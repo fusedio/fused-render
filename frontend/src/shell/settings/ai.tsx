@@ -189,10 +189,9 @@ export function PointerRow({ id, to, label }: { id: SettingId; to: string | (() 
   );
 }
 
-export function ClaudeModelPointer() {
-  const view = useContext(SettingsViewContext);
-  return <PointerRow id="claude-model" to={() => view.jump("claude-pref:model")} label="Claude Code" />;
-}
+export const ClaudeModelPointer = () => (
+  <PointerRow id="claude-model" to="/preferences?tab=claude-cli&s=claude-pref:model" label="Claude Code" />
+);
 export const EnginesPointer = () => <PointerRow id="engines" to="/ai-models/engines" label="AI Models › Engines" />;
 
 export function AgentSigninPointer() {

@@ -625,8 +625,7 @@ def set_claude_defaults(patch: DefaultsPatch, x_fused: str | None = Header(defau
 
 def _settings_model_options() -> set:
     """The `model` row's own options in the Claude settings catalog — the list
-    the settings page renders. Read per call for `preferences._catalog`'s
-    reason: a catalog refresh rewrites the override mid-process. A catalog that
+    the settings page renders. A catalog that
     cannot be read at all accepts nothing but the four short names, which is
     the vocabulary of the pills doing the writing."""
     from fused_render.claude_config import lib as _cfg_lib

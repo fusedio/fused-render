@@ -15,14 +15,13 @@
 //     helpers do. Callers let those reach the toast.
 //   * A module's OWN in-band refusal — `{ok: false, error: "..."}` on a 200 —
 //     is NOT thrown. It is part of each action's documented return (an
-//     unremovable marketplace, a dirty tree blocking a profile switch, a git
-//     ref git rejects), and several of those shapes carry extra fields the UI
-//     acts on. Sections branch on `ok` themselves.
+//     unremovable marketplace, a skill name that already exists), and several
+//     of those shapes carry extra fields the UI acts on. Sections branch on
+//     `ok` themselves.
 //
-// The kwargs are the SAME ones the modules' docstrings document, including the
-// two that are JSON-in-a-string (`preferences.patch`'s payload and
-// `profiles.import`'s paths) — the modules parse those with json.loads, so the
-// string is the contract, not an artefact of the old runPython transport.
+// The kwargs are the SAME ones the modules' docstrings document, including
+// the one that is JSON-in-a-string (`preferences.patch`'s payload) — the module
+// parses it with json.loads, so the string is the contract.
 //
 // The transport itself is @platform/lib/api's postJson/getJson rather than a
 // local fetch: these endpoints enforce the D3 write guard and answer 403 without
@@ -54,33 +53,12 @@ export interface OkResult {
   error?: string;
 }
 
-// One entry of a change preview (git_ops drift/diff). `status` is a git
-// name-status letter (A/M/D/R).
-export interface FileDelta {
-  status: string;
-  path: string;
-}
-
-export interface SettingDelta {
-  key: string;
-  from: unknown;
-  to: unknown;
-}
-
-// The `{files, settings}` pair every preview modal renders. `error` appears
-// instead when git rejected the ref (git_ops.diff with an unknown target).
-export interface ChangePreview {
-  files?: FileDelta[];
-  settings?: SettingDelta[];
-  error?: string;
-}
-
 // -- preferences --------------------------------------------------------------
 
 export type PrefControl = "toggle" | "select" | "number" | "text";
 
 // One catalog entry: the curated overlay (label/group/control/options/
-// unsetLabel) plus the doc-snapshot half refresh_catalog rewrites.
+// unsetLabel) plus the doc half (doc/default/minVersion).
 export interface PrefEntry {
   key: string;
   label: string;
@@ -94,10 +72,6 @@ export interface PrefEntry {
   // Sparse by design: only the options that need words appear here, and
   // an unmapped one shows itself, so the map never has to be kept exhaustive
   // against a list the docs refresh may grow.
-  //
-  // Part of the CURATED overlay, like `options` and `unsetLabel`:
-  // refresh_catalog rewrites `doc`/`default`/`minVersion` and leaves the rest of
-  // each entry untouched.
   optionLabels?: Record<string, string>;
   doc?: string | null;
   // The DOCUMENTED default, shown when the key is unset. Any JSON scalar, and
@@ -127,18 +101,6 @@ export const preferences = {
   patch: (patch: Record<string, unknown>) =>
     callModule<PatchResult>("preferences", { action: "patch", payload: JSON.stringify(patch) }),
 };
-
-export interface RefreshCatalogResult extends OkResult {
-  updated?: number;
-  total?: number;
-  undocumented?: string[];
-  // The user-override catalog the refresh wrote — the bundled catalog is
-  // read-only, so a refresh lands in the user's own copy and this says where.
-  path?: string;
-}
-
-// The catalog refresh is its own module with no actions — main() takes nothing.
-export const refreshCatalog = () => callModule<RefreshCatalogResult>("refresh_catalog");
 
 // -- plugins ------------------------------------------------------------------
 
@@ -226,6 +188,7 @@ export const plugins = {
   // Slow by nature (the CLI may clone a repo); the server allows it ~120s, so
   // the caller must show a busy state rather than assume a quick answer.
   install: (id: string) => callModule<UpdateResult>("plugins", { action: "install", id }),
+  uninstall: (id: string) => callModule<UpdateResult>("plugins", { action: "uninstall", id }),
 };
 
 // -- marketplaces -------------------------------------------------------------
@@ -275,16 +238,18 @@ export interface MemoryProject {
   path: string | null;
   pathConfirmed: boolean;
   files: MemoryFile[];
-  changes: FileDelta[];
 }
 
 export const memory = {
   list: () => callModule<{ projects: MemoryProject[] }>("memory", { action: "list" }),
   open: (project: string) => callModule<OkResult>("memory", { action: "open", project }),
-  commit: (project: string) =>
-    callModule<OkResult & { committed?: string | null }>("memory", { action: "commit", project }),
-  clear: (project: string) =>
-    callModule<OkResult & { committed?: string | null }>("memory", { action: "clear", project }),
+  clear: (project: string) => callModule<OkResult>("memory", { action: "clear", project }),
+  read: (project: string, file: string) =>
+    callModule<OkResult & { text: string }>("memory", { action: "read", project, file }),
+  write: (project: string, file: string, text: string) =>
+    callModule<OkResult>("memory", { action: "write", project, file, text }),
+  deleteFile: (project: string, file: string) =>
+    callModule<OkResult>("memory", { action: "delete_file", project, file }),
 };
 
 // -- skills -------------------------------------------------------------------
@@ -293,111 +258,33 @@ export interface Skill {
   slug: string;
   name: string;
   description: string;
+  source: "user" | "plugin";
+  plugin?: string;
+  marketplace?: string;
   linked: boolean;
-  source: string | null;
-  shareCommand: string | null;
+  path: string;
 }
+
+/** What addresses one skill: slugs collide across plugins and between a user
+ *  skill and a plugin skill. */
+export type SkillRef = Pick<Skill, "slug" | "source" | "plugin" | "marketplace">;
+
+const ident = (r: SkillRef) => ({
+  slug: r.slug,
+  source: r.source,
+  plugin: r.plugin ?? "",
+  marketplace: r.marketplace ?? "",
+});
 
 export const skills = {
   list: () => callModule<{ skills: Skill[] }>("skills", { action: "list" }),
-  open: (slug: string) => callModule<OkResult>("skills", { action: "open", slug }),
-};
-
-// -- statusline ---------------------------------------------------------------
-
-export interface StatuslineScript {
-  path: string;
-  tracked: boolean;
-  size: number;
-  // ISO-8601 with offset (statusline.py's _iso), not an epoch.
-  modified: string;
-  description: string;
-  fields: string[];
-  otherFields: string[];
-}
-
-export interface StatuslineGet {
-  configured: boolean;
-  type: string | null;
-  command: string | null;
-  script: StatuslineScript | null;
-}
-
-export interface StatuslinePreview {
-  ok: boolean;
-  // Raw stdout, ANSI escapes intact (see ./ansi.tsx).
-  output: string;
-  error?: string;
-}
-
-export const statusline = {
-  get: () => callModule<StatuslineGet>("statusline", { action: "get" }),
-  preview: () => callModule<StatuslinePreview>("statusline", { action: "preview" }),
-};
-
-// -- profiles -----------------------------------------------------------------
-
-export interface Profile {
-  name: string;
-  current: boolean;
-  isDefault: boolean;
-}
-
-// A refusal because the working tree is dirty. `files` is a list of PATHS
-// (lib.status), not the {status, path} pairs a change preview carries — the
-// two git shapes differ and the UI maps one onto the other.
-export interface DirtyRefusal extends OkResult {
-  dirty?: boolean;
-  files?: string[];
-}
-
-export interface ExportResult extends OkResult {
-  // Filename STEM only — the page stamps the date and appends .zip, because
-  // main() has no wall clock.
-  filename?: string;
-  b64?: string;
-}
-
-export interface ZipEntry {
-  path: string;
-  isDir: boolean;
-  size: number;
-}
-
-export interface ImportResult extends DirtyRefusal {
-  branch?: string;
-  imported?: string[];
-}
-
-export const profiles = {
-  list: () => callModule<{ profiles: Profile[]; current: string }>("profiles", { action: "list" }),
-  create: (name: string) => callModule<OkResult & { name?: string }>("profiles", {
-    action: "create",
-    name,
-  }),
-  // `message` is what turns a dirty-tree refusal into "commit, then switch":
-  // omitted, a dirty tree refuses with {dirty, files}; supplied, that message
-  // becomes the commit git makes first.
-  switch: (name: string, message?: string) =>
-    callModule<DirtyRefusal & { current?: string }>("profiles", {
-      action: "switch",
-      name,
-      ...(message ? { message } : {}),
-    }),
-  remove: (name: string) =>
-    callModule<OkResult & { name?: string }>("profiles", { action: "delete", name }),
-  export: (name: string) => callModule<ExportResult>("profiles", { action: "export", name }),
-  inspect: (b64: string) =>
-    callModule<OkResult & { entries?: ZipEntry[] }>("profiles", { action: "inspect", b64 }),
-  // `paths` is a JSON ARRAY STRING (the module json.loads it).
-  import: (b64: string, branch: string, paths: string[], message?: string) =>
-    callModule<ImportResult>("profiles", {
-      action: "import",
-      b64,
-      branch,
-      paths: JSON.stringify(paths),
-      ...(message ? { message } : {}),
-    }),
+  open: (r: SkillRef) => callModule<OkResult>("skills", { action: "open", ...ident(r) }),
+  create: (slug: string) => callModule<OkResult & { slug?: string }>("skills", { action: "create", slug }),
+  read: (r: SkillRef, path = "SKILL.md") =>
+    callModule<OkResult & { text: string; files: string[] }>("skills", { action: "read", ...ident(r), path }),
+  write: (r: SkillRef, path: string, text: string) =>
+    callModule<OkResult>("skills", { action: "write", ...ident(r), path, text }),
+  delete: (r: SkillRef) => callModule<OkResult>("skills", { action: "delete", ...ident(r) }),
 };
 
 // -- mcp ----------------------------------------------------------------------
@@ -448,30 +335,8 @@ export const mcp = {
   // `json` is the server definition as a JSON string — the CLI's own
   // `add-json` argument, validated by the module before it delegates.
   add: (name: string, json: string) => callModule<CliResult>("mcp", { action: "add", name, json }),
-};
-
-// -- git_ops ------------------------------------------------------------------
-
-export interface LogEntry {
-  sha: string;
-  date: string;
-  message: string;
-}
-
-export interface GitStatus {
-  dirty: boolean;
-  // Paths, not {status, path} pairs (see DirtyRefusal).
-  files: string[];
-}
-
-export const gitOps = {
-  log: () => callModule<{ log: LogEntry[] }>("git_ops", { action: "log" }),
-  status: () => callModule<GitStatus>("git_ops", { action: "status" }),
-  drift: () => callModule<ChangePreview>("git_ops", { action: "drift" }),
-  diff: (target: string) => callModule<ChangePreview>("git_ops", { action: "diff", target }),
-  commit: () => callModule<OkResult & { committed?: string | null }>("git_ops", {
-    action: "commit",
-  }),
-  restore: (target: string) =>
-    callModule<OkResult & { sha?: string }>("git_ops", { action: "restore", target }),
+  // Replaces the server with a new definition (remove, then add-json).
+  edit: (name: string, json: string) => callModule<CliResult>("mcp", { action: "edit", name, json }),
+  // The user-scope definition on disk, to prefill an edit.
+  spec: (name: string) => callModule<OkResult & { spec?: unknown }>("mcp", { action: "spec", name }),
 };

@@ -1,31 +1,11 @@
 /* ---- Claude config sections (apps/claude_config/sections) ----------------- */
-/* The Claude Code group of Preferences (shell/settings/claude.tsx) since
-   2026-10-20; before that one route, /claude-config, with a header band and
-   a tab strip of its own — those rules are gone with the page, the sections'
-   own vocabulary (toolbar, lists, rows, cards, the git chip) stays.
-   /claude-artifacts used to share this stylesheet; that page is gone (#492).
+/* The Claude Config page's sections (apps/claude_config/sections): lists, cards,
+   forms and the Plugins marketplace rail, inside the page's own card.
  *
- * The panel is ONE pattern repeated nine times, because it used to be four:
- * caption row, then .cc-toolbar (summary · controls · refresh), then a list of
- * .cc-lrow — one line each, expanding where a row has more to say than fits.
- * MD Files was the last holdout, on the theory that browse-and-preview is a
- * different job; it isn't different enough to be worth being the only page in
- * the app that looks like another application, and its snippet lives in the
- * expanded row now. Two exceptions remain: .cc-row for Preferences (label plus
- * control is not an item), and .cc-card, which is no longer a list item at all
- * — just the add forms and the drift statement.
- *
- * Nor is the section nav what the bundled html+py app this replaces had. That
- * app owned the window and put its sections in a 230px left column; here that
- * column landed against the shell's own GlobalSidebar and the page read as two
- * sidebars glued together. So the sections are a horizontal strip
- * (.cc-tabbar/.cc-tab) across the top of .cc-root — sized to the sidebar's
- * brand row, so the two bottom borders are one line — and .cc-body below it is
- * the content column plus, for MD Files only, the split preview pane.
- *
- * The COLOURS are not that app's either. It shipped its own warm-coral Claude
- * palette as hardcoded hexes and therefore ignored the Light/Dark setting;
- * every colour below is a shell palette token (styles/tokens.css) or a
+ * The panel is ONE pattern repeated: a caption row, then a list of .cc-lrow —
+ * one line each, expanding where a row has more to say than fits — with
+ * .cc-card for the add forms.
+ * Every colour below is a shell palette token (styles/tokens.css) or a
  * color-mix over one, which is what makes light mode possible at all and what
  * tests/test_theme.py enforces.
  *
@@ -68,8 +48,7 @@
   overflow-x: hidden;
   overflow-y: auto;
   /* Containing block for the absolutely positioned boxes inside this scroll
-     region, and the reason the DOCUMENT stays 100vh. `.sr-only` (the
-     visually-hidden label every `.cc-row-hint` carries) is
+     region, and the reason the DOCUMENT stays 100vh. `.sr-only` (visually-hidden labels) is
      `position: absolute` with auto offsets: with no positioned ancestor its
      containing block is the INITIAL one, so each span lands at its static
      position measured against the document — the last one on a long
@@ -85,74 +64,6 @@
   font-size: 13px;
 }
 
-/* -- the git chip (signature element) ---------------------------------------- */
-/* The one thing this page always states: Clean, or N uncommitted. It is the
-   page's ONE loud element besides the active tab marker — tinted --warning
-   the moment the repo drifts, quiet grey otherwise — and it opens History,
-   which is where the drift it names gets dealt with. */
-.cc-gitchip {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 6px;
-  font: inherit;
-  font-size: 12px;
-  font-weight: 500;
-  white-space: nowrap;
-  padding: 5px 10px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: none;
-  color: var(--fg-muted);
-  cursor: pointer;
-  transition: border-color 120ms var(--ease-out), color 120ms var(--ease-out);
-}
-
-.cc-gitchip:hover {
-  color: var(--fg);
-  border-color: color-mix(in srgb, var(--fg-muted) 60%, var(--border));
-}
-
-.cc-gitchip:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-.cc-gitchip.active {
-  color: var(--fg);
-  background: rgba(var(--tint), 0.06);
-}
-
-.cc-gitchip-dot {
-  width: 6px;
-  height: 6px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: var(--fg-muted);
-}
-
-/* Dirty state is the whole point of the chip, so it is the whole point of the
-   colour too — --warning, the same hue the old nav badge used, so "there is
-   drift" keeps one meaning across the app. */
-.cc-gitchip.dirty {
-  color: var(--warning-strong);
-  border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
-  background: color-mix(in srgb, var(--warning) 10%, transparent);
-}
-
-.cc-gitchip.dirty .cc-gitchip-dot {
-  background: var(--warning);
-}
-
-/* Unknown (loading, or the read failed) — italic, the same "not a stated
-   fact" grammar .cc-unset uses elsewhere, so it can't be mistaken for the
-   quiet default styling "Clean" also wears. Deliberately NOT the --warning
-   treatment: unknown isn't a claim that something is wrong, only that this
-   chip cannot vouch for "nothing is wrong" the way it usually does. */
-.cc-gitchip.unknown {
-  font-style: italic;
-}
-
 /* -- content column -------------------------------------------------------- */
 
 /* Single column, left-aligned, full-bleed to whatever width .cc-body gives it.
@@ -164,8 +75,8 @@
    the cap an opt-in class in the first place rather than a property of
    .cc-main itself. Removing the opt-in class is what the owner actually wants
    gone, not a second attempt at picking a bigger number — every row on this
-   page already bounds its own measure where it needs to (.cc-row-meta's
-   100ch, .cc-lrow-sub's ellipsis), so the column has nothing left to protect
+   page already bounds its own measure where it needs to (.cc-lrow-sub's
+   ellipsis), so the column has nothing left to protect
    against by capping itself too.
  *
  * Not centred — margin stays 0, matching the sidebar it sits beside rather
@@ -181,7 +92,7 @@
  * overflow-y `auto` as well, turning .cc-main back into a scroll container
  * even though nothing sets overflow-y on it. That's invisible normally
  * because .cc-main is height-bounded (flex:1 1 0% inside .cc-root's column)
- * and so never actually grows a scrollbar — but .cc-toolbar's and .cc-index's
+ * and so never actually grows a scrollbar — but .cc-index's
  * `position: sticky` resolve against the nearest scroll container, which was
  * silently THIS box instead of .cc-root, so they pinned against a box that
  * happens to never scroll rather than against the page. `clip` keeps the same
@@ -202,7 +113,7 @@
   font-weight: 600;
 }
 
-/* The file (or git object) the section actually edits — the one thing a settings
+/* The file the section actually edits — the one thing a settings
    UI over someone's dotfiles owes them. */
 .cc-caption {
   margin-bottom: 22px;
@@ -224,35 +135,6 @@
   gap: 16px;
 }
 
-/* Sticky, so a long list scrolls under the one row that names it, filters it
-   and refreshes it — summary · controls · refresh, per the design brief.
-   Flex-wrap is deliberate but constrained: the SUMMARY is the item allowed to
-   drop to its own line (flex-basis 100% below its min width), while the
-   controls travel together as one atomic flex item (.cc-toolbar-controls) and
-   never break apart into a ragged stack — that was the defect (a filter input
-   truncating its own placeholder as the row folded mid-control). */
-/* Sticky within .cc-root (the page's own scroll container — see .cc-root's
-   comment). top:0 still means what it always did: nothing else is sticky
-   above this on the page, so it pins to the very top of the scrollport once
-   the header and tab strip have scrolled past it, same as before .cc-root
-   became the scroller. .cc-index (Plugins' marketplace rail) is ALSO sticky
-   in the same scroll container, offset below this box's height — if this
-   toolbar's height changes, that offset (.cc-index's `top`) has to follow or
-   the rail slides under this and disappears. */
-.cc-toolbar {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  row-gap: 8px;
-  column-gap: 10px;
-  margin: 0 0 18px;
-  padding: 10px 0;
-  background: var(--bg);
-}
-
 /* What you are looking at, as a fact: "12 marketplaces", "4 servers · 3
    connected". Not italic — .cc-unset's italic means "this value is absent", and
    a count is not absent. Allowed to shrink to nothing and ellipsize before the
@@ -268,57 +150,10 @@
   color: var(--fg-muted);
 }
 
-/* Every control after the summary, as ONE flex item pinned to the row's right
-   edge. It never wraps internally — a filter input, a segmented switch and a
-   refresh icon breaking onto separate lines is the "ragged stack" defect —
-   so at a width where it and the summary can't share a line, the summary
-   folds first (its own 100% basis) and this group keeps its single row. Falls
-   back to its own horizontal scroll only in the extreme case that the controls
-   alone still don't fit. */
-.cc-toolbar-controls {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 8px;
-  max-width: 100%;
-  margin-left: auto;
-  overflow-x: auto;
-  scrollbar-width: thin;
-}
-
 @media (max-width: 640px) {
-  /* Below ~640px the summary's own line is claimed every time, so the
-     controls get the row to themselves and can use its full width — UNLESS
-     the only control is the solo refresh icon (Memory, Skills: no filter, no
-     segmented switch). That icon easily shares the summary's line, and
-     forcing it onto its own left a dead row under e.g. "10 skill(s)" —
-     .cc-toolbar-controls-solo (set in bits.tsx's SectionToolbar whenever
-     there are no `children`) opts a toolbar out of the split. */
+  /* Below ~640px the summary claims its own line. */
   .cc-summary {
     flex-basis: 100%;
-  }
-
-  .cc-toolbar:has(.cc-toolbar-controls-solo) .cc-summary {
-    flex-basis: auto;
-  }
-
-  .cc-toolbar-controls {
-    width: 100%;
-    justify-content: flex-start;
-    margin-left: 0;
-  }
-
-  .cc-toolbar-controls-solo {
-    width: auto;
-    margin-left: auto;
-  }
-
-  /* The filter input is the one control that needs real width to be useful;
-     everything else (segmented switch, refresh icon) is fixed-size, so the
-     input is the one allowed to grow into whatever the row has left. */
-  .cc-toolbar-controls .cc-scalar {
-    flex: 1 1 140px;
-    min-width: 120px;
   }
 }
 
@@ -337,7 +172,7 @@
 
 /* -- memory: one card per project, files inside as rows --------------------- */
 /* Memory (round 2) groups its ListRows by project — a project is not itself a
-   row, so it gets a plain header (folder/slug + count + drift) with the two
+   row, so it gets a plain header (folder/slug + count) with the two
    folder-level actions (Reveal, Clear) on the right, then a .cc-list card of
    its files underneath. */
 .cc-memgroup {
@@ -384,13 +219,6 @@
    this page does that any more (see .cc-lrow-actions), so a muted icon is what
    keeps it quiet now. */
 
-/* A filesystem path is not a category name: it keeps its own casing and wraps. */
-.cc-group-path {
-  text-transform: none;
-  letter-spacing: 0;
-  overflow-wrap: anywhere;
-}
-
 .cc-empty {
   padding: 30px 0;
   text-align: center;
@@ -408,113 +236,9 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-/* -- settings rows --------------------------------------------------------- */
-
-.cc-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 14px;
-  padding: 10px 0;
-  border-bottom: 1px solid var(--border);
-}
-
-/* Label + doc. USED TO be capped at 60ch on the theory that a long
-   documentation string should keep a comfortable reading measure and the
-   control column was what actually needed the row's remaining space — true
-   in isolation, but at full page width (the .cc-prefs wrapper that used to
-   bound this row is gone too, owner 2026-08-26: "make it use full width")
-   any fixed ch cap here stops growing before .cc-row-control's
-   right-anchored column (margin-left: auto) does, and that column's
-   auto-margin claims whatever gap is left over — so a cap doesn't just
-   shrink the void, it relocates it, at a width set by the cap rather than
-   by the viewport. Tried 100ch first: still a ~250px void at 1400px, the
-   width in question, because 100ch (~880px in this font) is well short of
-   the ~1050px actually available at that width once the row's own padding
-   and the control column are accounted for. No cap closes it at every
-   width without being unboundedly high, so it comes off entirely — meta now
-   grows to EXACTLY fill the row up to the control's left edge (the whole
-   point of it being the row's only growing flex item), zero void by
-   construction rather than by tuning a number to one width. Readability is
-   less at risk than a bare "no cap" reads: `doc` is refresh_catalog.py's
-   clean_doc output, already cut to one sentence, so there is no long-form
-   prose here to run edge-to-edge on an ultrawide monitor — verified live at
-   1400px and at the 640px stacked breakpoint below. */
-.cc-row-meta {
-  flex: 1 1 auto;
-  min-width: 0;
-  padding-top: 3px;
-}
-
-.cc-row-label {
-  font-weight: 500;
-}
-
-.cc-row-doc {
-  margin-top: 2px;
-  font-size: 12px;
-  color: var(--fg-muted);
-}
-
-/* The fixed column every control lines up against, down the whole page. A
-   GRID, not a packed flex row — the earlier flex version had the reset
-   button/hint and the control travel as one right-anchored group, so the
-   CONTROL's own left edge drifted with whatever text sat in front of it (a
-   select showing "opus" sat at a different x than one showing "auto"). Two
-   fixed tracks fix that: column 1 is always 22px (reset or the unset hint,
-   or nothing), column 2 is the control's own track — so every control,
-   whatever its own content, starts (and, for the ones that fill the track,
-   ends) at the same x down the page. Grid's default stretch is what makes a
-   <select>/<input> with no width of its own fill that second track; a
-   fixed-size control (the switch) is pinned to the SAME left edge with
-   justify-self below, rather than stretching or drifting to its own width. */
-
-/* margin-left: auto over .cc-row's own justify-content: space-between — this
-   is ONE child moving, not the row's whole justification, and space-between
-   would need a second opt-out the moment a row ever grew a third child (an
-   inline error, a badge) between meta and control, silently splitting them
-   apart instead of just sitting between two already-placed columns. Needed
-   once the 900px cap came off .cc-main (owner, 2026-08-26): capped, the row's
-   own width and .cc-row-meta's cap (60ch then, 100ch now — see that rule's
-   own comment) were close enough that this column landed near the right
-   edge anyway; uncapped, a wide row can still leave meta short of the row's
-   full width and this column stranded in the leftover space with no offset
-   in front of it. auto-margin still needs somewhere to draw that leftover FROM
-   — verified against the 640px block below, which switches the row to
-   column-flow and this control to width:100%: at that width the control
-   already fills the whole cross-axis track, so the auto margin would have
-   nothing left to pull from anyway. Reset explicitly there (`margin-left: 0`)
-   rather than leaning on that being incidentally true — a future edit to
-   this control's mobile width should not have to rediscover this. */
-.cc-row-control {
-  flex: 0 0 240px;
-  width: 240px;
-  margin-left: auto;
-  display: grid;
-  grid-template-columns: 22px minmax(0, 1fr);
-  align-items: center;
-  column-gap: 6px;
-}
-
-.cc-row-control select.field-control,
-.cc-row-control input.field-control {
-  width: 100%;
-  min-width: 0;
-}
-
-/* Left-aligned, not right: a select/input already fills the full column
-   (width:100%, so its own left edge sits at the column's left edge), and a
-   switch has to match that same left edge or toggle rows break the vertical
-   line every other control establishes. Grid's default justify-items is
-   already start; this exists to say so explicitly and rule out a future
-   "align it with the ones that fill the column" edit re-adding `end`. */
-.cc-row-control .cc-switch {
-  justify-self: start;
-}
-
 /* "using Claude's default" — italic and muted so it never reads as a value.
-   Still used elsewhere (Skills' "no recorded source", the import picker's
-   "Select all", an empty CLAUDE.md's placeholder) — just not in the
-   Preferences control column any more (see .cc-row-hint below). */
+   Used for Skills' "no recorded source" and an empty CLAUDE.md's
+   placeholder. */
 .cc-unset {
   font-size: 12px;
   font-style: italic;
@@ -524,73 +248,15 @@
   white-space: nowrap;
 }
 
-/* Column 1 of the control grid, in its two states: the reset button once a
-   value actually differs from its default, or — when it doesn't — a quiet
-   hint carrying the SAME fact ("Claude default", or the documented default
-   value) as a title= tooltip instead of as text. Text was the earlier
-   attempt: "Claude default"/"default: …" is unbounded in length (a catalog
-   entry's default can be an object), and at a fixed 22-64px width that meant
-   it silently ellipsized into "Claude …" — worse than not showing it, since
-   it now LOOKED like a value rather than read as absent. A fixed icon has no
-   such failure mode, and the fact is not exclusively carried here anyway: a
-   toggle already sits at its default position, and a select/scalar control
-   already shows its default as its own placeholder/option text. */
-.cc-iconbtn.cc-reset,
-.cc-row-hint {
-  width: 22px;
-  height: 22px;
-}
-
-.cc-row-hint {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--fg-muted);
-  opacity: 0.7;
-  cursor: default;
-}
-
-.cc-row-hint .cc-icon {
-  width: 12px;
-  height: 12px;
-}
-
-.cc-scalar {
-  min-width: 140px;
-}
-
 .cc-grow {
   flex: 1 1 auto;
   min-width: 0;
 }
 
-@media (max-width: 640px) {
-  /* Stacked label-then-control rather than a 240px column crushed down to
-     illegible width — the column only makes sense once there is room for it. */
-  .cc-row {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 6px;
-  }
-
-  .cc-row-meta {
-    max-width: none;
-    padding-top: 0;
-  }
-
-  .cc-row-control {
-    width: 100%;
-    margin-left: 0;
-    grid-template-columns: 22px 1fr;
-  }
-}
-
 /* -- cards ----------------------------------------------------------------- */
 /* No longer the shape of a LIST ITEM — that is .cc-lrow now. What is left is
    what a card is actually good at: a self-contained block with its own title,
-   prose and buttons. Four survive, all of them one-per-page — the add forms
-   behind the toolbar disclosures (Marketplaces, MCP, Profiles ×2) and the
-   History page's "Uncommitted changes" statement. */
+   prose and buttons. The add forms (Marketplaces, MCP) are the ones that remain. */
 
 .cc-card {
   padding: 14px 16px;
@@ -682,19 +348,9 @@
   flex: 0 0 180px;
   width: 180px;
   gap: 1px;
-  /* Sticks while the (much longer) list scrolls past it — offset below
-     .cc-toolbar's own sticky top:0, not stacked on top of it. Both stick to
-     the SAME scroll container — .cc-root now (it used to be .cc-main; see
-     .cc-root's comment for why the scroller moved) — so without this offset
-     scrolling slides this rail under the toolbar's opaque background and it
-     vanishes. The number itself didn't move with the scroller: sticky offsets
-     are measured from the scrollport, not from the document, so this is still
-     just the toolbar's own rendered height regardless of which ancestor is
-     doing the scrolling. 70px = the toolbar's own height (32px
-     .field-control/select, the tallest thing it holds, + 10px top/bottom
-     padding = 52) plus its 18px margin-bottom before .cc-split begins. */
+  /* Sticks while the (much longer) list scrolls past it. */
   position: sticky;
-  top: 70px;
+  top: 0;
 }
 
 /* The header above the rail — the same eyebrow weight as .cc-group-title,
@@ -993,50 +649,6 @@
   -webkit-box-orient: vertical;
 }
 
-/* Skills only: without a reserved width, the name shrink-wrapped to its own
-   text and the description that follows it started at whatever x that left
-   off at — ten different left edges for ten rows, unscannable. A fixed
-   column gives every row's description the SAME starting x. Top-aligned
-   (overriding .cc-lrow-line's and .cc-lrow-body's own center) because the
-   description can now be two lines and a centered name looked adrift beside
-   it. Scoped under this wrapper rather than touching the shared .cc-lrow-*
-   rules every other tab's rows also use. */
-.cc-skills-list .cc-lrow-line,
-.cc-skills-list .cc-lrow-body {
-  align-items: flex-start;
-}
-
-.cc-skills-list .cc-lrow-name {
-  flex: 0 0 168px;
-  width: 168px;
-  overflow: hidden;
-  padding-top: 1px;
-}
-
-/* The name box's own content: skill name, then (only for the rare skill
-   that isn't `linked`) a "not linked" pill stacked under it — both still
-   inside the fixed 168px column, so neither can push the description's
-   start x the way the pill used to when it rode beside the name instead. The
-   ellipsis that used to live on .cc-lrow-name moves to just the text line. */
-.cc-skills-namebox {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 3px;
-  max-width: 100%;
-}
-
-.cc-skills-namebox-text {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.cc-skills-list .cc-lrow-meta {
-  padding-top: 1px;
-}
-
 .cc-lrow-meta {
   flex: 0 0 auto;
   font-size: 11.5px;
@@ -1123,12 +735,8 @@
    a 420px add-marketplace dialog run ~350px tall to say three short things
    (owner, 2026-08-26: "why is the modal so ugly and spaced out?").
  *
- * NOT .cc-row: that grid reserves a fixed 22px track for a reset button/
- * default-value hint no field here has, and its own fixed column is the
- * CONTROL's (240px, on the right, tuned for Preferences' full-page rows) —
- * here it is the LABEL that wants the fixed, narrow column, with the control
- * growing to fill a dialog that is a third that width. Two different shapes
- * wearing the same "label plus control" idea, not one pattern reused. */
+ * The LABEL takes the fixed, narrow column and the control grows to fill the
+ * dialog. */
 .cc-modal-field {
   display: flex;
   align-items: center;
@@ -1354,39 +962,6 @@
   border-radius: 8px;
 }
 
-.cc-mdcard-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.cc-mdcard-name {
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.cc-mdcard-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-top: auto;
-}
-
-.cc-mdcard-meta {
-  font-size: 11px;
-  color: var(--fg-muted);
-  white-space: nowrap;
-}
-
-.cc-mdcard-actions {
-  display: flex;
-  gap: 2px;
-}
-
 /* Icon-only quiet action button; the label lives in title/aria-label. */
 .cc-iconbtn {
   display: inline-flex;
@@ -1576,49 +1151,6 @@
   outline-offset: 2px;
 }
 
-/* -- preformatted output (statusline preview, file view/edit) --------------- */
-
-.cc-pre {
-  margin: 12px 0 0;
-  padding: 10px 12px;
-  font-size: 12px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow-x: auto;
-}
-
-/* The statusline preview is the tab's hero, not a debug dump at the bottom:
-   roomier padding and no top margin, since it is the first thing on the page. */
-.cc-statusline {
-  margin-top: 0;
-  padding: 14px 16px;
-  font-size: 13px;
-}
-
-/* -- definition list (statusline metadata) --------------------------------- */
-/* Facts about a thing, under the thing. Same two-column grammar as an expanded
-   row's .cc-lrow-dl, at page scale rather than inside a row. */
-
-.cc-dl {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 8px 16px;
-  margin: 20px 0 0;
-  font-size: 12.5px;
-}
-
-.cc-dl-key {
-  color: var(--fg-muted);
-}
-
-.cc-dl-val {
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
 /* -- change-preview modal body --------------------------------------------- */
 
 .cc-note {
@@ -1627,161 +1159,13 @@
   line-height: 1.5;
 }
 
-.cc-delta-head {
-  margin: 14px 0 6px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--fg-muted);
-}
-
-.cc-delta-head:first-child {
-  margin-top: 0;
-}
-
-.cc-delta {
-  padding: 6px 0;
-  font-size: 13px;
-  border-bottom: 1px solid var(--border);
-  overflow-wrap: anywhere;
-}
-
-.cc-delta-key {
-  font-weight: 500;
-}
-
-.cc-delta-fromto {
-  font-size: 12px;
-  color: var(--fg-muted);
-}
-
-/* git name-status letter, colour-coded and fixed-width so the paths align. */
-.cc-fstat {
-  display: inline-block;
-  width: 16px;
-  font-weight: 700;
-}
-
-.cc-fstat-A {
-  color: var(--success);
-}
-
-.cc-fstat-M {
-  color: var(--warning);
-}
-
-.cc-fstat-D {
-  color: var(--error);
-}
-
-.cc-fstat-R {
-  color: var(--accent-soft);
-}
-
-/* -- profile import picker ------------------------------------------------- */
-
-.cc-pick {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 0;
-  font-size: 13px;
-  border-bottom: 1px solid var(--border);
-  cursor: pointer;
-  overflow-wrap: anywhere;
-}
-
-.cc-pick-all {
-  margin-top: 12px;
-}
-
-.cc-pick-group {
-  margin-top: 8px;
-}
-
-.cc-pick-grouplabel {
-  font-weight: 600;
-}
-
-/* Children sit under their group's checkbox. */
-.cc-pick-file {
-  padding-left: 24px;
-}
-
-/* -- ANSI (statusline preview) --------------------------------------------- */
-/* apps/claude_config/ansi.tsx maps an SGR code to one of these classes. Eight
-   hues, drawn from the palette tokens that already carry them — the three
-   semantic ones plus the file-icon hues for blue/magenta/cyan, which are the
-   only stable blue/magenta/cyan the palette has. Bright variants (90–97) resolve
-   to the same hue as their normal counterpart; `bold` is what separates
-   emphasis. */
-
-.cc-ansi-gray {
-  color: var(--fg-muted);
-}
-
-.cc-ansi-red {
-  color: var(--error);
-}
-
-.cc-ansi-green {
-  color: var(--success);
-}
-
-.cc-ansi-yellow {
-  color: var(--warning);
-}
-
-.cc-ansi-blue {
-  color: var(--icon-folder);
-}
-
-.cc-ansi-magenta {
-  color: var(--icon-image);
-}
-
-.cc-ansi-cyan {
-  color: var(--icon-code);
-}
-
-.cc-ansi-white {
-  color: var(--fg);
-}
-
-.cc-ansi-bold {
-  font-weight: 700;
-}
-
-.cc-ansi-dim {
-  opacity: 0.6;
-}
-
 /* -- narrow windows -------------------------------------------------------- */
-/* Used to also stack .cc-body's content column and its preview pane below
-   ~900px (`.cc-body { flex-direction: column; overflow-y: auto; }`) — dead
-   since the MD Files split-pane section that pane belonged to was removed
-   (round 2, see ClaudeConfig.tsx's header comment): .cc-body has exactly one
-   child now, so there is nothing left to stack. Worse than dead: that
-   `overflow-y: auto` re-created the "which box actually scrolls" bug below
-   900px width specifically (code review, 2026-08-26, same root cause as
-   .cc-main's own — see .cc-main's comment) by making .cc-body its own scroll
-   container instead of .cc-root, which strands .cc-toolbar's and .cc-index's
-   `position: sticky` against a narrower scrollport than the rest of the page
-   uses everywhere else. The tab strip needs no rule of its own: it scrolls
-   sideways at every width. What DOES go is the caption's standing note — at
-   this width the file the tab edits is the only half of that row worth the
-   space, and the note survives as the row's title=. */
+/* The tab strip needs no rule of its own: it scrolls sideways at every width. */
 
 @media (max-width: 900px) {
-  .cc-caption-note {
-    display: none;
-  }
-
   /* A row gives up its secondary text before it gives up its actions: the
      actions are the reason the row is there, and the secondary text is the one
-     part that has somewhere else to be (the expanded panel, or its title=).
-     Skills is the deliberate exception — its description IS the payload, so
-     .cc-skills-list overrides this back on below (and drops the source meta
-     instead, which is the low-value, repetitive field at this width). */
+     part that has somewhere else to be (the expanded panel, or its title=). */
   .cc-lrow-sub {
     display: none;
   }
@@ -1791,39 +1175,6 @@
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-
-  .cc-skills-list .cc-lrow-sub {
-    display: -webkit-box;
-  }
-
-  .cc-skills-list .cc-lrow-meta {
-    display: none;
-  }
-
-  /* The fixed 168px name column is a desktop-width affordance, and at a
-     ~340px content column it left so little room that the two-column shape
-     itself was the defect: the name — the row's identity — was what got
-     crushed down to two or three characters (`c..`) while the description
-     kept nearly the full row width. Below this width Skills' rows stack
-     instead: the name (with its "not linked" badge, still stacked under it
-     via .cc-skills-namebox) gets its own full-width line, the description
-     its own line(s) below — still clamped to 2 lines by .cc-lrow-sub-clamp2
-     above — and the source meta stays dropped, same as the comment above
-     already says. .cc-lrow-body flips to a column so those two lines stack;
-     align-items must go from the row layout's flex-start (top-aligns NAME
-     beside SUB) to stretch, or the column's cross axis would shrink-wrap
-     each line to its own content width instead of spanning the row. */
-  .cc-skills-list .cc-lrow-body {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 4px;
-  }
-
-  .cc-skills-list .cc-lrow-name {
-    flex: 0 0 auto;
-    width: auto;
-    max-width: 100%;
   }
 
   /* The marketplace filter column would leave the list ~120px at this width.
@@ -1850,4 +1201,162 @@
     width: 100%;
     position: static;
   }
+}
+
+/* -- the in-app file editor (FileEditor.tsx) ------------------------------- */
+.cc-fileeditor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.cc-fileeditor-text {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  field-sizing: fixed;
+  resize: vertical;
+}
+
+.cc-fileeditor-note {
+  font-size: 12px;
+  color: var(--muted-foreground, #888);
+}
+
+.cc-fileeditor-note.is-error {
+  color: var(--destructive, #d33);
+}
+
+.cc-fileeditor-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* -- Skills tab of the Claude Config page ------------------------------------- */
+
+/* The list: one full-width button per skill inside a .settings-card. */
+.cc-skill-row {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 12px 16px;
+  border: none;
+  border-top: 1px solid var(--border);
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cc-skill-row:first-child {
+  border-top: none;
+}
+
+.cc-skill-row:hover {
+  background: rgba(var(--accent-rgb), 0.06);
+}
+
+.cc-skill-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.cc-skill-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.cc-skill-name {
+  font-weight: 500;
+}
+
+.cc-skill-owner {
+  display: block;
+  margin-top: 2px;
+}
+
+.cc-skill-empty {
+  margin: 0;
+  padding: 12px 16px;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+.cc-skill-desc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.cc-skill-new {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+/* The editor's heading: back button, name, link pill on one line; the actions
+   (and the fading Saved note) sit at the row's right edge. */
+.cc-skill-headline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.cc-skill-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+
+.cc-skill-delete {
+  color: var(--destructive, #d33);
+}
+
+.cc-skill-note {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.cc-skill-note.is-error {
+  color: var(--destructive, #d33);
+}
+
+.cc-skill-files {
+  margin-bottom: 12px;
+}
+
+/* The card is the frame: the textarea inside has no border, background or
+   ring of its own, and keeps a fixed height (field-sizing off) that the
+   user can drag taller. */
+.cc-skill-editor {
+  display: block;
+  width: 100%;
+  min-height: 60vh;
+  padding: 12px 16px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  field-sizing: fixed;
+  resize: vertical;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.cc-skill-editor:focus-visible {
+  outline: none;
+  box-shadow: none;
 }

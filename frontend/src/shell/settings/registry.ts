@@ -14,7 +14,7 @@
 // is the design artifact claude.ai/artifact/NdzDR2rpNpFU3yBgQd5sJk.
 //
 // "SET ELSEWHERE" rows are pointers to a setting whose real control lives on
-// another page (Claude Config's model, AI Models' engines).
+// another page (the Claude Code page's Claude model, AI Models' engines).
 // They are in the list so a search for "model" lands on a door instead of on
 // nothing — the page used to lose those settings silently when they moved.
 import type { Prefs } from "@platform/lib/api";
@@ -29,11 +29,7 @@ export type GroupId =
   | "general"
   | "features"
   | "ai"
-  | "claude-settings"
-  | "claude-plugins"
-  | "claude-memory"
-  | "claude-mcp"
-  | "claude-history"
+  | "claude-cli"
   | "tasks"
   | "apps"
   | "indexing"
@@ -44,13 +40,9 @@ export type GroupId =
 // THE NAV IS SECTIONED THE WAY THE APP'S SIDEBAR IS (Akshil, 2026-10-20):
 // a heading per destination a reader already knows from the left rail —
 // the app itself, Bots, Tasks, Apps & files — and Other for what is none of
-// those. Claude Code is a section of its own (Akshil, 2026-10-21): the
-// former Claude Config panel's tabs are its groups, one page each, the way
-// the panel's tab strip laid them out — not accordions on one long page. A
-// group belongs to exactly one section; a section with no visible group
-// (Fused Bot has no apps or files; a machine without ~/.claude has no Claude
-// Code) is not drawn.
-export type NavSectionId = "general" | "bots" | "claude" | "tasks" | "apps" | "other";
+// those. A group belongs to exactly one section; a section with no visible
+// group (Fused Bot has no apps or files) is not drawn.
+export type NavSectionId = "general" | "bots" | "tasks" | "apps" | "other";
 
 export interface NavSection {
   id: NavSectionId;
@@ -60,7 +52,6 @@ export interface NavSection {
 export const NAV_SECTIONS: readonly NavSection[] = [
   { id: "general", label: "General" },
   { id: "bots", label: "Bots" },
-  { id: "claude", label: "Claude Code" },
   { id: "tasks", label: "Tasks" },
   { id: "apps", label: "Apps & files" },
   { id: "other", label: "Other" },
@@ -86,39 +77,11 @@ export const GROUPS: readonly SettingsGroup[] = [
     blurb: "Off by default and still settling. Each one adds a sidebar row or a page when you turn it on.",
   },
   { id: "ai", nav: "bots", label: "AI & agents", blurb: "Which coding agents run your chats and tasks." },
-  // Claude Code's own configuration under ~/.claude. Settings first (the
-  // page nearly everyone came for — Akshil, 2026-10-21), then the panel's old
-  // tab order: Plugins, Memory & Skills, MCP, History last. Edits commit to
-  // git and apply on the next session.
   {
-    id: "claude-settings",
-    nav: "claude",
-    label: "Settings",
-    blurb: "Claude Code's settings.json: the model, permissions, the status line and every documented key. Edits commit to git and apply on the next session.",
-  },
-  {
-    id: "claude-plugins",
-    nav: "claude",
-    label: "Plugins",
-    blurb: "Plugins and marketplaces Claude Code loads. Edits commit to git and apply on the next session.",
-  },
-  {
-    id: "claude-memory",
-    nav: "claude",
-    label: "Memory & Skills",
-    blurb: "What Claude Code remembers per project, and the skills it can run.",
-  },
-  {
-    id: "claude-mcp",
-    nav: "claude",
-    label: "MCP servers",
-    blurb: "The MCP servers every Claude Code session can reach.",
-  },
-  {
-    id: "claude-history",
-    nav: "claude",
-    label: "History",
-    blurb: "Uncommitted drift, profiles and the commit log over your Claude config.",
+    id: "claude-cli",
+    nav: "bots",
+    label: "Claude Code CLI",
+    blurb: "The settings.json keys that shape the Claude sessions fused-render runs.",
   },
   { id: "tasks", nav: "tasks", label: "Tasks", blurb: "How tasks queue, get titled and tell you they are done." },
   { id: "apps", nav: "apps", label: "Apps & sharing", blurb: "Git sync, sharing, and how app cards preview." },
@@ -156,13 +119,6 @@ export interface SettingEntry {
   child?: true;
   /** A pointer to another page, not a control. */
   elsewhere?: true;
-  /** The control is a whole block (a list with its own toolbar, an editor),
-   *  not one row: drawn as its own card under the section title, with the
-   *  description as the card's caption. In search results it is a pointer
-   *  row into its group. */
-  block?: true;
-  /** A block that only shows state (badge on its caption). */
-  readOnly?: true;
   /** Fused Bot's own wording where it differs (its launcher searches bots,
    *  not apps). Applied by `forFlavor`, so the row and the search agree. */
   bot?: { label?: string; description?: string };
@@ -175,11 +131,13 @@ export interface SettingsContext {
   prefs: Prefs;
   bot: boolean;
   mac: boolean;
-  /** GET /api/claude-config/status: ~/.claude exists on this machine. */
+  /** GET /api/claude-config/status: ~/.claude exists on this machine; the
+   *  model pointer leads to the Claude Code page's settings. */
   claudeConfig: boolean;
 }
 
 const claudeOnly = ({ claudeConfig }: SettingsContext) => claudeConfig;
+const claudeMissing = ({ claudeConfig }: SettingsContext) => !claudeConfig;
 
 const ENTRIES = [
   // ── General ──────────────────────────────────────────────────────────────
@@ -302,87 +260,18 @@ const ENTRIES = [
     elsewhere: true,
   },
 
-  // ── Claude Code ──────────────────────────────────────────────────────────
-  // The Claude Config panel's sections, each a block in its own card of its
-  // group (Plugins / Memory & Skills / MCP servers / Settings / History). The
-  // `description` is the file (or git object) the block edits — the one
-  // thing a settings UI over someone's dotfiles owes them. The settings.json
-  // rows are the Settings group: Statusline leads, then a static catalog row,
-  // and the catalog's own entries follow it at runtime (settings/claude.tsx
-  // builds them from GET preferences, so a search finds "model" or "effort"
-  // the way it finds any other row).
+  // ── Claude Code CLI ──────────────────────────────────────────────────────
+  // The settings.json rows are data the server ships and are spliced in at
+  // runtime (settings/claude.tsx); this row is the group's only static one,
+  // shown on a machine without ~/.claude.
   {
-    id: "claude-plugins",
-    group: "claude-plugins",
-    section: "Plugins",
-    label: "Plugins",
-    description: "settings.json → enabledPlugins + extraKnownMarketplaces",
-    keywords: "plugin marketplace install enable disable discover claude",
-    block: true,
-    available: claudeOnly,
-  },
-  {
-    id: "claude-memory",
-    group: "claude-memory",
-    section: "Memory",
-    label: "Memory",
-    description: "projects/*/memory/",
-    keywords: "memory remember notes project claude",
-    block: true,
-    readOnly: true,
-    available: claudeOnly,
-  },
-  {
-    id: "claude-skills",
-    group: "claude-memory",
-    section: "Skills",
-    label: "Skills",
-    description: "skills/*/SKILL.md",
-    keywords: "skill slash command claude",
-    block: true,
-    readOnly: true,
-    available: claudeOnly,
-  },
-  {
-    id: "claude-statusline",
-    group: "claude-settings",
-    section: "Statusline",
-    label: "Statusline",
-    description: "settings.json → statusLine",
-    keywords: "statusline status line prompt bar claude",
-    block: true,
-    readOnly: true,
-    available: claudeOnly,
-  },
-  {
-    id: "claude-mcp",
-    group: "claude-mcp",
-    section: "MCP",
-    label: "MCP servers",
-    description: "Global MCP servers via the `claude mcp` CLI (not version-controlled)",
-    keywords: "mcp server connector tool claude",
-    block: true,
-    available: claudeOnly,
-  },
-  {
-    id: "claude-catalog",
-    group: "claude-settings",
+    id: "claude-cli-missing",
+    group: "claude-cli",
     section: "settings.json",
-    label: "Settings catalog",
-    description:
-      "The settings below come from the checked-in catalog. Refresh re-fetches defaults and docs from code.claude.com and rewrites it.",
-    keywords: "settings.json catalog refresh docs defaults claude",
-    available: claudeOnly,
-  },
-  {
-    id: "claude-history",
-    group: "claude-history",
-    section: "History",
-    label: "History",
-    description: "Uncommitted drift, profiles (git branches) and the commit log over your Claude config",
-    keywords: "history git commit profile branch export import drift claude",
-    block: true,
-    available: claudeOnly,
+    label: "Claude Code isn't installed",
+    description: "~/.claude was not found on this machine. Install Claude Code and its settings.json keys appear here.",
+    keywords: "claude code cli install settings.json",
+    available: claudeMissing,
   },
 
   // ── Tasks ────────────────────────────────────────────────────────────────
@@ -743,15 +632,13 @@ export function sectionsOf<T extends SettingEntry>(
 }
 
 /** `?tab=` → the group to show. "render" was the old default tab's name,
- *  "account" the Accounts tab's (Integrations since 2026-10-20) and "claude"
- *  the one Claude Code group's (five groups since 2026-10-21; the router
- *  still writes it for /claude-config links, and it lands on Settings, the
- *  section's first group); anything unknown (a dead `?tab=engines` bookmark) or
- *  hidden on this flavor falls back to the first group rather than an empty
+ *  "account" the Accounts tab's (Integrations since 2026-10-20); anything
+ *  unknown (a dead `?tab=engines` bookmark) or hidden on this flavor falls
+ *  back to the first group rather than an empty
  *  panel. */
 export function resolveGroup(tab: string | null, groups: readonly SettingsGroup[]): GroupId {
   const wanted =
-    tab === "render" ? "general" : tab === "account" ? "integrations" : tab === "claude" ? "claude-settings" : tab;
+    tab === "render" ? "general" : tab === "account" ? "integrations" : tab;
   const hit = groups.find((g) => g.id === wanted);
   return (hit ?? groups[0] ?? GROUPS[0]).id;
 }

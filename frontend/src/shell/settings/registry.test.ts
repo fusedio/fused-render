@@ -46,15 +46,14 @@ describe("the registry", () => {
 
   test("every group sits under a nav section, in the sidebar's order", () => {
     const order = NAV_SECTIONS.map((s) => s.id);
-    expect(order).toEqual(["general", "bots", "claude", "tasks", "apps", "other"]);
+    expect(order).toEqual(["general", "bots", "tasks", "apps", "other"]);
     for (const g of GROUPS) expect(order).toContain(g.nav);
     // Groups are listed section by section — the nav never splits a section.
     const seen = GROUPS.map((g) => order.indexOf(g.nav));
     expect([...seen].sort((a, b) => a - b)).toEqual(seen);
     expect(navSections(GROUPS).map((s) => [s.section.id, s.groups.map((g) => g.id)])).toEqual([
       ["general", ["general", "features"]],
-      ["bots", ["ai"]],
-      ["claude", ["claude-settings", "claude-plugins", "claude-memory", "claude-mcp", "claude-history"]],
+      ["bots", ["ai", "claude-cli"]],
       ["tasks", ["tasks"]],
       ["apps", ["apps", "indexing", "lan"]],
       ["other", ["integrations", "advanced"]],
@@ -78,25 +77,9 @@ describe("the registry", () => {
 });
 
 describe("visibility", () => {
-  test("Claude Code is a nav section only where ~/.claude is", () => {
-    const without = navSections(visibleGroups(visibleSettings(ctx()))).map((s) => s.section.id);
-    expect(without).toEqual(["general", "bots", "tasks", "apps", "other"]);
-    const rows = visibleSettings(ctx({ claudeConfig: true }));
-    const nav = navSections(visibleGroups(rows));
-    expect(nav.map((s) => s.section.id)).toContain("claude");
-    // Settings first, then the panel's tab order: Plugins … History last.
-    const claude = nav.find((s) => s.section.id === "claude")!.groups;
-    expect(claude.map((g) => [g.id, rows.filter((r) => r.group === g.id).map((r) => r.id)])).toEqual([
-      ["claude-settings", ["claude-statusline", "claude-catalog"]],
-      ["claude-plugins", ["claude-plugins"]],
-      ["claude-memory", ["claude-memory", "claude-skills"]],
-      ["claude-mcp", ["claude-mcp"]],
-      ["claude-history", ["claude-history"]],
-    ]);
-    // Blocks are one per section: the card is the block.
-    for (const r of rows.filter((r) => r.block)) {
-      expect(rows.filter((x) => x.group === r.group && x.section === r.section)).toHaveLength(1);
-    }
+  test("the nav has no Claude Code section; it is the Claude Code page", () => {
+    const nav = navSections(visibleGroups(visibleSettings(ctx({ claudeConfig: true })))).map((s) => s.section.id);
+    expect(nav).toEqual(["general", "bots", "tasks", "apps", "other"]);
   });
 
   test("Fused Bot drops the Render-only groups and rows, and its nav drops Apps & files", () => {
@@ -187,13 +170,6 @@ describe("resolveGroup", () => {
   test("the old Accounts tab reads as Integrations", () => {
     expect(resolveGroup("account", groups)).toBe("integrations");
   });
-  test("the one Claude Code group's tab lands on Settings, the section's first group", () => {
-    const withClaude = visibleGroups(visibleSettings(ctx({ claudeConfig: true })));
-    expect(resolveGroup("claude", withClaude)).toBe("claude-settings");
-    expect(resolveGroup("claude-settings", withClaude)).toBe("claude-settings");
-    // Without ~/.claude there is no such group: General.
-    expect(resolveGroup("claude", groups)).toBe("general");
-  });
   test("a tab hidden on this flavor falls back", () => {
     const botGroups = visibleGroups(visibleSettings(ctx({ bot: true })));
     expect(resolveGroup("indexing", botGroups)).toBe("general");
@@ -236,10 +212,13 @@ describe("search", () => {
     expect(searchSettings(all, "opus")).toEqual([]);
   });
 
-  test("the Claude blocks are findable by what they hold", () => {
-    const rows = visibleSettings(ctx({ claudeConfig: true }));
-    expect(searchSettings(rows, "mcp").map((h) => h.id)).toEqual(["claude-mcp", "claude-strict-mcp"]);
-    expect(searchSettings(rows, "marketplace").map((h) => h.id).sort()).toEqual(["claude-plugins", "marketplace"]);
+  test("the Claude Code CLI group shows only its not-installed row without ~/.claude", () => {
+    const ids = (claudeConfig: boolean) =>
+      visibleSettings(ctx({ claudeConfig }))
+        .filter((e) => e.group === "claude-cli")
+        .map((e) => e.id as string);
+    expect(ids(false)).toEqual(["claude-cli-missing"]);
+    expect(ids(true)).toEqual([]);
   });
 
   test("Codex is findable by its own words and its account's", () => {

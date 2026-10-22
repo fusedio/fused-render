@@ -9,20 +9,14 @@
 // file named for its group, mapped by `settings/controls.tsx`. This file only
 // lays them out.
 //
-// The Claude Code groups (settings/claude.tsx) are the former Claude Config
-// panel, a group per tab under the nav's Claude Code heading: their sections
-// are BLOCKS — a card each, not a row — and the rows of settings.json come
-// from a catalog fetched at mount, spliced in after the registry's catalog
-// row so the nav count, the search and the page agree.
-//
 // It replaced five tabs, the first of which ("Render preferences") had grown
 // to twenty sections in the order their flags shipped, with no way to search.
 // The audit and the design are claude.ai/artifact/NdzDR2rpNpFU3yBgQd5sJk.
 // Four controls left the page then: the menu bar's pinned-file view (retired
 // for the Dock), Updates' "Check now" (the status bar's Updates chip asks
 // it), the Super Bot phone mirror (its setup is in the bot's own settings),
-// and the default Claude model (Claude Config's Model is the one value every
-// surface reads; a pointer row leads there).
+// and the default Claude model (the Claude Config page's settings hold the one
+// value every surface reads; a pointer row leads there).
 //
 // THE URL: `?tab=<group>` picks the group (absent = General). The four ids an
 // old tab used — ai, indexing, lan, account — kept their names so existing
@@ -32,15 +26,11 @@
 // setting's group and highlights it; `?q=` is the search, kept in the URL with
 // replaceState so a reload or a copied link keeps it without each keystroke
 // becoming a history entry.
-import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Brain,
-  FileJson,
-  History,
-  Puzzle,
   Search,
-  Server,
   SlidersHorizontal,
+  Terminal,
   Sparkles,
   ListChecks,
   LayoutGrid,
@@ -73,13 +63,7 @@ import {
   type GroupId,
   type SettingEntry,
 } from "./settings/registry";
-import {
-  ClaudeConfigProvider,
-  ClaudeGitChip,
-  ClaudePrefRow,
-  isClaudePref,
-  useClaudePrefEntries,
-} from "./settings/claude";
+import { ClaudeConfigProvider, ClaudePrefRow, isClaudePref, useClaudePrefEntries } from "./settings/claude";
 import { searchSettings, tokenize } from "./settings/search";
 import { CONTROLS } from "./settings/controls";
 import { rowId, SettingsViewContext, type SettingsView } from "./settings/SettingRow";
@@ -89,11 +73,7 @@ const GROUP_ICONS: Record<GroupId, LucideIcon> = {
   general: SlidersHorizontal,
   features: ToggleRight,
   ai: Sparkles,
-  "claude-plugins": Puzzle,
-  "claude-memory": Brain,
-  "claude-mcp": Server,
-  "claude-settings": FileJson,
-  "claude-history": History,
+  "claude-cli": Terminal,
   tasks: ListChecks,
   apps: LayoutGrid,
   indexing: FolderSearch,
@@ -122,19 +102,8 @@ function Section({
   prefs: Prefs;
   onChange: (p: Prefs) => void;
 }) {
-  // A block is its section's only entry: the card is the block, captioned
-  // with the file it edits. In search results (SettingsViewContext.tokens)
-  // the block's control is a pointer row and the card is an ordinary one.
-  const block = entries.find((e) => e.block) ?? null;
-  const searching = useContext(SettingsViewContext).tokens !== null;
   const card = (
-    <div className={cn("settings-card", block && !searching && "settings-card-block")}>
-      {block && !searching && (
-        <div className="settings-block-caption">
-          <code>{block.description}</code>
-          {block.readOnly && <Badge variant="secondary">read-only</Badge>}
-        </div>
-      )}
+    <div className="settings-card">
       {entries.map((e) => {
         if (isClaudePref(e)) return <ClaudePrefRow key={e.id} entry={e} />;
         const Control = CONTROLS[e.id as keyof typeof CONTROLS];
@@ -161,13 +130,8 @@ let lastPrefs: Prefs | null = null;
 let writeGen = 0;
 
 export default function Preferences() {
-  // The Claude Code groups' store wraps the page: the catalog rows it holds
-  // are part of the entry list (search included), and the git chip in each
-  // group's head reads the same epoch its blocks bump.
   // null until the probe answers: the page waits for it (with the prefs GET
-  // it waits for anyway) rather than resolve `?tab=claude` to General for a
-  // moment and then flip — every job and notification link into the groups
-  // lands on a cold cache.
+  // it waits for anyway) rather than show General for a moment and then flip.
   const claudeConfig = useClaudeConfigStatus();
   return (
     <ClaudeConfigProvider available={claudeConfig === true}>
@@ -210,28 +174,20 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
 
   const tokens = useMemo(() => tokenize(query), [query]);
   const searching = tokens.length > 0;
-  // The catalog is read with the page, not when its group opens: the nav's
-  // count for Settings is every row (Akshil, 2026-10-20: "keep it as 83"),
-  // so the page waits for the rows the way it waits for the prefs GET.
-  const { rows: claudeRows, ready: claudeReady } = useClaudePrefEntries(claudeConfig === true);
+  // The catalog is read with the page: the nav's count for Claude Code CLI is
+  // every row, so the page waits for the rows the way it waits for the prefs.
+  const { rows: claudeRows, ready: claudeReady } = useClaudePrefEntries();
   const loaded = prefs !== null && claudeConfig !== null && claudeReady;
   const entries = useMemo(() => {
     if (!prefs || claudeConfig === null) return [];
     const base: SettingEntry[] = visibleSettings({ prefs, bot, mac: isMac, claudeConfig });
-    // The settings.json rows follow the catalog row that introduces them.
-    const at = base.findIndex((e) => e.id === "claude-catalog");
-    return at === -1 ? base : [...base.slice(0, at + 1), ...claudeRows, ...base.slice(at + 1)];
+    return [...base, ...claudeRows];
   }, [prefs, bot, claudeConfig, claudeRows]);
   const groups = useMemo(() => visibleGroups(entries), [entries]);
   const sections = useMemo(() => navSections(groups), [groups]);
   const byId = (id: string) => entries.find((e) => e.id === id);
 
-  // Scroll a jumped-to row into view, light it briefly, then let it go — once
-  // the row IS on the page: a settings.json row is not until its catalog has
-  // loaded, and a timer started at mount would have cleared the highlight
-  // before then. Re-run as the entry list grows for the same reason. (The
-  // blocks above a row fetch their own lists and grow after this scroll; a
-  // deep link into a late row can land a little short. Accepted.)
+  // Scroll a jumped-to row into view, light it briefly, then let it go.
   useEffect(() => {
     if (!flash || !prefs) return;
     const el = document.getElementById(rowId(flash));
@@ -262,10 +218,7 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
     );
   };
 
-  // `?s=` names a setting: its group wins over `?tab=`. A settings.json row
-  // (`claude-pref:…`) is in `entries` only once its catalog has loaded; until
-  // then `?tab=` — which every link to one of them also carries — is what
-  // decides.
+  // `?s=` names a setting: its group wins over `?tab=`.
   const deep = byId(params.get("s") ?? "");
   const current: GroupId = deep ? deep.group : resolveGroup(params.get("tab"), groups);
 
@@ -274,11 +227,7 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
     tokens: searching ? tokens : null,
     flashId: flash,
     jump: (id) => {
-      // A settings.json row is not in `entries` until its catalog has loaded —
-      // from AI & agents the store is still asleep — but its group is known,
-      // and the mount that follows highlights the row once it exists (the
-      // flash effect waits for it).
-      const group = byId(id)?.group ?? (isClaudePref({ id } as SettingEntry) ? "claude-settings" : undefined);
+      const group = byId(id)?.group;
       if (group) showGroup(group, id);
     },
   };
@@ -388,12 +337,6 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
                     </Badge>
                   )}
                 </h2>
-                {/* Every Claude Code group wears the git chip: the drift it
-                    counts is the one fact that matters while a reader is on
-                    some other block. It leads to the History group. */}
-                {!searching && groupOf(current).nav === "claude" && (
-                  <ClaudeGitChip onOpen={() => showGroup("claude-history", "claude-history")} />
-                )}
               </div>
               <p>{blurb}</p>
             </div>
