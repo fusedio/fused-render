@@ -8145,3 +8145,21 @@ A user redid a canvas's folders through Claude; the five old folders stayed on s
 - **Never `allow-always`.** Cursor persists that answer into the user's GLOBAL allowlist (`~/.cursor/cli-config.json`). "Always approve" is the card's `allow-once` plus a host-side allow for the same call for the rest of the host process.
 - **The appended prompt rides the first prompt.** ACP's `session/new` takes no instructions and the only prompt files Cursor reads live in the user's folder, which fused never writes; the prompt goes ahead of the user's words on each host process's first `session/prompt`, wrapped in `<fused_render_context>`, and is stripped off a replayed prompt before the backfill compares texts.
 - **Rejected.** `cursor-agent -p --output-format stream-json` per turn for sessions (no permission round trip, a respawn per message). Writing `AGENTS.md`/`.cursor/rules` into the user's project. Spawning with `--force` for `auto` (team admins can restrict it, and it cannot be switched live). Offering Cursor on `/api/ai` (no flag limits a one-shot's MCP roster).
+
+## D1496: The compute backend and handler are vendored into `fused_render.compute` (2026-10-22, vendor-agent-core)
+
+- **Problem.** The built-in engine ran user code through `fused.agent_core`, which only ships in the beta `fused` wheel; the release `fused==2.9.3` does not carry it.
+- **Decision.** `fused_render/compute/` holds `backend.py` (`LocalPythonComputeBackend`), `invoke.py` (fan-out broker), `result.py` and `handler/` (the files written beside each call), with a NOTICE and the MIT header on each. Only the interpreter-given path was vendored: `_execute_sync(code, input_files, invoke_depth, interpreter, project_root, entrypoint)`. Upstream `venvs.py`, `workflow_venv.py`, caching, S3 and `execute()` are unreachable because fused-render always passes an interpreter, so they are not copied. `_execute` takes a required interpreter, `_interpreter_path_available` and `invalidate`/`available_nonblocking` are gone, and `available()` is always True. `python_executable` is public; `None` falls back to `sys.executable`. The handler's `get_secret` was dropped.
+- **Handoff premise.** The handoff said the venv key had to be re-pinned; it is already fused-render's own (`projectenv.venv_key_for`), and unit 1 only pins it in a test.
+- **Kept, deliberately.** `fused_available` in the API, `prefs.fused_engine_available()`, the `_forced_engine` branches in `server/common.py`, `supervisor.py:1205`, the frontend `api.ts` field, the CI `fused-engine` job and `FUSED_RENDER_REQUIRE_FUSED_ENGINE` are now moot but untouched. Remove them together in a follow-up.
+
+## D1497: `fused-render app serve <dir>` replaces `fused app serve <dir>` (2026-10-22, vendor-agent-core)
+
+- **Decision.** `app_mcp.py`, `mcp_params.py` and a trimmed `mcp_extra.py` (server side only) are vendored. Tools run on the app's own interpreter (`projectenv.interpreter_for(project_env_for(dir))`) through `_execute_sync(..., entrypoint=)`; `execute(requirements=)` and `large_result_delivery` do not exist here, so `OPENFUSED_APP_SERVE_PYTHON` and `local_compute_backend` are deleted. A tool's `cwd` is the call's context dir, not the app dir. A tool that returns a `str` yields that text, not a decoded object.
+- **`bots/apptools.py`** lost its native stdlib manifest reader and runner; it imports the vendored ones. `available()` stays as a constant True for its three callers.
+- **Command shape (chosen, not yet built).** Registration should write a `fused-render` wrapper script (`exec <sys.executable> -m fused_render.cli "$@"`) into `~/.fused-render/fused-bin/`, because py2app and AppImage bundles have no console script and the supervisor already proves `-m fused_render.cli`.
+
+## D1497: Unfinished at hand-off (2026-10-22, vendor-agent-core)
+
+- **Unit 3 remainder.** The `fused-render` wrapper writer, its env var and `appenv` helper; `inspect_app.py` `_fused_cli` and the `fused` report key (template.html ~528, 539, 791, 806, 1037, test_mcp_inspect, test_mcp_panel); registration args; the startup migration of existing `fused app serve <dir>` Claude entries; removing `_app_serve_python` / `APP_SERVE_PYTHON_ENV` from `fusedcli.py`; docs and starters that name `fused app serve`.
+- **Units 4 to 6** are not started.
