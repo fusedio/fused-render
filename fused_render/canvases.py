@@ -259,7 +259,8 @@ def _fused_settings_web_url() -> str:
         return known
     try:
         parts = urllib.parse.urlparse(api)
-    except ValueError:  # e.g. an unclosed IPv6 bracket, `https://[::1`
+        parts.port  # noqa: B018 — raises on a non-numeric port, which `new URL()` rejects
+    except ValueError:  # e.g. an unclosed IPv6 bracket, `https://[::1`, or `host:bogus`
         return _ENV_WEB_URLS["prod"]
     if parts.scheme not in ("http", "https") or not parts.netloc:
         return _ENV_WEB_URLS["prod"]

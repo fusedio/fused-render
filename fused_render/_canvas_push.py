@@ -328,9 +328,12 @@ def _fall_through(name: str, env: str, err, cli_env: str | None = None) -> int |
 
     The custom env is the one targeted by an UNSET FUSED_ENV (the CLI then
     keeps `~/.fused/settings.toml`'s endpoint), so a custom clone refuses any
-    set FUSED_ENV. An unset one with a prod/unstable clone still falls through
-    as before: unset is also a bare shell without the wrapper, and this cannot
-    tell the two apart.
+    set FUSED_ENV. A prod/unstable clone under an unset one (a custom default
+    outside the clone, or a bare shell) gets FUSED_ENV bound to its own env
+    before falling through: unset would otherwise send the raw push to
+    `~/.fused/settings.toml`'s endpoint, over a same-named canvas there. The
+    shim imports and runs the CLI in this same process right after
+    (`_fused_cli.py`), and click reads the variable at parse time.
 
     `cli_env` is the command's own `workbench --env`, which beats FUSED_ENV
     exactly as it does in the CLI (click: an option over its envvar)."""
@@ -356,6 +359,8 @@ def _fall_through(name: str, env: str, err, cli_env: str | None = None) -> int |
             "environment), or with FUSED_ENV=%s.\n"
             % (name, env, target_env, source, env))
         return 1
+    if not target_env:
+        os.environ["FUSED_ENV"] = env
     return None
 
 

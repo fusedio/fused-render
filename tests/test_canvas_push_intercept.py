@@ -31,6 +31,10 @@ def root(tmp_path, monkeypatch):
     canvases = tmp_path / "canvases"
     monkeypatch.setenv("FUSED_RENDER_CANVASES_DIR", str(canvases))
     monkeypatch.delenv("FUSED_RENDER_WORKBENCH_ENV", raising=False)
+    # A fall-through binds FUSED_ENV in os.environ (`_fall_through`); set then
+    # unset so monkeypatch records it and teardown leaves no value behind.
+    monkeypatch.setenv("FUSED_ENV", "placeholder")
+    monkeypatch.delenv("FUSED_ENV")
     root = canvases / ENV
     (root / "alpha").mkdir(parents=True)
     return root
@@ -382,6 +386,24 @@ def test_a_workbench_env_flag_naming_another_env_is_refused_on_fall_through(root
     args = ["workbench", "--env", ENV, "canvas", "push", str(root / "alpha")]
     code, _, _ = _intercept(args, monkeypatch, _Server(200, {"ok": True}), origin=None)
     assert code is None
+
+
+def test_an_unset_fused_env_is_bound_to_a_named_clones_env_on_fall_through(root, monkeypatch):
+    """Unset FUSED_ENV means `~/.fused/settings.toml` (the custom env) to the
+    CLI — a custom default outside the clone leaves it so. A prod/unstable
+    clone's raw push must still reach its own env, so the fall-through binds
+    it; a custom clone keeps it unset."""
+    args = ["workbench", "canvas", "push", str(root / "alpha")]
+    code, _, _ = _intercept(args, monkeypatch, _Server(200, {"ok": True}), origin=None)
+    assert code is None
+    assert os.environ["FUSED_ENV"] == ENV
+    custom = root.parent / "custom" / "alpha"
+    custom.mkdir(parents=True)
+    monkeypatch.delenv("FUSED_ENV")
+    code, _, _ = _intercept(["workbench", "canvas", "push", str(custom)], monkeypatch,
+                            _Server(200, {"ok": True}), origin=None)
+    assert code is None
+    assert "FUSED_ENV" not in os.environ
 
 
 def test_a_mismatched_fused_env_still_posts_when_the_server_takes_it(root, monkeypatch):
