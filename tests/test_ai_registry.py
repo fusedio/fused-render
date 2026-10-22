@@ -412,7 +412,9 @@ def test_text_to_speech_has_the_mlx_row_first_and_kokoro_last():
     kokoro = _runner("sherpa-tts")
     assert (kokoro.label, kokoro.short, kokoro.family) == (
         "Kokoro (sherpa-onnx)", "Kokoro", "Kokoro")
-    assert kokoro.hub_filter_tags == ("kokoro",)
+    # The one loadable repo (csukuangfj/kokoro-multi-lang-v1_1) carries only
+    # the tags ['onnx', 'region:us']; a "kokoro" tag filter would hide it.
+    assert kokoro.hub_filter_tags == ()
 
 
 def test_kokoro_runs_everywhere_and_the_mac_default_stays_qwen(monkeypatch):

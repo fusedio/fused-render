@@ -1729,7 +1729,9 @@ _RUNNERS: tuple[Runner, ...] = (
         family_label="Kokoro",
         note="Reads text aloud with Kokoro-82M on the CPU, on any machine. "
              "Under 1 GB of RAM.",
-        hub_filter_tags=("kokoro",),
+        # No Hub tag: the one repo this loads carries only `onnx`, and a
+        # "kokoro" filter would hide it while surfacing repos it cannot open.
+        hub_filter_tags=(),
         _available=_always,
     ),
 )
