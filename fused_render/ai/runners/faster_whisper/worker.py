@@ -381,7 +381,7 @@ def _await_orphan(job, row):
     _orphan["thread"] = None
 
 
-def _call_with_ticks(call, job, row, detail, late=None):
+def _call_with_ticks(call, job, row, detail, wait_on_cancel=False):
     """Run `call()` on a thread, ticking once a second until it returns.
 
     **`model.transcribe()` is not the lazy call it looks like.** It hands back a
@@ -400,13 +400,12 @@ def _call_with_ticks(call, job, row, detail, late=None):
     it finishes into a result that is discarded, which is the same trade the
     download path already makes and is bounded by the file.
 
-    **`late` is the caller saying "a ✕ on THIS call is too late to honour".** The
-    last Parakeet pack is the case: its decode is the only work left, so a ✕
-    landing on it must not discard a transcript that is one call from finished
-    (the rule `_consume_ct2` and MLX's `late_cancel` state). With a dict passed,
-    a cancel is recorded as `late["late"] = True` and the call is WAITED for —
-    silently, since every further tick would answer the same ✕ — then its value
-    is returned. Bounded by one pack (`vad.BUDGET_S`) now that no pack is longer.
+    **`wait_on_cancel` is the caller saying "a ✕ on THIS call is too late to
+    honour".** The last Parakeet pack is the case: its decode is the only work
+    left, so a ✕ landing on it must not discard a transcript that is one call
+    from finished (the rule `_consume_ct2` and MLX's `late_cancel` state). When
+    true, a cancel makes the call be WAITED for — ticking stops, since every
+    further tick would answer the same ✕ — and its value is returned. Bounded by one pack (`vad.BUDGET_S`) now that no pack is longer.
     A call that finished by raising keeps its error: there is nothing to salvage.
     """
     result = {}
@@ -432,8 +431,7 @@ def _call_with_ticks(call, job, row, detail, late=None):
             if not worker_base.CANCEL.is_set():
                 continue
         except worker_base.Cancelled:
-            if late is not None:
-                late["late"] = True
+            if wait_on_cancel:
                 thread.join()
                 break
             _orphan["thread"] = thread
@@ -444,8 +442,7 @@ def _call_with_ticks(call, job, row, detail, late=None):
             # keeps the normal path free of it.
             _orphan["thread"] = thread
             raise
-        if late is not None:
-            late["late"] = True
+        if wait_on_cancel:
             thread.join()
             break
         _orphan["thread"] = thread
@@ -853,9 +850,11 @@ def _consume_sherpa(recognizer, audio, packs, progressive, job, row, total,
             # states too.
             result = _call_with_ticks(lambda: _decode_pack(recognizer, clip),
                                       job, row, "Transcribing…",
-                                      late={} if last else None)
-            decoded += speech
+                                      wait_on_cancel=last)
             found = _sherpa_segments(result, len(clip) / SAMPLE_RATE)
+        # Counted for a skipped pack too: its seconds are handled, and the ETA's
+        # remaining term only reaches zero if every pack's are.
+        decoded += speech
         for start, end, text, spans in found:
             at = vad_module.original_start(pack, start)
             until = max(vad_module.original_end(pack, end), at)

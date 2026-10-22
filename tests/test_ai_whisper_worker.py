@@ -1636,6 +1636,9 @@ def test_a_trailing_pack_too_short_to_decode_still_advances_the_bar_to_the_end(
     ticks = [t for t in base.ticks if t.get("detail", "").startswith("Transcribing")]
     assert [t["done"] for t in ticks] == [29.0, 35.05]
     assert len(sherpa.clips) == 1
+    # The skipped pack's seconds count as handled: the ETA's remaining term must
+    # reach zero on the last tick, not strand at the skipped 0.05 s.
+    assert "left" not in ticks[-1]["detail"]
 
 
 def test_parakeet_segments_reach_the_partial_file_as_each_pack_lands(
