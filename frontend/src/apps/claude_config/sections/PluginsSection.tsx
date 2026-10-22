@@ -1,22 +1,16 @@
 // Plugins section: what is on this machine (Installed) and what the
 // marketplaces you have cloned publish that you don't have yet (Discover).
 //
-// Both lists are ONE LINE PER PLUGIN, through the app's shared `ListRow`. The
-// old layout gave each plugin a card with a head row, a sub line and an actions
-// row — three lines and ~90px of height to say "enabled, v1.2.3" about
-// something you scan twenty of. A row that never wraps says the same thing and
-// lets you compare the twenty. Discover's rows expand, because a catalog
-// description is the thing you are deciding on and must not be ellipsized into
-// nothing; Installed's don't, because `plugins list` has no description to show.
+// Both lists are full width, ONE ROW PER PLUGIN through the shared `ListRow`
+// (see ../plugin-row): the name over a muted description, the marketplace, the
+// version when it is one, an overflow menu, and at the right end the one thing
+// the row is for — the enable switch, or Install. A row that never wraps lets
+// you compare twenty of them.
 //
-// The marketplace column beside the list is BOTH the filter AND the
-// marketplaces surface (round 2 folded the standalone Marketplaces tab in
-// here — it was never worth a tab of its own, just the source list behind
-// this one). Each row still filters whichever list is showing on click; the
-// (+) at the foot opens the same add form the old tab had, and each editable
-// marketplace gets its own share/remove icon actions. It stays plain — no
-// panel background, no border — so it reads as a filter, not a third sidebar
-// next to the shell's own.
+// The marketplaces are a filter and a place to manage them, and neither earns
+// a column of its own: the filter is a select in the list's header, and the
+// Marketplaces button opens a dialog with each marketplace's count and
+// actions, and the form to add one.
 //
 // The Installed toggle is optimistic: the flip shows immediately and is rolled
 // back if the write fails, because the write is a config file update
@@ -26,50 +20,36 @@
 // optimistic value.
 import { useCallback, useEffect, useState } from "react";
 import { copyToClipboard } from "@platform/lib/clipboard";
-import { urlForFsPath } from "@platform/lib/router";
-import ContextMenu from "@platform/ui/ContextMenu";
 import Modal from "@platform/ui/modal/Modal";
 import type { MenuEntry } from "@platform/ui/ContextMenu";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import * as cc from "../api";
-import type {
-  AvailablePlugin,
-  AvailablePlugins,
-  MarketplaceKind,
-  Plugin,
-  PluginComponent,
-  PluginContents,
-} from "../api";
+import type { AvailablePlugin, AvailablePlugins, MarketplaceKind, Plugin } from "../api";
 import {
   Empty,
   Icon,
   List,
-  ListRow,
   ListSkeleton,
-  Pill,
+  PAGE_SIZE,
+  Pager,
   SKELETON_ROWS,
   Head,
   RefreshButton,
+  Seg,
   plural,
-  Toggle3,
   toastErr,
   toastOk,
   useConfirm,
   useModuleData,
 } from "../bits";
 import type { HeadedSectionProps } from "../bits";
+import { DiscoverPluginRow, InstalledPluginRow } from "../plugin-row";
 
 type Tab = "installed" | "discover";
 
 // The filter's "no marketplace picked" value. A sentinel rather than null so
 // the index rows and the state share one type.
 const ALL = "";
-
-// Rows per page on Discover. claude-plugins-official alone publishes ~287
-// plugins, so an unpaged Discover is a wall you scroll past rather than a list
-// you read. Installed is a handful and pages out at one page, which renders no
-// pager at all.
-const PAGE_SIZE = 25;
 
 // Count per marketplace over whatever list is showing, in first-seen order —
 // which is alphabetical, because both server actions sort their source.
@@ -89,153 +69,6 @@ function matches(q: string, ...fields: (string | null | undefined)[]): boolean {
   return fields.some((f) => (f || "").toLowerCase().includes(needle));
 }
 
-// The pager, which describes the FILTERED set — the marketplace filter and the
-// search have already run by the time it sees a total, so "1–25 of 287" narrows
-// with them. Renders nothing at all when everything fits: a lone disabled
-// "1 of 1" is chrome that only ever says "there is nothing to page".
-function Pager({
-  page,
-  pages,
-  total,
-  onPage,
-}: {
-  page: number;
-  pages: number;
-  total: number;
-  onPage: (next: number) => void;
-}) {
-  if (pages <= 1) return null;
-  const first = page * PAGE_SIZE + 1;
-  const last = Math.min(total, (page + 1) * PAGE_SIZE);
-  return (
-    <nav className="cc-pager" aria-label="Discover results pages">
-      <span className="cc-summary" aria-current="page">
-        {first}–{last} of {total}
-      </span>
-      <button
-        type="button"
-        className="btn"
-        disabled={page === 0}
-        onClick={() => onPage(page - 1)}
-      >
-        Previous
-      </button>
-      <button
-        type="button"
-        className="btn"
-        disabled={page >= pages - 1}
-        onClick={() => onPage(page + 1)}
-      >
-        Next
-      </button>
-    </nav>
-  );
-}
-
-// The five kinds of thing a plugin can put in a session, in the order a reader
-// cares about them: what it can DO for you first (skills, commands, agents),
-// then what it does on its own (hooks, MCP servers). A group with nothing in it
-// renders nothing at all — an empty "Commands 0" heading is a row of chrome
-// saying a plugin does not have something, which is most plugins for most
-// kinds.
-const GROUPS: { key: keyof PluginContents; label: string }[] = [
-  { key: "skills", label: "Skills" },
-  { key: "commands", label: "Commands" },
-  { key: "agents", label: "Agents" },
-  { key: "hooks", label: "Hooks" },
-  { key: "mcpServers", label: "MCP servers" },
-];
-
-// What one installed plugin actually contributes, under its expanded row.
-//
-// Mounted ONLY when the row is open (ListRow renders `details` behind `open`),
-// which is what makes the per-plugin read affordable: expanding one plugin
-// walks one plugin's tree, and a page you never expand reads nothing at all.
-// Hence a component with its own fetch rather than data threaded down from the
-// section — the mount IS the trigger.
-function PluginContentsPanel({ id }: { id: string }) {
-  const load = useCallback(() => cc.plugins.contents(id), [id]);
-  const { data, error } = useModuleData(load);
-
-  if (error) return <ErrorBanner>{error}</ErrorBanner>;
-  if (!data) return <p>Reading plugin files…</p>;
-  if (!data.ok) return <p>{data.error || "Could not read this plugin."}</p>;
-
-  const groups = GROUPS.map((g) => ({
-    ...g,
-    items: (data[g.key] as PluginComponent[] | undefined) ?? [],
-  })).filter((g) => g.items.length > 0);
-
-  return (
-    <div className="cc-pcontents">
-      {data.description && <p className="cc-pblurb">{data.description}</p>}
-      {groups.length === 0 && (
-        <p className="cc-pblurb">
-          This plugin ships no skills, commands, agents, hooks or MCP servers.
-        </p>
-      )}
-      {groups.map((g) => (
-        <section className="cc-pgroup" key={String(g.key)}>
-          <h4 className="cc-pgroup-title">
-            {g.label}
-            <span className="cc-count">{g.items.length}</span>
-          </h4>
-          {/* The panel is one grid and every level down to the anchor passes
-              its two tracks along (see .cc-pcontents), which is what puts
-              every description on a single left edge. Laid out per-entry, each
-              description started wherever its name happened to end — a ragged
-              left edge down thirteen rows was the loudest thing in here. */}
-          <ul className="cc-pitems">
-            {g.items.map((it) => (
-              // A real anchor, not a click handler: the entry IS a file, so it
-              // gets the file's affordances for free — middle-click,
-              // cmd-click, a copyable target in the context menu. A new tab
-              // because this page holds unsaved-ish state (an open filter, a
-              // half-typed marketplace form) that navigating away would lose.
-              <li key={it.path + it.name}>
-                <a
-                  className="cc-pitem"
-                  href={urlForFsPath(it.path)}
-                  target="_blank"
-                  rel="noopener"
-                  title={it.description ? `${it.description}\n\n${it.path}` : it.path}
-                >
-                  <span className="cc-pitem-name">{it.name}</span>
-                  <span className="cc-pitem-desc">{it.description}</span>
-                </a>
-              </li>
-            ))}
-          </ul>
-        </section>
-      ))}
-      {/* Where the files ARE — metadata about the plugin, not one of the
-          things it gives you, so it sits below a rule rather than becoming a
-          sixth row of whatever group happened to be last. */}
-      {data.root && (
-        <a
-          className="cc-pfiles"
-          href={urlForFsPath(data.root)}
-          target="_blank"
-          rel="noopener"
-          title={data.root}
-        >
-          <span className="cc-pfiles-label">Files</span>
-          <span className="cc-pfiles-path">{data.root}</span>
-        </a>
-      )}
-      {/* The server's per-read walk budget ran out (plugins.py's
-          _WalkBudget) — an unusually large plugin, not a plugin that
-          genuinely ships this little. Said plainly rather than left for the
-          groups above to quietly under-report. */}
-      {data.truncated && (
-        <p className="cc-pblurb cc-ptruncated">
-          This plugin ships more than shown here — the list was cut off to keep this panel fast.
-        </p>
-      )}
-    </div>
-  );
-}
-
 export default function PluginsSection({ filter = "", title, blurb }: HeadedSectionProps) {
   const { node: modal, ask } = useConfirm();
   const load = useCallback(() => cc.plugins.list(), []);
@@ -244,21 +77,17 @@ export default function PluginsSection({ filter = "", title, blurb }: HeadedSect
   const { data: mktData, reload: reloadMkt } = useModuleData(loadMkt);
   const [tab, setTab] = useState<Tab>("installed");
   const [marketplace, setMarketplace] = useState(ALL);
-  // The rail's own add-a-marketplace disclosure — the same form the standalone
-  // Marketplaces tab used to open with, now folded under a (+) at the foot of
-  // the rail instead of a tab of its own.
+  // The add-a-marketplace form, in its own dialog.
   const [mktName, setMktName] = useState("");
   const [mktKind, setMktKind] = useState<MarketplaceKind>("github");
   const [mktValue, setMktValue] = useState("");
   const [mktBusy, setMktBusy] = useState(false);
   const [addingMkt, setAddingMkt] = useState(false);
-  // Which marketplace's row menu is open, and where to hang it. One at a time
-  // by construction — the rail has one menu, not one per row.
-  const [mktMenu, setMktMenu] = useState<{ name: string; x: number; y: number } | null>(null);
-  // Local, never in the URL: this panel remounts on every `?cctab=` write, so a
-  // URL-held page would be reset by the very navigation meant to preserve it —
-  // and it would re-read every marketplace catalog on the way. Same reasoning
-  // as the row-expansion state in ListRow.
+  // The Marketplaces dialog: each marketplace with its count and actions.
+  const [managing, setManaging] = useState(false);
+  // Local, never in the URL: a URL-held page would re-read every marketplace
+  // catalog on each change. Same reasoning as the row-expansion state in
+  // ListRow.
   const [page, setPage] = useState(0);
   // id -> optimistically-shown enabled flag, overriding the fetched value.
   const [flipped, setFlipped] = useState<Record<string, boolean>>({});
@@ -411,7 +240,7 @@ export default function PluginsSection({ filter = "", title, blurb }: HeadedSect
     }
   };
 
-  // A row's menu. Remove is always PRESENT and disabled on a read-only
+  // A marketplace's actions. Remove is always PRESENT and disabled on a read-only
   // marketplace rather than absent: an item you can see and cannot use says
   // "this one is not yours to remove", where a missing item says nothing and
   // leaves the reader wondering whether they mis-clicked.
@@ -462,34 +291,34 @@ export default function PluginsSection({ filter = "", title, blurb }: HeadedSect
       </>
     );
 
-  const installed = data.plugins.filter((p) => matches(filter, p.name, p.id));
-  // Discover is only the plugins you do NOT have: what you already installed is
-  // the other tab's subject, and showing it twice makes the list longer without
-  // making it more useful.
-  const discover = (avail?.plugins ?? []).filter(
-    (p) => !p.installed && matches(filter, p.name, p.id, p.description),
+  const installed = data.plugins.filter((p) => matches(filter, p.name, p.id, p.description));
+  // Discover lists every plugin the catalogs publish; the ones you already
+  // have say "Installed" where the others have Install.
+  const discover = (avail?.plugins ?? []).filter((p) =>
+    matches(filter, p.name, p.id, p.description),
   );
-  // The index counts what the SEARCH left, so a marketplace's number is what
-  // clicking it will actually show. Kept as one un-narrowed list because the
-  // index doesn't care which shape it is counting.
+  // The select counts what the SEARCH left, so a marketplace's number is what
+  // picking it will actually show. Kept as one un-narrowed list because the
+  // count doesn't care which shape it is counting.
   const shown: { marketplace: string }[] = tab === "installed" ? installed : discover;
   const index = indexOf(shown);
   const inMarketplace = (m: string) => marketplace === ALL || m === marketplace;
   const rowsInstalled = installed.filter((p) => inMarketplace(p.marketplace));
   const rowsDiscover = discover.filter((p) => inMarketplace(p.marketplace));
   const rowCount = tab === "installed" ? rowsInstalled.length : rowsDiscover.length;
-  // Counted off the FULL list, not the filtered one: the toolbar summary says
-  // what you have, and the index column already says what the filter left.
+  // Counted off the FULL list, not the filtered one: the summary says what you
+  // have, and the select already says what the filter left.
   const enabledCount = data.plugins.filter((p) => flipped[p.id] ?? p.enabled).length;
 
   // Paging is the LAST step, over the already-filtered list, and only on
   // Discover — Installed is a handful of plugins with a search box over it.
-  // The page is clamped at render rather than corrected in an effect: an
-  // install removes a row from Discover, and the last page can vanish under a
-  // page number that was valid a moment ago.
+  // The page is clamped at render rather than corrected in an effect: a
+  // marketplace removal can shrink the list under a page number that was valid
+  // a moment ago.
   const pages = Math.max(1, Math.ceil(rowsDiscover.length / PAGE_SIZE));
   const safePage = Math.min(page, pages - 1);
   const pagedDiscover = rowsDiscover.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
+  const marketplaces = mktData?.marketplaces ?? [];
 
   return (
     <>
@@ -507,357 +336,174 @@ export default function PluginsSection({ filter = "", title, blurb }: HeadedSect
         }
         aside={
           <>
-      <div className="cc-seg" role="tablist" aria-label="Plugin source">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === "installed"}
-          className={"cc-seg-btn" + (tab === "installed" ? " active" : "")}
-          onClick={() => pick("installed")}
-          title="Plugins on this machine"
-        >
-          Installed
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === "discover"}
-          className={"cc-seg-btn" + (tab === "discover" ? " active" : "")}
-          onClick={() => pick("discover")}
-          title="Plugins your marketplaces publish that you don't have yet"
-        >
-          Discover
-        </button>
-      </div>
+            <select
+              className="field-control cc-mkt-select"
+              aria-label="Marketplace"
+              value={marketplace}
+              onChange={(e) => filterTo(e.target.value)}
+            >
+              <option value={ALL}>All marketplaces ({shown.length})</option>
+              {marketplaces.map((m) => (
+                <option key={m.name} value={m.name}>
+                  {m.name} ({index.find((x) => x.name === m.name)?.n ?? 0})
+                </option>
+              ))}
+            </select>
+            <button type="button" className="btn" onClick={() => setManaging(true)}>
+              Marketplaces
+            </button>
+            <Seg
+              label="Plugin source"
+              value={tab}
+              onChange={pick}
+              options={[
+                { id: "installed", label: "Installed", title: "Plugins on this machine" },
+                {
+                  id: "discover",
+                  label: "Discover",
+                  title: "Plugins your marketplaces publish",
+                },
+              ]}
+            />
             {/* Refetches whichever list is showing: refreshing Installed must
                 not trigger the catalog read that the Discover switch defers. */}
             <RefreshButton onClick={tab === "installed" ? reload : loadAvail} />
           </>
         }
       />
-      <div className="cc-split">
-        <nav className="cc-index" aria-label="Marketplaces">
-          {/* No count beside this label, deliberately. It used to carry one,
-              and the number it showed counted a DIFFERENT NOUN from every
-              number below it — marketplaces here, plugins in each row — while
-              sitting in the same right-hand column, in the same shape as the
-              clickable row directly beneath it. It read as a row you could
-              click, and its value was four rows you can see. */}
-          <div className="cc-index-header">Marketplaces</div>
-          {/* Structurally the SAME shape as every marketplace row below it —
-              a plain div wrapping the .cc-index-filter button — not a
-              standalone <button>. It used to BE the outer button, which is
-              what gave it browser-default button chrome (a border, centered
-              text) no other row in this rail has; it read as a stray control
-              from another component. */}
-          <div
-            className={"cc-index-item cc-index-all" + (marketplace === ALL ? " active" : "")}
-          >
-            <button
-              type="button"
-              className="cc-index-filter"
-              aria-pressed={marketplace === ALL}
-              onClick={() => filterTo(ALL)}
-            >
-              <span className="cc-index-name">All</span>
-              <span className="cc-count">{shown.length}</span>
-            </button>
-            {/* Empty, and load-bearing: the trail slot is what fixes where a
-                row's filter button ends, so a row without one ends 58px
-                further right and its count leaves the column — which is
-                exactly what "All" did, at the top of the rail where the
-                misalignment is most visible. */}
-            <div className="cc-index-trail" />
-          </div>
-          {(mktData?.marketplaces ?? []).map((m) => {
-            const n = index.find((x) => x.name === m.name)?.n ?? 0;
-            return (
-              <div
-                key={m.name}
-                className={"cc-index-item" + (marketplace === m.name ? " active" : "")}
-              >
-                <button
-                  type="button"
-                  className="cc-index-filter"
-                  aria-pressed={marketplace === m.name}
-                  title={m.name}
-                  onClick={() => filterTo(m.name)}
-                >
-                  <span className="cc-index-name">{m.name}</span>
-                  <span className="cc-count">{n}</span>
-                </button>
-                {/* ONE menu button per row, in place of the two icon buttons
-                    and the always-visible read-only lock that used to share
-                    this slot. Three glyphs is a lot of a 180px column to spend
-                    on a row whose job is a name and a count — and the lock was
-                    the worst of them, a permanent fixture saying "you cannot
-                    remove this" in a dialect the reader had to already know.
-                    That fact now lives where it can be READ: a Remove item
-                    that is present and disabled.
-
-                    The slot is fixed-width whether a row's button is showing
-                    or not, and that is what puts the counts in a column — the
-                    filter button beside it is `flex: 1`, so an equal trail
-                    means an equal button and one x for every count. */}
-                <div className="cc-index-trail">
-                  <button
-                    type="button"
-                    className={"cc-iconbtn" + (mktMenu?.name === m.name ? " cc-iconbtn-on" : "")}
-                    aria-haspopup="menu"
-                    aria-expanded={mktMenu?.name === m.name}
-                    aria-label={`Actions for ${m.name}`}
-                    title={`Actions for ${m.name}`}
-                    onPointerDown={(e) => {
-                      // This same pointerdown already closed an open menu (it
-                      // dismisses on any outside pointerdown), so reopening
-                      // here would make the button un-closable.
-                      if (mktMenu?.name === m.name) return;
-                      const r = e.currentTarget.getBoundingClientRect();
-                      setMktMenu({ name: m.name, x: r.left, y: r.bottom + 4 });
-                    }}
-                  >
-                    <Icon name="kebab" />
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-          {/* Opens a dialog, so it is a plain button rather than the
-              DisclosureButton this used to be. That control swapped its label
-              for "Cancel" while open — and with the rail's borderless styling
-              on it, "Cancel" rendered as bare accent-yellow text under the
-              marketplace list, which reads as a warning, not a control. */}
-          <button
-            type="button"
-            className="cc-index-add"
-            onClick={() => setAddingMkt(true)}
-          >
-            <Icon name="plus" />
-            Add marketplace
-          </button>
-        </nav>
-        <div className="cc-rows">
-          {tab === "discover" && availError && <ErrorBanner>{availError}</ErrorBanner>}
-          {/* A marketplace whose catalog we could not read is stated, not
-              swallowed: the list below is short for a reason the user can act
-              on (a hand-edited or half-cloned marketplace.json). */}
-          {tab === "discover" && avail && avail.skipped.length > 0 && (
-            <div className="cc-change">
-              Could not read the catalog for {avail.skipped.join(", ")}.
-            </div>
-          )}
-          {tab === "discover" && !avail && !availError && (
-            <ListSkeleton rows={SKELETON_ROWS} label="Reading marketplace catalogs" />
-          )}
-          {tab === "installed" && rowsInstalled.length > 0 && (
-            <List>
-              {rowsInstalled.map((p) => {
-                const enabled = flipped[p.id] ?? p.enabled;
-                return (
-                  // The chevron opens what the plugin CONTAINS — its skills,
-                  // commands, agents, hooks and MCP servers, read off disk on
-                  // expand. Nothing in `plugins list` (settings.json +
-                  // installed_plugins.json) knows any of that, which is why
-                  // this row had no chevron at all before: everything those two
-                  // files hold was already on the line. A plugin that is
-                  // recorded but not installed has no files to read, so it
-                  // keeps the flat row.
-                  <ListRow
-                    key={p.id}
-                    lead={
-                      <Toggle3
-                        label={`Enable ${p.name}`}
-                        value={enabled}
-                        onChange={(next) => toggle(p, next)}
-                      />
-                    }
-                    name={p.name}
-                    pills={!p.installed ? <Pill>not installed</Pill> : null}
-                    secondary={p.id}
-                    secondaryTitle={p.id}
-                    secondaryMono
-                    details={p.installed ? <PluginContentsPanel id={p.id} /> : null}
-                    // The row's icon actions ride in `meta`, BEFORE the
-                    // version, rather than in `actions` after it. In `actions`
-                    // they sat between the version and the chevron, and since
-                    // they only appeared on hover, what the row showed at rest
-                    // was a 54px hole between two things that belong beside
-                    // each other. The version keeps a fixed column (.cc-lrow-
-                    // ver) so the icons to its left land on one x too.
-                    meta={
-                      <>
-                        <span className="cc-lrow-inline-actions">
-                          {p.installed && (
-                            <button
-                              type="button"
-                              className="cc-iconbtn"
-                              disabled={busy === p.id}
-                              title={busy === p.id ? "Updating…" : "Update this plugin"}
-                              aria-label={`Update ${p.name}`}
-                              onClick={() => update(p)}
-                            >
-                              <Icon name="refresh" />
-                            </button>
-                          )}
-                          {p.installed && (
-                            <button
-                              type="button"
-                              className="cc-iconbtn"
-                              disabled={busy === p.id}
-                              title="Uninstall this plugin"
-                              aria-label={`Uninstall ${p.name}`}
-                              onClick={() => uninstall(p)}
-                            >
-                              <Icon name="trash" />
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            className="cc-iconbtn"
-                            title={`Copy install command — ${p.shareCommand}`}
-                            aria-label={`Copy the install command for ${p.name}`}
-                            onClick={() => share(p.shareCommand)}
-                          >
-                            <Icon name="copy" />
-                          </button>
-                        </span>
-                        <span className="cc-lrow-meta cc-lrow-ver">
-                          {p.version ? `v${p.version}` : ""}
-                        </span>
-                      </>
-                    }
-                  />
-                );
-              })}
-            </List>
-          )}
-          {tab === "discover" && pagedDiscover.length > 0 && (
-            <List>
-              {pagedDiscover.map((p) => (
-                <ListRow
-                  key={p.id}
-                  name={p.name}
-                  secondary={p.description}
-                  secondaryTitle={p.description}
-                  // Deciding whether to install something is exactly when the
-                  // marketing copy matters, and a catalog description runs to
-                  // a paragraph — so the row shows as much as fits and the
-                  // panel shows all of it, with who wrote it and what it is
-                  // filed under.
-                  details={
-                    p.description || p.author || p.category || p.keywords.length ? (
-                      <>
-                        {p.description && <p>{p.description}</p>}
-                        <dl className="cc-lrow-dl">
-                          {p.author && (
-                            <>
-                              <dt className="cc-lrow-dt">Author</dt>
-                              <dd className="cc-lrow-dd">{p.author}</dd>
-                            </>
-                          )}
-                          {p.category && (
-                            <>
-                              <dt className="cc-lrow-dt">Category</dt>
-                              <dd className="cc-lrow-dd">{p.category}</dd>
-                            </>
-                          )}
-                          {p.keywords.length > 0 && (
-                            <>
-                              <dt className="cc-lrow-dt">Keywords</dt>
-                              <dd className="cc-lrow-dd">{p.keywords.join(", ")}</dd>
-                            </>
-                          )}
-                        </dl>
-                      </>
-                    ) : null
-                  }
-                  meta={
-                    <>
-                      {p.version && <span className="cc-lrow-meta">v{p.version}</span>}
-                      <span className="cc-lrow-meta cc-mono">{p.marketplace}</span>
-                    </>
-                  }
-                  actions={
-                    <button
-                      type="button"
-                      className="btn"
-                      disabled={busy === p.id}
-                      title={`claude plugin install ${p.id}`}
-                      onClick={() => install(p)}
-                    >
-                      {busy === p.id ? "Installing…" : "Install"}
-                    </button>
-                  }
-                />
-              ))}
-            </List>
-          )}
-          {tab === "discover" && (
-            <Pager
-              page={safePage}
-              pages={pages}
-              total={rowsDiscover.length}
-              onPage={setPage}
-            />
-          )}
-          {/* Each empty state names what is missing and offers the control
-              that fixes it — which on this tab is usually the other list. */}
-          {(tab === "installed" || avail) && rowCount === 0 && (
-            <Empty
-              action={
-                tab === "installed" && data.plugins.length === 0 ? (
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    onClick={() => pick("discover")}
-                  >
-                    Browse Discover
-                  </button>
-                ) : marketplace !== ALL ? (
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={() => {
-                      filterTo(ALL);
-                    }}
-                  >
-                    Show every marketplace
-                  </button>
-                ) : null
-              }
-            >
-              {tab === "installed"
-                ? data.plugins.length === 0
-                  ? "No plugins installed. Discover shows what your marketplaces offer."
-                  : "No plugin matches this filter."
-                : (avail?.plugins.length ?? 0) === 0
-                  ? "No marketplace catalog to read. Add a marketplace and its plugins show up here."
-                  : "Nothing left to install here."}
-            </Empty>
-          )}
+      {tab === "discover" && availError && <ErrorBanner>{availError}</ErrorBanner>}
+      {/* A marketplace whose catalog we could not read is stated, not
+          swallowed: the list below is short for a reason the user can act
+          on (a hand-edited or half-cloned marketplace.json). */}
+      {tab === "discover" && avail && avail.skipped.length > 0 && (
+        <div className="cc-change">
+          Could not read the catalog for {avail.skipped.join(", ")}.
         </div>
-      </div>
-      {/* OUTSIDE .cc-index, and that is load-bearing. The menu is
-          position:fixed, but `position: sticky` on the rail makes it a
-          stacking context — so a menu rendered inside it has its z-index
-          resolved AGAINST ITS SIBLINGS IN THE RAIL, not against the page. The
-          rail itself has z-index auto and comes before .cc-rows in the DOM, so
-          the plugin list painted straight over the open menu: the toggles
-          showed through it, as if the panel were transparent. */}
-      {/* A dialog, not a panel in the rail. Three fields — a name, a kind and a
-          source url — do not fit a 180px column: the card they were in was a
-          bordered surface on a rail that deliberately has none, its select
-          barely cleared its own text, and open it stood taller than the
-          marketplace list it belonged to. */}
+      )}
+      {tab === "discover" && !avail && !availError && (
+        <ListSkeleton rows={SKELETON_ROWS} label="Reading marketplace catalogs" />
+      )}
+      {tab === "installed" && rowsInstalled.length > 0 && (
+        <List>
+          {rowsInstalled.map((p) => (
+            <InstalledPluginRow
+              key={p.id}
+              plugin={p}
+              enabled={flipped[p.id] ?? p.enabled}
+              busy={busy === p.id}
+              onToggle={(next) => toggle(p, next)}
+              onUpdate={() => update(p)}
+              onUninstall={() => uninstall(p)}
+              onCopy={share}
+            />
+          ))}
+        </List>
+      )}
+      {tab === "discover" && pagedDiscover.length > 0 && (
+        <List>
+          {pagedDiscover.map((p) => (
+            <DiscoverPluginRow
+              key={p.id}
+              plugin={p}
+              busy={busy === p.id}
+              onInstall={() => install(p)}
+              onCopy={share}
+            />
+          ))}
+        </List>
+      )}
+      {tab === "discover" && (
+        <Pager
+          page={safePage}
+          total={rowsDiscover.length}
+          label="Discover results pages"
+          onPage={setPage}
+        />
+      )}
+      {/* Each empty state names what is missing and offers the control
+          that fixes it — which on this tab is usually the other list. */}
+      {(tab === "installed" || avail) && rowCount === 0 && (
+        <Empty
+          action={
+            tab === "installed" && data.plugins.length === 0 ? (
+              <button type="button" className="btn btn-primary" onClick={() => pick("discover")}>
+                Browse Discover
+              </button>
+            ) : marketplace !== ALL ? (
+              <button type="button" className="btn" onClick={() => filterTo(ALL)}>
+                Show every marketplace
+              </button>
+            ) : null
+          }
+        >
+          {tab === "installed"
+            ? data.plugins.length === 0
+              ? "No plugins installed. Discover shows what your marketplaces offer."
+              : "No plugin matches this filter."
+            : (avail?.plugins.length ?? 0) === 0
+              ? "No marketplace catalog to read. Add a marketplace and its plugins show up here."
+              : "No plugin matches this filter."}
+        </Empty>
+      )}
+      {managing && (
+        <Modal
+          title="Marketplaces"
+          onClose={() => setManaging(false)}
+          width={460}
+          footer={
+            <>
+              <button type="button" className="btn btn-secondary" onClick={() => setManaging(false)}>
+                Close
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => {
+                  setManaging(false);
+                  setAddingMkt(true);
+                }}
+              >
+                <Icon name="plus" />
+                Add marketplace
+              </button>
+            </>
+          }
+        >
+          {marketplaces.length === 0 && <p>No marketplaces yet.</p>}
+          <ul className="cc-mkt-list">
+            {marketplaces.map((m) => (
+              <li key={m.name} className="cc-mkt-item">
+                <span className="cc-mkt-name" title={m.name}>
+                  {m.name}
+                </span>
+                <span className="cc-count">{index.find((x) => x.name === m.name)?.n ?? 0}</span>
+                <span className="cc-mkt-actions">
+                  {menuItemsFor(m.name).map((it) =>
+                    it === "separator" ? null : (
+                      <button
+                        key={it.label}
+                        type="button"
+                        className={"btn" + (it.danger ? " btn-danger-text" : "")}
+                        disabled={it.disabled}
+                        onClick={it.onClick}
+                      >
+                        {it.label}
+                      </button>
+                    ),
+                  )}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </Modal>
+      )}
       {addingMkt && (
         <Modal
           title="Add a marketplace"
           onClose={() => setAddingMkt(false)}
           busy={mktBusy}
-          // Narrower than the 420px this used to be: with the label beside its
-          // control (see .cc-modal-field) three one-line fields no longer need
-          // that much width, and 420px next to a 100px label column left the
-          // controls with an odd, over-wide measure for "owner/repo".
+          // With the label beside its control (see .cc-modal-field) three one-line
+          // fields do not need more.
           width={360}
           footer={
             <>
@@ -919,14 +565,6 @@ export default function PluginsSection({ filter = "", title, blurb }: HeadedSect
             />
           </div>
         </Modal>
-      )}
-      {mktMenu && (
-        <ContextMenu
-          x={mktMenu.x}
-          y={mktMenu.y}
-          items={menuItemsFor(mktMenu.name)}
-          onClose={() => setMktMenu(null)}
-        />
       )}
     </>
   );

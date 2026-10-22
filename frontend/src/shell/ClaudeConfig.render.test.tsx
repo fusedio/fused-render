@@ -43,7 +43,7 @@ beforeEach(() => {
       loc.search = q ? "?" + q : "";
     },
   } as unknown as History;
-  globalThis.fetch = fakeFetch as typeof fetch;
+  globalThis.fetch = fakeFetch as unknown as typeof fetch;
 });
 afterEach(() => {
   globalThis.fetch = realFetch;

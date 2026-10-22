@@ -92,9 +92,9 @@
  * overflow-y `auto` as well, turning .cc-main back into a scroll container
  * even though nothing sets overflow-y on it. That's invisible normally
  * because .cc-main is height-bounded (flex:1 1 0% inside .cc-root's column)
- * and so never actually grows a scrollbar — but .cc-index's
- * `position: sticky` resolve against the nearest scroll container, which was
- * silently THIS box instead of .cc-root, so they pinned against a box that
+ * and so never actually grows a scrollbar — but a
+ * `position: sticky` descendant would resolve against the nearest scroll container, which was
+ * silently THIS box instead of .cc-root, so it pinned against a box that
  * happens to never scroll rather than against the page. `clip` keeps the same
  * horizontal clamp without establishing a scrollport, so sticky escapes to
  * .cc-root where the comment above already says it lives. */
@@ -286,7 +286,7 @@
   margin-top: 12px;
 }
 
-/* -- segmented switch (Plugins: Installed / Discover) ---------------------- */
+/* -- segmented switch (Seg in bits.tsx: Installed / Discover) --------------- */
 /* The .am-tabs pattern from shell/AiModels: two joined buttons in one bordered
    pill, for a choice BETWEEN LISTS inside a page — distinct from .cc-tab, which
    navigates the panel. */
@@ -327,186 +327,6 @@
 .cc-seg-btn:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
-}
-
-/* -- filter index + list (Plugins) ----------------------------------------- */
-/* A narrow column of filter rows beside the list. Deliberately UNDECORATED —
-   no panel background, no border: this sits inside the content area, and any
-   surface of its own would read as a third sidebar stacked against the shell's
-   own. It is a filter, so its rows are buttons with counts, not links. */
-
-.cc-split {
-  display: flex;
-  align-items: flex-start;
-  gap: 20px;
-  width: 100%;
-}
-
-.cc-index {
-  display: flex;
-  flex-direction: column;
-  flex: 0 0 180px;
-  width: 180px;
-  gap: 1px;
-  /* Sticks while the (much longer) list scrolls past it. */
-  position: sticky;
-  top: 0;
-}
-
-/* The header above the rail — the same eyebrow weight as .cc-group-title,
-   standing alone. It used to be a flex row with a count pushed to the right,
-   which gave it the exact silhouette of the clickable row beneath it (name
-   left, number right) and made a label look like a control. See the comment at
-   its call site for why the count went rather than the shape. */
-.cc-index-header {
-  padding: 0 8px 6px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--fg-muted);
-}
-
-/* A row is a DIV now, not a button — round 2 gave each marketplace its own
-   share/remove icon actions beside the name+count filter, and a button cannot
-   nest buttons. "All" (.cc-index-all below) is the SAME shape even though it
-   has no actions of its own: it used to be the outer button itself, which
-   gave it browser-default button chrome no other row had (a border, centred
-   text) and read as a stray control. */
-.cc-index-item {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  border-radius: 6px;
-  color: var(--fg-muted);
-}
-
-.cc-index-item:hover {
-  background: rgba(var(--tint), 0.06);
-  color: var(--fg);
-}
-
-.cc-index-item.active {
-  background: rgba(var(--tint), 0.08);
-  color: var(--fg);
-  font-weight: 600;
-}
-
-.cc-index-filter {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 1 1 auto;
-  min-width: 0;
-  font: inherit;
-  font-size: 12px;
-  text-align: left;
-  padding: 4px 8px;
-  border: none;
-  border-radius: 6px;
-  background: none;
-  color: inherit;
-  cursor: pointer;
-}
-
-.cc-index-filter:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-/* The only thing that sets "All" apart from the marketplace rows below it — a
-   hairline, nothing else. Selected state, height, padding and alignment are
-   now identical to theirs (both render through the same .cc-index-item +
-   .cc-index-filter shape). */
-.cc-index-item.cc-index-all {
-  margin-bottom: 4px;
-  padding-bottom: 4px;
-  border-bottom: 1px solid var(--border);
-}
-
-/* Add a marketplace: the action AFTER the list, not an entry in it. A .btn
-   here put a bordered box in a column whose whole premise is that it has no
-   borders and no surface (see .cc-index above), which made it the heaviest
-   thing on the rail — and sitting one 1px gap below the last marketplace, it
-   read as a sixth row that had somehow grown a border. Separated by space
-   rather than by a hairline: the rail already spends its one rule on the
-   divider under "All", and two rules in a 180px column is book-keeping.
-   It opens a DIALOG (the form never fitted the rail), so it has one label and
-   no open state — nothing here turns into a bare "Cancel" any more. */
-.cc-index-add {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 10px;
-  padding: 5px 8px;
-  border: none;
-  border-radius: 6px;
-  background: none;
-  font: inherit;
-  font-size: 12px;
-  text-align: left;
-  color: var(--fg-muted);
-  cursor: pointer;
-}
-
-.cc-index-add:hover {
-  background: rgba(var(--tint), 0.06);
-  color: var(--fg);
-}
-
-.cc-index-add:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-}
-
-/* The row's one trailing slot, a fixed width whether its button is showing or
-   not. That constant is what puts the counts in a column: the filter button is
-   `flex: 1` beside it, so an equal trail means an equal button and one x for
-   every count down the rail. 26px is a single .cc-iconbtn — it held two of
-   them plus a lock before the row menu replaced all three, which cost the
-   names 32px of a 180px column. */
-.cc-index-trail {
-  display: flex;
-  flex: 0 0 26px;
-  align-items: center;
-  justify-content: flex-end;
-}
-
-/* Visible at rest like every other action on this page (see .cc-lrow-actions
-   for why nothing here fades in any more), and marked while ITS menu is open
-   so the row you are acting on stays identifiable once the pointer has left it
-   for the menu. */
-.cc-index-trail > .cc-iconbtn-on {
-  background: rgba(var(--tint), 0.1);
-  color: var(--fg);
-}
-
-/* The count is pushed to the right edge; the name is what gives way.
-   Lining figures, so the counts read as a column rather than as digits that
-   happen to be near each other. */
-.cc-index-filter .cc-count {
-  flex: 0 0 auto;
-  font-variant-numeric: tabular-nums;
-}
-
-.cc-index-name {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* flex-basis 0%, not auto: an `auto` basis sizes off this column's own
-   (essentially unbounded) content before flex-grow ever runs, and that
-   hypothetical size is what silently won over flex-grow's fill — the list
-   card inside it was shrink-wrapping to content instead of spanning the
-   column. 0% removes the content dependency entirely: the item starts at
-   nothing and flex-grow:1 is the ONLY thing deciding its final width. */
-.cc-rows {
-  flex: 1 1 0%;
-  min-width: 0;
-  width: 100%;
 }
 
 /* -- pager (Discover) ------------------------------------------------------ */
@@ -673,19 +493,52 @@
    absent — and it also retires the touch/narrow media query that existed only
    because hover-to-discover cannot work on a device with no hover. */
 
-/* The plugin row's own icons, which ride in `meta` ahead of the version. */
-.cc-lrow-inline-actions {
-  display: flex;
-  align-items: center;
-  gap: 2px;
+/* Columns, not labels: the marketplace and version sit at one x down the list,
+   so the controls to their right land on one x too. A version that is not a
+   release renders empty and keeps its column. */
+.cc-lrow-mkt {
+  width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: right;
 }
 
-/* A column, not a label: versions run from "v1.0.0" to a 12-char commit sha,
-   and with the icons now sitting to their LEFT a ragged version means ragged
-   icons all the way down the list. */
 .cc-lrow-ver {
-  min-width: 92px;
+  width: 64px;
   text-align: right;
+}
+
+/* A row's last control, at the right edge after the chevron: the enable switch
+   or the one verb the row is for. */
+.cc-lrow-end {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  min-width: 64px;
+}
+
+/* The name over its description. A grid so a pill beside the name stays on the
+   name's line and the description spans both columns; the description stays
+   visible on a narrow page because it is the row's content. */
+.cc-lrow-stacked .cc-lrow-body {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: 8px;
+  row-gap: 1px;
+}
+
+.cc-lrow-stacked .cc-lrow-name {
+  font-weight: 400;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cc-lrow-stacked .cc-lrow-sub {
+  display: block;
+  grid-column: 1 / -1;
 }
 
 .cc-lrow.open .cc-lrow-chev .cc-icon {
@@ -1176,31 +1029,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-
-  /* The marketplace filter column would leave the list ~120px at this width.
-     align-items MUST be overridden back to stretch here: the base rule's
-     flex-start is for the ROW layout (so the sticky filter rail doesn't
-     stretch to the list's full height) and in a COLUMN flex container that
-     same value governs the opposite axis — it was shrink-wrapping .cc-index
-     and .cc-rows (and the .cc-list card inside it) to their own content width
-     instead of letting them span the column, which is defect 2 restated at a
-     narrow viewport. */
-  .cc-split {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  /* Used to reflow into a horizontal wrap here (flex-direction: row,
-     flex-wrap: wrap): at this width that packed each marketplace as
-     `name count [icon][icon]` with no separation between one item and the
-     next, so two adjacent rows' icons read as one ambiguous run. Stacking
-     instead — the rail keeps its normal one-row-per-marketplace shape, just
-     spanning the full content width instead of a fixed 180px. */
-  .cc-index {
-    flex: 0 0 auto;
-    width: 100%;
-    position: static;
-  }
 }
 
 /* -- the in-app file editor (FileEditor.tsx) ------------------------------- */
@@ -1315,9 +1143,12 @@
 
 .cc-skill-actions {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
-  flex: none;
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 .cc-skill-delete {
@@ -1359,4 +1190,57 @@
 .cc-skill-editor:focus-visible {
   outline: none;
   box-shadow: none;
+}
+
+/* -- marketplaces (Plugins) ---------------------------------------------------- */
+
+/* The marketplace filter in the list's header. */
+.cc-mkt-select {
+  width: auto;
+  max-width: 220px;
+}
+
+/* The Marketplaces dialog: a name, its plugin count and its actions per row. */
+.cc-mkt-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.cc-mkt-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.cc-mkt-item:last-child {
+  border-bottom: none;
+}
+
+.cc-mkt-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cc-mkt-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+/* -- reader badges (Skills) ---------------------------------------------------- */
+
+.cc-reader {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--fg-muted);
+  border: 1px solid var(--border);
+  border-radius: 9px;
 }
