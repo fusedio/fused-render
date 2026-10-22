@@ -1643,16 +1643,14 @@ export default function CanvasWorkspace({
         {!embedded && (
           <>
         <div
+          // The explorer's preview/side seam, reused as-is: one hairline that
+          // lights `--seam-hot` on hover and drag like every other draggable
+          // seam in the app. It used to be a 6px grey band that turned blue
+          // under the cursor — the only seam styled on its own.
+          className={dragging ? "preview-side-divider dragging" : "preview-side-divider"}
           onMouseDown={(e) => {
             e.preventDefault();
             setDragging(true);
-          }}
-          style={{
-            flex: "0 0 6px",
-            cursor: "col-resize",
-            background: dragging
-              ? "rgba(100,140,255,0.5)"
-              : "rgba(128,128,128,0.25)",
           }}
           title="Drag to resize"
         />
