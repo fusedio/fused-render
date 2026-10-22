@@ -1362,6 +1362,68 @@ def test_without_a_detector_a_long_file_is_sliced_to_the_vad_budget(
         0.0, vad_module.BUDGET_S, 2 * vad_module.BUDGET_S]
 
 
+def test_one_long_speech_region_is_cut_at_the_budget_never_one_utterance(
+        worker, base, tmp_path, sherpa, monkeypatch):
+    """`vad.pack_regions` lets an over-budget region through alone; sherpa's
+    memory grows with the utterance, so an 8-minute monologue must not."""
+    import vad as vad_module
+
+    _loaded_parakeet(worker, sherpa, tmp_path)
+    _decoder(monkeypatch, samples=16000 * 490)
+    _no_vad(monkeypatch, worker, regions=[(5.0, 485.0)])
+    count = 17  # ceil(480 / 29)
+    sherpa.results = [(f"w{n}.", *_tokens((0.0, f" w{n}"), (0.2, ".")))
+                      for n in range(count)]
+
+    worker.generate(_request(tmp_path))
+
+    seconds = [c["seconds"] for c in sherpa.clips]
+    assert len(seconds) == count
+    assert all(0 < s <= vad_module.BUDGET_S for s in seconds)
+    assert sum(seconds) == pytest.approx(480.0)
+    written = json.loads(open(_request(tmp_path)["out"], encoding="utf-8").read())
+    starts = [seg["start"] for seg in written["segments"]]
+    assert starts == [round(5.0 + n * vad_module.BUDGET_S, 2) for n in range(count)]
+
+
+def test_bounded_packs_are_contiguous_cover_the_region_and_leave_small_ones_alone(
+        worker):
+    import vad as vad_module
+
+    budget = vad_module.BUDGET_S
+    packs = worker._bounded_packs([[(5.0, 485.0)], [(500.0, 510.0), (520.0, 530.0)]])
+
+    long_part, small = packs[:-1], packs[-1]
+    assert small == [(500.0, 510.0), (520.0, 530.0)]
+    assert all(len(p) == 1 for p in long_part)
+    assert long_part[0][0][0] == 5.0 and long_part[-1][0][1] == 485.0
+    for before, after in zip(long_part, long_part[1:]):
+        assert before[0][1] == after[0][0]
+    assert all(p[0][1] - p[0][0] <= budget for p in long_part)
+
+
+def test_only_a_missing_or_empty_detector_result_is_time_sliced(
+        worker, base, tmp_path, sherpa, monkeypatch):
+    """The branch is on what the detector RETURNED, not on the pack's shape: a
+    region that happens to span the whole file is the detector's answer."""
+    _loaded_parakeet(worker, sherpa, tmp_path)
+    _decoder(monkeypatch, samples=16000 * 10)
+    sliced = []
+    real = worker._time_slices
+    monkeypatch.setattr(worker, "_time_slices",
+                        lambda duration: sliced.append(duration) or real(duration))
+    for regions, expect_sliced in (([(0.0, 10.0)], False), (None, True), ([], True)):
+        sliced.clear()
+        _no_vad(monkeypatch, worker, regions=regions)
+        sherpa.results = [("a.", *_tokens((0.0, " a"), (0.2, ".")))]
+        worker.generate(_request(tmp_path))
+        assert bool(sliced) is expect_sliced, regions
+    sliced.clear()
+    sherpa.results = [("a.", *_tokens((0.0, " a"), (0.2, ".")))]
+    worker.generate(_request(tmp_path, vad=False))
+    assert sliced == [10.0]
+
+
 def test_a_detector_that_is_unavailable_degrades_to_the_whole_file(
         worker, base, tmp_path, sherpa, monkeypatch):
     _loaded_parakeet(worker, sherpa, tmp_path)
@@ -1438,14 +1500,14 @@ def test_each_pack_ticks_seconds_of_audio_and_a_cancel_between_packs_stops(
         worker, base, tmp_path, sherpa, monkeypatch):
     _loaded_parakeet(worker, sherpa, tmp_path)
     _decoder(monkeypatch, samples=16000 * 100)
-    _no_vad(monkeypatch, worker, regions=[(0.0, 40.0), (50.0, 90.0)])
+    _no_vad(monkeypatch, worker, regions=[(0.0, 25.0), (50.0, 75.0)])
     sherpa.results = [("a.", *_tokens((0.0, " a"), (0.2, "."))),
                       ("b.", *_tokens((0.0, " b"), (0.2, ".")))]
 
     worker.generate(_request(tmp_path))
 
     ticks = [t for t in base.ticks if t.get("detail", "").startswith("Transcribing")]
-    assert [(t["done"], t["total"]) for t in ticks] == [(40.0, 100.0), (90.0, 100.0)]
+    assert [(t["done"], t["total"]) for t in ticks] == [(25.0, 100.0), (75.0, 100.0)]
     assert all(t["job"] == "sys:ai-transcribe:abc" for t in ticks)
 
     sherpa.results = [("a.", *_tokens((0.0, " a"), (0.2, "."))),
@@ -1484,7 +1546,7 @@ def test_a_cancel_during_the_LAST_pack_decode_is_late_and_keeps_the_transcript(
     ✕ pressed while the last pack is decoding is the same case."""
     _loaded_parakeet(worker, sherpa, tmp_path)
     _decoder(monkeypatch, samples=16000 * 100)
-    _no_vad(monkeypatch, worker, regions=[(0.0, 40.0), (50.0, 90.0)])
+    _no_vad(monkeypatch, worker, regions=[(0.0, 25.0), (50.0, 75.0)])
     monkeypatch.setattr(worker, "_TICK_S", 0.01)
     sherpa.results = [("a.", *_tokens((0.0, " a"), (0.2, "."))),
                       ("b.", *_tokens((0.0, " b"), (0.2, ".")))]
@@ -1502,7 +1564,7 @@ def test_a_cancel_during_an_EARLIER_pack_decode_still_stops_the_run(
         worker, base, tmp_path, sherpa, monkeypatch):
     _loaded_parakeet(worker, sherpa, tmp_path)
     _decoder(monkeypatch, samples=16000 * 100)
-    _no_vad(monkeypatch, worker, regions=[(0.0, 40.0), (50.0, 90.0)])
+    _no_vad(monkeypatch, worker, regions=[(0.0, 25.0), (50.0, 75.0)])
     monkeypatch.setattr(worker, "_TICK_S", 0.01)
     sherpa.results = [("a.", *_tokens((0.0, " a"), (0.2, "."))),
                       ("b.", *_tokens((0.0, " b"), (0.2, ".")))]

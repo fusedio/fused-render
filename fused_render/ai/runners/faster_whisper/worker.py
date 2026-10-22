@@ -728,6 +728,20 @@ def _sherpa_segments(result, pack_seconds):
     return out
 
 
+def _cut(start, end):
+    """`[start, end)` as consecutive single-region packs of at most
+    `vad.BUDGET_S` seconds. The first starts at `start` and the last ends at
+    `end` exactly, so a caller's edges survive and only the inside is cut."""
+    import vad as vad_module
+
+    packs, at = [], start
+    while at < end:
+        stop = min(at + vad_module.BUDGET_S, end)
+        packs.append([(at, stop)])
+        at = stop
+    return packs
+
+
 def _time_slices(duration):
     """A recording as consecutive packs of at most `vad.BUDGET_S` seconds.
 
@@ -739,14 +753,32 @@ def _time_slices(duration):
     (`vad: false`, or one that could not be fetched); with the detector the cuts
     are at silence (`vad.pack_regions`).
     """
+    return _cut(0.0, duration)
+
+
+def _bounded_packs(packs):
+    """`vad.pack_regions`' packs with no pack over the budget.
+
+    `pack_regions` lets a region longer than the budget through ALONE, because
+    Whisper windows internally and a cut chosen there would be worse than its
+    own seeking. Sherpa has no such seeking and its memory grows with the
+    utterance, so a minutes-long unbroken region (a lecture, a monologue) is cut
+    here at fixed offsets from the region's own start. The region's edges are the
+    detector's; only the inside is a blind cut, which can split a word — the same
+    cost `_time_slices` documents, paid only where the detector found no pause.
+    """
     import vad as vad_module
 
-    packs, at = [], 0.0
-    while at < duration:
-        end = min(at + vad_module.BUDGET_S, duration)
-        packs.append([(at, end)])
-        at = end
-    return packs
+    out = []
+    for pack in packs:
+        if vad_module.packed_duration(pack) <= vad_module.BUDGET_S:
+            out.append(pack)
+            continue
+        # Over-budget packs hold one region by construction; a general pack is
+        # handled anyway by cutting each of its regions on its own.
+        for start, end in pack:
+            out.extend(_cut(start, end))
+    return out
 
 
 def _decode_pack(recognizer, clip):
@@ -948,9 +980,11 @@ def generate(body):
             regions = _call_with_ticks(
                 lambda: _speech_regions(audio, total, job, row),
                 job, row, "Finding speech…")
-        packs = stt_common.packs_to_decode(regions, duration)
-        if packs == [[(0.0, duration)]]:
-            packs = _time_slices(duration)
+        # Branched on what the detector RETURNED, not on the shape of the packs:
+        # a region that happens to span the whole file is its answer, and the
+        # sink below is scoring speakers against exactly that list.
+        packs = (_bounded_packs(stt_common.packs_to_decode(regions, duration))
+                 if regions else _time_slices(duration))
         stream = None
         # Parakeet auto-detects and sherpa reports no language, so the reply
         # carries none rather than inventing a code a page would then trust (a
