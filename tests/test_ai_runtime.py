@@ -13760,6 +13760,16 @@ def test_a_kokoro_id_is_accepted_where_the_kokoro_engine_serves_speech(client, m
     assert [m for _c, m in mac] == [KOKORO_ID] and [m for _c, m in linux] == [KOKORO_ID]
 
 
+def test_an_undownloaded_kokoro_id_refuses_a_voice_it_does_not_have_before_the_download(
+        client, monkeypatch):
+    started = _real_speech_registry(monkeypatch, "Linux", "x86_64", registry.AUTO)
+    unknown = _speech(client, {"text": "x", "model": KOKORO_ID, "voice": "af_heart"})
+    assert unknown.status_code == 400 and "af_heart" in unknown.json()["error"]
+    assert started == []
+    known = _speech(client, {"text": "x", "model": KOKORO_ID, "voice": "af_maple"})
+    assert known.status_code == 200 and known.json()["voice"] == "af_maple"
+
+
 def test_the_SKILL_names_every_field_speech_resolves_with(client, fake_speech_runner,
                                                          base_photo):
     page, _ = base_photo
