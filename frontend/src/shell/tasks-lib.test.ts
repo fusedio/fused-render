@@ -52,10 +52,7 @@ import {
   LANES_BUT_ARCHIVE,
   LANES_BUT_UPCOMING,
   groupFoldKeys,
-  openOnFirstVisit,
-  parseSeededViews,
   parseViewFilters,
-  seedCollapsedGroups,
   sectionsHolding,
   groupSize,
   parseViewTabs,
@@ -11659,7 +11656,6 @@ describe("groupRows", () => {
     // A pending entry's due time rides `last_active`; a future one is NO activity.
     const due = task({ key: "f", status: "upcoming", messages: [], last_active: Math.floor(NOW / 1000) + 7200 }, 0);
     expect(activityAt(due, NOW)).toBe(0);
-    expect([...openOnFirstVisit(groupRows([{ ...due, project: "/later" }], "project", "", NOW), "project", NOW)]).toEqual([]);
     expect(activityAt(t, NOW)).toBe(sec("2026-10-16T09:00:00"));
   });
   it("activityAt reads a stamp a few seconds ahead of the page clock as now (Sina, 2026-10-21)", () => {
@@ -11771,41 +11767,17 @@ describe("groupRows", () => {
     expect(g.map((x) => x.label)).toEqual(["x/y", "Unknown repository", "No PR"]);
     expect(g[1]?.groups?.map((x) => x.label)).toEqual(["Unknown"]);
   });
-  it("opens Later / Last hour / Today on a first visit to Time, folds the rest", () => {
-    const g = groupRows(
-      [row({ key: "h", last_active: Math.floor(NOW / 1000) - 20 * 60 }), ...rows],
-      "time", "", NOW,
-    );
-    expect([...openOnFirstVisit(g, "time", NOW)]).toEqual(["time:Last hour", "time:Today"]);
-    const seeded = seedCollapsedGroups(new Set(["time:Today", "other:x"]), g, "time", NOW);
-    expect([...seeded].sort()).toEqual(["other:x", "time:Earlier", "time:This week", "time:Yesterday"]);
-  });
-  it("opens the folders and pull requests touched in the last day on a first visit", () => {
-    const p = groupRows(rows, "project", "/Users/me", NOW);
-    expect([...openOnFirstVisit(p, "project", NOW)]).toEqual(["project:/Users/me/b"]);
-    // Exactly a day old is still open; a second more is not.
-    const edge = [
-      row({ key: "e1", project: "/e1", last_active: Math.floor(NOW / 1000) - 86400 }),
-      row({ key: "e2", project: "/e2", last_active: Math.floor(NOW / 1000) - 86401 }),
-    ];
-    expect([...openOnFirstVisit(groupRows(edge, "project", "", NOW), "project", NOW)]).toEqual(["project:/e1"]);
-    // PR: the repo opens with its recent PR; its older PRs stay folded.
+  it("groupFoldKeys names every section at every depth, in drawing order", () => {
     const pr = groupRows(
       [
         row({ key: "p1", title: "PR #1", repo: "x/y", last_active: sec("2026-10-16T14:00:00") }),
-        row({ key: "p2", title: "PR #2", repo: "x/y", last_active: sec("2026-10-01T14:00:00") }),
         row({ key: "p3", title: "PR #3", repo: "x/z", last_active: sec("2026-10-01T14:00:00") }),
       ],
       "pr", "", NOW,
     );
-    expect([...openOnFirstVisit(pr, "pr", NOW)]).toEqual(["pr:repo:x/y", "pr:pr:x/y:unknown"]);
-    expect([...seedCollapsedGroups(new Set(), pr, "pr", NOW)].sort()).toEqual(["pr:pr:x/z:unknown", "pr:repo:x/z"]);
     expect(groupFoldKeys(pr, "pr")).toEqual(["pr:repo:x/y", "pr:pr:x/y:unknown", "pr:repo:x/z", "pr:pr:x/z:unknown"]);
   });
-  it("reads the seeded views and the per-tab facets out of untrusted stores", () => {
-    expect([...parseSeededViews('["time","nope","pr"]')]).toEqual(["time", "pr"]);
-    expect(parseSeededViews("{").size).toBe(0);
-    expect(parseSeededViews(null).size).toBe(0);
+  it("reads the per-tab facets out of an untrusted store", () => {
     expect(parseViewFilters(JSON.stringify({
       board: { statuses: ["in_progress", "bogus"], projects: ["/a", 3] },
       project: { statuses: [], projects: [] },
