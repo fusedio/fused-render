@@ -189,9 +189,11 @@ Usage summary and iMessage state are the OpenBot shapes (`_usage_summary`,
 `status` values: `idle | running | waiting | paused | error`. `approval`:
 `ask | auto`. `build_access`: `scoped | full`. `trusted_apps`: app folder names
 (normalised lower, `-`/`_`/space → `-`, see `apptools.norm_app`) whose `tool`
-and `py` calls skip the approval card for this bot whatever the write heuristic,
-the app's SKILL.md or the bot's own `risky: true` say; browser actions, texts
-and builds are not apps. It is the ONE app-level permission (2026-10-22): a
+and `py` calls skip the approval card for this bot whatever the write heuristic
+or the app's SKILL.md say; a call the bot flags `risky: true` still asks (and
+that card offers no "Always approve": the tick would not silence it), and
+browser actions, texts and builds are not apps. It is the ONE app-level
+permission (2026-10-22): a
 build this bot finishes ticks its app (`bot.py`, where `builds[].done_at` is
 set), and "Always approve" on a `tool` / `py` card ticks the app (the rule kind
 `trusted`, key = the folder; `tools.forever_rule` no longer makes per-tool

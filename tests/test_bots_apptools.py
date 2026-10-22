@@ -963,8 +963,10 @@ def test_trusted_app_write_tool_skips_the_gate(monkeypatch):
     d = {"app": "fake-docs", "name": "send_mail", "args": {}}
     assert T.risk(B(), "tool", d, {}) == ""
     assert T.risk(B(), "tool", {"app": "other", "name": "delete_all"}, {}) != ""
-    # the tick is the user's standing "Always approve" for the whole app: it beats the bot's own `risky: true` too
-    assert T.risk(B(), "tool", dict(d, risky=True), {}) == ""
+    # the bot's own `risky: true` flag still wins: it knows something the tick does not, and such a card offers no
+    # "Always approve" (the tick would not silence it)
+    assert T.risk(B(), "tool", dict(d, risky=True), {}) != ""
+    assert T.forever_rule(B(), "tool", dict(d, risky=True), {}) is None
     # an unticked app: "Always approve" on its card offers one rule for the app, not the tool
     assert T.forever_rule(B(), "tool", {"app": "other", "name": "delete_all"}, {}) == {"kind": "trusted", "key": "other", "label": "uses the other app"}
 

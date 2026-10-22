@@ -576,7 +576,8 @@ def is_write(rec):
 # ---- trusted apps: a per-bot whitelist that skips the gate -----------------------
 # bot.json `trusted_apps`: app folder names (normalised as `find` matches them) whose
 # `tool` and `py` calls never raise an approval card for that bot, whatever the write
-# heuristic, the app's SKILL.md or the bot's own `risky: true` say. It is the ONE
+# heuristic or the app's SKILL.md say. The bot's own `risky: true` on a call still
+# asks: it knows something about this call the whitelist does not. It is the ONE
 # app-level permission (Settings › Permissions › "Apps it may use without asking"):
 # a build this bot finished and an "Always approve" on a tool/py card both land here
 # (`trusted_via` says which: "build" | "card"; absent = ticked in the dialog), so the

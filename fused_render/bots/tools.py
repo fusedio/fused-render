@@ -469,6 +469,10 @@ def forever_rule(bot, act: str, d: dict, obs: dict):
             return None
         verb = {"click": "clicks", "type": "types into", "press": "presses a key in", "select": "picks in"}[act]
         return {"kind": "browser", "key": f"{host}|{lbl}", "label": f'{verb} "{lbl}" on {host}'}
+    if act in ("tool", "py") and d.get("risky") is True:
+        # The tick never silences a call the bot itself flagged (risk()), so there is nothing a forever answer could
+        # remember here: no third button.
+        return None
     if act == "tool":
         # One rule per APP, not per tool: a forever answer ticks "Apps it may use without asking" (trusted_apps),
         # the one switch Settings › Permissions shows for an app.
@@ -1252,10 +1256,11 @@ def risk(bot, act: str, d: dict, obs: dict) -> str:
         rec = apptools.find(apptools.registry(), app, name)
         if rec is None:
             return ""
-        if apptools.is_trusted(bot.meta, rec.app):
-            return ""  # ticked under "Apps it may use without asking" (bot.json trusted_apps): runs at once, risky or not
         if d.get("risky") is True:
+            # The bot's own flag beats the tick: it knows something about THIS call the app-level permission does not.
             return f"It calls {rec.app} › {rec.name}, which changes something outside this chat."
+        if apptools.is_trusted(bot.meta, rec.app):
+            return ""  # ticked under "Apps it may use without asking" (bot.json trusted_apps): runs at once
         if apptools.is_write(rec):
             return f"It calls {rec.app} › {rec.name}, which changes something outside this chat."
         return ""
@@ -1269,13 +1274,13 @@ def risk(bot, act: str, d: dict, obs: dict) -> str:
             return ""
         says = f" Its SKILL.md: \"{skill['files'][name][:200]}\"" if skill["files"].get(name) else ""
         stem = os.path.basename(app_dir)
+        if d.get("risky") is True:
+            return f"It runs {stem} › {name}; the bot flagged it as irreversible.{says}"  # the flag beats the tick
         if apptools.is_trusted(bot.meta, stem):
             return ""  # ticked under "Apps it may use without asking": its documented scripts run without a card
         # A build this bot made is ticked when it finishes (bot.py); an unticked app always asks, built or not.
         if name in skill["approve"]:
             return f"It runs {stem} › {name}, which the app's SKILL.md marks as needing approval.{says}"
-        if d.get("risky") is True:
-            return f"It runs {stem} › {name}; the bot flagged it as irreversible.{says}"
         return f"It runs {stem} › {name} on this Mac; this bot may not use {stem} without asking.{says}"
     if act not in ("click", "type", "press", "select"):
         return ""
