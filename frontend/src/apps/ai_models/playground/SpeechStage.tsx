@@ -95,6 +95,12 @@ export function SpeechStage({ model, entry, transcribeModel }: {
   const [text, setText] = useState(() => readParam("prompt") ?? STARTERS[0].prompt);
   const [voice, setVoice] = useState(() => readParam("voice") ?? "");
   const [language, setLanguage] = useState(() => readParam("lang") ?? AUTO);
+  // A model with no language list (Kokoro) takes none: a `lang` left over from a
+  // Qwen session must neither show the field nor be sent.
+  const spoken = languages.length > 0 ? language : AUTO;
+  useEffect(() => {
+    if (languages.length === 0) setLanguage(AUTO);
+  }, [languages.length]);
   const [instruct, setInstruct] = useState(() => readParam("instruct") ?? (mode === "design"
     ? STARTERS[0].voice : "Speak clearly, warmly, and at a natural pace."));
   const [refAudio, setRefAudio] = useState<string | null>(() => readParam("ref"));
@@ -159,14 +165,14 @@ export function SpeechStage({ model, entry, transcribeModel }: {
       writeParams({
         prompt: text ? text : null,
         voice: mode === "preset" && voice ? voice : null,
-        lang: language !== AUTO ? language : null,
+        lang: spoken !== AUTO ? spoken : null,
         ref: mode === "clone" && refAudio ? refAudio : null,
         reftext: mode === "clone" && refText.trim() ? refText : null,
         instruct: styled && instruct.trim() ? instruct : null,
       });
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [text, voice, language, refAudio, refText, instruct, mode, styled]);
+  }, [text, voice, spoken, refAudio, refText, instruct, mode, styled]);
 
   const { ref: boxRef } = useAutoGrow(text);
 
@@ -209,7 +215,7 @@ export function SpeechStage({ model, entry, transcribeModel }: {
     const request: SpeechRequest = {
       text: wanted,
       model,
-      ...(language !== AUTO ? { language } : {}),
+      ...(spoken !== AUTO ? { language: spoken } : {}),
       ...(mode === "preset" && voice ? { voice } : {}),
       ...(styled && style.trim() ? { instruct: style.trim() } : {}),
       ...(mode === "clone" && refAudio ? { refAudio, refText: refText.trim() } : {}),
@@ -382,7 +388,7 @@ export function SpeechStage({ model, entry, transcribeModel }: {
             </RailField>
           )}
           {/* A model that lists no languages (Kokoro picks it from the voice) has nothing to choose. */}
-          {(languages.length > 0 || language !== AUTO) && (
+          {languages.length > 0 && (
             <RailField label="Language" hint="Auto finds the language from the text.">
               <RailSelect aria-label="Language" value={language} onValueChange={setLanguage} options={[
                 { value: AUTO, label: "Auto" },
