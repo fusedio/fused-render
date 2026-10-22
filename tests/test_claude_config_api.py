@@ -1470,8 +1470,13 @@ def test_skills_create_puts_one_copy_where_the_enabled_clis_read_it(client, clau
     assert _post(client, "skills", action="create", slug="solo").json()["ok"] is False
 
 
-def _cloned_marketplace(claude_dir, name, entries):
+def _cloned_marketplace(claude_dir, name, entries, registered=True):
     _marketplace(claude_dir, name, {"name": name, "plugins": entries})
+    if registered:
+        known = claude_dir / "plugins" / "known_marketplaces.json"
+        have = json.loads(known.read_text()) if known.exists() else {}
+        have[name] = {"source": {"source": "github", "repo": f"x/{name}"}}
+        known.write_text(json.dumps(have))
     return claude_dir / "plugins" / "marketplaces" / name
 
 
@@ -1490,10 +1495,27 @@ def test_skills_available_walks_cloned_marketplaces_and_skips_remote_sources(cli
     brew = by_slug["brew"]
     assert (brew["name"], brew["description"], brew["plugin"], brew["marketplace"]) == (
         "Brew", "Makes coffee.", "kit", "acme")
-    assert brew["installed"] is False
+    assert (brew["pluginInstalled"], brew["added"]) == (False, False)
     # Already in a user skills dir.
-    assert by_slug["own"]["installed"] is True
+    assert by_slug["own"]["added"] is True
     assert body["skipped"] == 2
+
+
+def test_skills_available_ignores_a_directory_no_marketplace_names(client, claude_dir):
+    mkt = _cloned_marketplace(claude_dir, "acme", [{"name": "kit", "source": "./kit"}])
+    _skill(mkt / "kit" / "skills" / "brew")
+    stray = _cloned_marketplace(
+        claude_dir, "surya-local..clone", [{"name": "ghost", "source": "./ghost"}], registered=False)
+    _skill(stray / "ghost" / "skills" / "boo")
+    skills_found = _post(client, "skills", action="available").json()["skills"]
+    assert [(s["marketplace"], s["slug"]) for s in skills_found] == [("acme", "brew")]
+
+
+def test_skills_available_carries_the_plugin_description(client, claude_dir):
+    mkt = _cloned_marketplace(
+        claude_dir, "acme", [{"name": "kit", "source": "./kit", "description": "A kit."}])
+    _skill(mkt / "kit" / "skills" / "brew")
+    assert _post(client, "skills", action="available").json()["skills"][0]["pluginDescription"] == "A kit."
 
 
 def test_skills_available_counts_a_skill_of_an_enabled_plugin_as_installed(client, claude_dir, tmp_path):
@@ -1501,7 +1523,8 @@ def test_skills_available_counts_a_skill_of_an_enabled_plugin_as_installed(clien
     _skill(mkt / "kit" / "skills" / "brew")
     _installed(claude_dir, "kit@acme", mkt / "kit")
     _enable(claude_dir, **{"kit@acme": True})
-    assert _post(client, "skills", action="available").json()["skills"][0]["installed"] is True
+    brew = _post(client, "skills", action="available").json()["skills"][0]
+    assert (brew["pluginInstalled"], brew["added"]) == (True, False)
 
 
 def _brew_marketplace(claude_dir):

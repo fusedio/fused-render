@@ -7479,7 +7479,7 @@ D406 withdrew `parakeet-mlx` because a separate Apple-only runner with its own v
 - **`feature_dim`** 80 vs 128 gave identical text and timestamps; the value is left at sherpa's default.
 - **Not done.** The model is not on our mirror yet (needs the `changing-suggested-models` upload). Sentence splitting has no abbreviation guard.
 
-## D1424: Claude Config: skills are read from every CLI's dir, and a new skill is one copy plus at most one link (2026-10-22, claude-config-revamp)
+## D1425: Claude Config: skills are read from every CLI's dir, and a new skill is one copy plus at most one link (2026-10-22, claude-config-revamp)
 
 Skills were `~/.claude/skills` plus enabled plugins, so a skill Copilot or Codex reads (`~/.agents/skills`) was invisible, and the Plugins page spent a column on marketplaces that a filter does the work of. The revamp widens the Skills page to every CLI and gives it a Discover tab over the cloned marketplaces.
 
@@ -7496,6 +7496,7 @@ Skills were `~/.claude/skills` plus enabled plugins, so a skill Copilot or Codex
 - **Taken means taken anywhere.** Add and create refuse a slug that exists (even as a dangling link) in ANY user dir, not only the target ones: a second copy in `~/.copilot/skills` would be read twice by Copilot.
 - **Delete** removes the real dir and every link to it across the user dirs, links first. A link to a skill outside the user dirs removes only the link.
 - **Copy safety.** The source must be a skill of a cloned plugin whose catalog `source` is a relative path resolving inside the clone; the walk does not follow symlinks and skips them; 500 files / 25 MB cap; the copy is staged in a dot-dir beside the destination and renamed in, so a refused or failed copy leaves nothing behind.
+- **Discover walks registered marketplaces only** (names from `marketplaces._list()`); a directory under the clones dir that no settings or known-marketplaces entry names is not listed. Each skill carries `pluginInstalled` and `added` so the page can say "Installed" or "Added", and its plugin's description.
 - **Discover covers local sources only.** A plugin whose catalog `source` is a github/git object is not on disk until installed, so its skills cannot be listed; `skills.available` counts them in `skipped` and the page says so.
 - **Not done: Copilot and Codex plugin skills.** Neither `~/.codex/plugins/cache` nor `~/.copilot` exists on this machine, so no on-disk plugin layout could be confirmed. Guessing a layout would list nothing or the wrong thing; they are left out until someone with those plugins installed can look.
 - **Installed plugins carry a description** joined from the cloned marketplace catalog by name (`""` when the marketplace is not cloned or does not list it).

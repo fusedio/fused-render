@@ -30,10 +30,12 @@ main(action=...):
                      linked, path, location, paths, readers}]}
           readers: ["claude" | "copilot" | "codex"]; paths: every entry (copy
           and link) that is this skill
-  available -> {skills: [{slug, name, description, plugin, marketplace, path,
-                          installed}], skipped}
-          the skills of every cloned marketplace's plugins that live inside the
-          clone; skipped counts the plugins whose source is elsewhere
+  available -> {skills: [{slug, name, description, plugin, pluginDescription,
+                          marketplace, path, pluginInstalled, added}], skipped}
+          the skills of every registered marketplace's plugins that live inside
+          its clone; skipped counts the plugins whose source is elsewhere.
+          pluginInstalled: the plugin is installed and enabled; added: the slug
+          is already in a user skills dir
   add -> {ok, slug, path}  params: marketplace, plugin, slug  (copies a
           marketplace skill to where the enabled CLIs read it)
   open -> {ok}   params: slug [, source, plugin, marketplace, location]  (reveal folder)
@@ -51,7 +53,7 @@ import shutil
 from fused_render import codex_health, copilot_health
 from fused_render.shell import prefs
 
-from . import lib, plugins
+from . import lib, marketplaces, plugins
 
 SKILLS_DIR = os.path.join(lib.CLAUDE_DIR, "skills")
 
@@ -205,18 +207,21 @@ def _skill_dir(slug: str, source: str, plugin: str, marketplace: str, location: 
 
 
 def _marketplace_plugins() -> tuple:
-    """([(marketplace, plugin, root)], skipped) over every cloned marketplace.
+    """([(marketplace, plugin, root, description)], skipped) over every
+    registered marketplace that is cloned. A stray directory under the clones
+    dir that no settings or known_marketplaces entry names is not a marketplace.
 
     Only a plugin whose catalog `source` is a relative path inside the clone is
     listed: a github/git source is not on this machine until it is installed,
     and counts toward `skipped`. The clone is third-party content, so the root
     must resolve inside it."""
     try:
-        marketplaces = sorted(os.listdir(lib.MARKETPLACES_DIR))
+        cloned = set(os.listdir(lib.MARKETPLACES_DIR))
     except OSError:
         return [], 0
+    registered = {m["name"] for m in marketplaces._list()["marketplaces"]}
     found, skipped = [], 0
-    for mkt in marketplaces:
+    for mkt in sorted(cloned & registered):
         mkt_dir = os.path.join(lib.MARKETPLACES_DIR, mkt)
         if lib.option_shaped(mkt) or not os.path.isdir(mkt_dir):
             continue
@@ -230,7 +235,8 @@ def _marketplace_plugins() -> tuple:
             if root is None or not plugins._within(mkt_dir, root) or not os.path.isdir(root):
                 skipped += 1
                 continue
-            found.append((mkt, name, root))
+            desc = entry.get("description")
+            found.append((mkt, name, root, desc if isinstance(desc, str) else ""))
     return found, skipped
 
 
@@ -250,16 +256,18 @@ def _available() -> dict:
     on = {(n, m) for n, m, _ in _enabled_plugin_roots()}
     taken = {slug for d, _ in _user_dirs() for slug, _p in _entries(d)}
     out = []
-    for mkt, plugin, root in found:
+    for mkt, plugin, root, plugin_desc in found:
         for slug, skill_dir, name, description in _marketplace_skills(root):
             out.append({
                 "slug": slug,
                 "name": name,
                 "description": description,
                 "plugin": plugin,
+                "pluginDescription": plugin_desc,
                 "marketplace": mkt,
                 "path": skill_dir,
-                "installed": (plugin, mkt) in on or slug in taken,
+                "pluginInstalled": (plugin, mkt) in on,
+                "added": slug in taken,
             })
     out.sort(key=lambda s: (s["name"].lower(), s["plugin"], s["marketplace"]))
     return {"skills": out, "skipped": skipped}
@@ -338,7 +346,7 @@ def _place(slug: str, fill) -> dict:
 
 def _add(marketplace: str, plugin: str, slug: str) -> dict:
     found, _ = _marketplace_plugins()
-    for mkt, name, root in found:
+    for mkt, name, root, _d in found:
         if mkt != marketplace or name != plugin:
             continue
         for s, skill_dir, _n, _d in _marketplace_skills(root):
