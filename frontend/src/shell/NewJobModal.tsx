@@ -5220,6 +5220,97 @@ export default function NewJobModal({
         </div>
 
         <div className="nt-pills">
+          {/* WHICH Claude, and HOW HARD — one pill, because they are one decision
+              read together ("Fable, thinking high"). Picking does not close the
+              popover: there are two things to set. A model is the rarest thing
+              anyone changes about a task; nothing about either appears on the
+              task row or the calendar chip (design: the card asks, the list
+              stays quiet). */}
+          <PropPill
+            k="Model"
+            ariaLabel="Model"
+            value={modelText}
+            open={modelOpen}
+            onToggle={() => togglePill("model")}
+            onDismiss={() => dismissPill("model")}
+            pillRef={modelPillRef}
+            popWidth={260}
+            popHeight={300}
+          >
+            <div className="nt-pop-h">Model</div>
+            {/* Same contract as Permissions: the KEY is submitted, the label is
+                only how it is said. `taskRunOptions` is what keeps an
+                unrecognised stored value selectable instead of silently
+                resetting the task to the default on the next edit. */}
+            <div className="nt-menu" role="group" aria-label="Model">
+              {taskRunOptions(runModels, model).map((o) => (
+                <button
+                  key={o.key}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={model === o.key}
+                  disabled={(o as { disabled?: boolean }).disabled}
+                  onClick={() => pickModel(o.key)}
+                >
+                  {o.label}
+                  {model === o.key && ICON_CHECK}
+                </button>
+              ))}
+            </div>
+            {/* "Thinking", not "Effort" (the CLI's word for the flag): what the
+                user is choosing is how long Claude gets to think before it
+                acts, and the chat's own pill says the same thing. The wire is
+                untouched — this is the label. */}
+            <div className="nt-pop-h">Thinking</div>
+            <div className="nt-menu" role="group" aria-label="Thinking">
+              {taskRunOptions(runEfforts, effort).map((o) => (
+                <button
+                  key={o.key}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={effort === o.key}
+                  disabled={(o as { disabled?: boolean }).disabled}
+                  onClick={() => pickEffort(o.key)}
+                >
+                  {o.label}
+                  {effort === o.key && ICON_CHECK}
+                </button>
+              ))}
+            </div>
+          </PropPill>
+          <PropPill
+            k="Access"
+            ariaLabel="Permissions"
+            value={permissionLabel(permission)}
+            open={accessOpen}
+            onToggle={() => togglePill("access")}
+            onDismiss={() => dismissPill("access")}
+            pillRef={accessPillRef}
+            popWidth={260}
+            popHeight={210}
+          >
+            {/* The KEY is what gets submitted; the label is only how the mode is
+                said. The raw keys ("acceptEdits") were the server's vocabulary
+                printed at the user (audit 2026-08-16), and an unknown key still
+                shows itself rather than being hidden. */}
+            <div className="nt-menu" role="menu" aria-label="Permissions">
+              {permissionOptions.map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={permission === m}
+                  onClick={() => { setPermission(m); setAccessOpen(false); }}
+                >
+                  {permissionLabel(m)}
+                  {permission === m && ICON_CHECK}
+                </button>
+              ))}
+            </div>
+            <div className="nt-menu-note">
+              The task runs unattended. Auto approves safe actions and holds the rest.
+            </div>
+          </PropPill>
           {/* NOT THERE AT ALL inside an app's Tasks tab (Akshil, 2026-09-19: "in
               dedicated tasks when we open the new task modal, hide the path
               field"): a control whose one answer is already known is a control
@@ -5734,97 +5825,6 @@ export default function NewJobModal({
                 </div>
               </>
             )}
-          </PropPill>
-          <PropPill
-            k="Access"
-            ariaLabel="Permissions"
-            value={permissionLabel(permission)}
-            open={accessOpen}
-            onToggle={() => togglePill("access")}
-            onDismiss={() => dismissPill("access")}
-            pillRef={accessPillRef}
-            popWidth={260}
-            popHeight={210}
-          >
-            {/* The KEY is what gets submitted; the label is only how the mode is
-                said. The raw keys ("acceptEdits") were the server's vocabulary
-                printed at the user (audit 2026-08-16), and an unknown key still
-                shows itself rather than being hidden. */}
-            <div className="nt-menu" role="menu" aria-label="Permissions">
-              {permissionOptions.map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={permission === m}
-                  onClick={() => { setPermission(m); setAccessOpen(false); }}
-                >
-                  {permissionLabel(m)}
-                  {permission === m && ICON_CHECK}
-                </button>
-              ))}
-            </div>
-            <div className="nt-menu-note">
-              The task runs unattended. Auto approves safe actions and holds the rest.
-            </div>
-          </PropPill>
-          {/* WHICH Claude, and HOW HARD — one pill, because they are one decision
-              read together ("Fable, thinking high"). Picking does not close the
-              popover: there are two things to set. A model is the rarest thing
-              anyone changes about a task; nothing about either appears on the
-              task row or the calendar chip (design: the card asks, the list
-              stays quiet). */}
-          <PropPill
-            k="Model"
-            ariaLabel="Model"
-            value={modelText}
-            open={modelOpen}
-            onToggle={() => togglePill("model")}
-            onDismiss={() => dismissPill("model")}
-            pillRef={modelPillRef}
-            popWidth={260}
-            popHeight={300}
-          >
-            <div className="nt-pop-h">Model</div>
-            {/* Same contract as Permissions: the KEY is submitted, the label is
-                only how it is said. `taskRunOptions` is what keeps an
-                unrecognised stored value selectable instead of silently
-                resetting the task to the default on the next edit. */}
-            <div className="nt-menu" role="group" aria-label="Model">
-              {taskRunOptions(runModels, model).map((o) => (
-                <button
-                  key={o.key}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={model === o.key}
-                  disabled={(o as { disabled?: boolean }).disabled}
-                  onClick={() => pickModel(o.key)}
-                >
-                  {o.label}
-                  {model === o.key && ICON_CHECK}
-                </button>
-              ))}
-            </div>
-            {/* "Thinking", not "Effort" (the CLI's word for the flag): what the
-                user is choosing is how long Claude gets to think before it
-                acts, and the chat's own pill says the same thing. The wire is
-                untouched — this is the label. */}
-            <div className="nt-pop-h">Thinking</div>
-            <div className="nt-menu" role="group" aria-label="Thinking">
-              {taskRunOptions(runEfforts, effort).map((o) => (
-                <button
-                  key={o.key}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={effort === o.key}
-                  disabled={(o as { disabled?: boolean }).disabled}
-                  onClick={() => pickEffort(o.key)}
-                >
-                  {o.label}
-                  {effort === o.key && ICON_CHECK}
-                </button>
-              ))}
-            </div>
           </PropPill>
         </div>
         {/* EVERY LINE THE ROWS USED TO PRINT UNDER THEMSELVES, in one place: the

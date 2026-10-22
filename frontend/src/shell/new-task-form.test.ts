@@ -2872,6 +2872,15 @@ describe("property pills", () => {
     expect(s).toContain("PERMISSION_ORDER.indexOf(m)");
   });
 
+  test("the pill row starts with Model, then Access, Where, When", () => {
+    const s = src();
+    const order = ["Model", "Access", "Where", "When"].map((k) => s.indexOf(`k="${k}"`));
+    expect(order[0]).toBeGreaterThan(-1);
+    expect(order[0]).toBeLessThan(order[1]);
+    expect(order[1]).toBeLessThan(order[2]);
+    expect(order[2]).toBeLessThan(order[3]);
+  });
+
   test("the stale-time note ignores the seed when nothing is picked", () => {
     expect(src()).toMatch(/pastNoteFor\(timePicked && pickedOk \? picked : null,/);
   });
