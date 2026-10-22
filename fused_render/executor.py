@@ -119,6 +119,10 @@ class _PreEncodedRun(dict):
         self.payload_json = payload_json
 
 
+# Prefix of the worker's success line (see `_child.run`).
+_OK_HEAD = '{"ok":true,"result":'
+
+
 def dumps_result(result: dict) -> str:
     """Render a run result as the /api/run response body.
 
@@ -453,10 +457,14 @@ def _run_python(path: str, params: dict, timeout: float) -> dict:
         # Return the normal wire shape rather than letting it 500 unlabeled.
         return _error("ExecutorError", f"could not start worker process: {e}")
 
-    lines = proc.stdout.strip().splitlines()
-    if lines:
+    # Split on "\n" only: the worker's JSON line never contains a raw newline
+    # (it is escaped), but str.splitlines() would also break on U+2028 and
+    # friends, which ensure_ascii=False leaves unescaped inside strings.
+    text = proc.stdout.rstrip("\n\r ")
+    last = text[text.rfind("\n") + 1:]
+    if last:
         try:
-            parsed = json.loads(lines[-1])
+            parsed = json.loads(last)
         except json.JSONDecodeError:
             pass
         else:
@@ -466,6 +474,17 @@ def _run_python(path: str, params: dict, timeout: float) -> dict:
             # lost. Tail, not head: the end is where the failure is.
             if isinstance(parsed, dict) and proc.stderr:
                 parsed.setdefault("stderr", proc.stderr[-4000:])
+            # A success line is `{"ok":true,"result":<json>,"stdout":...}`:
+            # keep the worker's own encoding of <json> so the response body
+            # splices it instead of encoding it again.
+            if (
+                isinstance(parsed, dict)
+                and parsed.get("ok") is True
+                and last.startswith(_OK_HEAD)
+            ):
+                cut = last.rfind(',"stdout":')
+                if cut >= len(_OK_HEAD):
+                    return _PreEncodedRun(parsed, last[len(_OK_HEAD):cut])
             return parsed
     return _error(
         "ExecutorError",

@@ -425,12 +425,15 @@ class _AiSession:
         if proc is not None:
             await _ai_reap(proc)
 
-    def prewarm_default(self) -> None:
+    def prewarm_default(self, delay: float = 0.0) -> None:
         """Spawn the instance ahead of the first request (startup hook).
         Fire-and-forget; a missing binary or failed spawn just means the
-        first call pays the cold start."""
+        first call pays the cold start. `delay` holds the spawn back so it
+        does not compete with the first requests and the other startup warms."""
 
         async def go():
+            if delay:
+                await asyncio.sleep(delay)
             async with self.lock:
                 if self._proc is None:
                     try:
@@ -2340,10 +2343,13 @@ def _ai_usage(raw) -> dict | None:
 # `_AI_SESSION` itself is still updated, as the default for callers with no
 # app handle (a bare module-level call, or a test driving `_ai_relay`
 # directly).
-def prewarm_ai(app=None):
+def prewarm_ai(app=None, delay: float = 0.0):
     global _AI_SESSION
     _AI_SESSION = _AiSession()
-    _AI_SESSION.prewarm_default()
+    if delay:
+        _AI_SESSION.prewarm_default(delay=delay)
+    else:
+        _AI_SESSION.prewarm_default()
     if app is not None:
         app.state.ai_session = _AI_SESSION
 

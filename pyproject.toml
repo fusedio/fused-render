@@ -323,12 +323,16 @@ fused = [
 # imports PIL unguarded and `[desktop]` only installs it on Linux.
 cli = [
     "pillow<13",
+    # Fast HTTP request parser for the local uvicorn server (logs.uvicorn_fast_kwargs).
+    "httptools>=0.6.3",
     "fused-render[index,data,hf,fused]",
 ]
 # `[cli]` plus the native desktop integrations; every packaged build and `[dev]`
 # include it. pillow is repeated because `[desktop]` only brings it on Linux.
 all = [
     "pillow<13",
+    # Fast HTTP request parser for the local uvicorn server (logs.uvicorn_fast_kwargs).
+    "httptools>=0.6.3",
     "fused-render[index,data,desktop,hf,fused]",
 ]
 # ---------------------------------------------------------------------------

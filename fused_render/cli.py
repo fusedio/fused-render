@@ -31,7 +31,7 @@ import webbrowser
 
 from fused_render import _flavor
 from fused_render._branch import branch_port, branch_ref
-from fused_render.logs import log_dir, setup_logging, uvicorn_log_config
+from fused_render.logs import log_dir, setup_logging, uvicorn_fast_kwargs, uvicorn_log_config
 from fused_render.shell.seed import ensure_fused_dir, fused_dir
 
 logger = logging.getLogger("fused_render")
@@ -301,7 +301,7 @@ def _run_serve(args: argparse.Namespace) -> None:
     # zero gain over loopback, so it is off.
     server = uvicorn.Server(uvicorn.Config(
         app, host=_HOST, port=port, log_config=uvicorn_log_config(),
-        ws_per_message_deflate=False))
+        ws_per_message_deflate=False, **uvicorn_fast_kwargs()))
     app.state.uvicorn_server = server
     # Local-network sharing of ~/Fused/local (lan.py): a second listener the
     # `lan_enabled` preference controls; this loopback bind is not touched.

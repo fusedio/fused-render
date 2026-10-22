@@ -1267,7 +1267,11 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     // The ROWS are deliberately not on this timer: the feed carries the same 20s
     // floor (LISTING_FLOOR_MS), and asking here as well would be two full listing
     // reads every twenty seconds for one answer.
-    const id = window.setInterval(reloadFeeds, POLL_MS);
+    // A hidden window skips the tick; useRefreshOnReturn(reload) catches it up.
+    const id = window.setInterval(() => {
+      if (document.visibilityState === "hidden") return;
+      reloadFeeds();
+    }, POLL_MS);
     return () => window.clearInterval(id);
   }, []);
   // The corner card knows a run ended about a second after it does; this page's

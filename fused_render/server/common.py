@@ -13,6 +13,7 @@ from fastapi.responses import (
 from fused_render import calls as shell_calls
 from fused_render import jobs as shell_jobs
 from fused_render import netlog
+from fused_render.server.asset_version import asset_version
 
 
 
@@ -295,9 +296,13 @@ _LOG_SKIP_PREFIXES = ("/static/", "/template-assets/", "/template-shared/")
 # immutable stops every native window from revalidating each chunk on open —
 # those all share WebKit's 6-connection HTTP/1.1 pool per host:port (measured
 # 2026-10-08), so a burst of 304 round-trips queues real API calls behind it.
-# shell-dist/index.html, runtime.js and /template-assets are NOT hashed and
-# keep no-cache (the stale-half-old-UI reason above still holds for them).
+# shell-dist/index.html, runtime.js and /template-assets are NOT hashed, so
+# unversioned requests for them keep no-cache (the stale-half-old-UI reason
+# above still holds). A request carrying `?v=` whose token equals the file's
+# current stat token (asset_version.py) is content-versioned and served
+# immutable; a mismatching token keeps no-cache.
 _IMMUTABLE_PREFIX = "/static/shell-dist/assets/"
+_VERSIONED_PREFIXES = ("/static/runtime.js", "/template-assets/", "/template-shared/")
 # Marketplace asset bytes (routers/marketplace.py) are cached per catalog
 # commit server-side and answered with their own `max-age=3600`, which this
 # middleware keeps instead of overwriting with no-cache — the browse grid
@@ -443,6 +448,11 @@ async def _no_cache_and_log_inner(request, call_next, call, path, logged, start)
     # 304 too: a browser refreshes a cached entry's headers from a 304, so an
     # asset cached back when it was no-cache gets upgraded on its next look.
     if path.startswith(_IMMUTABLE_PREFIX) and response.status_code in (200, 304):
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif (response.status_code in (200, 304) and request.method in ("GET", "HEAD")
+          and path.startswith(_VERSIONED_PREFIXES)
+          and request.query_params.get("v") is not None
+          and request.query_params.get("v") == asset_version(path)):
         response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     elif (path.startswith(_OWN_CACHE_PREFIX) and response.status_code == 200
           and "cache-control" in response.headers):

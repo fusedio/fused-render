@@ -400,6 +400,16 @@ def _lifespan(startup_handlers: list, shutdown_handlers: list):
 STARTUP_SLOW_HANDLER_S = 1.0
 
 
+def _safe_artifacts_scan() -> None:
+    """Warm thread target for `_startup_artifacts_warm`; never raises."""
+    try:
+        from fused_render import claude_artifacts
+
+        claude_artifacts.list_artifacts()
+    except Exception:  # noqa: BLE001 - a warm-up must never matter
+        logger.exception("could not warm the Claude artifacts listing")
+
+
 def _handler_name(handler) -> str:
     return getattr(handler, "__name__", None) or repr(handler)
 
@@ -517,7 +527,9 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
 
     @on_startup_full
     async def _startup_prewarm_ai():
-        prewarm_ai(app)
+        # Delayed: the spawn would otherwise compete with the first requests
+        # and the other startup warms.
+        prewarm_ai(app, delay=5.0)
 
     # Warm the fused engine off the request path (else the first /api/config pays the cold import).
     @on_startup
@@ -698,6 +710,15 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         # before they count listings of their own.
         app.state.tasks_warm = thread
 
+    # Warm the Claude artifacts listing (claude_artifacts.py): the first scan of
+    # a big ~/.claude is seconds, so it is paid here on a daemon thread rather
+    # than by the first /api/claude-artifacts request.
+    @on_startup_full
+    async def _startup_artifacts_warm():
+        # Looked up at call time so tests can swap the target (conftest).
+        threading.Thread(target=_safe_artifacts_scan, name="artifacts-warm",
+                         daemon=True).start()
+
     # `_AI_SESSION` is constructed at import time and can be started by the
     # first `/api/ai` request even under `lean` (its prewarm startup hook is
     # lean-skipped, but the session object itself is not gated on it) — so
@@ -841,13 +862,17 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     async def _startup_gc_project_venvs():
         from fused_render import projectenv
 
-        try:
-            removed = await asyncio.to_thread(projectenv.gc)
-        except Exception:  # noqa: BLE001 - never block startup on housekeeping
-            logger.exception("could not garbage-collect orphaned project venvs")
-            return
-        if removed:
-            logger.info("reclaimed %d orphaned project venv(s)", removed)
+        def _run_gc():
+            try:
+                removed = projectenv.gc()
+            except Exception:  # noqa: BLE001 - never block startup on housekeeping
+                logger.exception("could not garbage-collect orphaned project venvs")
+                return
+            if removed:
+                logger.info("reclaimed %d orphaned project venv(s)", removed)
+
+        # Fire and forget: nobody waits on this, so it must not hold the bind.
+        threading.Thread(target=_run_gc, name="project-venv-gc", daemon=True).start()
 
     app.exception_handler(Exception)(unhandled_exception)
     # A route whose feature group is not installed: 503 + `missing_extra`
@@ -1281,12 +1306,10 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
                 start_dir, app.state.startup_done)
             index_routes.start_index_job_bridge()
             return
-        await index_routes.startup_scan(start_dir)
-        # ...and warm the corpus path the explorer's home search reads, on a
-        # detached thread, so the gitignore sweep and the duckdb import are
-        # paid at idle rather than by the user's first keystroke
-        # (index/specs/server-api.md §4).
-        index_routes.startup_warm()
+        # The scan (prune + one detached worker per root) and then the warm of
+        # the corpus path the explorer's home search reads (index/specs/
+        # server-api.md §4) run on one daemon thread, so neither delays the bind.
+        index_routes.start_startup_scan_and_warm(start_dir)
         # ...and mirror every scan run into a sys:index:<run_id> Job so it
         # shows up in the Activity card the same way a download does. Same
         # idempotent start-once pattern as the resource-trail start

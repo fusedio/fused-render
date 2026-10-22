@@ -1645,3 +1645,25 @@ def test_ai_spawn_strips_bundle_python_vars(monkeypatch):
                  "PYTHONUSERBASE", "PYTHONINSPECT"):
         assert name not in env
     assert env["PATH"] == "/usr/bin:/bin"
+
+
+def test_prewarm_default_delay_defers_work(monkeypatch):
+    spawned = []
+
+    async def fake_spawn(self, model, prompt):
+        spawned.append(model)
+        return object()
+
+    monkeypatch.setattr(_server_ai._AiSession, "_spawn", fake_spawn)
+    session = _server_ai._AiSession()
+
+    async def go():
+        session.prewarm_default(delay=0.2)
+        await asyncio.sleep(0.05)
+        early = list(spawned)
+        await asyncio.sleep(0.45)
+        return early
+
+    early = asyncio.run(go())
+    assert early == []
+    assert len(spawned) == 1
