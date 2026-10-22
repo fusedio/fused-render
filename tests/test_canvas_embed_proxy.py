@@ -48,6 +48,8 @@ class _Upstream(BaseHTTPRequestHandler):
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Strict-Transport-Security", "max-age=1")
         self.send_header("X-Keep", "yes")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Credentials", "true")
         self.end_headers()
         self.wfile.write(b"hello " + self.path.encode())
 
@@ -106,7 +108,8 @@ def test_forwards_with_the_custom_bearer_and_relays_the_answer(proxy):
     # loopback cookies (any port's) are not the deployment's to see
     assert "cookie" not in seen["headers"]
     assert r.headers["x-keep"] == "yes"
-    for dropped in ("set-cookie", "x-frame-options", "strict-transport-security"):
+    for dropped in ("set-cookie", "x-frame-options", "strict-transport-security",
+                    "access-control-allow-origin", "access-control-allow-credentials"):
         assert dropped not in r.headers
 
 
@@ -169,12 +172,40 @@ def test_cross_site_and_foreign_origins_are_refused(proxy):
     assert _get(proxy, "/x", **{"sec-fetch-site": "cross-site"}).status_code == 403
     assert _get(proxy, "/x", origin="https://evil.example").status_code == 403
     assert _get(proxy, "/x", referer="https://evil.example/page").status_code == 403
-    # the workspace page framing the proxy: same-site (another loopback port)
-    assert _get(proxy, "/x", **{"sec-fetch-site": "same-site"},
-                origin="http://127.0.0.1:8765").status_code == 200
     assert _get(proxy, "/x", **{"sec-fetch-site": "none"}).status_code == 200
     assert not any(s["path"] == "/x" and s["headers"].get("origin") == "https://evil.example"
                    for s in _Upstream.seen)
+
+
+def test_only_the_apps_canvas_frame_may_load_it_from_another_loopback_port(proxy, monkeypatch):
+    """Every loopback port is the same site to a browser: `same-site` alone
+    would admit a page any other local server serves."""
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:8765")
+    frame = {"sec-fetch-site": "same-site", "sec-fetch-dest": "iframe",
+             "sec-fetch-mode": "navigate"}
+    assert _get(proxy, "/workbench/me/c", **frame,
+                referer="http://127.0.0.1:8765/").status_code == 200
+    assert _get(proxy, "/workbench/me/c", **frame,
+                referer="http://localhost:8765/canvases/custom/c").status_code == 200
+    # another local server's page, or no Referer at all
+    assert _get(proxy, "/x", **frame, referer="http://127.0.0.1:3000/").status_code == 403
+    assert _get(proxy, "/x", **frame).status_code == 403
+    # the app's own page, but not loading the frame: a fetch, a top-level page
+    for dest, mode in (("empty", "cors"), ("document", "navigate"), ("iframe", "no-cors")):
+        assert _get(proxy, "/x", **{**frame, "sec-fetch-dest": dest, "sec-fetch-mode": mode},
+                    referer="http://127.0.0.1:8765/").status_code == 403
+    # app origin unknown: nothing may frame it
+    monkeypatch.delenv("FUSED_RENDER_ORIGIN")
+    assert _get(proxy, "/workbench/me/c", **frame,
+                referer="http://127.0.0.1:8765/").status_code == 403
+    assert not any(s["path"] == "/x" for s in _Upstream.seen)
+
+
+def test_requests_without_sec_fetch_site_are_refused(proxy):
+    # a browser too old to send it, or a non-browser client
+    with httpx.Client(base_url=proxy.url()) as c:
+        assert c.get("/x").status_code == 403
+    assert _Upstream.seen == []
 
 
 def test_a_foreign_host_header_is_refused(proxy):

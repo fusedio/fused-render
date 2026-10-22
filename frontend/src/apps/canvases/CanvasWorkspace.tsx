@@ -1814,6 +1814,10 @@ export default function CanvasWorkspace({
               // Cross-origin frame: without this the workbench's
               // navigator.clipboard calls (Copy link, copy/paste UDFs) reject.
               allow="clipboard-read; clipboard-write"
+              // The custom env's embed proxy admits this frame's load only
+              // with the app's origin as its Referer (canvas_embed_proxy.py),
+              // so the policy is spelled out here rather than inherited.
+              referrerPolicy="origin"
               /* NO `data-fused-annotate-target` here, deliberately: the canvas
                  chat gets this frame as a getter (`annotateTarget` below), and
                  the explorer engine in the right pane finds its own content
