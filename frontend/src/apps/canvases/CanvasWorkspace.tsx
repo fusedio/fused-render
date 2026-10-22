@@ -297,7 +297,10 @@ function nodeEmbedSrc(file: string, tab: NodeTab, sessionId: string | null): str
   return embedUrlForFsPath(
     file,
     "?_mode=" + tab + "&_side=off" +
-      (tab === "claude" ? "&_noann=1" : "") +
+      // `_chatonly=1`: the chat alone, no file pane of its own beside it —
+      // the Code tab is this pane's preview, and a wide pane would otherwise
+      // split into code + chat at the chat's 800px breakpoint.
+      (tab === "claude" ? "&_noann=1&_chatonly=1" : "") +
       (sessionId ? "&session_id=" + encodeURIComponent(sessionId) : ""),
   );
 }
