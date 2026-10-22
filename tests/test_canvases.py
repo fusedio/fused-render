@@ -1269,7 +1269,7 @@ def test_status_and_token_follow_the_named_envs_login(harness, tmp_path, monkeyp
     body = harness.client.get("/api/canvases/status?env=custom").json()
     assert (body["auth_env"], body["logged_in"], body["creds_stamp"]) == ("custom", False, None)
     body = harness.client.get("/api/canvases/status").json()
-    assert (body["auth_env"], body["logged_in"]) == (ENV, True)
+    assert (body["auth_env"], body["logged_in"]) == (fusedcli_mod.DEFAULT_WORKBENCH_ENV, True)
     assert harness.client.get("/api/canvases/token?env=custom", headers=GUARD).status_code == 409
     assert harness.client.get("/api/canvases/token?env=prod",
                               headers=GUARD).json()["access_token"] == "hosted-tok"
@@ -1286,12 +1286,14 @@ def test_status_and_token_follow_the_named_envs_login(harness, tmp_path, monkeyp
 def test_status_with_an_unusable_env_describes_the_default_login(harness, monkeypatch):
     """Cheap and unguarded: a stale or pinned-away pick is not a 400, it falls
     back to the auth env and says so in `auth_env`."""
-    for env in ("staging", OTHER_ENV):
+    # Unpinned, a stale pick falls back to the built-in default; pinned to
+    # ENV, a pick of the other env falls back to the pin.
+    for env, expected in (("staging", fusedcli_mod.DEFAULT_WORKBENCH_ENV), (OTHER_ENV, ENV)):
         if env == OTHER_ENV:
             monkeypatch.setenv("FUSED_RENDER_WORKBENCH_ENV", ENV)
         res = harness.client.get(f"/api/canvases/status?env={env}")
         assert res.status_code == 200
-        assert res.json()["auth_env"] == ENV
+        assert res.json()["auth_env"] == expected
 
 
 def test_login_for_custom_runs_with_fused_env_unset(harness, tmp_path, monkeypatch):
@@ -2989,7 +2991,7 @@ def test_whoami_without_an_env_is_the_login_liveness_probe(harness):
     harness.log_in()
     res = harness.client.get("/api/canvases/whoami", headers=GUARD)
     assert res.status_code == 200 and res.json()["handle"] == "tester"
-    assert harness.env_calls()[-1][0] == ENV
+    assert harness.env_calls()[-1][0] == fusedcli_mod.DEFAULT_WORKBENCH_ENV
     assert harness.client.get("/api/canvases/whoami?env=staging",
                               headers=GUARD).status_code == 400
 
