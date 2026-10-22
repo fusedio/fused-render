@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
@@ -7,9 +7,8 @@ name = "fused-render"
 dynamic = ["version"]
 description = "Local file explorer with Python-powered renderable HTML previews"
 readme = "README.md"
-# license: intentionally unset pending the public-launch licensing decision —
-# add it (plus the matching classifier and a LICENSE file) before any PyPI
-# publish.
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 keywords = ["file-explorer", "preview", "data-viz", "duckdb", "geospatial", "html"]
 classifiers = [
@@ -392,6 +391,7 @@ linux-desktop = [
 Homepage = "https://github.com/fusedio/fused-render"
 Repository = "https://github.com/fusedio/fused-render"
 Releases = "https://github.com/fusedio/fused-render/releases"
+Issues = "https://github.com/fusedio/fused-render/issues"
 
 [project.scripts]
 fused-render = "fused_render.cli:main"
