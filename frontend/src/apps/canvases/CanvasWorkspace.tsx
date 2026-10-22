@@ -41,14 +41,14 @@
 //            the workbench frame's own window.
 //   parent → { type: "fused-embed-side-panel", open, code, width }  whether the
 //            right pane is up, whether it is up on the shown node's Code tab,
-//            and its width in px over the frame (0 shut), on every change and
+//            and its width in px over the frame — always 0: the pane shares
+//            the row with the frame, it never covers it — on every change and
 //            on every frame load: the frame's expand chip shows while the pane
-//            is shut, its collapse chip sits just left of the pane while it is
-//            up, and the toolbar's code button reads "Hide" / "Show code panel".
+//            is shut, its collapse chip while it is up, and the toolbar's code
+//            button reads "Hide" / "Show code panel".
 //   parent → { type: "fused-embed-pan", dx, dy }  on every tick of a seam drag,
 //            half the pane's width change: the canvas pans to keep its visible
-//            centre put, as the workbench's own sidebar drags do. Open and
-//            shut never pan (the pane overlays; nothing moves).
+//            centre put, as the workbench's own sidebar drags do.
 // Keyed by UDF NAME, never a React Flow node id (those are regenerated every
 // load): the node's source is `<clone>/<udfName>.py` (widgets: `.json`).
 //
@@ -780,31 +780,16 @@ export default function CanvasWorkspace({
   // The viewer (`embedded`) renders no pane at all: it reports shut, so the
   // frame draws neither chip and labels its code button "Show".
   const codePanelOpen = !embedded && sideOpen && nodeTab === "code" && node !== null;
-  // The pane's width over the frame, measured off the row (the frame cannot
-  // see it: the pane is this page's), so the frame's collapse chip can sit
-  // just left of it. Re-measured on every seam drag and window resize.
-  const [sideWidth, setSideWidth] = useState(0);
-  useEffect(() => {
-    const row = rowRef.current;
-    const paneUp = sideOpen && !embedded;
-    const measure = () => {
-      setSideWidth(paneUp && row ? Math.round(row.getBoundingClientRect().width * (1 - leftFrac)) : 0);
-    };
-    measure();
-    // The row's width moves with more than the window: the global sidebar,
-    // banners, a tab going hidden (width 0 — the chip reads shut, rightly).
-    if (!paneUp || !row || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measure);
-    observer.observe(row);
-    return () => observer.disconnect();
-  }, [sideOpen, leftFrac, embedded]);
+  // The pane shares the row with the frame (it never covers it), so the
+  // width it reports over the frame is always 0: the frame's collapse chip
+  // sits at its own right edge.
   // Written after commit, not during render: a discarded render must not
   // leave a pane state the message handler reads that was never shown.
   const paneOpen = !embedded && sideOpen;
-  const sidePanelStateRef = useRef({ open: paneOpen, code: codePanelOpen, width: sideWidth });
+  const sidePanelStateRef = useRef({ open: paneOpen, code: codePanelOpen, width: 0 });
   useLayoutEffect(() => {
-    sidePanelStateRef.current = { open: paneOpen, code: codePanelOpen, width: sideWidth };
-  }, [paneOpen, codePanelOpen, sideWidth]);
+    sidePanelStateRef.current = { open: paneOpen, code: codePanelOpen, width: 0 };
+  }, [paneOpen, codePanelOpen]);
   const sendCodePanelState = useCallback(() => {
     const frame = frameRef.current;
     const origin = baseOriginRef.current;
@@ -815,11 +800,8 @@ export default function CanvasWorkspace({
     );
   }, []);
   useEffect(() => {
-    // A pane just opened and not yet measured would read as up at width 0
-    // (the chip at the frame's edge for a frame): wait for the measure.
-    if (sideOpen && !embedded && sideWidth === 0) return;
     sendCodePanelState();
-  }, [sideOpen, codePanelOpen, sideWidth, embedded, sendCodePanelState]);
+  }, [sideOpen, codePanelOpen, embedded, sendCodePanelState]);
 
   // Tell the canvas whether THIS window is focused (see the header): on every
   // change, and whenever the frame (re)loads or re-hydrates, since it starts
@@ -1796,19 +1778,19 @@ export default function CanvasWorkspace({
       )}
       <div
         ref={rowRef}
-        // The right pane OVERLAYS the canvas (absolute, below) rather than
-        // sharing the row: opening or shutting it never resizes the
-        // workbench frame, so the canvas stays put — as the workbench's own
-        // side panes leave its canvas put.
-        style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "row", position: "relative" }}
+        // The canvas frame and the right pane share the row: the pane never
+        // covers the workbench, so its header, chips and toolbars stay in
+        // view whatever the pane's width.
+        style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "row" }}
       >
         <div
           // The wrapper, not the iframe: a frame swallows pointer events, but
           // the wrapper's mouseenter still fires as the pointer crosses in.
           onMouseEnter={focusCanvasOnEnter}
           style={{
-            // The canvas always takes the row: the right pane floats over it.
-            flex: "1 1 auto",
+            // The viewer has no right pane, and a shut pane leaves the row to
+            // the canvas; up, the seam's drag sets the split (`leftFrac`).
+            flex: embedded || !sideOpen ? "1 1 auto" : `0 0 ${leftFrac * 100}%`,
             minWidth: 0,
             position: "relative",
             pointerEvents: dragging ? "none" : "auto",
@@ -1841,19 +1823,14 @@ export default function CanvasWorkspace({
         </div>
         {!embedded && sideOpen && (
           <div
-            // The right pane's column, over the canvas's right edge: the seam
-            // and the pane, at the width the seam's drag sets (`leftFrac` is
-            // the canvas's share, as when the two shared the row).
+            // The right pane's column: the seam and the pane, the rest of
+            // the row past the canvas's share.
             style={{
-              position: "absolute",
-              top: 0,
-              bottom: 0,
-              right: 0,
-              width: `${(1 - leftFrac) * 100}%`,
+              flex: "1 1 auto",
+              minWidth: 0,
               display: "flex",
               flexDirection: "row",
               background: "var(--bg)",
-              zIndex: 3,
             }}
           >
         <div
