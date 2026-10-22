@@ -797,3 +797,79 @@ def test_keep_mine_then_bring_in_later(world):
     line = next(x for x in out["activity"] if x.get("undo") and "alice" in x["text"])
     r = post(W.bob, "restore", id=line["id"])
     assert r.get("ok") and head(W.bob.app) == bob_head, r
+
+
+# == merge commits on GitHub vs a copy whose history drifted ===========================
+#
+# The v1 engine rebased the sender's commits on every author push, so the ids
+# GitHub merged (in a merge commit) were not the ids in his copy any more and
+# the two never lined up again. v2 keeps ids, but a copy left in that shape by
+# v1, or one whose commits were rewritten by hand, must still come back.
+
+
+def test_merge_commit_when_the_senders_local_ids_were_rewritten(world):
+    """Alice merges (merge commit) the proposal; meanwhile Bob's local copy
+    of the same change has a different id (same content). The return lands
+    him on her latest with nothing duplicated and nothing lost."""
+    setup_world()
+    n = propose(W.bob, {"app.py": louder(3)}, "louder", title="Louder")
+    # Rewrite Bob's commit in place (same tree, new id), as v1 did on every author push.
+    use(W.bob)
+    git(W.bob.app, "-c", "user.name=Bob", "-c", "user.email=bob@example.com",
+        "commit", "--amend", "-q", "--no-edit", "--reset-author")
+    assert head(W.bob.app) != W.fake.tip("bob/sine", pr_row(n)["head_branch"])
+    turn_committed(W.bob, {"later.txt": "after sending\n"}, "later idea")
+    tip = accept_on_github(n, method="merge")
+    before = refs()
+    app_open(W.bob)
+    out = page(W.bob)
+    assert out["panel"]["state"] == "merged", out["panel"]
+    git(W.bob.app, "merge-base", "--is-ancestor", tip, "HEAD")
+    assert git(W.bob.app, "diff", "--name-only", tip, "HEAD").split() == ["later.txt"]
+    assert first_parent_subjects(W.bob.app, tip) == ["Claude: later idea"]
+    assert "return 3" in read(W.bob.app, "app.py")
+    no_pushes(before, "the return")
+    app_open(W.alice)
+    alice_clean()
+
+
+def test_merge_commit_with_no_proposal_record_still_lines_up(world):
+    """The same drift with the proposal record gone (a v1 copy, a lost
+    store): the copy has the change under its own id, GitHub has it inside
+    a merge commit. The ordinary update combines them cleanly and the copy
+    reads as following, with Discard / Use alice's version as the one-click
+    way back should anything look off."""
+    setup_world()
+    n = propose(W.bob, {"app.py": louder(3)}, "louder", title="Louder")
+    use(W.bob)
+    git(W.bob.app, "-c", "user.name=Bob", "-c", "user.email=bob@example.com",
+        "commit", "--amend", "-q", "--no-edit", "--reset-author")
+    from fused_render.contrib import store
+    store.update(W.bob.app, lambda r: r.__setitem__("proposal", None))
+    tip = accept_on_github(n, method="merge")
+    before = refs()
+    app_open(W.bob)
+    out = page(W.bob)
+    git(W.bob.app, "merge-base", "--is-ancestor", tip, "HEAD")
+    assert git(W.bob.app, "diff", "--name-only", tip, "HEAD").split() == []
+    assert out["panel"]["state"] == "following", out["panel"]
+    assert "return 3" in read(W.bob.app, "app.py")
+    no_pushes(before, "the update")
+
+
+def test_author_keeps_merging_after_the_accept(world):
+    """Alice accepts (merge commit) and then publishes two more changes
+    before Bob opens: the return lands on her newest, keeping his later edit."""
+    setup_world()
+    n = propose(W.bob, {"app.py": louder(3)}, "louder", title="Louder")
+    turn_committed(W.bob, {"later.txt": "after sending\n"}, "later idea")
+    accept_on_github(n, method="merge")
+    alice_publish({"index.html": PAGE.replace("blue", "green")}, "green")
+    tip = alice_publish({"README.md": "hi\n"}, "readme")
+    app_open(W.bob)
+    out = page(W.bob)
+    assert out["panel"]["state"] == "merged" and head(W.bob.app) != tip, out["panel"]
+    git(W.bob.app, "merge-base", "--is-ancestor", tip, "HEAD")
+    assert git(W.bob.app, "diff", "--name-only", tip, "HEAD").split() == ["later.txt"]
+    assert read(W.bob.app, "index.html") == PAGE.replace("blue", "green")
+    assert read(W.bob.app, "README.md") == "hi\n"
