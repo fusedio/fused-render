@@ -57,7 +57,7 @@ describe("the registry", () => {
       ["claude", ["claude-settings", "claude-plugins", "claude-memory", "claude-mcp", "claude-history"]],
       ["tasks", ["tasks"]],
       ["apps", ["apps", "indexing", "lan"]],
-      ["other", ["integrations", "advanced"]],
+      ["other", ["connections", "integrations", "advanced"]],
     ]);
   });
 
@@ -224,7 +224,7 @@ describe("search", () => {
 
   test("the Claude blocks are findable by what they hold", () => {
     const rows = visibleSettings(ctx({ claudeConfig: true }));
-    expect(searchSettings(rows, "mcp").map((h) => h.id)).toEqual(["claude-mcp", "claude-strict-mcp"]);
+    expect(searchSettings(rows, "mcp").map((h) => h.id)).toEqual(["claude-mcp", "claude-strict-mcp", "connections"]);
     expect(searchSettings(rows, "marketplace").map((h) => h.id).sort()).toEqual(["claude-plugins", "marketplace"]);
   });
 

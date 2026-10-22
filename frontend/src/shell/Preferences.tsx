@@ -35,6 +35,7 @@
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   Brain,
+  Cable,
   FileJson,
   History,
   Puzzle,
@@ -84,6 +85,7 @@ import { searchSettings, tokenize } from "./settings/search";
 import { CONTROLS } from "./settings/controls";
 import { rowId, SettingsViewContext, type SettingsView } from "./settings/SettingRow";
 import { IndexStateProvider } from "./settings/indexing";
+import Connections from "./Connections";
 
 const GROUP_ICONS: Record<GroupId, LucideIcon> = {
   general: SlidersHorizontal,
@@ -98,6 +100,7 @@ const GROUP_ICONS: Record<GroupId, LucideIcon> = {
   apps: LayoutGrid,
   indexing: FolderSearch,
   lan: Wifi,
+  connections: Cable,
   integrations: Plug,
   advanced: Wrench,
 };
@@ -411,9 +414,13 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
                           onChange={setPrefs}
                         />
                       ))
-                  : sectionsOf(entries, current).map((s) => (
-                      <Section key={s.section} title={s.section} entries={s.entries} prefs={prefs} onChange={setPrefs} />
-                    ))}
+                  : // Connections draws its own page: a card per provider
+                    // the server lists, not rows the registry knows.
+                    current === "connections"
+                    ? <Connections />
+                    : sectionsOf(entries, current).map((s) => (
+                        <Section key={s.section} title={s.section} entries={s.entries} prefs={prefs} onChange={setPrefs} />
+                      ))}
               </IndexStateProvider>
             </SettingsViewContext.Provider>
           </main>
