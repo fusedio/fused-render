@@ -3744,7 +3744,8 @@ def _copilot_argv(run_dir: str, pane: bool, cli_mode: str | None,
       * `--effort` → `--reasoning-effort`, except for a model the CLI takes
         no effort for (`_COPILOT_NO_EFFORT_MODELS`), where it is dropped;
       * `--add-dir` only for directories that exist: the CLI exits at startup
-        on one that does not, and SHOTS is made lazily by `_shots_dir`.
+        on one that does not. SHOTS is made (and secured) here through
+        `_shots_dir`, since the grant cannot be added after the spawn.
     """
     cmd = [_copilot_bin(), "--acp", "--no-auto-update"]
     if model:
@@ -3760,6 +3761,17 @@ def _copilot_argv(run_dir: str, pane: bool, cli_mode: str | None,
     if pane or _terminal_tools_supported():
         cmd += ["--additional-mcp-config",
                 "@" + _write_mcp_config(run_dir, pane, approve=False)]
+    # SHOTS is made HERE, not left to the first screenshot: `--add-dir` is the
+    # session's only read grant on it, the CLI exits at startup on a directory
+    # that does not exist, and there is no post-start grant over ACP. A refusal
+    # (`_require_private`: somebody else's directory planted there) or a full
+    # disk costs the session its screenshots, never the session.
+    try:
+        shots = _shots_dir()
+    except Exception as exc:  # noqa: BLE001
+        shots = {"error": str(exc)}
+    if shots.get("error"):
+        sys.stderr.write("copilot: no screenshot grant: %s\n" % shots["error"])
     for d in [SHOTS, *(extra_read_dirs or [])]:
         if os.path.isdir(d):
             cmd += ["--add-dir", d]

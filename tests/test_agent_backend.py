@@ -709,8 +709,7 @@ def test_copilot_argv_composition(agent, target, home, tmp_path, monkeypatch):
     run_dir = tmp_path / "run"
     run_dir.mkdir()
     # `--add-dir` names only directories that exist (the CLI exits on one that
-    # does not; SHOTS is made lazily by `_shots_dir`).
-    os.mkdir(agent.SHOTS)
+    # does not); SHOTS is made by the argv build itself, `extra` by the caller.
     (tmp_path / "extra").mkdir()
     argv = agent._copilot_argv(str(run_dir), True, "acceptEdits", "", "gpt-5.4",
                                "high", [str(tmp_path / "extra"), str(tmp_path / "gone")],
@@ -728,6 +727,7 @@ def test_copilot_argv_composition(agent, target, home, tmp_path, monkeypatch):
     assert argv[argv.index("--additional-mcp-config") + 1] == "@" + str(run_dir / "mcp.json")
     adds = [argv[i + 1] for i, a in enumerate(argv) if a == "--add-dir"]
     assert adds == [agent.SHOTS, str(tmp_path / "extra")]
+    assert os.path.isdir(agent.SHOTS)   # made and secured by the build
     allows = [argv[i + 1] for i, a in enumerate(argv) if a == "--allow-tool"]
     assert allows == ["shell(fused:*)", "write"]
     # No Claude-only plumbing leaks in.
@@ -767,7 +767,8 @@ def test_copilot_argv_without_a_pane_has_no_mcp_and_no_write_grant(
     assert "--session-id" not in argv and "--resume" not in argv
     assert "write" not in argv and "--model" not in argv
     assert not (run_dir / "plugin" / "skills").exists()   # no plugin exported
-    assert "--add-dir" not in argv   # SHOTS not made yet
+    adds = [argv[i + 1] for i, a in enumerate(argv) if a == "--add-dir"]
+    assert adds == [agent.SHOTS]   # the screenshot grant, nothing else
 
 
 @pytest.mark.parametrize("model", ["", "auto", "claude-sonnet-4.5", "claude-opus-4.5"])
