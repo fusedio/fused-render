@@ -106,7 +106,7 @@ export const isWorkbenchEnv = (s: unknown): s is WorkbenchEnv =>
 export const ENV_LABELS: Record<WorkbenchEnv, string> = {
   unstable: "Unstable",
   prod: "Production",
-  custom: "Custom ~/.fused/settings.toml",
+  custom: "Custom",
 };
 
 /** A canvas workspace route: the env is a path segment because it is one on
