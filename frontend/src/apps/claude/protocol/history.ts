@@ -91,6 +91,18 @@ export function historyToTurns(resp: HistoryResponse): Turn[] {
         ...(t.quota ? { quota: t.quota } : {}),
       };
     }
+    // A compaction summary, for the same reason as `error` above: unknown
+    // roles fall to the assistant branch below.
+    if (t.role === "compact") {
+      return {
+        role: "compact" as const,
+        key: t.uuid || "h:" + i,
+        text: t.text || "",
+        ...(t.trigger ? { trigger: t.trigger } : {}),
+        ...(typeof t.pre_tokens === "number" ? { preTokens: t.pre_tokens } : {}),
+        ...(typeof t.post_tokens === "number" ? { postTokens: t.post_tokens } : {}),
+      };
+    }
     if (t.stopped && i !== last && typeof console !== "undefined") {
       console.warn(
         "[chat] history carried `stopped` on turn " + i + " of " + last + "; only the last " +

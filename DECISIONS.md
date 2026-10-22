@@ -7336,6 +7336,9 @@ remains the only bot-terminal switch (user-only, off by default per bot). `useHe
 - **Phone stays Approve / Deny only.** "Always approve" writes a standing rule and is a desktop decision (phone.py). The phone does not render relayed approvals (it has no `relay` handling), so there was nothing to convert there.
 - **Moves.** `CollapsiblePre` now lives in `platform/ui` (old path re-exports); `approvalVerdict` lives in `platform/lib/risk.ts` (re-exported from `lan/bots/lib.ts`). Settled Bots cards show "Approved" / "Denied" from the answering user line when it is loaded.
 
+## Compaction divider (Claude chat)
+- A Claude Code compaction summary (`isCompactSummary` user row) replays as `role: "compact"`, not a user bubble; the preceding `compact_boundary` supplies trigger and token counts. Live, the boundary is a notice segment with the same label (`Context compacted · 167k → 16k tokens`). The page draws a divider with the summary folded behind "Show summary".
+
 ## D1411: A third canvas environment, `custom`, follows `~/.fused/settings.toml` by leaving FUSED_ENV unset (2026-10-21, canvases-custom-env)
 
 - **Problem.** Every canvas CLI run and shim got `FUSED_ENV=prod|unstable`, and `fused._env()` overwrites the `base_url` / `shared_udf_base_url` the SDK loaded from `~/.fused/settings.toml` with the hosted defaults, so there was no way to point canvases at a custom deployment. Pinning `FUSED_RENDER_WORKBENCH_ENV` to a URL refuses every canvas call (`_require_env`).
