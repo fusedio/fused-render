@@ -140,6 +140,7 @@ class LocalPythonComputeBackend:
         code: str,
         input_files: dict[str, bytes] | None,
         tmppath: Path,
+        entrypoint: str | None = None,
     ) -> dict:
         """Build the handler event."""
         # Per-call working directory: hand the handler the private per-call temp
@@ -147,6 +148,8 @@ class LocalPythonComputeBackend:
         # cleaned up by the `TemporaryDirectory` even when the handler's own
         # `finally` never runs (a hard kill).
         event: dict = {"code": code, "call_dir_root": str(tmppath)}
+        if entrypoint:
+            event["entrypoint"] = entrypoint
         if input_files:
             context_dir = tmppath / "context"
             context_dir.mkdir()
@@ -226,6 +229,7 @@ class LocalPythonComputeBackend:
         invoke_depth: int = 0,
         interpreter: str | None = None,
         project_root: str | None = None,
+        entrypoint: str | None = None,
     ) -> ExecutionResult:
         """Run one call synchronously and return its result."""
         venv_python = interpreter or self.python_executable or sys.executable
@@ -233,7 +237,7 @@ class LocalPythonComputeBackend:
         with tempfile.TemporaryDirectory() as tmpdir:
             tmppath = Path(tmpdir)
             self._write_handler_files(tmppath)
-            event = self._make_event(code, input_files, tmppath)
+            event = self._make_event(code, input_files, tmppath, entrypoint)
 
             (tmppath / "event.json").write_text(json.dumps(event))
             run_py = tmppath / "run.py"

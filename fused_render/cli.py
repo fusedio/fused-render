@@ -40,7 +40,7 @@ DEFAULT_PORT = branch_port()
 
 # Subcommand names; anything else as argv[1] falls through to the implicit `serve`
 # so the historical bare `fused-render --port 9000` invocation keeps working.
-_SUBCOMMANDS = ("serve", "open", "calls", "diagnose")
+_SUBCOMMANDS = ("serve", "open", "calls", "diagnose", "app")
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -131,6 +131,17 @@ def _build_parser() -> argparse.ArgumentParser:
     diagnose.add_argument("--no-system-log", action="store_true",
                           help="skip the macOS unified log (`log show`, the slow step: "
                                "15-45 s; it is where jetsam memory kills show up)")
+
+    app = sub.add_parser("app", help="commands on one app folder")
+    app_sub = app.add_subparsers(dest="app_command", required=True)
+    app_serve = app_sub.add_parser(
+        "serve",
+        help="serve an app folder's curated tools (its mcp.toml) as an MCP server over stdio",
+        description="Run a stdio MCP server exposing the tools listed in <dir>/mcp.toml. "
+                    "This is the command an MCP host (Claude Code, Claude Desktop) is "
+                    "registered with from the MCP panel.",
+    )
+    app_serve.add_argument("dir", help="the app folder holding mcp.toml")
     return parser
 
 
@@ -768,6 +779,26 @@ def _run_diagnose(args: argparse.Namespace) -> None:
     print(path)
 
 
+def _run_app_serve(args: argparse.Namespace) -> None:
+    """Serve one app folder's tools over stdio until the host closes the pipe.
+
+    stdout carries the MCP protocol, so every failure goes to stderr and exits
+    non-zero before the handshake: the host reports a startup failure rather than
+    an empty tool list.
+    """
+    from pathlib import Path
+
+    from fused_render.compute.app_mcp import AppManifestError, create_app_mcp
+    from fused_render.compute.mcp_extra import McpExtraMissingError
+
+    try:
+        server = create_app_mcp(Path(args.dir))
+    except (AppManifestError, McpExtraMissingError) as exc:
+        print(f"fused-render app serve: {exc}", file=sys.stderr)
+        raise SystemExit(1) from None
+    server.run("stdio")
+
+
 def main() -> None:
     parser = _build_parser()
 
@@ -787,6 +818,9 @@ def main() -> None:
         return
     if args.command == "diagnose":
         _run_diagnose(args)
+        return
+    if args.command == "app":
+        _run_app_serve(args)
         return
     _run_serve(args)
 
