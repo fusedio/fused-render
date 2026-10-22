@@ -1543,6 +1543,34 @@ def test_parakeet_refuses_language_and_initial_prompt_before_any_work(
     assert calls == [] and base.ticks == []
 
 
+def test_region_finding_runs_on_the_workers_thread_with_one_reporter(
+        worker, base, tmp_path, sherpa, monkeypatch):
+    """`stt_common.speech_regions` reports into the row itself (its own
+    determinate tick and the detector download's); ticking it from
+    `_call_with_ticks` as well put two threads on one row, interleaving
+    determinate and indeterminate progress. The MLX runner calls it
+    synchronously for this reason."""
+    import threading
+
+    _loaded_parakeet(worker, sherpa, tmp_path)
+    _decoder(monkeypatch, samples=16000 * 10)
+    sherpa.results = [("a.", *_tokens((0.0, " a"), (0.2, ".")))]
+    ticked = []
+    real = worker._call_with_ticks
+    monkeypatch.setattr(worker, "_call_with_ticks",
+                        lambda call, job, row, detail, **kw:
+                        ticked.append(detail) or real(call, job, row, detail, **kw))
+    seen = []
+    monkeypatch.setattr(worker, "_speech_regions",
+                        lambda *a, **k: seen.append(threading.current_thread())
+                        or [(0.0, 10.0)])
+
+    worker.generate(_request(tmp_path))
+
+    assert seen == [threading.current_thread()]
+    assert not any("Finding speech" in d for d in ticked), ticked
+
+
 def test_each_pack_ticks_seconds_of_audio_and_a_cancel_between_packs_stops(
         worker, base, tmp_path, sherpa, monkeypatch):
     _loaded_parakeet(worker, sherpa, tmp_path)

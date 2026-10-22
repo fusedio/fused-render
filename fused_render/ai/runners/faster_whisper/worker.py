@@ -993,12 +993,14 @@ def generate(body):
         total = duration or None
         # Independent of the diarization and after it, as on the MLX runner: the
         # segmenter finds its own silence and is better at it than a threshold
-        # over Silero probabilities. Ticked from a thread, because Silero over a
-        # long recording is minutes in which a ✕ must still land.
+        # over Silero probabilities. Called SYNCHRONOUSLY, as the MLX runner
+        # does: `stt_common.speech_regions` reports into this row itself (its
+        # own tick and the detector download's, both through `report_or_cancel`
+        # so a ✕ still lands), and ticking it from `_call_with_ticks` too would
+        # put two threads on one row, interleaving determinate and
+        # indeterminate progress.
         if vad:
-            regions = _call_with_ticks(
-                lambda: _speech_regions(audio, total, job, row),
-                job, row, "Finding speech…")
+            regions = _speech_regions(audio, total, job, row)
         # Branched on what the detector RETURNED, not on the shape of the packs:
         # a region that happens to span the whole file is its answer, and the
         # sink below is scoring speakers against exactly that list.
