@@ -5871,6 +5871,17 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     # next build would drop the task altogether (`_is_task`): work called off
     # with no archived row to take it back from. It keeps its row, wearing the
     # "Folder no longer exists" door, for the person to decide.
+    # NOR A ROW THAT IS LIVE OR HOLDING BACKGROUND WORK (CodeRabbit, PR
+    # #1863): a marked-live session with no parsed messages yet reads `done`
+    # (`_status` only asks liveness once there are messages), and
+    # `background_jobs` is a badge beside the status by design — both would
+    # pass the status guard above with a host still running.
+    # THE FILING LANDS FIRST, the cancellations after (CodeRabbit, PR #1863):
+    # `archive_task` cancels the pending entries and then writes the triage,
+    # and a triage write that failed would leave the entries cancelled with
+    # nothing filed to take them back from. Writing the record first and only
+    # then calling `archive_task` (whose own write is the same record again)
+    # means a failure costs nothing but this poll's attempt.
     # Best-effort like `revived` above: one filing that fails costs the row
     # coming back next poll, never the page.
     auto_file = only is None and ARCHIVE_MISSING_FOLDERS
@@ -5880,9 +5891,11 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
         if (auto_file and row["folder_missing"] and row.get("kind") != "draft"
                 and row.get("status") not in ("in_progress", "needs_attention",
                                               "queued", _FILED)
+                and not row.get("live") and not row.get("background_jobs")
                 and row.get("key") in listed
                 and listed[row["key"]].get("session_id")):
             try:
+                sessions.write_triage(listed[row["key"]]["session_id"], _FILED)
                 _, filed, _ = archive_task(listed[row["key"]], parked)
             except (OSError, ValueError, KeyError, TypeError):
                 filed = False
