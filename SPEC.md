@@ -6726,7 +6726,8 @@ an AI Models page that could say what was on disk but not what was *running*.
   code lives at the runners ROOT and each folder's `worker.py` is a shell over
   it** (D381). Diffusers is three folders — `diffusers_image`,
   `diffusers_image_cuda`, `diffusers_image_rocm` — llama.cpp is two
-  (`llamacpp_text`, `llamacpp_text_vulkan`), and the transformers embeddings
+  (`llamacpp_text`, `llamacpp_text_vulkan`), the vision runner is two
+  (`vision_torch`, `vision_torch_cuda`, shared body `runners/torch_vision.py`), and the transformers embeddings
   runner is three (`onnx_embed`, `onnx_embed_cuda`, `onnx_embed_rocm`), whose
   manifests are identical except for the
   index the accelerated distribution is resolved from, and whose `worker.py`
@@ -10108,7 +10109,8 @@ an AI Models page that could say what was on disk but not what was *running*.
   `points: [{x, y, label}]`, in 0–1 coordinates of the upright image.
   `POST /api/ai/vision` has decide's shape (closed options, local only,
   synchronous, `model_loading` + job id). Runner `vision-torch` (Apple
-  Silicon, torch MPS) runs only `formats.VISION_TORCH_RECIPES`: Grounding DINO
+  Silicon, torch MPS) and its hardware sibling `vision-torch-cuda` (NVIDIA,
+  gated on `_cuda`, PyPI's CUDA torch; shipped unmeasured) run only `formats.VISION_TORCH_RECIPES`: Grounding DINO
   Tiny/Base (detect) and Moondream 2 (caption, query, detect, point;
   recommended), both via transformers; Moondream at a pinned commit. A new
   model is a recipe (plus a family class for a new kind). Not in onboarding or

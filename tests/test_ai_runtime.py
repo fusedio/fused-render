@@ -1201,6 +1201,7 @@ _QUALIFIED_SHORT_NAMES = {
     "onnx-embed": "(CPU)",
     "onnx-embed-cuda": "(CUDA)",
     "onnx-embed-rocm": "(ROCm)",
+    "vision-torch-cuda": "(CUDA)",
 }
 
 #: Every qualifier this app uses to name a BUILD rather than a platform.
@@ -1286,17 +1287,35 @@ def test_no_engine_name_advertises_the_format_its_sibling_also_reads():
     qualifier must come from `_HARDWARE_QUALIFIERS`, they must differ, and no
     name may repeat a format tag both rows declare in `hub_filter_tags`.
     """
-    families: dict[str, list] = {}
-    for runner in registry.all_runners():
-        families.setdefault(runner.label.split(" (")[0], []).append(runner)
-    siblings = {stem: rows for stem, rows in families.items() if len(rows) > 1}
+    siblings = _sibling_families(registry.all_runners())
     # If this is ever empty the test has stopped testing anything — every
     # hardware-variant family could have been renamed out from under it.
-    assert "llama.cpp" in siblings, sorted(families)
+    assert "llama.cpp" in siblings, sorted(siblings)
+    _assert_sibling_names_ok(siblings)
+
+
+#: The ONE named exemption to the hardware-qualifier rule: the measured Apple
+#: row keeps its pre-CUDA label ("(Apple Silicon)", short name without it)
+#: beside its CUDA sibling. Keyed on the runner code on purpose, so a new
+#: family cannot borrow it by copying the label.
+_PLATFORM_LABELLED_ROWS = {"vision-torch"}
+
+
+def _sibling_families(runners):
+    families: dict[str, list] = {}
+    for runner in runners:
+        families.setdefault(runner.label.split(" (")[0], []).append(runner)
+    return {stem: rows for stem, rows in families.items() if len(rows) > 1}
+
+
+def _assert_sibling_names_ok(siblings):
     for stem, rows in siblings.items():
         qualifiers = [runner.label[len(stem):].strip() for runner in rows]
         assert len(set(qualifiers)) == len(qualifiers), (stem, qualifiers)
         for runner, qualifier in zip(rows, qualifiers):
+            if runner.code in _PLATFORM_LABELLED_ROWS:
+                assert qualifier == "(Apple Silicon)", (runner.code, qualifier)
+                continue
             assert qualifier in _HARDWARE_QUALIFIERS, (runner.code, qualifier)
             # And the hardware is in BOTH names, the shape the torch rows set:
             # the short name is what the Local card and the job row print, so a
@@ -1308,6 +1327,24 @@ def test_no_engine_name_advertises_the_format_its_sibling_also_reads():
                 assert tag.lower() not in runner.label.lower(), (
                     f"{runner.code}: {runner.label!r} names {tag!r}, which "
                     f"every {stem} row reads — it distinguishes nothing")
+
+
+def test_a_row_outside_the_exemption_whose_short_name_is_not_its_label_fails():
+    """Only `vision-torch` may print a short name unlike its label; a sibling
+    that does so (and so collides with the CUDA row's short name) is rejected
+    by the short==label rule, not by the qualifier check."""
+    def row(code, label, short):
+        return types.SimpleNamespace(code=code, label=label, short_label=short,
+                                     hub_filter_tags=())
+
+    ok = {"Fam": [row("fam-cuda", "Fam (CUDA)", "Fam (CUDA)"),
+                  row("vision-torch", "Fam (Apple Silicon)", "Fam")]}
+    _assert_sibling_names_ok(ok)
+    bad = {"Fam": [row("fam-cuda", "Fam (CUDA)", "Fam (CUDA)"),
+                   row("fam-rocm", "Fam (ROCm)", "Fam (CUDA)")]}
+    # "(ROCm)" is a valid qualifier, so it is the short==label rule that fires.
+    with pytest.raises(AssertionError, match="fam-rocm"):
+        _assert_sibling_names_ok(bad)
 
 
 def test_every_suggested_model_names_a_runner_that_exists():
@@ -1825,9 +1862,14 @@ def test_rocm_is_not_offered_off_linux(monkeypatch, tmp_path):
 
 def test_an_nvidia_machine_is_offered_the_cuda_engines(monkeypatch, tmp_path):
     _fake_nvidia(monkeypatch, tmp_path)
-    for code in ("diffusers-image-cuda",):
+    for code in ("diffusers-image-cuda", "vision-torch-cuda"):
         status = registry.by_code(code).available()
         assert status.ok is True, (code, status.reason)
+
+
+def test_the_cuda_vision_row_is_gated_on_an_nvidia_gpu(monkeypatch, tmp_path):
+    _fake_nvidia(monkeypatch, tmp_path, control=False, gpus=(), uvm=False)
+    assert registry.by_code("vision-torch-cuda").available().ok is False
 
 
 def test_cuda_is_a_HARD_GATE_on_a_machine_with_no_nvidia_gpu(monkeypatch, tmp_path):
@@ -1881,7 +1923,7 @@ def test_a_MISSING_uvm_node_is_not_a_refusal_because_it_is_created_LAZILY(
     argument the probe already makes about a driver-version floor.
     """
     _fake_nvidia(monkeypatch, tmp_path, uvm=False)
-    for code in ("diffusers-image-cuda",):
+    for code in ("diffusers-image-cuda", "vision-torch-cuda"):
         status = registry.by_code(code).available()
         assert status.ok is True, (code, status.reason)
 
@@ -2127,6 +2169,8 @@ def test_the_accelerated_engines_share_their_siblings_suggestions(monkeypatch, t
         catalog.SUGGESTIONS["onnx-embed"])
     assert catalog.for_runner("onnx-embed-rocm") == (
         catalog.SUGGESTIONS["onnx-embed"])
+    assert catalog.for_runner("vision-torch-cuda") == (
+        catalog.SUGGESTIONS["vision-torch"])
     # And through the resolution, which is how the page actually reaches it.
     _fake_nvidia(monkeypatch, tmp_path)
     _prefer(monkeypatch, registry.IMAGE_GENERATION, "diffusers-image-cuda")
@@ -6065,7 +6109,8 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
         "faster-whisper", "mlx-whisper",
         "mlx-embed",
         "onnx-embed", "onnx-embed-cuda",
-        "onnx-embed-rocm", "ltx-video", "laya-mlx", "mlx-audio-tts", "vision-torch"}
+        "onnx-embed-rocm", "ltx-video", "laya-mlx", "mlx-audio-tts", "vision-torch",
+        "vision-torch-cuda"}
     assert body["loaded"] == []
     # Exactly one runner per capability is ACTIVE — the distinction D302 needed,
     # since with a preference in the middle "available" stopped meaning "this is

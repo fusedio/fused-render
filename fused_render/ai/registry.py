@@ -1666,8 +1666,25 @@ _RUNNERS: tuple[Runner, ...] = (
              "probabilities. Under 1 GB of RAM.",
         _available=_apple_silicon,
     ),
-    # Image understanding on torch (SPEC AI-33). Apple Silicon only for now:
-    # it is the one platform the MPS path was measured on.
+    # Image understanding on torch (SPEC AI-33). The CUDA row below is the
+    # NVIDIA variant, shipped UNMEASURED (nobody on the team has an NVIDIA box;
+    # the worker's `cuda` device branch is its only evidence). The Apple row
+    # after it stays the measured one. It leads by the GPU-first ordering rule
+    # (the comment block above this table). This pair is accelerated vs
+    # accelerated, and `_cuda` and `_apple_silicon` never both pass on one
+    # machine, so the order is convention here, not resolution.
+    Runner(
+        code="vision-torch-cuda",
+        capability=VISION,
+        folder=os.path.join(RUNNERS_DIR, "vision_torch_cuda"),
+        label="PyTorch Vision (CUDA)",
+        short_label="PyTorch Vision (CUDA)",
+        family_label="PyTorch Vision",
+        note="Captions, answers questions about, and finds objects in images "
+             "on an NVIDIA GPU. 1 to 9 GB of GPU memory. Not yet measured on real "
+             "hardware.",
+        _available=_cuda,
+    ),
     Runner(
         code="vision-torch",
         capability=VISION,

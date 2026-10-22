@@ -1744,6 +1744,9 @@ DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "ltx-video",
             "laya-mlx",
             # Only curated repo ids reach it (`VISION_TORCH_RECIPES`), so the claim is exact.
             "vision-torch",
+            # The CUDA variant, for the diffusers variants' reason below:
+            # membership is a statement about the FORMAT, not the machine.
+            "vision-torch-cuda",
             "mlx-audio-tts",
             "diffusers-image",
             # Every hardware variant of the diffusers runner, because membership
@@ -2174,7 +2177,7 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
     if vision_torch_recipe(repo_id):
         # A curated vision repo and nothing else: Moondream's safetensors plus
         # config.json would otherwise fall through to the text runner below.
-        found.append("vision-torch")
+        found.extend(("vision-torch", "vision-torch-cuda"))
         return tuple(found)
     if is_qwen3_tts_snapshot(config, dirnames):
         found.append("mlx-audio-tts")
