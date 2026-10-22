@@ -1162,12 +1162,12 @@ else
       echo "$STRAY" >&2
       exit 1
     fi
-    "$BUILD_VENV/bin/python" -c '
+    "$BUILD_VENV/bin/python" - "$APP_DIR/Contents/Resources/chromium-engine.json" "$ARCH" "$CHROMIUM_DEST" <<'PYEOF'
 import sys
 from fused_render import chromium
 info = chromium.check_engine_info(sys.argv[1], arch=sys.argv[2])
-print(f"    engine (CEF {info[\"cef_version\"]}, {info[\"arch\"]}) -> {sys.argv[3]}")
-' "$APP_DIR/Contents/Resources/chromium-engine.json" "$ARCH" "$CHROMIUM_DEST"
+print("    engine (CEF %s, %s) -> %s" % (info["cef_version"], info["arch"], sys.argv[3]))
+PYEOF
   elif [[ -n "${FUSED_RENDER_CODESIGN_IDENTITY:-}" ]]; then
     echo "FATAL: a release build needs the Chromium engine and native/build.sh failed" >&2
     exit 1
