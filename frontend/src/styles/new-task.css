@@ -858,7 +858,7 @@ button.new-task-source:focus-visible {
 
 /* The header crumb is the agent dropdown (Modal `titleLead`): a PropPill that
    keeps the look the static crumb had. Scoped under the head so it beats the
-   dialog's generic button skin; the `.pp-k` carries only the mark. */
+   dialog's generic button skin; no key/icon cell, just the label. */
 .new-task-dialog .modal-head-title {
   gap: 0;
 }
@@ -867,7 +867,7 @@ button.new-task-source:focus-visible {
   display: inline-flex;
   align-items: center;
   height: 22px;
-  padding: 0 8px 0 6px;
+  padding: 0 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--ctl-quiet-bg);
@@ -878,14 +878,8 @@ button.new-task-source:focus-visible {
   cursor: pointer;
 }
 
-.new-task-dialog .modal-head-title .pp--agent .pp-k {
-  padding: 0;
-  border: 0;
-  background: none;
-}
-
 .new-task-dialog .modal-head-title .pp--agent .pp-v {
-  padding: 0 0 0 6px;
+  padding: 0;
   max-width: none;
 }
 
@@ -897,13 +891,6 @@ button.new-task-source:focus-visible {
   border-right: 1.5px solid var(--fg-muted);
   border-bottom: 1.5px solid var(--fg-muted);
   transform: rotate(45deg);
-}
-
-.nt-crumb-mark {
-  width: 16px;
-  height: 16px;
-  border-radius: 4px;
-  background: var(--accent);
 }
 
 .nt-crumb-sep {

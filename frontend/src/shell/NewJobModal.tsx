@@ -608,7 +608,7 @@ function PropPill({
         aria-label={ariaLabel}
         onClick={onToggle}
       >
-        <span className="pp-k">{icon}{k}</span>
+        {(icon || k) && <span className="pp-k">{icon}{k}</span>}
         <span className={"pp-v" + (empty ? " pp-v--empty" : "")}>{value}</span>
       </button>
       {open && (
@@ -4818,7 +4818,6 @@ export default function NewJobModal({
               reader with Copilot off can see that a second one exists. */}
           <PropPill
             k=""
-            icon={<span className="nt-crumb-mark" aria-hidden="true" />}
             value={agentLabel(agent)}
             ariaLabel="Agent"
             className="pp--agent"
