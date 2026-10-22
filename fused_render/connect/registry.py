@@ -41,6 +41,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
+import time
 import re
 import shutil
 from dataclasses import dataclass
@@ -266,10 +268,30 @@ def _warn_once(where: str, msg: str) -> None:
         logger.warning("connect: skipping provider pack: %s", msg)
 
 
+_CACHE_TTL_S = 2.0
+_cache: tuple[float, str, list] | None = None     # (read_at, env value, providers)
+_cache_lock = threading.Lock()
+
+
 def providers() -> list[Provider]:
     """Built-in packs + every pack in $FUSED_RENDER_CONNECT_PROVIDERS, sorted
-    by key. Read from disk on every call (a handful of small files), so an
-    edited pack or a changed env var shows on the next poll."""
+    by key. Re-read from disk after `_CACHE_TTL_S` (a handful of small files,
+    so an edited pack shows on the next poll), and at once when the env var
+    changes: the bots' roster calls this several times per step, which is
+    what the cache is for."""
+    global _cache
+    env = os.environ.get("FUSED_RENDER_CONNECT_PROVIDERS", "")
+    now = time.monotonic()
+    with _cache_lock:
+        if _cache is not None and _cache[1] == env and now - _cache[0] < _CACHE_TTL_S:
+            return list(_cache[2])
+    found = _read_packs()
+    with _cache_lock:
+        _cache = (now, env, found)
+    return list(found)
+
+
+def _read_packs() -> list[Provider]:
     found: dict[str, Provider] = {}
     for d in _pack_dirs():
         try:

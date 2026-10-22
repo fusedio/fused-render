@@ -48,6 +48,7 @@ export interface ConnectStatus {
   kind?: string | null;
   account?: string | null;
   url?: string | null;
+  opened?: boolean;
   user_code?: string | null;
   verification_uri?: string | null;
   error?: string | null;
@@ -142,7 +143,9 @@ export default function Connections() {
     if (wantOpen.current.has(key)) {
       if (st.url) {
         wantOpen.current.delete(key);
-        window.open(st.url, "_blank");
+        // The server opens the consent page itself when it can (desktop app:
+        // same machine); it says so with `opened`, and a second tab is noise.
+        if (!st.opened) window.open(st.url, "_blank");
       } else if (st.state !== "pending") {
         wantOpen.current.delete(key);
       }

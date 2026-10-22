@@ -7345,7 +7345,7 @@
   // joined flow returns the same URL again; a second tab of it is noise.
   let connectOpened = null;
   function connectOpen(st) {
-    if (st && typeof st.url === "string" && st.url && st.url !== connectOpened) {
+    if (st && typeof st.url === "string" && st.url && !st.opened && st.url !== connectOpened) {
       connectOpened = st.url;
       try {
         window.open(st.url, "_blank", "noopener");
