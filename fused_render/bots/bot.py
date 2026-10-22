@@ -598,6 +598,9 @@ class Bot:
         dirty = False
         if self.meta.pop("channel_forwards", None) is not None:
             dirty = True  # per-bot forwards are gone (docs §10): only a task's origin hears back
+        # Per-tool "Always approve" rules and finished builds become ticks under "Apps it may use without asking".
+        if _tools_mod().migrate_app_rules(self.meta):
+            dirty = True
         if not is_super(self.meta):
             # iMessage is Super Bot's alone (docs §10): an ordinary bot's leftover handle and contacts grant nothing
             # and show nowhere, so they go the way channel_forwards went (and `text`/`texts` leave its roster).
@@ -3007,6 +3010,9 @@ class Bot:
                               app={"name": bd["name"], "dir": bd["dir"]}, source="build", via=bd.get("via"))
                     with self.lock:
                         bd["done_at"] = time.time()
+                        # The app it just built is ticked under "Apps it may use without asking": its scripts run
+                        # without a card from here on, and Settings shows that (tools.risk reads only the tick).
+                        apptools.trust_app(self.meta, os.path.basename(str(bd.get("dir") or "").rstrip("/")), "build")
                         self.save()
                     return
                 stable = ""
@@ -4360,6 +4366,7 @@ def clone(src_id, name="", share=True):
             "approval": src.meta.get("approval", "ask"), "build_access": src.meta.get("build_access", "scoped"),
             "terminal": src.meta.get("terminal") is True,
             "trusted_apps": apptools.clean_trusted_apps(src.meta.get("trusted_apps")),
+            "trusted_via": apptools.clean_trusted_via(src.meta),
             "allow_rules": _tools_mod().clean_allow_rules(src.meta.get("allow_rules")),
             "folders": clean_folders(src.meta.get("folders")),
             "status": "idle", "created": time.time(), "task": "", "step": 0, "url": None, "title": None}

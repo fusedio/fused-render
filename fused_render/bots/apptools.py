@@ -576,9 +576,12 @@ def is_write(rec):
 # ---- trusted apps: a per-bot whitelist that skips the gate -----------------------
 # bot.json `trusted_apps`: app folder names (normalised as `find` matches them) whose
 # `tool` and `py` calls never raise an approval card for that bot, whatever the write
-# heuristic or the app's SKILL.md say. The bot's own `risky: true` on a call still
-# asks: it knows something about this call the whitelist does not. Browser actions,
-# texts and builds are not apps and keep their gates.
+# heuristic, the app's SKILL.md or the bot's own `risky: true` say. It is the ONE
+# app-level permission (Settings › Permissions › "Apps it may use without asking"):
+# a build this bot finished and an "Always approve" on a tool/py card both land here
+# (`trusted_via` says which: "build" | "card"; absent = ticked in the dialog), so the
+# checkbox never shows off while the app runs silently. Browser actions, texts and
+# builds are not apps and keep their gates.
 def norm_app(s):
     """One spelling for an app folder: lower, `-`/`_`/space collapsed to `-`."""
     return re.sub(r"[-_\s]+", "-", (s or "").strip().lower())
@@ -603,6 +606,46 @@ def trusted_set(meta):
 def is_trusted(meta, app):
     """Does this bot's meta whitelist the app (folder name, any spelling)?"""
     return bool(app) and norm_app(app) in trusted_set(meta)
+
+
+def clean_trusted_via(meta):
+    """`trusted_via` as stored: {normalised app: "build" | "card"} for ticked apps only."""
+    via = (meta or {}).get("trusted_via")
+    apps = trusted_set(meta)
+    if not isinstance(via, dict):
+        return {}
+    return {norm_app(k): v for k, v in via.items() if isinstance(k, str) and norm_app(k) in apps and v in ("build", "card")}
+
+
+def trust_app(meta, app, via=None) -> bool:
+    """Tick `app` for this bot (caller holds bot.lock and saves). `via` records how the tick got there
+    ("build" | "card"); a tick from the dialog carries none. True when meta changed."""
+    key = norm_app(app)
+    if not key:
+        return False
+    cur = clean_trusted_apps(meta.get("trusted_apps"))
+    changed = key not in cur
+    if changed:
+        meta["trusted_apps"] = [*cur, key]
+    v = clean_trusted_via(meta)
+    if via and v.get(key) != via:
+        v[key] = via
+        changed = True
+    meta["trusted_via"] = v
+    return changed
+
+
+def set_trusted_apps(meta, add=(), remove=()):
+    """The dialog's edit: additions and removals against the live list (trusted_apps has other writers, a build
+    finishing and a card answered "Always approve", so a full list from the dialog would clobber them)."""
+    cur = clean_trusted_apps(meta.get("trusted_apps"))
+    drop = set(clean_trusted_apps(list(remove)))
+    cur = [a for a in cur if a not in drop]
+    for a in clean_trusted_apps(list(add)):
+        if a not in cur:
+            cur.append(a)
+    meta["trusted_apps"] = cur
+    meta["trusted_via"] = clean_trusted_via(meta)
 
 
 # ---- prompt -------------------------------------------------------------------------
