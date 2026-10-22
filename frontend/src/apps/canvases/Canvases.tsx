@@ -324,8 +324,13 @@ export default function Canvases() {
     const gen = envGenRef.current;
     try {
       await logout(env);
-      // Signed out of the env picked then; a newer pick's listing stays.
-      if (gen !== envGenRef.current) return;
+      // Signed out of the env picked then; a newer pick's listing stays, but
+      // it is still re-read: prod and unstable share one store, so the new
+      // pick's own refresh may have run before this cleared it.
+      if (gen !== envGenRef.current) {
+        await refresh();
+        return;
+      }
       setCanvases(null);
       // Signed URLs belong to the account that just signed out.
       setPreviews({});
