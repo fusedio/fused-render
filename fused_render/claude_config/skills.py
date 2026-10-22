@@ -8,8 +8,16 @@ Plugin-bundled skills are excluded (they aren't under CLAUDE_DIR/skills).
 main(action=...):
   list -> {skills: [{slug, name, description, linked, source, shareCommand}]}
   open -> {ok}   params: slug  (reveal folder in OS explorer)
+  create -> {ok, slug}  params: slug  (scaffolds skills/<slug>/SKILL.md)
+  read   -> {ok, text, files}  params: slug, path (default SKILL.md)
+            files: every file under the skill dir, relative paths
+  write  -> {ok}  params: slug, path, text
+  delete -> {ok}  params: slug  (removes the skill dir, or just the link)
+Mutations commit to the config repo like the other modules.
 """
 import os
+import re
+import shutil
 from typing import Optional
 
 from . import lib
@@ -60,7 +68,27 @@ def _list() -> dict:
     return {"skills": skills}
 
 
-def main(action: str = "list", slug: str = "") -> dict:
+_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+
+def _files(root: str) -> list:
+    out = []
+    for dirpath, _dirs, names in os.walk(root, followlinks=True):
+        for n in names:
+            out.append(os.path.relpath(os.path.join(dirpath, n), root))
+    return sorted(out)
+
+
+def _skill_file(slug: str, path: str) -> str:
+    """skills/<slug>/<path>, guarded against escaping the skill dir."""
+    root = lib.safe_subdir(SKILLS_DIR, slug)
+    target = os.path.normpath(os.path.join(root, path or "SKILL.md"))
+    if target != root and not target.startswith(root + os.sep):
+        raise ValueError(f"invalid path: {path!r}")
+    return target
+
+
+def main(action: str = "list", slug: str = "", path: str = "", text: str = "") -> dict:
     if action == "list":
         return _list()
 
@@ -70,5 +98,46 @@ def main(action: str = "list", slug: str = "") -> dict:
             return {"ok": True}
         except ValueError as e:
             return {"ok": False, "error": str(e)}
+
+    try:
+        if action == "create":
+            if not _SLUG_RE.match(slug):
+                return {"ok": False, "error": "use lowercase letters, digits, - and _"}
+            entry = lib.safe_subdir(SKILLS_DIR, slug)
+            if os.path.exists(entry):
+                return {"ok": False, "error": f"skill {slug} already exists"}
+            with lib.config_lock():
+                lib.write_text(
+                    os.path.join(entry, "SKILL.md"),
+                    f"---\nname: {slug}\ndescription: Describe when to use this skill.\n---\n\n# {slug}\n",
+                )
+                lib.commit(f"Add skill {slug}", pathspec=os.path.join("skills", slug))
+            return {"ok": True, "slug": slug}
+
+        if action == "read":
+            target = _skill_file(slug, path)
+            with open(target, encoding="utf-8") as f:
+                body = f.read()
+            return {"ok": True, "text": body,
+                    "files": _files(lib.safe_subdir(SKILLS_DIR, slug))}
+
+        if action == "write":
+            target = _skill_file(slug, path)
+            with lib.config_lock():
+                lib.write_text(target, text)
+                lib.commit(f"Edit skill {slug}", pathspec=os.path.join("skills", slug))
+            return {"ok": True}
+
+        if action == "delete":
+            entry = lib.safe_subdir(SKILLS_DIR, slug)
+            with lib.config_lock():
+                if os.path.islink(entry):
+                    os.remove(entry)
+                else:
+                    shutil.rmtree(entry)
+                lib.commit(f"Remove skill {slug}", pathspec=os.path.join("skills", slug))
+            return {"ok": True}
+    except (ValueError, OSError) as e:
+        return {"ok": False, "error": str(e)}
 
     return {"ok": False, "error": f"unknown action: {action}"}

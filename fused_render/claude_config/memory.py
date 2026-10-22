@@ -1,9 +1,8 @@
 """Memory feature (memory.md).
 
-Read-only viewer of Claude Code's persistent memory under
+Viewer and editor of Claude Code's persistent memory under
 projects/*/memory/*.md, grouped by project, with per-folder git lifecycle
-controls (change status, commit, clear). Memory *contents* are authored by
-Claude Code, never edited here.
+controls (change status, commit, clear) and per-file read/write/delete.
 
 main(action=...):
   list   -> {projects: [{project, path, pathConfirmed, files, changes}]}
@@ -12,6 +11,10 @@ main(action=...):
   commit -> {ok, committed}   params: project  (path-limited commit)
   clear  -> {ok, committed}   params: project  (delete *.md + commit deletion)
   open   -> {ok}              params: project  (reveal folder in OS explorer)
+  files  -> {ok, files: [{name, size, mtime}]}  params: project
+  read   -> {ok, text}        params: project, file
+  write  -> {ok, committed}   params: project, file, text
+  delete_file -> {ok, committed}  params: project, file
 
 `project` is always the SLUG (the projects/ directory name). It stays the
 identifier on the wire because it is what lib.safe_subdir guards and what the
@@ -255,7 +258,15 @@ def _memory_changes() -> dict:
     return by_project
 
 
-def main(action: str = "list", project: str = "") -> dict:
+def _memory_file(project: str, file: str) -> str:
+    """One .md file inside the project's memory dir (no subpaths, no traversal)."""
+    mem_dir = _memory_dir(project)
+    if not file.endswith(".md") or "/" in file or "\\" in file or file.startswith("."):
+        raise ValueError(f"invalid memory file: {file!r}")
+    return os.path.join(mem_dir, file)
+
+
+def main(action: str = "list", project: str = "", file: str = "", text: str = "") -> dict:
     if action == "list":
         return _list()
 
@@ -282,5 +293,36 @@ def main(action: str = "list", project: str = "") -> dict:
                     os.remove(os.path.join(mem_dir, n))
             committed = lib.commit(f"Clear memory for {project}", pathspec=rel)
         return {"ok": True, "committed": committed}
+
+    try:
+        if action == "files":
+            mem_dir = _memory_dir(project)
+            files = []
+            for n in sorted(os.listdir(mem_dir), key=lambda n: (n != "MEMORY.md", n.lower())):
+                if n.endswith(".md"):
+                    st = os.stat(os.path.join(mem_dir, n))
+                    files.append({"name": n, "size": st.st_size, "mtime": st.st_mtime})
+            return {"ok": True, "files": files}
+
+        if action == "read":
+            with open(_memory_file(project, file), encoding="utf-8") as f:
+                return {"ok": True, "text": f.read()}
+
+        rel = os.path.join("projects", project, "memory")
+        if action == "write":
+            target = _memory_file(project, file)
+            with lib.config_lock():
+                lib.write_text(target, text)
+                committed = lib.commit(f"Edit memory {file} for {project}", pathspec=rel)
+            return {"ok": True, "committed": committed}
+
+        if action == "delete_file":
+            target = _memory_file(project, file)
+            with lib.config_lock():
+                os.remove(target)
+                committed = lib.commit(f"Delete memory {file} for {project}", pathspec=rel)
+            return {"ok": True, "committed": committed}
+    except (ValueError, OSError) as e:
+        return {"ok": False, "error": str(e)}
 
     return {"ok": False, "error": f"unknown action: {action}"}

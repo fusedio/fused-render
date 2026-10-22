@@ -569,4 +569,13 @@ def main(action: str = "list", id: str = "", enabled: bool = False) -> dict:
             return {"ok": False, "error": res["stderr"] or "install failed"}
         return {"ok": True, "id": id, "stdout": res["stdout"]}
 
+    if action == "uninstall":
+        installed = lib.read_json(lib.INSTALLED_PLUGINS_PATH, {})
+        if id not in set(installed.get("plugins") or {}):
+            return {"ok": False, "error": "unknown plugin"}
+        res = lib.claude_cli("plugin", "uninstall", id, "--scope", "user")
+        if not res["ok"]:
+            return {"ok": False, "error": res["stderr"] or "uninstall failed"}
+        return {"ok": True, "id": id, "stdout": res["stdout"]}
+
     return {"ok": False, "error": f"unknown action: {action}"}

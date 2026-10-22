@@ -62,6 +62,9 @@ def shell_explorer(path: str = "", shell_path: str = Depends(get_shell_path)):
 # test_shell_routes.py derives this list from the shell's own route table rather
 # than trusting the next page to remember.
 @router.get("/tasks")
+# Agents: each harness's own config (Claude's ~/.claude, Codex's, Copilot's) —
+# `?h=<harness>&tab=<tab>` is client-side state.
+@router.get("/agents")
 # Monitor — every process on the machine, live (frontend shell/monitor),
 # the System chip's "Open Monitor".
 @router.get("/monitor")
