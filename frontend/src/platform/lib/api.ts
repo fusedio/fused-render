@@ -1461,8 +1461,9 @@ export interface Prefs {
   // the shell's entry points to it (the sidebar row and the Settings menu
   // entry), not the /canvases routes, which keep answering a deep link.
   // `embed_proxy`: the custom env's workbench frames through the loopback
-  // proxy (opt-in, default off — canvas_embed_proxy.py).
-  canvases: { enabled: boolean; embed_proxy?: boolean };
+  // proxy (opt-in, default off — canvas_embed_proxy.py). `embed_proxy_locked`:
+  // `[render] canvases_embed_proxy_enabled` in ~/.fused/settings.toml sets it.
+  canvases: { enabled: boolean; embed_proxy?: boolean; embed_proxy_locked?: boolean };
   // Whether the unified Share sheet (public link + .fused file) is OFFERED in
   // place of the plain Export / Download action (opt-in, default off). Gates
   // the five share surfaces, not the /api/share routes.

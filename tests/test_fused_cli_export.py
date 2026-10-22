@@ -285,6 +285,10 @@ def test_custom_workbench_url_follows_fused_settings(monkeypatch, tmp_path):
 
     monkeypatch.delenv("FUSED_RENDER_WORKBENCH_ENV", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
+    # fused's own `~` paths, now under this HOME (conftest hides the
+    # machine's settings file from every test).
+    monkeypatch.setattr(canvases, "_FUSED_SETTINGS_FILES",
+                        ("~/.fused/settings.toml", "~/.fused/settings.json"))
     settings = tmp_path / ".fused"
     settings.mkdir()
     assert canvases.workbench_base_url("custom") == "https://www.fused.io"

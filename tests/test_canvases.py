@@ -1239,6 +1239,10 @@ def _custom_auth_home(monkeypatch, tmp_path, auth: bool = True):
     if auth:
         toml += '[auth]\ncredentials_path = "~/.fused/credentials-abc"\n'
     (home / ".fused" / "settings.toml").write_text(toml, encoding="utf-8")
+    # Back to fused's own `~` paths, now under this HOME (conftest hides the
+    # machine's settings file from every test).
+    monkeypatch.setattr(canvases_mod, "_FUSED_SETTINGS_FILES",
+                        ("~/.fused/settings.toml", "~/.fused/settings.json"))
     return home / ".fused" / "credentials", home / ".fused" / "credentials-abc"
 
 

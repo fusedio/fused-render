@@ -183,6 +183,48 @@ def test_put_rejects_bad_canvases_enabled(tmp_path, monkeypatch):
     assert not (home / "prefs.json").exists()
 
 
+def _fused_settings(tmp_path, monkeypatch, text):
+    from fused_render import canvases
+
+    path = tmp_path / "settings.toml"
+    path.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(canvases, "_FUSED_SETTINGS_FILES", (str(path),))
+
+
+def test_canvases_embed_proxy_follows_the_switch_when_the_settings_file_is_silent(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    _fused_settings(tmp_path, monkeypatch, 'base_url = "https://acme.fused.io/server/v1"\n')
+    body = client.get("/api/prefs").json()["canvases"]
+    assert body["embed_proxy"] is False and body["embed_proxy_locked"] is False
+    body = client.put("/api/prefs", json={"canvases_embed_proxy": True}, headers=FUSED).json()
+    assert body["canvases"]["embed_proxy"] is True
+    assert prefs_mod.canvases_embed_proxy_enabled() is True
+
+
+def test_canvases_embed_proxy_settings_file_wins_both_ways(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    client.put("/api/prefs", json={"canvases_embed_proxy": True}, headers=FUSED)
+    _fused_settings(tmp_path, monkeypatch, "[render]\ncanvases_embed_proxy_enabled = false\n")
+    body = client.get("/api/prefs").json()["canvases"]
+    assert body["embed_proxy"] is False and body["embed_proxy_locked"] is True
+    assert prefs_mod.canvases_embed_proxy_enabled() is False
+    _fused_settings(tmp_path, monkeypatch, "[render]\ncanvases_embed_proxy_enabled = true\n")
+    assert prefs_mod.canvases_embed_proxy_enabled() is True
+    # The switch cannot change a pinned value, and the stored pref is left alone.
+    r = client.put("/api/prefs", json={"canvases_embed_proxy": False}, headers=FUSED)
+    assert r.status_code == 423 and "canvases_embed_proxy_enabled" in r.json()["error"]
+    assert json.loads((home / "prefs.json").read_text(encoding="utf-8"))["canvases_embed_proxy"] is True
+
+
+def test_canvases_embed_proxy_ignores_a_non_boolean_settings_value(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    _fused_settings(tmp_path, monkeypatch, '[render]\ncanvases_embed_proxy_enabled = "yes"\n')
+    body = client.get("/api/prefs").json()["canvases"]
+    assert body["embed_proxy"] is False and body["embed_proxy_locked"] is False
+    assert client.put("/api/prefs", json={"canvases_embed_proxy": True},
+                      headers=FUSED).status_code == 200
+
+
 def test_monitor_enabled_defaults_off_and_toggles(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     # Default off: the System chip and /monitor page are opt-in.

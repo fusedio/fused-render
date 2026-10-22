@@ -226,13 +226,25 @@ export function CanvasesControl({ prefs, onChange }: PrefControlProps) {
 
 // No publish: the proxy follows the pref on the next canvas status read, which
 // every page that frames a canvas makes before it frames it. Off stops it at
-// once (shell/prefs.py).
+// once (shell/prefs.py). The settings file can pin it, like the env var that
+// pins the default environment.
 export function CanvasesEmbedProxyControl({ prefs, onChange }: PrefControlProps) {
+  const locked = prefs.canvases.embed_proxy_locked === true;
+  const on = prefs.canvases.embed_proxy === true;
   return (
     <PrefToggleRow
       id="canvases-embed-proxy"
-      checked={prefs.canvases.embed_proxy === true}
+      checked={on}
       put={putCanvasesEmbedProxy}
+      disabled={locked}
+      status={
+        locked ? (
+          <>
+            Pinned {on ? "on" : "off"} by <code>[render] canvases_embed_proxy_enabled</code> in{" "}
+            <code>~/.fused/settings.toml</code>.
+          </>
+        ) : undefined
+      }
       onChange={onChange}
     />
   );

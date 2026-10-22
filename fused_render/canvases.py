@@ -289,6 +289,16 @@ def _fused_settings_credentials_path() -> str:
     return value if isinstance(value, str) and value else "~/.fused/credentials"
 
 
+def fused_settings_embed_proxy() -> bool | None:
+    """`[render] canvases_embed_proxy_enabled` in the settings file: True or
+    False when the file sets it (it then wins over the Preferences switch,
+    shell/prefs.py), None when it does not. fused ignores a table it does not
+    know, so the deployment's own file can carry it."""
+    render = _fused_settings().get("render")
+    value = render.get("canvases_embed_proxy_enabled") if isinstance(render, dict) else None
+    return value if isinstance(value, bool) else None
+
+
 def fused_settings_present() -> bool:
     """Whether there is a `~/.fused/settings.toml` (or `settings.json`) for
     the custom environment to follow. Without one a custom run is just prod

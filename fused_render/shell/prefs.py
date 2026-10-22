@@ -208,8 +208,22 @@ def canvases_embed_proxy_enabled() -> bool:
     deployment whose gateway requires a login for the workbench pages: a
     cross-site iframe never carries that login cookie, so without the proxy
     the frame is redirected to the identity provider and never renders. A
-    feature flag read by canvases status; the hosted environments ignore it."""
+    feature flag read by canvases status; the hosted environments ignore it.
+
+    `[render] canvases_embed_proxy_enabled` in the fused settings file, when
+    set, wins over the stored preference (`canvases_embed_proxy_pinned`)."""
+    pinned = canvases_embed_proxy_pinned()
+    if pinned is not None:
+        return pinned
     return read_prefs().get("canvases_embed_proxy") is True
+
+
+def canvases_embed_proxy_pinned() -> bool | None:
+    # Imported here, not at module top: canvases is the heavier module and
+    # calls.py imports prefs on a hot path.
+    from fused_render.canvases import fused_settings_embed_proxy
+
+    return fused_settings_embed_proxy()
 
 
 def native_windows_enabled() -> bool:
@@ -923,8 +937,11 @@ def _prefs_response() -> dict:
         # Whether the Canvases feature is offered at all — its sidebar row and
         # its Settings menu entry (opt-in, D427). Not a route guard; see
         # `canvases_enabled`.
+        # `embed_proxy_locked`: the fused settings file sets the switch, so
+        # the row shows that value and cannot change it.
         "canvases": {"enabled": canvases_enabled(),
-                     "embed_proxy": canvases_embed_proxy_enabled()},
+                     "embed_proxy": canvases_embed_proxy_enabled(),
+                     "embed_proxy_locked": canvases_embed_proxy_pinned() is not None},
         # Whether the unified Share sheet (public link + .fused file) is offered
         # in place of the plain Export / Download action (opt-in, default off).
         # Not a route guard; see `app_sharing_enabled`.
@@ -1360,6 +1377,11 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             if not isinstance(value, bool):
                 return JSONResponse({"error": "'canvases_embed_proxy' must be a boolean"},
                                     status_code=400)
+            if canvases_embed_proxy_pinned() is not None:
+                return JSONResponse(
+                    {"error": "the embed proxy is set by [render] canvases_embed_proxy_enabled "
+                              "in ~/.fused/settings.toml; remove it there to use the preference"},
+                    status_code=423)
             prefs["canvases_embed_proxy"] = value
             changed = True
         if "lan_enabled" in body:
