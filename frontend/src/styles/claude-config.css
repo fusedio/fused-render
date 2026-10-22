@@ -1266,8 +1266,27 @@
   outline-offset: -2px;
 }
 
+.cc-skill-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .cc-skill-name {
   font-weight: 500;
+}
+
+.cc-skill-owner {
+  display: block;
+  margin-top: 2px;
+}
+
+.cc-skill-empty {
+  margin: 0;
+  padding: 12px 16px;
+  font-size: 13px;
+  color: var(--fg-muted);
 }
 
 .cc-skill-desc {

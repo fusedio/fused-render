@@ -1,9 +1,12 @@
-// Skills section: the user's own skills under skills/*/SKILL.md, drawn as the
-// Claude Code page's whole main column. `?skill=<name>` selects between the
-// two views: a list (one row per skill — name, then its description on one
-// muted line) and a skill's editor (SKILL.md and its sibling files, one
-// textarea in one card). A skill that is not linked (authored by hand rather
-// than managed by the `skills` CLI) says so in its editor's header.
+// Skills section: every skill available to the user, drawn as the Claude Code
+// page's whole main column. The user's own (skills/*/SKILL.md) come first,
+// then the skills that arrive with enabled plugins, which are read-only.
+// `?skill=` selects between the two views: a list (one row per skill — name,
+// then its description on one muted line) and a skill's editor (SKILL.md and
+// its sibling files, one textarea in one card). The value is `<slug>` for a
+// user skill and `plugin:<plugin>/<slug>` for a plugin's. A user skill that is
+// not linked (authored by hand rather than managed by the `skills` CLI) says
+// so in its editor's header; a plugin skill shows its plugin there instead.
 import { useCallback, useEffect, useState } from "react";
 import { ChevronLeft } from "lucide-react";
 import { Button } from "@platform/shadcn/ui/button";
@@ -18,6 +21,7 @@ import {
   ListSkeleton,
   Pill,
   SKELETON_ROWS,
+  plural,
   guard,
   toastErr,
   toastOk,
@@ -28,33 +32,33 @@ import type { SectionProps } from "../bits";
 
 const SKILLS_DIR = "~/.claude/skills";
 
+const skillKey = (s: cc.SkillRef) => (s.source === "plugin" ? `plugin:${s.plugin}/${s.slug}` : s.slug);
+
 function readSkill(): string | null {
   return new URLSearchParams(location.search).get("skill");
 }
 
-function writeSkill(slug: string | null) {
+function writeSkill(key: string | null) {
   const p = new URLSearchParams(location.search);
-  if (slug) p.set("skill", slug);
+  if (key) p.set("skill", key);
   else p.delete("skill");
   history.replaceState(history.state, "", `${location.pathname}?${p.toString()}`);
 }
 
 function SkillDetail({
-  slug,
-  description,
-  linked,
+  skill,
   onBack,
   onChanged,
   onDeleted,
 }: {
-  slug: string;
-  description: string;
-  linked: boolean;
+  skill: cc.Skill;
   onBack: () => void;
   onChanged: () => void;
   onDeleted: () => void;
 }) {
   const { node: modal, ask } = useConfirm();
+  const { slug, description, linked } = skill;
+  const readOnly = skill.source === "plugin";
   const [path, setPath] = useState("SKILL.md");
   const [files, setFiles] = useState<string[]>(["SKILL.md"]);
   const [saved, setSaved] = useState<string | null>(null);
@@ -69,7 +73,7 @@ function SkillDetail({
     setSaved(null);
     setLoadError(null);
     setNote(null);
-    cc.skills.read(slug, path).then(
+    cc.skills.read(skill, path).then(
       (res) => {
         if (!alive) return;
         if (!res.ok) {
@@ -85,7 +89,7 @@ function SkillDetail({
     return () => {
       alive = false;
     };
-  }, [slug, path]);
+  }, [skill, path]);
 
   // The "Saved" note fades out on its own; an error stays until the next edit.
   useEffect(() => {
@@ -109,7 +113,7 @@ function SkillDetail({
     setBusy(true);
     setNote(null);
     try {
-      const res = await cc.skills.write(slug, path, text);
+      const res = await cc.skills.write(skill, path, text);
       if (!res.ok) {
         setNote({ ok: false, text: res.error || "Save failed" });
         return;
@@ -134,7 +138,7 @@ function SkillDetail({
       ],
     });
     if (!ok) return;
-    const res = await guard(cc.skills.delete(slug));
+    const res = await guard(cc.skills.delete(skill));
     if (!res) return;
     if (!res.ok) {
       toastErr(res.error || "Delete failed");
@@ -163,10 +167,23 @@ function SkillDetail({
         title={
           <>
             {slug}
-            <Pill tone={linked ? "on" : "neutral"}>{linked ? "linked" : "not linked"}</Pill>
+            {readOnly ? (
+              <Pill>{skill.plugin}</Pill>
+            ) : (
+              <Pill tone={linked ? "on" : "neutral"}>{linked ? "linked" : "not linked"}</Pill>
+            )}
           </>
         }
-        blurb={description || `A skill in ${SKILLS_DIR}/${slug}.`}
+        blurb={
+          <>
+            {description || `A skill in ${readOnly ? skill.path : `${SKILLS_DIR}/${slug}`}.`}
+            {readOnly && (
+              <span className="cc-skill-owner">
+                Comes with the {skill.plugin} plugin. Updates to the plugin replace it.
+              </span>
+            )}
+          </>
+        }
         aside={
           <>
             {note && (
@@ -174,15 +191,19 @@ function SkillDetail({
                 {note.text}
               </span>
             )}
-            <Button variant="outline" size="sm" onClick={() => guard(cc.skills.open(slug))}>
+            <Button variant="outline" size="sm" onClick={() => guard(cc.skills.open(skill))}>
               Reveal
             </Button>
-            <Button variant="ghost" size="sm" className="cc-skill-delete" onClick={() => void remove()}>
-              Delete
-            </Button>
-            <Button size="sm" disabled={busy || !dirty} onClick={() => void save()}>
-              Save
-            </Button>
+            {!readOnly && (
+              <>
+                <Button variant="ghost" size="sm" className="cc-skill-delete" onClick={() => void remove()}>
+                  Delete
+                </Button>
+                <Button size="sm" disabled={busy || !dirty} onClick={() => void save()}>
+                  Save
+                </Button>
+              </>
+            )}
           </>
         }
       />
@@ -213,6 +234,7 @@ function SkillDetail({
             aria-label={`${slug}/${path}`}
             value={text}
             spellCheck={false}
+            readOnly={readOnly}
             className="cc-skill-editor"
             onChange={(e) => {
               setText(e.target.value);
@@ -232,9 +254,9 @@ export default function SkillsSection({ filter = "" }: SectionProps) {
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
 
-  const open = (slug: string | null) => {
-    setSkill(slug);
-    writeSkill(slug);
+  const open = (key: string | null) => {
+    setSkill(key);
+    writeSkill(key);
   };
 
   const create = async () => {
@@ -265,14 +287,12 @@ export default function SkillsSection({ filter = "" }: SectionProps) {
       </>
     );
 
-  const picked = skill ? data.skills.find((s) => s.slug === skill) : undefined;
+  const picked = skill ? data.skills.find((s) => skillKey(s) === skill) : undefined;
   if (skill && picked) {
     return (
       <SkillDetail
         key={skill}
-        slug={picked.slug}
-        description={picked.description}
-        linked={picked.linked}
+        skill={picked}
         onBack={() => open(null)}
         onChanged={reload}
         onDeleted={() => {
@@ -284,16 +304,41 @@ export default function SkillsSection({ filter = "" }: SectionProps) {
   }
 
   const needle = filter.trim().toLowerCase();
-  const shown = data.skills.filter(
-    (s) => !needle || `${s.name} ${s.slug} ${s.description}`.toLowerCase().includes(needle),
+  const matches = (s: cc.Skill) =>
+    !needle || `${s.name} ${s.slug} ${s.description} ${s.plugin ?? ""}`.toLowerCase().includes(needle);
+  const mine = data.skills.filter((s) => s.source === "user");
+  const bundled = data.skills
+    .filter((s) => s.source === "plugin")
+    .sort((a, b) => (a.plugin ?? "").localeCompare(b.plugin ?? "") || a.slug.localeCompare(b.slug));
+  const pluginCount = new Set(bundled.map((s) => `${s.plugin}@${s.marketplace}`)).size;
+  const shownMine = mine.filter(matches);
+  const shownBundled = bundled.filter(matches);
+  const total = data.skills.length;
+  const shown = shownMine.length + shownBundled.length;
+
+  const row = (s: cc.Skill) => (
+    <button key={skillKey(s)} type="button" className="cc-skill-row" onClick={() => open(skillKey(s))}>
+      <span className="cc-skill-title">
+        <span className="cc-skill-name">{s.name}</span>
+        {s.plugin && <Pill>{s.plugin}</Pill>}
+      </span>
+      {s.description && (
+        <span className="cc-skill-desc" title={s.description}>
+          {s.description}
+        </span>
+      )}
+    </button>
   );
-  const noun = (n: number) => `${n} ${n === 1 ? "skill" : "skills"}`;
 
   return (
     <>
       <Head
         title="Skills"
-        blurb={needle ? `${shown.length} of ${noun(data.skills.length)} match` : `${noun(shown.length)} in ${SKILLS_DIR}`}
+        blurb={
+          needle
+            ? `${shown} of ${plural(total, "skill")} match`
+            : `${plural(total, "skill")} · ${mine.length} yours, ${bundled.length} from ${plural(pluginCount, "plugin")}`
+        }
         aside={
           <Button size="sm" onClick={() => setCreating((v) => !v)}>
             {creating ? "Cancel" : "New skill"}
@@ -316,20 +361,26 @@ export default function SkillsSection({ filter = "" }: SectionProps) {
           </Button>
         </div>
       )}
-      {!shown.length && <Empty>{needle ? "No skills match." : "No local skills under skills/*/SKILL.md."}</Empty>}
-      {shown.length > 0 && (
-        <div className="settings-card">
-          {shown.map((s) => (
-            <button key={s.slug} type="button" className="cc-skill-row" onClick={() => open(s.slug)}>
-              <span className="cc-skill-name">{s.name}</span>
-              {s.description && (
-                <span className="cc-skill-desc" title={s.description}>
-                  {s.description}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
+      {needle && !shown && <Empty>No skills match.</Empty>}
+      {(shownMine.length > 0 || !needle) && (
+        <section className="settings-section">
+          <h3 className="settings-section-title">Your skills</h3>
+          {shownMine.length > 0 ? (
+            <div className="settings-card">{shownMine.map(row)}</div>
+          ) : (
+            !needle && (
+              <div className="settings-card">
+                <p className="cc-skill-empty">No skills of your own yet.</p>
+              </div>
+            )
+          )}
+        </section>
+      )}
+      {shownBundled.length > 0 && (
+        <section className="settings-section">
+          <h3 className="settings-section-title">From plugins</h3>
+          <div className="settings-card">{shownBundled.map(row)}</div>
+        </section>
       )}
     </>
   );

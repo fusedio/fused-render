@@ -258,20 +258,33 @@ export interface Skill {
   slug: string;
   name: string;
   description: string;
+  source: "user" | "plugin";
+  plugin?: string;
+  marketplace?: string;
   linked: boolean;
-  source: string | null;
-  shareCommand: string | null;
+  path: string;
 }
+
+/** What addresses one skill: slugs collide across plugins and between a user
+ *  skill and a plugin skill. */
+export type SkillRef = Pick<Skill, "slug" | "source" | "plugin" | "marketplace">;
+
+const ident = (r: SkillRef) => ({
+  slug: r.slug,
+  source: r.source,
+  plugin: r.plugin ?? "",
+  marketplace: r.marketplace ?? "",
+});
 
 export const skills = {
   list: () => callModule<{ skills: Skill[] }>("skills", { action: "list" }),
-  open: (slug: string) => callModule<OkResult>("skills", { action: "open", slug }),
+  open: (r: SkillRef) => callModule<OkResult>("skills", { action: "open", ...ident(r) }),
   create: (slug: string) => callModule<OkResult & { slug?: string }>("skills", { action: "create", slug }),
-  read: (slug: string, path = "SKILL.md") =>
-    callModule<OkResult & { text: string; files: string[] }>("skills", { action: "read", slug, path }),
-  write: (slug: string, path: string, text: string) =>
-    callModule<OkResult>("skills", { action: "write", slug, path, text }),
-  delete: (slug: string) => callModule<OkResult>("skills", { action: "delete", slug }),
+  read: (r: SkillRef, path = "SKILL.md") =>
+    callModule<OkResult & { text: string; files: string[] }>("skills", { action: "read", ...ident(r), path }),
+  write: (r: SkillRef, path: string, text: string) =>
+    callModule<OkResult>("skills", { action: "write", ...ident(r), path, text }),
+  delete: (r: SkillRef) => callModule<OkResult>("skills", { action: "delete", ...ident(r) }),
 };
 
 // -- mcp ----------------------------------------------------------------------
