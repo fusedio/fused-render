@@ -2234,19 +2234,35 @@ def main() -> None:
             NSApp.activateIgnoringOtherApps_(True)
             manager.show_bot(bid)
 
-        def _open_bots_native() -> None:
-            """The launcher's Fused Bot row (launcher.BOTS_ROW): the Bots
-            page itself, no bot picked — a window already on it comes
+        def _open_page_native(path: str) -> None:
+            """A shell PAGE picked in the launcher (the Bots page row, a
+            canvas row's project page): a window already on it comes
             forward, else one opens (`WindowManager.show_page`); a browser
             tab with the windows off. Main thread."""
             manager = state["windows"]
             if manager is None or not manager.enabled:
-                webbrowser.open(url.rstrip("/") + "/bots")
+                webbrowser.open(url.rstrip("/") + path)
                 return
             from AppKit import NSApp
 
             NSApp.activateIgnoringOtherApps_(True)
-            manager.show_page("/bots")
+            manager.show_page(path)
+
+        def _open_bots_native() -> None:
+            """The launcher's Fused Bot row (launcher.BOTS_ROW): the Bots
+            page itself, no bot picked."""
+            _open_page_native("/bots")
+
+        def _open_canvas_native(clone_dir: str) -> None:
+            """A cloned canvas picked in the launcher (`kind: "canvas"`, key
+            = the clone dir): its PROJECT page (`launcher.canvas_page_for`),
+            the sidebar's canvas-row door. A key that is no clone (the row
+            outlived a deleted folder) opens nothing."""
+            from fused_render import launcher as launcher_mod
+
+            path = launcher_mod.canvas_page_for(clone_dir)
+            if path is not None:
+                _open_page_native(path)
 
         # The launcher (launcher_panel.py): a Spotlight-like panel on a
         # global shortcut that opens any known app (Fused Render, ⌥Space by
@@ -2257,8 +2273,9 @@ def main() -> None:
         # windows preference: with native windows on its pick
         # focuses-or-opens a window, off it opens a browser tab at the same
         # address. A row opens through `open_row(kind, key)`: a bot to
-        # `_open_bot_native`, anything else to `_open_app_native`, the same
-        # doors the Dock uses. Guarded — no launcher is a lesser outcome than
+        # `_open_bot_native`, a canvas to `_open_canvas_native` (its project
+        # page), anything else to `_open_app_native`, the same doors the
+        # Dock uses. Guarded — no launcher is a lesser outcome than
         # no app; `state["launcher"]` then stays None, which is what the
         # ready path, the "Search …" menu key and /api/launcher's
         # `available` key off.
@@ -2274,6 +2291,8 @@ def main() -> None:
                     _open_bot_native(key)
                 elif kind == "bots":
                     _open_bots_native()
+                elif kind == "canvas":
+                    _open_canvas_native(key)
                 else:
                     _open_app_native(key)
 
