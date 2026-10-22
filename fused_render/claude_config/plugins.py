@@ -6,7 +6,7 @@ plugins/known_marketplaces.json. shareCommand strings are computed here
 (sharing.md; there is no dedicated sharing module).
 
 main(action=...):
-  list      -> {plugins: [...]}
+  list      -> {plugins: [...]}   each with the catalog's one-line description
   available -> {plugins: [...], skipped: [...]}   the marketplace CATALOGS
   contents  -> {ok, id, root, skills, commands, agents, hooks, mcpServers}
                                                  params: id   what one INSTALLED
@@ -46,6 +46,7 @@ def _list() -> dict:
     known = lib.read_json(lib.KNOWN_MARKETPLACES_PATH, {})
 
     ids = sorted(set(installed_plugins) | set(enabled))
+    descriptions: dict = {}
     plugins = []
     for pid in ids:
         name, _, marketplace = pid.partition("@")
@@ -62,6 +63,7 @@ def _list() -> dict:
             "installed": pid in installed_plugins,
             "version": rec.get("version"),
             "gitSourced": bool(rec.get("gitCommitSha")),
+            "description": _catalog_description(descriptions, marketplace, name),
             "shareCommand": _plugin_share_command(pid, mkt_src),
         })
     return {"plugins": plugins}
@@ -85,6 +87,37 @@ def _catalog_path(mkt_dir: str) -> Optional[str]:
         if os.path.isfile(cand):
             return cand
     return None
+
+
+def _read_catalog(mkt_dir: str) -> Optional[list]:
+    """The entries of one cloned marketplace's catalog, or None when it is
+    missing, unreadable or not shaped like a catalog."""
+    path = _catalog_path(mkt_dir)
+    if path is None:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            catalog = json.load(f)
+    except (OSError, ValueError):
+        return None
+    entries = catalog.get("plugins") if isinstance(catalog, dict) else None
+    return entries if isinstance(entries, list) else None
+
+
+def _catalog_description(cache: dict, marketplace: str, name: str) -> str:
+    """What the cloned catalog says one plugin is, or "" when the marketplace
+    is not cloned here or does not list it. `cache` holds each marketplace's
+    name -> description map for the length of one call."""
+    if marketplace not in cache:
+        by_name = {}
+        # The name comes from settings.json, so it is a directory name or nothing.
+        if marketplace not in ("", ".", "..") and os.path.basename(marketplace) == marketplace:
+            for entry in _read_catalog(os.path.join(lib.MARKETPLACES_DIR, marketplace)) or []:
+                if isinstance(entry, dict) and isinstance(entry.get("name"), str):
+                    desc = entry.get("description")
+                    by_name[entry["name"]] = desc if isinstance(desc, str) else ""
+        cache[marketplace] = by_name
+    return cache[marketplace].get(name, "")
 
 
 def _author(value: object) -> Optional[str]:
@@ -123,18 +156,8 @@ def _available() -> dict:
         mkt_dir = os.path.join(lib.MARKETPLACES_DIR, mkt)
         if not os.path.isdir(mkt_dir):
             continue
-        path = _catalog_path(mkt_dir)
-        if path is None:
-            skipped.append(mkt)
-            continue
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                catalog = json.load(f)
-        except (OSError, ValueError):
-            skipped.append(mkt)
-            continue
-        entries = catalog.get("plugins") if isinstance(catalog, dict) else None
-        if not isinstance(entries, list):
+        entries = _read_catalog(mkt_dir)
+        if entries is None:
             skipped.append(mkt)
             continue
         for entry in entries:

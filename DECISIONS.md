@@ -7478,3 +7478,24 @@ D406 withdrew `parakeet-mlx` because a separate Apple-only runner with its own v
 - **sherpa tokens** carry a leading plain space on word starts, not `▁`.
 - **`feature_dim`** 80 vs 128 gave identical text and timestamps; the value is left at sherpa's default.
 - **Not done.** The model is not on our mirror yet (needs the `changing-suggested-models` upload). Sentence splitting has no abbreviation guard.
+
+## D1424: Claude Config: skills are read from every CLI's dir, and a new skill is one copy plus at most one link (2026-10-22, claude-config-revamp)
+
+Skills were `~/.claude/skills` plus enabled plugins, so a skill Copilot or Codex reads (`~/.agents/skills`) was invisible, and the Plugins page spent a column on marketplaces that a filter does the work of. The revamp widens the Skills page to every CLI and gives it a Discover tab over the cloned marketplaces.
+
+| Dir | Read by | Notes |
+|---|---|---|
+| `~/.claude/skills` | Claude | |
+| `~/.agents/skills` | Copilot, Codex | |
+| `~/.copilot/skills` | Copilot | `COPILOT_HOME` moves it (`copilot_health.config_dir`) |
+| `~/.codex/skills` | Codex | `CODEX_HOME` moves it (`codex_health.config_dir`). The evidence that Codex reads this dir is weak; it is listed because Codex's own tooling writes there. |
+| enabled Claude plugins | Claude | read-only |
+
+- **Placement rule.** One copy, every enabled CLI reads it, none reads it twice. Copilot or Codex on: the copy goes to `~/.agents/skills/<slug>` and, when Claude is on, `~/.claude/skills/<slug>` is a symlink to it (Claude does not read `.agents`; Copilot does not read `.claude`). Only Claude on: the copy goes to `~/.claude/skills/<slug>`. "New skill" scaffolds with the same rule. The enabled set is the `claude_enabled` / `copilot_enabled` / `codex_enabled` prefs, read when the skill is added, not remembered.
+- **Dedupe.** Rows are keyed by `realpath`, so a link in one dir to a skill in another is one row whose readers are the union. The row stands on the real copy (`path`, `location`) and lists every entry (`paths`) so delete can name them.
+- **Taken means taken anywhere.** Add and create refuse a slug that exists (even as a dangling link) in ANY user dir, not only the target ones: a second copy in `~/.copilot/skills` would be read twice by Copilot.
+- **Delete** removes the real dir and every link to it across the user dirs, links first. A link to a skill outside the user dirs removes only the link.
+- **Copy safety.** The source must be a skill of a cloned plugin whose catalog `source` is a relative path resolving inside the clone; the walk does not follow symlinks and skips them; 500 files / 25 MB cap; the copy is staged in a dot-dir beside the destination and renamed in, so a refused or failed copy leaves nothing behind.
+- **Discover covers local sources only.** A plugin whose catalog `source` is a github/git object is not on disk until installed, so its skills cannot be listed; `skills.available` counts them in `skipped` and the page says so.
+- **Not done: Copilot and Codex plugin skills.** Neither `~/.codex/plugins/cache` nor `~/.copilot` exists on this machine, so no on-disk plugin layout could be confirmed. Guessing a layout would list nothing or the wrong thing; they are left out until someone with those plugins installed can look.
+- **Installed plugins carry a description** joined from the cloned marketplace catalog by name (`""` when the marketplace is not cloned or does not list it).
