@@ -2553,8 +2553,11 @@ def _new_task(key: str, session_id: str, path: str | None,
               backend: str = "") -> dict:
     # `backend` is which agent's root the transcript was found under ("" for a
     # row with no transcript yet); `_row_backend` finishes the answer.
+    # `key_filed_at` is the key-keyed archive stamp (`tasks_store.archived_at`)
+    # for a task with no session to file on; `_collect` fills it, `_row` reads
+    # it. 0.0 everywhere else, which reads as "not filed".
     return {"key": key, "session_id": session_id, "path": path, "entries": [],
-            "backend": backend}
+            "backend": backend, "key_filed_at": 0.0}
 
 
 def _entry_session(entry: dict, by_id: dict | None = None) -> str:
@@ -2809,6 +2812,16 @@ def _collect() -> dict[str, dict]:
     # user deleted — is absent from every one of them and no view has to know
     # why.
     deleted = tasks_store.deleted_state()
+    # THE KEY-KEYED FILING, for the rows that have no session to file on
+    # (`tasks_store.ARCHIVED_FILE`): read once per pass like the tombstones,
+    # stashed on the task so `_row` needs no new parameter. A task WITH a
+    # session is filed on its triage record and never reads this — the key
+    # record, if one exists under a pending key the row has since left, is
+    # an orphan nothing consults.
+    archived = tasks_store.archived_state()
+    for key, task in tasks.items():
+        if not task["session_id"]:
+            task["key_filed_at"] = tasks_store.archived_at(archived, key)
     return {key: task for key, task in tasks.items()
             if _is_task(task) and not _deleted(task, deleted)
             and not _bot_session(task)}
@@ -3932,9 +3945,22 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # it from disk. See `_revived`.
     record = _archive_record(task["session_id"], triage)
     filed = record is not None
-    if record is not None and _revived(merged, _filed_at(record)):
+    filed_at = _filed_at(record) if record is not None else 0.0
+    # A SESSION-LESS TASK IS FILED BY KEY (`tasks_store.archived_at`, stashed
+    # by `_collect`): a failed spawn that never minted a session has no triage
+    # record to carry the filing, and without this the Archive gesture on its
+    # red row did nothing visible. Same revival rule either way — `revived`
+    # carries the session id for a triage filing and the TASK KEY for a key
+    # filing (a session-less key is always `pending:`-prefixed, so the caller
+    # tells them apart by prefix and drops the right record).
+    key_filed = (not filed and not task["session_id"]
+                 and float(task.get("key_filed_at") or 0.0) > 0)
+    if key_filed:
+        filed = True
+        filed_at = float(task["key_filed_at"])
+    if filed and _revived(merged, filed_at):
         filed = False
-        revived.append(task["session_id"])
+        revived.append(task["key"] if key_filed else task["session_id"])
     # Which message the status is reading off — asked once here so the row's
     # `failed` flag and its `status` cannot be reading two different runs.
     speaker = _speaker(merged, filed)
@@ -5825,9 +5851,13 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
         # the row already reads as its derived lane above, and leaving the
         # record on disk would put the task back in Archive the moment it went
         # quiet again. Best-effort — a filing we could not drop costs one poll's
-        # worth of the row coming back, never the listing.
+        # worth of the row coming back, never the listing. A `pending:` key is
+        # a session-less task's KEY filing (`_row`), dropped from its own store.
         try:
-            sessions.clear_triage(session_id)
+            if session_id.startswith(tasks_store.PENDING_PREFIX):
+                tasks_store.clear_archived(session_id)
+            else:
+                sessions.clear_triage(session_id)
         except OSError:
             pass
     # Day one: everything that already exists is read. Done HERE, from the
@@ -7358,7 +7388,19 @@ def archive_task(task: dict, parked: dict) -> tuple[int, bool, bool]:
     session_id = task["session_id"]
     if session_id:
         sessions.write_triage(session_id, _FILED)
-    return cancelled, bool(session_id), stopped
+    else:
+        # NO SESSION, SO THE FILING GOES ON THE KEY (`tasks_store.ARCHIVED_FILE`;
+        # Akshil, 2026-10-22: failed Copilot tasks "appear as red tasks in the
+        # list, they cannot open it, they cannot archive it"). A send whose
+        # spawn failed is an `error` entry under `pending:<id>` — not PENDING,
+        # so nothing above cancelled it, and with no session nothing filed it:
+        # the route answered `filed: False` and the row stayed red for ever.
+        # Delete already worked on these rows because its tombstone is keyed
+        # by task key; archive now is too. `_row` reads it back, `_revived`
+        # drops it if the task ever runs, and Unarchive clears it.
+        tasks_store.mark_archived(task["key"])
+        task["key_filed_at"] = time.time()
+    return cancelled, True, stopped
 
 
 class UnarchivePatch(BaseModel):
@@ -7410,6 +7452,12 @@ def api_task_unarchive(patch: UnarchivePatch,
 
     session_id = task["session_id"]
     unfiled = bool(session_id) and sessions.clear_triage(session_id)
+    if not session_id:
+        # The key-keyed filing a session-less task carries (`archive_task`),
+        # and the stash `_collect` read off it, so the row built below reads
+        # the lane it will derive into rather than Archive once more.
+        unfiled = tasks_store.clear_archived(key)
+        task["key_filed_at"] = 0.0
     # Where it landed, read the same way the listing reads it — one row built
     # from the same helpers, AFTER the filing is gone, so the answer is the lane
     # the very next poll will draw rather than a guess about it.
