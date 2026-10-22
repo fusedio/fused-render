@@ -712,6 +712,33 @@ def ranked_search_enabled() -> bool:
     return read_prefs().get("ranked_search_enabled") is not False
 
 
+def _warm_run_env() -> bool | None:
+    """`FUSED_RENDER_WARM_RUN` as a tri-state (None = unset/unrecognised)."""
+    raw = os.environ.get("FUSED_RENDER_WARM_RUN")
+    if raw is None:
+        return None
+    raw = raw.strip().lower()
+    if raw in ("0", "false", "off", "no"):
+        return False
+    if raw in ("1", "true", "on", "yes"):
+        return True
+    return None
+
+
+def warm_run_enabled() -> bool:
+    """Whether `/api/run` may claim a pre-spawned idle interpreter (SPEC PY-20,
+    default ON). `FUSED_RENDER_WARM_RUN` wins over the stored pref, the way
+    `FUSED_RENDER_ENGINE` does; POSIX only, so Windows is always off. Same
+    idiom as `ranked_search_enabled`: absence and any non-`false` stored value
+    read as enabled."""
+    if os.name != "posix":
+        return False
+    forced = _warm_run_env()
+    if forced is not None:
+        return forced
+    return read_prefs().get("warm_run_enabled") is not False
+
+
 def calls_enabled() -> bool:
     """Whether the app call log records anything (default ON — see calls.py).
 
@@ -965,6 +992,9 @@ def _prefs_response() -> dict:
         # ON — D720; off is `depth ASC, rel ASC` instead of scored).
         "indexing": {"enabled": indexing_enabled(), "ranked": ranked_search_enabled(),
                      "low_impact": index_low_impact_enabled()},
+        # Whether /api/run may claim a pre-spawned idle interpreter (default
+        # ON, PY-20); `forced` = FUSED_RENDER_WARM_RUN decides, not the pref.
+        "warm_run": {"enabled": warm_run_enabled(), "forced": _warm_run_env() is not None},
         # Whether app-made git commits are auto-pushed and behind repos are
         # auto fast-forwarded on app open (default ON).
         "git": {"auto_sync": git_auto_sync_enabled()},
@@ -1376,6 +1406,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["ranked_search_enabled"] = value
             changed = True
+        if "warm_run_enabled" in body:
+            value = body.get("warm_run_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'warm_run_enabled' must be a boolean"},
+                                    status_code=400)
+            prefs["warm_run_enabled"] = value
+            changed = True
         if "index_low_impact_enabled" in body:
             value = body.get("index_low_impact_enabled")
             if not isinstance(value, bool):
@@ -1543,6 +1580,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'lan_enabled', "
                           "'claude_enabled', 'copilot_enabled', 'codex_enabled', "
                           "'default_backend', 'indexing_enabled', 'ranked_search_enabled', "
+                          "'warm_run_enabled', "
                           "'index_low_impact_enabled', "
                           "'git_auto_sync_enabled', 'auto_download_updates', "
                           "'calls_enabled', "

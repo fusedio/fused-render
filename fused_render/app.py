@@ -508,16 +508,23 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
         from fused_render.bots import browser as bots_browser
         from fused_render.server import engine_host
 
-        from fused_render import canvases
+        from fused_render import canvases, warm_run
 
         engine_host.refuse_new_children()
         supervisor.refuse_new_workers()
         bots_browser.refuse_launches()
         canvases.refuse_new_managers()
+        warm_run.refuse_new()
 
     def engines():
         from fused_render.server import engine_host
 
+        from fused_render import warm_run
+
+        # The pre-spawned idle interpreters (SPEC PY-20), first and fast so a
+        # slow `stop_all` cannot keep them alive past `os._exit` (they would
+        # otherwise only exit on stdin EOF).
+        warm_run.shutdown()
         engine_host.stop_all()
 
     def ai_workers():
