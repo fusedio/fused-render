@@ -3770,9 +3770,15 @@ def _copilot_argv(run_dir: str, pane: bool, cli_mode: str | None,
         shots = _shots_dir()
     except Exception as exc:  # noqa: BLE001
         shots = {"error": str(exc)}
+    # SHOTS is granted only on `_shots_dir`'s say-so, never on `isdir`: a
+    # refused directory exists too, and granting it would hand the session a
+    # directory `_require_private` just declined to vouch for.
     if shots.get("error"):
         sys.stderr.write("copilot: no screenshot grant: %s\n" % shots["error"])
-    for d in [SHOTS, *(extra_read_dirs or [])]:
+        dirs = []
+    else:
+        dirs = [SHOTS]
+    for d in [*dirs, *(extra_read_dirs or [])]:
         if os.path.isdir(d):
             cmd += ["--add-dir", d]
     if _fused_cli_dir():

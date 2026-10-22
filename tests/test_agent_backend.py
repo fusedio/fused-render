@@ -771,6 +771,21 @@ def test_copilot_argv_without_a_pane_has_no_mcp_and_no_write_grant(
     assert adds == [agent.SHOTS]   # the screenshot grant, nothing else
 
 
+def test_copilot_argv_grants_no_screenshot_dir_the_build_refused(
+        agent, target, home, tmp_path, monkeypatch):
+    """A SHOTS `_shots_dir` would not vouch for (somebody else's directory
+    planted there, or one it could not secure) is not granted even though it
+    exists: the grant follows the preparation's answer, not `isdir`."""
+    file, _ = target
+    _copilot_bin(tmp_path, monkeypatch)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    os.mkdir(agent.SHOTS)
+    monkeypatch.setattr(agent, "_shots_dir", lambda: {"error": "readable by others"})
+    argv = agent._copilot_argv(str(run_dir), False, None, "", "", "", [], file)
+    assert "--add-dir" not in argv
+
+
 @pytest.mark.parametrize("model", ["", "auto", "claude-sonnet-4.5", "claude-opus-4.5"])
 def test_copilot_argv_drops_the_effort_for_a_model_that_takes_none(
         agent, target, home, tmp_path, monkeypatch, model):
