@@ -851,6 +851,23 @@ def generate(body):
     # empty string would be passed through as a language code that matches none.
     language = str(body.get("language") or "") or None
     initial_prompt = str(body.get("initialPrompt") or "") or None
+    if sherpa and (language or "").lower() == "auto":
+        # The one spelling of "detect it" a caller can send: Parakeet always does.
+        language = None
+    if sherpa and language:
+        # Refused for `translate`'s reason, and before a row is touched: Parakeet
+        # v3 picks its own language among the 25 it was trained on, so pinning
+        # one would be accepted and ignored — a page that asked for German and
+        # got a guess has nothing on the reply to tell it.
+        raise ValueError(
+            "Parakeet detects its own language and cannot be pinned to one; "
+            "'language' needs a Whisper model such as "
+            "deepdml/faster-whisper-large-v3-turbo-ct2")
+    if sherpa and initial_prompt:
+        raise ValueError(
+            "Parakeet is a transducer with no text to condition on, so "
+            "'initialPrompt' is not supported; it needs a Whisper model such as "
+            "deepdml/faster-whisper-large-v3-turbo-ct2")
     # `is None`, not `get("vad", True)`: a JSON null is "not specified", and a
     # default reached only by an absent KEY inverts for the caller that spreads
     # an options object carrying an unset one.
@@ -904,10 +921,10 @@ def generate(body):
         if packs == [[(0.0, duration)]]:
             packs = _time_slices(duration)
         stream = None
-        # Parakeet auto-detects and sherpa reports no language, so the reply says
-        # only what the caller asked for — and `None` otherwise — rather than
-        # inventing a code a page would then trust.
-        detected = language
+        # Parakeet auto-detects and sherpa reports no language, so the reply
+        # carries none rather than inventing a code a page would then trust (a
+        # pinned `language` was refused above, so there is nothing to echo).
+        detected = None
     else:
         # TWO phases, and only the second one is lazy. `transcribe` returns a
         # generator that decodes segment by segment as it is consumed — but it

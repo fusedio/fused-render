@@ -26,6 +26,13 @@ declining leaves the key off, so a caller reads which happened off the reply.
 It is answered best-effort in `mlx_whisper/worker.py` and `faster_whisper/worker.py`
 (both formats there, D1423), where the decline lives.
 
+**Parakeet on the faster-whisper runner (D1423) is refused in its worker, not
+here**, for the reason the table is keyed by runner CODE: that code also serves
+Whisper, which answers all three options, so only the loaded MODEL can say no.
+`faster_whisper/worker.py` refuses `task: "translate"`, a pinned `language`
+(anything but unset or `"auto"`) and `initialPrompt` on a sherpa model before a
+row is touched, and its reply carries `language: null`.
+
 **This module is where that rule lives, once**, for exactly the reason
 `diarize.speakers_or_raise` sits where it does. The endpoint refuses first,
 before a job row opens and before a multi-gigabyte model downloads — the

@@ -8190,8 +8190,10 @@ an AI Models page that could say what was on disk but not what was *running*.
   (AI-10c). Parakeet has no VAD of its own and decodes one utterance at a time,
   so it uses the shared VAD policy (`stt_common`, AI-10f) and decodes packed
   regions in turn; with `vad: false` it cuts the recording into 29-second time
-  slices. `words` is honoured on both formats; Parakeet has no `translate` and
-  refuses it before decoding. CPU only.
+  slices. `words` is honoured on both formats; Parakeet has no `translate`, no pinned
+  `language` (only unset or `"auto"`) and no `initialPrompt`, and refuses each
+  before decoding rather than ignoring it; its reply carries `language: null`.
+  CPU only.
 - **AI-10a** **A transcription is job-backed like an image, and its result is a
   FILE.** `POST /api/ai/transcribe` answers immediately with a `jobId` and with
   the output paths already settled, exactly as AI-9 does — a 90-minute recording

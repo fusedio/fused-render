@@ -1338,10 +1338,10 @@ def test_a_result_with_no_usable_timestamps_is_one_segment_over_the_pack(
     assert "words" not in segment
 
 
-def test_the_reply_language_is_what_was_asked_for_or_none(
+def test_the_reply_language_is_none_because_sherpa_reports_none(
         worker, base, tmp_path, sherpa, monkeypatch):
-    """sherpa reports no language, so the reply says only what the caller said —
-    it must not invent one."""
+    """sherpa reports no language, so the reply must not invent one — and an
+    "auto" request is the one spelling of `language` that is not refused."""
     _loaded_parakeet(worker, sherpa, tmp_path)
     _decoder(monkeypatch, samples=16000)
     _no_vad(monkeypatch, worker)
@@ -1349,7 +1349,24 @@ def test_the_reply_language_is_what_was_asked_for_or_none(
                       ("Hi.", *_tokens((0.0, " Hi"), (0.3, ".")))]
 
     assert worker.generate(_request(tmp_path))["language"] is None
-    assert worker.generate(_request(tmp_path, language="de"))["language"] == "de"
+    assert worker.generate(_request(tmp_path, language="auto"))["language"] is None
+
+
+@pytest.mark.parametrize("option,value", [("language", "de"),
+                                          ("initialPrompt", "Acme, Fused")])
+def test_parakeet_refuses_language_and_initial_prompt_before_any_work(
+        worker, base, tmp_path, sherpa, monkeypatch, option, value):
+    """Accepted-and-ignored is the failure `engine_options` rates worst: a page
+    that pinned German and got a guess has nothing on the reply to tell it."""
+    _loaded_parakeet(worker, sherpa, tmp_path)
+    calls = _decoder(monkeypatch)
+
+    with pytest.raises(ValueError) as caught:
+        worker.generate(_request(tmp_path, **{option: value}))
+
+    assert "Parakeet" in str(caught.value) and option in str(caught.value)
+    assert "deepdml/faster-whisper-large-v3-turbo-ct2" in str(caught.value)
+    assert calls == [] and base.ticks == []
 
 
 def test_each_pack_ticks_seconds_of_audio_and_a_cancel_between_packs_stops(
