@@ -194,6 +194,14 @@ export default function Canvases() {
       // the old env's login, and the new pick's own refresh is on its way.
       if (gen !== envGenRef.current) return;
       setStatus(s);
+      if (!s.logged_in && s.login_in_flight) {
+        // This env's browser sign-in is still open — one `onPickEnv`
+        // stopped watching on the way out, or one started elsewhere. Watch
+        // it again, from the store as it is now (`login_in_flight` is
+        // already per store on the server).
+        loginStampRef.current = s.creds_stamp;
+        setLoggingIn(true);
+      }
       if (s.logged_in) {
         setLoggingIn(false);
         const env = effectiveEnv(s, pickedRef.current);
