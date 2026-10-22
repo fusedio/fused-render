@@ -2221,6 +2221,7 @@ def test_llamacpp_and_whisper_suggestions_show_snapshot_size_estimates():
         "deepdml/faster-whisper-large-v3-turbo-ct2": 1.6,
         "Systran/faster-whisper-tiny.en": 0.08,
         "Systran/faster-whisper-small": 0.5,
+        "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8": 0.67,
     }
     actual = {
         model["id"]: model["size_gb"]

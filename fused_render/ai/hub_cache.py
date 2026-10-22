@@ -622,6 +622,11 @@ def _format_task(repo_id: str, names, dirnames, config: dict) -> tuple[str, str]
         return "automatic-speech-recognition", "its CTranslate2 Whisper layout"
     if formats.is_mlx_whisper_snapshot(names, config):
         return "automatic-speech-recognition", "its MLX Whisper weights"
+    if formats.is_sherpa_transducer_snapshot(names):
+        # The Parakeet export (D1423). It has no config.json, so the `target`
+        # check cannot see it, and an `encoder.int8.onnx` + `joiner` + `decoder`
+        # triple is a transducer — speech recognition and nothing else.
+        return "automatic-speech-recognition", "its sherpa-onnx transducer export"
     # Either mflux table — a Fill checkpoint is as much text-to-image here as
     # a Klein one; `mflux_native_mode` is the one membership test for both.
     if formats.mflux_native_mode(repo_id) and formats.has_mflux_components(dirnames):

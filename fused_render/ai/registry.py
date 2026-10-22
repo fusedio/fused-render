@@ -1506,8 +1506,12 @@ _RUNNERS: tuple[Runner, ...] = (
         # machine gets whenever the MLX row above it is unavailable — and
         # that CPU path is still, in the module's own words, "several times
         # faster than real time".
-        note="Transcribes on an NVIDIA GPU when available, otherwise the "
-             "CPU. Several times faster than real time.",
+        # Whisper takes CUDA when there is one; Parakeet (D1423, the runner's
+        # second format) is CPU-only here — so the GPU clause is scoped to
+        # Whisper and the CPU fallback is what both share.
+        note="Transcribes with Whisper or Parakeet — Whisper on an NVIDIA GPU "
+             "when available, otherwise the CPU. Several times faster than "
+             "real time.",
         _available=_always,
     ),
     # Embeddings, the fourth capability, arranged like the other three: MLX takes
