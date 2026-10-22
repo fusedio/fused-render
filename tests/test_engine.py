@@ -3,8 +3,7 @@
 The pure parts (PEP 723 parsing, code wrapping + the bare-main compat bridge,
 traceback cleaning, wire-shape adaptation) run everywhere — the wrapped code is
 exec()'d directly, standing in for the backend's runner. The real-backend
-integration tests run only when the `fused` package is importable (CI without
-it skips them; the engine itself falls back the same way).
+integration tests run the vendored compute backend.
 """
 import asyncio
 import json
@@ -50,10 +49,6 @@ def _fresh_interpreter_probe():
 # --- engine warm-up ----------------------------------------------------------
 
 
-def test_the_compute_backend_is_always_available():
-    assert engine.available() is True
-
-
 def test_warm_primes_the_pre_spawned_interpreters(monkeypatch):
     seen = []
     monkeypatch.setattr(engine.warm_run, "prime",
@@ -76,7 +71,7 @@ def test_warm_unless_forced_builtin_gates_on_the_override(monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_ENGINE", "builtin")
     engine.warm_unless_forced_builtin()
     assert calls == []
-    monkeypatch.setenv("FUSED_RENDER_ENGINE", "auto")
+    monkeypatch.setenv("FUSED_RENDER_ENGINE", "fused")
     engine.warm_unless_forced_builtin()
     assert calls == [1]
 
