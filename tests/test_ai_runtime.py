@@ -13692,6 +13692,17 @@ def test_a_snapshot_with_a_config_is_not_listed_for_the_kokoro_layout(hub, monke
     assert ai_models.speech_traits("org/qwen-like")["voices"] == ["ryan"]
 
 
+def test_a_kokoro_layout_beside_a_non_qwen_config_still_reads_as_kokoro(hub):
+    """`cached_loaders` claims the layout whatever config sits beside it, so
+    `speech_traits` must too, or the row lists as speech with no voices."""
+    _cached_repo(hub, "org/repackaged-kokoro", files=KOKORO_FILES, dirs=KOKORO_DIRS,
+                 config={"model_type": "kokoro"})
+    assert ai_models.cached_loaders("org/repackaged-kokoro") == ("sherpa-tts",)
+    traits = ai_models.speech_traits("org/repackaged-kokoro")
+    assert traits is not None and traits["instructable"] is False
+    assert traits["voices"][:3] == ["af_maple", "af_sol", "bf_vale"]
+
+
 def test_the_catalog_says_a_kokoro_entry_has_no_style_line(client, fake_speech_runner, hub):
     _cached_repo(hub, "org/fake-preset", files=KOKORO_FILES, dirs=KOKORO_DIRS)
     rows = client.get("/api/ai/catalog").json()["capabilities"]
