@@ -887,6 +887,28 @@ def api_canvases_settings_save(body: dict = Body(...), x_fused: str | None = Hea
             "web_url": workbench_base_url(CUSTOM_WORKBENCH_ENV)}
 
 
+@router.post("/api/canvases/settings/delete")
+def api_canvases_settings_delete(x_fused: str | None = Header(default=None)):
+    """Remove the TOML settings file: the custom environment goes back to
+    unconfigured and the Canvases page offers the editor again. Only the
+    TOML file — a `settings.json` beside it is fused's own fallback and not
+    something this editor wrote. An already-missing file is a no-op."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    path = fused_settings_path()
+    try:
+        os.remove(path)
+        removed = True
+    except FileNotFoundError:
+        removed = False
+    except OSError as exc:
+        return _error(f"could not delete {path}: {exc}", 500)
+    _cli_cache_clear()
+    return {"ok": True, "path": path, "removed": removed,
+            "configured": fused_settings_configured()}
+
+
 def _cloned_names(env: str) -> set[str]:
     """The clone dirs under canvases_root(env): a dir holding a canvas.toml,
     the same rule /api/canvases/list uses to mark a card cloned.

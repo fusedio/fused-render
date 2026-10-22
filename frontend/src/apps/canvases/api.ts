@@ -75,6 +75,14 @@ export const saveFusedSettings = (text: string) =>
     web_url: string;
   }>("/api/canvases/settings/save", { text });
 
+/** Remove the settings file (only the TOML one); custom is unconfigured
+ *  again afterwards. A missing file is `removed: false`, not an error. */
+export const deleteFusedSettings = () =>
+  postJson<{ ok: boolean; path: string; removed: boolean; configured: boolean }>(
+    "/api/canvases/settings/delete",
+    {},
+  );
+
 /** `custom` (fusedcli.CUSTOM_WORKBENCH_ENV) is no Fused of its own: its CLI
  *  runs leave FUSED_ENV unset, so they talk to whatever endpoint
  *  `~/.fused/settings.toml` names, and its `base_url` is that endpoint's web

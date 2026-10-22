@@ -28,6 +28,7 @@ import {
   cancelLogin,
   cloneCanvas,
   createCanvas,
+  deleteFusedSettings,
   getCanvasesStatus,
   getCanvasPreviews,
   listCanvases,
@@ -154,6 +155,10 @@ export default function Canvases() {
   // changes, and the inline prompt reopens it on demand.
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsDismissedRef = useRef(false);
+  // "Delete config" is two presses: the first arms it in place (the second
+  // button's words say what goes), the next deletes. No `confirm()`.
+  const [deleteArmed, setDeleteArmed] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
   const env = status ? effectiveEnv(status, picked) : null;
 
   // Presigned preview URLs, keyed by collection id — the second, slower half
@@ -275,6 +280,7 @@ export default function Canvases() {
     // would call the sign-in done or failed wrongly. The sign-in itself
     // carries on; switching back finds it in this env's status.
     setLoggingIn(false);
+    setDeleteArmed(false);
     void refresh();
   };
 
@@ -298,6 +304,25 @@ export default function Canvases() {
     }
     if (!settingsDismissedRef.current) setSettingsOpen(true);
   }, [customUnconfigured]);
+
+  // Remove ~/.fused/settings.toml. The page then shows the inline prompt,
+  // not the editor: a reader who just deleted a config did not ask to write
+  // one, so the auto-open is suppressed for this pick.
+  const onDeleteSettings = async () => {
+    if (deleteBusy) return;
+    setDeleteBusy(true);
+    setError(null);
+    try {
+      await deleteFusedSettings();
+      settingsDismissedRef.current = true;
+      setDeleteArmed(false);
+      await refresh();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
 
   // While a login is in flight, poll status until logged_in flips — or the
   // browser child exits without ever flipping it (closed tab, denied, or the
@@ -596,6 +621,29 @@ export default function Canvases() {
                   Complete the sign-in in the browser window that just opened.
                 </span>
               </>
+            )}
+            {env === "custom" && !loggingIn && (
+              deleteArmed ? (
+                <>
+                  <span className="canvases-sub">
+                    Delete <code>{status.settings_path}</code>?
+                  </span>
+                  <button
+                    className="btn btn-danger"
+                    onClick={() => void onDeleteSettings()}
+                    disabled={deleteBusy}
+                  >
+                    {deleteBusy ? "Deleting…" : "Yes, delete"}
+                  </button>
+                  <button className="btn" onClick={() => setDeleteArmed(false)} disabled={deleteBusy}>
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button className="btn" onClick={() => setDeleteArmed(true)}>
+                  Delete config
+                </button>
+              )
             )}
           </div>
         )}
