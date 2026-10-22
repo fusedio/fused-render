@@ -23,7 +23,7 @@ touches the folder.
 the ones whose modules open the author's token files, hit a keychain, or talk to
 a localhost service at import time — inspecting by importing would run all of
 that just to draw a list of parameter names. `ast.parse` answers the question
-without executing a line, and it is the same derivation `fused app serve` does on
+without executing a line, and it is the same derivation `fused-render app serve` does on
 the other side of the contract, so the panel and the server agree about what an
 entrypoint is.
 
@@ -50,10 +50,9 @@ import sys
 # Which `.html` is "the app's page" is NOT decided here: it is
 # `app_entry.entry_html`'s answer, the marker being the only signal (D301).
 
-# The manifest filename — the contract with `fused app serve` (openfused
-# spec/serve/app-mcp.md §2). Deliberately NOT `openfused.toml`: fused's project
-# resolution walks up looking for that name, and an app must never resolve as a
-# project.
+# The manifest filename — the contract with `fused-render app serve`.
+# Deliberately NOT `openfused.toml`: project resolution walks up looking for that
+# name, and an app must never resolve as a project.
 _MANIFEST = "mcp.toml"
 
 # Ceilings. The panel is interactive, so every read here is bounded: a folder
@@ -100,32 +99,17 @@ def _shared_import(name: str, attr: str):
     return getattr(module, attr, None)
 
 
-def _fused_cli() -> str:
-    """The absolute `fused` the registration entry should name, or `""`.
+def _render_bin() -> str:
+    """The absolute `fused-render` wrapper the registration entry should name, or `""`.
 
-    From `appenv.fused_cli_dir()` — the directory the SERVER exported after
-    vetting its own interpreter's CLI and baking `FUSED_ENV` (D334,
-    `fusedcli.py`) — never from a PATH lookup. `shutil.which("fused")` was what
-    this did, and it is the exact mechanism D334 replaced: on a machine whose app
-    venv has no `[fused]` extra but whose PATH carries some other `fused` (a pipx
-    shim, another project's venv), the panel would bake that unvetted binary into
-    a GLOBAL `~/.claude.json` entry, where it runs with no FUSED_ENV and fails
-    somewhere the user cannot see. Absent means registration is not offered.
-
-    The wrapper's filename is a DUPLICATED rule, not an import — this file
-    cannot `import fused_render` (SPEC PY-15, templates are stdlib-only) — and
-    must stay character-for-character what `fusedcli.export_fused_cli_env()`
-    writes: `fused` (pinned together by
-    `tests/test_mcp_inspect.py::test_the_reader_finds_exactly_what_the_writer_names`).
+    From `appenv.render_bin()` — the file the SERVER wrote and exported
+    (`fusedcli.export_render_wrapper`) — never from a PATH lookup: the entry goes
+    into a GLOBAL `~/.claude.json`, where another `fused-render` found on PATH
+    would run somewhere the user cannot see. Absent means registration is not
+    offered.
     """
-    cli_dir = _shared_import("appenv", "fused_cli_dir")
-    if cli_dir is None:
-        return ""
-    directory = cli_dir()
-    if not directory:
-        return ""
-    candidate = os.path.join(directory, "fused")
-    return candidate if os.path.isfile(candidate) else ""
+    render_bin = _shared_import("appenv", "render_bin")
+    return (render_bin() if render_bin else None) or ""
 
 
 def _toml():
@@ -394,7 +378,7 @@ def _manifest_report(folder: str) -> dict:
 
     Read with the stdlib TOML parser — the same parser the
     server uses — so the panel's idea
-    of what is curated cannot diverge from what `fused app serve` will load. An
+    of what is curated cannot diverge from what `fused-render app serve` will load. An
     unparseable manifest is reported as an error on this sub-object rather than
     failing the whole report: the surface above it is still readable and still
     worth drawing.
@@ -503,9 +487,9 @@ def main(path: str = "") -> dict:
         "path": folder,
         "name": os.path.basename(folder.rstrip(os.sep)) or folder,
         # The absolute executable the registration entry will name, from the
-        # server's own vetted export (D334) and NOT from PATH — see `_fused_cli`.
+        # server's own export and NOT from PATH — see `_render_bin`.
         # `""` means no registration is possible and the panel says so.
-        "fused": _fused_cli(),
+        "command": _render_bin(),
         "files": [_file_report(folder, name) for name in _python_files(folder)],
         "page": _page_report(folder),
         "manifest": manifest,

@@ -657,8 +657,6 @@ def roster(bot) -> list[dict]:
     if not is_super(bot):
         for n in SUPER_TOOLS:
             names.remove(n)
-    if not apptools.available():
-        names.remove("tool")
     if not marketplace_on():
         for n in MARKET_TOOLS:
             names.remove(n)

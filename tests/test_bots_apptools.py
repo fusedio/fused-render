@@ -55,13 +55,7 @@ def apps_root(tmp_path):
 
 
 @pytest.fixture
-def core():
-    """The vendored runner is always present."""
-    assert apptools.available() is True
-
-
-@pytest.fixture
-def native(core):
+def native():
     """Tests that exercise the manifest reader and runner end to end."""
     return
 
@@ -72,7 +66,6 @@ def test_the_runner_is_the_vendored_one():
 
     assert apptools._run_app_tool is app_mcp._run_app_tool
     assert apptools.load_app_manifest is app_mcp.load_app_manifest
-    assert apptools.available() is True
 
 
 def test_defaults_skip_nothing():
@@ -85,7 +78,7 @@ def test_defaults_skip_nothing():
 
 
 # ---- discovery (needs fused.agent_core) ---------------------------------------------
-def test_discover_lists_tools_minus_pins(core, apps_root):
+def test_discover_lists_tools_minus_pins(apps_root):
     make_app(apps_root, "fake-docs")
     make_app(apps_root, "no-mcp", tools="")
     recs = apptools.discover([apps_root], [], skip_dir="/nonexistent")
@@ -97,19 +90,19 @@ def test_discover_lists_tools_minus_pins(core, apps_root):
     assert r.tools_in_app == 1
 
 
-def test_discover_skips_nothing_by_default(core, apps_root):
+def test_discover_skips_nothing_by_default(apps_root):
     make_app(apps_root, "one")
     assert [r.app for r in apptools.discover([apps_root], [])] == ["one"]
 
 
-def test_discover_skips_invalid_manifest(core, apps_root):
+def test_discover_skips_invalid_manifest(apps_root):
     make_app(apps_root, "good")
     make_app(apps_root, "bad", tools="[[tool]]\nname = 'x'\n")  # no file -> invalid
     recs = apptools.discover([apps_root], [], skip_dir="/nonexistent")
     assert [r.app for r in recs] == ["good"]
 
 
-def test_discover_reads_registry_files(core, apps_root, tmp_path):
+def test_discover_reads_registry_files(apps_root, tmp_path):
     other = str(tmp_path / "elsewhere")
     d = make_app(other, "linked-app")
     reg = tmp_path / "linked_apps.json"
@@ -118,7 +111,7 @@ def test_discover_reads_registry_files(core, apps_root, tmp_path):
     assert [r.app for r in recs] == ["linked-app"]
 
 
-def test_discover_ignores_bad_registry_file(core, apps_root, tmp_path):
+def test_discover_ignores_bad_registry_file(apps_root, tmp_path):
     make_app(apps_root, "good")
     bad = tmp_path / "registered_apps.json"
     bad.write_text("{not json")
@@ -126,7 +119,7 @@ def test_discover_ignores_bad_registry_file(core, apps_root, tmp_path):
     assert [r.app for r in recs] == ["good"]
 
 
-def test_discover_dedupes_realpath(core, apps_root, tmp_path):
+def test_discover_dedupes_realpath(apps_root, tmp_path):
     d = make_app(apps_root, "one")
     link = tmp_path / "link-to-one"
     os.symlink(d, link)
@@ -136,13 +129,13 @@ def test_discover_dedupes_realpath(core, apps_root, tmp_path):
     assert len(recs) == 1
 
 
-def test_discover_honours_explicit_skip(core, apps_root):
+def test_discover_honours_explicit_skip(apps_root):
     d = make_app(apps_root, "skip-me")
     recs = apptools.discover([apps_root], [], skip_dir=d)
     assert recs == []
 
 
-def test_discover_ignores_registry_entries_of_wrong_type(core, apps_root, tmp_path):
+def test_discover_ignores_registry_entries_of_wrong_type(apps_root, tmp_path):
     make_app(apps_root, "good")
     bad = tmp_path / "registered_apps.json"
     bad.write_text(json.dumps({"entries": 5}))
@@ -166,7 +159,7 @@ def test_count_tools(apps_root):
     assert apptools.count_tools(os.path.join(apps_root, "nope")) == 0
 
 
-def test_registry_caches_and_refreshes_on_mtime(core, apps_root, monkeypatch):
+def test_registry_caches_and_refreshes_on_mtime(apps_root, monkeypatch):
     make_app(apps_root, "a")
     monkeypatch.setattr(apptools, "ROOTS", [apps_root])
     monkeypatch.setattr(apptools, "REGISTRY_FILES", [])
@@ -178,7 +171,7 @@ def test_registry_caches_and_refreshes_on_mtime(core, apps_root, monkeypatch):
     assert sorted(r.app for r in apptools.registry()) == ["a", "b"]
 
 
-def test_registry_refreshes_when_entrypoint_edited(core, apps_root, monkeypatch):
+def test_registry_refreshes_when_entrypoint_edited(apps_root, monkeypatch):
     d = make_app(apps_root, "a")
     monkeypatch.setattr(apptools, "ROOTS", [apps_root])
     monkeypatch.setattr(apptools, "REGISTRY_FILES", [])
@@ -192,7 +185,7 @@ def test_registry_refreshes_when_entrypoint_edited(core, apps_root, monkeypatch)
     assert json.loads(apptools.run_tool(rec2, {"x": 3}).text)["x"] == 300
 
 
-def test_registry_drops_tool_whose_entrypoint_vanished(core, apps_root, monkeypatch):
+def test_registry_drops_tool_whose_entrypoint_vanished(apps_root, monkeypatch):
     d = make_app(apps_root, "a")
     monkeypatch.setattr(apptools, "ROOTS", [apps_root])
     monkeypatch.setattr(apptools, "REGISTRY_FILES", [])
@@ -208,7 +201,7 @@ def _one(apps_root, **kw):
     return apptools.discover([apps_root], [], skip_dir="/nonexistent")[0]
 
 
-def test_run_tool_returns_value_with_pin_applied(core, apps_root):
+def test_run_tool_returns_value_with_pin_applied(apps_root):
     rec = _one(apps_root)
     res = apptools.run_tool(rec, {"x": 7})
     assert res.ok is True
@@ -216,21 +209,21 @@ def test_run_tool_returns_value_with_pin_applied(core, apps_root):
     assert res.dropped == []
 
 
-def test_run_tool_cannot_override_pin(core, apps_root):
+def test_run_tool_cannot_override_pin(apps_root):
     rec = _one(apps_root)
     res = apptools.run_tool(rec, {"x": 1, "mode": "hacked"})
     assert json.loads(res.text)["mode"] == "pinned"
     assert res.dropped == ["mode"]
 
 
-def test_run_tool_drops_unknown_keys(core, apps_root):
+def test_run_tool_drops_unknown_keys(apps_root):
     rec = _one(apps_root)
     res = apptools.run_tool(rec, {"x": 2, "bogus": 1})
     assert res.ok and res.dropped == ["bogus"]
     assert json.loads(res.text)["x"] == 2
 
 
-def test_run_tool_args_not_object(core, apps_root):
+def test_run_tool_args_not_object(apps_root):
     rec = _one(apps_root)
     for bad in ('{"x": 1}', [1, 2], None):
         res = apptools.run_tool(rec, bad)
@@ -248,14 +241,14 @@ def test_run_tool_args_not_object_without_core():
         assert res.ok is False and "must be a JSON object" in res.text
 
 
-def test_run_tool_runtime_failure_is_error(core, apps_root):
+def test_run_tool_runtime_failure_is_error(apps_root):
     body_fail = "def main(x: int = 1, mode: str = 'a'):\n    raise RuntimeError('boom')\n"
     rec = _one(apps_root, body=body_fail)
     res = apptools.run_tool(rec, {})
     assert res.ok is False and res.text.startswith("error:") and "boom" in res.text
 
 
-def test_run_tool_non_json_result(core, apps_root):
+def test_run_tool_non_json_result(apps_root):
     body = "import datetime\ndef main(x: int = 1, mode: str = 'a'):\n    return {'when': datetime.date(2026, 9, 29)}\n"
     rec = _one(apps_root, body=body)
     res = apptools.run_tool(rec, {})
@@ -264,7 +257,7 @@ def test_run_tool_non_json_result(core, apps_root):
     assert "not JSON serializable" in res.text or "not JSON-serializable" in res.text
 
 
-def test_run_tool_timeout_warns_it_may_still_complete(core, apps_root):
+def test_run_tool_timeout_warns_it_may_still_complete(apps_root):
     body = "import time\ndef main(x: int = 1, mode: str = 'a'):\n    time.sleep(5)\n    return 1\n"
     rec = _one(apps_root, body=body)
     res = apptools.run_tool(rec, {}, timeout_s=1)
@@ -587,7 +580,7 @@ def test_prompt_section_lists_by_app_hand_built():
     assert '- mail_send(to: str, opts={"a": 1}): Sends mail. [approval]' in s
 
 
-def test_prompt_section_lists_by_app(core, apps_root):
+def test_prompt_section_lists_by_app(apps_root):
     make_app(apps_root, "fake-docs")
     recs = apptools.discover([apps_root], [], skip_dir="/nonexistent")
     s = apptools.prompt_section(recs)

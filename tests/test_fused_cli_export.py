@@ -16,6 +16,7 @@ Three parties have to agree, and each half is pinned here:
 import importlib.util
 import json
 import os
+import shlex
 import stat
 import subprocess
 import sys
@@ -148,59 +149,51 @@ def test_wrapper_scrubs_interpreter_vars_only_for_an_external_cli(
     assert "unset PYTHONHOME" not in text
 
 
-def test_wrapper_exports_the_engines_own_interpreter_for_app_serve(
-        monkeypatch, tmp_path):
-    """`fused app serve` must compute on the interpreter PAGE runs use.
-
-    OPENFUSED_APP_SERVE_PYTHON (openfused #364) becomes the compute backend's
-    `python_executable` inside the serve process, which is the same input
-    `engine.get_backend()` passes for page runs — so with the two equal, the
-    venv cache key (interpreter identity + sorted requirements) a tool resolves
-    is the key the page already built, and a tool with no declared dependencies
-    runs on that interpreter rather than in a bare stdlib venv. The MCP panel
-    registers `<fused-bin>/fused app serve <dir>` globally, so THIS wrapper is
-    the only place that value can be put.
-    """
-    from fused_render import envinstall
-
-    monkeypatch.setattr(envinstall, "script_python",
-                        lambda: "/opt/pythons/3.12.7/bin/python3.12")
-    bin_dir = _export_with_stub(monkeypatch, tmp_path)
-    text = open(os.path.join(bin_dir, "fused"), encoding="utf-8").read()
-    assert ('[ -n "${OPENFUSED_APP_SERVE_PYTHON:-}" ] || '
-            "OPENFUSED_APP_SERVE_PYTHON=/opt/pythons/3.12.7/bin/python3.12"
-            ) in text
-    assert "export OPENFUSED_APP_SERVE_PYTHON" in text
+def test_render_wrapper_runs_this_interpreter_on_the_cli_module(monkeypatch, tmp_path):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("PYTHONHOME", raising=False)
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    path = fusedcli.export_render_wrapper()
+    assert path == os.path.join(str(tmp_path / "home"), "fused-bin", "fused-render")
+    assert os.environ[fusedcli.RENDER_BIN_ENV] == path
+    assert os.access(path, os.X_OK)
+    text = open(path, encoding="utf-8").read()
+    assert text.splitlines()[-1] == f'exec {shlex.quote(sys.executable)} -m fused_render.cli "$@"'
+    assert "PYTHONHOME" not in text
 
 
-def test_app_serve_python_falls_back_to_this_interpreter(monkeypatch):
-    """`script_python()` returning None means "ours" — and "ours" is exactly
-    what the backend then runs on, because `python_executable=None` leaves it on
-    `sys.executable`. So the export must resolve None to sys.executable VERBATIM:
-    a hardcoded path would be wrong on every other machine, and a `realpath` of
-    a venv's python would name the base interpreter instead of the venv and so
-    key a different environment than the page's runs do.
-    """
-    from fused_render import envinstall
-
-    monkeypatch.setattr(envinstall, "script_python", lambda: None)
-    assert fusedcli._app_serve_python() == sys.executable
+def test_render_wrapper_bakes_the_bundle_interpreter_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("PYTHONHOME", "/Bundle/Resources/python")
+    monkeypatch.setenv("PYTHONPATH", "/Bundle/Resources/lib dir")
+    text = open(fusedcli.export_render_wrapper(), encoding="utf-8").read()
+    assert "export PYTHONHOME=/Bundle/Resources/python" in text
+    assert "export PYTHONPATH='/Bundle/Resources/lib dir'" in text
 
 
-def test_app_serve_python_is_the_engines_resolution_not_a_second_one(monkeypatch):
-    """One derivation, two consumers (D146: a duplicated rule needs a test).
+def test_render_wrapper_exists_with_no_fused_cli(monkeypatch, tmp_path):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(fusedcli, "fused_cli", lambda: None)
+    assert fusedcli.export_fused_cli_env() is None
+    assert os.path.isfile(fusedcli.export_render_wrapper())
 
-    The wrapper's value has to come from `envinstall.script_python()` — the same
-    call `engine.get_backend()` hands the backend as `python_executable`. Two
-    independent resolutions is how the serve process ends up filling a venv no
-    page run ever reads.
-    """
-    from fused_render import engine, envinstall
 
-    monkeypatch.setattr(envinstall, "script_python", lambda: "/opt/probe/python3.12")
-    assert fusedcli._app_serve_python() == "/opt/probe/python3.12"
-    src = open(engine.__file__, encoding="utf-8").read()
-    assert "python_executable=envinstall.script_python()" in src
+def test_render_wrapper_is_rewritten_atomically(monkeypatch, tmp_path):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    first = fusedcli.export_render_wrapper()
+    open(first, "w").write("stale")
+    assert fusedcli.export_render_wrapper() == first
+    assert open(first, encoding="utf-8").read().startswith("#!/bin/sh")
+    assert not os.path.exists(first + ".tmp")
+
+
+def test_render_wrapper_failure_unpublishes_the_env(monkeypatch, tmp_path):
+    blocker = tmp_path / "home"
+    blocker.write_text("a file where the dir should go")
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(blocker))
+    monkeypatch.setenv(fusedcli.RENDER_BIN_ENV, "/stale")
+    assert fusedcli.export_render_wrapper() is None
+    assert fusedcli.RENDER_BIN_ENV not in os.environ
 
 
 def _wrapper_env(wrapper: str, cwd: str, fused_env: str | None = None) -> str:

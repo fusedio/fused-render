@@ -158,3 +158,14 @@ def fused_cli_dir() -> str | None:
     return os.environ.get("FUSED_RENDER_FUSED_CLI_DIR") or None
 
 
+def render_bin() -> str | None:
+    """The `fused-render` wrapper the server wrote for MCP registration, or None.
+
+    Set by `fusedcli.export_render_wrapper` before the server serves, as an
+    absolute path. The MCP panel registers `{command: <this>, args: ["app",
+    "serve", <dir>]}` in the user's global Claude config, so the answer is the
+    server's own file and never a PATH lookup: another `fused-render` on PATH
+    would be baked into a config that outlives this server.
+    """
+    path = os.environ.get("FUSED_RENDER_BIN")
+    return path if path and os.path.isfile(path) else None

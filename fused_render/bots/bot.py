@@ -3297,8 +3297,6 @@ class Bot:
     def run_tool(self, app, name, args):
         """`tool`: run one app MCP tool (apptools.py). The first call into an app in a
         task also drops that app's card into the chat."""
-        if not apptools.available():
-            return f"tool {app} › {name}", "error: app tools are not available in this copy of the app (bundled fused module missing)"
         recs = apptools.registry()
         rec = apptools.find(recs, app, name)
         if rec is None:

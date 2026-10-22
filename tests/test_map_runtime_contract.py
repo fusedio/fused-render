@@ -137,7 +137,7 @@ def test_prepare_refusals_are_payloads_not_exceptions(tmp_path):
 
 @pytest.mark.parametrize("name", ["map_doc.py", "map_tools.py", "geo_paths.py", "discover.py"])
 def test_the_mcp_side_imports_nothing_outside_the_stdlib(name):
-    """`fused app serve` runs map_tools on whatever interpreter the MCP host
+    """`fused-render app serve` runs map_tools on whatever interpreter the MCP host
     resolves, so the tool path must not need the geo stack at import."""
     source = (MAP / name).read_text(encoding="utf-8")
     top = [line for line in source.splitlines() if re.match(r"^(import|from) ", line)]

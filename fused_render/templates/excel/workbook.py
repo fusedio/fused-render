@@ -7,7 +7,7 @@ Two callers, one engine:
   its own in-browser engine can't compute a formula (INDEX/MATCH, cross-sheet
   references, …) — including in a workbook no Excel ever computed.
 * **An agent** calls the tools below, published over MCP by `mcp.toml` beside
-  this file (`fused app serve <this folder>`) and over /api/run through
+  this file (`fused-render app serve <this folder>`) and over /api/run through
   reader.py's actions of the same names:
 
     sheets(file)                   every sheet: name, row count, typed columns

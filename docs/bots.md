@@ -56,7 +56,7 @@
 >   (`bot._fused_ai`), as `server/routers/claude_agent.py` loads `app_entry.py`.
 > - App MCP tools (`apptools.py`): always the bundled runner
 >   `fused.agent_core.app_mcp._run_app_tool` (`fused` is a base dependency),
->   the same path the MCP tab's `fused app serve` takes, with
+>   the same path the MCP tab's `fused-render app serve` takes, with
 >   `OPENFUSED_APP_SERVE_PYTHON` = `fusedcli._app_serve_python()`. The native
 >   runner keeps its manifest reader; its execution refuses with a sentence.
 > - A malformed or non-object JSON body is FastAPI's 422 `{"detail": [...]}`,

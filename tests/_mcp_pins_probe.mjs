@@ -47,6 +47,6 @@ const out = JSON.parse(casesJson).map((c) => {
   if (c.fn === "pinKind") return run.pinKind(c.param);
   if (c.fn === "seedPin") return run.seedPin(c.param);
   if (c.fn === "coercePin") return run.coercePin(c.kind, c.value);
-  return run.registrationDefinition(c.fused, c.path);
+  return run.registrationDefinition(c.command, c.path);
 });
 process.stdout.write(JSON.stringify(out));

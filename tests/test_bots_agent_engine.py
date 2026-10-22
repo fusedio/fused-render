@@ -341,7 +341,6 @@ def server(monkeypatch):
 def quiet_apptools(monkeypatch):
     """No real apps / app tools under test: the roster and the first message
     see none."""
-    monkeypatch.setattr(apptools, "available", lambda: False)
     monkeypatch.setattr(apptools, "apps", lambda *a, **k: [])
     monkeypatch.setattr(apptools, "registry", lambda *a, **k: [])
     monkeypatch.setattr(apptools, "apps_section", lambda *a, **k: "")
@@ -432,7 +431,7 @@ def test_text_then_done(server, fake_cli, monkeypatch):
     srv = cfg["mcpServers"]["bot"]
     assert srv["args"][1:3] == [server, "b1"] and srv["timeout"] == (agent_engine.APPROVAL_WAIT_S + 60) * 1000
     tools_listed = fake_cli("tools")[0]["tools"]
-    assert "goto" in tools_listed and "tool" not in tools_listed and "text" not in tools_listed
+    assert "goto" in tools_listed and "tool" in tools_listed and "text" not in tools_listed
     first = fake_cli("user")[0]["user"]
     assert first.startswith("YOU: 'Tester' · model haiku")
     assert "MEMORY (notes you saved" in first and "bot: hi there" in first
@@ -720,7 +719,7 @@ def test_no_cli_is_an_error(server, monkeypatch, tmp_path):
 def test_roster_follows_the_bot(server, tmp_path):
     bot = FakeBot()
     names = [t["name"] for t in tools.roster(bot)]
-    assert "upload" not in names and "readfile" not in names and "text" not in names and "tool" not in names
+    assert "upload" not in names and "readfile" not in names and "text" not in names
     assert "observe" in names
     f = tmp_path / "notes.txt"
     f.write_text("hi")

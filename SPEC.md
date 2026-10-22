@@ -11028,10 +11028,9 @@ calling and how.
 The `mcp` mode is that declaration's editor. It reads the app folder, proposes
 tools (with `fused.ai`), lets the user edit them, writes them to `mcp.toml` in the
 folder, and registers the folder with the MCP host — after which
-`fused app serve <folder>` answers `tools/list` with the curated tools **with this
-app not running at all**. The serving half lives in the `fused` package
-(openfused `spec/serve/app-mcp.md`); this app owns the authoring half, and the
-manifest is the entire contract between them.
+`fused-render app serve <folder>` answers `tools/list` with the curated tools **with this
+app not running at all**. The serving half is `fused_render.compute.app_mcp`;
+the panel owns the authoring half, and the manifest is the entire contract between them.
 
 - **MC-1** **The gate is the APP SHAPE, and it is folder-only** (CT-12,
   `templates/mcp/condition.py`). A directory qualifies when it holds a **tagged
@@ -11114,46 +11113,32 @@ manifest is the entire contract between them.
   why this is a banner with a re-curate affordance and not a blocker. Saving
   re-records the snapshots, so Save is also the fix.
 - **MC-5** **Registration goes through the existing Claude-config MCP module,
-  and pins the CLI THIS APP EXPORTED.** The panel POSTs
+  and pins the wrapper THIS APP WROTE.** The panel POSTs
   `/api/claude-config/mcp` (`action=add`, name `<folder>-mcp` — suffixed, because
   the name is read in a list of the user's own servers where the folder is the
   identifying half; a `fused-app-` prefix filed every app under one word and put
   the identity past where anyone reads. Server json
-  `{command: <exported fused>, args: ["app", "serve", <abs folder>]}`) — the same
+  `{command: <exported fused-render wrapper>, args: ["app", "serve", <abs folder>]}`) — the same
   module the Claude Config page uses, which owns the `claude mcp` CLI, the
   `--scope user` choice and the name guard. There is deliberately no second way to
-  write an MCP host entry. When no CLI is available, Register is DISABLED with the
+  write an MCP host entry. When no wrapper is available, Register is DISABLED with the
   reason stated: an entry whose `command` does not exist fails inside Claude,
   where the user cannot see why.
-- **MC-5a** **The `fused` path comes from `appenv.fused_cli_dir()`, NEVER from a
-  PATH lookup** (**D334**). That env var is the directory the server exported
-  after vetting its own interpreter's CLI and baking `FUSED_ENV` — the same signal
-  the chat's backend (`claude_agent/agent.py`) uses to decide whether to promise the command at all.
-  `shutil.which("fused")` was what this did first, and it is the exact mechanism
-  D334 replaced: on a machine whose app venv lacks the `[fused]` extra but whose
-  PATH carries some other `fused` (a pipx shim, another project's venv), the panel
-  baked that unvetted binary into a **global** `~/.claude.json` entry, to be run
-  later with no `FUSED_ENV` and to fail where nobody is looking. The registration
-  target is a global, durable, unattended command; deriving it from ambient PATH
-  is the one place that matters most and the one place it was done.
-- **MC-5b** **A registered server computes its tools on the interpreter PAGE
-  runs use** — the wrapper D334 writes exports `OPENFUSED_APP_SERVE_PYTHON`
-  (`fusedcli._app_serve_python`), and `fused app serve` (>= 2.9.3b7) makes it its
-  compute backend's `python_executable`. The value is
-  `envinstall.script_python()` — the SAME call `engine.get_backend()` passes for
-  page runs, resolved to `sys.executable` when it answers None (D214: "ours",
-  which is what the backend falls back to), never a hardcoded path and never a
-  `realpath` of a venv python, since that names the base interpreter and so keys
-  a different environment. Interpreter identity is half the venv cache key, so
-  equal inputs mean a tool RESOLVES the environment the page already built
-  instead of filling a parallel one nothing else reads — and a tool whose folder
-  declares no dependencies runs on the app's interpreter rather than in a bare
-  stdlib venv. It rides the wrapper rather than the registration entry's `env`
-  because the wrapper is rewritten on every server start (so a 3.12 that only
-  appears later takes effect on the next one) while a `~/.claude.json` entry is
-  written once and lives forever; it is a default (`[ -n … ] || …`), so an
-  explicitly set value still wins. An older engine ignores it silently, which is
-  why the pin carries a floor (test_the_fused_pin_reads_the_app_serve_python_seam).
+- **MC-5a** **The command is `appenv.render_bin()`, NEVER a PATH lookup.** That
+  is the absolute path of the `fused-render` wrapper the server writes to
+  `<home>/fused-bin/fused-render` before it serves (`fusedcli.export_render_wrapper`,
+  published as `FUSED_RENDER_BIN`): this interpreter running
+  `-m fused_render.cli "$@"`, with the bundle's PYTHONHOME/PYTHONPATH baked in
+  when set, written atomically and rewritten on every start. It needs no `fused`
+  CLI, so registration works without the `[fused]` extra. The registration target
+  is a global, durable, unattended command; a `fused-render` found on PATH could
+  be any other install. At startup `app_serve_migration` rewrites this home's
+  older `fused app serve <dir>` entries to the wrapper.
+- **MC-5b** **A registered server computes its tools on the interpreter the
+  app's page runs on** — `projectenv.interpreter_for(project_env_for(<folder>))`
+  (the folder's project venv, else the interpreter serving it) — through the
+  vendored backend's `_execute_sync`. A tool's own PEP 723 header is not
+  built into a venv (the page path ignores it too, D172).
 - **MC-6** **There is no gating layer beyond the MCP host's own per-call
   approval.** Every curated tool is callable, because the person who curated it is
   the person the host will ask. A second confirmation here would only be a false
@@ -11221,11 +11206,11 @@ manifest is the entire contract between them.
   (unclickable), and could-not-tell (re-probes). A control that offered a
   direction before the answer was in would be asserting the opposite of what
   might be true.
-- **MC-12** **The registration entry's `command` is the resolved `fused`
-  path, VERBATIM — never routed through a shell hop we add ourselves (D549).**
-  The MCP host spawns it directly, so the path `inspect_app._fused_cli()`
+- **MC-12** **The registration entry's `command` is the resolved `fused-render`
+  wrapper path, VERBATIM — never routed through a shell hop we add ourselves (D549).**
+  The MCP host spawns it directly, so the path `inspect_app._render_bin()`
   resolved is exactly what it runs. Extracted into a pure
-  `registrationDefinition(fused, path)` function specifically so
+  `registrationDefinition(command, path)` function specifically so
   `tests/test_mcp_panel.py` can pin the shape and turn a well-meaning wrapper
   into a loud, specific test failure.
 
@@ -12028,7 +12013,7 @@ https://claude.ai/artifact/PDhNwAeVBVfuAvNyrxicMz (SKILL.md discovery).
   required one comes back as the runner's `ParamError` envelope — the bot's
   cue to re-read the skill.
   **Rejected:** a synthesized manifest-less tool through the openfused
-  `fused app serve` runner inside the bot's worker (a second semantics —
+  `fused-render app serve` runner inside the bot's worker (a second semantics —
   requirements venv instead of the engine pref, 180 s, no call log — and a
   bundled `fused` import an exported copy of the bot lacks); a wrapper
   endpoint that would add only a name.

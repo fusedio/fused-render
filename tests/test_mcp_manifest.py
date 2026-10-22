@@ -1,7 +1,7 @@
 """The `mcp` template's manifest writer (SPEC §44 / MC-3).
 
 `manifest.py` is the write half of the panel: it reads and writes the `[[tool]]`
-tables in the app folder's `mcp.toml` — the contract `fused app serve` consumes
+tables in the app folder's `mcp.toml` — the contract `fused-render app serve` consumes
 (openfused's spec/serve/app-mcp.md §2). Everything pinned here is a property
 that contract depends on:
 
@@ -142,7 +142,7 @@ def test_the_written_toml_is_what_the_server_reads(manifest, app):
 
     raw = _read_toml(app)
 
-    # The shape `fused app serve` loads: an array of `[[tool]]` tables, pins in a
+    # The shape `fused-render app serve` loads: an array of `[[tool]]` tables, pins in a
     # `pinned` sub-table (openfused spec/serve/app-mcp.md §2).
     assert raw["tool"][0]["name"] == "send_email"
     assert raw["tool"][0]["file"] == "mail.py"

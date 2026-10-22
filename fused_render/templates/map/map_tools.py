@@ -2,7 +2,7 @@
 documents, with or without the page open.
 
 Each public function here is one tool, declared in this folder's `mcp.toml`
-(SPEC §44), so `fused app serve <this folder>` publishes them; its schema is the
+(SPEC §44), so `fused-render app serve <this folder>` publishes them; its schema is the
 signature. Every edit is a `map_doc` command applied to the file and written
 back atomically. A page showing that file polls it and reconciles, so an open
 map moves as the agent works; a closed one simply opens in the new state.
@@ -53,7 +53,7 @@ def _drop_none(**fields: Any) -> dict[str, Any]:
 
 
 def _json_arg(value: Any) -> Any:
-    """An object/list argument, or its JSON text. `fused app serve` derives
+    """An object/list argument, or its JSON text. `fused-render app serve` derives
     each tool's schema from the signature and publishes an optional dict or
     list as a string, so an agent reading that schema sends JSON text."""
     if isinstance(value, str):

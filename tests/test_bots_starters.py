@@ -145,18 +145,8 @@ def test_ensure_installs_missing_and_skips_unknown(tmp_path):
     assert starters.ensure(["google-sheets-tabs"], root) == []
 
 
-def test_status_without_app_tools_reports_unknown_not_error(tmp_path, monkeypatch):
-    root = str(tmp_path / "app")
-    starters.install("google-docs-tabs", root)
-    monkeypatch.setattr(apptools, "available", lambda: False)
-    ready, why = starters.status(root)
-    assert ready == {"google-docs-tabs": None}
-    assert "unavailable" in why["google-docs-tabs"]
-
-
 def _fake_tools(monkeypatch, result, seen=None):
     rec = apptools.ToolRec(app="google-docs-tabs", app_dir="", name="docs_status", description="")
-    monkeypatch.setattr(apptools, "available", lambda: True)
     monkeypatch.setattr(apptools, "registry", lambda force=False: [rec])
     monkeypatch.setattr(apptools, "find", lambda recs, app, name: rec if (app, name) == ("google-docs-tabs", "docs_status") else None)
 
@@ -282,9 +272,6 @@ def test_status_route(client, ws, monkeypatch):
     _fake_tools(monkeypatch, apptools.RunResult(True, json.dumps({"connected": True})))
     st, out = j(client.get("/api/bot-apps/starters/status"))
     assert st == 200 and out == {"ok": True, "ready": {"google-docs-tabs": True}, "why": {}}
-    monkeypatch.setattr(apptools, "available", lambda: False)
-    st, out = j(client.get("/api/bot-apps/starters/status"))
-    assert out["ready"] == {"google-docs-tabs": None} and "unavailable" in out["why"]["google-docs-tabs"]
 
 
 def test_icon_route(client, ws):

@@ -188,6 +188,10 @@ def export_app_env() -> None:
     # Filesystem-only, like the skill plugin export above.
     from fused_render import fusedcli
     fusedcli.export_fused_cli_env()
+    # The `fused-render` wrapper an MCP entry runs as `app serve <dir>`; it needs
+    # no fused CLI. Old `fused app serve` entries are pointed at it.
+    from fused_render import app_serve_migration
+    app_serve_migration.start(fusedcli.export_render_wrapper())
     _export_bundled_uv_path()
     # MUST stay last: every PATH writer above is a synchronous read-modify-write
     # of os.environ["PATH"], and the probe's background thread does the same.

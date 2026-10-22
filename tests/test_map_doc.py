@@ -305,7 +305,7 @@ def test_tool_refusals_come_back_as_payloads(tmp_path):
 
 
 def test_mcp_toml_declares_every_tool_with_its_current_signature():
-    """`fused app serve` publishes exactly mcp.toml's [[tool]] tables; each must
+    """`fused-render app serve` publishes exactly mcp.toml's [[tool]] tables; each must
     name a public map_tools function and carry that function's signature, the
     snapshot the MCP panel's drift check compares against."""
     import ast
