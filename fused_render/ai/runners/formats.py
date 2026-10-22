@@ -2052,12 +2052,13 @@ def is_kokoro_snapshot(names, dirnames) -> bool:
 def kokoro_traits() -> dict:
     """What `speech_traits` says for Kokoro: preset voices, no style line.
 
-    `languages` are informational: the export picks the language from the
-    voice (English voices speak English, `z*` voices Chinese), so the worker
-    accepts the option and hands it back unchanged.
+    `languages` is empty on purpose: the export picks the language from the
+    voice (English voices speak English, `z*` voices Chinese) and the engine
+    has no language input, so an advertised list would be a selector that
+    does nothing. An empty list hides the Language control.
     """
     return {"mode": "preset", "voices": list(KOKORO_VOICES),
-            "languages": ["english", "chinese"], "instructable": False}
+            "languages": [], "instructable": False}
 
 
 def kokoro_traits_from_names(names, dirnames) -> dict | None:

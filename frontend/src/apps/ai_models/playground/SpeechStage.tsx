@@ -381,13 +381,16 @@ export function SpeechStage({ model, entry, transcribeModel }: {
                 placeholder={STARTERS[0].voice} onChange={(e) => setInstruct(e.target.value)} />
             </RailField>
           )}
-          <RailField label="Language" hint="Auto finds the language from the text.">
-            <RailSelect aria-label="Language" value={language} onValueChange={setLanguage} options={[
-              { value: AUTO, label: "Auto" },
-              ...languages.map((l) => ({ value: l, label: nameOf(l) })),
-              ...(language !== AUTO && !languages.includes(language) ? [{ value: language, label: nameOf(language) }] : []),
-            ]} />
-          </RailField>
+          {/* A model that lists no languages (Kokoro picks it from the voice) has nothing to choose. */}
+          {(languages.length > 0 || language !== AUTO) && (
+            <RailField label="Language" hint="Auto finds the language from the text.">
+              <RailSelect aria-label="Language" value={language} onValueChange={setLanguage} options={[
+                { value: AUTO, label: "Auto" },
+                ...languages.map((l) => ({ value: l, label: nameOf(l) })),
+                ...(language !== AUTO && !languages.includes(language) ? [{ value: language, label: nameOf(language) }] : []),
+              ]} />
+            </RailField>
+          )}
         </ConfigPanel>
 
         {!busy && <StarterCards samples={STARTERS} onPick={(sample) => {
