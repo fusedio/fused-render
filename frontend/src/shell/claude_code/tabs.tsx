@@ -17,7 +17,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 import { Clock, RefreshCw, Undo2 } from "lucide-react";
 import * as cc from "@apps/claude_config/api";
 import type { PrefEntry, PreferencesGet } from "@apps/claude_config/api";
-import { toastErr, toastOk, useGitStatus, type GitStatusState } from "@apps/claude_config/bits";
+import { Head, toastErr, toastOk, useGitStatus, type GitStatusState } from "@apps/claude_config/bits";
 import { optionLabel, storedOptionLabel } from "@apps/claude_config/pref-option-label";
 import HistorySection from "@apps/claude_config/sections/HistorySection";
 import McpSection from "@apps/claude_config/sections/McpSection";
@@ -401,11 +401,13 @@ export function ClaudeCatalogControl() {
   );
 }
 
+type HeadProps = { title: string; blurb: string };
+
 // -- the tabs ------------------------------------------------------------------
 
 /** Settings tab: every settings.json key in cards by the catalog's group,
  *  led by the catalog's refresh. */
-export function ClaudeSettingsTab({ filter }: { filter: string }) {
+export function ClaudeSettingsTab({ filter, title, blurb }: HeadProps & { filter: string }) {
   const { catalog, catalogError, wake, available } = useContext(ClaudeContext);
   useEffect(() => wake(), [wake]);
   const rows = useMemo(() => (catalog ? claudePrefEntries(catalog.schema) : []), [catalog]);
@@ -414,9 +416,16 @@ export function ClaudeSettingsTab({ filter }: { filter: string }) {
     ? rows.filter((r) => `${r.prefKey} ${r.label} ${r.description}`.toLowerCase().includes(needle))
     : rows;
   const sections = [...new Set(shown.map((r) => r.section))];
-  if (!available) return <ErrorBanner>~/.claude was not found on this machine.</ErrorBanner>;
+  if (!available)
+    return (
+      <>
+        <Head title={title} blurb={blurb} />
+        <ErrorBanner>~/.claude was not found on this machine.</ErrorBanner>
+      </>
+    );
   return (
     <>
+      <Head title={title} blurb={blurb} />
       <section className="settings-section" aria-label="Catalog">
         <div className="settings-card">
           <ClaudeCatalogControl />
@@ -448,20 +457,20 @@ function Block({ children }: { children: ReactNode }) {
   );
 }
 
-export function ClaudePluginsTab({ filter }: { filter: string }) {
+export function ClaudePluginsTab({ filter, title, blurb }: HeadProps & { filter: string }) {
   const { onChanged } = useContext(ClaudeContext);
   return (
     <Block>
-      <PluginsSection onChanged={onChanged} filter={filter} />
+      <PluginsSection onChanged={onChanged} filter={filter} title={title} blurb={blurb} />
     </Block>
   );
 }
 
-export function ClaudeMemoryTab({ filter }: { filter: string }) {
+export function ClaudeMemoryTab({ filter, title, blurb }: HeadProps & { filter: string }) {
   const { onChanged } = useContext(ClaudeContext);
   return (
     <Block>
-      <MemorySection onChanged={onChanged} filter={filter} />
+      <MemorySection onChanged={onChanged} filter={filter} title={title} blurb={blurb} />
     </Block>
   );
 }
@@ -473,11 +482,11 @@ export function ClaudeSkillsTab({ filter }: { filter: string }) {
   );
 }
 
-export function ClaudeMcpTab({ filter }: { filter: string }) {
+export function ClaudeMcpTab({ filter, title, blurb }: HeadProps & { filter: string }) {
   const { onChanged } = useContext(ClaudeContext);
   return (
     <Block>
-      <McpSection onChanged={onChanged} filter={filter} />
+      <McpSection onChanged={onChanged} filter={filter} title={title} blurb={blurb} />
     </Block>
   );
 }

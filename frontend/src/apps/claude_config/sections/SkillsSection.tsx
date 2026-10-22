@@ -4,7 +4,7 @@
 // muted line) and a skill's editor (SKILL.md and its sibling files, one
 // textarea in one card). A skill that is not linked (authored by hand rather
 // than managed by the `skills` CLI) says so in its editor's header.
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ChevronLeft } from "lucide-react";
 import { Button } from "@platform/shadcn/ui/button";
 import { Input } from "@platform/shadcn/ui/input";
@@ -14,6 +14,7 @@ import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import * as cc from "../api";
 import {
   Empty,
+  Head,
   ListSkeleton,
   Pill,
   SKELETON_ROWS,
@@ -36,21 +37,6 @@ function writeSkill(slug: string | null) {
   if (slug) p.set("skill", slug);
   else p.delete("skill");
   history.replaceState(history.state, "", `${location.pathname}?${p.toString()}`);
-}
-
-function Head({ title, blurb, lead, aside }: { title: ReactNode; blurb: ReactNode; lead?: ReactNode; aside?: ReactNode }) {
-  return (
-    <div className="settings-head">
-      <div className="settings-head-row">
-        <div className="cc-skill-headline">
-          {lead}
-          <h2>{title}</h2>
-        </div>
-        {aside && <div className="cc-skill-actions">{aside}</div>}
-      </div>
-      <p>{blurb}</p>
-    </div>
-  );
 }
 
 function SkillDetail({

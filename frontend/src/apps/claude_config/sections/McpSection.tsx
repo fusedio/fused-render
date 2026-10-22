@@ -23,14 +23,16 @@ import {
   ListSkeleton,
   Pill,
   SKELETON_ROWS,
-  SectionToolbar,
+  Head,
+  RefreshButton,
+  plural,
   guard,
   toastErr,
   toastOk,
   useChangePreview,
   useModuleData,
 } from "../bits";
-import type { PillTone, SectionProps } from "../bits";
+import type { HeadedSectionProps, PillTone } from "../bits";
 
 const STATUS: Record<McpStatus, { label: string; tone: PillTone }> = {
   connected: { label: "connected", tone: "on" },
@@ -60,7 +62,7 @@ function cliError(res: CliResult, fallback: string): string {
   return res.stderr || res.error || fallback;
 }
 
-export default function McpSection({ onChanged, filter = "" }: SectionProps) {
+export default function McpSection({ onChanged, filter = "", title, blurb }: HeadedSectionProps) {
   const load = useCallback(() => cc.mcp.list(), []);
   const { data: cached, error, reload: reloadCached } = useModuleData(load);
   // The server answers from its cache at once (`stale`) because the real
@@ -193,31 +195,30 @@ export default function McpSection({ onChanged, filter = "" }: SectionProps) {
   return (
     <>
       {modal}
-      <SectionToolbar
-        summary={
-          data?.ok ? (
-            <>
-              {`${servers.length} server(s) · ${connected} connected`}
-              {checking && <span style={{ opacity: 0.6 }}> · Checking status…</span>}
-            </>
-          ) : (
-            "…"
-          )
+      <Head
+        title={title}
+        blurb={
+          data?.ok
+            ? `${plural(servers.length, "server")} · ${connected} connected${checking ? " · Checking status…" : ""}`
+            : blurb
         }
-        onRefresh={reload}
-      >
-        <DisclosureButton
-          open={adding}
-          controls={formId}
-          label="Add server"
-          onToggle={() => {
-            setAdding((v) => !v);
-            setEditing(null);
-            setName("");
-            setJson("");
-          }}
-        />
-      </SectionToolbar>
+        aside={
+          <>
+            <DisclosureButton
+              open={adding}
+              controls={formId}
+              label="Add server"
+              onToggle={() => {
+                setAdding((v) => !v);
+                setEditing(null);
+                setName("");
+                setJson("");
+              }}
+            />
+            <RefreshButton onClick={reload} />
+          </>
+        }
+      />
       {adding && (
         <div id={formId}>
           <Card>
@@ -243,9 +244,6 @@ export default function McpSection({ onChanged, filter = "" }: SectionProps) {
             disabled={busy}
             onChange={(e) => setJson(e.target.value)}
           />
-          {/* The `Refresh` button that used to sit here is gone: re-listing the
-              servers has nothing to do with adding one, and it now lives in the
-              toolbar's refresh slot like every other tab's. */}
           <button type="button" className="btn btn-primary" disabled={busy} onClick={add}>
             {editing ? "Save" : "Add"}
           </button>

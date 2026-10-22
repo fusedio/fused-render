@@ -40,6 +40,51 @@ export interface SectionProps {
   filter?: string;
 }
 
+/** The tab's name and its static description. The section draws the head
+ *  itself so the description can carry a live fact once data is in. */
+export type HeadedSectionProps = SectionProps & { title: string; blurb: string };
+
+/** "1 file", "7 projects". */
+export function plural(n: number, one: string, many = one + "s"): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+/** The heading every tab opens with: the title with the tab's actions on its
+ *  right, and one muted line beneath. `lead` sits before the title (a back
+ *  button). */
+export function Head({
+  title,
+  blurb,
+  lead,
+  aside,
+}: {
+  title: ReactNode;
+  blurb: ReactNode;
+  lead?: ReactNode;
+  aside?: ReactNode;
+}) {
+  return (
+    <div className="settings-head">
+      <div className="settings-head-row">
+        <div className="cc-skill-headline">
+          {lead}
+          <h2>{title}</h2>
+        </div>
+        {aside && <div className="cc-skill-actions">{aside}</div>}
+      </div>
+      <p>{blurb}</p>
+    </div>
+  );
+}
+
+export function RefreshButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button type="button" className="cc-iconbtn" title="Refresh" aria-label="Refresh" onClick={onClick}>
+      <Icon name="refresh" />
+    </button>
+  );
+}
+
 export function toastOk(msg: string): void {
   notify({ title: msg, tone: "info" });
 }

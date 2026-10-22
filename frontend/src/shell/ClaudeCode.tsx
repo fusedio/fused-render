@@ -2,11 +2,12 @@
 // under ~/.claude, framed like Preferences: title and filter across the top, a
 // nav of the six tabs (Skills, the default, Memory, Plugins, MCP servers,
 // Settings, History) on the left, the tab's heading and cards on the right.
-// The Skills tab draws its own heading, because it swaps between a list and a
-// skill's editor.
-import { useEffect, useState, type ReactNode } from "react";
+// Each tab draws its own heading, so the description can carry a live count;
+// Skills also swaps between a list and a skill's editor.
+import { useEffect, useState } from "react";
 import { Blocks, Brain, History, Search, Server, SlidersHorizontal, Sparkles, X, type LucideIcon } from "lucide-react";
 import { useClaudeConfigStatus } from "@apps/claude_config/available";
+import { Head } from "@apps/claude_config/bits";
 import { cn } from "@platform/lib/utils";
 import { Button } from "@platform/shadcn/ui/button";
 import { Input } from "@platform/shadcn/ui/input";
@@ -75,23 +76,12 @@ function writeTab(tab: TabId) {
   history.replaceState(history.state, "", `${location.pathname}?${p.toString()}`);
 }
 
-function TabHead({ title, blurb, aside }: { title: string; blurb: string; aside?: ReactNode }) {
-  return (
-    <div className="settings-head">
-      <div className="settings-head-row">
-        <h2>{title}</h2>
-        {aside}
-      </div>
-      <p>{blurb}</p>
-    </div>
-  );
-}
-
 export default function ClaudeCode() {
   const claudeConfig = useClaudeConfigStatus();
   const [tab, setTab] = useState<TabId>(readTab);
   const [filter, setFilter] = useState("");
   const current = TABS.find((t) => t.id === tab) ?? TABS[0];
+  const head = { title: current.label, blurb: current.blurb };
 
   useEffect(() => writeTab(tab), [tab]);
 
@@ -156,19 +146,17 @@ export default function ClaudeCode() {
             </div>
           </nav>
           <main className="settings-main">
-            {tab !== "skills" && (
-              <TabHead
-                title={current.label}
-                blurb={current.blurb}
-                aside={tab === "history" ? <ClaudeGitChip onOpen={() => pickTab("history")} /> : undefined}
-              />
-            )}
             {tab === "skills" && <ClaudeSkillsTab filter={filter} />}
-            {tab === "memory" && <ClaudeMemoryTab filter={filter} />}
-            {tab === "plugins" && <ClaudePluginsTab filter={filter} />}
-            {tab === "mcp" && <ClaudeMcpTab filter={filter} />}
-            {tab === "settings" && <ClaudeSettingsTab filter={filter} />}
-            {tab === "history" && <ClaudeHistoryTab />}
+            {tab === "memory" && <ClaudeMemoryTab filter={filter} {...head} />}
+            {tab === "plugins" && <ClaudePluginsTab filter={filter} {...head} />}
+            {tab === "mcp" && <ClaudeMcpTab filter={filter} {...head} />}
+            {tab === "settings" && <ClaudeSettingsTab filter={filter} {...head} />}
+            {tab === "history" && (
+              <>
+                <Head title={head.title} blurb={head.blurb} aside={<ClaudeGitChip onOpen={() => pickTab("history")} />} />
+                <ClaudeHistoryTab />
+              </>
+            )}
           </main>
         </div>
       </div>

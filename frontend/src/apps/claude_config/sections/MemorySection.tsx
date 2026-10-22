@@ -48,14 +48,16 @@ import {
   ListRow,
   ListSkeleton,
   SKELETON_ROWS,
-  SectionToolbar,
+  Head,
+  RefreshButton,
+  plural,
   guard,
   toastErr,
   toastOk,
   useChangePreview,
   useModuleData,
 } from "../bits";
-import type { SectionProps } from "../bits";
+import type { HeadedSectionProps } from "../bits";
 import { FileEditor } from "../FileEditor";
 
 function MemoryFileEditor({ project, file, onDelete }: { project: string; file: string; onDelete: () => void }) {
@@ -85,7 +87,7 @@ function MemoryFileEditor({ project, file, onDelete }: { project: string; file: 
   );
 }
 
-export default function MemorySection({ onChanged, filter = "" }: SectionProps) {
+export default function MemorySection({ onChanged, filter = "", title, blurb }: HeadedSectionProps) {
   const load = useCallback(() => cc.memory.list(), []);
   const { data, error, reload } = useModuleData(load);
   const { node: modal, ask } = useChangePreview();
@@ -135,7 +137,13 @@ export default function MemorySection({ onChanged, filter = "" }: SectionProps) 
   };
 
   if (error) return <ErrorBanner>{error}</ErrorBanner>;
-  if (!data) return <ListSkeleton rows={SKELETON_ROWS} label="Loading memory" />;
+  if (!data)
+    return (
+      <>
+        <Head title={title} blurb={blurb} />
+        <ListSkeleton rows={SKELETON_ROWS} label="Loading memory" />
+      </>
+    );
 
   const needle = filter.trim().toLowerCase();
   const projects = data.projects
@@ -154,16 +162,17 @@ export default function MemorySection({ onChanged, filter = "" }: SectionProps) 
   return (
     <>
       {modal}
-      <SectionToolbar
-        summary={`${data.projects.length} project(s) · ${fileCount} file(s)`}
-        onRefresh={reload}
+      <Head
+        title={title}
+        blurb={`${plural(fileCount, "file")} across ${plural(data.projects.length, "project")}`}
+        aside={<RefreshButton onClick={reload} />}
       />
       {!projects.length && (
         <Empty>{needle ? "No memory files match." : "No persistent memory found under projects/*/memory/."}</Empty>
       )}
       {projects.map((p) => {
         const dirty = p.changes.length;
-        const count = `${p.files.length} file${p.files.length === 1 ? "" : "s"}`;
+        const count = plural(p.files.length, "file");
         return (
           <div className="cc-memgroup" key={p.project}>
             <div className="cc-memgroup-head">

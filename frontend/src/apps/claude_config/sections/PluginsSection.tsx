@@ -48,14 +48,16 @@ import {
   ListSkeleton,
   Pill,
   SKELETON_ROWS,
-  SectionToolbar,
+  Head,
+  RefreshButton,
+  plural,
   Toggle3,
   toastErr,
   toastOk,
   useChangePreview,
   useModuleData,
 } from "../bits";
-import type { SectionProps } from "../bits";
+import type { HeadedSectionProps } from "../bits";
 
 type Tab = "installed" | "discover";
 
@@ -234,14 +236,13 @@ function PluginContentsPanel({ id }: { id: string }) {
   );
 }
 
-export default function PluginsSection({ onChanged, filter = "" }: SectionProps) {
+export default function PluginsSection({ onChanged, filter = "", title, blurb }: HeadedSectionProps) {
   const { node: modal, ask } = useChangePreview();
   const load = useCallback(() => cc.plugins.list(), []);
   const { data, error, reload } = useModuleData(load);
   const loadMkt = useCallback(() => cc.marketplaces.list(), []);
   const { data: mktData, reload: reloadMkt } = useModuleData(loadMkt);
   const [tab, setTab] = useState<Tab>("installed");
-  const [query, setQuery] = useState("");
   const [marketplace, setMarketplace] = useState(ALL);
   // The rail's own add-a-marketplace disclosure — the same form the standalone
   // Marketplaces tab used to open with, now folded under a (+) at the foot of
@@ -366,15 +367,6 @@ export default function PluginsSection({ onChanged, filter = "" }: SectionProps)
     }
   };
 
-  // Every filter change goes back to page 1. Without this, searching from page
-  // 6 lands you on an empty page of a three-page result and the list looks
-  // broken — so the three setters that narrow the list are wrapped rather than
-  // called raw anywhere.
-  const search = (next: string) => {
-    setQuery(next);
-    setPage(0);
-  };
-
   const filterTo = (next: string) => {
     setMarketplace(next);
     setPage(0);
@@ -469,14 +461,20 @@ export default function PluginsSection({ onChanged, filter = "" }: SectionProps)
   };
 
   if (error) return <ErrorBanner>{error}</ErrorBanner>;
-  if (!data) return <ListSkeleton rows={SKELETON_ROWS} label="Loading plugins" />;
+  if (!data)
+    return (
+      <>
+        <Head title={title} blurb={blurb} />
+        <ListSkeleton rows={SKELETON_ROWS} label="Loading plugins" />
+      </>
+    );
 
-  const installed = data.plugins.filter((p) => matches(query, p.name, p.id) && matches(filter, p.name, p.id));
+  const installed = data.plugins.filter((p) => matches(filter, p.name, p.id));
   // Discover is only the plugins you do NOT have: what you already installed is
   // the other tab's subject, and showing it twice makes the list longer without
   // making it more useful.
   const discover = (avail?.plugins ?? []).filter(
-    (p) => !p.installed && matches(query, p.name, p.id, p.description),
+    (p) => !p.installed && matches(filter, p.name, p.id, p.description),
   );
   // The index counts what the SEARCH left, so a marketplace's number is what
   // clicking it will actually show. Kept as one un-narrowed list because the
@@ -503,51 +501,47 @@ export default function PluginsSection({ onChanged, filter = "" }: SectionProps)
   return (
     <>
       {modal}
-      <SectionToolbar
+      <Head
+        title={title}
         // Discover's summary counts the SAME set the pager pages over, so the
         // two can never disagree about how many results there are.
-        summary={
+        blurb={
           tab === "installed"
             ? `${data.plugins.length} installed · ${enabledCount} enabled`
             : avail
-              ? `${rowsDiscover.length} available from ${index.length} marketplace(s)`
+              ? `${rowsDiscover.length} available from ${plural(index.length, "marketplace")}`
               : "reading marketplace catalogs…"
         }
-        // Refetches whichever list is showing — refreshing Installed must not
-        // trigger the catalog read that the Discover switch deliberately defers.
-        onRefresh={tab === "installed" ? reload : loadAvail}
-      >
-        <input
-          className="field-control cc-scalar"
-          type="search"
-          aria-label="Filter plugins"
-          placeholder="Filter by name, id or description…"
-          value={query}
-          onChange={(e) => search(e.target.value)}
-        />
-        <div className="cc-seg" role="tablist" aria-label="Plugin source">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === "installed"}
-            className={"cc-seg-btn" + (tab === "installed" ? " active" : "")}
-            onClick={() => pick("installed")}
-            title="Plugins on this machine"
-          >
-            Installed
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={tab === "discover"}
-            className={"cc-seg-btn" + (tab === "discover" ? " active" : "")}
-            onClick={() => pick("discover")}
-            title="Plugins your marketplaces publish that you don't have yet"
-          >
-            Discover
-          </button>
-        </div>
-      </SectionToolbar>
+        aside={
+          <>
+      <div className="cc-seg" role="tablist" aria-label="Plugin source">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "installed"}
+          className={"cc-seg-btn" + (tab === "installed" ? " active" : "")}
+          onClick={() => pick("installed")}
+          title="Plugins on this machine"
+        >
+          Installed
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "discover"}
+          className={"cc-seg-btn" + (tab === "discover" ? " active" : "")}
+          onClick={() => pick("discover")}
+          title="Plugins your marketplaces publish that you don't have yet"
+        >
+          Discover
+        </button>
+      </div>
+            {/* Refetches whichever list is showing: refreshing Installed must
+                not trigger the catalog read that the Discover switch defers. */}
+            <RefreshButton onClick={tab === "installed" ? reload : loadAvail} />
+          </>
+        }
+      />
       <div className="cc-split">
         <nav className="cc-index" aria-label="Marketplaces">
           {/* No count beside this label, deliberately. It used to carry one,
@@ -826,16 +820,15 @@ export default function PluginsSection({ onChanged, filter = "" }: SectionProps)
                   >
                     Browse Discover
                   </button>
-                ) : query || marketplace !== ALL ? (
+                ) : marketplace !== ALL ? (
                   <button
                     type="button"
                     className="btn"
                     onClick={() => {
-                      search("");
                       filterTo(ALL);
                     }}
                   >
-                    Clear the filter
+                    Show every marketplace
                   </button>
                 ) : null
               }
