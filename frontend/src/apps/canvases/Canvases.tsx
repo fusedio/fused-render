@@ -205,6 +205,10 @@ export default function Canvases() {
         // it again, from the store as it is now (`login_in_flight` is
         // already per store on the server).
         loginStampRef.current = s.creds_stamp;
+        // Started elsewhere, or before this page stopped watching: when it
+        // began is unknown, and a stale stamp from an earlier sign-in would
+        // call any early end a timeout.
+        loginStartedRef.current = null;
         setLoggingIn(true);
       }
       if (s.logged_in) {
