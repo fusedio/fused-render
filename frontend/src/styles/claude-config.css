@@ -384,13 +384,6 @@
    this page does that any more (see .cc-lrow-actions), so a muted icon is what
    keeps it quiet now. */
 
-/* A filesystem path is not a category name: it keeps its own casing and wraps. */
-.cc-group-path {
-  text-transform: none;
-  letter-spacing: 0;
-  overflow-wrap: anywhere;
-}
-
 .cc-empty {
   padding: 30px 0;
   text-align: center;
@@ -535,7 +528,6 @@
    such failure mode, and the fact is not exclusively carried here anyway: a
    toggle already sits at its default position, and a select/scalar control
    already shows its default as its own placeholder/option text. */
-.cc-iconbtn.cc-reset,
 .cc-row-hint {
   width: 22px;
   height: 22px;
@@ -993,50 +985,6 @@
   -webkit-box-orient: vertical;
 }
 
-/* Skills only: without a reserved width, the name shrink-wrapped to its own
-   text and the description that follows it started at whatever x that left
-   off at — ten different left edges for ten rows, unscannable. A fixed
-   column gives every row's description the SAME starting x. Top-aligned
-   (overriding .cc-lrow-line's and .cc-lrow-body's own center) because the
-   description can now be two lines and a centered name looked adrift beside
-   it. Scoped under this wrapper rather than touching the shared .cc-lrow-*
-   rules every other tab's rows also use. */
-.cc-skills-list .cc-lrow-line,
-.cc-skills-list .cc-lrow-body {
-  align-items: flex-start;
-}
-
-.cc-skills-list .cc-lrow-name {
-  flex: 0 0 168px;
-  width: 168px;
-  overflow: hidden;
-  padding-top: 1px;
-}
-
-/* The name box's own content: skill name, then (only for the rare skill
-   that isn't `linked`) a "not linked" pill stacked under it — both still
-   inside the fixed 168px column, so neither can push the description's
-   start x the way the pill used to when it rode beside the name instead. The
-   ellipsis that used to live on .cc-lrow-name moves to just the text line. */
-.cc-skills-namebox {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 3px;
-  max-width: 100%;
-}
-
-.cc-skills-namebox-text {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.cc-skills-list .cc-lrow-meta {
-  padding-top: 1px;
-}
-
 .cc-lrow-meta {
   flex: 0 0 auto;
   font-size: 11.5px;
@@ -1354,38 +1302,10 @@
   border-radius: 8px;
 }
 
-.cc-mdcard-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
 
-.cc-mdcard-name {
-  font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
-.cc-mdcard-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-top: auto;
-}
 
-.cc-mdcard-meta {
-  font-size: 11px;
-  color: var(--fg-muted);
-  white-space: nowrap;
-}
 
-.cc-mdcard-actions {
-  display: flex;
-  gap: 2px;
-}
 
 /* Icon-only quiet action button; the label lives in title/aria-label. */
 .cc-iconbtn {
@@ -1472,6 +1392,7 @@
   background: color-mix(in srgb, var(--error) 16%, transparent);
   color: var(--error);
 }
+
 
 /* -- three-state toggle ---------------------------------------------------- */
 /* The input overlays the whole switch (transparent, on top) so a click lands on
@@ -1676,21 +1597,12 @@
    container instead of .cc-root, which strands .cc-toolbar's and .cc-index's
    `position: sticky` against a narrower scrollport than the rest of the page
    uses everywhere else. The tab strip needs no rule of its own: it scrolls
-   sideways at every width. What DOES go is the caption's standing note — at
-   this width the file the tab edits is the only half of that row worth the
-   space, and the note survives as the row's title=. */
+   sideways at every width. */
 
 @media (max-width: 900px) {
-  .cc-caption-note {
-    display: none;
-  }
-
   /* A row gives up its secondary text before it gives up its actions: the
      actions are the reason the row is there, and the secondary text is the one
-     part that has somewhere else to be (the expanded panel, or its title=).
-     Skills is the deliberate exception — its description IS the payload, so
-     .cc-skills-list overrides this back on below (and drops the source meta
-     instead, which is the low-value, repetitive field at this width). */
+     part that has somewhere else to be (the expanded panel, or its title=). */
   .cc-lrow-sub {
     display: none;
   }
@@ -1700,39 +1612,6 @@
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-
-  .cc-skills-list .cc-lrow-sub {
-    display: -webkit-box;
-  }
-
-  .cc-skills-list .cc-lrow-meta {
-    display: none;
-  }
-
-  /* The fixed 168px name column is a desktop-width affordance, and at a
-     ~340px content column it left so little room that the two-column shape
-     itself was the defect: the name — the row's identity — was what got
-     crushed down to two or three characters (`c..`) while the description
-     kept nearly the full row width. Below this width Skills' rows stack
-     instead: the name (with its "not linked" badge, still stacked under it
-     via .cc-skills-namebox) gets its own full-width line, the description
-     its own line(s) below — still clamped to 2 lines by .cc-lrow-sub-clamp2
-     above — and the source meta stays dropped, same as the comment above
-     already says. .cc-lrow-body flips to a column so those two lines stack;
-     align-items must go from the row layout's flex-start (top-aligns NAME
-     beside SUB) to stretch, or the column's cross axis would shrink-wrap
-     each line to its own content width instead of spanning the row. */
-  .cc-skills-list .cc-lrow-body {
-    flex-direction: column;
-    align-items: stretch;
-    gap: 4px;
-  }
-
-  .cc-skills-list .cc-lrow-name {
-    flex: 0 0 auto;
-    width: auto;
-    max-width: 100%;
   }
 
   /* The marketplace filter column would leave the list ~120px at this width.
@@ -1793,11 +1672,6 @@
   gap: 8px;
 }
 
-.cc-fileeditor-files {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
 
 /* -- Skills tab of the Claude Code page ------------------------------------- */
 

@@ -104,17 +104,6 @@ export function Group({ title, children }: { title: ReactNode; children: ReactNo
   );
 }
 
-// A dir/path heading keeps its own casing and monospace (the CLAUDE.md tab's
-// groups are filesystem paths, not category names).
-export function PathGroup({ title, children }: { title: ReactNode; children: ReactNode }) {
-  return (
-    <div className="cc-group">
-      <h3 className="cc-group-title cc-group-path cc-mono">{title}</h3>
-      {children}
-    </div>
-  );
-}
-
 export function Card({ children }: { children: ReactNode }) {
   return <div className="cc-card">{children}</div>;
 }
