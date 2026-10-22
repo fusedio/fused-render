@@ -220,23 +220,10 @@ export function SectionToolbar({
   summary,
   children,
   onRefresh,
-  // Override only where "refresh" is the wrong word for the same act (MD Files
-  // re-runs a filesystem scan; Statusline re-runs the preview command).
-  refreshLabel = "Refresh",
-  refreshBusy,
 }: {
   summary: ReactNode;
   children?: ReactNode;
   onRefresh?: () => void;
-  refreshLabel?: string;
-  // Disables the refresh while its work is in flight. Offered rather than
-  // assumed, because most tabs' refresh is an idempotent read whose worst case
-  // is a wasted fetch — but Statusline's runs the USER'S OWN command through
-  // `sh -c`, where three fast clicks are three concurrent processes and the
-  // results land in completion order, so a slow earlier run can overwrite a
-  // newer one. A control that spawns a process should not be re-entrant just
-  // because it is drawn as an icon.
-  refreshBusy?: boolean;
 }) {
   return (
     <div className="cc-toolbar">
@@ -260,10 +247,8 @@ export function SectionToolbar({
             <button
               type="button"
               className="cc-iconbtn"
-              title={refreshBusy ? `${refreshLabel} — running…` : refreshLabel}
-              aria-label={refreshLabel}
-              aria-busy={refreshBusy || undefined}
-              disabled={refreshBusy}
+              title="Refresh"
+              aria-label="Refresh"
               onClick={onRefresh}
             >
               <Icon name="refresh" />

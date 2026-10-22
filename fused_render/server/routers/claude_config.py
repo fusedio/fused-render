@@ -52,7 +52,6 @@ from fused_render.claude_config import (
     profiles,
     refresh_catalog,
     skills,
-    statusline,
 )
 from fused_render.server.common import _error, _require_fused
 
@@ -79,7 +78,6 @@ MODULES = {
     "profiles": profiles.main,
     "refresh_catalog": refresh_catalog.main,
     "skills": skills.main,
-    "statusline": statusline.main,
 }
 
 

@@ -24,7 +24,6 @@ import McpSection from "@apps/claude_config/sections/McpSection";
 import MemorySection from "@apps/claude_config/sections/MemorySection";
 import PluginsSection from "@apps/claude_config/sections/PluginsSection";
 import SkillsSection from "@apps/claude_config/sections/SkillsSection";
-import StatuslineSection from "@apps/claude_config/sections/StatuslineSection";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { Button } from "@platform/shadcn/ui/button";
 import { Input } from "@platform/shadcn/ui/input";
@@ -405,8 +404,8 @@ export function ClaudeCatalogControl() {
 
 // -- the tabs ------------------------------------------------------------------
 
-/** Settings tab: the statusline preview, then every settings.json key in
- *  cards by the catalog's group, led by the catalog's refresh. */
+/** Settings tab: every settings.json key in cards by the catalog's group,
+ *  led by the catalog's refresh. */
 export function ClaudeSettingsTab({ filter }: { filter: string }) {
   const { catalog, catalogError, wake, available } = useContext(ClaudeContext);
   useEffect(() => wake(), [wake]);
@@ -419,16 +418,6 @@ export function ClaudeSettingsTab({ filter }: { filter: string }) {
   if (!available) return <ErrorBanner>~/.claude was not found on this machine.</ErrorBanner>;
   return (
     <>
-      {!needle && (
-        <section className="settings-section" aria-label="Statusline">
-          <h3 className="settings-section-title">Statusline</h3>
-          <div className="settings-card">
-            <div className="settings-block">
-              <StatuslineSection />
-            </div>
-          </div>
-        </section>
-      )}
       <section className="settings-section" aria-label="Catalog">
         <div className="settings-card">
           <ClaudeCatalogControl />

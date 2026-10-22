@@ -353,38 +353,6 @@ export const skills = {
   delete: (slug: string) => callModule<OkResult>("skills", { action: "delete", slug }),
 };
 
-// -- statusline ---------------------------------------------------------------
-
-export interface StatuslineScript {
-  path: string;
-  tracked: boolean;
-  size: number;
-  // ISO-8601 with offset (statusline.py's _iso), not an epoch.
-  modified: string;
-  description: string;
-  fields: string[];
-  otherFields: string[];
-}
-
-export interface StatuslineGet {
-  configured: boolean;
-  type: string | null;
-  command: string | null;
-  script: StatuslineScript | null;
-}
-
-export interface StatuslinePreview {
-  ok: boolean;
-  // Raw stdout, ANSI escapes intact (see ./ansi.tsx).
-  output: string;
-  error?: string;
-}
-
-export const statusline = {
-  get: () => callModule<StatuslineGet>("statusline", { action: "get" }),
-  preview: () => callModule<StatuslinePreview>("statusline", { action: "preview" }),
-};
-
 // -- profiles -----------------------------------------------------------------
 
 export interface Profile {

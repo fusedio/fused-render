@@ -1576,49 +1576,6 @@
   outline-offset: 2px;
 }
 
-/* -- preformatted output (statusline preview, file view/edit) --------------- */
-
-.cc-pre {
-  margin: 12px 0 0;
-  padding: 10px 12px;
-  font-size: 12px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow-x: auto;
-}
-
-/* The statusline preview is the tab's hero, not a debug dump at the bottom:
-   roomier padding and no top margin, since it is the first thing on the page. */
-.cc-statusline {
-  margin-top: 0;
-  padding: 14px 16px;
-  font-size: 13px;
-}
-
-/* -- definition list (statusline metadata) --------------------------------- */
-/* Facts about a thing, under the thing. Same two-column grammar as an expanded
-   row's .cc-lrow-dl, at page scale rather than inside a row. */
-
-.cc-dl {
-  display: grid;
-  grid-template-columns: max-content 1fr;
-  gap: 8px 16px;
-  margin: 20px 0 0;
-  font-size: 12.5px;
-}
-
-.cc-dl-key {
-  color: var(--fg-muted);
-}
-
-.cc-dl-val {
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
 /* -- change-preview modal body --------------------------------------------- */
 
 .cc-note {
@@ -1705,54 +1662,6 @@
 /* Children sit under their group's checkbox. */
 .cc-pick-file {
   padding-left: 24px;
-}
-
-/* -- ANSI (statusline preview) --------------------------------------------- */
-/* apps/claude_config/ansi.tsx maps an SGR code to one of these classes. Eight
-   hues, drawn from the palette tokens that already carry them — the three
-   semantic ones plus the file-icon hues for blue/magenta/cyan, which are the
-   only stable blue/magenta/cyan the palette has. Bright variants (90–97) resolve
-   to the same hue as their normal counterpart; `bold` is what separates
-   emphasis. */
-
-.cc-ansi-gray {
-  color: var(--fg-muted);
-}
-
-.cc-ansi-red {
-  color: var(--error);
-}
-
-.cc-ansi-green {
-  color: var(--success);
-}
-
-.cc-ansi-yellow {
-  color: var(--warning);
-}
-
-.cc-ansi-blue {
-  color: var(--icon-folder);
-}
-
-.cc-ansi-magenta {
-  color: var(--icon-image);
-}
-
-.cc-ansi-cyan {
-  color: var(--icon-code);
-}
-
-.cc-ansi-white {
-  color: var(--fg);
-}
-
-.cc-ansi-bold {
-  font-weight: 700;
-}
-
-.cc-ansi-dim {
-  opacity: 0.6;
 }
 
 /* -- narrow windows -------------------------------------------------------- */
@@ -1864,8 +1773,17 @@
   font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   font-size: 12px;
   line-height: 1.5;
-  min-height: 160px;
-  resize: vertical;
+  overflow-y: hidden;
+  resize: none;
+}
+
+.cc-fileeditor-note {
+  font-size: 12px;
+  color: var(--muted-foreground, #888);
+}
+
+.cc-fileeditor-note.is-error {
+  color: var(--destructive, #d33);
 }
 
 .cc-fileeditor-bar {
