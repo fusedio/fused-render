@@ -6,7 +6,8 @@
 # produce a real standalone bundle, see the note below) -> build the wheel
 # once (dist/*.whl) -> build a venv on it -> pip install that wheel
 # [bundled,app] + py2app + dmgbuild into the venv -> generate the app icon ->
-# run py2app -> codesign -> dmgbuild -> notarize.
+# run py2app -> build + seat the Chromium engine (4e-bis) -> codesign -> dmgbuild ->
+# notarize.
 #
 # Signing (step 5, D73) is credential-driven: with a Developer ID identity in
 # your keychain the bundle is signed with the hardened runtime (and optionally
@@ -1111,6 +1112,79 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 4e-bis. The Chromium engine (D1415, fused_render/chromium). Built here from
+#     native/ by native/build.sh (CMake + the CEF binary distribution the
+#     manifest pins, ~200 MB, cached under native/.cef-cache — release.yml
+#     caches it by manifest hash) and seated at Contents/Frameworks/
+#     FusedChromium/, build.sh's own output layout, which is what
+#     `FRChromiumEngine` opens; `chromium.engine_dir()` finds it there. No
+#     separate artifact, release, pin or download: the engine is part of the
+#     app it was built with, and its version is the app's.
+#
+#     Nested bundles in a plain subdirectory of Frameworks pass `codesign
+#     --verify --strict`; plain FILES there do not (Developer ID sealing
+#     failed on a marker file, 2026-10-22), so build.sh's engine.json is
+#     moved to Contents/Resources/chromium-engine.json (chromium.BUNDLED_INFO).
+#
+#     An arch the manifest pins no CEF for (x86_64 today: Apple silicon only,
+#     owner 2026-10-21) ships WITHOUT it — the row says so and every window
+#     is WebKit. For a pinned arch the build is FATAL when it fails in a
+#     release build (a Developer ID identity configured: the default-on
+#     preference would silently mean WebKit) and a warning for a dev DMG,
+#     the apple-helper rule (4e). cmake is what a dev Mac may lack.
+#
+#     Must run BEFORE 4f / 4f-bis (its Mach-Os are checked like everything
+#     else: CEF 139 carries minos 12.0) and before signing (step 5), which
+#     signs the engine as bundles, inside out, with the helper entitlements.
+# ---------------------------------------------------------------------------
+echo "==> building the Chromium engine"
+CHROMIUM_DEST="$APP_DIR/Contents/Frameworks/FusedChromium"
+rm -rf "$CHROMIUM_DEST"
+# Set when a pinned arch ends up without its engine. The FATAL checks here
+# only see FUSED_RENDER_CODESIGN_IDENTITY; a release signed with an identity
+# step 5 auto-detects from the keychain would otherwise sail past them, so
+# step 5 re-checks this flag once SIGN_IDENTITY is resolved.
+CHROMIUM_MISSING=""
+CHROMIUM_PINNED="$(python3 -c 'import json,sys;print("yes" if (json.load(open(sys.argv[1])).get("cef_sha1") or {}).get(sys.argv[2]) else "")' "$REPO_ROOT/fused_render/chromium/manifest.json" "$ARCH")"
+if [[ -z "$CHROMIUM_PINNED" ]]; then
+  echo "    skipped: the manifest pins no CEF for $ARCH (new windows use WebKit on this build)"
+elif ! command -v cmake >/dev/null 2>&1; then
+  if [[ -n "${FUSED_RENDER_CODESIGN_IDENTITY:-}" ]]; then
+    echo "FATAL: a release build needs the Chromium engine, and cmake is not installed (brew install cmake)" >&2
+    exit 1
+  fi
+  echo "    skipped: cmake not installed (brew install cmake; this DMG's windows use WebKit)"
+  CHROMIUM_MISSING="cmake is not installed"
+else
+  CHROMIUM_OUT="$BUILD_DIR/chromium-engine"
+  if bash "$REPO_ROOT/fused_render/chromium/native/build.sh" "$ARCH" "$CHROMIUM_OUT"; then
+    mkdir -p "$APP_DIR/Contents/Frameworks"
+    # ditto keeps the symlinks (Versions/Current) the frameworks are made of.
+    ditto "$CHROMIUM_OUT/FusedChromium" "$CHROMIUM_DEST"
+    mv "$CHROMIUM_DEST/engine.json" "$APP_DIR/Contents/Resources/chromium-engine.json"
+    STRAY="$(find "$CHROMIUM_DEST" -maxdepth 1 -mindepth 1 ! -name '*.framework' ! -name '*.app')"
+    if [[ -n "$STRAY" ]]; then
+      echo "FATAL: non-bundle entries in $CHROMIUM_DEST (strict sealing refuses them):" >&2
+      echo "$STRAY" >&2
+      exit 1
+    fi
+    "$BUILD_VENV/bin/python" - "$APP_DIR/Contents/Resources/chromium-engine.json" "$ARCH" "$CHROMIUM_DEST" <<'PYEOF'
+import sys
+from fused_render import chromium
+info = chromium.check_engine_info(sys.argv[1], arch=sys.argv[2])
+print("    engine (CEF %s, %s) -> %s" % (info["cef_version"], info["arch"], sys.argv[3]))
+PYEOF
+  elif [[ -n "${FUSED_RENDER_CODESIGN_IDENTITY:-}" ]]; then
+    echo "FATAL: a release build needs the Chromium engine and native/build.sh failed" >&2
+    exit 1
+  else
+    echo "    skipped: native/build.sh failed (this DMG's windows use WebKit)"
+    rm -rf "$CHROMIUM_DEST"
+    CHROMIUM_MISSING="native/build.sh failed"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # 4f. Every Mach-O we ship must run on the OLDEST macOS the bundle claims to
 #     support in practice. Read-only, so it can sit anywhere before signing.
 #
@@ -1263,6 +1337,10 @@ fi
 
 if [[ -n "$SIGN_IDENTITY" ]]; then
   echo "==> Developer ID signing (hardened runtime): $SIGN_IDENTITY"
+  if [[ -n "$CHROMIUM_MISSING" ]]; then
+    echo "FATAL: a Developer ID build needs the Chromium engine, and step 4e-bis skipped it: $CHROMIUM_MISSING" >&2
+    exit 1
+  fi
 
   # Entitlements the bundled interpreter + native stack need under the
   # hardened runtime. Build artifact, not committed.
@@ -1297,6 +1375,43 @@ PLIST
   # it for distribution and it skips nested executables like the bundled
   # `python`); we enumerate every Mach-O by magic bytes (same detection as the
   # sanity check above) and sign each, then seal the .app last.
+  # The Chromium engine (4e-bis) is signed as BUNDLES, inside out, before the
+  # flat sweep below — and excluded from that sweep. Signing a framework's or
+  # helper's main executable as a bare file, with the app's entitlements,
+  # would break that bundle's seal, and notarization validates nested bundles
+  # as bundles. Same recipe as fused_render/chromium/native/build.sh: the CEF
+  # dylibs, the CEF framework, our wrapper framework, then the five helper
+  # apps with Chromium's helper entitlements (JIT for V8, library validation
+  # off because they load the CEF framework from outside their own bundle).
+  if [[ -d "$CHROMIUM_DEST" ]]; then
+    echo "==> signing the Chromium engine (bundles, inside out)"
+    CHROMIUM_ENTITLEMENTS="$BUILD_DIR/chromium-helper-entitlements.plist"
+    cat > "$CHROMIUM_ENTITLEMENTS" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>com.apple.security.cs.allow-jit</key><true/>
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
+  <key>com.apple.security.cs.disable-library-validation</key><true/>
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key><true/>
+</dict>
+</plist>
+PLIST
+    CEF_FW="$CHROMIUM_DEST/Chromium Embedded Framework.framework"
+    while IFS= read -r -d '' lib; do
+      codesign --force --options runtime --timestamp $KC_OPT -s "$SIGN_IDENTITY" "$lib"
+    done < <(find "$CEF_FW/Versions/A/Libraries" -type f -name '*.dylib' -print0 2>/dev/null)
+    codesign --force --options runtime --timestamp $KC_OPT -s "$SIGN_IDENTITY" "$CEF_FW"
+    codesign --force --options runtime --timestamp $KC_OPT -s "$SIGN_IDENTITY" "$CHROMIUM_DEST/FusedChromium.framework"
+    for helper in "$CHROMIUM_DEST"/*.app; do
+      codesign --force --options runtime --timestamp --entitlements "$CHROMIUM_ENTITLEMENTS" \
+        $KC_OPT -s "$SIGN_IDENTITY" "$helper"
+    done
+    codesign --verify --strict "$CHROMIUM_DEST/FusedChromium.framework"
+    codesign --verify --strict "$CHROMIUM_DEST/FusedRender Helper.app"
+  fi
+
   echo "==> signing nested Mach-O binaries"
   # find -exec ... {} + emits NUL-delimited Mach-O paths, read back with
   # `read -d ''`. NOT `find -print0 | xargs -0 -I{} sh -c ...`: BSD xargs -I{}
@@ -1311,7 +1426,8 @@ PLIST
       --entitlements "$ENTITLEMENTS" $KC_OPT -s "$SIGN_IDENTITY" "$macho"
     signed_count=$((signed_count + 1))
   done < <(
-    find "$APP_DIR" -type f -exec sh -c '
+    # The engine subtree is already sealed as bundles above (see 4e-bis).
+    find "$APP_DIR" -path "$CHROMIUM_DEST" -prune -o -type f -exec sh -c '
       for f do
         case "$(head -c4 "$f" | xxd -p)" in
           cffaedfe|cafebabe|feedfacf|feedface|cefaedfe|bebafeca) printf "%s\0" "$f" ;;

@@ -1,10 +1,11 @@
-# The Chromium engine for macOS app windows (experimental)
+# The Chromium engine for macOS app windows
 
-The desktop app's windows are `WKWebView`s. With **Preferences → Optional
-features → Chromium engine for windows** on, every *new* app window is drawn by
-Chromium (the Chromium Embedded Framework, CEF) once the engine is on disk and
-loaded into the process; until then (downloading, failed, unsupported) a new
-window is a `WKWebView` as before. Everything around the
+The desktop app's windows are drawn by Chromium (the Chromium Embedded
+Framework, CEF) by default: **Preferences → Optional features → Chromium
+engine for windows** is on unless turned off, and the DMG ships the engine
+(D1415). Every *new* app window is Chromium once the engine is on disk and
+loaded into the process; anything short of that (off, a build that carries no
+engine, a failed load) makes a new window a `WKWebView` as before. Everything around the
 view is unchanged: the same `NSWindow`, main menu, Dock icon, ⌘-shortcuts,
 titlebar buttons, focus-or-open and saved frames. The menu-bar dock, the
 launcher, the pinned popover and the recording pill stay on WebKit.
@@ -18,36 +19,43 @@ build made for that.
 
 ## How it ships
 
-The engine is **not in the app bundle**. It is fetched on demand (the usd-core
-pattern, D119) when the preference is first turned on:
+**The DMG carries the engine, built with the app** (D1415). `scripts/build_dmg.sh`
+step 4e-bis runs `fused_render/chromium/native/build.sh` (CMake + the CEF
+binary distribution `manifest.json` names), seats the output at
+`<App>.app/Contents/Frameworks/FusedChromium/` and moves its `engine.json` to
+`Contents/Resources/chromium-engine.json` (only bundles may sit in a Frameworks
+subdirectory: strict sealing refuses plain files there). Step 5 signs the
+engine as bundles, inside out, with Chromium's helper entitlements. Nothing is
+downloaded, pinned or published separately; the engine's version is the app's.
+The Intel DMG ships none (the manifest pins no x86_64 CEF) and its windows stay
+WebKit; the row there reads off and disabled.
 
 | Piece | Where |
 |---|---|
-| Pinned artifact (version, URL, sha256, size per arch) | `fused_render/chromium/manifest.json` |
-| Download / verify / unpack state machine (OS-neutral, tested everywhere) | `fused_render/chromium/__init__.py` |
+| CEF version + the CDN's sha1 of its tarball | `fused_render/chromium/manifest.json` |
+| Locator: where the engine is, whether it is usable, which engine a new window gets (OS-neutral, tested everywhere) | `fused_render/chromium/__init__.py` |
 | PyObjC side: loads the framework, answers the view's delegate | `fused_render/chromium/mac.py` |
 | The window layer's engine choice (per window, at open) | `fused_render/mac_window.py` (`engine_for_new_window`) |
-| Preference, status and install/remove routes | `fused_render/shell/prefs.py` (`chromium_windows_enabled`, `/api/prefs/chromium*`) |
-| Preferences row with download progress | `frontend/src/shell/settings/general.tsx` (`ChromiumWindowsControl`) |
+| Preference and status | `fused_render/shell/prefs.py` (`chromium_windows_enabled`, `GET /api/prefs/chromium`) |
+| Preferences row | `frontend/src/shell/settings/general.tsx` (`ChromiumWindowsControl`) |
 | "Reopen windows" (open windows keep their engine; `stale_windows` counts the ones on the other engine) | `POST /api/prefs/chromium/reopen-windows` → `WindowManager.reopen_all`: close all, one Home window |
-| Updates: an app update with the preference on fetches the engine the new app pins before the swap (`update/mac.py` → `chromium.prefetch_for_bundle`); at start, a missing engine is fetched and older `engine-*` folders are removed (`app.py` → `install` / `prune_others`) | engine updates ride on app updates: bump the CEF pin, build, publish, pin, release the app |
-| The native framework source | `fused_render/chromium/native/` |
+| Build + seat + sign | `scripts/build_dmg.sh` steps 4e-bis and 5 |
+| The native framework source and its build script | `fused_render/chromium/native/` |
 
-Unpacked engines live under `<base home>/chromium/engine-<engine_version>-<arch>/`
-(`~/.fused-render/chromium/…`; the base home, not the branch dir, so one
-download serves every branch install). The Chromium profile is
-`<base home>/chromium/profile/`. A `.ready` marker is written last; a dir
-without it is rebuilt. The artifact's `engine.json` must agree with the
-manifest or the unpack is refused.
+A dev checkout (`python -m fused_render.app`) has no bundle: run
+`native/build.sh arm64` once and point `FUSED_RENDER_CHROMIUM_ENGINE_DIR` at
+`native/out/FusedChromium`. The Chromium profile is
+`<base home>/chromium/profile/` for every host.
 
 Rules the window layer follows:
 
 * The preference is read at **every window open**, never once at boot. An
-  open window keeps the engine it was born with.
+  open window keeps the engine it was born with. Default on; `false` in
+  prefs.json opts out.
 * A window is Chromium only when the preference is on **and** the engine is on
-  disk and verified **and** the framework loaded into this process. Anything
-  short of that is WebKit, silently (logged at WARNING when the load fails).
-  A download in progress never makes a blank window.
+  disk for this arch and CEF (`engine.json`) **and** the framework loaded into
+  this process. Anything short of that is WebKit, silently (logged at WARNING
+  when the load fails).
 * CEF initialises once per process and cannot restart. Turning the preference
   off closes nothing and stops nothing; the next window is WebKit. The engine
   is shut down at quit (`WindowManager.shutdown_engines`).
@@ -85,64 +93,41 @@ Rules the window layer follows:
 
 ## Building the engine
 
-Needs macOS, Xcode command line tools, cmake ≥ 3.21.
+Needs macOS, Xcode command line tools, cmake ≥ 3.21 (`brew install cmake`).
 
 ```
-fused_render/chromium/native/build.sh arm64      # or x86_64
+fused_render/chromium/native/build.sh arm64 [OUT_DIR]   # or x86_64
 ```
 
-The script reads `cef_version` / `engine_version` from the manifest, fetches
-that CEF binary distribution (`cef_binary_<ver>_macosarm64_minimal.tar.bz2`
-from cef-builds.spotifycdn.com; cached in `native/.cef-cache`), builds
-`FusedChromium.framework` and the helper with CMake, assembles
+The script reads `cef_version` / `cef_sha1` from the manifest, fetches that
+CEF binary distribution (`cef_binary_<ver>_macosarm64_minimal.tar.bz2` from
+cef-builds.spotifycdn.com; cached in `native/.cef-cache`, verified against the
+sha1 every run), builds `FusedChromium.framework` and the helper with CMake,
+assembles
 
 ```
 FusedChromium/
   FusedChromium.framework/                 our wrapper (FRChromiumEngine, FRChromiumView)
   Chromium Embedded Framework.framework/   CEF, re-laid out as Versions/A
   FusedRender Helper.app                   + (GPU) (Renderer) (Plugin) (Alerts)
-  engine.json                              {engine_version, cef_version, arch}
+  engine.json                              {cef_version, arch, app_version}
 ```
 
-signs it (Developer ID with hardened runtime and Chromium's helper
-entitlements when `FUSED_RENDER_CODESIGN_IDENTITY` is set, ad hoc otherwise)
-and zips it as `FusedChromium-<engine_version>-<arch>.zip` next to a `.json`
-with its sha256 and size.
+and ad-hoc signs it (enough to run from a checkout; the release signature is
+`build_dmg.sh`'s). `build_dmg.sh` runs exactly this, so a DMG build on a Mac
+without cmake ships no engine (a warning) and a release build without one
+fails. The artifact must stay at minos ≤ 13.0 — `build_dmg.sh` step 4f refuses
+the bundle otherwise (CEF 139 is 12.0).
 
-Why ad hoc is enough locally: the app downloads the engine itself (no
-quarantine flag), and `build_dmg.sh` already signs the app with
-`com.apple.security.cs.disable-library-validation`, so the framework loads.
-The helpers are separate executables CEF launches; on Apple silicon an ad-hoc
-signature runs.
-
-### Publishing
-
-1. Bump `engine_version` in the manifest on any native change (the artifact
-   name and release tag carry it).
-2. Run the **Chromium engine** workflow (`.github/workflows/chromium-engine.yml`,
-   manual) with *publish* on. It builds arm64 (Intel Macs are not served:
-   the manifest's `x86_64` entry stays unpinned and the row says unpublished
-   there), smoke-tests the zip with the Python unpacker, and uploads the zip
-   and `.json` to the GitHub release `chromium-engine-<engine_version>`. An
-   arch the manifest already pins is never re-uploaded: bump the version.
-3. Pin it:
-   ```
-   gh release download chromium-engine-<v> -p '*.json' -D /tmp/engine
-   scripts/publish_chromium_engine.py /tmp/engine/*.json
-   ```
-   and land the manifest change. Until the manifest carries a sha256 the
-   preference reports the engine as *not published for this build*.
-
-The engine updates out of band from app releases: a new engine is a manifest
-change. Security patches to Chromium are therefore ours to roll by bumping
-`cef_version`; CEF tracks Chromium's four-week cycle.
+**Bumping CEF**: set `cef_version` and the CDN's sha1 for arm64 in
+`manifest.json`, build once locally to see it compile, release the app. CEF
+tracks Chromium's four-week cycle; security patches are ours to roll.
 
 ## Status of this implementation
 
 The Python, API and frontend halves are unit-tested on every OS (the delegate
 is tested against stub `objc`/`AppKit` modules). The native framework compiles
-and runs: engines 1–5 were built by the workflow and the owner ran them on an
-Apple silicon Mac (2026-10-20/21), navigating canvases, Preferences and app
+and runs: the owner ran it on an Apple silicon Mac (2026-10-20/21), navigating canvases, Preferences and app
 windows. Three things the first run fixed, all in `FRChromiumEngine.mm`:
 
 * `main_bundle_path` is what every helper gets as `--main-bundle-path`;
@@ -161,8 +146,6 @@ Not yet exercised:
 * the external message pump under modal panels (the JS and file dialogs are
   answered on the next run-loop turn so the pump never nests; verify no
   input lag);
-* the engine prefetch during an app update (`update/mac.py`): needs a release
-  whose manifest pins a newer engine than the one installed;
 * `drawsBackground`: a windowed Chromium browser is always opaque, so the
   first frame is painted in the window's background colour rather than
   transparent;

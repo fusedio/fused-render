@@ -461,10 +461,9 @@ const ENTRIES = [
     section: "Windows",
     label: "Chromium engine for windows",
     description:
-      "Experimental. New app windows are drawn by Chromium instead of the system WebKit view — faster for heavy apps. Downloads the engine (about 150 MB) once; the menu-bar dock, launcher and pinned popover stay on WebKit.",
-    keywords: "chromium cef webkit engine rendering performance experimental blink",
+      "New app windows are drawn by Chromium instead of the system WebKit view — faster for heavy apps. Off, new windows use WebKit; the menu-bar dock, launcher and pinned popover always do.",
+    keywords: "chromium cef webkit engine rendering performance blink",
     macOnly: true,
-    badge: "Beta",
     available: ({ prefs }) => !!prefs.chromium_windows?.available,
   },
 

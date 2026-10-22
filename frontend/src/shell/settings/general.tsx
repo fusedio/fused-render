@@ -1,17 +1,14 @@
 // General: appearance, windows, the launcher's shortcuts, updates.
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  getChromiumEngine,
   getConfig,
   getPrefs,
-  installChromiumEngine,
   postLauncherSuspend,
   putAutoDownloadUpdates,
   putChromiumWindowsEnabled,
   putLauncherHotkey,
   putLauncherRowModifier,
   putNativeWindowsEnabled,
-  removeChromiumEngine,
   reopenChromiumWindows,
   type ChromiumEngineStatus,
   type ChromiumWindowsState,
@@ -93,29 +90,21 @@ export function NativeWindowsControl({ prefs, onChange }: PrefControlProps) {
   );
 }
 
-// Chromium (CEF) engine for app windows: experimental, off by default, lives
-// under Optional features. Turning it on makes the server download the engine
-// (~150 MB) once; while that runs this row polls the cheap
-// GET /api/prefs/chromium every second and merges the slice into the page's
-// Prefs, stopping as soon as the state leaves "downloading". Only drawn where
-// the running app can honour it (`chromium_windows.available`).
-const CHROMIUM_POLL_MS = 1000;
-
+// Chromium (CEF) engine for app windows: on by default, the app ships the
+// engine (D1415), lives under Optional features. Only drawn where the running
+// app can honour it (`chromium_windows.available`); where the build carries
+// no engine (Intel) the switch is off and disabled.
 function chromiumStatusLine(engine: ChromiumEngineStatus | undefined, enabled: boolean): string | null {
   if (!engine) return null;
   switch (engine.state) {
-    case "unpublished":
-      return "Engine not published for this build yet.";
     case "missing":
-      return enabled ? null : "Turning this on downloads the engine.";
-    case "downloading":
-      if (engine.phase === "verify") return "Verifying…";
-      if (engine.phase === "unpack") return "Unpacking…";
-      return `Downloading engine… ${Math.round(Math.max(0, Math.min(1, engine.progress || 0)) * 100)}%`;
-    case "ready":
-      return `Engine ready${engine.cef_version ? ` (CEF ${engine.cef_version})` : ""}. New windows use Chromium; open windows keep their engine.`;
-    case "failed":
-      return engine.error || "The engine download failed.";
+      return "This build ships no Chromium engine; windows use WebKit.";
+    case "ready": {
+      // Off with the engine present: the next window is WebKit (the window
+      // layer's rule), so the line must not promise Chromium.
+      const next = enabled ? `Chromium${engine.cef_version ? ` ${engine.cef_version.split("+")[0]}` : ""}` : "WebKit";
+      return `${next}. New windows use it; open windows keep their engine.`;
+    }
     default:
       return null;
   }
@@ -127,7 +116,6 @@ export function ChromiumWindowsControl({ prefs, onChange }: PrefControlProps) {
   const state = engine?.state;
   const enabled = !!cw?.enabled;
 
-  // The poll merges into the LATEST prefs, not the ones it started with.
   const latest = useRef({ prefs, onChange });
   useEffect(() => {
     latest.current = { prefs, onChange };
@@ -137,49 +125,14 @@ export function ChromiumWindowsControl({ prefs, onChange }: PrefControlProps) {
     publish({ ...p, chromium_windows: next });
   }, []);
 
-  useEffect(() => {
-    if (state !== "downloading") return;
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const tick = async () => {
-      try {
-        const next = await getChromiumEngine();
-        if (stopped) return;
-        merge(next);
-        if (next.engine.state !== "downloading") return;
-      } catch {
-        if (stopped) return;
-      }
-      timer = setTimeout(() => void tick(), CHROMIUM_POLL_MS);
-    };
-    timer = setTimeout(() => void tick(), CHROMIUM_POLL_MS);
-    return () => {
-      stopped = true;
-      if (timer !== undefined) clearTimeout(timer);
-    };
-  }, [state, merge]);
-
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const act = async (what: () => Promise<ChromiumWindowsState>) => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      merge(await what());
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setBusy(false);
-    }
-  };
 
   // The windows that are open keep their engine; the page itself is one of
   // them, so its own request may die with it — a rejection is not an error.
   const stale = cw?.stale_windows ?? 0;
-  // The moment windows become stale (the toggle flipped, or the download
-  // the toggle started finished) a dialog says so, once per transition;
-  // closed, the line under the row keeps the offer.
+  // The moment windows become stale (the toggle flipped) a dialog says so,
+  // once per transition; closed, the line under the row keeps the offer.
   const [ask, setAsk] = useState(false);
   const hadStale = useRef(stale > 0);
   useEffect(() => {
@@ -204,37 +157,17 @@ export function ChromiumWindowsControl({ prefs, onChange }: PrefControlProps) {
     (stale === 1 ? "1 open window still uses" : `${stale} open windows still use`) +
     " the previous engine. Reopen them for the change to take effect.";
   const line = chromiumStatusLine(engine, enabled);
-  const status =
-    line || state === "ready" || state === "failed" ? (
-      <span className="inline-flex flex-wrap items-center gap-x-2">
-        {line && <span>{line}</span>}
-        {state === "ready" && (
-          <Button
-            variant="link"
-            size="xs"
-            className="h-auto p-0"
-            disabled={busy}
-            title="Delete the downloaded engine and turn this off"
-            onClick={() => void act(removeChromiumEngine)}
-          >
-            Remove engine
-          </Button>
-        )}
-        {state === "failed" && (
-          <Button variant="outline" size="xs" disabled={busy} onClick={() => void act(installChromiumEngine)}>
-            Retry download
-          </Button>
-        )}
-      </span>
-    ) : undefined;
+  const usable = state === "ready";
 
   return (
     <PrefToggleRow
       id="chromium-windows"
-      checked={enabled}
+      // The preference defaults on; where no engine can load, a checked-but-
+      // disabled switch would promise what the status line denies.
+      checked={enabled && usable}
       put={putChromiumWindowsEnabled}
-      disabled={state === "unpublished" || state === "unsupported"}
-      status={status}
+      disabled={!usable}
+      status={line ?? undefined}
       onChange={onChange}
     >
       {error && <ErrorBanner>{error}</ErrorBanner>}

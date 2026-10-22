@@ -124,6 +124,15 @@ jobs:
       # do not have it preinstalled, so the build fails loudly without this.
       - uses: astral-sh/setup-uv@v9.0.0
 
+      # The Chromium engine is built into the bundle (build_dmg.sh 4e-bis,
+      # D1415) from the ~200 MB CEF distribution the manifest pins; keep the
+      # tarball between runs (build.sh re-verifies its sha1 every time).
+      - name: Cache the CEF binary distribution
+        uses: actions/cache@v4
+        with:
+          path: fused_render/chromium/native/.cef-cache
+          key: cef-arm64-${{ hashFiles('fused_render/chromium/manifest.json') }}
+
       - name: Import signing cert + notary credentials into ephemeral keychain
         env:
           CODESIGN_CERT_P12: ${{ secrets.CODESIGN_CERT_P12 }}
@@ -452,6 +461,15 @@ jobs:
       # script already requires uv on the host the same way; macOS runners
       # do not have it preinstalled, so the build fails loudly without this.
       - uses: astral-sh/setup-uv@v9.0.0
+
+      # The Chromium engine is built into the bundle (build_dmg.sh 4e-bis,
+      # D1415) from the ~200 MB CEF distribution the manifest pins; keep the
+      # tarball between runs (build.sh re-verifies its sha1 every time).
+      - name: Cache the CEF binary distribution
+        uses: actions/cache@v4
+        with:
+          path: fused_render/chromium/native/.cef-cache
+          key: cef-arm64-${{ hashFiles('fused_render/chromium/manifest.json') }}
 
       - name: Import signing cert + notary credentials into ephemeral keychain
         env:
