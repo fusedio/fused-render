@@ -364,3 +364,264 @@ stores or proxies the data, or adds an account.
 - A 401 mid-session refreshes once and retries; a 403
   `insufficient_scope` steps up once; a second failure surfaces as
   "Reconnect" on the card.
+
+## 11. Implementation contract (first wave: Notion, GitHub, Slack)
+
+This section is the interface each piece is built against. Four pieces
+are built in parallel by separate agents; a piece may call another only
+through what is written here.
+
+### Ownership
+
+| Piece | Files |
+|---|---|
+| core-auth | `fused_render/connect/{__init__,registry,store,oauth,discovery}.py`, `fused_render/connect/providers/{notion,github,slack}/provider.json` (+ `slack/manifest.json`, icons), `tests/_fake_vendor.py`, `tests/_fake_provider/fakevendor/provider.json`, `tests/test_connect_{registry,store,oauth,discovery}.py` |
+| core-tools | `fused_render/connect/{mcp_client,tools,manager,routes}.py`, `fused_render/connect/providers/slack/tools.py`, `fused_render/server/app.py` (one `include_router`), `tests/test_connect_{mcp_client,tools,manager,routes}.py` |
+| frontend | `frontend/src/shell/Preferences.tsx` (a Connections group) + `frontend/src/shell/Connections.tsx` (+ test), `fused_render/static/runtime.js` (`fused.connect`), `fused_render/templates/shared/fused_connect.py`, `tests/test_fused_connect_shared.py` |
+| bots | `fused_render/bots/apptools.py`, `fused_render/bots/bot.py` (the `tool` path), `tests/test_bots_connect_tools.py` |
+
+`fused_render/connect/__init__.py` stays empty. Nobody edits another
+piece's files; a needed change there is a note in the final report.
+
+### registry.py
+
+```python
+@dataclass
+class Provider:
+    key: str            # folder name
+    name: str
+    dir: str            # absolute pack folder
+    auth: list[dict]    # ordered; first is the default
+    tools: dict         # {"remote": url|None, "native": bool}  (native = pack has tools.py)
+    privacy: str
+    icon: str | None    # absolute path to icon.svg or None
+
+def providers() -> list[Provider]      # built-in packs + every dir in $FUSED_RENDER_CONNECT_PROVIDERS (os.pathsep-separated), sorted by key
+def get(key) -> Provider | None
+def validate(d: dict, where: str) -> None   # raises ValueError naming the field
+```
+
+Auth kinds and their required fields:
+
+- `mcp-oauth`: `resource` (the MCP URL). Endpoints are discovered.
+- `oauth-pkce`: `client_id` (may be `""`, see availability), `authorize_url`, `token_url`, `redirect` `{host, ports|null, path}`, optional `scopes` (dict of query params, e.g. `{"user_scope": "..."}` or `{"scope": "..."}`), `identity_url`, `revoke_url`, `client_secret` (Google only), `extra_authorize` (dict), `byo` `{manifest, docs}`.
+- `oauth-device`: `client_id`, `device_url`, `token_url`, `scope`, `identity_url`.
+- `cli`: `command` (argv list printing a token on stdout), `identity_url`. Available when the command runs and prints a non-empty token.
+- `api-key`: `label`, `identity_url`, optional `docs`.
+
+**Availability.** A kind needing `client_id` with `""` in the file reads
+`FUSED_RENDER_CONNECT_<KEY>_CLIENT_ID` (key upper-cased); still empty
+means the kind is listed as `available: false` with `reason`. The
+first available kind is the card's default.
+
+### store.py
+
+```python
+def get(key) -> dict | None
+def put(key, record: dict) -> None
+def delete(key) -> None
+def backend() -> str     # "keychain" | "file"
+```
+
+Record: `{"kind", "resource"?, "client_id"?, "client_registration"? (DCR
+response), "access", "refresh"?, "expires_at"? (epoch seconds, float),
+"token_type"?, "scope"?, "account"?, "extra"?}`. Backends: macOS login
+Keychain via `security add-generic-password -U` / `find-generic-password -w`
+/ `delete-generic-password`, service `fused-render.connect.<key>`,
+account `<key>`; otherwise a `0600` file at
+`<storage.home_dir()>/connect/<key>.json` (`fused_render.shell.storage.home_dir`).
+`FUSED_RENDER_CONNECT_STORE=file` forces the file backend (tests, CI).
+
+### oauth.py
+
+```python
+def pkce_pair() -> tuple[str, str]                      # (verifier, S256 challenge)
+REDIRECT_HOST, REDIRECT_PORTS, REDIRECT_PATH = "localhost", [47823, 47824, 47825, 47826, 47827], "/callback"
+
+@dataclass
+class TokenSet: access: str; refresh: str | None; expires_at: float | None; token_type: str; scope: str | None; raw: dict
+
+class LoopbackFlow:
+    def __init__(self, *, authorize_url, token_url, client_id, redirect: dict | None = None,
+                 scopes: dict | None = None, extra_authorize: dict | None = None,
+                 extra_token: dict | None = None, client_secret: str | None = None, http=None): ...
+    def start(self) -> str            # binds the listener (any free port when redirect.ports is None), returns the URL to open
+    redirect_uri: str
+    def result(self, timeout: float = 600) -> TokenSet    # blocks; raises FlowCancelled / FlowError / FlowTimeout
+    def complete_from_url(self, url: str) -> None         # the paste fallback: feeds code+state as if the listener got them
+    def cancel(self) -> None
+
+class DeviceFlow:
+    def __init__(self, *, device_url, token_url, client_id, scope: str | None = None, http=None): ...
+    def start(self) -> dict           # {verification_uri, verification_uri_complete?, user_code, expires_in, interval}
+    def result(self, timeout: float = 900) -> TokenSet
+    def cancel(self) -> None
+
+def refresh(*, token_url, client_id, refresh_token, client_secret=None, extra: dict | None = None, http=None) -> TokenSet
+```
+
+Token responses: standard JSON (`access_token`, `refresh_token`,
+`expires_in`, `token_type`, `scope`); Slack's `{ok, error}` envelope
+raises `FlowError(error)` on `ok: false`, and a user token under
+`authed_user.access_token` (+ `authed_user.refresh_token`,
+`authed_user.expires_in`) is what `TokenSet.access` carries when present.
+GitHub's device token endpoint needs `Accept: application/json`. The
+listener answers every hit with a small HTML page; it checks `state`
+and ignores a mismatch (logged, keeps waiting). All HTTP through `httpx`.
+
+### discovery.py
+
+```python
+@dataclass
+class Discovered:
+    resource: str; issuer: str
+    authorization_endpoint: str; token_endpoint: str
+    registration_endpoint: str | None; revocation_endpoint: str | None
+    scopes: list[str]              # the 401's `scope` if given, else PRM scopes_supported, else []
+    cimd_supported: bool; pkce_methods: list[str]; raw: dict
+
+def discover(resource_url: str, http=None) -> Discovered      # per MCP auth spec §Authorization Server Discovery; raises DiscoveryError (incl. "no PKCE")
+def register_dcr(d: Discovered, *, redirect_uris: list[str], client_name="Fused", http=None) -> dict   # the registration response (client_id, ...)
+def client_metadata_url() -> str | None     # $FUSED_RENDER_CLIENT_METADATA_URL, else None (CIMD off)
+def choose_client(d: Discovered, *, preregistered: str | None, redirect_uris, http=None) -> tuple[str, dict | None]
+    # (client_id, registration|None) in spec order: preregistered → CIMD (if url set and d.cimd_supported) → DCR → raises NeedsClientId
+```
+
+### mcp_client.py
+
+```python
+class McpClient:
+    def __init__(self, url: str, token: str | Callable[[], str], http=None, protocol_version="2025-06-18"): ...
+    def initialize(self) -> dict        # server info; stores Mcp-Session-Id
+    def list_tools(self) -> list[dict]  # raw MCP tool dicts (name, description, inputSchema, annotations?)
+    def call(self, name: str, args: dict) -> dict   # {"content": [...], "isError": bool, "structuredContent"?: ...}
+    def close(self) -> None
+class McpError(Exception)
+class McpAuthError(McpError): www_authenticate: str | None   # 401 (and GitHub's 400 "Authorization header" variant)
+class McpScopeError(McpError): scope: str | None             # 403 insufficient_scope
+```
+
+Streamable HTTP: POST JSON-RPC, `Accept: application/json, text/event-stream`,
+`MCP-Protocol-Version`, `Authorization: Bearer`; a `text/event-stream`
+body is read until the message whose `id` matches; `Mcp-Session-Id`
+is echoed back once seen; `notifications/initialized` after init.
+
+### tools.py
+
+```python
+@dataclass
+class ToolSpec: provider: str; name: str; description: str; input_schema: dict; read_only: bool; destructive: bool
+
+def list_tools(key: str) -> list[ToolSpec]       # [] unless connected; cached 60 s per key
+def call_tool(key: str, name: str, args: dict) -> dict   # {"ok": bool, "text": str, "content": list, "is_error": bool}
+def invalidate(key: str) -> None
+```
+
+Sources, in order: `tools.remote` through `McpClient` with
+`manager.token(key)` (a 401 refreshes once and retries; a second 401
+marks the provider `reconnect`); a native module
+`providers/<key>/tools.py` exposing `TOOLS: list[dict]` (`name`,
+`description`, `input_schema`, `read_only`, `destructive`) and
+`call(ctx, name, args) -> str | dict`, where `ctx.token`, `ctx.http`
+(an `httpx.Client`), `ctx.record`. `read_only` comes from MCP
+`annotations.readOnlyHint`, `destructive` from `destructiveHint`
+(default `True` when annotations are absent, per the MCP spec defaults).
+
+### manager.py
+
+```python
+def list() -> list[dict]         # one per provider: {key, name, icon: "/api/connect/<key>/icon"|None, privacy, auth: [{kind, label, available, reason?, byo?}], tools: {remote, native}, ...status(key)}
+def status(key) -> dict          # {state: "disconnected"|"pending"|"connected"|"reconnect"|"error", kind?, account?, url?, user_code?, verification_uri?, error?, tools: int, store: backend()}
+def login(key, kind: str | None = None, client_id: str | None = None, value: str | None = None) -> dict   # starts a flow on a daemon thread (joins a live one); `value` for api-key; returns status
+def callback(key, url: str) -> dict      # paste fallback
+def cancel(key) -> dict
+def logout(key) -> dict                  # revoke at the vendor when a revoke endpoint is known, then store.delete; never fails on the vendor
+def token(key) -> str                    # a valid access token, refreshing when expires_at is within 60 s; raises NotConnected
+```
+
+One flow per key at a time; the same lock discipline as `hf_auth.py`
+(`_start_lock` around check-and-create, state readable without it).
+`mcp-oauth` login: `discovery.discover` → `choose_client` → `LoopbackFlow`
+with `extra_authorize={"resource": ...}` and `extra_token={"resource": ...}`
+→ identity = `McpClient.initialize()`'s `serverInfo.name`; the record
+stores `resource`, `client_id`, `client_registration`. `cli` login:
+run the command, probe `identity_url`, store `{"kind": "cli", ...}` with
+the token re-read from the command on every `token()` call (nothing
+persisted but the kind and account).
+
+### routes.py (`/api/connect`)
+
+```
+GET  /api/connect                       manager.list()
+GET  /api/connect/{key}                 manager.status(key)
+GET  /api/connect/{key}/icon            the pack's icon.svg (404 when none)
+POST /api/connect/{key}/login           body {kind?, client_id?, value?} → manager.login
+POST /api/connect/{key}/callback        body {url} → manager.callback
+POST /api/connect/{key}/cancel          → manager.cancel
+POST /api/connect/{key}/logout          → manager.logout
+GET  /api/connect/{key}/tools           [{name, description, input_schema, read_only, destructive}]
+POST /api/connect/{key}/tools/call      body {name, args} → tools.call_tool; 404 unknown key, 409 not connected
+```
+
+Every POST requires the `X-Fused: 1` header (`server.common._require_fused`).
+Unknown key → 404 `{error}`. The router is included in `server/app.py`
+next to `hf_auth_router`.
+
+### runtime.js and the shared Python helper
+
+```js
+fused.connect.list()                      -> Promise<provider[]>          (GET /api/connect)
+fused.connect.status(key)                 -> Promise<status>
+fused.connect.login(key, {kind?, value?}) -> Promise<status>              (opens status.url in a new tab when present)
+fused.connect.logout(key)                 -> Promise<status>
+fused.connect.tools(key)                  -> Promise<tool[]>
+fused.connect.call(key, name, args)       -> Promise<{ok, text, content, isError}>   (rejects on 409 with {code: "not_connected"})
+```
+
+`templates/shared/fused_connect.py` (stdlib only, sibling-import
+`appenv` by path): `providers()`, `tools(key)`, `call(key, name, args)`
+against `appenv.origin()` with `X-Fused: 1`.
+
+### Bots bridge
+
+`apptools.registry()` appends one `ToolRec` per `tools.list_tools(key)`
+of every connected provider: `app = key`, `app_dir = "connect:" + key`,
+`name`, `description`, `params` built from `input_schema.properties`
+(required → no default), `spec = ToolSpec`, `tools_in_app = n`.
+`apptools.available()` stays about local apps; `bot.run_tool` checks for
+a connect record first and does not refuse on a missing bundled
+module. `run_tool(rec, args)` for a connect record calls
+`tools.call_tool` (unknown args dropped as today). `is_write(rec)` for a
+connect record is `not spec.read_only`. `_deliver` emits the "Used
+‹Provider› › tool" note without an app card when `app_dir` starts with
+`connect:`. The APP TOOLS header gains ", and connected services
+(Notion, GitHub, Slack...) whose tools run on their servers".
+
+### Test fake vendor (`tests/_fake_vendor.py`)
+
+A stdlib `http.server` on `127.0.0.1:<port>` runnable standalone
+(`python tests/_fake_vendor.py --port N`) and as a fixture:
+`/.well-known/oauth-protected-resource/mcp`, `/.well-known/oauth-authorization-server`
+(with `registration_endpoint`, `code_challenge_methods_supported: ["S256"]`,
+`token_endpoint_auth_methods_supported: ["none"]`), `POST /register`,
+`GET /authorize` (auto-approves: 302 to `redirect_uri` with `code` and
+`state`; `?approve=manual` renders a page with an Allow link instead),
+`POST /token` (code grant with PKCE check, refresh grant, 60 s access
+tokens so refresh is exercised), `POST /revoke`, `POST /device` +
+device polling on `/token` (approves after two polls), `GET /me`
+(identity), and `POST /mcp` (Bearer required; tools `echo`
+(`readOnlyHint: true`), `write_note` (no annotations); JSON responses,
+plus `?sse=1` to answer as `text/event-stream`).
+`tests/_fake_provider/fakevendor/provider.json` declares all four
+kinds against it (ports from an env var the fixture sets), so one
+provider exercises every path.
+
+### Conventions
+
+- Python 3.12, stdlib + `httpx`; no `mcp` package import anywhere in
+  `connect/`. Module docstrings in the repo's voice (what, why, what was
+  rejected). Tests use `pytest`, `-n 0` is fine for one file.
+- No token in any log line (`logger.debug` the key and the state, never
+  the record). Diagnostics redaction: add `fused-render.connect.` to
+  the redaction list if one exists in `diagnostics.py`.
+- Nothing commits; the integrator commits.
