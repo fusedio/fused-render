@@ -71,3 +71,39 @@ def test_legacy_mount_sweep_is_skipped_on_windows(monkeypatch):
     monkeypatch.setattr(legacy_mounts_cleanup.threading, "Thread",
                         lambda *a, **k: pytest.fail("started the sweep on Windows"))
     legacy_mounts_cleanup.start_background()
+
+
+def test_venv_python_follows_the_platform_layout(monkeypatch):
+    from fused_render import _platform
+    monkeypatch.setattr(_platform._mod, "IS_WINDOWS", False)
+    assert _platform.venv_python("/v") == os.path.join("/v", "bin", "python")
+    monkeypatch.setattr(_platform._mod, "IS_WINDOWS", True)
+    assert _platform.venv_python("/v") == os.path.join("/v", "Scripts", "python.exe")
+
+
+def test_envinstall_venv_python_uses_the_platform_layout(monkeypatch):
+    from fused_render import _platform, envinstall
+    monkeypatch.setattr(_platform._mod, "IS_WINDOWS", True)
+    assert envinstall._venv_python("/v") == os.path.join("/v", "Scripts", "python.exe")
+
+
+def test_env_install_worker_venv_python_uses_the_platform_layout(monkeypatch):
+    from fused_render import _env_install_worker as worker
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert worker._venv_python("/v") == os.path.join("/v", "Scripts", "python.exe")
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert worker._venv_python("/v") == os.path.join("/v", "bin", "python")
+
+
+def test_map_drops_root_needs_no_geteuid(monkeypatch):
+    from fused_render.templates.map import discover
+    monkeypatch.delattr(os, "geteuid")
+    assert "fused_render_map-0" in discover._drops_root()
+
+
+def test_require_private_skips_the_ownership_check_without_geteuid(monkeypatch, tmp_path):
+    from fused_render.templates.shared import private_dir
+    d = tmp_path / "p"
+    d.mkdir(mode=0o700)
+    monkeypatch.delattr(os, "geteuid")
+    private_dir.require_private(str(d))

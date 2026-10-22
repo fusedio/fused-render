@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 if __package__:
+    from ..shared.platutil import euid
     from ..shared.private_dir import private_dir, require_private
     from .geo_paths import is_remote_path, normalize_remote_path
 else:
@@ -20,6 +21,7 @@ else:
     sys.path.insert(0, os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "shared"))
     from geo_paths import is_remote_path, normalize_remote_path
+    from platutil import euid
     from private_dir import private_dir, require_private
 
 
@@ -209,7 +211,7 @@ def _drops_root() -> str:
     temp root, the same layout as claude/agent.py's `_runs_root` and for the
     same reason — one shared name cannot be both 0700-private and usable by a
     second account, and a per-uid root dissolves the contention."""
-    return os.path.join(tempfile.gettempdir(), "fused_render_map-%d" % os.geteuid(), "drops")
+    return os.path.join(tempfile.gettempdir(), "fused_render_map-%d" % euid(), "drops")
 
 
 DROPS = _drops_root()
