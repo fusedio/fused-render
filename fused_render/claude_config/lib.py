@@ -372,6 +372,11 @@ def option_shaped(value: str) -> bool:
     return value.startswith("-")
 
 
+def claude_available() -> bool:
+    """Whether the `claude` binary can be found (`claude_cli` would run it)."""
+    return _resolve_claude(_augmented_path()) is not None
+
+
 def claude_cli(*args: str, timeout: int = 25) -> dict:
     """Run the `claude` binary with an argv array (never a shell string, so
     args can't inject). Resolves the binary's absolute path (plugins.md §5) so

@@ -1,7 +1,8 @@
 """MCP-server management endpoints (mcp.md).
 
 Every action delegates to the `claude mcp` CLI (mcp.md §1) — this module never reads
-or writes ~/.claude.json directly. The CLI owns that file (config-store.md §6).
+or writes the Claude config file directly (`user_servers` only reads it). The CLI
+owns that file (config-store.md §6).
 
 main(action=...):
   list   -> {ok, servers:[{name,endpoint,transport,status,kind,connected,
@@ -21,7 +22,8 @@ main(action=...):
            params: name
   add    -> {ok, name, stdout, stderr} | {ok:false, error}    (mcp.md §4)
            params: name, json (JSON-stringified server definition)
-  edit   -> {ok, name, stdout, stderr}   params: name, json  (remove, then add-json)
+  edit   -> {ok, name, stdout, stderr}   params: name, json  (remove, then add-json; the old
+           definition is restored if the add fails)
   spec   -> {ok, name, spec}             params: name  (user-scope definition, read-only)
 """
 import json
@@ -32,6 +34,19 @@ import time
 from . import lib
 
 _LIST_TIMEOUT = 28
+
+
+def user_servers() -> dict:
+    """The user-scope `mcpServers` map, read-only. Claude Code keeps it in
+    `$CLAUDE_CONFIG_DIR/.claude.json` when that variable is set, else in
+    `~/.claude.json`; the CLI stays the only writer."""
+    base = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~")
+    try:
+        with open(os.path.join(base, ".claude.json"), encoding="utf-8") as f:
+            servers = json.load(f).get("mcpServers")
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return servers if isinstance(servers, dict) else {}
 
 _lock = threading.Lock()
 _inflight = None
@@ -185,11 +200,7 @@ def main(action: str = "list", name: str = "", **kwargs) -> dict:
         # CLI stays the only writer of the file.
         if _bad_name(name):
             return {"ok": False, "error": "invalid server name"}
-        try:
-            with open(os.path.join(os.path.expanduser("~"), ".claude.json"), encoding="utf-8") as f:
-                spec = (json.load(f).get("mcpServers") or {}).get(name)
-        except (OSError, ValueError):
-            spec = None
+        spec = user_servers().get(name)
         if spec is None:
             return {"ok": False, "error": "no user-scope definition for this server"}
         return {"ok": True, "name": name, "spec": spec}
@@ -205,11 +216,17 @@ def main(action: str = "list", name: str = "", **kwargs) -> dict:
             json.loads(spec)
         except ValueError:
             return {"ok": False, "error": "server definition is not valid JSON"}
+        previous = user_servers().get(name)
         gone = lib.claude_cli("mcp", "remove", name, "--scope", "user")
         if not gone["ok"]:
             return {"ok": False, "name": name, "stdout": gone.get("stdout", ""),
                     "stderr": gone.get("stderr", "")}
         res = lib.claude_cli("mcp", "add-json", name, spec, "--scope", "user")
+        if not res["ok"] and previous is not None:
+            # The new definition was refused after the old one was removed: put
+            # the old one back so a failed edit never costs the server.
+            lib.claude_cli("mcp", "add-json", name, json.dumps(previous),
+                           "--scope", "user")
         _invalidate()
         return {"ok": res["ok"], "name": name,
                 "stdout": res.get("stdout", ""), "stderr": res.get("stderr", "")}
