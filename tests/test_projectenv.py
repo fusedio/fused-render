@@ -787,6 +787,18 @@ def test_venv_key_is_the_sha256_of_the_absolute_path(home):
     assert projectenv.venv_key_for(str(proj)) == expected
 
 
+def test_venv_key_is_pinned_to_a_literal_value():
+    # Existing users' project venvs are found by this key and by the ready
+    # marker inside them; either one moving rebuilds every app's environment.
+    # A literal, so a change to the derivation (or to the engine behind it)
+    # cannot pass by agreeing with itself.
+    from fused_render import envinstall
+
+    assert projectenv.venv_key_for("/tmp/fixed-project-for-key-pin") == "8683663764dba067"
+    assert envinstall.venv_key_for("/tmp/fixed-project-for-key-pin") == "8683663764dba067"
+    assert envinstall.READY_MARKER == ".openfused-ready"
+
+
 def test_renaming_the_folder_gives_a_new_key(home):
     a = _write_project(home / "before")
     key_a = projectenv.venv_key_for(str(a))
