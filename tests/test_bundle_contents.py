@@ -331,35 +331,29 @@ def test_every_exclusion_is_declared_and_reasoned():
         )
 
 
-def test_the_base_and_fused_extra_pin_the_same_engine():
-    """`fused` is declared twice on purpose, so the two must name one version.
-
-    The base `dependencies` carry plain `fused==X`, the engine `fused-render
-    open` runs project apps with. `[fused]` asks for `fused[aws,mcp]==X`, the
-    deploy/share/MCP extras on top, and is what `[all]` (so every packaged
-    build and `[dev]`) installs. Two different versions would be an
-    unsatisfiable resolve for `[all]` at best, and at worst two builds shipping
-    different engines, so the version string must match exactly.
+def test_the_base_does_not_depend_on_fused_and_the_extra_pins_a_release():
+    """`fused` is the CLI behind canvases and sharing, not the compute engine
+    (that is vendored in `fused_render.compute`), so only `[fused]` asks for
+    it, and for a release: a pre-release pin would let a resolve land on a
+    build whose `fused.cli` layout differs from the one this app drives.
     """
     from packaging.requirements import Requirement
+    from packaging.version import Version
 
     project = _pyproject()["project"]
-    in_base = [r for r in project["dependencies"] if _norm(r) == "fused"]
+    assert not [r for r in project["dependencies"] if _norm(r) == "fused"], (
+        "the base install must not depend on `fused`: the engine does not need it"
+    )
     in_extra = [r for r in project["optional-dependencies"]["fused"] if _norm(r) == "fused"]
-    assert len(in_base) == 1, f"the base must declare `fused` exactly once; got {in_base}"
     assert len(in_extra) == 1, f"`[fused]` must declare `fused` exactly once; got {in_extra}"
-    base, extra = Requirement(in_base[0]), Requirement(in_extra[0])
-    assert not base.extras, (
-        f"the base pin {in_base[0]!r} must be plain `fused`: its extras (boto3, "
-        "pyarrow, pandas, cryptography, mcp) are what `[fused]` is for"
+    req = Requirement(in_extra[0])
+    (spec,) = req.specifier
+    assert spec.operator == "==" and not Version(spec.version).is_prerelease, (
+        f"`[fused]` must pin a released `fused` exactly; got {in_extra[0]!r}"
     )
-    assert str(base.specifier) == str(extra.specifier), (
-        "the `fused` version in the base and in `[fused]` have drifted:\n"
-        f"  base    {in_base[0]!r}\n  [fused] {in_extra[0]!r}"
-    )
-    # `anthropic` travels with the full engine. Since fused 2.9.3b10 it sits only
-    # in fused's `verify` extra, next to `ty`, which this app does not ship, so
-    # `[fused]` declares it directly, and the bundle reaches it through `[all]`.
+    # `anthropic` travels with the full engine. It sits only in fused's `verify`
+    # extra, next to `ty`, which this app does not ship, so `[fused]` declares
+    # it directly, and the bundle reaches it through `[all]`.
     ant = [r for r in project["optional-dependencies"]["fused"] if _norm(r) == "anthropic"]
     assert len(ant) == 1, f"`[fused]` must declare `anthropic` exactly once; got {ant}"
     assert "anthropic" in _declared_dists(), "`[bundled]` must reach anthropic through `[all]`"
@@ -384,22 +378,21 @@ def test_all_is_every_feature_extra_and_every_build_takes_it():
         assert "fused-render[all]" in table[build], f"`[{build}]` must include fused-render[all]"
 
 
-def test_the_fused_pin_asks_for_the_mcp_extra():
-    """`fused app serve`, the server the MCP panel registers globally (SPEC
-    MC-5), imports mcp. Since fused 2.9.3b10 mcp is not a core dependency of
-    fused, only of its `mcp` extra (which also carries the `<2` ceiling that
-    keeps `mcp.server.fastmcp` importable). Dropping the extra from the pin
-    would leave a registered server that dies at startup, and nothing else in
-    this suite would notice.
+def test_the_fused_extra_declares_mcp_with_its_ceiling():
+    """`fused-render app serve`, the server the MCP panel registers globally
+    (SPEC MC-5), imports `mcp.server.fastmcp` through the vendored
+    `compute/app_mcp.py`. `fused` no longer brings mcp along, so `[fused]`
+    declares it, with the `<2` ceiling that keeps `mcp.server.fastmcp`
+    importable. Dropping it would leave a registered server that dies at
+    startup, and nothing else in this suite would notice.
     """
     from packaging.requirements import Requirement
 
-    pinned = [r for r in _pyproject()["project"]["optional-dependencies"]["fused"]
-              if _norm(r) == "fused"]
-    assert len(pinned) == 1, pinned
-    assert "mcp" in Requirement(pinned[0]).extras, (
-        f"the engine pin {pinned[0]!r} must request fused's `mcp` extra, or "
-        "`fused app serve` cannot import mcp"
+    declared = [Requirement(r) for r in _pyproject()["project"]["optional-dependencies"]["fused"]
+                if _norm(r) == "mcp"]
+    assert len(declared) == 1, declared
+    assert any(sp.operator == "<" and sp.version == "2" for sp in declared[0].specifier), (
+        f"`mcp` must carry its `<2` ceiling; got {declared[0]}"
     )
 
 
@@ -429,33 +422,6 @@ def test_the_fused_pin_only_asks_for_extras_fused_provides():
                 f"{unknown} extra (it provides {sorted(provided)}); pip would "
                 "install it without them and only warn"
             )
-
-
-def test_the_fused_pin_reads_the_app_serve_python_seam():
-    """The pinned engine must be one whose `app serve` READS
-    OPENFUSED_APP_SERVE_PYTHON (openfused #364, released in `2.9.3b7`).
-
-    `fusedcli._wrapper_text` exports that variable in the `fused` wrapper every
-    Claude session gets, so the `fused app serve` the MCP panel registers
-    (SPEC MC-5) computes on the SAME interpreter page runs use: one venv cache
-    key instead of two, and a tool with no declared dependencies running on the
-    engine's interpreter instead of a bare stdlib venv. An older engine ignores
-    the export in SILENCE — the tools still answer, just out of venvs nothing
-    else shares — so the export and the pin are one change, and this is the
-    guard that keeps them one. A floor rather than an equality: the next bump
-    must not have to come back here.
-    """
-    from packaging.version import Version
-
-    pinned = [r for r in _pyproject()["project"]["optional-dependencies"]["fused"]
-              if _norm(r) == "fused"]
-    assert len(pinned) == 1, pinned
-    version = pinned[0].split("==", 1)[1].split(";")[0].split(",")[0].strip()
-    assert Version(version) >= Version("2.9.3b7"), (
-        f"the `fused` pin is {version}, which does not read "
-        "OPENFUSED_APP_SERVE_PYTHON; `fusedcli._wrapper_text` exports it, so the "
-        "pin must be >= 2.9.3b7 or the export is a silent no-op"
-    )
 
 
 def test_the_bundle_ships_everything_it_does_not_explicitly_exclude():

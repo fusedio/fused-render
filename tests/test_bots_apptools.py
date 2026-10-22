@@ -77,7 +77,7 @@ def test_defaults_skip_nothing():
     assert os.path.basename(registered_apps._registry_path()) == "registered_apps.json"
 
 
-# ---- discovery (needs fused.agent_core) ---------------------------------------------
+# ---- discovery ---------------------------------------------
 def test_discover_lists_tools_minus_pins(apps_root):
     make_app(apps_root, "fake-docs")
     make_app(apps_root, "no-mcp", tools="")
@@ -195,7 +195,7 @@ def test_registry_drops_tool_whose_entrypoint_vanished(apps_root, monkeypatch):
     assert apptools.registry() == []
 
 
-# ---- run_tool (needs fused.agent_core) ----------------------------------------------
+# ---- run_tool ----------------------------------------------
 def _one(apps_root, **kw):
     make_app(apps_root, "fake-docs", **kw)
     return apptools.discover([apps_root], [], skip_dir="/nonexistent")[0]
