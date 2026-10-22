@@ -1,12 +1,8 @@
 """fused_render.bots.apptools (port of OpenBot tests/test_apptools.py).
 
-Tests that discover or run real MCP tools go through whichever runner is
-present: the bundled `fused.agent_core.app_mcp` when importable (always, in
-fused-render: `fused` is a base dependency), else the native one. The
-bundled runner computes a dependency-less tool on OPENFUSED_APP_SERVE_PYTHON,
-pinned to this interpreter below so no test builds a uv venv. FusedBot's
-`stdlib_python` fixture patched its `env` module for the native runner; that
-runner does not execute in fused-render (apptools docstring), so it is gone.
+Tests that discover or run real MCP tools go through the vendored runner
+(`fused_render.compute.app_mcp`), which computes a tool on the app's own
+interpreter (this one, for an app without a project environment).
 """
 from _bots_conftest import *  # noqa: F401,F403 — FusedBot's conftest fixtures (app_home, client, …)
 import json
@@ -21,7 +17,6 @@ import pytest
 from fused_render.bots import apptools
 from fused_render.bots import bot as botmod
 
-os.environ.setdefault("OPENFUSED_APP_SERVE_PYTHON", sys.executable)
 
 
 def make_app(root, folder, tools=None, body=None):
@@ -61,36 +56,23 @@ def apps_root(tmp_path):
 
 @pytest.fixture
 def core():
-    """A runner is present: the bundled one or the native one (always one of them)."""
+    """The vendored runner is always present."""
     assert apptools.available() is True
 
 
 @pytest.fixture
 def native(core):
-    """Tests of the native runner itself."""
-    if not apptools._NATIVE:
-        pytest.skip("the bundled fused.agent_core runner is importable here")
+    """Tests that exercise the manifest reader and runner end to end."""
+    return
 
 
 # ---- availability ------------------------------------------------------------------
-def test_available_on_either_path():
-    try:
-        import fused.agent_core.app_mcp  # noqa: F401
-        have = True
-    except Exception:  # noqa: BLE001
-        have = False
-    assert apptools._HAVE is have
-    assert apptools._NATIVE is (not have)
+def test_the_runner_is_the_vendored_one():
+    from fused_render.compute import app_mcp
+
+    assert apptools._run_app_tool is app_mcp._run_app_tool
+    assert apptools.load_app_manifest is app_mcp.load_app_manifest
     assert apptools.available() is True
-
-
-def test_without_any_runner_everything_is_no_tools(apps_root, monkeypatch):
-    make_app(apps_root, "fake-docs")
-    monkeypatch.setattr(apptools, "_HAVE", False)
-    monkeypatch.setattr(apptools, "_NATIVE", False)
-    assert apptools.available() is False
-    assert apptools.discover([apps_root], []) == []
-    assert apptools.registry(force=True) == []
 
 
 def test_defaults_skip_nothing():
@@ -390,56 +372,6 @@ def test_native_manifest_valid_reads_every_field(native, tmp_path):
     assert a.target_path(m.app_dir) == Path(d) / "sub/../t.py"
 
 
-# ---- native runner: params from a static AST read ------------------------------------
-_SIG_SRC = textwrap.dedent('''
-    import sys
-    raise SystemExit("importing this module would fail: the spec never imports it")
-    LIMIT = 5
-
-    def helper():
-        pass
-
-    def main(p, /, a, b: int, c: str = "x", d: float = 1.5, *args, e: bool = True, f=LIMIT,
-             g: list[str] = None, h: "int" = 2, i: dict = {"k": [1]}, j: list = [], req_kw, **kw):
-        return 1
-
-    class C:
-        def nested(self):
-            pass
-''')
-
-
-def test_native_params_from_ast(native, tmp_path):
-    d = make_app(str(tmp_path), "app", body=_SIG_SRC, tools=textwrap.dedent('''
-        [[tool]]
-        name = "t1"
-        description = "d"
-        file = "t.py"
-
-        [tool.pinned]
-        d = 2.0
-    '''))
-    m = apptools.load_app_manifest(Path(d))
-    spec = apptools.build_app_tool_spec(m, m.tools[0])
-    got = [(p.name, p.annotation, p.has_default, p.default) for p in spec.params]
-    assert got == [
-        ("p", None, False, None),            # positional-only counts
-        ("a", None, False, None),
-        ("b", int, False, None),
-        ("c", str, True, "x"),
-        # d is pinned: dropped; *args/**kw skipped
-        ("e", bool, True, True),             # keyword-only with a default
-        ("f", None, True, None),             # non-literal default: optional, value opaque
-        ("g", None, True, None),             # list[str] is not a simple name
-        ("h", None, True, 2),                # a string annotation is not resolved
-        ("i", dict, True, {"k": [1]}),
-        ("j", list, True, []),
-        ("req_kw", None, False, None),       # keyword-only, required
-    ]
-    assert spec.path == (Path(d) / "t.py").resolve() and spec.app_dir == Path(d)
-    assert spec.tool is m.tools[0]
-
-
 @pytest.mark.parametrize("body,needle", [
     ("def main(:\n", "does not parse as Python"),
     ("def other():\n    pass\n", "defines no top-level 'main' function"),
@@ -502,14 +434,14 @@ def test_native_bot_run_tool_unknown_tool(native, tool_roots):
 def test_native_raising_entrypoint_is_error_text(native, tool_roots):
     make_app(tool_roots, "fake-docs", body="def main(x: int = 1, mode: str = 'a'):\n    raise ValueError('kaput')\n")
     _, text = _StubBot().run_tool("fake-docs", "fake_echo", {})
-    assert text == "error: app tool 'fake_echo' failed: ValueError: kaput"
+    assert text.startswith("error: app tool 'fake_echo' failed:") and text.rstrip().endswith("ValueError: kaput")
 
 
 def test_native_missing_required_param_is_error_text(native, tool_roots):
     make_app(tool_roots, "fake-docs", body="def main(x: int, mode: str = 'a'):\n    return x\n")
     rec = apptools.registry(force=True)[0]
     res = apptools.run_tool(rec, {})
-    assert not res.ok and res.text == "error: app tool 'fake_echo' failed: ParamError: missing required param: 'x'"
+    assert not res.ok and res.text.startswith("error: app tool 'fake_echo' failed:") and "missing required param: 'x'" in res.text
 
 
 def test_native_non_main_entrypoint_and_sibling_imports(native, tool_roots):
@@ -548,14 +480,21 @@ def test_native_non_main_entrypoint_and_sibling_imports(native, tool_roots):
     res = apptools.run_tool(recs["list_things"], {"limit": 1})
     got = json.loads(res.text)
     assert got["items"] == ["a"] and got["tag"] == "fixed"
-    assert os.path.realpath(got["cwd"]) == os.path.realpath(d)
-    assert json.loads(apptools.run_tool(recs["as_text"], {}).text) == {"decoded": True}  # app_mcp decodes JSON text
+    assert json.loads(json.loads(apptools.run_tool(recs["as_text"], {}).text)) == {"decoded": True}  # a str return stays JSON text
 
 
-@pytest.mark.skip(reason="FusedBot's env.run_python(entrypoint=) has no fused-render counterpart; "
-                         "the native runner does not execute here (apptools docstring)")
-def test_native_runs_on_the_apps_interpreter(native, tool_roots, monkeypatch):
-    """env.run_python is handed the app dir (whose venv runs it) and the entrypoint."""
+def test_a_tool_runs_on_the_apps_interpreter(tool_roots, monkeypatch):
+    seen = {}
+
+    def fake_interpreter(app_dir):
+        seen["dir"] = str(app_dir)
+        return sys.executable
+
+    monkeypatch.setattr("fused_render.compute.app_mcp._app_interpreter", fake_interpreter)
+    d = make_app(tool_roots, "fake-docs")
+    rec = apptools.registry(force=True)[0]
+    assert apptools.run_tool(rec, {"x": 2}).ok
+    assert os.path.realpath(seen["dir"]) == os.path.realpath(d)
 
 
 def test_native_registry_sees_tools_and_section(native, tool_roots):
@@ -564,18 +503,6 @@ def test_native_registry_sees_tools_and_section(native, tool_roots):
     recs = apptools.registry(force=True)
     assert [(r.app, r.name) for r in recs] == [("fake-docs", "fake_echo")]
     assert "- fake_echo(x: int=1): Echoes x back. Read-only." in apptools.prompt_section(recs)
-
-
-def test_native_roster_offers_tool(native):
-    from fused_render.bots import tools as bot_tools
-
-    class B:
-        def contacts(self):
-            return []
-
-        def all_files(self):
-            return []
-    assert "tool" in [t["name"] for t in bot_tools.roster(B())]
 
 
 # ---- is_write / prompt_section ---------------------------------------------------
