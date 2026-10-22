@@ -77,7 +77,7 @@ describe("the registry", () => {
 });
 
 describe("visibility", () => {
-  test("the nav has no Claude Code section; it is the Agents page", () => {
+  test("the nav has no Claude Code section; it is the Claude Code page", () => {
     const nav = navSections(visibleGroups(visibleSettings(ctx({ claudeConfig: true })))).map((s) => s.section.id);
     expect(nav).toEqual(["general", "bots", "tasks", "apps", "other"]);
   });

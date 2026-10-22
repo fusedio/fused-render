@@ -15,7 +15,7 @@
 // Four controls left the page then: the menu bar's pinned-file view (retired
 // for the Dock), Updates' "Check now" (the status bar's Updates chip asks
 // it), the Super Bot phone mirror (its setup is in the bot's own settings),
-// and the default Claude model (the Agents page's Claude settings hold the one
+// and the default Claude model (the Claude Code page's settings hold the one
 // value every surface reads; a pointer row leads there).
 //
 // THE URL: `?tab=<group>` picks the group (absent = General). The four ids an

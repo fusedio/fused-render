@@ -11,7 +11,7 @@
 // (SidebarFrame) and explorer-owned sections (Bookmarks), which only
 // the shell is allowed to import together (scripts/check-boundaries.mjs).
 import { useEffect, useRef, useState } from "react";
-import { ListTodo, Store } from "lucide-react";
+import { ListTodo, Store, Terminal } from "lucide-react";
 import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
 import type { Config } from "@platform/lib/api";
@@ -113,6 +113,10 @@ const TEMPLATES_ICON = (
 // glyph (shell/AppPage.tsx) so the two read as one thing. Was a clock while the
 // page was "Scheduled".
 const SCHEDULED_ICON = <ListTodo size={16} strokeWidth={2} aria-hidden="true" />;
+
+// A terminal prompt (lucide Terminal): the Claude Code page, where the CLI's
+// skills, memory, plugins, MCP servers and settings are edited.
+const CLAUDE_CODE_ICON = <Terminal size={16} strokeWidth={2} aria-hidden="true" />;
 
 // A shop front (lucide Store) for the Marketplace: where community apps are
 // browsed and installed, sized like the lucide Tasks glyph above.
@@ -703,8 +707,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
 
   // Everything that is not primary nav lives in the bottom menu for now: the
   // settings pages. Same gates as before — an entry a machine can't use stays
-  // hidden. Claude Config is no longer an entry: it is the Claude Code group
-  // of Preferences (2026-10-20), reached through that row.
+  // hidden.
   const menuEntries: (PrefsMenuEntry | "separator")[] = [];
   // Templates are the Render app's own concern; Fused Bot's menu skips
   // straight to Preferences (Canvases is already off above).
@@ -730,6 +733,10 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     // No /ai-models entry either, and unlike Canvases it is dropped outright:
     // its primary row is ungated, so a menu copy would only ever be the
     // double-selection the Tasks note rejects.
+    // Claude Code is a settings-weight page, so it lives here and not in the
+    // primary nav; listing it in both would light the row and the trigger at
+    // once, as the Tasks note above says.
+    { href: "/claude-code", label: "Claude Code", icon: CLAUDE_CODE_ICON },
     { href: "/preferences", label: "Preferences", icon: PREFERENCES_ICON }
   );
   // The tour replays, at the menu's tail, behind ONE row: four sibling entries

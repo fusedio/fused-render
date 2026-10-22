@@ -1798,3 +1798,26 @@
   flex-wrap: wrap;
   gap: 6px;
 }
+
+/* -- Claude Code page header and filter ------------------------------------ */
+
+.cc-page-intro {
+  flex: 1 1 100%;
+}
+
+.cc-page-intro .settings-title {
+  flex: none;
+}
+
+.cc-page-blurb {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+/* The filter sits directly above the list it narrows. */
+.cc-page-search {
+  flex: none;
+  max-width: 520px;
+  margin: 0 0 14px;
+}

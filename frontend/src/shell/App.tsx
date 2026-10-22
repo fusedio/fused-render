@@ -123,7 +123,7 @@ const AiModels = lazy(() =>
   import("@apps/ai_models").then((m) => ({ default: m.AiModels })),
 );
 const Scheduled = lazy(() => import("@shell/Scheduled"));
-const Agents = lazy(() => import("@shell/Agents"));
+const ClaudeCode = lazy(() => import("@shell/ClaudeCode"));
 const MonitorPage = lazy(() => import("@shell/monitor/MonitorPage"));
 const MarketplacePage = lazy(() =>
   import("@apps/marketplace").then((m) => ({ default: m.MarketplacePage })),
@@ -723,9 +723,9 @@ export default function App({ config }: { config: Config }) {
   // Scheduled Claude messages (shell/Scheduled.tsx) — chrome-free settings
   // pattern.
   const isTasks = pathname === "/tasks";
-  // The configuration of each coding agent (shell/Agents.tsx) — chrome-free
-  // settings pattern; the harness and tab are query params of its own.
-  const isAgents = pathname === "/agents";
+  // Claude Code's own configuration (shell/ClaudeCode.tsx) — chrome-free
+  // settings pattern; the tab is a query param of its own.
+  const isClaudeCode = pathname === "/claude-code";
   // Every process on the machine, live (shell/monitor/MonitorPage.tsx) —
   // the System chip's "Open Monitor". BEHIND THE FLAG (monitor-flag.ts,
   // `monitor_enabled`, default off): off, the chip is not rendered and the
@@ -798,7 +798,7 @@ export default function App({ config }: { config: Config }) {
     isPrefs ||
     isTemplates ||
     isTasks ||
-    isAgents ||
+    isClaudeCode ||
     isMonitor ||
     isMarketplace ||
     isAiModels ||
@@ -827,8 +827,8 @@ export default function App({ config }: { config: Config }) {
             ? "Templates"
             : isTasks
                 ? "Tasks"
-                : isAgents
-                ? "Agents"
+                : isClaudeCode
+                ? "Claude Code"
                 : isMonitor
                 ? "Monitor"
                 : isMarketplace
@@ -957,14 +957,14 @@ export default function App({ config }: { config: Config }) {
         </Suspense>
       </div>
     );
-  } else if (isAgents) {
-    // Agents: harness switcher + per-harness config tabs, no topbar. The
-    // selection lives in the page's own query params and is written with
-    // replaceState, so only a navigation to /agents remounts it.
+  } else if (isClaudeCode) {
+    // Claude Code: config tabs, no topbar. The tab lives in the page's own
+    // query param and is written with replaceState, so only a navigation to
+    // /claude-code remounts it.
     main = (
       <div id="content" key={epoch}>
         <Suspense fallback={<RouteFallback />}>
-          <Agents key={epoch} />
+          <ClaudeCode key={epoch} />
         </Suspense>
       </div>
     );

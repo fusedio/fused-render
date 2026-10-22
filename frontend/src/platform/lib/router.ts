@@ -47,8 +47,8 @@ export function rewriteLegacyUrl(url: string): string {
   // here because the alternative is carrying a dead URL shape forever.
   if (mapped) return mapped + q;
   if (p.startsWith("/view/") || p.startsWith("/embed/")) return "/explorer" + p + q;
-  // The Claude Config panel is the Claude tab set of the Agents page; the
-  // retired /claude-md page folded into it. `?cctab=<section>` becomes
+  // The Claude Config panel is the Claude Code page; the retired /claude-md
+  // page folded into it. `?cctab=<section>` becomes
   // `?tab=<tab>`. Kept for good: the server's jobs and notifications
   // (claude_install.py, server/ai.py) name this page, and a running older
   // build keeps writing it.
@@ -56,9 +56,8 @@ export function rewriteLegacyUrl(url: string): string {
     const params = new URLSearchParams(q.startsWith("?") ? q.slice(1) : q);
     const tab = claudeConfigTab(params.get("cctab"));
     params.delete("cctab");
-    params.set("h", "claude");
     if (tab) params.set("tab", tab);
-    return "/agents?" + params.toString();
+    return claudeCodeUrl(params);
   }
   // `/preferences?tab=claude…` and `?s=claude-…` named the Claude groups
   // Preferences used to hold.
@@ -70,10 +69,9 @@ export function rewriteLegacyUrl(url: string): string {
       const key = s.startsWith("claude-") ? s : tabParam;
       params.delete("tab");
       params.delete("s");
-      params.set("h", "claude");
       const tab = PREFS_CLAUDE_TABS[key] ?? (key.startsWith("claude-pref:") ? "settings" : null);
       if (tab) params.set("tab", tab);
-      return "/agents?" + params.toString();
+      return claudeCodeUrl(params);
     }
   }
   // `/bots?bot=<id>` → `/bots/<id>` (2026-10-14; the path shape is owned by
@@ -97,6 +95,11 @@ export function rewriteLegacyUrl(url: string): string {
   return url;
 }
 
+function claudeCodeUrl(params: URLSearchParams): string {
+  const q = params.toString();
+  return "/claude-code" + (q ? "?" + q : "");
+}
+
 const PREFS_CLAUDE_TABS: Record<string, string> = {
   "claude-settings": "settings",
   "claude-statusline": "settings",
@@ -108,7 +111,7 @@ const PREFS_CLAUDE_TABS: Record<string, string> = {
   "claude-history": "history",
 };
 
-// The panel's section ids → the Agents page's Claude tabs.
+// The panel's section ids → the Claude Code page's tabs.
 function claudeConfigTab(tab: string | null): string | null {
   switch (tab) {
     case "plugins":

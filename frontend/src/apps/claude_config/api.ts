@@ -42,43 +42,6 @@ function callModule<T>(module: string, kwargs: Record<string, unknown> = {}): Pr
   return postJson<T>(`${BASE}/${module}`, kwargs);
 }
 
-// -- other harnesses ------------------------------------------------------------
-
-export interface HarnessInfo {
-  id: string;
-  home: string;
-  exists: boolean;
-  capabilities: string[];
-}
-
-export const getHarnesses = () => getJson<{ harnesses: HarnessInfo[] }>("/api/agents/harnesses");
-
-export type FileKind = "instructions" | "settings";
-
-export const harnessFiles = {
-  get: (harness: string, kind: FileKind) =>
-    callModule<OkResult & { path: string; exists: boolean; text: string }>("files", { harness, action: "get", kind }),
-  put: (harness: string, kind: FileKind, text: string) =>
-    callModule<OkResult & { path?: string }>("files", { harness, action: "put", kind, text }),
-};
-
-export interface HarnessMcpServer {
-  name: string;
-  transport: string;
-  endpoint: string;
-  spec: Record<string, unknown>;
-}
-
-export const harnessMcp = {
-  list: (harness: string) =>
-    callModule<OkResult & { path?: string; servers?: HarnessMcpServer[] }>("mcp", { harness, action: "list" }),
-  add: (harness: string, name: string, json: string) =>
-    callModule<OkResult>("mcp", { harness, action: "add", name, json }),
-  edit: (harness: string, name: string, json: string) =>
-    callModule<OkResult>("mcp", { harness, action: "edit", name, json }),
-  remove: (harness: string, name: string) => callModule<OkResult>("mcp", { harness, action: "remove", name }),
-};
-
 export function getStatus(): Promise<ClaudeConfigStatus> {
   return getJson<ClaudeConfigStatus>(`${BASE}/status`);
 }

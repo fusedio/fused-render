@@ -1,4 +1,4 @@
-// The Claude tab set of the Agents page: Claude Code's own configuration under
+// The tabs of the Claude Code page: Claude Code's own configuration under
 // ~/.claude, drawn with the settings page's rows and cards.
 //
 // TWO THINGS LIVE HERE AND NOWHERE ELSE:
@@ -51,9 +51,8 @@ interface ClaudeStore {
   patch: (key: string, value: unknown) => Promise<void>;
   refreshCatalog: () => Promise<void>;
   refreshing: boolean;
-  /** Start the reads. The provider wraps the whole Agents page, and a reader
-   *  on another harness never needs the git status or the catalog; the page
-   *  calls this once the Claude tabs are shown. */
+  /** Start the reads. The provider wraps the whole page; a tab that needs the
+   *  git status or the catalog calls this when it mounts. */
   wake: () => void;
 }
 
@@ -196,7 +195,7 @@ export const CLAUDE_PREF_PREFIX = "claude-pref:";
 
 /** A settings.json key as a settings row. The row only reads `label`,
  *  `description` and `id`; `group` is required by the type and unread outside
- *  a search, which the Agents page does not run. */
+ *  a search, which the Claude Code page does not run. */
 export interface ClaudePrefEntry extends SettingEntry {
   id: string;
   prefKey: string;
@@ -365,7 +364,7 @@ export function ClaudePrefRow({ entry }: { entry: ClaudePrefEntry }) {
 }
 
 /** The catalog row is built here, not in the registry: the registry only
- *  lists Preferences rows, and this one lives on the Agents page. */
+ *  lists Preferences rows, and this one lives on the Claude Code page. */
 const CATALOG_ENTRY: SettingEntry = {
   id: "claude-catalog",
   group: "ai",

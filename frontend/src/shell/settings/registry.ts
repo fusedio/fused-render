@@ -14,7 +14,7 @@
 // is the design artifact claude.ai/artifact/NdzDR2rpNpFU3yBgQd5sJk.
 //
 // "SET ELSEWHERE" rows are pointers to a setting whose real control lives on
-// another page (the Agents page's Claude model, AI Models' engines).
+// another page (the Claude Code page's Claude model, AI Models' engines).
 // They are in the list so a search for "model" lands on a door instead of on
 // nothing — the page used to lose those settings silently when they moved.
 import type { Prefs } from "@platform/lib/api";
@@ -125,7 +125,7 @@ export interface SettingsContext {
   bot: boolean;
   mac: boolean;
   /** GET /api/claude-config/status: ~/.claude exists on this machine; the
-   *  model pointer leads to the Agents page's Claude settings. */
+   *  model pointer leads to the Claude Code page's settings. */
   claudeConfig: boolean;
 }
 
