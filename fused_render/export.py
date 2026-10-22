@@ -782,8 +782,7 @@ _CACHE_MAX_AGE_RE = re.compile(r"^(\d+)([smhd])$")
 def _validate_cache_max_age(value: str) -> None:
     """Reject a malformed ``cache_max_age`` before it lands in a manifest.
 
-    Mirrors the hosting layer's own parser (the ``fused`` wheel's
-    ``openfused.caching.parse_cache_max_age`` — not imported here, since ``fused`` is an
+    Mirrors the hosting layer's own parser (not imported here, since ``fused`` is an
     optional extra export must work without): a non-negative integer + unit (``s``/``m``/
     ``h``/``d``), ``"0s"`` the off sentinel. Validating at export time (not deferred to
     `share create`) means a bad value fails the local, no-network step, not a later publish.

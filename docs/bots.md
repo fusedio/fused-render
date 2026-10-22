@@ -896,7 +896,7 @@ deduplicated by message id + block index. Effort `low` on a model that
 ignores `--effort` (haiku) gets the relay's trick: a
 `set_max_thinking_tokens: 0` control request right after `system/init`.
 The roster is built per task by the server (`GET /api/bots/<id>/tools`):
-`tool` is omitted when `apptools.available()` is False, `text`/`texts` when
+`text`/`texts` are omitted when
 the bot has no contacts, `upload` and `readfile` when it has no files and no
 attachments;
 a tool that can only error gets called anyway.

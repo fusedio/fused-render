@@ -3,7 +3,7 @@
 `main(action=read|write, path, tools=...)` reads and writes the `[[tool]]` tables
 in an app folder's `mcp.toml`. That file is the contract with the server side:
 `fused-render app serve <app_dir>` loads exactly these tables and publishes one MCP
-tool per entry (openfused `spec/serve/app-mcp.md` §2). `inspect_app.py` beside
+tool per entry (`fused_render.compute.app_mcp.load_app_manifest`). `inspect_app.py` beside
 this module answers questions; this one changes the folder — the same split, and
 the same refusal-as-payload shape, as `git/log.py` vs `git/ops.py`.
 

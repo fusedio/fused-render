@@ -359,10 +359,18 @@ def _imported_dists(text: str) -> set[str]:
     }
 
 
+def _is_skipped_dir(dirpath: str) -> bool:
+    """Bytecode caches and bundled third-party copies, matched on the directory's
+    path segments below the templates root so the checkout's own location (a
+    worktree named `vendor-…`) cannot match."""
+    parts = os.path.relpath(dirpath, _TEMPLATES).split(os.sep)
+    return "__pycache__" in parts or "vendor" in parts
+
+
 def _template_files() -> list[str]:
     out = []
     for dirpath, _, filenames in os.walk(_TEMPLATES):
-        if "__pycache__" in dirpath or os.sep + "vendor" in dirpath:
+        if _is_skipped_dir(dirpath):
             continue
         out += [
             os.path.relpath(os.path.join(dirpath, f), _TEMPLATES)
@@ -458,7 +466,7 @@ def _runpython_targets() -> frozenset[str]:
     """
     targets = set()
     for dirpath, _, filenames in os.walk(_TEMPLATES):
-        if "__pycache__" in dirpath or os.sep + "vendor" in dirpath:
+        if _is_skipped_dir(dirpath):
             continue
         prose = ""
         for name in filenames:
