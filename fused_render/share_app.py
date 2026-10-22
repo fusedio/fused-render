@@ -72,11 +72,14 @@ def _error(message: str, status: int = 400) -> JSONResponse:
 
 
 def _credentials_file() -> str:
-    # The `fused login` store canvases.py reads (~/.fused/credentials, same env
-    # override). Duplicated rather than imported: the two are private there,
-    # and a router module should not lean on another's internals.
-    return os.environ.get("FUSED_RENDER_FUSED_CREDENTIALS") or os.path.expanduser(
-        "~/.fused/credentials")
+    # The `fused login` store the DEFAULT env reads — the env sharing uploads
+    # target (`set_fused_env(..., workbench_env())`). canvases owns the rule:
+    # under a custom default it is the settings file's `[auth]` store, not
+    # ~/.fused/credentials (D1412). Imported lazily: canvases is the heavier
+    # router and this module is imported by share_file at startup.
+    from fused_render.canvases import credentials_file
+
+    return credentials_file()
 
 
 def _logged_in() -> bool:

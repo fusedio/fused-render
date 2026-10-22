@@ -690,7 +690,9 @@ export default function CanvasWorkspace({
     const origin = baseOriginRef.current;
     if (!frame?.contentWindow || !origin) return;
     try {
-      const { access_token } = await getAccessToken();
+      // THIS canvas's env's login, as the origin is its env's: a custom
+      // deployment has its own `[auth]` tenant (D1412).
+      const { access_token } = await getAccessToken(env);
       frame.contentWindow.postMessage(
         { type: "fused-embed-auth-token", accessToken: access_token },
         origin, // exact origin — this message carries a credential
@@ -698,7 +700,7 @@ export default function CanvasWorkspace({
     } catch (e) {
       setError((e as Error).message);
     }
-  }, []);
+  }, [env]);
 
   // Ask the workbench to select a node (or, with null, to deselect). Exact
   // targetOrigin, like every message to the frame.
