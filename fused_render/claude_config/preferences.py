@@ -1,8 +1,9 @@
 """Preferences feature (preferences.md).
 
-Surfaces a curated catalog of scalar settings.json keys as form controls, each
-showing its documented default when unset. The catalog is settings_catalog.json
-— the copy that ships with the package (see lib.load_catalog()).
+Surfaces a curated list of 20 scalar settings.json keys, in five groups, as
+form controls, each showing its documented default when unset. The list is
+settings_catalog.json — the copy that ships with the package (see
+lib.load_catalog()); refresh_catalog.CURATED is its source of truth.
 
 main(action=...) actions:
   get    -> {schema, prefs}   schema = catalog list; prefs = current value per

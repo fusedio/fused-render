@@ -32,3 +32,7 @@
 ## Unfinished
 - No UI check was done; typecheck passes.
 - The Skills editor edits files already in the skill folder; adding a new sibling file is not supported.
+
+## Curated Settings tab
+- The Settings tab lists 20 keys in five groups (Model & reasoning, Sessions, Permissions, Git, Interface). `settings_catalog.json` holds only those, in that order, with the group names as its `group` field.
+- `refresh_catalog.CURATED` (key -> group, ordered) is the source of truth: the script emits only those keys in that order and takes each one's label/control/options overlay from the checked-in file. A curated key with no overlay is an error, not invented.

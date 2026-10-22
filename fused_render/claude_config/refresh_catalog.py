@@ -1,9 +1,13 @@
 """Catalog refresh (preferences.md §5).
 
 Fetches Anthropic's settings reference markdown, parses each settings-key
-section, and rewrites the doc/default/minVersion half of settings_catalog.json
-— keyed by each entry's `docKey` (falling back to `key`). The curated overlay
-fields (label/group/control/options/docKey/unsetLabel) are preserved untouched.
+section, and rewrites settings_catalog.json. The catalog is the curated list in
+`CURATED` (key -> group, in display order): only those keys are emitted, in that
+order, under those groups. Each one's doc/default/minVersion comes from the
+docs, keyed by its `docKey` (falling back to `key`); its label/control/options/
+docKey/unsetLabel overlay is read from the checked-in file and kept untouched.
+A CURATED key with no entry in the checked-in file has no overlay to carry, so
+it is reported as an error rather than invented.
 
 A development script: reads lib.load_catalog() and rewrites the checked-in
 settings_catalog.json (lib.packaged_catalog_path()) in place. The app never
@@ -23,6 +27,30 @@ import urllib.request
 from typing import Any, Optional
 
 from . import lib
+
+# The curated settings list: key -> group, in the order the Settings tab shows.
+CURATED: dict[str, str] = {
+    "model": "Model & reasoning",
+    "effortLevel": "Model & reasoning",
+    "alwaysThinkingEnabled": "Model & reasoning",
+    "fastMode": "Model & reasoning",
+    "language": "Model & reasoning",
+    "autoCompactEnabled": "Sessions",
+    "autoMemoryEnabled": "Sessions",
+    "fileCheckpointingEnabled": "Sessions",
+    "autoContinueAtUsageLimit": "Sessions",
+    "cleanupPeriodDays": "Sessions",
+    "permissions.defaultMode": "Permissions",
+    "sandbox.enabled": "Permissions",
+    "enableAllProjectMcpServers": "Permissions",
+    "permissions.blockReadsOutsideWorkingDirectories": "Permissions",
+    "includeGitInstructions": "Git",
+    "worktree.baseRef": "Git",
+    "attribution.sessionUrl": "Git",
+    "theme": "Interface",
+    "diffTool": "Interface",
+    "autoUpdatesChannel": "Interface",
+}
 
 # Anthropic restructured the docs (2026-08): the old SETTINGS_URL page
 # (settings.md) is now prose about settings files, precedence and
@@ -174,7 +202,12 @@ def main() -> dict:
                      "error": f"parsed only {len(entries)} keys (expected ~215); "
                               "docs shape changed"}
 
-        catalog = lib.load_catalog()
+        existing = {d["key"]: d for d in lib.load_catalog()}
+        missing = [k for k in CURATED if k not in existing]
+        if missing:
+            return {"ok": False,
+                    "error": f"no catalog overlay for curated key(s): {', '.join(missing)}"}
+        catalog = [{**existing[k], "group": g} for k, g in CURATED.items()]
 
         updated, undocumented = 0, []
         for d in catalog:

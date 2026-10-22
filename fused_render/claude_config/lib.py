@@ -86,7 +86,8 @@ def config_lock() -> Generator[None, None, None]:
 
 
 # --- preferences.md §5: the settings catalog ---------------------------------
-# settings_catalog.json ships next to this module. It is regenerated from
+# settings_catalog.json ships next to this module: the curated list of settings
+# the Settings tab shows (refresh_catalog.CURATED). Its docs half is regenerated from
 # Anthropic's docs by `python3 -m fused_render.claude_config.refresh_catalog`
 # (a development script that rewrites the checked-in file) and read as-is at
 # runtime.
