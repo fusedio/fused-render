@@ -28,17 +28,24 @@ from the app's pages. Loopback only, like the main server (D3).
 
 Who gets in. The proxy attaches a real credential to whatever reaches it, so
 it admits only what the workspace's frame produces. Every request must name
-this listener in ``Host`` (closes DNS rebinding) and must not come from
-another site: ``Sec-Fetch-Site`` ``same-origin`` (the frame's own fetches),
-``same-site`` (the workspace page framing it; a port does not change the
-site) or ``none`` are served; ``cross-site`` is refused, and so is a
-request whose ``Origin``/``Referer`` names a non-loopback host. A cross-site
-page can therefore neither read through this proxy nor drive a
-state-changing request with the user's token. WebSockets are not forwarded
-(the workbench's embed needs none).
+this listener in ``Host`` (closes DNS rebinding) and carry
+``Sec-Fetch-Site``: ``same-origin`` (the framed workbench's own requests) and
+``none`` (a navigation the user made) are served. ``same-site`` is served
+only for the frame's own load: ``Sec-Fetch-Dest: iframe``,
+``Sec-Fetch-Mode: navigate`` and a ``Referer`` on the app's own origin
+(``FUSED_RENDER_ORIGIN``'s port). A browser counts every loopback port as
+the same site, so without that a page any other local server serves could
+drive requests with the user's token. ``cross-site`` is refused, and so is
+a request with no ``Sec-Fetch-Site`` (a browser too old to send it, or a
+non-browser client) and one whose ``Origin``/``Referer`` names a
+non-loopback host. WebSockets are not forwarded (the workbench's embed
+needs none).
 
 Upstream answers pass through with hop-by-hop headers removed, ``Location``
-rewritten from the upstream origin to this one, and ``Set-Cookie`` dropped:
+rewritten from the upstream origin to this one, ``Access-Control-*`` dropped
+(the frame is same-origin with this listener and never needs a CORS grant;
+relayed, a grant such as ``Allow-Origin: *`` would let another origin read
+answers made with the user's token), and ``Set-Cookie`` dropped:
 embed mode authenticates with the bearer, and a cookie scoped to the
 upstream domain would not be accepted here anyway. A 401 from upstream
 forgets the cached token so the next request fetches a refreshed one; the
@@ -49,6 +56,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import socket
 import threading
 import time
@@ -102,6 +110,28 @@ def _strip_headers(headers, drop: set[bytes]) -> list[tuple[bytes, bytes]]:
 def _is_loopback_host(hostport: str) -> bool:
     host = hostport.rsplit(":", 1)[0] if not hostport.startswith("[") else hostport.split("]")[0] + "]"
     return host.lower() in _LOOPBACK_HOSTS
+
+
+def _app_port() -> int:
+    """The app's own port, from the FUSED_RENDER_ORIGIN server/app.py exports
+    before serving; 0 when unknown, which admits no framing page."""
+    try:
+        return urlsplit(os.environ.get("FUSED_RENDER_ORIGIN") or "").port or 0
+    except ValueError:
+        return 0
+
+
+def _is_app_page(referer: str) -> bool:
+    """Whether a frame load's `Referer` is a page on the app's own origin
+    (any loopback host name for it: the app answers on each)."""
+    try:
+        parts = urlsplit(referer)
+        port = parts.port
+    except ValueError:
+        return False
+    app_port = _app_port()
+    return (parts.scheme == "http" and bool(parts.netloc) and app_port != 0
+            and port == app_port and _is_loopback_host(parts.netloc))
 
 
 def _origin_is_loopback(value: str) -> bool:
@@ -203,7 +233,15 @@ class ProxyApp:
         if not _is_loopback_host(host) or not host.endswith(f":{self.port}"):
             return "this proxy serves its own loopback origin only"
         site = headers.get(b"sec-fetch-site", b"").decode("latin-1").lower()
-        if site == "cross-site":
+        if site == "same-site":
+            dest = headers.get(b"sec-fetch-dest", b"").decode("latin-1").lower()
+            mode = headers.get(b"sec-fetch-mode", b"").decode("latin-1").lower()
+            if dest != "iframe" or mode != "navigate" \
+                    or not _is_app_page(headers.get(b"referer", b"").decode("latin-1")):
+                return "only the app's canvas frame may load this proxy from another loopback port"
+        elif not site:
+            return "requests without Sec-Fetch-Site are not forwarded"
+        elif site not in ("same-origin", "none"):
             return "cross-site requests are not forwarded"
         for name in (b"origin", b"referer"):
             if not _origin_is_loopback(headers.get(name, b"").decode("latin-1")):
@@ -241,6 +279,8 @@ class ProxyApp:
             relay = []
             for k, v in _strip_headers(response.headers.raw, _DROP_RESPONSE):
                 lk = k.lower()
+                if lk.startswith(b"access-control-"):
+                    continue    # see the module doc: no CORS grant leaves here
                 if lk == b"location":
                     v = self._rewrite_location(v)
                 relay.append((lk, v))
