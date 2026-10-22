@@ -7515,3 +7515,14 @@ Skills were `~/.claude/skills` plus enabled plugins, so a skill Copilot or Codex
 - **docs/usage.md had no Claude Config section**, so one was added.
 - **Memory tests.** `test_memory_list_reconstructs_a_hyphenated_component_against_the_disk` and `..._a_dotted_component` fail in this worktree's scratch setup; `memory.py` is untouched by this change.
 
+
+## D1426: Switching a tab or sub-page inside a shell page never remounts it (2026-10-22, nav-no-remount)
+
+`App.tsx` keys most routes on the nav epoch, so any `navigateUrl` or `pushState`-plus-notify for a change that stays on the same page throws the page away and rebuilds it: a skeleton, a refetch, a fade-in replay. In the Linux native window (WebKitGTK) that shows as a flicker; Preferences stopped flickering once it stopped doing this (D1424).
+
+- **Rule.** A tab, segment or sub-view of a page is either held in React state and mirrored to the URL with `replaceSearch` (Preferences, Monitor, Templates, Claude Config), or is a path of a page the shell does not key on the epoch, which re-reads the URL through `useNavEpoch` (AI Models, Apps, Bots, Marketplace). Never an epoch-keyed route plus a navigation.
+- **Templates.** The File bindings / Library tab was a `navigateUrl` that remounted the page and refetched both tables. It is state plus `replaceSearch` now, and the default tab keeps a clean URL.
+- **Claude Config.** The tab was already state plus `replaceSearch`, but each tab unmounted when left, so coming back refetched and showed a skeleton. Tabs that have been opened stay mounted, hidden. Plugins remounts when Skills' Discover opens it (it reads `?view=` once), and Skills remounts when another tab is picked while a skill is open (the URL no longer names that skill).
+- **Marketplace.** Discover, Installed and an app's page are paths and each hop remounted the page and replayed the fade. The route is no longer keyed on the epoch; `MarketplacePage` subscribes with `useNavEpoch`, resets scroll and the Discover filters when the page changes, and keeps its header mounted.
+- **Checked and already correct.** Preferences, Monitor, AI Models, Apps (chips), App page (tab is a path, keyed on the slug), Bots, Canvases (env switch), Tasks (view toggle), Explorer previews (`_mode`, `_side`).
+- **History.** Templates tabs no longer add history entries, matching Preferences; a deep link and reload still land on the right tab.
