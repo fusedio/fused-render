@@ -62,6 +62,11 @@ def _me():
     return os.path.join(os.path.abspath(sys.path[0]), "kernel.py")
 
 
+# platutil is stdlib-only and the kernel daemon never imports fused_render.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(_me())), "shared"))
+from platutil import venv_python  # noqa: E402
+
+
 def _body():
     return os.path.join(os.path.dirname(_me()), "kernel_body.py")
 
@@ -478,7 +483,7 @@ def _serve():
         for _ in range(4):
             if not d:
                 break
-            cand = os.path.join(d, ".venv", "bin", "python")
+            cand = venv_python(os.path.join(d, ".venv"))
             if os.path.isfile(cand) and os.path.normcase(cand) not in seen:
                 envs.append({"label": f".venv — {os.path.basename(d)}", "path": cand})
                 seen.add(os.path.normcase(cand))
