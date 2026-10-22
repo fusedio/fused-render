@@ -238,12 +238,23 @@ export interface WorktreeMenuProps {
   request?: WorktreeRequest | null;
   /** A turn is live in this chat: Remove is refused. */
   running?: boolean;
+  /** The current worktree was removed. Absent, the chat moves to the main
+   *  checkout's folder chat (`onSwitch`); present, the host decides — the
+   *  tasks page stays put and re-reads its rows (the folder is now missing). */
+  onRemoved?(): void;
   /** Whether this menu can act: true once the list says the folder is in a
    *  repo, false when it is not (or the menu goes away). `/worktree` reads it. */
   onReady?(isRepo: boolean): void;
 }
 
-export function WorktreeMenu({ file, onSwitch, request, running, onReady }: WorktreeMenuProps) {
+export function WorktreeMenu({
+  file,
+  onSwitch,
+  request,
+  running,
+  onReady,
+  onRemoved,
+}: WorktreeMenuProps) {
   const { list, refresh } = useWorktreeList(file, listWorktrees, onReady);
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState<string | null>(null);
@@ -338,6 +349,11 @@ export function WorktreeMenu({ file, onSwitch, request, running, onReady }: Work
         // A dirty refusal keeps the confirm up, and the next press forces.
         if (out.dirty) setRefusedDirty(true);
         else setConfirming(false);
+      } else if (onRemoved) {
+        // The host owns the landing (tasks page: stay, re-read the rows).
+        setOpen(false);
+        setConfirming(false);
+        onRemoved();
       } else {
         // Back to the main checkout — on the chat's own file there when it exists.
         const main = list.worktrees.find((w) => w.is_main);
@@ -348,7 +364,7 @@ export function WorktreeMenu({ file, onSwitch, request, running, onReady }: Work
     } finally {
       if (!stale(at)) setBusy(false);
     }
-  }, [confirming, current, dirt, file, go, list, running]);
+  }, [confirming, current, dirt, file, go, list, running, onRemoved]);
 
   // `/worktree` from the composer: no name opens this menu, a name is
   // create-or-switch — with a refusal shown in the menu it would have used,
