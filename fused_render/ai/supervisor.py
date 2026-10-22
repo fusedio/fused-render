@@ -3594,8 +3594,35 @@ def speech_job_id(uid: str) -> str:
     return SPEECH_JOB_PREFIX + "".join(c for c in uid if c.isalnum() or c in "._-")
 
 
+def _refuse_speech_engine_mismatch(model: str, serving: registry.Runner) -> None:
+    """Raise a SupervisorError when another speech runner, one that can run
+    here, is the one that reads `model`'s files and `serving` is not.
+
+    The supervisor resolves ONE runner per capability, so a Kokoro id on a Mac
+    whose speech engine is Qwen3-TTS would otherwise download 0.39 GB and fail
+    at load inside the job. A cached snapshot is judged by its layout
+    (`hub_cache.cached_loaders`); an undownloaded id by the curated lists.
+    No claim from a registered, available runner means no opinion.
+    """
+    from fused_render.ai import hub_cache
+    loaders = hub_cache.cached_loaders(model)
+    codes = loaders if loaders else catalog.runners_offering(model)
+    claimers = []
+    for code in codes:
+        runner = registry.by_code(code)
+        if (runner is not None and runner.capability == registry.TEXT_TO_SPEECH
+                and runner.available().ok):
+            claimers.append(runner)
+    if claimers and all(runner.code != serving.code for runner in claimers):
+        names = " or ".join(dict.fromkeys(runner.label for runner in claimers))
+        raise SupervisorError(
+            f"{model} is read by the {names} speech engine, not {serving.label}; "
+            f"choose the {names} speech engine on the Engines tab")
+
+
 def start_speech(model: str, request: dict, job: str, page: str = "", source: str = "",
                  requester_id: str = "", requester_label: str = "") -> None:
+    _refuse_speech_engine_mismatch(model, _runner_or_raise(registry.TEXT_TO_SPEECH))
     _start_render(registry.TEXT_TO_SPEECH, model, request, job, generate_speech,
                   noun="speech clip", thread_name="ai-speech", page=page, source=source,
                   title=request.get("text"), requester_id=requester_id,

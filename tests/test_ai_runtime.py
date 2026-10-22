@@ -13721,6 +13721,45 @@ def test_a_mac_resolves_speech_to_qwen_unless_it_chooses_kokoro(monkeypatch):
     assert claimed == ("sherpa-tts",)
 
 
+def _real_speech_registry(monkeypatch, system, machine, preference):
+    """The shipped TTS rows, on a pretend `system`/`machine`, with the job
+    start replaced by a recorder so an accepted request opens nothing."""
+    monkeypatch.setattr(registry.platform, "system", lambda: system)
+    monkeypatch.setattr(registry.platform, "machine", lambda: machine)
+    monkeypatch.setattr(registry, "preferred_code", lambda capability: preference)
+    started = []
+    monkeypatch.setattr(supervisor, "_start_render",
+                        lambda capability, model, *a, **kw: started.append((capability, model)))
+    return started
+
+
+def test_a_kokoro_id_on_a_mac_with_the_qwen_engine_is_a_409_before_any_download(
+        client, monkeypatch):
+    started = _real_speech_registry(monkeypatch, "Darwin", "arm64", registry.AUTO)
+    refused = _speech(client, {"text": "x", "model": KOKORO_ID})
+    assert refused.status_code == 409, refused.json()
+    assert "Kokoro (sherpa-onnx)" in refused.json()["error"]
+    assert KOKORO_ID in refused.json()["error"]
+    assert started == []
+
+
+def test_a_cached_kokoro_snapshot_on_a_mac_with_the_qwen_engine_is_a_409(
+        client, hub, monkeypatch):
+    started = _real_speech_registry(monkeypatch, "Darwin", "arm64", registry.AUTO)
+    _cached_repo(hub, "org/some-kokoro-export", files=KOKORO_FILES, dirs=KOKORO_DIRS)
+    refused = _speech(client, {"text": "x", "model": "org/some-kokoro-export"})
+    assert refused.status_code == 409 and "Kokoro (sherpa-onnx)" in refused.json()["error"]
+    assert started == []
+
+
+def test_a_kokoro_id_is_accepted_where_the_kokoro_engine_serves_speech(client, monkeypatch):
+    mac = _real_speech_registry(monkeypatch, "Darwin", "arm64", "sherpa-tts")
+    assert _speech(client, {"text": "x", "model": KOKORO_ID}).status_code == 200
+    linux = _real_speech_registry(monkeypatch, "Linux", "x86_64", registry.AUTO)
+    assert _speech(client, {"text": "x", "model": KOKORO_ID}).status_code == 200
+    assert [m for _c, m in mac] == [KOKORO_ID] and [m for _c, m in linux] == [KOKORO_ID]
+
+
 def test_the_SKILL_names_every_field_speech_resolves_with(client, fake_speech_runner,
                                                          base_photo):
     page, _ = base_photo
