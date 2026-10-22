@@ -297,8 +297,15 @@ test("chatViewOnly pins the narrow CHAT view at any width, and `paneview` cannot
   p.calls.length = 0;
   const box = fakeBox(1400);
   let api!: ReturnType<typeof useNarrowView>;
+  let disarms = 0;
   function Probe() {
-    api = useNarrowView({ params: p.store as never, noPane: false, boxRef: box.ref, chatViewOnly: true });
+    api = useNarrowView({
+      params: p.store as never,
+      noPane: false,
+      boxRef: box.ref,
+      chatViewOnly: true,
+      onArriveChat: () => void disarms++,
+    });
     return null;
   }
   let r!: ReactTestRenderer;
@@ -310,6 +317,9 @@ test("chatViewOnly pins the narrow CHAT view at any width, and `paneview` cannot
   expect(api.view).toBe("chat");
   expect(api.classNames).toBe("narrow view-chat");
   expect(api.composerLocked).toBe(false);
+  // Disarmed on BOOT as well: the preview can never come on screen here, so an
+  // `annmode=1` a URL carried in has nothing to act on.
+  expect(disarms).toBe(1);
 
   act(() => box.resize(500));
   act(() => box.resize(1600));

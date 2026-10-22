@@ -256,7 +256,12 @@ export function useNarrowView(opts: UseNarrowViewOptions): NarrowViewState {
   //     Preview→Chat FLIP and nothing else, and a media CROSSING is not a flip.
   useEffect(() => {
     if (noPane) return;
-    if (narrow && shown.current !== null && view === "chat") cbs.current.onArriveChat?.();
+    // Pinned to the chat view, the preview can NEVER come on screen, so an
+    // armed mode a URL carried in (`annmode=1`) has nothing to act on and no
+    // toggle to undo it: the boot guard does not apply, disarm on arrival too.
+    if (narrow && (shown.current !== null || chatViewOnly) && view === "chat") {
+      cbs.current.onArriveChat?.();
+    }
     shown.current = view;
     cbs.current.onRemeasure?.();
     const raf =
@@ -266,7 +271,7 @@ export function useNarrowView(opts: UseNarrowViewOptions): NarrowViewState {
     return () => {
       if (raf !== null) cancelAnimationFrame(raf);
     };
-  }, [narrow, view, noPane]);
+  }, [narrow, view, noPane, chatViewOnly]);
 
   const toggle = useCallback(() => {
     // The opposite of the view ON SCREEN, not of the raw param: after a
