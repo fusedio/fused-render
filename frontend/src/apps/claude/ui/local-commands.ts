@@ -16,8 +16,14 @@ export function localModelArg(arg: string, backend = "claude"): string {
   const labels = modelLabelsOf(backend);
   const short = modelsOf(backend).find((m) => m === want || (labels[m] ?? "").toLowerCase() === want);
   if (short) return short;
-  const full = backend === "copilot" ? /^[a-z][a-z0-9.-]+$/ : /^claude-[a-z0-9.-]+$/;
+  const full = rawModelIds(backend) ? /^[a-z][a-z0-9.-]+$/ : /^claude-[a-z0-9.-]+$/;
   return full.test(want) ? want : "";
+}
+
+/** The agents whose full model ids are the provider's own, any shape
+ *  ("gpt-5.4", "gpt-6-luna") — not Claude's `claude-…` ones. */
+function rawModelIds(backend: string | undefined): boolean {
+  return backend === "copilot" || backend === "codex";
 }
 
 /** `/effort <level>`'s argument as a pill value, or "". */
@@ -34,6 +40,7 @@ export type LocalPlan =
   | { do: "model"; value: string }
   | { do: "effort"; value: string }
   | { do: "worktree"; name?: string }
+  | { do: "remote-control"; name: string }
   | { refuse: string };
 
 export interface LocalContext {
@@ -41,6 +48,7 @@ export interface LocalContext {
   worktreeReady: boolean;
   /** Whose models `/model` and `/effort` validate against; Claude when absent. */
   backend?: string;
+  hasSession?: boolean;
 }
 
 export function planLocalCommand(cmd: ClassifiedCommand, ctx: LocalContext): LocalPlan {
@@ -60,7 +68,7 @@ export function planLocalCommand(cmd: ClassifiedCommand, ctx: LocalContext): Loc
     case "model": {
       const value = localModelArg(cmd.arg, ctx.backend);
       if (!value) {
-        const full = ctx.backend === "copilot" ? "a full model id" : "a full claude-… model id";
+        const full = rawModelIds(ctx.backend) ? "a full model id" : "a full claude-… model id";
         return { refuse: `Usage: /model ${hint("model")} (${modelsOf(ctx.backend).join(", ")}, or ${full})` };
       }
       return { do: "model", value };
@@ -79,6 +87,12 @@ export function planLocalCommand(cmd: ClassifiedCommand, ctx: LocalContext): Loc
       if ("error" in parsed) return { refuse: `Usage: /worktree ${hint("worktree")}. ${parsed.error}` };
       return "name" in parsed ? { do: "worktree", name: parsed.name } : { do: "worktree" };
     }
+    case "remote-control":
+      if ((ctx.backend || "claude") !== "claude") {
+        return { refuse: `Remote Control is a Claude Code feature, not available for ${agentLabel(ctx.backend)}` };
+      }
+      if (!ctx.hasSession) return { refuse: "Send a first message, then turn on Remote Control" };
+      return { do: "remote-control", name: cmd.arg };
     default:
       return { refuse: `/${cmd.name} is not a local command` };
   }

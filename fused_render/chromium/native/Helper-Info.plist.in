@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleDevelopmentRegion</key>
+  <string>English</string>
+  <key>CFBundleDisplayName</key>
+  <string>${MACOSX_BUNDLE_BUNDLE_NAME}</string>
+  <key>CFBundleExecutable</key>
+  <string>${MACOSX_BUNDLE_BUNDLE_NAME}</string>
+  <key>CFBundleIdentifier</key>
+  <string>${MACOSX_BUNDLE_GUI_IDENTIFIER}</string>
+  <key>CFBundleInfoDictionaryVersion</key>
+  <string>6.0</string>
+  <key>CFBundleName</key>
+  <string>${MACOSX_BUNDLE_BUNDLE_NAME}</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>${FR_ENGINE_VERSION}</string>
+  <key>CFBundleVersion</key>
+  <string>${FR_ENGINE_VERSION}</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>12.0</string>
+  <key>LSUIElement</key>
+  <true/>
+  <key>LSEnvironment</key>
+  <dict>
+    <key>MallocNanoZone</key>
+    <string>0</string>
+  </dict>
+  <key>NSSupportsAutomaticGraphicsSwitching</key>
+  <true/>
+  <!-- The helper renders pages; the usage strings live on the APP, whose
+       TCC identity the helper inherits as its child. -->
+</dict>
+</plist>

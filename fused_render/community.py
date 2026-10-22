@@ -34,7 +34,6 @@ rather than a hang. A machine with no usable git is refused BEFORE the clone
 would otherwise sit on "still downloading" forever renders that message.
 """
 import contextlib
-import fcntl
 import json
 import os
 import shutil
@@ -44,6 +43,7 @@ import tempfile
 import time
 from urllib.parse import urlsplit
 
+from fused_render import _platform
 from fused_render.shell.seed import fused_dir
 
 
@@ -113,18 +113,16 @@ def _cache_lock():
     try:
         deadline = time.time() + LOCK_TIMEOUT
         while True:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if _platform.flock(fd, blocking=False):
                 break
-            except OSError:
-                if time.time() >= deadline:
-                    raise ActionError("the community catalog is busy with "
-                                      "another request — try again in a moment")
-                time.sleep(0.2)
+            if time.time() >= deadline:
+                raise ActionError("the community catalog is busy with "
+                                  "another request — try again in a moment")
+            time.sleep(0.2)
         try:
             yield
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            _platform.funlock(fd)
     finally:
         os.close(fd)
 

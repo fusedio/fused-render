@@ -137,13 +137,15 @@ function status(over: Partial<CanvasesStatus>): CanvasesStatus {
   return {
     cli_found: true,
     logged_in: true,
+    auth_env: "prod",
     creds_stamp: null,
     login_in_flight: false,
     workbench_env: "prod",
     locked: false,
     envs: {
-      unstable: { base_url: "https://unstable.fused.io", canvases_dir: "/Users/x/Fused/canvas/unstable", cloned_count: 0 },
-      prod: { base_url: "https://www.fused.io", canvases_dir: "/Users/x/Fused/canvas/prod", cloned_count: 0 },
+      unstable: { base_url: "https://unstable.fused.io", canvases_dir: "/Users/x/Fused/canvas/unstable", cloned_count: 0, available: true },
+      prod: { base_url: "https://www.fused.io", canvases_dir: "/Users/x/Fused/canvas/prod", cloned_count: 0, available: true },
+      custom: { base_url: "https://www.fused.io", canvases_dir: "/Users/x/Fused/canvas/custom", cloned_count: 0, available: true },
     },
     ...over,
   };

@@ -188,6 +188,12 @@ function hostFrameStub(): () => HTMLIFrameElement | null {
   const frame = {
     isConnected: true,
     contentWindow: win,
+    // `hostFrame` only counts a frame whose document is READABLE (a null
+    // `contentDocument` is the cross-origin canvases workbench, #1720); this
+    // stub is the same-origin kind, so it has one. `body: null` keeps the
+    // annotation layer (which needs a real DOM to inject into) out of a test
+    // about the boot; the app-state walk reads `contentWindow.document` above.
+    contentDocument: { body: null },
     addEventListener() {},
     removeEventListener() {},
   } as unknown as HTMLIFrameElement;
@@ -598,4 +604,26 @@ test("THE LANDING IS READY WHEN ITS LIST HAS ANSWERED (T:19282-19291)", async ()
   releaseSessions();
   await settle();
   expect(ready).toBe(1);
+});
+
+// THE SLIM HEADER IN A PEEK (headerInPeek): the Task page side peek and peek modal
+// draw the chat worktree seat and session label under the host head. A
+// conversation is up once a session id is on the mount.
+test("a peek with headerInPeek draws the slim top bar; a bare peek and a compact one do not", async () => {
+  const withHead = await mountChat({ peek: true, headerInPeek: true, initialSessionId: "sess-abc12345" });
+  await settle(20);
+  expect(byClass(withHead.r, "chat-peek-head").length).toBe(1);
+  expect(byClass(withHead.r, "c-topbar").length).toBe(1);
+  expect(byClass(withHead.r, "c-session").length).toBe(1);
+  // Back / picker / kebab stay the host job in a peek.
+  expect(byClass(withHead.r, "c-anntools").length).toBe(0);
+
+  const bare = await mountChat({ peek: true, initialSessionId: "sess-abc12345" });
+  await settle(20);
+  expect(byClass(bare.r, "chat-peek-head").length).toBe(0);
+  expect(byClass(bare.r, "c-topbar").length).toBe(0);
+
+  const compact = await mountChat({ compact: true, peek: true, headerInPeek: true, initialSessionId: "sess-abc12345" });
+  await settle(20);
+  expect(byClass(compact.r, "c-topbar").length).toBe(0);
 });

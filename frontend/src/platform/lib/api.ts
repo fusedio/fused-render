@@ -165,7 +165,7 @@ export interface HttpError extends Error {
   status?: number;
   body?: unknown;
 }
-function httpError(data: { error?: unknown } | null, status: number): HttpError {
+export function httpError(data: { error?: unknown } | null, status: number): HttpError {
   const said = data && typeof data.error === "string" ? data.error : "";
   const err = new Error(said || `HTTP ${status}`) as HttpError;
   err.status = status;
@@ -476,12 +476,16 @@ export interface ClaudeHealth {
       The COPILOT snapshot (`/api/copilot/health`, D10) says one of three:
       "copilot" (its own `copilot login`), "gh" (a `gh auth login` token the
       app hands it) or "token" (a token already in the environment) — worded
-      by `agentAccountLine` in platform/lib/claude-health. */
+      by `agentAccountLine` in platform/lib/claude-health. The CODEX snapshot
+      (`/api/codex/health`, docs/CODEX_BACKEND.md D10) says "chatgpt" or
+      "api_key", with the ChatGPT plan in `plan` (or `planType`, Codex's own
+      key, from a server that passes it through). */
   account: {
     method: string | null;
     email: string | null;
     org: string | null;
     plan: string | null;
+    planType?: string | null;
   } | null;
   config_dir: string;
   /** `sys.platform`. Here so the UI never guesses which install line to show. */
@@ -581,7 +585,7 @@ export function linkClaudePath(): Promise<{
   already?: boolean;
   error?: string;
 }> {
-  return postJson("/api/claude/link-path", {});
+  return linkAgentPath("claude");
 }
 
 /** A browser sign-in, as the server holds it.
@@ -594,7 +598,7 @@ export interface ClaudeLoginStatus {
   started_at: number | null;
   /** The child's own diagnosis when a sign-in ended without signing in. */
   error: string | null;
-  /** A DEVICE-CODE sign-in's two facts (Copilot, docs/COPILOT_BACKEND.md D10):
+  /** A DEVICE-CODE sign-in's two facts (Copilot and Codex, D10 of both contracts):
    *  the code to type and the page to type it on. Meaningful ONLY while
    *  `in_flight` — the record keeps the last flow's after it ends, so a reader
    *  must never show it otherwise. Absent for Claude, whose browser sign-in
@@ -618,17 +622,32 @@ export function cancelClaudeLogin(): Promise<ClaudeLoginStatus & { canceled: boo
     "/api/claude/login/cancel", {});
 }
 
-// -- The same five doors, PER AGENT (docs/COPILOT_BACKEND.md D10) -----------
+// -- The same doors, PER AGENT (docs/COPILOT_BACKEND.md D10) ----------------
 //
-// `/api/copilot/{health, health/refresh, install, login, login/cancel}` answer
-// the same bodies as the Claude ones above, so one set of functions keyed on
-// the backend id serves both — `useAgentSetup(backend)` in claude-setup.ts is
-// the caller. The Claude-named functions stay for every reader that predates
-// the second agent. `link-path` and `doctor` are Claude-only (no Copilot twin
-// in the contract) and are not generalised.
+// `/api/copilot/*` and `/api/codex/*` (docs/CODEX_BACKEND.md D10) — `health,
+// health/refresh, install, login, login/cancel, link-path` — answer the same
+// bodies as the Claude ones above, so one set of functions keyed on the
+// backend id serves every agent — `useAgentSetup(backend)` in claude-setup.ts
+// is the caller. The Claude-named functions stay for every reader that
+// predates the second agent. `doctor` is Claude-only (no twin in either
+// contract) and is not generalised.
+
+/** Each agent's route segment; an id not here (or none) is Claude's. */
+const AGENT_ROUTES: Record<string, string> = { claude: "claude", copilot: "copilot", codex: "codex" };
 
 function agentRoute(backend: string, tail: string): string {
-  return `/api/${backend === "copilot" ? "copilot" : "claude"}/${tail}`;
+  return `/api/${AGENT_ROUTES[backend] ?? "claude"}/${tail}`;
+}
+
+/** `linkClaudePath`, for any agent's CLI. */
+export function linkAgentPath(backend: string): Promise<{
+  ok: boolean;
+  rc_file?: string;
+  line?: string;
+  already?: boolean;
+  error?: string;
+}> {
+  return postJson(agentRoute(backend, "link-path"), {});
 }
 
 export function getAgentHealth(backend: string): Promise<ClaudeHealth> {
@@ -686,7 +705,7 @@ export interface AgentCaps {
 
 export interface AgentBackendRow {
   id: string;
-  /** "Claude" / "Copilot" — the word every surface names the agent by. */
+  /** "Claude" / "Copilot" / "Codex" — the word every surface names the agent by. */
   label: string;
   enabled: boolean;
   models: { id: string; label: string }[];
@@ -1589,6 +1608,12 @@ export interface Prefs {
   // `available` is false off macOS and under `fused-render serve`, where the
   // section is not rendered. OPTIONAL like `launcher`.
   native_windows?: { enabled: boolean; available: boolean };
+  // Chromium (CEF) engine for app windows (fused_render/shell/prefs.py's
+  // `chromium_windows_enabled`): experimental, off by default. `available` is
+  // false unless this is the macOS app with native windows, where the row is
+  // not rendered. `engine` is the on-disk engine's download state. OPTIONAL:
+  // an older server answers without it.
+  chromium_windows?: ChromiumWindowsState;
   // The DEFAULT Fused environment (fusedcli.workbench_env): the canvas
   // catalog's initial pick, the `fused` wrapper's env outside a canvas clone,
   // share uploads' target. Canvases carry their own env, so this is a plain
@@ -1597,11 +1622,42 @@ export interface Prefs {
   // OPTIONAL: an older server answers without it.
   workbench?: { env: string; locked: boolean; choices: string[] };
   // WHICH AGENTS MAY RUN CHATS AND TASKS (docs/COPILOT_BACKEND.md D17):
-  // `claude_enabled` (default on) / `copilot_enabled` (default off), and the
-  // one new chats and tasks open on. The server refuses a PUT that would turn
-  // the last one off (400 "turn on the other agent first"). OPTIONAL: an older
-  // server answers without it, and the reader treats absence as Claude only.
-  agents?: { claude: boolean; copilot: boolean; default: string };
+  // `claude_enabled` (default on) / `copilot_enabled` / `codex_enabled`
+  // (default off, docs/CODEX_BACKEND.md D17), and the one new chats and tasks
+  // open on. The server refuses a PUT that would turn the last one off (400
+  // "turn on another agent first"). OPTIONAL: an older server answers without
+  // it, and the reader treats absence as Claude only.
+  agents?: { claude: boolean; copilot: boolean; codex: boolean; default: string };
+}
+
+export type ChromiumEngineState =
+  | "unsupported"
+  | "unpublished"
+  | "missing"
+  | "downloading"
+  | "ready"
+  | "failed";
+
+export interface ChromiumEngineStatus {
+  state: ChromiumEngineState;
+  /** 0..1 while downloading (download ~0..0.9, then verify/unpack). */
+  progress: number;
+  /** "download" | "verify" | "unpack" while downloading. */
+  phase?: string;
+  /** Set when `state` is "failed". */
+  error: string | null;
+  engine_version: string | null;
+  cef_version: string | null;
+  path: string | null;
+}
+
+export interface ChromiumWindowsState {
+  enabled: boolean;
+  available: boolean;
+  engine: ChromiumEngineStatus;
+  // Open windows born on the other engine (they keep theirs): the row
+  // offers "Reopen windows" while this is > 0. OPTIONAL: older server.
+  stale_windows?: number;
 }
 
 export interface LauncherPrefs {
@@ -1633,7 +1689,7 @@ export interface EnginesPrefs {
   // One row per capability the registry knows, servable here or not — a
   // preference the user cannot see is one they cannot fix.
   capabilities: CapabilityEngine[];
-  // One row per DOWNLOADED model with a known capability (D1398): its own pin
+  // One row per DOWNLOADED model with a known capability (D1423): its own pin
   // and what actually serves it. Optional so an older server's payload, which
   // has no such block, still reads as "no model rows".
   models?: ModelEngine[];
@@ -1827,9 +1883,9 @@ export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
 }
 
 /** The default Fused environment (`prefs.workbench.env`). 400 outside
- *  `unstable` / `prod`, 423 while FUSED_RENDER_WORKBENCH_ENV pins it. The
- *  server re-exports the `fused` wrapper so its default follows. */
-export function putWorkbenchEnv(env: "unstable" | "prod"): Promise<Prefs> {
+ *  `unstable` / `prod` / `custom`, 423 while FUSED_RENDER_WORKBENCH_ENV pins
+ *  it. The server re-exports the `fused` wrapper so its default follows. */
+export function putWorkbenchEnv(env: "unstable" | "prod" | "custom"): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { workbench_env: env });
 }
 
@@ -1854,6 +1910,31 @@ export function putLauncherRowModifier(modifier: string): Promise<Prefs> {
 
 export function putNativeWindowsEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { native_windows_enabled: enabled });
+}
+
+/** Turning it ON also starts the engine download server-side. */
+export function putChromiumWindowsEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { chromium_windows_enabled: enabled });
+}
+
+/** Just the `chromium_windows` slice — the cheap poll while downloading. */
+export function getChromiumEngine(): Promise<ChromiumWindowsState> {
+  return getJson<ChromiumWindowsState>("/api/prefs/chromium");
+}
+
+/** Retry the engine download after a failure. */
+export function installChromiumEngine(): Promise<ChromiumWindowsState> {
+  return postJson<ChromiumWindowsState>("/api/prefs/chromium/install", {});
+}
+
+/** Close every app window and open one Home window on the current engine. */
+export function reopenChromiumWindows(): Promise<ChromiumWindowsState> {
+  return postJson<ChromiumWindowsState>("/api/prefs/chromium/reopen-windows", {});
+}
+
+/** Delete the engine from disk; the server also turns the preference off. */
+export function removeChromiumEngine(): Promise<ChromiumWindowsState> {
+  return postJson<ChromiumWindowsState>("/api/prefs/chromium/remove", {});
 }
 
 export function putAppSharingEnabled(enabled: boolean): Promise<Prefs> {
@@ -3366,6 +3447,23 @@ export async function removeAppIcon(
   return r.json();
 }
 
+/** The user opened a task on `path` (the side peek): if the folder (or an
+ *  ancestor) is an app not on the desk yet, the server puts it there
+ *  (current_apps.py `ensure` — the door-time check that replaced "the tasks
+ *  listing looked once"). `app` is the desk folder, null for a plain project;
+ *  `added` when this call put it there; `apps` is the table after, then. */
+export interface EnsureCurrentAppResult {
+  ok: boolean;
+  app: string | null;
+  /** This call put the row there — the one case there is a change to announce. */
+  added: boolean;
+  apps: CurrentAppEntry[] | null;
+}
+
+export function ensureCurrentApp(path: string): Promise<EnsureCurrentAppResult> {
+  return postJson<EnsureCurrentAppResult>("/api/current-apps/ensure", { path });
+}
+
 /** Put an app folder on the desk by hand — the explorer's "Open in project"
  *  button, ahead of the hop to `/apps/<folder>`. `added` is false when the
  *  row was already there; the sidebar then focuses it rather than inserting. */
@@ -3464,7 +3562,7 @@ export function createApp(
   effort: SessionEffort = "",
   // Paths from uploadTaskShot — the composer's pasted/dropped attachments.
   images: string[] = [],
-  // Which agent runs the scaffolding task: "claude" | "copilot" | "" for the
+  // Which agent runs the scaffolding task: "claude" | "copilot" | "codex" | "" for the
   // catalog's default (docs/COPILOT_BACKEND.md D17).
   backend: string = "",
 ): Promise<NewAppResult> {
@@ -3654,7 +3752,7 @@ export interface Task {
    *  for every other row. The door lands on the canvas page, node selected,
    *  chat on the task's session, instead of the clone in the explorer.
    *  Optional: pulse rows and older fixtures do not carry it. */
-  canvas?: { env: "unstable" | "prod"; name: string; file: string } | null;
+  canvas?: { env: "unstable" | "prod" | "custom"; name: string; file: string } | null;
   session_id: string; // "" until the first run
   // How the transcript's own session ENTERED — "cli" for an interactive
   // terminal (`claude` typed by hand), "sdk-cli" for a headless/programmatic
@@ -3692,8 +3790,9 @@ export interface Task {
   // sessionTitleOf and tasks.py `_title`.
   // …plus `"draft"` on a draft row, whose name is the form's own Title field
   // (or the first line of its description, or "Untitled draft") — there is no
-  // session or entry behind it to take one from.
-  title_source: "user" | "ai" | "message" | "entry" | "draft";
+  // session or entry behind it to take one from — and `"renamed"` when the reader
+  // renamed the task from the peek header.
+  title_source: "user" | "ai" | "message" | "entry" | "draft" | "renamed" | "command";
   description: string;
   /**
    * WHICH CLAUDE THIS TASK'S RUNS USE and how hard it thinks — `""` on both for
@@ -3716,8 +3815,8 @@ export interface Task {
    */
   model: string;
   effort: string;
-  /** WHICH AGENT RUNS THIS TASK — "claude" | "copilot" (docs/COPILOT_BACKEND.md
-   *  D2), chosen at the first turn and immutable. Optional: an older server
+  /** WHICH AGENT RUNS THIS TASK — "claude" | "copilot" | "codex"
+   *  (docs/COPILOT_BACKEND.md D2), chosen at the first turn and immutable. Optional: an older server
    *  sends nothing, and nothing reads as Claude everywhere a mark is drawn. */
   backend?: string;
   // Decided by the SERVER, once, for every view — List, Board and Calendar all
@@ -3836,6 +3935,9 @@ export interface Task {
    *  The List row prints it after the title; with `recap` present it also
    *  titles a finished turn until the recap lands (tasks-lib `cardTitleLine`). */
   last_reply?: string;
+  /** Every GitHub PR this session touched, oldest first (the server collects
+   *  them from the transcript). `prRefsOf` merges it with what the words name. */
+  prs?: { repo: string; number: number; url: string }[];
   /** The haiku recap of this row's last finished turn (`for_uuid` names the
    *  turn), or null while it has none. ABSENT unless prefs
    *  `task_recap.enabled` is on — the client reads the key's presence as
@@ -4044,7 +4146,16 @@ export type TaskPulseTask = Pick<
   | "entrypoint"
   | "backend"
   | "canvas"
->;
+  | "background_jobs"
+  // What the notice titles a task by (tasks-lib `taskNoticeTitle`: the newest
+  // user message, unless renamed / summary-only) — optional, each absent with
+  // its flag off or on an older server. Recap titles are deliberately NOT
+  // here: the notice ignores them, the Tasks cards do not.
+  | "title_mode"
+  | "last_message"
+> &
+  // Optional: a pulse row from a server that predates it carries none.
+  Partial<Pick<Task, "title_source">>;
 
 /** The model / thinking a NEW task opens on: the global Claude preference
  *  (`~/.claude/settings.json` `model` / `effortLevel`, the pair the Claude
@@ -4416,6 +4527,50 @@ export function markTaskIdle(sessionId: string, turn: number): Promise<{ ok: boo
   });
 }
 
+/** One task's whole transcript as a file — `GET /api/tasks/{key}/export`.
+ *  `md` is the Bots export's layout; `json` is the parsed turns the chat
+ *  restores from. The kebab's "Download transcript" row hands it to the
+ *  reader through a blob link, the same door `downloadTemplatesExport` uses. */
+export type TaskExportFormat = "md" | "json";
+
+export function taskExportUrl(key: string, format: TaskExportFormat = "md"): string {
+  return `/api/tasks/${encodeURIComponent(key)}/export?format=${format}`;
+}
+
+export async function downloadTaskTranscript(
+  key: string,
+  format: TaskExportFormat = "md",
+): Promise<void> {
+  const res = await fetch(taskExportUrl(key, format));
+  if (!res.ok) {
+    let message = `export failed (${res.status})`;
+    try {
+      const body = await res.json();
+      if (body && typeof body.detail === "string") message = body.detail;
+    } catch {
+      /* non-JSON error body — keep the status-based message */
+    }
+    throw new Error(message);
+  }
+  // The server names the file (`<title-slug>-<session8>.<fmt>`); read it
+  // back off the header so the saved name matches the row that was pressed.
+  const disposition = res.headers.get("content-disposition") || "";
+  const named = /filename="([^"]+)"/.exec(disposition);
+  const filename = named ? named[1] : `transcript.${format}`;
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
+}
+
 // "Show more": the whole thread, newest first. Deliberately a separate call —
 // this one is allowed to parse the full transcript because it is one task, on
 // demand, and never on the listing path.
@@ -4530,6 +4685,13 @@ export function archiveTask(
     "/api/tasks/archive",
     { key },
   );
+}
+
+/** Give a started task a title of the reader's own; "" takes it back and the
+ *  automatic title returns. `title` is what the server stored (first line,
+ *  trimmed, capped). */
+export function renameTask(key: string, title: string): Promise<{ ok: boolean; title: string }> {
+  return postJson<{ ok: boolean; title: string }>("/api/tasks/rename", { key, title });
 }
 
 // Taking the filing back — the drag out of the Archive lane, and the exact

@@ -329,7 +329,7 @@ def _admits(kind: str, data, *, model_id: str, model_type: str | None,
     if kind == "diffusers":
         # A Diffusers runner admits by `is_diffusers_repo` (flat index,
         # modular index or `library_name`): Hub rows carry only metadata.
-        # Wider than loading by design (D1397). The catch: `names`/`library_name` being absent must
+        # Wider than loading by design (D1422). The catch: `names`/`library_name` being absent must
         # NEVER read as "therefore not Diffusers" — that would flag every
         # row a caller has not yet read siblings/library for, exactly the
         # module docstring's "never drops a row" guarantee this would

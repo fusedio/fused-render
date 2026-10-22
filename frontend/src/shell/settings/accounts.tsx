@@ -247,7 +247,7 @@ export function WorkbenchEnvControl() {
   };
 
   const current = status?.workbench_env ?? "";
-  // A pin outside the two choices (a hand-set env var) still shows as itself.
+  // A pin outside the choices (a hand-set env var) still shows as itself.
   const known = isWorkbenchEnv(current);
   return (
     <SettingRow
@@ -269,6 +269,9 @@ export function WorkbenchEnvControl() {
               return (
                 <div key={e}>
                   {`${ENV_LABELS[e]}: ${n} ${n === 1 ? "canvas" : "canvases"} cloned under ${info.canvases_dir}`}
+                  {/* The one env whose workbench is not fixed: say where
+                      settings.toml points it right now. */}
+                  {e === "custom" && ` (workbench: ${info.base_url})`}
                 </div>
               );
             })}
@@ -282,7 +285,11 @@ export function WorkbenchEnvControl() {
             value={known ? current : ""}
             options={[
               ...(known ? [] : [{ key: "", label: current }]),
-              ...WORKBENCH_ENVS.map((e) => ({ key: e, label: ENV_LABELS[e] })),
+              ...WORKBENCH_ENVS.map((e) => ({
+                key: e,
+                label: ENV_LABELS[e],
+                disabled: status.envs?.[e]?.available === false,
+              })),
             ]}
             disabled={busy || status.locked}
             onChange={(v) => {

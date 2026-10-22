@@ -1114,8 +1114,8 @@ def test_post_creates_one_task_for_the_named_row_invoking_the_skill(
     (d / "README.md").unlink()
     seen = []
     monkeypatch.setattr(apps_mod, "_create_app_task",
-                        lambda entry, prompt, *rest:
-                        seen.append((entry, prompt)) or ({"id": "t1", "run_id": "r1"}, None))
+                        lambda entry, prompt, *rest, **kw:
+                        seen.append((entry, prompt, kw)) or ({"id": "t1", "run_id": "r1"}, None))
     r = client.post("/api/apps/doctor", json={"path": str(d), "check": "readme"},
                     headers=HDRS)
     assert r.status_code == 200
@@ -1127,7 +1127,9 @@ def test_post_creates_one_task_for_the_named_row_invoking_the_skill(
     # The task lands on the FILE (that is what lets "open this task" reach the
     # page rather than the folder), and its prompt invokes the skill by name
     # and points at this row's own section.
-    (entry, prompt), = seen
+    (entry, prompt, kw), = seen
+    # A doctor session is a lean one (`--strict-mcp-config`, #1802).
+    assert kw.get("strict_mcp") is True
     assert entry == str(d / "index.html")
     assert app_doctor.is_doctor_prompt(prompt)
     assert app_doctor.doctor_task_check_id(prompt) == "readme"
@@ -1154,7 +1156,7 @@ def test_post_check_all_covers_every_failing_row_in_one_task(
     (d / "app.py").write_text('DATA = "/Users/alice/data.csv"\n')
     seen = []
     monkeypatch.setattr(apps_mod, "_create_app_task",
-                        lambda entry, prompt, *rest:
+                        lambda entry, prompt, *rest, **kw:
                         seen.append(prompt) or ({"id": "t1", "run_id": "r1"}, None))
     r = client.post("/api/apps/doctor", json={"path": str(d), "check": "all"},
                     headers=HDRS)

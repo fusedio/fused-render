@@ -41,6 +41,7 @@ gate minted (see `gate._file_owner`).
 from __future__ import annotations
 
 import asyncio
+import functools
 import importlib.util
 import json
 import logging
@@ -48,20 +49,25 @@ import os
 import threading
 import time
 import traceback
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from types import ModuleType
+from urllib.parse import unquote
 
-from fastapi import APIRouter, Body, Header, Request, Response
+from fastapi import (APIRouter, Body, Header, Request, Response, WebSocket,
+                     WebSocketDisconnect)
 from fastapi.responses import JSONResponse
 
 from fused_render import calls as shell_calls
-from fused_render import claude_agent
+from fused_render import jobs as shell_jobs
+from fused_render import netlog
+from fused_render import claude_agent, claude_remote
 from fused_render import tasks_watch
 from fused_render._binding import ParamError, bind_params
 from fused_render.claude_agent import gate, pool
 from fused_render.executor import dumps_result
 from fused_render.server import git_status
-from fused_render.server.common import _error, _require_fused
+from fused_render.server.common import _error, _require_fused, ws_origin_ok
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -308,6 +314,13 @@ async def api_claude_agent(request: Request, body: dict = Body(default={}),
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    return await agent_dispatch(body, getattr(request.state, "fused_call", None))
+
+
+async def agent_dispatch(body: dict, call: dict | None) -> Response:
+    """Everything after the transport's guard: the POST route's body, shared
+    with the `/api/claude/agent/ws` socket (whose guard is its origin check).
+    `call` is the call-log record (`request.state.fused_call` for a POST)."""
     action = body.get("action")
     if not isinstance(action, str) or action not in ACTIONS:
         return _error(f"unknown claude agent action: {action!r}")
@@ -373,8 +386,10 @@ async def api_claude_agent(request: Request, body: dict = Body(default={}),
     def _on_cancel(fut):
         fut.add_done_callback(_late)
 
+    handler = (functools.partial(claude_remote.admit_call, agent.main)
+               if action in _SPAWN_ACTIONS else agent.main)
     envelope, status, cfut = await _run(
-        action, pool.budget(action), agent.main, bound,
+        action, pool.budget(action), handler, bound,
         executor=pool.pool_for(action),
         on_cancel=_on_cancel if action in ("start", "send") else None)
     timed_out = status == 504 and envelope["error"].get("type") == "Timeout"
@@ -435,7 +450,7 @@ async def api_claude_agent(request: Request, body: dict = Body(default={}),
     # (`claude_agent.CLAUDE_PAGE_ID`), which `calls.is_first_party` files as
     # first-party.
     shell_calls.enrich_run(
-        getattr(request.state, "fused_call", None),
+        call,
         resolved=claude_agent.AGENT_PATH, params=params, engine=ENGINE,
         result=envelope,
     )
@@ -484,6 +499,11 @@ async def api_claude_artifacts(request: Request, body: dict = Body(default={}),
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    return await artifacts_dispatch(body, getattr(request.state, "fused_call", None))
+
+
+async def artifacts_dispatch(body: dict, call: dict | None) -> Response:
+    """`api_claude_artifacts` past its guard; also the socket's `artifacts`."""
     try:
         from fused_render.claude_agent import artifacts
     except Exception as exc:  # noqa: BLE001
@@ -497,11 +517,139 @@ async def api_claude_artifacts(request: Request, body: dict = Body(default={}),
     envelope, status, _ = await _run("artifacts", pool.DEFAULT_BUDGET_S,
                                      artifacts.main, bound)
     shell_calls.enrich_run(
-        getattr(request.state, "fused_call", None),
+        call,
         resolved=os.path.abspath(artifacts.__file__), params=params,
         engine=ENGINE, result=envelope,
     )
     return _respond(envelope, status)
+
+
+# ---- the chat's agent/artifacts calls over a WebSocket -----------------------
+#
+# WHY: every chat poll (~400 ms) and send is a POST that holds one of WebKit's
+# six per-host HTTP/1.1 connections, a pool shared by every native window of
+# the app (same reason `/api/run/ws` exists, routers/run.py). Sockets do not
+# count toward that cap. Transport only: the same `agent_dispatch` /
+# `artifacts_dispatch` run, on the same pool lanes and budgets, so a cancel or
+# decide still rides CONTROL_POOL and the poll rate is unchanged.
+#
+# Protocol: `{id, route: "agent"|"artifacts", headers, body}` frames, answered
+# by `{"id": .., "status": n, "body": <the POST's JSON body>}`. The body is
+# NESTED rather than spliced (as run.ws does): a poll result can itself carry
+# `id` / `status` keys. The socket's guard is the origin check (a socket has
+# no CORS preflight, so X-Fused cannot protect it). LanApp 1008s every socket
+# but /api/fs/events, so a LAN peer falls back to POST.
+
+_WS_ROUTES = {
+    "agent": ("/api/claude/agent", agent_dispatch),
+    "artifacts": ("/api/claude/artifacts", artifacts_dispatch),
+}
+
+
+@router.websocket("/api/claude/agent/ws")
+@netlog.tracked_ws("claude-agent")
+async def api_claude_agent_ws(ws: WebSocket):
+    if not ws_origin_ok(ws):
+        await ws.close(code=1008)
+        return
+    await ws.accept()
+
+    send_lock = asyncio.Lock()
+    state = {"open": True}
+    tasks: set[asyncio.Task] = set()
+
+    async def reply(text: str) -> bool:
+        if not state["open"]:
+            return False
+        try:
+            async with send_lock:
+                await ws.send_text(text)
+            return True
+        except Exception:  # noqa: BLE001 — the page went away mid-send
+            state["open"] = False
+            return False
+
+    def frame(rid, status: int, body_json: str) -> str:
+        return '{"id":%s,"status":%d,"body":%s}' % (json.dumps(rid), status,
+                                                   body_json or "null")
+
+    async def handle(text: str) -> None:
+        start = time.monotonic()
+        try:
+            msg = json.loads(text)
+        except ValueError:
+            msg = None
+        if not isinstance(msg, dict):
+            await reply(frame(None, 400, json.dumps(
+                {"error": "message must be a JSON object"})))
+            return
+        rid = msg.get("id")
+        entry = _WS_ROUTES.get(msg.get("route"))
+        body = msg.get("body")
+        if entry is None or not isinstance(body, dict):
+            what = ("unknown route" if entry is None else "body must be an object")
+            await reply(frame(rid, 400, json.dumps(
+                {"error": f"{what}: {msg.get('route')!r}"})))
+            return
+        route, dispatch = entry
+        raw_headers = msg.get("headers")
+        headers = ({str(k).lower(): str(v) for k, v in raw_headers.items()}
+                   if isinstance(raw_headers, dict) else {})
+        call = shell_calls.begin_from(route, "WS", headers)
+        raw_source = headers.get("x-fused-source")
+        try:
+            with shell_jobs.ambient_source(unquote(raw_source) if raw_source else ""):
+                resp = await dispatch(body, call)
+        except asyncio.CancelledError:
+            shell_calls.finish(call, status=None,
+                               elapsed_ms=(time.monotonic() - start) * 1000,
+                               outcome="disconnected")
+            raise
+        except Exception as exc:  # noqa: BLE001 — mirrors unhandled_exception
+            err_id = uuid.uuid4().hex[:12]
+            tb = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+            dur = (time.monotonic() - start) * 1000
+            logger.info("WS %s -> 500 (%.0f ms)", route, dur)
+            logger.error("unhandled error on WS %s [err_id %s]\n%s", route, err_id, tb)
+            shell_calls.finish(call, status=500, elapsed_ms=dur, outcome="error",
+                               err_id=err_id)
+            await reply(frame(rid, 500, json.dumps({
+                "error": f"fused-render internal error on WS {route} "
+                         f"(err_id {err_id}):\n\n{tb}",
+            })))
+            return
+        content = bytes(resp.body).decode("utf-8")
+        sent = await reply(frame(rid, resp.status_code, content))
+        dur = (time.monotonic() - start) * 1000
+        logger.info("WS %s -> %s (%.0f ms)", route, resp.status_code, dur)
+        shell_calls.finish(
+            call, status=resp.status_code, elapsed_ms=dur,
+            outcome=None if sent else "disconnected",
+            content_length=(str(len(content.encode("utf-8")))
+                            if call is not None and call.get("result_bytes") is None
+                            else None),
+        )
+
+    try:
+        while True:
+            message = await ws.receive()
+            if message["type"] == "websocket.disconnect":
+                break
+            text = message.get("text")
+            if text is None:
+                continue
+            task = asyncio.create_task(handle(text))
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        state["open"] = False
+        # NOT cancelled on hang-up, as for the POST (an aborted fetch never
+        # reaches the handler): a half-run `send` is worse than a finished
+        # one, and its gate bookkeeping must still be filed.
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 #: `/api/claude/worktrees`' actions, and its budget. 20 s (SPEC W-3): a

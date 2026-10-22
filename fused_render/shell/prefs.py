@@ -16,7 +16,7 @@ similar the word is: it says which local-model backend serves a capability when
 more than one can, and `"auto"` (the default, and the absence of a key) means
 the registry's own ordering decides. See ``inference_engines``; the resolution,
 including what happens to a preference this machine cannot honour, belongs to
-``ai/registry.py``. Since D1398 that preference is the TIE-BREAKER among the
+``ai/registry.py``. Since D1423 that preference is the TIE-BREAKER among the
 runners that can read a given model, no longer the sole selector, and a model
 can carry its own pin (**model_engines**, ``model_engines()``) that outranks it.
 
@@ -38,6 +38,9 @@ for an app whose folder is its own pushed GitHub repo — opt-in, default off;
 see ``github_link_enabled``),
 **indexing_enabled** (whether
 background file-index scanning may run — default ON, see ``indexing_enabled``),
+**chromium_windows_enabled** (whether the macOS app's NEW windows are hosted
+by the on-demand Chromium engine instead of WKWebView — experimental, opt-in,
+default off; see ``chromium_windows_enabled`` and `fused_render.chromium`),
 and the **execution engine** for /api/run:
 
   * ``"fused"`` (default, D204) — the fused local compute backend (engine.py):
@@ -234,6 +237,22 @@ def native_windows_enabled() -> bool:
     `window_policy.native_hooks["apply"]` on a PUT.
     """
     return read_prefs().get("native_windows_enabled") is not False
+
+
+def chromium_windows_enabled() -> bool:
+    """Whether a NEW macOS app window is hosted by the Chromium (CEF) engine
+    instead of WKWebView (experimental, opt-in, default off — same `is True`
+    idiom as the other optional features).
+
+    Read by `mac_window.WindowManager` at EVERY window open, not once at
+    boot: flipping it changes what the next window gets, and open windows
+    keep the engine they were born with. It only takes effect when the
+    engine is on disk (`fused_render.chromium.status()["state"] == "ready"`);
+    a PUT that turns it on starts the download, and until that lands new
+    windows keep using WebKit. The dock, launcher, pinned popover and
+    recording pill are never behind this switch.
+    """
+    return read_prefs().get("chromium_windows_enabled") is True
 
 
 def app_sharing_enabled() -> bool:
@@ -488,18 +507,23 @@ def lan_enabled() -> bool:
     return read_prefs().get("lan_enabled") is True
 
 
-#: The two agent switches (D17, docs/COPILOT_BACKEND.md). Claude Code is on
-#: unless a stored `false` turns it off; Copilot is off unless a stored `true`
-#: turns it on. Asymmetric defaults on purpose — "Claude by default" is the
-#: owner's rule — and `put_prefs` refuses the write that would clear both.
-AGENT_BACKEND_KEYS = {"claude": "claude_enabled", "copilot": "copilot_enabled"}
-VALID_DEFAULT_BACKENDS = ("claude", "copilot")
+#: The three agent switches (D17, docs/COPILOT_BACKEND.md; the third from
+#: docs/CODEX_BACKEND.md). Claude Code is on unless a stored `false` turns it
+#: off; Copilot and Codex are off unless a stored `true` turns them on.
+#: Asymmetric defaults on purpose — "Claude by default" is the owner's rule —
+#: and `put_prefs` refuses the write that would clear all three.
+#: `VALID_DEFAULT_BACKENDS` is in `registry.ORDER`: the PUT's default re-point
+#: walks it and takes the first agent that is on.
+AGENT_BACKEND_KEYS = {"claude": "claude_enabled", "copilot": "copilot_enabled",
+                      "codex": "codex_enabled"}
+VALID_DEFAULT_BACKENDS = ("claude", "copilot", "codex")
 
 
 def backend_enabled(backend: str) -> bool:
-    """Whether `backend` ("claude" | "copilot") may start chats and tasks.
-    Unknown backend reads as off. See `agent_backends.registry.enabled_ids`
-    for the never-empty guarantee this feeds."""
+    """Whether `backend` ("claude" | "copilot" | "codex") may start chats and
+    tasks. Unknown backend reads as off. See
+    `agent_backends.registry.enabled_ids` for the never-empty guarantee this
+    feeds."""
     key = AGENT_BACKEND_KEYS.get(backend)
     if key is None:
         return False
@@ -517,6 +541,10 @@ def copilot_enabled() -> bool:
     return backend_enabled("copilot")
 
 
+def codex_enabled() -> bool:
+    return backend_enabled("codex")
+
+
 def default_backend() -> str:
     """The agent new chats and tasks start from, as stored — `"claude"` when
     unset or junk. Whether it is ENABLED is the registry's question
@@ -526,14 +554,16 @@ def default_backend() -> str:
 
 
 def _agents_state() -> dict:
-    """`{"claude": bool, "copilot": bool, "default": id}` for `GET /api/prefs`.
-    Imported lazily: the registry reads this module for the switches. The
-    REGISTRY's answer, not the raw switches: a hand-edited prefs.json that
-    turns both off reads as Claude on there, and this page must agree."""
+    """`{"claude": bool, "copilot": bool, "codex": bool, "default": id}` for
+    `GET /api/prefs`. Imported lazily: the registry reads this module for the
+    switches. The REGISTRY's answer, not the raw switches: a hand-edited
+    prefs.json that turns all three off reads as Claude on there, and this
+    page must agree."""
     from fused_render.agent_backends import registry
 
     return {"claude": registry.is_enabled("claude"),
             "copilot": registry.is_enabled("copilot"),
+            "codex": registry.is_enabled("codex"),
             "default": registry.default_id()}
 
 
@@ -576,7 +606,7 @@ def engine_for_capability(capability: str) -> str:
 
 
 def model_engines() -> dict:
-    """The per-MODEL engine pins, as stored (D1398): `{repo_id: runner code}`.
+    """The per-MODEL engine pins, as stored (D1423): `{repo_id: runner code}`.
 
     The sibling of `inference_engines()` and read under the same rule — returned
     raw, validated at the point of USE, non-strings dropped — because a pin
@@ -744,6 +774,33 @@ def ranked_search_enabled() -> bool:
     existing install — keeps the scored ordering exactly as before.
     """
     return read_prefs().get("ranked_search_enabled") is not False
+
+
+def _warm_run_env() -> bool | None:
+    """`FUSED_RENDER_WARM_RUN` as a tri-state (None = unset/unrecognised)."""
+    raw = os.environ.get("FUSED_RENDER_WARM_RUN")
+    if raw is None:
+        return None
+    raw = raw.strip().lower()
+    if raw in ("0", "false", "off", "no"):
+        return False
+    if raw in ("1", "true", "on", "yes"):
+        return True
+    return None
+
+
+def warm_run_enabled() -> bool:
+    """Whether `/api/run` may claim a pre-spawned idle interpreter (SPEC PY-20,
+    default ON). `FUSED_RENDER_WARM_RUN` wins over the stored pref, the way
+    `FUSED_RENDER_ENGINE` does; POSIX only, so Windows is always off. Same
+    idiom as `ranked_search_enabled`: absence and any non-`false` stored value
+    read as enabled."""
+    if os.name != "posix":
+        return False
+    forced = _warm_run_env()
+    if forced is not None:
+        return forced
+    return read_prefs().get("warm_run_enabled") is not False
 
 
 def calls_enabled() -> bool:
@@ -948,6 +1005,10 @@ def _prefs_response() -> dict:
         # `fused-render serve` or another platform has no windows to offer, so
         # the Preferences section stays hidden there.
         "native_windows": _native_windows_state(),
+        # The experimental Chromium engine for the macOS windows (opt-in):
+        # `available` is "this process has native windows on macOS", and
+        # `engine` is the download state the page shows next to the toggle.
+        "chromium_windows": _chromium_windows_state(),
         # A task on the Tasks page opens in a side panel beside the list —
         # always, since 2026-09-20 (`task_peek_enabled`). Still sent, because
         # the client's flag module reads it.
@@ -984,16 +1045,20 @@ def _prefs_response() -> dict:
         # the live listener state (url once it is up, error when it is not), so
         # the Preferences section can show the address a phone types.
         "lan": {"enabled": lan_enabled(), **_lan_status()},
-        # The two agent switches and the agent new chats/tasks start from
-        # (docs/COPILOT_BACKEND.md D17). `default` is the EFFECTIVE one — the
-        # stored choice re-pointed to an enabled agent by the registry — so
-        # the page never shows a default that is switched off.
+        # The three agent switches and the agent new chats/tasks start from
+        # (docs/COPILOT_BACKEND.md D17, docs/CODEX_BACKEND.md D17). `default`
+        # is the EFFECTIVE one — the stored choice re-pointed to an enabled
+        # agent by the registry — so the page never shows a default that is
+        # switched off.
         "agents": _agents_state(),
         # Whether background file-index scanning may run (default ON), and
         # whether index-backed search orders hits by relevance score (default
         # ON — D720; off is `depth ASC, rel ASC` instead of scored).
         "indexing": {"enabled": indexing_enabled(), "ranked": ranked_search_enabled(),
                      "low_impact": index_low_impact_enabled()},
+        # Whether /api/run may claim a pre-spawned idle interpreter (default
+        # ON, PY-20); `forced` = FUSED_RENDER_WARM_RUN decides, not the pref.
+        "warm_run": {"enabled": warm_run_enabled(), "forced": _warm_run_env() is not None},
         # Whether app-made git commits are auto-pushed and behind repos are
         # auto fast-forwarded on app open (default ON).
         "git": {"auto_sync": git_auto_sync_enabled()},
@@ -1033,6 +1098,28 @@ def _prefs_response() -> dict:
         # Preferences section renders only then.
         "launcher": _launcher_state(),
     }
+
+
+def _chromium_windows_state() -> dict:
+    from fused_render import chromium
+    from fused_render import window_policy
+
+    hooks = window_policy.native_hooks
+    engine = chromium.status()
+    # Only the macOS app has windows to put the engine in: the hook says this
+    # process shows native windows, `status` says the platform can host CEF.
+    available = ("apply" in hooks and engine["state"] != chromium.UNSUPPORTED
+                 and hooks.get("usable", lambda: True)())
+    enabled = chromium_windows_enabled()
+    # Open windows keep the engine they were born with: how many are not on
+    # the one a NEW window gets now (the row offers "Reopen windows"). The
+    # target is computed here, cheaply, never through `engine_for_new_window`:
+    # that may load CEF, which only the main thread can do.
+    target = "chromium" if enabled and engine["state"] == chromium.READY else "webkit"
+    count = hooks.get("windows_not_on")
+    stale = count(target) if count is not None else 0
+    return {"enabled": enabled, "available": available, "engine": engine,
+            "stale_windows": stale}
 
 
 def _native_windows_state() -> dict:
@@ -1249,6 +1336,20 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                     status_code=409,
                 )
             changed = True
+        if "chromium_windows_enabled" in body:
+            value = body.get("chromium_windows_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'chromium_windows_enabled' must be a boolean"}, status_code=400)
+            prefs["chromium_windows_enabled"] = value
+            changed = True
+            if value:
+                # Turning it on is also "get the engine": the download runs
+                # in the background and the page polls GET /api/prefs for
+                # its progress. A no-op when it is unsupported, unpublished,
+                # already there or already downloading (`install`).
+                from fused_render import chromium
+
+                chromium.install()
         if "task_notify_terminal_sessions" in body:
             value = body.get("task_notify_terminal_sessions")
             if not isinstance(value, bool):
@@ -1276,6 +1377,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 return JSONResponse({"error": "'task_summary_titles_enabled' must be a boolean"},
                                     status_code=400)
             prefs["task_summary_titles_enabled"] = value
+            changed = True
         for key in ("bots_autostage", "bots_sounds", "bots_clear_enabled"):
             if key in body:
                 value = body.get(key)
@@ -1398,6 +1500,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["ranked_search_enabled"] = value
             changed = True
+        if "warm_run_enabled" in body:
+            value = body.get("warm_run_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'warm_run_enabled' must be a boolean"},
+                                    status_code=400)
+            prefs["warm_run_enabled"] = value
+            changed = True
         if "index_low_impact_enabled" in body:
             value = body.get("index_low_impact_enabled")
             if not isinstance(value, bool):
@@ -1508,15 +1617,19 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 return JSONResponse({"error": f"'launcher_row_modifier': {exc}"}, status_code=400)
             prefs[launcher.row_modifier_key()] = value  # flavor's key, as above
             changed = launcher_changed = True
-        if any(k in body for k in ("claude_enabled", "copilot_enabled", "default_backend")):
-            # THE THREE AGENT KEYS TOGETHER (D17, invariant 11). Each is applied
-            # onto the merged record first and the RESULT is judged, so one PUT
-            # that turns Claude off and Copilot on in the same body is fine,
-            # while one that would leave both off is refused whole — there is
-            # no "no agent" state. `default_backend` naming an agent that ends
-            # up off is re-pointed to the one that is on, in the same write,
-            # so a reader never finds a default nothing can honour.
-            for key in ("claude_enabled", "copilot_enabled"):
+        agent_keys = tuple(AGENT_BACKEND_KEYS[b] for b in VALID_DEFAULT_BACKENDS)
+        if any(k in body for k in (*agent_keys, "default_backend")):
+            # THE FOUR AGENT KEYS TOGETHER (D17, invariant 11): three switches
+            # and the default. Each is applied onto the merged record first
+            # and the RESULT is judged, so one PUT that turns Claude off and
+            # Codex on in the same body is fine, and so is one that turns two
+            # off while the third stays on, while one that would leave all
+            # three off is refused whole — there is no "no agent" state.
+            # `default_backend` naming an agent that ends up off is re-pointed
+            # to the first one that is on (in `VALID_DEFAULT_BACKENDS` order,
+            # which is `registry.ORDER`), in the same write, so a reader never
+            # finds a default nothing can honour.
+            for key in agent_keys:
                 if key in body:
                     value = body.get(key)
                     if not isinstance(value, bool):
@@ -1532,12 +1645,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                         status_code=400)
                 prefs["default_backend"] = value
             # The same defaults `backend_enabled` reads: Claude on unless
-            # stored False, Copilot off unless stored True.
+            # stored False, Copilot and Codex off unless stored True.
             on = {"claude": prefs.get("claude_enabled") is not False,
-                  "copilot": prefs.get("copilot_enabled") is True}
+                  "copilot": prefs.get("copilot_enabled") is True,
+                  "codex": prefs.get("codex_enabled") is True}
             if not any(on.values()):
                 return JSONResponse(
-                    {"error": "turn on the other agent first"}, status_code=400)
+                    {"error": "turn on another agent first"}, status_code=400)
             wanted = prefs.get("default_backend")
             if wanted not in VALID_DEFAULT_BACKENDS:
                 wanted = "claude"
@@ -1549,7 +1663,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse(
                 {"error": "no known preference in request (expected 'engine', "
                           "'engines', 'model_engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'monitor_enabled', 'marketplace_enabled', 'github_link_enabled', "
-                          "'native_windows_enabled', "
+                          "'native_windows_enabled', 'chromium_windows_enabled', "
                           "'task_notify_terminal_sessions', "
                           "'project_queue_enabled', "
                           "'task_recap_titles_enabled', "
@@ -1558,8 +1672,9 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'bots_autostage', 'bots_sounds', 'bots_clear_enabled', "
                           "'tasks_view_tabs', "
                           "'lan_enabled', "
-                          "'claude_enabled', 'copilot_enabled', "
+                          "'claude_enabled', 'copilot_enabled', 'codex_enabled', "
                           "'default_backend', 'indexing_enabled', 'ranked_search_enabled', "
+                          "'warm_run_enabled', "
                           "'index_low_impact_enabled', "
                           "'git_auto_sync_enabled', 'auto_download_updates', "
                           "'calls_enabled', "
@@ -1648,3 +1763,57 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         # would invite the page to say "nothing was unloaded" about a read.
         response["engines"]["unloaded"] = unloaded
     return response
+
+
+# ---- the Chromium engine (experimental; see fused_render.chromium) ----------
+
+@router.get("/api/prefs/chromium")
+def get_chromium_engine():
+    """The engine's download state alone — what the Preferences row polls
+    while a download runs, cheaper than the whole prefs document."""
+    return _chromium_windows_state()
+
+
+@router.post("/api/prefs/chromium/install")
+def post_chromium_install(x_fused: str | None = Header(default=None)):
+    """Start (or retry after a failure) the engine download."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render import chromium
+
+    chromium.install()
+    return _chromium_windows_state()
+
+
+@router.post("/api/prefs/chromium/reopen-windows")
+def post_chromium_reopen_windows(x_fused: str | None = Header(default=None)):
+    """Close every app window and open one Home window on the engine new
+    windows get now — the way the preference takes effect for what is open."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render import window_policy
+
+    reopen = window_policy.native_hooks.get("reopen_windows")
+    if reopen is None or not reopen():
+        return JSONResponse({"error": "no window host in this process"}, status_code=409)
+    return _chromium_windows_state()
+
+
+@router.post("/api/prefs/chromium/remove")
+def post_chromium_remove(x_fused: str | None = Header(default=None)):
+    """Delete the unpacked engine from disk and switch the preference off.
+    Open windows keep running on it until they close."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render import chromium
+
+    with _PREFS_LOCK:
+        prefs = read_prefs()
+        if prefs.get("chromium_windows_enabled") is not None:
+            prefs["chromium_windows_enabled"] = False
+            storage.write_json(_path(), prefs)
+    chromium.remove()
+    return _chromium_windows_state()

@@ -3,7 +3,24 @@
 // through their `onClick` props.
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
-import { afterEach, describe, expect, test } from "bun:test";
+// The shim's `window` has no-op listeners and there is no `localStorage`: give
+// the open-bit tests a real event bus and an in-memory store.
+{
+  const g = globalThis as unknown as Record<string, any>;
+  const bus = new EventTarget();
+  const w = g.window as Record<string, unknown>;
+  w.addEventListener = bus.addEventListener.bind(bus);
+  w.removeEventListener = bus.removeEventListener.bind(bus);
+  w.dispatchEvent = bus.dispatchEvent.bind(bus);
+  const store = new Map<string, string>();
+  g.localStorage = {
+    getItem: (k: string) => store.get(k) ?? null,
+    setItem: (k: string, v: string) => void store.set(k, String(v)),
+    removeItem: (k: string) => void store.delete(k),
+    clear: () => store.clear(),
+  };
+}
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 const { TasksPanel, useTasksOpen, tasksPanelScope } = await import("./TasksPanel");
@@ -464,29 +481,69 @@ describe("working line verbs", () => {
   });
 });
 
-describe("review #5: the open bit is scoped to the run and conversation", () => {
-  test("opened for one run, collapsed again for the next; reopening works there", () => {
-    let api!: [boolean, () => void];
-    function Probe({ scope }: { scope: string }) {
-      api = useTasksOpen(scope);
+describe("the open bit is a remembered global preference", () => {
+  const base = { lastRunId: "r1", tasksRunId: "r1", sessionId: "s1", transcriptGen: 1 };
+  const next = { ...base, lastRunId: "r2", tasksRunId: "r2" };
+  let api!: [boolean, () => void];
+  function Probe({ scope, has }: { scope: string; has: boolean }) {
+    api = useTasksOpen(scope, has);
+    return null;
+  }
+  beforeEach(() => localStorage.clear());
+
+  test("default is collapsed", () => {
+    mount(<Probe scope={tasksPanelScope(base)} has={true} />);
+    expect(api[0]).toBe(false);
+  });
+  test("open survives a new run and a new session while tasks exist", () => {
+    const r = mount(<Probe scope={tasksPanelScope(base)} has={true} />);
+    act(() => api[1]());
+    expect(api[0]).toBe(true);
+    act(() => r.update(<Probe scope={tasksPanelScope(next)} has={true} />));
+    expect(api[0]).toBe(true);
+    act(() => r.update(<Probe scope={tasksPanelScope({ ...base, sessionId: "s2", transcriptGen: 2 })} has={true} />));
+    expect(api[0]).toBe(true);
+  });
+  test("remembered open + empty new scope is closed; toggling there opens it", () => {
+    const r = mount(<Probe scope={tasksPanelScope(base)} has={true} />);
+    act(() => api[1]());
+    act(() => r.update(<Probe scope={tasksPanelScope(next)} has={false} />));
+    expect(api[0]).toBe(false);
+    act(() => api[1]());
+    expect(api[0]).toBe(true);
+  });
+  test("closing persists into a new scope with tasks", () => {
+    const r = mount(<Probe scope={tasksPanelScope(base)} has={true} />);
+    act(() => api[1]());
+    act(() => api[1]());
+    expect(api[0]).toBe(false);
+    act(() => r.update(<Probe scope={tasksPanelScope(next)} has={true} />));
+    expect(api[0]).toBe(false);
+  });
+  test("toggle writes localStorage and a fresh mount reads it", () => {
+    const r = mount(<Probe scope={tasksPanelScope(base)} has={true} />);
+    act(() => api[1]());
+    expect(localStorage.getItem("fused-render.claude.tasks-open")).toBe("1");
+    act(() => r.unmount());
+    mount(<Probe scope={tasksPanelScope(base)} has={true} />);
+    expect(api[0]).toBe(true);
+  });
+  test("two mounted hooks stay in sync", () => {
+    let a!: [boolean, () => void];
+    let b!: [boolean, () => void];
+    function A() {
+      a = useTasksOpen("x", true);
       return null;
     }
-    const base = { lastRunId: "r1", tasksRunId: "r1", sessionId: "s1", transcriptGen: 1 };
-    const r = mount(<Probe scope={tasksPanelScope(base)} />);
-    expect(api[0]).toBe(false);
-    act(() => api[1]());
-    expect(api[0]).toBe(true);
-    // A later run in the same session.
-    act(() => r.update(<Probe scope={tasksPanelScope({ ...base, lastRunId: "r2", tasksRunId: "r2" })} />));
-    expect(api[0]).toBe(false);
-    act(() => api[1]());
-    expect(api[0]).toBe(true);
-    // Another session opened, and a new chat (everything back to empty).
-    act(() => r.update(<Probe scope={tasksPanelScope({ ...base, sessionId: "s2", transcriptGen: 2 })} />));
-    expect(api[0]).toBe(false);
-    act(() => api[1]());
-    act(() => r.update(<Probe scope={tasksPanelScope({ lastRunId: null, tasksRunId: null, sessionId: null, transcriptGen: 0 })} />));
-    expect(api[0]).toBe(false);
+    function B() {
+      b = useTasksOpen("y", true);
+      return null;
+    }
+    mount(<><A /><B /></>);
+    act(() => a[1]());
+    expect(b[0]).toBe(true);
+    act(() => b[1]());
+    expect(a[0]).toBe(false);
   });
 });
 

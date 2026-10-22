@@ -9,6 +9,7 @@ import {
   mergeEvents,
   multiAnswer,
   parseRoute,
+  severityLabel,
   previewType,
   routePath,
   scaledSize,
@@ -197,5 +198,15 @@ describe("routines", () => {
     const { localInputToEpoch } = await import("./lib");
     expect(Number.isNaN(localInputToEpoch(""))).toBe(true);
     expect(localInputToEpoch("2030-01-02T03:04")).toBe(Math.floor(new Date("2030-01-02T03:04").getTime() / 1000));
+  });
+});
+
+describe("severityLabel", () => {
+  test("names the levels, anything else is null", () => {
+    expect(severityLabel("low")).toBe("Low risk");
+    expect(severityLabel("medium")).toBe("Medium risk");
+    expect(severityLabel("high")).toBe("High risk");
+    expect(severityLabel(undefined)).toBeNull();
+    expect(severityLabel("odd")).toBeNull();
   });
 });

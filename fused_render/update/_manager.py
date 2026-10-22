@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import sys
 import threading
 import time
@@ -772,7 +773,6 @@ class UpdateManager:
             pass
 
     def _check_disk_space(self, updates: str) -> None:
-        stat = os.statvfs(updates)
-        free = stat.f_bavail * stat.f_frsize
+        free = shutil.disk_usage(updates).free
         if free < _DISK_SPACE_FACTOR * common.MAX_ARTIFACT_BYTES // 2:
             raise RuntimeError("not enough free disk space to download the update")

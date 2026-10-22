@@ -480,6 +480,11 @@ def _iter_events(path):
     return store.iter_events(path)
 
 
+# Event roles that are bookkeeping, not a message: never "unread" (news_seq; the page's lib/unread.ts unreadOf keeps
+# the same pair). `delivery` is the "texted to your phone" row joined to a bubble (docs §10 D12).
+NOISE_ROLES = frozenset({"system", "delivery"})
+
+
 def _engine_for(meta) -> str:
     """`steps` | `agent` for this bot's next task (docs §5): the `engine` setting,
     `auto` = steps for a local model or when no `claude` CLI is resolved."""
@@ -556,6 +561,7 @@ class Bot:
         self.events_path = os.path.join(self.dir, "events.jsonl")
         self.lock = threading.RLock()
         self._last_user_ts = None  # ts of the newest user event; lazily read from events.jsonl (last_user_ts)
+        self._news = None  # (line count, seq of the newest message row); lazily read from events.jsonl (news_seq)
         self.meta = _read_meta(bid)
         # The browser (its logins) is a folder of its own, maybe shared with other bots (browsers.py).
         # A bot from before browsers existed is adopted: its profile moves, nothing is copied.
@@ -598,6 +604,9 @@ class Bot:
         dirty = False
         if self.meta.pop("channel_forwards", None) is not None:
             dirty = True  # per-bot forwards are gone (docs §10): only a task's origin hears back
+        # Per-tool "Always approve" rules and finished builds become ticks under "Apps it may use without asking".
+        if _tools_mod().migrate_app_rules(self.meta):
+            dirty = True
         if not is_super(self.meta):
             # iMessage is Super Bot's alone (docs §10): an ordinary bot's leftover handle and contacts grant nothing
             # and show nowhere, so they go the way channel_forwards went (and `text`/`texts` leave its roster).
@@ -715,8 +724,27 @@ class Bot:
                 f.write(json.dumps(ev) + "\n")
             if role == "user" and (ev.get("via") or {}).get("kind") != chan.ROUTINE_KIND:
                 self._last_user_ts = ev["ts"]  # a routine's prompt is the schedule's doing, not the user's (last_user_ts)
+            if self._news is not None:  # one line appended: keep the cache in step instead of rescanning (news_seq)
+                self._news = (self._news[0] + 1, ev["seq"] if role not in NOISE_ROLES else self._news[1])
         _registry().on_event(self, ev)
         return ev
+
+    def news_seq(self, nlines=None):
+        """seq of the newest MESSAGE row (0 if none): the unread mark the sidebar compares `seen_seq` against. System
+        notes and delivery rows are bookkeeping, not news — the page's own unread count skips them (lib/unread.ts
+        unreadOf), and before this field the rail counted them: a "Browser closed after 20 minutes idle" note
+        appended after you had read everything lit the Bots dot green over a bot whose list row showed nothing new.
+        One pass over events.jsonl, then kept current by emit(); a line count that moved under the cache (a line
+        another process appended — botsend.py — with no page open to lift it through events_since) rescans."""
+        with self.lock:
+            n = self._count_events() if nlines is None else nlines
+            if self._news is None or self._news[0] != n:
+                seq = 0
+                for _i, ev in _iter_events(self.events_path):
+                    if isinstance(ev, dict) and ev.get("role") not in NOISE_ROLES and isinstance(ev.get("seq"), int):
+                        seq = max(seq, ev["seq"])
+                self._news = (n, seq)
+            return self._news[1]
 
     def last_user_ts(self):
         """ts of the newest message the user sent (0 if none): one pass over events.jsonl, then kept current by
@@ -1890,7 +1918,7 @@ class Bot:
             meta = dict(self.meta)
             if meta.get("handoffs"):
                 meta["handoffs"] = [dict(h) for h in meta["handoffs"]]
-        return {**meta, "id": self.id, "seq": self.seq, "last_user_ts": self.last_user_ts(), "browser": bs, "browser_id": self.browser_id,
+        return {**meta, "id": self.id, "seq": self.seq, "news_seq": self.news_seq(), "last_user_ts": self.last_user_ts(), "browser": bs, "browser_id": self.browser_id,
                 "browser_name": browsers.read_meta(self.browser_id).get("name") or self.meta.get("name") or "",
                 "shared_with": self.shared_with(), "encrypt": bool(self.browser.encrypt),
                 "terminal_id": self.terminal_id(), "terminal_available": _tools_mod().terminal_enabled(self),
@@ -3007,6 +3035,9 @@ class Bot:
                               app={"name": bd["name"], "dir": bd["dir"]}, source="build", via=bd.get("via"))
                     with self.lock:
                         bd["done_at"] = time.time()
+                        # The app it just built is ticked under "Apps it may use without asking": its scripts run
+                        # without a card from here on, and Settings shows that (tools.risk reads only the tick).
+                        apptools.trust_app(self.meta, os.path.basename(str(bd.get("dir") or "").rstrip("/")))
                         self.save()
                     return
                 stable = ""

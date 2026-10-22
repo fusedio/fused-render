@@ -54,7 +54,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-from fused_render import _startonce, jobs
+from fused_render import _platform, _startonce, jobs
 from fused_render.crashlog import describe_exit, report_child_exit
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai import catalog, fit, footprints, hub_catalog, hub_metadata, hw_detect, registry
@@ -704,7 +704,7 @@ def _alive(worker: Worker) -> bool:
 #: Detach a worker into its own process group so a stop reaches the CHILDREN it
 #: spawned too — a dataloader, a compile step, a `uv` download — and not just the
 #: leader that would otherwise leave them holding the weights.
-SPAWN_KWARGS = {"start_new_session": True}
+SPAWN_KWARGS = _platform.detach_kwargs()
 
 #: The worker's working directory, when the spawn cannot pass `cwd=` — see
 #: `_spawn_kwargs`. `worker_base.serve` reads it and `chdir`s first thing.
@@ -768,16 +768,10 @@ def _kill_tree(worker: Worker) -> None:
     pid = worker.pid
     if not pid:
         return
-    try:
-        leader = os.getpgid(pid) == pid
-    except OSError:
-        leader = False
-    for sig in (signal.SIGTERM, signal.SIGKILL):
+    for sig in (signal.SIGTERM, _platform.SIGKILL):
         if not _alive(worker):
             return
-        try:
-            os.killpg(pid, sig) if leader else os.kill(pid, sig)
-        except OSError:
+        if not _platform.kill_tree(pid, sig):
             return
         deadline = time.monotonic() + 3.0
         while time.monotonic() < deadline and _alive(worker):
@@ -1157,6 +1151,12 @@ def _spawn(runner: registry.Runner, worker: Worker, python: str) -> None:
     job = job_id_for(worker.model)
     log = _log_path(worker)
     env = _child_env(worker.token, worker.model, worker.capability)
+    # The bundled interpreter's stdlib dir carries the app's own packages and
+    # precedes the venv's site-packages, shadowing the runner's pins (Pillow 13
+    # breaking mflux's `_IntegralLike` import). See `prefer_venv_site_packages`.
+    from fused_render import envinstall
+
+    envinstall.prefer_venv_site_packages(env, python)
     proc = subprocess.Popen(
         [python, runner.worker, "--model", worker.model, "--status", status, "--job", job],
         stdin=subprocess.DEVNULL,
@@ -1635,6 +1635,9 @@ def _fetch_only(runner: registry.Runner, model: str, job: str,
         _report(job, detail="Fetching weights…")
         log = _log_path(stub)
         env = _child_env(stub.token, model)
+        from fused_render import envinstall
+
+        envinstall.prefer_venv_site_packages(env, python)  # see `_spawn`
         argv = [python, runner.worker, "--model", model, "--job", job, "--download-only"]
         if file:
             argv += ["--file", file]
@@ -1716,7 +1719,7 @@ def _runner_or_raise(capability: str, model: str | None = None) -> registry.Runn
     three wrong answers the moment text generation had two — all three named the
     Apple Silicon runner on machines that were never going to use it.
     """
-    # With a MODEL in hand the runner follows the model (D1398): a pin, then
+    # With a MODEL in hand the runner follows the model (D1423): a pin, then
     # the runners that read it, with the capability's preference as the
     # tie-breaker. Without one it is the capability-level answer as before.
     runner = (registry.resolve_for_model(capability, model).runner if model
@@ -2762,7 +2765,7 @@ def evict_stale_engines() -> list[str]:
         workers = list(_workers.values())
     stale = []
     for worker in workers:
-        # The resolution FOR THE RESIDENT MODEL (D1398): the capability-level
+        # The resolution FOR THE RESIDENT MODEL (D1423): the capability-level
         # answer would call a model stale whenever its serving runner is
         # not the one the preference names, and restart it forever. Resolved
         # OUTSIDE `_lock`: it reads prefs.json and the cache folder.

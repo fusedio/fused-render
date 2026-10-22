@@ -29,7 +29,11 @@ export type GroupId =
   | "general"
   | "features"
   | "ai"
-  | "claude"
+  | "claude-settings"
+  | "claude-plugins"
+  | "claude-memory"
+  | "claude-mcp"
+  | "claude-history"
   | "tasks"
   | "apps"
   | "indexing"
@@ -40,9 +44,13 @@ export type GroupId =
 // THE NAV IS SECTIONED THE WAY THE APP'S SIDEBAR IS (Akshil, 2026-10-20):
 // a heading per destination a reader already knows from the left rail —
 // the app itself, Bots, Tasks, Apps & files — and Other for what is none of
-// those. A group belongs to exactly one section; a section with no visible
-// group (Fused Bot has no apps or files) is not drawn.
-export type NavSectionId = "general" | "bots" | "tasks" | "apps" | "other";
+// those. Claude Code is a section of its own (Akshil, 2026-10-21): the
+// former Claude Config panel's tabs are its groups, one page each, the way
+// the panel's tab strip laid them out — not accordions on one long page. A
+// group belongs to exactly one section; a section with no visible group
+// (Fused Bot has no apps or files; a machine without ~/.claude has no Claude
+// Code) is not drawn.
+export type NavSectionId = "general" | "bots" | "claude" | "tasks" | "apps" | "other";
 
 export interface NavSection {
   id: NavSectionId;
@@ -52,6 +60,7 @@ export interface NavSection {
 export const NAV_SECTIONS: readonly NavSection[] = [
   { id: "general", label: "General" },
   { id: "bots", label: "Bots" },
+  { id: "claude", label: "Claude Code" },
   { id: "tasks", label: "Tasks" },
   { id: "apps", label: "Apps & files" },
   { id: "other", label: "Other" },
@@ -77,12 +86,39 @@ export const GROUPS: readonly SettingsGroup[] = [
     blurb: "Off by default and still settling. Each one adds a sidebar row or a page when you turn it on.",
   },
   { id: "ai", nav: "bots", label: "AI & agents", blurb: "Which coding agents run your chats and tasks." },
+  // Claude Code's own configuration under ~/.claude. Settings first (the
+  // page nearly everyone came for — Akshil, 2026-10-21), then the panel's old
+  // tab order: Plugins, Memory & Skills, MCP, History last. Edits commit to
+  // git and apply on the next session.
   {
-    id: "claude",
-    nav: "bots",
-    label: "Claude Code",
-    blurb:
-      "Claude Code's own configuration under ~/.claude: plugins, memory, skills, MCP servers, settings.json and its git history. Edits commit to git and apply on the next session.",
+    id: "claude-settings",
+    nav: "claude",
+    label: "Settings",
+    blurb: "Claude Code's settings.json: the model, permissions, the status line and every documented key. Edits commit to git and apply on the next session.",
+  },
+  {
+    id: "claude-plugins",
+    nav: "claude",
+    label: "Plugins",
+    blurb: "Plugins and marketplaces Claude Code loads. Edits commit to git and apply on the next session.",
+  },
+  {
+    id: "claude-memory",
+    nav: "claude",
+    label: "Memory & Skills",
+    blurb: "What Claude Code remembers per project, and the skills it can run.",
+  },
+  {
+    id: "claude-mcp",
+    nav: "claude",
+    label: "MCP servers",
+    blurb: "The MCP servers every Claude Code session can reach.",
+  },
+  {
+    id: "claude-history",
+    nav: "claude",
+    label: "History",
+    blurb: "Uncommitted drift, profiles and the commit log over your Claude config.",
   },
   { id: "tasks", nav: "tasks", label: "Tasks", blurb: "How tasks queue, get titled and tell you they are done." },
   { id: "apps", nav: "apps", label: "Apps & sharing", blurb: "Git sync, sharing, and how app cards preview." },
@@ -226,6 +262,14 @@ const ENTRIES = [
     keywords: "github copilot agent backend cli sign in login",
   },
   {
+    id: "agent-codex",
+    group: "ai",
+    section: "Agents",
+    label: "OpenAI Codex CLI",
+    description: "Runs chats and tasks with your ChatGPT or OpenAI account. Bots keep using Claude.",
+    keywords: "openai codex chatgpt gpt agent backend cli sign in login",
+  },
+  {
     id: "agent-default",
     group: "ai",
     section: "Agents",
@@ -233,7 +277,10 @@ const ENTRIES = [
     description: "With more than one agent on, new chats and tasks start here. A conversation keeps the agent it started with.",
     keywords: "default agent backend",
     child: true,
-    available: ({ prefs }) => !!prefs.agents?.claude && !!prefs.agents?.copilot,
+    // Two or more of the three on: a default only means something when there
+    // is a choice to make.
+    available: ({ prefs }) =>
+      [prefs.agents?.claude, prefs.agents?.copilot, prefs.agents?.codex].filter(Boolean).length >= 2,
   },
   {
     id: "claude-model",
@@ -256,17 +303,17 @@ const ENTRIES = [
   },
 
   // ── Claude Code ──────────────────────────────────────────────────────────
-  // The Claude Config panel's sections, in its order (Plugins first — the
-  // page worth landing on — History last), each a block in its own card. The
+  // The Claude Config panel's sections, each a block in its own card of its
+  // group (Plugins / Memory & Skills / MCP servers / Settings / History). The
   // `description` is the file (or git object) the block edits — the one
   // thing a settings UI over someone's dotfiles owes them. The settings.json
-  // rows sit between MCP and History: a static catalog row leads, and the
-  // catalog's own entries follow it at runtime (settings/claude.tsx builds
-  // them from GET preferences, so a search finds "model" or "effort" the way
-  // it finds any other row).
+  // rows are the Settings group: Statusline leads, then a static catalog row,
+  // and the catalog's own entries follow it at runtime (settings/claude.tsx
+  // builds them from GET preferences, so a search finds "model" or "effort"
+  // the way it finds any other row).
   {
     id: "claude-plugins",
-    group: "claude",
+    group: "claude-plugins",
     section: "Plugins",
     label: "Plugins",
     description: "settings.json → enabledPlugins + extraKnownMarketplaces",
@@ -276,7 +323,7 @@ const ENTRIES = [
   },
   {
     id: "claude-memory",
-    group: "claude",
+    group: "claude-memory",
     section: "Memory",
     label: "Memory",
     description: "projects/*/memory/",
@@ -287,7 +334,7 @@ const ENTRIES = [
   },
   {
     id: "claude-skills",
-    group: "claude",
+    group: "claude-memory",
     section: "Skills",
     label: "Skills",
     description: "skills/*/SKILL.md",
@@ -298,7 +345,7 @@ const ENTRIES = [
   },
   {
     id: "claude-statusline",
-    group: "claude",
+    group: "claude-settings",
     section: "Statusline",
     label: "Statusline",
     description: "settings.json → statusLine",
@@ -309,7 +356,7 @@ const ENTRIES = [
   },
   {
     id: "claude-mcp",
-    group: "claude",
+    group: "claude-mcp",
     section: "MCP",
     label: "MCP servers",
     description: "Global MCP servers via the `claude mcp` CLI (not version-controlled)",
@@ -319,7 +366,7 @@ const ENTRIES = [
   },
   {
     id: "claude-catalog",
-    group: "claude",
+    group: "claude-settings",
     section: "settings.json",
     label: "Settings catalog",
     description:
@@ -329,7 +376,7 @@ const ENTRIES = [
   },
   {
     id: "claude-history",
-    group: "claude",
+    group: "claude-history",
     section: "History",
     label: "History",
     description: "Uncommitted drift, profiles (git branches) and the commit log over your Claude config",
@@ -519,6 +566,18 @@ const ENTRIES = [
     description: "Adds a Reader mode to text files and PDFs that reads them aloud.",
     keywords: "read aloud speech tts listen accessibility pdf voice",
   },
+  {
+    id: "chromium-windows",
+    group: "features",
+    section: "Windows",
+    label: "Chromium engine for windows",
+    description:
+      "Experimental. New app windows are drawn by Chromium instead of the system WebKit view — faster for heavy apps. Downloads the engine (about 150 MB) once; the menu-bar dock, launcher and pinned popover stay on WebKit.",
+    keywords: "chromium cef webkit engine rendering performance experimental blink",
+    macOnly: true,
+    badge: "Beta",
+    available: ({ prefs }) => !!prefs.chromium_windows?.available,
+  },
 
   // ── Phone & network ──────────────────────────────────────────────────────
   {
@@ -564,9 +623,9 @@ const ENTRIES = [
     id: "agent-signin",
     group: "integrations",
     section: ELSEWHERE,
-    label: "Claude Code and Copilot sign-in",
+    label: "Claude Code, Copilot and Codex sign-in",
     description: "Shown with each agent's health under AI & agents.",
-    keywords: "claude login anthropic copilot github sign in",
+    keywords: "claude login anthropic copilot github codex openai chatgpt sign in",
     elsewhere: true,
   },
 
@@ -626,6 +685,10 @@ export function groupOf(id: GroupId): SettingsGroup {
   return GROUP_BY_ID.get(id)!;
 }
 
+export function navSectionOf(id: NavSectionId): NavSection {
+  return NAV_SECTIONS.find((s) => s.id === id)!;
+}
+
 /** Whether a row is drawn on this machine and flavor. */
 export function isVisible(entry: SettingEntry, ctx: SettingsContext): boolean {
   if (ctx.bot && entry.renderOnly) return false;
@@ -679,12 +742,16 @@ export function sectionsOf<T extends SettingEntry>(
   return out;
 }
 
-/** `?tab=` → the group to show. "render" was the old default tab's name and
- *  "account" the Accounts tab's (Integrations since 2026-10-20); anything
- *  unknown (a dead `?tab=engines` bookmark) or hidden on this flavor falls
- *  back to the first group rather than an empty panel. */
+/** `?tab=` → the group to show. "render" was the old default tab's name,
+ *  "account" the Accounts tab's (Integrations since 2026-10-20) and "claude"
+ *  the one Claude Code group's (five groups since 2026-10-21; the router
+ *  still writes it for /claude-config links, and it lands on Settings, the
+ *  section's first group); anything unknown (a dead `?tab=engines` bookmark) or
+ *  hidden on this flavor falls back to the first group rather than an empty
+ *  panel. */
 export function resolveGroup(tab: string | null, groups: readonly SettingsGroup[]): GroupId {
-  const wanted = tab === "render" ? "general" : tab === "account" ? "integrations" : tab;
+  const wanted =
+    tab === "render" ? "general" : tab === "account" ? "integrations" : tab === "claude" ? "claude-settings" : tab;
   const hit = groups.find((g) => g.id === wanted);
   return (hit ?? groups[0] ?? GROUPS[0]).id;
 }

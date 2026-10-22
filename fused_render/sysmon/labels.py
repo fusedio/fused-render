@@ -320,15 +320,24 @@ def command_name(args: list[str] | None) -> str:
     return describe(args)[1]
 
 
+def _warm_spares() -> set[int]:
+    """Pids of the idle interpreters the warm-run pool holds (SPEC PY-20)."""
+    from .. import warm_run
+
+    return set(warm_run.spare_pids())
+
+
 def classify(pid: int, args: list[str] | None) -> Owner | None:
     """An Owner for a process recognisable from its command line alone."""
     if not args:
         return None
     exe = _basename(args[0])
+    if pid in _warm_spares():
+        return Owner("run", "Warm Python (idle)", {})
     if exe == "claude":
         name = _claude_session_name(pid)
         return Owner("claude", f"Claude: {name}" if name else "Claude CLI", {})
-    if _is_python(exe) and any(_basename(a) == "_child.py" for a in args[1:3]):
+    if _is_python(exe) and any(_basename(a) == "_child.py" for a in args[1:4]):
         return Owner("run", "Run: Python", {})
     kind, label = describe(args)
     if kind == "template":
@@ -343,7 +352,7 @@ def classify_template(args: list[str] | None) -> Owner | None:
     if not args:
         return None
     exe = _basename(args[0])
-    if exe == "claude" or (_is_python(exe) and any(_basename(a) == "_child.py" for a in args[1:3])):
+    if exe == "claude" or (_is_python(exe) and any(_basename(a) == "_child.py" for a in args[1:4])):
         return None
     kind, label = describe(args)
     return Owner("template", label, {}) if kind == "template" else None

@@ -1,0 +1,259 @@
+/* The shared approval card (GateCard.tsx). Every colour goes through a private
+   --gate-* variable that falls back to the shell tokens, so one stylesheet looks
+   right in the Claude sidebar, the Bots app and the phone view. A host that has
+   its own palette (the Claude chat) re-points the --gate-* variables on the card
+   instead of restyling it. This app runs without Tailwind preflight, so every
+   margin is spelled out. */
+.gate-card {
+  --gate-accent: var(--accent, #d29922);
+  --gate-accent-text: var(--accent-text, var(--gate-accent));
+  --gate-ok: var(--success, #3fb950);
+  --gate-warn: var(--warning, #d29922);
+  --gate-err: var(--error, #ff6b6b);
+  --gate-muted: var(--fg-muted, #9aa0a6);
+  --gate-line: var(--border, #2a2d33);
+  --gate-ground: var(--card, transparent);
+  --gate-hover: color-mix(in srgb, currentColor 8%, transparent);
+  --gate-pre-bg: color-mix(in srgb, var(--fg, currentColor) 7%, var(--bg, transparent));
+  --gate-pre-fg: inherit;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--gate-accent) 55%, transparent);
+  border-radius: 14px;
+  background: var(--gate-ground);
+  white-space: normal;
+  text-align: left;
+}
+.gate-card *,
+.gate-card *::before,
+.gate-card *::after {
+  box-sizing: border-box;
+}
+/* Resolved: a receipt. The accent ring is for a card that is waiting on someone. */
+.gate-card.is-resolved {
+  border-color: var(--gate-line);
+}
+
+.gate-head {
+  margin: 0;
+  font-size: 13px;
+  color: color-mix(in srgb, currentColor 55%, var(--gate-muted));
+}
+.gate-head .gate-tool {
+  color: var(--gate-accent-text);
+  font-weight: 600;
+}
+
+/* Risk read: pill (low = ok, medium = warning, high = error), then the one sentence. */
+.gate-risk {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 8px;
+  margin: 6px 0 4px;
+  font-size: 13px;
+  line-height: 1.4;
+}
+.gate-risk.is-pending {
+  color: var(--gate-muted);
+  font-size: 12px;
+  opacity: 0.8;
+}
+.gate-pill {
+  display: inline-block;
+  margin: 0;
+  padding: 1px 9px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--rk) 40%, transparent);
+  background: color-mix(in srgb, var(--rk) 15%, transparent);
+  color: var(--rk);
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+.gate-pill.low {
+  --rk: var(--gate-ok);
+}
+.gate-pill.medium {
+  --rk: var(--gate-warn);
+}
+.gate-pill.high {
+  --rk: var(--gate-err);
+}
+.gate-sum {
+  margin: 0;
+}
+.gate-sub {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--gate-muted);
+  word-break: break-word;
+}
+.gate-card.is-resolved .gate-sub {
+  color: var(--gate-muted);
+}
+
+/* The verbatim payload. CollapsiblePre renders pre.perm-pre and the toggle; the
+   clip is `--gate-pre-lines` lines, mirrored from COLLAPSED_LINES. */
+.gate-card pre {
+  position: relative;
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  border: 1px solid var(--gate-line);
+  border-radius: 10px;
+  background: var(--gate-pre-bg);
+  color: var(--gate-pre-fg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.gate-card pre.is-collapsed {
+  --gate-pre-lines: 6;
+  max-height: calc(var(--gate-pre-lines) * 1.5em + 16px + 2px);
+  max-height: calc(var(--gate-pre-lines) * 1lh + 16px + 2px);
+  overflow: clip;
+}
+.gate-card pre.is-clipped::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2.5em;
+  pointer-events: none;
+  background: linear-gradient(to bottom, transparent, var(--gate-pre-bg) 85%);
+  border-radius: 0 0 10px 10px;
+}
+.gate-card .perm-pre-toggle {
+  display: inline-block;
+  margin: 4px 0 0;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 12px;
+  color: var(--gate-accent-text);
+  cursor: pointer;
+}
+.gate-card .perm-pre-toggle:hover {
+  text-decoration: underline;
+  background: none;
+}
+
+/* Extra input, closed until asked for. */
+.gate-details {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--gate-muted);
+}
+.gate-details > summary {
+  display: inline-block;
+  cursor: pointer;
+  user-select: none;
+}
+.gate-details > summary:hover {
+  text-decoration: underline;
+}
+.gate-details[open] > pre {
+  color: var(--gate-pre-fg);
+}
+
+.gate-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 0;
+}
+.gate-card .gate-btn {
+  margin: 0;
+  height: auto;
+  padding: 5px 14px;
+  border: 1px solid var(--gate-line);
+  border-radius: 999px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+  cursor: pointer;
+  transition:
+    background 0.12s,
+    border-color 0.12s,
+    filter 0.12s;
+}
+.gate-card .gate-btn:hover:not(:disabled) {
+  border-color: color-mix(in srgb, currentColor 35%, var(--gate-line));
+  background: var(--gate-hover);
+}
+.gate-card .gate-btn.is-primary {
+  background: var(--gate-accent);
+  border-color: var(--gate-accent);
+  color: var(--gate-on-accent, var(--on-accent, #111));
+}
+.gate-card .gate-btn.is-primary:hover:not(:disabled) {
+  background: var(--gate-accent);
+  filter: brightness(1.1);
+}
+.gate-card .gate-btn.is-link {
+  padding: 5px 6px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--gate-muted);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.gate-card .gate-btn.is-link:hover:not(:disabled) {
+  border-color: transparent;
+  background: transparent;
+  color: inherit;
+}
+.gate-card .gate-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.gate-card .gate-btn:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--gate-accent) 70%, transparent);
+  outline-offset: 2px;
+}
+
+/* Phone: a thumb-sized row. The link choice stays a link. */
+.gate-card.is-touch .gate-actions {
+  flex-wrap: nowrap;
+  margin-top: 12px;
+}
+.gate-card.is-touch .gate-btn {
+  min-height: 44px;
+  font-size: 15px;
+  border-radius: 12px;
+}
+.gate-card.is-touch .gate-btn:not(.is-link) {
+  flex: 1 1 0;
+}
+.gate-card.is-touch .gate-btn.is-link {
+  flex: none;
+}
+
+.gate-status {
+  margin: 10px 0 0;
+  font-size: 13px;
+}
+.gate-status.allow {
+  color: var(--gate-ok);
+}
+.gate-status.deny {
+  color: var(--gate-err);
+}
+.gate-status.expired {
+  color: var(--gate-muted);
+}
+/* Held by the project queue: decided, not yet delivered. Not the green an
+   allow wears, because nothing has been allowed yet. */
+.gate-status.queued {
+  color: var(--activity, var(--gate-accent-text));
+}

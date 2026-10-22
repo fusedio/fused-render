@@ -1,7 +1,7 @@
 """The one answer to "which agents exist, which are on, which is the default".
 
 Read by: `GET /api/agent-backends` (the catalog every picker renders),
-`prefs` (validation of the two switches and `default_backend`),
+`prefs` (validation of the three switches and `default_backend`),
 `routers/tasks` + `schedule` (the 400 gate on a disabled backend),
 `routers/claude_agent` (the same gate in front of `agent.main`), and the
 Claude-only surfaces that follow `claude_enabled` (recap, health warm-up).
@@ -17,10 +17,13 @@ from typing import Optional
 
 from fused_render.agent_backends.base import Backend
 from fused_render.agent_backends.claude import CLAUDE
+from fused_render.agent_backends.codex import CODEX
 from fused_render.agent_backends.copilot import COPILOT
 
-BACKENDS: dict[str, Backend] = {CLAUDE.id: CLAUDE, COPILOT.id: COPILOT}
-ORDER = (CLAUDE.id, COPILOT.id)
+BACKENDS: dict[str, Backend] = {CLAUDE.id: CLAUDE, COPILOT.id: COPILOT, CODEX.id: CODEX}
+#: The order every picker, the catalog and the prefs default re-point walk —
+#: also `agent_roots.BACKENDS` and `prefs.VALID_DEFAULT_BACKENDS`.
+ORDER = (CLAUDE.id, COPILOT.id, CODEX.id)
 DEFAULT = CLAUDE.id
 
 
@@ -36,7 +39,8 @@ def is_known(backend_id: Optional[str]) -> bool:
 
 def enabled_ids() -> list[str]:
     """In ORDER. Never empty: prefs refuses the PUT that would clear the last
-    one, and a hand-edited prefs.json that clears both reads as Claude on."""
+    one, and a hand-edited prefs.json that clears all three reads as Claude
+    on."""
     from fused_render.shell import prefs
     ids = [b for b in ORDER if prefs.backend_enabled(b)]
     return ids or [DEFAULT]
@@ -88,7 +92,8 @@ def catalog(with_health: bool = True) -> dict:
     page can render a switch for a disabled one). Health is ALWAYS the cached
     snapshot, never a probe: this payload sits in front of every picker and a
     cold Copilot cache is an ACP spawn plus `gh auth token` plus up to three
-    login-shell probes (~15 s worst case). The entry points warm both caches
+    login-shell probes (~15 s worst case; a cold Codex cache is an
+    app-server spawn plus its handshake). The entry points warm the caches
     at startup (`*_health.warm_in_background`), and a surface that needs a
     fresh answer asks that backend's own `/health` route, which measures.
     `null` here means "not measured yet", and the UI renders it as unknown."""

@@ -131,6 +131,9 @@ def pytest_configure(config):
 # A stable default executor for every test that reaches /api/run without caring
 # which engine answers — see the module docstring. Not a tmpdir, so it gets its
 # own line rather than a fourth entry above.
+# No permission-card risk read (a model call) in any test that does not ask for one: agent._permissions would
+# otherwise start a background model call for every parked Bash request it lists. Tests of the read clear this.
+os.environ.setdefault("FUSED_RENDER_PERMISSION_RISK", "0")
 os.environ.setdefault("FUSED_RENDER_ENGINE", "builtin")
 # Tests describe Fused Render; a stale fused_render/_baked_flavor.py from a
 # local bot DMG build must not flip them (port 1777 assertions, startup set).
@@ -364,6 +367,20 @@ def _no_real_session_count(monkeypatch):
     from fused_render import session_cap
 
     monkeypatch.setattr(session_cap, "_agent", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _warm_run_off_by_default(monkeypatch):
+    """`/api/run` claims pre-spawned idle interpreters by default (SPEC PY-20).
+    Tests that spy `executor.subprocess.Popen` or assert the cold spawn flags
+    must keep exercising the cold path, so every test starts with the switch off;
+    `tests/test_warm_run.py` turns it on itself. Teardown kills any spare a test
+    started so none outlives it."""
+    monkeypatch.setenv("FUSED_RENDER_WARM_RUN", "0")
+    yield
+    from fused_render import warm_run
+
+    warm_run.reset()
 
 
 @pytest.fixture(autouse=True)
@@ -723,6 +740,16 @@ def _no_legacy_mounts_cleanup(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_startup_artifacts_warm(monkeypatch):
+    """`_startup_artifacts_warm` scans every transcript under the developer's
+    real ~/.claude on a daemon thread; no test that merely boots the app wants
+    that. The test ABOUT the handler restores the real target."""
+    from fused_render.server import app as app_mod
+
+    monkeypatch.setattr(app_mod, "_safe_artifacts_scan", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _no_startup_index_scan(monkeypatch):
     """`create_app` schedules a background scan of the user's HOME dir.
 
@@ -745,6 +772,9 @@ def _no_startup_index_scan(monkeypatch):
     # developer's real home and outlives the test that spawned it — so it goes
     # too. Its own tests call `run_startup_warm()` directly.
     monkeypatch.setattr(index_routes, "startup_warm", lambda: None)
+    # ...and the combined scan+warm thread the non-low-impact hook now starts.
+    monkeypatch.setattr(index_routes, "start_startup_scan_and_warm",
+                        lambda start_dir=None: None)
     # Same hazard by a second door: GET /api/fs/list notes the folder for the
     # index freshness check (scan-incremental.md §5), which runs on a background
     # thread and can call runner.start. A test listing any path under the

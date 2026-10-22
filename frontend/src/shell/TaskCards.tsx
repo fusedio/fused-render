@@ -91,6 +91,7 @@ import {
 import { useTaskHeadline } from "./TaskPeekWho";
 import { TaskAgentMark } from "./ScheduleTaskViews";
 import { useMarginWheel } from "./useMarginWheel";
+import { TaskPrChip } from "./TaskPrChip";
 
 /** What the page says when there is nothing to draw — the Board's own words,
  *  whatever the reason (no tasks, or a filter narrowed them away), because the
@@ -859,6 +860,8 @@ function TaskCard({
             chatOnly
             compact
             paramsSource="memory"
+            // Same as the peek: removing the worktree stays on the tasks page.
+            {...(onReload ? { onWorktreeRemoved: onReload } : {})}
           />
         ) : resolving ? (
           <ChatFramePlaceholder />
@@ -1096,10 +1099,14 @@ function TaskPeek({
           backend={task.backend}
           chatOnly
           peek
+          headerInPeek
+          headerExtra={<TaskPrChip task={task} />}
           paramsSource="memory"
           onEscape={onClose}
           focusRef={boxRef}
           onReady={() => setChatReady((n) => n + 1)}
+          // Same as the side peek: removing the worktree stays on the page.
+          {...(onReload ? { onWorktreeRemoved: onReload } : {})}
         />
       ) : resolving ? (
         <ChatFramePlaceholder />

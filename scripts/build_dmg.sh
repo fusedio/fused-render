@@ -706,7 +706,7 @@ SMOKE_OUT="$(echo "{\"path\":\"$SMOKE_DIR/duckdb_smoke.py\",\"params\":{}}" | \
   env PYTHONHOME="$APP_DIR/Contents/Resources" \
   "$APP_DIR/Contents/MacOS/python" \
   "$APP_PYLIB/fused_render/_child.py" 2>&1 || true)"
-if ! echo "$SMOKE_OUT" | grep -q '"ok": true'; then
+if ! echo "$SMOKE_OUT" | grep -Eq '"ok": ?true'; then
   echo "FATAL: duckdb smoke test failed through _child.py:" >&2
   echo "$SMOKE_OUT" >&2
   exit 1
@@ -932,6 +932,33 @@ for SHADOW_WHO in bundled venv; do
   echo "    $SHADOW_WHO: shadowing smoke ok"
 done
 rm -rf "$BUILD_DIR/shadow-venv" "$BUILD_DIR/shadow-site" "$SHADOW_CHECK"
+
+# ---------------------------------------------------------------------------
+# 4b-quinquies. Bundled-package import smoke: a venv on the bundled interpreter
+#     sees the bundle's own packages (they live in the interpreter's stdlib
+#     dir), so a bundled package that cannot import on this Python breaks every
+#     runner that does not pin its own copy first. Pillow 13.0.0 did exactly
+#     that: `PIL/_typing.py` imports `numbers._IntegralLike`, which exists only
+#     on Python 3.15.
+# ---------------------------------------------------------------------------
+
+rm -rf "$BUILD_DIR/pil-venv"
+if ! env -u PYTHONHOME -u PYTHONPATH -u VIRTUAL_ENV \
+    "$APP_DIR/Contents/MacOS/python" -B -m venv --without-pip \
+    "$BUILD_DIR/pil-venv" >/dev/null 2>&1; then
+  echo "FATAL: the bundled interpreter cannot create a venv at all." >&2
+  exit 1
+fi
+# -B: this smoke must not write bytecode into the bundle (codesign seal).
+if ! PIL_OUT="$(env -u PYTHONHOME -u PYTHONPATH -u VIRTUAL_ENV \
+    "$BUILD_DIR/pil-venv/bin/python" -B -c "import PIL._typing" 2>&1)"; then
+  echo "FATAL: the bundled Pillow cannot import on the bundled interpreter:" >&2
+  echo "$PIL_OUT" >&2
+  echo "       Cap pillow in pyproject.toml below the release that broke it." >&2
+  exit 1
+fi
+echo "    bundled Pillow imports in a venv on the bundled interpreter"
+rm -rf "$BUILD_DIR/pil-venv"
 
 # ---------------------------------------------------------------------------
 # 4c. Bundled fused CLI (SPEC §19 DP-3): the `fused` package installed above

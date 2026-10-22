@@ -8,8 +8,9 @@
 // a failed send has to put the buttons back.
 import { useState } from "react";
 
-import { Button } from "@platform/shadcn/ui/button";
+import { severityLabel } from "@platform/lib/risk";
 import { cn } from "@platform/lib/utils";
+import { GateCard, type GateStatus } from "@platform/ui/GateCard";
 
 import type { ChatController } from "../protocol/controller-api";
 import {
@@ -22,7 +23,6 @@ import {
 } from "../protocol/summaries";
 import type { Decision, DecisionScope, PermissionMode, PermissionRow, SwitchableMode } from "../protocol/types";
 import { useAgent } from "./agent-context";
-import { CollapsiblePre } from "./CollapsiblePre";
 import { permissionLabelsFor } from "./composer-defaults";
 
 export interface PermCardProps {
@@ -101,7 +101,9 @@ function statusFor(
         text: "✓ Allowed — approvals set to “" + (modeLabels[row.mode] || row.mode) + "”",
       };
     if (row.scope === "session")
-      return { cls: "allow", text: "✓ Allowed — not asking again for " + label + " in this reply" };
+      return { cls: "allow", text: "✓ Allowed — not asking again for " + label + " in this chat" };
+    if (row.scope === "exact")
+      return { cls: "allow", text: "✓ Allowed — this exact command, for the rest of this chat" };
     return { cls: "allow", text: "✓ Allowed" };
   }
   if (row.decision === "expired")
@@ -133,6 +135,8 @@ export function PermCard({ row, liveMode, onDecide }: PermCardProps) {
   // is already answered — and the second answer is the one that would be thrown
   // away, silently, by first-writer-wins down in agent.py.
   const resolved = !!row.decision || answerHeld(row);
+  // null for a severity this build does not know: no pill rather than an empty one.
+  const riskLabel = severityLabel(row.severity);
 
   // WHY THE ROW AND NOT LOCAL STATE. `decidePermission` does not reject — the
   // controller catches the failure and writes `row.sendError`, which the poll
@@ -163,49 +167,55 @@ export function PermCard({ row, liveMode, onDecide }: PermCardProps) {
         ? { cls: "", text: "sending…" }
         : { cls: "", text: "" };
 
+  const ready = row.risk_state === "ready";
   return (
     // NO Enter SHORTCUT. `T` has none, and inventory 04 §D pins "no custom
     // Enter/Space handlers on cards except the Other textarea" (T:2121-2128) —
     // on the one card whose whole job is to be READ before it is answered, a
     // key that approves is the wrong affordance to invent.
-    <div className={cn("turn", "perm", resolved && "resolved")} data-perm-id={row.id}>
-      <div className="perm-head">
-        {/* Past tense once it is history: a card still reading "Claude wants to
-            use" above a verdict looks like a prompt that is somehow still
-            waiting (T:13955). */}
-        {resolved ? `${agent.label} wanted to use ` : `${agent.label} wants to use `}
-        <span className="tool" {...(pretty !== toolName ? { title: toolName } : {})}>
-          {pretty}
-        </span>
-      </div>
-      {sub ? <div className="perm-sub">{sub}</div> : null}
-      {/* Verbatim, and NEVER silently truncated: an Allow hands the tool its
-          input as it stands, so a card that showed a prefix would ask the user
-          to approve bytes they never saw. A long payload is CLIPPED instead —
-          a fade plus "Show full command (N more lines)", one click from the
-          whole text — so the pinned card stays the only scroller and Allow/Deny
-          stay reachable (see CollapsiblePre). */}
-      {body ? <CollapsiblePre text={body} what={toolName === "Bash" ? "command" : "input"} /> : null}
-      {extra ? <CollapsiblePre text={JSON.stringify(extra, null, 2)} what="input" /> : null}
-      {resolved ? null : (
-        <div className="perm-actions">
-          {choices.map((c) => (
-            <Button
-              key={c.text}
-              type="button"
-              variant="ghost"
-              className={cn("perm-btn", c.primary && "primary")}
-              disabled={posting}
-              {...(c.title ? { title: c.title } : {})}
-              onClick={() => void send(c.decision, c.scope, c.mode)}
-            >
-              {c.text}
-            </Button>
-          ))}
-        </div>
-      )}
-      <div className={cn("perm-status", status.cls)}>{status.text}</div>
-    </div>
+    //
+    // The root keeps `turn perm` (+ `resolved`) and `data-perm-id`: the tailpin
+    // and the parked-in-a-turn rules in transcript.css target them.
+    <GateCard
+      className={cn("turn", "perm", resolved && "resolved")}
+      rootProps={{ "data-perm-id": row.id }}
+      head={
+        <>
+          {/* Past tense once it is history: a card still reading "Claude wants to
+              use" above a verdict looks like a prompt that is somehow still
+              waiting (T:13955). */}
+          {resolved ? `${agent.label} wanted to use ` : `${agent.label} wants to use `}
+          <span className="gate-tool" {...(pretty !== toolName ? { title: toolName } : {})}>
+            {pretty}
+          </span>
+        </>
+      }
+      // The model's read, ABOVE the verbatim payload and never instead of it.
+      // "failed" or absent draws nothing, and the card is exactly what it was.
+      severity={ready && riskLabel ? row.severity : undefined}
+      riskSummary={ready && riskLabel ? row.risk_summary : undefined}
+      riskPending={row.risk_state === "pending"}
+      sub={sub || undefined}
+      // Verbatim, and NEVER silently truncated: an Allow hands the tool its
+      // input as it stands, so a card that showed a prefix would ask the user
+      // to approve bytes they never saw. A long payload is CLIPPED instead —
+      // a fade plus "Show full command (N more lines)", one click from the
+      // whole text (see CollapsiblePre). Input the summary did not cover sits
+      // in a collapsed "Details" disclosure under it.
+      body={body || undefined}
+      bodyWhat={toolName === "Bash" ? "command" : "input"}
+      details={extra ? JSON.stringify(extra, null, 2) : undefined}
+      resolved={resolved}
+      actions={choices.map((c) => ({
+        key: c.text,
+        text: c.text,
+        kind: c.secondary ? "link" : c.primary ? "primary" : "default",
+        disabled: posting,
+        title: c.title || undefined,
+        onClick: () => void send(c.decision, c.scope, c.mode),
+      }))}
+      status={{ tone: status.cls as GateStatus["tone"], text: status.text }}
+    />
   );
 }
 

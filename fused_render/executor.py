@@ -34,6 +34,7 @@ import threading
 import time
 import traceback
 
+from . import warm_run
 from ._binding import bind_params
 from .core_templates import ensure_core_templates
 
@@ -116,6 +117,10 @@ class _PreEncodedRun(dict):
     def __init__(self, mapping: dict, payload_json: str):
         super().__init__(mapping)
         self.payload_json = payload_json
+
+
+# Prefix of the worker's success line (see `_child.run`).
+_OK_HEAD = '{"ok":true,"result":'
 
 
 def dumps_result(result: dict) -> str:
@@ -346,21 +351,31 @@ def active_runs() -> dict[int, tuple[str, str]]:
 
 
 def _spawn_child(argv: list[str], path: str, request: str, *, timeout: float,
+                 proc: subprocess.Popen | None = None,
                  **popen_kw) -> subprocess.CompletedProcess:
     """`subprocess.run(argv, input=request, capture_output=True,
     timeout=timeout, **popen_kw)`, spelled out with Popen only so the child's pid
     is known while it runs (to register it in `_ACTIVE_RUNS`). Same semantics as
     `run`: on a timeout the child is killed and reaped before the error
     propagates. Popen kwargs (notably `close_fds=False`, see the call site) pass
-    through untouched."""
-    with subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, **popen_kw) as proc:
+    through untouched.
+
+    `proc` is a `_child.py` the warm-run pool (SPEC PY-20) started earlier and
+    that is parked reading stdin: it is used instead of spawning one. Its pipes
+    are binary, so the request is encoded and the output decoded here the way
+    the cold path's `text=True, encoding="utf-8", errors="replace"` does."""
+    spare = proc is not None
+    if proc is None:
+        proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, **popen_kw)
+    with proc:
         folder = os.path.dirname(os.path.abspath(path))
         with _ACTIVE_RUNS_LOCK:
             _ACTIVE_RUNS[proc.pid] = (folder, path)
         try:
             try:
-                out, err = proc.communicate(request, timeout=timeout)
+                out, err = proc.communicate(request.encode("utf-8") if spare else request,
+                                            timeout=timeout)
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.communicate()
@@ -368,6 +383,9 @@ def _spawn_child(argv: list[str], path: str, request: str, *, timeout: float,
             except BaseException:
                 proc.kill()
                 raise
+            if spare:
+                out = out.decode("utf-8", "replace")
+                err = err.decode("utf-8", "replace")
             return subprocess.CompletedProcess(argv, proc.poll(), out, err)
         finally:
             with _ACTIVE_RUNS_LOCK:
@@ -384,11 +402,15 @@ def _run_python(path: str, params: dict, timeout: float) -> dict:
         return _run_inprocess(path, params or {})
 
     request = json.dumps({"path": path, "params": params or {}})
+    # A parked `_child.py` the warm-run pool started ahead of time (SPEC PY-20),
+    # or None -> the unchanged cold spawn below.
+    spare = warm_run.claim_builtin(sys.executable)
     try:
         proc = _spawn_child(
             [sys.executable, CHILD],
             path,
             request,
+            proc=spare,
             text=True,
             encoding="utf-8",
             errors="replace",
@@ -435,10 +457,14 @@ def _run_python(path: str, params: dict, timeout: float) -> dict:
         # Return the normal wire shape rather than letting it 500 unlabeled.
         return _error("ExecutorError", f"could not start worker process: {e}")
 
-    lines = proc.stdout.strip().splitlines()
-    if lines:
+    # Split on "\n" only: the worker's JSON line never contains a raw newline
+    # (it is escaped), but str.splitlines() would also break on U+2028 and
+    # friends, which ensure_ascii=False leaves unescaped inside strings.
+    text = proc.stdout.rstrip("\n\r ")
+    last = text[text.rfind("\n") + 1:]
+    if last:
         try:
-            parsed = json.loads(lines[-1])
+            parsed = json.loads(last)
         except json.JSONDecodeError:
             pass
         else:
@@ -448,6 +474,17 @@ def _run_python(path: str, params: dict, timeout: float) -> dict:
             # lost. Tail, not head: the end is where the failure is.
             if isinstance(parsed, dict) and proc.stderr:
                 parsed.setdefault("stderr", proc.stderr[-4000:])
+            # A success line is `{"ok":true,"result":<json>,"stdout":...}`:
+            # keep the worker's own encoding of <json> so the response body
+            # splices it instead of encoding it again.
+            if (
+                isinstance(parsed, dict)
+                and parsed.get("ok") is True
+                and last.startswith(_OK_HEAD)
+            ):
+                cut = last.rfind(',"stdout":')
+                if cut >= len(_OK_HEAD):
+                    return _PreEncodedRun(parsed, last[len(_OK_HEAD):cut])
             return parsed
     return _error(
         "ExecutorError",

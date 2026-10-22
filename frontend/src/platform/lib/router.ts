@@ -47,10 +47,12 @@ export function rewriteLegacyUrl(url: string): string {
   // here because the alternative is carrying a dead URL shape forever.
   if (mapped) return mapped + q;
   if (p.startsWith("/view/") || p.startsWith("/embed/")) return "/explorer" + p + q;
-  // The Claude Config panel is the Claude Code group of Preferences
-  // (2026-10-20); the retired /claude-md page folded into the panel before
-  // that. `?cctab=<section>` becomes the group's `?s=` highlight, so a link
-  // into the panel's MCP tab still lands on the MCP block. Kept for good:
+  // The Claude Config panel is the Claude Code section of Preferences
+  // (2026-10-20; a group per tab since 2026-10-21 — `?tab=claude` resolves to
+  // the first, Settings); the retired /claude-md page folded into the panel
+  // before that. `?cctab=<section>` becomes a `?s=` highlight, whose group
+  // wins over the tab, so a link into the panel's MCP tab still lands on the
+  // MCP block. Kept for good:
   // the server's jobs and notifications (claude_install.py, server/ai.py)
   // name this page, and a running older build keeps writing it.
   if (p === "/claude-config" || p === "/claude-md") {
