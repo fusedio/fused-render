@@ -78,10 +78,15 @@ export default function ClaudeConfig() {
   useEffect(() => writeTab(tab), [tab]);
 
   const pickTab = (next: TabId) => {
-    // Leaving a skill's editor drops `?skill=` (writeTab); the hidden Skills
-    // tab starts over on its list rather than keep an editor the URL no longer
-    // names.
-    if (next !== "skills" && new URLSearchParams(location.search).has("skill")) setSkillsRun((n) => n + 1);
+    // Leaving a skill's editor drops `?skill=` now, before the remounted
+    // Skills reads it, so the hidden tab starts over on its list rather than
+    // keep an editor the URL no longer names.
+    if (next !== "skills" && new URLSearchParams(location.search).has("skill")) {
+      const p = new URLSearchParams(location.search);
+      p.delete("skill");
+      history.replaceState(history.state, "", `${location.pathname}?${p.toString()}`);
+      setSkillsRun((n) => n + 1);
+    }
     setTab(next);
     setSeen((s) => (s.includes(next) ? s : [...s, next]));
     setFilter("");

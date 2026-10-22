@@ -23,12 +23,15 @@ const realHistory = globalThis.history;
 let pushes = 0;
 
 // Every module answers with empty lists, so each tab mounts on an empty page.
+const DEMO = { slug: "demo", name: "demo", description: "", source: "user", linked: false, path: "/x", location: "user", paths: [], readers: [] };
+let skillRows: unknown[] = [];
 const EMPTY = { skills: [], plugins: [], marketplaces: [], servers: [], projects: [], files: [], skipped: 0 };
 let fetched: string[] = [];
 function fakeFetch(url: unknown): Promise<Response> {
   fetched.push(String(url));
-  const body = JSON.stringify(EMPTY);
-  return Promise.resolve({ ok: true, status: 200, json: async () => EMPTY, text: async () => body } as unknown as Response);
+  const data = { ...EMPTY, skills: skillRows };
+  const body = JSON.stringify(data);
+  return Promise.resolve({ ok: true, status: 200, json: async () => data, text: async () => body } as unknown as Response);
 }
 
 function setLocation(search: string) {
@@ -48,6 +51,7 @@ function setLocation(search: string) {
 beforeEach(() => {
   pushes = 0;
   fetched = [];
+  skillRows = [];
   setLocation("");
   globalThis.fetch = fakeFetch as unknown as typeof fetch;
 });
@@ -114,6 +118,24 @@ describe("switching tabs on the Claude Config page", () => {
     });
     expect(location.search).toContain("tab=memory");
     expect(location.search).not.toContain("skill=");
+  });
+
+  test("leaving an open skill editor and coming back shows the Skills list", async () => {
+    skillRows = [DEMO];
+    setLocation("?tab=skills&skill=user%2Fdemo");
+    const box = await mount();
+    expect(textOf(box.root)).not.toContain("Your skills");
+    const pick = async (label: string) => {
+      const target = navItems(box).find((n) => textOf(n).includes(label))!;
+      await act(async () => {
+        target.props.onClick();
+      });
+      for (let i = 0; i < 3; i++) await act(async () => { await new Promise((r) => setTimeout(r, 5)); });
+    };
+    await pick("Plugins");
+    await pick("Skills");
+    expect(location.search).not.toContain("skill=");
+    expect(textOf(box.root)).toContain("Your skills");
   });
 
   test("the nav has no heading above the tabs", async () => {
