@@ -6269,6 +6269,10 @@ export function activityAt(task: Task, now: number = Date.now()): number {
   return Math.max(past(w.at, ACTIVITY_SLACK_SEC), active);
 }
 
+/** Sections with activity inside the last day (Akshil, 2026-10-19): what the
+ *  Project and PR views open on a first visit. */
+export const RECENT_GROUP_WINDOW_MS = 24 * 60 * 60 * 1000;
+
 /**
  * Cut `rows` (already in list order) into sections. Rows never re-sort inside a
  * section; sections order by what the cut means — the last hour, then days
@@ -6397,11 +6401,21 @@ export function groupRows(
   return out;
 }
 
-// ---- the grouped views' folds -----------------------------------------------
-// Nothing folds on its own (Akshil, 2026-10-22: "we shouldn't auto collapse
-// anything"): every section starts open, and the only folds are the reader's
-// own, kept for this tab (ScheduleTaskViews GROUPS_COLLAPSED_KEY). The
-// first-visit seed that folded every folder idle for a day is gone.
+// ---- what a grouped view opens on, the first time ----------------------------
+// (Akshil, 2026-10-19: "it should be collapsed when first opening it".) Every
+// section starts folded except the ones about NOW: on Time, Later / Last hour /
+// Today; on Project and PR, the sections with a task interacted with inside
+// the last day — which, ordered as above, are the ones at the top. Seeded ONCE
+// per view and then remembered like any fold the reader makes themselves —
+// FOR THIS TAB (Akshil, 2026-10-19: "it should be like in-page memory"): the
+// folds and the seed marks live in sessionStorage beside the per-tab facets,
+// so a closed tab forgets them and a fresh one is seeded again.
+
+/** The views whose folds have been seeded, as a JSON array of view names. */
+export const GROUPS_SEEDED_KEY = "fused-render:tasks-groups-seeded";
+
+/** Time buckets a first visit leaves open: everything from today on. */
+const OPEN_TIME_BUCKETS: ReadonlySet<string> = new Set(["Later", "Last hour", "Today"]);
 
 /** Every section key, every depth, in `<view>:<group>` form — the same keys
  *  the fold store holds (ScheduleTaskViews groupFrames.keyOf). */
@@ -6413,6 +6427,20 @@ export function groupFoldKeys(groups: TaskGroup[], by: TaskGroupBy): string[] {
   };
   for (const g of groups) walk(g);
   return out;
+}
+
+/** The fold keys a first visit to `by` leaves OPEN. A repository whose newest
+ *  pull request is recent is open along with it; its older PRs are not. */
+export function openOnFirstVisit(groups: TaskGroup[], by: TaskGroupBy, now: number = Date.now()): Set<string> {
+  const open = new Set<string>();
+  const since = (now - RECENT_GROUP_WINDOW_MS) / 1000;
+  const walk = (g: TaskGroup) => {
+    const recent = by === "time" ? OPEN_TIME_BUCKETS.has(g.key) : g.recentAt > 0 && g.recentAt >= since;
+    if (recent) open.add(`${by}:${g.key}`);
+    for (const c of g.groups ?? []) walk(c);
+  };
+  for (const g of groups) walk(g);
+  return open;
 }
 
 /** The fold keys of every section holding one of `keys` — and of the sections
@@ -6432,3 +6460,31 @@ export function sectionsHolding(groups: TaskGroup[], by: TaskGroupBy, keys: Read
   return out;
 }
 
+/** `collapsed` with every section of `by` folded but the ones a first visit
+ *  opens — a new Set, the old untouched. Folds already in the set stay. */
+export function seedCollapsedGroups(
+  collapsed: ReadonlySet<string>,
+  groups: TaskGroup[],
+  by: TaskGroupBy,
+  now: number = Date.now(),
+): Set<string> {
+  const next = new Set(collapsed);
+  const open = openOnFirstVisit(groups, by, now);
+  for (const k of groupFoldKeys(groups, by)) {
+    if (open.has(k)) next.delete(k);
+    else next.add(k);
+  }
+  return next;
+}
+
+/** The views already seeded, out of an untrusted store. */
+export function parseSeededViews(raw: string | null | undefined): Set<TaskGroupBy> {
+  if (!raw) return new Set();
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((v): v is TaskGroupBy => typeof v === "string" && (GROUP_VIEWS as string[]).includes(v)));
+  } catch {
+    return new Set();
+  }
+}

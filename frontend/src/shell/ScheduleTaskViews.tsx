@@ -85,6 +85,9 @@ import {
   firstLine,
   groupByColumn,
   groupRows,
+  GROUPS_SEEDED_KEY,
+  parseSeededViews,
+  seedCollapsedGroups,
   sectionsHolding,
   activityAt,
   groupSize,
@@ -2426,11 +2429,25 @@ export function TaskList({
   const rowRefs = useMemo(() => (groups ? flattenGroupRefs(groups) : null), [groups]);
   // Which sections are folded (the grouped views only; see groupFrames).
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(readCollapsedGroups);
-  // NOTHING FOLDS ON ITS OWN (Akshil, 2026-10-22: "we shouldn't auto collapse
-  // anything"). Every section starts open; the only folds are the reader's
-  // own, remembered for this tab. The first-visit seed that folded every
-  // folder idle for a day (2026-10-19) is gone — a fresh window re-seeding
-  // read as the page closing folders by itself.
+  // THE FIRST VISIT TO A GROUPED VIEW STARTS FOLDED (Akshil, 2026-10-19), bar
+  // the sections about now — tasks-lib.openOnFirstVisit. Seeded once per view,
+  // the moment it first has sections to fold (an empty list seeds nothing, so
+  // a view opened before the tasks arrive is seeded when they do), and then
+  // the folds are the reader's own, remembered like any other. Layout effect,
+  // not effect: the seeded state must be what the first paint draws, or every
+  // section flashes open for a frame before folding.
+  useLayoutEffect(() => {
+    if (!groupBy || !groups || groups.length === 0) return;
+    if (readSeededViews().has(groupBy)) return;
+    setCollapsedGroups((cur) => {
+      const next = seedCollapsedGroups(cur, groups, groupBy, now);
+      writeCollapsedGroups(next);
+      return next;
+    });
+    writeSeededView(groupBy);
+    // `now` deliberately left out: the seed is a one-off, not a re-fold on
+    // every tick of the clock.
+  }, [groupBy, groups]);
   // A NEW TASK OPENS ITS SECTION (Sina, 2026-10-21: "when I create a new task
   // it should open it, otherwise very confusing") — AND SO DOES NEWS IN AN
   // OLD ONE (Akshil, 2026-10-22: "any new recent action or message in any
@@ -2445,15 +2462,16 @@ export function TaskList({
   // news in a row the reader already had is not — a folder opening is a
   // signal, the page scrolling away from what they are reading is a hijack.
   // The recency guard is what keeps a cleared filter — hundreds of "new" rows
-  // at once — from unfolding the whole page. Layout effect: the unfold must
-  // be in the first paint of the row.
+  // at once — from unfolding the whole page. Layout effect, like the seed,
+  // which is declared above and so runs first: the unfold must be in the
+  // first paint of the row.
   //
   // HELD BY NUMBER, not by key: a queued message's `pending:<entry>` row
   // becomes its session id the moment it runs (tasks-lib.taskListKeys) and
   // the number moves with it, so the rekey is the same task and not a second
   // arrival to unfold and scroll for. And an EMPTY list is not a list this
   // has held: the first non-empty listing is the baseline, not a page of new
-  // tasks (the folds the tab remembers must stand on first load).
+  // tasks (the seed's own folds must stand on first load).
   //
   // THE MARK is what a message or a verdict changes — the status, the count
   // and the newest message's stamp — and deliberately not `last_active` or
@@ -6854,6 +6872,31 @@ function writeCollapsedGroups(set: Set<string>) {
     sessionStorage.setItem(GROUPS_COLLAPSED_KEY, JSON.stringify([...set]));
   } catch {
     // A blocked store forgets the folds; the fold itself still happens.
+  }
+}
+
+// THE SEED MARKS, IN MEMORY FIRST (CodeRabbit, #1756): the store is only
+// persistence. `groups` recomputes on every listing publish and every tick of
+// `useNow`, and with a blocked store (quota, a locked-down webview) a mark that
+// lived in sessionStorage alone was never written, so every recompute seeded
+// again — a section the reader had just opened folded within the minute.
+const seededViews = new Set<TaskGroupBy>();
+
+function readSeededViews(): Set<TaskGroupBy> {
+  try {
+    for (const v of parseSeededViews(sessionStorage.getItem(GROUPS_SEEDED_KEY))) seededViews.add(v);
+  } catch {
+    // Unreadable store: the in-memory marks are the whole answer.
+  }
+  return seededViews;
+}
+
+function writeSeededView(by: TaskGroupBy) {
+  seededViews.add(by);
+  try {
+    sessionStorage.setItem(GROUPS_SEEDED_KEY, JSON.stringify([...seededViews]));
+  } catch {
+    // A blocked store seeds again next page load; this load remembers.
   }
 }
 
