@@ -28,6 +28,7 @@ import {
   cancelLogin,
   cloneCanvas,
   createCanvas,
+  deleteFusedSettings,
   getCanvasesStatus,
   getCanvasPreviews,
   listCanvases,
@@ -40,7 +41,7 @@ import {
   type CanvasesStatus,
   type WorkbenchEnv,
 } from "./api";
-import { publishLoggedIn } from "./logged-in";
+import { FusedSettingsModal } from "./FusedSettingsModal";
 
 /** sync/start before opening a canvas. Another process owning the clone
  *  (409 `owned`) is not a reason to stay on the list: the workspace shows
@@ -148,6 +149,16 @@ export default function Canvases() {
   // Bumped on every environment change: a listing or preview batch that
   // departed under the old env must not land in the new env's page.
   const envGenRef = useRef(0);
+  // The ~/.fused/settings.toml editor. It opens by itself the first time a
+  // status says custom is picked and unconfigured (a dropdown pick or a
+  // `?env=custom` load alike); a dismissal is remembered until the pick
+  // changes, and the inline prompt reopens it on demand.
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsDismissedRef = useRef(false);
+  // "Delete config" is two presses: the first arms it in place (the second
+  // button's words say what goes), the next deletes. No `confirm()`.
+  const [deleteArmed, setDeleteArmed] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
   const env = status ? effectiveEnv(status, picked) : null;
 
   // Presigned preview URLs, keyed by collection id — the second, slower half
@@ -219,6 +230,15 @@ export default function Canvases() {
           setError(null);
           return;
         }
+        if (env === "custom" && s.envs?.custom?.available === false) {
+          // An unconfigured custom run is a hosted-prod run under another
+          // name (FUSED_ENV unset, no base_url) — and its "login" may well be
+          // the shared hosted store. Listing would show prod canvases as
+          // custom ones; the settings prompt stands in instead.
+          setCanvases(null);
+          setError(null);
+          return;
+        }
         const { canvases } = await listCanvases(env);
         if (gen !== envGenRef.current) return;
         setCanvases(canvases);
@@ -260,6 +280,7 @@ export default function Canvases() {
     // would call the sign-in done or failed wrongly. The sign-in itself
     // carries on; switching back finds it in this env's status.
     setLoggingIn(false);
+    setDeleteArmed(false);
     void refresh();
   };
 
@@ -267,18 +288,41 @@ export default function Canvases() {
     void refresh();
   }, [refresh]);
 
-  // The sidebar's Canvases row reads the same fact this page does, so
-  // hand it every status this page learns — the first read, the login poll's
-  // flip, the 401 downgrade, the sign-out — rather than leaving it to notice on
-  // its own minute-long poll. The whole status goes over, not just the boolean:
-  // the 401 downgrade below is a verdict on a SPECIFIC credentials store, and
-  // `creds_stamp` is what names it (see ./logged-in).
-  // Only a status about the DEFAULT env's login, though: the sidebar's row is
-  // "this machine has a Fused account", and a custom pick's own `[auth]`
-  // login says nothing about that.
+  // Custom picked with nothing to point it at: open the editor rather than
+  // offer a "deployment" sign-in that, with FUSED_ENV unset and no settings
+  // file, would be a hosted-prod sign-in under another name. Gated on the
+  // CLI too: with none installed the page says so, and an editor over that
+  // message would be the wrong first thing to fix.
+  const customUnconfigured =
+    status?.cli_found === true &&
+    env === "custom" &&
+    status.envs?.custom?.available === false;
   useEffect(() => {
-    if (status && status.auth_env === status.workbench_env) publishLoggedIn(status);
-  }, [status]);
+    if (!customUnconfigured) {
+      settingsDismissedRef.current = false;
+      return;
+    }
+    if (!settingsDismissedRef.current) setSettingsOpen(true);
+  }, [customUnconfigured]);
+
+  // Remove ~/.fused/settings.toml. The page then shows the inline prompt,
+  // not the editor: a reader who just deleted a config did not ask to write
+  // one, so the auto-open is suppressed for this pick.
+  const onDeleteSettings = async () => {
+    if (deleteBusy) return;
+    setDeleteBusy(true);
+    setError(null);
+    try {
+      await deleteFusedSettings();
+      settingsDismissedRef.current = true;
+      setDeleteArmed(false);
+      await refresh();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setDeleteBusy(false);
+    }
+  };
 
   // While a login is in flight, poll status until logged_in flips — or the
   // browser child exits without ever flipping it (closed tab, denied, or the
@@ -459,14 +503,16 @@ export default function Canvases() {
                     if (isWorkbenchEnv(v)) onPickEnv(v);
                   }}
                 >
+                  {/* Custom is never disabled here: an unconfigured one opens
+                      the settings editor instead (customUnconfigured). */}
                   {WORKBENCH_ENVS.map((e) => (
-                    <option key={e} value={e} disabled={status.envs?.[e]?.available === false}>
+                    <option key={e} value={e}>
                       {ENV_LABELS[e]}
                     </option>
                   ))}
                 </select>
               </label>
-              {status.logged_in && (
+              {status.logged_in && !customUnconfigured && (
                 <>
                   <input
                     className="field-control canvases-search"
@@ -539,7 +585,25 @@ export default function Canvases() {
             or set <code>FUSED_RENDER_FUSED_BIN</code>.
           </p>
         )}
-        {status && status.cli_found && !status.logged_in && (
+        {status && status.cli_found && customUnconfigured && (
+          <div className="canvases-settings-prompt">
+            <p className="canvases-sub">
+              The custom environment follows <code>{status.settings_path}</code>, which
+              does not name a Fused deployment yet. Paste your deployment&rsquo;s config to
+              continue.
+            </p>
+            <button
+              className="btn btn-primary"
+              onClick={() => {
+                settingsDismissedRef.current = false;
+                setSettingsOpen(true);
+              }}
+            >
+              Add settings.toml
+            </button>
+          </div>
+        )}
+        {status && status.cli_found && !status.logged_in && !customUnconfigured && (
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <button className="btn btn-primary" onClick={onLogin} disabled={loggingIn}>
               {loggingIn
@@ -558,24 +622,47 @@ export default function Canvases() {
                 </span>
               </>
             )}
+            {env === "custom" && !loggingIn && (
+              deleteArmed ? (
+                <>
+                  <span className="canvases-sub">
+                    Delete <code>{status.settings_path}</code>?
+                  </span>
+                  <button
+                    className="btn btn-danger"
+                    onClick={() => void onDeleteSettings()}
+                    disabled={deleteBusy}
+                  >
+                    {deleteBusy ? "Deleting…" : "Yes, delete"}
+                  </button>
+                  <button className="btn" onClick={() => setDeleteArmed(false)} disabled={deleteBusy}>
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button className="btn" onClick={() => setDeleteArmed(true)}>
+                  Delete config
+                </button>
+              )
+            )}
           </div>
         )}
-        {status?.logged_in && env === null && (
+        {status?.logged_in && env === null && !customUnconfigured && (
           <p className="canvases-empty">
             {status.locked
               ? `Canvases are pinned to ${status.workbench_env} by FUSED_RENDER_WORKBENCH_ENV, which is not one of ${WORKBENCH_ENVS.join("/")}.`
               : `The default environment ${status.workbench_env} is not one of ${WORKBENCH_ENVS.join("/")}.`}
           </p>
         )}
-        {status?.logged_in && env && filtered === null && !error && <p>Loading canvases…</p>}
-        {status?.logged_in && env && filtered !== null && filtered.length === 0 && (
+        {status?.logged_in && env && !customUnconfigured && filtered === null && !error && <p>Loading canvases…</p>}
+        {status?.logged_in && env && !customUnconfigured && filtered !== null && filtered.length === 0 && (
           <p className="canvases-empty">
             {query
               ? "No canvases match your search."
               : "No canvases in this account yet — create one to get started."}
           </p>
         )}
-        {status?.logged_in && env && filtered !== null && filtered.length > 0 && (
+        {status?.logged_in && env && !customUnconfigured && filtered !== null && filtered.length > 0 && (
           <div className="canvases-grid">
             {filtered.map((canvas) => {
               // Either the free public URL from the listing, or the signed one
@@ -660,6 +747,19 @@ export default function Canvases() {
           </div>
         )}
       </div>
+      {settingsOpen && (
+        <FusedSettingsModal
+          onClose={() => {
+            settingsDismissedRef.current = true;
+            setSettingsOpen(false);
+          }}
+          onSaved={() => {
+            setSettingsOpen(false);
+            setError(null);
+            void refresh();
+          }}
+        />
+      )}
     </div>
   );
 }

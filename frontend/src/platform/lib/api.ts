@@ -1462,7 +1462,10 @@ export interface Prefs {
   // Whether the Canvases feature is OFFERED (opt-in, default off — D427). Gates
   // the shell's entry points to it (the sidebar row and the Settings menu
   // entry), not the /canvases routes, which keep answering a deep link.
-  canvases: { enabled: boolean };
+  // `embed_proxy`: the custom env's workbench frames through the loopback
+  // proxy (opt-in, default off — canvas_embed_proxy.py). `embed_proxy_locked`:
+  // `[render] canvases_embed_proxy_enabled` in ~/.fused/settings.toml sets it.
+  canvases: { enabled: boolean; embed_proxy?: boolean; embed_proxy_locked?: boolean };
   // Whether the unified Share sheet (public link + .fused file) is OFFERED in
   // place of the plain Export / Download action (opt-in, default off). Gates
   // the five share surfaces, not the /api/share routes.
@@ -1861,6 +1864,10 @@ export function putReaderEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvases_enabled: enabled });
+}
+
+export function putCanvasesEmbedProxy(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { canvases_embed_proxy: enabled });
 }
 
 /** The default Fused environment (`prefs.workbench.env`). 400 outside
