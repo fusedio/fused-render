@@ -7271,10 +7271,11 @@ def api_task_archive(patch: ArchivePatch,
     """File one task away: cancel its pending work, archive its session.
 
     Answers what it actually did — how many messages were called off, and
-    whether the session was filed — rather than a bare ok, because the two
-    halves can legitimately come apart (a task with no session id has only the
-    first, a pure-chat task has only the second) and the client's note line is
-    the place a person finds out which.
+    whether the task was filed — rather than a bare ok, because the two
+    halves can legitimately come apart (a never-ran task with no session has
+    only the first and vanishes with it; a pure-chat task has only the second;
+    a session-less task whose send BROKE is filed by key, `archive_task`) and
+    the client's note line is the place a person finds out which.
     """
     guard = _require_fused(x_fused)
     if guard is not None:
@@ -7348,8 +7349,10 @@ def api_task_rename(patch: RenamePatch,
 
 def archive_task(task: dict, parked: dict) -> tuple[int, bool, bool]:
     """The archive gesture on one collected task: how many messages were
-    called off, whether a session was filed, and whether a run parked on a
-    card was stopped on the way. Shared with the Current apps router
+    called off, whether the task was filed (its session's triage record, or
+    for a session-less task that outlives the cancel, its KEY — see below),
+    and whether a run parked on a card was stopped on the way. Shared with
+    the Current apps router
     (server/routers/current_apps.py), where removing an app archives every
     task under it — `parked` is the caller's one `_parked_runs()` scan, so an
     archive-all pays for the walk once.
@@ -7371,6 +7374,16 @@ def archive_task(task: dict, parked: dict) -> tuple[int, bool, bool]:
     cancel loops reach it — it would run after the filing and `_revived`
     would drop the record. Cancel first, stop second, file last."""
     cancelled = 0
+    # Decided BEFORE the cancel, off the states as collected: will this task
+    # still be a row once its pending work is called off? `_is_task` drops a
+    # session-less task whose every entry never ran, and a PENDING entry is
+    # about to be cancelled into exactly that — so a row made only of those
+    # vanishes on its own and needs no filing (and a key record for it would
+    # be an orphan from birth). What survives is an entry that SENT or BROKE,
+    # which is the shape the key filing exists for.
+    survives = bool(task["session_id"]) or any(
+        _entry_state(e) not in _NEVER_RAN and e.get("state") != schedule.PENDING
+        for e in task["entries"])
     # The rules FIRST: cancelling a template also cancels the occurrence it has
     # already materialised, so doing it the other way round would cancel one
     # occurrence and let the rule mint the next.
@@ -7388,7 +7401,7 @@ def archive_task(task: dict, parked: dict) -> tuple[int, bool, bool]:
     session_id = task["session_id"]
     if session_id:
         sessions.write_triage(session_id, _FILED)
-    else:
+    elif survives:
         # NO SESSION, SO THE FILING GOES ON THE KEY (`tasks_store.ARCHIVED_FILE`;
         # Akshil, 2026-10-22: failed Copilot tasks "appear as red tasks in the
         # list, they cannot open it, they cannot archive it"). A send whose
@@ -7400,7 +7413,7 @@ def archive_task(task: dict, parked: dict) -> tuple[int, bool, bool]:
         # drops it if the task ever runs, and Unarchive clears it.
         tasks_store.mark_archived(task["key"])
         task["key_filed_at"] = time.time()
-    return cancelled, True, stopped
+    return cancelled, survives, stopped
 
 
 class UnarchivePatch(BaseModel):
