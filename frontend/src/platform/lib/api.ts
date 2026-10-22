@@ -1507,6 +1507,10 @@ export interface Prefs {
   // Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
   // shell/prefs.py; off by default). Optional: absent reads as off.
   task_summary_titles?: { enabled: boolean };
+  // Tasks whose folder is gone from disk are archived by the listing
+  // (`task_auto_archive_missing_enabled`, shell/prefs.py; off by default).
+  // Optional: absent reads as off.
+  task_auto_archive_missing?: { enabled: boolean };
   // Lean Claude sessions (`claude_strict_mcp_enabled`, shell/prefs.py; ON by
   // default). Optional: absent (older server) reads as on.
   claude_strict_mcp?: { enabled: boolean };
@@ -1960,6 +1964,10 @@ export function putProjectQueueEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putTaskSummaryTitlesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { task_summary_titles_enabled: enabled });
+}
+
+export function putTaskAutoArchiveMissingEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { task_auto_archive_missing_enabled: enabled });
 }
 
 export function putClaudeDefaultPermission(mode: string): Promise<Prefs> {

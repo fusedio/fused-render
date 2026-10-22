@@ -5511,3 +5511,47 @@ def test_a_task_without_a_session_cannot_be_renamed(client, tmp_path):
     r = _rename(client, key, "x")
     assert r.status_code == 400
     assert r.json() == {"error": "only a started task can be renamed"}
+
+
+# ---------------------------- auto-archive on a gone folder (task_auto_archive_missing_enabled)
+
+def test_a_task_whose_folder_is_gone_is_left_alone_by_default(client, projects_dir,
+                                                               state_dir, tmp_path):
+    folder = tmp_path / "gone"
+    folder.mkdir()
+    _write_transcript(projects_dir, "sess-gone", str(folder), [_user("hi", T9)])
+    folder.rmdir()
+    row = _by_key(client)["sess-gone"]
+    assert row["folder_missing"] is True
+    assert row["status"] == "done"
+    assert not (state_dir / "triage.json").exists() or "sess-gone" not in json.loads(
+        (state_dir / "triage.json").read_text())
+
+
+def test_with_the_preference_on_a_task_whose_folder_is_gone_is_archived(
+        client, projects_dir, state_dir, tmp_path, monkeypatch):
+    """The listing files the task the way the Archive button would: the row
+    reads archived in the SAME build, its pending run is called off, and a
+    task whose folder is still there is untouched."""
+    monkeypatch.setattr(prefs_mod, "task_auto_archive_missing_enabled", lambda: True)
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    kept = tmp_path / "kept"
+    kept.mkdir()
+    _write_transcript(projects_dir, "sess-gone", str(gone), [_user("hi", T9)])
+    _write_transcript(projects_dir, "sess-kept", str(kept), [_user("hi", T9)])
+    _seed_schedule([
+        _entry("e-gone", "tomorrow", T12, claude_session_id="sess-gone"),
+    ])
+    gone.rmdir()
+    rows = _by_key(client)
+    assert rows["sess-gone"]["status"] == "archived"
+    assert rows["sess-gone"]["folder_missing"] is True
+    assert rows["sess-kept"]["status"] == "done"
+    rec = json.loads((state_dir / "triage.json").read_text())
+    assert rec["sess-gone"]["status"] == "archived"
+    assert "sess-kept" not in rec
+    states = {e["id"]: e["state"] for e in schedule.list_entries()}
+    assert states["e-gone"] == schedule.CANCELLED
+    # And it stays archived on the next build rather than being re-filed.
+    assert _by_key(client)["sess-gone"]["status"] == "archived"

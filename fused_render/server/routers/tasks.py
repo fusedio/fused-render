@@ -5844,12 +5844,42 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     # hashes replaces stringifying both sides of every row in every window.
     # Stamped here, after the sort and the drafts, so a draft row and a
     # narrowed build carry them too. The hash is of the row WITHOUT itself.
+    # A TASK WHOSE FOLDER IS GONE IS FILED AWAY — with the preference on
+    # (`task_auto_archive_missing_enabled`, default off). Decided off the same
+    # `folder_missing` stamp the row is about to carry, by the same gesture the
+    # Archive button makes (`archive_task`: pending runs into the gone folder
+    # called off, the session filed), on the FULL listing only — a narrowed
+    # changes answer stats a few rows and should not be the one filing things.
+    # A row that is in flight (running, parked on a card, standing in the
+    # queue) is left to settle and is caught on a later poll: `archive_task`
+    # would stop its run from inside the builder, and a parked stop can wait.
+    # A draft has no session to file. Best-effort like `revived` above: one
+    # filing that fails costs the row coming back next poll, never the page.
+    auto_file = only is None and shell_prefs.task_auto_archive_missing_enabled()
+    auto_filed: set[str] = set()
     for row in rows:
         row["folder_missing"] = _folder_missing(row.get("project"), row.get("target"))
+        if (auto_file and row["folder_missing"] and row.get("kind") != "draft"
+                and row.get("status") not in ("in_progress", "needs_attention",
+                                              "queued", _FILED)
+                and row.get("key") in listed):
+            try:
+                _, filed, _ = archive_task(listed[row["key"]], parked)
+            except (OSError, ValueError, KeyError, TypeError):
+                filed = False
+            if filed:
+                # Patched in place so THIS build already reads archived — the
+                # hash below is of the row as filed, and `observe` does not
+                # put the gone folder's app back on the desk off a row that
+                # is about to vanish.
+                row["status"] = _FILED
+                auto_filed.add(row["key"])
         # `repo`: the PR view's "which repository" (and its link), read once
         # here rather than by every window.
         row["repo"] = _repo_slug(row.get("project") or row.get("target"))
         row["row_hash"] = _row_hash(row)
+    if auto_filed:
+        tasks_watch.notify(auto_filed)
     # The Current apps desk (current_apps.py) learns about NEW tasks here —
     # the one place every task on the machine passes, whatever started it.
     # Best-effort: the desk is a side table, and a store that cannot be

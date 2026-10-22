@@ -34,6 +34,7 @@ import {
   ShareSheetControl,
   TaskRecapsControl,
   TaskSummaryTitlesControl,
+  TaskAutoArchiveMissingControl,
   ClaudeStrictMcpControl,
   ClaudeDefaultPermissionControl,
 } from "./toggles";
@@ -87,6 +88,7 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "project-queue": ProjectQueueControl,
   "task-recaps": TaskRecapsControl,
   "task-summary-titles": TaskSummaryTitlesControl,
+  "task-auto-archive-missing": TaskAutoArchiveMissingControl,
   "claude-strict-mcp": ClaudeStrictMcpControl,
   "claude-default-permission": ClaudeDefaultPermissionControl,
   "claude-max-sessions": ClaudeMaxSessionsControl,
