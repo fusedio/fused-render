@@ -1363,6 +1363,13 @@ const PERMISSION_LABELS: Record<string, string> = {
 
 const permissionLabel = (key: string) => PERMISSION_LABELS[key] ?? key;
 
+/** Claude Code's own picker order: ask → accept edits → plan → auto. */
+const PERMISSION_ORDER = ["prompt", "acceptEdits", "plan", "auto"];
+const permissionRank = (m: string) => {
+  const i = PERMISSION_ORDER.indexOf(m);
+  return i < 0 ? PERMISSION_ORDER.length : i;
+};
+
 // A Date as the value a <input type="datetime-local"> wants: local wall-clock,
 // minute precision, no zone suffix. `toISOString` is exactly wrong here (UTC).
 //
@@ -4692,9 +4699,10 @@ export default function NewJobModal({
     setTimeOpen(false);
     setWhenPane("presets");
   };
-  const permissionOptions = (permissionModes.length ? permissionModes : ["auto"])
+  const permissionOptions = [...(permissionModes.length ? permissionModes : ["auto"])]
     // No plan mode for an agent without one (§7 `plan_mode`).
-    .filter((m) => m !== "plan" || capsOf(agent).plan_mode);
+    .filter((m) => m !== "plan" || capsOf(agent).plan_mode)
+    .sort((a, b) => permissionRank(a) - permissionRank(b));
   // MODEL's value: the model alone — Thinking lives in the popover, so the four
   // pills keep to one line.
   const modelText = taskRunLabel(runModels, model) || "Default";

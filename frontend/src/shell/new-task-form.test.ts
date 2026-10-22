@@ -2865,6 +2865,13 @@ describe("property pills", () => {
     expect(s).toMatch(/saveActionLabel\(\s*(\/\/[^\n]*\n\s*)?timePicked \?/);
   });
 
+  test("the ACCESS menu follows Claude Code's picker order, whatever order the server lists", () => {
+    const s = src();
+    expect(s).toContain('const PERMISSION_ORDER = ["prompt", "acceptEdits", "plan", "auto"];');
+    expect(s).toMatch(/const permissionOptions = [^;]*\.sort\(\(a, b\) => permissionRank\(a\) - permissionRank\(b\)\);/s);
+    expect(s).toContain("PERMISSION_ORDER.indexOf(m)");
+  });
+
   test("the stale-time note ignores the seed when nothing is picked", () => {
     expect(src()).toMatch(/pastNoteFor\(timePicked && pickedOk \? picked : null,/);
   });
