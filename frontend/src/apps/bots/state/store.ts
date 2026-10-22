@@ -443,6 +443,9 @@ const hasNews = (b: Bot): boolean => botHasUnread({ seq: b.seq, news_seq: b.news
  *  with unread news, else the one that was open (lib/landing.ts). A replace: the click already made the history
  *  entry. A different bot than the one on screen gets the select resets (applySel), and landing marks it read.
  *  With no rows yet the pick waits for the first poll (pollOnce), which calls this again. */
+/** startStore landed the bare door on rows frozen when the page was last left (the loop stops with the route; the
+ *  sidebar's own pulse kept up, this store did not): the next poll's fresh rows decide again (pollOnce). */
+let relandOnPoll = false;
 function landOnBare(): void {
   const pick = S.bots.length ? landingBot(S.bots, hasNews, S.sel) : S.sel;
   if (!pick) return;
@@ -566,6 +569,9 @@ export async function pollOnce(): Promise<void> {
       }
       // A bot picked from the URL skips select(): place its "New" rule and clear its dot once, on first load. Later polls leave "seen" alone so the dot lights while you watch.
       if (first && S.sel && !document.hidden) { const c = cur(); if (c) { setNewMark(c); markSeen(c.id, c.seq); } }
+      // A remount landed on stale rows (startStore): a bot that started waiting, or got a reply, while you were on
+      // another page is only known now. After the mark above, so a switch places its own "New" rule.
+      if (relandOnPoll) { relandOnPoll = false; landOnBare(); }
       // Nothing selected yet: a bot waiting on you, else one with news, else Super Bot (seeded on first run,
       // registry.seed_super) — the chat a new user should land in (lib/landing.ts).
       if (!S.sel && r.bots.length) landOnBare();
@@ -638,7 +644,7 @@ export function startStore(): () => void {
   window.addEventListener(OPEN_EVENT, onOpenEvent);
   const urlBot = urlSel();
   if (urlBot && urlBot !== S.sel) commit({ sel: urlBot, scrollThread: S.scrollThread + 1 });
-  else if (!urlBot && S.sel) landOnBare();  // the bare door from another page: waiting > unread > the bot that was open
+  else if (!urlBot && S.sel) { landOnBare(); relandOnPoll = true; }  // the bare door from another page: waiting > unread > the bot that was open — on last-known rows, then again on fresh ones
   const gen = Math.abs(loopGen) + 1;
   loopGen = gen;
   void loop(gen);

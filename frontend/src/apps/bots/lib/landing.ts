@@ -10,8 +10,8 @@ import { botOrder } from "./order";
  *    3. else the bot that was open (`current`), if it is still a visible row;
  *    4. else Super Bot (seeded on first run), else the first visible bot, else anything.
  *  Ties inside 1 and 2 go by the list's own order (lib/order.ts: pinned, then recency), so the bot opened is the
- *  one the list shows first with that mark. Hidden bots are never picked: they are off every list, and landing on
- *  one would open a chat the rail has no row for. `null` only for no bots at all. */
+ *  one the list shows first with that mark. Hidden bots are never picked while any visible bot exists: they are off
+ *  every list, and landing on one would open a chat the rail has no row for. `null` only for no bots at all. */
 export function landingBot(bots: Bot[], unread: (b: Bot) => boolean, current: string | null, recency: (b: Bot) => number = (b) => b.last_user_ts || b.created || 0): string | null {
   const visible = bots.filter((b) => !b.hidden).sort(botOrder(() => false, recency));
   const waiting = visible.find((b) => b.status === "waiting");
