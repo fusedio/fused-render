@@ -582,22 +582,25 @@ def trusted_rule(app: str):
 def migrate_app_rules(meta) -> bool:
     """Old per-tool `allow_rules` (kind `tool` key `app/tool`, kind `py` key `app/file`) become ticks in
     `trusted_apps`, and every finished build (`builds[].done_at`) is ticked too: both ran without a card before,
-    and the checkbox is now the one place that says so. True when meta changed."""
-    changed = False
+    and the checkbox is now the one place that says so. ONCE per bot (`trusted_migrated`): a later restart must not
+    re-tick a build the user unticked in Settings (new builds tick themselves when they finish, bot.py). True when
+    meta changed."""
+    if meta.get("trusted_migrated"):
+        return False
+    meta["trusted_migrated"] = True
+    changed = True
     keep, apps = [], []
     for r in meta.get("allow_rules") or []:
         if isinstance(r, dict) and r.get("kind") in ("tool", "py") and "/" in str(r.get("key") or ""):
             apps.append((str(r["key"]).split("/", 1)[0], "card"))
-            changed = True
         else:
             keep.append(r)
     for bd in meta.get("builds") or []:
         if isinstance(bd, dict) and bd.get("done_at") and bd.get("dir"):
             apps.append((os.path.basename(str(bd["dir"]).rstrip("/")), "build"))
     for app, via in apps:
-        changed = apptools.trust_app(meta, app, via) or changed
-    if changed:
-        meta["allow_rules"] = keep
+        apptools.trust_app(meta, app, via)
+    meta["allow_rules"] = keep
     return changed
 
 

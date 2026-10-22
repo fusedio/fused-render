@@ -978,10 +978,13 @@ def test_trust_app_and_migration_tick_the_checkbox():
     assert meta["trusted_apps"] == ["mail", "fake-docs", "counter-notes"]
     assert meta["trusted_via"] == {"fake-docs": "card", "counter-notes": "build"}
     assert meta["allow_rules"] == [{"kind": "browser", "key": "a.com|save", "label": "y"}]
-    assert T.migrate_app_rules(meta) is False  # idempotent
-    apptools.set_trusted_apps(meta, add=["New App"], remove=["fake-docs"])
-    assert meta["trusted_apps"] == ["mail", "counter-notes", "new-app"]
-    assert meta["trusted_via"] == {"counter-notes": "build"}  # a dropped tick loses its via, a dialog tick has none
+    assert meta["trusted_migrated"] is True
+    assert T.migrate_app_rules(meta) is False  # once per bot
+    apptools.set_trusted_apps(meta, add=["New App"], remove=["fake-docs", "counter-notes"])
+    assert meta["trusted_apps"] == ["mail", "new-app"]
+    assert meta["trusted_via"] == {}  # a dropped tick loses its via, a dialog tick has none
+    assert T.migrate_app_rules(meta) is False  # a restart must not re-tick the build the user unticked
+    assert meta["trusted_apps"] == ["mail", "new-app"]
 
 
 def test_trusted_app_prompt_line_drops_the_approval_tag():
