@@ -226,11 +226,13 @@ function useCurrentApps(
   return { entries: apps, adopt };
 }
 
-/** The desk in the order the section shows it — for the collapsed rail's app
- *  icons. Fetches only while `enabled` (the rail is on screen), on mount and on
- *  the same add/open/drag nudges the section hears; no pulse-driven refetch, and
- *  no running/queued/unread state (the rail draws icons only). The order is the
- *  server's array as fetched (D1386) — the same one the section draws. */
+/** The desk in the order the sections show it — for the collapsed rail's app
+ *  and canvas icons. Fetches only while `enabled` (the rail is on screen), on
+ *  mount and on the same add/open/drag nudges the sections hear; no
+ *  pulse-driven refetch, and no running/queued/unread state (the rail draws
+ *  icons only). The order is the server's array as fetched (D1386) — the same
+ *  one the sections draw; the rail splits it on `canvas` as they do
+ *  (sidebar-rail-lib railExtras). */
 export function useDeskAppsOrdered(enabled: boolean): CurrentApp[] {
   const [refreshEpoch, setRefreshEpoch] = useState(0);
   const { entries } = useCurrentApps("", refreshEpoch, enabled);
@@ -248,9 +250,9 @@ export function useDeskAppsOrdered(enabled: boolean): CurrentApp[] {
     };
   }, [enabled]);
   // Expanded: the rail is not drawn and `entries` is the snapshot of the last
-  // collapse. App folders only: the rail's icons are the Projects section's.
+  // collapse.
   if (!enabled) return [];
-  return currentApps(entries, [], new Set(), []).filter((a) => inSection(a, "projects"));
+  return currentApps(entries, [], new Set(), []);
 }
 
 interface RowDragProps {
@@ -263,8 +265,11 @@ interface RowDragProps {
 
 /** A canvas row's door: the canvas's PROJECT page (/canvases-project/…), on
  *  the tab the reader is on when they are already on a canvas project page
- *  ("same view, other canvas", the Projects rule below). */
-function canvasRowHref(app: CurrentApp): string | null {
+ *  ("same view, other canvas", the Projects rule below). Null for a clone of
+ *  an unknown environment, which has no project page — the caller falls back
+ *  to the folder's app page. Exported for the collapsed rail's canvas doors
+ *  (GlobalSidebar), the same door as the row. */
+export function canvasRowHref(app: CurrentApp): string | null {
   const c = app.canvas;
   if (!c || !isWorkbenchEnv(c.env)) return null;
   const onProject = canvasProjectFromPath(location.pathname) !== null;
