@@ -1757,6 +1757,9 @@ DECISIVE = ("faster-whisper", "mlx-whisper", "mflux-image", "ltx-video",
             # membership is a statement about the FORMAT, not the machine.
             "vision-torch-cuda",
             "mlx-audio-tts",
+            # A root `model.onnx` + `voices.bin` + `tokens.txt` with espeak-ng
+            # data is Kokoro's sherpa export and nothing else's.
+            "sherpa-tts",
             "diffusers-image",
             # Every hardware variant of the diffusers runner, because membership
             # here is a statement about the FORMAT — a `model_index.json` is a
@@ -2008,12 +2011,64 @@ def speech_traits(config: dict) -> dict | None:
     }
 
 
+#: Kokoro-82M v1.1-zh as sherpa-onnx ships it (`csukuangfj/kokoro-multi-lang-v1_1`).
+#: A snapshot is this when the three engine files are at the root and the
+#: espeak-ng phonemizer data sits beside them; `loaders()` hands it to
+#: `sherpa-tts` and to nothing else, because a `model.onnx` at the root is
+#: otherwise an `onnx-embed` graph question and this one is not an embedder.
+KOKORO_FILES = ("model.onnx", "voices.bin", "tokens.txt")
+KOKORO_DATA_DIR = "espeak-ng-data"
+#: Speaker id -> name, index = sid (the sherpa-onnx table for kokoro-multi-lang-v1_1:
+#: https://k2-fsa.github.io/sherpa/onnx/tts/all/Chinese-English/kokoro-multi-lang-v1_1.html).
+#: Three English voices, then 55 `zf_*` and 45 `zm_*` Chinese ones. The count is
+#: fixed by `voices.bin`: 103 voices x 510 style rows x 256 float32 = 53,790,720
+#: bytes, the file's size. NOT the v1.0 table (53 voices, `af_heart` ...) that
+#: sits higher up the same docs page.
+KOKORO_VOICES = (
+     "af_maple", "af_sol", "bf_vale", "zf_001", "zf_002", "zf_003", "zf_004", "zf_005",
+     "zf_006", "zf_007", "zf_008", "zf_017", "zf_018", "zf_019", "zf_021", "zf_022",
+     "zf_023", "zf_024", "zf_026", "zf_027", "zf_028", "zf_032", "zf_036", "zf_038",
+     "zf_039", "zf_040", "zf_042", "zf_043", "zf_044", "zf_046", "zf_047", "zf_048",
+     "zf_049", "zf_051", "zf_059", "zf_060", "zf_067", "zf_070", "zf_071", "zf_072",
+     "zf_073", "zf_074", "zf_075", "zf_076", "zf_077", "zf_078", "zf_079", "zf_083",
+     "zf_084", "zf_085", "zf_086", "zf_087", "zf_088", "zf_090", "zf_092", "zf_093",
+     "zf_094", "zf_099", "zm_009", "zm_010", "zm_011", "zm_012", "zm_013", "zm_014",
+     "zm_015", "zm_016", "zm_020", "zm_025", "zm_029", "zm_030", "zm_031", "zm_033",
+     "zm_034", "zm_035", "zm_037", "zm_041", "zm_045", "zm_050", "zm_052", "zm_053",
+     "zm_054", "zm_055", "zm_056", "zm_057", "zm_058", "zm_061", "zm_062", "zm_063",
+     "zm_064", "zm_065", "zm_066", "zm_068", "zm_069", "zm_080", "zm_081", "zm_082",
+     "zm_089", "zm_091", "zm_095", "zm_096", "zm_097", "zm_098", "zm_100",
+)
+
+
+def is_kokoro_snapshot(names, dirnames) -> bool:
+    return all(name in names for name in KOKORO_FILES) and KOKORO_DATA_DIR in dirnames
+
+
+def kokoro_traits() -> dict:
+    """What `speech_traits` says for Kokoro: preset voices, no style line.
+
+    `languages` are informational: the export picks the language from the
+    voice (English voices speak English, `z*` voices Chinese), so the worker
+    accepts the option and hands it back unchanged.
+    """
+    return {"mode": "preset", "voices": list(KOKORO_VOICES),
+            "languages": ["english", "chinese"], "instructable": False}
+
+
+def kokoro_traits_from_names(names, dirnames) -> dict | None:
+    return kokoro_traits() if is_kokoro_snapshot(names, dirnames) else None
+
+
 def _option_names(keys) -> str:
     return ", ".join(f"'{key}'" for key in SPEECH_OPTIONS if key in keys)
 
 
 def speech_options(model_id: str, traits: dict, options: dict) -> dict:
     what, allowed, required = _SPEECH_MODE_RULES[traits["mode"]]
+    if traits.get("instructable") is False and options.get("instruct"):
+        raise ValueError(f"{model_id} has no style line; it takes "
+                         f"{_option_names(allowed - {'instruct'})}, not 'instruct'")
     resolved = {key: options[key] for key in SPEECH_OPTIONS if options.get(key)}
     given = set(resolved) - {"language"}
     if given - allowed:
@@ -2210,6 +2265,11 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
         return tuple(found)
     if is_qwen3_tts_snapshot(config, dirnames):
         found.append("mlx-audio-tts")
+        return tuple(found)
+    if is_kokoro_snapshot(names, dirnames):
+        # …and NOTHING else: the root `model.onnx` would otherwise be offered
+        # to the ONNX embedders below, which would refuse it after a download.
+        found.append("sherpa-tts")
         return tuple(found)
     if has_ltx_split_layout(names):
         found.append("ltx-video")
