@@ -17,7 +17,7 @@ import { ImportWizard } from "@shell/templates/ImportWizard";
 import { InventoryPanel } from "@shell/templates/InventoryPanel";
 import { NewTemplateModal } from "@shell/templates/NewTemplateModal";
 import { RowEditorModal } from "@shell/templates/RowEditorModal";
-import { navigateUrl } from "@platform/lib/router";
+import { replaceSearch } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 
@@ -34,19 +34,20 @@ export default function Templates() {
   const [creatingNew, setCreatingNew] = useState(false);
   const loadSeq = useRef(0);
 
-  // The active tab lives in the URL (`?tab=library`) so browser back/forward
-  // moves between tabs. The page is keyed by the nav epoch in App.tsx, so a
-  // pushState here remounts this view and it re-derives the tab from the URL —
-  // no local tab state to keep in sync. Bindings is the default (clean URL).
-  const tab: PageTab = new URLSearchParams(location.search).get("tab") === "library" ? "library" : "bindings";
+  // The active tab is held in state and mirrored to `?tab=library` with an
+  // in-place URL write, so a click neither remounts the page nor refetches its
+  // tables, and a link or reload still opens the tab it names. Bindings is the
+  // default (clean URL).
+  const [tab, setTabState] = useState<PageTab>(() =>
+    new URLSearchParams(location.search).get("tab") === "library" ? "library" : "bindings",
+  );
   const setTab = (next: PageTab) => {
+    setTabState(next);
     const params = new URLSearchParams(location.search);
     if (next === "bindings") params.delete("tab");
     else params.set("tab", next);
     const search = params.toString();
-    // navigateUrl (not raw pushState) so the nav epoch bumps and App remounts
-    // this view to re-derive the tab; back/forward already works via popstate.
-    navigateUrl(location.pathname + (search ? "?" + search : ""));
+    replaceSearch(location.pathname + (search ? "?" + search : ""));
   };
 
   const load = async () => {

@@ -999,16 +999,17 @@ export default function App({ config }: { config: Config }) {
     );
   } else if (isMarketplace) {
     // The Marketplace — chrome-free, the page owns its sticky header and
-    // scroll. Keyed on epoch like its neighbours (its catalog is a module
-    // cache, so a remount repaints instantly). Off, nothing is fetched: the
-    // notice is the whole page.
+    // scroll. Not keyed on `epoch`, like AI Models: Discover, Installed and an
+    // app's page are paths, and a hop between them must keep the header and
+    // scroll container mounted. The page reads the path itself. Off, nothing is
+    // fetched: the notice is the whole page.
     main = (
-      <div id="content" key={epoch}>
+      <div id="content">
         {marketplaceOn === null ? (
           <RouteFallback />
         ) : marketplaceOn ? (
           <Suspense fallback={<RouteFallback />}>
-            <MarketplacePage key={epoch} />
+            <MarketplacePage />
           </Suspense>
         ) : (
           <div className="monitor-off deploy-muted">
