@@ -1,4 +1,4 @@
-// The "Claude Code CLI" group of Preferences: the settings.json keys that
+// The "Claude Code" group of Preferences: the settings.json keys that
 // shape the Claude sessions fused-render runs. The catalog (GET preferences)
 // is fetched with the page and each entry becomes a row, `claude-pref:<key>`,
 // bucketed into the catalog's own groups ("Model & reasoning", ...), so a
@@ -82,7 +82,7 @@ export function ClaudeConfigProvider({ available, children }: { available: boole
 
 export const CLAUDE_PREF_PREFIX = "claude-pref:";
 
-/** A settings.json key as a settings row of the Claude Code CLI group. */
+/** A settings.json key as a settings row of the Claude Code group. */
 export interface ClaudePrefEntry extends SettingEntry {
   id: string;
   prefKey: string;

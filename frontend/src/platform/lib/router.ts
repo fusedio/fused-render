@@ -68,7 +68,7 @@ export function rewriteLegacyUrl(url: string): string {
     const params = new URLSearchParams(q.slice(1));
     const tabParam = params.get("tab") ?? "";
     const s = params.get("s") ?? "";
-    // `?tab=claude-cli` is the Claude Code CLI group, which lives here.
+    // `?tab=claude-cli` is the Claude Code group, which lives here.
     if ((tabParam.startsWith("claude") && tabParam !== "claude-cli") || s.startsWith("claude-")) {
       const key = s.startsWith("claude-") ? s : tabParam;
       const tab = PREFS_CLAUDE_TABS[key] ?? (key.startsWith("claude-pref:") ? "settings" : null);
@@ -105,7 +105,7 @@ function claudeConfigUrl(params: URLSearchParams): string {
   return "/claude-config" + (q ? "?" + q : "");
 }
 
-// The settings.json rows live in Preferences' Claude Code CLI group; a row id
+// The settings.json rows live in Preferences' Claude Code group; a row id
 // (`s=claude-pref:<key>`) is kept, the dead ids of the old Settings group are not.
 function claudeCliUrl(params: URLSearchParams): string {
   params.set("tab", "claude-cli");

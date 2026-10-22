@@ -96,7 +96,7 @@ const SAID_BY_AGENT: Record<string, Record<string, { title: string; explain: str
       title: "GitHub Copilot isn't signed in",
       explain:
         "Copilot is installed but not signed in to your GitHub account yet, so " +
-        "nothing can run. Sign in from Preferences → AI & agents, or run " +
+        "nothing can run. Sign in from Preferences → Coding agents, or run " +
         "`copilot login` in a terminal, once.",
     },
     limit: {

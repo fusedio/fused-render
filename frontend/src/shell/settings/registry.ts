@@ -37,12 +37,13 @@ export type GroupId =
   | "integrations"
   | "advanced";
 
-// THE NAV IS SECTIONED THE WAY THE APP'S SIDEBAR IS (Akshil, 2026-10-20):
-// a heading per destination a reader already knows from the left rail —
-// the app itself, Bots, Tasks, Apps & files — and Other for what is none of
-// those. A group belongs to exactly one section; a section with no visible
-// group (Fused Bot has no apps or files) is not drawn.
-export type NavSectionId = "general" | "bots" | "tasks" | "apps" | "other";
+// THE NAV IS SECTIONED BY WHAT THE SETTING CHANGES: the app itself, the
+// coding agents and the sessions they run, the apps and files you work on,
+// and the developer tools for when something breaks. A heading never repeats
+// the one page under it, and a page is named for what is on it. A group
+// belongs to exactly one section; a section with no visible group (Fused Bot
+// has no apps or files) is not drawn.
+export type NavSectionId = "app" | "agents" | "apps" | "developer";
 
 export interface NavSection {
   id: NavSectionId;
@@ -50,11 +51,10 @@ export interface NavSection {
 }
 
 export const NAV_SECTIONS: readonly NavSection[] = [
-  { id: "general", label: "General" },
-  { id: "bots", label: "Bots" },
-  { id: "tasks", label: "Tasks" },
+  { id: "app", label: "App" },
+  { id: "agents", label: "Agents" },
   { id: "apps", label: "Apps & files" },
-  { id: "other", label: "Other" },
+  { id: "developer", label: "Developer" },
 ];
 
 export interface SettingsGroup {
@@ -68,30 +68,35 @@ export interface SettingsGroup {
 
 // In nav order: the sections above, and the groups inside each.
 export const GROUPS: readonly SettingsGroup[] = [
-  { id: "general", nav: "general", label: "General", blurb: "How the app looks, opens and stays up to date." },
+  { id: "general", nav: "app", label: "General", blurb: "How the app looks, opens and stays up to date." },
+  { id: "integrations", nav: "app", label: "Accounts", blurb: "Services this app signs in to." },
   {
     id: "features",
-    nav: "general",
-    label: "Experimental features",
+    nav: "app",
+    label: "Labs",
     badge: "Beta",
     blurb: "Off by default and still settling. Each one adds a sidebar row or a page when you turn it on.",
   },
-  { id: "ai", nav: "bots", label: "AI & agents", blurb: "Which coding agents run your chats and tasks." },
+  { id: "ai", nav: "agents", label: "Coding agents", blurb: "Which coding agents run your chats and tasks." },
+  {
+    id: "tasks",
+    nav: "agents",
+    label: "Chats & tasks",
+    blurb: "How sessions queue, get titled and tell you they are done.",
+  },
   {
     id: "claude-cli",
-    nav: "bots",
-    label: "Claude Code CLI",
+    nav: "agents",
+    label: "Claude Code",
     blurb: "The settings.json keys that shape the Claude sessions fused-render runs.",
   },
-  { id: "tasks", nav: "tasks", label: "Tasks", blurb: "How tasks queue, get titled and tell you they are done." },
-  { id: "apps", nav: "apps", label: "Apps & sharing", blurb: "Git sync, sharing, and how app cards preview." },
-  { id: "indexing", nav: "apps", label: "Files & search", blurb: "The file index behind Files search." },
-  { id: "lan", nav: "apps", label: "Phone & network", blurb: "Open your apps from a phone on the same Wi-Fi." },
-  { id: "integrations", nav: "other", label: "Integrations", blurb: "Services this app signs in to." },
+  { id: "apps", nav: "apps", label: "Sharing & sync", blurb: "Git sync, sharing, and how app cards preview." },
+  { id: "indexing", nav: "apps", label: "File index", blurb: "The file index behind Files search." },
+  { id: "lan", nav: "apps", label: "Phone access", blurb: "Open your apps from a phone on the same Wi-Fi." },
   {
     id: "advanced",
-    nav: "other",
-    label: "Advanced",
+    nav: "developer",
+    label: "Debugging",
     blurb: "Call logging, the index query console, and diagnostics for bug reports.",
   },
 ];
@@ -202,7 +207,7 @@ const ENTRIES = [
     keywords: "update upgrade version download install auto release check now",
   },
 
-  // ── AI & agents ──────────────────────────────────────────────────────────
+  // ── Coding agents ────────────────────────────────────────────────────────
   {
     id: "agent-claude",
     group: "ai",
@@ -260,7 +265,7 @@ const ENTRIES = [
     elsewhere: true,
   },
 
-  // ── Claude Code CLI ──────────────────────────────────────────────────────
+  // ── Claude Code ──────────────────────────────────────────────────────────
   // The settings.json rows are data the server ships and are spliced in at
   // runtime (settings/claude.tsx); this row is the group's only static one,
   // shown on a machine without ~/.claude.
@@ -334,7 +339,7 @@ const ENTRIES = [
     keywords: "notification notify finished terminal claude alert done",
   },
 
-  // ── Apps & sharing ───────────────────────────────────────────────────────
+  // ── Sharing & sync ───────────────────────────────────────────────────────
   {
     id: "git-sync",
     group: "apps",
@@ -373,7 +378,7 @@ const ENTRIES = [
     renderOnly: true,
   },
 
-  // ── Files & search ───────────────────────────────────────────────────────
+  // ── File index ───────────────────────────────────────────────────────────
   {
     id: "indexing",
     group: "indexing",
@@ -420,7 +425,7 @@ const ENTRIES = [
     renderOnly: true,
   },
 
-  // ── Optional features ────────────────────────────────────────────────────
+  // ── Labs ─────────────────────────────────────────────────────────────
   {
     id: "canvases",
     group: "features",
@@ -467,7 +472,7 @@ const ENTRIES = [
     available: ({ prefs }) => !!prefs.chromium_windows?.available,
   },
 
-  // ── Phone & network ──────────────────────────────────────────────────────
+  // ── Phone access ─────────────────────────────────────────────────────────
   {
     id: "lan",
     group: "lan",
@@ -512,7 +517,7 @@ const ENTRIES = [
     group: "integrations",
     section: ELSEWHERE,
     label: "Claude Code, Copilot and Codex sign-in",
-    description: "Shown with each agent's health under AI & agents.",
+    description: "Shown with each agent's health under Coding agents.",
     keywords: "claude login anthropic copilot github codex openai chatgpt sign in",
     elsewhere: true,
   },

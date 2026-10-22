@@ -1,4 +1,4 @@
-// The one-switch settings: Tasks, Apps & sharing, Optional features.
+// The one-switch settings: Chats & tasks, Sharing & sync, Labs.
 //
 // Most of them publish after the PUT as well as saving: the surface the switch
 // governs is usually already on screen (the sidebar beside this page, a grid
@@ -145,7 +145,7 @@ export function NotifyTerminalControl({ prefs, onChange }: PrefControlProps) {
   );
 }
 
-// ── Apps & sharing ─────────────────────────────────────────────────────────
+// ── Sharing & sync ─────────────────────────────────────────────────────────
 
 // Git auto-sync: default ON (`!== false` — an older server's silence is the
 // default), an opt-OUT. Off is the Update card and the manual git flows only.
@@ -204,7 +204,7 @@ export function LivePreviewsControl({ prefs, onChange }: PrefControlProps) {
   );
 }
 
-// ── Optional features ──────────────────────────────────────────────────────
+// ── Labs ───────────────────────────────────────────────────────────────
 // Each is off by default and this is the only place it turns on (Canvases:
 // D427). Each one gates its ENTRY POINTS — a sidebar row, a status-bar chip, a
 // file view — never the routes behind them.
