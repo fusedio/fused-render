@@ -14,7 +14,7 @@ FALLTHROUGH one wherever `llamacpp_text_vulkan/`'s own row can run — and it
 was designed not to be even that.** This module shipped registered below
 three `transformers-text*` rows so that `auto` could never reach it, because
 `llamacpp_text/pyproject.toml` records that the maintainer's wheel index is a
-coin-flip per release on macOS arm64 (4 of 16 sampled releases fail an
+coin-flip per release on macOS arm64 (15 of 19 sampled releases fail an
 integrity check) and a capability that fragile to INSTALL is a poor thing to
 hand a machine that did not ask for it. D416 removed those rows on a
 benchmark this engine won on every axis at once (4.2x transformers'

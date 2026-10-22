@@ -315,8 +315,9 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "comfortable on 16GB.",
         },
         # Bonsai 27B (prism-ml). The family ships eight repos and most of them
-        # cannot run here: the GGUF builds are llama.cpp's format, and the AWQ
-        # builds are both AWQ and image-text-to-text. The MLX ones are what is
+        # cannot run here: the PQ2_0/PTQ1_0 GGUF files use ggml type 142, which
+        # 0.3.29's llama.cpp rejects at load (see D1413 before re-testing), and
+        # the AWQ builds are both AWQ and image-text-to-text. The MLX ones are what is
         # left, and only the 2-bit is listed — the 1-bit sibling is omitted
         # deliberately rather than forgotten (see the note below).
         #

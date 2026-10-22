@@ -19,9 +19,11 @@
 # **The RESIDUAL RISK that does not go away, and it is worse than "a second
 # host to trust".** A full sweep of every macOS arm64 wheel this index has ever
 # published for `llama-cpp-python` found the corruption is not a regression
-# with a clean cutoff — it is roughly a coin flip per release. Only 4 of 16
-# releases sampled (0.3.18, 0.3.24, 0.3.26, 0.3.29) pass `zipfile.testzip()` on
-# their `macosx_11_0_arm64` wheel; the rest fail, USUALLY on a bundled
+# with a clean cutoff — it is roughly a coin flip per release. Only 4 of 19
+# releases sampled (0.3.18, 0.3.24, 0.3.26, 0.3.29; 16 releases as of the
+# 2026-08-21 sweep, 19 after the 2026-10-22 one below) pass
+# `zipfile.testzip()` on their `macosx_11_0_arm64` wheel; the rest fail,
+# USUALLY on a bundled
 # `libggml-base*.dylib` (three different corruption signatures were seen across
 # versions — bad CRC-32, bad uncompressed size, bad zip64 offset — so it is not
 # one bug with one fingerprint), and every failing wheel's sha256 matched its
@@ -49,10 +51,10 @@
 # never that a specific version's bytes are intact, and a `uv sync` that
 # resolves and installs cleanly on ONE platform proves nothing about the other
 # two (an intact mac wheel implied nothing about the manylinux ones — they are
-# independent per-release coin flips). Download each of the three wheels for the
-# candidate version directly from
-# `github.com/abetlen/llama-cpp-python/releases/download/v<version>/...`,
-# run `zipfile.ZipFile(path).testzip()` on each, and if any of the three is not
+# independent per-release coin flips). Run `scripts/llamacpp_wheel_sweep.py`
+# (downloads each wheel for the candidate version from
+# `github.com/abetlen/llama-cpp-python/releases/download/v<version>/...` and
+# runs `zipfile.ZipFile(path).testzip()` on it), and if any of the three is not
 # `None`, do not bump — find the newest version where all three pass, exactly
 # as this pin was chosen (0.3.34 and 0.3.35, the two newest at the time, were
 # BOTH corrupt on macOS arm64 across five checked versions before 0.3.29 was
@@ -84,14 +86,18 @@
 # root — the vocabulary and the chat template are inside the one `.gguf`
 # already fetched, which is the whole point of the format being single-file.
 #
-# **SWEEP OF 0.3.30-0.3.36 (2026-10-22): NO BUMP.** Every `macosx_11_0_arm64`
-# wheel from 0.3.30 through 0.3.36 fails `testzip()` (the manylinux CPU wheels
-# and the vulkan wheel all pass), so the newest version intact on every shipped
-# tag is still 0.3.29. macOS arm64: 0.3.30 bad member libggml-base.0.dylib,
-# 0.3.32 libggml-base.0.15.3.dylib, 0.3.34 libggml-base.0.16.0.dylib, 0.3.35
+# **SWEEP OF 0.3.30-0.3.36 (2026-10-22): NO BUMP.** This extends the 2026-08-21
+# sweep above. Every `macosx_11_0_arm64` wheel that exists for 0.3.30 through
+# 0.3.36 fails `testzip()` (the manylinux CPU wheels and the vulkan wheel all
+# pass), so the newest version intact on every shipped tag is still 0.3.29.
+# macOS arm64: 0.3.30 bad member libggml-base.0.dylib, 0.3.32
+# libggml-base.0.15.3.dylib, 0.3.34 libggml-base.0.16.0.dylib, 0.3.35
 # libggml-base.0.20.0.dylib; 0.3.33 and 0.3.36 raise "Error -3 while
 # decompressing data: invalid block type". 0.3.31 published no CPU wheels (404)
-# at all. Full table (sizes, sha256 prefixes): DECISIONS.md D1413.
+# at all. Each failing wheel's full sha256 and size matched GitHub's published
+# asset digest. Counting 0.3.32, 0.3.33 and 0.3.36 as new samples, the mac tally
+# is now 4 of 19 releases passing. Full table (sizes, sha256 prefixes):
+# DECISIONS.md D1413. To repeat it: `scripts/llamacpp_wheel_sweep.py`.
 
 [project]
 name = "fused-render-runner-llamacpp-text"
