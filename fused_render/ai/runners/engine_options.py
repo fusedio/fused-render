@@ -23,7 +23,8 @@ one instead.
 does not: an ignored option is refused here because it is undetectable, and word
 timings are detectable — honouring them puts a `words` list on the segment and
 declining leaves the key off, so a caller reads which happened off the reply.
-It is answered best-effort in `mlx_whisper/worker.py`, where the decline lives.
+It is answered best-effort in `mlx_whisper/worker.py` and `faster_whisper/worker.py`
+(both formats there, D1423), where the decline lives.
 
 **This module is where that rule lives, once**, for exactly the reason
 `diarize.speakers_or_raise` sits where it does. The endpoint refuses first,

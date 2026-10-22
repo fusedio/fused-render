@@ -8180,6 +8180,18 @@ an AI Models page that could say what was on disk but not what was *running*.
   as a direction flag on one "audio" capability: AI-4 keeps one resident model
   per capability, so sharing one would have a synthesis model and a Whisper
   model evict each other on every alternation.
+- **AI-10g** **The faster-whisper runner reads two formats, and Parakeet is the
+  second** (D1423). A snapshot with `model.bin` is a CTranslate2 Whisper
+  conversion (`WhisperModel`); one with the sherpa-onnx transducer files
+  (`formats.SHERPA_TRANSDUCER_FILES`) is NVIDIA Parakeet TDT 0.6B v3 int8, run
+  through the sherpa-onnx the runner already carries for diarization, so there is
+  no new venv. `load()` records the kind and `generate()` dispatches on it; the
+  reply, the files and the `words` shape are identical to the other engines
+  (AI-10c). Parakeet has no VAD of its own and decodes one utterance at a time,
+  so it uses the shared VAD policy (`stt_common`, AI-10f) and decodes packed
+  regions in turn; with `vad: false` it cuts the recording into 29-second time
+  slices. `words` is honoured on both formats; Parakeet has no `translate` and
+  refuses it before decoding. CPU only.
 - **AI-10a** **A transcription is job-backed like an image, and its result is a
   FILE.** `POST /api/ai/transcribe` answers immediately with a `jobId` and with
   the output paths already settled, exactly as AI-9 does — a 90-minute recording
