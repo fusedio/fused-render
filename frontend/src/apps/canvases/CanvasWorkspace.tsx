@@ -688,8 +688,10 @@ export default function CanvasWorkspace({
         const status = await getCanvasesStatus();
         if (cancelled) return;
         // THIS canvas's environment's origin and handle, not the default's:
-        // the token is posted only to this exact origin.
-        const base = status.envs[env].base_url;
+        // the token is posted only to this exact origin. `embed_url` is the
+        // origin to frame — the custom env's loopback proxy when that is on
+        // (canvas_embed_proxy.py); otherwise the workbench itself.
+        const base = status.envs[env].embed_url ?? status.envs[env].base_url;
         setBaseUrl(base);
         baseOriginRef.current = new URL(base).origin;
         // The clone onto the sidebar's desk (its Canvases section, the

@@ -346,6 +346,46 @@ def log_url_override_without_pin() -> None:
                        "the pinned environment", _WORKBENCH_URL_VAR, WORKBENCH_ENV_VAR)
 
 
+def _embed_proxy_wanted() -> bool:
+    """The custom env's embed goes through the loopback proxy
+    (canvas_embed_proxy.py) when the preference is on and custom is usable."""
+    from fused_render.shell.prefs import canvases_embed_proxy_enabled
+
+    return canvases_embed_proxy_enabled() and fused_settings_present()
+
+
+def _custom_token() -> str:
+    """The proxy's token source: the custom env's own login, or an exception
+    whose text the proxy relays as a 502 (it runs off the event loop)."""
+    token, problem, _status = access_token(CUSTOM_WORKBENCH_ENV)
+    if token is None:
+        raise RuntimeError(problem or "could not read the fused access token")
+    return token
+
+
+def _apply_embed_proxy() -> None:
+    """Start, retarget or stop the proxy to match the preference and the
+    settings file's current origin. Idempotent; called from status."""
+    from fused_render.canvas_embed_proxy import controller
+
+    if _embed_proxy_wanted():
+        controller.apply(workbench_base_url(CUSTOM_WORKBENCH_ENV), _custom_token)
+    else:
+        controller.apply(None, None)
+
+
+def embed_base_url(env: str) -> str:
+    """The origin the workspace frames for `env` and posts its messages to:
+    `workbench_base_url(env)`, except the custom env while its proxy runs."""
+    if env == CUSTOM_WORKBENCH_ENV:
+        from fused_render.canvas_embed_proxy import controller
+
+        url = controller.url()
+        if url:
+            return url
+    return workbench_base_url(env)
+
+
 def _cli_env(cli, env: str) -> dict[str, str]:
     """child_env plus the env target, so a CLI run hits the canvas's own
     Fused — and the marker that stops a CLI child of OURS from being re-routed
@@ -756,6 +796,10 @@ def api_canvases_status(env: str = ""):
         stamp = os.path.getmtime(credentials_file(auth_env))
     except OSError:
         stamp = None
+    # The one place the embed proxy's lifecycle is driven: every page that
+    # frames a canvas reads status first, so the proxy is up (or retargeted
+    # after a settings.toml edit) by the time `embed_url` below is used.
+    _apply_embed_proxy()
     return {
         "cli_found": cli is not None,
         "logged_in": _logged_in(auth_env),
@@ -779,6 +823,10 @@ def api_canvases_status(env: str = ""):
         "envs": {
             env: {
                 "base_url": workbench_base_url(env),
+                # Where the workspace's iframe loads from and posts to: the
+                # workbench origin itself, or — custom env, embed proxy on —
+                # the loopback proxy standing in front of it.
+                "embed_url": embed_base_url(env),
                 "canvases_dir": canvases_root(env),
                 "cloned_count": len(_cloned_names(env)),
                 "available": env != CUSTOM_WORKBENCH_ENV or fused_settings_present(),
@@ -1024,8 +1072,20 @@ def api_canvases_token(env: str = "", x_fused: str | None = Header(default=None)
     env, bad = _optional_env(env)
     if bad is not None:
         return bad
+    token, problem, status = access_token(env)
+    if token is None:
+        return _error(problem or "could not read the fused access token", status)
+    return {"access_token": token}
+
+
+def access_token(env: str) -> tuple[str | None, str | None, int]:
+    """`env`'s `fused login` access token, refreshed through the package's
+    own child when the CLI is our interpreter: `(token, None, 200)`, or
+    `(None, reason, http_status)`. Shared by /api/canvases/token and the
+    custom env's embed proxy (canvas_embed_proxy.py), so the two never
+    disagree on which store an env reads or how a refresh runs."""
     if not _logged_in(env):
-        return _error("not signed in to Fused — sign in from the Canvases page", 409)
+        return None, "not signed in to Fused — sign in from the Canvases page", 409
     cli = fused_cli()
     if cli is not None and not cli.external:
         shim = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_fused_token.py")
@@ -1051,7 +1111,7 @@ def api_canvases_token(env: str = "", x_fused: str | None = Header(default=None)
             token = proc.stdout.strip()
             if not token:
                 return ("err", "the token helper printed nothing", 502)
-            return ("ok", {"access_token": token})
+            return ("ok", token)
 
         def ttl_for(_payload):
             # Reuse only while the stored token stays comfortably valid: one
@@ -1068,18 +1128,18 @@ def api_canvases_token(env: str = "", x_fused: str | None = Header(default=None)
 
         result = _cached_cli("token", env, compute, ttl_for)
         if result[0] == "err":
-            return _error(result[1], result[2])
-        return result[1]
+            return None, result[1], result[2]
+        return result[1], None, 200
     # External-CLI fallback: the raw store, no refresh.
     try:
         with open(credentials_file(env), encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, ValueError) as e:
-        return _error(f"could not read the fused credentials file: {e}", 502)
+        return None, f"could not read the fused credentials file: {e}", 502
     token = data.get("access_token") if isinstance(data, dict) else None
     if not isinstance(token, str) or not token:
-        return _error("the fused credentials file has no access token", 502)
-    return {"access_token": token}
+        return None, "the fused credentials file has no access token", 502
+    return token, None, 200
 
 
 # -- listing and cloning -----------------------------------------------------------

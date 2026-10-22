@@ -40,12 +40,20 @@ export interface CanvasesStatus {
    *  tab from there would hit real prod), and the catalog disables its
    *  environment dropdown. */
   locked: boolean;
-  /** Per environment: its workbench web origin, its clone folder
+  /** Per environment: its workbench web origin, the origin the workspace
+   *  frames (the same, or — custom env with the embed proxy on — the
+   *  loopback proxy in front of it), its clone folder
    *  (`~/Fused/canvas/<env>`), how many clones it holds here, and whether it
    *  can be picked (false only for custom with no `~/.fused/settings.toml`). */
   envs: Record<
     WorkbenchEnv,
-    { base_url: string; canvases_dir: string; cloned_count: number; available: boolean }
+    {
+      base_url: string;
+      embed_url?: string;
+      canvases_dir: string;
+      cloned_count: number;
+      available: boolean;
+    }
   >;
 }
 
