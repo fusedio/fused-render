@@ -2495,7 +2495,13 @@ export function TaskList({
     }
     heldMarks.current = marks;
     const since = Date.now() / 1000 - NEW_TASK_WINDOW_SEC;
-    const recent = rows.filter((t) => activityAt(t) >= since);
+    // RECENT BY EITHER CLOCK: a task just made lands as a pending row whose
+    // only stamp is a due time a second AHEAD, which `activityAt` rightly
+    // scores as no activity — so until its run started it was not "new" and
+    // its folder stayed folded (Akshil, 2026-10-22). `started` is the row's
+    // creation, fixed for life (`Task.started`), and a row created inside the
+    // window is new whatever its run is doing.
+    const recent = rows.filter((t) => Math.max(activityAt(t), t.started || 0) >= since);
     const fresh = new Set(recent.filter((t) => !before.has(nameOf(t))).map((t) => t.key));
     const moved = new Set(
       recent.filter((t) => {
