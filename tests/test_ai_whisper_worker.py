@@ -1394,6 +1394,61 @@ def test_each_pack_ticks_seconds_of_audio_and_a_cancel_between_packs_stops(
     assert not os.path.exists(request["out"])
 
 
+def _cancel_during_decode(sherpa, base, nth):
+    """Make the `nth` decode (1-based) outlast a tick, with the ✕ landing on it:
+    the next `report_or_cancel` answers "cancelled", as the real reply does."""
+    import time as time_module
+
+    recognizer = sherpa.recognizer
+    real = type(recognizer).decode_stream
+    seen = []
+
+    def decode_stream(stream):
+        seen.append(1)
+        if len(seen) == nth:
+            base.cancel_on_tick = 1
+            time_module.sleep(0.15)
+        return real(recognizer, stream)
+
+    recognizer.decode_stream = decode_stream
+
+
+def test_a_cancel_during_the_LAST_pack_decode_is_late_and_keeps_the_transcript(
+        worker, base, tmp_path, sherpa, monkeypatch):
+    """CT2 and MLX both refuse to throw away a finished transcript at 99%; the
+    ✕ pressed while the last pack is decoding is the same case."""
+    _loaded_parakeet(worker, sherpa, tmp_path)
+    _decoder(monkeypatch, samples=16000 * 100)
+    _no_vad(monkeypatch, worker, regions=[(0.0, 40.0), (50.0, 90.0)])
+    monkeypatch.setattr(worker, "_TICK_S", 0.01)
+    sherpa.results = [("a.", *_tokens((0.0, " a"), (0.2, "."))),
+                      ("b.", *_tokens((0.0, " b"), (0.2, ".")))]
+    _cancel_during_decode(sherpa, base, nth=2)
+    request = _request(tmp_path)
+
+    result = worker.generate(request)
+
+    assert result["segments"] == 2
+    written = json.loads(open(request["out"], encoding="utf-8").read())
+    assert [s["text"] for s in written["segments"]] == ["a.", "b."]
+
+
+def test_a_cancel_during_an_EARLIER_pack_decode_still_stops_the_run(
+        worker, base, tmp_path, sherpa, monkeypatch):
+    _loaded_parakeet(worker, sherpa, tmp_path)
+    _decoder(monkeypatch, samples=16000 * 100)
+    _no_vad(monkeypatch, worker, regions=[(0.0, 40.0), (50.0, 90.0)])
+    monkeypatch.setattr(worker, "_TICK_S", 0.01)
+    sherpa.results = [("a.", *_tokens((0.0, " a"), (0.2, "."))),
+                      ("b.", *_tokens((0.0, " b"), (0.2, ".")))]
+    _cancel_during_decode(sherpa, base, nth=1)
+    request = _request(tmp_path)
+
+    with pytest.raises(base.Cancelled):
+        worker.generate(request)
+    assert not os.path.exists(request["out"])
+
+
 def test_parakeet_segments_reach_the_partial_file_as_each_pack_lands(
         worker, base, tmp_path, sherpa, monkeypatch):
     _loaded_parakeet(worker, sherpa, tmp_path)
