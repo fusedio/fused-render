@@ -180,7 +180,7 @@ _PINNED_PYTHON_VERSION = "3.12"
 #:
 #: The union of what the two child-environment scrubbers in the package already
 #: strip — `engine._child_env` (`PYTHONPATH`, `PYTHONHOME`, `VIRTUAL_ENV`,
-#: `PYTHONSTARTUP`, read off `fused`'s own `python_compute`) and
+#: `PYTHONSTARTUP`, read off the compute backend's `_STRIPPED_ENV_VARS`) and
 #: `supervisor._child_env` (those minus `VIRTUAL_ENV`, plus `PYTHONEXECUTABLE`,
 #: which the macOS framework build sets). A union rather than a pick: each name
 #: is on one of those lists because it redirects an interpreter somewhere it

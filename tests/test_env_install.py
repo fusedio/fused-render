@@ -49,10 +49,6 @@ from fused_render._view_url_codec import canonical_fs_path
 # 3.10 to constrain. Same reasoning as tests/test_engine_requirements.py.
 pytest.importorskip("tomllib", reason="the fused engine needs Python 3.11+")
 
-requires_fused = pytest.mark.skipif(
-    not engine.available(), reason="fused package not installed (engine falls back)"
-)
-
 HEADER = '# /// script\n# dependencies = ["pip"]\n# ///\n'
 
 
@@ -108,7 +104,7 @@ def _mark(venv_dir, proj) -> None:
 
 
 def test_the_key_is_the_project_folders_path(tmp_path):
-    """Not the requirement set, and not upstream's recipe.
+    """Not the requirement set.
 
     Keying on the folder is what makes every script under it — however deep —
     resolve to one environment. Two folders declaring identical dependencies get
@@ -209,53 +205,11 @@ def test_the_interpreter_handed_to_the_run_is_the_projects_own(tmp_path):
     )
 
 
-@requires_fused
-def test_the_backend_attributes_this_module_reads_still_exist():
-    """Pin the private attributes the loader depends on.
-
-    Only `_python_executable` now: it decides which interpreter `uv sync` builds
-    on, and the backend runs the code, so a rename must be a red test rather than
-    an environment silently built on the wrong ABI. `_venvs_path` is deliberately
-    NOT here any more — the venv is ours and the backend is told about it through
-    `interpreter=`, so there is no directory the two sides have to agree on.
-    """
+def test_the_interpreter_projects_are_built_on_is_the_backends_python_executable(monkeypatch):
+    """`uv sync` builds on the interpreter the backend runs code with."""
     backend = engine.get_backend()
-    missing = [a for a in envinstall.BACKEND_ATTRS if not hasattr(backend, a)]
-    assert not missing, (
-        f"{type(backend).__name__} no longer has {missing}; envinstall reads them "
-        "to stay in step with the interpreter project venvs are built on"
-    )
-    assert "_venvs_path" not in envinstall.BACKEND_ATTRS, (
-        "project venvs live under our own home dir; reaching into upstream's "
-        "private store again would reintroduce the directory-drift failure"
-    )
-
-
-@requires_fused
-def test_a_renamed_backend_attribute_fails_loudly(monkeypatch):
-    """And when it IS missing, the failure says so instead of guessing."""
-
-    class Renamed:
-        pass
-
-    monkeypatch.setattr(engine, "get_backend", lambda: Renamed())
-    with pytest.raises(RuntimeError, match="_python_executable"):
-        envinstall._python_executable()
-
-
-@requires_fused
-def test_the_stripped_env_vars_are_read_off_fused_not_guessed():
-    """engine's probe env must match what the backend really strips.
-
-    A probe run under a different environment than the child gets is a probe that
-    proves nothing — the PYTHONHOME case is exactly that. So the list is read off
-    `python_compute`; this asserts the real attribute is still there, since the
-    literal fallback would otherwise go stale invisibly.
-    """
-    from fused.agent_core.backends.local import python_compute
-
-    assert hasattr(python_compute, "_STRIPPED_ENV_VARS")
-    assert set(engine._stripped_env_vars()) == set(python_compute._STRIPPED_ENV_VARS)
+    monkeypatch.setattr(backend, "python_executable", "/the/pinned/python")
+    assert envinstall._python_executable() == "/the/pinned/python"
 
 
 def _install_worker():
@@ -315,28 +269,16 @@ def test_the_install_worker_strips_everything_the_backend_does():
     backend's own list does not carry. What must never happen is the worker
     missing something the backend knows is dangerous.
     """
+    from fused_render.compute.backend import _STRIPPED_ENV_VARS
+
     worker = _install_worker()
-    assert set(worker._STRIPPED_ENV_VARS) >= set(engine._stripped_env_vars())
+    assert set(worker._STRIPPED_ENV_VARS) >= set(_STRIPPED_ENV_VARS)
 
 
-# --- the precedence `run_python`'s interpreter fast path rests on --------------
+# --- the interpreter a call names is the one that runs it ----------------------
 #
-# `run_python` skips the venv entirely when the app interpreter already satisfies
-# every requirement in a header, and it does that by passing `interpreter=` and NO
-# requirements. That is only correct because upstream reads `interpreter` FIRST and
-# never looks at `requirements` once it is set (`_execute_sync`, and stated in
-# `compute_base.py`: "`interpreter`, when set … wins over `requirements`"). Nothing
-# tested that precedence. If upstream ever flipped it to union the two, every
-# fast-path run would silently start building the multi-GB venv the fast path
-# exists to avoid — no error, just the old bill back. These two tests fail loudly
-# instead.
-#
-# Related hazard, deliberately NOT exercised here because we never trigger it:
-# `compute_base.execute()` sets `resolved_interpreter` from a uv workflow venv when
-# `project`/`project_dir` is passed, AND swaps the cache `env_component` to
-# `wv.env_component` — so with a project, requirements drop out of both the venv
-# and the cache identity. `engine._execute` passes neither argument; were it ever
-# to, "requirements were honoured" would stop being true on the venv path too.
+# `run_python` hands the backend an interpreter on every call: the app's own
+# python when a header is already satisfied, the project's venv python otherwise.
 
 
 class _StopBeforeSpawn(BaseException):
@@ -347,23 +289,13 @@ class _StopBeforeSpawn(BaseException):
     """
 
 
-@requires_fused
-def test_upstream_still_lets_the_interpreter_win_over_requirements(monkeypatch):
-    """Both arguments given: the interpreter runs the child, no venv is built."""
-    from fused.agent_core.backends.local import python_compute as pc
-
-    built = []
-    monkeypatch.setattr(
-        pc, "ensure_requirements_venv",
-        lambda *a, **k: built.append(a) or "/nonexistent/venv/bin/python",
-    )
+def test_the_backend_runs_the_child_on_the_interpreter_it_is_given(monkeypatch):
+    """The call's interpreter, not the backend default, runs the child."""
+    from fused_render.compute import backend as compute_backend
 
     backend = engine.get_backend()
     monkeypatch.setattr(type(backend), "_ensure_dispatcher",
                         lambda self: type("D", (), {"host_dir": "/tmp"})(),
-                        raising=True)
-    monkeypatch.setattr(type(backend), "_ensure_venv",
-                        lambda self: pytest.fail("built the bare venv"),
                         raising=True)
 
     spawned = []
@@ -372,69 +304,22 @@ def test_upstream_still_lets_the_interpreter_win_over_requirements(monkeypatch):
         spawned.append(cmd)
         raise _StopBeforeSpawn()
 
-    monkeypatch.setattr(pc.subprocess, "run", _run)
+    monkeypatch.setattr(compute_backend.subprocess, "run", _run)
 
     with pytest.raises(_StopBeforeSpawn):
-        backend._execute_sync(
-            code="print(1)",
-            interpreter="/the/app/interpreter",
-            requirements=["pandas>=2.0.0"],
-        )
+        backend._execute_sync(code="print(1)", interpreter="/the/app/interpreter")
 
-    assert not built, (
-        "upstream built a requirements venv despite `interpreter` being set; the "
-        "app-interpreter fast path in run_python is no longer safe"
-    )
     assert spawned and spawned[0][0] == "/the/app/interpreter", (
         f"the child ran on {spawned[0][0] if spawned else None}, not the interpreter"
-    )
-
-
-@requires_fused
-def test_engine_never_hands_the_backend_both_interpreter_and_requirements(monkeypatch):
-    """Our side of the same contract: the two are mutually exclusive at the call.
-
-    Passing both would read as "install these INTO that interpreter", which is not
-    what upstream does with it — and on the fast path the requirements are exactly
-    the set we have just proven is already present.
-    """
-    import asyncio
-
-    calls = {}
-
-    class _Backend:
-        def _execute_sync(self, **kw):
-            calls["sync"] = kw
-            return "ok"
-
-        async def execute(self, **kw):
-            calls["execute"] = kw
-            return "ok"
-
-    monkeypatch.setattr(engine, "get_backend", lambda: _Backend())
-
-    asyncio.run(engine._execute("code", ["pandas>=2.0.0"], "/the/app/interpreter", {}))
-    assert calls["sync"]["interpreter"] == "/the/app/interpreter"
-    assert "requirements" not in calls["sync"], (
-        "requirements travelled alongside interpreter; upstream would ignore them, "
-        "so passing them can only mislead a future reader"
-    )
-
-    calls.clear()
-    asyncio.run(engine._execute("code", ["pandas>=2.0.0"], None, {}))
-    assert calls["execute"]["requirements"] == ["pandas>=2.0.0"]
-    assert not calls["execute"].get("interpreter"), (
-        "the venv path must not pin an interpreter, or requirements stop mattering"
     )
 
 
 def test_the_bundled_uv_is_found_beside_the_interpreter(tmp_path, monkeypatch):
     """The macOS bundle has no `venv`/`ensurepip`/`pip`, so uv is not optional.
 
-    `fused`'s venv builder calls `shutil.which("uv")` and otherwise falls back to
-    `<python> -m venv`, which on a DMG fails with "No module named venv"
-    (measured). So the uv shipped at `Contents/Resources/bin/uv` has to be found
-    AND put on the worker's PATH.
+    A venv build falls back to `<python> -m venv` without uv, which on a DMG fails
+    with "No module named venv" (measured). So the uv shipped at
+    `Contents/Resources/bin/uv` has to be found AND put on the worker's PATH.
 
     Deliberately not gated on `sys.frozen`: py2app's boot script sets that, so
     anything reaching this code without the app launcher would miss the bundled uv
@@ -577,9 +462,8 @@ def test_an_interpreter_uv_NAMES_but_that_does_not_run_is_refused(
     tmp_path, monkeypatch, _fresh_script_python
 ):
     """Resolved is not the same as usable. A path that cannot be spawned would
-    otherwise reach upstream's `python_identity`, which runs it to build the key —
-    turning a bad resolution into a failure on the /api/run request path instead
-    of a fact we established once, ourselves, off it."""
+    otherwise fail on the /api/run request path instead of being a fact we
+    established once, off it."""
     _uv_stub(tmp_path, monkeypatch, finds=str(tmp_path / "not-there"))
     monkeypatch.setattr(envinstall, "_running_version", lambda: (3, 14))
     assert envinstall.script_python_ready() is False
@@ -613,7 +497,7 @@ def test_a_machine_with_no_uv_at_all_keeps_working_as_before(
 ):
     """A source checkout without uv must not become unusable to gain a pin.
 
-    Without uv there is no way to find or fetch a managed 3.12, and upstream's
+    Without uv there is no way to find or fetch a managed 3.12, and the
     builder already falls back to `<python> -m venv` there. So the answer is the
     pre-D214 behaviour — build from ours — which is worse than 3.12 but is what
     that machine could always do, and is a working server rather than a broken one.
@@ -724,7 +608,6 @@ def test_a_not_ready_verdict_is_never_CACHED(tmp_path, monkeypatch, _fresh_scrip
     assert envinstall.script_python() == str(exe)
 
 
-@requires_fused
 def test_no_312_yet_reports_NOT_installed_whatever_the_marker_says(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -744,7 +627,7 @@ def test_no_312_yet_reports_NOT_installed_whatever_the_marker_says(
     # resolution answers "not ready" — which is the very short-circuit under test,
     # so the baseline would assert the post-condition and pass for the wrong
     # reason on 3.12 while failing outright on 3.11 (which is what CI's
-    # fused-engine job pins, and the only job where @requires_fused runs at all).
+    # 3.11 job pins).
     monkeypatch.setattr(envinstall, "script_python_ready", lambda: True)
     assert envinstall.is_installed(proj) is True  # baseline: the marker is trusted
 
@@ -760,14 +643,12 @@ def test_no_312_yet_reports_NOT_installed_whatever_the_marker_says(
     )
 
 
-@requires_fused
 def test_no_project_never_needs_an_interpreter(monkeypatch, _fresh_script_python):
     """No project means no venv, so the pin is irrelevant — and must not block."""
     monkeypatch.setattr(envinstall, "script_python_ready", lambda: False)
     assert envinstall.is_installed(None) is True
 
 
-@requires_fused
 def test_the_bootstrap_reports_under_its_OWN_key_not_a_venv_key(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -797,7 +678,6 @@ def test_the_bootstrap_reports_under_its_OWN_key_not_a_venv_key(
     assert envinstall.progress(envinstall.PYTHON_BOOTSTRAP_KEY) is not None
 
 
-@requires_fused
 def test_start_REPORTS_the_key_it_used_rather_than_leaving_it_to_be_recomputed(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -821,7 +701,6 @@ def test_start_REPORTS_the_key_it_used_rather_than_leaving_it_to_be_recomputed(
     assert envinstall.start(proj)["key"] == envinstall.venv_key_for(proj)
 
 
-@requires_fused
 def test_start_says_whether_THIS_CALL_claimed_the_install(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -861,7 +740,6 @@ def test_start_says_whether_THIS_CALL_claimed_the_install(
 # (`projectenv.state_digest`).
 
 
-@requires_fused
 def test_a_permanently_incompatible_install_is_not_retried_on_the_same_manifest(
     tmp_path, monkeypatch
 ):
@@ -898,7 +776,6 @@ def test_a_permanently_incompatible_install_is_not_retried_on_the_same_manifest(
     )
 
 
-@requires_fused
 def test_editing_the_manifest_lets_the_next_attempt_run(tmp_path, monkeypatch):
     """The poison record's whole point is to be invalidated by the one thing
     that makes a retry legitimate: the user fixed `pyproject.toml`. A digest
@@ -927,7 +804,6 @@ def test_editing_the_manifest_lets_the_next_attempt_run(tmp_path, monkeypatch):
     assert rec["claimed"] is True
 
 
-@requires_fused
 def test_user_confirmed_build_bypasses_the_poison_record(tmp_path, monkeypatch):
     """The explicit "install anyway" retry (`/api/env/install`'s `allow_build`,
     which now also sets `user_confirmed_build`) must always reach a real
@@ -956,7 +832,6 @@ def test_user_confirmed_build_bypasses_the_poison_record(tmp_path, monkeypatch):
     assert spawned[0][2].get("allow_build") is True
 
 
-@requires_fused
 def test_a_declarative_allow_build_does_not_bypass_the_poison_record(tmp_path, monkeypatch):
     """The bug code review caught: `allow_build=True` with no
     `user_confirmed_build` is exactly the shape `ai/supervisor.py._ensure_venv`
@@ -1037,7 +912,6 @@ def _wait_until(predicate, timeout=30.0):
     raise AssertionError(f"condition never became true within {timeout}s")
 
 
-@requires_fused
 def test_start_mirrors_the_install_into_a_jobs_dock_row(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -1067,7 +941,6 @@ def test_start_mirrors_the_install_into_a_jobs_dock_row(
     assert row["state"] == "done"
 
 
-@requires_fused
 def test_the_mirrored_row_points_at_the_app_folder(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -1118,7 +991,6 @@ def test_the_mirrored_row_accepts_a_pathlib_project_dir(monkeypatch):
     assert type(paged[0]["page"]) is str
 
 
-@requires_fused
 def test_dismissing_the_dock_row_cancels_the_real_install(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -1154,7 +1026,6 @@ def test_dismissing_the_dock_row_cancels_the_real_install(
     )
 
 
-@requires_fused
 def test_a_cancel_pressed_right_after_the_row_opens_is_not_wiped(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -1188,7 +1059,6 @@ def test_a_cancel_pressed_right_after_the_row_opens_is_not_wiped(
     assert envinstall.progress(rec["key"])["error"] == "the install was cancelled"
 
 
-@requires_fused
 def test_a_superseded_mirror_does_not_touch_the_retrys_row(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -1233,7 +1103,6 @@ def test_a_superseded_mirror_does_not_touch_the_retrys_row(
     assert _job(job_id)["cancel_requested"], "the ✕ on the retry's row was wiped"
 
 
-@requires_fused
 def test_a_needs_build_refusal_mirrors_as_waiting_not_error(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -1276,7 +1145,6 @@ def test_a_needs_build_refusal_mirrors_as_waiting_not_error(
     )
 
 
-@requires_fused
 def test_a_platform_incompatible_refusal_mirrors_as_a_plain_language_error(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -1326,7 +1194,6 @@ def test_a_platform_incompatible_refusal_mirrors_as_a_plain_language_error(
     assert "Distribution" in prog["error"], "uv's raw stderr must stay verbatim in progress"
 
 
-@requires_fused
 def test_a_needs_build_row_flips_back_to_running_on_the_retry(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -1373,7 +1240,6 @@ def test_a_needs_build_row_flips_back_to_running_on_the_retry(
     _wait_until(lambda: (j := _job(job_id)) and j["state"] == "done" and j)
 
 
-@requires_fused
 def test_a_successful_retry_clears_the_needs_build_row_caption(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -1419,7 +1285,6 @@ def test_a_successful_retry_clears_the_needs_build_row_caption(
     )
 
 
-@requires_fused
 def test_a_joining_caller_starts_no_second_mirror_thread(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -1465,7 +1330,6 @@ def test_a_joining_caller_starts_no_second_mirror_thread(
     _wait_until(lambda: (j := _job(f"sys:env-install:{key}")) and j["state"] == "done" and j)
 
 
-@requires_fused
 def test_a_stale_cancel_requested_does_not_kill_a_fresh_attempt(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -1521,7 +1385,6 @@ def test_a_stale_cancel_requested_does_not_kill_a_fresh_attempt(
     assert prog["error"] == "the install was cancelled"
 
 
-@requires_fused
 def test_a_retry_inside_the_poll_window_leaves_one_live_mirror_thread(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -1590,7 +1453,6 @@ def test_a_retry_inside_the_poll_window_leaves_one_live_mirror_thread(
     _wait_until(lambda: (j := _job(job_id)) and j["state"] == "done" and j)
 
 
-@requires_fused
 def test_a_vanished_progress_record_and_claim_ends_the_mirror_thread(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -1621,7 +1483,6 @@ def test_a_vanished_progress_record_and_claim_ends_the_mirror_thread(
     assert "disappeared" in (row.get("message") or "")
 
 
-@requires_fused
 def test_the_bootstrap_rounds_jobs_row_is_titled_for_the_interpreter(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -1667,7 +1528,6 @@ def test_the_bootstrap_rounds_jobs_row_is_titled_for_the_interpreter(
                 and j["state"] == "done" and j)
 
 
-@requires_fused
 def test_report_job_false_opts_out_of_the_generic_mirror(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -1697,7 +1557,6 @@ def test_report_job_false_opts_out_of_the_generic_mirror(
     )
 
 
-@requires_fused
 def test_the_resolved_script_interpreter_reaches_the_worker(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -1726,13 +1585,12 @@ class _FakePopen:
     pid = 4242
 
 
-@requires_fused
 def test_the_ready_marker_is_the_index_of_readiness_not_the_directory(
     tmp_path, monkeypatch
 ):
     """A half-built venv (no marker) must read as NOT ready.
 
-    `ensure_requirements_venv` deletes and rebuilds a marker-less directory, so
+    The install worker deletes and rebuilds a marker-less directory, so
     treating "the directory exists" as installed would skip the loader and hand
     the request the very build it was meant to move off the request path.
 
@@ -1760,7 +1618,6 @@ def test_the_ready_marker_is_the_index_of_readiness_not_the_directory(
 # --- the venv also has to match the declaration it was built from --------------
 
 
-@requires_fused
 def test_editing_the_declaration_makes_a_ready_venv_report_not_installed(
     tmp_path, monkeypatch
 ):
@@ -1782,7 +1639,6 @@ def test_editing_the_declaration_makes_a_ready_venv_report_not_installed(
     )
 
 
-@requires_fused
 def test_renaming_a_project_keeps_its_venv_installed_no_rebuild(tmp_path, monkeypatch):
     """The in-tree venv travels with the folder, so a rename is not an orphan.
 
@@ -1803,7 +1659,6 @@ def test_renaming_a_project_keeps_its_venv_installed_no_rebuild(tmp_path, monkey
     assert envinstall.is_installed(moved) is True
 
 
-@requires_fused
 def test_a_ready_venv_with_no_sidecar_reports_not_installed(tmp_path, monkeypatch):
     """A venv that cannot say what it holds cannot be trusted to hold it.
 
@@ -1819,7 +1674,6 @@ def test_a_ready_venv_with_no_sidecar_reports_not_installed(tmp_path, monkeypatc
     assert envinstall.is_installed(proj) is False
 
 
-@requires_fused
 def test_a_stale_declaration_does_not_spend_the_rebuild_budget(tmp_path, monkeypatch):
     """A normal edit is not corruption, and must not be bounded like one.
 
@@ -1842,7 +1696,6 @@ def test_a_stale_declaration_does_not_spend_the_rebuild_budget(tmp_path, monkeyp
     )
 
 
-@requires_fused
 def test_a_locked_project_that_gains_a_dependency_goes_stale(tmp_path, monkeypatch):
     """The requirement the digest exists for: an edit is picked up automatically.
 
@@ -1861,7 +1714,6 @@ def test_a_locked_project_that_gains_a_dependency_goes_stale(tmp_path, monkeypat
     assert envinstall.is_installed(proj) is False
 
 
-@requires_fused
 def test_a_locked_project_with_an_untouched_manifest_stays_fresh(tmp_path, monkeypatch):
     """The other half: nothing moved, so nothing is rebuilt on every request."""
     proj = _project(tmp_path, deps=["cowsay"])
@@ -1876,13 +1728,13 @@ def test_a_locked_project_with_an_untouched_manifest_stays_fresh(tmp_path, monke
 # --- a marker is a claim, and the claim is verified once (D212) ----------------
 #
 # The macOS DMG shipped an interpreter that could not self-locate without
-# PYTHONHOME, and `python_compute` strips PYTHONHOME from every child — so a venv
+# PYTHONHOME, and the backend strips PYTHONHOME from every child — so a venv
 # built from it recorded a base prefix that does not exist on the user's machine
 # and every child of that venv died with `ModuleNotFoundError`. The venv cache key
 # folds in only the interpreter path and version, both constants inside the .app,
 # so an app upgrade did not change the key and nothing ever revalidated: the
 # marker was permanent and so was the breakage. These tests pin the two halves of
-# the fix — the probe, and the marker deletion that lets upstream rebuild.
+# the fix — the probe, and the marker deletion that lets the builder rebuild.
 
 
 def _runnable_venv_python(venv_dir: str) -> str:
@@ -1898,18 +1750,17 @@ def _runnable_venv_python(venv_dir: str) -> str:
     return exe
 
 
-@requires_fused
 def test_a_marked_venv_that_cannot_run_is_not_installed_and_loses_its_marker(
     tmp_path, monkeypatch
 ):
     """The DMG bug, reduced: a marker over a venv whose python does not work.
 
-    Deleting the marker is load-bearing, not tidying. Upstream's
-    `ensure_requirements_venv` returns immediately when the marker exists, so
+    Deleting the marker is load-bearing, not tidying. The
+    install worker returns immediately when the marker exists, so
     reporting "not installed" while leaving it in place would make `/api/run`
     answer `needs_install`, the loader run the install worker, the worker find the
     marker and do nothing, and the page ask to install again — forever. The
-    missing marker is what makes upstream rmtree and rebuild.
+    missing marker is what makes the builder rmtree and rebuild.
     """
     proj = _project(tmp_path, deps=["some-dist"])
     venv_dir = Path(envinstall.venv_dir_for(proj))
@@ -1919,10 +1770,9 @@ def test_a_marked_venv_that_cannot_run_is_not_installed_and_loses_its_marker(
     # No interpreter at all is the cheapest unrunnable venv and the one shape that
     # behaves the same on every OS; the exits-nonzero shape is covered below.
     assert not envinstall.is_installed(proj)
-    assert not marker.exists(), "the marker must go, or upstream will not rebuild"
+    assert not marker.exists(), "the marker must go, or the builder will not rebuild"
 
 
-@requires_fused
 def test_a_marked_venv_whose_python_FAILS_is_not_installed(tmp_path, monkeypatch):
     """Present but broken, which is what the real bug looked like.
 
@@ -1943,7 +1793,6 @@ def test_a_marked_venv_whose_python_FAILS_is_not_installed(tmp_path, monkeypatch
     assert not (venv_dir / envinstall.READY_MARKER).exists()
 
 
-@requires_fused
 def test_the_venv_probe_runs_at_most_once_per_venv_per_process(tmp_path, monkeypatch):
     """The cost ceiling. A probe per request would be a subprocess per request.
 
@@ -1967,7 +1816,6 @@ def test_the_venv_probe_runs_at_most_once_per_venv_per_process(tmp_path, monkeyp
     assert probes == [str(venv_dir)]
 
 
-@requires_fused
 def test_a_missing_marker_never_probes(tmp_path, monkeypatch):
     """Nothing to validate: the marker's absence is already the whole answer.
 
@@ -1981,7 +1829,6 @@ def test_a_missing_marker_never_probes(tmp_path, monkeypatch):
     assert probes == []
 
 
-@requires_fused
 def test_a_rebuilt_venv_is_not_stuck_on_the_earlier_failed_verdict(
     tmp_path, monkeypatch
 ):
@@ -2022,7 +1869,6 @@ def _marked_venv(proj, *, runnable=False):
     return venv_dir
 
 
-@requires_fused
 def test_a_probe_that_TIMES_OUT_destroys_nothing_and_reports_installed(
     tmp_path, monkeypatch
 ):
@@ -2049,7 +1895,6 @@ def test_a_probe_that_TIMES_OUT_destroys_nothing_and_reports_installed(
     assert str(venv_dir) not in envinstall._VALIDATED
 
 
-@requires_fused
 def test_a_probe_that_cannot_be_SPAWNED_destroys_nothing_and_reports_installed(
     tmp_path, monkeypatch
 ):
@@ -2073,15 +1918,14 @@ def test_a_probe_that_cannot_be_SPAWNED_destroys_nothing_and_reports_installed(
 
 
 def test_the_probe_classifies_a_returncode_the_way_engine_probe_does(monkeypatch):
-    """`_venv_runs` alone, with no `fused` and no venv — the classification IS the
+    """`_venv_runs` alone, with no venv — the classification IS the
     behaviour under test.
 
     `engine._probe` already carries this exact rule ("a child killed by a SIGNAL
     — `returncode < 0` — is inconclusive: it never got to answer"), which D277
     gave it while naming this function as the sibling it was not applying it to.
-    Written without the `requires_fused` gate the sibling tests need, because
-    the branch it covers is the one that decides whether a user's environment
-    gets deleted, and it should not go unrun wherever that wheel is absent.
+    The branch it covers is the one that decides whether a user's environment
+    gets deleted.
     """
     def _answer(code, **fields):
         monkeypatch.setattr(
@@ -2097,7 +1941,6 @@ def test_the_probe_classifies_a_returncode_the_way_engine_probe_does(monkeypatch
         assert _answer(-signal_number) is None, f"signal {signal_number}"
 
 
-@requires_fused
 def test_a_probe_KILLED_BY_A_SIGNAL_destroys_nothing_and_reports_installed(
     tmp_path, monkeypatch
 ):
@@ -2133,7 +1976,6 @@ def test_a_probe_KILLED_BY_A_SIGNAL_destroys_nothing_and_reports_installed(
         monkeypatch.undo()
 
 
-@requires_fused
 def test_the_readiness_probe_spawns_off_the_fork_path(tmp_path, monkeypatch):
     """`close_fds=False`, so CPython uses posix_spawn rather than fork()+exec.
 
@@ -2164,7 +2006,6 @@ def test_the_readiness_probe_spawns_off_the_fork_path(tmp_path, monkeypatch):
     )
 
 
-@requires_fused
 def test_a_missing_or_unexecutable_interpreter_IS_definite_corruption(
     tmp_path, monkeypatch
 ):
@@ -2188,7 +2029,6 @@ def test_a_missing_or_unexecutable_interpreter_IS_definite_corruption(
         monkeypatch.undo()  # restore subprocess.run (and venvs_path) per iteration
 
 
-@requires_fused
 def test_only_ONE_rebuild_is_attempted_per_venv_per_process(tmp_path, monkeypatch):
     """The bound that stops a futile download loop across runs.
 
@@ -2230,7 +2070,6 @@ def test_only_ONE_rebuild_is_attempted_per_venv_per_process(tmp_path, monkeypatc
     assert len(probes) == 2, probes
 
 
-@requires_fused
 def test_reset_venv_validation_cache_clears_the_rebuild_bound(tmp_path, monkeypatch):
     """A fresh process gets a fresh rebuild — that is what heals a fixed DMG.
 
@@ -2254,7 +2093,6 @@ def test_reset_venv_validation_cache_clears_the_rebuild_bound(tmp_path, monkeypa
     assert not marker.exists()
 
 
-@requires_fused
 def test_a_caller_that_LOSES_the_unmark_race_reports_not_installed(
     tmp_path, monkeypatch
 ):
@@ -2292,7 +2130,6 @@ def test_a_caller_that_LOSES_the_unmark_race_reports_not_installed(
     assert not marker.exists()
 
 
-@requires_fused
 def test_the_bound_warns_ONCE_per_venv_however_many_requests_arrive(
     tmp_path, monkeypatch, caplog
 ):
@@ -2321,7 +2158,6 @@ def test_the_bound_warns_ONCE_per_venv_however_many_requests_arrive(
     assert marker.exists()
 
 
-@requires_fused
 def test_concurrent_callers_still_pay_no_probe_per_request(tmp_path, monkeypatch):
     """The ceiling, under threads: probes are per venv, not per call.
 
@@ -2366,7 +2202,6 @@ def test_concurrent_callers_still_pay_no_probe_per_request(tmp_path, monkeypatch
     assert len(probes) == racing, "a probe per request in the steady state"
 
 
-@requires_fused
 def test_a_verdict_probed_ACROSS_a_discard_is_never_cached(tmp_path, monkeypatch):
     """The invariant: a verdict is only ever cached against the generation it judged.
 
@@ -2403,7 +2238,6 @@ def test_a_verdict_probed_ACROSS_a_discard_is_never_cached(tmp_path, monkeypatch
     assert len(probes) == 2, "the next call must re-probe, not trust the stale verdict"
 
 
-@requires_fused
 def test_a_marker_REPLACED_during_the_probe_is_not_unlinked(tmp_path, monkeypatch):
     """Identity, not existence: the marker we answer about must be the one we judged.
 
@@ -2435,7 +2269,6 @@ def test_a_marker_REPLACED_during_the_probe_is_not_unlinked(tmp_path, monkeypatc
     assert envinstall._marker_stamp(str(marker)) != before, "setup: stamp unchanged"
 
 
-@requires_fused
 def test_a_TRUE_verdict_is_not_returned_once_the_marker_has_VANISHED(
     tmp_path, monkeypatch
 ):
@@ -2465,7 +2298,6 @@ def test_a_TRUE_verdict_is_not_returned_once_the_marker_has_VANISHED(
     assert not marker.exists()
 
 
-@requires_fused
 def test_reset_ends_every_generation_so_an_inflight_probe_cannot_store(
     tmp_path, monkeypatch
 ):
@@ -2490,7 +2322,6 @@ def test_reset_ends_every_generation_so_an_inflight_probe_cannot_store(
     assert str(venv_dir) not in envinstall._VALIDATED
 
 
-@requires_fused
 def test_a_stalled_probe_of_one_venv_does_not_block_another(tmp_path, monkeypatch):
     """One wedged venv must not freeze `is_installed` for every other venv.
 
@@ -2537,7 +2368,6 @@ def test_a_stalled_probe_of_one_venv_does_not_block_another(tmp_path, monkeypatc
 # --- /api/run's pre-flight ----------------------------------------------------
 
 
-@requires_fused
 def test_a_declared_project_with_no_venv_asks_for_an_install(tmp_path, monkeypatch):
     """The pre-flight answers instead of blocking on a download."""
     # `_needs_install_dict` (engine.py) keys its answer on `venv_key_for`
@@ -2574,7 +2404,6 @@ def _tests_conftest(config):
     raise LookupError(f"{here} is not a registered pytest plugin")
 
 
-@requires_fused
 def test_a_project_whose_venv_exists_just_runs(tmp_path, monkeypatch, warm_fused_backend_venv, request):
     """No pre-flight interference once the venv is there."""
     import asyncio
@@ -2598,12 +2427,9 @@ def test_a_project_whose_venv_exists_just_runs(tmp_path, monkeypatch, warm_fused
 
 
 @pytest.mark.parametrize("boom", [
-    # `is_installed` reaches `fused.agent_core...` unguarded — no fused, no import.
-    ImportError("No module named 'fused'"),
-    # `_backend_attr` raises this BY DESIGN when an upstream private attribute
-    # disappears: guessing would build the environment on the wrong interpreter.
-    # routers/env.py already catches (ImportError, RuntimeError) for exactly this pair.
-    RuntimeError("this fused build's Backend has no '_python_executable'"),
+    # `is_installed` needs `uv` and a usable pinned Python; either can be missing.
+    ImportError("No module named 'uv'"),
+    RuntimeError("no usable pinned Python"),
 ])
 def test_a_preflight_that_cannot_answer_returns_the_house_error_shape(
     tmp_path, monkeypatch, boom
@@ -2661,7 +2487,6 @@ def test_a_headerless_script_never_asks_for_an_install(tmp_path, monkeypatch):
 # --- the worker ---------------------------------------------------------------
 
 
-@requires_fused
 def test_the_worker_builds_the_venv_and_reports_done(tmp_path, monkeypatch):
     """End to end through the real worker: a venv appears, progress says done.
 
@@ -2682,7 +2507,6 @@ def test_the_worker_builds_the_venv_and_reports_done(tmp_path, monkeypatch):
     assert envinstall.is_installed(proj)
 
 
-@requires_fused
 def test_a_resolver_failure_reaches_the_user_verbatim(tmp_path, monkeypatch):
     """The whole point of making this visible.
 
@@ -2703,7 +2527,6 @@ def test_a_resolver_failure_reaches_the_user_verbatim(tmp_path, monkeypatch):
     assert not envinstall.is_installed(proj)
 
 
-@requires_fused
 def test_a_worker_that_died_unreaped_is_not_reported_alive(tmp_path, monkeypatch):
     """The zombie trap, which the pid-2**31-1 test below cannot see.
 
@@ -2775,7 +2598,6 @@ def test_a_pid_this_module_did_not_spawn_is_never_reaped():
     )
 
 
-@requires_fused
 def test_a_dead_worker_is_reported_as_finished_not_pending(tmp_path, monkeypatch):
     """A killed installer must not leave the page polling forever.
 
@@ -2794,7 +2616,6 @@ def test_a_dead_worker_is_reported_as_finished_not_pending(tmp_path, monkeypatch
     assert "without finishing" in prog["error"]
 
 
-@requires_fused
 @pytest.mark.parametrize("final", ["success", "real error"])
 def test_a_worker_that_finished_during_the_liveness_check_is_not_called_a_crash(
     tmp_path, monkeypatch, final
@@ -2839,7 +2660,6 @@ def test_a_worker_that_finished_during_the_liveness_check_is_not_called_a_crash(
         assert prog["pct"] == 100
 
 
-@requires_fused
 @pytest.mark.parametrize("detached", [True, False], ids=["group-leader", "same-group"])
 def test_cancellation_kills_the_recorded_pid(tmp_path, monkeypatch, detached):
     """Cancel by the pid the worker recorded, and say the install was cancelled.
@@ -2878,7 +2698,6 @@ def test_cancellation_kills_the_recorded_pid(tmp_path, monkeypatch, detached):
         child.wait()
 
 
-@requires_fused
 def test_cancelling_a_pid_in_our_own_group_does_not_kill_us(tmp_path, monkeypatch):
     """The guard, asserted directly rather than only via the parametrized case.
 
@@ -2896,7 +2715,6 @@ def test_cancelling_a_pid_in_our_own_group_does_not_kill_us(tmp_path, monkeypatc
     assert sent == [(os.getpid(), signal.SIGTERM)]
 
 
-@requires_fused
 def test_the_worker_is_told_the_venv_directory_rather_than_deriving_it(
     tmp_path, monkeypatch
 ):
@@ -2930,7 +2748,6 @@ def test_the_worker_is_told_the_venv_directory_rather_than_deriving_it(
     assert argv[6] == projectenv.uv_cache_dir()
 
 
-@requires_fused
 def test_a_none_cache_sends_the_worker_the_empty_string_not_the_word_None(
     tmp_path, monkeypatch
 ):
@@ -2962,7 +2779,6 @@ def test_a_none_cache_sends_the_worker_the_empty_string_not_the_word_None(
     assert argv[6] == ""
 
 
-@requires_fused
 def test_the_worker_syncs_the_project_into_the_named_venv(tmp_path, monkeypatch):
     """`uv sync`, in the project dir, with the venv redirected out of it.
 
@@ -3102,7 +2918,6 @@ def test_no_explicit_cache_passes_through_an_ambient_UV_CACHE_DIR_unchanged(
     assert seen["env"]["UV_CACHE_DIR"] == "/home/runner/work/_temp/setup-uv-cache"
 
 
-@requires_fused
 def test_the_sync_leaves_the_users_link_mode_alone(tmp_path, monkeypatch):
     """`UV_LINK_MODE` is inherited, never set and never stripped.
 
@@ -3146,7 +2961,6 @@ def test_the_sync_leaves_the_users_link_mode_alone(tmp_path, monkeypatch):
     assert seen["env"]["UV_LINK_MODE"] == "copy"
 
 
-@requires_fused
 def test_the_sync_skips_default_dependency_groups(tmp_path, monkeypatch):
     """PY-16 makes `[project].dependencies` the WHOLE declaration.
 
@@ -3207,7 +3021,6 @@ def _fake_build_run(seen, venv_dir, worker):
     return _fake_run
 
 
-@requires_fused
 def test_no_build_is_the_default(tmp_path, monkeypatch):
     """A dependency with no matching wheel must fail resolution, not silently
     run that package's own build backend with no consent asked for it —
@@ -3230,7 +3043,6 @@ def test_no_build_is_the_default(tmp_path, monkeypatch):
     assert "--no-build" in seen["cmd"]
 
 
-@requires_fused
 def test_no_build_also_skips_installing_the_local_project(tmp_path, monkeypatch):
     """`--no-build` alone refuses to build the LOCAL PROJECT too, not just its
     dependencies — a plain `uv init` scaffold declares `[build-system]` with
@@ -3261,7 +3073,6 @@ def test_no_build_also_skips_installing_the_local_project(tmp_path, monkeypatch)
     assert "--no-install-project" in seen["cmd"]
 
 
-@requires_fused
 def test_allow_build_drops_no_build(tmp_path, monkeypatch):
     """The explicit "install anyway" retry (runtime.js, after a no-wheel
     resolver error) sets `allow_build=True`, and that must be the ONLY way
@@ -3285,7 +3096,6 @@ def test_allow_build_drops_no_build(tmp_path, monkeypatch):
     assert "--no-install-project" not in seen["cmd"]
 
 
-@requires_fused
 def test_a_locked_project_is_never_synced_frozen(tmp_path, monkeypatch):
     """`--frozen` turns a manifest edit into an error instead of reconciling it.
 
@@ -3330,7 +3140,6 @@ def test_a_locked_project_is_never_synced_frozen(tmp_path, monkeypatch):
     )
 
 
-@requires_fused
 def test_the_worker_writes_the_sidecar_before_the_ready_marker(tmp_path, monkeypatch):
     """Order matters: a venv must never read as ready before it can say what it holds.
 
@@ -3392,7 +3201,6 @@ def test_the_worker_writes_the_sidecar_before_the_ready_marker(tmp_path, monkeyp
     assert projectenv.sidecar_matches(venv_dir, proj)
 
 
-@requires_fused
 def test_an_unmarked_venv_directory_is_removed_before_syncing(tmp_path, monkeypatch):
     """D212\'s repair has to be a replacement, not a reconcile — for a directory
     that has no usable interpreter to reconcile in the first place.
@@ -3440,7 +3248,6 @@ def test_an_unmarked_venv_directory_is_removed_before_syncing(tmp_path, monkeypa
     assert not os.path.exists(os.path.join(venv_dir, "leftover"))
 
 
-@requires_fused
 def test_an_unmarked_venv_that_still_runs_is_adopted_not_destroyed(tmp_path, monkeypatch):
     """A hand-built venv — `uv venv`, `python -m venv`, a plain `uv sync` run
     by the developer themselves in their own project folder — has no
@@ -3493,7 +3300,6 @@ def test_an_unmarked_venv_that_still_runs_is_adopted_not_destroyed(tmp_path, mon
     )
 
 
-@requires_fused
 def test_an_unmarked_venv_whose_probe_is_inconclusive_is_left_alone(tmp_path, monkeypatch):
     """A timeout or a transient `OSError` from the readiness probe is not
     evidence about the venv — `_venv_runs`\' own three-valued discipline, and
@@ -3573,7 +3379,6 @@ def test_venv_runs_reports_none_on_timeout(tmp_path, monkeypatch):
     assert worker._venv_runs(venv_dir) is None
 
 
-@requires_fused
 def test_a_read_only_project_syncs_in_a_mirror_beside_the_venv(tmp_path, monkeypatch):
     """`uv sync` WRITES `uv.lock` into the directory it runs in.
 
@@ -3630,7 +3435,6 @@ def test_a_read_only_project_syncs_in_a_mirror_beside_the_venv(tmp_path, monkeyp
     assert seen["env"]["UV_PROJECT_ENVIRONMENT"] == venv_dir
 
 
-@requires_fused
 def test_a_writable_project_gets_no_mirror(tmp_path, monkeypatch):
     """The mirror is a fallback, not a layer: a user's folder syncs in itself.
 
@@ -3691,7 +3495,6 @@ def _seed_mirror(proj, mirror, *, lock, manifest="same"):
         fh.write(current if manifest == "same" else manifest)
 
 
-@requires_fused
 def test_the_mirror_keeps_the_lock_it_RESOLVED_last_time(tmp_path, monkeypatch):
     """Which is the reason the mirror is a directory that persists at all.
 
@@ -3744,7 +3547,6 @@ def test_the_mirror_keeps_the_lock_it_RESOLVED_last_time(tmp_path, monkeypatch):
         assert "the first build resolved" in fh.read()
 
 
-@requires_fused
 def test_a_lock_the_project_SHIPS_wins_over_the_mirrors(tmp_path, monkeypatch):
     """Source beats derived, the same way the manifest does.
 
@@ -3795,7 +3597,6 @@ def test_a_lock_the_project_SHIPS_wins_over_the_mirrors(tmp_path, monkeypatch):
         assert "shipped with the app" in fh.read()
 
 
-@requires_fused
 def test_the_error_for_a_read_only_project_names_the_PROJECT(tmp_path, monkeypatch):
     """Not the mirror, which is an implementation detail of the home dir.
 
@@ -3881,7 +3682,6 @@ def test_the_write_probe_leaves_nothing_behind(tmp_path):
     assert sorted(os.listdir(proj)) == before
 
 
-@requires_fused
 def test_a_CHANGED_manifest_expires_the_mirrors_lock(tmp_path, monkeypatch):
     """Otherwise a widened ceiling in a runner manifest never actually widens.
 
@@ -3921,7 +3721,6 @@ def test_a_CHANGED_manifest_expires_the_mirrors_lock(tmp_path, monkeypatch):
         assert mirrored == fh.read(), "the record must be updated to what it now holds"
 
 
-@requires_fused
 def test_a_MISSING_project_folder_still_reports_itself_and_builds_no_mirror(tmp_path):
     """"Not there" must not be diagnosed as "read-only".
 
@@ -3942,7 +3741,6 @@ def test_a_MISSING_project_folder_still_reports_itself_and_builds_no_mirror(tmp_
     )
 
 
-@requires_fused
 def test_an_UNREADABLE_source_manifest_does_not_leave_a_vouched_for_lock(tmp_path, monkeypatch):
     """The gate must not read "I could not read either file" as "they agree".
 
@@ -3983,7 +3781,6 @@ def test_an_UNREADABLE_source_manifest_does_not_leave_a_vouched_for_lock(tmp_pat
     )
 
 
-@requires_fused
 def test_the_mirror_drops_a_file_the_source_STOPPED_shipping(tmp_path, monkeypatch):
     """A withdrawn `.python-version` must not govern every later build forever.
 
@@ -4017,7 +3814,6 @@ def test_the_mirror_drops_a_file_the_source_STOPPED_shipping(tmp_path, monkeypat
     assert os.path.exists(os.path.join(mirror, "uv.lock"))
 
 
-@requires_fused
 def test_the_mirror_carries_uv_s_own_config_beside_the_manifest(tmp_path, monkeypatch):
     """`uv.toml` is a resolution input, so leaving it out changes the answer.
 
@@ -4043,7 +3839,6 @@ def test_the_mirror_carries_uv_s_own_config_beside_the_manifest(tmp_path, monkey
         assert "internal.example" in fh.read()
 
 
-@requires_fused
 def test_a_bundled_venvs_sidecar_records_its_place_in_the_PACKAGE(tmp_path, monkeypatch):
     """Not this launch's mount path, which no later launch can resolve.
 
@@ -4086,7 +3881,6 @@ def test_a_bundled_venvs_sidecar_records_its_place_in_the_PACKAGE(tmp_path, monk
     assert recorded == "<fused_render>/ai/runners/faster_whisper"
 
 
-@requires_fused
 def test_a_bundled_runner_resolves_to_the_home_store_and_still_gets_a_mirror(tmp_path, monkeypatch):
     """The two mechanisms compose: package identity picks the STORE, writability
     picks whether the SYNC needs a mirror. A synthetic package layout (the same
@@ -4115,7 +3909,6 @@ def test_a_bundled_runner_resolves_to_the_home_store_and_still_gets_a_mirror(tmp
     assert root == venv_dir + ".src", "a read-only runner folder must sync through its mirror"
 
 
-@requires_fused
 def test_a_users_folder_still_gets_its_absolute_path_in_the_sidecar(tmp_path, monkeypatch):
     """The identity only relativises what is genuinely inside the package.
 
@@ -4154,7 +3947,6 @@ def test_a_users_folder_still_gets_its_absolute_path_in_the_sidecar(tmp_path, mo
         assert json.load(fh)["path"] == proj
 
 
-@requires_fused
 def test_an_empty_interpreter_slot_means_the_workers_OWN_python(tmp_path, monkeypatch):
     """None has always meant "the backend's own interpreter", never a version.
 
@@ -4186,7 +3978,6 @@ def test_an_empty_interpreter_slot_means_the_workers_OWN_python(tmp_path, monkey
     )
 
 
-@requires_fused
 def test_the_worker_spawns_with_the_interpreter_that_will_run_the_code(
     tmp_path, monkeypatch
 ):
@@ -4210,7 +4001,6 @@ def test_the_worker_spawns_with_the_interpreter_that_will_run_the_code(
     assert argv[0][-2] == "", "None must travel as the empty string"
 
 
-@requires_fused
 def test_the_installer_is_spawned_off_the_fork_path(tmp_path, monkeypatch):
     """`start_new_session=True` here is a crash, not a detail.
 
@@ -4283,7 +4073,6 @@ def test_an_already_leading_worker_still_installs(monkeypatch):
     worker._detach()  # must not raise
 
 
-@requires_fused
 def test_no_uv_is_reported_as_a_lost_capability_not_a_crash(tmp_path, monkeypatch):
     """uv IS the builder now, so without it a project venv is impossible (D231).
 
@@ -4313,7 +4102,6 @@ def test_no_uv_is_reported_as_a_lost_capability_not_a_crash(tmp_path, monkeypatc
     )
 
 
-@requires_fused
 def test_a_machine_with_no_uv_still_serves_the_app_interpreter_path(
     tmp_path, monkeypatch, _fresh_script_python
 ):
@@ -4340,7 +4128,6 @@ def test_a_machine_with_no_uv_still_serves_the_app_interpreter_path(
     assert projectenv.project_env_for(str(plain / "a.py")) is None
 
 
-@requires_fused
 def test_the_worker_imports_neither_fused_render_nor_fused(tmp_path):
     """A fresh process must reach `_build` with neither package imported.
 
@@ -4378,7 +4165,7 @@ def test_the_worker_imports_neither_fused_render_nor_fused(tmp_path):
 
 # --- the worker's heartbeat (D213) --------------------------------------------
 #
-# `ensure_requirements_venv` runs uv behind `capture_output=True`, so between the
+# The worker runs uv behind `capture_output=True`, so between the
 # `install` record and the terminal one NOTHING was emitted — minutes on a cold
 # cache with imagecodecs/pyproj. The client polled every 500ms and repainted an
 # identical record, which is the whole "stuck for a long time" report. The
@@ -4479,7 +4266,7 @@ def test_the_heartbeat_refreshes_ts_and_detail_without_faking_progress(
     """Liveness, not advancement.
 
     `pct` stays at 25 for the whole download because there IS no computable
-    percentage — upstream captures uv's output, so nothing here can see per-package
+    percentage — uv's output is captured, so nothing here can see per-package
     progress. Animating the number upward would be inventing data, and the number
     is what a user trusts most. What changes instead is elapsed time and `ts`: the
     record proves the install is alive without claiming to know how far along it is.
@@ -5171,7 +4958,6 @@ def test_the_worker_reads_an_empty_interpreter_argument_as_none(tmp_path, monkey
     assert seen == [sys.executable, "/usr/bin/python3"]
 
 
-@requires_fused
 def test_starting_twice_does_not_spawn_a_second_worker(tmp_path, monkeypatch):
     """Two pages (or a double-click) must share one install, not race it.
 
@@ -5190,7 +4976,6 @@ def test_starting_twice_does_not_spawn_a_second_worker(tmp_path, monkeypatch):
     assert len(spawned) == 1
 
 
-@requires_fused
 def test_concurrent_starts_spawn_exactly_one_worker(tmp_path, monkeypatch):
     """The race the sequential test cannot see.
 
@@ -5232,7 +5017,6 @@ def test_concurrent_starts_spawn_exactly_one_worker(tmp_path, monkeypatch):
     assert len(spawned) == 1, f"{len(spawned)} workers spawned for one venv"
 
 
-@requires_fused
 def test_two_scripts_in_one_project_still_spawn_exactly_one_worker(
     tmp_path, monkeypatch
 ):
@@ -5300,7 +5084,6 @@ def test_two_scripts_in_one_project_still_spawn_exactly_one_worker(
     assert spawned == [results[0]["key"]]
 
 
-@requires_fused
 def test_a_stale_claim_from_a_dead_installer_is_taken_over(tmp_path, monkeypatch):
     """A crashed installer must not wedge the key forever.
 
@@ -5391,7 +5174,6 @@ def test_claim_takeover_still_turns_on_claim_age_not_on_progress(monkeypatch):
     assert envinstall._claim(key) is True, "an abandoned claim must be takeable"
 
 
-@requires_fused
 def test_joining_an_install_mid_spawn_yields_a_pollable_record(tmp_path, monkeypatch):
     """The user-visible bug, at the layer that produced it.
 
@@ -5426,7 +5208,6 @@ def test_joining_an_install_mid_spawn_yields_a_pollable_record(tmp_path, monkeyp
     assert polled["done"] is False
 
 
-@requires_fused
 def test_the_spawn_record_never_overwrites_a_record_the_worker_already_wrote(
     tmp_path, monkeypatch
 ):
@@ -5470,7 +5251,6 @@ def test_the_spawn_record_never_overwrites_a_record_the_worker_already_wrote(
     )
 
 
-@requires_fused
 def test_a_retry_does_not_inherit_the_previous_attempt_s_record(tmp_path, monkeypatch):
     """A taken-over claim starts from no record, not from the old one.
 
@@ -5501,7 +5281,6 @@ def test_a_retry_does_not_inherit_the_previous_attempt_s_record(tmp_path, monkey
     assert envinstall.progress(key)["error"] is None
 
 
-@requires_fused
 def test_start_is_a_no_op_once_the_venv_is_installed(tmp_path, monkeypatch):
     proj = _project(tmp_path, deps=["pip"])
     venv_dir = envinstall.venv_dir_for(proj)

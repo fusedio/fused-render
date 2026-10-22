@@ -68,13 +68,10 @@ def api_env_install(body: dict = Body(...), x_fused: str | None = Header(default
     # marker-scoped dependency.
     reqs = projectenv.applicable_dependencies_of(project)
 
-    # envinstall speaks to the fused backend: `_backend_attr` raises RuntimeError
-    # BY DESIGN when an upstream attribute is missing (guessing would build the
-    # environment on the wrong interpreter), and reaching it imports
-    # `fused.agent_core...`. Both are reachable here without the fused engine — a
-    # page loaded before the engine preference was switched, or any direct API
-    # call — and uncaught they become a 500 the loader shows as a bare
-    # "HTTP 500", discarding the diagnostic that was the whole point.
+    # envinstall raises RuntimeError / ImportError with a sentence naming the
+    # missing prerequisite (no `uv`, no usable pinned Python); uncaught they
+    # become a 500 the loader shows as a bare "HTTP 500", discarding the
+    # diagnostic that was the whole point.
     # False unless the request says otherwise — the client only ever sets this
     # on its explicit "install anyway" retry, after a first attempt's resolver
     # error named a dependency with no matching wheel (`runtime.js`'s

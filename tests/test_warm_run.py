@@ -19,10 +19,6 @@ from fused_render import engine, envinstall, executor, warm_run
 
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="warm run is POSIX only")
 
-requires_fused = pytest.mark.skipif(
-    not engine.available(), reason="fused package not installed (engine falls back)"
-)
-
 TRIVIAL = "def main(x=1):\n    return {'x': x}\n"
 
 
@@ -262,7 +258,6 @@ def test_disabled_switch_never_spawns_spares(tmp_path, monkeypatch):
 
 # ---- fused kind ----------------------------------------------------------------
 
-@requires_fused
 @pytest.mark.parametrize("name", sorted(CASES))
 def test_fused_warm_equals_cold(tmp_path, monkeypatch, name):
     src, params = CASES[name]
@@ -274,7 +269,6 @@ def test_fused_warm_equals_cold(tmp_path, monkeypatch, name):
     assert _strip(warm) == _strip(cold)
 
 
-@requires_fused
 def test_fused_udf_and_dataframe_equal_cold(tmp_path, monkeypatch):
     srcs = {
         "udf": ("import fused\n@fused.udf\ndef udf(x: int = 1):\n    return {'x': x}\n", {"x": "7"}),
@@ -296,7 +290,6 @@ def test_fused_udf_and_dataframe_equal_cold(tmp_path, monkeypatch):
         wait_ready(1)
 
 
-@requires_fused
 def test_fused_runner_is_a_fresh_prespawned_process(tmp_path):
     prime_fused(tmp_path)
     path = script(tmp_path, "import os\ndef main():\n    return [os.getpid(), os.getppid()]\n", "p.py")
@@ -310,7 +303,6 @@ def test_fused_runner_is_a_fresh_prespawned_process(tmp_path):
     assert pid2 != pid1
 
 
-@requires_fused
 def test_fused_timeout_kills_the_whole_group(tmp_path):
     prime_fused(tmp_path)
     backend = engine.get_backend()
@@ -335,7 +327,6 @@ def test_fused_timeout_kills_the_whole_group(tmp_path):
     assert run_f(script(tmp_path, TRIVIAL, "ok.py"))["ok"]
 
 
-@requires_fused
 def test_fused_success_does_not_kill_script_daemons(tmp_path):
     prime_fused(tmp_path)
     path = script(tmp_path, (
@@ -354,38 +345,6 @@ def test_fused_success_does_not_kill_script_daemons(tmp_path):
         os.kill(pid, signal.SIGKILL)
 
 
-@requires_fused
-def test_fused_declines_when_backend_shape_differs(tmp_path, monkeypatch):
-    from test_engine import _FakeBackend, _FakeResult
-
-    class NoHandlerFiles(_FakeBackend):
-        _ensure_dispatcher = _child_env = _make_event = _result_from_run = None
-        _timeout_seconds = 5
-
-    backend = NoHandlerFiles(_FakeResult(return_value="1"))
-    monkeypatch.setattr(engine, "get_backend", lambda: backend)
-    assert warm_run.execute_fused(backend, "x=1", {}, sys.executable) is None
-    out = run_f(script(tmp_path, TRIVIAL))
-    assert out["ok"]
-    assert backend.calls[0]["via"] == "_execute_sync"
-
-
-@requires_fused
-def test_fused_declines_a_different_execute_sync_signature():
-    backend = engine.get_backend()
-
-    class Drifted(type(backend)):
-        def _execute_sync(self, code, input_files=None, interpreter=None):  # noqa: D401
-            raise AssertionError("must not run")
-
-    drifted = Drifted.__new__(Drifted)
-    drifted.__dict__.update(backend.__dict__)
-    assert warm_run._backend_ok(backend) is True
-    assert warm_run._backend_ok(drifted) is False
-    assert warm_run.execute_fused(drifted, "x=1", {}, sys.executable) is None
-
-
-@requires_fused
 def test_fused_site_stamp_discards_spare(tmp_path):
     prime_fused(tmp_path)
     site = warm_run._site_dirs(engine.app_interpreter())
@@ -399,7 +358,6 @@ def test_fused_site_stamp_discards_spare(tmp_path):
     assert wait_until(lambda: not any(pid_alive(p) for p in old), 3)
 
 
-@requires_fused
 def test_discard_all_hooks(tmp_path):
     prime_builtin(tmp_path)
     assert warm_run.spare_pids()
@@ -411,20 +369,16 @@ def test_discard_all_hooks(tmp_path):
     prime_builtin(tmp_path)
     engine.reset_app_packages_cache()
     assert wait_until(lambda: not warm_run.spare_pids(), 3)
-    prime_builtin(tmp_path)
-    engine.invalidate()
-    assert wait_until(lambda: not warm_run.spare_pids(), 3)
 
 
 # ---- interpreter start-up settings must match the cold path ----------------------
 
-@requires_fused
 @pytest.mark.parametrize("var,value", [("PYTHONPATH", "/wr-extra-path"), ("PYTHONSAFEPATH", "1")])
 def test_fused_startup_env_difference_falls_back_to_cold(tmp_path, monkeypatch, var, value):
     """The handler hands the runner an env that differs from the spare's in a
     setting Python reads at start-up: the warm B' (already booted) cannot honour
     it, so the call must take the cold runner and see the same sys.path."""
-    from fused.agent_core.backends.local import python_compute
+    from fused_render.compute import backend as python_compute
     monkeypatch.setattr(
         python_compute, "_RUN_SCRIPT",
         f"import os\nos.environ[{var!r}] = {value!r}\n" + python_compute._RUN_SCRIPT)

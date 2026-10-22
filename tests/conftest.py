@@ -816,9 +816,6 @@ def _no_startup_engine_warm(monkeypatch):
     from fused_render import engine
 
     monkeypatch.setattr(engine, "warm_in_background", lambda: None)
-    engine._available_cached = None
-    yield
-    engine._available_cached = None
 
 
 @pytest.fixture(autouse=True)

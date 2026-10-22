@@ -30,9 +30,9 @@ descriptors), parked in `json.load(stdin)`. Claiming it is `communicate(request)
 it is exactly the cold child, born early.
 
 ``fused`` — process A' (`A_BOOT`) which pre-imports the stdlib, starts the
-user-code runner B' (`B_BOOT`) with the same default `close_fds=True` the upstream
+user-code runner B' (`B_BOOT`) with the same default `close_fds=True` the
 handler uses, reports `ready`, and waits for one line naming the per-call
-`run.py`. A' then runs that upstream `run.py` unmodified; the only difference is
+`run.py`. A' then runs that `run.py` unmodified; the only difference is
 that the handler's `subprocess.run([sys.executable, _runner.py, ...])` is routed,
 by a narrow shim, to the already-booted B'. Any call the shim does not recognise
 goes to the real `subprocess.run`.
@@ -41,7 +41,6 @@ from __future__ import annotations
 
 import atexit
 import hashlib
-import inspect
 import json
 import logging
 import os
@@ -66,18 +65,6 @@ BOOT_WAIT_S = 0.25      # claim waits at most this for a spare that is still boo
 FAIL_LIMIT = 3          # consecutive failures before a key is parked ...
 FAIL_PARK_S = 60.0      # ... for this long
 
-# The one `_execute_sync` this module mirrors. Checked once per backend class so
-# an upstream signature change degrades quietly to the cold path (and loudly in
-# tests/test_warm_run.py).
-_EXPECTED_EXECUTE_SYNC_PARAMS = (
-    "self", "code", "input_files", "test_file", "monitoring", "monitor_interval",
-    "invoke_depth", "interpreter", "requirements", "project_root", "entrypoint",
-)
-_EXPECTED_CHILD_ENV_PARAMS = ("self", "invoke_dir", "invoke_depth", "interpreter", "project_root")
-_REQUIRED_BACKEND_ATTRS = (
-    "_ensure_dispatcher", "_write_handler_files", "_make_event", "_child_env",
-    "_result_from_run", "_timeout_seconds", "_execute_sync",
-)
 
 
 def enabled() -> bool:
@@ -608,7 +595,7 @@ def prime(backend, app_interpreter) -> None:
         env = dict(os.environ)
         _POOL.claim("builtin", exe, _fingerprint(exe, env),
                     [exe, "-c", BUILTIN_BOOT, executor.CHILD], env, seed_only=True)
-    if backend is None or not _backend_ok(backend):
+    if backend is None:
         return
     interpreter = app_interpreter()
     if not interpreter or not os.path.isabs(interpreter):
@@ -621,39 +608,15 @@ def prime(backend, app_interpreter) -> None:
 
 # ---- fused kind -------------------------------------------------------------------
 
-_shape_cache: dict[type, bool] = {}
-
-
-def _backend_ok(backend) -> bool:
-    cls = type(backend)
-    cached = _shape_cache.get(cls)
-    if cached is not None:
-        return cached
-    ok = all(hasattr(backend, a) for a in _REQUIRED_BACKEND_ATTRS)
-    if ok:
-        try:
-            ok = (tuple(inspect.signature(backend._execute_sync).parameters)
-                  == _EXPECTED_EXECUTE_SYNC_PARAMS[1:]
-                  and tuple(inspect.signature(backend._child_env).parameters)
-                  == _EXPECTED_CHILD_ENV_PARAMS[1:])
-        except (TypeError, ValueError):
-            ok = False
-    _shape_cache[cls] = ok
-    return ok
-
-
 def execute_fused(backend, code: str, input_files: dict | None, interpreter: str):
     """`backend._execute_sync(code=, input_files=, interpreter=)` with the
-    interpreter start-up already paid, or None when no spare is ready / the
-    backend's shape is not the one pinned here (the caller then runs the cold
-    `_execute_sync`). Mirrors `_execute_sync` step for step except the spawn."""
+    interpreter start-up already paid, or None when no spare is ready (the
+    caller then runs the cold `_execute_sync`). Mirrors `_execute_sync` step for step except the spawn."""
     try:
         if not enabled() or not interpreter or not os.path.isabs(interpreter):
             return None
-        if not _backend_ok(backend):
-            return None
-        from fused.agent_core.backends.base import ExecutionResult
-        from fused.agent_core.backends.local import python_compute
+        from .compute.backend import _RUN_SCRIPT
+        from .compute.result import ExecutionResult
 
         dispatcher = backend._ensure_dispatcher()
         env = backend._child_env(dispatcher.host_dir, 0, interpreter, None)
@@ -670,10 +633,10 @@ def execute_fused(backend, code: str, input_files: dict | None, interpreter: str
         with tempfile.TemporaryDirectory() as tmpdir:
             tmppath = Path(tmpdir)
             backend._write_handler_files(tmppath)
-            event = backend._make_event(code, input_files, None, tmppath, None)
+            event = backend._make_event(code, input_files, tmppath)
             (tmppath / "event.json").write_text(json.dumps(event))
             run_py = tmppath / "run.py"
-            run_py.write_text(python_compute._RUN_SCRIPT)
+            run_py.write_text(_RUN_SCRIPT)
 
             go = (json.dumps({"run_py": str(run_py)}) + "\n").encode()
             t0 = time.monotonic()
@@ -688,7 +651,7 @@ def execute_fused(backend, code: str, input_files: dict | None, interpreter: str
             duration_ms = int((time.monotonic() - t0) * 1000)
             return backend._result_from_run(
                 proc.poll(), out.decode("utf-8", "replace"), err.decode("utf-8", "replace"),
-                duration_ms, None)
+                duration_ms)
     except BaseException:
         _kill(spare)
         raise

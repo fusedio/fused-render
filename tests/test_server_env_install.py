@@ -34,23 +34,6 @@ HEADERS = {"X-Fused": "1"}
 # Must match `JOB_PING_KEY` in both runtime.js and frontend/src/platform/lib/jobs.ts.
 JOB_PING_KEY_PY = "fused-render:jobs-ping"
 
-# Two tests below reach `envinstall.venv_key_for`, which composes `fused`'s own
-# `requirements_venv_id`/`venv_key` — deliberately, so the loader's key is the
-# backend's key and not a re-derivation. That makes `fused` a real requirement
-# for them, and the `test-python` matrix job does not install the extra.
-#
-# The skip is made LOUD rather than left silent: these two are the only coverage
-# of "requirements come from the .py, never the request body", and the
-# `fused-engine` job's zero-skip gate (.github/workflows/test.yml) lists this file
-# so a skip THERE fails the build. A silent CI skip is how this whole class of bug
-# reached a shipped DMG.
-requires_fused = pytest.mark.skipif(
-    not engine.available(),
-    reason="needs the `fused` extra for the backend's own venv-key helpers "
-           "(the fused-engine job asserts this does not skip)",
-)
-
-
 def _client(tmp_path):
     return TestClient(create_app(start_dir=str(tmp_path)))
 
@@ -112,7 +95,6 @@ def test_install_surfaces_a_malformed_manifest_instead_of_500ing(tmp_path):
     assert "nothing to install" in resp.json()["error"]
 
 
-@requires_fused
 def test_install_derives_the_project_from_the_file_not_the_body(tmp_path, monkeypatch):
     """The rule that keeps the loader's venv and the run's venv the same one."""
     client = _client(tmp_path)
@@ -140,7 +122,6 @@ def test_install_derives_the_project_from_the_file_not_the_body(tmp_path, monkey
     assert started == [str(tmp_path)]
 
 
-@requires_fused
 def test_install_resolves_a_relative_py_against_the_page(tmp_path, monkeypatch):
     """Same `py`/`html` contract /api/run uses, so the loader addresses the
     identical file the failed run did."""
@@ -289,19 +270,14 @@ def test_cancel_of_an_unknown_key_is_a_clean_no_op(tmp_path):
 
 
 @pytest.mark.parametrize("boom", [
-    # `start` reaches `fused.agent_core...` unguarded — no fused, no import.
-    ImportError("No module named 'fused'"),
-    ModuleNotFoundError("No module named 'fused.agent_core'"),
-    # `_backend_attr` raises this BY DESIGN, with the diagnostic that matters.
-    RuntimeError("this fused build's Backend has no '_python_executable', so the "
-                 "install loader cannot tell which interpreter project venvs use"),
+    # `start` needs `uv` and a usable pinned Python; either can be missing.
+    ImportError("No module named 'uv'"),
+    RuntimeError("no usable pinned Python, so the install loader cannot tell "
+                 "which interpreter project venvs use"),
 ])
 def test_an_engine_that_cannot_answer_is_reported_not_500ed(tmp_path, monkeypatch, boom):
-    """Reachable without the fused engine: a page loaded before the engine
-    preference was switched, or any direct API call.
-
-    `_backend_attr`'s message was written to be READ by the user — a 500 renders
-    in the loader as a bare "HTTP 500" and throws that diagnostic away.
+    """The loader's diagnostics are written to be READ by the user — a 500
+    renders in the loader as a bare "HTTP 500" and throws them away.
     """
     from fused_render import envinstall
 

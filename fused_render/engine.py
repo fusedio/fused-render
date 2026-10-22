@@ -1,11 +1,9 @@
-"""Runs a Python file through the fused local compute backend, when installed.
+"""Runs a Python file through the local compute backend.
 
-Re-introduction of the D55-era engine (rolled back in D67) with a different
-posture (D69): the fused engine is **optional**. When the `fused` package is
-importable, /api/run executes code through `LocalPythonComputeBackend` —
-fresh subprocess per call in a temp exec dir, params delivered via
-`_params.json`. When it is not installed, the built-in executor
-(`executor.py`/`_child.py`) runs unchanged. `available()` is the probe;
+/api/run executes code through `LocalPythonComputeBackend` (`fused_render.compute`)
+— fresh subprocess per call in a temp exec dir, params delivered via
+`_params.json`. The built-in executor (`executor.py`/`_child.py`) stays selectable
+through the preference or `FUSED_RENDER_ENGINE=builtin`.
 `server/common.py`'s `_forced_engine` picks per process.
 
 Which interpreter a script gets is decided by the FOLDER it belongs to, not by
@@ -58,7 +56,6 @@ The wire shape returned here is the built-in executor's
 shape regardless of which engine ran the code.
 """
 import asyncio
-import importlib.util
 import json
 import logging
 import os
@@ -71,6 +68,7 @@ import time
 import traceback
 
 from . import warm_run
+from .compute.backend import _STRIPPED_ENV_VARS, LocalPythonComputeBackend
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +104,7 @@ _backend = None
 #     `executor.py`'s `[sys.executable, _child.py]` works there (D33, and
 #     build_dmg.sh smoke-tests exactly that spawn).
 #   * but that bundled python needs PYTHONHOME to find its runtime, and
-#     `python_compute` STRIPS PYTHONHOME from the child. Measured on a real DMG:
+#     the compute backend STRIPS PYTHONHOME from the child. Measured on a real DMG:
 #     stripped, it reports the BUILD MACHINE's Homebrew framework as its prefix.
 #     So the probe runs under the child's env, not ours, and the macOS bundle
 #     needs the wrapper (`_wrapper_interpreter`) rather than the raw path.
@@ -137,19 +135,13 @@ _app_interpreter_lock = threading.Lock()
 # misconfiguration to fall back from, not a reason to spawn it.
 _APP_PYTHON_ENV = "FUSED_RENDER_APP_PYTHON"
 
-# Mirrors python_compute._STRIPPED_ENV_VARS. Read off the module when it is
-# importable so the probe cannot drift from the env the child actually gets;
-# the literal is the fallback for a fused too old (or too new) to expose it.
-_FALLBACK_STRIPPED = ("PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "PYTHONSTARTUP")
-
 _PROBE = (
     "import json,sys;"
     "print(json.dumps({'prefix': sys.prefix, 'executable': sys.executable}))"
 )
 
 # Where the generated wrapper (see _wrapper_interpreter) lives: under the app's
-# OWN cache, never `fused`'s venvs_path, where it could collide with a
-# requirements key or be deleted by `ensure_requirements_venv`. Named `python` so
+# OWN cache, away from any project venv. Named `python` so
 # every log line and `ps` entry reads as an interpreter.
 _WRAPPER_CACHE = ("cache", "_app_interpreter", "bin")
 _WRAPPER_NAME = "python"
@@ -184,14 +176,6 @@ def reset_app_interpreter_cache() -> None:
     warm_run.discard_all("app interpreter cache reset")
 
 
-def _stripped_env_vars() -> tuple[str, ...]:
-    try:
-        from fused.agent_core.backends.local import python_compute
-    except ImportError:
-        return _FALLBACK_STRIPPED
-    return tuple(getattr(python_compute, "_STRIPPED_ENV_VARS", _FALLBACK_STRIPPED))
-
-
 def _interpreter_candidate() -> tuple[str, bool]:
     """(the interpreter we would like to use, whether it was autodetected)."""
     override = os.environ.get(_APP_PYTHON_ENV)
@@ -203,11 +187,11 @@ def _interpreter_candidate() -> tuple[str, bool]:
 def _child_env() -> dict:
     """The environment the backend will give the child — what the probe must use.
 
-    `python_compute` strips PYTHONHOME/PYTHONPATH/VIRTUAL_ENV/PYTHONSTARTUP. A
+    The backend strips PYTHONHOME/PYTHONPATH/VIRTUAL_ENV/PYTHONSTARTUP. A
     packaged interpreter that only self-locates *because* the app exports
     PYTHONHOME would pass a probe run with our env and then die for real.
     """
-    return {k: v for k, v in os.environ.items() if k not in _stripped_env_vars()}
+    return {k: v for k, v in os.environ.items() if k not in _STRIPPED_ENV_VARS}
 
 
 def _probe(exe: str) -> tuple[dict | None, str, bool]:
@@ -419,12 +403,10 @@ def app_interpreter() -> str | None:
 # interpreter — existed under FIVE distinct keys, and one thirteen-package science
 # stack under four.
 #
-# What makes skipping the venv expressible at all is upstream's precedence rule:
-# `_execute_sync` reads `interpreter` and, when it is set, never looks at
-# `requirements` (`compute_base.execute`'s docstring states it outright, and
-# tests/test_env_install.py pins it). So handing over an interpreter is a claim of
-# full ownership over what is installed — upstream will neither build nor verify
-# anything behind it. That is exactly why every branch below fails CLOSED: this
+# The backend runs whatever interpreter it is handed and never builds or verifies
+# an environment behind it, so handing over an interpreter is a claim of full
+# ownership over what is installed. That is exactly why every branch below fails
+# CLOSED: this
 # path may only be taken when every requirement is PROVEN present, because the
 # alternative to proof is not a slower run, it is a script that dies on its first
 # import with an error about the code rather than about the environment.
@@ -633,39 +615,6 @@ def app_satisfies(requirements: list[str]) -> bool:
         return False
 
 
-def _interpreter_path_available() -> bool:
-    """Can this backend run code on an interpreter WE choose?
-
-    `_execute_sync` is the only route to that (`execute()` derives an interpreter
-    only from a uv workflow project, which a standalone .py has none of), so
-    without it the fast path cannot be taken at all.
-
-    Asked before the pre-flight rather than discovered inside `_execute`, and that
-    ordering is the whole point: a header that declines the fast path must still
-    reach `is_installed`, so a missing venv comes back as `needs_install` and the
-    loader builds it off the request path. Discovering it later would leave
-    `execute(requirements=…)` to build the venv INLINE — a blocking download inside
-    /api/run, which is the exact failure PY-18 exists to remove.
-
-    Note this is a strictly weaker requirement than the header-LESS path's: there,
-    no `_execute_sync` is fatal (D175 — an empty venv has no data stack, so running
-    the script anyway would fail on `import numpy`), because there is nothing to
-    fall back TO. Here the venv path is a perfectly good fallback: slower, more
-    isolated, and exactly what this header did before the fast path existed.
-
-    `get_backend()` raising is one of those "no" answers, not an error to propagate.
-    It raises when `fused` is absent entirely, and this gate is the FIRST thing
-    /api/run touches — so letting it through would make every failure downstream
-    (the pre-flight's `RuntimeError`, `needs_install`, D175) unreachable, replacing
-    each one's specific diagnosis with a bare ModuleNotFoundError from a fast-path
-    probe that was only ever asking an optional question.
-    """
-    try:
-        return hasattr(get_backend(), "_execute_sync")
-    except Exception:  # noqa: BLE001
-        return False
-
-
 def _app_interpreter_if_satisfies(requirements: list[str]) -> str | None:
     """The app interpreter when it already meets `requirements`, else None.
 
@@ -748,40 +697,16 @@ def _resolve_app_interpreter() -> tuple[str | None, bool]:
 
 
 def available() -> bool:
-    """True iff the fused local backend is importable in this process.
-
-    Import failure of any flavor (package absent, too-old Python, a broken
-    install) means "not available" — the caller falls back to the built-in
-    executor rather than surfacing an import error to every /api/run.
-    """
-    try:
-        from fused.agent_core.backends.local import python_compute  # noqa: F401
-    except ImportError:
-        return False
+    """True: the compute backend ships with the app (`fused_render.compute`)."""
     return True
 
 
-# warm() caches both outcomes; invalidate() clears it (mid-session install).
-_available_cached: bool | None = None
-_available_lock = threading.Lock()
-
-
 def warm() -> None:
-    """Import the fused backend once off the request path and cache the result.
-
-    Startup daemon thread: on a fresh install the cold import is ~a minute and
-    left lazy it would freeze the first /api/config that resolves the engine."""
-    global _available_cached
-    t0 = time.monotonic()
-    ok = available()
-    with _available_lock:
-        _available_cached = ok
-    logger.info("engine warm-up: fused backend %s (%.1fs)",
-                "ready" if ok else "unavailable", time.monotonic() - t0)
-    # Seed the pre-spawned interpreters (SPEC PY-20) so the first run after
-    # startup is already warm. Best effort: a failure here is just a cold first run.
+    """Seed the pre-spawned interpreters (SPEC PY-20) off the request path, so the
+    first run after startup is already warm. Best effort: a failure here is just a
+    cold first run."""
     try:
-        warm_run.prime(get_backend() if ok else None, app_interpreter)
+        warm_run.prime(get_backend(), app_interpreter)
     except Exception:  # noqa: BLE001
         logger.debug("warm run priming failed", exc_info=True)
 
@@ -804,39 +729,16 @@ def warm_unless_forced_builtin() -> None:
         warm_in_background()
 
 
-def invalidate() -> None:
-    """Clear the cached availability so the next resolve re-checks (mid-session install)."""
-    global _available_cached
-    with _available_lock:
-        _available_cached = None
-    warm_run.discard_all("engine invalidated")
-
-
-def available_nonblocking() -> bool:
-    """available() without the cold import: warm()'s cached result, else find_spec."""
-    with _available_lock:
-        if _available_cached is not None:
-            return _available_cached
-    return importlib.util.find_spec("fused") is not None
-
-
 def get_backend():
-    # Lazy singleton: importing the backend pulls in the fused package tree,
-    # and constructing it is only needed once per server process. 60s matches
-    # the built-in executor's per-run timeout (executor.DEFAULT_TIMEOUT) — a
-    # cold overview read of a large remote COG legitimately takes ~30-40s, so
-    # the two engines must agree or the cold pyramid analyze dies at 30s here.
+    # Lazy singleton: constructed once per server process. 60s matches the
+    # built-in executor's per-run timeout (executor.DEFAULT_TIMEOUT) — a cold
+    # overview read of a large remote COG legitimately takes ~30-40s, so the two
+    # engines must agree or the cold pyramid analyze dies at 30s here.
     global _backend
     if _backend is None:
-        from fused.agent_core.backends.local.python_compute import LocalPythonComputeBackend
-
         from fused_render import envinstall
         from fused_render.executor import DEFAULT_TIMEOUT
 
-        # cache_storage=None disables result caching explicitly (PY-9: fresh
-        # execution every call). It is the upstream default today, but we may
-        # track a nightly wheel — don't rely on a default staying put.
-        #
         # python_executable pins the base interpreter script venvs are built from
         # to 3.12 (D214). Passed HERE, at the one place the backend is constructed,
         # because `envinstall._python_executable()` reads the attribute straight
@@ -844,64 +746,34 @@ def get_backend():
         # value with one source, and a loader that re-decided it independently
         # could disagree with the backend and fill a directory no run ever reads.
         #
-        # None for every packaged build (they already run 3.12), which is exactly
-        # the value this argument had before D214 — so their venv keys do not move.
+        # None for every packaged build (they already run 3.12), so their venv keys
+        # do not move.
         _backend = LocalPythonComputeBackend(
             timeout_seconds=int(DEFAULT_TIMEOUT),
-            cache_storage=None,
             python_executable=envinstall.script_python(),
         )
     return _backend
 
 
-async def _execute(code: str, requirements: list[str], interpreter: str | None, input_files: dict):
-    """Run `code` on the backend, on `interpreter` when one was resolved.
+async def _execute(code: str, interpreter: str, input_files: dict):
+    """Run `code` on the backend, on `interpreter`.
 
-    The venv path (a script whose folder declares dependencies) goes through the public
-    `execute()`, unchanged. The interpreter path cannot: `execute()` derives an
-    `interpreter` ONLY by resolving a uv workflow venv from a `project` /
-    `project_dir`, and a standalone .py has neither. So it calls the documented
-    subclass contract (`_execute_sync`, whose docstring defines exactly this
-    parameter) directly, off the event loop — which, with `cache_storage=None`,
-    is what `execute()` would have done for these arguments anyway, minus the
-    caching it has already disabled.
-
-    If a future `fused` drops `_execute_sync` this raises rather than quietly
-    running the script in an empty venv: with no baseline requirements (D172)
-    that venv has no data stack, so the "fallback" would fail on the first
-    import with an error about numpy instead of about the real breakage.
+    Every call names its interpreter: the app's own python for a folder with no
+    `pyproject.toml`, the project's venv python otherwise. Off the event loop.
     """
     backend = get_backend()
-    if interpreter is not None:
-        if not hasattr(backend, "_execute_sync"):
-            raise RuntimeError(
-                "this fused build has no LocalPythonComputeBackend._execute_sync, "
-                "so a script with no dependencies of its own cannot be run on this "
-                "app's interpreter. Refusing to run it in an empty script venv, "
-                "which would fail on the first import instead. Pin a fused version "
-                "that provides `_execute_sync`."
-            )
-        else:
-            # Keywords, not positionals: `_execute_sync` takes ten parameters and
-            # a reordering upstream would silently pass `interpreter` as something
-            # else. `requirements` is deliberately omitted — the interpreter wins
-            # over it upstream, and passing both would imply otherwise.
-            # A spare interpreter pair started ahead of time (SPEC PY-20), or None
-            # -> the unchanged cold call below (no spare ready, flag off, or a
-            # backend whose shape `warm_run` does not mirror).
-            warm = await asyncio.to_thread(
-                warm_run.execute_fused, backend, code, input_files, interpreter
-            )
-            if warm is not None:
-                return warm
-            return await asyncio.to_thread(
-                backend._execute_sync,
-                code=code,
-                input_files=input_files,
-                interpreter=interpreter,
-            )
-    return await backend.execute(
-        code=code, requirements=requirements, input_files=input_files
+    # A spare interpreter pair started ahead of time (SPEC PY-20), or None -> the
+    # cold call below (no spare ready, or the flag is off).
+    warm = await asyncio.to_thread(
+        warm_run.execute_fused, backend, code, input_files, interpreter
+    )
+    if warm is not None:
+        return warm
+    return await asyncio.to_thread(
+        backend._execute_sync,
+        code=code,
+        input_files=input_files,
+        interpreter=interpreter,
     )
 
 
@@ -1233,9 +1105,7 @@ async def run_python(path: str, params: dict) -> dict:
     # actually contains.
     requirements = projectenv.applicable_dependencies_of(project) if project else []
 
-    # No project -> the app's own interpreter, no venv (PY-17). `interpreter` and
-    # `requirements` are mutually exclusive upstream (the interpreter branch
-    # ignores requirements silently), so they are never both set here.
+    # No project -> the app's own interpreter, no venv (PY-17).
     interpreter = None
     if project is None:
         # Off the event loop: `app_interpreter` is sync (it is called from sync
@@ -1272,14 +1142,10 @@ async def run_python(path: str, params: dict) -> dict:
         # retries. Only when there IS something to install: an existing venv runs
         # straight through, so the normal case pays one marker stat.
         #
-        # Inside the guard, not before it, for the same reason build_code is:
-        # `is_installed` -> `venv_key_for` reaches into `fused.agent_core...`
-        # unguarded, and `_backend_attr` raises RuntimeError BY DESIGN when an
-        # upstream private attribute disappears (routers/env.py catches exactly
-        # that pair for its own calls). Escaping here made /api/run an unhandled
-        # 500 whose body is `{"error": "<string>"}`, and runtime.js reads
-        # `data.error.message` off that — so the diagnostic `_backend_attr` wrote
-        # to be READ reached the user as the literal word `undefined`.
+        # Inside the guard, not before it, for the same reason build_code is: an
+        # exception escaping here made /api/run an unhandled 500 whose body is
+        # `{"error": "<string>"}`, and runtime.js reads `data.error.message` off
+        # that, so the diagnostic reached the user as the literal word `undefined`.
         #
         # Off the event loop, for the same reason `app_interpreter` above is: since
         # D212 this is not a single `os.path.exists` any more — the first call for a
@@ -1301,18 +1167,13 @@ async def run_python(path: str, params: dict) -> dict:
         # exists to rule out. Unlocked, the trade is the same one it always was:
         # skip a multi-hundred-MB download the app has already paid for.
         #
-        # Inside the try and BEFORE the pre-flight, both deliberately.
-        # `_interpreter_path_available` calls `get_backend()`, which imports the
-        # backend and can raise — out here that would be an unhandled 500 rather
-        # than the house wire shape. And declining the fast path has to fall through
-        # to `is_installed` below, so a missing venv still becomes `needs_install`
-        # instead of an inline download inside this request.
-        #
         # Off the event loop for the same reason `app_interpreter` and
-        # `is_installed` are: both probes behind it spawn a subprocess on their
-        # first call.
+        # `is_installed` are: the probe behind it spawns a subprocess on its
+        # first call. Declining the fast path falls through to `is_installed`
+        # below, so a missing venv becomes `needs_install` instead of an inline
+        # download inside this request.
         locked = bool(project) and projectenv.has_lock(project)
-        if project and requirements and not locked and _interpreter_path_available():
+        if project and requirements and not locked:
             interpreter = await asyncio.to_thread(
                 _app_interpreter_if_satisfies, requirements
             )
@@ -1339,7 +1200,7 @@ async def run_python(path: str, params: dict) -> dict:
         # rather than raising into the request handler as a 500.
         code = build_code(user_code, os.path.dirname(abs_path), abs_path)
         r = await _execute(
-            code, requirements, interpreter,
+            code, interpreter,
             {"_params.json": json.dumps(params or {}).encode()},
         )
     except Exception:

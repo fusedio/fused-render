@@ -29,12 +29,12 @@ lives is `projectenv.venv_dir_for`'s call, not this module's or the backend's �
 `<project_dir>/.venv` for a folder this app can write to, `<home_dir()>/venvs/
 <key>` for one it cannot (a read-only in-package runner folder, an unwritable
 mount, `FUSED_RENDER_VENV_IN_TREE=0`). That is why nothing here reaches for
-upstream's `_venvs_path` any more, and why the split does not matter to it: we
-build the environment with `uv sync` and hand the resulting interpreter to the
-backend as `interpreter=`, so upstream never has to agree with us about a
-directory, in either case. What it DOES still have to agree with us about is
-the base interpreter (`_python_executable`), and that one attribute is still
-read off the live backend rather than restated.
+the backend has no venv directory of its own, and why the split does not matter
+to it: we build the environment with `uv sync` and hand the resulting interpreter
+to the backend as `interpreter=`, in either case. What the backend DOES still have
+to agree with us about is the base interpreter (`_python_executable`), and that
+one attribute is read off the live backend (`python_executable`) rather than
+restated.
 
 **Errors are verbatim.** uv's own stderr is written into `progress.json`
 unchanged. "No solution found ... imagecodecs has no wheels with a matching
@@ -79,9 +79,8 @@ _KEY_RE = re.compile(r"[0-9a-f]{16}")
 # The marker written once a venv is complete. A directory without it is
 # half-built — a `uv sync` that died mid-download leaves a real directory with a
 # real `bin/python` in it — so this, not the directory's existence, is what
-# "installed" means. The name is upstream's (`.openfused-ready`) and stays that
-# way deliberately: the file means the same thing here, and a second spelling
-# for one concept is a second thing to explain.
+# "installed" means. The name (`.openfused-ready`) is pinned by a test: venvs
+# already on disk carry it, and renaming it would make every one look half-built.
 READY_MARKER = ".openfused-ready"
 
 # Every stage the worker can report, in order. Coarse on purpose: see the module
@@ -195,18 +194,6 @@ _ENDINGS: dict[int, int] = {}
 _ENDINGS_KEPT = 32
 _ENDINGS_LOCK = threading.Lock()
 
-# Backend attributes the loader reads to stay in step with it. Named here so
-# `test_the_backend_attributes_this_module_reads_still_exist` can pin them.
-#
-# `_venvs_path` used to be here too and is deliberately gone: project venvs are
-# built by `uv sync` and handed to the backend as `interpreter=`, wherever
-# `projectenv.venv_dir_for` puts them (in the project itself, or under our own
-# home dir for the folders that cannot hold one), so there is no longer a
-# directory the two sides have to agree on. `_python_executable` remains,
-# because the base interpreter still has to be the one the backend was
-# constructed with.
-BACKEND_ATTRS = ("_python_executable",)
-
 # venv directory -> "does its own python actually run" (D212). Populated by
 # `_venv_is_usable`, which is the ONLY reader/writer, and dropped by
 # `is_installed` when the marker goes away. In-process and never persisted: the
@@ -271,30 +258,6 @@ _validated_lock = threading.Lock()
 _VENV_PROBE_TIMEOUT_S = 5
 
 
-def _backend_attr(name: str):
-    """Read `name` off the live backend, or fail saying what broke.
-
-    Deliberately NOT `getattr(backend, name, <default>)`. A default here is the
-    worst kind of fallback in this module: an upstream rename would silently
-    yield `None`, the loader would build the project's environment on a
-    different interpreter than the one the backend runs code with, and every
-    import in it would resolve against the wrong ABI. There is no safe guess, so
-    there is no guess.
-    """
-    from fused_render.engine import get_backend
-
-    backend = get_backend()
-    try:
-        return getattr(backend, name)
-    except AttributeError:
-        raise RuntimeError(
-            f"this fused build's {type(backend).__name__} has no {name!r}, so the "
-            "install loader cannot tell which interpreter project venvs are built "
-            "on. Guessing would build an environment the run cannot use. Pin a "
-            "fused version that provides it."
-        ) from None
-
-
 def _python_executable() -> str | None:
     """The base interpreter the backend builds venvs from (None = ours).
 
@@ -304,7 +267,9 @@ def _python_executable() -> str | None:
     another interpreter than the one the run uses is an ABI mismatch waiting to
     happen.
     """
-    return _backend_attr("_python_executable")
+    from fused_render.engine import get_backend
+
+    return get_backend().python_executable
 
 
 def _running_version() -> tuple[int, int]:
@@ -319,11 +284,8 @@ def _probe_python(path: str) -> bool:
     cannot start and an interpreter of the wrong version are equally unusable as a
     base, and asking separately would cost two spawns to learn less.
 
-    Proven here rather than left to upstream. `python_identity` runs the
-    interpreter itself to build the venv key and raises when it cannot — but that
-    happens inside `venv_key_for`, i.e. on the /api/run pre-flight path, so an
-    unusable resolution would surface as a failed *request* instead of a fact we
-    established once, off the request path, and answered `False` to.
+    Proven here, once and off the request path, so an unusable resolution is a
+    fact answered `False` to rather than a failed /api/run request.
     """
     try:
         proc = subprocess.run(
@@ -331,7 +293,7 @@ def _probe_python(path: str) -> bool:
             capture_output=True, text=True,
             encoding="utf-8", errors="replace",
             # close_fds=False for posix_spawn instead of fork()+exec, the discipline
-            # `venvs.py` documents at module level: this server has almost certainly
+            # the compute backend's spawn documents: this server has almost certainly
             # touched pyproj/rasterio, and a forked child runs PROJ's atfork handler,
             # which closes an inherited-but-invalid proj.db handle and SIGSEGVs before
             # exec. posix_spawn also needs a dir-qualified argv[0], which uv's output
@@ -352,8 +314,7 @@ def _resolve_script_python() -> tuple[str | None, bool]:
     """`(interpreter, ready)` — what script venvs are built from, or why not yet.
 
     `interpreter` is what the backend should be given: **None means "ours"**, the
-    value the backend has always had, so `python_identity` produces the identical
-    key it produces today. `ready` is False only when this machine has no usable
+    value the backend has always had, so venv keys do not move. `ready` is False only when this machine has no usable
     3.12 yet and one has to be downloaded before anything can be keyed at all.
 
     The order is deliberate:
@@ -403,7 +364,7 @@ def _resolve_script_python() -> tuple[str | None, bool]:
             # guessed: run from a checkout whose own `.venv` is 3.12, uv answers
             # `.venv/bin/python3` — a venv counts as managed when its BASE
             # interpreter is. Building script venvs from another venv's python would
-            # key them (via `python_identity`) to a per-worktree path that `dev.sh`
+            # key them to a per-worktree path that `dev.sh`
             # now deletes outright on a version mismatch, orphaning every script venv
             # on the machine. `--system` excludes virtual environments, which leaves
             # the genuinely managed interpreter.
@@ -572,7 +533,7 @@ def _venv_runs(venv_dir: str) -> bool | None:
     probe and destroys nothing.
 
     `-c ""` deliberately: the question is not "are the requirements importable"
-    (that is upstream's job and would cost a real import) but the far more basic
+    (that would cost a real import) but the far more basic
     "does this interpreter reach the point of executing a program". A venv whose
     `home`/base prefix no longer exists dies before that — in the DMG case with
     `ModuleNotFoundError: No module named 'encodings'` or a bare fatal error — so
@@ -580,7 +541,7 @@ def _venv_runs(venv_dir: str) -> bool | None:
 
     Run with `PYTHONHOME`/`PYTHONPATH`/`VIRTUAL_ENV`/`PYTHONSTARTUP` scrubbed,
     borrowed from `engine._child_env()` rather than restated here: that is derived
-    from `python_compute._STRIPPED_ENV_VARS` when fused is importable, so the probe
+    from the backend's `_STRIPPED_ENV_VARS`, so the probe
     cannot drift from the environment the child actually gets. Running it with OUR
     env is the whole reason the bug was invisible — inside the .app, PYTHONHOME is
     set and makes a broken venv look fine (build_dmg.sh's smokes made the same
@@ -796,7 +757,7 @@ def is_installed(project_dir: str) -> bool:
     find one, and its absence is final — but since D212 it is treated as a *claim*
     that gets verified once per process rather than as proof. The macOS DMG is why:
     its bundled interpreter could not self-locate without PYTHONHOME, which
-    `python_compute` strips from every child, so a venv built from it recorded a
+    the compute backend strips from every child, so a venv built from it recorded a
     base prefix that does not exist on the user's machine and every child of that
     venv died. And the venv cache key is the project folder's path — a constant
     across app upgrades — so upgrading the app did not change
@@ -851,8 +812,7 @@ def is_installed(project_dir: str) -> bool:
         # templates are re-staged with `copy2` on every release, which would make
         # an mtime rule resync byte-identical dependencies at every upgrade.
         #
-        # The marker is NOT unlinked here. Unlike upstream's builder, our worker
-        # does not short-circuit on it — `uv sync` reconciles the environment
+        # The marker is NOT unlinked here. Our worker does not short-circuit on it — `uv sync` reconciles the environment
         # whatever is in the directory — so there is no loop to break.
         with _validated_lock:
             _discard_verdict(venv_dir)

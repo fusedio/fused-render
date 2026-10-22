@@ -44,10 +44,8 @@ and the **execution engine** for /api/run:
 
   * ``"fused"`` (default, D204) — the fused local compute backend (engine.py):
     a folder's ``pyproject.toml`` dependencies resolved into cached venvs,
-    ``@fused.udf``/``result`` entrypoints. Effective only while the ``fused``
-    package is importable (``fused_engine_available``); otherwise execution
-    falls back to builtin and the page says so, which is what keeps a default
-    that depends on the environment from being a default that breaks in one.
+    ``@fused.udf``/``result`` entrypoints. Effective whenever the compute
+    backend is available (``fused_engine_available``), which is always.
   * ``"builtin"`` — the built-in executor: fresh subprocess per call, the
     environment that launched the server. Storing it PINS it: D204 flipped the
     default, not the choice, and an importable ``fused`` must not override a
@@ -858,12 +856,10 @@ def _ai_idle_state() -> dict:
 
 
 def fused_engine_available() -> bool:
-    """Whether the fused backend is importable, resolved off the request path:
-    engine.warm() caches it at startup, a mid-session install flips it via
-    invalidate()."""
+    """Whether the fused engine can run code here (`engine.available()`)."""
     from fused_render import engine as _engine
 
-    return _engine.available_nonblocking()
+    return _engine.available()
 
 
 def effective_engine() -> str:
