@@ -44,6 +44,8 @@ let saveEnabled: typeof import("./NewJobModal").saveEnabled;
 let saveBlockedReason: typeof import("./NewJobModal").saveBlockedReason;
 let TITLE_PLACEHOLDER: typeof import("./NewJobModal").TITLE_PLACEHOLDER;
 let ASK_PLACEHOLDER: typeof import("./NewJobModal").ASK_PLACEHOLDER;
+let taskFieldsOf: typeof import("./NewJobModal").taskFieldsOf;
+let initialTextOf: typeof import("./NewJobModal").initialTextOf;
 let composeTaskMessage: typeof import("./NewJobModal").composeTaskMessage;
 let withoutTitleHeading: typeof import("./NewJobModal").withoutTitleHeading;
 let splitDraft: typeof import("./NewJobModal").splitDraft;
@@ -59,6 +61,8 @@ let splitTargetPath: typeof import("./NewJobModal").splitTargetPath;
 let PATH_MISSING: typeof import("./NewJobModal").PATH_MISSING;
 let twoLevelsMissing: typeof import("./NewJobModal").twoLevelsMissing;
 let saveActionLabel: typeof import("./NewJobModal").saveActionLabel;
+let whenPillLabel: typeof import("./NewJobModal").whenPillLabel;
+let presetWhen: typeof import("./NewJobModal").presetWhen;
 let seededDraftForm: typeof import("./NewJobModal").seededDraftForm;
 
 beforeAll(async () => {
@@ -82,6 +86,8 @@ beforeAll(async () => {
   saveBlockedReason = mod.saveBlockedReason;
   TITLE_PLACEHOLDER = mod.TITLE_PLACEHOLDER;
   ASK_PLACEHOLDER = mod.ASK_PLACEHOLDER;
+  taskFieldsOf = mod.taskFieldsOf;
+  initialTextOf = mod.initialTextOf;
   composeTaskMessage = mod.composeTaskMessage;
   withoutTitleHeading = mod.withoutTitleHeading;
   splitDraft = mod.splitDraft;
@@ -96,6 +102,8 @@ beforeAll(async () => {
   PATH_MISSING = mod.PATH_MISSING;
   twoLevelsMissing = mod.twoLevelsMissing;
   saveActionLabel = mod.saveActionLabel;
+  whenPillLabel = mod.whenPillLabel;
+  presetWhen = mod.presetWhen;
   seededDraftForm = mod.seededDraftForm;
 });
 
@@ -1113,11 +1121,11 @@ describe("naming the task", () => {
     expect(TITLE_PLACEHOLDER).not.toContain("optional");
   });
 
-  test("…and the second field is the OVERFLOW of that question, and says it is optional", () => {
+  test("…and the placeholder is the attachment hint: no second field, nothing to say about optional", () => {
     // Never the same question twice: the field above asks what the task is, so
     // this one asks only for what that answer left out.
-    expect(ASK_PLACEHOLDER).toBe("Additional instructions (optional)");
-    expect(ASK_PLACEHOLDER).toContain("optional");
+    expect(ASK_PLACEHOLDER).toBe("Paste a screenshot or drop a file.");
+    expect(ASK_PLACEHOLDER).not.toContain("optional");
     expect(ASK_PLACEHOLDER).not.toContain("What should Claude do");
   });
 
@@ -1703,7 +1711,7 @@ describe("where the new-folder answer is shown", () => {
 
   test("the row lives inside the recents dropdown, under the folders", () => {
     const s = src();
-    const open = s.indexOf('className="schedule-recents"');
+    const open = s.indexOf('className="schedule-recents nt-recents"');
     const rowAt = s.indexOf("schedule-recents-new\"");
     expect(open).toBeGreaterThan(-1);
     expect(rowAt).toBeGreaterThan(open);
@@ -1744,9 +1752,9 @@ describe("where the new-folder answer is shown", () => {
     // reopened the dropdown after the user had clicked away — a dropdown that
     // could not stay dismissed. The row rides the open list only.
     expect(s).not.toContain("revealNew");
-    // A folder named in the picker refocuses the field WITHOUT the focus
-    // handler popping the list over the form.
-    expect(s).toContain("suppressOpen.current = true;\n              window.setTimeout(() => pathRef.current?.focus(), 0);");
+    // A folder named in the picker re-opens WHERE (which focuses the input),
+    // since the input only exists while the popover is open.
+    expect(s).toContain('onName={() => {\n              if (!recentsOpen) togglePill("where");');
   });
 });
 
@@ -1870,20 +1878,18 @@ describe("what the primary button says it will do", () => {
 describe("where the when-row lives", () => {
   const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
 
-  test("it is inside More options, which opens itself on a planning card", () => {
+  test("it is the WHEN property pill; the More options fold is gone", () => {
     const s = src();
-    const more = s.indexOf('<details className="schedule-form-more"');
-    expect(more).toBeGreaterThan(-1);
-    // The when-row now sits AFTER the disclosure opens, not on the card's face.
-    expect(s.indexOf("Google's when-row")).toBeGreaterThan(more);
-    // Openness is React state, not a bare `open` attribute: a half-controlled
-    // <details> would slam shut on the next re-render, under the user's hand.
-    // …and for a re-opened DRAFT that carries a time, which is the one other
-    // card whose when-row holds an answer the reader already gave.
-    expect(s).toContain(
-      "const [moreOpen, setMoreOpen] = useState(planning || saved.when !== null);",
-    );
-    expect(s).toContain("onToggle={(e) => setMoreOpen(e.currentTarget.open)}");
+    expect(s).toContain('<div className="nt-pills">');
+    expect(s).toContain('k="When"');
+    expect(s).not.toContain("schedule-form-more");
+    expect(s).not.toContain("<details");
+    // No disclosure state either: a planning card or a draft with a saved time
+    // simply shows its reading in the pill.
+    expect(s).not.toContain("moreOpen");
+    // The Google-style date grid and time list still back the custom pane.
+    expect(s).toContain("<MiniCalendar");
+    expect(s).toContain("<TimeList");
   });
 
   test("the three when-controls are what mark the time as picked", () => {
@@ -2324,7 +2330,7 @@ describe("only words or files make a draft", () => {
 
   test("the content predicate is the three things and nothing else", () => {
     const s = src();
-    expect(s).toContain('const draftContent = !!title.trim() || !!message.trim()');
+    expect(s).toContain('const draftContent = !!text.trim()');
     expect(s).toContain("|| images.some((i) => i.path);");
     // A chip whose upload has not answered names no file yet — the same rule
     // the body's own `attachments` uses.
@@ -2610,7 +2616,7 @@ describe("the path locks to the app the card was opened in", () => {
     // hide the path field". It used to sit disabled with a line saying why; the
     // whole row goes now, and the target is still what the scope seeded.
     const src = card();
-    expect(src).toContain('{!lockTarget && (\n        <div className="schedule-form-line">');
+    expect(src).toMatch(/\{!lockTarget && \(\s*<PropPill\s+k="Where"/);
     expect(src).not.toContain("Tasks here run against this project.");
   });
 });
@@ -2640,6 +2646,7 @@ describe("the source-task chip", () => {
   test("an Edit never wears one", () => {
     // That heading already IS the task, and the card is not continuing anything.
     expect(page()).toContain("if (editing) return null;");
+    // …the h2 is just the card's name; the agent crumb is `titleLead` beside it.
     expect(card()).toContain('title={editing ? "Edit task" : "New task"}');
     expect(card()).toContain("{...(editing || !sourceTask ? {} : {");
   });
@@ -2844,5 +2851,210 @@ describe("Tab in the folder field", () => {
     // …and the dead icon arm went with the dead flag: every row this list
     // builds is a folder.
     expect(s).not.toContain("p.is_dir ? ICON_FOLDER : ICON_FILE");
+  });
+});
+
+// ---- the property pills (P2 design) ----------------------------------------
+describe("property pills", () => {
+  const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+  const now = new Date("2026-10-21T14:30:00");
+
+  test("the WHEN pill and the Save word read what the submit sends: nothing picked is Now / Create", () => {
+    const s = src();
+    expect(s).toMatch(/whenPillLabel\(\s*timePicked && pickedOk \? picked : null,/);
+    expect(s).toMatch(/saveActionLabel\(\s*(\/\/[^\n]*\n\s*)?timePicked \?/);
+  });
+
+  test("the ACCESS menu follows Claude Code's picker order, whatever order the server lists", () => {
+    const s = src();
+    expect(s).toContain('const PERMISSION_ORDER = ["prompt", "acceptEdits", "plan", "auto"];');
+    expect(s).toMatch(/const permissionOptions = [^;]*\.sort\(\(a, b\) => permissionRank\(a\) - permissionRank\(b\)\);/s);
+    expect(s).toContain("PERMISSION_ORDER.indexOf(m)");
+  });
+
+  test("the pill row starts with Model, then Access, Where, When", () => {
+    const s = src();
+    const order = ["Model", "Access", "Where", "When"].map((k) => s.indexOf(`k="${k}"`));
+    expect(order[0]).toBeGreaterThan(-1);
+    expect(order[0]).toBeLessThan(order[1]);
+    expect(order[1]).toBeLessThan(order[2]);
+    expect(order[2]).toBeLessThan(order[3]);
+  });
+
+  test("the stale-time note ignores the seed when nothing is picked", () => {
+    expect(src()).toMatch(/pastNoteFor\(timePicked && pickedOk \? picked : null,/);
+  });
+
+  test("the MODEL pill shows the model alone; Thinking stays in the popover", () => {
+    const s = src();
+    expect(s).toContain('const modelText = taskRunLabel(runModels, model) || "Default";');
+    expect(s).not.toMatch(/modelText[^;]*·/);
+  });
+
+  test("Escape in an open pill popover closes the popover only", () => {
+    const s = src();
+    expect(s).toMatch(/e\.key === "Escape" && open && !e\.isPropagationStopped\(\)\) \{\s*e\.stopPropagation\(\);\s*onDismiss\(\);/);
+  });
+
+  test("a refused Save on the path, and the Browse hand-back, open WHERE rather than focus an unmounted input", () => {
+    const s = src();
+    expect(s).toContain('if (blocked.field === "target" && !recentsOpen) togglePill("where");');
+    expect(s).toContain('if (!recentsOpen) togglePill("where");');
+    expect(s).not.toContain("suppressOpen");
+    expect(s).not.toContain("ASK_HINT_KEY");
+  });
+
+  test("editing keeps a long first line whole, once", () => {
+    const line = "L".repeat(90);
+    const entry = (message: string, title: string, description = "") =>
+      ({ message, title, description }) as never;
+    const none = { title: null, text: null };
+    const t = taskFieldsOf(line).title;
+    expect(initialTextOf(none, entry(line, t), t, "")).toBe(line);
+    expect(initialTextOf(none, entry(`${line}\n\nbody`, t, "body"), t, "body")).toBe(`${line}\n\nbody`);
+    // No message: the join of title and description, as before.
+    expect(initialTextOf(none, entry("", "Name", "body"), "Name", "body")).toBe("Name\n\nbody");
+    // A draft's own text is verbatim — a single newline is not widened.
+    expect(initialTextOf({ title: "a", text: "a\nb" }, undefined, "a", "b")).toBe("a\nb");
+  });
+
+  test("four pills, in source order: Model, Access, Where, When", () => {
+    const s = src();
+    const at = ["Model", "Access", "Where", "When"].map((k) => s.indexOf(`k="${k}"`));
+    expect(at.every((i) => i > -1)).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+    // …and they sit in the row that replaced the folder row.
+    expect(s.indexOf('<div className="nt-pills">')).toBeLessThan(at[0]);
+    expect(s).toContain('<div className="nt-notes">');
+  });
+
+  test("the WHEN presets, in order", () => {
+    const s = src();
+    // Read off the menu's own markup, from its "Run" header on — the words also
+    // turn up in comments above it.
+    const menu = s.slice(s.indexOf('<div className="nt-pop-h">Run</div>'));
+    const labels = ["Now", "In an hour", "Tonight at 9:00pm", "Tomorrow at 9:00am",
+      "Pick a time…", "Repeat…"];
+    const at = labels.map((l) => menu.search(
+      new RegExp(`\\n\\s+(<span[^>]*/>\\s+)?${l}\\s*\\n`)));
+    expect(at.every((i) => i > -1)).toBe(true);
+    expect([...at].sort((a, b) => a - b)).toEqual(at);
+  });
+
+  test("the controls keep the aria-labels the rest of the suite finds them by", () => {
+    const s = src();
+    for (const l of ['ariaLabel="Permissions"', 'ariaLabel="Model"', 'aria-label="Thinking"',
+      'ariaLabel="Repeats"']) {
+      expect(s).toContain(l);
+    }
+  });
+
+  test("whenPillLabel reads the pick the way the pill says it", () => {
+    expect(whenPillLabel(null, null, now)).toBe("Now");
+    expect(whenPillLabel(new Date("2026-10-21T21:00:00"), null, now)).toBe("Today · 9:00pm");
+    expect(whenPillLabel(new Date("2026-10-22T09:00:00"), null, now)).toBe("Tomorrow · 9:00am");
+    expect(whenPillLabel(new Date("2026-10-24T09:00:00"), null, now)).toBe("Oct 24 · 9:00am");
+    // A repeat says the pattern, not the day.
+    expect(whenPillLabel(new Date("2026-10-22T02:00:00"), "Daily", now)).toBe("Daily · 2:00am");
+    expect(whenPillLabel(new Date("2026-10-22T09:00:00"), "Weekdays", now)).toBe("Weekdays · 9:00am");
+  });
+
+  test("whenPillLabel names a past time by its date, and a year away with the year", () => {
+    expect(whenPillLabel(new Date("2026-10-20T08:15:00"), null, now)).toBe("Oct 20 · 8:15am");
+    expect(whenPillLabel(new Date("2027-01-05T12:00:00"), null, now)).toBe("Jan 5, 2027 · 12:00pm");
+  });
+
+  test("presetWhen: an hour on, tonight at 21:00, tomorrow at 09:00", () => {
+    expect(presetWhen("hour", now).getTime()).toBe(now.getTime() + 3_600_000);
+    expect(presetWhen("tonight", now).getTime()).toBe(new Date("2026-10-21T21:00:00").getTime());
+    expect(presetWhen("tomorrow", now).getTime()).toBe(new Date("2026-10-22T09:00:00").getTime());
+    // Across a month end.
+    expect(presetWhen("tomorrow", new Date("2026-10-31T23:00:00")).getTime())
+      .toBe(new Date("2026-11-01T09:00:00").getTime());
+  });
+});
+
+describe("one box", () => {
+  const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+
+  test("one writing field, no title input", () => {
+    const s = src();
+    expect(s.split('className="new-task-field new-task-ask"').length - 1).toBe(1);
+    expect(s).not.toContain("new-task-title");
+    expect(s).not.toContain("titleRef");
+  });
+
+  test("a single line is the message and the title", () => {
+    expect(taskFieldsOf("  Fix the bug  ")).toEqual({
+      message: "Fix the bug", title: "Fix the bug", description: "",
+    });
+  });
+
+  test("two lines with a blank between", () => {
+    expect(taskFieldsOf("Fix it\n\nwith care")).toEqual({
+      message: "Fix it\n\nwith care", title: "Fix it", description: "with care",
+    });
+  });
+
+  test("two lines without a blank", () => {
+    expect(taskFieldsOf("Fix it\nwith care")).toEqual({
+      message: "Fix it\nwith care", title: "Fix it", description: "with care",
+    });
+  });
+
+  test("a long first line clamps the title on a word boundary, message intact", () => {
+    const long = "Go through the whole scheduling stack and work out why a recurring task stops resuming";
+    const f = taskFieldsOf(long + "\nmore");
+    expect(f.message).toBe(long + "\nmore");
+    expect(f.title.length).toBeLessThanOrEqual(60);
+    expect(long.startsWith(f.title)).toBe(true);
+    expect(long[f.title.length]).toBe(" ");
+    expect(f.description).toBe("more");
+  });
+
+  test("empty is all empty", () => {
+    expect(taskFieldsOf("  \n ")).toEqual({ message: "", title: "", description: "" });
+  });
+});
+
+describe("the agent crumb is the agent dropdown", () => {
+  const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+
+  test("a titleLead PropPill lists every agent, and the MODEL popover no longer does", () => {
+    const s = src();
+    expect(s).toContain("titleLead={(");
+    expect(s).toContain('className="pp--agent"');
+    expect(s).toContain("agents.all.map((b) =>");
+    expect(s.includes("agents.backends.map(")).toBe(false);
+    expect(s).toContain("popHeight={300}");
+    expect(s).toContain("AGENT_PREFS_URL");
+  });
+});
+
+describe("slash-command typeahead in the task box", () => {
+  const src = () => readFileSync(join(import.meta.dir, "NewJobModal.tsx"), "utf8");
+
+  test("built from the chat's own pieces, over the folder's commands only", () => {
+    const s = src();
+    expect(s).toContain("useSlashCommands");
+    expect(s).toContain("<CommandMenu");
+    expect(s).not.toMatch(/import[^;]*menuCommands/);
+    expect(s).not.toMatch(/import[^;]*LOCAL_COMMANDS/);
+  });
+
+  test("the textarea's onKeyDown routes the menu before the Enter-submit check", () => {
+    const s = src();
+    const ask = s.slice(s.indexOf('className="new-task-field new-task-ask"'));
+    const keyDown = ask.slice(ask.indexOf("onKeyDown="));
+    const menu = keyDown.indexOf("menuKey(");
+    const submit = keyDown.indexOf('if (e.key !== "Enter"');
+    expect(menu).toBeGreaterThan(-1);
+    expect(submit).toBeGreaterThan(menu);
+    expect(ask).toContain('aria-autocomplete="list"');
+  });
+
+  test("CommandMenu keeps its chat class unless a host passes one", () => {
+    const cm = readFileSync(join(import.meta.dir, "../apps/claude/ui/CommandMenu.tsx"), "utf8");
+    expect(cm).toContain('className = "chat-cmd-menu"');
   });
 });
