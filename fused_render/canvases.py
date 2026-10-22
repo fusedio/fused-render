@@ -317,7 +317,7 @@ def fused_settings_configured() -> bool:
     regardless and opens the settings editor when this is false (the empty
     file the editor starts from must NOT count as configured, or dismissing
     it would leave custom silently equal to prod); the Settings picker
-    disables it."""
+    offers it too."""
     value = _fused_settings().get("base_url")
     return isinstance(value, str) and bool(value.strip())
 
@@ -908,8 +908,8 @@ def api_canvases_status(env: str = ""):
         # Clone counts are a local listdir, no CLI — informational on the
         # Preferences row. `available` is false only for custom whose
         # settings file names no `base_url` (`fused_settings_configured`):
-        # the Settings picker disables it, the Canvases page offers it and
-        # opens the settings editor instead of the sign-in.
+        # both pickers still offer it; the Canvases page opens the settings
+        # editor instead of the sign-in.
         "envs": {
             env: {
                 "base_url": workbench_base_url(env),
@@ -3330,7 +3330,6 @@ class _SyncManager:
         # list answers. Module-level, called with no lock held.
         _cli_cache_clear()
         with self._op_lock:
-            self.push_seq += 1
             self.last_push_at = time.time()
             self.last_error = None
             self.error_detail = []
@@ -3342,8 +3341,12 @@ class _SyncManager:
             if moved:
                 # Written while the CLI ran: not in the copy, so not pushed.
                 self._dirty_since = self._dirty_since or time.time()
-        self._push_started_at = None
-        self.push_state = "pending" if moved else "idle"
+            self._push_started_at = None
+            self.push_state = "pending" if moved else "idle"
+            # Last: `status()` reads without the lock, so a reader that sees
+            # the new push_seq must already see the push settled, not
+            # push_seq 1 with push_state still "pushing".
+            self.push_seq += 1
         self.log_event("disk_to_server", "push end", ms=(time.time() - started) * 1000,
                        detail=f"push_seq {self.push_seq}"
                               + ("; the clone changed during the push, pushing again"
