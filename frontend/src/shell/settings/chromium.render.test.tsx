@@ -110,9 +110,13 @@ describe("Chromium engine for windows", () => {
   });
 
   test("the switch is disabled while the engine is unpublished", async () => {
-    const { box } = await mount(fakePrefs(cwState(false, { state: "unpublished" })));
+    // The preference defaults on (D1415), yet with no engine to load the
+    // switch reads off: an Intel Mac must not see a checked switch promising
+    // Chromium under a line saying WebKit.
+    const { box } = await mount(fakePrefs(cwState(true, { state: "unpublished" })));
     expect(sw(box).props.disabled).toBe(true);
-    expect(text(box)).toContain("Engine not published for this build yet.");
+    expect(sw(box).props.checked).toBe(false);
+    expect(text(box)).toContain("No Chromium engine for this build; windows use WebKit.");
     await act(async () => box.unmount());
   });
 

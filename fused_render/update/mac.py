@@ -540,6 +540,12 @@ class UpdateManager(_base.UpdateManager):
 
             if not chromium_windows_enabled():
                 return
+            # The update ships its engine (D1415, every arm64 release):
+            # nothing to fetch, and no "Downloading Chromium engine" beat
+            # for the row to flash through. `prefetch_for_bundle` would
+            # also return at once; the check here is for the row.
+            if os.path.isdir(os.path.join(source, chromium.BUNDLED_SUBDIR, chromium.FRAMEWORK_NAME)):
+                return
             self._job_report(detail="Downloading Chromium engine", message="",
                              done=None, total=None, cancellable=False)
             chromium.prefetch_for_bundle(source)

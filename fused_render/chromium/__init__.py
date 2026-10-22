@@ -174,10 +174,9 @@ def bundled_engine_dir() -> str | None:
 
 def _bundled_matches(art: Artifact) -> bool:
     """The bundled dir holds ``art`` — its `engine.json` names the manifest's
-    engine_version / cef_version / arch and the framework is there. No
-    `.ready` marker is consulted: the bundle is sealed by codesign and either
-    whole or not, and a marker under a signed tree would be one more file for
-    the build to remember."""
+    engine_version / cef_version / arch and the framework is there. The
+    `.ready` marker (the build's unpacker writes one too) is not consulted:
+    the bundle is sealed by codesign and either whole or not."""
     d = bundled_engine_dir()
     if not d or not os.path.isdir(os.path.join(d, FRAMEWORK_NAME)):
         return False

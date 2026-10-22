@@ -105,7 +105,9 @@ function chromiumStatusLine(engine: ChromiumEngineStatus | undefined, enabled: b
   if (!engine) return null;
   switch (engine.state) {
     case "unpublished":
-      return "Engine not published for this build yet.";
+      // Permanent on an Intel Mac (the engine is Apple silicon only); on a
+      // dev build it lasts until the manifest is pinned. Either way WebKit.
+      return "No Chromium engine for this build; windows use WebKit.";
     case "missing":
       return enabled ? null : "Turning this on downloads the engine.";
     case "downloading":
@@ -231,7 +233,10 @@ export function ChromiumWindowsControl({ prefs, onChange }: PrefControlProps) {
   return (
     <PrefToggleRow
       id="chromium-windows"
-      checked={enabled}
+      // The preference defaults on (D1415); where no engine can ever load,
+      // a checked-but-disabled switch would promise what the row's status
+      // line then denies, so it reads off there.
+      checked={enabled && state !== "unpublished" && state !== "unsupported"}
       put={putChromiumWindowsEnabled}
       disabled={state === "unpublished" || state === "unsupported"}
       status={status}
