@@ -79,6 +79,10 @@ def test_the_frontends_fallback_rows_match_the_catalog():
                              ("CODEX_FALLBACK", "codex")):
         client = _fallback(src, name)
         server = {k: rows[backend_id][k] for k in keys}
+        # `reasoning` is a per-model hint the fallback rows leave at the
+        # TS type's default; not part of what the first frame offers.
+        server["models"] = [{"id": m["id"], "label": m["label"]}
+                            for m in server["models"]]
         assert client == server, (
             f"agent-backends.ts {name} has drifted from agent_backends/"
             f"{backend_id}.py — the first frame (and an older server) would "
@@ -97,6 +101,14 @@ def test_every_effort_list_is_one_list():
     assert tuple(claude.EFFORTS) == tuple(agent._EFFORT_LEVELS)
     assert tuple(claude.EFFORTS) == tuple(
         e for e in tasks_mod._VALID_EFFORTS if e)
+
+
+def test_copilots_effortless_models_are_agent_pys():
+    """agent.py cannot import the package, so it keeps its own copy of the
+    Copilot ids `--reasoning-effort` must not ride with."""
+    agent = _agent()
+    assert tuple(copilot.NO_EFFORT_MODELS) == tuple(agent._COPILOT_NO_EFFORT_MODELS)
+    assert set(copilot.NO_EFFORT_MODELS) <= set(copilot.COPILOT.model_ids())
 
 
 def test_the_permission_modes_are_agent_pys_and_the_others_are_a_subset():

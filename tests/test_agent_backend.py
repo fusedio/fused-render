@@ -708,8 +708,12 @@ def test_copilot_argv_composition(agent, target, home, tmp_path, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_FUSED_CLI_DIR", str(tmp_path / "cli"))
     run_dir = tmp_path / "run"
     run_dir.mkdir()
+    # `--add-dir` names only directories that exist (the CLI exits on one that
+    # does not); SHOTS is made by the argv build itself, `extra` by the caller.
+    (tmp_path / "extra").mkdir()
     argv = agent._copilot_argv(str(run_dir), True, "acceptEdits", "", "gpt-5.4",
-                               "high", [str(tmp_path / "extra")], file)
+                               "high", [str(tmp_path / "extra"), str(tmp_path / "gone")],
+                               file)
     assert argv[0] == binary
     assert argv[1:3] == ["--acp", "--no-auto-update"]
     # `--acp` refuses `--session-id`: never emitted, fresh (here) or resume
@@ -723,6 +727,7 @@ def test_copilot_argv_composition(agent, target, home, tmp_path, monkeypatch):
     assert argv[argv.index("--additional-mcp-config") + 1] == "@" + str(run_dir / "mcp.json")
     adds = [argv[i + 1] for i, a in enumerate(argv) if a == "--add-dir"]
     assert adds == [agent.SHOTS, str(tmp_path / "extra")]
+    assert os.path.isdir(agent.SHOTS)   # made and secured by the build
     allows = [argv[i + 1] for i, a in enumerate(argv) if a == "--allow-tool"]
     assert allows == ["shell(fused:*)", "write"]
     # No Claude-only plumbing leaks in.
@@ -762,6 +767,42 @@ def test_copilot_argv_without_a_pane_has_no_mcp_and_no_write_grant(
     assert "--session-id" not in argv and "--resume" not in argv
     assert "write" not in argv and "--model" not in argv
     assert not (run_dir / "plugin" / "skills").exists()   # no plugin exported
+    adds = [argv[i + 1] for i, a in enumerate(argv) if a == "--add-dir"]
+    assert adds == [agent.SHOTS]   # the screenshot grant, nothing else
+
+
+def test_copilot_argv_grants_no_screenshot_dir_the_build_refused(
+        agent, target, home, tmp_path, monkeypatch):
+    """A SHOTS `_shots_dir` would not vouch for (somebody else's directory
+    planted there, or one it could not secure) is not granted even though it
+    exists: the grant follows the preparation's answer, not `isdir`."""
+    file, _ = target
+    _copilot_bin(tmp_path, monkeypatch)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    os.mkdir(agent.SHOTS)
+    monkeypatch.setattr(agent, "_shots_dir", lambda: {"error": "readable by others"})
+    argv = agent._copilot_argv(str(run_dir), False, None, "", "", "", [], file)
+    assert "--add-dir" not in argv
+
+
+@pytest.mark.parametrize("model", ["", "auto", "claude-sonnet-4.5", "claude-opus-4.5"])
+def test_copilot_argv_drops_the_effort_for_a_model_that_takes_none(
+        agent, target, home, tmp_path, monkeypatch, model):
+    """Copilot 1.0.102 fails `session/new` when `--reasoning-effort` rides
+    with `auto` or either Claude model; the effort goes, not the session.
+    An empty model is `auto` (the new-chat default)."""
+    file, _ = target
+    _copilot_bin(tmp_path, monkeypatch)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    argv = agent._copilot_argv(str(run_dir), False, None, "", model, "high", [], file)
+    assert "--reasoning-effort" not in argv
+    # A model the catalog has not caught up with is passed through with it.
+    run_dir2 = tmp_path / "run2"
+    run_dir2.mkdir()
+    argv = agent._copilot_argv(str(run_dir2), False, None, "", "gpt-9", "high", [], file)
+    assert argv[argv.index("--reasoning-effort") + 1] == "high"
 
 
 def test_two_plugins_make_skills_a_dir_of_links(agent, home, tmp_path, monkeypatch):

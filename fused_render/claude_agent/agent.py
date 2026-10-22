@@ -284,6 +284,14 @@ _SELF_MINTED_ID_BACKENDS = ("copilot", "codex")
 # `agent_backends/<id>.py` `default_model`, pinned equal by a test.
 _NEW_CHAT_MODELS = {"copilot": "auto", "codex": "gpt-6-luna"}
 
+# Copilot models the CLI refuses `--reasoning-effort` for (1.0.102 fails
+# `session/new`: "Reasoning effort is not supported when using the "auto"
+# model" / "does not support reasoning effort configuration"). A COPY of
+# `agent_backends/copilot.py` `NO_EFFORT_MODELS`, pinned equal by a test. An
+# id outside the catalog is passed through with its effort, as the catalog's
+# own passthrough stance says.
+_COPILOT_NO_EFFORT_MODELS = ("auto", "claude-sonnet-4.5", "claude-opus-4.5")
+
 # Error-text markers per backend — substrings (lower-cased) of a `result` row
 # or stderr that mean "signed out / no access" and "usage or credit limit".
 # COPIED from `agent_backends/claude.py`, `copilot.py` and `codex.py`
@@ -3733,20 +3741,46 @@ def _copilot_argv(run_dir: str, pane: bool, cli_mode: str | None,
         with"; verified 2026-10-16, the CLI exits). Copilot mints the id in
         its `session/new` reply and the host announces it on the init row,
         which `_poll` records (D2);
-      * `--effort` → `--reasoning-effort`.
+      * `--effort` → `--reasoning-effort`, except for a model the CLI takes
+        no effort for (`_COPILOT_NO_EFFORT_MODELS`), where it is dropped;
+      * `--add-dir` only for directories that exist: the CLI exits at startup
+        on one that does not. SHOTS is made (and secured) here through
+        `_shots_dir`, since the grant cannot be added after the spawn.
     """
     cmd = [_copilot_bin(), "--acp", "--no-auto-update"]
     if model:
         cmd += ["--model", model]
-    if effort:
+    # An empty model is the backend default (`auto`). The CLI fails
+    # `session/new` when an effort rides with a model that takes none
+    # (`_COPILOT_NO_EFFORT_MODELS`), so the effort is dropped rather than the
+    # session. The settings record still keeps what was asked for.
+    if effort and (model or _NEW_CHAT_MODELS["copilot"]) not in _COPILOT_NO_EFFORT_MODELS:
         cmd += ["--reasoning-effort", effort]
     cmd += ["--plugin-dir", _copilot_plugin_dir(run_dir, file, pane),
             "--agent", "fused:fused"]
     if pane or _terminal_tools_supported():
         cmd += ["--additional-mcp-config",
                 "@" + _write_mcp_config(run_dir, pane, approve=False)]
-    for d in [SHOTS, *(extra_read_dirs or [])]:
-        cmd += ["--add-dir", d]
+    # SHOTS is made HERE, not left to the first screenshot: `--add-dir` is the
+    # session's only read grant on it, the CLI exits at startup on a directory
+    # that does not exist, and there is no post-start grant over ACP. A refusal
+    # (`_require_private`: somebody else's directory planted there) or a full
+    # disk costs the session its screenshots, never the session.
+    try:
+        shots = _shots_dir()
+    except Exception as exc:  # noqa: BLE001
+        shots = {"error": str(exc)}
+    # SHOTS is granted only on `_shots_dir`'s say-so, never on `isdir`: a
+    # refused directory exists too, and granting it would hand the session a
+    # directory `_require_private` just declined to vouch for.
+    if shots.get("error"):
+        sys.stderr.write("copilot: no screenshot grant: %s\n" % shots["error"])
+        dirs = []
+    else:
+        dirs = [SHOTS]
+    for d in [*dirs, *(extra_read_dirs or [])]:
+        if os.path.isdir(d):
+            cmd += ["--add-dir", d]
     if _fused_cli_dir():
         cmd += ["--allow-tool", "shell(fused:*)"]
     if cli_mode == "acceptEdits":
