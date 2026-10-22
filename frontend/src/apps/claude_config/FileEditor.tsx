@@ -1,7 +1,7 @@
 // A plain text editor for one config file: loads once, edits in a monospace
-// textarea that grows to its content (at least MIN_ROWS tall), saves on
-// demand. Skills and memory files open in it.
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+// textarea of MIN_ROWS rows (draggable taller), saves on
+// demand. Memory files open in it.
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { Button } from "@platform/shadcn/ui/button";
 import { Textarea } from "@platform/shadcn/ui/textarea";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -27,15 +27,6 @@ export function FileEditor({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<{ ok: boolean; text: string } | null>(null);
-  const area = useRef<HTMLTextAreaElement>(null);
-
-  // Grow to the content: reset to auto so a shrinking text shrinks the box.
-  useLayoutEffect(() => {
-    const el = area.current;
-    if (!el) return;
-    el.style.height = "auto";
-    el.style.height = `${el.scrollHeight + 2}px`;
-  }, [text, saved]);
 
   useEffect(() => {
     let alive = true;
@@ -82,7 +73,6 @@ export function FileEditor({
       <Textarea
         aria-label={label}
         value={text}
-        ref={area}
         rows={MIN_ROWS}
         spellCheck={false}
         className="cc-fileeditor-text"

@@ -5,7 +5,11 @@
 - Legacy `/claude-config`, `/claude-md` and `/preferences?tab=claude*` / `?s=claude-*` rewrite to `/claude-code?tab=...` in `router.ts`.
 - Preferences keeps its own settings, including "AI & agents"; its Claude model pointer row links to this page.
 - Settings tab rows reuse `SettingRow`, whose entry type requires a `GroupId`; they use `group: "ai"`. The group is only read by search crumbs, which this page never runs.
-- Skills: list, filter, create (scaffold), delete, and edit SKILL.md or any sibling file in `FileEditor` (monospace, grows to content, 20 rows minimum, Save disabled while unchanged, inline saved/error note). Mutations commit to the config repo.
+- Page skeleton mirrors Preferences: `.settings-header` (title + filter), `.settings-nav` with the six tabs, `.settings-main` with an h2 + description. History hides the filter and carries the git chip in its head row. Switching tab clears the filter and drops `?skill=`.
+- Skills is master-detail: `?tab=skills` lists (one `.settings-card`, a button per skill: name, one muted description line); `?tab=skills&skill=<name>` shows the editor. SkillsSection draws its own head (New skill in the list; back, link pill, Reveal, Delete, Save in the editor). Sibling files are tabs; the textarea is the only child of a card, fixed 60vh minimum, vertically resizable. Saved note fades after 2.5s (no toast); errors stay inline.
+- Switching files or going Back with unsaved edits asks Discard / Keep editing. Navigating via the left nav while dirty does not ask.
+- The skill install-command copy action was dropped with the per-row icon buttons.
+- Memory, Plugins, MCP and History keep their `SectionToolbar` (counts, refresh, controls) under the new head.
 - Memory files are editable the same way; deleting one commits the deletion.
 - `claude plugin uninstall` has no `-y`; uninstall runs at user scope after checking the id is installed.
 - `mcp spec` reads `~/.claude.json` read-only to prefill Edit; Edit is remove + add-json (not atomic).
@@ -14,6 +18,5 @@
 - Shared CSS stays in `preferences.css` / `claude-config.css`.
 
 ## Unfinished
-- No UI check was done (no dev server was run); typecheck passes.
+- No UI check was done; typecheck passes.
 - The Skills editor edits files already in the skill folder; adding a new sibling file is not supported.
-- Switching between a skill's files discards unsaved edits without asking.
