@@ -86,6 +86,9 @@ _DROP_RESPONSE = _HOP_BY_HOP | {
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "[::1]")
 
 TokenSource = Callable[[], str]
+#: A cheap fingerprint of the credentials the token comes from (the store's
+#: stat): a change means a sign-out, a sign-in or another account.
+CredentialsStamp = Callable[[], object]
 
 
 def _strip_headers(headers, drop: set[bytes]) -> list[tuple[bytes, bytes]]:
@@ -116,19 +119,28 @@ def _origin_is_loopback(value: str) -> bool:
 
 class _TokenCache:
     """One token at a time, fetched off the event loop (the source runs a
-    CLI child), shared by concurrent requests, forgotten on a 401."""
+    CLI child), shared by concurrent requests, forgotten on a 401 and
+    whenever `stamp` changes: a signed-out or switched account must not keep
+    riding on the old token for the rest of the TTL."""
 
-    def __init__(self, source: TokenSource):
+    def __init__(self, source: TokenSource, stamp: CredentialsStamp | None = None):
         self._source = source
+        self._stamp = stamp
         self._token: str | None = None
+        self._token_stamp: object = None
         self._fetched_at = 0.0
         self._lock = asyncio.Lock()
 
     async def get(self) -> str:
         async with self._lock:
-            if self._token is not None and time.monotonic() - self._fetched_at < TOKEN_TTL_S:
+            # Read before the fetch: a change landing during it re-fetches
+            # next time rather than pinning the old token to the new stamp.
+            stamp = self._stamp() if self._stamp is not None else None
+            if (self._token is not None and stamp == self._token_stamp
+                    and time.monotonic() - self._fetched_at < TOKEN_TTL_S):
                 return self._token
             self._token = await asyncio.to_thread(self._source)
+            self._token_stamp = stamp
             self._fetched_at = time.monotonic()
             return self._token
 
@@ -139,9 +151,10 @@ class _TokenCache:
 class ProxyApp:
     """ASGI app: forward to `upstream` (an origin, no path) with the bearer."""
 
-    def __init__(self, upstream: str, token: TokenSource, port: int):
+    def __init__(self, upstream: str, token: TokenSource, port: int,
+                 stamp: CredentialsStamp | None = None):
         self.upstream = upstream.rstrip("/")
-        self._tokens = _TokenCache(token)
+        self._tokens = _TokenCache(token, stamp)
         self.port = port
         self._client = None
 
@@ -288,7 +301,8 @@ class Controller:
     def url(self) -> str | None:
         return f"http://127.0.0.1:{self.port}" if self.running else None
 
-    def apply(self, upstream: str | None, token: TokenSource | None) -> None:
+    def apply(self, upstream: str | None, token: TokenSource | None,
+              stamp: CredentialsStamp | None = None) -> None:
         with self._lock:
             if upstream is None or token is None:
                 self._stop()
@@ -297,9 +311,10 @@ class Controller:
             if self.running and self.upstream == upstream:
                 return
             self._stop()
-            self._start(upstream, token)
+            self._start(upstream, token, stamp)
 
-    def _start(self, upstream: str, token: TokenSource) -> None:
+    def _start(self, upstream: str, token: TokenSource,
+               stamp: CredentialsStamp | None = None) -> None:
         import uvicorn
 
         from fused_render.logs import uvicorn_log_config
@@ -314,7 +329,7 @@ class Controller:
             self.error = f"could not bind a loopback port: {exc}"
             return
         port = sock.getsockname()[1]
-        app = ProxyApp(upstream, token, port)
+        app = ProxyApp(upstream, token, port, stamp)
         config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning",
                                 lifespan="on", log_config=uvicorn_log_config())
         server = uvicorn.Server(config)

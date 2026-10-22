@@ -131,6 +131,25 @@ def test_token_is_cached_and_forgotten_on_401(proxy):
     assert len(proxy.calls) == 2
 
 
+def test_a_credentials_change_drops_the_cached_token(upstream):
+    """A sign-out, sign-in or account switch changes the store's stamp: the
+    next request fetches anew instead of riding the old token for the TTL."""
+    tokens = iter(["tok-1", "tok-2"])
+    stamp = ["login-a"]
+    ctl = mod.Controller()
+    ctl.apply(upstream.origin, lambda: next(tokens), lambda: stamp[0])
+    assert ctl.wait_ready(), ctl.error
+    try:
+        _get(ctl, "/a")
+        _get(ctl, "/b")
+        assert _Upstream.seen[-1]["headers"]["authorization"] == "Bearer tok-1"
+        stamp[0] = "login-b"
+        _get(ctl, "/c")
+        assert _Upstream.seen[-1]["headers"]["authorization"] == "Bearer tok-2"
+    finally:
+        ctl.apply(None, None)
+
+
 def test_posts_forward_the_body(proxy):
     with httpx.Client(base_url=proxy.url()) as c:
         r = c.post("/api/checkpoints", content=b'{"x":1}',

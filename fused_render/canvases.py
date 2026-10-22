@@ -373,13 +373,20 @@ def _custom_token() -> str:
     return token
 
 
+def _custom_creds_sig() -> tuple | None:
+    """The proxy's credentials stamp: a sign-out, sign-in or account switch
+    on the custom env changes it, and the proxy drops its cached token."""
+    return _creds_sig(CUSTOM_WORKBENCH_ENV)
+
+
 def _apply_embed_proxy() -> None:
     """Start, retarget or stop the proxy to match the preference and the
     settings file's current origin. Idempotent; called from status."""
     from fused_render.canvas_embed_proxy import controller
 
     if _embed_proxy_wanted():
-        controller.apply(workbench_base_url(CUSTOM_WORKBENCH_ENV), _custom_token)
+        controller.apply(workbench_base_url(CUSTOM_WORKBENCH_ENV), _custom_token,
+                         _custom_creds_sig)
     else:
         controller.apply(None, None)
 
