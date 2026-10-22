@@ -417,7 +417,7 @@ const ENTRIES = [
     group: "tasks",
     section: "Archive",
     label: "Auto-archive when folder is deleted",
-    description: "Archive a task automatically once its folder no longer exists on disk. Pending runs into that folder are cancelled. A folder on an unmounted drive counts as gone until it is back; unarchive, or any new activity in the chat, brings the task back.",
+    description: "Archive a task automatically once its folder no longer exists on disk. Pending runs into that folder are cancelled. The task stays archived while the folder is gone (a folder on an unmounted drive counts as gone) and can be brought back once the folder exists again, or once this is off.",
     keywords: "archive auto delete deleted folder missing gone cleanup",
   },
   {

@@ -423,11 +423,16 @@ def task_auto_archive_missing_enabled() -> bool:
     whose only door reads "Folder no longer exists". A row that is running
     is left to settle first; a draft is never a candidate.
 
+    WHILE THE FOLDER IS GONE THE FILING STICKS: the pass runs on every full
+    build, so Unarchive (or activity reviving the row) lasts one poll and the
+    task is filed again. The ways back are the folder existing again, or
+    this switch going off — then the ordinary doors (Unarchive, activity)
+    work as they always have.
+
     Opt-in because "gone" is `exists`, not "deleted": an unmounted external
     or network volume reads the same way, and with this on every task under
-    it is filed until it comes back — reversible (Unarchive, or any new
-    activity in the chat revives the row), but a surprise nobody should meet
-    by default. Only a stored `true` is on, like `task_summary_titles_enabled`.
+    it is filed until the volume is back — a surprise nobody should meet by
+    default. Only a stored `true` is on, like `task_summary_titles_enabled`.
     """
     return read_prefs().get("task_auto_archive_missing_enabled") is True
 # ---- moved off localStorage (D1386) -----------------------------------------
