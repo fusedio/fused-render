@@ -1287,25 +1287,36 @@ def test_no_engine_name_advertises_the_format_its_sibling_also_reads():
     qualifier must come from `_HARDWARE_QUALIFIERS`, they must differ, and no
     name may repeat a format tag both rows declare in `hub_filter_tags`.
     """
-    families: dict[str, list] = {}
-    for runner in registry.all_runners():
-        families.setdefault(runner.label.split(" (")[0], []).append(runner)
-    siblings = {stem: rows for stem, rows in families.items() if len(rows) > 1}
+    siblings = _sibling_families(registry.all_runners())
     # If this is ever empty the test has stopped testing anything — every
     # hardware-variant family could have been renamed out from under it.
-    assert "llama.cpp" in siblings, sorted(families)
+    assert "llama.cpp" in siblings, sorted(siblings)
+    _assert_sibling_names_ok(siblings)
+
+
+#: The ONE named exemption to the hardware-qualifier rule: the measured Apple
+#: row keeps its pre-CUDA label ("(Apple Silicon)", short name without it)
+#: beside its CUDA sibling. Keyed on the runner code on purpose, so a new
+#: family cannot borrow it by copying the label.
+_PLATFORM_LABELLED_ROWS = {"vision-torch"}
+
+
+def _sibling_families(runners):
+    families: dict[str, list] = {}
+    for runner in runners:
+        families.setdefault(runner.label.split(" (")[0], []).append(runner)
+    return {stem: rows for stem, rows in families.items() if len(rows) > 1}
+
+
+def _assert_sibling_names_ok(siblings):
     for stem, rows in siblings.items():
         qualifiers = [runner.label[len(stem):].strip() for runner in rows]
         assert len(set(qualifiers)) == len(qualifiers), (stem, qualifiers)
         for runner, qualifier in zip(rows, qualifiers):
-            # `vision-torch` is the one row named by a PLATFORM ("(Apple Silicon)",
-            # where it runs on MPS) beside a hardware sibling; it keeps its
-            # established short name, so the short==label rule below applies to
-            # hardware-qualified rows only.
-            assert qualifier in _HARDWARE_QUALIFIERS + ("(Apple Silicon)",), (
-                runner.code, qualifier)
-            if qualifier == "(Apple Silicon)":
+            if runner.code in _PLATFORM_LABELLED_ROWS:
+                assert qualifier == "(Apple Silicon)", (runner.code, qualifier)
                 continue
+            assert qualifier in _HARDWARE_QUALIFIERS, (runner.code, qualifier)
             # And the hardware is in BOTH names, the shape the torch rows set:
             # the short name is what the Local card and the job row print, so a
             # family whose short names collide renders as one engine there.
@@ -1316,6 +1327,21 @@ def test_no_engine_name_advertises_the_format_its_sibling_also_reads():
                 assert tag.lower() not in runner.label.lower(), (
                     f"{runner.code}: {runner.label!r} names {tag!r}, which "
                     f"every {stem} row reads — it distinguishes nothing")
+
+
+def test_an_apple_silicon_row_whose_short_name_collides_with_its_cuda_sibling_fails():
+    """The exemption is `vision-torch` only, not "any (Apple Silicon) row"."""
+    def row(code, label, short):
+        return types.SimpleNamespace(code=code, label=label, short_label=short,
+                                     hub_filter_tags=())
+
+    ok = {"Fam": [row("fam-cuda", "Fam (CUDA)", "Fam (CUDA)"),
+                  row("vision-torch", "Fam (Apple Silicon)", "Fam")]}
+    _assert_sibling_names_ok(ok)
+    bad = {"Fam": [row("fam-cuda", "Fam (CUDA)", "Fam (CUDA)"),
+                   row("fam-apple", "Fam (Apple Silicon)", "Fam (CUDA)")]}
+    with pytest.raises(AssertionError):
+        _assert_sibling_names_ok(bad)
 
 
 def test_every_suggested_model_names_a_runner_that_exists():

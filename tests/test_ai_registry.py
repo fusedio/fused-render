@@ -177,7 +177,7 @@ _GPU_CPU_PAIRS = (
     ("diffusers-image-rocm", "diffusers-image"),
     ("onnx-embed-cuda", "onnx-embed"),
     ("onnx-embed-rocm", "onnx-embed"),
-    ("vision-torch-cuda", "vision-torch"),
+    ("vision-torch-cuda", "vision-torch"),  # the "CPU sibling" here is the Apple MPS row
 )
 
 

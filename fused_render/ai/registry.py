@@ -1669,9 +1669,10 @@ _RUNNERS: tuple[Runner, ...] = (
     # Image understanding on torch (SPEC AI-33). The CUDA row below is the
     # NVIDIA variant, shipped UNMEASURED (nobody on the team has an NVIDIA box;
     # the worker's `cuda` device branch is its only evidence). The Apple row
-    # after it stays the measured one. The two never overlap on a machine
-    # (`_apple_silicon` vs `_cuda`), so their order matters only for the
-    # `_GPU_CPU_PAIRS` convention that an accelerated row leads its sibling.
+    # after it stays the measured one. It leads by the GPU-first ordering rule
+    # (the comment block above this table). This pair is accelerated vs
+    # accelerated, and `_cuda` and `_apple_silicon` never both pass on one
+    # machine, so the order is convention here, not resolution.
     Runner(
         code="vision-torch-cuda",
         capability=VISION,
