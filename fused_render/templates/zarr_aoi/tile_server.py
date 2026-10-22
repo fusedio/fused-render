@@ -63,6 +63,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # need the shell dirs. appenv is stdlib-only, so the daemon's venv (numpy/zarr
 # only, no fused_render) can import it just fine.
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "shared"))
+from platutil import venv_python
 
 STATE = os.path.expanduser("~/.cache/fused-render-zarraoi/daemon.json")
 DAEMON_VENV = os.path.expanduser("~/.cache/fused-render-zarraoi/venv")
@@ -85,7 +86,7 @@ def _me():
 
 
 def _daemon_python():
-    vp = os.path.join(DAEMON_VENV, "bin", "python")
+    vp = venv_python(DAEMON_VENV)
     if os.path.exists(vp):
         return vp
     import shutil

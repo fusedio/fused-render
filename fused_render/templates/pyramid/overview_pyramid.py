@@ -339,8 +339,10 @@ def _venv_python():
     import os
     import shutil
     import subprocess
+    import sys
     cache = os.path.expanduser(f"~/.cache/{VENV_DIR_NAME}")
-    vpy = os.path.join(cache, "venv", "bin", "python")
+    vpy = os.path.join(cache, "venv",
+                       *(("Scripts", "python.exe") if sys.platform == "win32" else ("bin", "python")))
     marker = os.path.join(cache, "deps_ok_pyramid")
     if os.path.exists(vpy) and os.path.exists(marker):
         return vpy
