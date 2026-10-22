@@ -7478,3 +7478,8 @@ D406 withdrew `parakeet-mlx` because a separate Apple-only runner with its own v
 - **sherpa tokens** carry a leading plain space on word starts, not `▁`.
 - **`feature_dim`** 80 vs 128 gave identical text and timestamps; the value is left at sherpa's default.
 - **Not done.** The model is not on our mirror yet (needs the `changing-suggested-models` upload). Sentence splitting has no abbreviation guard.
+
+## D1424: Preferences nav is sectioned by what a setting changes, and pages are named for what is on them (2026-10-22, prefs-section-names)
+
+- **Problem.** The nav mirrored the app's left rail (Akshil, 2026-10-20), which gave headings that repeated their one page ("General > General", "Tasks > Tasks"), put agent settings under "Bots", and kept an "Other" catch-all.
+- **Decision.** Four headings: App (General, Accounts, Labs), Agents (Coding agents, Chats & tasks, Claude Code), Apps & files (Sharing & sync, File index, Phone access), Developer (Debugging). A heading never repeats its single page, and a page is named for what is on it. This replaces the "nav mirrors the left rail" rule. Group ids and `?tab=` values are unchanged, so existing links keep working.

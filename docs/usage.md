@@ -268,17 +268,18 @@ place, or follow the path above it to see it in its group. Settings that live
 on another page (the default Claude model in Claude Config, local model
 engines in AI Models) are in the list too, as a row that takes you there.
 
-| Group | What is in it |
-|---|---|
-| **General** | Appearance and colour theme · native windows · the launcher's shortcuts (macOS) · automatic update downloads |
-| **AI & agents** | Which coding agents (Claude Code, GitHub Copilot CLI) run chats and tasks, each with its health, and the default for new ones |
-| **Tasks** | One task at a time per folder (beta) · AI recap titles (beta) · notifications for terminal sessions |
-| **Apps & sharing** | Git sync · the Share sheet and its GitHub link · live previews in thumbnails |
-| **Files & search** | The file index: on/off, ranking, low-impact mode, skipped folders, rebuild |
-| **Optional features** | Canvases · Marketplace · the process Monitor · Reader. All off by default |
-| **Phone & network** | Sharing your apps with a phone on the same Wi-Fi, with QR pairing |
-| **Accounts** | Fused account · Hugging Face |
-| **Advanced** | The [call log](#call-log) · the index query console · diagnostics for a bug report |
+| Heading | Page | What is in it |
+|---|---|---|
+| **App** | **General** | Appearance and colour theme · native windows · the launcher's shortcuts (macOS) · automatic update downloads · the process Monitor · Reader |
+| | **Accounts** | Fused account · default environment · Hugging Face |
+| | **Labs** (beta) | Canvases · Marketplace · Chromium engine for windows. All off by default |
+| **Agents** | **Coding agents** | Which coding agents (Claude Code, GitHub Copilot CLI, OpenAI Codex CLI) run chats and tasks, each with its health, and the default for new ones |
+| | **Chats & tasks** | One task at a time per folder (beta) · AI recap titles · summary-only titles · lean Claude sessions · default approvals for new chats · concurrent Claude sessions · notifications for terminal sessions |
+| | **Claude Code** | The `settings.json` keys that shape the Claude sessions this app runs |
+| **Apps & files** | **Sharing & sync** | Git sync · the Share sheet and its GitHub link · live previews in thumbnails |
+| | **File index** | On/off, ranking, low-impact mode, skipped folders, rebuild |
+| | **Phone access** | Sharing your apps with a phone on the same Wi-Fi, with QR pairing |
+| **Developer** | **Debugging** | The [call log](#call-log) · the index query console · diagnostics for a bug report |
 
 Links can open a group (`/preferences?tab=indexing`), a single setting
 (`/preferences?s=monitor`) or a search (`/preferences?q=token`).
@@ -417,7 +418,7 @@ experienced as one. A large stale count next to a small ok count is the sign a
 page is re-running Python far more than it needs to (a slider with no debounce,
 or an `onChange` handler that retriggers itself).
 
-**Getting to it from Preferences.** **Advanced › Record API calls › Browse** opens the store in the
+**Getting to it from Preferences.** **Debugging › Record API calls › Browse** opens the store in the
 explorer: one directory per app, and clicking any `.calls.jsonl` opens it in
 **Log studio**.
 
@@ -464,7 +465,7 @@ query globs `logs/*/*.calls.jsonl`.
 
 **A note on parameters.** A run's parameters are recorded by default: they are
 usually the whole reproduction, and they are already visible in the URL. If a
-page passes something sensitive as a parameter, switch **Preferences → Advanced
+page passes something sensitive as a parameter, switch **Preferences → Debugging
 → Parameters** to *names only* (or off). `FUSED_RENDER_CALLS=0` turns capture
 off entirely for a run, and `FUSED_RENDER_CALLS_RETENTION_DAYS` overrides the
 retention window.
