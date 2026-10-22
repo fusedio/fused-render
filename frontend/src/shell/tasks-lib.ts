@@ -6234,6 +6234,11 @@ function timeBucketOf(task: Task, now: number, sortBy: TaskSortBy = "changed"): 
  *  is its next run answers its last activity instead. A cron due next week
  *  must not pin its folder to the top of the Project view for a week. 0 when
  *  the task has no clock of any kind. */
+/** How far AHEAD of the page's clock a stamp may be and still count as
+ *  activity happening now — see `activityAt`. Longer than `useNow`'s minute
+ *  tick, shorter than any "run in a few minutes" due time. */
+export const ACTIVITY_SLACK_SEC = 90;
+
 export function activityAt(task: Task, now: number = Date.now()): number {
   const w = taskWhen(task, now);
   const nowSec = Math.floor(now / 1000);
@@ -6242,13 +6247,26 @@ export function activityAt(task: Task, now: number = Date.now()): number {
   // row's last_active keeps the due time"), and the row's own stamp can be
   // that same value — neither is an interaction, and clamping one to now
   // would make a folder with nothing but a run next week read as live.
-  const past = (t: number | null | undefined) => (t && t <= nowSec ? t : 0);
-  const active = past(task.last_active);
-  if (w.kind === "next") return active;
+  // …BUT A STAMP A FEW SECONDS AHEAD IS NOW, NOT NEVER (Sina, 2026-10-21: the
+  // folder of a task just continued vanished from the top of the Project view
+  // for fifteen seconds). While a sent mark stands the server stamps the row
+  // with ITS clock (`_live`: `last_active = now`, and the message in flight
+  // carries the same instant), and `now` here is `useNow`'s minute tick — up
+  // to sixty seconds stale. Zeroing everything past the tick made a folder
+  // that had just been touched the oldest on the page, and it sank to the
+  // bottom until the mark expired. A due time is minutes or days ahead; a
+  // stamp inside `ACTIVITY_SLACK_SEC` is clock lag, and reads as now.
+  const past = (t: number | null | undefined, slack: number) =>
+    t && t <= nowSec + slack ? Math.min(t, nowSec) : 0;
+  // NO SLACK FOR A ROW WHOSE STAMP IS ITS NEXT RUN: `last_active` keeps the
+  // due time there, and a run due in a minute is still a run that has not
+  // happened (reviewer, 2026-10-22).
+  if (w.kind === "next") return past(task.last_active, 0);
+  const active = past(task.last_active, ACTIVITY_SLACK_SEC);
   // THE NEWER OF THE TWO (CodeRabbit, #1756): the row's stamp can be its last
   // RUN while `last_active` records a message since, and the section must
   // sort and open by the later one.
-  return Math.max(past(w.at), active);
+  return Math.max(past(w.at, ACTIVITY_SLACK_SEC), active);
 }
 
 /** Sections with activity inside the last day (Akshil, 2026-10-19): what the
@@ -6423,6 +6441,23 @@ export function openOnFirstVisit(groups: TaskGroup[], by: TaskGroupBy, now: numb
   };
   for (const g of groups) walk(g);
   return open;
+}
+
+/** The fold keys of every section holding one of `keys` — and of the sections
+ *  above it, since a pull request open under a folded repository is still
+ *  out of sight. What a NEW task unfolds (Sina, 2026-10-21: "when I create a
+ *  new task it should open it, otherwise very confusing"). */
+export function sectionsHolding(groups: TaskGroup[], by: TaskGroupBy, keys: ReadonlySet<string>): string[] {
+  const out: string[] = [];
+  const walk = (g: TaskGroup, above: string[]): boolean => {
+    const here = [...above, `${by}:${g.key}`];
+    let hit = g.rows.some((t) => keys.has(t.key));
+    for (const c of g.groups ?? []) if (walk(c, here)) hit = true;
+    if (hit) for (const k of here) if (!out.includes(k)) out.push(k);
+    return hit;
+  };
+  for (const g of groups) walk(g, []);
+  return out;
 }
 
 /** `collapsed` with every section of `by` folded but the ones a first visit
