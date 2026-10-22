@@ -8,7 +8,7 @@
 // re-render the whole workspace (and its two iframes' parents) every second.
 import { ArrowLeftIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { ENV_LABELS, type WorkbenchEnv } from "./api";
+import { ENV_NAMES, type WorkbenchEnv } from "./api";
 import {
   LEG_LABEL,
   legVerdicts,
@@ -192,8 +192,8 @@ export function SyncStrip({
       >
         <ArrowLeftIcon size={14} />
       </button>
-      <span className="canvases-env-chip" title={`${name} syncs with ${ENV_LABELS[env]}`}>
-        {ENV_LABELS[env]}
+      <span className="canvases-env-chip" title={`${name} syncs with ${ENV_NAMES[env].label}`}>
+        {ENV_NAMES[env].label}
       </span>
         </>
       )}

@@ -103,14 +103,13 @@ export const WORKBENCH_ENVS: readonly WorkbenchEnv[] = ["unstable", "prod", "cus
 export const isWorkbenchEnv = (s: unknown): s is WorkbenchEnv =>
   typeof s === "string" && (WORKBENCH_ENVS as readonly string[]).includes(s);
 
-export const ENV_LABELS: Record<WorkbenchEnv, string> = {
-  unstable: "Unstable",
-  prod: "Production",
-  custom: "Custom ~/.fused/settings.toml",
+/** `label` names the env in full (pickers, headers, tooltips); `tag` is the
+ *  short form for tight spots (a sidebar row's chip). */
+export const ENV_NAMES: Record<WorkbenchEnv, { label: string; tag: string }> = {
+  unstable: { label: "Unstable", tag: "Unstable" },
+  prod: { label: "Production", tag: "Production" },
+  custom: { label: "Custom ~/.fused/settings.toml", tag: "Custom" },
 };
-
-/** The label where room is tight (a sidebar row's tag): custom drops its path. */
-export const ENV_TAGS: Record<WorkbenchEnv, string> = { ...ENV_LABELS, custom: "Custom" };
 
 /** A canvas workspace route: the env is a path segment because it is one on
  *  disk (~/Fused/canvas/<env>/<name>). The one-segment `/canvases/<name>` is
