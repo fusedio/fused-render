@@ -377,8 +377,12 @@ test("pending: false stops it; the cap stops it; an anchor change stops it", asy
   gated.clock.t += 3_600_000;
   await sleep(30);
   const duringGate = gated.calls.length;
-  await gated.set({ running: false });
+  // Clock first, synchronously: `await act` yields a macrotask after it
+  // renders, so a 5 ms tick could poll un-gated at 14 min (one fetch) before a
+  // later clock bump, then again at 16 — two fetches, and a flake. Bumped here,
+  // no tick can run until the render has already lifted the gate.
   gated.clock.t += 120_000;
+  await gated.set({ running: false });
   await sleep(30);
   const afterGate = gated.calls.length;
   await sleep(30);

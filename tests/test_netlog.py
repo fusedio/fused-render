@@ -1,6 +1,9 @@
 """fused_render/netlog.py: route normalisation, source naming, the request ring,
 rollups, websockets, and the browser queue merge. A fake clock stands in for
 time so no test sleeps."""
+import os
+import types
+
 import pytest
 
 from fused_render import netlog
@@ -323,9 +326,13 @@ def test_source_name_does_no_filesystem_io(monkeypatch):
     # runs on the event loop: a hung mount must not be able to stall it
     def boom(*a, **k):
         raise AssertionError("filesystem touched")
+    # A stand-in `os` seen by netlog alone. Patching the real `os.stat` would
+    # break every other thread in the worker for the test's duration — the
+    # excepthook formatting a leaked thread's traceback stats source files.
+    fake_path = types.SimpleNamespace(**vars(os.path))
     for name in ("isdir", "isfile", "exists", "realpath"):
-        monkeypatch.setattr(netlog.os.path, name, boom)
-    monkeypatch.setattr(netlog.os, "stat", boom)
+        setattr(fake_path, name, boom)
+    monkeypatch.setattr(netlog, "os", types.SimpleNamespace(**dict(vars(os), path=fake_path, stat=boom)))
     assert netlog.source_name("/Users/x/apps/myapp/sub/view.html", None) == "sub"
     assert netlog.source_name("/Users/x/apps/myapp/view.html", None) == "myapp"
     assert netlog.source_name(None, "http://h/?path=/a/b/view.html") == "b"

@@ -36,11 +36,12 @@ class _FakeBase(types.ModuleType):
         self.CANCEL = threading.Event()
         self.calls = []
         self.selects = worker_base.selects
+        self.snapshot_dir = None  # a real folder, for a worker that lists what it fetched
 
     def download_snapshot(self, model_id, allow_patterns=None,
                           ignore_patterns=None, **kwargs):
         self.calls.append((model_id, allow_patterns, ignore_patterns))
-        return f"/snapshots/{model_id}"
+        return self.snapshot_dir or f"/snapshots/{model_id}"
 
     def download_plan(self, phases):
         return [self.download_snapshot(m, allow_patterns=a, ignore_patterns=i)
@@ -170,8 +171,9 @@ def test_mlx_whisper_fetches_only_its_closed_file_set(monkeypatch):
     assert base.calls[0] == ("u/x", list(formats.MLX_WHISPER_FILES), None)
 
 
-def test_faster_whisper_fetches_only_its_closed_file_set(monkeypatch):
+def test_faster_whisper_fetches_only_its_closed_file_set(monkeypatch, tmp_path):
     worker, base = _worker(monkeypatch, "faster_whisper")
+    base.snapshot_dir = str(tmp_path)  # it lists the snapshot to tell Parakeet from Whisper
     worker.download("u/x")
     # Two formats, one allow list: the CTranslate2 set and the sherpa-onnx
     # transducer set. `test_wavs/*` (and everything else) stays out.

@@ -1037,11 +1037,11 @@
 
 .cc-fileeditor-note {
   font-size: 12px;
-  color: var(--muted-foreground, #888);
+  color: var(--fg-muted);
 }
 
 .cc-fileeditor-note.is-error {
-  color: var(--destructive, #d33);
+  color: var(--error);
 }
 
 .cc-fileeditor-bar {
@@ -1159,7 +1159,7 @@
 }
 
 .cc-skill-note.is-error {
-  color: var(--destructive, #d33);
+  color: var(--error);
 }
 
 /* A skill's page fills the height the page has left: the header takes what it
