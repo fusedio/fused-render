@@ -50,8 +50,8 @@ def load(model_id, path):
     if traits is None:
         raise RuntimeError(
             f"{model_id} is not a Kokoro sherpa-onnx export: it needs "
-            f"{', '.join(formats.KOKORO_FILES)} and an {formats.KOKORO_DATA_DIR}/ folder "
-            f"beside them")
+            f"{', '.join(formats.KOKORO_FILES)} and the {formats.KOKORO_DATA_DIR}/ and "
+            f"{formats.KOKORO_DICT_DIR}/ folders beside them")
     try:
         import sherpa_onnx
     except ImportError as e:
@@ -62,7 +62,7 @@ def load(model_id, path):
         voices=os.path.join(path, "voices.bin"),
         tokens=os.path.join(path, "tokens.txt"),
         data_dir=os.path.join(path, formats.KOKORO_DATA_DIR),
-        dict_dir=os.path.join(path, "dict"),
+        dict_dir=os.path.join(path, formats.KOKORO_DICT_DIR),
         lexicon=lexicon)
     config = sherpa_onnx.OfflineTtsConfig(
         model=sherpa_onnx.OfflineTtsModelConfig(

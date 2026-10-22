@@ -140,8 +140,8 @@ def test_every_registered_runner_appears_in_loaders():
     # Kokoro on sherpa-onnx: three root files plus the espeak-ng data folder.
     seen |= set(formats.loaders(
         repo_id="x/y", names=set(formats.KOKORO_FILES),
-        dirnames={formats.KOKORO_DATA_DIR}, config={}, torch_weights=False,
-        onnx_weights=True))
+        dirnames={formats.KOKORO_DATA_DIR, formats.KOKORO_DICT_DIR}, config={},
+        torch_weights=False, onnx_weights=True))
     missing = _codes() - seen
     assert not missing, (
         f"{sorted(missing)} are registered runners that `loaders()` never "
@@ -1437,6 +1437,8 @@ def test_kokoro_voice_table_has_one_name_per_voices_bin_row():
 def test_a_kokoro_snapshot_needs_its_three_files_and_espeak_data():
     assert formats.is_kokoro_snapshot(KOKORO_NAMES, {"espeak-ng-data", "dict"})
     assert not formats.is_kokoro_snapshot(KOKORO_NAMES, {"dict"})
+    # `load` hands sherpa-onnx `dict/`; a claim without it would die in the engine.
+    assert not formats.is_kokoro_snapshot(KOKORO_NAMES, {"espeak-ng-data"})
     assert not formats.is_kokoro_snapshot(KOKORO_NAMES - {"voices.bin"}, {"espeak-ng-data"})
     assert not formats.is_kokoro_snapshot({"model.onnx"}, {"espeak-ng-data"})
 
@@ -1456,7 +1458,7 @@ def test_kokoro_traits_are_preset_voices_without_a_style_line():
     assert traits["voices"] == list(formats.KOKORO_VOICES)
     assert traits["languages"] == ["english", "chinese"]
     assert traits["instructable"] is False
-    assert formats.kokoro_traits_from_names(KOKORO_NAMES, {"espeak-ng-data"}) == traits
+    assert formats.kokoro_traits_from_names(KOKORO_NAMES, {"espeak-ng-data", "dict"}) == traits
     assert formats.kokoro_traits_from_names({"model.onnx"}, set()) is None
 
 
