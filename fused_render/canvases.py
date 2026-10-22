@@ -609,6 +609,87 @@ def _err_of(response: JSONResponse) -> tuple:
     return ("err", message, response.status_code)
 
 
+def _creds_sig() -> tuple | None:
+    """`(mtime_ns, size)` of the credentials store, None when absent. A login,
+    logout or on-disk token refresh changes it, which invalidates cached CLI
+    results by construction."""
+    try:
+        st = os.stat(_credentials_file())
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def _cli_cache_clear() -> None:
+    global _cli_cache_gen
+    with _CLI_CACHE_LOCK:
+        _cli_cache.clear()
+        _cli_cache_gen += 1
+
+
+def _fresh(result):
+    """A result with its payload deep-copied (`api_canvases_list` mutates its
+    entries, so a hit must never hand out the stored object)."""
+    if result is not None and result[0] == "ok":
+        return ("ok", copy.deepcopy(result[1]))
+    return result
+
+
+def _cached_cli(kind: str, env: str, compute, ttl_for=None):
+    """Run `compute()` once per (kind, env, credentials signature) per TTL, and
+    share one run between concurrent callers (single flight).
+
+    `compute()` returns `("ok", payload)` or `("err", message, status)`; the
+    same shape comes back, payload deep-copied on every return. Errors reach
+    the running caller and its current waiters but are never stored. `ttl_for(
+    payload)` overrides the TTL (<= 0 means do not store)."""
+    key = (kind, env, _creds_sig())
+    with _CLI_CACHE_LOCK:
+        hit = _cli_cache.get(key)
+        if hit is not None and hit[0] > time.monotonic():
+            return _fresh(("ok", hit[1]))
+        flight = _cli_flights.get(key)
+        leader = flight is None
+        if leader:
+            flight = _cli_flights[key] = _Flight()
+            gen = _cli_cache_gen
+    if not leader:
+        flight.event.wait(TOKEN_TIMEOUT + LIST_SHIM_TIMEOUT)
+        if flight.result is not None:
+            return _fresh(flight.result)
+        return _fresh(compute())
+    result = None
+    try:
+        result = compute()
+        return _fresh(result)
+    finally:
+        flight.result = result
+        flight.event.set()
+        with _CLI_CACHE_LOCK:
+            if _cli_flights.get(key) is flight:
+                del _cli_flights[key]
+        if result is not None and result[0] == "ok" and gen == _cli_cache_gen:
+            ttl = ttl_for(result[1]) if ttl_for is not None else _CLI_CACHE_TTL_S
+            if ttl > 0:
+                # The child may have refreshed the credentials file, which
+                # changes its signature: store under the POST signature so the
+                # next call (which reads the new one) hits.
+                post_key = (kind, env, _creds_sig())
+                with _CLI_CACHE_LOCK:
+                    if gen == _cli_cache_gen:
+                        _cli_cache[post_key] = (
+                            time.monotonic() + ttl, copy.deepcopy(result[1]))
+
+
+def _err_of(response: JSONResponse) -> tuple:
+    """`("err", message, status)` from an `_error(...)` response."""
+    try:
+        message = json.loads(response.body)["error"]
+    except (ValueError, KeyError, TypeError):
+        message = "request failed"
+    return ("err", message, response.status_code)
+
+
 def _require_fused(x_fused: str | None) -> JSONResponse | None:
     # Same D3 guard as server's _require_fused, duplicated to stay acyclic.
     if x_fused != "1":

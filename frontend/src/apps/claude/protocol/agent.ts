@@ -5,7 +5,8 @@
 // No folder, no script path: the server owns the one agent module, so a call
 // names only the action. The two siblings — the folder's app entry and the
 // artifacts reader — have routes of their own beside it.
-import { postJson, runHeaders, type HttpError } from "@platform/lib/api";
+import { httpError, postJson, runHeaders, type HttpError } from "@platform/lib/api";
+import { agentSocketCall } from "./agentSocket";
 import type {
   Action,
   AgentRequests,
@@ -54,19 +55,37 @@ function newCallId(): string {
     : String(Date.now()) + "-" + Math.random().toString(36).slice(2);
 }
 
+const SOCKET_ROUTES: Record<string, "agent" | "artifacts"> = {
+  "/api/claude/agent": "agent",
+  "/api/claude/artifacts": "artifacts",
+};
+
 /** POST one of the chat routes. A 2xx body IS the result. A non-2xx whose
  *  `error` is the structured `{type, message, traceback}` becomes an
  *  `AgentError`; a string `error` (400 bad action/params, 403) stays the
  *  platform's `HttpError`; an abort rethrows untouched. */
 export async function post<T>(url: string, body: Record<string, unknown>, opts: RunOpts = {}): Promise<T> {
   try {
+    const headers = runHeaders({
+      page: CLAUDE_PAGE_ID,
+      ...(opts.target ? { target: opts.target } : {}),
+      callId: newCallId(),
+    });
+    // The two hot routes ride one WebSocket when it works (agentSocket.ts);
+    // `null` — no socket, or it never opened — means the POST below. A reply
+    // status >= 400 goes through the SAME mapping as a non-2xx fetch.
+    const route = SOCKET_ROUTES[url];
+    const viaSocket = route ? agentSocketCall(route, headers, body, opts.signal) : null;
+    if (viaSocket) {
+      const reply = await viaSocket;
+      if (reply) {
+        if (reply.status >= 400) throw httpError(reply.body as { error?: unknown } | null, reply.status);
+        return reply.body as T;
+      }
+    }
     return await postJson<T>(url, body, {
       ...(opts.signal ? { signal: opts.signal } : {}),
-      headers: runHeaders({
-        page: CLAUDE_PAGE_ID,
-        ...(opts.target ? { target: opts.target } : {}),
-        callId: newCallId(),
-      }),
+      headers,
     });
   } catch (err) {
     const said = (err as HttpError | null)?.body as { error?: unknown } | null | undefined;
