@@ -1,6 +1,6 @@
 // The two kinds of plugin row. Both share one anatomy: the name over a muted
-// one-line description, the marketplace, the version when it is one, then the
-// controls — an overflow menu and the chevron, and at the far right the one
+// one-line description, one muted "marketplace · version" string (the version
+// only when it is one), then the controls — an overflow menu and the chevron, and at the far right the one
 // thing the row is for (the enable switch on Installed, Install on Discover).
 import type { AvailablePlugin, Plugin } from "./api";
 import { Icon, KebabMenu, ListRow, Pill, Toggle3 } from "./bits";
@@ -18,6 +18,12 @@ export function versionLabel(version?: string | null): { row: string; detail: st
   if (SEMVER.test(v)) return { row: `v${v}`, detail: `v${v}` };
   if (COMMIT.test(v)) return { row: "", detail: `commit ${v.slice(0, 7)}` };
   return { row: "", detail: v };
+}
+
+/** The one muted string at a row's right edge: the marketplace, then the
+ *  version when it is a release. */
+export function metaText(marketplace: string, version?: string | null): string {
+  return [marketplace, versionLabel(version).row].filter(Boolean).join(" · ");
 }
 
 function Details({
@@ -81,12 +87,7 @@ export function InstalledPluginRow({
       pills={!p.installed ? <Pill>not installed</Pill> : null}
       secondary={p.description}
       secondaryTitle={p.description}
-      meta={
-        <>
-          <span className="cc-lrow-meta cc-lrow-mkt">{p.marketplace}</span>
-          <span className="cc-lrow-meta cc-lrow-ver">{versionLabel(p.version).row}</span>
-        </>
-      }
+      meta={<span className="cc-lrow-meta">{metaText(p.marketplace, p.version)}</span>}
       actions={
         <KebabMenu
           label={`Actions for ${p.name}`}
@@ -134,12 +135,7 @@ export function DiscoverPluginRow({
       name={p.name}
       secondary={p.description}
       secondaryTitle={p.description}
-      meta={
-        <>
-          <span className="cc-lrow-meta cc-lrow-mkt">{p.marketplace}</span>
-          <span className="cc-lrow-meta cc-lrow-ver">{versionLabel(p.version).row}</span>
-        </>
-      }
+      meta={<span className="cc-lrow-meta">{metaText(p.marketplace, p.version)}</span>}
       // A catalog description runs to a paragraph, and deciding whether to
       // install is exactly when it matters — so the row shows as much as fits
       // and the panel shows all of it, with who wrote it and what it is filed
@@ -182,7 +178,7 @@ export function DiscoverPluginRow({
         ) : (
           <button
             type="button"
-            className="btn"
+            className="cc-btn-sm"
             disabled={busy}
             title={`claude plugin install ${p.id}`}
             onClick={onInstall}

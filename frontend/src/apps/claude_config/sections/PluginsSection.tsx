@@ -75,7 +75,9 @@ export default function PluginsSection({ filter = "", title, blurb }: HeadedSect
   const { data, error, reload } = useModuleData(load);
   const loadMkt = useCallback(() => cc.marketplaces.list(), []);
   const { data: mktData, reload: reloadMkt } = useModuleData(loadMkt);
-  const [tab, setTab] = useState<Tab>("installed");
+  const [tab, setTab] = useState<Tab>(() =>
+    new URLSearchParams(location.search).get("view") === "discover" ? "discover" : "installed",
+  );
   const [marketplace, setMarketplace] = useState(ALL);
   // The add-a-marketplace form, in its own dialog.
   const [mktName, setMktName] = useState("");

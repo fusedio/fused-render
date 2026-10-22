@@ -283,9 +283,14 @@ export interface AvailableSkill {
   name: string;
   description: string;
   plugin: string;
+  /** What the marketplace's catalog says the plugin is, or "". */
+  pluginDescription: string;
   marketplace: string;
   path: string;
-  installed: boolean;
+  /** The plugin is installed and enabled, so the skill is already read. */
+  pluginInstalled: boolean;
+  /** The skill's slug is already in one of the user's skills dirs. */
+  added: boolean;
 }
 
 export interface AvailableSkills {

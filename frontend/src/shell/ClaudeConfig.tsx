@@ -54,7 +54,10 @@ function readTab(): TabId {
 // replaceSearch: a navigation would bump the nav epoch and remount the page.
 function writeTab(tab: TabId) {
   const p = new URLSearchParams(location.search);
-  if (p.get("tab") !== tab) p.delete("skill");
+  if (p.get("tab") !== tab) {
+    p.delete("skill");
+    p.delete("view");
+  }
   p.set("tab", tab);
   replaceSearch(`${location.pathname}?${p.toString()}`);
 }
@@ -72,8 +75,17 @@ export default function ClaudeConfig() {
     setFilter("");
   };
 
+  // Skills' Discover points at the Plugins catalog. `?view=` carries which
+  // Plugins list to open on; writeTab clears it once the tab has changed.
+  const openPluginsDiscover = () => {
+    const p = new URLSearchParams(location.search);
+    p.set("view", "discover");
+    history.replaceState(history.state, "", `${location.pathname}?${p.toString()}`);
+    pickTab("plugins");
+  };
+
   return (
-      <div className="settings-page">
+      <div className="settings-page cc-page">
         <div className="settings-header">
           <h1 className="settings-title">Claude Config</h1>
           <div className="settings-search" role="search">
@@ -122,7 +134,7 @@ export default function ClaudeConfig() {
             </div>
           </nav>
           <main className="settings-main">
-            {tab === "skills" && <ClaudeSkillsTab filter={filter} />}
+            {tab === "skills" && <ClaudeSkillsTab filter={filter} onOpenPluginsDiscover={openPluginsDiscover} />}
             {tab === "memory" && <ClaudeMemoryTab filter={filter} {...head} />}
             {tab === "plugins" && <ClaudePluginsTab filter={filter} {...head} />}
             {tab === "mcp" && <ClaudeMcpTab filter={filter} {...head} />}

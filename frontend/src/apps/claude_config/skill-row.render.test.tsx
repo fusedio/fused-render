@@ -60,3 +60,12 @@ describe("a skill row", () => {
     for (const label of ["Claude", "Copilot", "Codex"]) expect(text).not.toContain(label);
   });
 });
+
+describe("a skill row's meta", () => {
+  test("names the plugin as muted text on the right, not as a pill", () => {
+    const box = mount(skill({ source: "plugin", plugin: "kit" }), ["claude"]);
+    const metas = box.root.findAll((n) => n.type === "span" && String(n.props.className ?? "").includes("cc-lrow-meta"));
+    expect(metas.map(textOf)).toEqual(["kit"]);
+    expect(box.root.findAll((n) => String(n.props.className ?? "").includes("cc-pill"))).toHaveLength(0);
+  });
+});

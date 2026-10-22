@@ -117,3 +117,15 @@ describe("a discover row", () => {
     expect(textOf(have.root)).toContain("Installed");
   });
 });
+
+describe("a row's meta", () => {
+  test("is ONE muted string: marketplace, then the version when it is a release", () => {
+    const box = mountInstalled(plugin());
+    const metas = box.root.findAll((n) => n.type === "span" && String(n.props.className ?? "").includes("cc-lrow-meta"));
+    expect(metas).toHaveLength(1);
+    expect(textOf(metas[0])).toBe("claude-plugins-official · v1.2.3");
+    const hashed = mountInstalled(plugin({ version: "ed2e105b6e4c9f0a7d3b1c8e5f2a4d6b8c0e1f3a" }));
+    const m = hashed.root.findAll((n) => n.type === "span" && String(n.props.className ?? "").includes("cc-lrow-meta"));
+    expect(textOf(m[0])).toBe("claude-plugins-official");
+  });
+});
