@@ -311,7 +311,10 @@ def bots_pulse():
             # `seq` as the page's own row would carry it: `events_since` lifts the counter over lines another process
             # appended (an iMessage reply via botsend.py), and with no page open nothing else does — which is exactly
             # when the sidebar is the one asking, and a reply nobody has seen is the unread it exists to count.
-            row = {"id": b.id, "status": m.get("status") or "idle", "seq": max(b.seq, b._count_events()),
+            n = b._count_events()
+            # `news_seq`: the newest message row, system notes and delivery rows skipped — what `seen_seq` is read
+            # against (bot.news_seq). The line count is passed so a stale cache rescans for lines nobody lifted.
+            row = {"id": b.id, "status": m.get("status") or "idle", "seq": max(b.seq, n), "news_seq": b.news_seq(n),
                    "hidden": bool(m.get("hidden"))}
             if isinstance(m.get("seen_seq"), int):
                 row["seen_seq"] = m["seen_seq"]

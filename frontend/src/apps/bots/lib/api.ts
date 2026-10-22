@@ -232,6 +232,9 @@ export interface Bot {
   dl_pct?: number | null;
   engine?: "auto" | "steps" | "agent";
   seq: number;
+  /** The newest MESSAGE row's seq (bot.py news_seq): system notes and delivery rows past it do not count as unread.
+   *  What the sidebar's dot reads `seen_seq` against (platform/lib/botsPulse botHasUnread). */
+  news_seq?: number;
   /** The last event seq as of you opening this bot (markBotSeen; the server never lowers it). Absent = never opened,
    *  which unreadOf reads as nothing to catch up on. On the bot row so a relaunch on another port keeps it (D1386). */
   seen_seq?: number | null;
