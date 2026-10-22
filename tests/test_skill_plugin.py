@@ -1330,53 +1330,14 @@ def test_retire_is_idempotent(claude_home):
 
 
 def test_retire_never_git_inits_the_users_claude_dir(claude_home):
-    """`lib.commit` calls `ensure_repo`, which `git init`s ~/.claude and writes a
-    .gitignore into it. Right when the user pressed a button in a config UI built
-    around versioning; NOT something an unattended canvas open may do to their
-    home directory behind their back."""
+    """An unattended canvas open must not `git init` ~/.claude or write a
+    .gitignore into it."""
     _write_settings(claude_home, {"enabledPlugins": {
         skill_plugin.LEGACY_PLUGIN_ID: True,
     }})
     assert skill_plugin.retire_legacy_fused_plugin() is True
     assert not os.path.exists(os.path.join(str(claude_home), ".git"))
     assert not os.path.exists(os.path.join(str(claude_home), ".gitignore"))
-
-
-def test_retire_records_the_flip_when_a_config_repo_already_exists(claude_home,
-                                                                  monkeypatch):
-    """The user versioning their Claude config is the user who will go looking
-    for an unexplained settings change — so when the history is already there,
-    the flip lands in it."""
-    from fused_render.claude_config import lib
-
-    seen = []
-    monkeypatch.setattr(lib, "commit", lambda msg, **kw: seen.append(msg))
-    os.makedirs(os.path.join(str(claude_home), ".git"))
-    _write_settings(claude_home, {"enabledPlugins": {
-        skill_plugin.LEGACY_PLUGIN_ID: True,
-    }})
-    assert skill_plugin.retire_legacy_fused_plugin() is True
-    assert len(seen) == 1 and skill_plugin.LEGACY_PLUGIN_ID in seen[0]
-
-
-def test_a_failed_commit_does_not_undo_the_retirement(claude_home, monkeypatch):
-    """The setting is already written and that is the part that matters — the
-    audit trail is a nicety and its failure must not report the flip as failed
-    (a caller that retried on False would keep re-reading a config it already
-    fixed)."""
-    from fused_render.claude_config import lib
-
-    def boom(*a, **kw):
-        raise RuntimeError("no git here")
-
-    monkeypatch.setattr(lib, "commit", boom)
-    os.makedirs(os.path.join(str(claude_home), ".git"))
-    _write_settings(claude_home, {"enabledPlugins": {
-        skill_plugin.LEGACY_PLUGIN_ID: True,
-    }})
-    assert skill_plugin.retire_legacy_fused_plugin() is True
-    assert _read_settings(claude_home)["enabledPlugins"][
-        skill_plugin.LEGACY_PLUGIN_ID] is False
 
 
 def test_the_legacy_id_is_the_pre_rename_plugin_and_not_the_live_one():

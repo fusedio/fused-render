@@ -7,8 +7,9 @@ Ports server/lib.ts from claude-config-ui to stdlib Python. Owns:
   - the packaged settings catalog
 
 Every feature module imports from here; no feature reimplements these mechanics
-(specs: "one concept, one owner"). Stdlib only bar one intra-repo import,
-`_platform`, for the cross-platform file lock.
+(specs: "one concept, one owner"). Stdlib only bar two intra-repo imports:
+`_platform` (the cross-platform file lock) and `shell.storage.home_dir()` (the
+single owner of ~/.fused-render, re-exported for mcp.py's cache path).
 """
 import contextlib
 import itertools
@@ -20,6 +21,7 @@ import threading
 from typing import Any, Generator, Optional
 
 from fused_render import _platform
+from fused_render.shell.storage import home_dir
 
 
 # --- config-store.md §1: base directory ------------------------------------
