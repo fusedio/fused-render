@@ -1080,49 +1080,35 @@ def _split_error(cleaned: str) -> tuple[str, str]:
     return "Error", cleaned.strip() or "execution failed"
 
 
-async def run_python(path: str, params: dict) -> dict:
-    if not os.path.isfile(path):
-        return _error_dict("FileNotFoundError", f"no such Python file: {path}")
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            user_code = f.read()
-    except OSError as e:
-        return _error_dict("OSError", f"cannot read {path}: {e}")
+async def resolve_interpreter(path: str) -> tuple[str | None, dict | None]:
+    """The interpreter a Python file runs on, or an answer in the house wire shape.
 
+    Returns `(interpreter, None)` to run, or `(None, dict)` when nothing can run:
+    no usable app interpreter, or the folder's environment is not installed yet
+    (the page shows the install loader). `run_python` and the app MCP tools share
+    this one resolution.
+    """
     from fused_render import projectenv
 
-    # The environment is the FOLDER's (SPEC PY-16). `project` is the project root
-    # when that folder declares one, and None when it does not — every `.py`
-    # under a root resolves to the same answer however deep it sits, which is
-    # what makes one page calling five scripts one install.
+    # The environment is the FOLDER's (SPEC PY-16): `project` is the project root
+    # when that folder declares one, else None.
     project = projectenv.project_env_for(path)
-    # The APPLICABLE dependencies, from the one helper every caller shares
-    # (`_needs_install_dict` and `has_project_env` use it too). A dependency whose
-    # PEP 508 marker does not hold here is not one this platform needs: leaving it
-    # in would make `app_satisfies` refuse a fast path over a package that will
-    # never be installed, and would let the loader name it. uv applies the same
-    # markers when it syncs, so every side agrees about what the environment
-    # actually contains.
+    # The APPLICABLE dependencies (PEP 508 markers evaluated), from the one helper
+    # every caller shares: a dependency that does not apply here is not one this
+    # platform needs, and would only make the fast path below refuse for nothing.
     requirements = projectenv.applicable_dependencies_of(project) if project else []
 
-    # No project -> the app's own interpreter, no venv (PY-17).
+    # No project -> the app's own interpreter, no venv (PY-17). Off the event loop:
+    # the first call in a process runs up to two `subprocess.run(..., timeout=5)`
+    # probes plus a wrapper write.
     interpreter = None
     if project is None:
-        # Off the event loop: `app_interpreter` is sync (it is called from sync
-        # contexts and tests) and its first call in a process runs up to two
-        # `subprocess.run(..., timeout=5)` probes plus a wrapper write. /api/run
-        # awaits this coroutine directly, so inline that stalls the entire
-        # server — websockets, watcher, every other request — for the probe's
-        # duration. The per-process cache means only the first call pays the hop.
         interpreter = await asyncio.to_thread(app_interpreter)
         if interpreter is None:
-            # NEVER fall through to a venv here. With no baseline requirements
-            # (D172) that venv is stdlib-only, so a template that works today
-            # would fail on `import numpy` — an error about the wrong thing
-            # entirely, on a path the user cannot see. And a header-less core
-            # template must never reach the network, which a venv build would.
-            # A configuration error naming its own fix is strictly better.
-            return _error_dict(
+            # NEVER fall through to a venv here: with no baseline requirements
+            # (D172) it would be stdlib-only and fail on `import numpy`, and a
+            # header-less core template must never reach the network.
+            return None, _error_dict(
                 "InterpreterUnavailable",
                 "This app could not resolve a usable Python interpreter for "
                 f"{os.path.basename(path)}, which declares no dependencies of its "
@@ -1134,65 +1120,49 @@ async def run_python(path: str, params: dict) -> dict:
                 "candidates were tried and why each was rejected.",
             )
 
+    # The app-interpreter fast path: a declaration this interpreter already meets
+    # needs no venv, no download and no loader. Skipped for a LOCKED project: a
+    # `uv.lock` asks for exact resolution, which "near enough" from the app's own
+    # packages would defeat. Off the event loop: the probe spawns a subprocess on
+    # its first call.
+    locked = bool(project) and projectenv.has_lock(project)
+    if project and requirements and not locked:
+        interpreter = await asyncio.to_thread(
+            _app_interpreter_if_satisfies, requirements
+        )
+
+    # `interpreter is None` and not merely `project`: a declaration the fast path
+    # resolved has nothing to install.
+    if project and interpreter is None:
+        from fused_render import envinstall
+
+        # Pre-flight (PY-18): a missing venv needs a real download, which does not
+        # fit runPython's ~30s budget, so answer instead of blocking. Off the event
+        # loop: the first call for a venv probes its interpreter with a subprocess.
+        if not await asyncio.to_thread(envinstall.is_installed, project):
+            return None, _needs_install_dict(
+                project, abs_path=os.path.abspath(path)
+            )
+        # The environment lives under OUR home dir, so the backend cannot find it
+        # by key: it is told, through the `interpreter=` channel.
+        interpreter = envinstall.venv_python_for(project)
+    return interpreter, None
+
+
+async def run_python(path: str, params: dict) -> dict:
+    if not os.path.isfile(path):
+        return _error_dict("FileNotFoundError", f"no such Python file: {path}")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            user_code = f.read()
+    except OSError as e:
+        return _error_dict("OSError", f"cannot read {path}: {e}")
+
     abs_path = os.path.abspath(path)
     try:
-        # Pre-flight (PY-18): a header whose venv does not exist yet needs a real
-        # download, which does not fit runPython's ~30s budget. Answer instead of
-        # blocking — the page shows the install loader, POSTs /api/env/install and
-        # retries. Only when there IS something to install: an existing venv runs
-        # straight through, so the normal case pays one marker stat.
-        #
-        # Inside the guard, not before it, for the same reason build_code is: an
-        # exception escaping here made /api/run an unhandled 500 whose body is
-        # `{"error": "<string>"}`, and runtime.js reads `data.error.message` off
-        # that, so the diagnostic reached the user as the literal word `undefined`.
-        #
-        # Off the event loop, for the same reason `app_interpreter` above is: since
-        # D212 this is not a single `os.path.exists` any more — the first call for a
-        # given venv probes its interpreter with `subprocess.run(..., timeout=5)`.
-        # /api/run awaits this coroutine directly (`routers/run.py`), so inline that
-        # stalls the entire server — websockets, watcher, every other request — for
-        # the probe's duration, and a venv on a wedged mount would stall it for the
-        # full budget. `to_thread` re-raises in this frame, so the guard above still
-        # contains the ImportError/RuntimeError pair (pinned by a test, because "the
-        # exception now surfaces somewhere else" is exactly what a thread hop hides).
-        # The app-interpreter fast path: a declaration this interpreter already
-        # meets needs no venv, no download and no loader. See the `app_satisfies`
-        # block above for why it fails closed and what it trades.
-        #
-        # Skipped entirely for a LOCKED project. A `uv.lock` is a request for
-        # exact resolution — the user committed specific versions so the folder
-        # resolves the same way on another machine — and satisfying it "near
-        # enough" from whatever the app happens to ship is the one thing a lock
-        # exists to rule out. Unlocked, the trade is the same one it always was:
-        # skip a multi-hundred-MB download the app has already paid for.
-        #
-        # Off the event loop for the same reason `app_interpreter` and
-        # `is_installed` are: the probe behind it spawns a subprocess on its
-        # first call. Declining the fast path falls through to `is_installed`
-        # below, so a missing venv becomes `needs_install` instead of an inline
-        # download inside this request.
-        locked = bool(project) and projectenv.has_lock(project)
-        if project and requirements and not locked:
-            interpreter = await asyncio.to_thread(
-                _app_interpreter_if_satisfies, requirements
-            )
-
-        # `interpreter is None` and not merely `project`: a declaration the app
-        # interpreter already satisfies resolved one just above, and it has nothing
-        # to install — asking `is_installed` about it would name a venv directory
-        # that is never going to be built and answer `needs_install`, putting the
-        # loader in front of a run that was ready to go.
-        if project and interpreter is None:
-            from fused_render import envinstall
-
-            if not await asyncio.to_thread(envinstall.is_installed, project):
-                return _needs_install_dict(project, abs_path=abs_path)
-            # The environment lives under OUR home dir, not in the backend's
-            # store, so the backend cannot find it by key — it is TOLD, through
-            # the same `interpreter=` channel the app-interpreter path uses.
-            # That is the whole reason `projectenv` may own the storage layout.
-            interpreter = envinstall.venv_python_for(project)
+        interpreter, early = await resolve_interpreter(path)
+        if early is not None:
+            return early
 
         # build_code reads _binding.py's source off the package
         # (importlib.resources), so a broken/partial install fails here — and
