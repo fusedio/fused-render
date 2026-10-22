@@ -407,9 +407,13 @@ export function openBot(id: string): void {
   sendOpen(id);
 }
 
+/** startStore landed the bare door on rows frozen when the page was last left (the loop stops with the route; the
+ *  sidebar's own pulse kept up, this store did not): the next poll's fresh rows decide again (pollOnce). */
+let relandOnPoll = false;
 /** Everything select() does to the store for a new selection, minus the URL: the resets a bot switch needs whoever
  *  moved it (a click, or the URL under back/forward — syncFromUrl). */
 function applySel(id: string | null): void {
+  relandOnPoll = false;  // a pick made before the first fresh poll (a click, Back) stands; the poll must not re-land over it
   if (id !== S.sel) { for (const cb of [...selectListeners]) cb(id); clearToast(); }  // a reply and a status toast belong to one bot
   commit({ sel: id, scrollThread: S.scrollThread + 1 });
   const b = cur(); if (b) { setNewMark(b); markSeen(b.id, b.seq); }
@@ -443,9 +447,6 @@ const hasNews = (b: Bot): boolean => botHasUnread({ seq: b.seq, news_seq: b.news
  *  with unread news, else the one that was open (lib/landing.ts). A replace: the click already made the history
  *  entry. A different bot than the one on screen gets the select resets (applySel), and landing marks it read.
  *  With no rows yet the pick waits for the first poll (pollOnce), which calls this again. */
-/** startStore landed the bare door on rows frozen when the page was last left (the loop stops with the route; the
- *  sidebar's own pulse kept up, this store did not): the next poll's fresh rows decide again (pollOnce). */
-let relandOnPoll = false;
 function landOnBare(): void {
   const pick = S.bots.length ? landingBot(S.bots, hasNews, S.sel) : S.sel;
   if (!pick) return;
@@ -570,11 +571,12 @@ export async function pollOnce(): Promise<void> {
       // A bot picked from the URL skips select(): place its "New" rule and clear its dot once, on first load. Later polls leave "seen" alone so the dot lights while you watch.
       if (first && S.sel && !document.hidden) { const c = cur(); if (c) { setNewMark(c); markSeen(c.id, c.seq); } }
       // A remount landed on stale rows (startStore): a bot that started waiting, or got a reply, while you were on
-      // another page is only known now. After the mark above, so a switch places its own "New" rule.
-      if (relandOnPoll) { relandOnPoll = false; landOnBare(); }
+      // another page is only known now. After the mark above, so a switch places its own "New" rule. Not while
+      // hidden: landing marks the bot read (applySel), and nobody saw it — the flag holds for the poll visibility kicks.
+      if (relandOnPoll && !document.hidden) { relandOnPoll = false; landOnBare(); }
       // Nothing selected yet: a bot waiting on you, else one with news, else Super Bot (seeded on first run,
       // registry.seed_super) — the chat a new user should land in (lib/landing.ts).
-      if (!S.sel && r.bots.length) landOnBare();
+      if (!S.sel && r.bots.length && !document.hidden) landOnBare();
       if (S.sel && !r.bots.find((b) => b.id === S.sel)) select(r.bots[0]?.id || null, { replace: true });
       // The bot on screen is open: the Bots page shows it (by a click, a deep link or landing here). Only this page
       // polls, so onboarding or another page never counts. Once per bot per page load; the server ignores repeats.
@@ -644,7 +646,9 @@ export function startStore(): () => void {
   window.addEventListener(OPEN_EVENT, onOpenEvent);
   const urlBot = urlSel();
   if (urlBot && urlBot !== S.sel) commit({ sel: urlBot, scrollThread: S.scrollThread + 1 });
-  else if (!urlBot && S.sel) { landOnBare(); relandOnPoll = true; }  // the bare door from another page: waiting > unread > the bot that was open — on last-known rows, then again on fresh ones
+  // The bare door from another page (`/bots` itself — not /bots/tasks, apps or preferences, which select nothing):
+  // waiting > unread > the bot that was open — on last-known rows now (if anyone is looking), then again on fresh ones.
+  else if (!urlBot && S.sel && parseBotsPath(location.pathname).kind === "list") { if (!document.hidden) landOnBare(); relandOnPoll = true; }
   const gen = Math.abs(loopGen) + 1;
   loopGen = gen;
   void loop(gen);
