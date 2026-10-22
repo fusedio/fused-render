@@ -3,7 +3,7 @@
 //
 // `fetch` is stubbed rather than the api module, because the whole point of
 // the fire-and-forget posture is what happens when the *request* fails.
-import { afterEach, beforeEach, describe, expect, it, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock, test } from "bun:test";
 
 // bun's test runner has no DOM, so the store's one browser dependency is
 // supplied here — a real Storage-shaped object, installed BEFORE the module is
@@ -148,6 +148,14 @@ test("an unsupported bridge does not record a token", async () => {
 
 // ---- review findings --------------------------------------------------------
 
+// Put back when the file is done: bun runs every file in one process, and a
+// `location.host` left behind sends every later suite's agent calls down a
+// real WebSocket (agentSocket.ts's `socketUsable`) instead of their fetch stub.
+let realLocation: { value: unknown } | undefined;
+afterAll(() => {
+  if (realLocation) (globalThis as { location?: unknown }).location = realLocation.value;
+});
+
 test("bookkeeping after a delete or a rename does not republish to the OS", async () => {
   // Found in review. Both repair OUR reference and keep op: "copy", so the
   // default mirror republished them — rewriting a clipboard the user may not
@@ -157,6 +165,7 @@ test("bookkeeping after a delete or a rename does not republish to the OS", asyn
   // hence the stub and the dynamic import. These two files are the whole
   // frontend suite and carry no DOM; adding one for a two-line assertion is a
   // worse trade than this.
+  realLocation ??= { value: (globalThis as { location?: unknown }).location };
   (globalThis as { location?: unknown }).location = new URL("http://x/");
   const { remapClipboardPath } = await import("@apps/explorer/lib/fs-actions");
 

@@ -1162,7 +1162,7 @@ else
     # ditto keeps the symlinks (Versions/Current) the frameworks are made of.
     ditto "$CHROMIUM_OUT/FusedChromium" "$CHROMIUM_DEST"
     mv "$CHROMIUM_DEST/engine.json" "$APP_DIR/Contents/Resources/chromium-engine.json"
-    STRAY="$(find "$CHROMIUM_DEST" -maxdepth 1 -mindepth 1 ! -name '*.framework' ! -name '*.app')"
+    STRAY="$(find "$CHROMIUM_DEST" -maxdepth 1 -mindepth 1 ! -name '*.framework' ! -name '*.app' || true)"
     if [[ -n "$STRAY" ]]; then
       echo "FATAL: non-bundle entries in $CHROMIUM_DEST (strict sealing refuses them):" >&2
       echo "$STRAY" >&2

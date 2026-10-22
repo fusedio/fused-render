@@ -553,6 +553,7 @@ MEMORY_LINES_HINT = 200  # Bot.MEMORY_LINES, visible to the class-body prompt st
 class Bot:
     _terminal_id = None  # id of this bot's live pty (terminal_session); class default for __new__-built test bots
     deleted = False  # class default: a Bot built with __new__ (tests) still has it; delete() sets the instance flag
+    _news = None  # class default for __new__-built test bots; __init__ sets it too (news_seq)
 
     def __init__(self, bid):
         self.id = bid
