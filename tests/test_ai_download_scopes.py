@@ -173,7 +173,10 @@ def test_mlx_whisper_fetches_only_its_closed_file_set(monkeypatch):
 def test_faster_whisper_fetches_only_its_closed_file_set(monkeypatch):
     worker, base = _worker(monkeypatch, "faster_whisper")
     worker.download("u/x")
-    assert base.calls == [("u/x", list(formats.CT2_FILES), None)]
+    # Two formats, one allow list: the CTranslate2 set and the sherpa-onnx
+    # transducer set. `test_wavs/*` (and everything else) stays out.
+    assert base.calls == [
+        ("u/x", list(formats.CT2_FILES + formats.SHERPA_TRANSDUCER_FILES), None)]
 
 
 def test_ltx_gemma_phase_ignores_the_unreadable_formats(monkeypatch):

@@ -7336,6 +7336,9 @@ remains the only bot-terminal switch (user-only, off by default per bot). `useHe
 - **Phone stays Approve / Deny only.** "Always approve" writes a standing rule and is a desktop decision (phone.py). The phone does not render relayed approvals (it has no `relay` handling), so there was nothing to convert there.
 - **Moves.** `CollapsiblePre` now lives in `platform/ui` (old path re-exports); `approvalVerdict` lives in `platform/lib/risk.ts` (re-exported from `lan/bots/lib.ts`). Settled Bots cards show "Approved" / "Denied" from the answering user line when it is loaded.
 
+## Compaction divider (Claude chat)
+- A Claude Code compaction summary (`isCompactSummary` user row) replays as `role: "compact"`, not a user bubble; the preceding `compact_boundary` supplies trigger and token counts. Live, the boundary is a notice segment with the same label (`Context compacted · 167k → 16k tokens`). The page draws a divider with the summary folded behind "Show summary".
+
 ## D1411: A third canvas environment, `custom`, follows `~/.fused/settings.toml` by leaving FUSED_ENV unset (2026-10-21, canvases-custom-env)
 
 - **Problem.** Every canvas CLI run and shim got `FUSED_ENV=prod|unstable`, and `fused._env()` overwrites the `base_url` / `shared_udf_base_url` the SDK loaded from `~/.fused/settings.toml` with the hosted defaults, so there was no way to point canvases at a custom deployment. Pinning `FUSED_RENDER_WORKBENCH_ENV` to a URL refuses every canvas call (`_require_env`).
@@ -7401,3 +7404,58 @@ An AST scan of `fused_render/server` for blocking filesystem/subprocess calls in
 ## D1421 The Chromium engine download is an Activity row
 
 Turning on `chromium_windows_enabled` starts a ~150 MB engine download (`fused_render.chromium.install`), but the only thing that showed it was the Preferences row polling `GET /api/prefs/chromium` — navigate away and nothing on screen said a download was running, which is exactly the gap the job registry exists to close (SPEC §36). The installer now mirrors every tick into `fused_render.jobs` the way the app updater mirrors its DMG download: `install()` opens the row (`sys:chromium-engine:<engine>-<arch>`, kind `download`, unit `bytes`, origin "Preferences", page `/preferences`, no ✕ — the state machine has no cancel) BEFORE starting the worker thread, so the PUT that turned the preference on returns with the row already there for the activity chip's next poll; `_set_progress` reports one tick per fetch chunk with the bytes derived from the manifest's `size` (the fetch's own fraction is scaled by 0.9 in `_install_sync`, which the report undoes) and the phase verb in `detail` ("Downloading"/"Verifying"/"Unpacking", read by `jobTypeLabel`); `_run_install` writes the terminal row — `error` with the exception text (it sticks until dismissed) or `done` with "Ready. New windows use Chromium…" (unlike the updater, which forgets its row because the restart dialog announces the finish; here the Preferences row that also says "ready" is only there if the user stayed on it). A retry after a failure reuses the id and so reopens the same row. `prefetch_for_bundle`'s direct `_install_sync` path still reports nothing of its own — the update's row already says "Downloading Chromium engine" for it. Reporting is best-effort: a registry failure is logged at debug and the install carries on (`test_a_registry_failure_never_breaks_the_install`). Lock order is always `_state.lock` → `jobs._lock` (the opening report is made under the state lock; progress and terminal reports are made outside it), and `jobs.py` is a leaf that never calls back.
+## D1414: Vision runner gets a CUDA sibling, shipped unmeasured (2026-10-22, vision-torch-cuda)
+
+- **Decision.** `vision-torch-cuda` (folder `vision_torch_cuda`, gated on `_cuda`) installs PyPI's default torch, which is the CUDA build on Linux. It sits above `vision-torch` in the registry and aliases its catalog suggestions. A folder rather than a flag, per D381: `uv sync` runs bare in the runner folder, so one environment is one manifest.
+- **Body moved.** The runner body is now `runners/torch_vision.py`; both `worker.py` files are shells over it. The module could not keep the name `vision_torch` because it would collide with the folder, so it mirrors `torch_image.py`.
+- **Unmeasured.** No NVIDIA machine was available. The row's only evidence is the worker's existing `torch.cuda.is_available()` device branch, and its registry note says "Not yet measured on real hardware".
+- **Naming.** The sibling-name test now accepts "(Apple Silicon)" as a platform qualifier for `vision-torch` beside the "(CUDA)" row, and skips its short-name equals long-name rule for that row, rather than renaming the measured Apple row.
+- **CUDA-less torch.** The two CUDA runners differ on a torch without CUDA: vision refuses (before download and at load), `diffusers-image-cuda` reports `device=cpu`; unifying this into `worker_base` is deferred.
+## D1413: llama-cpp-python stays at 0.3.29; Ternary-Bonsai-2-27B GGUF gets no row (2026-10-22, llamacpp-bump-bonsai2-gguf)
+
+- **Problem.** Wanted a newer llama.cpp so `llamacpp-text` could serve `prism-ml/Ternary-Bonsai-2-27B-gguf` (PQ2_0 7.21 GB, PTQ1_0 5.95 GB). A bump is only allowed where every shipped wheel passes `zipfile.ZipFile(...).testzip()` (see `llamacpp_text/pyproject.toml`).
+- **Sweep.** Each wheel downloaded from `github.com/abetlen/llama-cpp-python/releases/download/v<ver>[-vulkan]/`, sha256 prefix (12) and size (decimal MB) in brackets. mac = macosx_11_0_arm64, x86 = manylinux2014_x86_64, arm = manylinux2014_aarch64, vk = vulkan x86_64.
+
+  | version | mac | x86 | arm | vk |
+  |---|---|---|---|---|
+  | 0.3.36 | FAIL invalid block type [1bec5e1d9fc7, 24.93 MB] | PASS [c8a3e98093e9, 27.08 MB] | PASS [410bdf3cf664, 24.94 MB] | PASS [00eeeb1771c2, 127.48 MB] |
+  | 0.3.35 | FAIL bad member libggml-base.0.20.0.dylib [f16df6e77c2b, 18.16 MB] | PASS [d172f3d3c8cd, 23.91 MB] | PASS [b5a4abd4d1d5, 22.23 MB] | PASS [0acc0e07b9b6, 142.84 MB] |
+  | 0.3.34 | FAIL bad member libggml-base.0.16.0.dylib [d42e069db63c, 17.64 MB] | PASS [f34c26f51ec4, 23.20 MB] | PASS [725d8a324032, 21.65 MB] | PASS [8e8e6bc57837, 130.14 MB] |
+  | 0.3.33 | FAIL invalid block type [47c29d1fe1a9, 17.57 MB] | PASS [2b7f027866f7, 23.14 MB] | PASS [68ac4dddf636, 21.58 MB] | PASS [c5dbdeb53099, 130.05 MB] |
+  | 0.3.32 | FAIL bad member libggml-base.0.15.3.dylib [c49f83e02513, 17.27 MB] | PASS [9f5cf69f2358, 22.71 MB] | PASS [2f37eaca0765, 21.17 MB] | PASS [936eddabea61, 129.62 MB] |
+  | 0.3.31 | no CPU wheels published (404) | 404 | 404 | PASS [d926a9fb97e3, 181.91 MB] |
+  | 0.3.30 | FAIL bad member libggml-base.0.dylib [a66d416e5d4d, 17.11 MB] | PASS [591337ea31b6, 22.55 MB] | PASS [0720e1d122a4, 21.01 MB] | PASS [41c9edb8f532, 181.88 MB] |
+
+  Remaining CPU tags `registry._llamacpp_platform` admits (added in review; musl = musllinux_1_2, rv = linux_riscv64; all PASS, 0.3.31 published none, 404):
+
+  | version | musl x86_64 | musl aarch64 | rv64 |
+  |---|---|---|---|
+  | 0.3.36 | PASS [1b7ba90f5131, 28.30 MB] | PASS [cd36015cf5cc, 25.64 MB] | PASS [49b11462dc5e, 21.64 MB] |
+  | 0.3.35 | PASS [fb9998367428, 25.17 MB] | PASS [a024ca666cbc, 22.96 MB] | PASS [9bbbffd9638b, 19.34 MB] |
+  | 0.3.34 | PASS [85269707b9d7, 24.51 MB] | PASS [a3bd2321a348, 22.45 MB] | PASS [95d966503d1d, 18.80 MB] |
+  | 0.3.33 | PASS [716b8d4b4261, 24.42 MB] | PASS [0bb118f12c99, 22.34 MB] | PASS [6aa62bcbdee8, 18.70 MB] |
+  | 0.3.32 | PASS [0ba09e3744d8, 23.93 MB] | PASS [04d11fa9e706, 21.87 MB] | PASS [ce27a0e208ec, 18.30 MB] |
+  | 0.3.31 | 404 | 404 | 404 |
+  | 0.3.30 | PASS [dca09fcba476, 23.77 MB] | PASS [571f901a8669, 21.69 MB] | PASS [f47eef3930c5, 18.14 MB] |
+  | 0.3.29 (current pin) | PASS [7e8b4d11dc20, 23.69 MB] | PASS [743c2ed3762a, 21.64 MB] | PASS [1250f32350ce, 18.08 MB] |
+
+  The pin 0.3.29 is intact on all six CPU tags (macOS arm64, manylinux x86_64/aarch64, musllinux x86_64/aarch64, riscv64) and the vulkan wheel.
+
+  **Mac tally.** 4 of 17 sampled releases pass on macOS arm64 (13 of 17 fail): the 2026-08-21 sweep covered 16 releases, and only 0.3.36 is certainly new to it. August's list is not in the repo; 0.3.32 and 0.3.33 were probably already in it, so they are not counted again.
+
+  "invalid block type" is `zlib.error: Error -3 while decompressing data`, raised by `testzip()` itself.
+
+  **Digest check (done 2026-10-22).** For each of the six FAILing mac wheels, the full sha256 of the downloaded file was compared with the `digest` GitHub publishes for that release asset (`gh release view v<ver> --repo abetlen/llama-cpp-python --json assets`), and the byte size with the asset's `size`. All six match exactly (0.3.30, 0.3.32, 0.3.33, 0.3.34, 0.3.35, 0.3.36), so none of the failures is a bad fetch: upstream publishes these bytes, as the 2026-08-21 audit found for the earlier corrupt releases. No re-download was needed.
+- **Decision.** No bump: the macOS arm64 wheel is corrupt in six of the seven versions 0.3.30-0.3.36 (0.3.31 published no CPU wheels at all, 404), so no version in the range has an intact mac wheel, and macOS is a shipped tag. Both pins stay at 0.3.29; the sweep is recorded in both pyproject comments so nobody repeats it. Linux and vulkan wheels were intact throughout, so a Linux-only bump would be possible but would split the pin across platforms; not done.
+- **Bonsai 2 gate.** Loaded `Ternary-Bonsai-2-27B-PQ2_0.gguf` (the only file tested; the v1 GGUFs and PTQ1_0 were not) on 0.3.29 (scratch venv, Apple M5, Metal) with `Llama(n_ctx=2048, n_gpu_layers=-1)`. It fails: `gguf_init_from_reader: tensor 'output.weight' has invalid ggml type 142. should be in [0, 42)` then `ValueError: Failed to load model`. The PQ2_0 quant is a PrismML-specific ggml type that upstream llama.cpp at 0.3.29's vendored commit does not know; no wheel that passes integrity is newer, and the newer mac wheels cannot be installed to test. No `SUGGESTIONS` or `GGUF_RECIPES` row, no mirror upload.
+- **Not done / resume point.** Re-run the sweep when a release appears after 0.3.36. Re-test Bonsai 2 only on a build that knows type 142 (probably PrismML's own llama.cpp fork; upstream may never take it). The sweep script is `scripts/llamacpp_wheel_sweep.py` (`python scripts/llamacpp_wheel_sweep.py <scratch dir> <lo> <hi>`, e.g. `37 40` for 0.3.37-0.3.40; it downloads into the scratch dir).
+
+## D1423: Parakeet TDT 0.6B v3 returns as a sherpa-onnx int8 transducer inside the faster-whisper runner (2026-10-22, parakeet-sherpa-stt)
+
+D406 withdrew `parakeet-mlx` because a separate Apple-only runner with its own venv was not worth its cost. The premise that mattered was the separate runner, not the model: the `faster_whisper` venv already carries sherpa-onnx (diarization), and `csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8` loads through `OfflineRecognizer.from_transducer(model_type="nemo_transducer")`. So Parakeet is now a second model format in that runner, dispatched by snapshot format (`formats.is_sherpa_transducer_snapshot`), CPU only, no translate. A catalog row (not recommended) exposes it; the shared VAD policy moved to `runners/stt_common.py` with thin wrappers left in the MLX worker.
+
+- **Gate** (270.9 s English recording, `vad: true, words: true, diarize: false`, Apple Silicon CPU, scratch venv, av 18): Parakeet 23.6 s wall, RTF 0.087, RSS 3629 MB, 46 segments, 777 words; word spans monotonic and inside their segments. `deepdml/faster-whisper-large-v3-turbo-ct2` on the same file: 145.8 s, RTF 0.538, RSS 1661 MB, 47 segments, 774 words, same checks pass. Parakeet is about 6.2x faster at roughly twice the resident memory.
+- **av pin.** faster-whisper 1.2.1 is incompatible with PyAV 19 (`metadata_errors`), so the runner pyproject now carries `av<19`.
+- **sherpa tokens** carry a leading plain space on word starts, not `▁`.
+- **`feature_dim`** 80 vs 128 gave identical text and timestamps; the value is left at sherpa's default.
+- **Not done.** The model is not on our mirror yet (needs the `changing-suggested-models` upload). Sentence splitting has no abbreviation guard.

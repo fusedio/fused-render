@@ -6726,7 +6726,8 @@ an AI Models page that could say what was on disk but not what was *running*.
   code lives at the runners ROOT and each folder's `worker.py` is a shell over
   it** (D381). Diffusers is three folders — `diffusers_image`,
   `diffusers_image_cuda`, `diffusers_image_rocm` — llama.cpp is two
-  (`llamacpp_text`, `llamacpp_text_vulkan`), and the transformers embeddings
+  (`llamacpp_text`, `llamacpp_text_vulkan`), the vision runner is two
+  (`vision_torch`, `vision_torch_cuda`, shared body `runners/torch_vision.py`), and the transformers embeddings
   runner is three (`onnx_embed`, `onnx_embed_cuda`, `onnx_embed_rocm`), whose
   manifests are identical except for the
   index the accelerated distribution is resolved from, and whose `worker.py`
@@ -8179,6 +8180,23 @@ an AI Models page that could say what was on disk but not what was *running*.
   as a direction flag on one "audio" capability: AI-4 keeps one resident model
   per capability, so sharing one would have a synthesis model and a Whisper
   model evict each other on every alternation.
+- **AI-10g** **The faster-whisper runner reads two formats, and Parakeet is the
+  second** (D1423). A snapshot with `model.bin` is a CTranslate2 Whisper
+  conversion (`WhisperModel`); one with the sherpa-onnx transducer files
+  (`formats.SHERPA_TRANSDUCER_FILES`) is NVIDIA Parakeet TDT 0.6B v3 int8, run
+  through the sherpa-onnx the runner already carries for diarization, so there is
+  no new venv. `load()` records the kind and `generate()` dispatches on it; the
+  reply, the files and the `words` shape are identical to the other engines
+  (AI-10c). Parakeet has no VAD of its own and decodes one utterance at a time,
+  so it uses the shared VAD policy (`stt_common`, AI-10f) and decodes packed
+  regions in turn; with `vad: false` it cuts the recording into 29-second time
+  slices. `words` is honoured on both formats; `language: "auto"` means "detect"
+  on both. Parakeet has no `translate`, no pinned `language` (only unset or
+  `"auto"`) and no `initialPrompt`, and refuses each rather than ignoring it:
+  `POST /api/ai/transcribe` answers 400 before any job exists (from the cached
+  snapshot's layout, or the curated row's `transcribeOnly` for a model not
+  downloaded yet), and the worker refuses again as the last line of defence; its
+  reply carries `language: null`. CPU only.
 - **AI-10a** **A transcription is job-backed like an image, and its result is a
   FILE.** `POST /api/ai/transcribe` answers immediately with a `jobId` and with
   the output paths already settled, exactly as AI-9 does — a 90-minute recording
@@ -10108,7 +10126,8 @@ an AI Models page that could say what was on disk but not what was *running*.
   `points: [{x, y, label}]`, in 0–1 coordinates of the upright image.
   `POST /api/ai/vision` has decide's shape (closed options, local only,
   synchronous, `model_loading` + job id). Runner `vision-torch` (Apple
-  Silicon, torch MPS) runs only `formats.VISION_TORCH_RECIPES`: Grounding DINO
+  Silicon, torch MPS) and its hardware sibling `vision-torch-cuda` (NVIDIA,
+  gated on `_cuda`, PyPI's CUDA torch; shipped unmeasured) run only `formats.VISION_TORCH_RECIPES`: Grounding DINO
   Tiny/Base (detect) and Moondream 2 (caption, query, detect, point;
   recommended), both via transformers; Moondream at a pinned commit. A new
   model is a recipe (plus a family class for a new kind). Not in onboarding or
