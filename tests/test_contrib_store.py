@@ -49,21 +49,25 @@ def _clone(tmp_path, name, url):
 def test_flags_default_off_and_one_switch(home):
     assert flags.snapshot() == {"sources": False, "changes": False, "inbox": False,
                                 "loop": False, "remix": False}
-    # The old five phase keys are not read any more (folded 2026-10-22).
+    # The old four loop keys are not read any more (folded 2026-10-22), and
+    # remix needs the loop on.
     _prefs(home, contrib_sources_enabled=True, contrib_changes_enabled=True,
            contrib_inbox_enabled=True, contrib_loop_enabled=True, contrib_remix_enabled=True)
     assert not any(flags.snapshot().values())
     _prefs(home, contrib_enabled=True)
-    assert all(flags.snapshot().values()) and flags.loop() is True and flags.remix() is True
-    _prefs(home, contrib_enabled="yes")  # opt-in: only a literal true is on
+    assert flags.snapshot() == {"sources": True, "changes": True, "inbox": True,
+                                "loop": True, "remix": False}
+    _prefs(home, contrib_enabled=True, contrib_remix_enabled=True)
+    assert all(flags.snapshot().values())
+    _prefs(home, contrib_enabled="yes", contrib_remix_enabled=True)  # opt-in: only a literal true
     assert not any(flags.snapshot().values())
 
 
 def test_prefs_response_reports_raw_switch(home):
     from fused_render.shell import prefs
 
-    _prefs(home, contrib_enabled=True)
-    assert prefs._prefs_response()["contrib"] == {"enabled": True}
+    _prefs(home, contrib_remix_enabled=True)
+    assert prefs._prefs_response()["contrib"] == {"enabled": False, "remix": True}
 
 
 # ------------------------------------------------------------------ store

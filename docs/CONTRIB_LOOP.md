@@ -53,18 +53,20 @@ contributor by default.
 
 ## 1. Feature flags
 
-**Amended 2026-10-22: ONE switch.** The five phase switches below were folded
-into a single pref, `contrib_enabled` (`fused_render/shell/prefs.py`, opt-in
-`is True` getter `contrib_enabled()`, default OFF). The phase vocabulary
-stayed: `fused_render/contrib/flags.py` still exposes `sources() changes()
-inbox() loop() remix()` and `snapshot() -> {"sources","changes","inbox",
-"loop","remix"}`, every one answering the one switch, so no server branch and
-no `/api/contrib/app` consumer changed. `_prefs_response()` answers
-`"contrib": {"enabled": bool}`; `PUT /api/prefs` accepts `contrib_enabled`.
-Frontend: `contrib-flags.ts` keeps `ContribFlags` (five phase bools, all the
-switch), `ContribPrefs` is `{enabled}`, `putContribEnabled()`, one
-Preferences row (`contrib`, "Community apps"). The old keys
-`contrib_{sources,changes,inbox,loop,remix}_enabled` are NOT read any more.
+**Amended 2026-10-22: ONE loop switch + Remix.** The four loop switches (A1–A4)
+below were folded into a single pref, `contrib_enabled`
+(`fused_render/shell/prefs.py`, opt-in `is True` getter `contrib_enabled()`,
+default OFF); Remix keeps its own `contrib_remix_enabled`, effective only with
+the loop on. The phase vocabulary stayed: `fused_render/contrib/flags.py`
+still exposes `sources() changes() inbox() loop() remix()` and `snapshot() ->
+{"sources","changes","inbox","loop","remix"}` — the first four answer the loop
+switch, `remix()` needs both — so no server branch and no `/api/contrib/app`
+consumer changed. `_prefs_response()` answers `"contrib": {"enabled": bool,
+"remix": bool}` (RAW); `PUT /api/prefs` accepts both keys. Frontend:
+`contrib-flags.ts` keeps `ContribFlags` (five phase bools), `ContribPrefs` is
+`{enabled, remix}`, `putContribEnabled()` / `putContribRemixEnabled()`, two
+Preferences rows (`contrib` "Community apps", `contrib-remix` "Remix"). The
+old keys `contrib_{sources,changes,inbox,loop}_enabled` are NOT read any more.
 
 Original phase table (historical — what each phase meant):
 

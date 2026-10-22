@@ -35,8 +35,9 @@ and /monitor page — is offered; opt-in, default off; see ``monitor_enabled``),
 for an app whose folder is its own pushed GitHub repo — opt-in, default off;
 see ``github_link_enabled``),
 **contrib_enabled** (the GitHub contribution loop — sources, your changes,
-the proposals inbox, merged proposals, remix — one switch, opt-in, default
-off; see ``CONTRIB_PREF_KEYS`` and ``fused_render.contrib.flags``),
+the proposals inbox, merged proposals — one switch, opt-in, default off) and
+**contrib_remix_enabled** (remix, needs the loop on; see ``CONTRIB_PREF_KEYS``
+and ``fused_render.contrib.flags``),
 **indexing_enabled** (whether
 background file-index scanning may run — default ON, see ``indexing_enabled``),
 **chromium_windows_enabled** (whether the macOS app's NEW windows are hosted
@@ -324,19 +325,26 @@ def github_link_enabled() -> bool:
     return read_prefs().get("github_link_enabled") is True
 
 
-# The GitHub contribution loop (docs/CONTRIB_LOOP.md §1): ONE switch, opt-in,
-# default off. It used to be five phase switches with a prerequisite chain;
-# 2026-10-22 they were folded into this one. This is the RAW stored value,
-# which Preferences shows as set; every server branch asks
-# `fused_render.contrib.flags` (whose five phase getters all answer this).
-CONTRIB_PREF_KEYS = ("contrib_enabled",)
+# The GitHub contribution loop (docs/CONTRIB_LOOP.md §1): ONE switch for the
+# loop (opt-in, default off) plus Remix on its own switch, which needs the loop
+# on. Until 2026-10-22 the loop was four phase switches with a prerequisite
+# chain. These are the RAW stored values, which Preferences shows as set;
+# every server branch asks `fused_render.contrib.flags` (whose phase getters
+# answer the loop switch, and `remix()` both).
+CONTRIB_PREF_KEYS = ("contrib_enabled", "contrib_remix_enabled")
 
 
 def contrib_enabled() -> bool:
     """The contribution loop (default off): install sources + share by link,
     your changes + Propose, the author's inbox, merged proposals returning a
-    copy to following, remix."""
+    copy to following."""
     return read_prefs().get("contrib_enabled") is True
+
+
+def contrib_remix_enabled() -> bool:
+    """Remix (default off): publish your changed copy as a remix. Effective
+    only with the loop on — `contrib.flags.remix()` applies that."""
+    return read_prefs().get("contrib_remix_enabled") is True
 
 
 def task_peek_enabled() -> bool:
@@ -909,9 +917,9 @@ def _prefs_response() -> dict:
         # Whether the Share sheet offers the GitHub install-link card (opt-in,
         # default off). Not an API guard; see `github_link_enabled`.
         "github_link": {"enabled": github_link_enabled()},
-        # The GitHub contribution loop (opt-in, default off), RAW as stored.
-        # Not an API guard; the phase getters in `contrib.flags` all read it.
-        "contrib": {"enabled": contrib_enabled()},
+        # The GitHub contribution loop + Remix (opt-in, default off), RAW as
+        # stored; `contrib.flags` applies "remix needs the loop".
+        "contrib": {"enabled": contrib_enabled(), "remix": contrib_remix_enabled()},
         # The DEFAULT Fused environment (fusedcli.workbench_env): the canvas
         # catalog's initial pick, the `fused` wrapper outside a clone, share
         # uploads. Canvases carry their own env, so writing it (PUT below)
@@ -1544,7 +1552,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             return JSONResponse(
                 {"error": "no known preference in request (expected 'engine', "
                           "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'monitor_enabled', 'marketplace_enabled', 'github_link_enabled', "
-                          "'contrib_enabled', "
+                          "'contrib_enabled', 'contrib_remix_enabled', "
                           "'native_windows_enabled', 'chromium_windows_enabled', "
                           "'task_notify_terminal_sessions', "
                           "'project_queue_enabled', "

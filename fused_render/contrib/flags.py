@@ -1,11 +1,11 @@
 """The contribution loop's feature flags (docs/CONTRIB_LOOP.md §1).
 
-ONE opt-in pref, `contrib_enabled` (`shell/prefs.py`, default OFF). It used to
-be five phase switches (sources, changes, inbox, loop, remix) with a
-prerequisite chain; on 2026-10-22 they were folded into one. The five phase
-getters below are kept so every server branch keeps asking by phase — they
-all answer the one switch now, and `snapshot()` keeps its five-key shape
-because `/api/contrib/app` returns it as `flags`.
+Two opt-in prefs (`shell/prefs.py`, default OFF): `contrib_enabled` is the
+loop (sources, changes, inbox, loop — until 2026-10-22 four separate phase
+switches with a prerequisite chain, folded into one), `contrib_remix_enabled`
+is Remix, effective only with the loop on. The five phase getters below are
+kept so every server branch keeps asking by phase, and `snapshot()` keeps its
+five-key shape because `/api/contrib/app` returns it as `flags`.
 
 At most one `read_prefs()` per change of prefs.json (`_raw`'s stat memo): the
 flag is asked on every sync, card and Doctor row, and a `stat` is all an
@@ -23,7 +23,7 @@ _memo: dict = {}  # {"key": (path, mtime_ns, size, ino), "raw": dict}
 
 
 def _raw() -> dict:
-    """The STORED switch as a bool (opt-in: only a literal `true` is on).
+    """The STORED switches as bools (opt-in: only a literal `true` is on).
     Memoized on prefs.json's stat (path, mtime, size, inode): the flags are
     asked on every sync, card and Doctor row, and a `stat` is all an
     unchanged file costs. `storage.write_json` replaces the file atomically,
@@ -50,14 +50,17 @@ def _raw() -> dict:
 
 
 def _switches(stored: dict) -> dict:
-    return {"enabled": stored.get("contrib_enabled") is True}
+    return {"enabled": stored.get("contrib_enabled") is True,
+            "remix": stored.get("contrib_remix_enabled") is True}
 
 
 def effective(raw: dict) -> dict:
-    """`raw` (the stored switch) as the five phase values — every phase is
-    the one switch; same rule `contrib-flags.ts` applies client-side."""
+    """`raw` (the stored switches) as the five phase values — the loop's
+    four phases are the one switch, remix needs it too; same rule
+    `contrib-flags.ts` applies client-side."""
     on = raw.get("enabled") is True
-    return {"sources": on, "changes": on, "inbox": on, "loop": on, "remix": on}
+    return {"sources": on, "changes": on, "inbox": on, "loop": on,
+            "remix": on and raw.get("remix") is True}
 
 
 def snapshot() -> dict:
@@ -66,7 +69,8 @@ def snapshot() -> dict:
 
 
 def raw() -> dict:
-    """The stored switch as set (what Preferences shows): `{"enabled": bool}`."""
+    """The stored switches as set (what Preferences shows):
+    `{"enabled": bool, "remix": bool}`, no prerequisite applied."""
     return _raw()
 
 
@@ -91,5 +95,5 @@ def remix() -> bool:
 
 
 def any_on() -> bool:
-    """Whether the loop is on — every phase is the one switch."""
+    """Whether the loop is on — `sources` is every phase's root prerequisite."""
     return sources()

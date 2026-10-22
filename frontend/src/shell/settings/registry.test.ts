@@ -112,12 +112,12 @@ describe("visibility", () => {
     expect(bot.map((s) => s.id)).toContain("monitor");
   });
 
-  test("Community (preview) is one Apps & sharing row, absent on Fused Bot", () => {
+  test("Community (preview) is the loop row then Remix under Apps & sharing, absent on Fused Bot", () => {
     const ids = sectionsOf(visibleSettings(ctx()), "apps")
       .find((s) => s.section === "Community (preview)")
       ?.entries.map((e) => e.id);
-    expect(ids).toEqual(["contrib"]);
-    expect(visibleSettings(ctx({ bot: true })).some((s) => s.id === "contrib")).toBe(false);
+    expect(ids).toEqual(["contrib", "contrib-remix"]);
+    expect(visibleSettings(ctx({ bot: true })).some((s) => s.id.startsWith("contrib"))).toBe(false);
     expect(searchSettings(visibleSettings(ctx()), "proposals inbox").map((s) => s.id)).toEqual(["contrib"]);
   });
 

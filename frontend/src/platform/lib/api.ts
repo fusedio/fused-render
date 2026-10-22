@@ -1433,9 +1433,11 @@ export interface EnginePrefs {
   fused_available: boolean;
 }
 
-/** The contribution loop's one switch as stored (`Prefs.contrib`). */
+/** The contribution loop's switches as stored (`Prefs.contrib`): the loop,
+ *  and Remix (effective only with the loop on). */
 export interface ContribPrefs {
   enabled: boolean;
+  remix: boolean;
 }
 
 export interface Prefs {
@@ -1475,10 +1477,11 @@ export interface Prefs {
   // /api/share/github. OPTIONAL: an older server answers without it, and the
   // reader (github-link-flag.ts) treats absence as off.
   github_link?: { enabled: boolean };
-  // The GitHub contribution loop's one switch, RAW as set (shell/prefs.py
-  // `contrib_enabled`, opt-in, default off — docs/CONTRIB_LOOP.md §1).
-  // Readers want the per-phase values: contrib-flags.ts. OPTIONAL: an older
-  // server answers without it, and absence means off.
+  // The GitHub contribution loop's switches, RAW as set (shell/prefs.py
+  // `contrib_enabled` + `contrib_remix_enabled`, opt-in, default off —
+  // docs/CONTRIB_LOOP.md §1). Readers want the per-phase values with "remix
+  // needs the loop" applied: contrib-flags.ts. OPTIONAL: an older server
+  // answers without it, and absence means off.
   contrib?: ContribPrefs;
   // ONE TASK IN PROGRESS PER FOLDER (`project_queue_enabled`, shell/prefs.py).
   // Everything that wants to run in a folder somebody else's task is already
@@ -1940,6 +1943,11 @@ export function putGithubLinkEnabled(enabled: boolean): Promise<Prefs> {
 /** The contribution loop's switch (`contrib_enabled`). */
 export function putContribEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { contrib_enabled: enabled });
+}
+
+/** The Remix switch (`contrib_remix_enabled`; effective only with the loop on). */
+export function putContribRemixEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { contrib_remix_enabled: enabled });
 }
 
 /** Whether a finished-task notification fires for an interactive-terminal

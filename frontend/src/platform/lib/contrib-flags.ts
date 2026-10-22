@@ -33,11 +33,12 @@ export interface ContribFlags {
 
 const OFF: ContribFlags = { sources: false, changes: false, inbox: false, loop: false, remix: false };
 
-/** Raw switch → per-phase flags (every phase is the one switch). */
+/** Raw switches → per-phase flags. Exported so Preferences can say that
+ *  Remix waits for the loop without restating the rule. */
 export function effectiveContribFlags(raw: Partial<ContribPrefs> | null | undefined): ContribFlags {
-  // `=== true`: opt-in, so a server that predates the key reads it as off.
+  // `=== true`: opt-in, so a server that predates a key reads it as off.
   const on = raw?.enabled === true;
-  return { sources: on, changes: on, inbox: on, loop: on, remix: on };
+  return { sources: on, changes: on, inbox: on, loop: on, remix: on && raw?.remix === true };
 }
 
 /** The last answer, or `null` while nobody has asked yet. Null reads as all
