@@ -2864,7 +2864,7 @@ def test_status_lists_every_environment_and_the_default(harness):
     (harness.base / OTHER_ENV / "beta").mkdir(parents=True)
     (harness.base / OTHER_ENV / "beta" / "canvas.toml").write_text("", encoding="utf-8")
     body = harness.client.get("/api/canvases/status").json()
-    assert body["workbench_env"] == ENV  # the preference's default
+    assert body["workbench_env"] == fusedcli_mod.DEFAULT_WORKBENCH_ENV == OTHER_ENV
     assert body["locked"] is False
     assert set(body["envs"]) == {"unstable", "prod", "custom"}
     assert body["envs"][OTHER_ENV]["canvases_dir"] == str(harness.base / OTHER_ENV)
@@ -3119,10 +3119,11 @@ def test_the_default_environment_is_an_ordinary_preference(harness, tmp_path, mo
     exported = []
     monkeypatch.setattr(fusedcli_mod, "export_fused_cli_env", lambda: exported.append(1))
 
-    res = harness.client.put("/api/prefs", json={"workbench_env": OTHER_ENV}, headers=GUARD)
+    # ENV differs from the built-in default (OTHER_ENV): the PUT must move it.
+    res = harness.client.put("/api/prefs", json={"workbench_env": ENV}, headers=GUARD)
     assert res.status_code == 200, res.text
-    assert res.json()["workbench"]["env"] == OTHER_ENV
-    assert harness.client.get("/api/canvases/status").json()["workbench_env"] == OTHER_ENV
+    assert res.json()["workbench"]["env"] == ENV
+    assert harness.client.get("/api/canvases/status").json()["workbench_env"] == ENV
     assert exported == [1]
     assert _manager() is manager and not manager.stop_event.is_set()
 
