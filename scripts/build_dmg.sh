@@ -1119,8 +1119,9 @@ fi
 #     `FRChromiumEngine` opens is byte-for-byte the one a download produces,
 #     and `chromium.bundled_engine_dir()` finds it ready at first launch with
 #     nothing to fetch. Nested bundles in a plain subdirectory of Frameworks
-#     pass `codesign --verify --strict` (checked against a flat layout too
-#     before choosing this one, 2026-10-22).
+#     pass `codesign --verify --strict`; plain FILES there do not (Developer
+#     ID sealing failed on `.ready`, 2026-10-22), so engine.json is relocated
+#     to Contents/Resources/chromium-engine.json and no marker is kept.
 #
 #     Fetched, not built: the artifact is the one fused_render/chromium/
 #     manifest.json pins (release chromium-engine-<engine_version>), verified
@@ -1188,7 +1189,7 @@ else
   if [[ -n "$CHROMIUM_ZIP" ]]; then
     # Verify + unpack through the runtime's own code: same size/sha check,
     # same traversal-safe extractor, same engine.json cross-check against
-    # the manifest, same .ready marker. A mismatch is always fatal — a wrong
+    # the manifest. A mismatch is always fatal — a wrong
     # file is never "skipped" into a release.
     "$BUILD_VENV/bin/python" - "$ARCH" "$CHROMIUM_ZIP" "$CHROMIUM_DEST" <<'PYEOF'
 import os, sys
@@ -1200,6 +1201,17 @@ os.makedirs(os.path.dirname(dest), exist_ok=True)
 chromium.unpack_artifact(zip_path, dest, art)
 assert os.path.isfile(os.path.join(dest, chromium.FRAMEWORK_NAME, "FusedChromium"))
 assert os.path.isdir(os.path.join(dest, "FusedRender Helper (Renderer).app"))
+# Only bundles may sit in a Contents/Frameworks subdirectory: sealing the
+# app with a Developer ID fails on a plain file there ("code object is not
+# signed at all In subcomponent: .../FusedChromium/.ready"). engine.json
+# moves to Contents/Resources (chromium.BUNDLED_INFO), the marker goes.
+app = os.path.dirname(os.path.dirname(os.path.dirname(dest)))
+info = os.path.join(app, chromium.BUNDLED_INFO)
+os.replace(os.path.join(dest, chromium.ENGINE_INFO), info)
+os.remove(os.path.join(dest, chromium.READY_MARKER))
+stray = [f for f in os.listdir(dest) if not f.endswith((".framework", ".app"))]
+assert not stray, f"non-bundle files in {dest}: {stray}"
+chromium.check_engine_info(info, art)
 print(f"    engine {art.engine_version} (CEF {art.cef_version}) -> {dest}")
 PYEOF
   fi
