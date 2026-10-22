@@ -23,7 +23,9 @@ build made for that.
 **The DMG carries the engine** (D1415): `scripts/build_dmg.sh` step 4e-bis
 fetches the artifact the manifest pins from its `chromium-engine-<v>` release,
 verifies it by size and SHA-256, unpacks it with the runtime's own unpacker
-into `<App>.app/Contents/Frameworks/FusedChromium/` and signs it as bundles,
+into `<App>.app/Contents/Frameworks/FusedChromium/` (its `engine.json` moves to
+`Contents/Resources/chromium-engine.json`: only bundles may sit in a Frameworks
+subdirectory, strict sealing refuses plain files there) and signs it as bundles,
 inside out, with Chromium's helper entitlements. `chromium.bundled_engine_dir()`
 finds it, `status()` reports it `ready` with `bundled: true`, and the row has
 nothing to download or remove. The Intel DMG ships none (the manifest pins no

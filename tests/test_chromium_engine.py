@@ -401,14 +401,32 @@ def test_a_dir_without_the_marker_is_not_ready(home, monkeypatch):
 
 # ---- the bundled engine (D1415) ---------------------------------------------------
 
-def _bundle(tmp_path, art, info=None):
-    """An unpacked engine where build_dmg.sh puts it, named through the env
-    override `bundled_engine_dir` honours outside a .app."""
-    d = tmp_path / "App.app" / eng.BUNDLED_SUBDIR
+def _bundle(tmp_path, art, info=None, info_inside=False):
+    """An unpacked engine where build_dmg.sh puts it (engine.json relocated
+    to Contents/Resources, or left inside for the env-override dev case),
+    named through the env override `bundled_engine_dir` honours outside a
+    .app."""
+    app = tmp_path / "App.app"
+    d = app / eng.BUNDLED_SUBDIR
     os.makedirs(d / eng.FRAMEWORK_NAME)
-    (d / eng.ENGINE_INFO).write_text(json.dumps(info or {
+    where = d / eng.ENGINE_INFO if info_inside else app / eng.BUNDLED_INFO
+    os.makedirs(where.parent, exist_ok=True)
+    where.write_text(json.dumps(info or {
         "engine_version": art.engine_version, "cef_version": art.cef_version, "arch": art.arch}))
     return d
+
+
+def test_bundled_info_lives_in_resources_or_inside(home, monkeypatch):
+    data = _engine_zip()
+    monkeypatch.setattr(eng, "_read_manifest", lambda: _published(data))
+    art = eng.artifact("arm64")
+    d = _bundle(home, art, info_inside=True)
+    monkeypatch.setenv("FUSED_RENDER_CHROMIUM_ENGINE_DIR", str(d))
+    assert eng.bundled_info_path(str(d)) == os.path.join(str(d), eng.ENGINE_INFO)
+    assert eng.is_bundled(art)
+    os.remove(d / eng.ENGINE_INFO)
+    assert not eng.is_bundled(art)
+    assert eng.bundled_info_path(str(d)) == str(home / "App.app" / eng.BUNDLED_INFO)
 
 
 def test_bundled_engine_is_ready_without_a_download_or_marker(home, monkeypatch):
@@ -468,7 +486,7 @@ def test_prefetch_sees_the_updates_bundled_engine(home, monkeypatch):
     calls = []
     d = app / eng.BUNDLED_SUBDIR
     os.makedirs(d / eng.FRAMEWORK_NAME)
-    (d / eng.ENGINE_INFO).write_text(json.dumps({
+    (app / eng.BUNDLED_INFO).write_text(json.dumps({
         "engine_version": art.engine_version, "cef_version": art.cef_version, "arch": "arm64"}))
     assert eng.prefetch_for_bundle(str(app), "arm64", fetch=_fake_fetch(data, calls)) is True
     assert calls == []

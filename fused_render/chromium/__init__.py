@@ -150,12 +150,28 @@ def engines_root() -> str:
 
 
 #: Where build_dmg.sh unpacks the engine inside the app bundle. A plain
-#: subdirectory of Contents/Frameworks holding the two frameworks, the five
-#: helpers and engine.json — the artifact's own top-level dir, so the layout
+#: subdirectory of Contents/Frameworks holding the two frameworks and the
+#: five helpers — the artifact's own top-level dir, so the layout
 #: `FRChromiumEngine` expects is identical to a downloaded engine's. Strict
-#: codesign accepts nested bundles in such a subdirectory (verified against
-#: both this and a flat Contents/Frameworks layout before choosing it).
+#: codesign accepts nested bundles in such a subdirectory but NOT plain
+#: files beside them (Developer ID sealing of the app failed on `.ready`:
+#: "code object is not signed at all", 2026-10-22), so the artifact's
+#: `engine.json` is moved to `BUNDLED_INFO` and no marker is written there.
 BUNDLED_SUBDIR = os.path.join("Contents", "Frameworks", "FusedChromium")
+#: The bundled engine's `engine.json`, relocated under Resources (sealed as
+#: a resource, where plain files belong).
+BUNDLED_INFO = os.path.join("Contents", "Resources", "chromium-engine.json")
+
+
+def bundled_info_path(engine_dir: str) -> str:
+    """The `engine.json` that describes the engine at ``engine_dir``: inside
+    it (a download, or `FUSED_RENDER_CHROMIUM_ENGINE_DIR` at an unpacked
+    artifact) or, for the app bundle's copy, `BUNDLED_INFO` two levels up."""
+    inside = os.path.join(engine_dir, ENGINE_INFO)
+    if os.path.isfile(inside):
+        return inside
+    contents = os.path.dirname(os.path.dirname(engine_dir))
+    return os.path.join(os.path.dirname(contents), BUNDLED_INFO)
 
 
 def bundled_engine_dir() -> str | None:
@@ -173,15 +189,15 @@ def bundled_engine_dir() -> str | None:
 
 
 def _bundled_matches(art: Artifact) -> bool:
-    """The bundled dir holds ``art`` — its `engine.json` names the manifest's
-    engine_version / cef_version / arch and the framework is there. The
-    `.ready` marker (the build's unpacker writes one too) is not consulted:
-    the bundle is sealed by codesign and either whole or not."""
+    """The bundled dir holds ``art`` — its `engine.json` (`bundled_info_path`)
+    names the manifest's engine_version / cef_version / arch and the
+    framework is there. No `.ready` marker: the bundle is sealed by codesign
+    and either whole or not, and codesign refuses the file there anyway."""
     d = bundled_engine_dir()
     if not d or not os.path.isdir(os.path.join(d, FRAMEWORK_NAME)):
         return False
     try:
-        check_engine_info(os.path.join(d, ENGINE_INFO), art)
+        check_engine_info(bundled_info_path(d), art)
     except ValueError:
         return False
     return True
@@ -460,7 +476,7 @@ def prefetch_for_bundle(app_dir: str, arch: str | None = None, fetch=None) -> bo
     shipped = os.path.join(app_dir, BUNDLED_SUBDIR)
     if os.path.isdir(os.path.join(shipped, FRAMEWORK_NAME)):
         try:
-            check_engine_info(os.path.join(shipped, ENGINE_INFO), art)
+            check_engine_info(bundled_info_path(shipped), art)
             logger.info("chromium prefetch: the update ships engine %s", art.engine_version)
             return True
         except ValueError as exc:
