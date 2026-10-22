@@ -528,6 +528,26 @@ def fake_ltx_video_runner(tmp_path, monkeypatch):
     yield from _only_video_runner(tmp_path, monkeypatch, "ltx-video")
 
 
+@pytest.fixture()
+def fake_wan_video_runner(tmp_path, monkeypatch):
+    """Registered under the REAL `diffusers-video-cuda` code AND keeping the real
+    catalog rows, so the route resolves Wan's traits and each row's `defaults`
+    (the other video fixtures replace the rows with a defaults-free one)."""
+    folder = tmp_path / "fake_runner_diffusers_video_cuda"
+    folder.mkdir()
+    (folder / "worker.py").write_text(FAKE_VIDEO_WORKER, encoding="utf-8")
+    runner = registry.Runner(
+        code="diffusers-video-cuda", capability=registry.VIDEO_GENERATION,
+        folder=str(folder), label="Fake Wan",
+    )
+    monkeypatch.setattr(registry, "_RUNNERS", (runner,))
+    monkeypatch.setattr(supervisor, "_ensure_venv", lambda r, w, j: sys.executable)
+    monkeypatch.setattr(supervisor, "_require_build_tools", lambda: None)
+    yield runner
+    supervisor.unload()
+    supervisor.reset()
+
+
 def _only_transcribe_runner(tmp_path, monkeypatch, code):
     """A registry whose ONLY runner transcribes, under `code`, with the fake
     worker and this interpreter — so no CTranslate2, no weights, no audio.
@@ -1202,6 +1222,7 @@ _QUALIFIED_SHORT_NAMES = {
     "onnx-embed-cuda": "(CUDA)",
     "onnx-embed-rocm": "(ROCm)",
     "vision-torch-cuda": "(CUDA)",
+    "diffusers-video-cuda": "(CUDA)",
 }
 
 #: Every qualifier this app uses to name a BUILD rather than a platform.
@@ -6110,7 +6131,7 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
         "mlx-embed",
         "onnx-embed", "onnx-embed-cuda",
         "onnx-embed-rocm", "ltx-video", "laya-mlx", "mlx-audio-tts", "vision-torch",
-        "vision-torch-cuda"}
+        "vision-torch-cuda", "diffusers-video-cuda"}
     assert body["loaded"] == []
     # Exactly one runner per capability is ACTIVE — the distinction D302 needed,
     # since with a preference in the middle "available" stopped meaning "this is
@@ -8282,6 +8303,73 @@ def test_naming_the_OTHER_video_engines_cached_model_is_refused_not_started(
     # No job opened for work that was never going to start — the same
     # invariant `test_a_video_on_a_machine_with_no_video_runner_says_why`
     # checks for the "nothing can serve this at all" 409.
+    assert not [j for j in jobs.list_jobs()
+               if j["id"].startswith(supervisor.VIDEO_JOB_PREFIX)]
+
+
+def test_each_wan_row_renders_at_its_own_catalog_defaults(client, fake_wan_video_runner):
+    """D1424: the video route applies the serving model's catalog `defaults`
+    when the body omits them — 832x480x81 for the 1.3B, 1280x704x121 for the
+    5B — on Wan's `1+4n` grid, not LTX's."""
+    small = client.post("/api/ai/video", json={"prompt": "x"},
+                        headers={"X-Fused": "1"}).json()
+    assert (small["width"], small["height"], small["frames"]) == (832, 480, 81)
+    _wait_job(small["jobId"])
+
+    big = client.post(
+        "/api/ai/video",
+        json={"prompt": "x", "model": "Wan-AI/Wan2.2-TI2V-5B-Diffusers"},
+        headers={"X-Fused": "1"}).json()
+    assert (big["width"], big["height"], big["frames"]) == (1280, 704, 121)
+    assert big["steps"] == 50
+    _wait_job(big["jobId"])
+
+    # A request that names its own values is left alone, snapped to Wan's grid.
+    own = client.post("/api/ai/video", json={"prompt": "x", "frames": 10, "steps": 7,
+                                   "model": "Wan-AI/Wan2.2-TI2V-5B-Diffusers"},
+                      headers={"X-Fused": "1"}).json()
+    assert "error" not in own, own
+    assert (own["frames"], own["steps"]) == (13, 7)
+    _wait_job(own["jobId"])
+
+
+def _two_video_runners(tmp_path, monkeypatch, serving_code, other_code):
+    def fake_runner(code):
+        folder = tmp_path / f"fake_{code.replace('-', '_')}"
+        folder.mkdir()
+        (folder / "worker.py").write_text(FAKE_VIDEO_WORKER, encoding="utf-8")
+        return registry.Runner(
+            code=code, capability=registry.VIDEO_GENERATION,
+            folder=str(folder), label=f"Fake {code}", short_label=code)
+
+    serving, other = fake_runner(serving_code), fake_runner(other_code)
+    monkeypatch.setattr(registry, "_RUNNERS", (serving, other))
+    monkeypatch.setattr(supervisor, "_ensure_venv", lambda r, w, j: sys.executable)
+    monkeypatch.setattr(supervisor, "_require_build_tools", lambda: None)
+
+
+@pytest.mark.parametrize("serving, other, repo", [
+    ("diffusers-video-cuda", "ltx-video", "org/cached-ltx"),
+    ("ltx-video", "diffusers-video-cuda", "org/cached-wan"),
+])
+def test_naming_a_cached_model_of_the_other_real_video_engine_is_a_409(
+        client, monkeypatch, tmp_path, serving, other, repo):
+    """The guard is reachable since D1424: a cached LTX repo named while the
+    CUDA runner resolves (and the mirror case) is refused with the Engines tab
+    named, and no job opens."""
+    _two_video_runners(tmp_path, monkeypatch, serving, other)
+    monkeypatch.setattr(
+        ai_runtime, "cached_capability",
+        lambda repo_id: ai_models.CacheReading(
+            cached=True, capability=registry.VIDEO_GENERATION,
+            looks_like="a cached checkpoint", runner_code=other))
+
+    response = client.post("/api/ai/video", json={"prompt": "x", "model": repo},
+                           headers={"X-Fused": "1"})
+
+    assert response.status_code == 409
+    message = response.json()["error"]
+    assert repo in message and "Engines tab" in message
     assert not [j for j in jobs.list_jobs()
                if j["id"].startswith(supervisor.VIDEO_JOB_PREFIX)]
 

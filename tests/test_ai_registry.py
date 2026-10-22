@@ -9,6 +9,7 @@ running on whatever machine CI happens to be.
 import os
 import re
 
+from _hardware_probe_helpers import force_no_accelerators
 from fused_render.ai import registry, tasks
 
 
@@ -127,8 +128,12 @@ def test_available_runners_excludes_a_platform_that_cannot_run_it(monkeypatch):
     assert "llamacpp-text" not in codes
 
 
-def test_available_runners_is_empty_for_a_capability_nothing_here_serves(monkeypatch):
+def test_available_runners_is_empty_for_a_capability_nothing_here_serves(monkeypatch, tmp_path):
+    """Linux with no NVIDIA GPU: neither video engine (MLX, CUDA) can run. The
+    CUDA probe reads the real host, so it is forced to refuse rather than
+    trusting the machine running the suite to have no GPU."""
     _linux(monkeypatch)
+    force_no_accelerators(monkeypatch, tmp_path)
     assert registry.available_runners(registry.VIDEO_GENERATION) == ()
 
 
@@ -178,6 +183,7 @@ _GPU_CPU_PAIRS = (
     ("onnx-embed-cuda", "onnx-embed"),
     ("onnx-embed-rocm", "onnx-embed"),
     ("vision-torch-cuda", "vision-torch"),  # the "CPU sibling" here is the Apple MPS row
+    ("diffusers-video-cuda", "ltx-video"),  # likewise: the sibling is the Apple MLX row
 )
 
 
@@ -212,13 +218,23 @@ def test_video_generation_is_a_registered_capability():
     assert registry.VIDEO_GENERATION in registry.capabilities()
 
 
-def test_ltx_video_is_the_only_registered_video_runner():
-    """D468 dropped `h3-video`, the second row. Pinned as an exact set rather
-    than a membership check because registry ORDER is this table's opt-in
-    mechanism — a stray video row added above this one would silently take
-    over `for_capability`."""
+def test_the_registered_video_runners_are_the_cuda_row_then_ltx():
+    """D468 dropped `h3-video`; D1424 added the CUDA Wan row ahead of LTX.
+    Pinned as an exact ordered list rather than a membership check because
+    registry ORDER is this table's opt-in mechanism — a stray video row added
+    above these would silently take over `for_capability`."""
     codes = [r.code for r in registry.all_runners() if r.capability == registry.VIDEO_GENERATION]
-    assert codes == ["ltx-video"]
+    assert codes == ["diffusers-video-cuda", "ltx-video"]
+
+
+def test_the_wan_video_row_is_cuda_gated_and_refuses_off_nvidia(monkeypatch, tmp_path):
+    _mac_arm(monkeypatch)
+    force_no_accelerators(monkeypatch, tmp_path)
+    status = _runner("diffusers-video-cuda")._available()
+    assert not status.ok
+    assert "NVIDIA" in status.reason
+    resolved = registry.for_capability(registry.VIDEO_GENERATION)
+    assert resolved is not None and resolved.code == "ltx-video"
 
 
 def test_ltx_video_row_present_on_apple_silicon(monkeypatch):
@@ -233,11 +249,12 @@ def test_ltx_video_row_absent_off_apple_silicon(monkeypatch):
     assert "Apple Silicon" in status.reason
 
 
-def test_no_video_runner_is_available_off_apple_silicon(monkeypatch):
-    """The capability's one row is gated on `_apple_silicon`, so a machine
-    that is not one has no video capability at all — the property that makes
-    video the first capability with no "everywhere" row."""
+def test_no_video_runner_is_available_off_apple_silicon_without_nvidia(monkeypatch, tmp_path):
+    """The capability's rows are gated on `_apple_silicon` and `_cuda`, so a
+    machine that is neither has no video capability at all — the property that
+    makes video the first capability with no "everywhere" row."""
     _linux(monkeypatch)
+    force_no_accelerators(monkeypatch, tmp_path)
     assert registry.for_capability(registry.VIDEO_GENERATION) is None
 
 
@@ -331,7 +348,24 @@ def test_hub_repo_the_engine_cannot_read_hits_the_wrong_format_refusal():
 
 
 def test_video_traits_names_every_registered_video_runner():
-    assert set(registry.VIDEO_TRAITS) == {"ltx-video"}
+    assert set(registry.VIDEO_TRAITS) == {"ltx-video", "diffusers-video-cuda"}
+
+
+def test_video_traits_for_the_wan_cuda_runner():
+    traits = registry.video_traits_for("diffusers-video-cuda")
+    assert (traits.frames_base, traits.frames_step) == (1, 4)
+    assert traits.default_frames_n == 30  # 1 + 4*30 = 121, the Wan 2.2 card default
+    assert (traits.default_width, traits.default_height) == (1280, 704)
+    assert traits.default_steps == 50
+    assert traits.supports_image is True
+    assert registry.video_frame_bounds(traits) == (5, 121)
+
+
+def test_max_frames_n_defaults_to_the_apps_original_window():
+    assert registry.VideoTraits(
+        frames_base=1, frames_step=8, default_frames_n=12, default_width=704,
+        default_height=480, default_steps=8, supports_image=True,
+    ).max_frames_n == registry.MAX_VIDEO_FRAMES_N
 
 
 def test_video_traits_for_falls_back_to_the_shipping_runner_for_an_unknown_code():

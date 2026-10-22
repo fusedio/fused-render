@@ -33,6 +33,7 @@ the app.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import secrets
@@ -107,20 +108,14 @@ _IMAGE_OPTIONS = frozenset({
 # renders differently than the reply would claim.
 _MIN_VIDEO_SIDE, _MAX_VIDEO_SIDE, _VIDEO_SIDE_STEP = 256, 1344, 32
 _MAX_VIDEO_PIXELS = 768 * 1344
-#: `n` ranges 1..21 on EVERY engine's own grid — an app-chosen bound, not a
-#: per-engine fact. `registry.MIN_VIDEO_FRAMES_N`/`MAX_VIDEO_FRAMES_N`, not a
-#: private pair here, because `catalog.py`'s video-traits payload for the
-#: Playground's frame slider needs the identical window — a slider computed
-#: from one and a server clamped by the other would disagree with itself
-#: exactly the way Task 5 left the client disagreeing with the engine's
-#: grid. The window was originally VERIFIED against the built `h3` binary of
-#: the since-dropped `h3-video` runner (D468), which refused `n=0` and
-#: anything aligning past its released 5..362 range outright. LTX has no
-#: compiled binary to refuse a value, so the same `[1, 21]` window is
-#: carried over as the app's own bound on its grid (1 + 8*21 = 169 frames,
-#: ~7s at 24fps), rather than inventing an unrelated ceiling with no
-#: measurement behind it.
-_MIN_FRAMES_N, _MAX_FRAMES_N = registry.MIN_VIDEO_FRAMES_N, registry.MAX_VIDEO_FRAMES_N
+#: `n` starts at `registry.MIN_VIDEO_FRAMES_N` on EVERY engine's own grid; the
+#: ceiling is the serving runner's own `traits.max_frames_n` (D1424: LTX's
+#: `1 + 8n` and Wan's `1 + 4n` need different windows to reach their card
+#: defaults). `catalog.py`'s video-traits payload reads the same two numbers
+#: through `registry.video_frame_bounds`, so a slider and this clamp cannot
+#: disagree. The window was originally VERIFIED against the built `h3` binary
+#: of the since-dropped `h3-video` runner (D468), which refused `n=0`.
+_MIN_FRAMES_N = registry.MIN_VIDEO_FRAMES_N
 #: The floor of 2 came from the since-dropped `h3-video` runner's own hard
 #: range ("denoising steps must be in [2, 1000]", D468) — for that binary 1
 #: step was not merely slow, it was refused outright. LTX has no such floor
@@ -646,6 +641,30 @@ def _clamp_video_canvas(width: int, height: int) -> tuple[int, int]:
     return width, height
 
 
+def _traits_with_model_defaults(traits: "registry.VideoTraits", model: str) -> "registry.VideoTraits":
+    """`traits` with the curated row's `defaults` (width, height, frames,
+    steps) laid over the runner's own — see the call site in `api_ai_video`.
+
+    `frames` is a frame COUNT in the catalog and a grid index in `traits`, so
+    it is rounded up onto the grid the same way a request is. The width/height
+    pair applies only as a pair, like the image route's.
+    """
+    entry = catalog.entry_for(registry.VIDEO_GENERATION, model)
+    defaults = entry.get("defaults") if entry else None
+    if not defaults:
+        return traits
+    changes = {}
+    if "width" in defaults and "height" in defaults:
+        changes["default_width"] = int(defaults["width"])
+        changes["default_height"] = int(defaults["height"])
+    if "steps" in defaults:
+        changes["default_steps"] = int(defaults["steps"])
+    if "frames" in defaults:
+        extra = max(0, int(defaults["frames"]) - traits.frames_base)
+        changes["default_frames_n"] = -(-extra // traits.frames_step)
+    return dataclasses.replace(traits, **changes) if changes else traits
+
+
 def _snap_frames(value, traits: "registry.VideoTraits") -> int:
     """The value on `traits`' own frame grid that the serving ENGINE would
     ACTUALLY RENDER for `value` — rounded UP to the next grid point, never
@@ -667,10 +686,10 @@ def _snap_frames(value, traits: "registry.VideoTraits") -> int:
     and rounding the same direction keeps this function's one contract —
     "the frames on the reply are the frames the engine renders" — true.
 
-    Bounded to `n` in `[_MIN_FRAMES_N, _MAX_FRAMES_N]` regardless of engine —
-    an app-chosen safety rail (unlike the grid itself, this is not a fact
-    about either engine's weights), so it stays a shared constant rather
-    than a fourth `VideoTraits` field.
+    Bounded to `n` in `[_MIN_FRAMES_N, traits.max_frames_n]` — an app-chosen
+    safety rail (not a fact about either engine's weights) whose ceiling is
+    per runner, because the two grids reach their card defaults at different
+    `n` (`VideoTraits.max_frames_n`).
     """
     base, step = traits.frames_base, traits.frames_step
     try:
@@ -682,7 +701,7 @@ def _snap_frames(value, traits: "registry.VideoTraits") -> int:
     if remainder:
         frames += step - remainder
     n = (frames - base) // step
-    n = max(_MIN_FRAMES_N, min(_MAX_FRAMES_N, n))
+    n = max(_MIN_FRAMES_N, min(traits.max_frames_n, n))
     return base + step * n
 
 
@@ -2390,6 +2409,13 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
     # `None` by falling back to the shipping runner's own numbers.
     serving_runner = registry.for_capability(registry.VIDEO_GENERATION)
     traits = registry.video_traits_for(serving_runner.code if serving_runner else None)
+    # The serving MODEL's curated defaults, like the image route's (`entry_for`
+    # below `_model_of`): a row that names a canvas, a frame count or a step
+    # count speaks for its own checkpoint (Wan 2.1 1.3B is a 832x480, 81-frame
+    # model, Wan 2.2 5B a 1280x704, 121-frame one), so it replaces the RUNNER's
+    # defaults before `_snap_frames` and the side clamps run. A key the row
+    # omits keeps the runner's.
+    traits = _traits_with_model_defaults(traits, model)
 
     # **Naming a model explicitly does NOT pick its runner.** Resolution is
     # by CAPABILITY plus stored preference (`registry.resolve`), never by
@@ -2402,19 +2428,16 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
     # reachable: the Engines tab, which is exactly the switch
     # `registry.resolve` already honours (see that module's own docstring).
     #
-    # **CURRENTLY UNREACHABLE, and kept deliberately.** D468 dropped
-    # `h3-video`, leaving one video runner, and `formats.loaders` no longer
-    # names any video runner but `ltx-video` — so `runner_code !=
-    # serving_runner.code` cannot hold today. The guard is generic over
-    # runners rather than about those two specifically, and it is what a
-    # second video engine's own arrival would otherwise have to remember to
-    # add back; the same argument `formats.py`'s withdrawn-runner early
-    # returns make for themselves. Silent for anything not already cached —
-    # there is no
-    # format evidence to refuse on without a network call this route has
-    # never made, and an uncached id is the ordinary "let the runner's own
-    # `load()` refusal explain it" path every other capability already
-    # relies on.
+    # **Reachable since D1424.** D468 dropped `h3-video` and left this guard
+    # with nothing to guard, because `formats.loaders` named only `ltx-video`
+    # for a video repo. The second engine, `diffusers-video-cuda`, arrived
+    # with its own format claim (a Wan diffusers snapshot), so a cached LTX
+    # repo named while the CUDA row resolves (and the mirror case) now
+    # reaches this 409. The guard stays generic over runners. Silent for
+    # anything not already cached — there is no format evidence to refuse on
+    # without a network call this route has never made, and an uncached id is
+    # the ordinary "let the runner's own `load()` refusal explain it" path
+    # every other capability already relies on.
     if serving_runner is not None:
         reading = cached_capability(model)
         if (reading.cached and reading.capability == registry.VIDEO_GENERATION

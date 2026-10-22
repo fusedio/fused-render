@@ -855,7 +855,10 @@ def test_the_three_onnx_embed_manifests_agree_beyond_their_onnxruntime_line():
      pytest.param(_VISION_TORCH_FOLDERS,
                   tuple(os.path.join(RUNNERS_DIR, f)
                         for f in ("torch_vision.py", "embed_common.py")),
-                  id="vision-torch")])
+                  id="vision-torch"),
+     pytest.param(("diffusers_video_cuda",),
+                  (os.path.join(RUNNERS_DIR, "diffusers_video.py"),),
+                  id="diffusers-video")])
 def test_every_third_party_import_of_a_shared_body_is_declared_in_all_siblings(folders, bodies):
     """The regression itself: `onnx_embed.py` is free to `import` anything, but
     only `onnxruntime`'s own transitive dependencies rode along for free — and

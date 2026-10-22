@@ -1491,6 +1491,40 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "defaults": {"steps": 8},
         },
     ],
+    # **Wan 2.1 / 2.2 on diffusers (D1424)** — the CUDA video runner's own list,
+    # NOT an alias of `ltx-video`'s: the format differs (diffusers layout, not
+    # mlx-forge's), so `_SHARED_SUGGESTIONS` would offer each engine the other's
+    # repos. Smallest first. Sizes are the repos' Hub blob totals for the files
+    # the worker fetches (see `diffusers_video.download`): the 2.1 repo is 28.9 GB
+    # of which the fp32 UMT5 text encoder is 22.7 GB. UNMEASURED on NVIDIA
+    # hardware, so no `resident_gb` (D526's figures were measured). `defaults`
+    # are each model card's own canvas, frame count and step count, applied by
+    # the video route when a request omits them.
+    "diffusers-video-cuda": [
+        {
+            "id": "Wan-AI/Wan2.1-T2V-1.3B-Diffusers",
+            "label": "Wan 2.1 T2V 1.3B",
+            "nickname": "Wan 2.1 1.3B",
+            "params": "1.3B",
+            "quantization": "bf16",
+            "size_gb": 28.9,
+            "note": "480p text-to-video, 81 frames at 16 fps, Apache-2.0; "
+                    "most of the download is the fp32 text encoder.",
+            "defaults": {"width": 832, "height": 480, "frames": 81, "steps": 50},
+        },
+        {
+            "id": "Wan-AI/Wan2.2-TI2V-5B-Diffusers",
+            "recommended": True,
+            "label": "Wan 2.2 TI2V 5B",
+            "nickname": "Wan 2.2 5B",
+            "params": "5B",
+            "quantization": "bf16",
+            "size_gb": 34.2,
+            "note": "720p text-to-video and image-to-video, 121 frames at "
+                    "24 fps, Apache-2.0.",
+            "defaults": {"width": 1280, "height": 704, "frames": 121, "steps": 50},
+        },
+    ],
     # **Laya typed decisions (D887).** The two pre-converted FP16 MLX
     # checkpoints published by the `laya-mlx` port's author — NOT the upstream
     # `convaiinnovations/laya` bundle, which is transformers-tagged, holds all

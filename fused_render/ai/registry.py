@@ -1610,9 +1610,30 @@ _RUNNERS: tuple[Runner, ...] = (
              "gigabytes.",
         _available=_onnx_platform,
     ),
+    # **Wan 2.1 / 2.2 on diffusers, CUDA only (D1424).** The second video
+    # engine, and the first that is not Apple-only. It leads `ltx-video` by the
+    # GPU-first ordering rule, like the vision pair below it; `_cuda` and
+    # `_apple_silicon` never both pass on one machine, so the order is
+    # convention and nothing changes on a Mac. Shipped UNMEASURED, exactly as
+    # `vision-torch-cuda` was (D1414): nobody has run it on NVIDIA hardware.
+    # Its repos are a different FORMAT from LTX's (diffusers layout, not
+    # mlx-forge's), so it shares no suggestion list with `ltx-video`.
+    Runner(
+        code="diffusers-video-cuda",
+        capability=VIDEO_GENERATION,
+        folder=os.path.join(RUNNERS_DIR, "diffusers_video_cuda"),
+        label="Wan Video (CUDA)",
+        short_label="Wan Video (CUDA)",
+        family_label="Wan Video",
+        note="Generates text-to-video with Wan 2.1 / 2.2 through diffusers on "
+             "an NVIDIA GPU. 8 to 24 GB of GPU memory. Not yet measured on "
+             "real hardware.",
+        _available=_cuda,
+    ),
     # Video generation, the fifth capability and the first with no
-    # "everywhere" row: its one engine is MLX, so this capability is
-    # Apple-Silicon-only and has no cross-platform fallback at all.
+    # "everywhere" row: its engines are MLX (Apple Silicon) and, since D1424,
+    # diffusers on CUDA, so this capability has no cross-platform fallback at
+    # all and is unavailable on a machine with neither.
     #
     # `ltx-video` is LTX-2.3 run through `ltx-2-mlx`, a pure-MLX, MIT-licensed
     # port that keeps AUDIO (mlx-video's own LTX and Wan paths either want the
@@ -1750,6 +1771,13 @@ class VideoTraits:
     #: payload carries it through so the Playground cannot offer an image
     #: control the resolved engine will not honour (SPEC AI-15).
     supports_image: bool
+    #: The longest clip this runner's grid offers, as the grid index `n` (the
+    #: shortest is `MIN_VIDEO_FRAMES_N`). A trait because the two engines have
+    #: different grids and different budgets: LTX's `1 + 8n` reaches 169 frames
+    #: at n=21, Wan's `1 + 4n` would reach only 85 there, short of its own
+    #: 121-frame card default, which is n=30. Defaults to the app's original
+    #: window.
+    max_frames_n: int = 21
 
 
 #: Runner code -> its `VideoTraits`. ABSENT for a runner with no video
@@ -1773,6 +1801,16 @@ VIDEO_TRAITS: dict[str, VideoTraits] = {
         frames_base=1, frames_step=8, default_frames_n=12,
         default_width=704, default_height=480, default_steps=8,
         supports_image=True),
+    # 121 = 1 + 4*30 is the Wan 2.2 TI2V-5B card default, so `max_frames_n` is
+    # 30 rather than the shared 21 (which would cap Wan at 85 frames). The
+    # canvas is that card's 1280x704 and 50 steps; the 2.1 1.3B row overrides
+    # canvas and frames through its catalog `defaults`. `supports_image` is
+    # true because Wan 2.2 TI2V-5B accepts a reference image; Wan 2.1 does not,
+    # and the worker refuses it by model (an index fact, not a runner one).
+    "diffusers-video-cuda": VideoTraits(
+        frames_base=1, frames_step=4, default_frames_n=30,
+        default_width=1280, default_height=704, default_steps=50,
+        supports_image=True, max_frames_n=30),
 }
 
 
@@ -1788,26 +1826,25 @@ def video_traits_for(code: str | None) -> VideoTraits:
     return VIDEO_TRAITS.get(code or "", VIDEO_TRAITS["ltx-video"])
 
 
-#: `n` ranges over this window on EVERY video runner's own grid — an
-#: app-chosen safety rail, not a fact about either engine's weights (see
-#: `VideoTraits`'s own docstring for that distinction), so it lives here as
-#: a public constant rather than duplicated as a private one in every place
-#: that needs the ACTUAL min/max frame count a runner's grid offers:
-#: `server/routers/ai_runtime.py`'s `_snap_frames` and `catalog.py`'s own
-#: video-traits payload for the Playground.
+#: `n` starts here on EVERY video runner's own grid — an app-chosen safety
+#: rail, not a fact about either engine's weights (see `VideoTraits`'s own
+#: docstring for that distinction). The ceiling is per runner now
+#: (`VideoTraits.max_frames_n`, default `MAX_VIDEO_FRAMES_N`), so the two
+#: grids can both reach their own card default.
 MIN_VIDEO_FRAMES_N = 1
+#: The default ceiling of `VideoTraits.max_frames_n`.
 MAX_VIDEO_FRAMES_N = 21
 
 
 def video_frame_bounds(traits: VideoTraits) -> tuple[int, int]:
     """`(min, max)` actual frame counts `traits`' grid offers, at the app's
-    own `[MIN_VIDEO_FRAMES_N, MAX_VIDEO_FRAMES_N]` window — the two absolute
+    `[MIN_VIDEO_FRAMES_N, traits.max_frames_n]` window — the two absolute
     numbers a caller outside this module (a route clamping a request, a
     payload describing a slider's range) needs, so neither has to re-derive
     `frames_base + frames_step * n` itself.
     """
     return (traits.frames_base + traits.frames_step * MIN_VIDEO_FRAMES_N,
-            traits.frames_base + traits.frames_step * MAX_VIDEO_FRAMES_N)
+            traits.frames_base + traits.frames_step * traits.max_frames_n)
 
 
 # The task vocabulary — which `pipeline_tag` means what, and which of them a

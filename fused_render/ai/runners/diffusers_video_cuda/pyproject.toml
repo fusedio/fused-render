@@ -1,0 +1,47 @@
+# The Wan video runner's environment (D1424) — CUDA only, and shipped UNMEASURED.
+#
+# One folder, one hardware, because the only engine here is diffusers' Wan 2.1 /
+# 2.2 pipelines and the only accelerator this runner is written for is NVIDIA.
+# Where torch comes from is the one thing a hardware variant may change, and
+# here it comes from PyPI unchanged: PyPI's `torch` wheel for Linux IS the CUDA
+# build (its `nvidia-*` requirements are marked `platform_system == "Linux"`),
+# so this folder names no index and no source of its own. Read
+# `diffusers_image_cuda/pyproject.toml` for the longer account, including why
+# `cu13` moves with torch itself rather than through a URL revisited by hand.
+#
+# Whatever the environment REALLY got is still reported rather than claimed:
+# `diffusers_video.load()` passes the device it placed the model on to
+# `worker_base.set_state(device=…)`, and `EXPECTED_DEVICE = "cuda"` makes a
+# torch that cannot see the GPU refuse before a byte is fetched.
+#
+# The dependency list is `diffusers_image_cuda`'s core (torch, diffusers,
+# transformers, accelerate, sentencepiece, protobuf) at the SAME versions, so
+# the two diffusers runners are one diffusers; the image runner's quantization
+# backends are left out because no Wan row here is quantized. Added for video:
+# `ftfy` (Wan's UMT5 prompt cleaning imports it), `imageio` and
+# `imageio-ffmpeg` (`diffusers.utils.export_to_video` writes the mp4 through
+# them), and `numpy` (frames arrive as arrays). All wheels, no source builds.
+[project]
+name = "fused-render-runner-diffusers-video-cuda"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.13,<3",
+    "diffusers>=0.41,<0.42",
+    "transformers<6",
+    "accelerate>=1.14,<2",
+    "sentencepiece",
+    "protobuf",
+    "ftfy>=6,<7",
+    "imageio>=2.35,<3",
+    "imageio-ffmpeg>=0.5,<1",
+    "numpy>=1.26,<3",
+    # <13: Pillow 13.0.0 does not import on Python 3.12 (see mflux_image).
+    "pillow>=12.3,<13",
+    "huggingface_hub",
+    "psutil",
+]
+
+# Not a distribution — a folder of scripts, not something to build and install.
+[tool.uv]
+package = false
