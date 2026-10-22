@@ -50,7 +50,7 @@ import os
 import threading
 import time
 
-from fused_render import session_liveness, tasks_store
+from fused_render import _platform, session_liveness, tasks_store
 from fused_render.agent_backends import roots
 
 logger = logging.getLogger(__name__)
@@ -1021,7 +1021,7 @@ def _pid_alive(pid) -> bool:
     if not isinstance(pid, int) or pid <= 0:
         return True  # no pid to check: trust the file
     try:
-        os.kill(pid, 0)
+        _platform.probe_pid(pid)
     except ProcessLookupError:
         return False
     except OSError:

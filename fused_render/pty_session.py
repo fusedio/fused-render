@@ -44,6 +44,7 @@ import uuid
 from queue import SimpleQueue
 from typing import Optional
 
+from fused_render import _platform
 from fused_render.shell_integration import ShellEventParser, integrate
 from fused_render.terminal_profiles import TerminalProfile, resolve_profile
 
@@ -643,6 +644,8 @@ class PtySessionRegistry:
               rows: Optional[int] = None,
               cols: Optional[int] = None,
               owner: Optional[str] = None) -> PtySession:
+        if _platform.IS_WINDOWS:
+            raise RuntimeError("the terminal is not supported on Windows")
         with self._lock:
             self._reap_dead_locked()
             is_bot = bool(owner) and owner.startswith(BOT_OWNER_PREFIX)

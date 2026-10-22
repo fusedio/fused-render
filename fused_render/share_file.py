@@ -35,7 +35,7 @@ import time
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
-from fused_render import share_app
+from fused_render import _platform, share_app
 from fused_render import share_file_rules
 from fused_render.fusedcli import child_env, fused_cli, set_fused_env, workbench_env
 
@@ -360,7 +360,7 @@ def _upload_paths(upload_id: str) -> dict:
 
 def _pid_alive(pid: int) -> bool:
     try:
-        os.kill(pid, 0)
+        _platform.probe_pid(pid)
     except OSError:
         return False
     return True
@@ -490,13 +490,7 @@ def cancel_upload(upload_id: str) -> dict:
         except (OSError, ValueError):
             pid = None
     if pid is not None:
-        try:
-            os.killpg(os.getpgid(pid), signal.SIGTERM)
-        except OSError:
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except OSError:
-                pass
+        _platform.kill_tree(pid, signal.SIGTERM)
     return read_upload_state(upload_id)
 
 

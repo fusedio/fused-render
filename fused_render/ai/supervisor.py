@@ -54,7 +54,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 
-from fused_render import _startonce, jobs
+from fused_render import _platform, _startonce, jobs
 from fused_render.crashlog import describe_exit, report_child_exit
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.ai import catalog, fit, footprints, hub_catalog, hub_metadata, hw_detect, registry
@@ -644,7 +644,7 @@ def _alive(worker: Worker) -> bool:
 #: Detach a worker into its own process group so a stop reaches the CHILDREN it
 #: spawned too — a dataloader, a compile step, a `uv` download — and not just the
 #: leader that would otherwise leave them holding the weights.
-SPAWN_KWARGS = {"start_new_session": True}
+SPAWN_KWARGS = _platform.detach_kwargs()
 
 #: The worker's working directory, when the spawn cannot pass `cwd=` — see
 #: `_spawn_kwargs`. `worker_base.serve` reads it and `chdir`s first thing.
@@ -708,16 +708,10 @@ def _kill_tree(worker: Worker) -> None:
     pid = worker.pid
     if not pid:
         return
-    try:
-        leader = os.getpgid(pid) == pid
-    except OSError:
-        leader = False
-    for sig in (signal.SIGTERM, signal.SIGKILL):
+    for sig in (signal.SIGTERM, _platform.SIGKILL):
         if not _alive(worker):
             return
-        try:
-            os.killpg(pid, sig) if leader else os.kill(pid, sig)
-        except OSError:
+        if not _platform.kill_tree(pid, sig):
             return
         deadline = time.monotonic() + 3.0
         while time.monotonic() < deadline and _alive(worker):

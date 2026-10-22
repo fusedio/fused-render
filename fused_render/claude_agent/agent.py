@@ -79,7 +79,6 @@ Actions:
   main(action="cancel", run_id=...)   -> {"cancelled": ...}
 """
 import datetime
-import fcntl
 import io
 import hashlib
 import json
@@ -113,6 +112,7 @@ _SHARED = os.path.join(os.path.dirname(HERE), "templates", "shared")
 if _SHARED not in sys.path:
     sys.path.insert(0, _SHARED)
 import agent_roots as _agent_roots
+import platutil as _platform
 from agent_roots import BACKENDS, DEFAULT_BACKEND
 from appenv import canvases_root as _canvases_root
 from appenv import fused_cli_dir as _fused_cli_dir
@@ -138,7 +138,7 @@ def _runs_root() -> str:
     0700 on it is then simply correct.
     """
     return os.path.join(tempfile.gettempdir(),
-                        "fused_render_claude-%d" % os.geteuid(), "runs")
+                        "fused_render_claude-%d" % _platform.euid(), "runs")
 
 
 RUNS = _runs_root()
@@ -2267,7 +2267,7 @@ def _record_settings(session_id: str, model: str = "", effort: str = "",
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path + ".lock", "w") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+            _platform.flock(lock)
             try:
                 with open(path, encoding="utf-8") as fh:
                     state = json.load(fh)
@@ -2765,7 +2765,7 @@ def _chat_allow_add(run_dir: str, tool: str, asked) -> None:
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path + ".lock", "w") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+            _platform.flock(lock)
             try:
                 with open(path, encoding="utf-8") as fh:
                     store = json.load(fh)
@@ -7511,7 +7511,7 @@ class _RunLock:
     def __enter__(self):
         try:
             self.fh = os.fdopen(os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600), "r+b")
-            fcntl.flock(self.fh, fcntl.LOCK_EX)
+            _platform.flock(self.fh)
         except OSError:
             if self.fh is not None:
                 self.fh.close()
@@ -10383,7 +10383,7 @@ def _learn_windows(row: dict) -> None:
     try:
         os.makedirs(os.path.dirname(MODEL_WINDOWS), exist_ok=True)
         with open(MODEL_WINDOWS + ".lock", "w") as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)
+            _platform.flock(lock)
             known = _model_windows()
             if all(known.get(m) == w for m, w in learned.items()):
                 return
@@ -11738,6 +11738,9 @@ def _kill_tree(run_dir: str) -> None:
     try:
         pid = int(open(os.path.join(run_dir, "pid"), encoding="utf-8").read())
     except (OSError, ValueError):
+        return
+    if _platform.IS_WINDOWS:
+        _platform.kill_tree(pid, signal.SIGTERM)
         return
     try:
         os.killpg(pid, signal.SIGTERM)  # the CLI's setsid -> pid is pgid
