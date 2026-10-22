@@ -53,29 +53,30 @@ contributor by default.
 
 ## 1. Feature flags
 
-Prefs (`fused_render/shell/prefs.py`, opt-in `is True` getters, default OFF):
+**Amended 2026-10-22: ONE switch.** The five phase switches below were folded
+into a single pref, `contrib_enabled` (`fused_render/shell/prefs.py`, opt-in
+`is True` getter `contrib_enabled()`, default OFF). The phase vocabulary
+stayed: `fused_render/contrib/flags.py` still exposes `sources() changes()
+inbox() loop() remix()` and `snapshot() -> {"sources","changes","inbox",
+"loop","remix"}`, every one answering the one switch, so no server branch and
+no `/api/contrib/app` consumer changed. `_prefs_response()` answers
+`"contrib": {"enabled": bool}`; `PUT /api/prefs` accepts `contrib_enabled`.
+Frontend: `contrib-flags.ts` keeps `ContribFlags` (five phase bools, all the
+switch), `ContribPrefs` is `{enabled}`, `putContribEnabled()`, one
+Preferences row (`contrib`, "Community apps"). The old keys
+`contrib_{sources,changes,inbox,loop,remix}_enabled` are NOT read any more.
 
-| Phase | pref key | getter | effective when |
-| --- | --- | --- | --- |
-| A1 sources + share by link | `contrib_sources_enabled` | `contrib_sources_enabled()` | itself |
-| A2 your changes + Propose | `contrib_changes_enabled` | `contrib_changes_enabled()` | A1 and itself |
-| A3 author inbox | `contrib_inbox_enabled` | `contrib_inbox_enabled()` | A1 and itself |
-| A4 merge closes the loop | `contrib_loop_enabled` | `contrib_loop_enabled()` | A2 and A3 and itself |
-| A5 remix | `contrib_remix_enabled` | `contrib_remix_enabled()` | A2 and itself |
+Original phase table (historical — what each phase meant):
 
-`fused_render/contrib/flags.py` exposes `sources() changes() inbox() loop()
-remix()` returning the EFFECTIVE value (prerequisites applied) and
-`snapshot() -> {"sources":bool,"changes":bool,"inbox":bool,"loop":bool,"remix":bool}`.
-Every server branch on a phase calls `flags.<phase>()`, never the raw pref.
-`_prefs_response()` gains `"contrib": {"sources":…, "changes":…, "inbox":…,
-"loop":…, "remix":…}` (RAW values — Preferences shows the switches as set);
-`PUT /api/prefs` accepts each key as a bool. Frontend flag module:
-`frontend/src/platform/lib/contrib-flags.ts` (pattern of github-link-flag.ts +
-a sync getter like share-app-flag.ts `appSharingEnabled()`), exporting
-`useContribFlags(): ContribFlags | null` (effective values, prerequisites
-applied client-side the same way) and `contribFlagsSync()`.
+| Phase | was pref key | was effective when |
+| --- | --- | --- |
+| A1 sources + share by link | `contrib_sources_enabled` | itself |
+| A2 your changes + Propose | `contrib_changes_enabled` | A1 and itself |
+| A3 author inbox | `contrib_inbox_enabled` | A1 and itself |
+| A4 merge closes the loop | `contrib_loop_enabled` | A2 and A3 and itself |
+| A5 remix | `contrib_remix_enabled` | A2 and itself |
 
-A1 also turns on the existing `github_link_enabled` share card behaviour (the
+The switch also turns on the existing `github_link_enabled` share card behaviour (the
 share sheet shows the GitHub link when either flag is on).
 
 ## 2. Package layout and ownership

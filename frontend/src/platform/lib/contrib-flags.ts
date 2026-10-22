@@ -33,16 +33,11 @@ export interface ContribFlags {
 
 const OFF: ContribFlags = { sources: false, changes: false, inbox: false, loop: false, remix: false };
 
-/** Raw switches → effective flags. Exported so Preferences can say which
- *  prerequisite holds a switch back without restating the rules. */
+/** Raw switch → per-phase flags (every phase is the one switch). */
 export function effectiveContribFlags(raw: Partial<ContribPrefs> | null | undefined): ContribFlags {
-  // `=== true`: opt-in, so a server that predates a key reads it as off.
-  const sources = raw?.sources === true;
-  const changes = sources && raw?.changes === true;
-  const inbox = sources && raw?.inbox === true;
-  const loop = changes && inbox && raw?.loop === true;
-  const remix = changes && raw?.remix === true;
-  return { sources, changes, inbox, loop, remix };
+  // `=== true`: opt-in, so a server that predates the key reads it as off.
+  const on = raw?.enabled === true;
+  return { sources: on, changes: on, inbox: on, loop: on, remix: on };
 }
 
 /** The last answer, or `null` while nobody has asked yet. Null reads as all

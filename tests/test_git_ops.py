@@ -713,7 +713,7 @@ def test_push_is_refused_in_plain_words_for_a_guarded_copy(ops, reader, wired, t
     git(root, "config", "remote.origin.pushurl", "no-push://fused")
     assert reader.main(root)["repo"]["push_blocked"] == (
         "This copy of alice/x has changes of its own, and they stay on this computer.")
-    (home / "prefs.json").write_text(json.dumps({"contrib_sources_enabled": True}))
+    (home / "prefs.json").write_text(json.dumps({"contrib_enabled": True}))
     blocked = reader.main(root)["repo"]["push_blocked"]
     assert blocked == "This app follows alice/x. Send your changes from its app page."
     write(root, "pkg/mod.py", "kept here\n")

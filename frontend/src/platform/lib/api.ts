@@ -1433,13 +1433,9 @@ export interface EnginePrefs {
   fused_available: boolean;
 }
 
-/** The contribution loop's phase switches as stored (`Prefs.contrib`). */
+/** The contribution loop's one switch as stored (`Prefs.contrib`). */
 export interface ContribPrefs {
-  sources: boolean;
-  changes: boolean;
-  inbox: boolean;
-  loop: boolean;
-  remix: boolean;
+  enabled: boolean;
 }
 
 export interface Prefs {
@@ -1479,11 +1475,10 @@ export interface Prefs {
   // /api/share/github. OPTIONAL: an older server answers without it, and the
   // reader (github-link-flag.ts) treats absence as off.
   github_link?: { enabled: boolean };
-  // The GitHub contribution loop's five phase switches, RAW as set
-  // (shell/prefs.py `contrib_<phase>_enabled`, all opt-in, default off —
-  // docs/CONTRIB_LOOP.md §1). Readers want the EFFECTIVE values, with the
-  // prerequisites applied: contrib-flags.ts. OPTIONAL: an older server
-  // answers without it, and absence means every phase off.
+  // The GitHub contribution loop's one switch, RAW as set (shell/prefs.py
+  // `contrib_enabled`, opt-in, default off — docs/CONTRIB_LOOP.md §1).
+  // Readers want the per-phase values: contrib-flags.ts. OPTIONAL: an older
+  // server answers without it, and absence means off.
   contrib?: ContribPrefs;
   // ONE TASK IN PROGRESS PER FOLDER (`project_queue_enabled`, shell/prefs.py).
   // Everything that wants to run in a folder somebody else's task is already
@@ -1942,9 +1937,9 @@ export function putGithubLinkEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { github_link_enabled: enabled });
 }
 
-/** One contribution-loop phase switch (`contrib_<key>_enabled`). */
-export function putContribFlag(key: keyof ContribPrefs, enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { [`contrib_${key}_enabled`]: enabled });
+/** The contribution loop's switch (`contrib_enabled`). */
+export function putContribEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { contrib_enabled: enabled });
 }
 
 /** Whether a finished-task notification fires for an interactive-terminal

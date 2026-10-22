@@ -1632,7 +1632,7 @@ def _app_page_on():
 
         with open(os.path.join(appenv.home_dir(), "prefs.json"), encoding="utf-8") as f:
             prefs = json.load(f)
-        return isinstance(prefs, dict) and prefs.get("contrib_sources_enabled") is True
+        return isinstance(prefs, dict) and prefs.get("contrib_enabled") is True
     except Exception:  # noqa: BLE001 — the plain sentence is always true
         return False
 

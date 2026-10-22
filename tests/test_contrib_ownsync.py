@@ -99,10 +99,9 @@ def env(tmp_path, monkeypatch):
 
 
 def _flags(e, **on):
-    keys = {"sources": "contrib_sources_enabled", "changes": "contrib_changes_enabled",
-            "inbox": "contrib_inbox_enabled", "loop": "contrib_loop_enabled"}
+    # One switch since 2026-10-22: any phase named on turns the loop on.
     with open(e.home / "prefs.json", "w") as f:
-        json.dump({keys[k]: v for k, v in on.items()}, f)
+        json.dump({"contrib_enabled": any(on.values())}, f)
 
 
 def _commit(repo, name, text, msg):

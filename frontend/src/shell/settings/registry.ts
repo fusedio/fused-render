@@ -472,56 +472,17 @@ const ENTRIES = [
     keywords: "thumbnail preview iframe cards live hover image",
     renderOnly: true,
   },
-  // Community (preview): the GitHub contribution loop's five switches
-  // (docs/CONTRIB_LOOP.md §1), in the order they build on each other. Off by
-  // default; each turns on separately while it is being tried out.
+  // Community (preview): the GitHub contribution loop, one switch (docs/
+  // CONTRIB_LOOP.md §1). Off by default.
   {
-    id: "contrib-sources",
+    id: "contrib",
     group: "apps",
     section: "Community (preview)",
-    label: "Where apps come from",
-    description: "Cards and app pages say whether an app is yours or follows someone else's, and Share offers its GitHub link.",
-    keywords: "community contribute github follow author source origin preview",
-    renderOnly: true,
-    badge: "Beta",
-  },
-  {
-    id: "contrib-changes",
-    group: "apps",
-    section: "Community (preview)",
-    label: "Your changes",
-    description: "Edits to someone else's app are kept as your changes on top of theirs, and you can propose them to the author.",
-    keywords: "community contribute propose proposal edits improve send back pull request",
-    renderOnly: true,
-    badge: "Beta",
-  },
-  {
-    id: "contrib-inbox",
-    group: "apps",
-    section: "Community (preview)",
-    label: "Proposals inbox",
-    description: "Changes people propose to your apps show up on the app, with a safety review, to try, accept or decline.",
-    keywords: "community contribute proposals inbox review accept decline pull request",
-    renderOnly: true,
-    badge: "Beta",
-  },
-  {
-    id: "contrib-loop",
-    group: "apps",
-    section: "Community (preview)",
-    label: "Merged proposals",
-    description: "Once the author accepts your change, your copy goes back to following theirs and you're credited.",
-    keywords: "community contribute merged accepted credit contributors",
-    renderOnly: true,
-    badge: "Beta",
-  },
-  {
-    id: "contrib-remix",
-    group: "apps",
-    section: "Community (preview)",
-    label: "Remix",
-    description: "Publish your changed version as an app of your own, credited to the original.",
-    keywords: "community contribute remix fork publish credit original",
+    label: "Community apps",
+    description:
+      "Cards say whether an app is yours or follows someone else's, and Share offers its GitHub link. Your edits to someone else's app stay on top of theirs and you can propose them to the author; proposals to your apps show up on the app with a safety review to try, accept or decline. Once accepted, your copy goes back to following theirs and you're credited. Remix publishes your changed version as an app of your own.",
+    keywords:
+      "community contribute github follow author source origin propose proposal edits pull request inbox review accept decline merged accepted credit contributors remix fork publish original",
     renderOnly: true,
     badge: "Beta",
   },

@@ -1,16 +1,16 @@
-"""The contribution loop's EFFECTIVE feature flags (docs/CONTRIB_LOOP.md §1).
+"""The contribution loop's feature flags (docs/CONTRIB_LOOP.md §1).
 
-Five opt-in prefs (`shell/prefs.py`, default OFF), one per phase, each with a
-prerequisite chain: changes and inbox need sources; loop needs changes AND
-inbox; remix needs changes. Every server branch on a phase asks THIS module,
-never the raw pref, so a phase switched on without its prerequisite behaves
-as off everywhere at once — a half-enabled loop (Propose without the record
-that says what a copy follows) is a state no code path has to reason about.
+ONE opt-in pref, `contrib_enabled` (`shell/prefs.py`, default OFF). It used to
+be five phase switches (sources, changes, inbox, loop, remix) with a
+prerequisite chain; on 2026-10-22 they were folded into one. The five phase
+getters below are kept so every server branch keeps asking by phase — they
+all answer the one switch now, and `snapshot()` keeps its five-key shape
+because `/api/contrib/app` returns it as `flags`.
 
-At most one `read_prefs()` per change of prefs.json (`_raw`'s stat memo):
-`snapshot()` answers all five off it, and each getter is a snapshot lookup. An
-unreadable prefs file reads as every flag off — the default, and the only
-answer that keeps today's behaviour byte for byte (§0.6).
+At most one `read_prefs()` per change of prefs.json (`_raw`'s stat memo): the
+flag is asked on every sync, card and Doctor row, and a `stat` is all an
+unchanged file costs. An unreadable prefs file reads as off — the default,
+and the only answer that keeps today's behaviour byte for byte (§0.6).
 """
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ _memo: dict = {}  # {"key": (path, mtime_ns, size, ino), "raw": dict}
 
 
 def _raw() -> dict:
-    """The five STORED switches as bools (opt-in: only a literal `true` is on).
+    """The STORED switch as a bool (opt-in: only a literal `true` is on).
     Memoized on prefs.json's stat (path, mtime, size, inode): the flags are
     asked on every sync, card and Doctor row, and a `stat` is all an
     unchanged file costs. `storage.write_json` replaces the file atomically,
@@ -50,28 +50,14 @@ def _raw() -> dict:
 
 
 def _switches(stored: dict) -> dict:
-    return {
-        "sources": stored.get("contrib_sources_enabled") is True,
-        "changes": stored.get("contrib_changes_enabled") is True,
-        "inbox": stored.get("contrib_inbox_enabled") is True,
-        "loop": stored.get("contrib_loop_enabled") is True,
-        "remix": stored.get("contrib_remix_enabled") is True,
-    }
+    return {"enabled": stored.get("contrib_enabled") is True}
 
 
 def effective(raw: dict) -> dict:
-    """`raw` (the stored switches) with the prerequisites applied — the same
-    rule `contrib-flags.ts` applies client-side."""
-    sources = raw.get("sources") is True
-    changes = sources and raw.get("changes") is True
-    inbox = sources and raw.get("inbox") is True
-    return {
-        "sources": sources,
-        "changes": changes,
-        "inbox": inbox,
-        "loop": changes and inbox and raw.get("loop") is True,
-        "remix": changes and raw.get("remix") is True,
-    }
+    """`raw` (the stored switch) as the five phase values — every phase is
+    the one switch; same rule `contrib-flags.ts` applies client-side."""
+    on = raw.get("enabled") is True
+    return {"sources": on, "changes": on, "inbox": on, "loop": on, "remix": on}
 
 
 def snapshot() -> dict:
@@ -80,7 +66,7 @@ def snapshot() -> dict:
 
 
 def raw() -> dict:
-    """The stored switches as set (what Preferences shows), no prerequisites."""
+    """The stored switch as set (what Preferences shows): `{"enabled": bool}`."""
     return _raw()
 
 
@@ -105,6 +91,5 @@ def remix() -> bool:
 
 
 def any_on() -> bool:
-    """Whether any phase is effectively on — `sources` is every phase's root
-    prerequisite, so this is just that."""
+    """Whether the loop is on — every phase is the one switch."""
     return sources()

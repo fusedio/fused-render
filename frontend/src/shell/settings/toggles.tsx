@@ -20,10 +20,9 @@ import {
   putTaskSummaryTitlesEnabled,
   putClaudeDefaultPermission,
   putClaudeStrictMcpEnabled,
-  putContribFlag,
-  type ContribPrefs,
+  putContribEnabled,
 } from "@platform/lib/api";
-import { effectiveContribFlags, publishContribFlags } from "@platform/lib/contrib-flags";
+import { publishContribFlags } from "@platform/lib/contrib-flags";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
 import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
@@ -38,7 +37,6 @@ import {
 import { publishTaskNotifyTerminalSessions } from "../task-notify-terminal-flag";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { PERMISSION_LABELS } from "@apps/claude/protocol/summaries";
-import { settingById, type SettingId } from "./registry";
 import { PrefToggleRow, SettingRow, SettingSelect, usePrefWrite, type PrefControlProps } from "./SettingRow";
 
 // ── Tasks ──────────────────────────────────────────────────────────────────
@@ -209,65 +207,22 @@ export function LivePreviewsControl({ prefs, onChange }: PrefControlProps) {
 }
 
 // ── Community (preview) ────────────────────────────────────────────────────
-// The GitHub contribution loop's five switches, one row each. Shown AS SET
-// (the raw prefs), never disabled: a switch whose prerequisite is off can
-// still be turned on, and its row says what it is waiting for instead — the
-// reader may be turning them on bottom-up, and a disabled switch would hide
-// that the click would have counted. Same publish-after-PUT as the rows above
-// (contrib-flags.ts), so the cards and the share sheet already mounted follow.
+// The GitHub contribution loop's one switch (it was five phase switches with
+// a prerequisite chain until 2026-10-22). Same publish-after-PUT as the rows
+// above (contrib-flags.ts), so the cards and the share sheet already mounted
+// follow.
 
-const CONTRIB_IDS = {
-  sources: "contrib-sources",
-  changes: "contrib-changes",
-  inbox: "contrib-inbox",
-  loop: "contrib-loop",
-  remix: "contrib-remix",
-} as const satisfies Record<keyof ContribPrefs, SettingId>;
-
-/** What each switch builds on (docs/CONTRIB_LOOP.md §1). */
-const CONTRIB_NEEDS: Record<keyof ContribPrefs, (keyof ContribPrefs)[]> = {
-  sources: [],
-  changes: ["sources"],
-  inbox: ["sources"],
-  loop: ["changes", "inbox"],
-  remix: ["changes"],
-};
-
-/** The switches actually OFF somewhere under `key` — Merged proposals on
- *  with everything but Where apps come from names that one, not the two
- *  switched-on rows it holds back in turn. */
-function contribOffUnder(raw: Partial<ContribPrefs> | undefined, key: keyof ContribPrefs): (keyof ContribPrefs)[] {
-  const out: (keyof ContribPrefs)[] = [];
-  for (const n of CONTRIB_NEEDS[key]) {
-    for (const k of raw?.[n] === true ? contribOffUnder(raw, n) : [n]) if (!out.includes(k)) out.push(k);
-  }
-  return out;
-}
-
-function ContribFlagControl({ flag, prefs, onChange }: PrefControlProps & { flag: keyof ContribPrefs }) {
-  const raw = prefs.contrib;
-  const on = raw?.[flag] === true;
-  // Named only while this row is on but held back — an off row has nothing
-  // to wait for yet.
-  const missing = on && !effectiveContribFlags(raw)[flag] ? contribOffUnder(raw, flag) : [];
-  const names = missing.map((k) => settingById(CONTRIB_IDS[k])?.label ?? k).join(" and ");
+export function ContribControl({ prefs, onChange }: PrefControlProps) {
   return (
     <PrefToggleRow
-      id={CONTRIB_IDS[flag]}
-      checked={on}
-      put={(next) => putContribFlag(flag, next)}
+      id="contrib"
+      checked={prefs.contrib?.enabled === true}
+      put={(next) => putContribEnabled(next)}
       after={(next) => publishContribFlags(next.contrib)}
-      status={missing.length > 0 ? `Needs ${names} to be on.` : undefined}
       onChange={onChange}
     />
   );
 }
-
-export const ContribSourcesControl = (p: PrefControlProps) => <ContribFlagControl flag="sources" {...p} />;
-export const ContribChangesControl = (p: PrefControlProps) => <ContribFlagControl flag="changes" {...p} />;
-export const ContribInboxControl = (p: PrefControlProps) => <ContribFlagControl flag="inbox" {...p} />;
-export const ContribLoopControl = (p: PrefControlProps) => <ContribFlagControl flag="loop" {...p} />;
-export const ContribRemixControl = (p: PrefControlProps) => <ContribFlagControl flag="remix" {...p} />;
 
 // ── Optional features ──────────────────────────────────────────────────────
 // Each is off by default and this is the only place it turns on (Canvases:

@@ -46,27 +46,24 @@ def _clone(tmp_path, name, url):
 # ------------------------------------------------------------------ flags
 
 
-def test_flags_default_off_and_prerequisites(home):
+def test_flags_default_off_and_one_switch(home):
     assert flags.snapshot() == {"sources": False, "changes": False, "inbox": False,
                                 "loop": False, "remix": False}
-    _prefs(home, contrib_changes_enabled=True, contrib_loop_enabled=True,
-           contrib_inbox_enabled=True, contrib_remix_enabled=True)
-    assert not any(flags.snapshot().values())  # sources is everyone's prerequisite
+    # The old five phase keys are not read any more (folded 2026-10-22).
     _prefs(home, contrib_sources_enabled=True, contrib_changes_enabled=True,
-           contrib_loop_enabled=True)
-    assert flags.snapshot() == {"sources": True, "changes": True, "inbox": False,
-                                "loop": False, "remix": False}
-    _prefs(home, contrib_sources_enabled=True, contrib_changes_enabled=True,
-           contrib_inbox_enabled=True, contrib_loop_enabled=True, contrib_remix_enabled="yes")
-    assert flags.loop() is True and flags.remix() is False
+           contrib_inbox_enabled=True, contrib_loop_enabled=True, contrib_remix_enabled=True)
+    assert not any(flags.snapshot().values())
+    _prefs(home, contrib_enabled=True)
+    assert all(flags.snapshot().values()) and flags.loop() is True and flags.remix() is True
+    _prefs(home, contrib_enabled="yes")  # opt-in: only a literal true is on
+    assert not any(flags.snapshot().values())
 
 
-def test_prefs_response_reports_raw_switches(home):
+def test_prefs_response_reports_raw_switch(home):
     from fused_render.shell import prefs
 
-    _prefs(home, contrib_loop_enabled=True)
-    assert prefs._prefs_response()["contrib"] == {
-        "sources": False, "changes": False, "inbox": False, "loop": True, "remix": False}
+    _prefs(home, contrib_enabled=True)
+    assert prefs._prefs_response()["contrib"] == {"enabled": True}
 
 
 # ------------------------------------------------------------------ store
@@ -93,8 +90,7 @@ def test_store_unknown_keys_survive(home, tmp_path):
     store.add_event(str(d), "updated")
     assert store.get(str(d))["try_of"]["number"] == 3
     assert classify.ensure(str(d))["kind"] == "scratch"
-    _prefs(home, contrib_sources_enabled=True, contrib_changes_enabled=True,
-           contrib_inbox_enabled=True)
+    _prefs(home, contrib_enabled=True)
     assert engine.status(str(d))["kind"] == "scratch"
     assert classify.kind_of(str(d)) == "scratch"  # never synced (git_upstream)
 
@@ -222,7 +218,7 @@ def test_fused_dir_row_is_gated_and_reports_tracked_paths(home, tmp_path):
     git(d, "commit", "-q", "-m", "fused")
     ids = [c["id"] for c in app_doctor.report(d)["checks"]]
     assert "fused-dir-committed" not in ids
-    _prefs(home, contrib_sources_enabled=True)
+    _prefs(home, contrib_enabled=True)
     row = next(c for c in app_doctor.report(d)["checks"] if c["id"] == "fused-dir-committed")
     assert row["state"] == "fail" and row["severity"] == "warning"
     assert [f["path"] for f in row["findings"]] == [".fused/meta.json"]
@@ -258,11 +254,11 @@ def test_orphan_rows_drop_after_thirty_days(home, tmp_path):
 
 def test_flags_memo_follows_the_file(home):
     assert flags.sources() is False
-    _prefs(home, contrib_sources_enabled=True)
+    _prefs(home, contrib_enabled=True)
     assert flags.sources() is True
     from fused_render.shell import prefs
 
-    prefs.write_pref("contrib_sources_enabled", False)
+    prefs.write_pref("contrib_enabled", False)
     assert flags.sources() is False
 
 
@@ -377,8 +373,7 @@ def _sync(root, push=False):
 
 
 def _all_on(home):
-    _prefs(home, contrib_sources_enabled=True, contrib_changes_enabled=True,
-           contrib_inbox_enabled=True, contrib_loop_enabled=True)
+    _prefs(home, contrib_enabled=True)
 
 
 def _ident():
@@ -395,7 +390,7 @@ def test_install_records_root_commit_and_push_guard(world):
     assert classify.kind_of(bob) == "github"
 
 
-@pytest.mark.parametrize("flags_on", [{}, {"contrib_sources_enabled": True}])
+@pytest.mark.parametrize("flags_on", [{}, {"contrib_enabled": True}])
 def test_flags_off_github_copy_never_pushes_to_the_author(world, flags_on):
     """P0-1/P0-2 (audit F1, F1d, L1): a GitHub-link copy's Claude turn with
     the loop off (or only A1 on) used to `git push origin main` straight to
@@ -554,7 +549,7 @@ def test_switch_card_hidden_for_a_github_copy_while_the_panel_exists(world):
     """P2-8 (audit O1): with A1 on (the panel's Go back), a GitHub-link copy
     on another branch gets no old Switch card; Update is never offered for
     one (round 2 keeps the Switch row only with A1 off — next test)."""
-    _prefs(world.home, contrib_sources_enabled=True)
+    _prefs(world.home, contrib_enabled=True)
     bob = _install(world)
     git(bob, "checkout", "-q", "-b", "feature")
     _alice_push(world, "c.txt", "alice\n")
@@ -772,7 +767,7 @@ def test_own_copy_divergence_through_the_real_ownsync(world):
     (a commit made elsewhere), is settled by `ownsync.resolve` — never
     today's diverged row — and its push guard (left from a mistaken
     `github` classification) is gone."""
-    _prefs(world.home, contrib_sources_enabled=True)
+    _prefs(world.home, contrib_enabled=True)
     a = _install(world)
     store.update(a, lambda r: r.__setitem__("kind", "own"))
     mine = _commit(a, "b.txt", "mine\n", "mine")
@@ -819,7 +814,7 @@ def test_install_page_for_a_github_copy_with_changes_is_plain(world):
     # Audit V1/V13 (§16.12): with A1 off the app page has no panel — plain
     # words, no pointer there.
     assert str(exc.value) == "This app has changes of its own, so it isn't updated from here."
-    _prefs(world.home, contrib_sources_enabled=True)
+    _prefs(world.home, contrib_enabled=True)
     with pytest.raises(appfile_git.GitInstallError) as exc:
         appfile_git.install("x.fused", target, {}, force=False)
     msg = str(exc.value)
@@ -855,7 +850,7 @@ def test_pre_loop_author_app_keeps_auto_pushing_while_signed_out(world, monkeypa
     """Audit author V4: A1 on, signed out, a pre-loop app of Alice's (no
     record) was classified github/unchecked and stopped reaching GitHub.
     Now: no record until an identity exists; today's sync pushes."""
-    _prefs(world.home, contrib_sources_enabled=True)
+    _prefs(world.home, contrib_enabled=True)
     monkeypatch.setattr(classify, "ensure_in_background", lambda d: classify.ensure(d))
     lap = os.path.join(str(world.ws), "app", "sine")
     os.makedirs(os.path.dirname(lap), exist_ok=True)
@@ -917,7 +912,7 @@ def test_sign_in_upgrade_holds_unpublished_work_until_publish_now(world, monkeyp
 
     import fused_render.contrib as pkg
 
-    _prefs(world.home, contrib_sources_enabled=True)
+    _prefs(world.home, contrib_enabled=True)
     fake = types.ModuleType("fused_render.contrib.ownsync")
     fake.resolve = lambda root, action, push: None
     fake.note_seen = lambda root: None
@@ -1065,7 +1060,7 @@ def test_unknown_owner_wording_never_promises_the_edits_stay(world):
 def test_a1_off_while_held_says_so_before_publishing(world, monkeypatch):
     """Final gate: A1 switched off while held — the next push publishes the
     held edits; one activity line says so and the hold is dropped."""
-    _prefs(world.home, contrib_sources_enabled=True)
+    _prefs(world.home, contrib_enabled=True)
     bob = _install(world)
     _commit(bob, "b1.txt", "x\n", "l1")
     monkeypatch.setattr(classify, "_owns", lambda owner, ident: True)
@@ -1117,7 +1112,7 @@ def test_flags_off_switch_card_stays_for_a_github_copy_on_another_branch(world):
     rows = git_upstream.known_repos()
     assert [(r["branch"], r["on_default"], r["behind"]) for r in rows] == [("feature", False, 1)]
     assert git_upstream.switch_repo(bob)["ok"] is True
-    _prefs(world.home, contrib_sources_enabled=True)
+    _prefs(world.home, contrib_enabled=True)
     assert git_upstream.known_repos() == []
 
 
