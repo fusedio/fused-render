@@ -1051,18 +1051,18 @@ def _fused_cli_note(backend: str = "") -> str:
     return (
         " The `fused` CLI is on PATH: use it when the user asks to push, "
         "pull or otherwise work with Fused (canvases, UDFs — e.g. `fused "
-        "workbench canvas push <dir> --canvas <name>`; see `fused --help`). "
+        "canvas push <dir> --canvas <name>`; see `fused --help`). "
         "Run it as a plain `fused ...` command" + _FUSED_PREAPPROVED + " "
         "and never invoke fused any other way: no `pip install "
         "fused`, no `python -m fused`, no copy from another path or "
         "environment, since only the bare command reaches the CLI this app "
         "ships. It uses the user's existing Fused sign-in; NEVER run "
-        "`fused workbench login` or `fused cloud login` (they wait on a "
+        "`fused login` (it waits on a "
         "browser round-trip that cannot complete here) — on an auth error, "
         "ask the user to sign in from fused-render's Canvases page or a "
         "terminal instead. Inside a canvas folder under ~/Fused/canvas/, "
         "fused-render holds its own auto-push while you work and "
-        "routes `fused workbench canvas push .` through its sync manager, "
+        "routes `fused canvas push .` through its sync manager, "
         "which merges concurrent workbench edits first: publish a coherent "
         "change set with that command and read the errors it prints back."
         + _CANVAS_CLAUDE_MD
@@ -1209,7 +1209,7 @@ def _canvas_node_prompt(file: str) -> str:
     (the code template, this origin's, readable — the app_state tool is
     real here). What that prompt cannot know is the folder's shape: the
     canvas.toml beside the file names the node, every node's code is the
-    file named after it, publishing is `fused workbench canvas push .` (D350)
+    file named after it, publishing is `fused canvas push .` (D350)
     with the auto-push held while this session is live, and the user's own
     edits to this file arrive through the same code pane. The clone's
     CLAUDE.md (D340) carries the skills and layout.

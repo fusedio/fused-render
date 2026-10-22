@@ -1,4 +1,4 @@
-"""`fused workbench canvas push` inside a canvas clone goes through the server.
+"""`fused canvas push` inside a canvas clone goes through the server.
 
 A Claude session working in a clone is told to publish with the standard
 command. That command is only safe because `_fused_cli.py` — the in-interpreter
@@ -47,95 +47,81 @@ def test_the_canonical_push_is_recognised():
     """The exact shape `_SyncManager._push` itself uses, and the shape the
     prompt tells a session to type."""
     assert _canvas_push.parse_push(
-        ["workbench", "canvas", "push", "/x/alpha", "--canvas", "alpha"]
+        ["canvas", "push", "/x/alpha", "--canvas", "alpha"]
     ) == {"source_dir": "/x/alpha", "canvas": "alpha", "unsupported": [], "env": None}
-    assert _canvas_push.parse_push(["workbench", "canvas", "push", "."]) == {
+    assert _canvas_push.parse_push(["canvas", "push", "."]) == {
         "source_dir": ".", "canvas": None, "unsupported": [], "env": None}
     assert _canvas_push.parse_push(
-        ["workbench", "canvas", "push", "--canvas=alpha", "."]
+        ["canvas", "push", "--canvas=alpha", "."]
     ) == {"source_dir": ".", "canvas": "alpha", "unsupported": [], "env": None}
 
 
-@pytest.mark.parametrize("global_prefix", [
+@pytest.mark.parametrize("root_prefix", [
     ["--env", "unstable"],
-    ["--backend", "local"],
     ["--env=unstable"],
-    ["--backend=local"],
+    ["--format", "json"],
+    ["--format=json"],
     # Several stacked, in whatever order a session might type them.
-    ["--backend", "local", "--env", "unstable"],
-    ["--env=unstable", "--backend=local"],
+    ["--format", "json", "--env", "unstable"],
+    ["--env=unstable", "--format=json"],
 ])
-def test_a_global_option_before_the_subcommand_is_still_recognised(global_prefix):
-    """`fused` mounts `workbench` under a TOP-LEVEL group with its own options
-    (fused/agent_core/cli.py) — `fused --env unstable workbench canvas push .`
-    is a real shape a session can type, and matching `args[:3]` verbatim
-    missed it entirely, falling through to the raw, unguarded push."""
-    assert _canvas_push.parse_push([*global_prefix, "workbench", "canvas", "push", "."]) == {
-        "source_dir": ".", "canvas": None, "unsupported": [], "env": None}
-    assert _canvas_push.parse_push(
-        [*global_prefix, "workbench", "canvas", "push", "/x/alpha", "--canvas", "alpha"]
-    ) == {"source_dir": "/x/alpha", "canvas": "alpha", "unsupported": [], "env": None}
+def test_a_root_option_before_the_subcommand_is_still_recognised(root_prefix):
+    """`fused --env unstable canvas push .` is a real shape a session can type,
+    and matching `args[:2]` verbatim would miss it, falling through to the
+    raw, unguarded push."""
+    got = _canvas_push.parse_push([*root_prefix, "canvas", "push", "."])
+    assert got["source_dir"] == "." and got["canvas"] is None and got["unsupported"] == []
+    got = _canvas_push.parse_push(
+        [*root_prefix, "canvas", "push", "/x/alpha", "--canvas", "alpha"])
+    assert got["source_dir"] == "/x/alpha" and got["canvas"] == "alpha"
 
 
-def test_the_workbench_groups_own_env_is_recognised_and_reported():
-    """`fused workbench --env prod canvas push .` is FUSED_ENV in flag form
-    (the workbench group's `--env`), unlike the top-level `--env` (agent_core's
-    OPENFUSED_ENV, reported as no target). Unmatched it fell through to the
-    raw push unchecked; now it is matched and its value carried."""
+def test_the_root_env_is_recognised_and_reported():
+    """`fused --env prod canvas push .` is FUSED_ENV in flag form: matched, and
+    its value carried so a fall-through knows the run's real target."""
     assert _canvas_push.parse_push(
-        ["workbench", "--env", "prod", "--format=json", "canvas", "push", "."]
+        ["--env", "prod", "--format=json", "canvas", "push", "."]
     ) == {"source_dir": ".", "canvas": None, "unsupported": [], "env": "prod"}
     assert _canvas_push.parse_push(
-        ["--env", "x", "workbench", "--env=custom", "canvas", "push", "."]
+        ["--env", "x", "--env=custom", "canvas", "push", "."]
     )["env"] == "custom"
-    assert _canvas_push.parse_push(["workbench", "--env"]) is None
+    assert _canvas_push.parse_push(["--env"]) is None
 
 
 def test_an_unrecognised_option_before_the_subcommand_falls_through():
-    """Conservative by construction: a global flag this parser has never heard
+    """Conservative by construction: a root flag this parser has never heard
     of must fall through rather than guess whether it takes a value."""
     assert _canvas_push.parse_push(
-        ["--some-future-flag", "workbench", "canvas", "push", "."]
+        ["--some-future-flag", "canvas", "push", "."]
     ) is None
-    # A malformed value-taking global option (nothing after it) is also left
+    # `--backend` is not a root option of the release CLI: its usage error is
+    # the right outcome, so the matcher must not skip it.
+    assert _canvas_push.parse_push(["--backend", "local", "canvas", "push", "."]) is None
+    # A malformed value-taking root option (nothing after it) is also left
     # to the real CLI to complain about, not guessed at.
     assert _canvas_push.parse_push(["--env"]) is None
 
 
-@pytest.mark.parametrize("removed_flag", [
-    "--enable-infra", "--enable-destructive", "--disable-reset",
-])
-def test_a_removed_root_flag_before_the_subcommand_falls_through(removed_flag):
-    """fusedio/fused#371 dropped these root-group flags with the MCP server.
-    The real CLI now rejects them, so the matcher must not skip them as if
-    they were still valid — the CLI's own usage error is the right outcome."""
-    assert _canvas_push.parse_push(
-        [removed_flag, "workbench", "canvas", "push", "."]
-    ) is None
-
-
 @pytest.mark.parametrize("args", [
     # Not a push at all — the overwhelming majority of `fused` traffic.
-    ["workbench", "canvas", "pull", "alpha", "-o", "/x/alpha"],
-    ["workbench", "canvas", "validate", "."],
-    ["workbench", "canvas", "list"],
-    ["workbench", "whoami"],
+    ["canvas", "pull", "alpha", "-o", "/x/alpha"],
+    ["canvas", "validate", "."],
+    ["canvas", "list"],
+    ["whoami"],
     ["udf", "run", "x"],
     [],
     ["--version"],
-    # A push, but not through the `workbench` group.
-    ["canvas", "push", "/x/alpha"],
     # --help must reach the real CLI, which owns the help text.
-    ["workbench", "canvas", "push", "--help"],
+    ["canvas", "push", "--help"],
     # --id means the reference is a canvas ID, not a directory.
-    ["workbench", "canvas", "push", "--id", "abc123"],
+    ["canvas", "push", "--id", "abc123"],
     # A flag this parser has never heard of: the CLI is the authority.
-    ["workbench", "canvas", "push", ".", "--brand-new-flag"],
+    ["canvas", "push", ".", "--brand-new-flag"],
     # SOURCE_DIR is required and singular.
-    ["workbench", "canvas", "push"],
-    ["workbench", "canvas", "push", "/x/alpha", "/x/beta"],
+    ["canvas", "push"],
+    ["canvas", "push", "/x/alpha", "/x/beta"],
     # Malformed --canvas: let the CLI produce its own usage error.
-    ["workbench", "canvas", "push", ".", "--canvas"],
+    ["canvas", "push", ".", "--canvas"],
 ])
 def test_everything_else_falls_through(args):
     """A false positive breaks a command that has nothing to do with canvases,
@@ -193,7 +179,7 @@ def _intercept(args, monkeypatch, server=None, origin="http://127.0.0.1:9999"):
 def test_a_clone_push_is_sent_to_the_server(root, monkeypatch):
     server = _Server(200, {"ok": True, "push_state": "idle", "push_seq": 1})
     code, out, err = _intercept(
-        ["workbench", "canvas", "push", str(root / "alpha")], monkeypatch, server)
+        ["canvas", "push", str(root / "alpha")], monkeypatch, server)
     assert code == 0, err
     assert server.calls == [("http://127.0.0.1:9999", "alpha", ENV)]
     assert "alpha" in out
@@ -201,11 +187,11 @@ def test_a_clone_push_is_sent_to_the_server(root, monkeypatch):
 
 
 def test_a_relative_target_resolves(root, monkeypatch):
-    """The session's cwd IS the clone, so `fused workbench canvas push .` is
+    """The session's cwd IS the clone, so `fused canvas push .` is
     the form it will actually type."""
     server = _Server(200, {"ok": True})
     monkeypatch.chdir(root / "alpha")
-    code, _, err = _intercept(["workbench", "canvas", "push", "."],
+    code, _, err = _intercept(["canvas", "push", "."],
                               monkeypatch, server)
     assert code == 0, err
     assert server.calls == [("http://127.0.0.1:9999", "alpha", ENV)]
@@ -222,7 +208,7 @@ def test_a_validation_failure_reaches_the_session_verbatim(root, monkeypatch):
                            "error": "Canvas validation failed with 2 error(s).",
                            "error_detail": lines})
     code, _, err = _intercept(
-        ["workbench", "canvas", "push", str(root / "alpha")], monkeypatch, server)
+        ["canvas", "push", str(root / "alpha")], monkeypatch, server)
     assert code == 1
     for line in lines:
         assert line in err
@@ -234,7 +220,7 @@ def test_a_failure_with_no_detail_still_says_something(root, monkeypatch):
                            "error": "the fused CLI is not available",
                            "error_detail": []})
     code, _, err = _intercept(
-        ["workbench", "canvas", "push", str(root / "alpha")], monkeypatch, server)
+        ["canvas", "push", str(root / "alpha")], monkeypatch, server)
     assert code == 1
     assert "the fused CLI is not available" in err
 
@@ -244,7 +230,7 @@ def test_a_refusal_is_reported_not_retried_as_a_raw_push(root, monkeypatch):
     CLI push — that is the unguarded path this whole mechanism removes."""
     server = _Server(409, {"error": "syncing for 'alpha' is paused; try again"})
     code, _, err = _intercept(
-        ["workbench", "canvas", "push", str(root / "alpha")], monkeypatch, server)
+        ["canvas", "push", str(root / "alpha")], monkeypatch, server)
     assert code == 1
     assert "paused" in err
 
@@ -256,7 +242,7 @@ def test_unsupported_flags_are_refused_rather_than_passed_through(root, monkeypa
     for flag in ("--no-validate", "--no-ignore"):
         server = _Server(200, {"ok": True})
         code, _, err = _intercept(
-            ["workbench", "canvas", "push", str(root / "alpha"), flag],
+            ["canvas", "push", str(root / "alpha"), flag],
             monkeypatch, server)
         assert code == 2, flag
         assert flag in err
@@ -277,7 +263,7 @@ def test_the_internal_marker_short_circuits_everything(root, monkeypatch):
     server = _Server(200, {"ok": True})
     monkeypatch.setenv(_canvas_push.INTERNAL_ENV, "1")
     code, out, err = _intercept(
-        ["workbench", "canvas", "push", str(root / "alpha")], monkeypatch, server)
+        ["canvas", "push", str(root / "alpha")], monkeypatch, server)
     assert code is None, "the manager's own push must fall through to the CLI"
     assert server.calls == []
     assert out == "" and err == ""
@@ -307,7 +293,7 @@ def test_a_busy_refusal_reads_as_retryable_not_as_a_broken_canvas(root, monkeypa
     server = _Server(409, {"error": "a push is already running for this canvas",
                            "code": "busy"})
     code, _, err = _intercept(
-        ["workbench", "canvas", "push", str(root / "alpha")], monkeypatch, server)
+        ["canvas", "push", str(root / "alpha")], monkeypatch, server)
     assert code == 1, "the push did not happen, so it must not exit 0"
     assert "already running" in err
     assert "Nothing is wrong with the canvas" in err
@@ -318,7 +304,7 @@ def test_no_server_origin_falls_through(root, monkeypatch):
     """Nothing published an origin, so there is no fused-render around. Never a
     guessed port: 1777 is wrong under any --port override."""
     server = _Server(200, {"ok": True})
-    code, _, _ = _intercept(["workbench", "canvas", "push", str(root / "alpha")],
+    code, _, _ = _intercept(["canvas", "push", str(root / "alpha")],
                             monkeypatch, server, origin=None)
     assert code is None
     assert server.calls == []
@@ -335,10 +321,10 @@ def test_a_clone_of_the_other_environment_is_refused_on_every_fall_through(root,
     clone.mkdir(parents=True)
     monkeypatch.setenv("FUSED_ENV", env)
     cases = [
-        (["workbench", "canvas", "push", str(clone)], None, _Server(200, {"ok": True})),
-        (["workbench", "canvas", "push", str(clone), "--canvas", "zeta"],
+        (["canvas", "push", str(clone)], None, _Server(200, {"ok": True})),
+        (["canvas", "push", str(clone), "--canvas", "zeta"],
          "http://127.0.0.1:9999", _Server(200, {"ok": True})),
-        (["workbench", "canvas", "push", str(clone)], "http://127.0.0.1:9999",
+        (["canvas", "push", str(clone)], "http://127.0.0.1:9999",
          _Server(None, {})),
     ]
     for args, origin, server in cases:
@@ -355,7 +341,7 @@ def test_a_custom_clone_refuses_a_set_fused_env_and_falls_through_unset(root, mo
     refuses any named env, and with FUSED_ENV unset runs the real CLI."""
     clone = root.parent / "custom" / "alpha"
     clone.mkdir(parents=True)
-    args = ["workbench", "canvas", "push", str(clone)]
+    args = ["canvas", "push", str(clone)]
     monkeypatch.setenv("FUSED_ENV", "prod")
     code, _, err = _intercept(args, monkeypatch, _Server(200, {"ok": True}), origin=None)
     assert code == 1
@@ -370,20 +356,20 @@ def test_a_custom_clone_refuses_a_set_fused_env_and_falls_through_unset(root, mo
     assert [c[1:] for c in server.calls] == [("alpha", "custom")]
 
 
-def test_a_workbench_env_flag_naming_another_env_is_refused_on_fall_through(root, monkeypatch):
-    """`workbench --env` beats FUSED_ENV in the CLI, so it does here: a flag
+def test_a_root_env_flag_naming_another_env_is_refused_on_fall_through(root, monkeypatch):
+    """`--env` beats FUSED_ENV in the CLI, so it does here: a flag
     naming another env refuses even with FUSED_ENV unset (or matching), for a
     custom clone and a named one alike."""
     custom = root.parent / "custom" / "alpha"
     custom.mkdir(parents=True)
     monkeypatch.delenv("FUSED_ENV", raising=False)
     for clone, flag in ((custom, "prod"), (root / "alpha", OTHER_ENV)):
-        args = ["workbench", "--env", flag, "canvas", "push", str(clone)]
+        args = ["--env", flag, "canvas", "push", str(clone)]
         code, _, err = _intercept(args, monkeypatch, _Server(200, {"ok": True}), origin=None)
         assert code == 1, clone
         assert "(--env)" in err
     monkeypatch.setenv("FUSED_ENV", ENV)
-    args = ["workbench", "--env", ENV, "canvas", "push", str(root / "alpha")]
+    args = ["--env", ENV, "canvas", "push", str(root / "alpha")]
     code, _, _ = _intercept(args, monkeypatch, _Server(200, {"ok": True}), origin=None)
     assert code is None
 
@@ -393,14 +379,14 @@ def test_an_unset_fused_env_is_bound_to_a_named_clones_env_on_fall_through(root,
     CLI — a custom default outside the clone leaves it so. A prod/unstable
     clone's raw push must still reach its own env, so the fall-through binds
     it; a custom clone keeps it unset."""
-    args = ["workbench", "canvas", "push", str(root / "alpha")]
+    args = ["canvas", "push", str(root / "alpha")]
     code, _, _ = _intercept(args, monkeypatch, _Server(200, {"ok": True}), origin=None)
     assert code is None
     assert os.environ["FUSED_ENV"] == ENV
     custom = root.parent / "custom" / "alpha"
     custom.mkdir(parents=True)
     monkeypatch.delenv("FUSED_ENV")
-    code, _, _ = _intercept(["workbench", "canvas", "push", str(custom)], monkeypatch,
+    code, _, _ = _intercept(["canvas", "push", str(custom)], monkeypatch,
                             _Server(200, {"ok": True}), origin=None)
     assert code is None
     assert "FUSED_ENV" not in os.environ
@@ -414,7 +400,7 @@ def test_a_mismatched_fused_env_still_posts_when_the_server_takes_it(root, monke
     clone.mkdir(parents=True)
     monkeypatch.setenv("FUSED_ENV", ENV)
     server = _Server(200, {"ok": True})
-    code, _, _ = _intercept(["workbench", "canvas", "push", str(clone)], monkeypatch, server)
+    code, _, _ = _intercept(["canvas", "push", str(clone)], monkeypatch, server)
     assert code == 0
     assert [c[1:] for c in server.calls] == [("alpha", OTHER_ENV)]
 
@@ -428,10 +414,10 @@ def test_a_clone_of_either_environment_routes_to_the_server_with_its_env(root, m
     other_clone.mkdir(parents=True)
     monkeypatch.delenv("FUSED_ENV", raising=False)
     server = _Server(200, {"ok": True})
-    code, _, _ = _intercept(["workbench", "canvas", "push", str(other_clone)], monkeypatch, server)
+    code, _, _ = _intercept(["canvas", "push", str(other_clone)], monkeypatch, server)
     assert code == 0
     monkeypatch.setenv("FUSED_ENV", ENV)
-    code, _, _ = _intercept(["workbench", "canvas", "push", str(root / "alpha")], monkeypatch, server)
+    code, _, _ = _intercept(["canvas", "push", str(root / "alpha")], monkeypatch, server)
     assert code == 0
     assert [c[1:] for c in server.calls] == [("alpha", OTHER_ENV), ("alpha", ENV)]
 
@@ -442,7 +428,7 @@ def test_a_push_outside_the_canvases_root_falls_through(root, monkeypatch, tmp_p
     other = tmp_path / "myproject" / "mycanvas"
     other.mkdir(parents=True)
     server = _Server(200, {"ok": True})
-    code, _, _ = _intercept(["workbench", "canvas", "push", str(other)],
+    code, _, _ = _intercept(["canvas", "push", str(other)],
                             monkeypatch, server)
     assert code is None
     assert server.calls == []
@@ -456,7 +442,7 @@ def test_no_watcher_on_a_clone_refuses_rather_than_falls_through(root, monkeypat
     this refuses instead of running the raw, unguarded push."""
     server = _Server(409, {"error": "not being synced", "code": "no_watcher"})
     code, _, err = _intercept(
-        ["workbench", "canvas", "push", str(root / "alpha")], monkeypatch, server)
+        ["canvas", "push", str(root / "alpha")], monkeypatch, server)
     assert code == 1, "must not silently run the raw push"
     assert "not being synced" in err
     assert "start sync" in err.lower() or "open this canvas" in err.lower()
@@ -467,7 +453,7 @@ def test_an_unreachable_server_falls_through(root, monkeypatch):
     The real CLI is the honest fallback, not an invented failure."""
     server = _Server(None, {})
     code, _, err = _intercept(
-        ["workbench", "canvas", "push", str(root / "alpha")], monkeypatch, server)
+        ["canvas", "push", str(root / "alpha")], monkeypatch, server)
     assert code is None
     assert err == ""
 
@@ -485,7 +471,7 @@ def test_a_slow_but_alive_server_does_not_fall_through(root, monkeypatch):
     and must still fall through — this only pins the timeout case."""
     server = _Server(_canvas_push._TIMED_OUT, {})
     code, _, err = _intercept(
-        ["workbench", "canvas", "push", str(root / "alpha")], monkeypatch, server)
+        ["canvas", "push", str(root / "alpha")], monkeypatch, server)
     assert code == 1, "a timeout must not exit as if nothing happened"
     assert "timed out" in err
 
@@ -537,7 +523,7 @@ def test_pushing_a_clone_at_a_different_canvas_falls_through(root, monkeypatch):
     keyed on the watcher for THIS folder and cannot express it."""
     server = _Server(200, {"ok": True})
     code, _, _ = _intercept(
-        ["workbench", "canvas", "push", str(root / "alpha"), "--canvas", "beta"],
+        ["canvas", "push", str(root / "alpha"), "--canvas", "beta"],
         monkeypatch, server)
     assert code is None
     assert server.calls == []
@@ -552,14 +538,14 @@ _SHIM = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 def test_the_shim_intercepts_before_dispatching_to_the_real_cli(root, tmp_path):
     """End-to-end through the real entry point: a clone push must not reach
-    `fused._cli.main` at all. Run in a subprocess because that is how the shim
+    `fused.cli.main` at all. Run in a subprocess because that is how the shim
     runs, and with a stub `fused` package on the path so a dispatch would be
     loudly visible instead of hitting the network.
     """
     stub = tmp_path / "stub"
     (stub / "fused").mkdir(parents=True)
     (stub / "fused" / "__init__.py").write_text("")
-    (stub / "fused" / "_cli.py").write_text(
+    (stub / "fused" / "cli.py").write_text(
         "import sys\n"
         "def main():\n"
         "    sys.stderr.write('REAL CLI RAN\\n')\n"
@@ -596,7 +582,7 @@ def test_the_shim_intercepts_before_dispatching_to_the_real_cli(root, tmp_path):
         env["FUSED_RENDER_ORIGIN"] = "http://127.0.0.1:%d" % port
 
         done = subprocess.run(
-            [sys.executable, _SHIM, "workbench", "canvas", "push",
+            [sys.executable, _SHIM, "canvas", "push",
              str(root / "alpha")],
             capture_output=True, text=True, env=env, timeout=60)
         assert done.returncode == 0, (done.stdout, done.stderr)
@@ -605,7 +591,7 @@ def test_the_shim_intercepts_before_dispatching_to_the_real_cli(root, tmp_path):
 
         # And a command that is NOT a clone push still reaches the real CLI.
         other = subprocess.run(
-            [sys.executable, _SHIM, "workbench", "canvas", "list"],
+            [sys.executable, _SHIM, "canvas", "list"],
             capture_output=True, text=True, env=env, timeout=60)
         assert other.returncode == 99, (other.stdout, other.stderr)
         assert "REAL CLI RAN" in other.stderr
@@ -620,12 +606,12 @@ def test_the_shim_falls_through_when_the_interception_cannot_load(root, tmp_path
     with open(_SHIM, encoding="utf-8") as fh:
         source = fh.read()
     assert "except Exception" in source
-    assert "from fused._cli import main" in source
+    assert "from fused.cli import main" in source
     # The fallthrough must be reached with the interception unimportable.
     stub = tmp_path / "stub"
     (stub / "fused").mkdir(parents=True)
     (stub / "fused" / "__init__.py").write_text("")
-    (stub / "fused" / "_cli.py").write_text(
+    (stub / "fused" / "cli.py").write_text(
         "import sys\n"
         "def main():\n"
         "    sys.stderr.write('REAL CLI RAN\\n')\n"
@@ -636,7 +622,7 @@ def test_the_shim_falls_through_when_the_interception_cannot_load(root, tmp_path
     env["PYTHONPATH"] = str(stub)
     env.pop("FUSED_RENDER_ORIGIN", None)
     done = subprocess.run(
-        [sys.executable, _SHIM, "workbench", "canvas", "push", str(root / "alpha")],
+        [sys.executable, _SHIM, "canvas", "push", str(root / "alpha")],
         capture_output=True, text=True, env=env, timeout=60)
     assert done.returncode == 99, (done.stdout, done.stderr)
     assert "REAL CLI RAN" in done.stderr

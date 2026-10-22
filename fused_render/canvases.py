@@ -7,14 +7,10 @@ every change set back upstream with `fused canvas push` — the embedded
 workbench iframe picks up the pushed change itself, no reload from this page.
 
 Provider note: canvas commands authenticate with `fused login`
-(~/.fused/credentials, Auth0 PKCE) — a DIFFERENT provider from the fused
-CLI's own `fused cloud login` store (~/.openfused). Same CLI binary (the
-`fused` package resolved by fusedcli.fused_cli()), different credential
-stores; this module owns the `fused login` side. Unlike `cloud login
---no-browser`, plain `fused login` never prints its authorize URL — it opens
-the browser itself and blocks on a localhost callback — so the login endpoint
-here spawns the child and the client simply polls status until the
-credentials file appears.
+(~/.fused/credentials, Auth0 PKCE). `fused login` never prints its authorize
+URL — it opens the browser itself and blocks on a localhost callback — so the
+login endpoint here spawns the child and the client simply polls status until
+the credentials file appears.
 
 Sync model — the host is one more workbench tab. One watcher thread per
 synced canvas fingerprints the clone folder (path/mtime/size walk) once a
@@ -425,7 +421,7 @@ def _cli_env(cli, env: str) -> dict[str, str]:
     and one chokepoint cannot be forgotten at a new call site.
 
     Without it the sync manager's own push ate its own tail. `_push` runs
-    `[*cli.command, "workbench", "canvas", "push", …]`, and on the shim path
+    `[*cli.command, "canvas", "push", …]`, and on the shim path
     `cli.command` IS `[sys.executable, _fused_cli.py]` — the file that performs
     the interception. So the push POSTed back to /api/canvases/sync/push, was
     refused because a push was already running (itself), and recorded that
@@ -710,9 +706,9 @@ def _run_cli(args: list[str], timeout: float,
     if cli is None:
         return None, _no_cli_error()
     # Human-readable command label for error messages: the subcommand words,
-    # skipping the `workbench` nesting and option tokens.
+    # skipping option tokens.
     label = "fused " + " ".join(
-        a for a in args if a not in ("workbench", "--format", "json")
+        a for a in args if a not in ("--format", "json")
     )
     try:
         proc = subprocess.run(
@@ -948,7 +944,7 @@ def api_canvases_whoami(env: str = "", x_fused: str | None = Header(default=None
             return bad
 
     def compute():
-        proc, err = _run_cli(["workbench", "--format", "json", "whoami"], WHOAMI_TIMEOUT, env)
+        proc, err = _run_cli(["--format", "json", "whoami"], WHOAMI_TIMEOUT, env)
         if err is not None:
             return _err_of(err)
         try:
@@ -1019,18 +1015,18 @@ def api_canvases_login(env: str = "", x_fused: str | None = Header(default=None)
             child = _cli_env(cli, env)
             child["PYTHONUNBUFFERED"] = "1"
             # The CLI's own login gives the browser only 30s before its
-            # callback server dies (fused.workbench._auth), which loses real
+            # callback server dies (fused._auth), which loses real
             # human sign-ins. When the CLI is our own interpreter, run the
             # long-timeout driver instead (same PKCE flow via the package's
             # helpers); an external FUSED_RENDER_FUSED_BIN may not even be a
             # Python we can drive, so it keeps the CLI's login.
             if cli.external:
-                command = [*cli.command, "workbench", "login"]
+                command = [*cli.command, "login"]
             else:
                 driver = os.path.join(os.path.dirname(__file__), "_fused_login.py")
                 command = [cli.command[0], driver]
             try:
-                # Unlike `cloud login --no-browser`, plain `fused login` opens
+                # `fused login` opens
                 # the browser itself (webbrowser.open) and never prints the
                 # authorize URL — so there is nothing to capture; the client
                 # polls /api/canvases/status until logged_in flips.
@@ -1327,7 +1323,7 @@ file quiet, and you go quiet mid-change-set (thinking, reading, waiting on a
 tool), so shipping then would publish a half-done rename. You publish
 deliberately instead:
 
-    fused workbench canvas push .
+    fused canvas push .
 
 That is the right command and it is safe here. Inside this folder fused-render
 intercepts it and runs the push through its own sync manager, which first
@@ -1347,7 +1343,7 @@ Push when a change set is COHERENT (e.g. a rename: the `.py` file *and* its
   somewhere else (see "Running the fused CLI" below) — a raw push skips the
   merge guard and can destroy a workbench edit the user made seconds ago,
   unrecoverably.
-- `fused workbench canvas pull --force` overwrites the WHOLE folder with
+- `fused canvas pull --force` overwrites the WHOLE folder with
   remote: any unpushed local edits are lost, and it deletes this CLAUDE.md /
   .fusedignore (the watcher re-seeds them on its own pulls). Do not use it to
   answer "server changes": the Pull in the canvas view merges instead.
@@ -1367,7 +1363,7 @@ protection described above.
 ## Keeping the canvas valid
 
 - After structural edits (renaming a node, adding/removing nodes or edges),
-  check the clone with `fused workbench canvas validate .` — an invalid
+  check the clone with `fused canvas validate .` — an invalid
   canvas is rejected at push time and the error surfaces to the user.
 - `canvas.toml` defines the canvas (nodes, edges, viewport); every node
   needs its source file next to it (`<udfName>.py`; widgets are `.json`).
@@ -1537,7 +1533,7 @@ def _list_entries_uncached(env: str):
                         }
                     )
         return entries, None
-    proc, err = _run_cli(["workbench", "--format", "json", "canvas", "list"], LIST_TIMEOUT, env)
+    proc, err = _run_cli(["--format", "json", "canvas", "list"], LIST_TIMEOUT, env)
     if err is not None:
         return None, err
     try:
@@ -1718,7 +1714,7 @@ def api_canvases_create(body: dict = Body(...), x_fused: str | None = Header(def
         return bad
     if not _logged_in(env):
         return _error("not signed in to Fused — sign in first", 409)
-    proc, err = _run_cli(["workbench", "canvas", "create", name], LIST_TIMEOUT, env)
+    proc, err = _run_cli(["canvas", "create", name], LIST_TIMEOUT, env)
     if err is not None:
         return err
     _cli_cache_clear()
@@ -1754,7 +1750,7 @@ def api_canvases_logout(env: str = "", x_fused: str | None = Header(default=None
         managers = [m for _, m in on_store()]
     for manager in managers:
         manager.pause()
-    proc, err = _run_cli(["workbench", "logout"], WHOAMI_TIMEOUT, env)
+    proc, err = _run_cli(["logout"], WHOAMI_TIMEOUT, env)
     if err is not None:
         # Still signed in — resume so sync keeps working until the user
         # retries. Resuming a manager we're about to stop (success path)
@@ -1815,7 +1811,7 @@ def _clone(env: str, name: str):
     if manager is not None:
         manager.pause()
     proc, err = _run_cli(
-        ["workbench", "canvas", "pull", name, "-o", target, "--force"], PULL_TIMEOUT, env
+        ["canvas", "pull", name, "-o", target, "--force"], PULL_TIMEOUT, env
     )
     if err is None:
         # Seed BEFORE resume's rebaseline (harmless either way — both files
@@ -2397,7 +2393,7 @@ class _SyncManager:
             return None
         try:
             proc = subprocess.run(
-                [*cli.command, "workbench", "canvas", "validate", self.dir],
+                [*cli.command, "canvas", "validate", self.dir],
                 capture_output=True, text=True, timeout=VALIDATE_TIMEOUT,
                 encoding="utf-8", errors="replace",
                 env=_cli_env(cli, self.env),
@@ -2784,7 +2780,7 @@ class _SyncManager:
         self._snapshot_clone()
         try:
             applied = subprocess.run(
-                [*cli.command, "workbench", "canvas", "pull", self.name,
+                [*cli.command, "canvas", "pull", self.name,
                  "-o", self.dir, "--force"],
                 capture_output=True, text=True, timeout=PULL_TIMEOUT,
                 encoding="utf-8", errors="replace",
@@ -2823,7 +2819,7 @@ class _SyncManager:
         # re-pushing the content it just pulled right back down each cycle.
         try:
             recheck = subprocess.run(
-                [*cli.command, "workbench", "canvas", "pull", self.name,
+                [*cli.command, "canvas", "pull", self.name,
                  "-o", self.dir, "--dry-run"],
                 capture_output=True, text=True, timeout=PULL_TIMEOUT,
                 encoding="utf-8", errors="replace",
@@ -2964,10 +2960,10 @@ class _SyncManager:
         return dest
 
     def _push_argv(self, cli, copy_dir: str) -> list[str]:
-        return [*cli.command, "workbench", "canvas", "push", copy_dir, "--canvas", self.name]
+        return [*cli.command, "canvas", "push", copy_dir, "--canvas", self.name]
 
     def _run_push_cli(self, cli, copy_dir: str) -> subprocess.CompletedProcess:
-        """`fused workbench canvas push <frozen copy> --canvas <name>` — the
+        """`fused canvas push <frozen copy> --canvas <name>` — the
         one network call of a push, run with _op_lock RELEASED. Its own seam
         so a test can stand in a slow push. The child is kept on the manager
         (`_push_proc`) while it runs, so the quit rung can stop it
@@ -3229,7 +3225,7 @@ class _SyncManager:
         cli = fused_cli()
         if cli is None:
             return
-        base = ["workbench", "canvas", "pull", self.name, "-o", self.dir]
+        base = ["canvas", "pull", self.name, "-o", self.dir]
         try:
             probe = subprocess.run(
                 [*cli.command, *base, "--dry-run"],
@@ -3603,7 +3599,7 @@ class _SyncManager:
                 finally:
                     self._op_lock.release()
         else:
-            base = ["workbench", "canvas", "pull", self.name, "-o", self.dir]
+            base = ["canvas", "pull", self.name, "-o", self.dir]
             if self.agent_run_id(fresh=True):
                 return agent_live
             if not self._op_lock.acquire(timeout=wait):
@@ -4574,7 +4570,7 @@ def api_canvases_sync_push(body: dict = Body(...), x_fused: str | None = Header(
 
     Exists so a Claude session working in the clone can publish a coherent
     change set on purpose instead of waiting out the debounce — and, more
-    importantly, so it never has a reason to run `fused workbench canvas push`
+    importantly, so it never has a reason to run `fused canvas push`
     itself. That raw call is not a faster version of this one, it is a
     different and unsafe one:
 
@@ -4720,7 +4716,7 @@ def _fix_prompt(name: str, detail: list[str], error: str | None) -> str:
     It used to forbid pushing, because a hand-push raced the watcher and a
     `--no-validate` one defeated the reason the session was spawned. Neither
     holds now: the auto-push is HELD while this session is live, so there is
-    nothing to race, and `fused workbench canvas push` inside a clone is
+    nothing to race, and `fused canvas push` inside a clone is
     intercepted into the guarded server-side push, which refuses
     --no-validate outright. So the session is told to push — that is how it
     confirms the fix actually landed, instead of finishing blind and leaving
@@ -4731,8 +4727,8 @@ def _fix_prompt(name: str, detail: list[str], error: str | None) -> str:
         f"The CLI reported:\n\n"
         f"{report}\n\n"
         "Fix these problems in this folder's files. Check your work with "
-        "`fused workbench canvas validate .` until it passes, then publish "
-        "with `fused workbench canvas push .` — inside this folder that runs "
+        "`fused canvas validate .` until it passes, then publish "
+        "with `fused canvas push .` — inside this folder that runs "
         "through fused-render's sync manager, so it is safe, and it prints "
         "any remaining errors straight back to you. Do not change the canvas "
         "name, and do not use --no-validate (it is refused here anyway)."

@@ -78,7 +78,7 @@ def fused_cli() -> FusedCli | None:
          OPENFUSED_BIN seam; also how tests substitute a stub CLI.
       2. the `fused` package importable in THIS interpreter — run as
          ``[sys.executable, _fused_cli.py]`` (the shim sets argv[0] and calls
-         fused._cli.main). Covers a venv server that pip-installed the
+         fused.cli.main). Covers a venv server that pip-installed the
          [fused] extra AND the packaged macOS app, whose py2app bundle has no
          console scripts but bakes the fused package in (build_dmg.sh) and
          whose sys.executable is a real re-invokable interpreter (the
@@ -121,18 +121,14 @@ _PINNED_FUSED_RE = re.compile(r"^fused(?:\[[^\]]*\])?==")
 
 def _pinned_fused_version() -> str | None:
     """What THIS project pins `fused` to, from fused-render's own installed
-    metadata (``fused==X`` or ``fused[extra1,extra2]==X`` in Requires-Dist) —
-    the only source that exists at runtime, since a shipped app has no
-    pyproject.toml.
+    metadata (``fused==X`` in Requires-Dist, behind the `[fused]` extra's
+    marker) — the only source that exists at runtime, since a shipped app has
+    no pyproject.toml.
 
-    The optional `[...]` extras group must be matched and stripped, not just
-    the bare name: `[bundled]`/`[fused]` pin `fused[aws,mcp]==...` (since fused
-    2.9.3b9/b10, boto3, pyarrow, `pyjwt[crypto]` and mcp sit behind those extras,
-    so a bare `fused==` pin no longer builds a working DMG venv or a startable
-    `fused app serve`; the pyproject.toml comment on that line has the detail). A plain `startswith("fused==")`
-    check would silently stop matching the moment extras were added, turning
-    this drift check into a permanent no-op with no failing test — exactly the
-    class of defect `test_the_pin_is_discoverable_at_runtime` exists to catch.
+    An optional `[...]` extras group on the name is matched and stripped too,
+    so the check survives the pin gaining extras instead of silently turning
+    into a permanent no-op — the class of defect
+    `test_the_pin_is_discoverable_at_runtime` exists to catch.
     """
     try:
         from importlib.metadata import PackageNotFoundError, requires
@@ -156,7 +152,7 @@ def log_cli_provenance() -> str | None:
     and return the warning text (or None when all is well).
 
     A DEVELOPER diagnostic, not user-facing. For a shipping user there is no
-    other fused: the DMG bakes the pre-release wheel into the app's own
+    other fused: the DMG bakes the release wheel into the app's own
     interpreter and `fused_cli()`'s second branch is the only path they take —
     so both states this reports (an explicit override, or an installed fused
     that does not match the pin) are conditions only a dev checkout reaches.
@@ -295,7 +291,7 @@ def _wrapper_text(cli: FusedCli) -> str:
         `~/Fused/canvas/<env>/` it is that `<env>`, because the path segment
         IS the clone's environment (D1382) and a session in a prod clone must
         reach prod even when the default is another env — a bare `fused
-        workbench canvas pull`/`validate`/`whoami` there would otherwise hit
+        canvas pull`/`validate`/`whoami` there would otherwise hit
         the wrong Fused. Both `$PWD` and `pwd -P` are matched against both
         the base as given and its realpath, so a symlinked path (macOS
         `/var` → `/private/var`, a symlinked home) still matches. Outside a
@@ -456,14 +452,10 @@ def export_fused_cli_env() -> str | None:
     return bin_dir
 
 
-def child_env(cli: FusedCli, env_name: str | None = None) -> dict[str, str]:
-    """The child environment for a fused CLI run.
+def child_env(cli: FusedCli) -> dict[str, str]:
+    """The child environment for a fused CLI run. The env target is the
+    caller's to set (`set_fused_env`).
 
-    OPENFUSED_ENV targets the chosen env when one is given (the CLI's own
-    override channel). Callers that have no env to target (canvases.py's
-    `fused login`/`canvas push`/`canvas pull`) pass None and get the variable
-    CLEARED instead of inherited, so an ambient value in the server's own
-    environment can't leak an unrelated env target into the child.
     For an EXTERNAL cli (FUSED_RENDER_FUSED_BIN), interpreter-scoped vars are
     scrubbed: inside the packaged macOS app the process carries PYTHONHOME/
     PYTHONPATH pointing into the bundle, which would break any other Python's
@@ -472,10 +464,6 @@ def child_env(cli: FusedCli, env_name: str | None = None) -> dict[str, str]:
     work in the bundle.
     """
     child = dict(os.environ)
-    if env_name is not None:
-        child["OPENFUSED_ENV"] = env_name
-    else:
-        child.pop("OPENFUSED_ENV", None)
     if cli.external:
         for var in ("PYTHONHOME", "PYTHONPATH"):
             child.pop(var, None)
@@ -484,7 +472,7 @@ def child_env(cli: FusedCli, env_name: str | None = None) -> dict[str, str]:
 
 def setup_cli_hint() -> str:
     """The command users type in a terminal for one-time CLI setup
-    (`fused env create`, `fused cloud setup`, `fused cloud login`).
+    (`fused login`).
 
     Inside the packaged macOS app (py2app sets sys.frozen) there is no
     user-facing `fused` on PATH — but the bundle ships a terminal wrapper
@@ -507,7 +495,7 @@ def cli_error(stderr: str, fallback: str) -> str:
     """Last non-empty stderr line with click's `Error: ` prefix stripped — the
     CLI's messages already name the fix, so they reach the UI verbatim.
 
-    One adjustment: login errors say `fused cloud login`, which doesn't
+    One adjustment: login errors say `fused login`, which doesn't
     resolve inside the packaged app (no `fused` on PATH) — when the bundled
     wrapper is the setup CLI, its real path is appended so the instruction is
     runnable as printed.
@@ -516,8 +504,8 @@ def cli_error(stderr: str, fallback: str) -> str:
     message = lines[-1] if lines else fallback
     message = message.removeprefix("Error: ")
     setup = setup_cli_hint()
-    if setup != "fused" and "fused cloud login" in message:
-        message += f" (in this app: {setup} cloud login)"
+    if setup != "fused" and "`fused login`" in message:
+        message += f" (in this app: {setup} login)"
     return message
 
 

@@ -985,7 +985,7 @@ def test_appenv_canvases_root_matches_the_servers_own(monkeypatch, tmp_path):
     failure is silent.
 
     The third participant is `_canvas_push.canvases_root()`, the shim the
-    intercepted `fused workbench canvas push` runs through; all three resolve the
+    intercepted `fused canvas push` runs through; all three resolve the
     same folder or the feature breaks in a different place each time.
     """
     import fused_render.canvases as canvases_mod

@@ -111,8 +111,8 @@ def test_a_snapshot_applies_while_a_slow_push_runs(harness, tmp_path, monkeypatc
     # The mid-push write re-armed the debounce: a second push follows.
     status = _wait_sync(lambda s: s["push_seq"] >= 2 and s["push_state"] == "idle")
     assert status["push_seq"] >= 2, status
-    pushes = [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]]
-    assert pushes and pushes[0][3] == copy_dir and pushes[0][4:] == ["--canvas", "alpha"]
+    pushes = [c for c in harness.calls() if c[:2] == ["canvas", "push"]]
+    assert pushes and pushes[0][2] == copy_dir and pushes[0][3:] == ["--canvas", "alpha"]
     assert not os.path.exists(copy_dir), "the frozen copy outlived its push"
     actions = [e["action"] for e in harness.client.get(
         "/api/canvases/sync/log?env=unstable&name=alpha").json()["events"]]
@@ -820,7 +820,7 @@ def test_a_rowless_file_within_its_grace_gets_no_row_no_op_and_no_push(
     assert 'udfName = "fresh"' not in _toml(harness)
     res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     assert res.status_code == 409 and res.json()["code"] == "busy", res.text
-    assert not [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]]
+    assert not [c for c in harness.calls() if c[:2] == ["canvas", "push"]]
     m.push_state = "pending"
     m._dirty_since = time.time()
     assert _state(harness)["legs"]["disk_to_server"]["reason"] == \
@@ -998,7 +998,7 @@ def test_a_wholesale_pull_waits_for_a_live_claude_session(
     assert body["pull_error"] == ("a Claude session is editing this folder; "
                                   "pull when it finishes"), body
     forces = [c for c in harness.calls()
-              if c[:3] == ["workbench", "canvas", "pull"] and "--force" in c]
+              if c[:2] == ["canvas", "pull"] and "--force" in c]
     assert len(forces) == 1, forces  # the clone's only
     assert not (harness.root / "alpha" / "remote_udf.py").exists()
     s2d = _state(harness)["legs"]["server_to_disk"]
@@ -1023,7 +1023,7 @@ def test_the_manual_push_refuses_over_a_server_change(harness, tmp_path, monkeyp
     assert body["code"] == "server_changed", body
     assert body["server_stale"]["udfs"] == [{"slug": "a", "kind": "changed"}]
     assert "a (changed)" in body["error"] and "pull first" in body["error"], body
-    assert not [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]]
+    assert not [c for c in harness.calls() if c[:2] == ["canvas", "push"]]
 
 
 def test_a_rebaseline_during_a_scan_does_not_mark_the_clone_pending(

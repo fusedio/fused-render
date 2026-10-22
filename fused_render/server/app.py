@@ -183,7 +183,7 @@ def export_app_env() -> None:
     canvases.log_url_override_without_pin()
     # The `fused` CLI wrapper the chats we spawn can run (D334): a wrapper
     # script under home_dir()/fused-bin goes on PATH and its dir is published
-    # as one more FUSED_RENDER_* var, so a Claude session can `fused workbench
+    # as one more FUSED_RENDER_* var, so a Claude session can `fused
     # canvas push` against the same environment the canvases iframe shows.
     # Filesystem-only, like the skill plugin export above.
     from fused_render import fusedcli

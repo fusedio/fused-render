@@ -1,6 +1,6 @@
-"""`fused workbench login`, but with a humane callback timeout.
+"""`fused login`, but with a humane callback timeout.
 
-The CLI's own login (fused.workbench._auth.authenticate) opens the browser
+The CLI's own login (fused._auth.authenticate) opens the browser
 and then waits at most 30 seconds for Auth0's redirect back to its
 localhost callback server — shorter than a real human sign-in, so the child
 dies mid-flow and the redirect lands on a dead port. This driver replays the
@@ -39,10 +39,7 @@ def main() -> int:
     if env_name:
         fused._env(env_name)
 
-    try:
-        from fused.workbench import _auth  # fused >= 2.9 layout
-    except ImportError:  # pragma: no cover - older package layout
-        from fused import _auth  # type: ignore[no-redef]
+    from fused import _auth
 
     import requests
 
