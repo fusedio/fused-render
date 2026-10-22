@@ -255,24 +255,26 @@ test("legacy view/embed prefixes gain the /explorer namespace", () => {
   );
 });
 
-test("the Claude Config panel is the Claude tab set of the Agents page", () => {
-  expect(rewriteLegacyUrl("/claude-config")).toBe("/claude-code");
-  expect(rewriteLegacyUrl("/claude-md")).toBe("/claude-code");
+test("the Claude Config panel path and the old /claude-code path land on the Claude Config page", () => {
+  expect(rewriteLegacyUrl("/claude-config")).toBe("/claude-config");
+  expect(rewriteLegacyUrl("/claude-code?tab=memory&embed=1")).toBe("/claude-config?tab=memory&embed=1");
+  expect(rewriteLegacyUrl("/claude-code")).toBe("/claude-config");
+  expect(rewriteLegacyUrl("/claude-md")).toBe("/claude-config");
 
   const row = (tab: string) => rewriteLegacyUrl(`/claude-config?cctab=${tab}`);
-  expect(row("plugins")).toBe("/claude-code?tab=plugins");
-  expect(row("marketplaces")).toBe("/claude-code?tab=plugins");
-  expect(row("memory")).toBe("/claude-code?tab=memory");
-  expect(row("skills")).toBe("/claude-code?tab=skills");
+  expect(row("plugins")).toBe("/claude-config?tab=plugins");
+  expect(row("marketplaces")).toBe("/claude-config?tab=plugins");
+  expect(row("memory")).toBe("/claude-config?tab=memory");
+  expect(row("skills")).toBe("/claude-config?tab=skills");
   expect(row("statusline")).toBe("/preferences?tab=claude-cli");
-  expect(row("mcp")).toBe("/claude-code?tab=mcp");
+  expect(row("mcp")).toBe("/claude-config?tab=mcp");
   expect(row("preferences")).toBe("/preferences?tab=claude-cli");
-  expect(row("history")).toBe("/claude-code");
-  expect(row("profiles")).toBe("/claude-code");
-  expect(row("claudemd")).toBe("/claude-code");
-  expect(rewriteLegacyUrl("/claude-config?cctab=profiles&embed=1")).toBe("/claude-code?embed=1");
-  expect(rewriteLegacyUrl("/preferences?tab=claude")).toBe("/claude-code");
-  expect(rewriteLegacyUrl("/preferences?tab=claude-mcp")).toBe("/claude-code?tab=mcp");
+  expect(row("history")).toBe("/claude-config");
+  expect(row("profiles")).toBe("/claude-config");
+  expect(row("claudemd")).toBe("/claude-config");
+  expect(rewriteLegacyUrl("/claude-config?cctab=profiles&embed=1")).toBe("/claude-config?embed=1");
+  expect(rewriteLegacyUrl("/preferences?tab=claude")).toBe("/claude-config");
+  expect(rewriteLegacyUrl("/preferences?tab=claude-mcp")).toBe("/claude-config?tab=mcp");
   expect(rewriteLegacyUrl("/preferences?tab=claude-settings")).toBe("/preferences?tab=claude-cli");
   expect(rewriteLegacyUrl("/preferences?s=claude-pref:model")).toBe("/preferences?s=claude-pref%3Amodel&tab=claude-cli");
   expect(rewriteLegacyUrl("/preferences?tab=claude-settings&s=claude-catalog")).toBe("/preferences?tab=claude-cli");
@@ -357,8 +359,8 @@ describe("navigateToJobPage dispatches a Job.page value", () => {
   test("a known shell route goes through navigateUrl untouched", () => {
     expect(pushedJobPage("/ai-models/local").url).toBe("/ai-models/local");
     expect(pushedJobPage("/ai-models/benchmark").url).toBe("/ai-models/benchmark");
-    // The panel's route is a legacy one now: it lands on its Preferences group.
-    expect(pushedJobPage("/claude-config").url).toBe("/claude-code");
+    // The page's own route is a known shell route and stays as is.
+    expect(pushedJobPage("/claude-config").url).toBe("/claude-config");
     expect(pushedJobPage("/preferences").url).toBe("/preferences");
     expect(pushedJobPage("/preferences?tab=indexing").url).toBe("/preferences?tab=indexing");
   });

@@ -47,8 +47,10 @@ export function rewriteLegacyUrl(url: string): string {
   // here because the alternative is carrying a dead URL shape forever.
   if (mapped) return mapped + q;
   if (p.startsWith("/view/") || p.startsWith("/embed/")) return "/explorer" + p + q;
-  // The Claude Config panel is the Claude Code page; the retired /claude-md
-  // page folded into it. `?cctab=<section>` becomes
+  // `/claude-code` was this page's earlier path; the query rides along.
+  if (p === "/claude-code") return "/claude-config" + q;
+  // The retired /claude-md page folded into /claude-config, and the panel's
+  // `?cctab=<section>` becomes
   // `?tab=<tab>`. Kept for good: the server's jobs and notifications
   // (claude_install.py, server/ai.py) name this page, and a running older
   // build keeps writing it.
@@ -58,7 +60,7 @@ export function rewriteLegacyUrl(url: string): string {
     params.delete("cctab");
     if (tab === "settings") return claudeCliUrl(params);
     if (tab) params.set("tab", tab);
-    return claudeCodeUrl(params);
+    return claudeConfigUrl(params);
   }
   // `/preferences?tab=claude…` and `?s=claude-…` named the Claude groups
   // Preferences used to hold.
@@ -74,7 +76,7 @@ export function rewriteLegacyUrl(url: string): string {
       params.delete("tab");
       params.delete("s");
       if (tab) params.set("tab", tab);
-      return claudeCodeUrl(params);
+      return claudeConfigUrl(params);
     }
   }
   // `/bots?bot=<id>` → `/bots/<id>` (2026-10-14; the path shape is owned by
@@ -98,9 +100,9 @@ export function rewriteLegacyUrl(url: string): string {
   return url;
 }
 
-function claudeCodeUrl(params: URLSearchParams): string {
+function claudeConfigUrl(params: URLSearchParams): string {
   const q = params.toString();
-  return "/claude-code" + (q ? "?" + q : "");
+  return "/claude-config" + (q ? "?" + q : "");
 }
 
 // The settings.json rows live in Preferences' Claude Code CLI group; a row id
@@ -121,7 +123,7 @@ const PREFS_CLAUDE_TABS: Record<string, string> = {
   "claude-mcp": "mcp",
 };
 
-// The panel's section ids → the Claude Code page's tabs.
+// The panel's section ids → the Claude Config page's tabs.
 function claudeConfigTab(tab: string | null): string | null {
   switch (tab) {
     case "plugins":

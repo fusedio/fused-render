@@ -1,8 +1,10 @@
 # Claude Code page: decisions and open items
 
+- The page is named "Claude Config" and lives at `/claude-config?tab=<tab>` (`shell/ClaudeConfig.tsx`, `shell/claude_config/`); `/claude-code` is a legacy path that rewrites to it with the query kept. The notes below that say `/claude-code` mean this route.
+
 - `/claude-code?tab=<tab>` hosts everything that was Preferences' Claude Code section. Tabs: Skills (default), Memory, Plugins, MCP servers, Settings. The tab is written with `replaceState`.
 - The page is reached from the settings popover (directly above Preferences), not from primary nav, so the sidebar never lights a row and the trigger at once.
-- Legacy `/claude-config`, `/claude-md` and `/preferences?tab=claude*` / `?s=claude-*` rewrite to `/claude-code?tab=...` in `router.ts`.
+- Legacy `/claude-code`, `/claude-md`, `/claude-config?cctab=...` and `/preferences?tab=claude*` / `?s=claude-*` rewrite to `/claude-config?tab=...` in `router.ts`.
 - Preferences keeps its own settings, including "AI & agents"; its Claude model pointer row links to this page.
 - Settings tab rows reuse `SettingRow`, whose entry type requires a `GroupId`; they use `group: "ai"`. The group is only read by search crumbs, which this page never runs.
 - Page skeleton mirrors Preferences: `.settings-header` (title + filter), `.settings-nav` with the five tabs, `.settings-main` with an h2 + description. The filter shows on every tab. Switching tab clears the filter and drops `?skill=`.

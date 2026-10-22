@@ -114,7 +114,7 @@ const TEMPLATES_ICON = (
 // page was "Scheduled".
 const SCHEDULED_ICON = <ListTodo size={16} strokeWidth={2} aria-hidden="true" />;
 
-// A terminal prompt (lucide Terminal): the Claude Code page, where the CLI's
+// A terminal prompt (lucide Terminal): the Claude Config page, where the CLI's
 // skills, memory, plugins, MCP servers and settings are edited.
 const CLAUDE_CODE_ICON = <Terminal size={16} strokeWidth={2} aria-hidden="true" />;
 
@@ -733,10 +733,10 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     // No /ai-models entry either, and unlike Canvases it is dropped outright:
     // its primary row is ungated, so a menu copy would only ever be the
     // double-selection the Tasks note rejects.
-    // Claude Code is a settings-weight page, so it lives here and not in the
+    // Claude Config is a settings-weight page, so it lives here and not in the
     // primary nav; listing it in both would light the row and the trigger at
     // once, as the Tasks note above says.
-    { href: "/claude-code", label: "Claude Code", icon: CLAUDE_CODE_ICON },
+    { href: "/claude-config", label: "Claude Config", icon: CLAUDE_CODE_ICON },
     { href: "/preferences", label: "Preferences", icon: PREFERENCES_ICON }
   );
   // The tour replays, at the menu's tail, behind ONE row: four sibling entries

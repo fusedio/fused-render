@@ -1,5 +1,5 @@
 /* ---- Claude config sections (apps/claude_config/sections) ----------------- */
-/* The Claude Code page's sections (apps/claude_config/sections): lists, cards,
+/* The Claude Config page's sections (apps/claude_config/sections): lists, cards,
    forms and the Plugins marketplace rail, inside the page's own card.
  *
  * The panel is ONE pattern repeated: a caption row, then a list of .cc-lrow —
@@ -1235,7 +1235,7 @@
   gap: 8px;
 }
 
-/* -- Skills tab of the Claude Code page ------------------------------------- */
+/* -- Skills tab of the Claude Config page ------------------------------------- */
 
 /* The list: one full-width button per skill inside a .settings-card. */
 .cc-skill-row {

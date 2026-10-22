@@ -1,4 +1,4 @@
-// Claude Code page — `/claude-code?tab=<tab>`: Claude Code's own configuration
+// Claude Config page — `/claude-config?tab=<tab>`: Claude Code's own configuration
 // under ~/.claude, framed like Preferences: title and filter across the top, a
 // nav of the four tabs (Skills, the default, Memory, Plugins, MCP servers)
 // on the left, the tab's heading and cards on the right.
@@ -14,7 +14,7 @@ import {
   ClaudeMemoryTab,
   ClaudePluginsTab,
   ClaudeSkillsTab,
-} from "./claude_code/tabs";
+} from "./claude_config/tabs";
 
 const TABS = [
   { id: "skills", label: "Skills", icon: Sparkles, filter: "Filter skills", blurb: "" },
@@ -56,7 +56,7 @@ function writeTab(tab: TabId) {
   history.replaceState(history.state, "", `${location.pathname}?${p.toString()}`);
 }
 
-export default function ClaudeCode() {
+export default function ClaudeConfig() {
   const [tab, setTab] = useState<TabId>(readTab);
   const [filter, setFilter] = useState("");
   const current = TABS.find((t) => t.id === tab) ?? TABS[0];
@@ -72,7 +72,7 @@ export default function ClaudeCode() {
   return (
       <div className="settings-page">
         <div className="settings-header">
-          <h1 className="settings-title">Claude Code</h1>
+          <h1 className="settings-title">Claude Config</h1>
           <div className="settings-search" role="search">
             <Search aria-hidden="true" className="settings-search-icon" />
             <Input
@@ -99,10 +99,10 @@ export default function ClaudeCode() {
           </div>
         </div>
         <div className="settings-body">
-          <nav className="settings-nav" aria-label="Claude Code">
-            <div className="settings-nav-section" role="group" aria-label="Claude Code">
+          <nav className="settings-nav" aria-label="Claude Config">
+            <div className="settings-nav-section" role="group" aria-label="Claude Config">
               <div className="settings-nav-heading" aria-hidden="true">
-                Claude Code
+                Claude Config
               </div>
               {TABS.map((t) => {
                 const Icon = t.icon;
