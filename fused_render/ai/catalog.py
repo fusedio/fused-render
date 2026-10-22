@@ -1068,6 +1068,26 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "punctuation turbo gets right.",
         },
         {
+            # The runner's SECOND format (D1423): a sherpa-onnx int8 transducer,
+            # not a CTranslate2 conversion — `faster_whisper/worker.py` reads it
+            # beside Whisper. Not `recommended`: it has no translate and covers
+            # 25 European languages, so turbo stays the answer for anyone who
+            # does not know they want this one.
+            "id": "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
+            "params": "600M",
+            "quantization": "ONNX int8",
+            "label": "Parakeet TDT 0.6B v3 (sherpa-onnx int8)",
+            "nickname": "Parakeet v3",
+            "size_gb": 0.67,
+            # Read by `/api/ai/transcribe` to refuse `translate`, a pinned
+            # `language` and `initialPrompt` before a job exists, for a model
+            # that is not downloaded yet (a cached one is read off its files).
+            "transcribeOnly": True,
+            "note": "25 European languages with punctuation and word timings, "
+                    "several times faster than Whisper turbo on a CPU. "
+                    "Transcribes only (no translate). CC-BY-4.0.",
+        },
+        {
             "id": "deepdml/faster-whisper-large-v3-turbo-ct2",
             "params": "809M",
             "recommended": True,

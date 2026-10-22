@@ -120,6 +120,15 @@ MLX_IGNORE = (
 CT2_FILES = ("config.json", "preprocessor_config.json", CT2_WEIGHTS,
              "tokenizer.json", "vocabulary.*")
 
+#: The sherpa-onnx NeMo transducer export of Parakeet TDT
+#: (`csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8`): three int8 graphs
+#: and a token table. The `faster-whisper` runner reads it as its SECOND format
+#: (D1423), beside the CTranslate2 one, because its venv already carries
+#: sherpa-onnx for diarization. Closed set, so an allow list — and it leaves out
+#: `test_wavs/`, which is most of the repo's file count and none of its use.
+SHERPA_TRANSDUCER_FILES = ("encoder.int8.onnx", "decoder.int8.onnx",
+                           "joiner.int8.onnx", "tokens.txt")
+
 #: What `mlx_whisper.load_model` opens: `config.json` and one of the three weight
 #: spellings (see `MLX_WHISPER_WEIGHTS`). The tokenizer ships inside the package,
 #: so nothing else in the repo is read.
@@ -1804,6 +1813,17 @@ def has_ct2_weights(names) -> bool:
     return CT2_WEIGHTS in names
 
 
+def is_sherpa_transducer_snapshot(names) -> bool:
+    """All four files of a sherpa-onnx transducer export at the snapshot root.
+
+    Keyed on the NAMES, because the export carries no `config.json` for the
+    NeMo check (`is_parakeet_checkpoint`) to read. All four, not any: an
+    `encoder.int8.onnx` alone is a fragment, and the runner's `load()` would
+    refuse it with a file-not-found from inside sherpa.
+    """
+    return all(name in names for name in SHERPA_TRANSDUCER_FILES)
+
+
 def has_gguf_weights(names) -> bool:
     """A `.gguf` file at the snapshot ROOT — `names` is a top-level listing,
     never a recursive walk, so this cannot fire on a GGUF sitting inside some
@@ -2140,6 +2160,15 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
     found: list[str] = []
     if has_ct2_weights(names):
         found.append("faster-whisper")
+    if is_sherpa_transducer_snapshot(names):
+        # The runner's second format (D1423), and claimed EXCLUSIVELY: the
+        # graphs are `.onnx`, which the ONNX embedding rows below would
+        # otherwise be offered (`onnx_weights`), and nothing but sherpa-onnx
+        # can open a transducer. Already decisive, via `faster-whisper`'s place
+        # in `DECISIVE`.
+        if "faster-whisper" not in found:
+            found.append("faster-whisper")
+        return tuple(found)
     # Checked EARLY and returned on unconditionally, ahead of mflux/diffusers
     # below: a `.gguf` at the root is llama.cpp's format and nothing else's
     # (`DECISIVE`), and letting it fall through to those checks first is how
