@@ -26,16 +26,12 @@ def _forced_engine() -> str | None:
     """The process-level engine override, or None when unset (D69/D70 + §20).
 
     FUSED_RENDER_ENGINE forces the /api/run engine for the whole process:
-    `builtin` never touches the `fused` package even if importable; `auto`
-    opts in to it iff importable; `fused` demands it (a missing package is a
-    startup error, not a silent fallback). **Unset returns None** — the
-    engine then follows the persisted preference (shell/prefs.py, default
-    **fused-when-importable** since D204, which reversed D70's builtin
-    default here), re-read per request so the Preferences page's switch
-    applies without a restart. Logged either way — engine choice changes the
-    code contract, so it must never be silent, and a log line describing the
-    wrong default is worse than none: it is the only place most people ever
-    read this contract.
+    `builtin` is the built-in executor, `fused` the local compute backend. An
+    unknown value is a startup error. **Unset returns None**: the engine then
+    follows the persisted preference (shell/prefs.py, default **fused**),
+    re-read per request so the Preferences page's switch applies without a
+    restart. Logged either way — engine choice changes the code contract, so it
+    must never be silent.
     """
     from fused_render import engine as _engine
 
@@ -43,34 +39,23 @@ def _forced_engine() -> str | None:
     if requested is None:
         logger.info(
             "execution engine: following the preference (~/.fused-render/prefs.json, "
-            "default fused when its package is importable, else builtin); "
-            "FUSED_RENDER_ENGINE overrides it for this process"
+            "default fused); FUSED_RENDER_ENGINE overrides it for this process"
         )
         return None
-    if requested not in ("auto", "fused", "builtin"):
+    if requested not in ("fused", "builtin"):
         raise RuntimeError(
-            f"FUSED_RENDER_ENGINE={requested!r} is not one of: auto, fused, builtin"
+            f"FUSED_RENDER_ENGINE={requested!r} is not one of: fused, builtin"
         )
-    if requested == "builtin":
-        logger.info("execution engine: builtin (forced by FUSED_RENDER_ENGINE)")
-        return "builtin"
-    if _engine.available():
-        logger.info("execution engine: fused (forced by FUSED_RENDER_ENGINE)")
+    logger.info("execution engine: %s (forced by FUSED_RENDER_ENGINE)", requested)
+    if requested == "fused":
         # Probe the app's interpreter now, while logging is configured and no
         # request is waiting (PY-17): it decides whether every header-less script
         # runs on this app's python or falls back to a script venv, and the
         # fallback's warning is the only signal a user gets that it happened. On
-        # the preference-driven path (`raw is None`) the first /api/run probes
-        # instead — still after logging setup, just not in the startup log.
+        # the preference-driven path the first /api/run probes instead.
         _engine.app_interpreter()
-        return "fused"
-    if requested == "fused":
-        raise RuntimeError(
-            "FUSED_RENDER_ENGINE=fused but the `fused` package is not importable; "
-            "install it (pip install 'fused-render[fused]') or unset the override"
-        )
-    logger.info("execution engine: builtin (FUSED_RENDER_ENGINE=auto, `fused` not installed)")
-    return "builtin"
+    return requested
+
 
 import fused_render
 

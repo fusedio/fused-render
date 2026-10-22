@@ -4,7 +4,7 @@
 — fresh subprocess per call in a temp exec dir, params delivered via
 `_params.json`. The built-in executor (`executor.py`/`_child.py`) stays selectable
 through the preference or `FUSED_RENDER_ENGINE=builtin`.
-`server/common.py`'s `_forced_engine` picks per process.
+`server/common.py`'s `_forced_engine` validates the override at startup.
 
 Which interpreter a script gets is decided by the FOLDER it belongs to, not by
 anything written in the file (SPEC PY-16; supersedes D172's per-file header):
@@ -696,11 +696,6 @@ def _resolve_app_interpreter() -> tuple[str | None, bool]:
     return None, conclusive
 
 
-def available() -> bool:
-    """True: the compute backend ships with the app (`fused_render.compute`)."""
-    return True
-
-
 def warm() -> None:
     """Seed the pre-spawned interpreters (SPEC PY-20) off the request path, so the
     first run after startup is already warm. Best effort: a failure here is just a
@@ -717,7 +712,7 @@ def warm_in_background() -> None:
 
 
 def forced_override() -> str | None:
-    """Normalized FUSED_RENDER_ENGINE ('builtin'/'fused'/'auto') or None — the one
+    """Normalized FUSED_RENDER_ENGINE ('builtin'/'fused') or None — the one
     reader of that env var (startup validation, effective_engine, the warm hook)."""
     raw = os.environ.get("FUSED_RENDER_ENGINE")
     return raw.strip().lower() if raw is not None else None

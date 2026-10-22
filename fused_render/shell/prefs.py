@@ -44,8 +44,7 @@ and the **execution engine** for /api/run:
 
   * ``"fused"`` (default, D204) — the fused local compute backend (engine.py):
     a folder's ``pyproject.toml`` dependencies resolved into cached venvs,
-    ``@fused.udf``/``result`` entrypoints. Effective whenever the compute
-    backend is available (``fused_engine_available``), which is always.
+    ``@fused.udf``/``result`` entrypoints.
   * ``"builtin"`` — the built-in executor: fresh subprocess per call, the
     environment that launched the server. Storing it PINS it: D204 flipped the
     default, not the choice, and an importable ``fused`` must not override a
@@ -155,10 +154,8 @@ def selected_engine() -> str:
     """The persisted engine preference; unset/unknown values read as **fused**.
 
     D204 flipped this from builtin. It is only the SELECTION —
-    ``effective_engine()`` ANDs it with live availability, so "fused by default"
-    can never mean "broken by default" on a machine without the package; and a
-    stored ``"builtin"`` still pins builtin, because that is a choice the user
-    made and not a default to override.
+    a stored ``"builtin"`` pins builtin, because that is a choice the user made
+    and not a default to override.
     """
     value = read_prefs().get("engine")
     return value if value in VALID_ENGINES else "fused"
@@ -855,13 +852,6 @@ def _ai_idle_state() -> dict:
     }
 
 
-def fused_engine_available() -> bool:
-    """Whether the fused engine can run code here (`engine.available()`)."""
-    from fused_render import engine as _engine
-
-    return _engine.available()
-
-
 def effective_engine() -> str:
     """The engine /api/run uses **right now** — the single resolver both the
     server's dispatch (`server.current_engine`) and the Preferences page
@@ -869,22 +859,12 @@ def effective_engine() -> str:
     disagree with what actually executes a page.
 
     `FUSED_RENDER_ENGINE` overrides the pref (validated at startup by
-    `server._forced_engine`, which fails loudly for `=fused` when the package
-    is missing); otherwise the persisted pref decides. Availability is
-    resolved **live** on every call — an `=auto` override, or a `fused` pref,
-    both reflect a mid-session install/removal without a server restart
-    (the earlier startup-frozen resolution let the page and dispatch drift
-    after an install).
+    `server._forced_engine`); otherwise the persisted pref decides, read per call
+    so a switch applies with no restart.
     """
     from fused_render import engine as _engine
 
-    forced = _engine.forced_override()
-    if forced is not None:
-        if forced == "builtin":
-            return "builtin"
-        # auto / fused: fused iff importable now (=fused was startup-validated).
-        return "fused" if fused_engine_available() else "builtin"
-    return "fused" if (selected_engine() == "fused" and fused_engine_available()) else "builtin"
+    return _engine.forced_override() or selected_engine()
 
 
 def engine_state() -> dict:
@@ -900,7 +880,6 @@ def engine_state() -> dict:
         "selected": selected_engine(),
         "effective": effective_engine(),
         "forced_by": os.environ.get("FUSED_RENDER_ENGINE"),
-        "fused_available": fused_engine_available(),
     }
 
 

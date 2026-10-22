@@ -6,11 +6,11 @@ running, see the [README](../README.md); for building and development, see
 
 ## Execution engine
 
-Python runs in a fresh subprocess per call through the built-in runner by
-default. Opt into fused's local compute backend — which gives a folder its own
-cached virtual environment (see [Dependencies](#dependencies)) — with
-`FUSED_RENDER_ENGINE=auto` (use it when `fused` is importable, else the builtin)
-or `=fused` (require it). The engine itself ships with fused-render;
+Python runs in a fresh subprocess per call through fused-render's local compute
+backend, which gives a folder its own cached virtual environment (see
+[Dependencies](#dependencies)). The built-in runner stays selectable with the
+`engine` preference or `FUSED_RENDER_ENGINE=builtin`; `=fused` forces the backend.
+The backend ships with fused-render;
 `pip install "fused-render[fused]"` adds the release `fused` package (its
 `fused` CLI, canvas push) plus MCP and Anthropic support
 (`[cli]` includes it and runs `fused-render serve`; `[all]` adds the native

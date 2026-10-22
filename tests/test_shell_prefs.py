@@ -33,39 +33,15 @@ def _client(tmp_path, monkeypatch):
 # -- /api/prefs -----------------------------------------------------------------
 
 
-def test_defaults_to_fused_when_available_unforced(tmp_path, monkeypatch):
-    """D204 flipped the unset-pref default from builtin to fused-when-available.
-    `fused_available` is stubbed rather than left to the test environment: the
-    default's whole point is that it depends on the environment, so a test that
-    let the environment answer would assert nothing on the machine that lacks the
-    package."""
+def test_defaults_to_fused_unforced(tmp_path, monkeypatch):
+    """D204 flipped the unset-pref default from builtin to fused."""
     client, _ = _client(tmp_path, monkeypatch)
-    monkeypatch.setattr(prefs_mod, "fused_engine_available", lambda: True)
     body = client.get("/api/prefs").json()
-    assert body["engine"]["selected"] == "fused"
-    assert body["engine"]["effective"] == "fused"
-    assert body["engine"]["forced_by"] is None
-    assert body["engine"]["fused_available"] is True
+    assert body["engine"] == {"selected": "fused", "effective": "fused", "forced_by": None}
     # The app's own log left this payload with its Preferences section
     # (PF-5): absence asserted so it cannot quietly come back.
     assert "log" not in body
-
-
-def test_an_unset_pref_still_runs_builtin_while_fused_is_missing(tmp_path,
-                                                                monkeypatch):
-    """The half of D204 that makes it safe: `effective_engine` ANDs the selection
-    with live availability, so "fused by default" cannot mean "broken by default"
-    on a machine without the package. Pinned separately from the flip because it is
-    the property that must survive it."""
-    client, _ = _client(tmp_path, monkeypatch)
-    monkeypatch.setattr(prefs_mod, "fused_engine_available", lambda: False)
-    body = client.get("/api/prefs").json()
-    assert body["engine"]["selected"] == "fused"      # nothing stored
-    assert body["engine"]["effective"] == "builtin"   # ...but nothing to run it
-    assert body["engine"]["fused_available"] is False
-    # The page reads exactly this pair to show "Currently running: Local
-    # (built-in) — falling back while the fused package is unavailable".
-    assert client.get("/api/config").json()["engine"] == "builtin"
+    assert client.get("/api/config").json()["engine"] == "fused"
 
 
 def test_a_stored_builtin_still_pins_builtin(tmp_path, monkeypatch):
@@ -73,28 +49,12 @@ def test_a_stored_builtin_still_pins_builtin(tmp_path, monkeypatch):
     available fused package must not quietly override that — which is the exact
     surprise D70 was about."""
     client, home = _client(tmp_path, monkeypatch)
-    monkeypatch.setattr(prefs_mod, "fused_engine_available", lambda: True)
     body = client.put("/api/prefs", json={"engine": "builtin"}, headers=FUSED).json()
     assert json.loads((home / "prefs.json").read_text(encoding="utf-8"))["engine"] \
         == "builtin"
     assert body["engine"]["selected"] == "builtin"
     assert body["engine"]["effective"] == "builtin"
     assert client.get("/api/prefs").json()["engine"]["effective"] == "builtin"
-
-
-def test_put_persists_and_degrades_while_fused_unavailable(tmp_path, monkeypatch):
-    client, home = _client(tmp_path, monkeypatch)
-    monkeypatch.setattr(prefs_mod, "fused_engine_available", lambda: False)
-    body = client.put("/api/prefs", json={"engine": "fused"}, headers=FUSED).json()
-    # Persisted...
-    saved = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert saved["engine"] == "fused"
-    assert body["engine"]["selected"] == "fused"
-    # ...but effective degrades to builtin until the package is importable.
-    assert body["engine"]["effective"] == "builtin"
-
-    monkeypatch.setattr(prefs_mod, "fused_engine_available", lambda: True)
-    assert client.get("/api/prefs").json()["engine"]["effective"] == "fused"
 
 
 def test_put_rejects_unknown_engine_and_missing_header(tmp_path, monkeypatch):
@@ -122,7 +82,6 @@ def test_reader_enabled_defaults_off_and_toggles(tmp_path, monkeypatch):
 def test_reader_enabled_toggle_is_independent_of_other_prefs(tmp_path, monkeypatch):
     # A partial PUT touching only reader_enabled must not disturb the others.
     client, _ = _client(tmp_path, monkeypatch)
-    monkeypatch.setattr(prefs_mod, "fused_engine_available", lambda: True)
     client.put("/api/prefs", json={"engine": "fused"}, headers=FUSED)
     body = client.put("/api/prefs", json={"reader_enabled": True}, headers=FUSED).json()
     assert body["engine"]["selected"] == "fused"
@@ -595,7 +554,6 @@ def test_the_menubar_pin_pref_is_retired(tmp_path, monkeypatch):
 def test_env_var_reports_as_forcing(tmp_path, monkeypatch):
     client, _ = _client(tmp_path, monkeypatch)
     monkeypatch.setenv("FUSED_RENDER_ENGINE", "builtin")
-    monkeypatch.setattr(prefs_mod, "fused_engine_available", lambda: True)
     # The pref still persists (applies once the override is removed), but the
     # reported state says who is in charge right now.
     body = client.put("/api/prefs", json={"engine": "fused"}, headers=FUSED).json()
@@ -603,23 +561,16 @@ def test_env_var_reports_as_forcing(tmp_path, monkeypatch):
     assert body["engine"]["effective"] == "builtin"
 
 
-def test_forced_auto_reports_match_dispatch_after_midsession_install(tmp_path, monkeypatch):
-    # FUSED_RENDER_ENGINE=auto with fused absent at startup. The engine must be
-    # resolved LIVE, so a mid-session install of the `fused` package flips
-    # BOTH the reported state and actual dispatch together — the page never
-    # claims a different running engine than /api/run uses.
-    # (Built here, not via _client, since _client clears FUSED_RENDER_ENGINE
-    # and create_app must see =auto at startup.)
-    available = {"v": False}
+def test_forced_fused_beats_a_stored_builtin(tmp_path, monkeypatch):
+    # The override wins over the pref, and the reported state and /api/run
+    # dispatch agree on it. (Built here, not via _client, since _client clears
+    # FUSED_RENDER_ENGINE and create_app must see it at startup.)
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
-    monkeypatch.setenv("FUSED_RENDER_ENGINE", "auto")
-    monkeypatch.setattr(prefs_mod, "fused_engine_available", lambda: available["v"])
-    client = TestClient(create_app(start_dir=str(tmp_path)))  # validates =auto (no raise)
+    monkeypatch.setenv("FUSED_RENDER_ENGINE", "fused")
+    monkeypatch.setattr("fused_render.engine.app_interpreter", lambda: None)
+    client = TestClient(create_app(start_dir=str(tmp_path)))
 
-    assert client.get("/api/config").json()["engine"] == "builtin"
-    assert client.get("/api/prefs").json()["engine"]["effective"] == "builtin"
-
-    available["v"] = True  # installed mid-session
+    client.put("/api/prefs", json={"engine": "builtin"}, headers=FUSED)
     assert client.get("/api/config").json()["engine"] == "fused"
     assert client.get("/api/prefs").json()["engine"]["effective"] == "fused"
 
@@ -635,7 +586,6 @@ def test_engine_switch_applies_without_restart(tmp_path, monkeypatch):
     client, _ = _client(tmp_path, monkeypatch)
     (tmp_path / "one.py").write_text("def main():\n    return {'engine': 'builtin-real'}\n", encoding="utf-8")
 
-    monkeypatch.setattr(prefs_mod, "fused_engine_available", lambda: True)
     monkeypatch.setattr("fused_render.engine.run_python", _fake_fused_run, raising=False)
 
     # Default pref, with the package importable: the fused engine (D204).
@@ -667,7 +617,6 @@ def test_forced_env_var_beats_the_pref(tmp_path, monkeypatch):
     home = tmp_path / "home"
     monkeypatch.setenv("FUSED_RENDER_HOME", str(home))
     client = TestClient(create_app(start_dir=str(tmp_path)))
-    monkeypatch.setattr(prefs_mod, "fused_engine_available", lambda: True)
     client.put("/api/prefs", json={"engine": "fused"}, headers=FUSED)
     # The process override pins the engine regardless of the pref.
     assert client.get("/api/config").json()["engine"] == "builtin"

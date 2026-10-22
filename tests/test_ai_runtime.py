@@ -5899,23 +5899,12 @@ def test_a_worker_past_the_venv_phase_cancels_nothing(monkeypatch, tmp_path):
     assert cancelled == []
 
 
-def test_a_prerequisite_this_machine_lacks_is_said_before_a_row_opens(monkeypatch):
-    """`uv` and the `fused` package, refused at the REQUEST.
-
-    A missing prerequisite used to surface as somebody's import error inside a
-    thread, on a card that had already said "Preparing…" — "ModuleNotFoundError:
-    No module named 'fused'" on a model download tells a user nothing about what
-    to install. `envinstall` is the loader for the fused ENGINE and reads the
-    base interpreter off that engine's backend, so a machine without the package
-    cannot build a runner venv at all, and that is knowable up front.
-    """
-    from fused_render import engine
-
+def test_a_missing_uv_is_said_before_a_row_opens(monkeypatch):
+    """`uv` builds every runner environment, so its absence is refused at the
+    REQUEST with a sentence the page can show, not as an error inside a thread on
+    a card that already said "Preparing…"."""
     monkeypatch.setattr(supervisor.shutil, "which", lambda name: "/usr/bin/uv")
-    monkeypatch.setattr(engine, "available", lambda: False)
-    with pytest.raises(supervisor.SupervisorError) as caught:
-        supervisor._require_build_tools()
-    assert "fused-render[fused]" in str(caught.value)
+    supervisor._require_build_tools()
 
     monkeypatch.setattr(supervisor.shutil, "which", lambda name: None)
     with pytest.raises(supervisor.SupervisorError) as caught:

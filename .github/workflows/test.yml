@@ -217,19 +217,10 @@ jobs:
         with:
           GITHUB_TOKEN: ${{ github.token }}
 
-  # The optional fused execution engine (D69) — the engine the migration plan
-  # promotes to default, after which the built-in executor goes away. Until this
-  # job, CI had never run it: no job installed the `[fused]` extra, so every
-  # engine.available()-gated test skipped and the green matrix said nothing
-  # about it — the param-binding divergence and the missing script-venv
-  # dependencies fixed in D167/D170 would all have been caught here.
-  #
-  # A separate job rather than adding the extra to the matrix above, because the
-  # matrix must keep exercising the *built-in* engine (still the default per
-  # PY-12). D171 gave a second reason that no longer applies: the extra's wheel
-  # is marked `python_version >= "3.11"`, so it installed nothing on the 3.10
-  # matrix entry — and that entry is gone. The first reason is on its own
-  # sufficient, so the job stays separate.
+  # The `[fused]` extra: the release `fused` package, `mcp` and `anthropic`, which
+  # the workbench/canvas integrations and `fused-render app serve` need. The
+  # matrix above installs `.[dev]` and runs without that extra, so every test
+  # gated on the workbench SDK or CLI skips there; this job runs them.
   fused-engine:
     needs: [detect-changes, frontend]
     if: needs.detect-changes.outputs.app == 'true' && needs.frontend.result == 'success'
@@ -279,26 +270,16 @@ jobs:
 
       - name: Prove the engine tests run rather than skip
         # The failure mode this job exists to avoid is looking like coverage
-        # while providing none, so it is asserted twice over:
-        #   * FUSED_RENDER_REQUIRE_FUSED_ENGINE turns engine.available() from a
-        #     skip condition into an assertion (test_engine.py);
-        #   * these three files — the real-backend integration tests, the
-        #     cross-engine binding parity table, and the install-loader HTTP
-        #     surface — must report ZERO skips on 3.11 with the extra
-        #     installed. Every OTHER reason those files can skip is provisioned
-        #     by the steps above (the extra itself, uv, and node for the
-        #     loader's JS tests), so any skip means the extra didn't take
-        #     effect. tests/test_ci_engine_gate.py keeps that list honest.
-        #     test_server_env_install
-        #     is listed because two of its tests skip without `fused` on the
-        #     matrix job, and they are the only coverage of "requirements come
-        #     from the .py, never the request body" — exactly the kind of
-        #     silent CI skip that let a broken bundle ship.
+        # while providing none: these three files — the real-backend integration
+        # tests, the cross-engine binding parity table, and the install-loader
+        # HTTP surface — must report ZERO skips on 3.11 with the extra installed.
+        # Every reason those files can skip is provisioned by the steps above
+        # (the extra itself, uv, and node for the loader's JS tests), so any skip
+        # means the extra didn't take effect. tests/test_ci_engine_gate.py keeps
+        # that list honest.
         # `shell: bash` for pipefail: without it the pipe into tee would hide
         # pytest's exit code.
         shell: bash
-        env:
-          FUSED_RENDER_REQUIRE_FUSED_ENGINE: "1"
         run: |
           python -m pytest tests/test_engine.py tests/test_engine_parity.py \
             tests/test_server_env_install.py -q -rs \
@@ -309,12 +290,9 @@ jobs:
           fi
 
       - name: Run the full suite with the fused engine installed
-        # Not just the engine files: `fused` being importable changes what
-        # server.py resolves (engine selection, /api/config) and what the
-        # deploy/pinned-wheel tests can see, so the whole suite is the honest
-        # check that installing the extra doesn't break anything else.
-        env:
-          FUSED_RENDER_REQUIRE_FUSED_ENGINE: "1"
+        # Not just the engine files: `fused` being importable changes what the
+        # canvas and share code can see, so the whole suite is the honest check
+        # that installing the extra doesn't break anything else.
         run: python -m pytest tests/ -q
 
   # Does the base install (`pip install fused-render`, no extras) actually

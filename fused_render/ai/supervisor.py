@@ -1186,29 +1186,11 @@ def _require_build_tools() -> None:
 
     Checked BEFORE a job row is opened, so a missing prerequisite is a 409 on
     the request with a sentence the page can show — not a row that appears, sits
-    at "Preparing…", and dies with somebody's import error in it.
-
-    Two things, and the second is the one that surprised us. `uv` is obvious.
-    The **`fused` package** is not: `envinstall` is the loader for the fused
-    engine (PY-18) and reads the base interpreter off that engine's live backend
-    (`engine.get_backend()`, a hard import of `fused`), so a machine running the
-    builtin engine cannot build ANY project venv — including a runner's. The
-    symptom was a bare "ModuleNotFoundError: No module named 'fused'" on a
-    download card, which says nothing about what to install or why a model
-    download wanted it. The wording matches `_forced_engine`'s, because it is
-    the same package and the same remedy.
+    at "Preparing…", and dies with a bare error in it. The prerequisite is `uv`,
+    which builds every runner environment.
     """
     if not shutil.which("uv"):
         raise SupervisorError("uv is not available, so the model environment cannot be built")
-    from fused_render import engine
-
-    if not engine.available():
-        raise SupervisorError(
-            "running a model needs the `fused` package: runner environments are "
-            "built by the install loader, which builds them on the interpreter "
-            "the fused engine runs code with. Install it with "
-            "`pip install 'fused-render[fused]'`"
-        )
 
 
 def _failure_text(e: BaseException) -> str:
