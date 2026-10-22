@@ -223,6 +223,11 @@ def test_publish_over_the_inline_cap_uses_a_finished_uploads_remote(client, tmp_
     captured = {}
 
     def fake_run_shim(request, timeout):
+        # `_cached_rules` kicks a background `rules` warm-up on an empty cache
+        # (a lean server's first read), and that thread reaches this stub too;
+        # only the publish request is the one under test.
+        if request.get("action") != "publish":
+            return {"rules": []}, None
         captured["request"] = request
         return {"url": "https://udf.fused.ai/tok/big.html", "canvas_id": "c1",
                 "canvas_name": "big_abc123", "share_token": "tok", "slug": "big_abc123",

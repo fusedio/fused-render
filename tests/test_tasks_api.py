@@ -5369,12 +5369,14 @@ def test_recap_backfill_waits_for_the_delay_then_honours_the_gap(lanes):
     tasks_mod._recap_feed([_job("a", now - 7200), _job("b", now - 8000)])
     t0 = tasks_mod._recap_started
     with tasks_mod._recap_cond:
+        # approx: t0 is time.monotonic(), so `ready - now` carries float
+        # rounding that depends on the machine's uptime (10.000000000000114).
         job, wait = tasks_mod._recap_next(t0 + 10)
-        assert job is None and 109 < wait <= 110
+        assert job is None and wait == pytest.approx(tasks_mod._RECAP_BACKFILL_DELAY_S - 10)
         job, _ = tasks_mod._recap_next(t0 + tasks_mod._RECAP_BACKFILL_DELAY_S)
         assert job["session_id"] == "a"  # newest first
         job, wait = tasks_mod._recap_next(t0 + tasks_mod._RECAP_BACKFILL_DELAY_S + 5)
-        assert job is None and 9 < wait <= 10
+        assert job is None and wait == pytest.approx(tasks_mod._RECAP_BACKFILL_GAP_S - 5)
         job, _ = tasks_mod._recap_next(t0 + tasks_mod._RECAP_BACKFILL_DELAY_S
                                        + tasks_mod._RECAP_BACKFILL_GAP_S)
         assert job["session_id"] == "b"  # both lanes drain

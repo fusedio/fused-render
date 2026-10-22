@@ -1407,18 +1407,19 @@ class _Host:
                     # raises while it winds down is refused at once.
                     self.cancelling = True
                     self.cancel_deadline = time.monotonic() + _CANCEL_GRACE_SECONDS
+                # Answered NOW, as Claude answers it: `_await_control_response`
+                # tree-kills a session that is silent for 5 s — which a Copilot
+                # still unwinding a tool would be. And answered BEFORE the
+                # cancel goes out: the turn's `result` follows on the cancelled
+                # reply (or from `_reap_cancel` if that reply never comes), and
+                # `agent._interrupt_turn` relies on it landing after this
+                # answer, as Claude's does — sent first, a quick reply raced it.
+                # Nothing reaches the CLI's own queue (held follow-ups stay in
+                # inbox/, which `_cancel_run` empties), so nothing `still_queued`.
+                self._control_response(request_id, {"still_queued": []})
             if cancel:
                 self.peer.notify("session/cancel", {"sessionId": self.sid})
                 self.reject_pending("cancelled")
-            # Answered NOW, as Claude answers it: the cancel is delivered,
-            # and `_await_control_response` tree-kills a session that is
-            # silent for 5 s — which a Copilot still unwinding a tool would
-            # be. The turn's `result` follows on the cancelled reply, or
-            # from `_reap_cancel` if that reply never comes. Nothing reaches
-            # the CLI's own queue (held follow-ups stay in inbox/, which
-            # `_cancel_run` empties), so there is nothing `still_queued`.
-            with self.lock:
-                self._control_response(request_id, {"still_queued": []})
         elif subtype == "set_permission_mode":
             mode = str(request.get("mode") or "")
 
