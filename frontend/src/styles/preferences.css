@@ -1957,7 +1957,7 @@
 }
 
 
-/* Share on local network: QR pairing + paired devices (Preferences ▸ Phone & network). */
+/* Share on local network: QR pairing + paired devices (Preferences ▸ Phone access). */
 .lan-pair {
   display: flex;
   gap: 20px;

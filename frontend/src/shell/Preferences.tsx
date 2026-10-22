@@ -174,7 +174,7 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
 
   const tokens = useMemo(() => tokenize(query), [query]);
   const searching = tokens.length > 0;
-  // The catalog is read with the page: the nav's count for Claude Code CLI is
+  // The catalog is read with the page: the nav's count for Claude Code is
   // every row, so the page waits for the rows the way it waits for the prefs.
   const { rows: claudeRows, ready: claudeReady } = useClaudePrefEntries();
   const loaded = prefs !== null && claudeConfig !== null && claudeReady;

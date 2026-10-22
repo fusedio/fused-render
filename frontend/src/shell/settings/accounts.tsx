@@ -1,5 +1,5 @@
 // Accounts: every service this app signs in to, in one place. Agent sign-in
-// (Claude Code, Copilot) stays with each agent's health under AI & agents,
+// (Claude Code, Copilot) stays with each agent's health under Coding agents,
 // where the fix for a broken install sits beside it; a pointer row here finds it.
 //
 // NO TOKEN PASSES THROUGH THIS FILE in either direction. Each sign-in starts
