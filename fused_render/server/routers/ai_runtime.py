@@ -1250,6 +1250,8 @@ def _catalog_with_downloads() -> list[dict]:
             if traits:
                 entry.update(voiceMode=traits["mode"], voices=traits["voices"],
                              languages=traits["languages"])
+                if traits.get("instructable") is False:
+                    entry["instructable"] = False
     return rows
 
 
@@ -2579,7 +2581,8 @@ def api_ai_speech(body: dict = Body(...), x_fused: str | None = Header(default=N
                       or "no speech model is configured", status=409)
     curated = catalog.entry_for(registry.TEXT_TO_SPEECH, model) or {}
     traits = speech_traits(model) or (
-        {"mode": curated["voiceMode"]} if curated.get("voiceMode") else None)
+        {"mode": curated["voiceMode"], "instructable": curated.get("instructable", True)}
+        if curated.get("voiceMode") else None)
     if traits is not None:
         try:
             fields = formats.speech_options(model, traits, fields)

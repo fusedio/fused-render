@@ -5809,6 +5809,10 @@ export interface AiCatalogModel {
    *  non-text capability. Optional for an older payload. */
   useCases?: string[];
   voiceMode?: "preset" | "clone" | "design";
+  /** False for a preset model with no style line (Kokoro): the server refuses an
+   *  `instruct` for it, so the speech stage must not offer or send one. Absent
+   *  means true. */
+  instructable?: boolean;
   voices?: string[];
   languages?: string[];
 }
