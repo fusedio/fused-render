@@ -1201,6 +1201,7 @@ _QUALIFIED_SHORT_NAMES = {
     "onnx-embed": "(CPU)",
     "onnx-embed-cuda": "(CUDA)",
     "onnx-embed-rocm": "(ROCm)",
+    "vision-torch-cuda": "(CUDA)",
 }
 
 #: Every qualifier this app uses to name a BUILD rather than a platform.
@@ -1297,7 +1298,14 @@ def test_no_engine_name_advertises_the_format_its_sibling_also_reads():
         qualifiers = [runner.label[len(stem):].strip() for runner in rows]
         assert len(set(qualifiers)) == len(qualifiers), (stem, qualifiers)
         for runner, qualifier in zip(rows, qualifiers):
-            assert qualifier in _HARDWARE_QUALIFIERS, (runner.code, qualifier)
+            # `vision-torch` is the one row named by a PLATFORM ("(Apple Silicon)",
+            # where it runs on MPS) beside a hardware sibling; it keeps its
+            # established short name, so the short==label rule below applies to
+            # hardware-qualified rows only.
+            assert qualifier in _HARDWARE_QUALIFIERS + ("(Apple Silicon)",), (
+                runner.code, qualifier)
+            if qualifier == "(Apple Silicon)":
+                continue
             # And the hardware is in BOTH names, the shape the torch rows set:
             # the short name is what the Local card and the job row print, so a
             # family whose short names collide renders as one engine there.
@@ -1825,9 +1833,14 @@ def test_rocm_is_not_offered_off_linux(monkeypatch, tmp_path):
 
 def test_an_nvidia_machine_is_offered_the_cuda_engines(monkeypatch, tmp_path):
     _fake_nvidia(monkeypatch, tmp_path)
-    for code in ("diffusers-image-cuda",):
+    for code in ("diffusers-image-cuda", "vision-torch-cuda"):
         status = registry.by_code(code).available()
         assert status.ok is True, (code, status.reason)
+
+
+def test_the_cuda_vision_row_is_gated_on_an_nvidia_gpu(monkeypatch, tmp_path):
+    _fake_nvidia(monkeypatch, tmp_path, control=False, gpus=(), uvm=False)
+    assert registry.by_code("vision-torch-cuda").available().ok is False
 
 
 def test_cuda_is_a_HARD_GATE_on_a_machine_with_no_nvidia_gpu(monkeypatch, tmp_path):
@@ -1881,7 +1894,7 @@ def test_a_MISSING_uvm_node_is_not_a_refusal_because_it_is_created_LAZILY(
     argument the probe already makes about a driver-version floor.
     """
     _fake_nvidia(monkeypatch, tmp_path, uvm=False)
-    for code in ("diffusers-image-cuda",):
+    for code in ("diffusers-image-cuda", "vision-torch-cuda"):
         status = registry.by_code(code).available()
         assert status.ok is True, (code, status.reason)
 
@@ -2127,6 +2140,8 @@ def test_the_accelerated_engines_share_their_siblings_suggestions(monkeypatch, t
         catalog.SUGGESTIONS["onnx-embed"])
     assert catalog.for_runner("onnx-embed-rocm") == (
         catalog.SUGGESTIONS["onnx-embed"])
+    assert catalog.for_runner("vision-torch-cuda") == (
+        catalog.SUGGESTIONS["vision-torch"])
     # And through the resolution, which is how the page actually reaches it.
     _fake_nvidia(monkeypatch, tmp_path)
     _prefer(monkeypatch, registry.IMAGE_GENERATION, "diffusers-image-cuda")
@@ -6065,7 +6080,8 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
         "faster-whisper", "mlx-whisper",
         "mlx-embed",
         "onnx-embed", "onnx-embed-cuda",
-        "onnx-embed-rocm", "ltx-video", "laya-mlx", "mlx-audio-tts", "vision-torch"}
+        "onnx-embed-rocm", "ltx-video", "laya-mlx", "mlx-audio-tts", "vision-torch",
+        "vision-torch-cuda"}
     assert body["loaded"] == []
     # Exactly one runner per capability is ACTIVE — the distinction D302 needed,
     # since with a preference in the middle "available" stopped meaning "this is

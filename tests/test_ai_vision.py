@@ -17,7 +17,7 @@ from fused_render.server import create_app
 from fused_render.server.routers import ai_runtime
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_WORKER = os.path.join(_ROOT, "fused_render", "ai", "runners", "vision_torch", "worker.py")
+_WORKER = os.path.join(_ROOT, "fused_render", "ai", "runners", "torch_vision.py")
 
 MOONDREAM = "vikhyatk/moondream2"
 DINO = "IDEA-Research/grounding-dino-tiny"
@@ -159,6 +159,8 @@ def test_recipes_are_curated_and_code_is_pinned():
     layout = dict(names={"config.json", "model.safetensors"}, dirnames=set(), config={},
                   torch_weights=True)
     assert "vision-torch" not in formats.loaders(repo_id="someone/moondream-ft", **layout)
+    claimed = formats.loaders(repo_id=MOONDREAM, **layout)
+    assert {"vision-torch", "vision-torch-cuda"} <= set(claimed)
     for tag in ("image-to-text", "zero-shot-object-detection"):
         assert tasks.capability_for_tag(tag) == registry.VISION and tasks.is_format_gated(tag)
 
@@ -212,6 +214,23 @@ class _FakeBase(types.ModuleType):
 
     def download_file(self, repo_id, filename, **kwargs):
         self.downloads.append((repo_id, filename))
+
+
+@pytest.mark.parametrize("folder", ["vision_torch", "vision_torch_cuda"])
+def test_each_vision_folder_is_a_shell_over_the_shared_body(folder):
+    """The runner body lives in `runners/torch_vision.py`; a folder only picks
+    which torch wheel its venv gets (SPEC §40)."""
+    path = os.path.join(_ROOT, "fused_render", "ai", "runners", folder, "worker.py")
+    source = open(path, encoding="utf-8").read()
+    assert "import torch_vision" in source
+    assert "torch_vision.main()" in source
+    assert "def " not in source
+
+
+def test_both_vision_folders_exist_with_a_manifest():
+    for folder in ("vision_torch", "vision_torch_cuda"):
+        assert os.path.isfile(os.path.join(
+            _ROOT, "fused_render", "ai", "runners", folder, "pyproject.toml"))
 
 
 @pytest.fixture()

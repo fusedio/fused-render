@@ -1643,6 +1643,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
 _SHARED_SUGGESTIONS = {
     "diffusers-image-cuda": "diffusers-image",
     "diffusers-image-rocm": "diffusers-image",
+    # Same recipes, same safetensors; only the torch wheel differs.
+    "vision-torch-cuda": "vision-torch",
     "llamacpp-text-vulkan": "llamacpp-text",
     # Hardware variants of `onnx-embed` — same repos, same `onnx/` graphs, a
     # different execution provider — for the identical reason. The three ONNX

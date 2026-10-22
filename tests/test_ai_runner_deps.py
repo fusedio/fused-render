@@ -644,6 +644,40 @@ def test_the_three_diffusers_image_manifests_agree_beyond_torch_and_triton():
         assert rest == shared, name
 
 
+# -- the two vision_torch* manifests' dependency parity ----------------------
+#
+# The same shape as the diffusers check above, for the same reason: the CUDA
+# folder is declared to be the CPU folder's dependency list with only where
+# `torch` comes from changed.
+_VISION_TORCH_FOLDERS = ("vision_torch", "vision_torch_cuda")
+_VISION_TORCH_HARDWARE_SPECIFIC = {"torch"}
+
+
+def test_the_two_vision_torch_manifests_agree_beyond_torch():
+    shared = None
+    for name in _VISION_TORCH_FOLDERS:
+        declared = _declared(os.path.join(RUNNERS_DIR, name))
+        rest = sorted(d for d in declared
+                      if d not in _VISION_TORCH_HARDWARE_SPECIFIC)
+        if shared is None:
+            shared = rest
+        assert rest == shared, name
+    for name in _VISION_TORCH_FOLDERS:
+        folder = os.path.join(RUNNERS_DIR, name)
+        assert _declared_specifier(folder, "torch") == _declared_specifier(
+            os.path.join(RUNNERS_DIR, _VISION_TORCH_FOLDERS[0]), "torch"), name
+
+
+def test_only_the_cpu_vision_folder_names_an_index_for_torch():
+    """PyPI's Linux wheel IS the CUDA build, so the CUDA folder names no index
+    and no source; the CPU folder names exactly the `pytorch-cpu` one."""
+    cpu = os.path.join(RUNNERS_DIR, "vision_torch")
+    cuda = os.path.join(RUNNERS_DIR, "vision_torch_cuda")
+    assert [i["name"] for i in _declared_indexes(cpu)] == ["pytorch-cpu"]
+    assert _declared_indexes(cuda) == []
+    assert not _declared_uv_sources(cuda)
+
+
 def test_the_diffusers_image_manifests_ceiling_torchao_below_the_broken_release():
     """`tonera/FLUX.2-klein-4B-int8-diffusers` — a `diffusers-image`
     suggestion, and the recommended one until the SDNQ row took that — fails
