@@ -1,4 +1,4 @@
-// Memory section: a read-only viewer of Claude Code's persistent memory under
+// Memory section: Claude Code's persistent memory under
 // projects/*/memory/, with the per-folder git lifecycle beside it.
 //
 // Round 2 redesign: the memory FILE is the row now, not the project. Before
@@ -11,8 +11,8 @@
 // malformed — the row's own filename already carries the fallback, so there
 // is no separate "untitled" state to invent).
 //
-// Contents are Claude's to author — nothing here edits a memory file. What the
-// UI adds is the lifecycle the files themselves can't express: which folders
+// Each file row opens an in-app editor and has a delete of its own. The UI also
+// adds the lifecycle the files themselves can't express: which folders
 // have uncommitted drift, a path-limited Commit per project, and a Clear that
 // deletes the .md files and commits the deletion (recoverable from History,
 // which is why Clear is a confirm and not a two-step). All three live on the
@@ -38,6 +38,7 @@
 // claude_config/memory.py's _project_path for why a "-" -> "/" replace is not
 // an option.
 import { useCallback } from "react";
+import { Button } from "@platform/shadcn/ui/button";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import * as cc from "../api";
 import {
@@ -49,13 +50,42 @@ import {
   SKELETON_ROWS,
   SectionToolbar,
   guard,
+  toastErr,
   toastOk,
   useChangePreview,
   useModuleData,
 } from "../bits";
 import type { SectionProps } from "../bits";
+import { FileEditor } from "../FileEditor";
 
-export default function MemorySection({ onChanged }: SectionProps) {
+function MemoryFileEditor({ project, file, onDelete }: { project: string; file: string; onDelete: () => void }) {
+  const load = useCallback(async () => {
+    const res = await cc.memory.read(project, file);
+    if (!res.ok) throw new Error(res.error || "Could not read the file");
+    return res.text;
+  }, [project, file]);
+  const save = useCallback(
+    async (text: string) => {
+      const res = await cc.memory.write(project, file, text);
+      return res.ok ? null : res.error || "Save failed";
+    },
+    [project, file],
+  );
+  return (
+    <FileEditor
+      label={file}
+      load={load}
+      save={save}
+      extra={
+        <Button size="sm" variant="destructive" className="ml-auto" onClick={onDelete}>
+          Delete file
+        </Button>
+      }
+    />
+  );
+}
+
+export default function MemorySection({ onChanged, filter = "" }: SectionProps) {
   const load = useCallback(() => cc.memory.list(), []);
   const { data, error, reload } = useModuleData(load);
   const { node: modal, ask } = useChangePreview();
@@ -83,8 +113,41 @@ export default function MemorySection({ onChanged }: SectionProps) {
     reload();
   };
 
+  const deleteFile = async (project: string, file: string) => {
+    const ok = await ask<boolean>({
+      title: `Delete ${file}?`,
+      note: "The file is deleted and the deletion is committed — recoverable from History.",
+      buttons: [
+        { label: "Cancel", value: false },
+        { label: "Delete", value: true, primary: true, danger: true },
+      ],
+    });
+    if (!ok) return;
+    const res = await guard(cc.memory.deleteFile(project, file));
+    if (!res) return;
+    if (!res.ok) {
+      toastErr(res.error || "Delete failed");
+      return;
+    }
+    toastOk("Deleted");
+    onChanged();
+    reload();
+  };
+
   if (error) return <ErrorBanner>{error}</ErrorBanner>;
   if (!data) return <ListSkeleton rows={SKELETON_ROWS} label="Loading memory" />;
+
+  const needle = filter.trim().toLowerCase();
+  const projects = data.projects
+    .map((p) => ({
+      ...p,
+      shown: needle
+        ? p.files.filter(
+            (f) => `${f.name} ${f.description ?? ""} ${p.path ?? p.project}`.toLowerCase().includes(needle),
+          )
+        : p.files,
+    }))
+    .filter((p) => p.shown.length > 0 || !needle);
 
   const fileCount = data.projects.reduce((n, p) => n + p.files.length, 0);
 
@@ -95,10 +158,10 @@ export default function MemorySection({ onChanged }: SectionProps) {
         summary={`${data.projects.length} project(s) · ${fileCount} file(s)`}
         onRefresh={reload}
       />
-      {!data.projects.length && (
-        <Empty>No persistent memory found under projects/*/memory/.</Empty>
+      {!projects.length && (
+        <Empty>{needle ? "No memory files match." : "No persistent memory found under projects/*/memory/."}</Empty>
       )}
-      {data.projects.map((p) => {
+      {projects.map((p) => {
         const dirty = p.changes.length;
         const count = `${p.files.length} file${p.files.length === 1 ? "" : "s"}`;
         return (
@@ -128,8 +191,8 @@ export default function MemorySection({ onChanged }: SectionProps) {
                 <button
                   type="button"
                   className="cc-iconbtn"
-                  title="Reveal in Finder"
-                  aria-label={`Reveal the memory folder for ${p.path ?? p.project} in Finder`}
+                  title="Reveal in file manager"
+                  aria-label={`Reveal the memory folder for ${p.path ?? p.project} in the file manager`}
                   onClick={() => guard(cc.memory.open(p.project))}
                 >
                   <Icon name="folder" />
@@ -157,7 +220,7 @@ export default function MemorySection({ onChanged }: SectionProps) {
               </div>
             </div>
             <List>
-              {p.files.map((f) => (
+              {p.shown.map((f) => (
                 <ListRow
                   key={f.name}
                   name={f.name}
@@ -165,6 +228,13 @@ export default function MemorySection({ onChanged }: SectionProps) {
                   secondary={f.description ?? undefined}
                   secondaryClass="cc-lrow-sub-clamp2"
                   secondaryTitle={f.description ?? undefined}
+                  details={
+                    <MemoryFileEditor
+                      project={p.project}
+                      file={f.name}
+                      onDelete={() => void deleteFile(p.project, f.name)}
+                    />
+                  }
                 />
               ))}
             </List>

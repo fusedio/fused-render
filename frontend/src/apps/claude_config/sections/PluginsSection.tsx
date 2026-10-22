@@ -52,6 +52,7 @@ import {
   Toggle3,
   toastErr,
   toastOk,
+  useChangePreview,
   useModuleData,
 } from "../bits";
 import type { SectionProps } from "../bits";
@@ -233,7 +234,8 @@ function PluginContentsPanel({ id }: { id: string }) {
   );
 }
 
-export default function PluginsSection({ onChanged }: SectionProps) {
+export default function PluginsSection({ onChanged, filter = "" }: SectionProps) {
+  const { node: modal, ask } = useChangePreview();
   const load = useCallback(() => cc.plugins.list(), []);
   const { data, error, reload } = useModuleData(load);
   const loadMkt = useCallback(() => cc.marketplaces.list(), []);
@@ -308,6 +310,33 @@ export default function PluginsSection({ onChanged }: SectionProps) {
       const res = await cc.plugins.update(p.id);
       if (res.ok) toastOk("Updated");
       else toastErr(res.error || "Update failed");
+    } catch (e) {
+      toastErr((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const uninstall = async (p: Plugin) => {
+    const ok = await ask<boolean>({
+      title: `Uninstall "${p.name}"?`,
+      note: "Removed through the claude CLI, at user scope.",
+      buttons: [
+        { label: "Cancel", value: false },
+        { label: "Uninstall", value: true, primary: true, danger: true },
+      ],
+    });
+    if (!ok) return;
+    setBusy(p.id);
+    try {
+      const res = await cc.plugins.uninstall(p.id);
+      if (!res.ok) {
+        toastErr(res.error || "Uninstall failed");
+        return;
+      }
+      toastOk(`Uninstalled ${p.name}`);
+      onChanged();
+      reload();
     } catch (e) {
       toastErr((e as Error).message);
     } finally {
@@ -442,7 +471,7 @@ export default function PluginsSection({ onChanged }: SectionProps) {
   if (error) return <ErrorBanner>{error}</ErrorBanner>;
   if (!data) return <ListSkeleton rows={SKELETON_ROWS} label="Loading plugins" />;
 
-  const installed = data.plugins.filter((p) => matches(query, p.name, p.id));
+  const installed = data.plugins.filter((p) => matches(query, p.name, p.id) && matches(filter, p.name, p.id));
   // Discover is only the plugins you do NOT have: what you already installed is
   // the other tab's subject, and showing it twice makes the list longer without
   // making it more useful.
@@ -473,6 +502,7 @@ export default function PluginsSection({ onChanged }: SectionProps) {
 
   return (
     <>
+      {modal}
       <SectionToolbar
         // Discover's summary counts the SAME set the pager pages over, so the
         // two can never disagree about how many results there are.
@@ -680,6 +710,18 @@ export default function PluginsSection({ onChanged }: SectionProps) {
                               onClick={() => update(p)}
                             >
                               <Icon name="refresh" />
+                            </button>
+                          )}
+                          {p.installed && (
+                            <button
+                              type="button"
+                              className="cc-iconbtn"
+                              disabled={busy === p.id}
+                              title="Uninstall this plugin"
+                              aria-label={`Uninstall ${p.name}`}
+                              onClick={() => uninstall(p)}
+                            >
+                              <Icon name="trash" />
                             </button>
                           )}
                           <button

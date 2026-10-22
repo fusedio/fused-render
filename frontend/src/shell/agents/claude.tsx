@@ -1,28 +1,18 @@
-// The Claude Code groups of Preferences: Claude Code's own configuration under
-// ~/.claude, drawn with the page's own rows and cards. Until 2026-10-20 this
-// was the Claude Config panel, a page of its own at /claude-config with a tab
-// strip (Plugins, Memory, Skills, Statusline, MCP, Preferences, History) and
-// a settings-page vocabulary of its own; the sections are the same components
-// (apps/claude_config/sections), each a block in a card of its group. The
-// groups are the nav's Claude Code section (Akshil, 2026-10-21): Plugins,
-// Memory & Skills, MCP servers, Settings, History — one page each, the way
-// the panel's tabs were, after a day as accordions on one long page.
+// The Claude tab set of the Agents page: Claude Code's own configuration under
+// ~/.claude, drawn with the settings page's rows and cards.
 //
 // TWO THINGS LIVE HERE AND NOWHERE ELSE:
 //
 //   * the settings.json rows. The catalog (GET preferences) is fetched once
-//     per mount and each of its entries becomes a row — `claude-pref:<key>` —
-//     bucketed into the catalog's own groups ("Model & reasoning", …), so a
-//     search for "model" or "effort" lands on the row itself, the way it lands
-//     on any registry row (Akshil: "this is the global search, search over
-//     everything"). The registry cannot list them: they are data the server
-//     ships, refreshed from Anthropic's docs by the Refresh catalog button.
+//     per mount and each of its entries becomes a row, bucketed into the
+//     catalog's own groups ("Model & reasoning", …). The registry cannot list
+//     them: they are data the server ships, refreshed from Anthropic's docs by
+//     the Refresh catalog button.
 //
-//   * the git epoch. Every block can dirty the repo (`onChanged`), the History
-//     block commits it (`onCommitted`), and the chip beside the group's title
-//     carries the dirty state — the one fact that matters while a reader is
-//     looking at some other block. A commit rewrites state no block could have
-//     predicted, so each remounts on the commit epoch and refetches.
+//   * the git epoch. Every section can dirty the repo (`onChanged`), the
+//     History section commits it (`onCommitted`), and the chip on the History
+//     tab's header carries the dirty state. A commit rewrites state no section
+//     could have predicted, so each remounts on the commit epoch and refetches.
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Clock, RefreshCw, Undo2 } from "lucide-react";
 import * as cc from "@apps/claude_config/api";
@@ -40,9 +30,8 @@ import { Button } from "@platform/shadcn/ui/button";
 import { Input } from "@platform/shadcn/ui/input";
 import { Switch } from "@platform/shadcn/ui/switch";
 import { cn } from "@platform/lib/utils";
-import { PointerRow } from "./ai";
-import { groupOf, settingById, type SettingEntry, type SettingId } from "./registry";
-import { labelId, rowId, SettingRow, SettingSelect, SettingsViewContext } from "./SettingRow";
+import type { SettingEntry } from "../settings/registry";
+import { labelId, SettingRow, SettingSelect } from "../settings/SettingRow";
 
 // -- the store ---------------------------------------------------------------
 
@@ -63,9 +52,9 @@ interface ClaudeStore {
   patch: (key: string, value: unknown) => Promise<void>;
   refreshCatalog: () => Promise<void>;
   refreshing: boolean;
-  /** Start the reads. The provider wraps the whole Preferences page, and a
-   *  reader on General never needs the git status or the catalog; the page
-   *  calls this once a Claude Code group is shown or a search starts. */
+  /** Start the reads. The provider wraps the whole Agents page, and a reader
+   *  on another harness never needs the git status or the catalog; the page
+   *  calls this once the Claude tabs are shown. */
   wake: () => void;
 }
 
@@ -206,13 +195,12 @@ export function ClaudeConfigProvider({ available, children }: { available: boole
 
 export const CLAUDE_PREF_PREFIX = "claude-pref:";
 
+/** A settings.json key as a settings row. The row only reads `label`,
+ *  `description` and `id`; `group` is required by the type and unread outside
+ *  a search, which the Agents page does not run. */
 export interface ClaudePrefEntry extends SettingEntry {
   id: string;
   prefKey: string;
-}
-
-export function isClaudePref(e: SettingEntry): e is ClaudePrefEntry {
-  return e.id.startsWith(CLAUDE_PREF_PREFIX);
 }
 
 /** One row per catalog entry, in catalog order, sectioned by its group. */
@@ -220,23 +208,12 @@ export function claudePrefEntries(schema: readonly PrefEntry[]): ClaudePrefEntry
   return schema.map((d) => ({
     id: CLAUDE_PREF_PREFIX + d.key,
     prefKey: d.key,
-    group: "claude-settings",
+    group: "ai",
     section: d.group,
     label: d.label,
     description: d.doc || "",
-    keywords: `${d.key} ${d.group} ${(d.options || []).join(" ")} claude settings.json`,
+    keywords: "",
   }));
-}
-
-/** The catalog's rows on this machine, or none until it has loaded. `wanted`
- *  wakes the store: the rows exist once a group is shown or a search runs. */
-export function useClaudePrefEntries(wanted: boolean): { rows: ClaudePrefEntry[]; ready: boolean } {
-  const { catalog, catalogReady, wake } = useContext(ClaudeContext);
-  useEffect(() => {
-    if (wanted) wake();
-  }, [wanted, wake]);
-  const rows = useMemo(() => (catalog ? claudePrefEntries(catalog.schema) : []), [catalog]);
-  return { rows, ready: !wanted || catalogReady };
 }
 
 function unsetLabel(d: PrefEntry): string {
@@ -414,75 +391,106 @@ export function ClaudeCatalogControl() {
   );
 }
 
-// -- the blocks ----------------------------------------------------------------
+// -- the tabs ------------------------------------------------------------------
 
-/** A panel section as a block of its group. In search results the block is a
- *  door to its group instead — a plugin list is not a search hit. */
-function Block({ id, children }: { id: SettingId; children: ReactNode }) {
-  const view = useContext(SettingsViewContext);
-  const { sectionEpoch } = useContext(ClaudeContext);
-  if (view.tokens) {
-    const group = settingById(id)?.group;
-    const label = group ? `Claude Code › ${groupOf(group).label}` : "Claude Code";
-    return <PointerRow id={id} to={() => view.jump(id)} label={label} />;
-  }
+/** Settings tab: the statusline preview, then every settings.json key in
+ *  cards by the catalog's group, led by the catalog's refresh. */
+export function ClaudeSettingsTab({ filter }: { filter: string }) {
+  const { catalog, catalogError, wake, available } = useContext(ClaudeContext);
+  useEffect(() => wake(), [wake]);
+  const rows = useMemo(() => (catalog ? claudePrefEntries(catalog.schema) : []), [catalog]);
+  const needle = filter.trim().toLowerCase();
+  const shown = needle
+    ? rows.filter((r) => `${r.prefKey} ${r.label} ${r.description}`.toLowerCase().includes(needle))
+    : rows;
+  const sections = [...new Set(shown.map((r) => r.section))];
+  if (!available) return <ErrorBanner>~/.claude was not found on this machine.</ErrorBanner>;
   return (
-    <div key={sectionEpoch} className="settings-block" id={rowId(id)} data-setting={id}>
+    <>
+      {!needle && (
+        <section className="settings-section" aria-label="Statusline">
+          <h3 className="settings-section-title">Statusline</h3>
+          <div className="settings-card">
+            <div className="settings-block">
+              <StatuslineSection />
+            </div>
+          </div>
+        </section>
+      )}
+      <section className="settings-section" aria-label="Catalog">
+        <div className="settings-card">
+          <ClaudeCatalogControl />
+        </div>
+      </section>
+      {catalogError && <ErrorBanner>{catalogError}</ErrorBanner>}
+      {sections.map((sec) => (
+        <section key={sec} className="settings-section" aria-label={sec}>
+          <h3 className="settings-section-title">{sec}</h3>
+          <div className="settings-card">
+            {shown
+              .filter((r) => r.section === sec)
+              .map((r) => (
+                <ClaudePrefRow key={r.id} entry={r} />
+              ))}
+          </div>
+        </section>
+      ))}
+    </>
+  );
+}
+
+function Block({ children }: { children: ReactNode }) {
+  const { sectionEpoch } = useContext(ClaudeContext);
+  return (
+    <div key={sectionEpoch} className="settings-block">
       {children}
     </div>
   );
 }
 
-export function ClaudePluginsBlock() {
+export function ClaudePluginsTab({ filter }: { filter: string }) {
   const { onChanged } = useContext(ClaudeContext);
   return (
-    <Block id="claude-plugins">
-      <PluginsSection onChanged={onChanged} />
+    <Block>
+      <PluginsSection onChanged={onChanged} filter={filter} />
     </Block>
   );
 }
 
-export function ClaudeMemoryBlock() {
+export function ClaudeMemoryTab({ filter }: { filter: string }) {
   const { onChanged } = useContext(ClaudeContext);
   return (
-    <Block id="claude-memory">
-      <MemorySection onChanged={onChanged} />
+    <Block>
+      <MemorySection onChanged={onChanged} filter={filter} />
     </Block>
   );
 }
 
-export function ClaudeSkillsBlock() {
+export function ClaudeSkillsTab({ filter }: { filter: string }) {
+  const { onChanged } = useContext(ClaudeContext);
   return (
-    <Block id="claude-skills">
-      <SkillsSection />
+    <Block>
+      <SkillsSection onChanged={onChanged} filter={filter} />
     </Block>
   );
 }
 
-export function ClaudeStatuslineBlock() {
+export function ClaudeMcpTab({ filter }: { filter: string }) {
+  const { onChanged } = useContext(ClaudeContext);
   return (
-    <Block id="claude-statusline">
-      <StatuslineSection />
+    <Block>
+      <McpSection onChanged={onChanged} filter={filter} />
     </Block>
   );
 }
 
-export function ClaudeMcpBlock() {
-  return (
-    <Block id="claude-mcp">
-      <McpSection />
-    </Block>
-  );
-}
-
-export function ClaudeHistoryBlock() {
+export function ClaudeHistoryTab() {
   const { onCommitted, onChanged, badgeEpoch } = useContext(ClaudeContext);
   // Keyed on EVERY edit, not only on a commit: the card reads its own git
-  // status and log, and a plugin toggle or a settings.json write above it is
-  // drift it must show beside the chip that already counts it. (The panel had
-  // the same freshness by remounting History on every tab switch.)
+  // status and log, and a plugin toggle or a settings.json write elsewhere is
+  // drift it must show beside the chip that already counts it.
   return (
-    <Block id="claude-history">
+    <Block>
       <HistorySection key={badgeEpoch} onChanged={onChanged} onCommitted={onCommitted} />
     </Block>
   );
@@ -490,9 +498,8 @@ export function ClaudeHistoryBlock() {
 
 // -- the git chip ---------------------------------------------------------------
 
-/** Beside every Claude Code group's title: Clean / N uncommitted / Status
- *  unknown, and the way to the History group where the drift is committed
- *  (`onOpen` — the page navigates). Three states, not two: it states "Clean"
+/** On the History tab's header: Clean / N uncommitted / Status unknown.
+ *  (`onOpen` — the page navigates to History.) Three states, not two: it states "Clean"
  *  POSITIVELY, so it must never say that from a null status — during the
  *  first read, or forever if the read keeps failing. */
 export function ClaudeGitChip({ onOpen }: { onOpen: () => void }) {

@@ -32,11 +32,12 @@ import { Modal } from "@platform/ui/modal/Modal";
 import * as cc from "./api";
 import type { ChangePreview } from "./api";
 
-// Every section gets the same two capabilities: report that the on-disk config
-// changed (so the nav's git badge re-reads), and nothing else. Sections own
-// their own data and reload it themselves.
+// Every section reports that the on-disk config changed (so the nav's git
+// badge re-reads) and receives the page's name filter. Sections own their own
+// data and reload it themselves.
 export interface SectionProps {
   onChanged: () => void;
+  filter?: string;
 }
 
 export function toastOk(msg: string): void {

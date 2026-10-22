@@ -47,22 +47,34 @@ export function rewriteLegacyUrl(url: string): string {
   // here because the alternative is carrying a dead URL shape forever.
   if (mapped) return mapped + q;
   if (p.startsWith("/view/") || p.startsWith("/embed/")) return "/explorer" + p + q;
-  // The Claude Config panel is the Claude Code section of Preferences
-  // (2026-10-20; a group per tab since 2026-10-21 — `?tab=claude` resolves to
-  // the first, Settings); the retired /claude-md page folded into the panel
-  // before that. `?cctab=<section>` becomes a `?s=` highlight, whose group
-  // wins over the tab, so a link into the panel's MCP tab still lands on the
-  // MCP block. Kept for good:
-  // the server's jobs and notifications (claude_install.py, server/ai.py)
-  // name this page, and a running older build keeps writing it.
+  // The Claude Config panel is the Claude tab set of the Agents page; the
+  // retired /claude-md page folded into it. `?cctab=<section>` becomes
+  // `?tab=<tab>`. Kept for good: the server's jobs and notifications
+  // (claude_install.py, server/ai.py) name this page, and a running older
+  // build keeps writing it.
   if (p === "/claude-config" || p === "/claude-md") {
     const params = new URLSearchParams(q.startsWith("?") ? q.slice(1) : q);
-    const tab = params.get("cctab");
+    const tab = claudeConfigTab(params.get("cctab"));
     params.delete("cctab");
-    params.set("tab", "claude");
-    const s = claudeConfigSetting(tab);
-    if (s) params.set("s", s);
-    return "/preferences?" + params.toString();
+    params.set("h", "claude");
+    if (tab) params.set("tab", tab);
+    return "/agents?" + params.toString();
+  }
+  // `/preferences?tab=claude…` and `?s=claude-…` named the Claude groups
+  // Preferences used to hold.
+  if (p === "/preferences" && q) {
+    const params = new URLSearchParams(q.slice(1));
+    const tabParam = params.get("tab") ?? "";
+    const s = params.get("s") ?? "";
+    if (tabParam.startsWith("claude") || s.startsWith("claude-")) {
+      const key = s.startsWith("claude-") ? s : tabParam;
+      params.delete("tab");
+      params.delete("s");
+      params.set("h", "claude");
+      const tab = PREFS_CLAUDE_TABS[key] ?? (key.startsWith("claude-pref:") ? "settings" : null);
+      if (tab) params.set("tab", tab);
+      return "/agents?" + params.toString();
+    }
   }
   // `/bots?bot=<id>` → `/bots/<id>` (2026-10-14; the path shape is owned by
   // apps/bots/routes.ts, which the platform may not import, so the rule is
@@ -85,25 +97,35 @@ export function rewriteLegacyUrl(url: string): string {
   return url;
 }
 
-// The panel's section ids → the Preferences row they are now (settings/registry).
-function claudeConfigSetting(tab: string | null): string | null {
+const PREFS_CLAUDE_TABS: Record<string, string> = {
+  "claude-settings": "settings",
+  "claude-statusline": "settings",
+  "claude-catalog": "settings",
+  "claude-plugins": "plugins",
+  "claude-memory": "memory",
+  "claude-skills": "skills",
+  "claude-mcp": "mcp",
+  "claude-history": "history",
+};
+
+// The panel's section ids → the Agents page's Claude tabs.
+function claudeConfigTab(tab: string | null): string | null {
   switch (tab) {
     case "plugins":
     case "marketplaces":
-      return "claude-plugins";
+      return "plugins";
     case "memory":
-      return "claude-memory";
+      return "memory";
     case "skills":
-      return "claude-skills";
+      return "skills";
     case "statusline":
-      return "claude-statusline";
-    case "mcp":
-      return "claude-mcp";
     case "preferences":
-      return "claude-catalog";
+      return "settings";
+    case "mcp":
+      return "mcp";
     case "history":
     case "profiles":
-      return "claude-history";
+      return "history";
     default:
       return null;
   }

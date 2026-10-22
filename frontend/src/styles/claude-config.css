@@ -1851,3 +1851,32 @@
     position: static;
   }
 }
+
+/* -- the in-app file editor (FileEditor.tsx) ------------------------------- */
+.cc-fileeditor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.cc-fileeditor-text {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  min-height: 160px;
+  resize: vertical;
+}
+
+.cc-fileeditor-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.cc-fileeditor-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}

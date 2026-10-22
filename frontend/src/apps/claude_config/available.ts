@@ -1,8 +1,7 @@
 // Whether the Claude Config bridge is installed on this machine (~/.claude
-// exists): the gate on the Claude Code group of Preferences
-// (shell/settings/claude.tsx, registry.ts). Its own module, light: the probe
-// is asked on every Preferences mount, and must not drag the sections it
-// gates (plugins, MCP, …) into the bundle that asks.
+// exists): the gate on the Claude tabs of the Agents page. Its own module,
+// light: the probe is asked on every Agents mount, and must not drag the
+// sections it gates (plugins, MCP, …) into the bundle that asks.
 import { useEffect, useState } from "react";
 import { getStatus } from "./api";
 

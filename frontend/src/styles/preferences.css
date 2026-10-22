@@ -1538,22 +1538,6 @@
    inside the page's card: the card's surface under the sticky toolbar, the
    card's padding around the whole, and a list inside it on the page's base
    surface so card-in-card still reads as two levels. */
-.settings-block-caption {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  padding: 10px 16px 0;
-  color: var(--fg-muted);
-  font-size: 12px;
-}
-
-.settings-block-caption code {
-  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
-  font-size: 12px;
-  overflow-wrap: anywhere;
-}
-
 .settings-block {
   padding: 2px 16px 14px;
 }

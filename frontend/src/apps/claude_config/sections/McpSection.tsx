@@ -30,7 +30,7 @@ import {
   useChangePreview,
   useModuleData,
 } from "../bits";
-import type { PillTone } from "../bits";
+import type { PillTone, SectionProps } from "../bits";
 
 const STATUS: Record<McpStatus, { label: string; tone: PillTone }> = {
   connected: { label: "connected", tone: "on" },
@@ -60,7 +60,7 @@ function cliError(res: CliResult, fallback: string): string {
   return res.stderr || res.error || fallback;
 }
 
-export default function McpSection() {
+export default function McpSection({ onChanged, filter = "" }: SectionProps) {
   const load = useCallback(() => cc.mcp.list(), []);
   const { data: cached, error, reload: reloadCached } = useModuleData(load);
   // The server answers from its cache at once (`stale`) because the real
@@ -94,6 +94,7 @@ export default function McpSection() {
   const [json, setJson] = useState("");
   const [busy, setBusy] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<string | null>(null);
   const formId = useId();
 
   const add = async () => {
@@ -105,21 +106,36 @@ export default function McpSection() {
     }
     setBusy(true);
     try {
-      const res = await cc.mcp.add(n, spec);
+      const res = editing ? await cc.mcp.edit(n, spec) : await cc.mcp.add(n, spec);
       if (!res.ok) {
-        toastErr(cliError(res, "Add failed"));
+        toastErr(cliError(res, editing ? "Edit failed" : "Add failed"));
         return;
       }
-      toastOk(`Added ${n}`);
+      toastOk(`${editing ? "Updated" : "Added"} ${n}`);
       setName("");
       setJson("");
       setAdding(false);
+      setEditing(null);
+      onChanged();
       reload();
     } catch (e) {
       toastErr((e as Error).message);
     } finally {
       setBusy(false);
     }
+  };
+
+  const edit = async (server: McpServer) => {
+    const res = await guard(cc.mcp.spec(server.name));
+    if (!res) return;
+    if (!res.ok) {
+      toastErr(res.error || "Could not read the server definition");
+      return;
+    }
+    setName(server.name);
+    setJson(JSON.stringify(res.spec, null, 2));
+    setEditing(server.name);
+    setAdding(true);
   };
 
   const login = async (server: McpServer) => {
@@ -168,7 +184,10 @@ export default function McpSection() {
     reload();
   };
 
-  const servers = data?.servers ?? [];
+  const needle = filter.trim().toLowerCase();
+  const servers = (data?.servers ?? []).filter(
+    (s) => !needle || `${s.name} ${s.endpoint ?? ""}`.toLowerCase().includes(needle),
+  );
   const connected = servers.filter((s) => s.connected).length;
 
   return (
@@ -191,13 +210,18 @@ export default function McpSection() {
           open={adding}
           controls={formId}
           label="Add server"
-          onToggle={() => setAdding((v) => !v)}
+          onToggle={() => {
+            setAdding((v) => !v);
+            setEditing(null);
+            setName("");
+            setJson("");
+          }}
         />
       </SectionToolbar>
       {adding && (
         <div id={formId}>
           <Card>
-            <CardTitle>Add a server</CardTitle>
+            <CardTitle>{editing ? `Edit ${editing}` : "Add a server"}</CardTitle>
             <CardSub>
               Registers a user-scoped MCP server via{" "}
               <span className="cc-mono">claude mcp add-json</span>.
@@ -208,7 +232,7 @@ export default function McpSection() {
             aria-label="Server name"
             placeholder="name"
             value={name}
-            disabled={busy}
+            disabled={busy || !!editing}
             onChange={(e) => setName(e.target.value)}
           />
           <input
@@ -223,7 +247,7 @@ export default function McpSection() {
               servers has nothing to do with adding one, and it now lives in the
               toolbar's refresh slot like every other tab's. */}
           <button type="button" className="btn btn-primary" disabled={busy} onClick={add}>
-            Add
+            {editing ? "Save" : "Add"}
           </button>
             </CardActions>
           </Card>
@@ -311,6 +335,11 @@ export default function McpSection() {
                           {showLogout && (
                             <button type="button" className="btn" onClick={() => logout(s)}>
                               Log out
+                            </button>
+                          )}
+                          {s.removable && (
+                            <button type="button" className="btn" onClick={() => edit(s)}>
+                              Edit
                             </button>
                           )}
                           {s.removable && (

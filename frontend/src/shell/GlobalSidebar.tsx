@@ -11,7 +11,7 @@
 // (SidebarFrame) and explorer-owned sections (Bookmarks), which only
 // the shell is allowed to import together (scripts/check-boundaries.mjs).
 import { useEffect, useRef, useState } from "react";
-import { ListTodo, Store } from "lucide-react";
+import { Bot, ListTodo, Store } from "lucide-react";
 import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
 import type { Config } from "@platform/lib/api";
@@ -113,6 +113,9 @@ const TEMPLATES_ICON = (
 // glyph (shell/AppPage.tsx) so the two read as one thing. Was a clock while the
 // page was "Scheduled".
 const SCHEDULED_ICON = <ListTodo size={16} strokeWidth={2} aria-hidden="true" />;
+
+// A robot (lucide Bot): the Agents page, where each coding agent is configured.
+const AGENTS_ICON = <Bot size={16} strokeWidth={2} aria-hidden="true" />;
 
 // A shop front (lucide Store) for the Marketplace: where community apps are
 // browsed and installed, sized like the lucide Tasks glyph above.
@@ -501,6 +504,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // through a different door, not a second destination (apps/bots/routes.ts).
   const botsActive = isBotsPath(pathname);
   const tasksActive = pathname === "/tasks";
+  const agentsActive = pathname === "/agents";
   // PREFIX, unlike Canvases above: /ai-models/<tab> is the same page seen
   // through a different tab, not a second destination, so every one of the five
   // lights the row. (The bare prefix is redirected to the default tab before
@@ -925,6 +929,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       active: tasksActive,
       badge: tasksDot,
     },
+    { key: "agents", label: "Agents", icon: AGENTS_ICON, href: "/agents", active: agentsActive },
     // No Canvases entry (owner, 2026-10-20): the Canvases SECTION below lists
     // the canvases, and its "+ Canvas" row is the door to the catalog.
     ...(bot
@@ -1035,6 +1040,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             extra={tasksDot}
             trailing={tasksTrailing}
           />
+          <NavItem href="/agents" id="agents-link" label="Agents" icon={AGENTS_ICON} active={agentsActive} />
           {/* No Canvases row (owner, 2026-10-20): the Canvases section below
               is the listing, its "+ Canvas" row the way to the catalog. */}
           {!bot && (

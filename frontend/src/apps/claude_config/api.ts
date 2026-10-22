@@ -42,6 +42,43 @@ function callModule<T>(module: string, kwargs: Record<string, unknown> = {}): Pr
   return postJson<T>(`${BASE}/${module}`, kwargs);
 }
 
+// -- other harnesses ------------------------------------------------------------
+
+export interface HarnessInfo {
+  id: string;
+  home: string;
+  exists: boolean;
+  capabilities: string[];
+}
+
+export const getHarnesses = () => getJson<{ harnesses: HarnessInfo[] }>("/api/agents/harnesses");
+
+export type FileKind = "instructions" | "settings";
+
+export const harnessFiles = {
+  get: (harness: string, kind: FileKind) =>
+    callModule<OkResult & { path: string; exists: boolean; text: string }>("files", { harness, action: "get", kind }),
+  put: (harness: string, kind: FileKind, text: string) =>
+    callModule<OkResult & { path?: string }>("files", { harness, action: "put", kind, text }),
+};
+
+export interface HarnessMcpServer {
+  name: string;
+  transport: string;
+  endpoint: string;
+  spec: Record<string, unknown>;
+}
+
+export const harnessMcp = {
+  list: (harness: string) =>
+    callModule<OkResult & { path?: string; servers?: HarnessMcpServer[] }>("mcp", { harness, action: "list" }),
+  add: (harness: string, name: string, json: string) =>
+    callModule<OkResult>("mcp", { harness, action: "add", name, json }),
+  edit: (harness: string, name: string, json: string) =>
+    callModule<OkResult>("mcp", { harness, action: "edit", name, json }),
+  remove: (harness: string, name: string) => callModule<OkResult>("mcp", { harness, action: "remove", name }),
+};
+
 export function getStatus(): Promise<ClaudeConfigStatus> {
   return getJson<ClaudeConfigStatus>(`${BASE}/status`);
 }
@@ -226,6 +263,7 @@ export const plugins = {
   // Slow by nature (the CLI may clone a repo); the server allows it ~120s, so
   // the caller must show a busy state rather than assume a quick answer.
   install: (id: string) => callModule<UpdateResult>("plugins", { action: "install", id }),
+  uninstall: (id: string) => callModule<UpdateResult>("plugins", { action: "uninstall", id }),
 };
 
 // -- marketplaces -------------------------------------------------------------
@@ -285,6 +323,12 @@ export const memory = {
     callModule<OkResult & { committed?: string | null }>("memory", { action: "commit", project }),
   clear: (project: string) =>
     callModule<OkResult & { committed?: string | null }>("memory", { action: "clear", project }),
+  read: (project: string, file: string) =>
+    callModule<OkResult & { text: string }>("memory", { action: "read", project, file }),
+  write: (project: string, file: string, text: string) =>
+    callModule<OkResult>("memory", { action: "write", project, file, text }),
+  deleteFile: (project: string, file: string) =>
+    callModule<OkResult>("memory", { action: "delete_file", project, file }),
 };
 
 // -- skills -------------------------------------------------------------------
@@ -301,6 +345,12 @@ export interface Skill {
 export const skills = {
   list: () => callModule<{ skills: Skill[] }>("skills", { action: "list" }),
   open: (slug: string) => callModule<OkResult>("skills", { action: "open", slug }),
+  create: (slug: string) => callModule<OkResult & { slug?: string }>("skills", { action: "create", slug }),
+  read: (slug: string, path = "SKILL.md") =>
+    callModule<OkResult & { text: string; files: string[] }>("skills", { action: "read", slug, path }),
+  write: (slug: string, path: string, text: string) =>
+    callModule<OkResult>("skills", { action: "write", slug, path, text }),
+  delete: (slug: string) => callModule<OkResult>("skills", { action: "delete", slug }),
 };
 
 // -- statusline ---------------------------------------------------------------
@@ -448,6 +498,10 @@ export const mcp = {
   // `json` is the server definition as a JSON string — the CLI's own
   // `add-json` argument, validated by the module before it delegates.
   add: (name: string, json: string) => callModule<CliResult>("mcp", { action: "add", name, json }),
+  // Replaces the server with a new definition (remove, then add-json).
+  edit: (name: string, json: string) => callModule<CliResult>("mcp", { action: "edit", name, json }),
+  // The user-scope definition on disk, to prefill an edit.
+  spec: (name: string) => callModule<OkResult & { spec?: unknown }>("mcp", { action: "spec", name }),
 };
 
 // -- git_ops ------------------------------------------------------------------
