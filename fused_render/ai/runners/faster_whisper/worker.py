@@ -660,18 +660,27 @@ def _sherpa_words(tokens, stamps):
     (measured; `▁` is also accepted, in case an export or a later release does
     not decode it). A token without one — a word piece or a punctuation mark —
     continues the word before it, so "sk" joins " A" and "?" joins " what". The
-    first token starts a word whatever it looks like.
+    first token starts a word whatever it looks like. A token of only whitespace
+    is a boundary, not a word: it is dropped, and the token after it starts a
+    new word.
 
     Each word's text keeps its leading space, like the other two engines'
     (`_ct2_words`).
     """
     words = []
+    boundary = True
     for token, at in zip(tokens, stamps):
         token = str(token).replace("\u2581", " ")
-        if not words or token[:1] == " ":
+        if not token.strip():
+            # A bare space is a word boundary and nothing else: kept as a word
+            # it would be published as a phantom " " (the text is truthy).
+            boundary = True
+            continue
+        if boundary or token[:1] == " ":
             words.append([float(at), token if token[:1] == " " else " " + token])
         else:
             words[-1][1] += token
+        boundary = False
     return [(at, text) for at, text in words]
 
 

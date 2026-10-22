@@ -1307,6 +1307,17 @@ def test_downloading_a_whisper_repo_does_not_fetch_the_detector(
     assert fetched == []
 
 
+def test_a_whitespace_only_token_is_never_a_word(worker):
+    """A bare " " token used to become the word " ", which `words_in_original_time`
+    kept (the text is truthy) and published as a phantom word."""
+    assert worker._sherpa_words([" Hello", " ", " world"], [0.0, 0.5, 0.6]) == [
+        (0.0, " Hello"), (0.6, " world")]
+    # …but it still marks a boundary: the next token starts a NEW word.
+    assert worker._sherpa_words([" Hello", " ", "world"], [0.0, 0.5, 0.6]) == [
+        (0.0, " Hello"), (0.6, " world")]
+    assert worker._sherpa_words([" ", " Hi"], [0.0, 0.2]) == [(0.2, " Hi")]
+
+
 def test_a_word_is_a_space_led_token_run_with_its_end_at_the_next_start(
         worker, base, tmp_path, sherpa, monkeypatch):
     _loaded_parakeet(worker, sherpa, tmp_path)
