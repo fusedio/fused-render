@@ -359,6 +359,17 @@ _APPENV_VARS = ("FUSED_RENDER_HOME_DIR", "FUSED_RENDER_ORIGIN",
 
 
 @pytest.fixture(autouse=True)
+def _no_archiving_of_missing_folders(monkeypatch):
+    """The Tasks listing files away a task whose folder is gone from disk
+    (`routers/tasks.py ARCHIVE_MISSING_FOLDERS`), and nearly every transcript
+    the suite writes names a cwd that does not exist (`/p`). Off for the suite;
+    the test of the pass itself (test_tasks_api.py, "gone folder") turns it
+    back on."""
+    from fused_render.server.routers import tasks as tasks_router
+    monkeypatch.setattr(tasks_router, "ARCHIVE_MISSING_FOLDERS", False)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_session_count(monkeypatch):
     """The Claude session cap counts live hosts under the REAL runs tree, which
     on a developer machine with ten chats open would hold every scheduler test.
@@ -367,6 +378,20 @@ def _no_real_session_count(monkeypatch):
     from fused_render import session_cap
 
     monkeypatch.setattr(session_cap, "_agent", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _warm_run_off_by_default(monkeypatch):
+    """`/api/run` claims pre-spawned idle interpreters by default (SPEC PY-20).
+    Tests that spy `executor.subprocess.Popen` or assert the cold spawn flags
+    must keep exercising the cold path, so every test starts with the switch off;
+    `tests/test_warm_run.py` turns it on itself. Teardown kills any spare a test
+    started so none outlives it."""
+    monkeypatch.setenv("FUSED_RENDER_WARM_RUN", "0")
+    yield
+    from fused_render import warm_run
+
+    warm_run.reset()
 
 
 @pytest.fixture(autouse=True)
@@ -703,6 +728,16 @@ def _no_legacy_mounts_cleanup(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_startup_artifacts_warm(monkeypatch):
+    """`_startup_artifacts_warm` scans every transcript under the developer's
+    real ~/.claude on a daemon thread; no test that merely boots the app wants
+    that. The test ABOUT the handler restores the real target."""
+    from fused_render.server import app as app_mod
+
+    monkeypatch.setattr(app_mod, "_safe_artifacts_scan", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _no_startup_index_scan(monkeypatch):
     """`create_app` schedules a background scan of the user's HOME dir.
 
@@ -725,6 +760,9 @@ def _no_startup_index_scan(monkeypatch):
     # developer's real home and outlives the test that spawned it — so it goes
     # too. Its own tests call `run_startup_warm()` directly.
     monkeypatch.setattr(index_routes, "startup_warm", lambda: None)
+    # ...and the combined scan+warm thread the non-low-impact hook now starts.
+    monkeypatch.setattr(index_routes, "start_startup_scan_and_warm",
+                        lambda start_dir=None: None)
     # Same hazard by a second door: GET /api/fs/list notes the folder for the
     # index freshness check (scan-incremental.md §5), which runs on a background
     # thread and can call runner.start. A test listing any path under the

@@ -43,7 +43,8 @@ from fastapi.responses import JSONResponse
 
 from fused_render import app_id as app_identity
 from fused_render import app_listing, appfile
-from fused_render.fusedcli import child_env, cli_error, fused_cli, workbench_env
+from fused_render.fusedcli import (child_env, cli_error, fused_cli, set_fused_env,
+                                   workbench_env)
 
 logger = logging.getLogger(__name__)
 
@@ -71,11 +72,14 @@ def _error(message: str, status: int = 400) -> JSONResponse:
 
 
 def _credentials_file() -> str:
-    # The `fused login` store canvases.py reads (~/.fused/credentials, same env
-    # override). Duplicated rather than imported: the two are private there,
-    # and a router module should not lean on another's internals.
-    return os.environ.get("FUSED_RENDER_FUSED_CREDENTIALS") or os.path.expanduser(
-        "~/.fused/credentials")
+    # The `fused login` store the DEFAULT env reads — the env sharing uploads
+    # target (`set_fused_env(..., workbench_env())`). canvases owns the rule:
+    # under a custom default it is the settings file's `[auth]` store, not
+    # ~/.fused/credentials (D1412). Imported lazily: canvases is the heavier
+    # router and this module is imported by share_file at startup.
+    from fused_render.canvases import credentials_file
+
+    return credentials_file()
 
 
 def _logged_in() -> bool:
@@ -215,7 +219,7 @@ def _run_shim(request: dict, timeout: float) -> tuple[dict | None, JSONResponse 
         return None, err
     cli = fused_cli()
     env = child_env(cli)
-    env["FUSED_ENV"] = workbench_env()
+    set_fused_env(env, workbench_env())
     try:
         proc = subprocess.run(
             command,

@@ -144,7 +144,19 @@ export interface ErrorTurn {
   quota?: import("./types").Quota;
 }
 
-export type Turn = UserTurn | AssistantTurn | NoteTurn | ErrorTurn;
+/** A context compaction: drawn as a divider with the summary folded away. Not
+ *  a user message, so recaps and anchors ignore it. */
+export interface CompactTurn {
+  role: "compact";
+  key: string;
+  /** The summary, markdown. */
+  text: string;
+  trigger?: string;
+  preTokens?: number;
+  postTokens?: number;
+}
+
+export type Turn = UserTurn | AssistantTurn | NoteTurn | ErrorTurn | CompactTurn;
 
 /** Kinds the trouble card knows (T:13531-13602 TROUBLE_*). Reuse platform/lib/trouble.ts ids where identical. */
 export type TroubleKind =
@@ -218,7 +230,7 @@ export interface ChatState {
   file: string | null;
   sessionId: string | null;
   /**
-   * WHICH AGENT THIS CONVERSATION RUNS ON — "claude" | "copilot" — as the
+   * WHICH AGENT THIS CONVERSATION RUNS ON — "claude" | "copilot" | "codex" — as the
    * server reported it (poll, history, defaults), or "" while nothing has
    * (docs/COPILOT_BACKEND.md D2). Immutable once a session has a turn: the
    * Agent pill fixes on it, and a send names it. "" for a brand-new chat,

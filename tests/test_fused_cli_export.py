@@ -130,7 +130,7 @@ def test_wrapper_defaults_fused_env_but_never_clobbers_an_explicit_one(
     # Assign only when unset/empty — "default, not override". The assignment
     # sits outside any double quotes so shlex.quote's single quotes actually
     # quote (inside "${VAR:=...}" they would become literal characters).
-    assert '[ -n "${FUSED_ENV:-}" ] || FUSED_ENV=stg' in text
+    assert '[ -n "${FUSED_ENV:-}" ] || [ -n "${_fused_custom:-}" ] || FUSED_ENV=stg' in text
     assert "export FUSED_ENV" in text
 
 
@@ -217,8 +217,8 @@ def _wrapper_env(wrapper: str, cwd: str, fused_env: str | None = None) -> str:
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh wrapper")
 def test_wrapper_takes_fused_env_from_the_clone_it_runs_in(monkeypatch, tmp_path):
     """A canvas carries its environment in its path (`<base>/<env>/<name>`):
-    a session's bare `fused` inside a prod clone must reach prod even when
-    the default is unstable, while outside any clone it gets the default and
+    a session's bare `fused` inside an unstable clone must reach unstable
+    even when the default is prod, while outside any clone it gets the default and
     an explicit FUSED_ENV still wins. Matched through a symlink too (macOS
     tmp and homes are behind /private, so $PWD and the realpath differ)."""
     monkeypatch.delenv("FUSED_RENDER_WORKBENCH_ENV", raising=False)
@@ -234,21 +234,100 @@ def test_wrapper_takes_fused_env_from_the_clone_it_runs_in(monkeypatch, tmp_path
                               external=True)
     monkeypatch.setattr(fusedcli, "fused_cli", lambda: probe)
     wrapper = os.path.join(fusedcli.export_fused_cli_env(), "fused")
-    assert fusedcli.workbench_env() == "unstable"
+    assert fusedcli.workbench_env() == "prod"
     assert _wrapper_env(wrapper, str(real_base / "prod" / "alpha")) == "prod"
     assert _wrapper_env(wrapper, str(link / "canvas" / "prod" / "alpha" / "sub")) == "prod"
     assert _wrapper_env(wrapper, str(real_base / "unstable" / "alpha")) == "unstable"
     # A canvas NAMED like an env is still its own env's clone: only the
     # segment right under the base decides.
     assert _wrapper_env(wrapper, str(real_base / "unstable" / "prod")) == "unstable"
-    assert _wrapper_env(wrapper, str(tmp_path)) == "unstable"
+    assert _wrapper_env(wrapper, str(tmp_path)) == "prod"
     assert _wrapper_env(wrapper, str(real_base / "prod" / "alpha"), "unstable") == "unstable"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX sh wrapper")
+def test_wrapper_leaves_fused_env_unset_for_the_custom_environment(monkeypatch, tmp_path):
+    """The custom environment follows `~/.fused/settings.toml`, which only an
+    UNSET FUSED_ENV preserves (`fused._env` overwrites base_url). So a custom
+    clone gets no FUSED_ENV even when the default is another env, a custom
+    default gives none outside a clone, and the other envs' clones and an
+    explicit FUSED_ENV are untouched."""
+    monkeypatch.delenv("FUSED_RENDER_WORKBENCH_ENV", raising=False)
+    base = tmp_path / "canvas"
+    for env in ("custom", "prod"):
+        (base / env / "alpha").mkdir(parents=True)
+    monkeypatch.setenv("FUSED_RENDER_CANVASES_DIR", str(base))
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    probe = fusedcli.FusedCli(
+        command=["/bin/sh", "-c", 'printf %s "${FUSED_ENV-<unset>}"', "probe"],
+        external=True)
+    monkeypatch.setattr(fusedcli, "fused_cli", lambda: probe)
+    wrapper = os.path.join(fusedcli.export_fused_cli_env(), "fused")
+    assert fusedcli.workbench_env() == "prod"
+    assert _wrapper_env(wrapper, str(base / "custom" / "alpha")) == "<unset>"
+    assert _wrapper_env(wrapper, str(tmp_path)) == "prod"
+
+    from fused_render.shell import prefs
+
+    prefs.write_pref("workbench_env", "custom")
+    wrapper = os.path.join(fusedcli.export_fused_cli_env(), "fused")
+    assert _wrapper_env(wrapper, str(tmp_path)) == "<unset>"
+    assert _wrapper_env(wrapper, str(base / "custom" / "alpha")) == "<unset>"
+    assert _wrapper_env(wrapper, str(base / "prod" / "alpha")) == "prod"
+    assert _wrapper_env(wrapper, str(tmp_path), "unstable") == "unstable"
+
+
+def test_custom_workbench_url_follows_fused_settings(monkeypatch, tmp_path):
+    """The custom env's iframe loads the web origin of the endpoint fused
+    itself would use: settings.toml, else settings.json, else fused's
+    default — mapped by fused's own `Options.base_web_url` rule."""
+    import fused_render.canvases as canvases
+
+    monkeypatch.delenv("FUSED_RENDER_WORKBENCH_ENV", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    settings = tmp_path / ".fused"
+    settings.mkdir()
+    assert canvases.workbench_base_url("custom") == "https://www.fused.io"
+    assert not canvases.fused_settings_present()
+    (settings / "settings.json").write_text('{"base_url": "https://json.example.com/server/v1"}')
+    assert canvases.fused_settings_present()
+    assert canvases.workbench_base_url("custom") == "https://json.example.com"
+    toml = settings / "settings.toml"
+    toml.write_text('base_url = "https://abc.fused.io/server/v1"\n')
+    assert canvases.fused_settings_base_url() == "https://abc.fused.io/server/v1"
+    assert canvases.workbench_base_url("custom") == "https://abc.fused.io"
+    toml.write_text('base_url = "https://unstable.fused.io/server/v1"\n')
+    assert canvases.workbench_base_url("custom") == "https://unstable.fused.io"
+    # A file without base_url is fused's default; one that fails to parse is
+    # skipped for the next, as fused does.
+    toml.write_text('request_timeout = 10\n')
+    assert canvases.workbench_base_url("custom") == "https://www.fused.io"
+    toml.write_text("base_url = \n")
+    assert canvases.workbench_base_url("custom") == "https://json.example.com"
+    # A base_url urlparse rejects falls back instead of failing the status call.
+    toml.write_text('base_url = "https://[::1"\n')
+    assert canvases.workbench_base_url("custom") == "https://www.fused.io"
+    toml.write_text('base_url = "https://example.com:bogus/server/v1"\n')
+    assert canvases.workbench_base_url("custom") == "https://www.fused.io"
+    # The named envs never read the file.
+    assert canvases.workbench_base_url("prod") == "https://www.fused.io"
+
+
+def test_set_fused_env_removes_the_variable_for_the_custom_environment(monkeypatch):
+    """Every run pointed at an env goes through set_fused_env: a named env is
+    set, and custom REMOVES an inherited value rather than keeping it."""
+    import fused_render.canvases as canvases
+
+    monkeypatch.setenv("FUSED_ENV", "prod")
+    cli = fusedcli.FusedCli(command=["fused"], external=False)
+    assert canvases._cli_env(cli, "unstable")["FUSED_ENV"] == "unstable"
+    assert "FUSED_ENV" not in canvases._cli_env(cli, "custom")
 
 
 def test_canvases_never_default_a_cli_run_to_the_preference(monkeypatch, tmp_path):
     """The preference is only the DEFAULT now: a CLI run names the canvas's
     own env, and the dev URL override follows the PIN, not the default — keyed
-    off the mutable default, flipping it to prod would load prod canvases in
+    off the mutable default, a prod default would load prod canvases in
     the local (unstable) workbench."""
     monkeypatch.delenv("FUSED_RENDER_WORKBENCH_ENV", raising=False)
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
@@ -256,13 +335,13 @@ def test_canvases_never_default_a_cli_run_to_the_preference(monkeypatch, tmp_pat
     import fused_render.canvases as canvases
     from fused_render.shell import prefs
 
-    assert fusedcli.workbench_env() == "unstable"
+    assert fusedcli.workbench_env() == "prod"
     cli = fusedcli.FusedCli(command=["fused"], external=False)
-    assert canvases._cli_env(cli, "prod")["FUSED_ENV"] == "prod"
+    assert canvases._cli_env(cli, "unstable")["FUSED_ENV"] == "unstable"
     # Unpinned: the override is ignored for every env, the default included.
-    assert canvases.workbench_base_url("unstable") == "https://unstable.fused.io"
-    prefs.write_pref("workbench_env", "prod")
     assert canvases.workbench_base_url("prod") == "https://www.fused.io"
+    prefs.write_pref("workbench_env", "unstable")
+    assert canvases.workbench_base_url("unstable") == "https://unstable.fused.io"
     # Pinned: the pinned env alone takes it.
     monkeypatch.setenv("FUSED_RENDER_WORKBENCH_ENV", "unstable")
     assert canvases.workbench_base_url("unstable") == "http://localhost:3000"

@@ -144,7 +144,8 @@ def main():
     if plain[:2] == ["canvas", "create"]:
         return
     if plain[:1] == ["logout"]:
-        os.remove(os.environ["FUSED_RENDER_FUSED_CREDENTIALS"])
+        os.remove(os.environ.get("FUSED_STUB_LOGOUT_FILE")
+                  or os.environ["FUSED_RENDER_FUSED_CREDENTIALS"])
         return
     sys.stderr.write("Error: unknown stub command\n")
     sys.exit(2)
@@ -155,7 +156,9 @@ main()
 
 @pytest.fixture(autouse=True)
 def _reset_module_state():
+    canvases_mod._cli_cache_clear()
     yield
+    canvases_mod._cli_cache_clear()
     login = canvases_mod._active_login
     if login is not None and login.proc.poll() is None:
         login.proc.kill()
@@ -203,10 +206,13 @@ class Harness:
 
         self.client = TestClient(create_app(start_dir=str(tmp_path)))
 
-    def set_scenario(self, scenario: dict) -> None:
+    def set_scenario(self, scenario: dict, keep_cache: bool = False) -> None:
         self.scenario_file.write_text(json.dumps(scenario), encoding="utf-8")
+        if not keep_cache:
+            canvases_mod._cli_cache_clear()
 
     def log_in(self) -> None:
+        canvases_mod._cli_cache_clear()
         self.creds.write_text(json.dumps({"access_token": "tok123"}), encoding="utf-8")
 
     def calls(self) -> list[list[str]]:
@@ -234,7 +240,7 @@ def test_status_reports_signed_out(harness):
     assert body["cli_found"] is True
     assert body["logged_in"] is False
     assert body["login_in_flight"] is False
-    assert set(body["envs"]) == {"unstable", "prod"}
+    assert set(body["envs"]) == {"unstable", "prod", "custom"}
     assert all(e["base_url"] for e in body["envs"].values())
 
 
@@ -637,6 +643,105 @@ def test_whoami_extracts_handle(harness):
     res = harness.client.get("/api/canvases/whoami?env=unstable", headers=GUARD)
     assert res.status_code == 200
     assert res.json()["handle"] == "vasu"
+
+
+def _spawns(harness, word):
+    return [c for c in harness.calls() if word in c]
+
+
+def test_whoami_second_call_within_ttl_spawns_once(harness):
+    harness.log_in()
+    a = harness.client.get("/api/canvases/whoami?env=unstable", headers=GUARD)
+    b = harness.client.get("/api/canvases/whoami?env=unstable", headers=GUARD)
+    assert a.status_code == b.status_code == 200
+    assert a.json() == b.json()
+    assert len(_spawns(harness, "whoami")) == 1
+
+
+def test_whoami_cache_is_keyed_by_env(harness):
+    harness.log_in()
+    harness.client.get(f"/api/canvases/whoami?env={ENV}", headers=GUARD)
+    harness.client.get(f"/api/canvases/whoami?env={OTHER_ENV}", headers=GUARD)
+    assert len(_spawns(harness, "whoami")) == 2
+
+
+def test_cli_error_is_not_cached(harness):
+    harness.log_in()
+    harness.set_scenario({"fail": "boom"})
+    res = harness.client.get("/api/canvases/whoami?env=unstable", headers=GUARD)
+    assert res.status_code == 502
+    harness.set_scenario({}, keep_cache=True)
+    res = harness.client.get("/api/canvases/whoami?env=unstable", headers=GUARD)
+    assert res.status_code == 200
+
+
+def test_list_cache_returns_independent_copies(harness):
+    harness.log_in()
+    first = harness.client.get("/api/canvases/list?env=unstable", headers=GUARD)
+    second = harness.client.get("/api/canvases/list?env=unstable", headers=GUARD)
+    assert first.status_code == second.status_code == 200
+    assert len(_spawns(harness, "list")) == 1
+    # The endpoint mutates its entries (`cloned`); a hit must carry it afresh.
+    assert all("cloned" in c for c in first.json()["canvases"])
+    assert all("cloned" in c for c in second.json()["canvases"])
+
+
+def test_create_invalidates_list_cache(harness):
+    harness.log_in()
+    harness.client.get("/api/canvases/list?env=unstable", headers=GUARD)
+    res = harness.client.post("/api/canvases/create", json={"name": "gamma", "env": ENV},
+                              headers=GUARD)
+    assert res.status_code == 200
+    harness.client.get("/api/canvases/list?env=unstable", headers=GUARD)
+    assert len(_spawns(harness, "list")) == 2
+
+
+def test_logout_invalidates_whoami_cache(harness):
+    harness.log_in()
+    harness.client.get("/api/canvases/whoami?env=unstable", headers=GUARD)
+    assert harness.client.post("/api/canvases/logout", headers=GUARD).status_code == 200
+    harness.log_in()
+    harness.client.get("/api/canvases/whoami?env=unstable", headers=GUARD)
+    assert len(_spawns(harness, "whoami")) == 2
+
+
+def test_concurrent_whoami_is_single_flight(harness, monkeypatch):
+    import types
+
+    harness.log_in()
+    count = []
+
+    def slow_cli(args, timeout, env):
+        count.append(1)
+        time.sleep(0.3)
+        return types.SimpleNamespace(stdout='{"handle":"h"}', returncode=0), None
+
+    monkeypatch.setattr(canvases_mod, "_run_cli", slow_cli)
+    codes = []
+    threads = [threading.Thread(target=lambda: codes.append(harness.client.get(
+        "/api/canvases/whoami?env=unstable", headers=GUARD).status_code))
+        for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(20)
+    assert len(count) == 1
+    assert codes == [200] * 4
+
+
+@pytest.mark.parametrize("ttl,computes", [(0, 2), (60, 1)])
+def test_token_cache_only_until_expiry(harness, ttl, computes):
+    harness.log_in()
+    runs = []
+
+    def compute():
+        runs.append(1)
+        return ("ok", {"access_token": "t"})
+
+    for _ in range(2):
+        out = canvases_mod._cached_cli("token", ENV, compute, lambda payload: ttl)
+        assert out == ("ok", {"access_token": "t"})
+    assert len(runs) == computes
 
 
 def test_clone_rejects_bad_names(harness):
@@ -1117,6 +1222,133 @@ def test_token_external_cli_reads_store(harness):
 def test_token_requires_login(harness):
     res = harness.client.get("/api/canvases/token", headers=GUARD)
     assert res.status_code == 409
+
+
+# -- per-env credentials: custom's own `[auth]` store (D1412) -------------------
+
+
+def _custom_auth_home(monkeypatch, tmp_path, auth: bool = True):
+    """HOME with a `~/.fused/settings.toml` naming its own `[auth]` store, and
+    the harness's store override dropped so the per-env rule decides.
+    Returns (prod/unstable store, custom store)."""
+    home = tmp_path / "home"
+    (home / ".fused").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("FUSED_RENDER_FUSED_CREDENTIALS", raising=False)
+    toml = 'base_url = "https://abc.fused.io/server/v1"\n'
+    if auth:
+        toml += '[auth]\ncredentials_path = "~/.fused/credentials-abc"\n'
+    (home / ".fused" / "settings.toml").write_text(toml, encoding="utf-8")
+    return home / ".fused" / "credentials", home / ".fused" / "credentials-abc"
+
+
+def _write_token(path, token: str) -> None:
+    path.write_text(json.dumps({"access_token": token}), encoding="utf-8")
+
+
+def test_custom_reads_the_settings_files_auth_store(tmp_path, monkeypatch):
+    """custom runs leave FUSED_ENV unset, so fused keeps the settings file's
+    `[auth] credentials_path`; prod/unstable reset to the hosted default. No
+    `[auth]` path means fused's default store; the test override wins all."""
+    hosted, custom = _custom_auth_home(monkeypatch, tmp_path)
+    assert canvases_mod.credentials_file("custom") == str(custom)
+    assert canvases_mod.credentials_file("prod") == str(hosted)
+    assert canvases_mod.credentials_file("unstable") == str(hosted)
+    _custom_auth_home(monkeypatch, tmp_path / "plain", auth=False)
+    assert canvases_mod.credentials_file("custom").endswith("/.fused/credentials")
+    monkeypatch.setenv("FUSED_RENDER_FUSED_CREDENTIALS", "/x/creds")
+    assert canvases_mod.credentials_file("custom") == "/x/creds"
+
+
+def test_status_and_token_follow_the_named_envs_login(harness, tmp_path, monkeypatch):
+    """A custom canvas's iframe must get the custom deployment's own token,
+    never the hosted one — its tenant rejects it, and it must not be handed
+    to another origin. Signed in to fused.io only, custom reads signed out."""
+    hosted, custom = _custom_auth_home(monkeypatch, tmp_path)
+    _write_token(hosted, "hosted-tok")
+    body = harness.client.get("/api/canvases/status?env=custom").json()
+    assert (body["auth_env"], body["logged_in"], body["creds_stamp"]) == ("custom", False, None)
+    body = harness.client.get("/api/canvases/status").json()
+    assert (body["auth_env"], body["logged_in"]) == (fusedcli_mod.DEFAULT_WORKBENCH_ENV, True)
+    assert harness.client.get("/api/canvases/token?env=custom", headers=GUARD).status_code == 409
+    assert harness.client.get("/api/canvases/token?env=prod",
+                              headers=GUARD).json()["access_token"] == "hosted-tok"
+    _write_token(custom, "abc-tok")
+    body = harness.client.get("/api/canvases/status?env=custom").json()
+    assert body["logged_in"] is True and body["creds_stamp"] is not None
+    assert harness.client.get("/api/canvases/token?env=custom",
+                              headers=GUARD).json()["access_token"] == "abc-tok"
+    # Listing a custom catalog checks custom's own login too.
+    os.remove(custom)
+    assert harness.client.get("/api/canvases/list?env=custom", headers=GUARD).status_code == 409
+
+
+def test_status_with_an_unusable_env_describes_the_default_login(harness, monkeypatch):
+    """Cheap and unguarded: a stale or pinned-away pick is not a 400, it falls
+    back to the auth env and says so in `auth_env`."""
+    # Unpinned, a stale pick falls back to the built-in default; pinned to
+    # ENV, a pick of the other env falls back to the pin.
+    for env, expected in (("staging", fusedcli_mod.DEFAULT_WORKBENCH_ENV), (OTHER_ENV, ENV)):
+        if env == OTHER_ENV:
+            monkeypatch.setenv("FUSED_RENDER_WORKBENCH_ENV", ENV)
+        res = harness.client.get(f"/api/canvases/status?env={env}")
+        assert res.status_code == 200
+        assert res.json()["auth_env"] == expected
+
+
+def test_login_for_custom_runs_with_fused_env_unset(harness, tmp_path, monkeypatch):
+    """The custom sign-in must reach the settings file's `[auth]` tenant, which
+    only a run with FUSED_ENV unset reads; a bad env is refused."""
+    _custom_auth_home(monkeypatch, tmp_path)
+    assert harness.client.post("/api/canvases/login?env=staging", headers=GUARD).status_code == 400
+    res = harness.client.post("/api/canvases/login?env=custom", headers=GUARD)
+    assert res.status_code == 200
+    canvases_mod._active_login.proc.wait(10)
+    assert [e for e, argv in harness.env_calls() if "login" in argv] == [None]
+
+
+def test_a_login_for_another_store_is_neither_reused_nor_cancelled(harness, tmp_path, monkeypatch):
+    """One browser sign-in at a time, matched on the store it writes: with a
+    hosted sign-in waiting, a custom one is refused (not silently reused),
+    custom's status does not report it in flight, and a custom sign-out
+    leaves it running."""
+    hosted, custom = _custom_auth_home(monkeypatch, tmp_path)
+    _write_token(custom, "abc-tok")
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    canvases_mod._active_login = canvases_mod._ActiveLogin(
+        proc=proc, started_at=time.time(), store=str(hosted))
+    res = harness.client.post("/api/canvases/login?env=custom", headers=GUARD)
+    assert res.status_code == 409 and res.json()["code"] == "busy"
+    assert harness.client.get("/api/canvases/status?env=custom").json()["login_in_flight"] is False
+    assert harness.client.get("/api/canvases/status?env=prod").json()["login_in_flight"] is True
+    monkeypatch.setenv("FUSED_STUB_LOGOUT_FILE", str(custom))
+    assert harness.client.post("/api/canvases/logout?env=custom", headers=GUARD).status_code == 200
+    assert proc.poll() is None, "a custom sign-out cancelled the hosted sign-in"
+    # Same store: reused, not refused.
+    res = harness.client.post("/api/canvases/login?env=prod", headers=GUARD)
+    assert res.status_code == 200 and canvases_mod._active_login.proc is proc
+
+
+def test_logout_for_custom_stops_only_its_stores_watchers(harness, tmp_path, monkeypatch):
+    """custom's login is its own store: signing out of it leaves the hosted
+    envs' watchers (and their store) alone."""
+    hosted, custom = _custom_auth_home(monkeypatch, tmp_path)
+    _write_token(hosted, "hosted-tok")
+    _write_token(custom, "abc-tok")
+    for env in (ENV, "custom"):
+        assert harness.client.post("/api/canvases/clone", json={"env": env, "name": "alpha"},
+                                   headers=GUARD).status_code == 200
+        harness.client.post("/api/canvases/sync/start", json={"env": env, "name": "alpha"},
+                            headers=GUARD)
+    hosted_mgr = canvases_mod._syncs.get((ENV, "alpha"))
+    custom_mgr = canvases_mod._syncs.get(("custom", "alpha"))
+    assert hosted_mgr is not None and custom_mgr is not None
+    monkeypatch.setenv("FUSED_STUB_LOGOUT_FILE", str(custom))
+    assert harness.client.post("/api/canvases/logout?env=custom", headers=GUARD).status_code == 200
+    assert not custom.exists() and hosted.exists()
+    assert custom_mgr.stop_event.is_set()
+    assert not hosted_mgr.stop_event.is_set()
+    assert list(canvases_mod._syncs) == [(ENV, "alpha")]
 
 
 # -- shim-backed sync: manifest probe + per-file three-way merge ---------------
@@ -2194,7 +2426,12 @@ def test_the_managers_own_push_does_not_route_back_through_the_endpoint(
                             headers=GUARD)
         (harness.root / "alpha" / "a.py").write_text("a2-edited\n")
 
-        status = _wait_sync(lambda s: s["push_seq"] >= 1)
+        # Settled, not just counted: `push_seq` is bumped a beat before
+        # `push_state` leaves "pushing", and an edit that landed mid-push
+        # re-arms a second one ("pending" -> "pushing") — a loaded runner
+        # sampled either window and read "pushing" (CI, fused-engine job).
+        status = _wait_sync(lambda s: s["push_seq"] >= 1
+                            and s["push_state"] not in ("pending", "pushing"))
         assert status and status["push_seq"] >= 1, (
             "the manager's own push never succeeded", status)
         assert status["push_state"] == "idle", status
@@ -2629,15 +2866,30 @@ def test_status_lists_every_environment_and_the_default(harness):
     (harness.base / OTHER_ENV / "beta").mkdir(parents=True)
     (harness.base / OTHER_ENV / "beta" / "canvas.toml").write_text("", encoding="utf-8")
     body = harness.client.get("/api/canvases/status").json()
-    assert body["workbench_env"] == ENV  # the preference's default
+    assert body["workbench_env"] == fusedcli_mod.DEFAULT_WORKBENCH_ENV == OTHER_ENV
     assert body["locked"] is False
-    assert set(body["envs"]) == {"unstable", "prod"}
+    assert set(body["envs"]) == {"unstable", "prod", "custom"}
     assert body["envs"][OTHER_ENV]["canvases_dir"] == str(harness.base / OTHER_ENV)
     assert body["envs"][OTHER_ENV]["cloned_count"] == 1
     assert body["envs"][ENV]["cloned_count"] == 0
     assert body["envs"]["prod"]["base_url"] == "https://www.fused.io"
     for gone in ("workbench_base_url", "canvases_dir", "cloned_count"):
         assert gone not in body
+
+
+def test_status_marks_custom_unavailable_without_a_fused_settings_file(
+        harness, monkeypatch, tmp_path):
+    """No ~/.fused/settings.toml means custom would just be prod: the pickers
+    disable it. The named envs are always available."""
+    harness.log_in()
+    toml = tmp_path / "settings.toml"
+    monkeypatch.setattr(canvases_mod, "_FUSED_SETTINGS_FILES", (str(toml),))
+    envs = harness.client.get("/api/canvases/status").json()["envs"]
+    assert {e: v["available"] for e, v in envs.items()} == {
+        "unstable": True, "prod": True, "custom": False}
+    toml.write_text('base_url = "https://abc.fused.io/server/v1"\n')
+    envs = harness.client.get("/api/canvases/status").json()["envs"]
+    assert envs["custom"]["available"] is True
 
 
 def test_every_canvas_call_requires_a_known_env(harness):
@@ -2739,7 +2991,7 @@ def test_whoami_without_an_env_is_the_login_liveness_probe(harness):
     harness.log_in()
     res = harness.client.get("/api/canvases/whoami", headers=GUARD)
     assert res.status_code == 200 and res.json()["handle"] == "tester"
-    assert harness.env_calls()[-1][0] == ENV
+    assert harness.env_calls()[-1][0] == fusedcli_mod.DEFAULT_WORKBENCH_ENV
     assert harness.client.get("/api/canvases/whoami?env=staging",
                               headers=GUARD).status_code == 400
 
@@ -2869,10 +3121,11 @@ def test_the_default_environment_is_an_ordinary_preference(harness, tmp_path, mo
     exported = []
     monkeypatch.setattr(fusedcli_mod, "export_fused_cli_env", lambda: exported.append(1))
 
-    res = harness.client.put("/api/prefs", json={"workbench_env": OTHER_ENV}, headers=GUARD)
+    # ENV differs from the built-in default (OTHER_ENV): the PUT must move it.
+    res = harness.client.put("/api/prefs", json={"workbench_env": ENV}, headers=GUARD)
     assert res.status_code == 200, res.text
-    assert res.json()["workbench"]["env"] == OTHER_ENV
-    assert harness.client.get("/api/canvases/status").json()["workbench_env"] == OTHER_ENV
+    assert res.json()["workbench"]["env"] == ENV
+    assert harness.client.get("/api/canvases/status").json()["workbench_env"] == ENV
     assert exported == [1]
     assert _manager() is manager and not manager.stop_event.is_set()
 

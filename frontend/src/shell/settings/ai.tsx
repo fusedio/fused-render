@@ -1,4 +1,4 @@
-// AI & agents: which coding agents may run chats and tasks, and the pointers
+// Coding agents: which coding agents may run chats and tasks, and the pointers
 // to the model and engine settings that live on their own pages.
 import { useContext, useSyncExternalStore } from "react";
 import { ArrowUpRight } from "lucide-react";
@@ -14,11 +14,18 @@ import { signedInHint } from "../onboarding/ToolsStep";
 import type { SettingId } from "./registry";
 import { RowSwitch, SettingRow, SettingSelect, SettingsViewContext, usePrefWrite, type PrefControlProps } from "./SettingRow";
 
-type AgentId = "claude" | "copilot";
+type AgentId = "claude" | "copilot" | "codex";
 
-// ONE busy flag for every agent write on the page. The two switches and the
+/** Every switch, in the registry's ORDER (docs/CODEX_BACKEND.md §1). */
+const AGENT_IDS: readonly AgentId[] = ["claude", "copilot", "codex"];
+
+/** The name the health line uses — the product's, where the label is the
+ *  short word the pills use. */
+const HEALTH_NAME: Record<AgentId, string> = { claude: "Claude Code", copilot: "Copilot", codex: "Codex" };
+
+// ONE busy flag for every agent write on the page. The three switches and the
 // default picker are separate rows, but each decides what it allows from
-// prefs the others' in-flight writes have not updated yet: turning both
+// prefs the others' in-flight writes have not updated yet: turning two
 // agents off in quick succession would otherwise send two PUTs the server
 // has to refuse one of.
 let agentWrites = 0;
@@ -53,7 +60,9 @@ function useAgentWrite(onChange: PrefControlProps["onChange"]) {
 
 /** Absent (an older server) reads as the only answer it could give: Claude. */
 function agentsOf(prefs: Prefs) {
-  return prefs.agents ?? { claude: true, copilot: false, default: "claude" };
+  const a = prefs.agents;
+  // A server from before Codex answers without its key: off, its default.
+  return a ? { ...a, codex: a.codex ?? false } : { claude: true, copilot: false, codex: false, default: "claude" };
 }
 
 /** One switched-on agent's health: a line when all is well, the strip's own
@@ -64,7 +73,7 @@ function AgentHealth({ backend }: { backend: AgentId }) {
     health, loaded, busy, install, login, doctor, actionError, acting,
     linkedNote, load, act, cancelLogin,
   } = useAgentSetup(backend, true);
-  const name = backend === "copilot" ? "Copilot" : "Claude Code";
+  const name = HEALTH_NAME[backend];
   const again = (
     <button type="button" className="settings-link" onClick={() => load(true)} disabled={busy}>
       {busy ? "Checking…" : "Check again"}
@@ -106,14 +115,14 @@ function AgentHealth({ backend }: { backend: AgentId }) {
   );
 }
 
-// The server refuses a write that would leave no agent on (400 "turn on the
-// other agent first"), so the last switch on is drawn disabled saying so.
+// The server refuses a write that would leave no agent on (400 "turn on
+// another agent first"), so the last switch on is drawn disabled saying so.
 function AgentSwitch({ id, backend, prefs, onChange }: PrefControlProps & { id: SettingId; backend: AgentId }) {
   useAgentBackends();
   const { busy, error, write } = useAgentWrite(onChange);
   const agents = agentsOf(prefs);
   const on = agents[backend];
-  const last = on && (agents.claude ? 1 : 0) + (agents.copilot ? 1 : 0) === 1;
+  const last = on && AGENT_IDS.filter((a) => agents[a]).length === 1;
   return (
     <SettingRow
       id={id}
@@ -123,12 +132,12 @@ function AgentSwitch({ id, backend, prefs, onChange }: PrefControlProps & { id: 
           id={id}
           checked={on}
           disabled={busy || last}
-          title={last ? "Turn on the other agent first" : undefined}
+          title={last ? "Turn on another agent first" : undefined}
           onChange={(v) => void write(() => putAgentEnabled(backend, v))}
         />
       }
     >
-      {last && <p className="settings-row-desc">Turn on the other agent before turning this one off.</p>}
+      {last && <p className="settings-row-desc">Turn on another agent before turning this one off.</p>}
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </SettingRow>
   );
@@ -136,12 +145,13 @@ function AgentSwitch({ id, backend, prefs, onChange }: PrefControlProps & { id: 
 
 export const ClaudeAgentControl = (p: PrefControlProps) => <AgentSwitch {...p} id="agent-claude" backend="claude" />;
 export const CopilotAgentControl = (p: PrefControlProps) => <AgentSwitch {...p} id="agent-copilot" backend="copilot" />;
+export const CodexAgentControl = (p: PrefControlProps) => <AgentSwitch {...p} id="agent-codex" backend="codex" />;
 
 export function DefaultAgentControl({ prefs, onChange }: PrefControlProps) {
   useAgentBackends();
   const { busy, error, write } = useAgentWrite(onChange);
   const agents = agentsOf(prefs);
-  const ids = (["claude", "copilot"] as const).filter((a) => agents[a]);
+  const ids = AGENT_IDS.filter((a) => agents[a]);
   return (
     <SettingRow
       id="agent-default"
@@ -179,13 +189,12 @@ export function PointerRow({ id, to, label }: { id: SettingId; to: string | (() 
   );
 }
 
-export function ClaudeModelPointer() {
-  const view = useContext(SettingsViewContext);
-  return <PointerRow id="claude-model" to={() => view.jump("claude-pref:model")} label="Claude Code" />;
-}
+export const ClaudeModelPointer = () => (
+  <PointerRow id="claude-model" to="/preferences?tab=claude-cli&s=claude-pref:model" label="Claude Code" />
+);
 export const EnginesPointer = () => <PointerRow id="engines" to="/ai-models/engines" label="AI Models › Engines" />;
 
 export function AgentSigninPointer() {
   const view = useContext(SettingsViewContext);
-  return <PointerRow id="agent-signin" to={() => view.jump("agent-claude")} label="AI & agents" />;
+  return <PointerRow id="agent-signin" to={() => view.jump("agent-claude")} label="Coding agents" />;
 }

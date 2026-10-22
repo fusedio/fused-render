@@ -609,7 +609,6 @@ def retire_legacy_fused_plugin() -> bool:
                 return False
             settings["enabledPlugins"] = {**enabled, LEGACY_PLUGIN_ID: False}
             lib.write_json(lib.SETTINGS_PATH, settings)
-            _commit_legacy_retirement(lib)
     except Exception:  # noqa: BLE001 — a read-only Claude dir, malformed JSON…
         logger.warning("could not disable the legacy %s plugin",
                        LEGACY_PLUGIN_ID, exc_info=True)
@@ -618,28 +617,6 @@ def retire_legacy_fused_plugin() -> bool:
                 "copies of the workbench ones this app supplies itself",
                 LEGACY_PLUGIN_ID)
     return True
-
-
-def _commit_legacy_retirement(lib) -> None:
-    """Record the flip in the Claude-config git history, but ONLY if that history
-    already exists.
-
-    `lib.commit` calls `ensure_repo`, which `git init`s `~/.claude` and writes a
-    .gitignore into it. That is right when the user pressed a button in a config
-    UI built around versioning; it is not something an unattended canvas open may
-    do to their home directory behind their back. So: a repo already there gets
-    the audit trail (the user is using it, and an unexplained settings change is
-    exactly what they'd go looking for), and a machine without one stays without
-    one. A failure here is not a failure of the retirement — the setting is
-    already written and that is the part that matters."""
-    if not os.path.isdir(os.path.join(lib.CLAUDE_DIR, ".git")):
-        return
-    try:
-        lib.commit(f"Disable legacy plugin {LEGACY_PLUGIN_ID} (superseded by "
-                   "the workbench skills fused-render supplies per-session)")
-    except Exception:  # noqa: BLE001
-        logger.debug("could not commit the legacy plugin retirement",
-                     exc_info=True)
 
 
 def sync_workbench_plugin() -> str | None:

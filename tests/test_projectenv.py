@@ -1478,3 +1478,26 @@ def test_write_sidecar_records_a_bundled_folders_identity(home, monkeypatch):
 
     with open(os.path.join(venv, projectenv.SIDECAR_NAME), encoding="utf-8") as fh:
         assert json.load(fh)["path"] == "<fused_render>/ai/runners/faster_whisper"
+
+
+def _cross_drive_relpath(monkeypatch):
+    """`os.path.relpath` as Windows has it when the two paths sit on different
+    drives."""
+    real = os.path.relpath
+
+    def relpath(path, start=os.curdir):
+        if os.path.abspath(start) != os.path.abspath(path) and "otherdrive" in path:
+            raise ValueError("path is on mount 'D:', start on mount 'C:'")
+        return real(path, start)
+
+    monkeypatch.setattr(os.path, "relpath", relpath)
+
+
+def test_immediate_child_treats_another_drive_as_outside(tmp_path, monkeypatch):
+    _cross_drive_relpath(monkeypatch)
+    assert projectenv._immediate_child(str(tmp_path), "/otherdrive/app/x.py") is None
+
+
+def test_package_identity_treats_another_drive_as_outside(monkeypatch):
+    _cross_drive_relpath(monkeypatch)
+    assert projectenv._venv_identity("/otherdrive/app") == os.path.abspath("/otherdrive/app")

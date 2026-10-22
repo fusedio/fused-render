@@ -10,9 +10,15 @@
 // Google's: the REPEAT choices are derived from the picked date-time ("Weekly
 // on Monday" because the date IS a Monday), so recurrence needs no fields of
 // its own — only "Custom (cron)…" reveals one extra input.
-import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState,
+  type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject,
+} from "react";
 import { shortTaskId } from "@platform/lib/task-id";
 import { Dropdown, popStyle } from "./Dropdown";
+import { CommandMenu, acceptText, menuKey, menuQuery } from "@apps/claude/ui/CommandMenu";
+import { useSlashCommands } from "@apps/claude/ui/useSlashCommands";
+import { filterCommands, type MenuCommand } from "@apps/claude/protocol/commands";
 import { getUiLayout, patchUiLayout } from "@platform/lib/ui-layout";
 import {
   getClaudeDefaults, readClaudeDefaults, subscribeClaudeDefaults,
@@ -22,6 +28,7 @@ import {
   agentNamed,
   capsOf,
   defaultModelOf,
+  AGENT_PREFS_URL,
   isBackendEnabled,
   isForeignModel,
   isUnlistedEffort,
@@ -453,17 +460,6 @@ const ICON_CHECK = (
   </svg>
 );
 
-// lucide "chevron-right", at the size the task list's disclosure uses — the
-// same mark, so the two read as one pattern. Points right when closed and is
-// rotated a quarter turn by CSS when the block opens.
-const ICON_CHEVRON = (
-  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-       strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-    <polyline points="9 18 15 12 9 6" />
-  </svg>
-);
-
-
 // lucide "trash-2", at the footer buttons' glyph scale. Carries the destructive
 // reading before the label is read, and stays through both press states so the
 // button does not change shape under the cursor.
@@ -510,6 +506,124 @@ function CheckField({
       <span className="new-task-check-box" aria-hidden="true">{ICON_CHECK}</span>
       <span className="new-task-check-text">{label}</span>
     </label>
+  );
+}
+
+// A PROPERTY PILL: one fact about the task — WHERE · WHEN · ACCESS · MODEL —
+// drawn as a labelled chip ("WHERE | fused-render") with every control for it
+// living in the popover the chip opens. The key half names the property so the
+// value half never has to explain itself.
+//
+// The pill and its popover share ONE wrapper, which is what makes outside-click
+// dismissal a containment question: focus leaving the wrapper closes it (the
+// contract the recents and date popovers already keep), and Escape from
+// anywhere inside closes it without reaching the modal's own Escape. The
+// popover is `tabIndex={-1}` and takes focus when it opens, so a click on a
+// non-focusable part of it (a note, the padding) leaves focus INSIDE the
+// wrapper instead of dropping it on <body>, and Safari — which never focuses a
+// <button> on click — still has a focus owner to lose.
+//
+// `display: contents` on the wrapper (new-task.css): the pills stay direct
+// flex items of `.nt-pills`.
+type PillName = "where" | "when" | "access" | "model" | "agent";
+const PILL_NAMES: readonly PillName[] = ["where", "when", "access", "model", "agent"];
+
+function PropPill({
+  k, icon, value, open, onToggle, onDismiss, onKeyDown, pillRef, children,
+  className, ariaLabel, invalid, empty, popWidth, popHeight, popClassName,
+}: {
+  k: string;
+  icon?: ReactNode;
+  value: ReactNode;
+  open: boolean;
+  onToggle: () => void;
+  /** Close without toggling — focus left, or Escape. */
+  onDismiss: () => void;
+  /** Runs first on every key inside the wrapper; `stopPropagation()` there
+   *  claims the key and the generic Escape below stands down. */
+  onKeyDown?: (e: ReactKeyboardEvent<HTMLDivElement>) => void;
+  pillRef: RefObject<HTMLButtonElement>;
+  children?: ReactNode;
+  className?: string;
+  ariaLabel: string;
+  invalid?: boolean;
+  /** The value is a prompt ("Choose folder"), not an answer — drawn muted. */
+  empty?: boolean;
+  /** Popover box: its width, and the height `popStyle` flips against. */
+  popWidth: number;
+  popHeight: number;
+  popClassName?: string;
+}) {
+  const popRef = useRef<HTMLDivElement>(null);
+  // Closed BY FOCUS LEAVING, as opposed to by a pick or Escape: focus is
+  // already where the reader sent it and must not be pulled back.
+  const blurClosed = useRef(false);
+  const wasOpen = useRef(false);
+  useEffect(() => {
+    if (open) {
+      const pop = popRef.current;
+      if (pop && !pop.contains(document.activeElement)) pop.focus({ preventScroll: true });
+    } else if (wasOpen.current) {
+      // A pick that closes the popover unmounts the row that held focus, which
+      // leaves it on <body>; hand it back to the pill so the keyboard is not
+      // stranded at the top of the page.
+      const at = document.activeElement;
+      if (!blurClosed.current && (!at || at === document.body)) pillRef.current?.focus();
+    }
+    blurClosed.current = false;
+    wasOpen.current = open;
+  }, [open, pillRef]);
+  return (
+    <div
+      className="nt-pill-wrap"
+      onBlur={(e) => {
+        if (!open) return;
+        const wrap = e.currentTarget;
+        if (wrap.contains(e.relatedTarget as Node | null)) return;
+        // Deferred one tick: a row that unmounts itself under the pointer (the
+        // WHEN menu swapping panes) drops focus to <body> for a moment before
+        // the new pane's own focus lands, and that is not "focus left".
+        window.setTimeout(() => {
+          if (wrap.contains(document.activeElement)) return;
+          blurClosed.current = true;
+          onDismiss();
+        }, 0);
+      }}
+      onKeyDown={(e) => {
+        onKeyDown?.(e);
+        if (e.key === "Escape" && open && !e.isPropagationStopped()) {
+          e.stopPropagation();
+          onDismiss();
+          pillRef.current?.focus();
+        }
+      }}
+    >
+      <button
+        type="button"
+        ref={pillRef}
+        className={"pp" + (open ? " pp--open" : "") + (invalid ? " pp--bad" : "")
+          + (className ? " " + className : "")}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-label={ariaLabel}
+        onClick={onToggle}
+      >
+        {(icon || k) && <span className="pp-k">{icon}{k}</span>}
+        <span className={"pp-v" + (empty ? " pp-v--empty" : "")}>{value}</span>
+      </button>
+      {open && (
+        <div
+          ref={popRef}
+          tabIndex={-1}
+          role="dialog"
+          aria-label={ariaLabel}
+          className={"schedule-pop nt-pop" + (popClassName ? " " + popClassName : "")}
+          style={{ ...popStyle(pillRef.current, popHeight), width: popWidth }}
+        >
+          {children}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -1249,6 +1363,13 @@ const PERMISSION_LABELS: Record<string, string> = {
 
 const permissionLabel = (key: string) => PERMISSION_LABELS[key] ?? key;
 
+/** Claude Code's own picker order: ask → accept edits → plan → auto. */
+const PERMISSION_ORDER = ["prompt", "acceptEdits", "plan", "auto"];
+const permissionRank = (m: string) => {
+  const i = PERMISSION_ORDER.indexOf(m);
+  return i < 0 ? PERMISSION_ORDER.length : i;
+};
+
 // A Date as the value a <input type="datetime-local"> wants: local wall-clock,
 // minute precision, no zone suffix. `toISOString` is exactly wrong here (UTC).
 //
@@ -1486,10 +1607,7 @@ export const titlePlaceholderFor = (agent: string) =>
 // left alone. It read "What should Claude do?" while it was the whole message,
 // and leaving that question here while the field above asks it too would put the
 // user in front of the same question twice.
-export const ASK_PLACEHOLDER = "Additional instructions (optional)";
-// The second line of the ask's placeholder: the key that brings the caret
-// down from the title (its onKeyDown).
-export const ASK_HINT_KEY = "shift + enter";
+export const ASK_PLACEHOLDER = "Paste a screenshot or drop a file.";
 
 // One line of a block of prose, trimmed. Used to reduce a multi-line value to
 // something an <input> can hold — it would strip the newlines anyway. It also
@@ -1543,6 +1661,39 @@ export function shortTitle(text: string, max = TITLE_MAX): string {
   // before it rather than losing it.
   const boundary = line.slice(0, max + 1).lastIndexOf(" ");
   return (boundary > 0 ? line.slice(0, boundary) : line.slice(0, max)).trimEnd();
+}
+
+// What the one box opens holding. A saved draft's `text` is verbatim; an Edit
+// takes the entry's full `message` (what Claude was sent) — recomposing from the
+// clamped title would cut or repeat a long first line; anything else joins the
+// title and the description.
+export function initialTextOf(
+  saved: { title: string | null; text?: string | null },
+  entry: ScheduledMessage | null | undefined,
+  derivedTitle: string,
+  initialAsk: string,
+): string {
+  if (saved.text) return saved.text;
+  if (
+    entry?.message && saved.title === null
+    && withoutTitleHeading(entry.message, entry.title ?? "") === entry.message
+  ) return entry.message.trim();
+  return joinDraft(saved.title ?? derivedTitle, initialAsk);
+}
+
+// THE ONE BOX'S THREE DERIVED VALUES. The card holds a single text; what Claude
+// is sent, the task's name and its description are all read out of it. The
+// message is the trimmed text itself (never a recomposed title + body, so a
+// first line over the clamp is not lost); the name is the first line clamped on
+// a word boundary; the description is everything after the first line.
+export function taskFieldsOf(text: string): {
+  message: string; title: string; description: string;
+} {
+  return {
+    message: text.trim(),
+    title: shortTitle(text),
+    description: splitDraft(text).description,
+  };
 }
 
 /**
@@ -1870,6 +2021,56 @@ export function saveActionLabel(
   return startOfMinute(picked) > startOfMinute(now) ? "Schedule" : "Create";
 }
 
+// ---- The WHEN pill ---------------------------------------------------------
+// The pill says what the card will DO, in the shortest words that are still
+// true: "Now" until somebody picks a time, then "Today · 9:00pm" /
+// "Tomorrow · 9:00am" / "Oct 24 · 9:00am", or — once Repeat is on — the pattern
+// instead of the day, "Daily · 2:00am". Pure, so the reading is asserted in one
+// place rather than inferred from the render.
+//
+// A day that is neither today nor tomorrow is named by its date, past or
+// future alike (a past pick is legitimate, see pastNoteFor); a date outside the
+// current year carries its year, since "Jan 5" alone is ambiguous from a
+// distance.
+export function whenPillLabel(
+  when: Date | null,
+  repeat: string | null,
+  now: Date,
+): string {
+  if (!when || Number.isNaN(when.getTime())) return "Now";
+  const clock = fmtTime(when.getHours(), when.getMinutes());
+  if (repeat) return `${repeat} · ${clock}`;
+  const day = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const diff = Math.round((day(when) - day(now)) / 86_400_000);
+  if (diff === 0) return `Today · ${clock}`;
+  if (diff === 1) return `Tomorrow · ${clock}`;
+  const date = `${MONTHS[when.getMonth()].slice(0, 3)} ${when.getDate()}`;
+  return when.getFullYear() === now.getFullYear()
+    ? `${date} · ${clock}`
+    : `${date}, ${when.getFullYear()} · ${clock}`;
+}
+
+/** The repeat's name as the pill says it: the Repeats menu's own label, with the
+ *  two long ones shortened ("Weekly on Monday" → "Weekly"; the pill has no room
+ *  for the weekday it would then repeat in the time). */
+export function repeatPillName(key: string, label: string): string {
+  if (key === "weekday") return "Weekdays";
+  if (key === "weekly") return "Weekly";
+  if (key === "monthly") return "Monthly";
+  return label;
+}
+
+/** THE WHEN MENU'S QUICK ANSWERS, as the moment each one means — from `now`,
+ *  never a clock read of its own. "tonight" is today at 21:00 whether or not
+ *  that has passed (the menu hides the row once it has). */
+export function presetWhen(kind: "hour" | "tonight" | "tomorrow", now: Date): Date {
+  if (kind === "hour") return new Date(startOfMinute(now) + 3_600_000);
+  if (kind === "tonight") {
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 21, 0);
+  }
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 9, 0);
+}
+
 // The body POSTed to /api/schedule — api.ts's own parameter type, nothing
 // added to it. That type models `title`, `description` and `new_task_each_run`
 // itself, so this alias only names what the builder returns.
@@ -2011,6 +2212,10 @@ export function buildSchedulePayload(form: {
   // empty branch below stays as the honest fallback for a caller this form's
   // gate never saw.
   title: string;
+  // The one box's raw text, when the caller has one (the card does). It IS what
+  // Claude is sent, trimmed — `title`/`message` above then only name the task
+  // and describe it (taskFieldsOf), and are not recomposed into the message.
+  text?: string;
   when: string;
   // The structured rule the current choice means; null for a one-off and for
   // the legacy cron key, whose line is submitted verbatim instead.
@@ -2095,7 +2300,9 @@ export function buildSchedulePayload(form: {
   const trimmedDescription = form.message.trim();
   // WHAT CLAUDE IS ACTUALLY SENT — title and description as one message, not
   // the description alone. See composeTaskMessage.
-  const composed = composeTaskMessage(form.title, form.message);
+  const composed = form.text !== undefined
+    ? form.text.trim()
+    : composeTaskMessage(form.title, form.message);
   // WHICH session, if any, the re-created entry continues. The two sources are
   // treated oppositely:
   //   · the task's own (learned) id survives everything except a template that
@@ -2329,6 +2536,8 @@ export interface DraftSeed {
 
 export interface SeededDraftForm {
   title: string | null;
+  /** The whole box, verbatim — beats title + description on reopen. */
+  text: string | null;
   description: string | null;
   target: string | null;
   when: string | null;
@@ -2408,6 +2617,7 @@ export function seededDraftForm(seed?: DraftSeed | null): SeededDraftForm {
   return {
     title: str("title"),
     description: str("description"),
+    text: str("text"),
     target: str("target"),
     when: str("when"),
     repeat: str("repeat"),
@@ -2578,7 +2788,6 @@ export default function NewJobModal({
   // title below opens on `draft.title` and the description on the body that goes
   // with it, so the split has to be taken once rather than per reader.
   const draft = splitDraft(initialMessage);
-  const [message, setMessage] = useState(initialAsk);
   // The attachments (design: the same functionality the claude template's chat
   // has — paste or drop ANY file, a thumbnail or a doc glyph with a remove ✕ —
   // in this card's own chrome). An Edit opens on the entry's stored paths, kind
@@ -2781,7 +2990,13 @@ export default function NewJobModal({
     (editing?.session_id || chatKeySession(chatKey ?? "") || chatSessionId) ?? "";
   const { title: derivedTitle, lookupSession: titleLookup } =
     initialTitleStateOf(editing, nameSession, draft.title);
-  const [title, setTitle] = useState(saved.title ?? derivedTitle);
+  // ONE box: the text is the truth, the name and the description are read out
+  // of it (taskFieldsOf). Opens on exactly the message the two-field form sent.
+  // A saved draft's own `text` wins; an Edit opens on the entry's full message
+  // (a first line over the clamp would be cut by title + description).
+  const initialText = initialTextOf(saved, editing, derivedTitle, initialAsk);
+  const [text, setText] = useState(initialText);
+  const fields = taskFieldsOf(text);
   const initialTargetValue = saved.target ?? editing?.target ?? initialTarget ?? "";
   const [target, setTarget] = useState(initialTargetValue);
   // ONE date-time drives everything: a one-off runs at it, and every derived
@@ -2810,7 +3025,7 @@ export default function NewJobModal({
   // means two different things depending on how it got there: a time the user
   // chose (or accepted, on the calendar, where choosing when is the whole
   // reason the card is open) versus a field they never saw because it was
-  // folded into More options. The first belongs on the calendar; the second is
+  // never opened the WHEN pill. The first belongs on the calendar; the second is
   // a task somebody wanted RUN, and drawing it on the grid turned the plan into
   // a log of everything ever typed (Akshil, 2026-08-23).
   //
@@ -2829,14 +3044,6 @@ export default function NewJobModal({
     // (see the autosaved body below, which stores null until it is picked).
     () => (saved.when !== null ? true : editing ? !editing.immediate : planning),
   );
-  // …and the disclosure the when-row now lives behind, open from the start on a
-  // planning card. State rather than a bare `open` attribute: `<details>` keeps
-  // its own openness in the DOM, and a React re-render would slam a
-  // half-controlled one shut under the user's hand.
-  // …opened as well for a draft that has a time in it: the row holds the answer
-  // the reader already gave, and folding it away would hide the one thing about
-  // this card that is not on its face.
-  const [moreOpen, setMoreOpen] = useState(planning || saved.when !== null);
   // The repeat CHOICE (a key into repeatChoicesFor) plus the one choice that
   // carries its own data: a custom rule from the recurrence dialog. Legacy
   // cron templates edit under the "cron" key and keep their line verbatim.
@@ -3396,16 +3603,14 @@ export default function NewJobModal({
   // measure. Measured on every change because "auto then scrollHeight" is the
   // one reflow-safe way to shrink back when lines are deleted.
   const askRef = useRef<HTMLTextAreaElement>(null);
-  // Title is the third field a refused Save can send the caret to (see
-  // trySubmit); the ask has `askRef` above and the path already has `pathRef`.
-  // Refs rather than a querySelector, because the card is a portal and there can
-  // be a second one mid-exit-animation when a deep link swaps the entry.
-  const titleRef = useRef<HTMLInputElement>(null);
+  // The box (`askRef` above) and the path (`pathRef`) are the two fields a
+  // refused Save can send the caret to (see trySubmit). Refs rather than a
+  // querySelector, because the card is a portal and there can be a second one
+  // mid-exit-animation when a deep link swaps the entry.
   const pathRef = useRef<HTMLInputElement>(null);
   // Escape-from-a-row hands focus back to the field WITHOUT reopening the
   // list it just dismissed — the input's onFocus otherwise undoes the close
   // in the same tick.
-  const suppressOpen = useRef(false);
   // Whether the picker is closing because a folder was chosen (done — stay
   // closed) or backed out of (return to the recents dropdown). onPick runs
   // just before onClose, so a ref is enough to tell the two closes apart.
@@ -3415,7 +3620,7 @@ export default function NewJobModal({
     if (!el) return;
     el.style.height = "auto";
     el.style.height = `${el.scrollHeight}px`;
-  }, [message]);
+  }, [text]);
 
   // The default target, filled once the server says where home is — and only
   // into a still-empty field, so it never clobbers an edit or the user's own
@@ -3451,8 +3656,7 @@ export default function NewJobModal({
     // close-twice guard on an untouched modal (the bug the getConfig effect's
     // setInitial exists for — this is the same one, one prefill earlier).
     target: initialTargetValue,
-    message: initialAsk,
-    title,
+    text: initialText,
     when,
     repeat,
     repeatOn,
@@ -3477,8 +3681,7 @@ export default function NewJobModal({
   // discard an adjusted schedule (Bugbot, PR #538).
   const dirty =
     target !== initial.target ||
-    message !== initial.message ||
-    title !== initial.title ||
+    text !== initial.text ||
     when !== initial.when ||
     repeat !== initial.repeat ||
     repeatOn !== initial.repeatOn ||
@@ -3694,7 +3897,7 @@ export default function NewJobModal({
    * PATH: a chip whose upload has not answered names no file yet, which is the
    * same rule the body's `attachments` uses two lines down.
    */
-  const draftContent = !!title.trim() || !!message.trim()
+  const draftContent = !!text.trim()
     || images.some((i) => i.path);
   /**
    * …AND ONCE A DRAFT EXISTS, EMPTYING IT IS A WRITE, not a silence. The body
@@ -3716,11 +3919,13 @@ export default function NewJobModal({
    * that constant. An Edit on a task with no session still writes nothing: it is
    * a stored entry, not a draft.
    */
+  const draftSplit = splitDraft(text);
   const draftBody: TaskDraftForm | null = (!editing || !!recordKey) && dirty
     && (draftContent || draftId !== null || !!recordKey)
     ? {
-      title,
-      description: message,
+      title: draftSplit.title,
+      description: draftSplit.description,
+      text,
       target,
       when: timePicked ? when : null,
       repeat: repeatOn ? repeat : null,
@@ -3842,7 +4047,7 @@ export default function NewJobModal({
       const el = typeof document === "undefined" ? null : document.activeElement;
       return !!el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA");
     },
-    localText: () => `${title}\u0000${message}`,
+    localText: () => text,
     adopt: () => {
       // A CARD CANNOT REPAINT ITSELF FROM A RECORD: every field is seeded in a
       // `useState` initialiser, which is what makes a re-opened draft a fresh
@@ -3979,6 +4184,65 @@ export default function NewJobModal({
   const [timeText, setTimeText] = useState(() =>
     fmtTime(new Date(when).getHours() || 0, new Date(when).getMinutes() || 0),
   );
+
+  // ---- The four property pills: which popover is open ------------------------
+  // WHERE is `recentsOpen` — the popover IS the recents list — and the other
+  // three are the flags below. At most one is open: opening a pill dismisses the
+  // rest (`togglePill`), and every popover closes the way PropPill says (focus
+  // leaves, or Escape).
+  const [whenOpen, setWhenOpen] = useState(false);
+  // WHEN's two panes: the quick answers, or the date / time / repeat controls
+  // they lead to. Always reopens on the quick answers.
+  const [whenPane, setWhenPane] = useState<"presets" | "custom">("presets");
+  const [accessOpen, setAccessOpen] = useState(false);
+  const [modelOpen, setModelOpen] = useState(false);
+  const [agentOpen, setAgentOpen] = useState(false);
+  const wherePillRef = useRef<HTMLButtonElement>(null);
+  const whenPillRef = useRef<HTMLButtonElement>(null);
+  const accessPillRef = useRef<HTMLButtonElement>(null);
+  const modelPillRef = useRef<HTMLButtonElement>(null);
+  const agentPillRef = useRef<HTMLButtonElement>(null);
+  const dismissPill = (which: PillName) => {
+    if (which === "where") {
+      setRecentsOpen(false);
+      setPathAt(-1);
+    } else if (which === "when") {
+      setWhenOpen(false);
+      setDateOpen(false);
+      setTimeOpen(false);
+    } else if (which === "access") {
+      setAccessOpen(false);
+    } else if (which === "agent") {
+      setAgentOpen(false);
+    } else {
+      setModelOpen(false);
+    }
+  };
+  const togglePill = (which: PillName) => {
+    const wasOpen = { where: recentsOpen, when: whenOpen, access: accessOpen, model: modelOpen, agent: agentOpen }[which];
+    for (const other of PILL_NAMES) if (other !== which) dismissPill(other);
+    if (wasOpen) {
+      dismissPill(which);
+      return;
+    }
+    if (which === "where") {
+      // The input only mounts while the popover is open, so the open has to
+      // come first; the focus's own onFocus repeats it harmlessly.
+      openRecents();
+      // The popover opens ON the path: the first thing anyone does there is type
+      // or arrow. Next tick, so the input exists to be focused.
+      window.setTimeout(() => pathRef.current?.focus(), 0);
+    } else if (which === "when") {
+      setWhenPane("presets");
+      setWhenOpen(true);
+    } else if (which === "access") {
+      setAccessOpen(true);
+    } else if (which === "agent") {
+      setAgentOpen(true);
+    } else {
+      setModelOpen(true);
+    }
+  };
 
   const dateLabel = pickedOk
     ? `${DAYS[picked.getDay()]}, ${MONTHS[picked.getMonth()]} ${picked.getDate()}` +
@@ -4117,10 +4381,22 @@ export default function NewJobModal({
       .then(({ tasks }) => {
         const resolved = sessionTitleOf(tasks, titleLookup);
         if (!alive || !resolved) return;
-        setTitle((prev) => (prev === derivedTitle ? resolved : prev));
-        setInitial((prev) =>
-          prev.title === derivedTitle ? { ...prev, title: resolved } : prev,
-        );
+        // One box: the resolved name lands where the user has not written
+        // their own — an empty box, or a first line still equal to the derived
+        // (synchronous) name. Anything else is the user's text; left alone.
+        const swap = (prev: string) => {
+          if (prev.trim() === "") return resolved;
+          if (!derivedTitle) return prev;
+          const lines = prev.split("\n");
+          if (lines[0].trim() !== derivedTitle) return prev;
+          lines[0] = resolved;
+          return lines.join("\n");
+        };
+        setText(swap);
+        setInitial((prev) => {
+          const next = swap(prev.text);
+          return next === prev.text ? prev : { ...prev, text: next };
+        });
       })
       // A failed lookup is not worth reporting: the field is either already
       // showing a stored title or blank with Save asking for one, and neither
@@ -4220,8 +4496,9 @@ export default function NewJobModal({
       await scheduleMessage(
         buildSchedulePayload({
           target,
-          message,
-          title,
+          message: fields.description,
+          title: fields.title,
+          text,
           when,
           rule,
           repeat,
@@ -4322,14 +4599,14 @@ export default function NewJobModal({
   // anchor's pattern role is untouched — a monthly rule anchored on a past
   // second Wednesday still means the second Wednesday — which is exactly why
   // the two wordings differ rather than one covering both. See pastNoteFor.
-  const pastNote = pastNoteFor(pickedOk ? picked : null, repeatOn, rule, new Date());
+  const pastNote = pastNoteFor(timePicked && pickedOk ? picked : null, repeatOn, rule, new Date());
 
   // See saveEnabled: Title is the required prose field, and the description is
   // not — a title alone is a whole task, and it is what goes on the wire as the
   // message.
   const gate = {
-    message,
-    title,
+    message: "",
+    title: text,
     target,
     pathError,
     repeatOn,
@@ -4349,7 +4626,12 @@ export default function NewJobModal({
   // saveActionLabel — and note it is read from the same `picked`/`repeatOn` the
   // when-row edits, so folding the row away does not freeze the word: a card
   // left on its default of now says Run, which is exactly what it does.
-  const actionLabel = saveActionLabel(pickedOk ? picked : null, repeatOn, new Date());
+  const actionLabel = saveActionLabel(
+    // Nothing picked runs now: the word is Create whatever the field holds.
+    timePicked ? (pickedOk ? picked : null) : new Date(),
+    repeatOn,
+    new Date(),
+  );
 
   // What a press does when the form is not ready. Save is NOT disabled on that
   // any more — see saveBlockedReason for why a dead button was the wrong answer
@@ -4363,15 +4645,218 @@ export default function NewJobModal({
       return;
     }
     setError(blocked.text);
-    const el = blocked.field === "title" ? titleRef.current
-      : blocked.field === "target" ? pathRef.current
-        : null;
-    el?.focus();
+    if (blocked.field === "title") askRef.current?.focus();
+    // The path input only exists while WHERE is open: open it (it focuses).
+    if (blocked.field === "target" && !recentsOpen) togglePill("where");
+  };
+
+  // ---- What the four pills say -------------------------------------------------
+  // The Repeats menu's own label for the current choice — read by the menu and,
+  // shortened (`repeatPillName`), by the WHEN pill.
+  const repeatLabel = repeat === "custom" && customRule
+    ? describeRule(customRule, pickedOk ? picked : new Date())
+    : repeat === "cron"
+      ? describeRepeats(legacyCron)
+      : choices.find((c) => c.key === repeat)?.label ?? "Does not repeat";
+  const nowForPills = new Date();
+  const whenText = whenPillLabel(
+    timePicked && pickedOk ? picked : null,
+    repeatOn ? repeatPillName(repeat, repeatLabel) : null,
+    nowForPills,
+  );
+  // "Tonight at 9:00pm" is a promise about the future; once 21:00 has gone the
+  // row would mean a past time, so it is not offered.
+  const tonightLeft = presetWhen("tonight", nowForPills) > nowForPills;
+  // A preset writes the same three things the date grid and the time list do
+  // between them (`setWhen`, the time field's draft, `timePicked`) — written
+  // here in one go because `setDatePart` then `setTimePart` would each read the
+  // stale `picked` and the second would undo the first.
+  const pickPreset = (kind: "hour" | "tonight" | "tomorrow") => {
+    const d = presetWhen(kind, new Date());
+    setWhen(toLocalInput(d));
+    setTimeText(fmtTime(d.getHours(), d.getMinutes()));
+    setTimePicked(true);
+    setWhenOpen(false);
+  };
+  // NOW: back to the card's default — run immediately. `timePicked` false is
+  // how the submit says so (`immediate`, see buildSchedulePayload); the rule goes
+  // with it, since a repeat with no time of its own has nothing to repeat from.
+  const runNow = () => {
+    if (repeatOn) toggleRepeat(false);
+    const d = new Date();
+    setWhen(toLocalInput(d));
+    setTimeText(fmtTime(d.getHours(), d.getMinutes()));
+    setTimePicked(false);
+    setWhenOpen(false);
+  };
+  // `Repeat…` opens the custom pane with the tick already on.
+  const repeatPane = () => {
+    if (!repeatOn) toggleRepeat(true);
+    setWhenPane("custom");
+  };
+  const backToPresets = () => {
+    setDateOpen(false);
+    setTimeOpen(false);
+    setWhenPane("presets");
+  };
+  const permissionOptions = [...(permissionModes.length ? permissionModes : ["auto"])]
+    // No plan mode for an agent without one (§7 `plan_mode`).
+    .filter((m) => m !== "plan" || capsOf(agent).plan_mode)
+    .sort((a, b) => permissionRank(a) - permissionRank(b));
+  // MODEL's value: the model alone — Thinking lives in the popover, so the four
+  // pills keep to one line.
+  const modelText = taskRunLabel(runModels, model) || "Default";
+
+  // THE WHERE POPOVER'S KEYS (arrows, Tab, Enter). On the pill's wrapper, not the
+  // input: a row reached by Tab is focusable too. Escape is PropPill's — it
+  // dismisses the popover without reaching the modal's own close handler
+  // (Bugbot, PR #541).
+  const onWhereKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    // ARROWS, TAB AND ENTER, read by the Explorer address bar's own
+    // key map (`completionKeyAction`) and dispatched the way it
+    // dispatches them.
+    //
+    // TAB ACCEPTS (Akshil, 2026-09-18). This round called it the other
+    // way — "Tab leaves a form field" — and that was the wrong call
+    // here: the Explorer completes on Tab, this field is the same kind
+    // of control, and one address bar in the app that answers Tab
+    // differently from the other is worse than one that takes the key.
+    // It only ever fires while the list is OPEN with rows in it;
+    // everywhere else Tab is untouched and moves focus, because
+    // `completionKeyAction` answers `none` when the list is shut.
+    //
+    // …BUT ONLY ONTO A ROW THE READER ARROWED TO (review, 2026-09-19).
+    // `completionKeyAction` answers Tab with row 0 when nothing is
+    // highlighted (`tabDefaultIndex`), which is right for the
+    // Explorer — there row 0 completes the segment being typed — and
+    // wrong here: row 0 is a folder from LAST WEEK, and Tab out of a
+    // freshly typed path replaced it with that folder. Tab with
+    // nothing arrowed to is left alone, so it does what Tab does and
+    // moves on.
+    const act = completionKeyAction(
+      e.key, recentsOpen, pathAt, pathRows.length);
+    if (act.type === "tab-accept" && pathAt < 0) return;
+    if (act.type === "move") {
+      e.preventDefault();
+      setPathAt(moveHighlight(pathAt, act.delta, pathRows.length));
+    } else if (act.type === "tab-accept" || act.type === "enter-accept") {
+      e.preventDefault();
+      const row = pathRows[act.index];
+      if (!row) return;
+      // THE NEW-FOLDER SUGGESTION ANSWERS WITH THE PATH THE FIELD
+      // ALREADY HOLDS, so taking it is only ever "close the list" —
+      // the same thing its click has always done. Named by index
+      // rather than by shape: it is the one row whose text is a NAME
+      // and not an address, and writing that name into the field
+      // would throw away the path it was derived from (caught in the
+      // browser — Enter on it turned `/Users/me/Desktop/fu` into
+      // `fu`).
+      if (act.index === newFolderAt) {
+        setRecentsOpen(false);
+        setPathAt(-1);
+        return;
+      }
+      // TAB PUTS IT IN THE FIELD, ENTER ANSWERS WITH IT. Tab leaves
+      // the list open on a path the reader can go on editing; Enter
+      // settles, because a folder on this list is a whole address
+      // rather than a way towards one.
+      if (act.type === "tab-accept") acceptPath(row);
+      else pickPath(row);
+    }
+  };
+
+  // ---- THE SLASH-COMMAND MENU, as the chat's composer has it ----------------
+  // The folder's own commands for the picked agent, offered while the box holds
+  // only a `/token`. NOT the chat's `menuCommands()`: that prepends /clear,
+  // /help, /tasks — chat-UI commands a task cannot run. Esc or leaving the box
+  // dismisses it for the text it was dismissed at; the next keystroke brings it
+  // back.
+  const { commands: slashRows } = useSlashCommands(target.trim() || null, undefined, { backend: agent });
+  const menuAll = useMemo<MenuCommand[]>(
+    () => (slashRows ?? []).map((r) => ({ name: r.name, description: r.description, hint: "", local: false })),
+    [slashRows],
+  );
+  const menuId = useId();
+  const [menuIdx, setMenuIdx] = useState(0);
+  const [menuDismissed, setMenuDismissed] = useState<string | null>(null);
+  const menuQ = menuQuery(text);
+  const menuRows = useMemo(
+    () => (menuQ === null ? [] : filterCommands(menuAll, menuQ)),
+    [menuAll, menuQ],
+  );
+  const menuOpen = menuQ !== null && menuRows.length > 0 && menuDismissed !== text;
+  const menuActive = Math.min(menuIdx, Math.max(0, menuRows.length - 1));
+  const pickCommand = (name: string) => {
+    const next = acceptText(name);
+    setText(next);
+    setMenuIdx(0);
+    const box = askRef.current;
+    if (box) {
+      box.focus({ preventScroll: true });
+      // The caret after the space, ready for an argument.
+      try {
+        box.setSelectionRange?.(next.length, next.length);
+      } catch {
+        /* a box that cannot place a caret still has the words */
+      }
+    }
   };
 
   return (
     <Modal
+      // A breadcrumb — WHO runs it, then what this card is — so the heading
+      // answers "which agent" before the first field does. The crumb is the
+      // agent dropdown (`titleLead`), a button beside the h2 rather than inside
+      // it; the h2 alone names the dialog.
       title={editing ? "Edit task" : "New task"}
+      titleLead={(
+        <>
+          {/* THE AGENT FIRST (D18): the Permissions, Model and Thinking are that
+              agent's. A card out of a session opens on that session's agent and
+              may still pick another — the task then starts fresh there
+              (`continuesSession`). A dropdown even with one agent on, so a
+              reader with Copilot off can see that a second one exists. */}
+          <PropPill
+            k=""
+            value={agentLabel(agent)}
+            ariaLabel="Agent"
+            className="pp--agent"
+            popWidth={240}
+            popHeight={agents.all.length * 40 + 60}
+            open={agentOpen}
+            onToggle={() => togglePill("agent")}
+            onDismiss={() => dismissPill("agent")}
+            pillRef={agentPillRef}
+          >
+            <div className="nt-pop-h">Agent</div>
+            <div className="nt-menu" role="group" aria-label="Agent">
+              {agents.all.map((b) => {
+                const on = isBackendEnabled(b.id);
+                return (
+                  <button
+                    key={b.id}
+                    type="button"
+                    role="menuitemradio"
+                    aria-checked={agent === b.id}
+                    disabled={!on}
+                    onClick={() => { pickBackend(b.id); dismissPill("agent"); }}
+                  >
+                    {b.label}
+                    {!on && <span className="nt-menu-off">Off</span>}
+                    {on && agent === b.id && ICON_CHECK}
+                  </button>
+                );
+              })}
+            </div>
+            {agents.all.some((b) => !isBackendEnabled(b.id)) && (
+              <div className="nt-menu-note">
+                Turn agents on in <a href={AGENT_PREFS_URL}>Preferences</a>
+              </div>
+            )}
+          </PropPill>
+          <span className="nt-crumb-sep" aria-hidden="true">›</span>
+        </>
+      )}
       dialogClassName="new-task-dialog"
       // …plus WHICH TASK this one came out of, when it came out of one
       // (design.md B, Option 1). A chip, not a field: it states the fact the
@@ -4403,7 +4888,7 @@ export default function NewJobModal({
       })}
       onClose={onClose}
       busy={busy}
-      width={460}
+      width={580}
       // THE CLOSE-TWICE GUARD IS OFF WHENEVER THERE IS A DRAFT TO CLOSE INTO
       // (design.md, Decisions: "Modal close keeps the draft silently; Discard in
       // footer. No prompt."). The guard exists to stop a ✕ discarding typed
@@ -4414,6 +4899,10 @@ export default function NewJobModal({
       dirty={editing ? dirty : false}
       footer={
         <>
+          <div className="nt-foot-left">
+          <span className="nt-foot-hint">
+            <kbd className="nt-kbd">⇧</kbd><kbd className="nt-kbd">↵</kbd> new line
+          </span>
           {/* Destructive, so it sits at the far left of the footer, away from
               Save — `.btn-danger-text` carries the margin-right:auto that
               anchors it there. Present only on an Edit, and only when the
@@ -4462,6 +4951,7 @@ export default function NewJobModal({
               Discard
             </button>
           )}
+          </div>
           {/* The way back completes the chat's round trip: chat → schedule →
               adjust the draft → schedule again. Only shown when there is a chat
               record behind this card — from anywhere else there is no "back".
@@ -4489,9 +4979,10 @@ export default function NewJobModal({
           <button type="button" className="btn btn-primary schedule-save"
                   disabled={busy} aria-disabled={!ready} onClick={trySubmit}>
             {busy ? `${actionLabel === "Create" ? "Creating" : "Scheduling"}…` : actionLabel}
-            {/* No hotkey badge (Akshil, 2026-09-23): the chord it advertised
-                (⌘↩) is gone, and a bare ↩ beside "Create" said nothing a
-                reader would not try first. */}
+            {/* The key that presses it. Enter creates from either field, so the
+                badge states a chord that is true (the ⌘↩ it once advertised is
+                gone — Akshil, 2026-09-23). */}
+            <kbd className="nt-kbd nt-kbd--on-dark" aria-hidden="true">↵</kbd>
           </button>
         </>
       }
@@ -4499,42 +4990,11 @@ export default function NewJobModal({
       <div
         className="schedule-form"
       >
-        {/* ONE WRITING SURFACE, not two controls (Akshil, 2026-08-17, reference
-            image): the title and the description share a single borderless
-            area running from the header rule to the rows below it, the title
-            set large and the description quieter beneath it. Neither field
-            looks like an input — no border, no underline, no filled box — so
-            the top of the card reads as a document you type into rather than a
-            form with two fields in it. The wrapper is what makes that ONE
-            surface: it owns the block's vertical space and hands the slack to
-            the description, so a two-word entry does not leave the card
-            top-heavy. See `.new-task-write` in new-task.css for the whole
-            treatment, including what focus looks like when there is no box to
-            recolour.
-
-            TITLE FIRST, and the prominent one (Akshil, 2026-08-17: "title will
-            be the first field and then description will be the second field").
-            The folder and the time are facts ABOUT the task and stay quiet
-            beneath in the 26px icon gutter; neither of these two carries a
-            leading icon, because a 14px glyph beside a 20px face read as
-            debris and the gutter is what says "this is a detail".
-
-            REQUIRED, and the only required field on the card now — it is both
-            the task's name in the list and the first line of what Claude is sent
-            (composeTaskMessage). Prefilled from the chat draft's first line
-            where the form was deep-linked from a composer (splitDraft, which
-            takes that line OUT of the description so nothing is said twice), and
-            otherwise from the SESSION where there is one to read: its
-            `ai-title`, else its first user message — see sessionTitleOf for the
-            whole precedence and for what it refuses. Opened from the New task
-            button, or from a session with nothing to say for itself, the field is
-            blank and the requirement is what asks for a name — `aria-required`
-            says so rather than leaving a disabled Save as the only hint.
-
-            An <input>, not a textarea, and that is the whole overflow answer:
-            one line that never wraps and never grows. Long text scrolls
-            horizontally under the caret while the field has focus and ellipses
-            when it does not — see `.new-task-title` in new-task.css. */}
+        {/* ONE WRITING SURFACE: a single borderless box that reads as a
+            document you type into. See `.new-task-write` in new-task.css for the
+            treatment, including what focus looks like with no box to recolour.
+            The box below is prefilled from a chat draft or the session's own
+            name (sessionTitleOf), which land as its first line. */}
         <div
           className="new-task-write"
           // The write block is the drop target — the part of the card that
@@ -4551,77 +5011,71 @@ export default function NewJobModal({
             }
           }}
         >
-          <input
-            ref={titleRef}
-            type="text"
-            className="new-task-field new-task-title"
-            aria-label={titlePlaceholderFor(agentLabel(agent))}
-            aria-required="true"
-            onPaste={pasteFiles}
-            placeholder={titlePlaceholderFor(agentLabel(agent))}
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            // ENTER CREATES THE TASK; SHIFT+ENTER MOVES DOWN into the
-            // instructions (Akshil, 2026-09-23). It was the other way round —
-            // Enter walked the caret down and ⌘↩ saved — and the card asked
-            // for a chord to do the one thing it exists for. An IME
-            // composition's Enter commits the candidate, not the line, and is
-            // left alone. Goes through trySubmit, not submit, so a form that
-            // cannot be saved answers the same way the button does.
-            onKeyDown={(e) => {
-              if (e.key !== "Enter" || e.nativeEvent.isComposing) return;
-              e.preventDefault();
-              if (e.shiftKey) {
-                askRef.current?.focus();
-                return;
-              }
-              if (!busy) trySubmit();
-            }}
-            autoFocus
-          />
-
-          {/* …and the ADDITIONAL INSTRUCTIONS second: the rest of what Claude
-              is sent. The two fields are ONE message — the answer above is its
-              first line and this is the body under it (composeTaskMessage) —
-              which is what makes this field OPTIONAL as of 2026-08-18. "Update
-              the changelog" is a complete instruction, and the form used to make
-              the user type it twice: once to name the task and once to say it.
-              So no aria-required here, and Save no longer refuses an empty one.
-
-              It is named for what it ADDS rather than as a "description",
-              because the field above is now the one that asks the question: what
-              belongs here is the part that answer left out.
-
-              Quieter and smaller than the title, and it keeps the growth Title
-              deliberately does not have: multi-line, autogrowing with the text
-              from the floor `.new-task-ask` sets up to its max-height, then
-              scrolling. */}
+          {/* ONE BOX (Paperclip's "Describe a task…"): the whole task text.
+              There is no title field — the task's name is the first line,
+              clamped (taskFieldsOf), the way the server names a session from
+              its first prompt. REQUIRED (`aria-required`): it is what Claude is
+              sent. Enter creates the task, Shift+Enter is the textarea's own
+              newline, and an IME composition's Enter is left alone. Goes
+              through trySubmit, not submit, so a form that cannot be saved
+              answers the same way the button does. Autogrows from the CSS
+              floor up to its max-height, then scrolls. */}
           <div className="new-task-ask-wrap">
             <textarea
               ref={askRef}
               className="new-task-field new-task-ask"
               rows={2}
-              aria-label="Additional instructions"
-              value={message}
-              onChange={(e) => setMessage(e.target.value)}
+              aria-label={titlePlaceholderFor(agentLabel(agent))}
+              aria-required="true"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
               onPaste={pasteFiles}
-              // Enter creates the task here too; Shift+Enter is the textarea's
-              // own newline and is left to it (Akshil, 2026-09-23).
+              aria-autocomplete="list"
+              aria-controls={menuOpen ? menuId : undefined}
+              aria-activedescendant={menuOpen ? `${menuId}-${menuActive}` : undefined}
               onKeyDown={(e) => {
+                // THE MENU HAS THE ARROWS, ENTER, TAB AND ESC WHILE IT IS OPEN.
+                // Enter always accepts the row here (no "fully typed name"
+                // exception: a task is created by Create, or by Enter once the
+                // menu is closed). Not mid-composition: an IME's keys are its own.
+                if (menuOpen && !e.nativeEvent.isComposing) {
+                  const k = menuKey(e.key, menuActive, menuRows.length, e.shiftKey);
+                  if (k) {
+                    e.preventDefault();
+                    if (k.type === "move") setMenuIdx(k.index);
+                    else if (k.type === "accept") pickCommand(menuRows[menuActive].name);
+                    else {
+                      // Esc closes the menu and goes no further: not the modal's.
+                      e.stopPropagation();
+                      setMenuDismissed(text);
+                    }
+                    return;
+                  }
+                }
                 if (e.key !== "Enter" || e.nativeEvent.isComposing || e.shiftKey) return;
                 e.preventDefault();
                 if (!busy) trySubmit();
               }}
+              autoFocus
             />
-            {/* The placeholder, drawn rather than set: a native `placeholder`
-                is one run of text, and this one is two — the words, and under
-                them the key that gets the caret here, in italics. Hidden the
-                moment there is text, like the native one; `aria-hidden`
-                because the field's `aria-label` already says what it is. */}
-            {!message && (
+            {menuOpen && (
+              <CommandMenu
+                id={menuId}
+                rows={menuRows}
+                active={menuActive}
+                onPick={pickCommand}
+                onHover={setMenuIdx}
+                className="nt-cmd-menu"
+              />
+            )}
+            {/* The placeholder, drawn rather than set: two lines in two faces,
+                which a native `placeholder` cannot do. Hidden the moment there
+                is text or an image, like the native one; `aria-hidden` because
+                the field's `aria-label` already says what it is. */}
+            {!text && images.length === 0 && (
               <div className="new-task-ask-hint" aria-hidden="true">
-                <span>{ASK_PLACEHOLDER}</span>
-                <em>{ASK_HINT_KEY}</em>
+                <span>{titlePlaceholderFor(agentLabel(agent))}</span>
+                <small>{ASK_PLACEHOLDER}</small>
               </div>
             )}
           </div>
@@ -4764,387 +5218,675 @@ export default function NewJobModal({
           )}
         </div>
 
-        {/* The path is a combobox, Google-style: focusing it drops the last
-            few folders the user scheduled against, with Browse as the
-            dropdown's last row (Akshil, 2026-08-15 — the standalone Browse
-            button next to the field moved in here). Blur closes it, but only
-            when focus truly leaves the wrap — clicking a row moves focus INTO
-            the dropdown, and closing on that blur would eat the click. */}
-        {/* NOT THERE AT ALL inside an app's Tasks tab (Akshil, 2026-09-19: "in
-            dedicated tasks when we open the new task modal, hide the path field").
-            It used to sit here disabled with a line saying why; a control whose
-            one answer is already known is a control the card is better off
-            without. The target is still saved — `target` is seeded from the
-            scope and never touched — and Save's own check still refuses a path
-            it could not clear. */}
-        {!lockTarget && (
-        <div className="schedule-form-line">
-          {ICON_FOLDER}
-          <div
-            className="schedule-recents-wrap"
-            onBlur={(e) => {
-              if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
-                setRecentsOpen(false);
-              }
-            }}
-            // On the WRAP, not the input: a row reached by Tab is focusable
-            // too, and Escape from it must dismiss the list, not bubble to
-            // the modal's close handler (Bugbot, PR #541).
-            onKeyDown={(e) => {
-              if (e.key === "Escape" && recentsOpen) {
-                e.stopPropagation();
-                setRecentsOpen(false);
-                setPathAt(-1);
-                if (document.activeElement !== pathRef.current) {
-                  suppressOpen.current = true;
-                  pathRef.current?.focus();
-                }
-              }
-              // ARROWS, TAB AND ENTER, read by the Explorer address bar's own
-              // key map (`completionKeyAction`) and dispatched the way it
-              // dispatches them.
-              //
-              // TAB ACCEPTS (Akshil, 2026-09-18). This round called it the other
-              // way — "Tab leaves a form field" — and that was the wrong call
-              // here: the Explorer completes on Tab, this field is the same kind
-              // of control, and one address bar in the app that answers Tab
-              // differently from the other is worse than one that takes the key.
-              // It only ever fires while the list is OPEN with rows in it;
-              // everywhere else Tab is untouched and moves focus, because
-              // `completionKeyAction` answers `none` when the list is shut.
-              //
-              // …BUT ONLY ONTO A ROW THE READER ARROWED TO (review, 2026-09-19).
-              // `completionKeyAction` answers Tab with row 0 when nothing is
-              // highlighted (`tabDefaultIndex`), which is right for the
-              // Explorer — there row 0 completes the segment being typed — and
-              // wrong here: row 0 is a folder from LAST WEEK, and Tab out of a
-              // freshly typed path replaced it with that folder. Tab with
-              // nothing arrowed to is left alone, so it does what Tab does and
-              // moves on.
-              const act = completionKeyAction(
-                e.key, recentsOpen, pathAt, pathRows.length);
-              if (act.type === "tab-accept" && pathAt < 0) return;
-              if (act.type === "move") {
-                e.preventDefault();
-                setPathAt(moveHighlight(pathAt, act.delta, pathRows.length));
-              } else if (act.type === "tab-accept" || act.type === "enter-accept") {
-                e.preventDefault();
-                const row = pathRows[act.index];
-                if (!row) return;
-                // THE NEW-FOLDER SUGGESTION ANSWERS WITH THE PATH THE FIELD
-                // ALREADY HOLDS, so taking it is only ever "close the list" —
-                // the same thing its click has always done. Named by index
-                // rather than by shape: it is the one row whose text is a NAME
-                // and not an address, and writing that name into the field
-                // would throw away the path it was derived from (caught in the
-                // browser — Enter on it turned `/Users/me/Desktop/fu` into
-                // `fu`).
-                if (act.index === newFolderAt) {
-                  setRecentsOpen(false);
-                  setPathAt(-1);
-                  return;
-                }
-                // TAB PUTS IT IN THE FIELD, ENTER ANSWERS WITH IT. Tab leaves
-                // the list open on a path the reader can go on editing; Enter
-                // settles, because a folder on this list is a whole address
-                // rather than a way towards one.
-                if (act.type === "tab-accept") acceptPath(row);
-                else pickPath(row);
-              }
-            }}
+        <div className="nt-pills">
+          {/* WHICH Claude, and HOW HARD — one pill, because they are one decision
+              read together ("Fable, thinking high"). Picking does not close the
+              popover: there are two things to set. A model is the rarest thing
+              anyone changes about a task; nothing about either appears on the
+              task row or the calendar chip (design: the card asks, the list
+              stays quiet). */}
+          <PropPill
+            k="Model"
+            ariaLabel="Model"
+            value={modelText}
+            open={modelOpen}
+            onToggle={() => togglePill("model")}
+            onDismiss={() => dismissPill("model")}
+            pillRef={modelPillRef}
+            popWidth={260}
+            popHeight={300}
           >
-            <input
-              ref={pathRef}
-              type="text"
-              // A locked field never wears the red: the line it prints is a
-              // statement, not a refusal, and a border the reader cannot act on
-              // is an alarm with no exit. Save still refuses a path the check
-              // could not clear, and says so in the banner it already has.
-              className={"field-control"
-                + (pathError && !lockTarget ? " is-invalid" : "")
-                + (lockTarget ? " new-task-target-lock" : "")}
-              aria-invalid={!lockTarget && pathError !== null}
-              // LOCKED INSIDE AN APP (design.md §2): the field still SHOWS the
-              // target — the reader has to be able to see what the task runs
-              // against — but it is not a control there. `disabled` is what
-              // makes that true of the whole combobox rather than only of the
-              // typing: no focus, so `openRecents` never fires, so the list, the
-              // Browse row and the picker are all unreachable without a second
-              // rule to keep them in step. `readOnly` beside it is for the
-              // reader, not the browser: it says the value is the value.
-              disabled={lockTarget}
-              readOnly={lockTarget}
-              // The new-folder row only exists while the list is open, so it is
-              // only pointed at while it is there — a describedby aimed at a
-              // node that is not in the document says nothing at all.
-              aria-describedby={
-                pathError
-                  ? pathErrorId
-                  : newFolder && recentsOpen
-                    ? newFolderId
-                    : undefined
-              }
-              placeholder="Add folder or file"
-              // Not a combobox when there is nothing to expand: announcing one
-              // promises a list that a disabled field can never produce.
-              role={lockTarget ? undefined : "combobox"}
-              aria-expanded={lockTarget ? undefined : recentsOpen}
-              // THE ROW THE ARROWS ARE ON, announced. Focus never leaves this
-              // input while the list is walked — the same discipline the
-              // dropdowns above this field keep — so the highlighted row has to
-              // be named here or a screen reader is told nothing moved.
-              aria-controls={recentsOpen ? recentsId : undefined}
-              aria-activedescendant={
-                recentsOpen && pathAt >= 0
-                  ? (pathAt === newFolderAt
-                      ? newFolderId : `${recentsId}-${pathAt}`)
-                  : undefined
-              }
-              value={target}
-              onFocus={(e) => {
-                // THE WHOLE PATH IS SELECTED ON ARRIVAL (Akshil, 2026-09-19:
-                // "when I select the field it should select the whole path, and
-                // I can replace it directly"). The field opens holding an
-                // address the reader most often wants to replace, not edit, so
-                // the first keystroke replaces it — and a bare word is the
-                // project search one line up. Only on focus: a second click
-                // places the caret like any text field, so editing is still
-                // there for whoever wants it.
-                e.currentTarget.select();
-                if (suppressOpen.current) {
-                  suppressOpen.current = false;
-                  return;
+            <div className="nt-pop-h">Model</div>
+            {/* Same contract as Permissions: the KEY is submitted, the label is
+                only how it is said. `taskRunOptions` is what keeps an
+                unrecognised stored value selectable instead of silently
+                resetting the task to the default on the next edit. */}
+            <div className="nt-menu" role="group" aria-label="Model">
+              {taskRunOptions(runModels, model).map((o) => (
+                <button
+                  key={o.key}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={model === o.key}
+                  disabled={(o as { disabled?: boolean }).disabled}
+                  onClick={() => pickModel(o.key)}
+                >
+                  {o.label}
+                  {model === o.key && ICON_CHECK}
+                </button>
+              ))}
+            </div>
+            {/* "Thinking", not "Effort" (the CLI's word for the flag): what the
+                user is choosing is how long Claude gets to think before it
+                acts, and the chat's own pill says the same thing. The wire is
+                untouched — this is the label. */}
+            <div className="nt-pop-h">Thinking</div>
+            <div className="nt-menu" role="group" aria-label="Thinking">
+              {taskRunOptions(runEfforts, effort).map((o) => (
+                <button
+                  key={o.key}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={effort === o.key}
+                  disabled={(o as { disabled?: boolean }).disabled}
+                  onClick={() => pickEffort(o.key)}
+                >
+                  {o.label}
+                  {effort === o.key && ICON_CHECK}
+                </button>
+              ))}
+            </div>
+          </PropPill>
+          <PropPill
+            k="Access"
+            ariaLabel="Permissions"
+            value={permissionLabel(permission)}
+            open={accessOpen}
+            onToggle={() => togglePill("access")}
+            onDismiss={() => dismissPill("access")}
+            pillRef={accessPillRef}
+            popWidth={260}
+            popHeight={210}
+          >
+            {/* The KEY is what gets submitted; the label is only how the mode is
+                said. The raw keys ("acceptEdits") were the server's vocabulary
+                printed at the user (audit 2026-08-16), and an unknown key still
+                shows itself rather than being hidden. */}
+            <div className="nt-menu" role="menu" aria-label="Permissions">
+              {permissionOptions.map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={permission === m}
+                  onClick={() => { setPermission(m); setAccessOpen(false); }}
+                >
+                  {permissionLabel(m)}
+                  {permission === m && ICON_CHECK}
+                </button>
+              ))}
+            </div>
+            <div className="nt-menu-note">
+              The task runs unattended. Auto approves safe actions and holds the rest.
+            </div>
+          </PropPill>
+          {/* NOT THERE AT ALL inside an app's Tasks tab (Akshil, 2026-09-19: "in
+              dedicated tasks when we open the new task modal, hide the path
+              field"): a control whose one answer is already known is a control
+              the card is better off without. The target is still saved —
+              `target` is seeded from the scope and never touched — and Save's
+              own check still refuses a path it could not clear.
+
+              The path is a combobox, Google-style, and now lives INSIDE the
+              WHERE popover: opening the pill drops the last few folders the
+              user scheduled against with the field on top and Browse as the
+              last row (Akshil, 2026-08-15). */}
+          {!lockTarget && (
+            <PropPill
+              k="Where"
+              icon={ICON_FOLDER}
+              ariaLabel="Folder"
+              value={target.trim() ? leafOf(target.trim()) : "Choose folder"}
+              empty={!target.trim()}
+              invalid={pathError !== null}
+              open={recentsOpen}
+              onToggle={() => togglePill("where")}
+              onDismiss={() => dismissPill("where")}
+              onKeyDown={onWhereKeyDown}
+              pillRef={wherePillRef}
+              popWidth={300}
+              popHeight={320}
+              popClassName="nt-pop--where"
+            >
+              <input
+                ref={pathRef}
+                type="text"
+                // A locked field never wears the red: the line it prints is a
+                // statement, not a refusal, and a border the reader cannot act on
+                // is an alarm with no exit. Save still refuses a path the check
+                // could not clear, and says so in the banner it already has.
+                className={"field-control"
+                  + (pathError && !lockTarget ? " is-invalid" : "")
+                  + (lockTarget ? " new-task-target-lock" : "")}
+                aria-invalid={!lockTarget && pathError !== null}
+                // LOCKED INSIDE AN APP (design.md §2): the field still SHOWS the
+                // target — the reader has to be able to see what the task runs
+                // against — but it is not a control there. `disabled` is what
+                // makes that true of the whole combobox rather than only of the
+                // typing: no focus, so `openRecents` never fires, so the list, the
+                // Browse row and the picker are all unreachable without a second
+                // rule to keep them in step. `readOnly` beside it is for the
+                // reader, not the browser: it says the value is the value.
+                disabled={lockTarget}
+                readOnly={lockTarget}
+                // The new-folder row only exists while the list is open, so it is
+                // only pointed at while it is there — a describedby aimed at a
+                // node that is not in the document says nothing at all.
+                aria-describedby={
+                  pathError
+                    ? pathErrorId
+                    : newFolder && recentsOpen
+                      ? newFolderId
+                      : undefined
                 }
-                openRecents();
-              }}
-              // The mouse-up that ends the focusing click would collapse the
-              // selection to a caret in Safari and Chrome alike; swallowed once,
-              // for that click only, so the selection made on focus survives it.
-              // Armed on the mouse-DOWN that finds the field unfocused — not on
-              // focus itself — so a Tab into the field never leaves a swallow
-              // waiting for the first real click.
-              onMouseDown={(e) => {
-                selectOnUp.current = document.activeElement !== e.currentTarget;
-              }}
-              onMouseUp={(e) => {
-                if (!selectOnUp.current) return;
-                selectOnUp.current = false;
-                e.preventDefault();
-              }}
-              onClick={openRecents}
-              onChange={(e) => setTarget(e.target.value)}
-            />
-            {recentsOpen && (
-              // mousedown preventDefault: keep focus ON the input while a row
-              // is clicked. Safari never focuses <button> on click, so the
-              // blur handler's relatedTarget is null there and the list would
-              // unmount before its click fired (Bugbot, PR #541).
-              <div
-                ref={recentsRef}
-                className="schedule-recents"
-                style={popStyle(pathRef.current, 240, true, true)}
-                onMouseDown={(e) => e.preventDefault()}
-                // The pointer leaving takes the highlight with it — the same
-                // rule the dropdowns at the top of this file keep, so a row left
-                // lit under a pointer that has gone is never the row an Enter
-                // would take.
-                onMouseLeave={() => {
-                  setPathAt(-1);
-                  pathTip.hide();
+                placeholder="Add folder or file"
+                // Not a combobox when there is nothing to expand: announcing one
+                // promises a list that a disabled field can never produce.
+                role={lockTarget ? undefined : "combobox"}
+                aria-expanded={lockTarget ? undefined : recentsOpen}
+                // THE ROW THE ARROWS ARE ON, announced. Focus never leaves this
+                // input while the list is walked — the same discipline the
+                // dropdowns above this field keep — so the highlighted row has to
+                // be named here or a screen reader is told nothing moved.
+                aria-controls={recentsOpen ? recentsId : undefined}
+                aria-activedescendant={
+                  recentsOpen && pathAt >= 0
+                    ? (pathAt === newFolderAt
+                        ? newFolderId : `${recentsId}-${pathAt}`)
+                    : undefined
+                }
+                value={target}
+                onFocus={(e) => {
+                  // THE WHOLE PATH IS SELECTED ON ARRIVAL (Akshil, 2026-09-19:
+                  // "when I select the field it should select the whole path, and
+                  // I can replace it directly"). The field opens holding an
+                  // address the reader most often wants to replace, not edit, so
+                  // the first keystroke replaces it — and a bare word is the
+                  // project search one line up. Only on focus: a second click
+                  // places the caret like any text field, so editing is still
+                  // there for whoever wants it.
+                  e.currentTarget.select();
+                  openRecents();
                 }}
-              >
-                {/* THE ROWS SCROLL; THE VERBS DO NOT (Akshil, 2026-09-18:
-                    "Browse… and + New folder are scrolling WITH the results").
-                    They are not results — they are the two ways out of a list
-                    that did not have the answer — and a way out that scrolls
-                    off the bottom of fifty folders is a way out you have to go
-                    looking for.
-
-                    So the panel is a FRAME now: this box takes whatever height
-                    is left under the cap and scrolls, and the footer below it is
-                    a sibling that keeps its own. No arithmetic — `flex: 1 1
-                    auto` with `min-height: 0` against a `flex: 0 0 auto` footer
-                    is what makes "the total never exceeds the cap" a fact about
-                    the layout rather than a number to keep in step.
-
-                    THE LISTBOX MOVED HERE WITH THE OPTIONS. `aria-controls` and
-                    `aria-activedescendant` on the field point at a list, and the
-                    list is the scroller — the verbs underneath are buttons, not
-                    options, and were never in the ring. */}
+                // The mouse-up that ends the focusing click would collapse the
+                // selection to a caret in Safari and Chrome alike; swallowed once,
+                // for that click only, so the selection made on focus survives it.
+                // Armed on the mouse-DOWN that finds the field unfocused — not on
+                // focus itself — so a Tab into the field never leaves a swallow
+                // waiting for the first real click.
+                onMouseDown={(e) => {
+                  selectOnUp.current = document.activeElement !== e.currentTarget;
+                }}
+                onMouseUp={(e) => {
+                  if (!selectOnUp.current) return;
+                  selectOnUp.current = false;
+                  e.preventDefault();
+                }}
+                onClick={openRecents}
+                onChange={(e) => setTarget(e.target.value)}
+              />
+              {recentsOpen && (
+                // mousedown preventDefault: keep focus ON the input while a row
+                // is clicked. Safari never focuses <button> on click, so the
+                // blur handler's relatedTarget is null there and the list would
+                // unmount before its click fired (Bugbot, PR #541).
                 <div
                   ref={recentsRef}
-                  id={recentsId}
-                  role="listbox"
-                  aria-label="Folders"
-                  className="schedule-recents-scroll"
+                  className="schedule-recents nt-recents"
+                  onMouseDown={(e) => e.preventDefault()}
+                  // The pointer leaving takes the highlight with it — the same
+                  // rule the dropdowns at the top of this file keep, so a row left
+                  // lit under a pointer that has gone is never the row an Enter
+                  // would take.
+                  onMouseLeave={() => {
+                    setPathAt(-1);
+                    pathTip.hide();
+                  }}
                 >
-                {/* THE REMEMBERED FOLDERS, in `pathRows`' own order — which is
-                    what makes `aria-activedescendant` and the arrow ring agree
-                    with what is on screen. */}
-                {pathRows.map((p, i) => {
-                  // The LAST row is the new-folder suggestion when there is
-                  // one; it is a different shape and draws itself below. Same
-                  // index `pathRows` put it at, or the ring and the markup part
-                  // company the moment the path check refuses something.
-                  if (i === newFolderAt) return null;
-                  return (
+                  {/* THE ROWS SCROLL; THE VERBS DO NOT (Akshil, 2026-09-18:
+                      "Browse… and + New folder are scrolling WITH the results").
+                      They are not results — they are the two ways out of a list
+                      that did not have the answer — and a way out that scrolls
+                      off the bottom of fifty folders is a way out you have to go
+                      looking for.
+
+                      So the panel is a FRAME now: this box takes whatever height
+                      is left under the cap and scrolls, and the footer below it is
+                      a sibling that keeps its own. No arithmetic — `flex: 1 1
+                      auto` with `min-height: 0` against a `flex: 0 0 auto` footer
+                      is what makes "the total never exceeds the cap" a fact about
+                      the layout rather than a number to keep in step.
+
+                      THE LISTBOX MOVED HERE WITH THE OPTIONS. `aria-controls` and
+                      `aria-activedescendant` on the field point at a list, and the
+                      list is the scroller — the verbs underneath are buttons, not
+                      options, and were never in the ring. */}
+                  <div
+                    ref={recentsRef}
+                    id={recentsId}
+                    role="listbox"
+                    aria-label="Folders"
+                    className="schedule-recents-scroll"
+                  >
+                  {/* THE REMEMBERED FOLDERS, in `pathRows`' own order — which is
+                      what makes `aria-activedescendant` and the arrow ring agree
+                      with what is on screen. */}
+                  {pathRows.map((p, i) => {
+                    // The LAST row is the new-folder suggestion when there is
+                    // one; it is a different shape and draws itself below. Same
+                    // index `pathRows` put it at, or the ring and the markup part
+                    // company the moment the path check refuses something.
+                    if (i === newFolderAt) return null;
+                    return (
+                      <button
+                        key={p.path}
+                        id={`${recentsId}-${i}`}
+                        type="button"
+                        role="option"
+                        aria-selected={pathAt === i}
+                        className={"schedule-picker-row" + (pathAt === i ? " is-active" : "")}
+                        onMouseEnter={() => setPathAt(i)}
+                        // THE WHOLE PATH WHILE THE POINTER IS ON THE ROW, with no
+                        // delay — pointing at a row IS the question. On focus
+                        // too, so a row reached by Tab is told the same thing.
+                        onPointerEnter={(e) => pathTip.show(e.currentTarget, p.path)}
+                        onPointerLeave={pathTip.hide}
+                        onFocus={(e) => pathTip.show(e.currentTarget, p.path)}
+                        onBlur={pathTip.hide}
+                        onClick={() => pickPath(p)}
+                      >
+                        {ICON_FOLDER}
+                        {/* THE NAME, and the address beside it, muted. The
+                            Explorer's rows print `item.name` and never the
+                            address, because the address is in the field one line
+                            above; a row on THIS list did not come from that line
+                            — it is remembered, or it was searched for — so it says
+                            where it is, quietly.
+
+                            MIDDLE-TRUNCATED, and only as far as it has to be
+                            (`FitPath`, which measures this row): the start says
+                            which part of the machine, the end says which folder,
+                            and the segments in between are the ones every path
+                            here shares. The hover tooltip carries the whole of
+                            it, and so does the span's `aria-label`. */}
+                        <span className="schedule-recents-path">{p.name}</span>
+                        {p.where && (
+                          <FitPath
+                            className="schedule-recents-where"
+                            path={tildePath(p.where, home)}
+                            fullPath={p.path}
+                          />
+                        )}
+                      </button>
+                    );
+                  })}
+                  {/* A SEARCH THAT FOUND NOTHING STILL ANSWERS. Only ever while
+                      SEARCHING: an empty recents list is a card nobody has used
+                      yet, and "No project matches" would be a wrong answer to a
+                      question nobody asked. Same sentence and same shape as the
+                      Tasks page's own project menu. */}
+                  {pathSearching && !pathRows.length && (
+                    <p className="schedule-recents-empty">No project matches</p>
+                  )}
+                  {/* What the typed path IS, answered where the other answers
+                      about folders are — in the dropdown, in the same row shape
+                      as them (Akshil, 2026-08-20: "this UI should be in
+                      dropdown"; it was an inline note under the field that pushed
+                      the rest of the card down as you typed). A BUTTON like every
+                      row around it: it started as an inert status and a click on
+                      it did nothing, which read as broken next to five siblings
+                      that all accept the click. Picking it picks the path the
+                      field already holds, so the click's whole job is to close
+                      the list — same ending as picking any folder above. The
+                      badge carries the fact and the line under it says when it
+                      becomes true, because a badge alone reads as a label on a
+                      folder that is already there.
+
+                      LAST, UNDER THE REMEMBERED FOLDERS, and not first as it was
+                      for one round — see `pathRows` for the ArrowDown-Enter that
+                      created a folder nobody asked for. */}
+                  {newFolderAt >= 0 && (
                     <button
-                      key={p.path}
-                      id={`${recentsId}-${i}`}
                       type="button"
+                      id={newFolderId}
                       role="option"
-                      aria-selected={pathAt === i}
-                      className={"schedule-picker-row" + (pathAt === i ? " is-active" : "")}
-                      onMouseEnter={() => setPathAt(i)}
-                      // THE WHOLE PATH WHILE THE POINTER IS ON THE ROW, with no
-                      // delay — pointing at a row IS the question. On focus
-                      // too, so a row reached by Tab is told the same thing.
-                      onPointerEnter={(e) => pathTip.show(e.currentTarget, p.path)}
-                      onPointerLeave={pathTip.hide}
-                      onFocus={(e) => pathTip.show(e.currentTarget, p.path)}
-                      onBlur={pathTip.hide}
-                      onClick={() => pickPath(p)}
+                      aria-selected={pathAt === newFolderAt}
+                      className={"schedule-picker-row schedule-recents-new"
+                        + (pathAt === newFolderAt ? " is-active" : "")}
+                      onMouseEnter={() => setPathAt(newFolderAt)}
+                      onClick={() => setRecentsOpen(false)}
                     >
                       {ICON_FOLDER}
-                      {/* THE NAME, and the address beside it, muted. The
-                          Explorer's rows print `item.name` and never the
-                          address, because the address is in the field one line
-                          above; a row on THIS list did not come from that line
-                          — it is remembered, or it was searched for — so it says
-                          where it is, quietly.
-
-                          MIDDLE-TRUNCATED, and only as far as it has to be
-                          (`FitPath`, which measures this row): the start says
-                          which part of the machine, the end says which folder,
-                          and the segments in between are the ones every path
-                          here shares. The hover tooltip carries the whole of
-                          it, and so does the span's `aria-label`. */}
-                      <span className="schedule-recents-path">{p.name}</span>
-                      {p.where && (
-                        <FitPath
-                          className="schedule-recents-where"
-                          path={tildePath(p.where, home)}
-                          fullPath={p.path}
-                        />
-                      )}
+                      <span className="schedule-recents-new-text">
+                        <span className="schedule-recents-new-top">
+                          {/* Read out of the ring rather than off `newFolder`
+                              again: one value, so the row and the Enter that
+                              takes it can never name two different folders. */}
+                          <span className="schedule-picker-name"
+                                title={pathRows[newFolderAt]?.path}>
+                            {pathRows[newFolderAt]?.name}
+                          </span>
+                          <span className="schedule-new-badge">New folder</span>
+                        </span>
+                        <span className="schedule-recents-new-why">
+                          Created when the task is saved
+                        </span>
+                      </span>
                     </button>
-                  );
-                })}
-                {/* A SEARCH THAT FOUND NOTHING STILL ANSWERS. Only ever while
-                    SEARCHING: an empty recents list is a card nobody has used
-                    yet, and "No project matches" would be a wrong answer to a
-                    question nobody asked. Same sentence and same shape as the
-                    Tasks page's own project menu. */}
-                {pathSearching && !pathRows.length && (
-                  <p className="schedule-recents-empty">No project matches</p>
-                )}
-                {/* What the typed path IS, answered where the other answers
-                    about folders are — in the dropdown, in the same row shape
-                    as them (Akshil, 2026-08-20: "this UI should be in
-                    dropdown"; it was an inline note under the field that pushed
-                    the rest of the card down as you typed). A BUTTON like every
-                    row around it: it started as an inert status and a click on
-                    it did nothing, which read as broken next to five siblings
-                    that all accept the click. Picking it picks the path the
-                    field already holds, so the click's whole job is to close
-                    the list — same ending as picking any folder above. The
-                    badge carries the fact and the line under it says when it
-                    becomes true, because a badge alone reads as a label on a
-                    folder that is already there.
-
-                    LAST, UNDER THE REMEMBERED FOLDERS, and not first as it was
-                    for one round — see `pathRows` for the ArrowDown-Enter that
-                    created a folder nobody asked for. */}
-                {newFolderAt >= 0 && (
+                  )}
+                  </div>
+                  {/* THE FOOTER — outside the scroller, so it is on screen
+                      whatever the list is doing. */}
+                  <div className="schedule-recents-foot">
+                  {/* A separator ELEMENT, not a border-top on Browse: the border
+                      version sat flush against the row's hover wash and read as
+                      part of the button rather than as the line between the
+                      found paths and the verbs (Akshil, 2026-08-20). Full-bleed
+                      across the panel, the way every menu draws this line. */}
+                  <div className="schedule-recents-sep" role="separator" />
                   <button
                     type="button"
-                    id={newFolderId}
-                    role="option"
-                    aria-selected={pathAt === newFolderAt}
-                    className={"schedule-picker-row schedule-recents-new"
-                      + (pathAt === newFolderAt ? " is-active" : "")}
-                    onMouseEnter={() => setPathAt(newFolderAt)}
-                    onClick={() => setRecentsOpen(false)}
+                    className="schedule-picker-row schedule-recents-browse"
+                    onClick={() => {
+                      setRecentsOpen(false);
+                      openPicker();
+                    }}
                   >
-                    {ICON_FOLDER}
-                    <span className="schedule-recents-new-text">
-                      <span className="schedule-recents-new-top">
-                        {/* Read out of the ring rather than off `newFolder`
-                            again: one value, so the row and the Enter that
-                            takes it can never name two different folders. */}
-                        <span className="schedule-picker-name"
-                              title={pathRows[newFolderAt]?.path}>
-                          {pathRows[newFolderAt]?.name}
-                        </span>
-                        <span className="schedule-new-badge">New folder</span>
-                      </span>
-                      <span className="schedule-recents-new-why">
-                        Created when the task is saved
-                      </span>
-                    </span>
+                    {/* The empty icon column, so the verb's label starts on the
+                        same edge as every folder above it (audit 2026-08-16). */}
+                    <span className="schedule-picker-gutter" aria-hidden="true" />
+                    Browse…
                   </button>
-                )}
+                  {/* The second verb, under Browse (Akshil, 2026-08-20). Typing a
+                      name into the field is the fast way to a new folder and
+                      needs no button; this is the way in for someone who does not
+                      yet know it is allowed. It opens the SAME panel Browse does,
+                      already naming — one flow with the picker's own affordance,
+                      not a second one. */}
+                  <button
+                    type="button"
+                    className="schedule-picker-row schedule-recents-mk"
+                    onClick={() => {
+                      setRecentsOpen(false);
+                      openPicker(true);
+                    }}
+                  >
+                    {/* The plus lives in the icon column, where every folder
+                        above carries its glyph — "+ New folder" as label text put
+                        the word on a different edge from every other label in
+                        the list (Akshil, 2026-08-20). */}
+                    {ICON_PLUS}
+                    New folder
+                  </button>
+                  </div>
+                  {/* THE HOVER TOOLTIP, portalled to `<body>` from here —
+                      rendered inside the panel so the list closing takes it with
+                      it, drawn outside every stacking context this modal makes so
+                      nothing can cover it. */}
+                  {pathTip.host}
                 </div>
-                {/* THE FOOTER — outside the scroller, so it is on screen
-                    whatever the list is doing. */}
-                <div className="schedule-recents-foot">
-                {/* A separator ELEMENT, not a border-top on Browse: the border
-                    version sat flush against the row's hover wash and read as
-                    part of the button rather than as the line between the
-                    found paths and the verbs (Akshil, 2026-08-20). Full-bleed
-                    across the panel, the way every menu draws this line. */}
-                <div className="schedule-recents-sep" role="separator" />
-                <button
-                  type="button"
-                  className="schedule-picker-row schedule-recents-browse"
-                  onClick={() => {
-                    setRecentsOpen(false);
-                    openPicker();
-                  }}
-                >
-                  {/* The empty icon column, so the verb's label starts on the
-                      same edge as every folder above it (audit 2026-08-16). */}
-                  <span className="schedule-picker-gutter" aria-hidden="true" />
-                  Browse…
-                </button>
-                {/* The second verb, under Browse (Akshil, 2026-08-20). Typing a
-                    name into the field is the fast way to a new folder and
-                    needs no button; this is the way in for someone who does not
-                    yet know it is allowed. It opens the SAME panel Browse does,
-                    already naming — one flow with the picker's own affordance,
-                    not a second one. */}
-                <button
-                  type="button"
-                  className="schedule-picker-row schedule-recents-mk"
-                  onClick={() => {
-                    setRecentsOpen(false);
-                    openPicker(true);
-                  }}
-                >
-                  {/* The plus lives in the icon column, where every folder
-                      above carries its glyph — "+ New folder" as label text put
-                      the word on a different edge from every other label in
-                      the list (Akshil, 2026-08-20). */}
-                  {ICON_PLUS}
-                  New folder
-                </button>
+              )}
+            </PropPill>
+          )}
+          <PropPill
+            k="When"
+            icon={ICON_CLOCK}
+            ariaLabel="When"
+            value={timePicked
+              ? whenText
+              : <><span className="pp-dot" aria-hidden="true" />Now</>}
+            open={whenOpen}
+            onToggle={() => togglePill("when")}
+            onDismiss={() => dismissPill("when")}
+            pillRef={whenPillRef}
+            popWidth={250}
+            popHeight={whenPane === "presets" ? 250 : 200}
+          >
+            {whenPane === "presets" ? (
+              <>
+                <div className="nt-pop-h">Run</div>
+                <div className="nt-menu" role="menu" aria-label="Run">
+                  {/* NOW is the default and says so with the green dot — the
+                      pill reads the same until somebody states an opinion about
+                      when (`timePicked`). It clears that opinion, so the card
+                      runs immediately and says Create. */}
+                  <button type="button" role="menuitemradio" aria-checked={!timePicked}
+                          onClick={runNow}>
+                    <span className="pp-dot" aria-hidden="true" />
+                    Now
+                    {!timePicked && ICON_CHECK}
+                  </button>
+                  <button type="button" role="menuitem" onClick={() => pickPreset("hour")}>
+                    In an hour
+                  </button>
+                  {tonightLeft && (
+                    <button type="button" role="menuitem" onClick={() => pickPreset("tonight")}>
+                      Tonight at 9:00pm
+                    </button>
+                  )}
+                  <button type="button" role="menuitem" onClick={() => pickPreset("tomorrow")}>
+                    Tomorrow at 9:00am
+                  </button>
+                  <div className="nt-menu-sep" role="separator" />
+                  <button type="button" role="menuitem" onClick={() => setWhenPane("custom")}>
+                    Pick a time…
+                  </button>
+                  <button type="button" role="menuitem" onClick={repeatPane}>
+                    Repeat…
+                  </button>
                 </div>
-                {/* THE HOVER TOOLTIP, portalled to `<body>` from here —
-                    rendered inside the panel so the list closing takes it with
-                    it, drawn outside every stacking context this modal makes so
-                    nothing can cover it. */}
-                {pathTip.host}
-              </div>
+              </>
+            ) : (
+              <>
+                <div className="nt-menu">
+                  <button type="button" onClick={backToPresets}>‹ Back</button>
+                </div>
+                <div className="nt-when-custom">
+                  {/* Google's when-row, its controls included: a date field that
+                      drops a month grid and a time field that drops a 15-minute
+                      list (Akshil, 2026-08-15). Both write into the single `when`
+                      string. Moved here whole from the row that lived under
+                      More options. */}
+                  <div className="schedule-when">
+            <div
+              className="schedule-pop-wrap"
+              onBlur={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node | null))
+                  setDateOpen(false);
+              }}
+              // Escape dismisses the GRID, not the modal around it — same
+              // contract as every other dropdown here.
+              onKeyDown={(e) => {
+                if (e.key === "Escape" && dateOpen) {
+                  e.stopPropagation();
+                  setDateOpen(false);
+                }
+              }}
+            >
+              <button ref={dateBtnRef} type="button"
+                      className="schedule-when-field"
+                      aria-describedby={pastNote ? pastHintId : undefined}
+                      aria-expanded={dateOpen}
+                      onClick={() => { setDateOpen((o) => !o); setTimeOpen(false); }}>
+                {dateLabel}
+              </button>
+              {dateOpen && (
+                <div className="schedule-pop" style={popStyle(dateBtnRef.current, 300)}
+                     onMouseDown={(e) => e.preventDefault()}>
+                  {/* No floor at all now. A past day is a one-off saying "run
+                      this as soon as you can" (design §9), and for a rule it
+                      is legitimate too — it says "start this pattern, and run
+                      the one I missed". The date is still the series' ANCHOR,
+                      which is what makes "monthly on the second Wednesday"
+                      expressible by picking a past second Wednesday; what
+                      changed is that the server no longer waits for the next
+                      future slot to materialize from. It catches up on the
+                      latest past one first (SCH-13b), which is why picking a
+                      past day under a standing Repeat prints a note of its own
+                      rather than nothing. */}
+                  <MiniCalendar
+                    selected={pickedOk ? picked : new Date()}
+                    onPick={(d) => { setDatePart(d); setDateOpen(false); }}
+                  />
+                </div>
+              )}
+            </div>
+            <div
+              className="schedule-pop-wrap"
+              onBlur={(e) => {
+                if (!e.currentTarget.contains(e.relatedTarget as Node | null))
+                  setTimeOpen(false);
+              }}
+            >
+              <input
+                ref={timeRef}
+                type="text"
+                className="schedule-when-field schedule-when-time"
+                aria-describedby={pastNote ? pastHintId : undefined}
+                aria-expanded={timeOpen}
+                aria-label="Time"
+                value={timeText}
+                onFocus={(e) => { setTimeOpen(true); setDateOpen(false); e.target.select(); }}
+                onChange={(e) => setTimeText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") { commitTimeText(); setTimeOpen(false); }
+                  if (e.key === "Escape" && timeOpen) { e.stopPropagation(); setTimeOpen(false); }
+                }}
+                onBlur={commitTimeText}
+              />
+              {timeOpen && (
+                <div className="schedule-pop schedule-pop--time"
+                     style={popStyle(timeRef.current, 208)}
+                     onMouseDown={(e) => e.preventDefault()}>
+                  <TimeList
+                    selected={{ h: pickedOk ? picked.getHours() : 9, m: pickedOk ? picked.getMinutes() : 0 }}
+                    onPick={(h, m) => { setTimePart(h, m); setTimeOpen(false); }}
+                  />
+                </div>
+              )}
+            </div>
+                  </div>
+                  {/* Repeat is a tick on the when-row, not a dropdown that is
+                      always open (design §6): most tasks run once. Unticking
+                      clears the rule outright — see toggleRepeat. */}
+                  <CheckField
+                    className="new-task-check--repeat"
+                    label="Repeat"
+                    checked={repeatOn}
+                    onChange={toggleRepeat}
+                  />
+                  {repeatOn && (
+            <div className="schedule-form-line schedule-form-line--sub">
+              <Dropdown
+                ariaLabel="Repeats"
+                className="schedule-repeat"
+                value={repeatLabel}
+                options={[
+                  // "Does not repeat" is gone from the menu: the tick above IS
+                  // that answer now, and a dropdown that can contradict the
+                  // checkbox it hangs from is two controls for one question.
+                  ...choices
+                    .filter((c) => c.key !== "none")
+                    .map((c) =>
+                      c.key === "custom" && repeat === "custom" && customRule
+                        ? { key: "custom", label: describeRule(customRule, pickedOk ? picked : new Date()) }
+                        : { key: c.key, label: c.label },
+                    ),
+                  // Legacy cron templates keep their line under a key of their
+                  // own — the form no longer writes cron, but editing one must
+                  // not silently rewrite the rule.
+                  ...(legacyCron ? [{ key: "cron", label: describeRepeats(legacyCron) }] : []),
+                ]}
+                onPick={(v) => {
+                  if (v === "custom") {
+                    // The dialog answers what "Custom…" means; the choice only
+                    // commits once Done says so. One side panel at a time — the
+                    // recurrence panel takes Browse's spot beside the card.
+                    repeatBefore.current = repeat;
+                    openRecur();
+                    setRepeat("custom");
+                  } else {
+                    setRepeat(v);
+                    // A non-custom pick makes an open recurrence panel moot.
+                    if (recurOpen) closeRecur();
+                  }
+                }}
+              />
+              {/* A task IS a Claude session, so a repeating task sends every run
+                  into its own thread by construction — that is the default and
+                  needs no flag. This is the opt-OUT: tick it and each occurrence
+                  mints a fresh task, with a session and a TASK-nnn of its own
+                  (design §6).
+
+                  "FRESH", not "New" (Akshil, 2026-08-18): the card's own button says
+                  New task, so "New task each run" read as a second thing the form
+                  could create rather than as what this run's thread does. The flag,
+                  the wire (`new_task_each_run`) and the behaviour are untouched —
+                  this is the word the user reads. */}
+              <CheckField
+                label="Fresh task each run"
+                checked={newTaskEachRun}
+                onChange={setNewTaskEachRun}
+                describedBy={threadHintId}
+              />
+            </div>
+                  )}
+                </div>
+              </>
             )}
-          </div>
+          </PropPill>
         </div>
-        )}
-        {!lockTarget && pathError && (
-          <span id={pathErrorId} className="field-hint schedule-form-bad schedule-form-sub"
-                role="alert">
-            {pathError}
-          </span>
-        )}
+        {/* EVERY LINE THE ROWS USED TO PRINT UNDER THEMSELVES, in one place: the
+            path's refusal, who runs the task, what leaving the session costs,
+            the past-time note, the thread a repeat writes into, and the error.
+            Flush left — the 26px icon gutter they hung from went with the
+            icons. Same ids, same conditions; the box vanishes when empty. */}
+        <div className="nt-notes">
+          {!lockTarget && pathError && (
+            <span id={pathErrorId} className="field-hint schedule-form-bad schedule-form-sub"
+                  role="alert">
+              {pathError}
+            </span>
+          )}
+          {agentNamed(agent) && (
+            <span className="field-hint schedule-form-sub new-task-agent">
+              {target.trim()
+                ? `${agentLabel(agent)} will run this task in ${leafOf(target.trim())}`
+                : `${agentLabel(agent)} will run this task`}
+            </span>
+          )}
+          {/* …AND WHAT THAT COSTS when the card came out of another agent's
+              conversation: the task starts a fresh one (see `continuesSession`),
+              which must be said here, before Create, not discovered after. */}
+          {leavesSession && (
+            <span className="field-hint schedule-form-sub new-task-agent">
+              {sessionAgent
+                ? `Starts a new ${agentLabel(agent)} conversation — the ${agentLabel(sessionAgent)} one is not continued.`
+                : `Starts a new ${agentLabel(agent)} conversation — the one this came from is not continued.`}
+            </span>
+          )}
+          {/* Not a refusal any more: past-due work is queued and runs when the
+              app next opens (design §9), so this says what will happen instead
+              of asking for a different answer. WHICH of the two things it says is
+              pastNoteFor's decision — a repeat's past anchor gets its own
+              sentence, because SCH-13b makes it one catch-up run and then the
+              pattern, not "as soon as it can" full stop.
+
+              One element for both wordings, so it keeps the id the date and time
+              fields point `aria-describedby` at. `role="status"` earns its keep
+              twice over — ticking Repeat rewrites this line in place, and a
+              silent swap is the one thing worse than no line. */}
+          {pastNote && (
+            <span id={pastHintId} className="field-hint new-task-past schedule-form-sub"
+                  role="status">
+              {pastNote}
+            </span>
+          )}
+          {/* The thread this repeat writes into, said out loud: a task IS a Claude
+              session, so every run lands in the same chat — and an edit that
+              silently dropped that chat cost the user everything it had built
+              with nothing on screen to notice. */}
+          {repeatOn && (
+            <span id={threadHintId} className="field-hint schedule-form-sub new-task-thread">
+              {newTaskEachRun
+                ? "Each run starts a new chat."
+                : learnedSession
+                  ? "Every run adds to the chat this task has already started."
+                  : "Every run adds to the same chat."}
+            </span>
+          )}
+          {error && <ErrorBanner>{error}</ErrorBanner>}
+        </div>
         {picking && (
           // Slides in BESIDE the card (position:fixed; the card shifts left
           // via the :has() rule in schedule.css) — inside the card it was
@@ -5166,8 +5908,7 @@ export default function NewJobModal({
             // the confirmation; the field now shows the path, and the list is
             // one click away if anyone wants the verdict row too.
             onName={() => {
-              suppressOpen.current = true;
-              window.setTimeout(() => pathRef.current?.focus(), 0);
+              if (!recentsOpen) togglePill("where");
             }}
             onClose={() => {
               closePicker();
@@ -5176,7 +5917,6 @@ export default function NewJobModal({
             closing={pickingOut}
           />
         )}
-
         {recurOpen && (
           <CustomRecurrence
             initial={customRule}
@@ -5197,342 +5937,6 @@ export default function NewJobModal({
             closing={recurOut}
           />
         )}
-
-        {/* WHEN, and everything that hangs off it, now lives HERE (Akshil,
-            2026-08-23) — open from the start when the card is being used to
-            plan (`planning`: the calendar, a slot click, an edit) and folded
-            away otherwise. A task typed on the List or the Board is
-            overwhelmingly one to run, and the when-row was a field everybody
-            scrolled past to reach Save; behind the disclosure it costs one
-            click for the people who want it and nothing at all for the people
-            who do not. The row is unchanged — same controls, same rules — it
-            has only moved. */}
-        {/* WHO RUNS IT, AND WHERE (D18) — said whenever there is an agent to
-            tell apart, so the card's one hidden choice is never a surprise. */}
-        {agentNamed(agent) && (
-          <span className="field-hint schedule-form-sub new-task-agent">
-            {target.trim()
-              ? `${agentLabel(agent)} will run this task in ${leafOf(target.trim())}`
-              : `${agentLabel(agent)} will run this task`}
-          </span>
-        )}
-        {/* …AND WHAT THAT COSTS when the card came out of another agent's
-            conversation: the task starts a fresh one (see `continuesSession`),
-            which must be said here, before Create, not discovered after. */}
-        {leavesSession && (
-          <span className="field-hint schedule-form-sub new-task-agent">
-            {sessionAgent
-              ? `Starts a new ${agentLabel(agent)} conversation — the ${agentLabel(sessionAgent)} one is not continued.`
-              : `Starts a new ${agentLabel(agent)} conversation — the one this came from is not continued.`}
-          </span>
-        )}
-        <details className="schedule-form-more" open={moreOpen}
-                 onToggle={(e) => setMoreOpen(e.currentTarget.open)}>
-          {/* The disclosure is a QUIET row, not a button: secondary text and a
-              chevron, the same object the task list opens its threads with
-              (`tasks-caret`). It used to be accent yellow, which made the one
-              thing on the card the user rarely needs the loudest thing on it —
-              and the accent belongs to Save. The chevron is drawn here rather
-              than as a CSS glyph so it is the app's own mark at the app's own
-              weight: a text triangle sat on the baseline while the label sat on
-              its x-height, which is the misalignment no amount of nudging fixed.
-              It rotates 90° on open (▸ → ▾), so the row is one object that
-              turns. */}
-          <summary>
-            <span className="schedule-form-more-caret" aria-hidden="true">
-              {ICON_CHEVRON}
-            </span>
-            More options
-          </summary>
-          {/* Google's when-row, its controls included: a date field that drops
-              a month grid and a time field that drops a 15-minute list (Akshil,
-              2026-08-15). Both write into the single `when` string. */}
-          <div className="schedule-form-line">
-            {ICON_CLOCK}
-            <div className="schedule-when">
-              <div
-                className="schedule-pop-wrap"
-                onBlur={(e) => {
-                  if (!e.currentTarget.contains(e.relatedTarget as Node | null))
-                    setDateOpen(false);
-                }}
-                // Escape dismisses the GRID, not the modal around it — same
-                // contract as every other dropdown here.
-                onKeyDown={(e) => {
-                  if (e.key === "Escape" && dateOpen) {
-                    e.stopPropagation();
-                    setDateOpen(false);
-                  }
-                }}
-              >
-                <button ref={dateBtnRef} type="button"
-                        className="schedule-when-field"
-                        aria-describedby={pastNote ? pastHintId : undefined}
-                        aria-expanded={dateOpen}
-                        onClick={() => { setDateOpen((o) => !o); setTimeOpen(false); }}>
-                  {dateLabel}
-                </button>
-                {dateOpen && (
-                  <div className="schedule-pop" style={popStyle(dateBtnRef.current, 300)}
-                       onMouseDown={(e) => e.preventDefault()}>
-                    {/* No floor at all now. A past day is a one-off saying "run
-                        this as soon as you can" (design §9), and for a rule it
-                        is legitimate too — it says "start this pattern, and run
-                        the one I missed". The date is still the series' ANCHOR,
-                        which is what makes "monthly on the second Wednesday"
-                        expressible by picking a past second Wednesday; what
-                        changed is that the server no longer waits for the next
-                        future slot to materialize from. It catches up on the
-                        latest past one first (SCH-13b), which is why picking a
-                        past day under a standing Repeat prints a note of its own
-                        rather than nothing. */}
-                    <MiniCalendar
-                      selected={pickedOk ? picked : new Date()}
-                      onPick={(d) => { setDatePart(d); setDateOpen(false); }}
-                    />
-                  </div>
-                )}
-              </div>
-              <div
-                className="schedule-pop-wrap"
-                onBlur={(e) => {
-                  if (!e.currentTarget.contains(e.relatedTarget as Node | null))
-                    setTimeOpen(false);
-                }}
-              >
-                <input
-                  ref={timeRef}
-                  type="text"
-                  className="schedule-when-field schedule-when-time"
-                  aria-describedby={pastNote ? pastHintId : undefined}
-                  aria-expanded={timeOpen}
-                  aria-label="Time"
-                  value={timeText}
-                  onFocus={(e) => { setTimeOpen(true); setDateOpen(false); e.target.select(); }}
-                  onChange={(e) => setTimeText(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") { commitTimeText(); setTimeOpen(false); }
-                    if (e.key === "Escape" && timeOpen) { e.stopPropagation(); setTimeOpen(false); }
-                  }}
-                  onBlur={commitTimeText}
-                />
-                {timeOpen && (
-                  <div className="schedule-pop schedule-pop--time"
-                       style={popStyle(timeRef.current, 208)}
-                       onMouseDown={(e) => e.preventDefault()}>
-                    <TimeList
-                      selected={{ h: pickedOk ? picked.getHours() : 9, m: pickedOk ? picked.getMinutes() : 0 }}
-                      onPick={(h, m) => { setTimePart(h, m); setTimeOpen(false); }}
-                    />
-                  </div>
-                )}
-              </div>
-            </div>
-            {/* Repeat is a tick on the when-row, not a dropdown that is always
-                open (design §6): most tasks run once, and the menu they never
-                use was the loudest thing under the time. Unticking clears the
-                rule outright — see toggleRepeat. */}
-            <CheckField
-              className="new-task-check--repeat"
-              label="Repeat"
-              checked={repeatOn}
-              onChange={toggleRepeat}
-            />
-          </div>
-          {/* Not a refusal any more: past-due work is queued and runs when the
-              app next opens (design §9), so this says what will happen instead
-              of asking for a different answer. WHICH of the two things it says is
-              pastNoteFor's decision — a repeat's past anchor gets its own
-              sentence, because SCH-13b makes it one catch-up run and then the
-              pattern, not "as soon as it can" full stop.
-
-              One element for both wordings, so it keeps the id the date and time
-              fields point `aria-describedby` at, and stays directly under the row
-              it is about: printed after the repeat row it read as a complaint
-              about the recurrence rule (audit 2026-08-16). `role="status"` earns
-              its keep twice over now — ticking Repeat rewrites this line in
-              place, and a silent swap is the one thing worse than no line. */}
-          {pastNote && (
-            <span id={pastHintId} className="field-hint new-task-past schedule-form-sub"
-                  role="status">
-              {pastNote}
-            </span>
-          )}
-          {repeatOn && (
-          <>
-          <div className="schedule-form-line schedule-form-line--sub">
-            <Dropdown
-              ariaLabel="Repeats"
-              className="schedule-repeat"
-              value={
-                repeat === "custom" && customRule
-                  ? describeRule(customRule, pickedOk ? picked : new Date())
-                  : repeat === "cron"
-                    ? describeRepeats(legacyCron)
-                    : choices.find((c) => c.key === repeat)?.label ?? "Does not repeat"
-              }
-              options={[
-                // "Does not repeat" is gone from the menu: the tick above IS
-                // that answer now, and a dropdown that can contradict the
-                // checkbox it hangs from is two controls for one question.
-                ...choices
-                  .filter((c) => c.key !== "none")
-                  .map((c) =>
-                    c.key === "custom" && repeat === "custom" && customRule
-                      ? { key: "custom", label: describeRule(customRule, pickedOk ? picked : new Date()) }
-                      : { key: c.key, label: c.label },
-                  ),
-                // Legacy cron templates keep their line under a key of their
-                // own — the form no longer writes cron, but editing one must
-                // not silently rewrite the rule.
-                ...(legacyCron ? [{ key: "cron", label: describeRepeats(legacyCron) }] : []),
-              ]}
-              onPick={(v) => {
-                if (v === "custom") {
-                  // The dialog answers what "Custom…" means; the choice only
-                  // commits once Done says so. One side panel at a time — the
-                  // recurrence panel takes Browse's spot beside the card.
-                  repeatBefore.current = repeat;
-                  openRecur();
-                  setRepeat("custom");
-                } else {
-                  setRepeat(v);
-                  // A non-custom pick makes an open recurrence panel moot.
-                  if (recurOpen) closeRecur();
-                }
-              }}
-            />
-            {/* A task IS a Claude session, so a repeating task sends every run
-                into its own thread by construction — that is the default and
-                needs no flag. This is the opt-OUT: tick it and each occurrence
-                mints a fresh task, with a session and a TASK-nnn of its own
-                (design §6).
-
-                "FRESH", not "New" (Akshil, 2026-08-18): the card's own button says
-                New task, so "New task each run" read as a second thing the form
-                could create rather than as what this run's thread does. The flag,
-                the wire (`new_task_each_run`) and the behaviour are untouched —
-                this is the word the user reads. */}
-            <CheckField
-              label="Fresh task each run"
-              checked={newTaskEachRun}
-              onChange={setNewTaskEachRun}
-              describedBy={threadHintId}
-            />
-          </div>
-          {/* The thread this repeat writes into, said out loud. It is the one
-              thing about a repeating task that was invisible: a task IS a
-              session, so every run lands in the same chat — and an edit that
-              silently dropped that chat cost the user everything it had built
-              with nothing on screen to notice. Editing a task that already has
-              a thread says so in particular, because THAT is the sentence worth
-              reading before you change anything. */}
-          <span id={threadHintId} className="field-hint schedule-form-sub new-task-thread">
-            {newTaskEachRun
-              ? "Each run starts a new chat."
-              : learnedSession
-                ? "Every run adds to the chat this task has already started."
-                : "Every run adds to the same chat."}
-          </span>
-          </>
-          )}
-          {/* Inside the same 26px icon gutter every other control hangs from —
-              the details block was flush with the card edge, so the one control
-              behind it was the only one in the form that did not line up
-              (audit 2026-08-16). */}
-          {/* THE AGENT FIRST (D18), and only while there is a choice: the
-              Permissions, Model and Thinking under it are that agent's. A card
-              out of a session opens on that session's agent and may still
-              pick another — the task then starts fresh there (`continuesSession`). */}
-          {agents.backends.length >= 2 && (
-            <div className="field schedule-form-sub">
-              <span className="field-label">Agent</span>
-              <Dropdown
-                ariaLabel="Agent"
-                value={agentLabel(agent)}
-                options={agents.backends.map((b) => ({ key: b.id, label: b.label }))}
-                onPick={pickBackend}
-              />
-            </div>
-          )}
-          <div className="field schedule-form-sub">
-            <span className="field-label">Permissions</span>
-            <Dropdown
-              ariaLabel="Permissions"
-              value={permissionLabel(permission)}
-              // The KEY is what gets submitted; the label is only how the mode
-              // is said. The raw keys ("acceptEdits") were the server's
-              // vocabulary printed at the user (audit 2026-08-16), and an
-              // unknown key still shows itself rather than being hidden.
-              options={(permissionModes.length ? permissionModes : ["auto"])
-                // No plan mode for an agent without one (§7 `plan_mode`).
-                .filter((m) => m !== "plan" || capsOf(agent).plan_mode)
-                .map((m) => ({
-                key: m,
-                label: permissionLabel(m),
-              }))}
-              onPick={setPermission}
-            />
-            <span className="field-hint">
-              The task runs unattended. Auto approves safe actions and holds the rest.
-            </span>
-          </div>
-          {/* WHICH Claude, and HOW HARD — the same two things the chat's
-              composer row asks with pills, asked here as fields because this
-              card is a form and the row is a toolbar.
-
-              They live at the BOTTOM of More options, under Permissions, and
-              that is the whole reason they are askable at all rather than
-              prominent: a model is the rarest thing anyone changes about a
-              task, and both default to "Default", which sends nothing and lets
-              the session detect the project's own config. Nothing about them
-              appears on the task row or the calendar chip (design: the card
-              asks, the list stays quiet) — the only other place they surface is
-              this same card reopened on an edit, prefilled.
-
-              ONE ROW, two equal columns (Akshil, 2026-09-03). They are one
-              decision read together — "Fable, thinking high" is the
-              sentence — and stacking them spent two full rows of the card's
-              least-used section saying half of it each. Permissions stays on
-              its own line above: it is a policy with a consequence to explain,
-              and these two are a pair of names.
-
-              Neither carries a hint any more. Model's ("Default lets the run
-              use whatever this project already uses") restated what the word
-              Default already says, and one hint under one of a pair of side-by-
-              side fields lands as a note about the pair. */}
-          <div className="schedule-form-sub new-task-run-pair">
-            <div className="field">
-              <span className="field-label">Model</span>
-              <Dropdown
-                ariaLabel="Model"
-                value={taskRunLabel(runModels, model)}
-                // Same contract as Permissions above: the KEY is submitted, the
-                // label is only how it is said. `taskRunOptions` is what keeps
-                // an unrecognised stored value selectable instead of silently
-                // resetting the task to the default on the next edit.
-                options={taskRunOptions(runModels, model)}
-                onPick={pickModel}
-              />
-            </div>
-            <div className="field">
-              {/* "Thinking", not "Effort" (the CLI's word for the flag): the
-                  flag is `--effort`, but what the user is choosing is how long
-                  Claude gets to think before it acts, and the chat's own pill
-                  says the same thing. The wire is untouched — this is the
-                  label. */}
-              <span className="field-label">Thinking</span>
-              <Dropdown
-                ariaLabel="Thinking"
-                value={taskRunLabel(runEfforts, effort)}
-                options={taskRunOptions(runEfforts, effort)}
-                onPick={pickEffort}
-              />
-            </div>
-          </div>
-        </details>
-
-        {error && <ErrorBanner>{error}</ErrorBanner>}
       </div>
     </Modal>
   );

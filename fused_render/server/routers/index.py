@@ -915,6 +915,22 @@ def startup_warm() -> None:
                      daemon=True).start()
 
 
+def start_startup_scan_and_warm(start_dir) -> threading.Thread:
+    """The create_app hook for the non-low-impact path: the startup scan (prune,
+    one `runner.start` per root) and then the warm, on ONE detached daemon
+    thread, so the startup handler returns at once and serving is not held up
+    by index housekeeping. Order is kept: the warm reads the runs the scan
+    registered. Neither step raises."""
+
+    def _run():
+        run_startup_scan(start_dir)
+        run_startup_warm()
+
+    t = threading.Thread(target=_run, name="index-startup", daemon=True)
+    t.start()
+    return t
+
+
 # --------------------------------------------------------- activity job bridge
 
 # Re-indexing is a server-owned Job (jobs.SERVER_ID_PREFIX, "sys:"), the same

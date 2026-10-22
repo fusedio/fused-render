@@ -1,10 +1,17 @@
 """GitHub Copilot CLI as a backend. Facts verified against Copilot CLI
-1.0.98 on 2026-10-16 (docs/COPILOT_BACKEND.md §verified):
+1.0.98 on 2026-10-16 and 1.0.102 on 2026-10-22 (docs/COPILOT_BACKEND.md
+§verified):
 
 * driven over ACP (`copilot --acp`, JSON-RPC on stdio) by
   `claude_agent/copilot_host.py`; never `copilot -p` for a session;
 * model and reasoning effort are spawn-time only (ACP exposes no model
   option), so a model change respawns and `session/load`s;
+* 1.0.102 fails `session/new` when `--reasoning-effort` is given with
+  `auto` ("Reasoning effort is not supported when using the "auto" model")
+  or with either Claude model ("does not support reasoning effort
+  configuration"); the GPT and Gemini ids accept every level, and 1.0.98
+  accepted all 42 model × effort pairs. ACP has no `models.list` to ask, so
+  `Model.reasoning` records it and `agent._copilot_argv` drops the flag;
 * `allow_all` and the session mode CAN be switched live
   (`session/set_config_option`, `session/set_mode`);
 * no `ask_user` tool, no background tasks, no file-history checkpoints the
@@ -25,13 +32,16 @@ import shlex
 from fused_render.agent_backends.base import Backend, Caps, Model
 
 MODELS = (
-    Model("auto", "Auto (Copilot picks)"),
+    Model("auto", "Auto (Copilot picks)", reasoning=False),
     Model("gpt-5.4", "GPT-5.4"),
     Model("gpt-5.4-mini", "GPT-5.4 mini"),
-    Model("claude-sonnet-4.5", "Claude Sonnet 4.5 (via Copilot)"),
-    Model("claude-opus-4.5", "Claude Opus 4.5 (via Copilot)"),
+    Model("claude-sonnet-4.5", "Claude Sonnet 4.5 (via Copilot)", reasoning=False),
+    Model("claude-opus-4.5", "Claude Opus 4.5 (via Copilot)", reasoning=False),
     Model("gemini-3-pro", "Gemini 3 Pro (via Copilot)"),
 )
+#: The ids `_copilot_argv` must not pair with `--reasoning-effort`. A COPY
+#: lives in agent.py (`_COPILOT_NO_EFFORT_MODELS`), pinned equal by a test.
+NO_EFFORT_MODELS = tuple(m.id for m in MODELS if not m.reasoning)
 
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 #: No plan mode (D12/Q2): ACP has a plan mode but no card to approve a plan.

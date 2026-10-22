@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
@@ -7,9 +7,8 @@ name = "fused-render"
 dynamic = ["version"]
 description = "Local file explorer with Python-powered renderable HTML previews"
 readme = "README.md"
-# license: intentionally unset pending the public-launch licensing decision —
-# add it (plus the matching classifier and a LICENSE file) before any PyPI
-# publish.
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 keywords = ["file-explorer", "preview", "data-viz", "duckdb", "geospatial", "html"]
 classifiers = [
@@ -72,7 +71,7 @@ dependencies = [
     # deploy, share and MCP features need on top. The version must match that
     # extra's pin (tests/test_bundle_contents.py checks it), so the base
     # engine and the full one are the same build.
-    "fused==2.9.3b11",
+    "fused==2.9.3b12",
 ]
 
 [project.optional-dependencies]
@@ -302,7 +301,7 @@ hf = [
 # WARNS on an unknown extra, so tests/test_bundle_contents.py checks that every
 # extra named here is one the installed `fused` provides.
 fused = [
-    'fused[aws,mcp]==2.9.3b11 ; python_version >= "3.11"',
+    'fused[aws,mcp]==2.9.3b12 ; python_version >= "3.11"',
     'anthropic>=0.40.0 ; python_version >= "3.11"',
     # Platform-conditional ceiling (LEAN_WHEEL_SPEC.md item 1). fused-render
     # does not use cryptography itself, but `pyjwt[crypto]` from both
@@ -323,12 +322,16 @@ fused = [
 # imports PIL unguarded and `[desktop]` only installs it on Linux.
 cli = [
     "pillow<13",
+    # Fast HTTP request parser for the local uvicorn server (logs.uvicorn_fast_kwargs).
+    "httptools>=0.6.3",
     "fused-render[index,data,hf,fused]",
 ]
 # `[cli]` plus the native desktop integrations; every packaged build and `[dev]`
 # include it. pillow is repeated because `[desktop]` only brings it on Linux.
 all = [
     "pillow<13",
+    # Fast HTTP request parser for the local uvicorn server (logs.uvicorn_fast_kwargs).
+    "httptools>=0.6.3",
     "fused-render[index,data,desktop,hf,fused]",
 ]
 # ---------------------------------------------------------------------------
@@ -388,6 +391,7 @@ linux-desktop = [
 Homepage = "https://github.com/fusedio/fused-render"
 Repository = "https://github.com/fusedio/fused-render"
 Releases = "https://github.com/fusedio/fused-render/releases"
+Issues = "https://github.com/fusedio/fused-render/issues"
 
 [project.scripts]
 fused-render = "fused_render.cli:main"
@@ -447,8 +451,8 @@ allow-direct-references = true
 [tool.hatch.build.targets.wheel]
 packages = ["fused_render"]
 # The Chromium engine's native sources (ObjC++, CMake) are built by
-# fused_render/chromium/native/build.sh from a checkout into a separately
-# downloaded artifact; the wheel and the app ship only manifest.json.
+# fused_render/chromium/native/build.sh from a checkout; build_dmg.sh seats
+# the result in the app bundle (D1415). The wheel ships only manifest.json.
 exclude = ["fused_render/chromium/native/**"]
 # The Vite-built shell is gitignored (D54) but must ship in the wheel;
 # `artifacts` overrides hatchling's VCS-based exclusion for it. The starter

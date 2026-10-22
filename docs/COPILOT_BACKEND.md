@@ -118,7 +118,14 @@ claude_enabled(), copilot_enabled(), default_backend() -> "claude" unless stored
   control requests are never held → `session/cancel` immediately.
 - **D7** `--model`, `--reasoning-effort` at spawn only. `_send` returns
   `{respawn: True}` when model differs and `caps.live_model_switch` is False (same
-  path effort already takes); new host resumes with `session/load`.
+  path effort already takes); new host resumes with `session/load`. **1.0.102**
+  (verified 2026-10-22, all 42 model × effort pairs probed): `session/new` fails
+  with `--reasoning-effort` for `auto` and both Claude ids; GPT and Gemini
+  accept every level; 1.0.98 accepted all. `Model.reasoning=False` marks those
+  and `_copilot_argv` drops the flag for them (an uncataloged id passes
+  through). The UI still offers and defaults an effort for them; the spawn
+  discards it. `--add-dir` is emitted only for directories that exist (both
+  versions exit at startup otherwise; SHOTS is created on first screenshot).
 - **D8** System prompt via generated `run_dir/plugin/{plugin.json,
   agents/fused.agent.md}` + `--agent fused:fused`; `skills/` symlinked from the
   fused skill plugin (and workbench plugin for canvases). Slash commands from

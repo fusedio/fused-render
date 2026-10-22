@@ -31,10 +31,11 @@ export function parseSeenMap(raw: string | null): Record<string, number> {
 
 /** Events past "seen", system notes excluded; 0 for a bot never opened. A hand-off result (role done, docs §11) counts like
  *  any done; the hand-off "Asked …" / "Sent to Super Bot" lines are system rows and do not. Falls back to the raw seq gap when trimmed history no longer covers the range. */
-export function unreadOf(seen: number | undefined, evs: BotEvent[], b: Pick<Bot, "seq">): number {
+export function unreadOf(seen: number | undefined, evs: BotEvent[], b: Pick<Bot, "seq" | "news_seq">): number {
   if (seen == null) return 0;  // never opened: nothing to catch up on
   // Delivery rows (docs §10 D12) are bookkeeping joined to a bubble, not a message: a texted reply is one new item, not two.
-  return evs.some((e) => e.seq > seen) ? evs.filter((e) => e.seq > seen && e.role !== "system" && e.role !== "delivery").length : Math.max(0, b.seq - seen);
+  // The fallback stops at the newest message row (`news_seq`, same rule server-side) when the server says it.
+  return evs.some((e) => e.seq > seen) ? evs.filter((e) => e.seq > seen && e.role !== "system" && e.role !== "delivery").length : Math.max(0, (b.news_seq ?? b.seq) - seen);
 }
 
 /** Your own messages are never "new" to you; system notes never show in the thread. */

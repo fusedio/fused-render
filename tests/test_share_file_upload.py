@@ -224,8 +224,9 @@ def test_publish_over_the_inline_cap_uses_a_finished_uploads_remote(client, tmp_
 
     def fake_run_shim(request, timeout):
         # `_cached_rules` kicks a background `rules` warm-up on an empty cache
-        # (a lean server's first read), and that thread reaches this stub too;
-        # only the publish request is the one under test.
+        # (a lean server's first read), and that thread reaches this stub too —
+        # when it lands after the publish it overwrote the capture (seen on a
+        # loaded CI runner as KeyError: 's3_uri'); only publish is under test.
         if request.get("action") != "publish":
             return {"rules": []}, None
         captured["request"] = request
@@ -351,6 +352,8 @@ def test_publish_still_accepts_the_uploads_own_matching_id(client, tmp_path, mon
     seed(file_id, done=0, result={"remote": "fd://h/x/big.fused", "s3_uri": "s3://b/big.fused"})
 
     def fake_run_shim(request, timeout):
+        if request.get("action") != "publish":
+            return {"rules": []}, None  # the background rules warm-up (above)
         return {"url": "https://udf.fused.ai/tok/big.html", "canvas_id": "c1",
                 "canvas_name": "big_abc123", "share_token": "tok", "slug": "big_abc123",
                 "remote": "fd://h/x/big.fused", "workbench_url": "https://x"}, None

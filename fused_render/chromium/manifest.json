@@ -1,20 +1,6 @@
 {
-  "_comment": "The pinned Chromium engine artifact. `engine_version` is OUR wrapper framework's version (bumped on every native change); `cef_version` is the CEF binary distribution it was built against (cef-builds.spotifycdn.com). `sha256`/`size` are filled in by scripts/publish_chromium_engine.py after the artifact is uploaded to the release named in base_url; null means not published yet, and the preference reports the engine as unavailable. See docs/CHROMIUM_ENGINE.md. `cef_sha1` is the SHA-1 the CDN publishes beside each CEF tarball, copied here so build.sh verifies what it fetched (and its cache) against a value the repository controls.",
-  "engine_version": "6",
+  "_comment": "What the Chromium engine is built against. `cef_version` is the CEF binary distribution (cef-builds.spotifycdn.com) native/build.sh fetches and the app's engine.json must name; `cef_sha1` is the SHA-1 the CDN publishes beside each tarball, copied here so build.sh verifies what it fetched (and its cache) against a value the repository controls. x86_64 is null: Intel Macs ship no engine (owner, 2026-10-21). The engine ships inside the DMG (D1415, docs/CHROMIUM_ENGINE.md); there is no separate artifact or version.",
   "cef_version": "139.0.37+gb457b0b+chromium-139.0.7258.139",
-  "base_url": "https://github.com/fusedio/fused-render/releases/download/chromium-engine-6/",
-  "artifacts": {
-    "arm64": {
-      "file": "FusedChromium-6-arm64.zip",
-      "sha256": "5d86a95ae71eeee9a0fbd54294e22d8debbeca7f41506f990819986b82d40766",
-      "size": 122564141
-    },
-    "x86_64": {
-      "file": "FusedChromium-6-x86_64.zip",
-      "sha256": null,
-      "size": null
-    }
-  },
   "cef_sha1": {
     "arm64": "40f3c125e98223efa3616f9049f7e3a11e173e4f",
     "x86_64": null

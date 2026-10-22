@@ -860,6 +860,8 @@ function TaskCard({
             chatOnly
             compact
             paramsSource="memory"
+            // Same as the peek: removing the worktree stays on the tasks page.
+            {...(onReload ? { onWorktreeRemoved: onReload } : {})}
           />
         ) : resolving ? (
           <ChatFramePlaceholder />
@@ -1103,6 +1105,8 @@ function TaskPeek({
           onEscape={onClose}
           focusRef={boxRef}
           onReady={() => setChatReady((n) => n + 1)}
+          // Same as the side peek: removing the worktree stays on the page.
+          {...(onReload ? { onWorktreeRemoved: onReload } : {})}
         />
       ) : resolving ? (
         <ChatFramePlaceholder />

@@ -1397,6 +1397,11 @@ export function TaskPeek({
                 // this panel's own listener sees it, so the blur-first rule has
                 // to be applied here too (see `escapeOrBlur`).
                 onEscape={() => escapeOrBlur(document)}
+                // REMOVING THE WORKTREE STAYS ON THIS PAGE (bug report,
+                // 2026-10-22: it used to leave for the explorer, the landing
+                // the explorer's own chat wants). The rows are re-read so the
+                // task's folder registers as missing and this body says so.
+                {...(onReload ? { onWorktreeRemoved: onReload } : {})}
                 // FOCUS STAYS ON THE TRIGGER (design.md, Keyboard — Notion's
                 // behaviour): the peek is a place to look first and type
                 // second, and a panel that steals the caret makes the next

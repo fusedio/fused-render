@@ -127,11 +127,17 @@ export interface TroubleViewProps {
 /** `SAID` with the AGENT named (D18): "Claude Code" is the CLI's own name and
  *  "Claude" the agent's, so the two words swap separately. The Claude row is
  *  the constant above, untouched. */
+/** Each other agent's two words: its CLI's name, and its own. */
+const AGENT_WORDS: Record<string, { cli: string; agent: string }> = {
+  copilot: { cli: "Copilot CLI", agent: "Copilot" },
+  codex: { cli: "Codex CLI", agent: "Codex" },
+};
+
 function saidFor(kind: TroubleKind, backend: string): { title: string; explain: string } | undefined {
   const row = SAID[kind];
-  if (!row || backend !== "copilot") return row;
-  const cli = "Copilot CLI";
-  const swap = (s: string) => s.replace(/Claude Code/g, cli).replace(/\bClaude\b/g, "Copilot");
+  const words = AGENT_WORDS[backend];
+  if (!row || !words) return row;
+  const swap = (s: string) => s.replace(/Claude Code/g, words.cli).replace(/\bClaude\b/g, words.agent);
   return { title: swap(row.title), explain: swap(row.explain) };
 }
 

@@ -65,6 +65,8 @@ import threading
 import time
 from typing import Any
 
+from fused_render import _platform
+
 logger = logging.getLogger(__name__)
 
 # `projectenv.venv_key_for` returns sha256(...)[:16], so every real key is 16
@@ -544,7 +546,7 @@ def prefer_venv_site_packages(env: dict, python: str) -> dict:
 
 def _venv_python(venv_dir: str) -> str:
     """Where a venv keeps its own interpreter."""
-    return os.path.join(venv_dir, "bin", "python")
+    return _platform.venv_python(venv_dir)
 
 
 def _venv_runs(venv_dir: str) -> bool | None:
@@ -780,6 +782,11 @@ def reset_venv_validation_cache() -> None:
         _GENERATION.clear()
         _REBUILD_ATTEMPTED.clear()
         _BOUND_LOGGED.clear()
+    # A venv rebuilt or extended (`uv sync`, a `.pth`) is something an
+    # interpreter started before the change cannot see: drop the spares.
+    from . import warm_run
+
+    warm_run.discard_all("venv validation cache reset")
 
 
 def is_installed(project_dir: str) -> bool:
@@ -1153,7 +1160,7 @@ def _pid_alive(pid: int) -> bool:
         except OSError:
             pass
     try:
-        os.kill(pid, 0)
+        _platform.probe_pid(pid)
     except ProcessLookupError:
         return False
     except OSError:
@@ -1172,22 +1179,7 @@ def _kill(pid: int) -> bool:
     server down. (It did exactly that to a pytest session, which is how the
     guard got here.) Anything not a group leader gets a plain single-pid kill.
     """
-    try:
-        leader = os.getpgid(pid) == pid
-    except OSError:
-        leader = False
-    try:
-        if leader:
-            os.killpg(pid, signal.SIGTERM)
-        else:
-            logger.warning(
-                "install worker pid %s is not a process-group leader, so only it "
-                "(not any download it started) is being killed", pid,
-            )
-            os.kill(pid, signal.SIGTERM)
-        return True
-    except OSError:
-        return False
+    return _platform.kill_tree(pid, signal.SIGTERM)
 
 
 def _read_record(key: str) -> dict | None:

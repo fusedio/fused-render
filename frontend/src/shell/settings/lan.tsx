@@ -1,4 +1,4 @@
-// Phone & network: sharing your apps with phones on the same Wi-Fi (lan.py).
+// Phone access: sharing your apps with phones on the same Wi-Fi (lan.py).
 // Off by default and this is the only place it turns on. While the listener
 // is up the row shows the QR code a phone scans to pair — the ONLY way in: no
 // PIN, no approval dialog — and the devices that have, each revocable.

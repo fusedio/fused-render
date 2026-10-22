@@ -2,33 +2,20 @@
 fused_render/claude_config/ package behind it): one dispatch POST per feature
 module, plus the availability probe the Preferences tab gates on.
 
-Replaces test_claude_config_mount.py. That suite covered a builtin :archive:
-mount that shipped the same Python as an html+py app; the app is now a server
-router, so there is no zip, no mount and no readiness poll left to test — what
-took their place is the dispatch contract (allowlist, kwarg binding, error
-shape) and the two port-specific decisions:
-
-  * the settings catalog is READ from a user-writable override when one exists
-    and WRITTEN only there, never into the packaged copy (site-packages is
-    read-only in a real install);
-  * every write is still anchored at CLAUDE_DIR, so a scratch CLAUDE_DIR fully
-    isolates a test — which is what lets the git-backed actions below run for
-    real rather than against a mocked subprocess.
+Covers the dispatch contract (allowlist, kwarg binding, error shape). Every
+write is anchored at CLAUDE_DIR, so a scratch CLAUDE_DIR fully isolates a test.
 
 Hermetic by construction: CLAUDE_DIR (and every module-level path derived from
 it at import time) is repointed into tmp_path, HOME is repointed so
-~/.claude.json discovery can be seeded, git identity comes from the
-environment with the developer's ~/.gitconfig switched off, and `mdfind` is
-stubbed — a real Spotlight query would return the machine's own CLAUDE.md files
-and make the assertions depend on the developer's disk.
+~/.claude.json discovery can be seeded, and `mdfind` is stubbed — a real
+Spotlight query would return the machine's own CLAUDE.md files and make the
+assertions depend on the developer's disk.
 """
 import ast
 import json
-import multiprocessing
 import os
 import subprocess
 import threading
-from unittest import mock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -45,7 +32,6 @@ from fused_render.claude_config import (
 from fused_render.server import create_app
 from fused_render.server.routers import claude_config as router_mod
 
-from _git_repo import git_available
 
 # The write guard every mutating POST in the app carries (D3): a custom header
 # forces a CORS preflight, so a foreign page can't fire these blind.
@@ -73,19 +59,12 @@ def claude_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(lib, "_LOCK_PATH", str(root / ".config-ui.lock"))
     monkeypatch.setattr(memory, "PROJECTS_DIR", str(root / "projects"))
     monkeypatch.setattr(skills, "SKILLS_DIR", str(root / "skills"))
-    monkeypatch.setattr(skills, "SKILL_LOCK_PATH",
-                        str(tmp_path / ".agents" / ".skill-lock.json"))
     # HOME drives claude_md's ~/.claude.json probe (and nothing else here).
     monkeypatch.setenv("HOME", str(tmp_path))
-    # Identity + no global config, so `git commit` works on a machine with an
-    # empty ~/.gitconfig and a developer's own settings can't change the result
-    # (same posture as tests/_git_repo.py).
-    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
-    monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
-    monkeypatch.setenv("GIT_AUTHOR_NAME", "Fixture Author")
-    monkeypatch.setenv("GIT_AUTHOR_EMAIL", "fixture@example.com")
-    monkeypatch.setenv("GIT_COMMITTER_NAME", "Fixture Author")
-    monkeypatch.setenv("GIT_COMMITTER_EMAIL", "fixture@example.com")
+    # The other CLIs' homes follow HOME unless their own override is set, and a
+    # developer's shell may set it.
+    monkeypatch.delenv("COPILOT_HOME", raising=False)
+    monkeypatch.delenv("CODEX_HOME", raising=False)
     return root
 
 
@@ -97,19 +76,6 @@ def client(tmp_path):
 @pytest.fixture()
 def no_spotlight(monkeypatch):
     monkeypatch.setattr(claude_md, "_mdfind", lambda: [])
-
-
-@pytest.fixture()
-def catalog_home(tmp_path, monkeypatch):
-    """A per-test shell home, so the catalog override starts absent.
-
-    conftest points FUSED_RENDER_HOME at ONE tmpdir for the whole run, so a test
-    that writes the override would otherwise leak into every later test that
-    asserts the packaged copy is what gets read.
-    """
-    home = tmp_path / "shell-home"
-    monkeypatch.setenv("FUSED_RENDER_HOME", str(home))
-    return home
 
 
 def _post(client, module, **body):
@@ -133,13 +99,13 @@ def test_dynamic_import_is_not_reachable_through_the_url(client):
 
 
 def test_bad_kwargs_are_400_not_500(client, claude_dir):
-    r = _post(client, "git_ops", action="log", nope=1)
+    r = _post(client, "preferences", action="get", nope=1)
     assert r.status_code == 400
     assert "nope" in r.json()["error"]
 
 
 def test_missing_x_fused_header_is_refused(client, claude_dir):
-    r = client.post("/api/claude-config/git_ops", json={"action": "status"})
+    r = client.post("/api/claude-config/preferences", json={"action": "get"})
     assert r.status_code == 403
 
 
@@ -153,13 +119,13 @@ def test_empty_body_uses_each_module_s_default_action(client, claude_dir, no_spo
 
 def test_module_exception_is_500_with_the_message_only(client, claude_dir, monkeypatch):
     def boom(**kwargs):
-        raise RuntimeError("git exploded")
+        raise RuntimeError("module exploded")
 
-    monkeypatch.setitem(router_mod.MODULES, "git_ops", boom)
-    r = _post(client, "git_ops", action="log")
+    monkeypatch.setitem(router_mod.MODULES, "preferences", boom)
+    r = _post(client, "preferences", action="get")
     assert r.status_code == 500
     body = r.json()
-    assert "git exploded" in body["error"]
+    assert "module exploded" in body["error"]
     assert "Traceback" not in body["error"]
 
 
@@ -214,34 +180,9 @@ def test_claude_md_delete_removes_an_allowlisted_file(client, claude_dir, tmp_pa
     assert not doomed.exists()
 
 
-@pytest.mark.skipif(not git_available(), reason="needs git")
-def test_claude_md_commit_folds_an_edit_into_the_config_repo(client, claude_dir):
-    # The page saves content through /api/fs/write, then asks this action to
-    # commit the drift; the commit must land and name the file. First call
-    # bootstraps the repo (the file rides the seed commit); the EDIT after
-    # that is the case the action exists for.
-    target = claude_dir / "CLAUDE.md"
-    target.write_text("# original\n")
-    _post(client, "claude_md", action="commit", path=str(target))
-    target.write_text("# edited\n")
-    body = _post(client, "claude_md", action="commit", path=str(target)).json()
-    assert body["ok"] is True
-    assert body["committed"]  # a fresh sha — the edit is in history
-
-
-def test_claude_md_commit_is_a_noop_outside_the_config_repo(client, claude_dir, tmp_path):
-    outside = tmp_path / "elsewhere" / "CLAUDE.md"
-    outside.parent.mkdir()
-    outside.write_text("# project file\n")
-    body = _post(client, "claude_md", action="commit", path=str(outside)).json()
-    assert body["ok"] is True
-    assert body["committed"] is None
-
-
 # -- preferences: schema + prefs against a seeded settings.json --------------
 
 
-@pytest.mark.skipif(not git_available(), reason="needs git")
 def test_preferences_get_returns_the_catalog_and_current_values(client, claude_dir):
     (claude_dir / "settings.json").write_text(json.dumps({"model": "opus"}))
     data = _post(client, "preferences", action="get").json()
@@ -251,11 +192,8 @@ def test_preferences_get_returns_the_catalog_and_current_values(client, claude_d
     # Unset catalog keys read as null rather than being absent — the page needs
     # the key to render the "using Claude's default" state.
     assert all(k in data["prefs"] for k in keys)
-    # `get` also captures the baseline snapshot, so the repo exists afterwards.
-    assert (claude_dir / ".git").is_dir()
 
 
-@pytest.mark.skipif(not git_available(), reason="needs git")
 def test_preferences_patch_writes_settings_and_rejects_unmanaged_keys(client, claude_dir):
     ok = _post(client, "preferences", action="patch",
                payload=json.dumps({"model": "haiku"})).json()
@@ -268,7 +206,7 @@ def test_preferences_patch_writes_settings_and_rejects_unmanaged_keys(client, cl
     assert "someRandomKey" in bad["error"]
 
 
-# -- the catalog override: reads fall back, writes never touch the package ----
+# -- the settings-reference parser behind the catalog refresh script ---------
 #
 # Anthropic reshaped code.claude.com/docs/en/settings-reference.md (2026-08):
 # no more table, one `### `key`` heading per setting followed by a prose
@@ -276,7 +214,7 @@ def test_preferences_patch_writes_settings_and_rejects_unmanaged_keys(client, cl
 # fixture in the table shape the parser no longer reads — which is exactly why
 # the suite stayed green while `refresh_catalog` was 100% broken against the
 # real page (ValueError: could not find '### Available settings' section, a
-# raw 500 through the button). `_LIVE_DOC_SLICE` below is captured verbatim
+# failure). `_LIVE_DOC_SLICE` below is captured verbatim
 # from the live page instead — four real sections (a plain key, a dotted
 # sub-key, a backticked default, a prose "unset" default, and a
 # `#### Fields for` sub-heading that must NOT parse as a key of its own).
@@ -460,156 +398,6 @@ def test_parse_settings_reference_keeps_a_nested_type_list_out_of_the_doc():
     # values the Type list under it enumerates.
     assert entries["theme"]["doc"] == "Pick the color theme for the interface."
     assert entries["theme"]["default"] == "dark"
-
-
-def _fake_settings_reference(doc_keys):
-    """A settings-reference page in the real page's heading-per-key shape,
-    padded past the parser's 100-key sanity floor with filler sections in the
-    same shape. The shape-specific behavior (dotted keys, prose vs. backticked
-    defaults, a `####` sub-heading that isn't a key) is pinned for real above
-    against `_LIVE_DOC_SLICE`; this only has to be structurally honest, not
-    individually verbatim, to exercise the round trip through the catalog."""
-    keys = list(doc_keys) + [f"filler{i}" for i in range(100)]
-    return "\n\n".join(
-        f"### `{k}`\n\nDoc for {k}.\n\n"
-        f"* **Scope**: `Any file`\n"
-        f"* **Type**: Boolean\n"
-        f"* **Default**: `false`"
-        for k in keys
-    )
-
-
-def test_catalog_reads_the_packaged_copy_until_an_override_exists(catalog_home):
-    assert lib.catalog_read_path() == lib.packaged_catalog_path()
-    override = lib.catalog_override_path()
-    os.makedirs(os.path.dirname(override), exist_ok=True)
-    with open(override, "w", encoding="utf-8") as f:
-        json.dump([{"key": "model", "doc": "Overridden doc"}], f)
-    assert lib.catalog_read_path() == override
-    served = preferences._catalog()[0]
-    # The override's doc/default/minVersion half wins for a key it names...
-    assert served["doc"] == "Overridden doc"
-    # ...but curated fields (label, options, ...) never come from the
-    # override — only the packaged copy authors those, so an override
-    # snapshot can never shadow a later catalog change to them. This is the
-    # PR #968 bug: a `label`/`options` override key here used to win outright
-    # and freeze the served catalog to whatever shipped the day someone last
-    # pressed "Refresh catalog".
-    packaged = json.loads(open(lib.packaged_catalog_path(), encoding="utf-8").read())
-    assert served["label"] == packaged[0]["label"]
-    assert served["options"] == packaged[0].get("options")
-
-
-def test_a_curated_addition_to_the_packaged_catalog_reaches_a_server_with_a_stale_override(
-        catalog_home):
-    # PR #968, live: a model was added to the packaged catalog's `model`
-    # options, but a server that had refreshed before that change kept
-    # serving the old option list forever, because the override used to be
-    # read wholesale instead of merged per field.
-    override = lib.catalog_override_path()
-    os.makedirs(os.path.dirname(override), exist_ok=True)
-    packaged = json.loads(open(lib.packaged_catalog_path(), encoding="utf-8").read())
-    stale = json.loads(json.dumps(packaged))  # deep copy, pre-dates the new option
-    model_entry = next(d for d in stale if d["key"] == "model")
-    model_entry["options"] = [o for o in model_entry["options"] if o != "sonnet[1m]"]
-    model_entry["label"] = "Stale label from an old refresh"
-    with open(override, "w", encoding="utf-8") as f:
-        json.dump(stale, f)
-
-    served = next(d for d in preferences._catalog() if d["key"] == "model")
-    assert "sonnet[1m]" in served["options"]
-    # …and the same rule for every other curated field, not just `options`.
-    assert served["label"] == next(
-        d for d in packaged if d["key"] == "model")["label"]
-
-
-def test_refresh_writes_the_override_and_leaves_the_package_untouched(
-        catalog_home, monkeypatch):
-    # Only the fetch is stubbed; the parse, the >=100-key floor and the write
-    # path are the real ones.
-    packaged = lib.packaged_catalog_path()
-    before = open(packaged, "rb").read()
-    shipped = json.loads(before.decode())
-    doc_keys = [d.get("docKey") or d["key"] for d in shipped]
-    monkeypatch.setattr(refresh_catalog, "_fetch",
-                        lambda: _fake_settings_reference(doc_keys))
-
-    res = refresh_catalog.main()
-
-    assert res["ok"] is True
-    assert res["updated"] == res["total"] == len(shipped)
-    assert res["undocumented"] == []
-    assert res["path"] == lib.catalog_override_path()
-    # The shipped copy is byte-identical: site-packages is read-only by policy.
-    assert open(packaged, "rb").read() == before
-    # And the refreshed catalog is what preferences now serves — same curated
-    # entries (the overlay half is preserved), new doc/default half.
-    assert lib.catalog_read_path() == lib.catalog_override_path()
-    served = preferences._catalog()
-    assert [d["key"] for d in served] == [d["key"] for d in shipped]
-    assert served[0]["default"] is False
-    assert served[0]["doc"].startswith("Doc for ")
-
-
-def test_refresh_keeps_a_surfaced_key_s_doc_when_the_new_docs_omit_it(
-        catalog_home, monkeypatch):
-    # Real finding against the live page (2026-08-26): three shipped keys —
-    # `defaultView`, `todoFeatureEnabled`, `skipWorkflowUsageWarning` — have
-    # zero mentions anywhere on the reshaped settings-reference.md. Absent
-    # from the docs is not the same claim as removed from Claude Code, so a
-    # refresh must leave a key like this exactly as it was (doc, default,
-    # minVersion all untouched) and merely name it in `undocumented` —
-    # never blank it, never invent a value for it, never drop it from the
-    # catalog.
-    packaged = lib.packaged_catalog_path()
-    shipped = json.loads(open(packaged, "rb").read().decode())
-    doc_keys = [d.get("docKey") or d["key"] for d in shipped if d["key"] != "defaultView"]
-    monkeypatch.setattr(refresh_catalog, "_fetch",
-                        lambda: _fake_settings_reference(doc_keys))
-
-    before = next(d for d in shipped if d["key"] == "defaultView")
-    res = refresh_catalog.main()
-
-    assert res["ok"] is True
-    assert "defaultView" in res["undocumented"]
-    served = preferences._catalog()
-    after = next(d for d in served if d["key"] == "defaultView")
-    assert after["doc"] == before["doc"]
-    assert after["default"] == before["default"]
-    assert after["minVersion"] == before["minVersion"]
-    # Every OTHER key still resolved and got the fresh doc/default.
-    assert res["updated"] == len(shipped) - 1
-
-
-def test_refresh_keeps_the_existing_catalog_when_the_docs_shape_changes(
-        catalog_home, monkeypatch):
-    # Below the sanity floor — the parser found real headings, just not
-    # nearly enough of them, the same "docs shape changed" signal a table
-    # missing most of its rows used to give.
-    monkeypatch.setattr(refresh_catalog, "_fetch",
-                        lambda: "### `only`\n\nOne key.\n\n* **Default**: `1`\n")
-    res = refresh_catalog.main()
-    assert res["ok"] is False
-    assert "docs shape changed" in res["error"]
-    # Nothing written anywhere — a truncated refresh must not become the catalog.
-    assert not os.path.exists(lib.catalog_override_path())
-    assert lib.catalog_read_path() == lib.packaged_catalog_path()
-
-
-def test_refresh_over_the_api_survives_a_page_with_no_headings_at_all(
-        catalog_home, monkeypatch):
-    # main()'s docstring promises failures are RETURNED, never raised — but it
-    # used to wrap only `_fetch()`. `parse_settings_reference` raises
-    # ValueError when it finds no `### `key`` heading at all (a page reshaped
-    # even more drastically than "too few keys"), and that escaped straight
-    # through to the HTTP router as a raw 500 — which is exactly what the
-    # owner saw against the real reshaped docs. Pinned here so the button
-    # renders an in-band error again if the docs move a second time.
-    monkeypatch.setattr(refresh_catalog, "_fetch", lambda: "# Not a settings page at all\n")
-    res = refresh_catalog.main()
-    assert res == {"ok": False, "error": "parse failed (found no '### `key`' "
-                                          "headings); kept existing catalog"}
-    assert not os.path.exists(lib.catalog_override_path())
 
 
 # -- memory: the project slug back to a real folder --------------------------
@@ -1358,14 +1146,12 @@ def test_every_subprocess_in_the_package_avoids_fork_and_pins_utf8():
       * close_fds=True forks, and a forking spawn in a process with libproj
         resident runs PROJ's atfork handler into a SIGSEGV before exec. The
         child dies rc=-11 with EMPTY stderr, so the MCP page said "failed to
-        list MCP servers" and git_ops said "git add -A failed: " with nothing
-        after the colon. pytest never has PROJ loaded, so a green suite proves
+        list MCP servers". pytest never has PROJ loaded, so a green suite proves
         nothing here; only the source can be checked.
       * text=True with no encoding decodes with locale.getpreferredencoding —
         ASCII in a GUI-launched process — and `claude mcp list` prints ✔.
 
-    A call may spread SUBPROCESS_KWARGS or pass close_fds=False itself
-    (archive_zip has to: it reads binary, so it cannot take the text half).
+    A call may spread SUBPROCESS_KWARGS or pass close_fds=False itself.
     """
     assert lib.SUBPROCESS_KWARGS == {
         "close_fds": False, "text": True, "encoding": "utf-8", "errors": "replace",
@@ -1383,325 +1169,7 @@ def test_every_subprocess_in_the_package_avoids_fork_and_pins_utf8():
     assert no_spawn_guard == []
     assert bare_text == []
     # A guard that silently matched nothing would pass forever.
-    assert calls >= 6
-
-
-def test_git_runs_with_dash_c_rather_than_cwd():
-    """app_git.py's discipline, the other half: `git -C <dir>`, never `cwd=`.
-    A `cwd=` that has gone missing fails inside the spawn — before git — with
-    an error that names the wrong thing."""
-    seen = {}
-
-    def fake_run(argv, **kwargs):
-        seen["argv"] = argv
-        seen["kwargs"] = kwargs
-        return subprocess.CompletedProcess(argv, 0, "", "")
-
-    with mock.patch.object(subprocess, "run", fake_run):
-        lib.git("status", "--porcelain")
-
-    # argv[0] is the ABSOLUTE git path, and the absoluteness is the point:
-    # CPython only reaches posix_spawn when os.path.dirname(executable) is
-    # truthy, and a fork with libproj resident SIGSEGVs before exec
-    # (tests/test_git_posix_spawn.py). basename alone would pass a
-    # regression to a bare "git".
-    assert os.path.isabs(seen["argv"][0])
-    assert os.path.basename(seen["argv"][0]) == "git"
-    assert seen["argv"][1:3] == ["-C", lib.CLAUDE_DIR]
-    assert "cwd" not in seen["kwargs"]
-    assert seen["kwargs"]["close_fds"] is False
-
-
-@pytest.mark.skipif(not git_available(), reason="needs git")
-def test_git_log_round_trips_a_non_ascii_commit_message(claude_dir):
-    lib.ensure_repo()  # the seed commit, so the edit below is a commit of its own
-    (claude_dir / "settings.json").write_text(json.dumps({"model": "opus"}))
-    assert lib.commit("Enable — plugin ✔")
-    assert lib.log()[0]["message"] == "Enable — plugin ✔"
-
-
-def _config_lock_commit_worker(claude_dir: str) -> None:
-    """Module-level (picklable, and run under a `spawn` context explicitly --
-    see the test) so it can run in its OWN process for
-    test_config_lock_held_commit_does_not_deadlock -- see that test for why a
-    thread is not enough.
-
-    Sets `lib.CLAUDE_DIR`/`SETTINGS_PATH`/`_LOCK_PATH` by ATTRIBUTE, the same
-    mechanism the `claude_dir` fixture uses (`monkeypatch.setattr`) -- NOT by
-    setting the `CLAUDE_DIR` environment variable and importing `lib`
-    afterward, which was this function's first version and was a no-op: under
-    `spawn`, unpickling this function's __module__ already imports the WHOLE
-    test module to find it, and that module imports `lib` at its own top
-    level -- so `lib.CLAUDE_DIR` is resolved from whatever environment this
-    worker process inherited BEFORE a single line of this function body runs.
-    On a machine or CI job that exports `CLAUDE_DIR`, that version would have
-    `git init`ed the REAL directory, overwritten its real settings.json, and
-    committed it -- this process gets none of the `claude_dir` fixture's
-    `monkeypatch` state, only what it sets up for itself here, and it has to
-    actually land where this docstring says.
-    """
-    from fused_render.claude_config import lib as _lib
-
-    _lib.CLAUDE_DIR = claude_dir
-    _lib.SETTINGS_PATH = os.path.join(claude_dir, "settings.json")
-    _lib._LOCK_PATH = os.path.join(claude_dir, ".config-ui.lock")
-    os.environ["GIT_CONFIG_GLOBAL"] = os.devnull
-    os.environ["GIT_CONFIG_SYSTEM"] = os.devnull
-    os.environ["GIT_AUTHOR_NAME"] = "Fixture Author"
-    os.environ["GIT_AUTHOR_EMAIL"] = "fixture@example.com"
-    os.environ["GIT_COMMITTER_NAME"] = "Fixture Author"
-    os.environ["GIT_COMMITTER_EMAIL"] = "fixture@example.com"
-
-    # Prove it landed BEFORE anything destructive runs -- this is exactly
-    # the assertion whose absence let the environment-variable version of
-    # this function silently target the developer's real ~/.claude.
-    assert _lib.CLAUDE_DIR == claude_dir, (_lib.CLAUDE_DIR, claude_dir)
-
-    with _lib.config_lock():
-        _lib.write_json(_lib.SETTINGS_PATH, {"model": "opus"})
-        _lib.commit("test edit")
-
-
-# -- ensure_repo(): the first-run `git init` TOCTOU race ---------------------
-
-
-@pytest.mark.skipif(not git_available(), reason="needs git")
-def test_ensure_repo_survives_concurrent_first_run(claude_dir):
-    """The reported bug: on first paint, PreferencesSection's preferences.get()
-    and useGitStatus's gitOps.status() fire two POSTs at once, both dispatched
-    through run_in_threadpool -- genuine OS-thread concurrency in one process
-    -- and both reach lib.ensure_repo() unguarded by config_lock(). The old
-    body was a bare check-then-act (`os.path.isdir(.git)` then `git init`):
-    the loser's `git init` dies mid-template-copy with "File exists" (git's
-    copy_file() opens each hook with O_CREAT|O_EXCL after an lstat that skips
-    existing entries -- EEXIST can only happen in that window).
-
-    A test that calls ensure_repo() twice sequentially proves nothing: the
-    second call short-circuits on os.path.isdir before the race window ever
-    opens. This drives real concurrency instead -- several threads arrive at
-    a FRESH CLAUDE_DIR together via a barrier, so they race the check for
-    real."""
-    n = 8
-    barrier = threading.Barrier(n)
-    errors = []
-
-    def worker():
-        barrier.wait()
-        try:
-            lib.ensure_repo()
-        except Exception as e:  # pragma: no cover - failure path
-            errors.append(e)
-
-    threads = [threading.Thread(target=worker) for _ in range(n)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=30)
-
-    assert not any(t.is_alive() for t in threads)
-    assert errors == [], errors
-    assert os.path.isdir(os.path.join(str(claude_dir), ".git"))
-    # Not just "no exception" -- the SEED COMMIT is its own TOCTOU (several
-    # threads read an unborn HEAD before any of them commits, then race `git
-    # add -A` + `git commit`), and it kept failing here one step later than
-    # the `git init` race even after that race was fixed. A test that only
-    # checks `.git` isdir would still pass with the seed commit moved back
-    # outside the lock -- this is what actually catches that regression.
-    assert lib.git("rev-parse", "--verify", "HEAD", check=False).strip() != ""
-
-
-@pytest.mark.skipif(not git_available(), reason="needs git")
-def test_ensure_repo_reraises_a_genuine_init_failure_even_though_git_created_the_dir(
-        claude_dir):
-    """`.git` existing is NOT proof `git init` succeeded -- the original bug
-    report proves it: the user's error was `cannot copy ... to
-    ~/.claude/.git/hooks/pre-applypatch.sample: File exists`,
-    i.e. `.git/hooks/` already existed while init was genuinely still
-    failing. git creates the `.git` directory FIRST, then writes
-    `HEAD`/`config`, then copies hook templates -- so a real failure partway
-    through (disk full, permissions) leaves `.git` behind too, same as a won
-    race would.
-
-    No concurrency needed to prove this: forces `git init` itself to create
-    an empty `.git` (mimicking git's own first step) and then fail, and
-    confirms ensure_repo() still raises rather than treating the directory's
-    mere existence as "someone else already won"."""
-    real_run = subprocess.run
-    git_dir = os.path.join(str(claude_dir), ".git")
-
-    def fake_run(argv, **kwargs):
-        if "init" in argv:
-            os.makedirs(git_dir, exist_ok=True)
-            return subprocess.CompletedProcess(
-                argv, 128,
-                "", "fatal: cannot copy '...pre-applypatch.sample': File exists")
-        return real_run(argv, **kwargs)
-
-    with mock.patch.object(subprocess, "run", fake_run):
-        with pytest.raises(RuntimeError):
-            lib.ensure_repo()
-
-    # Not silently healed into a half-built repo: git itself does not
-    # recognise this directory (no HEAD/config/objects/refs were ever
-    # written), so a later call will retry rather than proceeding as if
-    # init had actually finished. `--resolve-git-dir`, not `--git-dir`: see
-    # test_ensure_repo_does_not_bleed_into_an_ancestor_repo_on_a_genuine_init_failure
-    # for why `--git-dir` is the wrong check here too.
-    assert lib.git("rev-parse", "--resolve-git-dir", ".git", check=False).strip() == ""
-
-
-@pytest.mark.skipif(not git_available(), reason="needs git")
-def test_ensure_repo_does_not_bleed_into_an_ancestor_repo_on_a_genuine_init_failure(
-        claude_dir):
-    """Second review round: the fix above used `git rev-parse --git-dir` to
-    detect a lost race, and that command performs git's normal repository
-    DISCOVERY -- it walks UP the filesystem for a `.git` in any ancestor.
-    Plenty of people keep `~/.claude` (or a `CLAUDE_DIR` override) inside a
-    versioned dotfiles or home repo. From a CLAUDE_DIR with no valid `.git`
-    of its own but a repo somewhere ABOVE it, `--git-dir` exits 0 and prints
-    the ANCESTOR's git dir -- so a genuinely failed `git init` there (EPERM,
-    ENOSPC, a read-only volume) that leaves no local `.git` would have been
-    misread as "someone else already won", and every git() call after that
-    -- identity, the seed `git add -A` + `git commit`, and every later
-    commit()/status()/log()/diff() -- would run against the ANCESTOR repo
-    instead: rewriting its config and committing the user's whole dotfiles
-    tree.
-
-    Builds a REAL ancestor repo directly above the fixture's CLAUDE_DIR (the
-    exact "home/dotfiles repo containing ~/.claude" shape), forces `git
-    init` to fail without creating anything at all, and asserts both that
-    ensure_repo() raises AND that the ancestor repo is completely untouched
-    -- same HEAD sha, same config, no new commit. This test fails against
-    the `--git-dir` version of the fix (it exits 0 and lets ensure_repo()
-    proceed to write into the ancestor)."""
-    ancestor = claude_dir.parent
-
-    def ancestor_git(*args):
-        res = subprocess.run(
-            [lib._git_bin(), "-C", str(ancestor), *args],
-            capture_output=True, text=True)
-        assert res.returncode == 0, res.stderr
-        return res.stdout
-
-    ancestor_git("init", "-q")
-    ancestor_git("config", "user.email", "fixture@example.com")
-    ancestor_git("config", "user.name", "Fixture Author")
-    (ancestor / "existing-dotfile").write_text("keep me\n")
-    ancestor_git("add", "-A")
-    ancestor_git("commit", "-q", "-m", "seed")
-    before_head = ancestor_git("rev-parse", "HEAD").strip()
-    before_config = (ancestor / ".git" / "config").read_text()
-
-    real_run = subprocess.run
-
-    def fake_run(argv, **kwargs):
-        if "init" in argv:
-            # A genuine failure that creates NOTHING under CLAUDE_DIR -- e.g.
-            # EPERM before git even gets to mkdir `.git`.
-            return subprocess.CompletedProcess(
-                argv, 128, "", "fatal: permission denied")
-        return real_run(argv, **kwargs)
-
-    with mock.patch.object(subprocess, "run", fake_run):
-        with pytest.raises(RuntimeError):
-            lib.ensure_repo()
-
-    assert not os.path.isdir(os.path.join(str(claude_dir), ".git"))
-    assert ancestor_git("rev-parse", "HEAD").strip() == before_head
-    assert (ancestor / ".git" / "config").read_text() == before_config
-
-
-@pytest.mark.skipif(not git_available(), reason="needs git")
-def test_config_lock_held_commit_does_not_deadlock(claude_dir):
-    """The trap: config_lock() acquires _THREAD_LOCK, a plain (non-reentrant)
-    threading.Lock, then commit() calls ensure_repo(). If ensure_repo() ever
-    routed its init check back through config_lock(), preferences.py's
-    action=patch (which holds config_lock() before calling commit()) would
-    self-deadlock on the very first edit.
-
-    Runs in a SEPARATE PROCESS, not a daemon thread. A thread-based version
-    that only waited on a timeout would not actually protect the suite: on a
-    regression the worker blocks while HOLDING `_THREAD_LOCK`, which is
-    module-level and never released, so every later test in the same pytest
-    worker that touches `config_lock()` would hang too -- the suite would
-    still die, just in some unrelated victim test with no pointer back here.
-    A subprocess takes the poisoned lock down with it when this test kills
-    it, so a regression fails HERE, cleanly, instead of hanging the run.
-
-    Uses the `spawn` context EXPLICITLY, not the platform default (`fork` on
-    Linux <=3.13). A bare fork() out of a pytest worker that may already have
-    PROJ/duckdb/rasterio resident from an earlier module in the same xdist
-    worker is exactly the rc=-11 hazard this repo guards against everywhere
-    else (SUBPROCESS_KWARGS, tests/test_git_posix_spawn.py) -- here it would
-    surface as a load-order-dependent `proc.exitcode` with no connection to
-    the deadlock under test. `spawn` also makes `_config_lock_commit_worker`'s
-    own "picklable" claim actually true on every platform, not just the ones
-    that happen to default to it."""
-    proc = multiprocessing.get_context("spawn").Process(
-        target=_config_lock_commit_worker, args=(str(claude_dir),))
-    proc.start()
-    proc.join(timeout=15)
-    if proc.is_alive():
-        proc.terminate()
-        proc.join(timeout=5)
-        pytest.fail("config_lock() -> commit() -> ensure_repo() deadlocked "
-                    "(worker process did not finish within 15s)")
-    assert proc.exitcode == 0
-
-
-@pytest.mark.skipif(not git_available(), reason="needs git")
-def test_ensure_repo_reraises_a_genuine_seed_commit_failure(claude_dir):
-    """The seed commit tolerates a LOST RACE (another thread already got HEAD
-    born) but must not tolerate a real failure -- a bad local identity, a
-    `commit-msg`/`pre-commit` hook someone dropped into
-    `~/.claude/.git/hooks`, a full disk, a stale `index.lock` left by a
-    crashed process. An earlier version of this fix used `check=False` on the
-    seed `git commit`, which swallowed BOTH cases identically: the config
-    page would show no history, forever, with no exception and nothing to
-    say why.
-
-    Forces the `git commit` call specifically to fail (everything else --
-    init, identity, add, status -- runs for real), and confirms ensure_repo()
-    still raises rather than returning normally with the repo permanently
-    HEAD-less.
-
-    Uses mock.patch.object as its own context manager rather than the
-    `monkeypatch` fixture: `claude_dir` already uses `monkeypatch` to redirect
-    CLAUDE_DIR/HOME/GIT_CONFIG_* away from the developer's real ~/.claude, and
-    `monkeypatch` is function-scoped -- calling `.undo()` on the SAME instance
-    here would undo those redirects too, and the read below would land on the
-    developer's real repo instead of the scratch one (caught in review of this
-    test, not in CI: the read is harmless, but the mechanism is the kind of
-    mistake that silently stops being harmless).
-    """
-    real_run = subprocess.run
-
-    def fake_run(argv, **kwargs):
-        if "commit" in argv:
-            return subprocess.CompletedProcess(
-                argv, 1, "", "commit-msg hook rejected the commit")
-        return real_run(argv, **kwargs)
-
-    with mock.patch.object(subprocess, "run", fake_run):
-        with pytest.raises(RuntimeError):
-            lib.ensure_repo()
-
-    # Not silently healed: HEAD is still unborn, so a later call will retry
-    # rather than treating this dir as done forever.
-    assert lib.git("rev-parse", "--verify", "HEAD", check=False).strip() == ""
-
-
-def test_refresh_over_the_api_reports_a_fetch_failure_rather_than_500(
-        client, catalog_home, monkeypatch):
-    def offline():
-        raise OSError("no network")
-
-    monkeypatch.setattr(refresh_catalog, "_fetch", offline)
-    r = _post(client, "refresh_catalog")
-    assert r.status_code == 200
-    body = r.json()
-    assert body["ok"] is False
-    assert "kept existing catalog" in body["error"]
+    assert calls >= 3
 
 
 # -- mcp list: cached instantly, refreshed in the background --------------------
@@ -1800,3 +1268,362 @@ def test_mcp_failed_refresh_leaves_the_cache_alone(client, mcp_cache, monkeypatc
     body = _post(client, "mcp", action="list", fresh=True).json()
     assert body == {"ok": False, "error": "boom"}
     assert mcp_cache._read_cache()["servers"][0]["name"] == "srv"
+
+
+# -- skills: the user's own plus every enabled plugin's -----------------------
+
+
+def _enable(claude_dir, **flags):
+    (claude_dir / "settings.json").write_text(json.dumps({"enabledPlugins": flags}))
+
+
+def _plugin_with_skills(claude_dir, tmp_path, pid, slugs, **extra):
+    root = _plugin_tree(tmp_path, pid.split("@")[0])
+    for slug in slugs:
+        _write(root / "skills" / slug / "SKILL.md",
+               f"---\nname: {slug}\ndescription: {slug} from {pid}.\n---\nbody\n")
+    _installed(claude_dir, pid, root, **extra)
+    return root
+
+
+def test_skills_list_merges_user_and_enabled_plugin_skills(client, claude_dir, tmp_path):
+    _write(claude_dir / "skills" / "mine" / "SKILL.md", "---\nname: mine\ndescription: Own.\n---\n")
+    root = _plugin_with_skills(claude_dir, tmp_path, "utilities@local", ["unslop", "caveman"])
+    _plugin_with_skills(claude_dir, tmp_path, "off@local", ["hidden"])
+    # An old cache dir next to the current install is never listed.
+    _write(tmp_path / "plugin-cache" / "utilities-old" / "skills" / "stale" / "SKILL.md", "---\nname: stale\n---\n")
+    _enable(claude_dir, **{"utilities@local": True, "off@local": False})
+
+    got = _post(client, "skills", action="list").json()["skills"]
+    assert [(s["source"], s.get("plugin"), s["slug"]) for s in got] == [
+        ("user", None, "mine"), ("plugin", "utilities", "caveman"), ("plugin", "utilities", "unslop"),
+    ]
+    plug = got[2]
+    assert plug["marketplace"] == "local"
+    assert plug["description"] == "unslop from utilities@local."
+    assert plug["path"] == str(root / "skills" / "unslop")
+    assert plug["linked"] is False
+
+
+def test_skills_read_and_files_work_for_plugin_skills(client, claude_dir, tmp_path):
+    root = _plugin_with_skills(claude_dir, tmp_path, "utilities@local", ["unslop"])
+    _write(root / "skills" / "unslop" / "extra.md", "more")
+    _enable(claude_dir, **{"utilities@local": True})
+    r = _post(client, "skills", action="read", slug="unslop", source="plugin",
+              plugin="utilities", marketplace="local").json()
+    assert r["ok"] is True and r["text"].startswith("---")
+    assert r["files"] == ["SKILL.md", "extra.md"]
+    r = _post(client, "skills", action="read", slug="unslop", source="plugin",
+              plugin="utilities", path="../../.claude-plugin/plugin.json").json()
+    assert r["ok"] is False
+    r = _post(client, "skills", action="read", slug="nope", source="plugin", plugin="utilities").json()
+    assert r["ok"] is False
+
+
+def test_skills_write_and_delete_refuse_plugin_skills(client, claude_dir, tmp_path):
+    root = _plugin_with_skills(claude_dir, tmp_path, "utilities@local", ["unslop"])
+    _enable(claude_dir, **{"utilities@local": True})
+    for action in ("write", "delete"):
+        r = _post(client, "skills", action=action, slug="unslop", source="plugin",
+                  plugin="utilities", path="SKILL.md", text="x").json()
+        assert r["ok"] is False and "read-only" in r["error"]
+    assert (root / "skills" / "unslop" / "SKILL.md").read_text().endswith("body\n")
+
+
+def test_skills_slug_shared_by_user_and_plugin_is_addressed_by_source(client, claude_dir, tmp_path):
+    _write(claude_dir / "skills" / "unslop" / "SKILL.md", "---\nname: unslop\n---\nuser copy\n")
+    _plugin_with_skills(claude_dir, tmp_path, "utilities@local", ["unslop"])
+    _plugin_with_skills(claude_dir, tmp_path, "other@local", ["unslop"])
+    _enable(claude_dir, **{"utilities@local": True, "other@local": True})
+
+    assert len(_post(client, "skills", action="list").json()["skills"]) == 3
+    user = _post(client, "skills", action="read", slug="unslop").json()
+    assert user["text"].endswith("user copy\n")
+    for plugin in ("utilities", "other"):
+        r = _post(client, "skills", action="read", slug="unslop", source="plugin", plugin=plugin).json()
+        assert f"{plugin}@local" in r["text"]
+    # Writing the user copy leaves the plugin copies alone.
+    assert _post(client, "skills", action="write", slug="unslop", path="SKILL.md", text="new").json()["ok"]
+    assert _post(client, "skills", action="read", slug="unslop").json()["text"] == "new"
+
+
+# -- skills across the CLIs: readers, dedupe, placement --------------------------
+
+
+def _skill(path, name=None, desc="d"):
+    _write(path / "SKILL.md", f"---\nname: {name or path.name}\ndescription: {desc}\n---\nbody\n")
+    return path
+
+
+def _rows(client):
+    return {s["slug"]: s for s in _post(client, "skills", action="list").json()["skills"]}
+
+
+def test_skills_list_reads_every_cli_dir_and_names_who_reads_each(client, claude_dir, tmp_path):
+    _skill(claude_dir / "skills" / "solo")
+    _skill(tmp_path / ".agents" / "skills" / "shared")
+    _skill(tmp_path / ".copilot" / "skills" / "cop")
+    _skill(tmp_path / ".codex" / "skills" / "cod")
+    # Dot-dirs (Codex's bundled `.system`) are not the user's skills.
+    _skill(tmp_path / ".codex" / "skills" / ".system" / "bundled")
+    _skill(tmp_path / ".agents" / "skills" / ".hidden")
+    rows = _rows(client)
+    assert set(rows) == {"solo", "shared", "cop", "cod"}
+    assert rows["solo"]["readers"] == ["claude"]
+    assert rows["shared"]["readers"] == ["copilot", "codex"]
+    assert rows["cop"]["readers"] == ["copilot"]
+    assert rows["cod"]["readers"] == ["codex"]
+    assert rows["cod"]["location"] == str(tmp_path / ".codex" / "skills")
+    assert all(r["source"] == "user" for r in rows.values())
+
+
+def test_skills_list_makes_a_symlink_across_dirs_one_row_with_the_union_of_readers(
+    client, claude_dir, tmp_path
+):
+    real = _skill(tmp_path / ".agents" / "skills" / "shared")
+    (claude_dir / "skills").mkdir()
+    (claude_dir / "skills" / "shared").symlink_to(real)
+    (tmp_path / ".codex" / "skills").mkdir(parents=True)
+    (tmp_path / ".codex" / "skills" / "shared").symlink_to(real)
+    got = _post(client, "skills", action="list").json()["skills"]
+    assert len(got) == 1
+    row = got[0]
+    assert row["readers"] == ["claude", "copilot", "codex"]
+    # The row stands on the real copy, so editing it edits the one file.
+    assert row["path"] == str(real) and row["location"] == str(real.parent)
+    assert row["linked"] is True
+    assert sorted(row["paths"]) == sorted([
+        str(real), str(claude_dir / "skills" / "shared"),
+        str(tmp_path / ".codex" / "skills" / "shared")])
+
+
+def test_skills_list_honours_copilot_home_and_codex_home(client, claude_dir, tmp_path, monkeypatch):
+    monkeypatch.setenv("COPILOT_HOME", str(tmp_path / "cop-home"))
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "cod-home"))
+    _skill(tmp_path / "cop-home" / "skills" / "c1")
+    _skill(tmp_path / "cod-home" / "skills" / "c2")
+    _skill(tmp_path / ".copilot" / "skills" / "ignored")
+    rows = _rows(client)
+    assert set(rows) == {"c1", "c2"}
+    assert rows["c1"]["readers"] == ["copilot"] and rows["c2"]["readers"] == ["codex"]
+
+
+def test_skills_list_marks_plugin_skills_as_read_by_claude(client, claude_dir, tmp_path):
+    _plugin_with_skills(claude_dir, tmp_path, "utilities@local", ["unslop"])
+    _enable(claude_dir, **{"utilities@local": True})
+    assert _rows(client)["unslop"]["readers"] == ["claude"]
+
+
+def test_skills_read_write_address_a_user_skill_in_any_cli_dir(client, claude_dir, tmp_path):
+    _skill(tmp_path / ".agents" / "skills" / "shared")
+    r = _post(client, "skills", action="read", slug="shared").json()
+    assert r["ok"] and "body" in r["text"]
+    assert _post(client, "skills", action="write", slug="shared", path="SKILL.md", text="new").json()["ok"]
+    assert (tmp_path / ".agents" / "skills" / "shared" / "SKILL.md").read_text() == "new"
+
+
+def test_skills_delete_removes_the_copy_and_every_link_to_it(client, claude_dir, tmp_path):
+    real = _skill(tmp_path / ".agents" / "skills" / "shared")
+    (claude_dir / "skills").mkdir()
+    (claude_dir / "skills" / "shared").symlink_to(real)
+    keep = _skill(claude_dir / "skills" / "keep")
+    row = _rows(client)["shared"]
+    r = _post(client, "skills", action="delete", slug="shared", location=row["location"]).json()
+    assert r["ok"] is True
+    assert not real.exists()
+    assert not os.path.lexists(claude_dir / "skills" / "shared")
+    assert keep.exists()
+
+
+def test_skills_delete_of_a_link_to_an_outside_dir_leaves_the_target(client, claude_dir, tmp_path):
+    outside = _skill(tmp_path / "elsewhere" / "mine")
+    (claude_dir / "skills").mkdir()
+    (claude_dir / "skills" / "mine").symlink_to(outside)
+    assert _post(client, "skills", action="delete", slug="mine").json()["ok"]
+    assert not os.path.lexists(claude_dir / "skills" / "mine")
+    assert outside.exists()
+
+
+def _prefs_on(monkeypatch, *clis):
+    monkeypatch.setattr(
+        skills, "_enabled_clis", lambda: [c for c in ("claude", "copilot", "codex") if c in clis])
+
+
+def test_skills_create_puts_one_copy_where_the_enabled_clis_read_it(client, claude_dir, tmp_path, monkeypatch):
+    _prefs_on(monkeypatch, "claude")
+    assert _post(client, "skills", action="create", slug="solo").json()["ok"]
+    assert (claude_dir / "skills" / "solo" / "SKILL.md").is_file()
+    assert not (tmp_path / ".agents").exists()
+
+    _prefs_on(monkeypatch, "claude", "codex")
+    assert _post(client, "skills", action="create", slug="both").json()["ok"]
+    real = tmp_path / ".agents" / "skills" / "both"
+    assert (real / "SKILL.md").is_file()
+    assert (claude_dir / "skills" / "both").is_symlink()
+    assert os.path.realpath(claude_dir / "skills" / "both") == str(real)
+
+    _prefs_on(monkeypatch, "copilot")
+    assert _post(client, "skills", action="create", slug="cop").json()["ok"]
+    assert (tmp_path / ".agents" / "skills" / "cop" / "SKILL.md").is_file()
+    assert not os.path.lexists(claude_dir / "skills" / "cop")
+    # A taken slug is refused, in any of the target dirs.
+    assert _post(client, "skills", action="create", slug="solo").json()["ok"] is False
+
+
+def _cloned_marketplace(claude_dir, name, entries, registered=True):
+    _marketplace(claude_dir, name, {"name": name, "plugins": entries})
+    if registered:
+        known = claude_dir / "plugins" / "known_marketplaces.json"
+        have = json.loads(known.read_text()) if known.exists() else {}
+        have[name] = {"source": {"source": "github", "repo": f"x/{name}"}}
+        known.write_text(json.dumps(have))
+    return claude_dir / "plugins" / "marketplaces" / name
+
+
+def test_skills_available_walks_cloned_marketplaces_and_skips_remote_sources(client, claude_dir):
+    mkt = _cloned_marketplace(claude_dir, "acme", [
+        {"name": "kit", "source": "./plugins/kit"},
+        {"name": "remote", "source": {"source": "github", "repo": "a/b"}},
+        {"name": "escape", "source": "../../outside"},
+    ])
+    _skill(mkt / "plugins" / "kit" / "skills" / "brew", name="Brew", desc="Makes coffee.")
+    _skill(mkt / "plugins" / "kit" / "skills" / "own")
+    _skill(claude_dir / "skills" / "own")
+    body = _post(client, "skills", action="available").json()
+    by_slug = {s["slug"]: s for s in body["skills"]}
+    assert set(by_slug) == {"brew", "own"}
+    brew = by_slug["brew"]
+    assert (brew["name"], brew["description"], brew["plugin"], brew["marketplace"]) == (
+        "Brew", "Makes coffee.", "kit", "acme")
+    assert (brew["pluginInstalled"], brew["added"]) == (False, False)
+    # Already in a user skills dir.
+    assert by_slug["own"]["added"] is True
+    assert body["skipped"] == 2
+
+
+def test_skills_available_ignores_a_directory_no_marketplace_names(client, claude_dir):
+    mkt = _cloned_marketplace(claude_dir, "acme", [{"name": "kit", "source": "./kit"}])
+    _skill(mkt / "kit" / "skills" / "brew")
+    stray = _cloned_marketplace(
+        claude_dir, "surya-local..clone", [{"name": "ghost", "source": "./ghost"}], registered=False)
+    _skill(stray / "ghost" / "skills" / "boo")
+    skills_found = _post(client, "skills", action="available").json()["skills"]
+    assert [(s["marketplace"], s["slug"]) for s in skills_found] == [("acme", "brew")]
+
+
+def test_skills_available_carries_the_plugin_description(client, claude_dir):
+    mkt = _cloned_marketplace(
+        claude_dir, "acme", [{"name": "kit", "source": "./kit", "description": "A kit."}])
+    _skill(mkt / "kit" / "skills" / "brew")
+    assert _post(client, "skills", action="available").json()["skills"][0]["pluginDescription"] == "A kit."
+
+
+def test_skills_available_counts_a_skill_of_an_enabled_plugin_as_installed(client, claude_dir, tmp_path):
+    mkt = _cloned_marketplace(claude_dir, "acme", [{"name": "kit", "source": "./kit"}])
+    _skill(mkt / "kit" / "skills" / "brew")
+    _installed(claude_dir, "kit@acme", mkt / "kit")
+    _enable(claude_dir, **{"kit@acme": True})
+    brew = _post(client, "skills", action="available").json()["skills"][0]
+    assert (brew["pluginInstalled"], brew["added"]) == (True, False)
+
+
+def _brew_marketplace(claude_dir):
+    mkt = _cloned_marketplace(claude_dir, "acme", [{"name": "kit", "source": "./kit"}])
+    brew = _skill(mkt / "kit" / "skills" / "brew")
+    _write(brew / "refs" / "a.md", "ref")
+    return mkt, brew
+
+
+def _add(client, slug="brew"):
+    return _post(client, "skills", action="add", marketplace="acme", plugin="kit", slug=slug).json()
+
+
+def test_skills_add_copies_to_claude_when_only_claude_is_on(client, claude_dir, tmp_path, monkeypatch):
+    _brew_marketplace(claude_dir)
+    _prefs_on(monkeypatch, "claude")
+    assert _add(client)["ok"] is True
+    dest = claude_dir / "skills" / "brew"
+    assert not dest.is_symlink()
+    assert (dest / "SKILL.md").is_file() and (dest / "refs" / "a.md").read_text() == "ref"
+    assert not (tmp_path / ".agents").exists()
+
+
+def test_skills_add_keeps_one_copy_in_agents_and_links_claude_to_it(client, claude_dir, tmp_path, monkeypatch):
+    _brew_marketplace(claude_dir)
+    _prefs_on(monkeypatch, "claude", "codex")
+    assert _add(client)["ok"] is True
+    real = tmp_path / ".agents" / "skills" / "brew"
+    assert (real / "SKILL.md").is_file() and not real.is_symlink()
+    link = claude_dir / "skills" / "brew"
+    assert link.is_symlink() and os.path.realpath(link) == str(real)
+    # And it lists as the one row it is.
+    assert _rows(client)["brew"]["readers"] == ["claude", "copilot", "codex"]
+
+
+def test_skills_add_without_claude_makes_no_claude_link(client, claude_dir, tmp_path, monkeypatch):
+    _brew_marketplace(claude_dir)
+    _prefs_on(monkeypatch, "copilot")
+    assert _add(client)["ok"] is True
+    assert (tmp_path / ".agents" / "skills" / "brew" / "SKILL.md").is_file()
+    assert not os.path.lexists(claude_dir / "skills" / "brew")
+
+
+def test_skills_add_refuses_a_slug_that_already_exists_in_a_target(client, claude_dir, tmp_path, monkeypatch):
+    _brew_marketplace(claude_dir)
+    _prefs_on(monkeypatch, "claude", "codex")
+    _skill(claude_dir / "skills" / "brew")
+    r = _add(client)
+    assert r["ok"] is False and "already" in r["error"]
+    assert not (tmp_path / ".agents" / "skills" / "brew").exists()
+    # A dangling link is as taken as a skill.
+    (claude_dir / "skills" / "brew").rename(claude_dir / "skills" / "moved")
+    (claude_dir / "skills" / "brew").symlink_to(tmp_path / "nowhere")
+    assert _add(client)["ok"] is False
+
+
+def test_skills_add_refuses_what_no_cloned_marketplace_publishes(client, claude_dir, monkeypatch):
+    _brew_marketplace(claude_dir)
+    _prefs_on(monkeypatch, "claude")
+    assert _add(client, slug="nope")["ok"] is False
+    assert _post(client, "skills", action="add", marketplace="acme", plugin="nope", slug="brew").json()["ok"] is False
+    assert _post(client, "skills", action="add", marketplace="../x", plugin="kit", slug="brew").json()["ok"] is False
+    assert _add(client, slug="../brew")["ok"] is False
+    assert not (claude_dir / "skills").exists()
+
+
+def test_skills_add_does_not_follow_a_symlink_out_of_the_clone(client, claude_dir, tmp_path, monkeypatch):
+    _, brew = _brew_marketplace(claude_dir)
+    secret = tmp_path / "secret"
+    _write(secret / "key.txt", "hunter2")
+    (brew / "leak").symlink_to(secret)
+    (brew / "leak.txt").symlink_to(secret / "key.txt")
+    _prefs_on(monkeypatch, "claude")
+    assert _add(client)["ok"] is True
+    dest = claude_dir / "skills" / "brew"
+    assert not os.path.lexists(dest / "leak") and not os.path.lexists(dest / "leak.txt")
+    assert (dest / "SKILL.md").is_file()
+
+
+def test_skills_add_refuses_a_skill_over_the_size_budget_and_leaves_nothing(
+    client, claude_dir, monkeypatch
+):
+    _brew_marketplace(claude_dir)
+    _prefs_on(monkeypatch, "claude")
+    monkeypatch.setattr(skills, "_COPY_MAX_FILES", 1)
+    r = _add(client)
+    assert r["ok"] is False and "large" in r["error"]
+    assert not (claude_dir / "skills").exists() or not list((claude_dir / "skills").iterdir())
+
+
+def test_plugins_list_carries_the_description_from_the_cloned_catalog(client, claude_dir):
+    _cloned_marketplace(claude_dir, "acme", [
+        {"name": "widget", "description": "Widgets.", "source": "./w"},
+        {"name": "gadget", "source": "./g"},
+    ])
+    _installed(claude_dir, "widget@acme", claude_dir / "x")
+    _installed(claude_dir, "gadget@acme", claude_dir / "x")
+    _installed(claude_dir, "orphan@gone", claude_dir / "x")
+    by_id = {p["id"]: p for p in _post(client, "plugins", action="list").json()["plugins"]}
+    assert by_id["widget@acme"]["description"] == "Widgets."
+    assert by_id["gadget@acme"]["description"] == ""
+    assert by_id["orphan@gone"]["description"] == ""

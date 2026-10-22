@@ -1,5 +1,5 @@
 // Accounts: every service this app signs in to, in one place. Agent sign-in
-// (Claude Code, Copilot) stays with each agent's health under AI & agents,
+// (Claude Code, Copilot) stays with each agent's health under Coding agents,
 // where the fix for a broken install sits beside it; a pointer row here finds it.
 //
 // NO TOKEN PASSES THROUGH THIS FILE in either direction. Each sign-in starts
@@ -12,6 +12,7 @@ import {
   ENV_LABELS,
   WORKBENCH_ENVS,
   cancelLogin,
+  loginOutcome,
   getCanvasesStatus,
   getWhoami,
   isWorkbenchEnv,
@@ -48,6 +49,7 @@ export function FusedAccountControl() {
   const [loggingIn, setLoggingIn] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const loginStampRef = useRef<number | null>(null);
+  const loginStartedRef = useRef<number | null>(null);
   const aliveRef = useRef(true);
 
   const refresh = useCallback(async () => {
@@ -118,7 +120,7 @@ export function FusedAccountControl() {
               });
           } else if (!s.login_in_flight) {
             setLoggingIn(false);
-            setError("Sign-in was not completed — try again.");
+            setError(loginOutcome(loginStartedRef.current));
           }
         })
         .catch(() => undefined); // a blip mid-login is not worth a banner
@@ -145,6 +147,7 @@ export function FusedAccountControl() {
     act(async () => {
       loginStampRef.current = status?.creds_stamp ?? null;
       await startLogin();
+      loginStartedRef.current = Date.now();
       setLoggingIn(true);
     });
 
@@ -247,7 +250,7 @@ export function WorkbenchEnvControl() {
   };
 
   const current = status?.workbench_env ?? "";
-  // A pin outside the two choices (a hand-set env var) still shows as itself.
+  // A pin outside the choices (a hand-set env var) still shows as itself.
   const known = isWorkbenchEnv(current);
   return (
     <SettingRow
@@ -269,6 +272,9 @@ export function WorkbenchEnvControl() {
               return (
                 <div key={e}>
                   {`${ENV_LABELS[e]}: ${n} ${n === 1 ? "canvas" : "canvases"} cloned under ${info.canvases_dir}`}
+                  {/* The one env whose workbench is not fixed: say where
+                      settings.toml points it right now. */}
+                  {e === "custom" && ` (workbench: ${info.base_url})`}
                 </div>
               );
             })}
@@ -282,7 +288,11 @@ export function WorkbenchEnvControl() {
             value={known ? current : ""}
             options={[
               ...(known ? [] : [{ key: "", label: current }]),
-              ...WORKBENCH_ENVS.map((e) => ({ key: e, label: ENV_LABELS[e] })),
+              ...WORKBENCH_ENVS.map((e) => ({
+                key: e,
+                label: ENV_LABELS[e],
+                disabled: status.envs?.[e]?.available === false,
+              })),
             ]}
             disabled={busy || status.locked}
             onChange={(v) => {

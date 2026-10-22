@@ -15,7 +15,7 @@ export interface AppRef { name: string; dir: string; params?: Record<string, str
 export interface ReplyRef { seq: number; role: Role; text: string }
 /** One "Approve forever" rule (bot.json `allow_rules`): what kind of call, its coarse key, and the sentence shown for it.
  *  `source` is set when a preset pre-approved it rather than a card. */
-export interface AllowRule { kind: "browser" | "tool" | "py" | "builtin" | "text" | "upload" | "build" | (string & {}); key: string; label: string; source?: string }
+export interface AllowRule { kind: "browser" | "builtin" | "text" | "upload" | "build" | "terminal" | "trusted" | (string & {}); key: string; label: string; source?: string }
 
 /** A channel address (docs §10): "imessage" + the sender's handle, "routine", "botsend", "handoff" + the Super Bot's id
  *  (a task Super Bot delegated, docs §11); the web is never stamped. */
@@ -179,7 +179,8 @@ export interface Bot {
   terminal_id?: string | null;
   /** Terminal is off for this bot only because its engine is not a Claude model. */
   terminal_needs_claude?: boolean;
-  /** App folders (normalised) whose tools and scripts never raise an approval card for this bot. */
+  /** App folders (normalised) whose tools and scripts never raise an approval card for this bot. The one app-level
+   *  permission: a build this bot finished and an "Always approve" on a tool/script card both tick it. */
   trusted_apps?: string[];
   /** Calls the user approved forever from a card; revoked under Settings › Permissions. */
   allow_rules?: AllowRule[];
@@ -231,6 +232,9 @@ export interface Bot {
   dl_pct?: number | null;
   engine?: "auto" | "steps" | "agent";
   seq: number;
+  /** The newest MESSAGE row's seq (bot.py news_seq): system notes and delivery rows past it do not count as unread.
+   *  What the sidebar's dot reads `seen_seq` against (platform/lib/botsPulse botHasUnread). */
+  news_seq?: number;
   /** The last event seq as of you opening this bot (markBotSeen; the server never lowers it). Absent = never opened,
    *  which unreadOf reads as nothing to catch up on. On the bot row so a relaunch on another port keeps it (D1386). */
   seen_seq?: number | null;
@@ -385,6 +389,8 @@ export interface SettingsBody {
   build_access?: string; terminal?: boolean; encrypt?: boolean; imessage_handle?: string; imessage_to?: string; imessage_enabled?: boolean;
   imessage_approvals?: boolean;
   super_access?: string; trusted_apps?: string[];
+  /** Ticks added / removed since the dialog opened; applied to the live list, since builds and cards also write it. */
+  trusted_apps_add?: string[]; trusted_apps_remove?: string[];
   /** Forever rules to drop (kind + key); applied to the live list, since the task thread also writes it. */
   allow_rules_remove?: AllowRule[];
   /** The whole list of folders the bot may read (the dialog is its only writer). */

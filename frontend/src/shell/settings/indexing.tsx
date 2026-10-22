@@ -1,4 +1,4 @@
-// Files & search: the file index's switches and its escape hatches.
+// File index: the file index's switches and its escape hatches.
 //
 // The index maintains itself (a scan on every startup, incremental after the
 // first), so the rows here are "is it on", "how does it rank", "what does it
