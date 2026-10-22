@@ -826,15 +826,20 @@ def _consume_sherpa(recognizer, audio, packs, progressive, job, row, total,
                 else vad_module.packed_samples(audio, pack, SAMPLE_RATE))
         if len(clip) < SAMPLE_RATE // 10:
             # Under a tenth of a second: nothing to hear, and a few hundred
-            # samples is where a decoder invents a word.
-            continue
-        # The last pack's decode is the only work left: a ✕ on it is late (see
-        # `_call_with_ticks`), the rule the post-tick `except` below states too.
-        result = _call_with_ticks(lambda: _decode_pack(recognizer, clip),
-                                  job, row, "Transcribing…",
-                                  late={} if last else None)
-        decoded += speech
-        for start, end, text, spans in _sherpa_segments(result, len(clip) / SAMPLE_RATE):
+            # samples is where a decoder invents a word. Skipped, but NOT past
+            # the tick below — a skipped last pack would otherwise leave the bar
+            # at the previous pack's end and the ✕ unchecked.
+            found = []
+        else:
+            # The last pack's decode is the only work left: a ✕ on it is late
+            # (see `_call_with_ticks`), the rule the post-tick `except` below
+            # states too.
+            result = _call_with_ticks(lambda: _decode_pack(recognizer, clip),
+                                      job, row, "Transcribing…",
+                                      late={} if last else None)
+            decoded += speech
+            found = _sherpa_segments(result, len(clip) / SAMPLE_RATE)
+        for start, end, text, spans in found:
             at = vad_module.original_start(pack, start)
             until = max(vad_module.original_end(pack, end), at)
             line = {"start": round(at, 2), "end": round(until, 2), "text": text}

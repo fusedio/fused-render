@@ -1583,6 +1583,21 @@ def test_a_cancel_during_an_EARLIER_pack_decode_still_stops_the_run(
     assert not os.path.exists(request["out"])
 
 
+def test_a_trailing_pack_too_short_to_decode_still_advances_the_bar_to_the_end(
+        worker, base, tmp_path, sherpa, monkeypatch):
+    _loaded_parakeet(worker, sherpa, tmp_path)
+    _decoder(monkeypatch, samples=16000 * 40)
+    # 29s fills the budget, so the 0.05s region is its own (undecodable) pack.
+    _no_vad(monkeypatch, worker, regions=[(0.0, 29.0), (35.0, 35.05)])
+    sherpa.results = [("a.", *_tokens((0.0, " a"), (0.2, ".")))]
+
+    worker.generate(_request(tmp_path))
+
+    ticks = [t for t in base.ticks if t.get("detail", "").startswith("Transcribing")]
+    assert [t["done"] for t in ticks] == [29.0, 35.05]
+    assert len(sherpa.clips) == 1
+
+
 def test_parakeet_segments_reach_the_partial_file_as_each_pack_lands(
         worker, base, tmp_path, sherpa, monkeypatch):
     _loaded_parakeet(worker, sherpa, tmp_path)
