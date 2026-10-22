@@ -42,10 +42,24 @@ told to), and the apps root comes from `fused_render.bots.paths`.
 `FUSED_HOME` is fused-render's `shell.storage.home_dir()` at import, and
 `REGISTRY_FILES` its `registered_apps.json` (registered_apps.py); FusedBot's
 second file, `linked_apps.json`, has no fused-render counterpart.
+
+Connected services (SPEC-connect-oauth §4, §11 "Bots bridge") sit in the same
+roster: `registry()` appends one ToolRec per `fused_render.connect.tools.
+list_tools(key)` entry of every provider, with `app_dir = "connect:<key>"`
+(there is no folder) and `spec` the connect ToolSpec. They are not gated by
+`available()` (that is about the bundled runner for LOCAL apps) and not held
+in this module's cache (connect caches its own tools/list for 60 s; a second,
+longer cache here would keep a disconnected service's tools callable).
+`run_tool` sends them to `connect.tools.call_tool`, `is_write` reads the
+tool's `read_only` annotation instead of the name heuristic, and anything that
+would read `app_dir` off disk checks `is_connect` first. The connect package
+is imported lazily and an ImportError means no connected tools, so this
+module works in a build without it.
 """
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import sys
@@ -55,6 +69,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from fused_render.bots import paths as _bpaths
+
+logger = logging.getLogger(__name__)
 
 try:
     from fused.agent_core.app_mcp import build_app_tool_spec, load_app_manifest, _run_app_tool  # noqa: F401
@@ -458,6 +474,12 @@ def _signature(roots, registry_files, skip_dir):
 
 
 def registry(force=False):
+    """Every tool a bot can call: local app tools (cached, see above) then the
+    connected services' tools (recomputed each call; connect caches them)."""
+    return _local_registry(force) + connect_records()
+
+
+def _local_registry(force=False):
     global _cache, _cache_at, _cache_sig
     if not available():
         return []
@@ -471,6 +493,83 @@ def registry(force=False):
             _cache_sig = sig
         _cache_at = now
         return _cache
+
+
+# ---- connected services (fused_render.connect) -----------------------------------
+CONNECT_PREFIX = "connect:"
+_JSON_TYPES = {"string": str, "integer": int, "number": float, "boolean": bool, "array": list, "object": dict}
+
+
+def is_connect(rec):
+    """True for a connected service's tool: its `app_dir` is `connect:<key>`, not a folder."""
+    return str(getattr(rec, "app_dir", "") or "").startswith(CONNECT_PREFIX)
+
+
+def connect_key(rec):
+    return str(rec.app_dir)[len(CONNECT_PREFIX):] if is_connect(rec) else None
+
+
+def _schema_params(schema):
+    """ParamSpecs from a JSON-schema `input_schema` (MCP `inputSchema`): required
+    ones first, in schema order, then the optional ones, so `_sig` reads like a
+    Python signature. A `type` list (["string", "null"]) takes its first non-null."""
+    props = schema.get("properties") if isinstance(schema, dict) else None
+    if not isinstance(props, dict):
+        return []
+    req = schema.get("required")
+    req = {r for r in req if isinstance(r, str)} if isinstance(req, list) else set()
+    out = []
+    for name, p in props.items():
+        p = p if isinstance(p, dict) else {}
+        t = p.get("type")
+        if isinstance(t, list):
+            t = next((x for x in t if x != "null"), None)
+        out.append(ParamSpec(name=str(name), annotation=_JSON_TYPES.get(t) if isinstance(t, str) else None,
+                             has_default=name not in req, default=p.get("default")))
+    return [p for p in out if not p.has_default] + [p for p in out if p.has_default]
+
+
+def connect_records():
+    """One ToolRec per tool of every connected provider; [] when the connect
+    package is absent or fails (logged at debug, never raised: a broken service
+    must not take the local app tools down with it)."""
+    try:
+        from fused_render.connect import registry as creg
+        from fused_render.connect import tools as ctools
+    except ImportError:
+        return []
+    try:
+        provs = list(creg.providers())
+    except Exception:  # noqa: BLE001
+        logger.debug("connect providers() failed", exc_info=True)
+        return []
+    out = []
+    for prov in provs:
+        key = getattr(prov, "key", None)
+        if not key:
+            continue
+        try:
+            specs = list(ctools.list_tools(key) or [])
+            recs = [ToolRec(app=key, app_dir=CONNECT_PREFIX + key, name=str(sp.name),
+                            description=str(getattr(sp, "description", "") or ""),
+                            params=_schema_params(getattr(sp, "input_schema", None)), spec=sp,
+                            tools_in_app=len(specs)) for sp in specs]
+        except Exception:  # noqa: BLE001
+            logger.debug("connect list_tools(%s) failed", key, exc_info=True)
+            continue
+        out.extend(recs)
+    return out
+
+
+def connect_title(key):
+    """The provider's display name ("Notion") for a key, else the key itself."""
+    try:
+        from fused_render.connect import registry as creg
+
+        prov = creg.get(key)
+        return str(getattr(prov, "name", "") or key) if prov is not None else key
+    except Exception:  # noqa: BLE001 — ImportError, or a broken pack
+        return key
 
 
 def tool_ref(d):
@@ -510,6 +609,10 @@ class RunResult:
 
 
 def _call(rec, kwargs):
+    if is_connect(rec):  # the service's own server runs it (connect.tools.call_tool)
+        from fused_render.connect import tools as ctools
+
+        return ctools.call_tool(rec.app, rec.name, kwargs)
     if _NATIVE:  # the native runner is sync (and refuses in fused-render: module docstring)
         return _run_app_tool(rec.spec, kwargs)
     # The bundled one is async: asyncio.run in a worker thread (the bot loop is a
@@ -540,11 +643,26 @@ def run_tool(rec, args, timeout_s=TIMEOUT_S):
         return RunResult(False, f"error: {e}", dropped)
     finally:
         ex.shutdown(wait=False, cancel_futures=True)
+    if is_connect(rec):
+        return _connect_result(value, dropped)
     try:
         text = json.dumps(value, ensure_ascii=False, default=str)
     except Exception as e:
         return RunResult(False, f"error: result not serialisable: {e}", dropped)
     return RunResult(True, text, dropped)
+
+
+def _connect_result(res, dropped):
+    """connect.tools.call_tool's {ok, text, content, is_error} as a RunResult. A
+    failure's text gets the `error: ` prefix local failures carry, so the bot reads
+    both the same way."""
+    if not isinstance(res, dict):
+        return RunResult(False, f"error: unexpected result from the service ({type(res).__name__})", dropped)
+    ok = bool(res.get("ok")) and not res.get("is_error")
+    text = str(res.get("text") or "")
+    if not ok and not text.startswith("error"):
+        text = "error: " + (text or "the service reported a failure with no message")
+    return RunResult(ok, text, dropped)
 
 
 # ---- approval: which tools change something ----------------------------------------
@@ -569,7 +687,11 @@ def _words(name):
 
 
 def is_write(rec):
-    """Heuristic: a tool whose name or description reads as a write goes through the gate."""
+    """Heuristic: a tool whose name or description reads as a write goes through the gate.
+    A connected service's tool carries its own MCP annotation instead: anything not
+    marked read-only goes through the gate."""
+    if is_connect(rec):
+        return not bool(getattr(rec.spec, "read_only", False))
     return bool(WRITE_NAME_RX.search(_words(rec.name)) or WRITE_DESC_RX.search(rec.description or ""))
 
 
@@ -632,11 +754,11 @@ def _line(rec, trusted=False):
 
 def _render(recs, limit, trusted=frozenset()):
     by_app = {}
-    for r in recs:
-        by_app.setdefault(r.app, []).append(r)
+    for r in recs:  # a local app folder and a service may share a name: two headings
+        by_app.setdefault((r.app, is_connect(r)), []).append(r)
     out = []
-    for app, rs in by_app.items():
-        head = app
+    for (app, conn), rs in by_app.items():
+        head = app + (" (connected service)" if conn else "")
         tr = norm_app(app) in trusted
         if tr:
             head += " (trusted: its tools never ask)"
@@ -653,7 +775,9 @@ def prompt_section(recs, trusted=None):
     if not recs:
         return ""
     trusted = frozenset(trusted or ())
-    hdr = ("\n\nAPP TOOLS (local apps on this Mac; call one with `tool` app name args. Prefer a tool over browsing when it "
+    services = ", and connected services (Notion, GitHub, Slack…) whose tools run on the service's own servers" \
+        if any(is_connect(r) for r in recs) else ""
+    hdr = (f"\n\nAPP TOOLS (local apps on this Mac{services}; call one with `tool` app name args. Prefer a tool over browsing when it "
            "does the job directly. Tools marked [approval] change something and pause for the user's yes; the rest run at once):\n")
     body = _render(recs, None, trusted)
     if len(body) > SECTION_CAP:
