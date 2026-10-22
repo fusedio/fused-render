@@ -35,14 +35,22 @@ export interface CanvasesStatus {
    *  environment dropdown. */
   locked: boolean;
   /** Per environment: its workbench web origin, its clone folder
-   *  (`~/Fused/canvas/<env>`) and how many clones it holds here. */
-  envs: Record<WorkbenchEnv, { base_url: string; canvases_dir: string; cloned_count: number }>;
+   *  (`~/Fused/canvas/<env>`), how many clones it holds here, and whether it
+   *  can be picked (false only for custom with no `~/.fused/settings.toml`). */
+  envs: Record<
+    WorkbenchEnv,
+    { base_url: string; canvases_dir: string; cloned_count: number; available: boolean }
+  >;
 }
 
-export type WorkbenchEnv = "unstable" | "prod";
+/** `custom` (fusedcli.CUSTOM_WORKBENCH_ENV) is no Fused of its own: its CLI
+ *  runs leave FUSED_ENV unset, so they talk to whatever endpoint
+ *  `~/.fused/settings.toml` names, and its `base_url` is that endpoint's web
+ *  origin. */
+export type WorkbenchEnv = "unstable" | "prod" | "custom";
 
 /** fusedcli.WORKBENCH_ENV_CHOICES, in the server's order. */
-export const WORKBENCH_ENVS: readonly WorkbenchEnv[] = ["unstable", "prod"];
+export const WORKBENCH_ENVS: readonly WorkbenchEnv[] = ["unstable", "prod", "custom"];
 
 export const isWorkbenchEnv = (s: unknown): s is WorkbenchEnv =>
   typeof s === "string" && (WORKBENCH_ENVS as readonly string[]).includes(s);
@@ -50,6 +58,7 @@ export const isWorkbenchEnv = (s: unknown): s is WorkbenchEnv =>
 export const ENV_LABELS: Record<WorkbenchEnv, string> = {
   unstable: "Unstable",
   prod: "Production",
+  custom: "Custom ~/.fused/settings.toml",
 };
 
 /** A canvas workspace route: the env is a path segment because it is one on

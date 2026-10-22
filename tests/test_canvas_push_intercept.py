@@ -31,6 +31,10 @@ def root(tmp_path, monkeypatch):
     canvases = tmp_path / "canvases"
     monkeypatch.setenv("FUSED_RENDER_CANVASES_DIR", str(canvases))
     monkeypatch.delenv("FUSED_RENDER_WORKBENCH_ENV", raising=False)
+    # A fall-through binds FUSED_ENV in os.environ (`_fall_through`); set then
+    # unset so monkeypatch records it and teardown leaves no value behind.
+    monkeypatch.setenv("FUSED_ENV", "placeholder")
+    monkeypatch.delenv("FUSED_ENV")
     root = canvases / ENV
     (root / "alpha").mkdir(parents=True)
     return root
@@ -44,12 +48,12 @@ def test_the_canonical_push_is_recognised():
     prompt tells a session to type."""
     assert _canvas_push.parse_push(
         ["workbench", "canvas", "push", "/x/alpha", "--canvas", "alpha"]
-    ) == {"source_dir": "/x/alpha", "canvas": "alpha", "unsupported": []}
+    ) == {"source_dir": "/x/alpha", "canvas": "alpha", "unsupported": [], "env": None}
     assert _canvas_push.parse_push(["workbench", "canvas", "push", "."]) == {
-        "source_dir": ".", "canvas": None, "unsupported": []}
+        "source_dir": ".", "canvas": None, "unsupported": [], "env": None}
     assert _canvas_push.parse_push(
         ["workbench", "canvas", "push", "--canvas=alpha", "."]
-    ) == {"source_dir": ".", "canvas": "alpha", "unsupported": []}
+    ) == {"source_dir": ".", "canvas": "alpha", "unsupported": [], "env": None}
 
 
 @pytest.mark.parametrize("global_prefix", [
@@ -67,10 +71,24 @@ def test_a_global_option_before_the_subcommand_is_still_recognised(global_prefix
     is a real shape a session can type, and matching `args[:3]` verbatim
     missed it entirely, falling through to the raw, unguarded push."""
     assert _canvas_push.parse_push([*global_prefix, "workbench", "canvas", "push", "."]) == {
-        "source_dir": ".", "canvas": None, "unsupported": []}
+        "source_dir": ".", "canvas": None, "unsupported": [], "env": None}
     assert _canvas_push.parse_push(
         [*global_prefix, "workbench", "canvas", "push", "/x/alpha", "--canvas", "alpha"]
-    ) == {"source_dir": "/x/alpha", "canvas": "alpha", "unsupported": []}
+    ) == {"source_dir": "/x/alpha", "canvas": "alpha", "unsupported": [], "env": None}
+
+
+def test_the_workbench_groups_own_env_is_recognised_and_reported():
+    """`fused workbench --env prod canvas push .` is FUSED_ENV in flag form
+    (the workbench group's `--env`), unlike the top-level `--env` (agent_core's
+    OPENFUSED_ENV, reported as no target). Unmatched it fell through to the
+    raw push unchecked; now it is matched and its value carried."""
+    assert _canvas_push.parse_push(
+        ["workbench", "--env", "prod", "--format=json", "canvas", "push", "."]
+    ) == {"source_dir": ".", "canvas": None, "unsupported": [], "env": "prod"}
+    assert _canvas_push.parse_push(
+        ["--env", "x", "workbench", "--env=custom", "canvas", "push", "."]
+    )["env"] == "custom"
+    assert _canvas_push.parse_push(["workbench", "--env"]) is None
 
 
 def test_an_unrecognised_option_before_the_subcommand_falls_through():
@@ -329,6 +347,63 @@ def test_a_clone_of_the_other_environment_is_refused_on_every_fall_through(root,
         assert other in err and env in err
         # The remedy names the clone's own env, not a Preferences switch.
         assert f"FUSED_ENV={other}" in err and "Preferences" not in err
+
+
+def test_a_custom_clone_refuses_a_set_fused_env_and_falls_through_unset(root, monkeypatch):
+    """The custom env is the one an UNSET FUSED_ENV targets (the CLI keeps
+    `~/.fused/settings.toml`'s endpoint): on a fall-through a custom clone
+    refuses any named env, and with FUSED_ENV unset runs the real CLI."""
+    clone = root.parent / "custom" / "alpha"
+    clone.mkdir(parents=True)
+    args = ["workbench", "canvas", "push", str(clone)]
+    monkeypatch.setenv("FUSED_ENV", "prod")
+    code, _, err = _intercept(args, monkeypatch, _Server(200, {"ok": True}), origin=None)
+    assert code == 1
+    assert "custom environment" in err and "FUSED_ENV unset" in err
+    monkeypatch.delenv("FUSED_ENV")
+    server = _Server(200, {"ok": True})
+    code, _, _ = _intercept(args, monkeypatch, server, origin=None)
+    assert code is None
+    # With a server, the push routes to the custom manager like any env's.
+    code, _, _ = _intercept(args, monkeypatch, server)
+    assert code == 0
+    assert [c[1:] for c in server.calls] == [("alpha", "custom")]
+
+
+def test_a_workbench_env_flag_naming_another_env_is_refused_on_fall_through(root, monkeypatch):
+    """`workbench --env` beats FUSED_ENV in the CLI, so it does here: a flag
+    naming another env refuses even with FUSED_ENV unset (or matching), for a
+    custom clone and a named one alike."""
+    custom = root.parent / "custom" / "alpha"
+    custom.mkdir(parents=True)
+    monkeypatch.delenv("FUSED_ENV", raising=False)
+    for clone, flag in ((custom, "prod"), (root / "alpha", OTHER_ENV)):
+        args = ["workbench", "--env", flag, "canvas", "push", str(clone)]
+        code, _, err = _intercept(args, monkeypatch, _Server(200, {"ok": True}), origin=None)
+        assert code == 1, clone
+        assert "(--env)" in err
+    monkeypatch.setenv("FUSED_ENV", ENV)
+    args = ["workbench", "--env", ENV, "canvas", "push", str(root / "alpha")]
+    code, _, _ = _intercept(args, monkeypatch, _Server(200, {"ok": True}), origin=None)
+    assert code is None
+
+
+def test_an_unset_fused_env_is_bound_to_a_named_clones_env_on_fall_through(root, monkeypatch):
+    """Unset FUSED_ENV means `~/.fused/settings.toml` (the custom env) to the
+    CLI — a custom default outside the clone leaves it so. A prod/unstable
+    clone's raw push must still reach its own env, so the fall-through binds
+    it; a custom clone keeps it unset."""
+    args = ["workbench", "canvas", "push", str(root / "alpha")]
+    code, _, _ = _intercept(args, monkeypatch, _Server(200, {"ok": True}), origin=None)
+    assert code is None
+    assert os.environ["FUSED_ENV"] == ENV
+    custom = root.parent / "custom" / "alpha"
+    custom.mkdir(parents=True)
+    monkeypatch.delenv("FUSED_ENV")
+    code, _, _ = _intercept(["workbench", "canvas", "push", str(custom)], monkeypatch,
+                            _Server(200, {"ok": True}), origin=None)
+    assert code is None
+    assert "FUSED_ENV" not in os.environ
 
 
 def test_a_mismatched_fused_env_still_posts_when_the_server_takes_it(root, monkeypatch):

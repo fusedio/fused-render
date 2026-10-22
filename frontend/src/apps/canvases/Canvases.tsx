@@ -394,7 +394,7 @@ export default function Canvases() {
                   }}
                 >
                   {WORKBENCH_ENVS.map((e) => (
-                    <option key={e} value={e}>
+                    <option key={e} value={e} disabled={status.envs?.[e]?.available === false}>
                       {ENV_LABELS[e]}
                     </option>
                   ))}

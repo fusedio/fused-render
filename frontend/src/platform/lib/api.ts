@@ -1853,9 +1853,9 @@ export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
 }
 
 /** The default Fused environment (`prefs.workbench.env`). 400 outside
- *  `unstable` / `prod`, 423 while FUSED_RENDER_WORKBENCH_ENV pins it. The
- *  server re-exports the `fused` wrapper so its default follows. */
-export function putWorkbenchEnv(env: "unstable" | "prod"): Promise<Prefs> {
+ *  `unstable` / `prod` / `custom`, 423 while FUSED_RENDER_WORKBENCH_ENV pins
+ *  it. The server re-exports the `fused` wrapper so its default follows. */
+export function putWorkbenchEnv(env: "unstable" | "prod" | "custom"): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { workbench_env: env });
 }
 
@@ -3717,7 +3717,7 @@ export interface Task {
    *  for every other row. The door lands on the canvas page, node selected,
    *  chat on the task's session, instead of the clone in the explorer.
    *  Optional: pulse rows and older fixtures do not carry it. */
-  canvas?: { env: "unstable" | "prod"; name: string; file: string } | null;
+  canvas?: { env: "unstable" | "prod" | "custom"; name: string; file: string } | null;
   session_id: string; // "" until the first run
   // How the transcript's own session ENTERED — "cli" for an interactive
   // terminal (`claude` typed by hand), "sdk-cli" for a headless/programmatic

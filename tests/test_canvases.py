@@ -234,7 +234,7 @@ def test_status_reports_signed_out(harness):
     assert body["cli_found"] is True
     assert body["logged_in"] is False
     assert body["login_in_flight"] is False
-    assert set(body["envs"]) == {"unstable", "prod"}
+    assert set(body["envs"]) == {"unstable", "prod", "custom"}
     assert all(e["base_url"] for e in body["envs"].values())
 
 
@@ -2631,13 +2631,28 @@ def test_status_lists_every_environment_and_the_default(harness):
     body = harness.client.get("/api/canvases/status").json()
     assert body["workbench_env"] == ENV  # the preference's default
     assert body["locked"] is False
-    assert set(body["envs"]) == {"unstable", "prod"}
+    assert set(body["envs"]) == {"unstable", "prod", "custom"}
     assert body["envs"][OTHER_ENV]["canvases_dir"] == str(harness.base / OTHER_ENV)
     assert body["envs"][OTHER_ENV]["cloned_count"] == 1
     assert body["envs"][ENV]["cloned_count"] == 0
     assert body["envs"]["prod"]["base_url"] == "https://www.fused.io"
     for gone in ("workbench_base_url", "canvases_dir", "cloned_count"):
         assert gone not in body
+
+
+def test_status_marks_custom_unavailable_without_a_fused_settings_file(
+        harness, monkeypatch, tmp_path):
+    """No ~/.fused/settings.toml means custom would just be prod: the pickers
+    disable it. The named envs are always available."""
+    harness.log_in()
+    toml = tmp_path / "settings.toml"
+    monkeypatch.setattr(canvases_mod, "_FUSED_SETTINGS_FILES", (str(toml),))
+    envs = harness.client.get("/api/canvases/status").json()["envs"]
+    assert {e: v["available"] for e, v in envs.items()} == {
+        "unstable": True, "prod": True, "custom": False}
+    toml.write_text('base_url = "https://abc.fused.io/server/v1"\n')
+    envs = harness.client.get("/api/canvases/status").json()["envs"]
+    assert envs["custom"]["available"] is True
 
 
 def test_every_canvas_call_requires_a_known_env(harness):
