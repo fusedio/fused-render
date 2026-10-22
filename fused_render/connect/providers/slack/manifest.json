@@ -1,0 +1,40 @@
+{
+  "_metadata": {"major_version": 1, "minor_version": 1},
+  "display_information": {
+    "name": "Fused",
+    "description": "Read and search your Slack from fused-render on your own computer.",
+    "long_description": "Signs in with PKCE from the fused-render desktop app. Every call goes straight from your computer to Slack; no server of Fused's is involved and no token leaves your machine.",
+    "background_color": "#1f1f1f"
+  },
+  "oauth_config": {
+    "redirect_urls": [
+      "http://localhost:47823/callback",
+      "http://localhost:47824/callback",
+      "http://localhost:47825/callback",
+      "http://localhost:47826/callback",
+      "http://localhost:47827/callback"
+    ],
+    "scopes": {
+      "user": [
+        "channels:history",
+        "channels:read",
+        "groups:history",
+        "groups:read",
+        "im:history",
+        "im:read",
+        "mpim:history",
+        "mpim:read",
+        "users:read",
+        "search:read",
+        "reactions:read",
+        "reactions:write",
+        "chat:write"
+      ]
+    },
+    "pkce_enabled": true
+  },
+  "settings": {
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false
+  }
+}

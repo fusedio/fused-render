@@ -1,0 +1,8 @@
+{
+  "name": "Notion",
+  "auth": [
+    {"kind": "mcp-oauth", "resource": "https://mcp.notion.com/mcp"}
+  ],
+  "tools": {"remote": "https://mcp.notion.com/mcp"},
+  "privacy": "Sign-in and every call go straight from this computer to Notion. The token stays on this computer. Fused runs no server in this flow."
+}

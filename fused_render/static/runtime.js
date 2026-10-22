@@ -506,6 +506,29 @@
  *         t.watch((ev) => ev.role === "note" && setStatus(ev.text));
  *         const r = await t.done;  // r.state === "done" ? r.text : t.blocked
  *     LOCAL ONLY — a hosted page has no bots; 403 while Bots is off in Preferences.
+ *   fused.connect.* -> Connections (SPEC-connect-oauth.md §4/§11): the services
+ *     a person signed in to at Preferences → Connections (Notion, GitHub,
+ *     Slack...), and their tools, run on the server's side. The token never
+ *     reaches the page: it asks, the server calls the vendor, the page gets
+ *     the result. Same contract as fused.tasks (Promises, the server's
+ *     sentence as the Error with `.status`/`.error`).
+ *     list() -> Provider[] — {key, name, icon, privacy, auth: [{kind, label,
+ *       available, reason?}], state, account, tools (a count), ...}; `state`
+ *       is disconnected | pending | connected | reconnect | error.
+ *     status(key) -> {state, kind, account, url, user_code,
+ *       verification_uri, error, tools, store}.
+ *     login(key, {kind, value, client_id}) -> status — starts (or joins) the
+ *       sign-in; opens `status.url` (the vendor's consent page) in a new tab
+ *       when there is one. Prefer sending people to Preferences → Connections.
+ *     logout(key) -> status.
+ *     tools(key) -> [{name, description, input_schema, read_only,
+ *       destructive}] — [] while not connected.
+ *     call(key, name, args) -> {ok, text, content, isError} — `text` is the
+ *       result's text joined; `isError` a tool that ran and failed. Not
+ *       connected rejects with `.code === "not_connected"` (HTTP 409).
+ *         const r = await fused.connect.call("notion", "search", { query: "roadmap" });
+ *         show(r.isError ? "Notion said: " + r.text : r.text);
+ *     LOCAL ONLY — a hosted page has no server to hold the sign-in.
  *   fused.params.get(key) / getAll() / onChange(cb) -> unsubscribe
  *   fused.params.set(key, value, opts?)   opts: { history: "replace", default: d }
  *                                         value === null REMOVES the key
@@ -7304,6 +7327,75 @@
     watch: botsWatch,
   };
 
+  // ------------------------------------------------------------ fused.connect
+  //
+  // fused.connect — Connections (SPEC-connect-oauth.md §4, §11): the services
+  // signed in to at Preferences → Connections, and their tools. A thin door
+  // onto `/api/connect`: the server holds the token and makes the vendor
+  // call, so nothing here ever sees one — an app page gets tool RESULTS.
+  // `login` exists so a page can offer a Connect button of its own, but the
+  // card in Preferences is the one place that shows the whole flow (device
+  // code, paste fallback, BYO client id); a page's job on a 409 is to point
+  // there, which is what the not_connected Error's sentence does.
+  function connectPath(key, tail) {
+    return "/api/connect/" + encodeURIComponent(String(key)) + (tail || "");
+  }
+
+  // Opens the vendor's consent page once per URL a login hands back. A
+  // joined flow returns the same URL again; a second tab of it is noise.
+  let connectOpened = null;
+  function connectOpen(st) {
+    if (st && typeof st.url === "string" && st.url && !st.opened && st.url !== connectOpened) {
+      connectOpened = st.url;
+      try {
+        window.open(st.url, "_blank", "noopener");
+      } catch (e) {
+        /* a blocked popup leaves the url on the status for the page to show */
+      }
+    }
+    return st;
+  }
+
+  const connect = {
+    list: () =>
+      taskFetch("GET", "/api/connect").then((d) => (Array.isArray(d) ? d : (d && d.providers) || [])),
+    status: (key) => taskFetch("GET", connectPath(key)),
+    login: (key, opts) => {
+      const o = opts || {};
+      const body = {};
+      if (o.kind != null) body.kind = o.kind;
+      if (o.value != null) body.value = o.value;
+      if (o.client_id != null) body.client_id = o.client_id;
+      return taskFetch("POST", connectPath(key, "/login"), body).then(connectOpen);
+    },
+    logout: (key) => taskFetch("POST", connectPath(key, "/logout"), {}),
+    tools: (key) =>
+      taskFetch("GET", connectPath(key, "/tools")).then((d) => (Array.isArray(d) ? d : (d && d.tools) || [])),
+    call: (key, name, args) =>
+      taskFetch("POST", connectPath(key, "/tools/call"), { name: String(name), args: args || {} }).then(
+        (d) => ({
+          ok: !!(d && d.ok),
+          text: (d && typeof d.text === "string" && d.text) || "",
+          content: (d && Array.isArray(d.content) && d.content) || [],
+          isError: !!(d && (d.isError != null ? d.isError : d.is_error)),
+        }),
+        (err) => {
+          if (err && err.status === 409) {
+            const e = taskError(
+              409,
+              String(key) +
+                " is not connected (" +
+                err.message +
+                "). Open Preferences → Connections in Fused and connect it, then try again.",
+            );
+            e.code = "not_connected";
+            throw e;
+          }
+          throw err;
+        },
+      ),
+  };
+
   // ----------------------------------------------------------- fused.capture
   //
   // Native screen / microphone / still capture (SPEC §45). Named `capture` and
@@ -7965,6 +8057,7 @@
     fileIndex,
     tasks,
     bots,
+    connect,
     trackJob,
     watchJob,
     autoReload,

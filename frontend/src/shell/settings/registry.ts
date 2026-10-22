@@ -38,6 +38,7 @@ export type GroupId =
   | "apps"
   | "indexing"
   | "lan"
+  | "connections"
   | "integrations"
   | "advanced";
 
@@ -124,6 +125,12 @@ export const GROUPS: readonly SettingsGroup[] = [
   { id: "apps", nav: "apps", label: "Apps & sharing", blurb: "Git sync, sharing, and how app cards preview." },
   { id: "indexing", nav: "apps", label: "Files & search", blurb: "The file index behind Files search." },
   { id: "lan", nav: "apps", label: "Phone & network", blurb: "Open your apps from a phone on the same Wi-Fi." },
+  {
+    id: "connections",
+    nav: "other",
+    label: "Connections",
+    blurb: "Sign in to a service once and its tools work in your apps, bots and tasks. Tokens stay on this machine.",
+  },
   { id: "integrations", nav: "other", label: "Integrations", blurb: "Services this app signs in to." },
   {
     id: "advanced",
@@ -590,6 +597,19 @@ const ENTRIES = [
     renderOnly: true,
   },
 
+
+  // ── Connections ──────────────────────────────────────────────────────────
+  // The group draws its own page (shell/Connections.tsx: a card per provider
+  // the server lists, which the registry cannot know ahead of time); this row
+  // is what search finds, a pointer into it.
+  {
+    id: "connections",
+    group: "connections",
+    section: "Services",
+    label: "Connections",
+    description: "Notion, GitHub, Slack and other services whose tools your apps, bots and tasks can use.",
+    keywords: "connect connection oauth mcp sign in login api key notion github slack service tools",
+  },
 
   // ── Accounts ─────────────────────────────────────────────────────────────
   {

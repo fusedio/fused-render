@@ -3295,12 +3295,13 @@ class Bot:
     _tool_calls = 0
 
     def run_tool(self, app, name, args):
-        """`tool`: run one app MCP tool (apptools.py). The first call into an app in a
-        task also drops that app's card into the chat."""
-        if not apptools.available():
-            return f"tool {app} › {name}", "error: app tools are not available in this copy of the app (bundled fused module missing)"
+        """`tool`: run one app MCP tool (apptools.py), or a connected service's tool
+        (fused_render.connect, which needs no bundled module). The first call into
+        a local app in a task also drops that app's card into the chat."""
         recs = apptools.registry()
         rec = apptools.find(recs, app, name)
+        if not apptools.available() and (rec is None or not apptools.is_connect(rec)):
+            return f"tool {app} › {name}", "error: app tools are not available in this copy of the app (bundled fused module missing)"
         if rec is None:
             have = ", ".join(sorted({r.app for r in recs})) or "none"
             return f"tool {app or '?'} › {name or '?'}", f"error: no such tool. Apps with tools: {have}. Use exact names from APP TOOLS."
@@ -3317,11 +3318,13 @@ class Bot:
         if used is None:
             used = self._tool_apps = set()
         extra = {}
-        if app_dir not in used:
+        service = str(app_dir or "").startswith(apptools.CONNECT_PREFIX)  # a connected service: no folder, no card
+        title = apptools.connect_title(app_dir[len(apptools.CONNECT_PREFIX):]) if service else _app_title(app_dir)
+        if not service and app_dir not in used:
             used.add(app_dir)
-            extra["app"] = {"name": _app_title(app_dir), "dir": app_dir, "tools": tools}
+            extra["app"] = {"name": title, "dir": app_dir, "tools": tools}
         # A harness line, not bot speech: role `note` (muted, no react/reply).
-        self.emit("note", f"Used {_app_title(app_dir)} › {name}", detail=json.dumps(args or {}, ensure_ascii=False)[:400], **extra)
+        self.emit("note", f"Used {title} › {name}", detail=json.dumps(args or {}, ensure_ascii=False)[:400], **extra)
         note = f"\n(ignored unknown args: {', '.join(res.dropped)}; {what} takes only the parameters listed)" if res.dropped else ""
         if not res.ok:
             return label, res.text + note

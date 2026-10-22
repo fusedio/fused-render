@@ -79,6 +79,7 @@ from fused_render.server.routers.system import router as system_router
 from fused_render.server.routers.system_net import router as system_net_router
 from fused_render.server.routers.ai_models import router as ai_models_router
 from fused_render.server.routers.hf_auth import router as hf_auth_router
+from fused_render.connect.routes import router as connect_router
 from fused_render.server.routers.hub_models import router as hub_models_router
 from fused_render.server.routers.ai_runtime import router as ai_runtime_router
 from fused_render.server.routers.ai_benchmark import router as ai_benchmark_router
@@ -1102,6 +1103,10 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # nothing else. The read is unguarded and carries no credential — not even
     # the value of an environment variable that may be overriding hf's store.
     app.include_router(hf_auth_router)
+    # Connected services (connect/routes.py, SPEC-connect-oauth): sign-in to
+    # Notion, GitHub, Slack and the rest, and their tools for pages and bots.
+    # Tokens stay in connect/store.py; no response carries one.
+    app.include_router(connect_router)
     # Local inference (routers/ai_runtime.py, SPEC §40): which models this
     # machine is holding in memory, what they cost, and the load/unload/download
     # that change that. Reads unguarded; the three POSTs start processes and

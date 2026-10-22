@@ -217,7 +217,7 @@ TOOL_SPECS: dict[str, dict] = {
     "texts": {"description": "Read the recent iMessage thread with a CONTACTS person. With `seconds` (max 300) first wait up to "
                              "that long for a NEW message from them (use right after `text` when you need their answer).",
               "inputSchema": _s(to=REQ, seconds="integer")},
-    "tool": {"description": "Call one of the APP TOOLS (functions local apps on this Mac expose). `app` is the app folder, `name` "
+    "tool": {"description": "Call one of the APP TOOLS (functions local apps on this Mac, or connected services, expose). `app` is the app folder, `name` "
                             "the tool, `args` exactly the parameters shown. Prefer a tool over browsing when it does the job. "
                             "Tools marked [approval] pause for the user's yes. The same call with the same args is refused until "
                             "the user speaks again. Never put passwords or keys in args.",
