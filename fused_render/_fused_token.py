@@ -2,11 +2,27 @@
 
 Run as ``[sys.executable, _fused_token.py]`` by canvases.py (same in-interpreter
 spawn pattern as _fused_cli.py). This is the `fused login` credential store
-(~/.fused/credentials, Auth0 PKCE) — the LEGACY-workbench provider, distinct
-from the fused CLI's own `fused cloud login` store. The refreshed token is
-saved back so the on-disk expires_at stays truthful for the cheap staleness
-check canvases.py does before spawning this child.
+(Auth0 PKCE) — the LEGACY-workbench provider, distinct from the fused CLI's
+own `fused cloud login` store. The refreshed token is saved back so the
+on-disk expires_at stays truthful for the cheap staleness check canvases.py
+does before spawning this child.
+
+FUSED_ENV is honored the same way the CLI does it (fused._env), like the other
+shims: prod/unstable read fused's hosted-tenant store (~/.fused/credentials)
+even when ~/.fused/settings.toml names a custom deployment's `[auth]`
+credentials_path, and only a run with FUSED_ENV unset (the custom env) reads
+that one. Without this the import-time options — the settings file's — pick
+the store, and a prod canvas fails with "Credentials file does not exist" as
+soon as a settings.toml exists (canvases.credentials_file assumes this reset).
 """
+import os
+
+import fused
+
+_env_name = os.environ.get("FUSED_ENV")
+if _env_name:
+    fused._env(_env_name)
+
 try:
     # fused >= 2.x agent-toolkit layout nests the legacy SDK under
     # fused.workbench (fused._auth aliases it today, but the nested path is

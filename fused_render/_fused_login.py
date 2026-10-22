@@ -11,7 +11,14 @@ callback server's timeout differs.
 Spawned by canvases.py as ``[sys.executable, <this file>]`` when the fused
 package is importable in the server's interpreter (the internal-CLI case);
 an external FUSED_RENDER_FUSED_BIN override keeps the CLI's own login.
+
+FUSED_ENV is honored the same way the CLI does it (fused._env), like the other
+shims: a prod/unstable sign-in goes to fused's hosted tenant and writes
+~/.fused/credentials — the store canvases.py watches for completion — even
+when ~/.fused/settings.toml names a custom deployment's `[auth]`; only a run
+with FUSED_ENV unset (the custom env) signs in against that one.
 """
+import os
 import secrets
 import sys
 import time
@@ -26,6 +33,12 @@ CALLBACK_TIMEOUT_S = 600
 
 
 def main() -> int:
+    import fused
+
+    env_name = os.environ.get("FUSED_ENV")
+    if env_name:
+        fused._env(env_name)
+
     try:
         from fused.workbench import _auth  # fused >= 2.9 layout
     except ImportError:  # pragma: no cover - older package layout
