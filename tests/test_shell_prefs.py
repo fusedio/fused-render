@@ -1795,3 +1795,41 @@ def test_chromium_engine_routes(tmp_path, monkeypatch):
     assert body["enabled"] is False
     assert json.loads((home / "prefs.json").read_text())["chromium_windows_enabled"] is False
     assert calls[-1] == "remove"
+
+
+# -- warm_run_enabled (SPEC PY-20) --------------------------------------------
+
+
+def test_warm_run_defaults_on_toggles_and_reports_forced(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    monkeypatch.delenv("FUSED_RENDER_WARM_RUN", raising=False)
+    monkeypatch.setattr(os, "name", "posix")
+    assert client.get("/api/prefs").json()["warm_run"] == {"enabled": True, "forced": False}
+    body = client.put("/api/prefs", json={"warm_run_enabled": False}, headers=FUSED).json()
+    assert body["warm_run"]["enabled"] is False
+    assert json.loads((home / "prefs.json").read_text(encoding="utf-8"))[
+        "warm_run_enabled"] is False
+    assert client.put("/api/prefs", json={"warm_run_enabled": True},
+                      headers=FUSED).json()["warm_run"]["enabled"] is True
+
+
+def test_put_rejects_bad_warm_run_enabled(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    resp = client.put("/api/prefs", json={"warm_run_enabled": "yes"}, headers=FUSED)
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "'warm_run_enabled' must be a boolean"
+    assert not (home / "prefs.json").exists()
+
+
+def test_warm_run_env_beats_the_pref_and_windows_is_always_off(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    monkeypatch.setattr(os, "name", "posix")
+    client.put("/api/prefs", json={"warm_run_enabled": True}, headers=FUSED)
+    monkeypatch.setenv("FUSED_RENDER_WARM_RUN", "0")
+    assert prefs_mod.warm_run_enabled() is False
+    assert client.get("/api/prefs").json()["warm_run"] == {"enabled": False, "forced": True}
+    client.put("/api/prefs", json={"warm_run_enabled": False}, headers=FUSED)
+    monkeypatch.setenv("FUSED_RENDER_WARM_RUN", "1")
+    assert prefs_mod.warm_run_enabled() is True
+    monkeypatch.setattr(os, "name", "nt")
+    assert prefs_mod.warm_run_enabled() is False
