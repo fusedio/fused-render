@@ -23,7 +23,7 @@ function ctx(over: Partial<SettingsContext> = {}, prefs: Partial<Prefs> = {}): S
     prefs: {
       native_windows: { available: true, enabled: true },
       launcher: { available: true },
-      agents: { claude: true, copilot: false, default: "claude" },
+      agents: { claude: true, copilot: false, codex: false, default: "claude" },
       ...prefs,
     } as unknown as Prefs,
     ...over,
@@ -131,10 +131,24 @@ describe("visibility", () => {
   });
 
 
-  test("the default-agent picker appears only with both agents on", () => {
+  test("the default-agent picker appears only with two or more agents on", () => {
     expect(visibleSettings(ctx()).map((s) => s.id)).not.toContain("agent-default");
-    const both = ctx({}, { agents: { claude: true, copilot: true, default: "claude" } } as Partial<Prefs>);
-    expect(visibleSettings(both).map((s) => s.id)).toContain("agent-default");
+    const agents = (claude: boolean, copilot: boolean, codex: boolean) =>
+      visibleSettings(ctx({}, { agents: { claude, copilot, codex, default: "claude" } } as Partial<Prefs>))
+        .map((s) => s.id);
+    expect(agents(true, true, false)).toContain("agent-default");
+    expect(agents(true, false, true)).toContain("agent-default");
+    expect(agents(false, true, true)).toContain("agent-default");
+    expect(agents(true, true, true)).toContain("agent-default");
+    expect(agents(false, false, true)).not.toContain("agent-default");
+    // An older server says nothing of Codex: two of the other two still count.
+    const old = ctx({}, { agents: { claude: true, copilot: true, default: "claude" } } as unknown as Partial<Prefs>);
+    expect(visibleSettings(old).map((s) => s.id)).toContain("agent-default");
+  });
+
+  test("the three agent switches stand in the registry's order", () => {
+    const ids = visibleSettings(ctx()).map((s) => s.id as string).filter((id) => /^agent-(claude|copilot|codex)$/.test(id));
+    expect(ids).toEqual(["agent-claude", "agent-copilot", "agent-codex"]);
   });
 
   test("sections come out in first-appearance order", () => {
@@ -226,6 +240,13 @@ describe("search", () => {
     const rows = visibleSettings(ctx({ claudeConfig: true }));
     expect(searchSettings(rows, "mcp").map((h) => h.id)).toEqual(["claude-mcp", "claude-strict-mcp"]);
     expect(searchSettings(rows, "marketplace").map((h) => h.id).sort()).toEqual(["claude-plugins", "marketplace"]);
+  });
+
+  test("Codex is findable by its own words and its account's", () => {
+    for (const q of ["codex", "openai", "chatgpt"]) {
+      expect(searchSettings(all, q).map((h) => h.id)).toContain("agent-codex");
+    }
+    expect(searchSettings(all, "codex sign").map((h) => h.id)).toEqual(["agent-codex", "agent-signin"]);
   });
 
   test("results keep page order", () => {

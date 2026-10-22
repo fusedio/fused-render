@@ -483,18 +483,23 @@ def lan_enabled() -> bool:
     return read_prefs().get("lan_enabled") is True
 
 
-#: The two agent switches (D17, docs/COPILOT_BACKEND.md). Claude Code is on
-#: unless a stored `false` turns it off; Copilot is off unless a stored `true`
-#: turns it on. Asymmetric defaults on purpose — "Claude by default" is the
-#: owner's rule — and `put_prefs` refuses the write that would clear both.
-AGENT_BACKEND_KEYS = {"claude": "claude_enabled", "copilot": "copilot_enabled"}
-VALID_DEFAULT_BACKENDS = ("claude", "copilot")
+#: The three agent switches (D17, docs/COPILOT_BACKEND.md; the third from
+#: docs/CODEX_BACKEND.md). Claude Code is on unless a stored `false` turns it
+#: off; Copilot and Codex are off unless a stored `true` turns them on.
+#: Asymmetric defaults on purpose — "Claude by default" is the owner's rule —
+#: and `put_prefs` refuses the write that would clear all three.
+#: `VALID_DEFAULT_BACKENDS` is in `registry.ORDER`: the PUT's default re-point
+#: walks it and takes the first agent that is on.
+AGENT_BACKEND_KEYS = {"claude": "claude_enabled", "copilot": "copilot_enabled",
+                      "codex": "codex_enabled"}
+VALID_DEFAULT_BACKENDS = ("claude", "copilot", "codex")
 
 
 def backend_enabled(backend: str) -> bool:
-    """Whether `backend` ("claude" | "copilot") may start chats and tasks.
-    Unknown backend reads as off. See `agent_backends.registry.enabled_ids`
-    for the never-empty guarantee this feeds."""
+    """Whether `backend` ("claude" | "copilot" | "codex") may start chats and
+    tasks. Unknown backend reads as off. See
+    `agent_backends.registry.enabled_ids` for the never-empty guarantee this
+    feeds."""
     key = AGENT_BACKEND_KEYS.get(backend)
     if key is None:
         return False
@@ -512,6 +517,10 @@ def copilot_enabled() -> bool:
     return backend_enabled("copilot")
 
 
+def codex_enabled() -> bool:
+    return backend_enabled("codex")
+
+
 def default_backend() -> str:
     """The agent new chats and tasks start from, as stored — `"claude"` when
     unset or junk. Whether it is ENABLED is the registry's question
@@ -521,14 +530,16 @@ def default_backend() -> str:
 
 
 def _agents_state() -> dict:
-    """`{"claude": bool, "copilot": bool, "default": id}` for `GET /api/prefs`.
-    Imported lazily: the registry reads this module for the switches. The
-    REGISTRY's answer, not the raw switches: a hand-edited prefs.json that
-    turns both off reads as Claude on there, and this page must agree."""
+    """`{"claude": bool, "copilot": bool, "codex": bool, "default": id}` for
+    `GET /api/prefs`. Imported lazily: the registry reads this module for the
+    switches. The REGISTRY's answer, not the raw switches: a hand-edited
+    prefs.json that turns all three off reads as Claude on there, and this
+    page must agree."""
     from fused_render.agent_backends import registry
 
     return {"claude": registry.is_enabled("claude"),
             "copilot": registry.is_enabled("copilot"),
+            "codex": registry.is_enabled("codex"),
             "default": registry.default_id()}
 
 
@@ -943,10 +954,11 @@ def _prefs_response() -> dict:
         # the live listener state (url once it is up, error when it is not), so
         # the Preferences section can show the address a phone types.
         "lan": {"enabled": lan_enabled(), **_lan_status()},
-        # The two agent switches and the agent new chats/tasks start from
-        # (docs/COPILOT_BACKEND.md D17). `default` is the EFFECTIVE one — the
-        # stored choice re-pointed to an enabled agent by the registry — so
-        # the page never shows a default that is switched off.
+        # The three agent switches and the agent new chats/tasks start from
+        # (docs/COPILOT_BACKEND.md D17, docs/CODEX_BACKEND.md D17). `default`
+        # is the EFFECTIVE one — the stored choice re-pointed to an enabled
+        # agent by the registry — so the page never shows a default that is
+        # switched off.
         "agents": _agents_state(),
         # Whether background file-index scanning may run (default ON), and
         # whether index-backed search orders hits by relevance score (default
@@ -1474,15 +1486,19 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 return JSONResponse({"error": f"'launcher_row_modifier': {exc}"}, status_code=400)
             prefs[launcher.row_modifier_key()] = value  # flavor's key, as above
             changed = launcher_changed = True
-        if any(k in body for k in ("claude_enabled", "copilot_enabled", "default_backend")):
-            # THE THREE AGENT KEYS TOGETHER (D17, invariant 11). Each is applied
-            # onto the merged record first and the RESULT is judged, so one PUT
-            # that turns Claude off and Copilot on in the same body is fine,
-            # while one that would leave both off is refused whole — there is
-            # no "no agent" state. `default_backend` naming an agent that ends
-            # up off is re-pointed to the one that is on, in the same write,
-            # so a reader never finds a default nothing can honour.
-            for key in ("claude_enabled", "copilot_enabled"):
+        agent_keys = tuple(AGENT_BACKEND_KEYS[b] for b in VALID_DEFAULT_BACKENDS)
+        if any(k in body for k in (*agent_keys, "default_backend")):
+            # THE FOUR AGENT KEYS TOGETHER (D17, invariant 11): three switches
+            # and the default. Each is applied onto the merged record first
+            # and the RESULT is judged, so one PUT that turns Claude off and
+            # Codex on in the same body is fine, and so is one that turns two
+            # off while the third stays on, while one that would leave all
+            # three off is refused whole — there is no "no agent" state.
+            # `default_backend` naming an agent that ends up off is re-pointed
+            # to the first one that is on (in `VALID_DEFAULT_BACKENDS` order,
+            # which is `registry.ORDER`), in the same write, so a reader never
+            # finds a default nothing can honour.
+            for key in agent_keys:
                 if key in body:
                     value = body.get(key)
                     if not isinstance(value, bool):
@@ -1498,12 +1514,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                         status_code=400)
                 prefs["default_backend"] = value
             # The same defaults `backend_enabled` reads: Claude on unless
-            # stored False, Copilot off unless stored True.
+            # stored False, Copilot and Codex off unless stored True.
             on = {"claude": prefs.get("claude_enabled") is not False,
-                  "copilot": prefs.get("copilot_enabled") is True}
+                  "copilot": prefs.get("copilot_enabled") is True,
+                  "codex": prefs.get("codex_enabled") is True}
             if not any(on.values()):
                 return JSONResponse(
-                    {"error": "turn on the other agent first"}, status_code=400)
+                    {"error": "turn on another agent first"}, status_code=400)
             wanted = prefs.get("default_backend")
             if wanted not in VALID_DEFAULT_BACKENDS:
                 wanted = "claude"
@@ -1524,7 +1541,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'bots_autostage', 'bots_sounds', 'bots_clear_enabled', "
                           "'tasks_view_tabs', "
                           "'lan_enabled', "
-                          "'claude_enabled', 'copilot_enabled', "
+                          "'claude_enabled', 'copilot_enabled', 'codex_enabled', "
                           "'default_backend', 'indexing_enabled', 'ranked_search_enabled', "
                           "'index_low_impact_enabled', "
                           "'git_auto_sync_enabled', 'auto_download_updates', "

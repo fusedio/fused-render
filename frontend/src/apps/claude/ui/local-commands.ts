@@ -16,8 +16,14 @@ export function localModelArg(arg: string, backend = "claude"): string {
   const labels = modelLabelsOf(backend);
   const short = modelsOf(backend).find((m) => m === want || (labels[m] ?? "").toLowerCase() === want);
   if (short) return short;
-  const full = backend === "copilot" ? /^[a-z][a-z0-9.-]+$/ : /^claude-[a-z0-9.-]+$/;
+  const full = rawModelIds(backend) ? /^[a-z][a-z0-9.-]+$/ : /^claude-[a-z0-9.-]+$/;
   return full.test(want) ? want : "";
+}
+
+/** The agents whose full model ids are the provider's own, any shape
+ *  ("gpt-5.4", "gpt-6-luna") — not Claude's `claude-…` ones. */
+function rawModelIds(backend: string | undefined): boolean {
+  return backend === "copilot" || backend === "codex";
 }
 
 /** `/effort <level>`'s argument as a pill value, or "". */
@@ -62,7 +68,7 @@ export function planLocalCommand(cmd: ClassifiedCommand, ctx: LocalContext): Loc
     case "model": {
       const value = localModelArg(cmd.arg, ctx.backend);
       if (!value) {
-        const full = ctx.backend === "copilot" ? "a full model id" : "a full claude-… model id";
+        const full = rawModelIds(ctx.backend) ? "a full model id" : "a full claude-… model id";
         return { refuse: `Usage: /model ${hint("model")} (${modelsOf(ctx.backend).join(", ")}, or ${full})` };
       }
       return { do: "model", value };
