@@ -32,7 +32,6 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
-import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -64,13 +63,6 @@ DEFAULT_ENTRYPOINT = "main"
 # TOML types that have no JSON counterpart (dates, times, datetimes) are rejected
 # at load time rather than failing inside `json.dumps` on the first call.
 _JSON_SCALARS = (str, int, float, bool)
-
-# PEP 723's own reference regex for an inline script-metadata block (§5). Matched
-# against the target file's source; only the ``script`` type carries the app's
-# runtime dependencies.
-_PEP723_BLOCK = re.compile(
-    r"(?m)^# /// (?P<type>[a-zA-Z0-9-]+)$\s(?P<content>(^#(| .*)$\s)+)^# ///$"
-)
 
 
 class AppManifestError(ValueError):
@@ -289,9 +281,7 @@ class AppToolSpec:
     ``params`` is the entrypoint's signature **minus** the pinned parameters —
     the schema the model sees. ``code`` is the target file's source wrapped by
     `code_with_file` so it runs with ``__file__`` set (the runner then calls
-    ``tool.entrypoint``) and ``requirements`` is
-    what `tool_requirements` resolved — the file's PEP 723 header, else the app
-    folder's `pyproject.toml`. All three are read once at startup: a served
+    ``tool.entrypoint``). All of it is read once at startup: a served
     tool's shape is fixed for the lifetime of the server process, which is also
     what makes a startup error (a vanished entrypoint) surface as a failed
     handshake rather than a runtime surprise.
@@ -300,175 +290,7 @@ class AppToolSpec:
     tool: AppTool
     params: list[ParamSpec]
     code: str
-    requirements: list[str]
     app_dir: Path
-
-
-def script_requirements(source: str) -> list[str]:
-    """The PEP 723 `# /// script` block's `dependencies`, or `[]` (§5).
-
-    The PER-FILE half of what `tool_requirements` unions: the same
-    inline-metadata header ``uv run`` would honour. Note that fused-render's page
-    path does NOT read it (``engine.py``: a leftover from the superseded per-file
-    regime, D172), so a header here can be stale or name a subset of the folder's
-    list without anything having gone wrong — which is why the two sources are
-    unioned rather than ranked. Absent, non-``script``, unparseable, or
-    dependency-less headers all contribute nothing: a dependency list is an
-    optimisation of the venv, never a correctness gate, so a malformed header
-    must not stop a tool from being served.
-    """
-    for match in _PEP723_BLOCK.finditer(source):
-        if match.group("type") != "script":
-            continue
-        content = "".join(
-            line[2:] if line.startswith("# ") else line[1:]
-            for line in match.group("content").splitlines(keepends=True)
-        )
-        try:
-            meta = tomllib.loads(content)
-        except tomllib.TOMLDecodeError:
-            return []
-        deps = meta.get("dependencies")
-        if isinstance(deps, list):
-            return [d for d in deps if isinstance(d, str)]
-        return []
-    return []
-
-
-def project_requirements(app_dir: Path) -> list[str]:
-    """`<app_dir>/pyproject.toml`'s `[project] dependencies`, or `[]` (§5).
-
-    The FOLDER-WIDE declaration, and the one most app folders actually use: a
-    `pyproject.toml` at the app root with `[project] dependencies` and
-    ``[tool.uv] package = false`` is how fused-render itself resolves the
-    environment for every `.py` under that folder (its ``projectenv``: the
-    environment belongs to the FOLDER, not to a header in one file). Reading only
-    the header meant an app written that way served with no requirements at all
-    and every tool call died in the bare stdlib venv on its first import —
-    reported against the ``open-notion`` showcase app, whose ``duckdb`` and
-    ``pyarrow`` were declared exactly there.
-
-    Markers are kept on the strings and NOT evaluated here: uv and pip apply PEP
-    508 markers when they install, so passing them through is both correct and
-    less code than a second implementation of the rules. Markers are also the
-    AUTHOR'S tool for scoping a platform dependency, and the union
-    (`tool_requirements`) is what makes that matter: the folder's list now
-    attaches to every header-less tool in the app, so one unscoped
-    platform-specific entry — a bare `pywin32` rather than
-    `pywin32 ; sys_platform == "win32"` — fails the venv build for tools that
-    need nothing but the stdlib, and `venvs.py` retries that same failed build on
-    every call (it caches no negative result — pre-existing behaviour, not
-    something this read introduced).
-
-    **`[tool.uv.sources]` IS IGNORED — known limitation.** A dependency pinned
-    there to a path, a git ref, or an alternate index resolves from PyPI here,
-    because this reads `[project] dependencies` and hands the strings to
-    `uv pip install`, while the page path's `uv sync` honours the sources table.
-    For a name that exists on PyPI too, that is a supply-chain difference and not
-    merely a resolution one. No showcase app uses the table today; an app that
-    does needs its sources honoured (or the dependency vendored) before its tools
-    can be trusted under serve.
-
-    THE APP FOLDER ONLY — this never walks up. The served folder is the unit the
-    operator registered, and adopting a parent repository's dependency set would
-    install packages nobody named here; openfused also has no project resolution
-    for an app folder by design (which is why the manifest is `mcp.toml` and not
-    `openfused.toml`, §2).
-
-    Tolerant like the header reader: a missing file, an unparseable one (or one
-    that is not UTF-8 — `tomllib` raises `UnicodeDecodeError`, a `ValueError`), a
-    missing table, or a `dependencies` that is not a list of strings all mean
-    `[]` rather than a refusal to serve.
-    """
-    path = app_dir / "pyproject.toml"
-    try:
-        with open(path, "rb") as fh:
-            raw = tomllib.load(fh)
-    except (OSError, ValueError):
-        return []
-    project = raw.get("project")
-    if not isinstance(project, dict):
-        return []
-    deps = project.get("dependencies")
-    if not isinstance(deps, list):
-        return []
-    return [d for d in deps if isinstance(d, str)]
-
-
-def tool_requirements(app_dir: Path, source: str) -> list[str]:
-    """The requirements one tool's call runs with: the UNION of both declarations
-    — the file's PEP 723 header and the app folder's `pyproject.toml` (§5).
-
-    **Union, not precedence, and the difference is a bug.** This was
-    ``header or folder`` first, on a "most specific wins" reading — which
-    reproduced the very failure the folder read was added to fix, for any file
-    carrying a STALE OR PARTIAL header: a header naming `duckdb` suppressed the
-    folder's `pyarrow`, and the tool died under serve on an import that works on
-    the page. And the parity argument was false. fused-render's page path does
-    not read these headers AT ALL — ``engine.py`` treats them as leftovers from
-    the superseded per-file regime (D172) and resolves the folder's
-    ``pyproject.toml`` instead — so nothing keeps a header in step with the
-    folder, and a header naming a subset is an ordinary state in a working app
-    rather than a contradiction someone would have noticed.
-
-    Header entries come first and dedupe is EXACT-STRING: `duckdb>=1.0` and
-    `duckdb` both go through, because narrowing them to one would mean deciding
-    which constraint wins, and uv already intersects overlapping requirements
-    correctly. Exact duplicates collapse, which keeps the venv cache key stable
-    for the common case of a header that repeats the folder's list verbatim.
-
-    The cost, stated because it is a real one: a file can no longer opt into a
-    bare venv by carrying an empty header inside a folder that declares
-    dependencies. Neither can a page-side script — the environment is the
-    FOLDER's (PY-16) — so this is parity, and it buys back the failure mode that
-    matters more.
-
-    The merged list is finally filtered through `applicable_requirements`, so an
-    entry whose PEP 508 marker does not hold on this machine is dropped — the
-    same filtering fused-render's page path applies, and what keeps the venv key
-    identical for an app with markered dependencies.
-    """
-    merged: list[str] = []
-    for requirement in [*script_requirements(source), *project_requirements(app_dir)]:
-        if requirement not in merged:
-            merged.append(requirement)
-    return applicable_requirements(merged)
-
-
-def applicable_requirements(requirements: list[str]) -> list[str]:
-    """`requirements` minus the entries whose PEP 508 marker does not hold (§5).
-
-    Same semantics as fused-render's ``applicable_dependencies_of``: FILTER the
-    list, do not rewrite it — a surviving entry keeps its marker text verbatim,
-    because uv and pip apply markers at install time anyway and because the venv
-    key folds the *sorted requirement strings* (`venvs.py:requirements_venv_id`).
-    Stripping a marker, or leaving an inapplicable entry in, would key serve's
-    venv differently from the page's for the same app and cost the cache hit this
-    whole alignment is for.
-
-    It also fixes a real failure on its own: an unscoped-looking but marker-
-    scoped platform dependency (`pywin32 ; sys_platform == "win32"`) in the app
-    folder's list attaches to every header-less tool, and `uv pip install` of it
-    on macOS/Linux fails the venv build for tools that need nothing but the
-    stdlib.
-
-    Tolerant, like the rest of resolution: an entry that does not parse as a
-    requirement, or whose marker cannot be evaluated (a malformed marker, an
-    undefined marker variable), PASSES THROUGH unfiltered. uv and pip get the
-    final say on such a string; refusing to serve — or silently dropping a
-    dependency the app really needs — would both be worse than handing it on.
-    """
-    from packaging.requirements import Requirement
-
-    applicable: list[str] = []
-    for requirement in requirements:
-        try:
-            marker = Requirement(requirement).marker
-            if marker is None or marker.evaluate():
-                applicable.append(requirement)
-        except Exception:  # noqa: BLE001 — any parse/evaluate failure is a pass-through
-            applicable.append(requirement)
-    return applicable
 
 
 # The value fused-render's page path gives an entrypoint's ``__name__`` (its
@@ -570,7 +392,6 @@ def build_app_tool_spec(manifest: AppManifest, tool: AppTool) -> AppToolSpec:
         tool=tool,
         params=params,
         code=code_with_file(source, path.resolve()),
-        requirements=tool_requirements(manifest.app_dir, source),
         app_dir=manifest.app_dir,
     )
 
