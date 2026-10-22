@@ -34,5 +34,5 @@
 - The Skills editor edits files already in the skill folder; adding a new sibling file is not supported.
 
 ## Curated Settings tab
-- The Settings tab lists 20 keys in five groups (Model & reasoning, Sessions, Permissions, Git, Interface). `settings_catalog.json` holds only those, in that order, with the group names as its `group` field.
+- The Settings tab lists only settings.json keys that change how the Claude sessions fused-render launches behave. 16 keys in three groups: Model & reasoning (model, effortLevel, alwaysThinkingEnabled, fastMode, language), Sessions (autoCompactEnabled, autoMemoryEnabled, fileCheckpointingEnabled, cleanupPeriodDays, disableBundledSkills, includeGitInstructions, attribution.sessionUrl), Permissions (permissions.defaultMode, sandbox.enabled, enableAllProjectMcpServers, permissions.blockReadsOutsideWorkingDirectories). Terminal-UI keys (theme, diffTool, update channel) and worktree keys (fused-render manages worktrees itself) are out. `settings_catalog.json` holds only those, in that order, with the group names as its `group` field.
 - `refresh_catalog.CURATED` (key -> group, ordered) is the source of truth: the script emits only those keys in that order and takes each one's label/control/options overlay from the checked-in file. A curated key with no overlay is an error, not invented.

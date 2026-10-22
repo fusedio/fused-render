@@ -38,18 +38,14 @@ CURATED: dict[str, str] = {
     "autoCompactEnabled": "Sessions",
     "autoMemoryEnabled": "Sessions",
     "fileCheckpointingEnabled": "Sessions",
-    "autoContinueAtUsageLimit": "Sessions",
     "cleanupPeriodDays": "Sessions",
+    "disableBundledSkills": "Sessions",
+    "includeGitInstructions": "Sessions",
+    "attribution.sessionUrl": "Sessions",
     "permissions.defaultMode": "Permissions",
     "sandbox.enabled": "Permissions",
     "enableAllProjectMcpServers": "Permissions",
     "permissions.blockReadsOutsideWorkingDirectories": "Permissions",
-    "includeGitInstructions": "Git",
-    "worktree.baseRef": "Git",
-    "attribution.sessionUrl": "Git",
-    "theme": "Interface",
-    "diffTool": "Interface",
-    "autoUpdatesChannel": "Interface",
 }
 
 # Anthropic restructured the docs (2026-08): the old SETTINGS_URL page

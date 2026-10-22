@@ -1,6 +1,6 @@
 """Preferences feature (preferences.md).
 
-Surfaces a curated list of 20 scalar settings.json keys, in five groups, as
+Surfaces a curated list of 16 scalar settings.json keys, in three groups, as
 form controls, each showing its documented default when unset. The list is
 settings_catalog.json — the copy that ships with the package (see
 lib.load_catalog()); refresh_catalog.CURATED is its source of truth.

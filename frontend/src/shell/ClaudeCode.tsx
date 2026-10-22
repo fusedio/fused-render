@@ -47,7 +47,7 @@ const TABS = [
     label: "Settings",
     icon: SlidersHorizontal,
     filter: "Search settings",
-    blurb: "The keys of settings.json, with Claude's defaults.",
+    blurb: "The settings.json keys that shape the Claude sessions fused-render runs.",
   },
 ] as const satisfies readonly { id: string; label: string; icon: LucideIcon; filter: string; blurb: string }[];
 type TabId = (typeof TABS)[number]["id"];

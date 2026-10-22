@@ -88,15 +88,6 @@
     "minVersion": "2.1.119"
   },
   {
-    "key": "autoContinueAtUsageLimit",
-    "label": "Auto-continue at usage limit",
-    "group": "Sessions",
-    "control": "toggle",
-    "doc": "After a claude.ai usage limit stops your session, wait in the open session and continue the task automatically after the reset.",
-    "default": true,
-    "minVersion": "2.1.234"
-  },
-  {
     "key": "cleanupPeriodDays",
     "label": "Cleanup period (days)",
     "group": "Sessions",
@@ -104,6 +95,33 @@
     "doc": "Claude Code deletes session files and other application data older than this period at startup.",
     "default": 30,
     "minVersion": "2.1.203"
+  },
+  {
+    "key": "disableBundledSkills",
+    "label": "Bundled skills disabled",
+    "group": "Sessions",
+    "control": "toggle",
+    "doc": "Turn off the skills and workflows included with Claude Code.",
+    "default": null,
+    "minVersion": null
+  },
+  {
+    "key": "includeGitInstructions",
+    "label": "Git workflow instructions",
+    "group": "Sessions",
+    "control": "toggle",
+    "doc": "At session start, Claude Code adds two git-related pieces to Claude's prompt: its built-in instructions for how to write commits and pull requests, in the Bash tool's description, and a git status snapshot of your repository in the system prompt, meaning the current branch, the main branch, git status output, and recent commits.",
+    "default": true,
+    "minVersion": null
+  },
+  {
+    "key": "attribution.sessionUrl",
+    "label": "Session link in commits/PRs",
+    "group": "Sessions",
+    "control": "toggle",
+    "doc": "Choose whether Claude Code appends the claude.ai session link when it commits or opens a pull request from a cloud or Remote Control session.",
+    "default": true,
+    "minVersion": null
   },
   {
     "key": "permissions.defaultMode",
@@ -149,80 +167,5 @@
     "doc": "Stop Claude from reading paths outside the session's working directories with the Read, Grep, Glob, and LSP tools, in every permission mode including bypassPermissions.",
     "default": null,
     "minVersion": "2.1.257"
-  },
-  {
-    "key": "includeGitInstructions",
-    "label": "Git workflow instructions",
-    "group": "Git",
-    "control": "toggle",
-    "doc": "At session start, Claude Code adds two git-related pieces to Claude's prompt: its built-in instructions for how to write commits and pull requests, in the Bash tool's description, and a git status snapshot of your repository in the system prompt, meaning the current branch, the main branch, git status output, and recent commits.",
-    "default": true,
-    "minVersion": null
-  },
-  {
-    "key": "worktree.baseRef",
-    "label": "Worktree base ref",
-    "group": "Git",
-    "control": "select",
-    "options": [
-      "fresh",
-      "head"
-    ],
-    "doc": "Choose which ref new worktrees branch from.",
-    "default": "fresh",
-    "minVersion": null
-  },
-  {
-    "key": "attribution.sessionUrl",
-    "label": "Session link in commits/PRs",
-    "group": "Git",
-    "control": "toggle",
-    "doc": "Choose whether Claude Code appends the claude.ai session link when it commits or opens a pull request from a cloud or Remote Control session.",
-    "default": true,
-    "minVersion": null
-  },
-  {
-    "key": "theme",
-    "label": "Theme",
-    "group": "Interface",
-    "control": "select",
-    "options": [
-      "auto",
-      "dark",
-      "light",
-      "dark-daltonized",
-      "light-daltonized",
-      "dark-ansi",
-      "light-ansi"
-    ],
-    "doc": "Color theme for the interface: \"auto\", \"dark\", \"light\", \"dark-daltonized\", \"light-daltonized\", \"dark-ansi\", \"light-ansi\", or a custom theme reference such as \"custom:<slug>\" or \"custom:<plugin-name>:<slug>\".",
-    "default": "dark",
-    "minVersion": "2.1.119"
-  },
-  {
-    "key": "diffTool",
-    "label": "Diff viewer",
-    "group": "Interface",
-    "control": "select",
-    "options": [
-      "auto",
-      "terminal"
-    ],
-    "doc": "Choose where Claude Code shows the diff of an Edit or Write change it proposes when a VS Code or JetBrains IDE is connected: \"auto\" opens it in the IDE's diff viewer, \"terminal\" keeps it in the terminal.",
-    "default": "auto",
-    "minVersion": null
-  },
-  {
-    "key": "autoUpdatesChannel",
-    "label": "Auto-update channel",
-    "group": "Interface",
-    "control": "select",
-    "options": [
-      "latest",
-      "stable"
-    ],
-    "doc": "Choose which release channel background auto-updates and claude update follow.",
-    "default": null,
-    "minVersion": null
   }
 ]
