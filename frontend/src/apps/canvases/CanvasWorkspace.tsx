@@ -292,15 +292,15 @@ function nodeTabIcon(mode: NodeTab, templates: readonly TemplateEntry[]): React.
 function nodeEmbedSrc(file: string, tab: NodeTab, sessionId: string | null): string {
   // `_noann=1` on the chat: its Screenshot / Annotate seats and view toggle
   // would open the chat's own preview of the file, which is the Code tab's
-  // job here (owner, 2026-10-17). `session_id` when a Recent row on the
+  // job here (owner, 2026-10-17). It also pins the chat to its narrow CHAT
+  // view at every width (useNarrowView `chatViewOnly`): the chat's own file
+  // pane stays mounted — it is what files the session under the file — but
+  // never on screen, so a wide node pane is the chat alone, not code + chat. `session_id` when a Recent row on the
   // canvas chat hopped here: the frame's chat resumes that conversation.
   return embedUrlForFsPath(
     file,
     "?_mode=" + tab + "&_side=off" +
-      // `_chatonly=1`: the chat alone, no file pane of its own beside it —
-      // the Code tab is this pane's preview, and a wide pane would otherwise
-      // split into code + chat at the chat's 800px breakpoint.
-      (tab === "claude" ? "&_noann=1&_chatonly=1" : "") +
+      (tab === "claude" ? "&_noann=1" : "") +
       (sessionId ? "&session_id=" + encodeURIComponent(sessionId) : ""),
   );
 }

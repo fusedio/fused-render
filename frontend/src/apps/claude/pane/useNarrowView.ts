@@ -104,6 +104,14 @@ export interface UseNarrowViewOptions {
    * behaviour and still right whenever the pane fills the window.
    */
   boxRef?: { current: HTMLElement | null };
+  /**
+   * ALWAYS the narrow CHAT view, whatever the box measures (`noAnnTools`, the
+   * canvas node pane). The pane stays mounted — it is the app-state frame that
+   * files the chat under its file and answers `has_pane` — but it is never on
+   * screen, and with the toggle hidden `paneview` cannot reach it either. Not
+   * `chatOnly`: that unmounts the pane and records a folder chat.
+   */
+  chatViewOnly?: boolean;
   /** Injected for tests. */
   matchMedia?: (q: string) => MediaQueryList;
   /** Called after every view/breakpoint change. T calls `renderAnn()` twice here
@@ -138,7 +146,7 @@ export interface NarrowViewState {
 }
 
 export function useNarrowView(opts: UseNarrowViewOptions): NarrowViewState {
-  const { params, noPane } = opts;
+  const { params, noPane, chatViewOnly = false } = opts;
   const mq = useRef<MediaQueryList | null>(null);
   if (mq.current === null) {
     const match = opts.matchMedia ?? (typeof window !== "undefined" ? window.matchMedia : undefined);
@@ -150,10 +158,11 @@ export function useNarrowView(opts: UseNarrowViewOptions): NarrowViewState {
   const measuresBox =
     !!opts.boxRef && typeof ResizeObserver === "function" && !opts.matchMedia;
 
-  const [narrow, setNarrow] = useState<boolean>(() => !!mq.current?.matches);
+  const [measured, setNarrow] = useState<boolean>(() => !!mq.current?.matches);
+  const narrow = chatViewOnly || measured;
   /** The last value published, read by the observer without re-subscribing. */
-  const narrowNow = useRef(narrow);
-  narrowNow.current = narrow;
+  const narrowNow = useRef(measured);
+  narrowNow.current = measured;
   const [param, setParam] = useState<string | undefined>(() => params.get("paneview"));
   /**
    * Crossing DOWN with `paneview` unset: both halves were on screen, and the
@@ -232,7 +241,7 @@ export function useNarrowView(opts: UseNarrowViewOptions): NarrowViewState {
     // re-subscribe per render.
   }, [measuresBox, opts.boxRef, noPane, params]);
 
-  const view = narrowViewOf(param, crossView.current);
+  const view = chatViewOnly ? "chat" : narrowViewOf(param, crossView.current);
 
   // The disarm, and the re-measure. Three clauses, one per thing that must not
   // trigger the disarm (T:8895-8928):

@@ -282,8 +282,10 @@ export interface ClaudeChatProps {
   preview?: boolean;
   /** `_noann=1` — no Screenshot / Comment / Annotate seats and no narrow-view
    *  toggle: the host shows this chat where its pane must stay out of reach
-   *  (the canvas node pane, whose Code tab is the file's view). The pane
-   *  itself stays mounted — it is what files the chat under its file. */
+   *  (the canvas node pane, whose Code tab is the file's view), and the chat
+   *  is pinned to its narrow CHAT view at every width (useNarrowView
+   *  `chatViewOnly`). The pane itself stays mounted — it is what files the
+   *  chat under its file — but is never on screen. */
   noAnnTools?: boolean;
   /** `_noopen=1` — this mount must not record the app it frames as OPENED
    *  (D622, the listing pane). Unlike `preview` it is not display-only: the
@@ -717,6 +719,9 @@ function ChatBody(props: ChatBodyProps) {
     // window not one narrow rule fired. `.chat-root` is the box the iframe's
     // viewport used to be.
     boxRef: rootRef,
+    // `_noann=1`: the chat alone on screen at every width; the pane stays
+    // mounted for the app-state block (see `noAnnTools` on the props).
+    chatViewOnly: !!props.noAnnTools,
     // T:8940 — arriving in the narrow CHAT view disarms: the toggle that would
     // undo the mode is hidden there, and an armed mode behind a hidden toggle
     // keeps the frame's click swallower live over a document nobody can see.

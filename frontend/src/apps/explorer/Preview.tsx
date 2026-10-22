@@ -104,10 +104,6 @@ const CHAT_MODE = "claude";
 // `?_noann=1` on this document's URL (an embed a host frames): the content-pane
 // chat renders without its annotate seats (ChatMount `noAnnTools`).
 const NO_ANN_TOOLS = new URLSearchParams(location.search).get("_noann") === "1";
-// `?_chatonly=1` (same host, same reason): the content-pane chat renders without
-// its own file pane — the host's other tab is the preview — so a wide frame never
-// splits into preview + chat at the chat's 800px breakpoint (ChatMount `chatOnly`).
-const CHAT_ONLY = new URLSearchParams(location.search).get("_chatonly") === "1";
 import { subscribePreviewSideSlot, previewSideSlot } from "@apps/explorer/preview-side-slot";
 import { subscribeTopbarSlot, topbarSlot } from "@apps/explorer/topbar-slot";
 import ContextMenu, { type MenuEntry, type MenuItem } from "@platform/ui/ContextMenu";
@@ -2264,7 +2260,6 @@ function TemplatePreview({
                       // document's URL, the embed's own.
                       { noAnnTools: true }
                     : {})}
-                  {...(CHAT_ONLY ? { chatOnly: true } : {})}
                   {...(nativeAsk && claudeAskRoute === "content"
                     ? { initialAsk: nativeAsk }
                     : {})}
