@@ -8714,7 +8714,7 @@ describe("sortForList: the page's one order", () => {
     // cut, and `rows` is still the sorted list, flattened in section order.
     expect(VIEWS).toContain('<div className="tasks-list-frame">{rows.map(rowAt)}</div>');
     expect(VIEWS).toContain(
-      "groupBy ? groupRows(sorted, groupBy, home, now, sortBy, (k) => prStatuses[k]) : null",
+      "groupBy ? groupRows(sorted, groupBy, home, Math.max(now, Date.now()), sortBy, (k) => prStatuses[k]) : null",
     );
     // The index rides along ONLY so the row can take its React key from
     // `taskListKeys` (the queue's identity rule).

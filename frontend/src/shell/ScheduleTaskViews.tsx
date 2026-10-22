@@ -2410,8 +2410,14 @@ export function TaskList({
     [sorted, groupBy],
   );
   const prStatuses = usePrStatuses(visiblePrKeys);
+  // A LIVE CLOCK FOR THE SECTIONS' ORDER, not the minute tick alone
+  // (CodeRabbit, #1855): `activityAt` reads a server stamp up to
+  // ACTIVITY_SLACK_SEC ahead of its clock as now, and a tick a minute stale
+  // would spend most of that slack before the stamp was even compared. The
+  // memo still runs on the tick (the Time view's buckets) and on every
+  // listing change, which is exactly when a stamp can be new.
   const groups = useMemo(
-    () => (groupBy ? groupRows(sorted, groupBy, home, now, sortBy, (k) => prStatuses[k]) : null),
+    () => (groupBy ? groupRows(sorted, groupBy, home, Math.max(now, Date.now()), sortBy, (k) => prStatuses[k]) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps -- `prStatuses` is a fresh object each render; its values are the dep
     [sorted, groupBy, home, now, sortBy, visiblePrKeys.map((k) => prStatuses[k] ?? "").join(",")],
   );
@@ -2465,7 +2471,9 @@ export function TaskList({
       heldKeys.current = null;
       return;
     }
-    const nameOf = (t: Task) => t.task_id || t.key;
+    // The number is per FOLDER (`Task.task_id`: "numbered per project"), so
+    // it names a task only beside its folder (CodeRabbit, #1855).
+    const nameOf = (t: Task) => (t.task_id ? `${t.project}\u0000${t.task_id}` : t.key);
     const keys = new Set(rows.map(nameOf));
     const before = heldKeys.current;
     if (!before) {
@@ -2488,11 +2496,14 @@ export function TaskList({
       return next;
     });
     // …and into view: the section has just sorted to the top (newest activity
-    // first), which can be a screen away from where the + was pressed.
-    const first = open[0]!.replace(/[^\w-]+/g, "_");
+    // first), which can be a screen away from where the + was pressed. The
+    // DEEPEST section opened — the pull request, not the repository over it,
+    // whose heading can be in view with the PR still below the fold
+    // (CodeRabbit, #1855).
+    const deepest = open[open.length - 1]!.replace(/[^\w-]+/g, "_");
     requestAnimationFrame(() => {
       listRef.current
-        ?.querySelector(`#tasks-group-${groupBy}-${first}`)
+        ?.querySelector(`#tasks-group-${groupBy}-${deepest}`)
         ?.closest(".tasks-group")
         ?.scrollIntoView({ block: "nearest", behavior: reducedMotion() ? "auto" : "smooth" });
     });
