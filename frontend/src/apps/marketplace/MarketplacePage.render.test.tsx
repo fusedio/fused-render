@@ -110,6 +110,16 @@ describe("moving between pages of the Marketplace", () => {
     expect(catalogReads()).toBe(reads);
   });
 
+  test("Discover from Discover drops the filters the URL no longer names", async () => {
+    const box = await mount("/marketplace?category=dev&q=foo");
+    const input = () => box.root.findAll((n) => n.type === "input" && n.props.type === "search")[0];
+    expect(input().props.value).toBe("foo");
+    await act(async () => {
+      navigateUrl("/marketplace");
+    });
+    expect(input().props.value).toBe("");
+  });
+
   test("a deep link to Installed opens Installed", async () => {
     const box = await mount("/marketplace/installed");
     expect(activeTab(box)).toBe("/marketplace/installed");

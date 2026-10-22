@@ -99,15 +99,18 @@ export function MarketplacePage({ fusedFile }: { fusedFile?: string } = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Landing on another page of the store: back to the top, and on Discover the
-  // filters the URL names. Not on the first render, which already read them.
+  // Landing on another page of the store, or on Discover with other filters
+  // than the page shows (the Discover link dropping them): back to the top, and
+  // on Discover the filters the URL names. Not on the first render, which
+  // already read them.
   const routeKey = route.kind === "app" ? "app:" + route.slug : route.kind === "file" ? "file:" + route.path : route.kind;
   const lastRouteKey = useRef(routeKey);
   useEffect(() => {
-    if (lastRouteKey.current === routeKey) return;
+    const next = route.kind === "discover" ? readParams() : { category: "all", q: "" };
+    const moved = lastRouteKey.current !== routeKey;
+    if (!moved && next.category === category && next.q === q) return;
     lastRouteKey.current = routeKey;
     scrollRef.current?.scrollTo({ top: 0 });
-    const next = route.kind === "discover" ? readParams() : { category: "all", q: "" };
     setCategory(next.category);
     setQ(next.q);
     // eslint-disable-next-line react-hooks/exhaustive-deps
