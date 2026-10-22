@@ -1,13 +1,15 @@
 // Claude Code page — `/claude-code?tab=<tab>`: Claude Code's own configuration
-// under ~/.claude. Tabs: Skills (the default), Memory, Plugins, MCP servers,
-// Settings and History. The filter box sits above the tab's list and narrows
-// that tab's rows.
-import { useEffect, useState } from "react";
-import { Search, X } from "lucide-react";
+// under ~/.claude, framed like Preferences: title and filter across the top, a
+// nav of the six tabs (Skills, the default, Memory, Plugins, MCP servers,
+// Settings, History) on the left, the tab's heading and cards on the right.
+// The Skills tab draws its own heading, because it swaps between a list and a
+// skill's editor.
+import { useEffect, useState, type ReactNode } from "react";
+import { Blocks, Brain, History, Search, Server, SlidersHorizontal, Sparkles, X, type LucideIcon } from "lucide-react";
 import { useClaudeConfigStatus } from "@apps/claude_config/available";
+import { cn } from "@platform/lib/utils";
 import { Button } from "@platform/shadcn/ui/button";
 import { Input } from "@platform/shadcn/ui/input";
-import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import {
   ClaudeConfigProvider,
   ClaudeGitChip,
@@ -20,13 +22,43 @@ import {
 } from "./claude_code/tabs";
 
 const TABS = [
-  { id: "skills", label: "Skills" },
-  { id: "memory", label: "Memory" },
-  { id: "plugins", label: "Plugins" },
-  { id: "mcp", label: "MCP servers" },
-  { id: "settings", label: "Settings" },
-  { id: "history", label: "History" },
-] as const;
+  { id: "skills", label: "Skills", icon: Sparkles, filter: "Filter skills", blurb: "" },
+  {
+    id: "memory",
+    label: "Memory",
+    icon: Brain,
+    filter: "Filter memory",
+    blurb: "The memory files Claude Code keeps for each project.",
+  },
+  {
+    id: "plugins",
+    label: "Plugins",
+    icon: Blocks,
+    filter: "Filter plugins",
+    blurb: "Installed plugins and the marketplaces to find more in.",
+  },
+  {
+    id: "mcp",
+    label: "MCP servers",
+    icon: Server,
+    filter: "Filter MCP servers",
+    blurb: "Servers Claude Code connects to for extra tools.",
+  },
+  {
+    id: "settings",
+    label: "Settings",
+    icon: SlidersHorizontal,
+    filter: "Search settings",
+    blurb: "The keys of settings.json, with Claude's defaults.",
+  },
+  {
+    id: "history",
+    label: "History",
+    icon: History,
+    filter: "",
+    blurb: "Every change to this configuration is committed; undo one here.",
+  },
+] as const satisfies readonly { id: string; label: string; icon: LucideIcon; filter: string; blurb: string }[];
 type TabId = (typeof TABS)[number]["id"];
 
 const DEFAULT_TAB: TabId = "skills";
@@ -38,14 +70,28 @@ function readTab(): TabId {
 
 function writeTab(tab: TabId) {
   const p = new URLSearchParams(location.search);
+  if (p.get("tab") !== tab) p.delete("skill");
   p.set("tab", tab);
   history.replaceState(history.state, "", `${location.pathname}?${p.toString()}`);
+}
+
+function TabHead({ title, blurb, aside }: { title: string; blurb: string; aside?: ReactNode }) {
+  return (
+    <div className="settings-head">
+      <div className="settings-head-row">
+        <h2>{title}</h2>
+        {aside}
+      </div>
+      <p>{blurb}</p>
+    </div>
+  );
 }
 
 export default function ClaudeCode() {
   const claudeConfig = useClaudeConfigStatus();
   const [tab, setTab] = useState<TabId>(readTab);
   const [filter, setFilter] = useState("");
+  const current = TABS.find((t) => t.id === tab) ?? TABS[0];
 
   useEffect(() => writeTab(tab), [tab]);
 
@@ -58,37 +104,16 @@ export default function ClaudeCode() {
     <ClaudeConfigProvider available={claudeConfig === true}>
       <div className="settings-page">
         <div className="settings-header">
-          <div className="cc-page-intro">
-            <h1 className="settings-title">Claude Code</h1>
-            <p className="cc-page-blurb">
-              Skills, memory, plugins, MCP servers and settings.json for Claude Code on this machine.
-            </p>
-          </div>
-        </div>
-        <main className="settings-main">
-          <div className="settings-head">
-            <div className="settings-head-row">
-              <Tabs value={tab} onValueChange={(v) => pickTab(String(v) as TabId)}>
-                <TabsList>
-                  {TABS.map((t) => (
-                    <TabsTrigger key={t.id} value={t.id}>
-                      {t.label}
-                    </TabsTrigger>
-                  ))}
-                </TabsList>
-              </Tabs>
-              {tab === "history" && <ClaudeGitChip onOpen={() => pickTab("history")} />}
-            </div>
-          </div>
+          <h1 className="settings-title">Claude Code</h1>
           {tab !== "history" && (
-            <div className="settings-search cc-page-search" role="search">
+            <div className="settings-search" role="search">
               <Search aria-hidden="true" className="settings-search-icon" />
               <Input
                 type="search"
                 value={filter}
                 onChange={(e) => setFilter(e.target.value)}
-                placeholder={`Filter ${TABS.find((t) => t.id === tab)?.label.toLowerCase()}`}
-                aria-label="Filter this tab"
+                placeholder={current.filter}
+                aria-label={current.filter}
                 className="settings-search-input"
                 autoComplete="off"
                 spellCheck={false}
@@ -106,13 +131,46 @@ export default function ClaudeCode() {
               )}
             </div>
           )}
-          {tab === "skills" && <ClaudeSkillsTab filter={filter} />}
-          {tab === "memory" && <ClaudeMemoryTab filter={filter} />}
-          {tab === "plugins" && <ClaudePluginsTab filter={filter} />}
-          {tab === "mcp" && <ClaudeMcpTab filter={filter} />}
-          {tab === "settings" && <ClaudeSettingsTab filter={filter} />}
-          {tab === "history" && <ClaudeHistoryTab />}
-        </main>
+        </div>
+        <div className="settings-body">
+          <nav className="settings-nav" aria-label="Claude Code">
+            <div className="settings-nav-section" role="group" aria-label="Claude Code">
+              <div className="settings-nav-heading" aria-hidden="true">
+                Claude Code
+              </div>
+              {TABS.map((t) => {
+                const Icon = t.icon;
+                return (
+                  <Button
+                    key={t.id}
+                    variant="ghost"
+                    aria-current={t.id === tab ? "page" : undefined}
+                    className={cn("settings-nav-item", t.id === tab && "is-active")}
+                    onClick={() => pickTab(t.id)}
+                  >
+                    <Icon data-icon="inline-start" aria-hidden="true" />
+                    <span className="settings-nav-label">{t.label}</span>
+                  </Button>
+                );
+              })}
+            </div>
+          </nav>
+          <main className="settings-main">
+            {tab !== "skills" && (
+              <TabHead
+                title={current.label}
+                blurb={current.blurb}
+                aside={tab === "history" ? <ClaudeGitChip onOpen={() => pickTab("history")} /> : undefined}
+              />
+            )}
+            {tab === "skills" && <ClaudeSkillsTab filter={filter} />}
+            {tab === "memory" && <ClaudeMemoryTab filter={filter} />}
+            {tab === "plugins" && <ClaudePluginsTab filter={filter} />}
+            {tab === "mcp" && <ClaudeMcpTab filter={filter} />}
+            {tab === "settings" && <ClaudeSettingsTab filter={filter} />}
+            {tab === "history" && <ClaudeHistoryTab />}
+          </main>
+        </div>
       </div>
     </ClaudeConfigProvider>
   );

@@ -467,11 +467,9 @@ export function ClaudeMemoryTab({ filter }: { filter: string }) {
 }
 
 export function ClaudeSkillsTab({ filter }: { filter: string }) {
-  const { onChanged } = useContext(ClaudeContext);
+  const { onChanged, sectionEpoch } = useContext(ClaudeContext);
   return (
-    <Block>
-      <SkillsSection onChanged={onChanged} filter={filter} />
-    </Block>
+    <SkillsSection key={sectionEpoch} onChanged={onChanged} filter={filter} />
   );
 }
 
