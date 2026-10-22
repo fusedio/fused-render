@@ -2500,12 +2500,21 @@ export function TaskList({
     // DEEPEST section opened — the pull request, not the repository over it,
     // whose heading can be in view with the PR still below the fold
     // (CodeRabbit, #1855).
+    // AFTER THE SLIDE, not during it (QA, 2026-10-23): the section is already
+    // in its new place in layout, but the FLIP transform below has it drawn
+    // at its OLD one for a quarter second, and `scrollIntoView` reads the
+    // drawn box — asked then, it smooth-scrolled the reader straight back to
+    // the bottom the section had just left.
     const deepest = open[open.length - 1]!.replace(/[^\w-]+/g, "_");
     requestAnimationFrame(() => {
-      listRef.current
+      const node = listRef.current
         ?.querySelector(`#tasks-group-${groupBy}-${deepest}`)
-        ?.closest(".tasks-group")
-        ?.scrollIntoView({ block: "nearest", behavior: reducedMotion() ? "auto" : "smooth" });
+        ?.closest<HTMLElement>(".tasks-group");
+      if (!node) return;
+      const sliding = typeof node.getAnimations === "function" ? node.getAnimations() : [];
+      void Promise.allSettled(sliding.map((a) => a.finished)).then(() => {
+        if (node.isConnected) node.scrollIntoView({ block: "nearest", behavior: reducedMotion() ? "auto" : "smooth" });
+      });
     });
   }, [rows, groups, groupBy]);
   // SECTIONS SLIDE TO THEIR NEW PLACE rather than teleport (Akshil, 2026-10-22:
