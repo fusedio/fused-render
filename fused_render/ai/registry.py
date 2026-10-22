@@ -1681,7 +1681,7 @@ _RUNNERS: tuple[Runner, ...] = (
         short_label="PyTorch Vision (CUDA)",
         family_label="PyTorch Vision",
         note="Captions, answers questions about, and finds objects in images "
-             "on an NVIDIA GPU. 1 to 9 GB of RAM. Not yet measured on real "
+             "on an NVIDIA GPU. 1 to 9 GB of GPU memory. Not yet measured on real "
              "hardware.",
         _available=_cuda,
     ),

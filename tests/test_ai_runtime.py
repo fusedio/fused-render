@@ -1329,8 +1329,10 @@ def _assert_sibling_names_ok(siblings):
                     f"every {stem} row reads — it distinguishes nothing")
 
 
-def test_an_apple_silicon_row_whose_short_name_collides_with_its_cuda_sibling_fails():
-    """The exemption is `vision-torch` only, not "any (Apple Silicon) row"."""
+def test_a_row_outside_the_exemption_whose_short_name_is_not_its_label_fails():
+    """Only `vision-torch` may print a short name unlike its label; a sibling
+    that does so (and so collides with the CUDA row's short name) is rejected
+    by the short==label rule, not by the qualifier check."""
     def row(code, label, short):
         return types.SimpleNamespace(code=code, label=label, short_label=short,
                                      hub_filter_tags=())
@@ -1339,8 +1341,9 @@ def test_an_apple_silicon_row_whose_short_name_collides_with_its_cuda_sibling_fa
                   row("vision-torch", "Fam (Apple Silicon)", "Fam")]}
     _assert_sibling_names_ok(ok)
     bad = {"Fam": [row("fam-cuda", "Fam (CUDA)", "Fam (CUDA)"),
-                   row("fam-apple", "Fam (Apple Silicon)", "Fam (CUDA)")]}
-    with pytest.raises(AssertionError):
+                   row("fam-rocm", "Fam (ROCm)", "Fam (CUDA)")]}
+    # "(ROCm)" is a valid qualifier, so it is the short==label rule that fires.
+    with pytest.raises(AssertionError, match="fam-rocm"):
         _assert_sibling_names_ok(bad)
 
 

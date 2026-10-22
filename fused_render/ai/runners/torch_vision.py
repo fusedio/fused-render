@@ -52,8 +52,20 @@ def _device(half):
     if torch.backends.mps.is_available():
         return "mps", torch.bfloat16 if half else torch.float32
     if torch.cuda.is_available():
-        return "cuda", torch.bfloat16 if half else torch.float32
+        if not half:
+            return "cuda", torch.float32
+        return "cuda", torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
     return "cpu", torch.float32
+
+
+def _check_expected_device():
+    """Refuse before any bytes are fetched when the folder promised CUDA and torch has none."""
+    import torch
+
+    if EXPECTED_DEVICE == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError(
+            "vision-torch-cuda loaded torch without CUDA; check the NVIDIA "
+            "driver supports this torch build")
 
 
 def _open(path):
@@ -152,6 +164,7 @@ _FAMILIES = {"moondream": _Moondream, "grounding-dino": _GroundingDino}
 
 
 def download(model_id):
+    _check_expected_device()
     spec = recipe(model_id)
     if spec["family"] == "moondream":
         worker_base.download_file(
@@ -162,14 +175,12 @@ def download(model_id):
 
 
 def load(model_id, path):
+    # Cleared first: a failed load must not leave the previous model serving.
+    _loaded.clear()
+    _check_expected_device()
     spec = recipe(model_id)
-    if EXPECTED_DEVICE == "cuda" and _device(half=False)[0] != "cuda":
-        raise RuntimeError(
-            "vision-torch-cuda loaded torch without CUDA; check the NVIDIA "
-            "driver supports this torch build")
     family = _FAMILIES[spec["family"]](model_id, spec, path)
     worker_base.set_state(device=family.device)
-    _loaded.clear()
     _loaded.update(family=family, model_id=model_id, tasks=tuple(spec["tasks"]))
 
 

@@ -813,24 +813,25 @@ _ONNX_EMBED_LOCAL_MODULES = {"embed_common", "formats", "worker_base"}
 _PREFIX_MATCHED_IMPORT = "onnxruntime"
 
 
-def _onnx_embed_third_party_imports():
+def _third_party_imports(*paths):
     """Every top-level module `runners/onnx_embed.py` imports, module-level or
     lazily inside a function, that is neither stdlib nor one of this runner's
     own sibling files — parsed with `ast`, not copied by eye, because a
     hand-copied list is exactly what let `numpy` go undeclared in the first
     place."""
-    with open(_ONNX_EMBED_WORKER_PATH) as handle:
-        tree = ast.parse(handle.read())
     names = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                names.add(alias.name.split(".")[0])
-        elif isinstance(node, ast.ImportFrom):
-            if node.level == 0 and node.module:
-                names.add(node.module.split(".")[0])
+    for path in paths:
+        with open(path) as handle:
+            tree = ast.parse(handle.read())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    names.add(alias.name.split(".")[0])
+            elif isinstance(node, ast.ImportFrom):
+                if node.level == 0 and node.module:
+                    names.add(node.module.split(".")[0])
     names -= sys.stdlib_module_names
-    names -= _ONNX_EMBED_LOCAL_MODULES
+    names -= _ONNX_EMBED_LOCAL_MODULES | {"torch_vision"}
     return {_IMPORT_TO_DISTRIBUTION.get(name, name) for name in names}
 
 
@@ -848,7 +849,14 @@ def test_the_three_onnx_embed_manifests_agree_beyond_their_onnxruntime_line():
         assert rest == shared, name
 
 
-def test_every_third_party_import_of_onnx_embed_is_declared_in_all_three():
+@pytest.mark.parametrize(
+    "folders, bodies",
+    [pytest.param(_ONNX_EMBED_FOLDERS, (_ONNX_EMBED_WORKER_PATH,), id="onnx-embed"),
+     pytest.param(_VISION_TORCH_FOLDERS,
+                  tuple(os.path.join(RUNNERS_DIR, f)
+                        for f in ("torch_vision.py", "embed_common.py")),
+                  id="vision-torch")])
+def test_every_third_party_import_of_a_shared_body_is_declared_in_all_siblings(folders, bodies):
     """The regression itself: `onnx_embed.py` is free to `import` anything, but
     only `onnxruntime`'s own transitive dependencies rode along for free — and
     `onnxruntime-rocm` declares NONE (see `SPLIT_DISTRIBUTIONS` above), so a
@@ -857,9 +865,9 @@ def test_every_third_party_import_of_onnx_embed_is_declared_in_all_three():
     Every third-party import this runner makes, lazy ones included, must be a
     distribution named in all three manifests — matched EXACTLY, except for
     `onnxruntime` itself (see `_PREFIX_MATCHED_IMPORT`)."""
-    imported = _onnx_embed_third_party_imports()
+    imported = _third_party_imports(*bodies)
     assert imported, "the parser found nothing — it is broken, not the runner"
-    for name in _ONNX_EMBED_FOLDERS:
+    for name in folders:
         declared = _declared(os.path.join(RUNNERS_DIR, name))
         missing = set()
         for imp in imported:

@@ -226,8 +226,14 @@ def test_each_vision_folder_is_a_shell_over_the_shared_body(folder):
     assert "torch_vision.main()" in source
     assert "def " not in source
     # The one assignment a shell may make: what device its folder promises.
-    extra = [l for l in source.splitlines() if l.startswith("torch_vision.") and "main()" not in l]
-    assert extra == ([] if folder == "vision_torch" else ['torch_vision.EXPECTED_DEVICE = "cuda"  # a CPU fallback here is a driver fault'])
+    code = [l.split("#")[0].strip() for l in source.splitlines() if l.strip() and not l.strip().startswith("#")]
+    stmts = [l for l in code if l.startswith("torch_vision.") or l == "import torch_vision"]
+    assert stmts[0] == "import torch_vision" and stmts[-1] == "torch_vision.main()"
+    middle = stmts[1:-1]
+    if folder == "vision_torch":
+        assert middle == []
+    else:
+        assert len(middle) == 1 and middle[0] == 'torch_vision.EXPECTED_DEVICE = "cuda"'
 
 
 def test_both_vision_folders_exist_with_a_manifest():
@@ -312,11 +318,11 @@ def test_the_worker_opens_a_rotated_photo_upright(worker, tmp_path):
     assert worker._open(str(tmp_path / "phone.jpg")).size == (20, 40)
 
 
-def _torch_with(worker, monkeypatch, *, mps, cuda):
+def _torch_with(worker, monkeypatch, *, mps, cuda, bf16=True):
     torch = sys.modules["torch"]
     torch.backends = types.SimpleNamespace(mps=types.SimpleNamespace(is_available=lambda: mps))
-    torch.cuda = types.SimpleNamespace(is_available=lambda: cuda)
-    torch.bfloat16, torch.float32 = "bf16", "f32"
+    torch.cuda = types.SimpleNamespace(is_available=lambda: cuda, is_bf16_supported=lambda: bf16)
+    torch.bfloat16, torch.float16, torch.float32 = "bf16", "f16", "f32"
     monkeypatch.setattr(worker, "recipe", lambda model_id: {"family": "fake", "tasks": ()})
     monkeypatch.setattr(worker, "_FAMILIES", {"fake": lambda *a: types.SimpleNamespace(device="cpu")})
     monkeypatch.setattr(worker.worker_base, "set_state", lambda **kw: None, raising=False)
@@ -341,3 +347,37 @@ def test_the_cuda_folder_loads_when_cuda_is_there_and_the_cpu_folder_never_objec
     monkeypatch.setattr(worker, "EXPECTED_DEVICE", None)
     worker.load(MOONDREAM, "/snap/x")
     assert worker._loaded["model_id"] == MOONDREAM
+
+
+def test_the_cuda_folder_refuses_before_download_fetches_anything(worker, monkeypatch):
+    _torch_with(worker, monkeypatch, mps=False, cuda=False)
+    monkeypatch.setattr(worker, "EXPECTED_DEVICE", "cuda")
+    with pytest.raises(RuntimeError, match="without CUDA.*NVIDIA driver"):
+        worker.download(MOONDREAM)
+    assert worker.worker_base.downloads == []
+
+
+def test_cuda_uses_bf16_only_where_the_gpu_supports_it(worker, monkeypatch):
+    _torch_with(worker, monkeypatch, mps=False, cuda=True, bf16=True)
+    assert worker._device(half=True) == ("cuda", "bf16")
+    _torch_with(worker, monkeypatch, mps=False, cuda=True, bf16=False)
+    assert worker._device(half=True) == ("cuda", "f16")
+    assert worker._device(half=False) == ("cuda", "f32")
+    _torch_with(worker, monkeypatch, mps=True, cuda=False, bf16=False)
+    assert worker._device(half=True) == ("mps", "bf16")
+
+
+def test_a_failed_load_does_not_keep_serving_the_previous_model(worker, monkeypatch):
+    _torch_with(worker, monkeypatch, mps=False, cuda=True)
+    worker.load(MOONDREAM, "/snap/x")
+    assert worker._loaded["model_id"] == MOONDREAM
+
+    def boom(*a):
+        raise RuntimeError("out of memory")
+
+    monkeypatch.setattr(worker, "_FAMILIES", {"fake": boom})
+    with pytest.raises(RuntimeError, match="out of memory"):
+        worker.load(DINO, "/snap/y")
+    assert worker._loaded == {}
+    with pytest.raises(RuntimeError, match="no model is loaded"):
+        worker.generate({"task": "caption", "image": "/x.png"})
