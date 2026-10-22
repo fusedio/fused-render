@@ -87,6 +87,8 @@ export function SpeechStage({ model, entry, transcribeModel }: {
   model: string; entry: AiCatalogModel; transcribeModel?: string;
 }) {
   const mode: VoiceMode = entry.voiceMode ?? "preset";
+  // A style line exists for design and for most preset models; Kokoro has none.
+  const styled = mode !== "clone" && !(mode === "preset" && entry.instructable === false);
   const voices = entry.voices ?? [];
   const languages = entry.languages ?? [];
 
@@ -160,11 +162,11 @@ export function SpeechStage({ model, entry, transcribeModel }: {
         lang: language !== AUTO ? language : null,
         ref: mode === "clone" && refAudio ? refAudio : null,
         reftext: mode === "clone" && refText.trim() ? refText : null,
-        instruct: mode !== "clone" && instruct.trim() ? instruct : null,
+        instruct: styled && instruct.trim() ? instruct : null,
       });
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [text, voice, language, refAudio, refText, instruct, mode]);
+  }, [text, voice, language, refAudio, refText, instruct, mode, styled]);
 
   const { ref: boxRef } = useAutoGrow(text);
 
@@ -209,7 +211,7 @@ export function SpeechStage({ model, entry, transcribeModel }: {
       model,
       ...(language !== AUTO ? { language } : {}),
       ...(mode === "preset" && voice ? { voice } : {}),
-      ...(mode !== "clone" && style.trim() ? { instruct: style.trim() } : {}),
+      ...(styled && style.trim() ? { instruct: style.trim() } : {}),
       ...(mode === "clone" && refAudio ? { refAudio, refText: refText.trim() } : {}),
     };
     setStarting(true);
@@ -346,7 +348,7 @@ export function SpeechStage({ model, entry, transcribeModel }: {
             <div>
               <strong>{mode === "design" ? "Designed voice" : voice ? nameOf(voice) : voices.length ? nameOf(voices[0]) : "Default voice"}</strong>
               <p className="text-muted-foreground text-sm">
-                {mode === "design" ? instruct.trim() || STARTERS[0].voice : instruct.trim() || "Natural delivery"}
+                {mode === "design" ? instruct.trim() || STARTERS[0].voice : !styled ? "Preset voice" : instruct.trim() || "Natural delivery"}
               </p>
             </div>
             <button type="button" className="pg-ghost-btn" aria-expanded={configOpen} onClick={toggleConfig}>
@@ -366,9 +368,11 @@ export function SpeechStage({ model, entry, transcribeModel }: {
                   ...(voice && !voices.includes(voice) ? [{ value: voice, label: nameOf(voice) }] : []),
                 ]} />
               </RailField>
-              <RailField label="Delivery">
-                <Input value={instruct} placeholder="Natural delivery" onChange={(e) => setInstruct(e.target.value)} />
-              </RailField>
+              {styled && (
+                <RailField label="Delivery">
+                  <Input value={instruct} placeholder="Natural delivery" onChange={(e) => setInstruct(e.target.value)} />
+                </RailField>
+              )}
             </>
           )}
           {mode === "design" && (

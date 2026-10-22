@@ -639,6 +639,8 @@ def _format_task(repo_id: str, names, dirnames, config: dict) -> tuple[str, str]
         return _ai_registry.DECISIONS, "its Laya decision-head config"
     if formats.is_qwen3_tts_snapshot(config, dirnames):
         return _ai_registry.TEXT_TO_SPEECH, "its Qwen3-TTS speech tokenizer"
+    if formats.is_kokoro_snapshot(names, dirnames):
+        return _ai_registry.TEXT_TO_SPEECH, "its Kokoro sherpa-onnx files"
     if formats.vision_torch_recipe(repo_id):
         return _ai_registry.VISION, "its vision-torch recipe"
     return None
@@ -1554,6 +1556,15 @@ def speech_traits(repo_id: str) -> dict | None:
     snapshot_dir = _embed_snapshot_dir(repo_id)
     if snapshot_dir is None:
         return None
+    try:
+        entries = os.listdir(snapshot_dir)
+    except OSError:
+        entries = []
+    dirnames = {name for name in entries if os.path.isdir(os.path.join(snapshot_dir, name))}
+    # Kokoro's sherpa export has no config.json — the layout is the evidence.
+    kokoro = formats.kokoro_traits_from_names(set(entries), dirnames)
+    if kokoro is not None:
+        return kokoro
     return formats.speech_traits(_read_json(os.path.join(snapshot_dir, "config.json")) or {})
 
 

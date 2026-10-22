@@ -13636,6 +13636,84 @@ def test_the_catalog_carries_each_speech_models_voice_mode(client, fake_speech_r
     assert "voices" not in models["org/fake-clone"]
 
 
+KOKORO_ID = "csukuangfj/kokoro-multi-lang-v1_1"
+KOKORO_FILES = ("model.onnx", "voices.bin", "tokens.txt", "lexicon-us-en.txt")
+KOKORO_DIRS = ("espeak-ng-data", "dict")
+
+
+def test_a_kokoro_snapshot_reads_as_speech_for_the_sherpa_tts_runner(hub):
+    """No `config.json` at all: the layout is the evidence, and the root
+    `model.onnx` must not be offered to the ONNX embedders."""
+    _cached_repo(hub, KOKORO_ID, files=KOKORO_FILES, dirs=KOKORO_DIRS)
+    reading = ai_models.cached_capability(KOKORO_ID)
+    assert reading.cached and reading.capability == registry.TEXT_TO_SPEECH
+    assert [m for m in ai_models.cached_models() if m.repo_id == KOKORO_ID][0].loaders == (
+        "sherpa-tts",)
+
+
+def test_speech_takes_kokoros_voices_and_refuses_a_style_line(client, fake_speech_runner, hub):
+    _cached_repo(hub, "org/fake-preset", files=KOKORO_FILES, dirs=KOKORO_DIRS)
+    style = _speech(client, {"text": "x", "instruct": "calm"})
+    assert style.status_code == 400
+    assert style.json()["error"] == (
+        "org/fake-preset has no style line; it takes 'voice', not 'instruct'")
+    unknown = _speech(client, {"text": "x", "voice": "af_heart"})
+    assert unknown.status_code == 400 and "af_maple, af_sol, bf_vale" in unknown.json()["error"]
+    named = _speech(client, {"text": "x", "voice": "ZF_001", "language": "Chinese"}).json()
+    assert (named["voice"], named["language"]) == ("zf_001", "chinese")
+    default = _speech(client, {"text": "x"}).json()
+    assert default["voice"] == "af_maple"
+    _wait_job(named["jobId"])
+    _wait_job(default["jobId"])
+
+
+def test_the_catalog_says_a_kokoro_entry_has_no_style_line(client, fake_speech_runner, hub):
+    _cached_repo(hub, "org/fake-preset", files=KOKORO_FILES, dirs=KOKORO_DIRS)
+    rows = client.get("/api/ai/catalog").json()["capabilities"]
+    row = next(r for r in rows if r["capability"] == registry.TEXT_TO_SPEECH)
+    models = {m["id"]: m for m in row["models"]}
+    assert models["org/fake-preset"]["instructable"] is False
+    assert models["org/fake-preset"]["voices"][:3] == ["af_maple", "af_sol", "bf_vale"]
+    assert "instructable" not in models["org/fake-clone"]
+
+
+def test_a_curated_kokoro_row_refuses_a_style_line_before_it_is_downloaded(
+        client, fake_speech_runner, monkeypatch):
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-speech", [
+        {"id": "org/fake-kokoro", "label": "K", "size_gb": None, "note": "",
+         "voiceMode": "preset", "instructable": False}])
+    refused = _speech(client, {"text": "x", "instruct": "calm"})
+    assert refused.status_code == 400 and "has no style line" in refused.json()["error"]
+
+
+def test_the_kokoro_suggestion_is_the_one_row_of_its_own_list():
+    rows = catalog.for_runner("sherpa-tts")
+    assert [r["id"] for r in rows] == [KOKORO_ID]
+    assert rows[0]["voiceMode"] == "preset" and rows[0]["instructable"] is False
+    assert rows[0]["recommended"] is True and rows[0]["size_gb"] == 0.39
+    assert catalog.for_runner("mlx-audio-tts") != rows
+    assert catalog.capability_of(KOKORO_ID) == registry.TEXT_TO_SPEECH
+    # A repo id, not a GGUF filename: the mirror is named it unchanged.
+    assert catalog.mirror_id(KOKORO_ID) == KOKORO_ID
+
+
+def test_a_mac_resolves_speech_to_qwen_unless_it_chooses_kokoro(monkeypatch):
+    """The supervisor resolves ONE runner per capability (`_runner_or_raise`),
+    so the loaders claim says which runner CAN open a repo, and the engine
+    preference says which one a Mac uses. A Kokoro id is claimed by
+    `sherpa-tts` alone; it runs on a Mac whose engine for speech is Kokoro."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(registry, "preferred_code", lambda capability: registry.AUTO)
+    assert supervisor._runner_or_raise(registry.TEXT_TO_SPEECH).code == "mlx-audio-tts"
+    monkeypatch.setattr(registry, "preferred_code", lambda capability: "sherpa-tts")
+    assert supervisor._runner_or_raise(registry.TEXT_TO_SPEECH).code == "sherpa-tts"
+    claimed = formats.loaders(repo_id=KOKORO_ID, names=set(KOKORO_FILES),
+                              dirnames=set(KOKORO_DIRS), config={}, torch_weights=False,
+                              onnx_weights=True)
+    assert claimed == ("sherpa-tts",)
+
+
 def test_the_SKILL_names_every_field_speech_resolves_with(client, fake_speech_runner,
                                                          base_photo):
     page, _ = base_photo
