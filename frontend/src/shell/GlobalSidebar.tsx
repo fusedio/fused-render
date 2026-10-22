@@ -848,7 +848,28 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // rule (both are "the canvas open"); the href is the row's (canvasRowHref),
   // with the row's fallback for a clone of an unknown environment.
   const onCanvas = canvasProjectFromPath(pathname) ?? canvasNameFromPath(pathname);
-  const railCanvases: SidebarRailItem[] = extras.canvases.map((app, i) => ({
+  // The Canvases section's "+ Canvas" row, on the rail: the catalog
+  // (/canvases), at the head of the canvases group, behind the section's gate
+  // — the one door in, since the primary nav has no Canvases row. Plain
+  // navigation, not a composer: create and clone live on the catalog page.
+  const railNewCanvas: SidebarRailItem[] = canvasesInNav
+    ? [
+        {
+          key: "new-canvas",
+          label: "Canvas — open or create",
+          icon: (
+            <span className="sidebar-rail-new-glyph" aria-hidden="true">
+              +
+            </span>
+          ),
+          href: "/canvases",
+          active: pathname === "/canvases",
+          dividerBefore: true,
+          scrolls: true,
+        },
+      ]
+    : [];
+  const railCanvases: SidebarRailItem[] = extras.canvases.map((app) => ({
     key: "canvas:" + app.path,
     label: app.name,
     icon: (
@@ -862,7 +883,6 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       !!onCanvas &&
       onCanvas.env === app.canvas.env &&
       onCanvas.name === app.canvas.name,
-    dividerBefore: i === 0,
     scrolls: true,
   }));
   const railPins: SidebarRailItem[] = extras.pins.map((b, i) => ({
@@ -933,6 +953,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       : []),
     ...railNewApp,
     ...railApps,
+    ...railNewCanvas,
     ...railCanvases,
     ...railPins,
     // Same gate and same place as the expanded row: the rail is the whole
