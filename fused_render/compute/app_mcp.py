@@ -123,7 +123,7 @@ def load_app_manifest(app_dir: Path) -> AppManifest:
 
     manifest_path = app_dir / MANIFEST_NAME
     try:
-        raw_text = manifest_path.read_text()
+        raw_text = manifest_path.read_text(encoding="utf-8")
     except OSError as exc:
         raise AppManifestError(
             f"No {MANIFEST_NAME} in {app_dir} — curate the app's tools first "
@@ -371,7 +371,7 @@ def build_app_tool_spec(manifest: AppManifest, tool: AppTool) -> AppToolSpec:
     derived list, so they are invisible to the model and unoverridable by it.
     """
     path = tool.target_path(manifest.app_dir)
-    source = path.read_text()
+    source = path.read_text(encoding="utf-8")
     try:
         tree = ast.parse(source)
     except SyntaxError as exc:
@@ -414,12 +414,25 @@ def call_params(tool: AppTool, kwargs: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _app_interpreter(app_dir: Path) -> str:
-    """The interpreter the app's own page runs on: its project venv python when the
-    folder declares an environment, else this process's interpreter (SPEC PY-17)."""
-    from fused_render import projectenv
+async def _app_interpreter(spec: AppToolSpec) -> str:
+    """The interpreter the tool's page-side twin runs on: the one resolution
+    `engine.run_python` uses (SPEC PY-16/17), so the app-interpreter fast path and
+    the macOS bundle's wrapper interpreter apply here too. A tool cannot show the
+    install loader, so an environment that is not installed yet is an error that
+    says so."""
+    from fused_render import engine
 
-    return projectenv.interpreter_for(projectenv.project_env_for(str(app_dir)))
+    interpreter, unavailable = await engine.resolve_interpreter(
+        str(spec.tool.target_path(spec.app_dir))
+    )
+    if interpreter is None:
+        detail = (unavailable or {}).get("error") or {}
+        raise RuntimeError(
+            f"app tool {spec.tool.name!r} cannot run: "
+            f"{detail.get('message') or 'its Python environment is not available'}"
+            " Open the app in fused-render once to install its environment."
+        )
+    return interpreter
 
 
 async def _run_app_tool(spec: AppToolSpec, kwargs: dict[str, Any]) -> Any:
@@ -431,16 +444,19 @@ async def _run_app_tool(spec: AppToolSpec, kwargs: dict[str, Any]) -> Any:
     the MCP client sees the error instead of a silent null. Nothing is cached:
     these tools act, and a memoized action is a wrong answer.
     """
-    from fused_render.compute.backend import LocalPythonComputeBackend
+    from fused_render import engine
 
-    backend = LocalPythonComputeBackend()
+    # The engine's one backend: each backend owns an invoke dispatcher (a temp dir
+    # and a watcher thread) that nothing stops, so a backend per call would leak
+    # both for the life of a long-running server.
+    backend = engine.get_backend()
     params = call_params(spec.tool, kwargs)
     input_files = {"_params.json": json.dumps(params, sort_keys=True, default=str).encode()}
     execution = await asyncio.to_thread(
         backend._execute_sync,
         code=spec.code,
         input_files=input_files,
-        interpreter=_app_interpreter(spec.app_dir),
+        interpreter=await _app_interpreter(spec),
         entrypoint=spec.tool.entrypoint,
     )
 
