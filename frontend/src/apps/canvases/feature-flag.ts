@@ -33,7 +33,7 @@ let enabled: boolean | null = null;
  *  keys it on the nav epoch), and a fresh GET per trip is waste when the value
  *  cannot change without this module being told. */
 let reading: Promise<void> | null = null;
-/** Which answer is newest (shell/tasksPulse's counter): a publish bumps
+/** Which answer is newest: a publish bumps
  *  it, and a read that DEPARTED earlier drops its result rather than
  *  overwriting the fresher one. Nothing else can cancel an in-flight GET — a
  *  reader who lands on /preferences and flips the checkbox before that GET

@@ -16,8 +16,8 @@ export const RAIL_PINS_MAX = 3;
  *  the whole desk in section order; it splits on `canvas` exactly as the
  *  sections do (CurrentAppsSection `inSection`). Under Fused Bot no section
  *  exists, so no group does; the canvases group follows the Canvases
- *  section's own gate (`canvases`: the feature on), since a door to
- *  a clone with no account behind it opens a page that does not work. */
+ *  section's own gate (`canvases`: the feature on, owner 2026-10-22 — no
+ *  sign-in half, so a new machine sees the group with the switch). */
 export function railExtras({
   desk,
   pins,

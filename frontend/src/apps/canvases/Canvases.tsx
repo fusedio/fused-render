@@ -266,7 +266,6 @@ export default function Canvases() {
     void refresh();
   }, [refresh]);
 
-
   // While a login is in flight, poll status until logged_in flips — or the
   // browser child exits without ever flipping it (closed tab, denied, or the
   // flow otherwise failed), which must also drop `loggingIn` or the button

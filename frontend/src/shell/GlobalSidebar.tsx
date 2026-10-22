@@ -718,9 +718,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     // CLI-missing / signed-out state itself, so the entry is what "there is a
     // thing here you could set up" looks like — and the whole point of the
     // preference is that a machine which has not turned Canvases on is not
-    // shown it anywhere. It stays here even while the primary row above is
-    // showing — the menu is where someone looks for a named destination — and
-    // `prefsActive` below drops it instead, so the two never light at once.
+    // shown it anywhere. The Canvases SECTION below takes the same gate since
+    // 2026-10-22; this entry stays because the menu is where someone looks
+    // for a named destination.
     ...(canvasesEnabled
       ? [{ href: "/canvases", label: "Canvases", icon: CANVASES_ICON }]
       : []),
@@ -803,8 +803,8 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // THE RAIL'S DOORS INTO THE SECTIONS: the desk's apps, its canvases and
   // the pinned bookmarks, in their sections' order, capped (sidebar-rail-lib).
   // The desk fetch runs only while the rail is on screen — expanded, the
-  // sections own it. The canvases group wears the Canvases section's gate.
-  // (the feature on, nothing more)
+  // sections own it. The canvases group wears the Canvases section's gate
+  // (the feature on, nothing more).
   const { collapsed: sidebarCollapsed } = useSidebarState();
   useBookmarksVersion();
   const desk = useDeskAppsOrdered(sidebarCollapsed && !bot);
