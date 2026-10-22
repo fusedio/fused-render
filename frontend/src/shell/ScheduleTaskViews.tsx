@@ -2505,13 +2505,20 @@ export function TaskList({
     // at its OLD one for a quarter second, and `scrollIntoView` reads the
     // drawn box — asked then, it smooth-scrolled the reader straight back to
     // the bottom the section had just left.
+    // THE ROW ITSELF where it is on screen, else its section (CodeRabbit,
+    // #1855): a section taller than the list can hold the viewport with the
+    // new row still outside it, and "nearest" on the section would move
+    // nothing. The registry is keyed by the List's row key (`taskListKeys`).
     const deepest = open[open.length - 1]!.replace(/[^\w-]+/g, "_");
+    const arrived = rows.findIndex((t) => fresh.has(t.key));
     requestAnimationFrame(() => {
-      const node = listRef.current
+      const section = listRef.current
         ?.querySelector(`#tasks-group-${groupBy}-${deepest}`)
         ?.closest<HTMLElement>(".tasks-group");
-      if (!node) return;
-      const sliding = typeof node.getAnimations === "function" ? node.getAnimations() : [];
+      const row = arrived >= 0 ? elsByKey.current.get(rowKeys[arrived] ?? "") : undefined;
+      const node = (row instanceof HTMLElement && section?.contains(row) ? row : section) ?? null;
+      if (!node || !section) return;
+      const sliding = typeof section.getAnimations === "function" ? section.getAnimations() : [];
       void Promise.allSettled(sliding.map((a) => a.finished)).then(() => {
         if (node.isConnected) node.scrollIntoView({ block: "nearest", behavior: reducedMotion() ? "auto" : "smooth" });
       });
