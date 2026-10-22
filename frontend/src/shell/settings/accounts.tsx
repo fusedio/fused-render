@@ -289,7 +289,6 @@ export function WorkbenchEnvControl() {
               ...WORKBENCH_ENVS.map((e) => ({
                 key: e,
                 label: ENV_LABELS[e],
-                disabled: status.envs?.[e]?.available === false,
               })),
             ]}
             disabled={busy || status.locked}

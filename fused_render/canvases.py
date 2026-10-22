@@ -317,7 +317,7 @@ def fused_settings_configured() -> bool:
     regardless and opens the settings editor when this is false (the empty
     file the editor starts from must NOT count as configured, or dismissing
     it would leave custom silently equal to prod); the Settings picker
-    disables it."""
+    offers it too."""
     value = _fused_settings().get("base_url")
     return isinstance(value, str) and bool(value.strip())
 
@@ -908,8 +908,8 @@ def api_canvases_status(env: str = ""):
         # Clone counts are a local listdir, no CLI — informational on the
         # Preferences row. `available` is false only for custom whose
         # settings file names no `base_url` (`fused_settings_configured`):
-        # the Settings picker disables it, the Canvases page offers it and
-        # opens the settings editor instead of the sign-in.
+        # both pickers still offer it; the Canvases page opens the settings
+        # editor instead of the sign-in.
         "envs": {
             env: {
                 "base_url": workbench_base_url(env),
