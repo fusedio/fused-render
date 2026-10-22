@@ -945,31 +945,38 @@ def test_a_wedged_stats_or_search_request_does_not_permanently_hold_its_lane_slo
             while calls["n"] < 1 and time.monotonic() < deadline:
                 await asyncio.sleep(0.01)
             assert calls["n"] >= 1, "the wedged request never reached the fake"
-            await asyncio.sleep(0.15)  # let the wedged request time out
+            try:
+                # Its own bounded wait answers it (503) after ABANDON_S, not a
+                # sleep's guess at when that happened. Unbounded, it would
+                # hang here, so the wait is capped.
+                wedged_resp = await asyncio.wait_for(wedged_task, 30.0)
 
-            t0 = time.monotonic()
-            second_resp = await client.get(path, params={"root": str(tmp_path)})
-            second_elapsed = time.monotonic() - t0
+                # The healthy request gets a budget no runner jitter can
+                # exhaust: ABANDON_S is read per request, so the wedged one
+                # timed out fast and this one cannot time out by accident (a
+                # wall-clock bound on it, 0.3s, tripped at 1.5s on a loaded
+                # runner). Queued behind the wedged request, it would wait on
+                # a thread that never finishes and answer 503 after 30s.
+                monkeypatch.setattr(index_router, "ABANDON_S", 30.0)
+                second_resp = await client.get(path, params={"root": str(tmp_path)})
+            finally:
+                # Same draining discipline as the rank version of this test
+                # (finding F), and for the same reason: a real, un-killable
+                # OS thread is parked in `never.wait()` until this fires, and
+                # it must happen HERE, inside `run()`, while this loop is
+                # still running — the abandoned future's done-callback is
+                # chained via `call_soon` on this loop and never fires once
+                # `asyncio.run` has torn it down. In a `finally`, so a failure
+                # above ends the test instead of leaving the worker to hang.
+                never.set()
+                deadline = time.monotonic() + 2.0
+                while index_router._abandoned_reads and time.monotonic() < deadline:
+                    await asyncio.sleep(0.01)
+            return second_resp, wedged_resp
 
-            wedged_resp = await wedged_task
-
-            # Same draining discipline as the rank version of this test
-            # (finding F), and for the same reason: a real, un-killable OS
-            # thread is parked in `never.wait()` until this fires, and it
-            # must happen HERE, inside `run()`, while this loop is still
-            # running — the abandoned future's done-callback is chained via
-            # `call_soon` on this loop and never fires once `asyncio.run`
-            # has torn it down.
-            never.set()
-            deadline = time.monotonic() + 2.0
-            while index_router._abandoned_reads and time.monotonic() < deadline:
-                await asyncio.sleep(0.01)
-            return second_resp, second_elapsed, wedged_resp
-
-    second_resp, second_elapsed, wedged_resp = asyncio.run(run())
+    second_resp, wedged_resp = asyncio.run(run())
     # A later request must not queue behind the wedged one.
     assert second_resp.status_code == 200, second_resp.text
-    assert second_elapsed < 0.3, second_elapsed
     assert wedged_resp.status_code == 503
     assert wedged_resp.json() == {"error": "index read timed out"}
     assert not index_router._abandoned_reads
