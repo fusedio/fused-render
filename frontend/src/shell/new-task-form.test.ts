@@ -2918,9 +2918,9 @@ describe("property pills", () => {
     expect(initialTextOf({ title: "a", text: "a\nb" }, undefined, "a", "b")).toBe("a\nb");
   });
 
-  test("four pills, in source order: Where, When, Access, Model", () => {
+  test("four pills, in source order: Model, Access, Where, When", () => {
     const s = src();
-    const at = ["Where", "When", "Access", "Model"].map((k) => s.indexOf(`k="${k}"`));
+    const at = ["Model", "Access", "Where", "When"].map((k) => s.indexOf(`k="${k}"`));
     expect(at.every((i) => i > -1)).toBe(true);
     expect([...at].sort((a, b) => a - b)).toEqual(at);
     // …and they sit in the row that replaced the folder row.
