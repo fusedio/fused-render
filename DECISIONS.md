@@ -7423,9 +7423,26 @@ Turning on `chromium_windows_enabled` starts a ~150 MB engine download (`fused_r
   | 0.3.31 | no CPU wheels published (404) | 404 | 404 | PASS [d926a9fb97e3, 181.91 MB] |
   | 0.3.30 | FAIL bad member libggml-base.0.dylib [a66d416e5d4d, 17.11 MB] | PASS [591337ea31b6, 22.55 MB] | PASS [0720e1d122a4, 21.01 MB] | PASS [41c9edb8f532, 181.88 MB] |
 
+  Remaining CPU tags `registry._llamacpp_platform` admits (added in review; musl = musllinux_1_2, rv = linux_riscv64; all PASS, 0.3.31 published none, 404):
+
+  | version | musl x86_64 | musl aarch64 | rv64 |
+  |---|---|---|---|
+  | 0.3.36 | PASS [1b7ba90f5131, 28.30 MB] | PASS [cd36015cf5cc, 25.64 MB] | PASS [49b11462dc5e, 21.64 MB] |
+  | 0.3.35 | PASS [fb9998367428, 25.17 MB] | PASS [a024ca666cbc, 22.96 MB] | PASS [9bbbffd9638b, 19.34 MB] |
+  | 0.3.34 | PASS [85269707b9d7, 24.51 MB] | PASS [a3bd2321a348, 22.45 MB] | PASS [95d966503d1d, 18.80 MB] |
+  | 0.3.33 | PASS [716b8d4b4261, 24.42 MB] | PASS [0bb118f12c99, 22.34 MB] | PASS [6aa62bcbdee8, 18.70 MB] |
+  | 0.3.32 | PASS [0ba09e3744d8, 23.93 MB] | PASS [04d11fa9e706, 21.87 MB] | PASS [ce27a0e208ec, 18.30 MB] |
+  | 0.3.31 | 404 | 404 | 404 |
+  | 0.3.30 | PASS [dca09fcba476, 23.77 MB] | PASS [571f901a8669, 21.69 MB] | PASS [f47eef3930c5, 18.14 MB] |
+  | 0.3.29 (current pin) | PASS [7e8b4d11dc20, 23.69 MB] | PASS [743c2ed3762a, 21.64 MB] | PASS [1250f32350ce, 18.08 MB] |
+
+  The pin 0.3.29 is intact on all six CPU tags (macOS arm64, manylinux x86_64/aarch64, musllinux x86_64/aarch64, riscv64) and the vulkan wheel.
+
+  **Mac tally.** 4 of 17 sampled releases pass on macOS arm64 (13 of 17 fail): the 2026-08-21 sweep covered 16 releases, and only 0.3.36 is certainly new to it. August's list is not in the repo; 0.3.32 and 0.3.33 were probably already in it, so they are not counted again.
+
   "invalid block type" is `zlib.error: Error -3 while decompressing data`, raised by `testzip()` itself.
 
   **Digest check (done 2026-10-22).** For each of the six FAILing mac wheels, the full sha256 of the downloaded file was compared with the `digest` GitHub publishes for that release asset (`gh release view v<ver> --repo abetlen/llama-cpp-python --json assets`), and the byte size with the asset's `size`. All six match exactly (0.3.30, 0.3.32, 0.3.33, 0.3.34, 0.3.35, 0.3.36), so none of the failures is a bad fetch: upstream publishes these bytes, as the 2026-08-21 audit found for the earlier corrupt releases. No re-download was needed.
 - **Decision.** No bump: the macOS arm64 wheel is corrupt in six of the seven versions 0.3.30-0.3.36 (0.3.31 published no CPU wheels at all, 404), so no version in the range has an intact mac wheel, and macOS is a shipped tag. Both pins stay at 0.3.29; the sweep is recorded in both pyproject comments so nobody repeats it. Linux and vulkan wheels were intact throughout, so a Linux-only bump would be possible but would split the pin across platforms; not done.
-- **Bonsai 2 gate.** Loaded `Ternary-Bonsai-2-27B-PQ2_0.gguf` on 0.3.29 (scratch venv, Apple M5, Metal) with `Llama(n_ctx=2048, n_gpu_layers=-1)`. It fails: `gguf_init_from_reader: tensor 'output.weight' has invalid ggml type 142. should be in [0, 42)` then `ValueError: Failed to load model`. The quant is a PrismML-specific ggml type that upstream llama.cpp at 0.3.29's vendored commit does not know; no wheel that passes integrity is newer, and the newer mac wheels cannot be installed to test. No `SUGGESTIONS` or `GGUF_RECIPES` row, no mirror upload.
+- **Bonsai 2 gate.** Loaded `Ternary-Bonsai-2-27B-PQ2_0.gguf` (the only file tested; the v1 GGUFs and PTQ1_0 were not) on 0.3.29 (scratch venv, Apple M5, Metal) with `Llama(n_ctx=2048, n_gpu_layers=-1)`. It fails: `gguf_init_from_reader: tensor 'output.weight' has invalid ggml type 142. should be in [0, 42)` then `ValueError: Failed to load model`. The PQ2_0 quant is a PrismML-specific ggml type that upstream llama.cpp at 0.3.29's vendored commit does not know; no wheel that passes integrity is newer, and the newer mac wheels cannot be installed to test. No `SUGGESTIONS` or `GGUF_RECIPES` row, no mirror upload.
 - **Not done / resume point.** Re-run the sweep when a release appears after 0.3.36. Re-test Bonsai 2 only on a build that knows type 142 (probably PrismML's own llama.cpp fork; upstream may never take it). The sweep script is `scripts/llamacpp_wheel_sweep.py` (`python scripts/llamacpp_wheel_sweep.py <scratch dir> <lo> <hi>`, e.g. `37 40` for 0.3.37-0.3.40; it downloads into the scratch dir).

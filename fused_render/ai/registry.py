@@ -1287,8 +1287,8 @@ _RUNNERS: tuple[Runner, ...] = (
     # **This row's own history is worth keeping rather than deleting.** It
     # shipped BELOW three `transformers-text*` rows precisely so `auto` could
     # never reach it: `llamacpp_text/pyproject.toml` records that the
-    # maintainer's wheel index is a coin-flip per release on macOS arm64 (15 of
-    # 19 sampled releases fail `testzip()`), and a capability whose INSTALL can
+    # maintainer's wheel index is a coin-flip per release on macOS arm64 (13 of
+    # 17 sampled releases fail `testzip()`), and a capability whose INSTALL can
     # silently fail is a poor thing to hand a machine that did not ask for it.
     # D416 removed the rows that made "never a fallthrough" possible, on a
     # measurement this engine won outright — 4.2x the throughput of transformers

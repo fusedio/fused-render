@@ -19,10 +19,12 @@
 # **The RESIDUAL RISK that does not go away, and it is worse than "a second
 # host to trust".** A full sweep of every macOS arm64 wheel this index has ever
 # published for `llama-cpp-python` found the corruption is not a regression
-# with a clean cutoff — it is roughly a coin flip per release. Only 4 of 19
+# with a clean cutoff — it is roughly a coin flip per release. Only 4 of 17
 # releases sampled (0.3.18, 0.3.24, 0.3.26, 0.3.29; 16 releases as of the
-# 2026-08-21 sweep, 19 after the 2026-10-22 one below) pass
-# `zipfile.testzip()` on their `macosx_11_0_arm64` wheel; the rest fail,
+# 2026-08-21 sweep, 17 after the 2026-10-22 one below, which added only 0.3.36
+# as certainly new: August's list is not in the repo, and 0.3.32 and 0.3.33
+# were already in it when 0.3.34/0.3.35 were newest) pass
+# `zipfile.testzip()` on their `macosx_11_0_arm64` wheel; 13 of 17 fail,
 # USUALLY on a bundled
 # `libggml-base*.dylib` (three different corruption signatures were seen across
 # versions — bad CRC-32, bad uncompressed size, bad zip64 offset — so it is not
@@ -45,6 +47,11 @@
 #     manylinux2014_x86_64.manylinux_2_17_x86_64     PASS
 #     manylinux2014_aarch64.manylinux_2_17_aarch64   PASS
 #
+# The other three tags `registry._llamacpp_platform` admits (musllinux_1_2_x86_64,
+# musllinux_1_2_aarch64, linux_riscv64) were swept on 2026-10-22 and ALL PASS
+# for 0.3.29 (and for every version 0.3.30-0.3.36 that published them; 0.3.31
+# published none): the pin is intact on all six CPU tags. See D1413.
+#
 # **ANY version bump of this pin MUST repeat that audit before landing** — this
 # is not a rule a resolver can enforce, `test_ai_runner_deps.py` can only check
 # that the index declaration stays `explicit = true` on a wheel-shaped source,
@@ -54,8 +61,9 @@
 # independent per-release coin flips). Run `scripts/llamacpp_wheel_sweep.py`
 # (downloads each wheel for the candidate version from
 # `github.com/abetlen/llama-cpp-python/releases/download/v<version>/...` and
-# runs `zipfile.ZipFile(path).testzip()` on it), and if any of the three is not
-# `None`, do not bump — find the newest version where all three pass, exactly
+# runs `zipfile.ZipFile(path).testzip()` on it), and if any row the script
+# prints for the candidate version (seven: six CPU tags plus vulkan) is not
+# PASS, do not bump — find the newest version where every row passes, exactly
 # as this pin was chosen (0.3.34 and 0.3.35, the two newest at the time, were
 # BOTH corrupt on macOS arm64 across five checked versions before 0.3.29 was
 # found intact on every platform this runner ships).
@@ -95,8 +103,9 @@
 # libggml-base.0.20.0.dylib; 0.3.33 and 0.3.36 raise "Error -3 while
 # decompressing data: invalid block type". 0.3.31 published no CPU wheels (404)
 # at all. Each failing wheel's full sha256 and size matched GitHub's published
-# asset digest. Counting 0.3.32, 0.3.33 and 0.3.36 as new samples, the mac tally
-# is now 4 of 19 releases passing. Full table (sizes, sha256 prefixes):
+# asset digest. Counting only 0.3.36 as a new sample (August's list is not in the
+# repo; 0.3.36 is the only version certainly new to it), the mac tally is now
+# 4 of 17 releases passing. Full table (sizes, sha256 prefixes):
 # DECISIONS.md D1413. To repeat it: `scripts/llamacpp_wheel_sweep.py`.
 
 [project]
