@@ -7515,3 +7515,7 @@ Skills were `~/.claude/skills` plus enabled plugins, so a skill Copilot or Codex
 - **docs/usage.md had no Claude Config section**, so one was added.
 - **Memory tests.** `test_memory_list_reconstructs_a_hyphenated_component_against_the_disk` and `..._a_dotted_component` fail in this worktree's scratch setup; `memory.py` is untouched by this change.
 
+## D1426: A custom deployment's share links derive their host from `base_url` (2026-10-22, custom-share-host)
+
+- **Problem.** `_fused_share_app._share_url` reads fused's `shared_udf_base_url`. `fused._env(<name>)` sets it for the hosted envs, but a custom run (FUSED_ENV unset, D1411) takes its endpoints from `~/.fused/settings.toml`, and a file naming `base_url` without `shared_udf_base_url` leaves fused's PROD default, `https://udf.ai`. Since D1412 lets a custom default share at all, every link it handed out pointed at the hosted deployment, which does not know the token.
+- **Decision.** With FUSED_ENV unset, a `shared_udf_base_url` still at the PROD default and a `base_url` other than prod's, the shim derives the host by the workbench's own enterprise rule (`<name>.fused.io` → `https://<name>.udf.ai`). A host that rule does not cover refuses the share, naming the `shared_udf_base_url` setting to add: a wrong link is worse than none. An explicit `shared_udf_base_url` in the settings file always wins. No UI change.

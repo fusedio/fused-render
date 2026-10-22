@@ -44,6 +44,7 @@ import os
 import re
 import sys
 import zipfile
+from urllib.parse import urlparse
 
 import fused
 
@@ -188,8 +189,37 @@ def _scope(value) -> str | None:
     return getattr(value, "value", value)
 
 
+# fused's share host. `fused._env(<name>)` sets `shared_udf_base_url` for the
+# hosted environments. A custom deployment runs with FUSED_ENV unset (D1411)
+# and takes its endpoints from ~/.fused/settings.toml; when that file names a
+# `base_url` but no `shared_udf_base_url`, fused keeps the PROD default,
+# https://udf.ai — another deployment's host, so every link handed out would
+# point at the wrong Fused. Derive it by the workbench's own enterprise rule
+# (<name>.fused.io serves its shares from <name>.udf.ai) and refuse, naming
+# the fix, for a host that rule does not cover: a wrong link is worse than
+# none. An explicit `shared_udf_base_url` in the settings file always wins.
+_PROD_API_URL = "https://www.fused.io/server/v1"
+_PROD_SHARED_URL = "https://udf.ai"
+_ENTERPRISE_HOST = re.compile(r"^(?P<name>[a-z0-9-]+)\.fused\.io$", re.IGNORECASE)
+
+
+def _shared_udf_base_url() -> str:
+    configured = OPTIONS.shared_udf_base_url
+    if _env_name or configured != _PROD_SHARED_URL or OPTIONS.base_url == _PROD_API_URL:
+        return configured
+    host = urlparse(OPTIONS.base_url).hostname or ""
+    m = _ENTERPRISE_HOST.match(host)
+    if m and m.group("name").lower() != "www":
+        return f"https://{m.group('name').lower()}.udf.ai"
+    raise ShareError(
+        f"~/.fused/settings.toml points at {OPTIONS.base_url} but does not say where "
+        'that deployment serves shared UDFs; add shared_udf_base_url = "https://…" '
+        "to it and retry."
+    )
+
+
 def _share_url(share_token: str, slug: str) -> str:
-    return f"{OPTIONS.shared_udf_base_url}/{share_token}/{slug}.html"
+    return f"{_shared_udf_base_url()}/{share_token}/{slug}.html"
 
 
 def _workbench_url(handle: str, name: str) -> str:

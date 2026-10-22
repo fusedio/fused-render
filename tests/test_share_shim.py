@@ -32,6 +32,7 @@ def _install_fake_fused(monkeypatch):
     options_mod = types.ModuleType("fused._options")
     options_mod.options = types.SimpleNamespace(
         shared_udf_base_url="https://udf.fused.ai",
+        base_url="https://www.fused.io/server/v1",
         base_web_url="https://www.fused.io",
     )
 
@@ -49,6 +50,47 @@ def shim(monkeypatch):
     import fused_render._fused_share_app as mod
     yield mod
     sys.modules.pop("fused_render._fused_share_app", None)
+
+
+def _custom(shim, base_url, shared="https://udf.ai"):
+    """A custom-deployment run: FUSED_ENV unset, settings.toml's base_url,
+    and shared_udf_base_url left at fused's PROD default unless named."""
+    shim._env_name = None
+    shim.OPTIONS.base_url = base_url
+    shim.OPTIONS.shared_udf_base_url = shared
+
+
+def test_share_url_follows_fused_env_when_set(shim):
+    # prod/unstable: fused._env already set the host; nothing to derive.
+    shim._env_name = "unstable"
+    shim.OPTIONS.base_url = "https://unstable.fused.io/server/v1"
+    shim.OPTIONS.shared_udf_base_url = "https://unstable.udf.ai"
+    assert shim._share_url("fsh_x", "app") == "https://unstable.udf.ai/fsh_x/app.html"
+
+
+def test_share_url_custom_prod_default_stays_udf_ai(shim):
+    _custom(shim, "https://www.fused.io/server/v1")
+    assert shim._share_url("fsh_x", "app") == "https://udf.ai/fsh_x/app.html"
+
+
+def test_share_url_custom_explicit_shared_host_wins(shim):
+    _custom(shim, "https://acme.fused.io/server/v1", shared="https://shares.example.com")
+    assert shim._share_url("fsh_x", "app") == "https://shares.example.com/fsh_x/app.html"
+
+
+def test_share_url_custom_enterprise_host_derives_udf_ai(shim):
+    # settings.toml names base_url but not shared_udf_base_url: fused keeps
+    # the PROD default, which would send every link to the wrong deployment.
+    _custom(shim, "https://acme.fused.io/server/v1")
+    assert shim._share_url("fsh_x", "app") == "https://acme.udf.ai/fsh_x/app.html"
+    _custom(shim, "https://Unstable.Fused.io/server/v1")
+    assert shim._share_url("fsh_x", "app") == "https://unstable.udf.ai/fsh_x/app.html"
+
+
+def test_share_url_custom_unknown_host_refuses_with_the_fix(shim):
+    _custom(shim, "https://fused.internal.example.com/server/v1")
+    with pytest.raises(shim.ShareError, match="shared_udf_base_url"):
+        shim._share_url("fsh_x", "app")
 
 
 def test_canvas_name_unchanged_for_an_app_id(shim):
