@@ -54,7 +54,7 @@ dependencies = [
     # human sees (\r progress bars, cursor moves). Pure python, ~200 KB, one
     # tiny dep (wcwidth); imported lazily, only when a terminal is read.
     "pyte>=0.8.2",
-    # The venv builder behind project apps (SPEC PY-16/PY-18). `fused`'s
+    # The venv builder behind project apps (SPEC PY-16/PY-18). The
     # installer prefers `uv venv` + `uv pip install` and falls back to
     # `<python> -m venv`, which is several times slower and absent from the
     # macOS bundle. envinstall.uv_bin() looks beside the interpreter before PATH,
@@ -62,16 +62,6 @@ dependencies = [
     # system uv still builds project venvs with uv. The packaged builds copy
     # their own uv next to the interpreter; this one is for pip installs.
     "uv>=0.5",
-    # The execution engine (D69): with it, /api/run builds a pyproject app's
-    # own venv and runs its scripts there; without it only the built-in
-    # executor exists, which has no venv machinery and fails every project app
-    # with "install [fused]". Plain `fused`, no extras: its core carries the
-    # local compute backend and nothing heavier (no boto3, pyarrow, pandas,
-    # cryptography or mcp). The `[fused]` extra below adds what the desktop's
-    # deploy, share and MCP features need on top. The version must match that
-    # extra's pin (tests/test_bundle_contents.py checks it), so the base
-    # engine and the full one are the same build.
-    "fused==2.9.3b12",
 ]
 
 [project.optional-dependencies]
@@ -285,31 +275,26 @@ desktop = [
 hf = [
     "huggingface_hub>=1.28,<2",
 ]
-# The full engine: the deploy CLI, canvas share/push and the MCP server the
-# MCP panel registers. The base install already has `fused` itself (see
-# `dependencies`); this asks for its extras on the same version:
-#   * `aws` = boto3 + `pyjwt[crypto]` + fused's `data` group (pyarrow, pandas,
-#     numpy). The macOS build force-lists boto3/botocore/s3transfer/jmespath
-#     (setup_py2app.py), and a force-listed name must be installed.
-#   * `mcp` = `mcp>=1.8.0,<2`. The MCP panel registers `<this venv's fused>
-#     app serve <folder>` as a global Claude MCP server (SPEC MC-5), and
-#     `app serve` imports mcp. The `<2` ceiling lives upstream (mcp 2.x removed
-#     `mcp.server.fastmcp`).
-# Not `verify`: that extra is `anthropic` + `ty`, and `ty` stays unshipped (a
-# Rust binary console script py2app cannot carry). `anthropic` is declared
-# directly instead, with the floor `fused[verify]` itself declares. pip only
-# WARNS on an unknown extra, so tests/test_bundle_contents.py checks that every
-# extra named here is one the installed `fused` provides.
+# The `fused` CLI behind canvases and sharing, and the MCP server the MCP panel
+# registers. The compute engine itself is vendored (fused_render/compute), so
+# the base install needs none of this:
+#   * `fused` = the release CLI (`fused.cli`, `fused._auth`) that canvases.py,
+#     the share flows and the sign-in shims drive.
+#   * `mcp` = what `fused-render app serve <folder>` imports (SPEC MC-5). The
+#     `<2` ceiling is because mcp 2.x removed `mcp.server.fastmcp`.
+# `anthropic` is declared directly, with the floor fused's own `verify` extra
+# declares; `verify` itself also carries `ty`, a Rust binary console script
+# py2app cannot carry.
 fused = [
-    'fused[aws,mcp]==2.9.3b12 ; python_version >= "3.11"',
+    'fused==2.9.3 ; python_version >= "3.11"',
+    'mcp>=1.8.0,<2 ; python_version >= "3.11"',
     'anthropic>=0.40.0 ; python_version >= "3.11"',
     # Platform-conditional ceiling (LEAN_WHEEL_SPEC.md item 1). fused-render
-    # does not use cryptography itself, but `pyjwt[crypto]` from both
-    # `fused[aws]` and mcp pulls in an unmarked one, and cryptography ships no
-    # x86_64 macOS wheel after 48.0.1 (the `[dev]` entry above has the
-    # verification). pip's resolver intersects this direct entry with the
-    # transitive requirement, so it constrains the resolve without overriding
-    # the version those packages need.
+    # does not use cryptography itself, but mcp pulls in an unmarked
+    # `pyjwt[crypto]`, and cryptography ships no x86_64 macOS wheel after
+    # 48.0.1 (the `[dev]` entry above has the verification). pip's resolver
+    # intersects this direct entry with the transitive requirement, so it
+    # constrains the resolve without overriding the version mcp needs.
     'cryptography<=48.0.1 ; python_version >= "3.11" and sys_platform == "darwin" and platform_machine == "x86_64"',
 ]
 # The middle ground: what `fused-render serve` (the file explorer) needs, and

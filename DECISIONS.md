@@ -7542,7 +7542,12 @@ Skills were `~/.claude/skills` plus enabled plugins, so a skill Copilot or Codex
 - **`bots/apptools.py`** lost its native stdlib manifest reader and runner; it imports the vendored ones. `available()` stays as a constant True for its three callers.
 - **Command shape (chosen, not yet built).** Registration should write a `fused-render` wrapper script (`exec <sys.executable> -m fused_render.cli "$@"`) into `~/.fused-render/fused-bin/`, because py2app and AppImage bundles have no console script and the supervisor already proves `-m fused_render.cli`.
 
-## D1430: Unfinished at hand-off (2026-10-22, vendor-agent-core)
+## D1430: Unit 3b and units 4 to 6 finished (2026-10-22, vendor-agent-core)
 
-- **Unit 3 remainder.** The `fused-render` wrapper writer, its env var and `appenv` helper; `inspect_app.py` `_fused_cli` and the `fused` report key (template.html ~528, 539, 791, 806, 1037, test_mcp_inspect, test_mcp_panel); registration args; the startup migration of existing `fused app serve <dir>` Claude entries; removing `_app_serve_python` / `APP_SERVE_PYTHON_ENV` from `fusedcli.py`; docs and starters that name `fused app serve`.
-- **Units 4 to 6** are not started.
+Resolved. The `fused-render` wrapper, the startup migration of old `fused app serve` entries, `inspect_app.py` and the docs landed with unit 3b. Units 4 to 6 follow.
+
+- **Release pin.** `fused==2.9.3` lives only in the `[fused]` extra; the base no longer depends on `fused`. `mcp>=1.8.0,<2` and `anthropic` are declared directly there. `extras.EXTRAS["fused"]` is `("fused", "mcp", "anthropic")`; release fused pulls no boto3.
+- **CLI layout.** `fused.cli.main`, `fused._auth`, `fused._env`. Root options are `--env` and `--format` only (no `--backend`, no `workbench` or `cloud` group). `_canvas_push` skips those root options and matches `canvas push`. `fusedcli.child_env(cli)` lost `env_name` (no callers); auth hints say `fused login`.
+- **Bundle.** The py2app force-list dropped boto3, botocore, s3transfer, jmespath, keyring, pluggy and tomlkit (not in the release closure). The AppImage script no longer prunes `ty`.
+- **Kept on purpose.** The `OPENFUSED_*` env names, the `.openfused-ready` marker, and the "Derived from openfused" headers plus NOTICE in `compute/`. The engine `find_spec("fused")` gates are moot (`engine.available()` is always True) and left per D1428; the `fused-engine` CI job stays.
+- **Known environmental failure.** 13 tests in `tests/test_engine_requirements.py` fail in this worktree because its template scan skips paths containing `/vendor` and the path has `/vendor-agent-core`. They pass elsewhere; same count before and after.

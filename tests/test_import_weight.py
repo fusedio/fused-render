@@ -39,11 +39,8 @@ import pytest
 #   * [index]: duckdb, pyarrow, watchfiles
 #   * [desktop]: zeroconf (and its ifaddr), PIL, dbus_fast, objc
 #   * [hf]: huggingface_hub
-#   * [fused]: boto3, mcp, anthropic, cryptography (via pyjwt[crypto])
+#   * [fused]: fused, mcp, anthropic, cryptography (via pyjwt[crypto])
 #   * [bundled]: numpy, pandas, openpyxl, pptx, msgpack, fpdf, drain3
-# Plus `fused`: it IS base, but the server imports it lazily, on the first
-# engine call, so `open` reaches its URL without paying for it. Blocking it
-# here keeps that true.
 #
 # cryptography is also the regression test for `fused_render.update.common`,
 # which reached it unguarded once; the child imports `fused_render.update.mac`
@@ -53,7 +50,7 @@ OPTIONAL = frozenset({
     "zeroconf", "ifaddr", "PIL", "dbus_fast", "objc",
     "huggingface_hub",
     "botocore", "google", "requests",
-    "boto3", "mcp", "anthropic", "cryptography",
+    "mcp", "anthropic", "cryptography",
     "numpy", "pandas", "openpyxl", "pptx", "msgpack", "fpdf", "drain3",
     "fused",
 })

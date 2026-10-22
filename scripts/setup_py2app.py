@@ -203,7 +203,7 @@ def _bundled_distributions():
 
 
 def _req_extras(requirement):
-    """The extras a requirement asks for: `fused[aws,mcp]==X` -> {"aws", "mcp"}."""
+    """The extras a requirement asks for: `pyjwt[crypto]>=2` -> {"crypto"}."""
     from packaging.requirements import InvalidRequirement, Requirement
 
     try:
@@ -218,9 +218,9 @@ def _runtime_requires(dist, extras=frozenset()):
     A requirement gated on an extra is followed only when that extra was ASKED
     FOR (`extras`, i.e. the requester wrote `dist[extra]`). An extra nobody
     asked for is not installed and so has nothing to copy. This matters because
-    `[bundled]` pins `fused[aws,mcp]`: since fused 2.9.3b10 boto3, mcp and
-    `pyjwt[crypto]` are reachable ONLY through those extras, and skipping every
-    `extra ==` marker would drop their whole closure from the force-list.
+    mcp asks for `pyjwt[crypto]`: cryptography is reachable ONLY through that
+    extra, and skipping every `extra ==` marker would drop its whole closure
+    from the force-list.
     Markers that do not hold on this interpreter are skipped too.
     """
     from packaging.markers import InvalidMarker, UndefinedComparison, UndefinedEnvironmentName
@@ -276,7 +276,7 @@ def bundled_force_lists():
             installed[_norm_dist(name)] = dist
 
     # Transitive closure over the non-excluded [bundled] distributions, following
-    # the extras each requirement names (`fused[aws,mcp]`, `pyjwt[crypto]`).
+    # the extras each requirement names (`pyjwt[crypto]`).
     # `walked` is keyed per (distribution, extra), "" meaning its base deps, so a
     # distribution reached first bare and later as `dist[extra]` still has that
     # extra's deps followed.
@@ -490,35 +490,27 @@ OPTIONS = {
         # dropped transitive is a build error rather than an ImportError on a
         # user's first recording.
         "ScreenCaptureKit", "AVFoundation", "Quartz", "CoreMedia", "CoreAudio",
-        # The execution engine and deploy CLI (D69, D79, SPEC §19 DP-3), run
-        # in-bundle via fused_render/_fused_cli.py. `fused` ITSELF is no longer
-        # named here: it is a `[bundled]` requirement, so BUNDLED_PACKAGES below
-        # derives it (forced whole, which is what it needs — pluggy entry-point
-        # plugins + pervasive in-function imports + non-.py package data) and
+        # The `fused` CLI behind canvases and sharing (D79, SPEC §19 DP-3), run
+        # in-bundle via fused_render/_fused_cli.py. `fused` ITSELF is not named
+        # here: it is a `[bundled]` requirement, so BUNDLED_PACKAGES below
+        # derives it (forced whole, which is what it needs: pervasive
+        # in-function imports and non-.py package data) and
         # test_bundle_contents.py's reconciliation fails if the bundle would
-        # ever stop carrying it. A hand entry could not be checked that way,
-        # which for the engine meant it could vanish with the suite still green.
+        # ever stop carrying it. A hand entry could not be checked that way.
         #
         # These deps stay explicit: they carry data dirs or dynamic loading that
-        # a traced-module copy would drop — botocore's JSON service models
-        # (boto3), anthropic's tokenizer data, keyring's entry-point backends,
-        # cryptography's cffi bindings, pluggy's registry. The derivation now
-        # reaches most of them too: through `fused`'s core requirements, through
-        # the extras `[bundled]` asks of it (`fused[aws,mcp]` carries boto3,
-        # `pyjwt[crypto]` -> cryptography, and mcp, since fused 2.9.3b10), and
-        # through `anthropic`, which `[bundled]` declares directly. The
-        # duplication is harmless (py2app de-dupes); they are kept named because
-        # the REASON they must be whole-copied is not derivable from metadata.
-        # The rest of fused's dep tree is pure-python with ordinary imports —
-        # modulegraph traces it. The gate for anything missed here is
-        # build_dmg.sh §4c's bundled-CLI smoke test (real verbs through the
-        # shim). `ty` is deliberately NOT shipped (a Rust binary console script
-        # py2app can't carry); fused's verify scanner detects its absence and
-        # skips with a warning finding.
-        "boto3", "botocore", "s3transfer", "jmespath",
-        "cryptography", "keyring",
+        # a traced-module copy would drop: anthropic's tokenizer data and
+        # cryptography's cffi bindings. The derivation reaches them too, through
+        # `mcp`'s `pyjwt[crypto]` and through `anthropic`, which `[bundled]`
+        # declares directly. The duplication is harmless (py2app de-dupes);
+        # they are kept named because the REASON they must be whole-copied is
+        # not derivable from metadata. The rest of fused's dep tree is
+        # pure-python with ordinary imports: modulegraph traces it. The gate for
+        # anything missed here is build_dmg.sh §4c's bundled-CLI smoke test
+        # (real verbs through the shim).
+        "cryptography",
         "anthropic", "mcp", "httpx", "httpcore",
-        "pluggy", "tomlkit", "jwt", "yaml", "loguru",
+        "jwt", "yaml", "loguru",
         "aiohttp", "yarl", "multidict", "frozenlist",
         "fsspec", "tabulate", "tqdm", "rtoml",
         # The Hub client, for the Preferences sign-in (routers/hf_auth.py, D402).

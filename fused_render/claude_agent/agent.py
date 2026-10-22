@@ -1498,7 +1498,7 @@ def _terminal_command(file: str, session_id: str = "", backend: str = "") -> dic
     sessions we spawn inherit that dir on PATH from the server process; a
     terminal the user opens themselves does not. Without this, `fused` in the
     continued session is not a wrong version — for a shipping user it is
-    `command not found`, because fused-render bakes its own pre-release fused
+    `command not found`, because fused-render bakes its own fused
     into the app's interpreter and they never installed one. Prepended rather
     than appended so the app's CLI also wins over any fused a developer does
     have, since only that one carries the manifest shims the canvas sync needs.

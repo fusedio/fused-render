@@ -189,26 +189,23 @@ _IMPORT_TO_DIST = {
     # Screenshot interface over D-Bus. linux-only, so the same harmless
     # maps-to-nothing shape as the pyobjc rows above on the other two platforms.
     "dbus_fast": "dbus-fast",
-    # The engine itself (core `dependencies`, with `[fused]` adding its extras;
-    # setup_py2app.py derives the macOS force-list from both). Mapped, so
+    # The `fused` CLI (the `[fused]` extra; setup_py2app.py derives the macOS
+    # force-list from it). Mapped, so
     # `test_the_import_map_covers_everything_the_app_ships` stays satisfied, but
     # exempt from the COMPLETENESS half below — see _COMPLETENESS_EXEMPT.
     "fused": "fused",
-    # No longer declared by fused-render: since fused 2.9.3b10 it arrives through
-    # the engine pin's `mcp` extra (which carries the `<2` ceiling `fused app
-    # serve` needs), so it is not an app distribution this map must cover. Kept
-    # mapped anyway so a template that imports `mcp` is still checked: it is not
-    # a declared app distribution, so such a template has to declare it.
+    # Declared by `[fused]` with the `<2` ceiling `fused-render app serve`
+    # needs. Not a library any template imports; mapped so a template that
+    # does import `mcp` has to declare it like any other bundled distribution.
     "mcp": "mcp",
-    # Declared directly next to the engine pin: fused 2.9.3b10 moved it into its
-    # `verify` extra, which also carries `ty`, and this app ships anthropic but
-    # not ty. Not a library any template imports; mapped so the completeness
+    # Declared directly next to the CLI pin: fused's `verify` extra carries it
+    # beside `ty`, and this app ships anthropic but not ty. Not a library any template imports; mapped so the completeness
     # half stays honest, with the same declare-or-fail rule as any other
     # bundled distribution if a template ever does import it.
     "anthropic": "anthropic",
     # A CONSTRAINT `[bundled]`/`[fused]` add, not a library any template
-    # imports: `fused[aws]` and mcp both pull in an unmarked `pyjwt[crypto]`,
-    # which is where cryptography actually enters a real install, so the
+    # imports: mcp pulls in an unmarked `pyjwt[crypto]`, which is where
+    # cryptography actually enters a real install, so the
     # x86_64-macOS wheel ceiling (LEAN_WHEEL_SPEC.md item 1) is declared as a
     # direct, platform-marked `cryptography` entry there. Mapped so the
     # completeness half stays honest; if a template ever does import it, the

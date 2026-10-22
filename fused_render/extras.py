@@ -37,7 +37,7 @@ EXTRAS: dict[str, tuple[str, ...]] = {
     "data": ("pyarrow",),
     "desktop": ("zeroconf",),
     "hf": ("huggingface_hub",),
-    "fused": ("boto3", "mcp", "anthropic"),
+    "fused": ("fused", "mcp", "anthropic"),
 }
 
 # What `fused-render serve` requires: exactly what `[cli]` installs. `[desktop]`

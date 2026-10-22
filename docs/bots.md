@@ -54,11 +54,9 @@
 >   fused-render's `claude_health.resolve()` (FusedBot's module had it built in).
 > - `fused_ai`: `fused_render/templates/shared/fused_ai.py`, loaded by path
 >   (`bot._fused_ai`), as `server/routers/claude_agent.py` loads `app_entry.py`.
-> - App MCP tools (`apptools.py`): always the bundled runner
->   `fused.agent_core.app_mcp._run_app_tool` (`fused` is a base dependency),
->   the same path the MCP tab's `fused-render app serve` takes, with
->   `OPENFUSED_APP_SERVE_PYTHON` = `fusedcli._app_serve_python()`. The native
->   runner keeps its manifest reader; its execution refuses with a sentence.
+> - App MCP tools (`apptools.py`): the vendored runner
+>   `fused_render.compute.app_mcp._run_app_tool`, the same path the MCP tab's
+>   `fused-render app serve` takes, on the app's own interpreter.
 > - A malformed or non-object JSON body is FastAPI's 422 `{"detail": [...]}`,
 >   not the `{"error"}` 400 FusedBot's shim gave; every error a route raises
 >   itself keeps the `{"error": "<sentence>"}` shape.
@@ -105,7 +103,7 @@ fused_render/bots/            the backend package (in-process; no daemon, no fus
   agent_engine.py the Claude Code harness (section 6): one `claude -p` per task, tools over MCP
   tools.py        the tool table shared by both engines: names, schemas, descriptions, the risk rule, execution
   botmcp.py       stdio MCP server spawned by `claude`; forwards tools/call to POST /api/bots/<id>/tool (stdlib only)
-  apptools.py     port of OpenBot apptools.py (APPS / APP TOOLS / SKILL.md); `available()` False when `fused.agent_core` is absent
+  apptools.py     port of OpenBot apptools.py (APPS / APP TOOLS / SKILL.md)
   imessage.py     port of OpenBot imessage.py (bridge thread, texts, contacts)
   apps.py         ports of listapps.py, importapp.py, mkbuild.py, revealapp.py
   presets.py      presets()/apply_preset (agents.py); data in presets/<key>/ (preset.json + playbook .md), section 5

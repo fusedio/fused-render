@@ -102,14 +102,6 @@ find "$PYTHON_ROOT" -type f \( -name '*.so' -o -name '*.so.*' \) \
 find "$PYTHON_ROOT/lib/python3.12/site-packages" -type d \
     \( -name tests -o -name test \) -prune -exec rm -rf {} + 2>/dev/null || true
 
-# Drop `ty` (Astral's type checker, ~27 MB): the `fused` wheel declares it as a
-# runtime dependency, but nothing in fused_render imports it and the packaged
-# app never type-checks — it's pure dead weight in the bundle. Remove both the
-# console-script binary and the package. macOS can prune it the same way; keep this in sync if that lands there too.
-rm -rf "$PYTHON_ROOT/bin/ty" \
-    "$PYTHON_ROOT"/lib/python3.12/site-packages/ty \
-    "$PYTHON_ROOT"/lib/python3.12/site-packages/ty-*.dist-info
-
 find "$PYTHON_ROOT" -type d -name __pycache__ -prune -exec rm -rf {} + 2>/dev/null || true
 
 # --- system libraries must NOT ride along ------------------------------------

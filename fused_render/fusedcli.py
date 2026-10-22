@@ -74,8 +74,8 @@ def fused_cli() -> FusedCli | None:
 
       1. FUSED_RENDER_FUSED_BIN — trusted verbatim, split into an argv so a
          compound command works (e.g. "uv run fused"); quote a component that
-         contains spaces (see _split_override). Mirrors the flow app's
-         OPENFUSED_BIN seam; also how tests substitute a stub CLI.
+         contains spaces (see _split_override). Also how tests substitute a
+         stub CLI.
       2. the `fused` package importable in THIS interpreter — run as
          ``[sys.executable, _fused_cli.py]`` (the shim sets argv[0] and calls
          fused.cli.main). Covers a venv server that pip-installed the

@@ -5,7 +5,7 @@ clipboard so the user can continue a session in a real terminal. The sessions
 fused-render spawns inherit the `fused` wrapper dir on PATH from the server
 process; a terminal the user opens themselves does not.
 
-That is not a version preference. fused-render bakes its own pre-release fused
+That is not a version preference. fused-render bakes its own fused
 into the app's interpreter and a shipping user never installs one, so `fused` in
 the continued session is `command not found` — an outright breakage. Prepending
 the wrapper dir fixes it, and prepending (not appending) also means the app's
