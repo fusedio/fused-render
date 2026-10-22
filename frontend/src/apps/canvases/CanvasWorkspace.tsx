@@ -777,7 +777,9 @@ export default function CanvasWorkspace({
   // the header): the frame's expand chip and its toolbar code button act on
   // this pane, so they need the state to show and label themselves. Sent on
   // every change, and on every frame load below.
-  const codePanelOpen = sideOpen && nodeTab === "code" && node !== null;
+  // The viewer (`embedded`) renders no pane at all: it reports shut, so the
+  // frame draws neither chip and labels its code button "Show".
+  const codePanelOpen = !embedded && sideOpen && nodeTab === "code" && node !== null;
   // The pane's width over the frame, measured off the row (the frame cannot
   // see it: the pane is this page's), so the frame's collapse chip can sit
   // just left of it. Re-measured on every seam drag and window resize.
@@ -798,10 +800,11 @@ export default function CanvasWorkspace({
   }, [sideOpen, leftFrac, embedded]);
   // Written after commit, not during render: a discarded render must not
   // leave a pane state the message handler reads that was never shown.
-  const sidePanelStateRef = useRef({ open: sideOpen, code: codePanelOpen, width: sideWidth });
+  const paneOpen = !embedded && sideOpen;
+  const sidePanelStateRef = useRef({ open: paneOpen, code: codePanelOpen, width: sideWidth });
   useLayoutEffect(() => {
-    sidePanelStateRef.current = { open: sideOpen, code: codePanelOpen, width: sideWidth };
-  }, [sideOpen, codePanelOpen, sideWidth]);
+    sidePanelStateRef.current = { open: paneOpen, code: codePanelOpen, width: sideWidth };
+  }, [paneOpen, codePanelOpen, sideWidth]);
   const sendCodePanelState = useCallback(() => {
     const frame = frameRef.current;
     const origin = baseOriginRef.current;
