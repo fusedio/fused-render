@@ -573,7 +573,11 @@ export async function pollOnce(): Promise<void> {
       // A remount landed on stale rows (startStore): a bot that started waiting, or got a reply, while you were on
       // another page is only known now. After the mark above, so a switch places its own "New" rule. Not while
       // hidden: landing marks the bot read (applySel), and nobody saw it — the flag holds for the poll visibility kicks.
-      if (relandOnPoll && !document.hidden) { relandOnPoll = false; landOnBare(); }
+      // Moot once the route moved on (Tasks, Apps: the store stays mounted) — landing would mark a bot read off-screen.
+      if (relandOnPoll && !document.hidden) {
+        relandOnPoll = false;
+        if (isBotsPath(location.pathname) && parseBotsPath(location.pathname).kind === "list") landOnBare();
+      }
       // Nothing selected yet: a bot waiting on you, else one with news, else Super Bot (seeded on first run,
       // registry.seed_super) — the chat a new user should land in (lib/landing.ts).
       if (!S.sel && r.bots.length && !document.hidden) landOnBare();
@@ -645,6 +649,7 @@ export function startStore(): () => void {
   window.addEventListener("fused:urlchange", syncFromUrl);
   window.addEventListener(OPEN_EVENT, onOpenEvent);
   const urlBot = urlSel();
+  relandOnPoll = false;  // a flag left by a mount that unmounted before its first poll must not re-land this one (a deep link)
   if (urlBot && urlBot !== S.sel) commit({ sel: urlBot, scrollThread: S.scrollThread + 1 });
   // The bare door from another page (`/bots` itself — not /bots/tasks, apps or preferences, which select nothing):
   // waiting > unread > the bot that was open — on last-known rows now (if anyone is looking), then again on fresh ones.
