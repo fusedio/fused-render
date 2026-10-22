@@ -12,6 +12,7 @@ import {
   ENV_LABELS,
   WORKBENCH_ENVS,
   cancelLogin,
+  loginOutcome,
   getCanvasesStatus,
   getWhoami,
   isWorkbenchEnv,
@@ -48,6 +49,7 @@ export function FusedAccountControl() {
   const [loggingIn, setLoggingIn] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const loginStampRef = useRef<number | null>(null);
+  const loginStartedRef = useRef<number | null>(null);
   const aliveRef = useRef(true);
 
   const refresh = useCallback(async () => {
@@ -118,7 +120,7 @@ export function FusedAccountControl() {
               });
           } else if (!s.login_in_flight) {
             setLoggingIn(false);
-            setError("Sign-in was not completed — try again.");
+            setError(loginOutcome(loginStartedRef.current));
           }
         })
         .catch(() => undefined); // a blip mid-login is not worth a banner
@@ -145,6 +147,7 @@ export function FusedAccountControl() {
     act(async () => {
       loginStampRef.current = status?.creds_stamp ?? null;
       await startLogin();
+      loginStartedRef.current = Date.now();
       setLoggingIn(true);
     });
 

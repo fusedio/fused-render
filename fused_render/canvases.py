@@ -155,7 +155,11 @@ PUSH_TIMEOUT = 180.0
 TOKEN_TIMEOUT = 30.0
 # `fused login` blocks on its browser callback; its own HTTP server times out
 # after ~30s per request, but give the child room for slow human sign-ins.
-LOGIN_CHILD_TIMEOUT = 600.0
+# Five minutes: long enough to find the window and a password manager, short
+# enough that an abandoned or wedged attempt frees the page (and the one-at-a-
+# time login slot) before the person gives up on it. The page watches
+# `login_in_flight` and reports the timeout when the child dies at this mark.
+LOGIN_CHILD_TIMEOUT = 300.0
 # Quiet period after the last observed file change before a push fires.
 DEBOUNCE_S = 1.5
 # Folder fingerprint poll cadence.
