@@ -51,6 +51,11 @@ class FakeBase:
         #: which is how a real cancel reaches a worker (the reply to the tick
         #: it was sending anyway).
         self.cancel_on_tick = None
+        #: `set_state` fields, as `worker_base.STATE` would hold them.
+        self.state = {}
+
+    def set_state(self, **fields):
+        self.state.update(fields)
 
     def download_file(self, repo_id, filename, detail=None, job=None, row=None):
         # `job`/`row` recorded rather than ignored: the diarization models are
@@ -1019,3 +1024,441 @@ def test_a_transformers_format_repo_is_named_as_the_cause(worker, tmp_path):
     message = str(caught.value)
     assert "model.bin" in message and "CTranslate2" in message
     assert "Systran/faster-whisper-small" in message
+
+
+# -- Parakeet: the runner's SECOND format (sherpa-onnx transducer, D1423) --------
+#
+# What is faked is exactly what the real thing cannot be on CI: the recognizer
+# (`sherpa_onnx`), the decoder (`faster_whisper.audio`) and Silero. Everything
+# else — the packing, the remap through `vad.py`, the segment and word building,
+# the ticks, the partial sink, the join with diarization — is the real code.
+
+
+def _sherpa_files(folder):
+    folder.mkdir(exist_ok=True)
+    for name in ("encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx",
+                 "tokens.txt"):
+        (folder / name).write_bytes(b"")
+    return str(folder)
+
+
+def _tokens(*spans):
+    """`(start, "text")` pairs → sherpa's parallel `(tokens, timestamps)`, where a
+    token that begins a word carries a LEADING SPACE (what 1.13.8 returns for
+    Parakeet — measured; the SentencePiece `▁` is already decoded)."""
+    return [text for _at, text in spans], [at for at, _text in spans]
+
+
+class FakeSherpa:
+    """`sherpa_onnx` — a recognizer that answers each decode from a queue
+    (`results`: `(text, tokens, timestamps)`) and records what it was built with
+    and handed."""
+
+    def __init__(self):
+        self.results = []
+        self.built = []
+        self.clips = []
+        sherpa = self
+
+        class Stream:
+            def __init__(self):
+                self.result = None
+
+            def accept_waveform(self, rate, samples):
+                sherpa.clips.append({"rate": rate, "seconds": len(samples) / rate})
+
+        class Recognizer:
+            def create_stream(self):
+                return Stream()
+
+            def decode_stream(self, stream):
+                text, tokens, stamps = sherpa.results.pop(0)
+                stream.result = types.SimpleNamespace(
+                    text=text, tokens=tokens, timestamps=stamps)
+
+        class OfflineRecognizer:
+            @staticmethod
+            def from_transducer(**kwargs):
+                sherpa.built.append(kwargs)
+                return sherpa.recognizer
+
+        self.recognizer = Recognizer()
+        self.OfflineRecognizer = OfflineRecognizer
+
+
+@pytest.fixture()
+def sherpa(monkeypatch):
+    fake = FakeSherpa()
+    monkeypatch.setitem(sys.modules, "sherpa_onnx", fake)
+    return fake
+
+
+def _loaded_parakeet(worker, sherpa, tmp_path):
+    worker.load("csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
+                _sherpa_files(tmp_path / "snap"))
+
+
+def _no_vad(monkeypatch, worker, regions=None):
+    """Pin what the detector finds, as the MLX tests do (`_speech_regions` is
+    the seam; Silero itself is `tests/test_ai_vad.py`'s)."""
+    monkeypatch.setattr(worker, "_speech_regions", lambda *a, **k: regions)
+
+
+def test_load_dispatches_on_FORMAT_a_sherpa_export_builds_a_transducer(
+        worker, base, tmp_path, sherpa):
+    import diarize as diarize_module
+
+    _loaded_parakeet(worker, sherpa, tmp_path)
+
+    (built,) = sherpa.built
+    snap = str(tmp_path / "snap")
+    assert built["encoder"] == os.path.join(snap, "encoder.int8.onnx")
+    assert built["decoder"] == os.path.join(snap, "decoder.int8.onnx")
+    assert built["joiner"] == os.path.join(snap, "joiner.int8.onnx")
+    assert built["tokens"] == os.path.join(snap, "tokens.txt")
+    # `nemo_transducer` is what makes sherpa read a NeMo TDT export; the default
+    # `transducer` loads and then decodes garbage.
+    assert built["model_type"] == "nemo_transducer"
+    assert built["provider"] == "cpu"
+    assert built["num_threads"] == diarize_module.NUM_THREADS
+    assert worker._loaded["kind"] == "sherpa"
+    assert worker._loaded["device"] == "cpu"
+    assert base.state == {"device": "cpu"}
+    assert worker._loaded["model"] is sherpa.recognizer
+
+
+def test_load_of_a_CT2_snapshot_still_builds_a_whisper_model(
+        worker, tmp_path, monkeypatch):
+    snapshot = tmp_path / "ct2"
+    snapshot.mkdir()
+    (snapshot / "model.bin").write_bytes(b"")
+    built = []
+    monkeypatch.setitem(sys.modules, "ctranslate2", _fake_ctranslate2(0))
+    monkeypatch.setitem(sys.modules, "faster_whisper", types.SimpleNamespace(
+        WhisperModel=lambda path, **kw: built.append((path, kw)) or "whisper"))
+
+    worker.load("Systran/faster-whisper-small", str(snapshot))
+
+    assert built == [(str(snapshot), {"device": "cpu", "compute_type": "int8"})]
+    assert worker._loaded["model"] == "whisper"
+    assert worker._loaded["kind"] == "ct2"
+
+
+def test_the_refusal_names_all_three_models_and_both_formats(worker, tmp_path):
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "model.safetensors").write_bytes(b"")
+
+    with pytest.raises(RuntimeError) as caught:
+        worker.load("openai/whisper-large-v3", str(snapshot))
+
+    message = str(caught.value)
+    assert "deepdml/faster-whisper-large-v3-turbo-ct2" in message
+    assert "Systran/faster-whisper-small" in message
+    assert "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8" in message
+    assert "sherpa-onnx" in message and "CTranslate2" in message
+
+
+def test_a_half_a_sherpa_export_is_refused_not_loaded(worker, tmp_path):
+    snapshot = tmp_path / "snap"
+    snapshot.mkdir()
+    (snapshot / "encoder.int8.onnx").write_bytes(b"")
+    with pytest.raises(RuntimeError):
+        worker.load("x/y", str(snapshot))
+
+
+def test_the_refusal_in_the_worker_names_only_models_the_catalog_offers():
+    from fused_render.ai import catalog
+
+    offered = {row["id"] for row in catalog.SUGGESTIONS["faster-whisper"]}
+    assert "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8" in offered
+    assert "deepdml/faster-whisper-large-v3-turbo-ct2" in offered
+    assert "Systran/faster-whisper-small" in offered
+
+
+def test_parakeet_refuses_translate_before_any_work(
+        worker, base, tmp_path, sherpa, monkeypatch):
+    _loaded_parakeet(worker, sherpa, tmp_path)
+    calls = _decoder(monkeypatch)
+
+    with pytest.raises(ValueError) as caught:
+        worker.generate(_request(tmp_path, task="translate"))
+
+    assert "Parakeet transcribes only" in str(caught.value)
+    assert "deepdml/faster-whisper-large-v3-turbo-ct2" in str(caught.value)
+    assert calls == [] and base.ticks == []
+
+
+def test_the_VAD_packs_become_segments_on_the_RECORDING_clock(
+        worker, base, tmp_path, sherpa, monkeypatch):
+    """One pack of two regions, 10-13s and 20-22s of the recording, decoded as a
+    5-second clip. The second sentence starts 3.0s into the clip — exactly on
+    the join — so it belongs to the region that BEGINS there (20.0), and the
+    first one's end, being the next sentence's start, to the region that ENDS
+    there (13.0), not stretched across the dropped silence."""
+    _loaded_parakeet(worker, sherpa, tmp_path)
+    _decoder(monkeypatch, samples=16000 * 30)
+    _no_vad(monkeypatch, worker, regions=[(10.0, 13.0), (20.0, 22.0)])
+    tokens, stamps = _tokens((0.0, " First"), (0.8, " sentence"), (1.6, "."),
+                             (3.0, " Second"), (3.8, " one"), (4.2, "."))
+    sherpa.results = [("First sentence. Second one.", tokens, stamps)]
+
+    result = worker.generate(_request(tmp_path))
+
+    assert [c["seconds"] for c in sherpa.clips] == [5.0]
+    written = json.loads(open(_request(tmp_path)["out"], encoding="utf-8").read())
+    assert [(s["start"], s["end"], s["text"]) for s in written["segments"]] == [
+        (10.0, 13.0, "First sentence."), (20.0, 22.0, "Second one.")]
+    assert result["segments"] == 2
+    assert written["text"] == "First sentence. Second one."
+
+
+def test_a_word_is_a_space_led_token_run_with_its_end_at_the_next_start(
+        worker, base, tmp_path, sherpa, monkeypatch):
+    _loaded_parakeet(worker, sherpa, tmp_path)
+    _decoder(monkeypatch, samples=16000 * 4)
+    _no_vad(monkeypatch, worker)
+    tokens, stamps = _tokens((0.0, " A"), (0.24, "sk"), (0.4, " not"),
+                             (0.64, " what"), (1.0, "?"))
+    sherpa.results = [("Ask not what?", tokens, stamps)]
+
+    worker.generate(_request(tmp_path, words=True))
+
+    written = json.loads(open(_request(tmp_path)["out"], encoding="utf-8").read())
+    (segment,) = written["segments"]
+    assert segment["text"] == "Ask not what?"
+    assert segment["words"] == [
+        {"start": 0.0, "end": 0.4, "word": " Ask"},
+        {"start": 0.4, "end": 0.64, "word": " not"},
+        # The punctuation token has no leading space, so it belongs to "what".
+        {"start": 0.64, "end": 4.0, "word": " what?"},
+    ]
+
+
+def test_words_are_monotonic_and_inside_their_segment_across_joins(
+        worker, base, tmp_path, sherpa, monkeypatch):
+    _loaded_parakeet(worker, sherpa, tmp_path)
+    _decoder(monkeypatch, samples=16000 * 40)
+    _no_vad(monkeypatch, worker, regions=[(2.0, 4.0), (30.0, 33.0)])
+    # A word straddling the join at clip 2.0 must not be stretched over 26s.
+    tokens, stamps = _tokens((0.0, " one"), (1.9, " straddle"), (2.4, " three"),
+                             (3.5, "."))
+    sherpa.results = [("one straddle three.", tokens, stamps)]
+
+    worker.generate(_request(tmp_path, words=True))
+
+    written = json.loads(open(_request(tmp_path)["out"], encoding="utf-8").read())
+    (segment,) = written["segments"]
+    words = segment["words"]
+    assert len(words) == 3
+    previous = segment["start"]
+    for word in words:
+        assert segment["start"] <= word["start"] <= word["end"] <= segment["end"]
+        assert word["start"] >= previous
+        previous = word["start"]
+    assert max(w["end"] - w["start"] for w in words) < 3.0
+
+
+def test_words_are_ABSENT_unless_asked_for(
+        worker, base, tmp_path, sherpa, monkeypatch):
+    _loaded_parakeet(worker, sherpa, tmp_path)
+    _decoder(monkeypatch, samples=16000 * 2)
+    _no_vad(monkeypatch, worker)
+    sherpa.results = [("Hi.", *_tokens((0.0, " Hi"), (0.3, ".")))]
+
+    worker.generate(_request(tmp_path))
+
+    written = json.loads(open(_request(tmp_path)["out"], encoding="utf-8").read())
+    assert "words" not in written["segments"][0]
+
+
+def test_without_a_detector_a_long_file_is_sliced_to_the_vad_budget(
+        worker, base, tmp_path, sherpa, monkeypatch):
+    """`vad: false` (and a detector that could not be fetched) must still never
+    hand sherpa an unbounded utterance: one pack per BUDGET_S of recording."""
+    import vad as vad_module
+
+    _loaded_parakeet(worker, sherpa, tmp_path)
+    _decoder(monkeypatch, samples=16000 * 70)
+    sherpa.results = [("a.", *_tokens((0.0, " a"), (0.2, "."))),
+                      ("b.", *_tokens((0.0, " b"), (0.2, "."))),
+                      ("c.", *_tokens((0.0, " c"), (0.2, ".")))]
+    never = []
+    monkeypatch.setattr(worker, "_speech_regions",
+                        lambda *a, **k: never.append(1) or [])
+
+    worker.generate(_request(tmp_path, vad=False))
+
+    assert never == [], "vad: false must not even consult the detector"
+    assert [c["seconds"] for c in sherpa.clips] == [
+        vad_module.BUDGET_S, vad_module.BUDGET_S, 70.0 - 2 * vad_module.BUDGET_S]
+    written = json.loads(open(_request(tmp_path)["out"], encoding="utf-8").read())
+    assert [s["start"] for s in written["segments"]] == [
+        0.0, vad_module.BUDGET_S, 2 * vad_module.BUDGET_S]
+
+
+def test_a_detector_that_is_unavailable_degrades_to_the_whole_file(
+        worker, base, tmp_path, sherpa, monkeypatch):
+    _loaded_parakeet(worker, sherpa, tmp_path)
+    _decoder(monkeypatch, samples=16000 * 10)
+    _no_vad(monkeypatch, worker, regions=None)
+    sherpa.results = [("Hello.", *_tokens((0.5, " Hello"), (1.0, ".")))]
+
+    worker.generate(_request(tmp_path))
+
+    assert [c["seconds"] for c in sherpa.clips] == [10.0]
+
+
+def test_a_pack_that_decodes_to_nothing_adds_no_segment(
+        worker, base, tmp_path, sherpa, monkeypatch):
+    _loaded_parakeet(worker, sherpa, tmp_path)
+    _decoder(monkeypatch, samples=16000 * 10)
+    _no_vad(monkeypatch, worker, regions=[(0.0, 2.0), (40.0, 41.0)])
+    sherpa.results = [("", [], [])]
+
+    result = worker.generate(_request(tmp_path))
+
+    assert result["segments"] == 0
+    assert open(_request(tmp_path)["outText"]).read() == "\n"
+
+
+def test_a_result_with_no_usable_timestamps_is_one_segment_over_the_pack(
+        worker, base, tmp_path, sherpa, monkeypatch):
+    _loaded_parakeet(worker, sherpa, tmp_path)
+    _decoder(monkeypatch, samples=16000 * 6)
+    _no_vad(monkeypatch, worker)
+    sherpa.results = [("No times here.", [], [])]
+
+    worker.generate(_request(tmp_path, words=True))
+
+    written = json.loads(open(_request(tmp_path)["out"], encoding="utf-8").read())
+    (segment,) = written["segments"]
+    assert (segment["start"], segment["end"], segment["text"]) == (
+        0.0, 6.0, "No times here.")
+    assert "words" not in segment
+
+
+def test_the_reply_language_is_what_was_asked_for_or_none(
+        worker, base, tmp_path, sherpa, monkeypatch):
+    """sherpa reports no language, so the reply says only what the caller said —
+    it must not invent one."""
+    _loaded_parakeet(worker, sherpa, tmp_path)
+    _decoder(monkeypatch, samples=16000)
+    _no_vad(monkeypatch, worker)
+    sherpa.results = [("Hi.", *_tokens((0.0, " Hi"), (0.3, "."))),
+                      ("Hi.", *_tokens((0.0, " Hi"), (0.3, ".")))]
+
+    assert worker.generate(_request(tmp_path))["language"] is None
+    assert worker.generate(_request(tmp_path, language="de"))["language"] == "de"
+
+
+def test_each_pack_ticks_seconds_of_audio_and_a_cancel_between_packs_stops(
+        worker, base, tmp_path, sherpa, monkeypatch):
+    _loaded_parakeet(worker, sherpa, tmp_path)
+    _decoder(monkeypatch, samples=16000 * 100)
+    _no_vad(monkeypatch, worker, regions=[(0.0, 40.0), (50.0, 90.0)])
+    sherpa.results = [("a.", *_tokens((0.0, " a"), (0.2, "."))),
+                      ("b.", *_tokens((0.0, " b"), (0.2, ".")))]
+
+    worker.generate(_request(tmp_path))
+
+    ticks = [t for t in base.ticks if t.get("detail", "").startswith("Transcribing")]
+    assert [(t["done"], t["total"]) for t in ticks] == [(40.0, 100.0), (90.0, 100.0)]
+    assert all(t["job"] == "sys:ai-transcribe:abc" for t in ticks)
+
+    sherpa.results = [("a.", *_tokens((0.0, " a"), (0.2, "."))),
+                      ("b.", *_tokens((0.0, " b"), (0.2, ".")))]
+    base.ticks.clear()
+    base.cancel_on_tick = 1
+    request = _request(tmp_path, out=str(tmp_path / "c.json"),
+                       outText=str(tmp_path / "c.txt"))
+    with pytest.raises(base.Cancelled):
+        worker.generate(request)
+    assert not os.path.exists(request["out"])
+
+
+def test_parakeet_segments_reach_the_partial_file_as_each_pack_lands(
+        worker, base, tmp_path, sherpa, monkeypatch):
+    _loaded_parakeet(worker, sherpa, tmp_path)
+    _decoder(monkeypatch, samples=16000 * 70)
+    _no_vad(monkeypatch, worker, regions=[(0.0, 20.0), (30.0, 50.0), (60.0, 70.0)])
+    # 20s + 20s don't fit one 29s budget, so three single-region packs.
+    sherpa.results = [("one.", *_tokens((0.0, " one"), (0.2, "."))),
+                      ("two.", *_tokens((0.0, " two"), (0.2, "."))),
+                      ("three.", *_tokens((0.0, " three"), (0.2, ".")))]
+    request = _request(tmp_path, outPartial=str(tmp_path / "out.partial.jsonl"))
+    mid_run = []
+    ticked = base.report_or_cancel
+
+    def peek(job=None, **fields):
+        mid_run.append([l["text"] for l in _partial_lines(request["outPartial"])])
+        return ticked(job=job, **fields)
+
+    base.report_or_cancel = peek
+
+    worker.generate(request)
+
+    assert mid_run == [["one."], ["one.", "two."], ["one.", "two.", "three."]]
+    assert not os.path.exists(request["outPartial"])
+
+
+def test_parakeet_diarization_decodes_once_and_labels_the_segments(
+        worker, base, tmp_path, sherpa, monkeypatch):
+    _loaded_parakeet(worker, sherpa, tmp_path)
+    calls = _decoder(monkeypatch, samples=16000 * 20)
+    seen = {}
+    _diarizes(monkeypatch, [(0.0, 10.0, 0), (10.0, 20.0, 1)], seen)
+    _no_vad(monkeypatch, worker, regions=[(0.0, 5.0), (12.0, 17.0)])
+    sherpa.results = [("Hello there. Hi back.", *_tokens(
+        (0.0, " Hello"), (0.5, " there"), (1.0, "."), (5.0, " Hi"), (5.5, " back"),
+        (6.0, ".")))]
+    request = _request(tmp_path, diarize=True, speakers=2)
+
+    worker.generate(request)
+
+    assert len(calls) == 1, "the file is decoded ONCE for VAD, diarization and Parakeet"
+    assert seen["samples"] == 16000 * 20 and seen["speakers"] == 2
+    written = json.loads(open(request["out"], encoding="utf-8").read())
+    assert [s["speaker"] for s in written["segments"]] == ["Speaker 1", "Speaker 2"]
+    assert written["speakers"] == ["Speaker 1", "Speaker 2"]
+
+
+def test_the_ct2_path_asks_for_word_timestamps_only_when_words_are_wanted(
+        worker, tmp_path):
+    model = FakeModel([FakeSegment(0.0, 1.0, "hi")])
+    worker._loaded["model"] = model
+
+    worker.generate(_request(tmp_path))
+    worker.generate(_request(tmp_path, words=True))
+    worker.generate(_request(tmp_path, words=True, task="translate"))
+
+    assert [c.get("word_timestamps", False) for c in model.calls] == [
+        False, True, False]
+
+
+def test_the_ct2_path_maps_segment_words_into_the_shared_shape(worker, tmp_path):
+    segment = FakeSegment(0.0, 1.0, " hello there")
+    segment.words = [
+        types.SimpleNamespace(start=0.0, end=0.5, word=" hello", probability=0.9),
+        types.SimpleNamespace(start=0.5123, end=1.0, word=" there", probability=0.8),
+    ]
+    worker._loaded["model"] = FakeModel([segment])
+
+    worker.generate(_request(tmp_path, words=True))
+
+    written = json.loads(open(_request(tmp_path)["out"], encoding="utf-8").read())
+    # No `probability`: it is an engine-tell (AI-10c), and 2dp like everything.
+    assert written["segments"][0]["words"] == [
+        {"start": 0.0, "end": 0.5, "word": " hello"},
+        {"start": 0.51, "end": 1.0, "word": " there"}]
+
+
+def test_the_ct2_path_writes_no_words_key_when_not_asked(worker, tmp_path):
+    segment = FakeSegment(0.0, 1.0, "hi")
+    segment.words = [types.SimpleNamespace(start=0.0, end=1.0, word=" hi")]
+    worker._loaded["model"] = FakeModel([segment])
+
+    worker.generate(_request(tmp_path))
+
+    written = json.loads(open(_request(tmp_path)["out"], encoding="utf-8").read())
+    assert "words" not in written["segments"][0]
