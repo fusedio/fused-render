@@ -708,7 +708,9 @@ export interface AgentBackendRow {
   /** "Claude" / "Copilot" / "Codex" — the word every surface names the agent by. */
   label: string;
   enabled: boolean;
-  models: { id: string; label: string }[];
+  /** `reasoning: false` marks a model its CLI takes no effort for (the spawn
+   *  drops a chosen effort rather than fail); absent reads as true. */
+  models: { id: string; label: string; reasoning?: boolean }[];
   default_model: string;
   efforts: string[];
   modes: string[];

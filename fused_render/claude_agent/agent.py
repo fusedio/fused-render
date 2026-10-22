@@ -284,6 +284,14 @@ _SELF_MINTED_ID_BACKENDS = ("copilot", "codex")
 # `agent_backends/<id>.py` `default_model`, pinned equal by a test.
 _NEW_CHAT_MODELS = {"copilot": "auto", "codex": "gpt-6-luna"}
 
+# Copilot models the CLI refuses `--reasoning-effort` for (1.0.102 fails
+# `session/new`: "Reasoning effort is not supported when using the "auto"
+# model" / "does not support reasoning effort configuration"). A COPY of
+# `agent_backends/copilot.py` `NO_EFFORT_MODELS`, pinned equal by a test. An
+# id outside the catalog is passed through with its effort, as the catalog's
+# own passthrough stance says.
+_COPILOT_NO_EFFORT_MODELS = ("auto", "claude-sonnet-4.5", "claude-opus-4.5")
+
 # Error-text markers per backend — substrings (lower-cased) of a `result` row
 # or stderr that mean "signed out / no access" and "usage or credit limit".
 # COPIED from `agent_backends/claude.py`, `copilot.py` and `codex.py`
@@ -3733,23 +3741,25 @@ def _copilot_argv(run_dir: str, pane: bool, cli_mode: str | None,
         with"; verified 2026-10-16, the CLI exits). Copilot mints the id in
         its `session/new` reply and the host announces it on the init row,
         which `_poll` records (D2);
-      * `--effort` → `--reasoning-effort`.
+      * `--effort` → `--reasoning-effort`, except for a model the CLI takes
+        no effort for (`_COPILOT_NO_EFFORT_MODELS`), where it is dropped;
+      * `--add-dir` only for directories that exist: the CLI exits at startup
+        on one that does not, and SHOTS is made lazily by `_shots_dir`.
     """
     cmd = [_copilot_bin(), "--acp", "--no-auto-update"]
     if model:
         cmd += ["--model", model]
-    # `auto` (also what an empty model means: the backend default) routes
-    # across models and the CLI refuses `--reasoning-effort` with it ("Reasoning
-    # effort is not supported when using the \"auto\" model").
-    if effort and model not in ("", "auto"):
+    # An empty model is the backend default (`auto`). The CLI fails
+    # `session/new` when an effort rides with a model that takes none
+    # (`_COPILOT_NO_EFFORT_MODELS`), so the effort is dropped rather than the
+    # session. The settings record still keeps what was asked for.
+    if effort and (model or _NEW_CHAT_MODELS["copilot"]) not in _COPILOT_NO_EFFORT_MODELS:
         cmd += ["--reasoning-effort", effort]
     cmd += ["--plugin-dir", _copilot_plugin_dir(run_dir, file, pane),
             "--agent", "fused:fused"]
     if pane or _terminal_tools_supported():
         cmd += ["--additional-mcp-config",
                 "@" + _write_mcp_config(run_dir, pane, approve=False)]
-    # The CLI exits at startup on an `--add-dir` that does not exist, and SHOTS
-    # is made lazily by `_shots_dir` (first screenshot), so skip what is absent.
     for d in [SHOTS, *(extra_read_dirs or [])]:
         if os.path.isdir(d):
             cmd += ["--add-dir", d]

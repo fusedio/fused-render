@@ -37,6 +37,10 @@ class Caps:
 class Model:
     id: str
     label: str
+    #: Whether the CLI accepts a reasoning effort for this model. False makes
+    #: the spawn drop the effort rather than fail (Copilot 1.0.102 refuses
+    #: `--reasoning-effort` for `auto` and its Claude models at `session/new`).
+    reasoning: bool = True
 
 
 @dataclass(frozen=True)
@@ -81,7 +85,8 @@ class Backend:
             "id": self.id,
             "label": self.label,
             "enabled": enabled,
-            "models": [{"id": m.id, "label": m.label} for m in self.models],
+            "models": [{"id": m.id, "label": m.label, "reasoning": m.reasoning}
+                       for m in self.models],
             "default_model": self.default_model,
             "efforts": list(self.efforts),
             "modes": list(self.modes),
