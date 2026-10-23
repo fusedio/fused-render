@@ -169,7 +169,7 @@
   justify-content: center;
   align-items: flex-start;
   padding-top: 12vh;
-  background: rgba(0, 0, 0, 0.35);
+  background: var(--scrim);
 }
 .ws-search {
   width: min(640px, calc(100vw - 32px));
