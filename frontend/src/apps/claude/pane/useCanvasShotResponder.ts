@@ -25,6 +25,9 @@ import { shotExt } from "../shots/encode";
  *  Under the server's 100 s timeout, so the sentence still arrives first. */
 export const CANVAS_SHOT_WAIT_S = 88;
 
+/** The pause before the one retry of a capture the workbench refused. */
+export const CAPTURE_RETRY_MS = 1500;
+
 export const NO_CANVAS_SENTENCE =
   "no canvas page is open in Fused Render for this chat — ask the user to open the canvas, then try again";
 
@@ -55,7 +58,14 @@ export async function takeCanvasShot(shot: CanvasShot, row: CanvasShotRow): Prom
     }
     what = "udf";
   }
-  const a = await shot.capture(what, row.udf || undefined);
+  let a = await shot.capture(what, row.udf || undefined);
+  if (!a.ok && /could not be captured/.test(a.error)) {
+    // The workbench's html-to-image draws nothing once in a while — seen
+    // right after another capture restored the DOM. One more try, a beat
+    // later; a second refusal is the answer.
+    await new Promise((res) => setTimeout(res, CAPTURE_RETRY_MS));
+    a = await shot.capture(what, row.udf || undefined);
+  }
   if (!a.ok) return { error: a.error };
   try {
     const dir = await shotsDir();

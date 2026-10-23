@@ -172,3 +172,21 @@ test("a capture that outlives a poll still answers (the effect re-runs every tic
   await settle();
   expect(answers).toEqual([["r1", { error: "slow but done" }]]);
 });
+
+test("a capture the workbench refused once is tried once more", async () => {
+  let n = 0;
+  const shot: CanvasShot = {
+    targets: ["canvas"],
+    capture: async () => {
+      n += 1;
+      return n === 1
+        ? { ok: false, error: "the canvas could not be captured" }
+        : { ok: false, error: "still no" };
+    },
+  };
+  const answers: Array<[string, Answer]> = [];
+  mount({ rows: [row("r1", 1)], shot }, answers);
+  await new Promise((res) => setTimeout(res, 1800));
+  expect(n).toBe(2);
+  expect(answers).toEqual([["r1", { error: "still no" }]]);
+});
