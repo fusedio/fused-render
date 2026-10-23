@@ -26,3 +26,12 @@ def test_windows_drive_root_does_not_open_the_volume(monkeypatch):
 def test_normal_root_still_allowed(monkeypatch, tmp_path):
     monkeypatch.setattr(lan, "allowed_roots", lambda: [str(tmp_path)])
     assert lan._inside_root(str(tmp_path / "a.txt"))
+
+
+def test_zip_slip_check_refuses_a_filesystem_root_staging_dir():
+    import zipfile
+
+    from fused_render import zip_import
+
+    assert zip_import.reject_reason(zipfile.ZipInfo("etc/x"), "/") is not None
+    assert zip_import.reject_reason(zipfile.ZipInfo("a/x"), "/tmp/stage") is None

@@ -42,12 +42,12 @@ import ast
 import fnmatch
 import json
 import os
-
-from fused_render._platform import is_within
 import re
 import shutil
 import tempfile
 from dataclasses import dataclass, field
+
+from fused_render._platform import is_within
 
 # Route names the hosting layer reserves (serve control paths + the shell/asset
 # routes build_html_artifact mints). A run entrypoint must never collide with one,

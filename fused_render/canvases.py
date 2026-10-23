@@ -105,6 +105,7 @@ from fastapi import APIRouter, Body, Header, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
 from fused_render import canvas_snapshot, canvas_sync_state
+from fused_render._platform import is_within
 from fused_render.fusedcli import (
     CUSTOM_WORKBENCH_ENV,
     WORKBENCH_ENV_CHOICES,
@@ -1065,7 +1066,7 @@ def clone_dir_for(path: str) -> tuple[str, str, str] | None:
     for env in WORKBENCH_ENV_CHOICES:
         root = canvases_root(env)
         for base in {os.path.normpath(root), os.path.realpath(root)}:
-            if cand == base or not cand.startswith(base + os.sep):
+            if not is_within(cand, base, strict=True):
                 continue
             name = cand[len(base) + 1:].split(os.sep)[0]
             if not _NAME_RE.match(name):
