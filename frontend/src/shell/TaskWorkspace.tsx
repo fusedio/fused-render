@@ -31,7 +31,7 @@ import {
   tildePath,
 } from "@shell/tasks-lib";
 import {
-  bgJobChips,
+  bgJobBadge,
   capList,
   groupCollapsed,
   groupTasks,
@@ -180,14 +180,14 @@ function WorkspaceCard({
   onSelect: () => void;
   onOpen: () => void;
 }) {
-  const bg = bgJobChips(task);
+  const bg = bgJobBadge(task);
   const word = cardStatusWord(task);
   const reasonList = visibleReasons(reasons, task);
   const text = reasonList.join(" · ");
   const clear = reasons.length === 0;
   const hasPrs = prRefsOf(task).some((r) => r.repo);
   const unread = task.unread > 0 && reasons.some((r) => /^\d+ unread$/.test(r));
-  const hasBg = (task.background_jobs?.count ?? 0) > 0;
+  const hasBg = bg !== null;
   const preview = messagePreview(task);
   const showChip = showProject && task.project !== "";
   const hasContext = preview !== "" || showChip;
@@ -264,15 +264,9 @@ function WorkspaceCard({
             </span>
           )}
           <PrChips task={task} states={states} />
-          {hasBg && (
-            <span className="ws-bgs" title="Background jobs still running">
-              {bg.titles.map((t, i) => (
-                <span key={i} className="ws-badge ws-bg" title={t}>
-                  <span className="ws-badge-label">job</span>
-                  <span className="ws-bg-title">{t}</span>
-                </span>
-              ))}
-              {bg.more > 0 && <span className="ws-badge ws-bg">{bg.titles.length ? `+${bg.more} bg` : `${bg.more} bg`}</span>}
+          {bg && (
+            <span className="ws-badge ws-bg" title={bg.title}>
+              {bg.label}
             </span>
           )}
           {ports.map((p) => (

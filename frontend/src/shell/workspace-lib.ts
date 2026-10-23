@@ -203,16 +203,17 @@ export function capList<T>(items: readonly T[], max: number): { shown: T[]; more
 }
 
 export const MAX_PRS = 8;
-export const MAX_BG_JOBS = 3;
 
-/** The background-job chips: each job's title (empty ones dropped), at most
- *  `max`, and how many running jobs the chips do not name. With no titles at
- *  all, `titles` is [] and `more` is the whole count ("N bg"). */
-export function bgJobChips(task: Task, max: number = MAX_BG_JOBS): { titles: string[]; more: number } {
+/** The card's one background-job badge: "1 job" / "N jobs" (the running count,
+ *  not the titles), and a tooltip naming every titled job, one per line. */
+export function bgJobBadge(task: Task): { label: string; title: string } | null {
   const count = task.background_jobs?.count ?? 0;
+  if (count <= 0) return null;
   const titles = (task.background_jobs?.jobs ?? []).map((j) => (j.title ?? "").trim()).filter(Boolean);
-  const { shown } = capList(titles, max);
-  return { titles: shown, more: Math.max(0, count - shown.length) };
+  return {
+    label: `${count} ${count === 1 ? "job" : "jobs"}`,
+    title: titles.length > 0 ? titles.join("\n") : "Background jobs still running",
+  };
 }
 
 /** The card's context line: the newest message (cardTitleLine, the List row's

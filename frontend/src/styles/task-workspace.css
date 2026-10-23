@@ -105,12 +105,6 @@
   white-space: nowrap;
   text-decoration: none;
 }
-.ws-badge-label {
-  opacity: 0.7;
-  text-transform: uppercase;
-  font-size: 10px;
-  letter-spacing: 0.04em;
-}
 .ws-status {
   font-weight: 600;
 }
@@ -187,12 +181,6 @@
 }
 .ws-bg {
   max-width: 34ch;
-}
-.ws-bg-title {
-  max-width: 24ch;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 .ws-port {
   font-variant-numeric: tabular-nums;

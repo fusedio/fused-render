@@ -110,18 +110,19 @@ test("the card drops reasons its chips or bold title already say, and the status
   expect(r.root.findAllByProps({ className: "ws-badge ws-clear" })).toHaveLength(0);
   expect(r.root.findAllByProps({ className: "ws-badge ws-marker" })).toHaveLength(0);
   expect(r.root.findAllByProps({ className: "ws-badge ws-status" })).toHaveLength(0);
-  expect(r.root.findByProps({ className: "ws-badge ws-bg" }).findByProps({ className: "ws-bg-title" }).children.join("")).toBe("dev");
+  expect(text(r.root.findByProps({ className: "ws-badge ws-bg" }))).toBe("1 job");
 });
 
 const text = (n: { children: unknown[] }): string =>
   n.children.map((c) => (typeof c === "string" ? c : text(c as { children: unknown[] }))).join("");
 
-test("background jobs show their titles, three at most, then +N bg", async () => {
+test("background jobs show one count badge whose tooltip lists the titles", async () => {
   serve();
   const jobs = ["a", "b", "c", "d", "e"].map((t) => ({ id: t, title: t }));
   const r = await render([task({ key: "a", background_jobs: { count: 5, run_id: "r", jobs } })]);
-  const chips = r.root.findAllByProps({ className: "ws-badge ws-bg" }).map(text);
-  expect(chips).toEqual(["joba", "jobb", "jobc", "+2 bg"]);
+  const chips = r.root.findAllByProps({ className: "ws-badge ws-bg" });
+  expect(chips.map(text)).toEqual(["5 jobs"]);
+  expect(chips[0].props.title).toBe("a\nb\nc\nd\ne");
 });
 
 test("PR chips cap at 8 and the dot sits inside the .task-pr-num pill", async () => {

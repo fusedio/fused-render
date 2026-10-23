@@ -252,18 +252,20 @@ describe("visibleReasons", () => {
   });
 });
 
-import { bgJobChips, capList, groupCollapsed, GROUP_CAP, messagePreview, visibleGroupTasks } from "./workspace-lib";
+import { bgJobBadge, capList, groupCollapsed, GROUP_CAP, messagePreview, visibleGroupTasks } from "./workspace-lib";
 
 test("capList keeps the first max and counts the rest", () => {
   expect(capList([1, 2, 3, 4], 3)).toEqual({ shown: [1, 2, 3], more: 1 });
   expect(capList([1], 3)).toEqual({ shown: [1], more: 0 });
 });
 
-test("bgJobChips names up to three jobs and counts the rest", () => {
+test("bgJobBadge says the count and lists the titles in its tooltip", () => {
   const t = (count: number, titles: string[]) =>
     ({ background_jobs: { count, run_id: "r", jobs: titles.map((x) => ({ id: x, title: x })) } }) as never;
-  expect(bgJobChips(t(4, ["a", "b", "c", "d"]))).toEqual({ titles: ["a", "b", "c"], more: 1 });
-  expect(bgJobChips(t(2, []))).toEqual({ titles: [], more: 2 });
+  expect(bgJobBadge(t(4, ["a", "b", "c", "d"]))).toEqual({ label: "4 jobs", title: "a\nb\nc\nd" });
+  expect(bgJobBadge(t(1, ["a"]))?.label).toBe("1 job");
+  expect(bgJobBadge(t(2, []))?.label).toBe("2 jobs");
+  expect(bgJobBadge({} as never)).toBeNull();
 });
 
 test("messagePreview is empty when it equals the title", () => {
