@@ -352,13 +352,15 @@ test("the 'Copied' reset timer is cleared on unmount", async () => {
   let resetTimer: unknown;
   const cleared = new Set<unknown>();
   globalThis.setTimeout = ((fn: () => void, ms?: number, ...rest: unknown[]) => {
-    const id = realSet(fn, ms, ...rest);
-    if (ms === 2_000) resetTimer = id; // the "Copied" → "Copy report" reset
-    return id;
+    // The "Copied" → "Copy report" reset gets a handle that never fires: a
+    // real 2s timer could fire (and drop itself) before a slow unmount,
+    // leaving nothing for the cleanup to clear.
+    if (ms === 2_000) return (resetTimer = { reset: true });
+    return realSet(fn, ms, ...rest);
   }) as typeof setTimeout;
   globalThis.clearTimeout = ((id?: Parameters<typeof clearTimeout>[0]) => {
     cleared.add(id);
-    realClear(id);
+    if (id !== resetTimer) realClear(id);
   }) as typeof clearTimeout;
   try {
     const r = await mount(() => {}, { copy: () => {} });
