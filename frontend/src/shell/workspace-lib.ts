@@ -79,16 +79,19 @@ export function holdReasons(task: Task, facts: WorkspaceFacts): string[] {
   if (bg > 0) out.push(count(bg, "bg job", "bg jobs"));
   if ((task.next_run ?? 0) > 0) out.push("run pending");
 
-  // Only unpushed commits hold a task. A dirty working tree does not: it is
-  // nearly always an agent's untracked scratch (.claude/handoffs/, SPEC-*.md).
-  // Teardown still refuses to remove a dirty worktree (task_teardown.holds_open).
+  // Uncommitted counts tracked changes only (tracked_dirty): untracked agent
+  // scratch (.claude/handoffs/, SPEC-*.md) is ignored on the card. Teardown
+  // still guards every dirty file, untracked included (task_teardown.holds_open).
   const rows = facts.holds[task.key] ?? [];
+  let dirty = 0;
   let unpushed = 0;
   let unknown = false;
   for (const w of rows) {
     if (w.dirty_files === null || w.unpushed === null || w.reasons.includes("unknown")) unknown = true;
+    dirty += w.tracked_dirty ?? 0;
     unpushed += w.unpushed ?? 0;
   }
+  if (dirty > 0) out.push(`${dirty} uncommitted`);
   if (unpushed > 0) out.push(`${unpushed} unpushed`);
   if (unknown) out.push("unknown");
   if (!facts.holdsReady && rows.length === 0) out.push(facts.holdsFailed ? "unknown" : "checking");
@@ -115,16 +118,19 @@ export function visibleReasons(reasons: readonly string[]): string[] {
   });
 }
 
-/** The hold reason the worktree counts produce ("2 unpushed"). */
-export const DIRTY_REASON = /^\d+ unpushed$/;
+/** The hold reasons the worktree counts produce ("3 uncommitted", "2 unpushed"). */
+export const DIRTY_REASON = /^\d+ (uncommitted|unpushed)$/;
 
-/** The one word the card shows for the worktree counts: "unpushed", or null
- *  when nothing is held. */
-export function dirtyBadge(reasons: readonly string[]): "unpushed" | null {
-  return reasons.some((r) => DIRTY_REASON.test(r)) ? "unpushed" : null;
+/** The one word the card shows for the worktree counts: "uncommitted" wins over
+ *  "unpushed"; null when neither is held. Display only: the reasons themselves
+ *  (and so Open vs Safe to archive) are unchanged. */
+export function dirtyBadge(reasons: readonly string[]): "uncommitted" | "unpushed" | null {
+  if (reasons.some((r) => /^\d+ uncommitted$/.test(r))) return "uncommitted";
+  if (reasons.some((r) => /^\d+ unpushed$/.test(r))) return "unpushed";
+  return null;
 }
 
-/** The badge's tooltip: the exact count, "2 unpushed". */
+/** The badge's tooltip: the exact counts, "3 uncommitted, 2 unpushed". */
 export function dirtyTitle(reasons: readonly string[]): string {
   return reasons.filter((r) => DIRTY_REASON.test(r)).join(", ");
 }

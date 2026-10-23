@@ -4739,6 +4739,8 @@ export async function fetchTaskPorts(ids: string[]): Promise<Record<string, numb
 export interface TaskHold {
   path: string;
   dirty_files: number | null;
+  /** `dirty_files` minus untracked paths: what the card counts. Absent from an older backend. */
+  tracked_dirty?: number | null;
   unpushed: number | null;
   /** The checked-out branch; null on a git error or a detached HEAD. */
   branch?: string | null;

@@ -156,7 +156,7 @@ test("the dirty facts collapse to one word badge with the counts in its tooltip"
     const reply: Record<string, unknown> = {
       "/api/tasks/ports": { ports: {} },
       "/api/tasks/holds": {
-        holds: { a: [{ path: "/w", dirty_files: 3, unpushed: 2, branch: "b", reasons: ["dirty", "unpushed"] }] },
+        holds: { a: [{ path: "/w", dirty_files: 4, tracked_dirty: 3, unpushed: 2, branch: "b", reasons: ["dirty", "unpushed"] }] },
       },
     };
     return new Response(JSON.stringify(reply[url] ?? {}), { status: 200 });
@@ -164,17 +164,17 @@ test("the dirty facts collapse to one word badge with the counts in its tooltip"
   const r = await render([task({ key: "a" })]);
   const badges = r.root.findByProps({ "data-key": "a" }).findAllByProps({ className: "ws-badge ws-marker ws-dirty" });
   expect(badges).toHaveLength(1);
-  expect(text(badges[0])).toBe("unpushed");
+  expect(text(badges[0])).toBe("uncommitted");
   expect(/\d/.test(text(badges[0]))).toBe(false);
-  expect(badges[0].props.title).toBe("2 unpushed");
+  expect(badges[0].props.title).toBe("3 uncommitted, 2 unpushed");
 });
 
-test("a dirty but fully pushed worktree shows no badge", async () => {
+test("untracked-only files show no badge", async () => {
   globalThis.fetch = mock(async (url: string) => {
     const reply: Record<string, unknown> = {
       "/api/tasks/ports": { ports: {} },
       "/api/tasks/holds": {
-        holds: { a: [{ path: "/w", dirty_files: 1, unpushed: 0, branch: "b", reasons: ["dirty"] }] },
+        holds: { a: [{ path: "/w", dirty_files: 1, tracked_dirty: 0, unpushed: 0, branch: "b", reasons: ["dirty"] }] },
       },
     };
     return new Response(JSON.stringify(reply[url] ?? {}), { status: 200 });
