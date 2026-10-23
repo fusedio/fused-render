@@ -3,6 +3,7 @@
 //   2. else                      -> fallback metadata card
 // No file-type checks live in the shell — html arrives through stat.templates
 // like everything else, via the "_render" sentinel (SPEC PT-12).
+import { canonFsPath } from "@platform/lib/path-url";
 import { isBackendEnabled, useAgentBackends } from "@platform/lib/agent-backends";
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -351,8 +352,8 @@ function usePreviewFileMenu(
         // top entry describing an older op, so Cmd+Z after it would undo that
         // one instead — and the file stayed unreachable in the Trash.
         //
-        // `to` is absent wherever the OS owns the location (the macOS
-        // cross-device Finder fallback), and then there is no pair to
+        // `to` is absent wherever the OS owns the location (the Recycle Bin, the
+        // macOS cross-device Finder fallback), and then there is no pair to
         // record — recoverable from the OS, just not from here.
         if (r.to) recordFsOp({ kind: "delete", pairs: [{ from: fsPath, to: r.to }] });
         notePathDeleted(fsPath);
@@ -469,7 +470,7 @@ function usePreviewFileMenu(
     if (stat.is_dir) return;
     getAppEntry(parent)
       .then((r) => {
-        if (alive) setIsAppEntry(r.entry != null && r.entry === fsPath);
+        if (alive) setIsAppEntry(r.entry != null && canonFsPath(r.entry) === fsPath);
       })
       .catch(() => {
         /* indeterminate reads as "not an entry" — no verb for nothing */
@@ -597,7 +598,7 @@ function usePreviewFileMenu(
         onClick: () => window.open(urlForFsPath(fsPath), "_blank", "noopener"),
       },
       // Absent where no TerminalDrawer is mounted to open (an embedded pane,
-      // App.tsx).
+      // App.tsx) or on Windows, where the drawer's shell isn't offered.
       ...(canRun
         ? [
             {

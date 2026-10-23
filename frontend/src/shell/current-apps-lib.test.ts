@@ -186,6 +186,12 @@ describe("app page codec", () => {
     expect(appPageUrl("/Users/me/a", "api")).toBe("/apps/Users/me/a?_tab=api");
   });
 
+  it("carries a Windows drive as the explorer does", () => {
+    const url = appPageUrl("C:\\Users\\me\\Fused\\local\\a", "files");
+    expect(url).toBe("/apps/C%3A/Users/me/Fused/local/a?_tab=files");
+    expect(appPathFromPath(url.split("?")[0])).toBe("C:/Users/me/Fused/local/a");
+  });
+
   it("treats a folder named like a tab as a folder", () => {
     expect(appPathFromPath("/apps/Users/me/tasks")).toBe("/Users/me/tasks");
     expect(appPathFromPath("/apps/overview")).toBe("/overview");

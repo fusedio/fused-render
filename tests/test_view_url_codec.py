@@ -3,6 +3,7 @@ import pytest
 
 from fused_render._view_url_codec import (
     canonical_fs_path,
+    rooted_fs_path,
     is_launch_url,
     normpath_for_shape,
     open_target_path,
@@ -134,3 +135,55 @@ def test_is_launch_url_classification():
     assert is_launch_url("https://example.com/x")
     assert not is_launch_url("/home/u/a.parquet")
     assert not is_launch_url("relative/path")
+
+
+def test_normpath_for_shape_picks_windows_semantics_for_a_drive_path():
+    assert normpath_for_shape("C:\\Users\\ada\\..\\code\\") == "C:\\Users\\code"
+
+
+def test_drive_letter_path():
+    assert view_url(8000, "C:\\Users\\x") == "http://127.0.0.1:8000/explorer/view/C%3A/Users/x"
+
+
+def test_drive_root_path():
+    assert view_url_path("C:\\") == "/explorer/view/C%3A"
+
+
+def test_drive_letter_path_unicode_and_spaces():
+    assert view_url_path("C:\\data\\résumé.xlsx") == "/explorer/view/C%3A/data/r%C3%A9sum%C3%A9.xlsx"
+    assert (
+        view_url_path("C:\\data\\my résumé v2.xlsx")
+        == "/explorer/view/C%3A/data/my%20r%C3%A9sum%C3%A9%20v2.xlsx"
+    )
+
+
+def test_forward_slash_drive_path_matches_backslash_form():
+    assert view_url_path("C:/Users/x") == view_url_path("C:\\Users\\x")
+
+
+def test_unc_path_stays_one_segment():
+    assert view_url(8000, "\\\\server\\share\\file") == (
+        "http://127.0.0.1:8000/explorer/view/%5C%5Cserver%5Cshare%5Cfile"
+    )
+
+
+def test_canonical_fs_path_normalizes_drive_paths_only():
+    assert canonical_fs_path("C:\\Users\\foo\\app\\mine.html") == "C:/Users/foo/app/mine.html"
+    assert canonical_fs_path("c:\\data\\x.py") == "c:/data/x.py"
+    assert canonical_fs_path("C:/Users/foo\\app\\mine.html") == "C:/Users/foo/app/mine.html"
+    assert canonical_fs_path("/home/u/we\\ird.py") == "/home/u/we\\ird.py"
+    assert canonical_fs_path("\\\\server\\share\\x.py") == "\\\\server\\share\\x.py"
+    once = canonical_fs_path("C:\\Users\\foo\\a.py")
+    assert canonical_fs_path(once) == once
+
+
+def test_drive_path_is_not_a_launch_url():
+    assert not is_launch_url("C:\\Users\\x")
+
+
+def test_rooted_fs_path_roots_posix_and_keeps_drive_paths():
+    assert rooted_fs_path("Users/me/a.py") == "/Users/me/a.py"
+    assert rooted_fs_path("C:/Users/me") == "C:/Users/me"
+    # A bare drive (a URL segment split drops the slash) re-roots to "C:/".
+    assert rooted_fs_path("C:") == "C:/"
+    assert rooted_fs_path("a:notes/x") == "/a:notes/x"

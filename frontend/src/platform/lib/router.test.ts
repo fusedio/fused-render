@@ -22,6 +22,9 @@ const {
   spaLinkProps,
   confirmLeave,
   registerLeaveGuard,
+  rootedFsPath,
+  encodeFsPathSegments,
+  urlForFsPath,
 } = await import("./router");
 const { setResolvedSnapshot } = await import("./snapshot-param");
 const setSnapshotAppDir = (appDir: string | null) =>
@@ -682,5 +685,33 @@ describe("navigateUrl replace option", () => {
       hist.pushState = prevPush;
       hist.replaceState = prevReplace;
     }
+  });
+});
+
+describe("fs path <-> url codec", () => {
+  test("a drive path folds backslashes and decodes back without a leading slash", () => {
+    const url = urlForFsPath("C:\\Users\\x\\Fused\\app\\foo");
+    expect(url.endsWith("/C%3A/Users/x/Fused/app/foo")).toBe(true);
+    const joined = url
+      .split("/")
+      .filter((s) => s)
+      .slice(-6)
+      .map(decodeURIComponent)
+      .join("/");
+    expect(rootedFsPath(joined)).toBe("C:/Users/x/Fused/app/foo");
+  });
+
+  test("a bare drive re-roots to C:/", () => {
+    expect(rootedFsPath("C:")).toBe("C:/");
+    expect(encodeFsPathSegments("C:\\")).toBe("C%3A");
+  });
+
+  test("a POSIX path keeps its leading slash and a literal backslash", () => {
+    expect(rootedFsPath("Users/me/a")).toBe("/Users/me/a");
+    expect(encodeFsPathSegments("/home/u/we\\ird")).toBe("home/u/we%5Cird");
+  });
+
+  test("a UNC path stays one segment", () => {
+    expect(encodeFsPathSegments("\\\\server\\share\\f")).toBe("%5C%5Cserver%5Cshare%5Cf");
   });
 });

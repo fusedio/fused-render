@@ -169,9 +169,13 @@ function Pane({ node, ctx, first }: { node: LayoutLeaf; ctx: PaneCtx; first: boo
   // Same "~" contraction as the top-bar Breadcrumb: strictly below home only —
   // home itself shows its full path, not a lone "~".
   const underHome = loc.path.startsWith(ctx.home + "/");
-  const parts = (underHome ? loc.path.slice(ctx.home.length) : loc.path)
+  const allParts = (underHome ? loc.path.slice(ctx.home.length) : loc.path)
     .split("/")
     .filter((s) => s.length > 0);
+  // A drive path's first segment ("C:") is the root crumb and targets "C:/".
+  const isDrive = !underHome && /^[A-Za-z]:$/.test(allParts[0] || "");
+  const parts = isDrive ? allParts.slice(1) : allParts;
+  const rootTarget = underHome ? ctx.home : isDrive ? allParts[0] + "/" : "/";
   const crumbs: ReactNode[] = [];
   const addCrumb = (label: string, targetPath: string, isLast: boolean, key: string) => {
     crumbs.push(
@@ -191,12 +195,12 @@ function Pane({ node, ctx, first }: { node: LayoutLeaf; ctx: PaneCtx; first: boo
       </span>
     );
   };
-  addCrumb(underHome ? "~" : "/", underHome ? ctx.home : "/", parts.length === 0, "root");
-  let acc = underHome ? ctx.home : "";
+  addCrumb(underHome ? "~" : isDrive ? allParts[0] : "/", rootTarget, parts.length === 0, "root");
+  let acc = rootTarget === "/" ? "" : rootTarget.replace(/\/$/, "");
   parts.forEach((p, i) => {
     acc += "/" + p;
     // The "~" crumb carries no slash, so its first segment needs one too.
-    if (i > 0 || underHome) crumbs.push(<span key={"sep" + i} className="panel-crumb-sep">/</span>);
+    if (i > 0 || underHome || isDrive) crumbs.push(<span key={"sep" + i} className="panel-crumb-sep">/</span>);
     addCrumb(p, acc, i === parts.length - 1, acc);
   });
 

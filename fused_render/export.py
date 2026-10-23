@@ -47,6 +47,8 @@ import shutil
 import tempfile
 from dataclasses import dataclass, field
 
+from fused_render._platform import is_within
+
 # Route names the hosting layer reserves (serve control paths + the shell/asset
 # routes build_html_artifact mints). A run entrypoint must never collide with one,
 # and no exported name may start with "_" (that namespace is host-internal).
@@ -302,9 +304,8 @@ def _within_page_dir(page_dir: str, target: str) -> bool:
     would follow it into the bundle. Compare resolved real paths so such a symlink is
     caught before it is bundled.
     """
-    root = os.path.realpath(page_dir)
-    real = os.path.realpath(target)
-    return real == root or real.startswith(root + os.sep)
+    return is_within(os.path.realpath(target), os.path.realpath(page_dir),
+                     fs_root_ok=False)
 
 
 def _extract_bundle_manifest(html: str, errors: list[str], warnings: list[str]) -> tuple[list[str], str]:

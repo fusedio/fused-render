@@ -364,8 +364,11 @@ export { localEffortArg, localModelArg } from "./ui/local-commands";
 export function chatWorkdir(file: string | null, noun: TargetNoun): string | null {
   if (!file || !noun) return null;
   if (noun !== "file") return file;
-  const cut = file.replace(/\/+$/, "").search(/\/[^/]*$/);
-  return cut > 0 ? file.slice(0, cut) : cut === 0 ? file.slice(0, 1) : file;
+  const cut = file.replace(/[\\/]+$/, "").search(/[\\/][^\\/]*$/);
+  if (cut <= 0) return cut === 0 ? file.slice(0, 1) : file;
+  const parent = file.slice(0, cut);
+  // A drive root keeps its separator: bare "C:" is cwd-relative.
+  return /^[A-Za-z]:$/.test(parent) ? parent + file[cut] : parent;
 }
 
 /** T:16435 `noteChatActivity` — best-effort: a blocked store (private mode, a
@@ -3973,7 +3976,7 @@ function ChatBody(props: ChatBodyProps) {
     [controller],
   );
 
-  const name = file ? file.split("/").filter(Boolean).pop() || file : agentLabel(chatBackend);
+  const name = file ? file.split(/[\\/]/).filter(Boolean).pop() || file : agentLabel(chatBackend);
   const running =
     state.status === "running" || state.status === "starting" || state.status === "stopping";
   // Worktrees are Claude's (§7 `worktrees`): no menu for an agent without them.

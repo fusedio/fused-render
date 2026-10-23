@@ -2,7 +2,7 @@ import os
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
-from fused_render import __version__, _flavor
+from fused_render import __version__, _flavor, _platform
 from fused_render import calls as shell_calls
 from fused_render.installed import installed_version
 from fused_render.server import dirpicker
@@ -82,6 +82,10 @@ def api_config(
         # whether an AppKit run loop is up, which is a property of the process,
         # not of the build.
         "native_dir_picker": dirpicker.available(),
+        # Whether the Bots feature exists here. The server never runs bots on
+        # Windows (server/app.py: no election, `/api/bots/*` answers 503), so the
+        # shell hides the sidebar entry, the page and the pulse poll off this.
+        "bots_available": not _platform.IS_WINDOWS,
     }
     # Self-update state (update/mac.py, update/linux.py) — present only when
     # this platform started an in-app manager (mac, or Linux running from an

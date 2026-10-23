@@ -13,9 +13,15 @@ test("a folder target is its own working folder", () => {
 test("a file target works in its parent", () => {
   expect(chatWorkdir("/w/p/notes.md", "file")).toBe("/w/p");
   expect(chatWorkdir("/notes.md", "file")).toBe("/");
+  expect(chatWorkdir("C:\\w\\p\\x.py", "file")).toBe("C:\\w\\p");
 });
 
 test("no target, or a kind not decided yet, gives no cwd", () => {
   expect(chatWorkdir(null, "file")).toBe(null);
   expect(chatWorkdir("/w/p", "")).toBe(null);
+});
+
+test("a file at a drive root works in the drive root, never bare C:", () => {
+  expect(chatWorkdir("C:\\notes.md", "file")).toBe("C:\\");
+  expect(chatWorkdir("C:/notes.md", "file")).toBe("C:/");
 });

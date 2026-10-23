@@ -34,4 +34,13 @@ describe("listingAddress", () => {
   test("root stays root", () => {
     expect(listingAddress("/", fsPath, home)).toBe("/");
   });
+
+  test("a Windows drive-letter path is a candidate, backslashes folded to /", () => {
+    expect(listingAddress("C:/Users/me", fsPath, home)).toBe("C:/Users/me");
+    expect(listingAddress("C:\\Users\\me", fsPath, home)).toBe("C:/Users/me");
+  });
+
+  test("a bare drive root keeps its slash", () => {
+    expect(listingAddress("C:/", fsPath, home)).toBe("C:/");
+  });
 });

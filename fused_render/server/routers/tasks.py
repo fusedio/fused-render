@@ -136,6 +136,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
+from fused_render._platform import is_within
 from fused_render import netlog
 from fused_render import (
     app_listing,
@@ -3045,7 +3046,7 @@ def _task_canvas(target: str) -> dict | None:
     for env, bases in _canvas_roots(canvases).items():
         for base in bases:
             for cand in cands:
-                if cand == base or not cand.startswith(base + os.sep):
+                if not is_within(cand, base, strict=True):
                     continue
                 rest = cand[len(base) + 1:].split(os.sep)
                 name = rest[0]
@@ -8139,7 +8140,8 @@ def _codex_rollout_files(session_id: str) -> list[str]:
         for hit in glob.glob(pattern, recursive=True):
             resolved = os.path.realpath(hit)
             leaf = os.path.basename(resolved)
-            if (resolved.startswith(base_real + os.sep)
+            if (is_within(resolved, base_real, strict=True,
+                           fs_root_ok=False)
                     and leaf.startswith("rollout-") and leaf.endswith(suffix)
                     and os.path.isfile(resolved) and resolved not in out):
                 out.append(resolved)

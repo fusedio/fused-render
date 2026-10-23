@@ -230,7 +230,7 @@ def _transcript_backend(path: str) -> str:
     real = os.path.realpath(path)
     for backend, root in _transcript_roots():
         r = os.path.realpath(root)
-        if real == r or real.startswith(r + os.sep):
+        if _platform.is_within(real, r):
             return backend
     return DEFAULT_BACKEND
 
@@ -4097,7 +4097,8 @@ def _spawn_env(chat_id: str = "", backend: str = "") -> dict:
                 if os.path.isdir(log_dir):
                     _require_private(log_dir)
                     # It refuses group/other WRITE only; the log is readable.
-                    if os.lstat(log_dir).st_mode & 0o077:
+                    # (POSIX only: Windows lstat reports every dir as 0o777.)
+                    if hasattr(os, "geteuid") and os.lstat(log_dir).st_mode & 0o077:
                         return env
                 else:
                     try:
@@ -4747,7 +4748,7 @@ def _app_dir_for(path: str) -> str:
     keep the two in step (templates must not import fused_render, D166)."""
     root = _workspace_dir()
     ap = os.path.abspath(path)
-    if not ap.startswith(root + os.sep):
+    if not _platform.is_within(ap, root, strict=True):
         return ""
     parts = os.path.relpath(ap, root).split(os.sep)
     if len(parts) < 2 or parts[0].startswith(".") or parts[1].startswith("."):
