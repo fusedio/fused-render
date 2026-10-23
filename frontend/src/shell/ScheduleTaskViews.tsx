@@ -3083,7 +3083,12 @@ export function TaskList({
     : Math.max(0, Math.floor(seedScroll / REVEAL_ROW_GUESS_PX) - REVEAL_SEED_ABOVE);
 
   if (!hasRows) {
-    return <p className="schedule-tv-empty">{emptyLabel}</p>;
+    return (
+      <>
+        <p className="schedule-tv-empty">{emptyLabel}</p>
+        {bulk && bulkH.node}
+      </>
+    );
   }
 
   // ONE ROW, by its flat index — shared by the plain frame and the grouped
@@ -5629,7 +5634,9 @@ function writeLaneChoices(next: LaneChoices): void {
 }
 
 export function TaskBoard({
-  tasks,
+  tasks: tasksIn,
+  bulkSelect = false,
+  selectionResetKey = "",
   home = "",
   onReload,
   onQueued,
@@ -5647,6 +5654,10 @@ export function TaskBoard({
    * (tasks-lib.groupByColumn), which is the one thing this view does to the
    * order it is handed and the one place it is decided. */
   tasks: Task[];
+  /** Draw the lane checkboxes, the card checkboxes and the bulk bar. */
+  bulkSelect?: boolean;
+  /** Changes when the page's filters or search do: the selection empties. */
+  selectionResetKey?: string;
   home?: string;
   /** Re-read the list after a drop lands (or fails). */
   onReload: () => void;
@@ -5671,6 +5682,10 @@ export function TaskBoard({
    * Explorer error. */
   missing?: ReadonlySet<string>;
 }) {
+  // Bulk archive: the cards it has hidden are filtered out of `tasks` here.
+  const bulkH = useBulkArchive({ tasks: tasksIn, selectable: selectableTask, resetKey: selectionResetKey, onReload });
+  const tasks = bulkSelect ? bulkH.tasks : tasksIn;
+  const bulk = bulkSelect ? bulkH.bulk : undefined;
   const [choices, setChoices] = useState<LaneChoices>(readLaneChoices);
   // Lanes the reader has opened WHILE EMPTY. Deliberately component state and
   // deliberately not persisted: opening a column with nothing in it is a peek,
@@ -6061,6 +6076,7 @@ export function TaskBoard({
             (Bugbot, #1079). */}
         {note && <p className="schedule-tv-note">{note}</p>}
         <p className="schedule-tv-empty">{emptyLabel}</p>
+        {bulk && bulkH.node}
       </>
     );
   }
@@ -6068,12 +6084,15 @@ export function TaskBoard({
   return (
     <>
       {note && <p className="schedule-tv-note">{note}</p>}
+      {bulk && (
+        <BulkBar count={bulkH.selection.size} onArchive={bulkH.archiveSelected} onClear={bulkH.selection.clear} />
+      )}
       {/* The LANES, not every status: `needs_attention` draws inside Blocked
           (schedule-lib.BOARD_LANES / laneOf, and groupByColumn puts those cards
           at the top of it). A board is read by sweeping across it, and a sixth
           column that is empty except during the minutes somebody is being
           waited on is a column that teaches the reader to skip it. */}
-      <div className="schedule-tv-board">
+      <div className="schedule-tv-board" data-selecting={bulk && bulkH.selection.size > 0 ? "1" : undefined}>
         {BOARD_LANES.map((col) => {
           const lane = byLane.get(col.key) ?? [];
           // How many CARDS in this column still hold something nobody has read —
@@ -6145,25 +6164,35 @@ export function TaskBoard({
           const cardKeys = taskListKeys(cards, queueOn);
           return (
             <div className="schedule-tv-lane" key={col.key}>
-              <button
-                type="button"
-                className="schedule-tv-lane-head"
-                title={`Collapse ${col.label}`}
-                onClick={() => toggleLane(col.key, false)}
-              >
-                {/* The group header's own unread mark, the same ring the cards
-                    under it wear — filled while any of them holds something
-                    unread, and naming the number on hover. */}
-                <StatusIcon status={col.key} unread={news > 0} count={news} />
-                <span className="schedule-tv-lane-label">{col.label}</span>
-                {/* "7", or "1 running · 2 queued" on the one lane that now holds
-                    two statuses (tasks-lib.laneCountLabel). A bare total over a
-                    column of three running tasks and four waiting ones answers a
-                    question nobody asked. */}
-                <span className="schedule-tv-lane-count">
-                  {laneCountLabel(col.key, lane)}
-                </span>
-              </button>
+              {(() => {
+                const head = (
+                <button
+                    type="button"
+                    className="schedule-tv-lane-head"
+                    title={`Collapse ${col.label}`}
+                    onClick={() => toggleLane(col.key, false)}
+                  >
+                    {/* The group header's own unread mark, the same ring the cards
+                        under it wear — filled while any of them holds something
+                        unread, and naming the number on hover. */}
+                    <StatusIcon status={col.key} unread={news > 0} count={news} />
+                    <span className="schedule-tv-lane-label">{col.label}</span>
+                    {/* "7", or "1 running · 2 queued" on the one lane that now holds
+                        two statuses (tasks-lib.laneCountLabel). A bare total over a
+                        column of three running tasks and four waiting ones answers a
+                        question nobody asked. */}
+                    <span className="schedule-tv-lane-count">
+                      {laneCountLabel(col.key, lane)}
+                    </span>
+                  </button>
+                );
+                return bulk ? (
+                  <div className="schedule-tv-lane-headwrap">
+                    <GroupCheck select={bulk} keys={lane.filter(selectableTask).map((t) => t.key)} name={col.label} />
+                    {head}
+                  </div>
+                ) : head;
+              })()}
               <div
                 className={
                   "schedule-tv-lane-body" +
@@ -6207,6 +6236,7 @@ export function TaskBoard({
                     peekOn={peekOn}
                     peeked={peekedKey === task.key}
                     isDragging={dragging?.key === task.key}
+                    bulk={bulk}
                     dropping={inFlight.has(task.key)}
                     onDragStart={() => setDragging(task)}
                     onDragEnd={() => {
@@ -6246,12 +6276,14 @@ export function TaskBoard({
           );
         })}
       </div>
+      {bulk && bulkH.node}
     </>
   );
 }
 
 function TaskCard({
   task,
+  bulk,
   home,
   showProject,
   onPickDraft,
@@ -6273,6 +6305,8 @@ function TaskCard({
   onErased,
 }: {
   task: Task;
+  /** The bulk-select handle (the Tasks page's Board only): draws the checkbox. */
+  bulk?: BulkSelect | undefined;
   home: string;
   /** The card's task was erased (the foot's trash → EraseTaskModal): the
    *  Board re-reads, since the card that was pressed is the one that left. */
@@ -6454,7 +6488,9 @@ function TaskCard({
     // one. The action is a SIBLING pinned over the card's head — where the head
     // has spare room to its right on every card — rather than a nested control
     // the browser would refuse to parse.
-    <div className={"tasks-card-wrap" + (isDragging ? " is-dragging" : "")}>
+    <div className={"tasks-card-wrap" + (isDragging ? " is-dragging" : "")}
+      data-checked={bulk?.selection.has(task.key) ? "1" : undefined}>
+      {bulk && <RowCheck select={bulk} task={task} />}
       <button
         type="button"
         className={

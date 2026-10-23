@@ -9228,7 +9228,7 @@ describe("the Cards view's frame", () => {
       "scrollbar-color: var(--sb-thumb) transparent",
     );
     expect(SCHED_CSS).not.toContain(".task-cards-scroll::-webkit-scrollbar");
-    expect(CARDS).toContain('<div className="task-cards-scroll" ref={wallRef}>');
+    expect(CARDS).toContain('<div className="task-cards-scroll" ref={wallRef}');
     // ...and a wheel in the margins reaches it, by the List's own rule — ONE
     // hook for both views (useMarginWheel), not a second forwarding rule.
     expect(CARDS).toContain("useMarginWheel(wallRef);");

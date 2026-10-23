@@ -437,3 +437,43 @@
   color: var(--accent-soft);
   font-weight: 600;
 }
+
+/* Bulk select on the Board and Cards: a lane head carries its select-all at the
+   left, a card carries its own box in the top-left corner. Same reveal rule as
+   the List row: on hover or focus, and always once anything is selected. */
+.schedule-tv-lane-headwrap {
+  position: relative;
+}
+.schedule-tv-lane-headwrap > .tasks-group-check {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 1;
+}
+.schedule-tv-lane-headwrap > .schedule-tv-lane-head {
+  padding-left: 30px;
+}
+.tasks-card-wrap > .tasks-row-check,
+.task-card > .tasks-row-check {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 2;
+  opacity: 0;
+}
+.tasks-card-wrap:hover > .tasks-row-check,
+.tasks-card-wrap:focus-within > .tasks-row-check,
+.task-card:hover > .tasks-row-check,
+.task-card:focus-within > .tasks-row-check,
+[data-selecting] .tasks-card-wrap > .tasks-row-check,
+[data-selecting] .task-card > .tasks-row-check,
+.tasks-card-wrap > .tasks-row-check:checked,
+.task-card > .tasks-row-check:checked {
+  opacity: 1;
+}
+.tasks-card-wrap[data-checked],
+.task-card[data-checked] {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}

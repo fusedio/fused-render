@@ -1778,6 +1778,8 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           ) : view === "board" ? (
             <TaskBoard
               tasks={shown}
+              bulkSelect
+              selectionResetKey={selectionKey}
               home={home}
               onReload={reload}
               onQueued={noteQueued}
@@ -1812,6 +1814,8 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               // lens they meant to keep — the same argument that put the
               // toolbar on the calendar.
               tasks={shown}
+              bulkSelect
+              selectionResetKey={selectionKey}
               home={home}
               onReload={reload}
               // The folder chip in a card's head is the List row's filter tag
