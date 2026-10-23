@@ -99,7 +99,12 @@ agent.py:      _HOST_FILES["gemini"] = gemini_host.py; _SELF_MINTED_ID_BACKENDS 
   `setApprovalMode(AUTO_EDIT)` itself, verified — a session-wide switch
   behind the host's back; the explicit request keeps the host authoritative.)
   "Allow, and stop asking" (mode `auto`) → the card's answer, then
-  `session/set_mode yolo`. Every mode change the CLI makes arrives as an
+  `session/set_mode yolo`. A plain "Always approve" (scope `session`, no
+  mode) on an edit card is still that card's `allow_always`, which the CLI
+  turns into AUTO_EDIT for the session — what the click asked for ("every
+  Edit for the rest of this chat"); the host's `mode` follows the notice
+  below while the pill keeps saying Ask, and `_send` never undoes it since
+  host.json's mode is unchanged. Every mode change the CLI makes arrives as an
   `agent_message_chunk` whose text is `[MODE_UPDATE] <ApprovalMode id>`
   (`Session.handleApprovalModeChanged`, verified): the host reads it as the
   CLI's authoritative mode notice (`self.mode` follows it) and never as
@@ -233,12 +238,23 @@ agent.py:      _HOST_FILES["gemini"] = gemini_host.py; _SELF_MINTED_ID_BACKENDS 
   (`~/.gemini/settings.json`) as `raw`, never as "the CLI is not
   installed". **The OAuth
   prompt**: with `NO_BROWSER=1` on the spawn env (`_spawn_env(backend=
-  "gemini")`, setdefault), a login whose token cannot be refreshed makes
-  `session/new` print "Please visit the following URL to authorize…" on
-  STDOUT and wait on stdin for a code nobody will type; the host reads that
-  line (`_Peer.on_text`) and fails the handshake AT ONCE as signed out
+  "gemini")`, setdefault), a Google login whose token cannot be refreshed
+  runs the paste-a-code flow — "Please visit the following URL to
+  authorize…" on STDOUT, then a wait on stdin for a code nobody will type —
+  AT STARTUP, before the ACP server answers `initialize` (verified 0.65.0:
+  `main` awaits `getOauthClient` when the selected method is Google and the
+  browser is suppressed, then starts ACP; the first JSON line the host
+  wrote is swallowed as "the code"). The host reads that line
+  (`_Peer.on_text`) and fails whichever handshake request is pending —
+  `initialize` included (`_wait_rpc`) — AT ONCE as signed out
   (`_SIGNED_OUT_TEXT`, matched by the `not signed in` marker), never waiting
-  the handshake bound out and never showing the URL.
+  the handshake bound out and never showing the URL. The health probe reads
+  the same line as "signed out" (D10). A related CLI inconsistency: with
+  only `GEMINI_API_KEY` exported and no `security.auth.selectedType` in
+  settings.json, `session/new` works (the CLI defaults the method) but
+  `session/load` refuses with "Authentication required" (verified in
+  `prepareSessionConfig`), so a user who never picked a method in `gemini`
+  can start chats and not resume them; the sign-in brief says so.
 - **D14** tool → name map: ACP `kind` → `execute`=Bash{command,description},
   `edit` new file=Write{file_path,content} / existing=Edit{file_path,diff},
   `read`=Read{file_path}, `fetch`=WebFetch{url}, `search`=Grep{pattern,path}

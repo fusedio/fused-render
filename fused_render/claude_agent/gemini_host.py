@@ -111,11 +111,15 @@ _KIND_TO_TOOL = {"execute": "Bash", "read": "Read", "fetch": "WebFetch",
 _MCP_TITLE = re.compile(r"^(?P<tool>[A-Za-z0-9_.-]+) \((?P<server>[A-Za-z0-9_.-]+) MCP Server\)$")
 _MCP_SERVER = "fused_approvals"
 #: ...and an MCP call WITH arguments: `<tool>(key: value, …)`
-#: (`formatToolDisplayTitle`, verified 0.65.0). A call whose arguments hold a
+#: (`formatToolDisplayTitle` / `formatToolDescription`, verified 0.65.0):
+#: pairs joined by ", ", string values BARE (never quoted), arrays `[a, b]`,
+#: objects `(k: v)`, and the conversational keys (description, explanation,
+#: reason, thought) dropped. A value may itself hold commas, so a pair ends
+#: only where the next `, key: ` begins. A call whose arguments hold a
 #: non-empty `command` is titled by that command alone, which no regex can
 #: tell from prose — fused's own tools have no such argument.
 _MCP_CALL = re.compile(r"^(?P<tool>[A-Za-z0-9_.-]+)\((?P<args>.*)\)$", re.S)
-_CALL_ARG = re.compile(r'(?P<key>[A-Za-z_][A-Za-z0-9_]*):\s*(?P<val>"(?:[^"\\]|\\.)*"|[^,]*)')
+_CALL_ARG = re.compile(r"(?P<key>[A-Za-z_][A-Za-z0-9_]*): (?P<val>.*?)(?=, [A-Za-z_][A-Za-z0-9_]*: |$)", re.S)
 #: fused's own pane-server tools (permission_server.py): the names an
 #: argument-bearing title is matched against, since it names no server.
 _FUSED_TOOLS = frozenset({"app_state", "canvas_shot", "terminal_list",
@@ -526,11 +530,6 @@ def _map_tool(kind: str, title: str, raw, locations=None, cwd: str = "",
             name = "mcp__%s__%s" % (_MCP_SERVER, call.group("tool"))
             for arg in _CALL_ARG.finditer(call.group("args")):
                 val = arg.group("val").strip()
-                if val.startswith('"'):
-                    try:
-                        val = json.loads(val)
-                    except ValueError:
-                        val = val[1:-1]
                 if val != "":
                     inp.setdefault(arg.group("key"), val)
         else:
@@ -1342,10 +1341,22 @@ class _Host:
                 # "…and stop asking" / "…and accept edits" (D5): after the
                 # RPC reply, so the tool that asked runs first and what
                 # follows runs under the new mode — Gemini's `yolo` /
-                # `autoEdit`, by `session/set_mode`.
+                # `autoEdit`, by `session/set_mode`. Recorded now, so the
+                # next card already reads the new mode, and REVERTED if the
+                # CLI refuses (an untrusted folder refuses the privileged
+                # modes, and sends no `[MODE_UPDATE]` then).
                 with self.lock:
-                    self.mode = mode
-                self._set_mode(mode)
+                    before, self.mode = self.mode, mode
+
+                def switched(rpc, mode=mode, before=before):
+                    if rpc.error is not None:
+                        with self.lock:
+                            if self.mode == mode:
+                                self.mode = before
+                        sys.stderr.write("gemini_host: session/set_mode %s refused: %r\n"
+                                         % (mode, rpc.error))
+
+                self._set_mode(mode, on_done=switched)
 
     def _await_decision(self, entry: dict):
         """permission_server's `_await_answer`, with one extra exit: the
@@ -1547,13 +1558,19 @@ class _Host:
 
     # ------------------------------------------------------------ lifecycle
 
-    def _wait_session(self, rpc: _Rpc) -> bool:
-        """Wait for a `session/new` | `session/load` reply, bounded — and
-        cut short by the OAuth prompt (D13): a CLI that started its browser
-        flow inside the request will not answer until a person signs in,
-        which nobody here will, so the request is failed as "signed out"
-        now rather than when `_HANDSHAKE_SECONDS` runs out. Answers whether
-        the rpc is DONE (its `error` says how)."""
+    def _wait_rpc(self, rpc: _Rpc) -> bool:
+        """Wait for a handshake reply (`initialize`, `session/new`,
+        `session/load`), bounded — and cut short by the OAuth prompt (D13): a
+        CLI that started its paste-a-code flow will not answer until a
+        person signs in, which nobody here will, so the request is failed
+        as "signed out" now rather than when `_HANDSHAKE_SECONDS` runs out.
+        Under `NO_BROWSER` a Google login whose token cannot be refreshed
+        runs that flow AT STARTUP, before the ACP server exists (verified
+        0.65.0: `main` awaits `getOauthClient` when the selected method is
+        Google and the browser is suppressed, then starts ACP), so the
+        prompt can land while `initialize` is pending — hence this wait on
+        every handshake request. Answers whether the rpc is DONE (its
+        `error` says how)."""
         deadline = time.monotonic() + _HANDSHAKE_SECONDS
         while not rpc.done.wait(min(0.2, max(0.0, deadline - time.monotonic()))):
             with self.lock:
@@ -1595,7 +1612,7 @@ class _Host:
         rpc = self.peer.request("initialize", {
             "protocolVersion": PROTOCOL_VERSION, "clientCapabilities": {},
             "clientInfo": {"name": "fused-render", "version": "1"}})
-        if not rpc.done.wait(_HANDSHAKE_SECONDS) or rpc.error is not None:
+        if not self._wait_rpc(rpc) or rpc.error is not None:
             return self._handshake_failed("initialize", rpc)
         servers = self._mcp_servers()
         if self.resume:
@@ -1603,20 +1620,23 @@ class _Host:
                 self.replaying = True
             rpc = self.peer.request("session/load", {
                 "sessionId": self.sid, "cwd": self.cwd, "mcpServers": servers})
-            ok = self._wait_session(rpc)
-            if ok and rpc.error is None:
-                self._await_replay_quiet()
+            ok = self._wait_rpc(rpc)
+            if not ok or rpc.error is not None:
+                with self.lock:
+                    self.replaying = False
+                return self._handshake_failed("session/load", rpc)
+            # The model first, so the backfilled rows name the session's
+            # model as every later row does (a resume spawned without `-m`
+            # has "" until the reply's `currentModelId` is adopted).
+            self._adopt_model(rpc.result)
+            self._await_replay_quiet()
             with self.lock:
                 self.replaying = False
-                if ok and rpc.error is None:
-                    self.backfill_replay()
-            if not ok or rpc.error is not None:
-                return self._handshake_failed("session/load", rpc)
-            self._adopt_model(rpc.result)
+                self.backfill_replay()
         else:
             rpc = self.peer.request("session/new", {
                 "cwd": self.cwd, "mcpServers": servers})
-            if not self._wait_session(rpc) or rpc.error is not None:
+            if not self._wait_rpc(rpc) or rpc.error is not None:
                 return self._handshake_failed("session/new", rpc)
             self._adopt_model(rpc.result)
             got = rpc.result.get("sessionId") if isinstance(rpc.result, dict) else None

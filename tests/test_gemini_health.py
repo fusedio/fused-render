@@ -230,6 +230,13 @@ _FAKE_ACP = textwrap.dedent("""\
     assert sys.argv[1:] == ["--acp"], sys.argv
     if mode == "stubborn":
         signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    if mode == "oauth-start":
+        # Where 0.65.0 really puts the paste-a-code prompt under NO_BROWSER:
+        # before the ACP server answers anything.
+        print("Please visit the following URL to authorize the application:", flush=True)
+        print("https://accounts.google.com/o/oauth2/v2/auth?state=SECRET", flush=True)
+        print("Enter the authorization code: ", flush=True)
+        time.sleep(60)
     got = []
 
     def log():
@@ -360,9 +367,21 @@ def test_the_child_never_opens_a_browser_and_trusts_the_probe_dir(fake_acp, monk
     assert fake_acp.log()["cwd"] != gemini_health._probe_dir()   # no chdir
 
 
-def test_the_oauth_prompt_is_unknown_never_signed_out(fake_acp, monkeypatch):
-    monkeypatch.setattr(gemini_health, "_ACP_TIMEOUT_S", 0.8)
-    assert fake_acp("oauth") is None
+@pytest.mark.parametrize("mode", ["oauth", "oauth-start"])
+def test_the_oauth_prompt_is_signed_out_at_once_and_the_url_stays_private(
+        fake_acp, monkeypatch, mode):
+    """A Google login whose token cannot be refreshed starts the paste-a-code
+    flow (at startup in 0.65.0, before `initialize`; inside `session/new` in
+    the older placement) and waits for a code the probe never types. That
+    line is the verdict — signed out, now, not "unknown" when the timeout
+    runs out — and the authorize URL (OAuth state) reaches no snapshot."""
+    monkeypatch.setattr(gemini_health, "_ACP_TIMEOUT_S", 5.0)
+    began = time.monotonic()
+    reply = fake_acp(mode)
+    assert time.monotonic() - began < 4, "the prompt must cut the wait short"
+    assert gemini_health._classify(reply) is False
+    assert "accounts.google.com" not in json.dumps(reply)
+    assert gemini_health._models_of(reply) is None or gemini_health._models_of(reply) == []
 
 
 def _assert_reaped(pid):

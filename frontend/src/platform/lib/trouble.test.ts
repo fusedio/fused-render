@@ -487,8 +487,17 @@ test("gemini's markers are Gemini's alone, and a shape counts when it names Gemi
   expect(troubleKind("ENOENT: no such file or directory, open 'C:\\Users\\me\\.gemini\\trusted_folders.json'", "gemini")).toBe("raw");
   expect(troubleKind("ENOENT: open '/Users/me/.codex/config.toml'", "codex")).toBe("raw");
   expect(troubleKind("claude: ENOENT /Users/me/.claude/settings.json", "claude")).toBe("raw");
-  // ...while the binary itself missing still reads as notfound.
+  // ...while the binary itself missing still reads as notfound — also when
+  // the binary sits under the config dir (Claude's legacy `~/.claude/local`).
   expect(troubleKind("/usr/local/bin/gemini: No such file or directory", "gemini")).toBe("notfound");
+  expect(troubleKind("spawn /Users/me/.claude/local/claude ENOENT", "claude")).toBe("notfound");
+  expect(troubleKind("[Errno 2] No such file or directory: '/Users/me/.claude/local/claude'", "claude")).toBe("notfound");
+  expect(troubleKind("ENOENT: no such file or directory, scandir '/Users/me/.gemini'", "gemini")).toBe("raw");
+  // The server's own "not found" sentence for each agent (agent.py) is a
+  // missing install, not an engine fault.
+  expect(troubleKind("session start failed: gemini CLI not found — install with `npm install -g @google/gemini-cli`, put `gemini` on the PATH", "gemini")).toBe("notfound");
+  expect(troubleKind("codex CLI not found — install with `npm install -g @openai/codex`", "codex")).toBe("notfound");
+  expect(troubleKind("copilot CLI not found — install GitHub Copilot CLI", "copilot")).toBe("notfound");
 });
 
 test("the Gemini brief installs with npm and signs in with Google", () => {

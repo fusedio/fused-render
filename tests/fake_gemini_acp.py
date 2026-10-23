@@ -73,6 +73,10 @@ WITH_THOUGHT = "--think" in ARGS
 DIE = "--die" in ARGS
 SIGNED_OUT = "--signed-out" in ARGS
 OAUTH_PROMPT = "--oauth-prompt" in ARGS
+#: The real 0.65.0 placement of that prompt under NO_BROWSER: at STARTUP,
+#: before the ACP server answers anything (`main` awaits `getOauthClient`
+#: for a Google login with the browser suppressed, then starts ACP).
+OAUTH_PROMPT_AT_START = "--oauth-prompt-at-start" in ARGS
 LATE_COMMANDS = "--late-commands" in ARGS
 COMMANDS_AFTER_REPLY = "--commands-after-reply" in ARGS
 IGNORE_EOF = "--ignore-eof" in ARGS
@@ -226,13 +230,7 @@ def _serve(msg):
             _error(rid, -32000, "Gemini API key is missing or not configured.")
             return
         if OAUTH_PROMPT:
-            # The web flow under NO_BROWSER: a prompt on stdout, then a wait
-            # on stdin for a code nobody will type — no reply, ever.
-            _print("Please visit the following URL to authorize the application:")
-            _print("")
-            _print("https://accounts.google.com/o/oauth2/v2/auth?state=XYZ&code_challenge=abc")
-            _print("")
-            _print("Enter the authorization code: ")
+            _oauth_prompt()
             return
         SESSION_ID = str(uuid.uuid4())
         if not LATE_COMMANDS:
@@ -264,7 +262,24 @@ def _serve(msg):
         _error(rid, -32601, "unknown " + method)
 
 
+def _oauth_prompt():
+    """The web flow under NO_BROWSER: a prompt on stdout, then a wait on
+    stdin for a code nobody will type — no reply, ever."""
+    _print("Please visit the following URL to authorize the application:")
+    _print("")
+    _print("https://accounts.google.com/o/oauth2/v2/auth?state=XYZ&code_challenge=abc")
+    _print("")
+    _print("Enter the authorization code: ")
+
+
 def _reader():
+    if OAUTH_PROMPT_AT_START:
+        _oauth_prompt()
+        for line in sys.stdin:   # swallowed as "the code": never answered
+            _log({"swallowed": line.strip()[:80]})
+        _log({"eof": True})
+        _eof.set()
+        return
     for line in sys.stdin:
         line = line.strip()
         if not line:

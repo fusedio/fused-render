@@ -359,7 +359,17 @@ _SIGNED_OUT_CODE = -32000
 #: CLI falls back to; plus the OAuth client's own refusals, assumed.
 _SIGNED_OUT_RE = re.compile(
     r"api key is missing|authentication required|not authenticated|"
-    r"not logged in|invalid_grant|unauthenticated|credential", re.I)
+    r"not logged in|not signed in|invalid_grant|unauthenticated|credential", re.I)
+#: The paste-a-code OAuth flow's first line (0.65.0, `authWithUserCode`): a
+#: Google login whose token cannot be refreshed prints it — at STARTUP,
+#: before `initialize` is answered (`main` awaits `getOauthClient` when the
+#: selected method is Google and the browser is suppressed) — and then waits
+#: on stdin for a code. The probe never types one; the line IS the answer.
+_OAUTH_PROMPT_MARK = "Please visit the following URL to authorize"
+_OAUTH_PROMPT_REPLY = {"error": {"code": _SIGNED_OUT_CODE,
+                                 "message": "not signed in: the CLI started its "
+                                            "browser sign-in (the Google token could "
+                                            "not be refreshed)"}}
 
 
 def _classify(reply: Optional[dict]) -> Optional[bool]:
@@ -437,7 +447,11 @@ def _acp_probe(path: str) -> Optional[dict]:
 
     `initialize` then `session/new` on the probe dir. Timeout, a dead child,
     output we could not parse — all None, because "could not tell" must never
-    render as "sign in". The child runs with `NO_BROWSER=1` (the OAuth flow
+    render as "sign in". One non-JSON line does tell: the OAuth flow's
+    "Please visit the following URL…" means the CLI has no usable Google
+    token and is waiting for a sign-in, so it answers as a signed-out reply
+    (`_OAUTH_PROMPT_REPLY`) at once instead of running the timeout out. The
+    child runs with `NO_BROWSER=1` (the OAuth flow
     may never open a window from a health read) and the probe dir marked
     trusted (`GEMINI_CLI_TRUST_WORKSPACE`, so a user who turned folder trust
     on does not make the probe die at startup). No `cwd=` (the fork argument
@@ -453,7 +467,10 @@ def _acp_probe(path: str) -> Optional[dict]:
                 try:
                     msg = json.loads(line)
                 except ValueError:
-                    continue   # the OAuth flow's "Please visit…" line, a warning
+                    if _OAUTH_PROMPT_MARK in line:
+                        answer.append(dict(_OAUTH_PROMPT_REPLY))
+                        return
+                    continue   # a warning, or the flow's other prose
                 # A server→client REQUEST also carries an `id` (and a
                 # `method`); only a reply to one of ours is read here.
                 if not isinstance(msg, dict) or "method" in msg:

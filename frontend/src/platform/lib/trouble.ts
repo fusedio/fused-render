@@ -76,6 +76,9 @@ const NAMED: [TroubleKind, RegExp][] = [
 const COPILOT_NAMED: [TroubleKind, RegExp][] = [
   ["login", /authentication required|auth_required|not logged in|copilot login|no copilot access|not authorized/i],
   ["limit", /ai credits|premium request|rate.?limit|quota/i],
+  // The server's own sentence for a binary it could not find (agent.py's
+  // `_copilot_bin`), which names no shell and no ENOENT.
+  ["notfound", /copilot cli not found/i],
 ];
 
 // CODEX'S OWN MARKERS (docs/CODEX_BACKEND.md D13, §8), unconditional for a
@@ -86,6 +89,7 @@ const COPILOT_NAMED: [TroubleKind, RegExp][] = [
 const CODEX_NAMED: [TroubleKind, RegExp][] = [
   ["login", /not logged in|requiresopenaiauth|codex login|unauthorized|authentication|login required|sign in/i],
   ["limit", /rate limit|usage limit|quota|insufficient_quota|spend control|too many requests|\b429\b/i],
+  ["notfound", /codex cli not found/i],
 ];
 
 // GEMINI'S OWN MARKERS (docs/GEMINI_BACKEND.md D13, §8), unconditional for a
@@ -99,6 +103,7 @@ const CODEX_NAMED: [TroubleKind, RegExp][] = [
 const GEMINI_NAMED: [TroubleKind, RegExp][] = [
   ["login", /api key is missing|authentication required|not logged in|not signed in|unauthenticated|unauthorized|invalid_grant|login required|\bsign in\b/i],
   ["limit", /resource_exhausted|rate limit|quota|too many requests|\b429\b/i],
+  ["notfound", /gemini cli not found/i],
 ];
 
 /** Each non-Claude agent's unconditional markers and subject test. Claude's
@@ -109,10 +114,13 @@ const AGENT_TROUBLE: Record<string, { named: [TroubleKind, RegExp][]; about: Reg
   gemini: { named: GEMINI_NAMED, about: ABOUT_GEMINI },
 };
 
-// An ENOENT whose path sits INSIDE an agent's own config dir is a missing
-// settings or credentials file of an installed CLI, not a missing CLI: the
-// notfound shape must not read it as "install the CLI".
-const AGENT_CONFIG_PATH = /[\\/]\.(?:claude|copilot|codex|gemini)[\\/]/i;
+// An ENOENT whose path sits INSIDE an agent's own config dir (or is the dir
+// itself) is a missing settings or credentials file of an installed CLI, not
+// a missing CLI: the notfound shape must not read it as "install the CLI".
+// Unless the path's last segment IS the binary: `~/.claude/local/claude` is
+// a real (legacy) install location, and a half-removed one is a missing CLI.
+const AGENT_CONFIG_PATH = /[\\/]\.(?:claude|copilot|codex|gemini)(?:[\\/]|['"\s]|$)/i;
+const CLI_BINARY_PATH = /[\\/](?:claude|copilot|codex|gemini)(?:\.cmd|\.exe)?(?=$|['"\s:,)])/i;
 
 // Only when the message is about Claude — see above.
 const SHAPES: [TroubleKind, RegExp][] = [
@@ -138,7 +146,7 @@ export function troubleKind(message: string, backend = "claude"): TroubleKind {
   if ((agent ? agent.about : ABOUT_CLAUDE).test(text)) {
     for (const [kind, re] of SHAPES) {
       if (!re.test(text)) continue;
-      if (kind === "notfound" && AGENT_CONFIG_PATH.test(text)) return "raw";
+      if (kind === "notfound" && AGENT_CONFIG_PATH.test(text) && !CLI_BINARY_PATH.test(text)) return "raw";
       return kind;
     }
   }
@@ -360,7 +368,7 @@ export function troubleInstructions(ctx: TroubleContext): string {
     login: gemini
       ? [
         "Confirm the CLI runs: `gemini --version`.",
-        "Sign in: run `gemini`, pick a sign-in method (`/auth`) and finish it in the browser — or export `GEMINI_API_KEY` for the environment that launches the app.",
+        "Sign in: run `gemini`, pick a sign-in method (`/auth`) and finish it in the browser. An exported `GEMINI_API_KEY` works for new chats, but resuming a chat needs the method picked once in `gemini` (the CLI refuses `session/load` without it).",
         `Confirm the session works, then tell me to retry in ${displayName()}.`,
       ]
       : codex

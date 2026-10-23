@@ -538,11 +538,16 @@ def test_tool_mapping_table(host_mod, tmp_path):
     # `<tool>(key: value, …)`, parsed into the input the card shows.
     assert m("other", "app_state (fused_approvals MCP Server)", None, [], "")[0] == \
         "mcp__fused_approvals__app_state"
-    name, inp = m("other", 'terminal_send(id: "t1", text: "ls -la")', None, [], "")
+    # Values are BARE (the CLI never quotes), and may hold commas and colons:
+    # a pair ends only where the next `, key: ` begins.
+    name, inp = m("other", "terminal_send(id: t1, text: ls -la)", None, [], "")
     assert name == "mcp__fused_approvals__terminal_send"
     assert (inp["id"], inp["text"]) == ("t1", "ls -la")
-    name, inp = m("other", 'canvas_shot(what: "udf", udf: my_udf)', None, [], "")
+    name, inp = m("other", "terminal_send(id: t3, text: echo a, b; date: now)", None, [], "")
+    assert (inp["id"], inp["text"]) == ("t3", "echo a, b; date: now")
+    name, inp = m("other", "canvas_shot(what: udf, udf: my_udf)", None, [], "")
     assert name == "mcp__fused_approvals__canvas_shot" and inp["udf"] == "my_udf"
+    assert m("other", "app_state(keys: [a, b])", None, [], "")[1]["keys"] == "[a, b]"
     assert m("other", "other_tool(x: 1)", None, [], "")[0] == "other_tool(x: 1)"
     assert m("other", "echo (weather MCP Server)", None, [], "")[0] == "weather-echo"
     assert m("execute", "Run", {"command": "ls"}, [], str(tmp_path))[0] == "Bash"
@@ -1036,6 +1041,23 @@ def test_signed_out_is_an_api_error_and_a_clean_exit(start, agent):
     _assert_failed_start(s, agent, "Gemini API key is missing or not configured.")
     assert "session/new" in s.methods_seen()
     assert "session/prompt" not in s.methods_seen()
+    assert agent._account_error(s.results()[0]["result"], "gemini").startswith(
+        "Gemini CLI isn't signed in.")
+
+
+def test_an_oauth_prompt_at_startup_reads_as_signed_out_too(start, agent):
+    """D13, where the CLI really puts it (0.65.0): under NO_BROWSER a Google
+    login whose token cannot be refreshed runs the paste-a-code flow in
+    `main`, BEFORE the ACP server answers `initialize`. The host must cut the
+    `initialize` wait short the same way, or a revoked login reads as "no
+    answer within 120s" instead of "signed out"."""
+    s = start(fake_args=["--oauth-prompt-at-start"], messages=["hi"],
+              env={"FUSED_GEMINI_HOST_HANDSHAKE_SECONDS": "30"})
+    began = time.monotonic()
+    _assert_failed_start(s, agent, "asked for a browser sign-in")
+    assert time.monotonic() - began < 15, "the OAuth prompt must cut the wait short"
+    assert "accounts.google.com" not in json.dumps(s.out())
+    assert "initialize failed" in s.results()[0]["result"]
     assert agent._account_error(s.results()[0]["result"], "gemini").startswith(
         "Gemini CLI isn't signed in.")
 
