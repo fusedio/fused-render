@@ -6633,9 +6633,18 @@ describe("the grouped lists start with every lane but Archive ticked (2026-10-17
       const out = filterTasks(tasks, filtersForView({ ...EMPTY_FILTERS, ...f }, view));
       expect(out.map((t) => t.key)).toEqual(["a", "c", "d", "e", "f"]);
     }
-    for (const view of BASE_VIEWS.filter((v) => v !== "cards")) {
+    for (const view of BASE_VIEWS.filter((v) => v !== "cards" && v !== "detailed")) {
       expect(defaultViewFacets(view)).toEqual({ statuses: [], projects: [] });
     }
+  });
+
+  it("starts the Detailed view on every lane but Archive too, and says so when only archive is left", () => {
+    expect(defaultViewFacets("detailed")).toEqual({ statuses: LANES_BUT_ARCHIVE, projects: [] });
+    const f = { ...EMPTY_FILTERS, ...defaultViewFacets("detailed") };
+    expect(emptyTasksLabel("detailed", f, 3, false)).toBe(
+      "Only archived tasks here. Tick Archive under Status to see them.",
+    );
+    expect(emptyTasksLabel("detailed", { ...f, search: "x" }, 3, false)).toBe("Nothing matches these filters.");
   });
 
   it("starts the Cards wall on every lane it draws (no Upcoming), ticked, so the menu matches the wall", () => {
