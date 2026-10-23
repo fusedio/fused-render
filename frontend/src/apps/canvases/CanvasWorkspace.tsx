@@ -43,6 +43,9 @@
 //            host deletes (POST /api/canvases/delete — sync stopped, server
 //            delete, clone removed) and leaves for the canvas list. The frame
 //            writes nothing itself (embed-canvas-gates).
+//   parent → { type: "fused-embed-delete-rejected", reason }  the host did
+//            not delete (a name that is not this canvas's, or the delete
+//            failed): the frame is still on the canvas and toasts it.
 //   iframe → { type: "fused-embed-open-side" } | { type: "fused-embed-close-side" }
 //            the workbench's right-edge chips (its own right pane never shows
 //            embedded): open or shut the right pane here. Accepted only from
@@ -1529,7 +1532,18 @@ export default function CanvasWorkspace({
         // frame's own window only; the project page's viewer never sends it.
         if (embedded) return;
         if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
-        if (event.data?.name !== name) return;
+        const reject = (reason: string) => {
+          const origin = baseOriginRef.current;
+          if (!origin) return;
+          frameRef.current?.contentWindow?.postMessage(
+            { type: "fused-embed-delete-rejected", reason },
+            origin,
+          );
+        };
+        if (event.data?.name !== name) {
+          reject(`this window holds "${name}", not "${String(event.data?.name ?? "")}"`);
+          return;
+        }
         void deleteCanvas(env, name)
           .then(() => {
             // `replace`: Back must not land on the deleted canvas's editor.
@@ -1537,6 +1551,7 @@ export default function CanvasWorkspace({
           })
           .catch((e) => {
             setError(`Delete canvas failed: ${(e as Error).message}`);
+            reject((e as Error).message);
           });
         return;
       }
