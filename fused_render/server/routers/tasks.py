@@ -584,7 +584,10 @@ def _note_prs(rec: dict, line: str) -> None:
 
 
 _WORKTREES_PER_SCAN = 20
-_MANAGED_WT = os.sep.join(("", ".claude", "worktrees", ""))
+# Forward slashes on every platform: `_add_worktree` normalizes the path to them
+# before comparing, so an `os.sep` here recorded nothing on Windows.
+_MANAGED_WT = "/.claude/worktrees/"
+_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
 
 
 def _add_worktree(rec: dict, path: str, cwd: str = "") -> None:
@@ -594,11 +597,11 @@ def _add_worktree(rec: dict, path: str, cwd: str = "") -> None:
     target. Relative paths resolve against the line's cwd. Deduped, capped."""
     if not path:
         return
-    if not os.path.isabs(path):
+    if not (os.path.isabs(path) or _DRIVE_RE.match(path)):
         if not cwd:
             return
         path = os.path.join(cwd, path)
-    path = os.path.normpath(path).replace("\\", "/")
+    path = os.path.normpath(path.replace("\\", "/"))
     head, _, name = path.rpartition("/")
     if not name or not (head + "/").endswith(_MANAGED_WT):
         return
@@ -607,9 +610,69 @@ def _add_worktree(rec: dict, path: str, cwd: str = "") -> None:
         paths.append(path)
 
 
-_WT_ADD_RE = re.compile(r"\bgit\b[^|;&\n]*?\bworktree\s+add\s+([^|;&\n]+)")
+_WT_ADD_RE = re.compile(r"\bgit\b([^|;&\n]*?)\bworktree\s+add\s+([^|;&\n]+)")
 #: `git worktree add` flags that take a value of their own.
 _WT_VALUE_FLAGS = frozenset({"-b", "-B", "--reason"})
+_LEADING_CD_RE = re.compile(r"^\s*cd\s+(\S+)\s*(?:&&|;)\s*")
+_CD_ANYWHERE_RE = re.compile(r"(?:^|[\s;&|(])cd\s")
+_UNRESOLVABLE = ("$", "`", "~", "(")
+
+
+def _resolve_dir(base: str, d: str) -> str | None:
+    """`d` resolved against `base`; None when it names something a transcript line
+    cannot settle (a variable, a substitution, a home shortcut) or has no base."""
+    if not d or any(ch in d for ch in _UNRESOLVABLE):
+        return None
+    if os.path.isabs(d) or _DRIVE_RE.match(d):
+        return d
+    return os.path.join(base, d) if base else None
+
+
+def _worktree_adds(cmd: str, cwd: str):
+    """`(path word, directory it is relative to)` for each `git worktree add` in
+    one Bash command, honouring a leading `cd <dir> &&` and `git -C <dir>`. Where
+    the shape is ambiguous (a later `cd`, a variable in a directory,
+    `--git-dir`) a RELATIVE path comes back with no base and so is not recorded:
+    a wrong guess is a wrong removal target. Absolute paths always come through."""
+    base: str | None = cwd or None
+    rest = cmd
+    while True:
+        m = _LEADING_CD_RE.match(rest)
+        if not m:
+            break
+        try:
+            word = shlex.split(m.group(1))[0]
+        except (ValueError, IndexError):
+            word = ""
+        base = _resolve_dir(base or "", word)
+        rest = rest[m.end():]
+    ambiguous = base is None or bool(_CD_ANYWHERE_RE.search(rest))
+    for before, found in _WT_ADD_RE.findall(rest):
+        try:
+            pre = shlex.split(before)
+            words = shlex.split(found)
+        except ValueError:
+            continue
+        where = None if ambiguous else base
+        i = 0
+        while i < len(pre):
+            if pre[i] == "-C" and i + 1 < len(pre):
+                where = _resolve_dir(where or "", pre[i + 1])
+                i += 2
+                continue
+            if pre[i].startswith(("--git-dir", "--work-tree")):
+                where = None
+            i += 1
+        skip = False
+        for word in words:
+            if skip:
+                skip = False
+            elif word in _WT_VALUE_FLAGS:
+                skip = True
+            elif not word.startswith("-"):
+                if not any(ch in word for ch in _UNRESOLVABLE):
+                    yield word, where or ""
+                break
 
 
 def _note_worktrees(rec: dict, line: str) -> None:
@@ -636,20 +699,8 @@ def _note_worktrees(rec: dict, line: str) -> None:
         cmd = inp.get("command") if isinstance(inp, dict) else None
         if block.get("name") != "Bash" or not isinstance(cmd, str):
             continue
-        for found in _WT_ADD_RE.findall(cmd):
-            try:
-                words = shlex.split(found)
-            except ValueError:
-                continue
-            skip = False
-            for word in words:
-                if skip:
-                    skip = False
-                elif word in _WT_VALUE_FLAGS:
-                    skip = True
-                elif not word.startswith("-"):
-                    _add_worktree(rec, word, cwd)
-                    break
+        for word, base in _worktree_adds(cmd, cwd):
+            _add_worktree(rec, word, base)
 
 
 def _absorb(rec: dict, line: str) -> None:

@@ -5718,7 +5718,37 @@ def test_a_worktree_is_recorded_once_however_often_it_is_named(projects_dir):
     assert got == [f"{WT_ROOT}/feat"]
 
 
-# -- archive tears the task down (Workspace scope, unit 3) -----------------------
+def test_a_windows_style_path_is_recorded_with_forward_slashes():
+    rec = {}
+    tasks_mod._add_worktree(rec, "C:\\repo\\.claude\\worktrees\\feat")
+    assert rec["worktrees"] == ["C:/repo/.claude/worktrees/feat"]
+    other = {}
+    tasks_mod._add_worktree(other, "C:\\repo\\elsewhere\\feat")
+    assert other == {}
+
+
+def test_worktree_add_honours_dash_C_and_a_leading_cd(projects_dir):
+    got = _recorded(projects_dir, [
+        _user("hi", T9),
+        _bash_use("git -C /other worktree add .claude/worktrees/c", T10),
+        _bash_use("cd /elsewhere && git worktree add .claude/worktrees/d", T10),
+        _bash_use("cd sub; git worktree add .claude/worktrees/e", T10),
+    ])
+    assert got == ["/other/.claude/worktrees/c", "/elsewhere/.claude/worktrees/d",
+                   "/repo/sub/.claude/worktrees/e"]
+
+
+def test_an_ambiguous_relative_worktree_command_is_not_recorded(projects_dir):
+    got = _recorded(projects_dir, [
+        _user("hi", T9),
+        _bash_use("git worktree add $WT/.claude/worktrees/v", T10),
+        _bash_use("git -C $DIR worktree add .claude/worktrees/w", T10),
+        _bash_use("make && cd sub && git worktree add .claude/worktrees/x", T10),
+    ])
+    assert got == []
+
+
+# -- archive tears the task down (Workspace scope, unit 3)-----------------------
 
 
 def _git_worktree(tmp_path, name):
