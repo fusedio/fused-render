@@ -11,7 +11,10 @@
 // never reaches a cross-site iframe, so the workbench's embed-auth mode asks
 // its parent (this page) for a Bearer token over postMessage:
 //   iframe → { type: "fused-embed-auth-ready" }   (also -refresh on a 401)
-//   parent → { type: "fused-embed-auth-token", accessToken }
+//   parent → { type: "fused-embed-auth-token", accessToken, publicOrigin }
+//            publicOrigin is the workbench's real origin, for the links it
+//            builds (share URLs): under the custom env's loopback proxy its
+//            own origin is 127.0.0.1:<port>.
 // The token is the CLI's own `fused login` JWT (GET /api/canvases/token) and
 // is posted with an EXACT targetOrigin — never "*" — so it cannot leak to a
 // frame that navigated elsewhere.
@@ -765,14 +768,35 @@ export default function CanvasWorkspace({
       // THIS canvas's env's login, as the origin is its env's: a custom
       // deployment has its own `[auth]` tenant (D1412).
       const { access_token } = await getAccessToken(env);
+      // `publicOrigin`: the workbench's REAL origin. Framed through the custom
+      // env's loopback proxy (canvas_embed_proxy.py) the workbench's own
+      // `window.location.origin` is `http://127.0.0.1:<port>`, and every link
+      // it builds from that — the Share dialog's canvas URL above all — would
+      // name a port on this machine that nobody else can open. The workbench
+      // builds those links from this origin instead (application embed-auth.ts).
+      // Parsed apart from the post: a malformed FUSED_RENDER_WORKBENCH_URL
+      // override reaches here unvalidated, and it must cost the field, not
+      // the token.
+      let publicOrigin: string | undefined;
+      if (workbenchBase) {
+        try {
+          publicOrigin = new URL(workbenchBase).origin;
+        } catch {
+          publicOrigin = undefined;
+        }
+      }
       frame.contentWindow.postMessage(
-        { type: "fused-embed-auth-token", accessToken: access_token },
+        {
+          type: "fused-embed-auth-token",
+          accessToken: access_token,
+          ...(publicOrigin ? { publicOrigin } : {}),
+        },
         origin, // exact origin — this message carries a credential
       );
     } catch (e) {
       setError((e as Error).message);
     }
-  }, [env]);
+  }, [env, workbenchBase]);
 
   // Ask the workbench to select a node (or, with null, to deselect). Exact
   // targetOrigin, like every message to the frame.
