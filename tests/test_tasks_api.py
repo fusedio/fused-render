@@ -5946,6 +5946,21 @@ def test_holds_endpoint_reports_a_tasks_recorded_worktrees(client, projects_dir,
     assert row["branch"] == "wt-holds"
 
 
+def test_consecutive_holds_chunks_share_one_collect(client, projects_dir, tmp_path,
+                                                    monkeypatch):
+    _write_transcript(projects_dir, "sess-a", str(tmp_path), [_user("hi", T9)])
+    tasks_mod.reset_cache()
+    calls = []
+    real = tasks_mod._collect
+    monkeypatch.setattr(tasks_mod, "_collect",
+                        lambda *a, **k: calls.append(1) or real(*a, **k))
+    for _ in range(2):
+        r = client.post("/api/tasks/holds", headers={"X-Fused": "1"},
+                        json={"ids": ["sess-a"]})
+        assert r.status_code == 200
+    assert len(calls) == 1
+
+
 def test_holds_are_not_on_the_list_payload(client, projects_dir, tmp_path):
     wt = _git_worktree(tmp_path, "lp")
     _write_transcript(projects_dir, "sess-a", str(tmp_path), [

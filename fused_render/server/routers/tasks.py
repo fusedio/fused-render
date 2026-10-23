@@ -303,7 +303,8 @@ _WINDOW_MAX = 16
 def reset_cache() -> None:
     """Forget every cached transcript read. For tests, and for any caller that
     wants the next listing to re-read from disk unconditionally."""
-    global _snapshot, _builder_on, _builder_thread
+    global _snapshot, _builder_on, _builder_thread, _HOLDS_COLLECT
+    _HOLDS_COLLECT = None
     _SCAN.clear()
     _FULL.clear()
     _WINDOW.clear()
@@ -6706,6 +6707,26 @@ async def api_tasks_ports(body: PortsBody,
     return {"ports": await run_in_threadpool(work)}
 
 
+_HOLDS_COLLECT_TTL_S = 10.0
+_HOLDS_COLLECT: tuple[float, int, dict] | None = None
+_HOLDS_COLLECT_LOCK = threading.Lock()
+
+
+def _collect_for_holds() -> dict[str, dict]:
+    """`_collect()` shared across the consecutive chunk calls of one holds poll."""
+    global _HOLDS_COLLECT
+    now = time.monotonic()
+    gen = tasks_watch.generation()
+    with _HOLDS_COLLECT_LOCK:
+        hit = _HOLDS_COLLECT
+        if hit is not None and now - hit[0] < _HOLDS_COLLECT_TTL_S and hit[1] == gen:
+            return hit[2]
+    tasks = _collect()
+    with _HOLDS_COLLECT_LOCK:
+        _HOLDS_COLLECT = (now, gen, tasks)
+    return tasks
+
+
 @router.post("/api/tasks/holds")
 async def api_tasks_holds(body: PortsBody,
                           x_fused: str | None = Header(default=None)):
@@ -6714,14 +6735,20 @@ async def api_tasks_holds(body: PortsBody,
     the Workspace row's "3 uncommitted · 2 unpushed" marker. Tasks with no
     recorded worktree (or whose folders are gone) are absent. `dirty_files` /
     `unpushed` are null when git could not answer, and `reasons` then says
-    `unknown`. Off the list payload, in the threadpool, cached ~10 s."""
+    `unknown`. Off the list payload, in the threadpool.
+
+    The client polls EVERY open key (the grouping needs them all), in chunks of
+    100 ids. Each chunk used to pay its own full `_collect()`, so the collected
+    result is shared for `_HOLDS_COLLECT_TTL_S` (and dropped the moment the tasks
+    watcher's generation moves), and each worktree's git answer has its own
+    ~10 s cache in `task_teardown.holds_for`."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
     from fused_render.server import task_teardown  # noqa: PLC0415
 
     def work() -> dict:
-        tasks = _collect()
+        tasks = _collect_for_holds()
         out: dict = {}
         for key in dict.fromkeys(body.ids[:100]):
             task = tasks.get(key)
