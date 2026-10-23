@@ -273,7 +273,7 @@ engines in AI Models) are in the list too, as a row that takes you there.
 | **App** | **General** | Appearance and colour theme · native windows · the launcher's shortcuts (macOS) · automatic update downloads · the process Monitor · Reader |
 | | **Accounts** | Fused account · default environment · Hugging Face |
 | | **Experimental flags** (beta) | Canvases (and, under it, loading a custom deployment's workbench through a local proxy; `canvases_embed_proxy_enabled` under `[render]` in `~/.fused/settings.toml` overrides that switch) · Marketplace · Chromium engine for windows. All off by default |
-| **Agents** | **Coding agents** | Which coding agents (Claude Code, GitHub Copilot CLI, OpenAI Codex CLI) run chats and tasks, each with its health, and the default for new ones |
+| **Agents** | **Coding agents** | Which coding agents (Claude Code, GitHub Copilot CLI, OpenAI Codex CLI, Google Gemini CLI) run chats and tasks, each with its health, and the default for new ones |
 | | **Chats & tasks** | One task at a time per folder (beta) · AI recap titles · stable AI titles · lean Claude sessions · default approvals for new chats · concurrent Claude sessions · notifications for terminal sessions |
 | | **Claude Code** | The `settings.json` keys that shape the Claude sessions this app runs |
 | **Apps & files** | **Sharing & sync** | Git sync · the Share sheet and its GitHub link · live previews in thumbnails |
@@ -327,7 +327,7 @@ four tabs, each with its own filter box at the top of the page.
 
 - **Skills** has **Installed** and **Discover**. Installed lists the skills in
   `~/.claude/skills`, `~/.agents/skills` (read by Copilot and Codex),
-  `~/.copilot/skills` and `~/.codex/skills`, then the skills that come with
+  `~/.copilot/skills`, `~/.codex/skills` and `~/.gemini/skills`, then the skills that come with
   enabled Claude plugins (read-only). A skill reachable through a link and a
   copy is one row. When more than one coding agent is on in Preferences, each
   row says which of them read it. **Discover** lists the skills the marketplaces

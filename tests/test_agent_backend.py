@@ -78,7 +78,7 @@ def home(tmp_path, monkeypatch):
     for name in ("FUSED_RENDER_SKILL_PLUGIN_DIR", "FUSED_RENDER_WORKBENCH_PLUGIN_DIR",
                  "FUSED_RENDER_FUSED_CLI_DIR", "FUSED_RENDER_ORIGIN",
                  "FUSED_RENDER_COPILOT_BIN", "FUSED_RENDER_CLAUDE_BIN",
-                 "FUSED_RENDER_CODEX_BIN"):
+                 "FUSED_RENDER_CODEX_BIN", "FUSED_RENDER_GEMINI_BIN"):
         monkeypatch.delenv(name, raising=False)
     return {"unnested": str(unnested), "resolved": str(resolved)}
 
@@ -180,15 +180,20 @@ def test_the_error_markers_and_labels_mirror_agent_backends(agent):
     from fused_render.agent_backends import codex as backend_codex
     assert agent._ACCOUNT_ERROR_MARKERS["codex"] == backend_codex.CODEX.account_error_markers
     assert agent._LIMIT_ERROR_MARKERS["codex"] == backend_codex.CODEX.limit_error_markers
+    from fused_render.agent_backends import gemini as backend_gemini
+    assert agent._ACCOUNT_ERROR_MARKERS["gemini"] == backend_gemini.GEMINI.account_error_markers
+    assert agent._LIMIT_ERROR_MARKERS["gemini"] == backend_gemini.GEMINI.limit_error_markers
     assert agent._BACKEND_LABELS == {"claude": backend_claude.CLAUDE.label,
                                      "copilot": backend_copilot.COPILOT.label,
-                                     "codex": backend_codex.CODEX.label}
+                                     "codex": backend_codex.CODEX.label,
+                                     "gemini": backend_gemini.GEMINI.label}
     assert set(agent.BACKENDS) == set(agent._BACKEND_LABELS)
     assert set(agent._ACCOUNT_ERROR_MARKERS) == set(agent.BACKENDS)
     assert set(agent._LIMIT_ERROR_MARKERS) == set(agent.BACKENDS)
     # A new non-Claude chat's model pill: each catalog row's default.
     assert agent._NEW_CHAT_MODELS == {"copilot": backend_copilot.COPILOT.default_model,
-                                      "codex": backend_codex.CODEX.default_model}
+                                      "codex": backend_codex.CODEX.default_model,
+                                      "gemini": backend_gemini.GEMINI.default_model}
     # Every backend with no fused-minted id is a non-Claude one, and every
     # non-Claude one here mints its own.
     assert set(agent._SELF_MINTED_ID_BACKENDS) == set(agent.BACKENDS) - {"claude"}
@@ -610,7 +615,7 @@ def test_a_disabled_agent_is_refused_before_a_run_dir_exists(agent, target, home
                    "reason": "backend_disabled", "backend": "copilot"}
     assert os.listdir(agent.RUNS) == []
     assert "unknown agent backend" in agent._start(
-        file, "hi", "", "", "", "", has_pane=False, backend="gemini")["error"]
+        file, "hi", "", "", "", "", has_pane=False, backend="nope")["error"]
     _prefs(home, copilot_enabled=True)
     res = agent._start(file, "hi", "", "", "", "plan", has_pane=False, backend="copilot")
     assert res["error"] == "plan mode is not available for Copilot"
@@ -1279,7 +1284,7 @@ def test_registry_running_reads_every_root(agent, target):
         with open(os.path.join(sessions_dir, "p.json"), "w") as fh:
             json.dump({"pid": os.getpid(), "sessionId": "s-" + backend,
                        "cwd": workdir, "status": "busy"}, fh)
-    assert agent._registry_running(workdir) == {"s-claude", "s-copilot", "s-codex"}
+    assert agent._registry_running(workdir) == {"s-claude", "s-copilot", "s-codex", "s-gemini"}
 
 
 def test_defaults_carry_the_backend(agent, target, home):
@@ -2162,3 +2167,405 @@ def test_poll_context_carries_the_codex_window(agent, tmp_path):
                    {"type": "system", "subtype": "status", "context_window": 258400}])
     p = agent._poll("run-1")
     assert p["backend"] == "codex" and p["context"]["window"] == 258400
+
+
+# ================================================= Gemini (GEMINI_BACKEND.md)
+
+SID_GEMINI = "3f2c6c1e-5b1a-4c2d-9e3f-0a1b2c3d4e5f"    # uuid4, as `session/new` mints
+
+
+def _gemini_bin(tmp_path, monkeypatch):
+    b = tmp_path / "bin" / "gemini"
+    b.parent.mkdir(exist_ok=True)
+    b.write_text("#!/bin/sh\nexit 0\n")
+    b.chmod(0o755)
+    monkeypatch.setenv("FUSED_RENDER_GEMINI_BIN", str(b))
+    return str(b)
+
+
+def test_gemini_account_text_names_geminis_fix(agent):
+    """D18/§8: a Gemini run reads its own sign-in fix and quota sentence,
+    never Claude's (and no guide link: the site has no Gemini panel)."""
+    assert agent._account_error("Gemini API key is missing or not configured.", "gemini") == (
+        "Gemini CLI isn't signed in. Sign in from Preferences → Agents (or run "
+        "`gemini` in a terminal and finish the sign-in), then start a new chat "
+        "here. (Gemini API key is missing or not configured.)")
+    assert agent._account_error("RESOURCE_EXHAUSTED: quota exceeded", "gemini") == (
+        "Your Gemini quota was reached. Wait for it to reset, or switch to a "
+        "plan or key with more, then try again. (RESOURCE_EXHAUSTED: quota exceeded)")
+    for raw in ("401 Unauthorized", "429 Too Many Requests", "invalid_grant"):
+        text = agent._account_error(raw, "gemini")
+        assert "claude" not in text.lower() and "http" not in text
+    # Each agent's markers stay its own.
+    assert agent._account_error("resource_exhausted", "claude") == "resource_exhausted"
+    assert agent._account_error("requiresOpenaiAuth", "gemini") == "requiresOpenaiAuth"
+
+
+def test_the_gemini_prompt_never_speaks_claude(agent, home, tmp_path, monkeypatch):
+    """`_appended_prompt(..., "gemini")` is the body of the generated
+    GEMINI.md (D8): no Claude, no CLAUDE.md, no Claude-only tool names — and
+    no promise that `fused` is pre-approved (Gemini has no allow-list flag,
+    D9, `_NO_PREAPPROVE_BACKENDS`). The context dir spells the pane tool by
+    its bare name, since that is how Gemini offers an MCP tool."""
+    canvases = tmp_path / "canvases"
+    clone = canvases / "c1"
+    clone.mkdir(parents=True)
+    (clone / "index.html").write_text("<html></html>")
+    monkeypatch.setenv("FUSED_RENDER_CANVASES_DIR", str(canvases))
+    monkeypatch.setenv("FUSED_RENDER_FUSED_CLI_DIR", str(tmp_path / "cli"))
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:9")
+    monkeypatch.setattr(agent, "_custom_env", lambda origin, file: None)
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    page = tmp_path / "page.html"
+    page.write_text("<html></html>")
+    claude_only = re.compile(r"\bClaude\b|CLAUDE\.md|AskUserQuestion|ExitPlanMode|"
+                             r"EnterWorktree|\bSkill\b")
+    for target, pane in ((str(page), True), (str(clone), True), (str(plain), False)):
+        body = agent._appended_prompt(target, pane, "gemini")
+        assert not claude_only.search(body), (target, claude_only.search(body))
+        assert "pre-approved" not in body and "`fused` CLI is on PATH" in body
+        assert body.endswith(agent._blocked_note("gemini"))
+    assert agent._blocked_note("gemini") == agent._blocked_note("copilot")
+    assert agent._fused_cli_note("gemini") == agent._fused_cli_note("codex")
+    assert agent._NO_PREAPPROVE_BACKENDS == ("codex", "gemini")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    ctx = agent._gemini_context_dir(str(run_dir), str(page), True)
+    assert ctx == str(run_dir / "gemini")
+    text = (run_dir / "gemini" / "GEMINI.md").read_text()
+    assert "mcp__fused_approvals__" not in text and "app_state" in text
+    assert not claude_only.search(text)
+
+
+def test_a_fresh_gemini_chat_learns_its_id_from_the_stream(
+        agent, target, home, tmp_path, monkeypatch):
+    """D2: Gemini mints the session id in `session/new`, so a fresh chat has
+    none in `_start` (`session_id: ""`), the host gets a ready-made argv, and
+    the first poll that sees the init row records the id AS GEMINI before
+    naming it."""
+    file, workdir = target
+    _prefs(home, gemini_enabled=True)
+    binary = _gemini_bin(tmp_path, monkeypatch)
+    monkeypatch.setitem(agent._HOST_FILES, "gemini", _stub_host(tmp_path))
+    monkeypatch.setitem(agent._HOST_FILES, "claude", str(tmp_path / "never.py"))
+    res = agent._start(file, "hi", "", "gemini-2.5-pro", "", "acceptEdits",
+                       has_pane=False, backend="gemini")
+    assert res["backend"] == "gemini" and res["session_id"] == ""
+    req, run_dir = _req_of(agent, res)
+    assert req["backend"] == "gemini"
+    assert req["session_id"] == "" and req["new_session_id"] == ""
+    assert req["argv"][:3] == [binary, "--acp", "--skip-trust"]
+    assert req["argv"][3:7] == ["-m", "gemini-2.5-pro", "--approval-mode", "autoEdit"]
+    assert req["cli_mode"] == "acceptEdits"
+    with open(os.path.join(run_dir, "meta.json")) as fh:
+        meta = json.load(fh)
+    assert "session_id" not in meta and meta["backend"] == "gemini"
+    assert (meta["model"], meta["effort"]) == ("gemini-2.5-pro", "")
+    with open(os.path.join(run_dir, "pid"), "w") as fh:
+        fh.write(str(os.getpid()))
+    _out(run_dir, [{"type": "system", "subtype": "init", "session_id": SID_GEMINI,
+                    "backend": "gemini"},
+                   {"type": "result", "subtype": "success", "is_error": False,
+                    "result": "ok", "session_id": SID_GEMINI, "backend": "gemini"}])
+    assert agent._session_backend(SID_GEMINI) == ""
+    p = agent._poll(res["run_id"])
+    assert p["session_id"] == SID_GEMINI and p["backend"] == "gemini"
+    assert agent._session_backend(SID_GEMINI) == "gemini"
+    assert agent._session_settings(SID_GEMINI) == ("gemini-2.5-pro", "")
+    assert os.path.exists(os.path.join(run_dir, "settings_recorded"))
+    # A prompt-mode start: `default` on the wire, and no `--approval-mode`
+    # (the CLI's own default).
+    res = agent._start(file, "hi", "", "", "", "prompt", has_pane=False,
+                       backend="gemini")
+    req, _ = _req_of(agent, res)
+    assert req["cli_mode"] == "default" and "--approval-mode" not in req["argv"]
+    assert "-m" not in req["argv"]
+
+
+def test_a_gemini_resume_ignores_the_requests_backend(agent, target, home, tmp_path,
+                                                      monkeypatch):
+    file, workdir = target
+    _prefs(home, gemini_enabled=True)
+    _transcript(agent, "gemini", workdir, SID_GEMINI, [_said("b", workdir)])
+    _gemini_bin(tmp_path, monkeypatch)
+    monkeypatch.setitem(agent._HOST_FILES, "gemini", _stub_host(tmp_path))
+    monkeypatch.setitem(agent._HOST_FILES, "claude", str(tmp_path / "never.py"))
+    res = agent._start(file, "again", SID_GEMINI, "auto", "", "auto",
+                       has_pane=False, backend="claude")
+    assert res["backend"] == "gemini" and res["session_id"] == SID_GEMINI
+    req, run_dir = _req_of(agent, res)
+    assert req["backend"] == "gemini" and req["session_id"] == SID_GEMINI
+    assert req["new_session_id"] == "" and "--approval-mode" in req["argv"]
+    assert req["argv"][req["argv"].index("--approval-mode") + 1] == "yolo"
+    assert agent._session_backend(SID_GEMINI) == "gemini"
+    assert agent._backend_for_session(SID_GEMINI, workdir) == "gemini"
+
+
+def test_the_prefs_gate_reads_four_keys(agent, home):
+    """`gemini_enabled` is off unless stored True; Claude is on unless stored
+    False, or when nothing else is on (`registry.enabled_ids` never empty)."""
+    assert not agent._backend_enabled("gemini")
+    _prefs(home, gemini_enabled=True)
+    assert agent._backend_enabled("gemini") and agent._backend_enabled("claude")
+    _prefs(home, claude_enabled=False, gemini_enabled=True)
+    assert not agent._backend_enabled("claude") and agent._backend_enabled("gemini")
+    _prefs(home, claude_enabled=False, copilot_enabled=False, codex_enabled=False,
+           gemini_enabled=False)
+    assert agent._backend_enabled("claude")
+    _prefs(home, gemini_enabled="yes")
+    assert not agent._backend_enabled("gemini")
+
+
+def test_a_disabled_or_plan_gemini_start_is_refused_before_a_run_dir(agent, target, home):
+    file, _ = target
+    assert agent._start(file, "hi", "", "", "", "", has_pane=False, backend="gemini") == {
+        "error": "Gemini is turned off in Preferences",
+        "reason": "backend_disabled", "backend": "gemini"}
+    _prefs(home, gemini_enabled=True)
+    assert agent._start(file, "hi", "", "", "", "plan", has_pane=False,
+                        backend="gemini") == {
+        "error": "plan mode is not available for Gemini",
+        "reason": "unsupported", "backend": "gemini"}
+    assert os.listdir(agent.RUNS) == []
+
+
+def test_a_missing_gemini_binary_refuses_the_start(agent, target, home, tmp_path,
+                                                   monkeypatch):
+    file, _ = target
+    _prefs(home, gemini_enabled=True)
+    monkeypatch.setattr(agent, "_gemini_bin", lambda: (_ for _ in ()).throw(
+        FileNotFoundError("gemini CLI not found — install with `npm install -g "
+                          "@google/gemini-cli`")))
+    res = agent._start(file, "hi", "", "", "", "", has_pane=False, backend="gemini")
+    assert res["backend"] == "gemini" and "gemini CLI not found" in res["error"]
+    [run] = os.listdir(agent.RUNS)
+    assert not os.path.exists(os.path.join(agent.RUNS, run, "meta.json"))
+
+
+def test_gemini_argv_composition(agent, target, home, tmp_path, monkeypatch):
+    """§3/D8/D9: `--acp --skip-trust`, the model, Gemini's own mode, the
+    generated context dir and every readable directory as
+    `--include-directories`, and the pane `mcp.json` (`--no-approve`) left
+    for the HOST to hand to `session/new` — never a flag for it."""
+    file, _ = target
+    binary = _gemini_bin(tmp_path, monkeypatch)
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:9")
+    run_dir = tmp_path / "run ü"
+    run_dir.mkdir()
+    extra = tmp_path / "extra"
+    extra.mkdir()
+    argv = agent._gemini_argv(str(run_dir), True, "auto", SID_GEMINI,
+                              "gemini-2.5-pro", "", [str(extra), str(tmp_path / "gone")], file)
+    assert argv[:7] == [binary, "--acp", "--skip-trust", "-m", "gemini-2.5-pro",
+                        "--approval-mode", "yolo"]
+    included = [argv[i + 1] for i, a in enumerate(argv) if a == "--include-directories"]
+    assert included[0] == str(run_dir / "gemini")
+    assert str(extra) in included and str(tmp_path / "gone") not in included
+    assert (run_dir / "gemini" / "GEMINI.md").read_text().strip()
+    with open(run_dir / "mcp.json") as fh:
+        server = json.load(fh)["mcpServers"]["fused_approvals"]
+    assert "--no-approve" in server["args"]
+    assert agent._state_dir(str(run_dir)) in server["args"]
+    assert server["env"]["FUSED_RENDER_TERMINAL_ORIGIN"] == "http://127.0.0.1:9"
+    for flag in ("--model", "--effort", "--reasoning-effort", "--session-id",
+                 "--resume", "--add-dir", "--allow-tool", "--plugin-dir",
+                 "--additional-mcp-config", "-p", "--permission-mode", "-c",
+                 "app-server", SID_GEMINI):
+        assert flag not in argv
+    assert not (run_dir / "plugin").exists()
+
+
+def test_gemini_argv_without_a_pane_or_terminal_writes_no_mcp(agent, target, home,
+                                                             tmp_path, monkeypatch):
+    file, _ = target
+    binary = _gemini_bin(tmp_path, monkeypatch)
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    argv = agent._gemini_argv(str(run_dir), False, "default", "", "", "", [], file)
+    assert argv[:3] == [binary, "--acp", "--skip-trust"]
+    assert "-m" not in argv and "--approval-mode" not in argv
+    assert not (run_dir / "mcp.json").exists()
+    # A terminal origin alone is enough for the server (the terminal tools),
+    # with no app-state dir on its argv.
+    monkeypatch.setenv("FUSED_RENDER_ORIGIN", "http://127.0.0.1:9")
+    agent._gemini_argv(str(run_dir), False, None, "", "", "", [], file)
+    with open(run_dir / "mcp.json") as fh:
+        args = json.load(fh)["mcpServers"]["fused_approvals"]["args"]
+    assert agent._state_dir(str(run_dir)) not in args and "--no-approve" in args
+
+
+def test_gemini_bin_ladder(agent, tmp_path, monkeypatch):
+    """FUSED_RENDER_GEMINI_BIN → PATH → the install prefixes."""
+    on_path = _exe(str(tmp_path / "path" / "gemini"))
+    monkeypatch.setenv("PATH", str(tmp_path / "path"))
+    assert agent._gemini_bin() == on_path
+    forced = _exe(str(tmp_path / "forced" / "gemini"))
+    monkeypatch.setenv("FUSED_RENDER_GEMINI_BIN", forced)
+    assert agent._gemini_bin() == forced
+    monkeypatch.setenv("FUSED_RENDER_GEMINI_BIN", str(tmp_path / "gone"))
+    assert agent._gemini_bin() == on_path
+    monkeypatch.delenv("FUSED_RENDER_GEMINI_BIN")
+    monkeypatch.setenv("PATH", str(tmp_path / "nothing"))
+    monkeypatch.setenv("HOME", str(tmp_path / "h"))
+    npm = _exe(str(tmp_path / "h" / ".npm-global" / "bin" / "gemini"))
+    monkeypatch.setattr(agent, "_GEMINI_CANDIDATES",
+                        tuple(c for c in agent._GEMINI_CANDIDATES if c.startswith("~")))
+    assert agent._gemini_bin() == npm
+    os.remove(npm)
+    with pytest.raises(FileNotFoundError) as exc:
+        agent._gemini_bin()
+    assert str(exc.value).startswith(
+        "gemini CLI not found — install with `npm install -g @google/gemini-cli`")
+    assert "FUSED_RENDER_GEMINI_BIN" in str(exc.value)
+
+
+def test_gemini_candidates_mirror_gemini_health(agent):
+    from fused_render import gemini_health
+    assert agent._GEMINI_CANDIDATES == gemini_health.POSIX_CANDIDATES
+    assert agent._GEMINI_CANDIDATES == (
+        "~/.npm-global/bin/gemini", "/opt/homebrew/bin/gemini",
+        "/usr/local/bin/gemini", "~/.local/bin/gemini", "~/.bun/bin/gemini",
+        "~/Library/pnpm/gemini")
+
+
+def test_gemini_spawn_env(agent, home, tmp_path, monkeypatch):
+    """§3: Codex's branch plus `NO_BROWSER=1` — CLAUDE_CODE_* stripped, the
+    CLI's home and key variables untouched, no gh, no terminal mirror, the
+    fused wrapper dir FIRST on PATH; a user's own NO_BROWSER wins."""
+    cli = str(tmp_path / "fused-bin")
+    monkeypatch.setenv("FUSED_RENDER_FUSED_CLI_DIR", cli)
+    monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", cli, "/bin"]))
+    monkeypatch.setenv("CLAUDE_CODE_SHELL_PREFIX", "/x")
+    monkeypatch.setenv("GEMINI_CLI_HOME", "/somewhere/gemini-home")
+    monkeypatch.setenv("GEMINI_API_KEY", "k")
+    monkeypatch.delenv("NO_BROWSER", raising=False)
+    monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+    monkeypatch.setattr(agent, "_gh_token", _no_gh)
+    monkeypatch.setattr(agent, "_gh_bin", _no_gh)
+    env = agent._spawn_env("chat", backend="gemini")
+    assert not [k for k in env if k.startswith("CLAUDE_CODE_")]
+    assert env["GEMINI_CLI_HOME"] == "/somewhere/gemini-home"
+    assert env["GEMINI_API_KEY"] == "k" and env["NO_BROWSER"] == "1"
+    assert "COPILOT_GITHUB_TOKEN" not in env and "FUSED_CLAUDE_CMD_LOG" not in env
+    path = env["PATH"].split(os.pathsep)
+    assert path[0] == cli and path.count(cli) == 1 and "/usr/bin" in path
+    monkeypatch.setenv("NO_BROWSER", "false")
+    assert agent._spawn_env(backend="gemini")["NO_BROWSER"] == "false"
+    # Codex's and Claude's envs carry no NO_BROWSER of ours.
+    assert "NO_BROWSER" not in agent._spawn_env(backend="codex") or \
+        agent._spawn_env(backend="codex")["NO_BROWSER"] == "false"
+
+
+def test_the_gemini_host_file_is_picked_by_backend(agent):
+    assert agent._HOST_FILES["gemini"] == os.path.join(agent.HERE, "gemini_host.py")
+    assert set(agent._HOST_FILES) == set(agent.BACKENDS)
+
+
+@pytest.fixture()
+def gemini_send(agent, home, send_env):
+    _prefs(home, gemini_enabled=True)
+    return send_env
+
+
+def test_a_gemini_model_change_is_a_live_request_and_a_new_dir_respawns(
+        agent, tmp_path, gemini_send):
+    """D7/D9/§7: a model change is a `set_model` control request ahead of
+    the user row (never a respawn); an effort says nothing on this wire; a
+    directory the spawn never saw IS a respawn (`--include-directories`
+    is the workspace grant)."""
+    run_dir = _live_run(agent, tmp_path, backend="gemini", mode="default",
+                        model="gemini-2.5-pro")
+    assert agent._send("run-1", "m", model="gemini-2.5-flash") == {"sent": True}
+    rows = _inbox_rows(run_dir)
+    assert [r["type"] for r in rows] == ["control_request", "user"]
+    assert rows[0]["request"] == {"subtype": "set_model", "model": "gemini-2.5-flash"}
+    assert _host_json(run_dir)["model"] == "gemini-2.5-flash"
+    # Same model again: no request. An effort: no respawn, no request.
+    assert agent._send("run-1", "m", model="gemini-2.5-flash", effort="high") == {"sent": True}
+    assert [r["type"] for r in _inbox_rows(run_dir)][2:] == ["user"]
+    assert gemini_send == []
+    # A new directory: the respawn Copilot does too.
+    assert agent._send("run-1", "m", read_dirs=json.dumps([str(tmp_path)])) == {"respawn": True}
+
+
+def test_gemini_modes_switch_live_and_plan_is_refused(agent, tmp_path, gemini_send):
+    run_dir = _live_run(agent, tmp_path, backend="gemini", mode="default")
+    for page, wire in (("acceptEdits", "acceptEdits"), ("auto", "auto"),
+                       ("prompt", "default")):
+        assert agent._send("run-1", "m", permission_mode=page) == {"sent": True}
+        assert _inbox_rows(run_dir)[-2]["request"] == {
+            "subtype": "set_permission_mode", "mode": wire}
+        assert _host_json(run_dir)["mode"] == wire
+    res = agent._send("run-1", "m", permission_mode="plan")
+    assert res == {"error": "plan mode is not available for Gemini",
+                   "reason": "unsupported", "backend": "gemini"}
+    assert gemini_send == []
+
+
+def test_gemini_caps_snapshots_and_background_tasks(agent, target, tmp_path):
+    file, workdir = target
+    _transcript(agent, "gemini", workdir, SID_GEMINI, [_said("b", workdir)])
+    tl = agent._snapshots(file, False, False, session_id=SID_GEMINI)
+    assert tl["versions"] == [] and tl["note"] == "Gemini sessions keep no file snapshots."
+    assert agent._snapshot_plan(file, "v1", session_id=SID_GEMINI) == {
+        "ok": False, "error": "unsupported"}
+    _live_run(agent, tmp_path, backend="gemini")
+    assert agent._task_output("run-1", "b1") == {"error": "unsupported"}
+
+
+def test_the_gemini_terminal_command_and_commit_subject(agent, target, tmp_path, monkeypatch):
+    from fused_render.agent_backends import gemini as backend_gemini
+    file, workdir = target
+    _transcript(agent, "gemini", workdir, SID_GEMINI, [_said("b", workdir)])
+    out = agent._terminal_command(file, SID_GEMINI, backend="claude")
+    assert out["backend"] == "gemini"
+    assert out["command"] == "cd %s && gemini --resume %s" % (workdir, SID_GEMINI)
+    assert out["command"] == backend_gemini.GEMINI.terminal_resume(workdir, SID_GEMINI)
+    assert agent._terminal_command(file, backend="gemini")["command"] == \
+        backend_gemini.GEMINI.terminal_resume(workdir, "")
+    seen = []
+    monkeypatch.setattr(agent, "_app_dir_for", lambda p: str(tmp_path))
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setattr(agent, "_request_sync", lambda d: None)
+
+    class Done:
+        returncode = 0
+
+    def run(argv, **kw):
+        seen.append(argv)
+        Done.returncode = 1 if "diff" in argv else 0
+        return Done
+    monkeypatch.setattr(agent.subprocess, "run", run)
+    monkeypatch.setattr(agent.shutil, "which", lambda n: "/usr/bin/git")
+    agent._commit_turn(str(tmp_path / "f"), "fix the header", "gemini")
+    commit = [a for a in seen if "commit" in a][0]
+    assert commit[commit.index("-m") + 1] == "Gemini: fix the header"
+
+
+def test_gemini_defaults_and_history(agent, target):
+    file, workdir = target
+    d = agent._defaults(file, backend="gemini")
+    assert d == {"model": "auto", "effort": "", "source": "backend",
+                 "backend": "gemini", "recorded": {"model": "", "effort": ""}}
+    _transcript(agent, "gemini", workdir, SID_GEMINI, [
+        {"type": "system", "subtype": "task_notification",
+         "summary": "Handled by Google Gemini · model gemini-2.5-pro", "status": "",
+         "backend": "gemini", "model": "gemini-2.5-pro", "sessionId": SID_GEMINI},
+        dict(_said("hello", workdir), uuid="u1"),
+        dict(_reply("gemini-2.5-pro", used=4321), uuid="a1")])
+    d = agent._defaults(file, SID_GEMINI)
+    assert (d["model"], d["backend"], d["source"]) == ("gemini-2.5-pro", "gemini", "session")
+    run_dir = os.path.join(agent.RUNS, "20261023-120000-ggg")
+    os.makedirs(run_dir)
+    with open(os.path.join(run_dir, "meta.json"), "w") as fh:
+        json.dump({"file": file, "message": "hello", "resumed_from": "",
+                   "session_id": SID_GEMINI, "backend": "gemini"}, fh)
+    _out(run_dir, [{"type": "system", "subtype": "init", "session_id": SID_GEMINI,
+                    "context_window": 1048576}, _reply("gemini-2.5-pro")])
+    h = agent._history(file, SID_GEMINI)
+    assert h["backend"] == "gemini"
+    notices = [s for t in h["turns"] for s in t.get("segments", [])
+               if s.get("kind") == "notice"]
+    assert notices and notices[0]["text"] == "Handled by Google Gemini · model gemini-2.5-pro"
+    assert h["context"]["window"] == 1048576 and h["context"]["input_tokens"] == 4321

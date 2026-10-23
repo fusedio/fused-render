@@ -34,6 +34,19 @@ afterEach(() => {
 
 const path = (u: string) => new URL(u, "http://x").pathname;
 
+test("gemini's doors are /api/gemini/* (docs/GEMINI_BACKEND.md D10)", async () => {
+  await getAgentHealth("gemini");
+  await refreshAgentHealth("gemini");
+  await startAgentLogin("gemini");
+  await linkAgentPath("gemini");
+  expect(urls.map(path)).toEqual([
+    "/api/gemini/health",
+    "/api/gemini/health/refresh",
+    "/api/gemini/login",
+    "/api/gemini/link-path",
+  ]);
+});
+
 test("codex's doors are /api/codex/* (docs/CODEX_BACKEND.md D10)", async () => {
   await getAgentHealth("codex");
   await refreshAgentHealth("codex");

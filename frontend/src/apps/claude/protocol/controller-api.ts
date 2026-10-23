@@ -230,7 +230,7 @@ export interface ChatState {
   file: string | null;
   sessionId: string | null;
   /**
-   * WHICH AGENT THIS CONVERSATION RUNS ON — "claude" | "copilot" | "codex" — as the
+   * WHICH AGENT THIS CONVERSATION RUNS ON — "claude" | "copilot" | "codex" | "gemini" — as the
    * server reported it (poll, history, defaults), or "" while nothing has
    * (docs/COPILOT_BACKEND.md D2). Immutable once a session has a turn: the
    * Agent pill fixes on it, and a send names it. "" for a brand-new chat,

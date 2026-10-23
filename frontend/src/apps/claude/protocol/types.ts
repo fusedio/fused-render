@@ -55,7 +55,7 @@ export interface StartRequest {
   message: string;
   /** "" = a new session (T:16605-16623). */
   session_id: string;
-  /** WHICH AGENT RUNS THIS CHAT — "claude" (default) | "copilot" | "codex"
+  /** WHICH AGENT RUNS THIS CHAT — "claude" (default) | "copilot" | "codex" | "gemini"
    *  (docs/COPILOT_BACKEND.md D2). Chosen at the first turn and immutable: a
    *  send into an existing session must name the session's own. */
   backend?: string;

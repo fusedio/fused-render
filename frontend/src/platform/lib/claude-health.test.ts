@@ -14,12 +14,13 @@ import {
   CLAUDE_UPDATE_COMMAND,
   CODEX_BIN_ENV,
   COPILOT_BIN_ENV,
+  GEMINI_BIN_ENV,
   agentAccountLine,
   agentIssues,
   claudeIssues,
   issueHelpUrl,
 } from "./claude-health";
-import { CLAUDE_INSTALL_COMMAND, CODEX_INSTALL_COMMAND } from "./trouble";
+import { CLAUDE_INSTALL_COMMAND, CODEX_INSTALL_COMMAND, GEMINI_INSTALL_COMMAND } from "./trouble";
 import type { ClaudeHealth } from "./api";
 
 // A machine where everything is fine. Each test breaks exactly one thing, so
@@ -290,4 +291,56 @@ test("codex's account line: ChatGPT with its plan, or an API key", () => {
   expect(agentAccountLine(codexHealthy({ signed_in: false }), "codex", claudeWords)).toBeNull();
   // Claude's line is still the caller's.
   expect(agentAccountLine(healthy(), "claude", claudeWords)).toBe("CLAUDE LINE");
+});
+
+
+// -- Gemini (docs/GEMINI_BACKEND.md D10) ---------------------------------------
+
+function geminiHealthy(over: Partial<ClaudeHealth> = {}): ClaudeHealth {
+  return healthy({
+    path: "/Users/x/.npm-global/bin/gemini",
+    version: "0.65.0",
+    min_version: "0.65.0",
+    install_command: GEMINI_INSTALL_COMMAND,
+    account: { method: "google", email: "dev@example.com", org: null, plan: null },
+    ...over,
+  });
+}
+
+test("gemini: a healthy machine produces no issues", () => {
+  expect(agentIssues(geminiHealthy(), "gemini")).toEqual([]);
+});
+
+test("gemini: a missing CLI names Gemini CLI and offers npm, and a stale override names its env var", () => {
+  const [issue] = agentIssues(geminiHealthy({ found: false, path: null, version: null, signed_in: false }), "gemini");
+  expect(issue.id).toBe("missing");
+  expect(issue.title).toBe("The app can't find Gemini CLI");
+  expect(issue.command).toBe(GEMINI_INSTALL_COMMAND);
+  expect(issue.action).toEqual({ kind: "install", label: "Install Gemini CLI" });
+  const [override] = agentIssues(geminiHealthy({ found: false, source: "override" }), "gemini");
+  expect(override.id).toBe("unusable-override");
+  expect(override.title).toContain(GEMINI_BIN_ENV);
+  expect(GEMINI_BIN_ENV).toBe("FUSED_RENDER_GEMINI_BIN");
+  expect(override.title).not.toContain(CODEX_BIN_ENV);
+});
+
+test("gemini: signed out offers the Google sign-in, never `claude doctor`", () => {
+  const issues = agentIssues(geminiHealthy({ signed_in: false, account: null }), "gemini");
+  expect(issues.map((i) => i.id)).toEqual(["signed-out"]);
+  expect(issues[0].detail).toContain("Sign in with Google");
+  expect(issues[0].action?.kind).toBe("login");
+  const [broken] = agentIssues(geminiHealthy({ broken: true }), "gemini");
+  expect(broken.id).toBe("broken");
+  expect(broken.action).toBeUndefined();
+});
+
+test("gemini: the account line names the method in Gemini's words", () => {
+  const line = (over: Partial<ClaudeHealth>) => agentAccountLine(geminiHealthy(over), "gemini", () => "CLAUDE LINE");
+  expect(line({})).toBe("Signed in with Google as dev@example.com");
+  expect(line({ account: { method: "google", email: null, org: null, plan: null } })).toBe("Signed in with Google");
+  expect(line({ account: { method: "api_key", email: null, org: null, plan: null } })).toBe("Signed in with a Gemini API key");
+  expect(line({ account: { method: "vertex", email: null, org: null, plan: null } })).toBe("Signed in through Vertex AI");
+  expect(line({ account: { method: "gateway", email: null, org: null, plan: null } })).toBe("Signed in through an AI API gateway");
+  expect(line({ account: null })).toBe("Signed in");
+  expect(line({ signed_in: false })).toBeNull();
 });

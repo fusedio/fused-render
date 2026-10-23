@@ -57,17 +57,17 @@ router = APIRouter()
 # Claude Code's projects dir (CLAUDE_CONFIG_DIR wins where set —
 # `agent_roots.claude_dir`), module-level because the tests of this router
 # and of `routers/tasks` patch it at a tmp dir. Every scan here walks
-# `projects_roots()`, which puts fused's own Copilot and Codex roots beside
-# it (docs/COPILOT_BACKEND.md D3, docs/CODEX_BACKEND.md D3): same bucket
-# layout, same row shape, so a Copilot or Codex session is a session on every
-# one of these surfaces.
+# `projects_roots()`, which puts fused's own Copilot, Codex and Gemini roots
+# beside it (docs/COPILOT_BACKEND.md D3, docs/CODEX_BACKEND.md D3,
+# docs/GEMINI_BACKEND.md D3): same bucket layout, same row shape, so a
+# non-Claude session is a session on every one of these surfaces.
 CLAUDE_DIR = roots.claude_dir()
 PROJECTS_DIR = os.path.join(CLAUDE_DIR, "projects")
 
 
 def projects_roots() -> list[tuple[str, str]]:
-    """`[(backend, projects dir), ...]` — Claude's (as patched), Copilot's and
-    Codex's."""
+    """`[(backend, projects dir), ...]` — Claude's (as patched), Copilot's,
+    Codex's and Gemini's."""
     return roots.projects_roots(PROJECTS_DIR)
 
 # Mutable session state (custom names, triage). The retired bundled sessions
@@ -1100,9 +1100,10 @@ def _recap_generate(agent, file: str, session_id: str, transcript: str = "",
     the title prompt pair replaces the recap one on every backend and the
     reply comes back RAW for `_title_parse`.
 
-    A COPILOT session is recapped by Copilot (`_recap_copilot`) and a CODEX
-    session by Codex (`_recap_codex`), each from the same tail; everything
-    below is the Claude run.
+    A COPILOT session is recapped by Copilot (`_recap_copilot`), a CODEX
+    session by Codex (`_recap_codex`) and a GEMINI session by Gemini
+    (`_recap_gemini`), each from the same tail; everything below is the
+    Claude run.
 
     `--no-session-persistence` is the load-bearing flag: this run mints a
     session id of its own and must leave no `.jsonl` behind, or every recap
@@ -1156,6 +1157,8 @@ def _recap_generate(agent, file: str, session_id: str, transcript: str = "",
         return _recap_copilot(agent, tail, titles, prompts, raw)
     if backend == "codex":
         return _recap_codex(agent, tail, titles, prompts, raw)
+    if backend == "gemini":
+        return _recap_gemini(agent, tail, titles, prompts, raw)
     message = json.dumps({"type": "user", "message": {
         "role": "user",
         "content": [{"type": "text", "text": prompts[1] % tail}]}})
@@ -1339,6 +1342,87 @@ def _recap_codex(agent, tail: str, titles: bool | None = None,
         return reply if raw else _recap_plain(reply, titles)
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
+
+
+#: What `-p` says when the whole prompt rides stdin: the CLI appends the flag's
+#: text AFTER the stdin input, so the pointer closes the message.
+_GEMINI_RECAP_POINTER = "Answer as the instructions above say."
+
+
+def _recap_gemini(agent, tail: str, titles: bool | None = None,
+                  prompts: tuple[str, str] | None = None,
+                  raw: bool = False) -> str:
+    """The Gemini twin of the Claude run (docs/GEMINI_BACKEND.md D12, D16):
+    `gemini -p`, Gemini's headless one-shot, never the ACP server the
+    sessions use. Gemini has no system-prompt flag either, so the system text
+    leads the one user message, as the Copilot and Codex runs send it.
+
+    The flags, each checked against `gemini --help` (0.65.0):
+
+    * `-p <pointer>` enters headless mode; the help says the flag's text is
+      "appended to input on stdin (if any)", so the tail travels over stdin,
+      never argv (the same rule as the other three runs), and the flag
+      carries one closing sentence.
+    * `-o json`: one JSON object on stdout — `{session_id, response, stats}`
+      (`JsonFormatter` in the CLI's source) — so the reply is read off a
+      field, never scraped from a stream that also carries the CLI's own
+      lines.
+    * `--approval-mode default`: a headless run never stops to ask, and a
+      tool that would ask is refused instead of granted — the recap only has
+      to read the prompt.
+    * `-m <the Gemini row's default model>`: `auto`, the CLI's own default.
+
+    Gemini has no `--no-session-persistence`: every run records a chat file
+    under `<gemini home>/tmp/<project>/chats/`, which `gemini --resume`
+    lists. The reply names the run's `session_id`, so that one file is
+    removed afterwards through the same helper erase uses
+    (`routers.tasks._gemini_chat_files`), whatever the outcome.
+
+    `_spawn_env(backend="gemini")` leaves `GEMINI_CLI_HOME` and the Google
+    credential variables exactly as found and sets `NO_BROWSER`, so a
+    signed-out run fails instead of opening a browser. Same spawn rule as
+    the other three (no Popen `cwd`, `close_fds=False`), and every failure
+    is "", as there."""
+    from fused_render.agent_backends import registry
+
+    system, template = prompts or _recap_prompts(titles)
+    prompt = system + "\n\n" + template % tail
+    sid = ""
+    try:
+        proc = subprocess.Popen(
+            [agent._gemini_bin(), "-p", _GEMINI_RECAP_POINTER, "-o", "json",
+             "--approval-mode", "default",
+             "-m", registry.get("gemini").default_model],
+            env=agent._spawn_env(backend="gemini"),
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, **claude_health.SUBPROCESS_KWARGS)
+        try:
+            stdout, _ = proc.communicate(input=prompt, timeout=_RECAP_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            _recap_reap(proc)
+            return ""
+        try:
+            body = json.loads(stdout or "")
+        except ValueError:
+            return ""
+        if not isinstance(body, dict):
+            return ""
+        sid = str(body.get("session_id") or "")
+        if proc.returncode != 0 or body.get("error"):
+            return ""
+        reply = body.get("response")
+        if not isinstance(reply, str):
+            return ""
+        return reply if raw else _recap_plain(reply, titles)
+    finally:
+        if sid:
+            # Lazily: `routers.tasks` imports this module.
+            from fused_render.server.routers import tasks as tasks_mod
+            for path in tasks_mod._gemini_chat_files(sid):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
 
 
 def _stored_recap(session_id: str, for_uuid: str,

@@ -23,7 +23,7 @@ function ctx(over: Partial<SettingsContext> = {}, prefs: Partial<Prefs> = {}): S
     prefs: {
       native_windows: { available: true, enabled: true },
       launcher: { available: true },
-      agents: { claude: true, copilot: false, codex: false, default: "claude" },
+      agents: { claude: true, copilot: false, codex: false, gemini: false, default: "claude" },
       ...prefs,
     } as unknown as Prefs,
     ...over,
@@ -124,22 +124,25 @@ describe("visibility", () => {
 
   test("the default-agent picker appears only with two or more agents on", () => {
     expect(visibleSettings(ctx()).map((s) => s.id)).not.toContain("agent-default");
-    const agents = (claude: boolean, copilot: boolean, codex: boolean) =>
-      visibleSettings(ctx({}, { agents: { claude, copilot, codex, default: "claude" } } as Partial<Prefs>))
+    const agents = (claude: boolean, copilot: boolean, codex: boolean, gemini = false) =>
+      visibleSettings(ctx({}, { agents: { claude, copilot, codex, gemini, default: "claude" } } as Partial<Prefs>))
         .map((s) => s.id);
     expect(agents(true, true, false)).toContain("agent-default");
     expect(agents(true, false, true)).toContain("agent-default");
     expect(agents(false, true, true)).toContain("agent-default");
     expect(agents(true, true, true)).toContain("agent-default");
     expect(agents(false, false, true)).not.toContain("agent-default");
+    // Gemini counts as one of the two (docs/GEMINI_BACKEND.md D17).
+    expect(agents(true, false, false, true)).toContain("agent-default");
+    expect(agents(false, false, false, true)).not.toContain("agent-default");
     // An older server says nothing of Codex: two of the other two still count.
     const old = ctx({}, { agents: { claude: true, copilot: true, default: "claude" } } as unknown as Partial<Prefs>);
     expect(visibleSettings(old).map((s) => s.id)).toContain("agent-default");
   });
 
-  test("the three agent switches stand in the registry's order", () => {
-    const ids = visibleSettings(ctx()).map((s) => s.id as string).filter((id) => /^agent-(claude|copilot|codex)$/.test(id));
-    expect(ids).toEqual(["agent-claude", "agent-copilot", "agent-codex"]);
+  test("the four agent switches stand in the registry's order", () => {
+    const ids = visibleSettings(ctx()).map((s) => s.id as string).filter((id) => /^agent-(claude|copilot|codex|gemini)$/.test(id));
+    expect(ids).toEqual(["agent-claude", "agent-copilot", "agent-codex", "agent-gemini"]);
   });
 
   test("sections come out in first-appearance order", () => {
@@ -228,6 +231,13 @@ describe("search", () => {
         .map((e) => e.id as string);
     expect(ids(false)).toEqual(["claude-cli-missing"]);
     expect(ids(true)).toEqual([]);
+  });
+
+  test("Gemini is findable by its own words and Google's", () => {
+    for (const q of ["gemini", "google"]) {
+      expect(searchSettings(all, q).map((h) => h.id)).toContain("agent-gemini");
+    }
+    expect(searchSettings(all, "gemini sign").map((h) => h.id)).toEqual(["agent-gemini", "agent-signin"]);
   });
 
   test("Codex is findable by its own words and its account's", () => {

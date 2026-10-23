@@ -5,6 +5,7 @@ import { expect, test } from "bun:test";
 import {
   CLAUDE_INSTALL_COMMAND,
   CODEX_INSTALL_COMMAND,
+  GEMINI_INSTALL_COMMAND,
   troubleInstructions,
   resetAnnouncedTemplateErrors,
   shouldAnnounceTemplateError,
@@ -434,4 +435,55 @@ test("the Codex brief installs with npm and signs in with a device code", () => 
   expect(signedOut).toContain("codex login --device-auth");
   expect(signedOut).not.toContain("/login");
   expect(signedOut).not.toContain(CODEX_INSTALL_COMMAND);
+});
+
+
+// -- Gemini (docs/GEMINI_BACKEND.md D13, §8) -----------------------------------
+
+test("gemini's own markers classify a Gemini session's failure", () => {
+  // The account markers, verbatim from agent_backends/gemini.py.
+  for (const msg of [
+    "Gemini API key is missing or not configured.",
+    "Authentication required.",
+    "Not logged in",
+    "gemini is not signed in: the CLI asked for a browser sign-in",
+    "UNAUTHENTICATED: Request had invalid authentication credentials",
+    "invalid_grant: Token has been expired or revoked.",
+    "login required",
+    "Please sign in again",
+    "PERMISSION_DENIED",
+    "HTTP 401",
+  ]) expect(troubleKind(msg, "gemini")).toBe("login");
+  // The limit markers, likewise.
+  for (const msg of [
+    "RESOURCE_EXHAUSTED: quota exceeded",
+    "Rate limit exceeded",
+    "You exceeded your current quota",
+    "Too Many Requests",
+    "HTTP 429",
+  ]) expect(troubleKind(msg, "gemini")).toBe("limit");
+});
+
+test("gemini's markers are Gemini's alone, and a shape counts when it names Gemini or Google", () => {
+  expect(troubleKind("RESOURCE_EXHAUSTED", "claude")).toBe("raw");
+  expect(troubleKind("invalid_grant", "codex")).toBe("raw");
+  expect(troubleKind("listening on port 14290", "gemini")).toBe("raw");
+  expect(troubleKind("build 4011 done", "gemini")).toBe("raw");
+  expect(troubleKind("gemini: command not found", "gemini")).toBe("notfound");
+  expect(troubleKind("spawn gemini ENOENT", "gemini")).toBe("notfound");
+  expect(troubleKind("could not write the file: no such file or directory", "gemini")).toBe("raw");
+  expect(troubleKind("claude: command not found", "gemini")).toBe("raw");
+});
+
+test("the Gemini brief installs with npm and signs in with Google", () => {
+  const missing = troubleInstructions({ what: "x", error: "gemini: command not found", backend: "gemini" });
+  expect(missing).toContain("which gemini");
+  expect(missing).toContain(GEMINI_INSTALL_COMMAND);
+  expect(missing).not.toContain("install.sh");
+  expect(missing).toContain("gemini --version");
+  const signedOut = troubleInstructions({ what: "x", error: "Not logged in", backend: "gemini" });
+  expect(signedOut).toContain("/auth");
+  expect(signedOut).toContain("GEMINI_API_KEY");
+  expect(signedOut).not.toContain("codex login");
+  expect(signedOut).not.toContain(GEMINI_INSTALL_COMMAND);
 });
