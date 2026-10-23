@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import stat
+import string
 import sys
 import tempfile
 import time
@@ -100,7 +101,15 @@ def roots() -> list[dict[str, str]]:
     home = Path.home()
     if home.is_dir():
         locations.append({"name": "Home", "path": str(home), "kind": "home"})
-    locations.append({"name": "Computer", "path": os.sep, "kind": "root"})
+    if os.name == "nt":
+        for letter in string.ascii_uppercase:
+            drive = Path(f"{letter}:\\")
+            if drive.is_dir():
+                locations.append(
+                    {"name": f"{letter}:", "path": str(drive), "kind": "drive"}
+                )
+    else:
+        locations.append({"name": "Computer", "path": os.sep, "kind": "root"})
     deduplicated: dict[str, dict[str, str]] = {}
     for location in locations:
         deduplicated.setdefault(os.path.normcase(location["path"]), location)

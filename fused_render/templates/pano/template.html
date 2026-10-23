@@ -462,8 +462,12 @@
     if (viewer) { try { viewer.destroy(); } catch (e) {} viewer = null; viewerKey = ""; viewerKind = ""; }
   }
 
-  // Comparison key for a file path, not the URL used to fetch it.
-  const pathKey = (p) => p;
+  // Comparison key for a file path, not the URL used to fetch it: the same
+  // absolute path can come through as forward slashes (a URL param, as typed
+  // in _file) or backslashes (pano.py's os.path.abspath, on Windows) — normalize
+  // before comparing so those two spellings of the same file don't look like a
+  // change and force a pointless viewer rebuild.
+  const pathKey = (p) => (/^[A-Za-z]:\\/.test(p) ? p.replace(/\\/g, "/") : p);
 
   function buildSphere(panoUrl, kind, key) {
     if (viewerKey === key && viewerKind === kind) return;

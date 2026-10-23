@@ -2620,15 +2620,18 @@ function flistSkelHtml(n = 6) {
     `<div class="fitem skel"><span class="ic"><span class="skel-bar" style="width:12px"></span></span><span class="skel-bar" style="width:${SKEL_WIDTHS[i % SKEL_WIDTHS.length]}%"></span></div>`
   ).join("");
 }
+// Drive paths (C:\\...) use forward slashes in the shell; POSIX backslashes are filename characters.
+const winFwd = (p) => (/^[A-Za-z]:\\/.test(p) ? p.replace(/\\/g, "/") : p);
 function startDir() {
-  const cf = currentFile();
+  const cf = winFwd(currentFile());
   return cf ? cf.replace(/\/[^/]*$/, "") || "/" : "~";
 }
 function crumbHtml(path) {
   const parts = path.split("/").filter(Boolean);
-  const crumbs = ['<a data-p="/">/</a>'];
+  const winRoot = /^[A-Za-z]:$/.test(parts[0] || "");   // "C:" drive paths take no leading "/"
+  const crumbs = winRoot ? [] : ['<a data-p="/">/</a>'];
   parts.forEach((p, i) => {
-    const acc = "/" + parts.slice(0, i + 1).join("/");
+    const acc = (winRoot ? "" : "/") + parts.slice(0, i + 1).join("/") + (winRoot && !i ? "/" : "");
     crumbs.push(`<a data-p="${escHtml(acc)}">${escHtml(p)}</a>`);
   });
   return crumbs.join(" <span style='color:var(--faint)'>/</span> ");
@@ -2636,7 +2639,7 @@ function crumbHtml(path) {
 // ---- save as (File ▸ Save as…) ----
 async function saveAsDialog() {
   if (!book) return;
-  const cf = currentFile();
+  const cf = winFwd(currentFile());
   const ext = ((cf.match(/\.(xlsx|xlsm|csv|parquet)$/i) || [".xlsx"])[0]).toLowerCase();
   const base = (cf.split("/").pop() || "workbook").replace(/\.(xlsx|xlsm|csv|parquet)$/i, "");
   openModal("Save workbook as", `<div id="crumbs"></div><div class="flist" id="flist">${flistSkelHtml()}</div>

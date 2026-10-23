@@ -2448,7 +2448,7 @@
   }
 
   async function saveAs(firstSave) {
-    const fileDir = FILE.slice(0, FILE.lastIndexOf("/"));
+    const fileDir = FILE.slice(0, Math.max(FILE.lastIndexOf("/"), FILE.lastIndexOf("\\")));
     const start = await py({ action: "listdir", path: firstSave ? "~/Documents" : fileDir }).catch(() => null);
     let dir = start ? start.path : firstSave ? "" : fileDir;
     const homeDir = start ? start.home : "";
