@@ -5,10 +5,11 @@
 // bulk archive tears down exactly what a single one does.
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { archiveTask, unarchiveTask } from "@platform/lib/api";
+import type { TeardownReport } from "@platform/lib/api";
 import type { Task } from "@platform/lib/api";
 import { notify } from "@platform/lib/notifications";
 import { ConfirmDialog } from "@apps/explorer/FsDialogs";
-import { beginArchiveBatch } from "@shell/teardown-notice";
+import { beginArchiveBatch, closedToastText } from "@shell/teardown-notice";
 import { useTaskSelection, type TaskSelection } from "@shell/useTaskSelection";
 import {
   archivedLabel,
@@ -40,7 +41,7 @@ export function useBulkArchive({
 }) {
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
   const [confirm, setConfirm] = useState<{ keys: string[]; running: number } | null>(null);
-  const [undo, setUndo] = useState<{ keys: string[] } | null>(null);
+  const [undo, setUndo] = useState<{ keys: string[]; text: string } | null>(null);
   const timer = useRef<number | null>(null);
   const tasks = useMemo(() => (hidden.size === 0 ? tasksIn : tasksIn.filter((t) => !hidden.has(t.key))), [tasksIn, hidden]);
   const visibleKeys = useMemo(() => tasks.filter(selectable).map((t) => t.key), [tasks, selectable]);
@@ -72,7 +73,12 @@ export function useBulkArchive({
       setHidden((h) => new Set([...h, ...keys]));
       selection.clear();
       const batch = beginArchiveBatch(keys);
-      const results = await runPool(keys, BULK_CONCURRENCY, (k) => archiveTask(k));
+      const reports: Record<string, TeardownReport | undefined> = {};
+      const results = await runPool(keys, BULK_CONCURRENCY, (k) =>
+        archiveTask(k).then((r) => {
+          reports[k] = r.teardown;
+        }),
+      );
       batch.end();
       const failed = results.filter((r) => !r.ok).map((r) => r.item);
       const done = results.filter((r) => r.ok).map((r) => r.item);
@@ -89,7 +95,7 @@ export function useBulkArchive({
         });
       }
       if (done.length > 0) {
-        setUndo({ keys: done });
+        setUndo({ keys: done, text: closedToastText(archivedLabel(done.length), done.map((k) => reports[k])) });
         if (timer.current !== null) window.clearTimeout(timer.current);
         timer.current = window.setTimeout(() => setUndo(null), BULK_UNDO_MS);
       }
@@ -137,7 +143,7 @@ export function useBulkArchive({
       )}
       {undo && (
         <div className="ws-undo" role="status" data-bulk-undo>
-          <span className="ws-undo-text">{archivedLabel(undo.keys.length)}</span>
+          <span className="ws-undo-text">{undo.text}</span>
           <button type="button" className="ws-undo-btn" onClick={undoAll}>
             Undo
           </button>

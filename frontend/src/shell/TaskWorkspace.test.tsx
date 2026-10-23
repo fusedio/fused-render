@@ -227,6 +227,54 @@ test("pressing x archives the task, hides the row and offers Undo, which un-arch
   expect(r.root.findAllByProps({ "data-key": "a" })).toHaveLength(1);
 });
 
+test("x on a RUNNING task asks first; nothing is archived until it is confirmed", async () => {
+  const posts = serve();
+  const handlers: ((e: unknown) => void)[] = [];
+  const realAdd = window.addEventListener;
+  window.addEventListener = ((type: string, fn: (e: unknown) => void) => {
+    if (type === "keydown") handlers.push(fn);
+  }) as typeof window.addEventListener;
+  const r = await render([task({ key: "run", title: "Busy", status: "in_progress" })]);
+  window.addEventListener = realAdd;
+  const press = (key: string) =>
+    handlers.forEach((h) =>
+      h({ key, defaultPrevented: false, target: null, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, preventDefault() {} }),
+    );
+  await act(async () => {
+    press("j");
+  });
+  await act(async () => {
+    press("x");
+  });
+  expect(posts.some((p) => p.url === "/api/tasks/archive")).toBe(false);
+  const dlg = r.root.findAllByProps({ title: "Archive task" })[0];
+  expect(dlg.props.message).toBe("Archive 1 task? 1 is still running and will be stopped.");
+  await act(async () => dlg.props.onConfirm());
+  expect(posts.some((p) => p.url === "/api/tasks/archive" && (p.body as { key: string }).key === "run")).toBe(true);
+});
+
+test("the Undo toast says what the archive stopped and removed", async () => {
+  const posts = serve();
+  const base = globalThis.fetch;
+  globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
+    if (url === "/api/tasks/archive") {
+      return new Response(
+        JSON.stringify({ ok: true, key: "a", cancelled: 0, filed: true, teardown: { stopped: 1, killed: [9], removed: ["/w"], kept: [], gone: [] } }),
+        { status: 200 },
+      );
+    }
+    return base(url, init);
+  }) as unknown as typeof fetch;
+  void posts;
+  const r = await render([task({ key: "a", title: "Fix it" })]);
+  const btn = r.root.findByProps({ className: "tasks-rowmark ws-mark" }).findByProps({ className: "tasks-act tasks-act--archive" });
+  await act(async () => {
+    btn.props.onClick({ stopPropagation() {} });
+  });
+  const text = r.root.findByProps({ className: "ws-undo-text" }).children.join("");
+  expect(text).toBe("Closed \u201cFix it\u201d \u2014 stopped 2 processes, removed 1 worktree; Undo won't restart them");
+});
+
 test("the branch chip shows the worktree branch, naming the others in its title, and is omitted when unknown", async () => {
   globalThis.fetch = mock(async (url: string) => {
     const reply: Record<string, unknown> = {

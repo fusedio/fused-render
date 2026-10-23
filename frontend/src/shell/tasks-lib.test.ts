@@ -1877,7 +1877,7 @@ describe("the unarchive drag", () => {
   it("is the call the Board makes, and it sends no lane", () => {
     // The handler's own half of the rule, read out of the source: one call over
     // the task key, and the `lane` the drop was made on is not in it.
-    const from = VIEWS.indexOf('const drop = async (lane: BoardLane)');
+    const from = VIEWS.indexOf('const drop = async (lane: BoardLane');
     const handler = VIEWS.slice(from, VIEWS.indexOf("onReload();", from));
     expect(handler).toContain('action.kind === "unarchive"');
     // Through the shared helper — one call over the task key, and the `lane` the
@@ -4530,7 +4530,7 @@ describe("the archive action", () => {
     // answer, and for BOTH directions, because Unarchive flipped just as
     // instantly — and cleared by the row's own mouseleave.
     expect(NODE).toContain("const [refiled, setRefiled] = useState(false);");
-    const refileAt = NODE.indexOf("const refile = async (intent: FilingIntent)");
+    const refileAt = NODE.indexOf("const doRefile = async (intent: FilingIntent)");
     const refile = NODE.slice(refileAt, NODE.indexOf("\n  };", refileAt));
     expect(refile).toContain("setRefiled(true);");
     expect(ROW).toContain('(refiled ? " is-refiled" : "")');

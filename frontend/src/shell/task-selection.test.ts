@@ -72,3 +72,11 @@ test("runPool never has more than `limit` in flight and reports each outcome", a
   expect(out.map((o) => o.ok)).toEqual([true, true, true, true, false, true, true, true, true]);
   expect(out[4]!.error?.message).toBe("no");
 });
+
+import { archiveNeedsConfirm } from "@shell/task-selection";
+test("only a running task needs the stop confirmation", () => {
+  expect(archiveNeedsConfirm({ status: "in_progress" })).toBe(true);
+  for (const status of ["done", "failed", "queued", "needs_attention", "archived"]) {
+    expect(archiveNeedsConfirm({ status })).toBe(false);
+  }
+});

@@ -24,6 +24,7 @@
 // accordion, the thread rows, the id chips, the unread dot) is in
 // styles/tasks.css.
 import { BulkBar, GroupCheck, RowCheck, useBulkArchive, type BulkSelect } from "@shell/TaskBulk";
+import { useArchiveConfirm } from "@shell/archive-confirm";
 import { selectableTask } from "@shell/task-selection";
 import {
   Fragment,
@@ -3750,6 +3751,7 @@ function TaskNode({
   // row would leave the reader working out which press each answered.
   const [acting, setActing] = useState(false);
   const [note, setNote] = useState("");
+  const archiveAsk = useArchiveConfirm();
   // THE FILING PRESS'S RECEIPT (Akshil, 2026-08-19). Clicking Archive keeps the
   // pointer on the row, and the hover swap above kept right on swapping: the slot
   // instantly redrew the OPPOSITE verb (Unarchive), so the press's only visible
@@ -3866,7 +3868,14 @@ function TaskNode({
   // Filing, either direction. One call each, and the same ones the board's drops
   // make: the server cancels the work and files the session going in, and drops
   // the filing coming out, so this side composes nothing but the sentence.
-  const refile = async (intent: FilingIntent) => {
+  const refile = async (intent: FilingIntent): Promise<void> => {
+    if (intent.kind === "archive") {
+      archiveAsk.guard(task, () => void doRefile(intent));
+      return;
+    }
+    await doRefile(intent);
+  };
+  const doRefile = async (intent: FilingIntent) => {
     setActing(true);
     setNote("");
     // On the PRESS, not on the answer: the ring under the suppressed button is
@@ -4237,6 +4246,7 @@ function TaskNode({
 
   return (
     <div className="tasks-node" ref={nodeRef}>
+      {archiveAsk.node}
       <div
         className={"tasks-row" + (open ? " is-open" : "")
           + (selected ? " is-selected" : "") + (pressable ? "" : " is-inert")
@@ -5695,6 +5705,7 @@ export function TaskBoard({
   // card's own Archive button. One line above the lanes, because both are the
   // same kind of news about the same board.
   const [note, setNote] = useState<string | null>(null);
+  const archiveAsk = useArchiveConfirm();
   // The same read bookkeeping the List uses, for the same reason: a card's
   // pill has to go on the click that opens the thread, not 20 seconds later on
   // the next poll. Only the whole-task half is wanted here — a card links the
@@ -5789,15 +5800,23 @@ export function TaskBoard({
     setInFlight(new Set(inFlightRef.current));
   }, [tasks]);
 
-  const drop = async (lane: BoardLane) => {
-    const task = dragging;
-    setDragging(null);
-    setOverLane(null);
+  const drop = async (lane: BoardLane, confirmed?: Task) => {
+    const task = confirmed ?? dragging;
+    if (!confirmed) {
+      setDragging(null);
+      setOverLane(null);
+    }
     if (!task || !allowed.has(lane)) return;
     // Which of the three things this drop means — file the task, un-file it, or
     // run its next message early — is tasks-lib's decision, not this handler's.
     const action = dropAction(task, lane);
     if (!action) return;
+    // A running task is stopped by archiving: ask first (the card is not locked
+    // until the reader agrees, and a "no" leaves it where it was).
+    if (action.kind === "archive" && !confirmed) {
+      archiveAsk.guard(task, () => void drop(lane, task));
+      return;
+    }
     // The SECOND drop on a card whose first is still running is ignored
     // outright — see `inFlightRef`. Silently: the reader made one gesture twice
     // and the first one is already doing what they asked for, so there is no
@@ -5933,6 +5952,13 @@ export function TaskBoard({
   };
 
   const refile = async (task: Task, intent: FilingIntent) => {
+    if (intent.kind === "archive") {
+      archiveAsk.guard(task, () => void doRefile(task, intent));
+      return;
+    }
+    await doRefile(task, intent);
+  };
+  const doRefile = async (task: Task, intent: FilingIntent) => {
     setNote(null);
     try {
       if (intent.kind === "archive") {
@@ -6077,6 +6103,7 @@ export function TaskBoard({
 
   return (
     <>
+      {archiveAsk.node}
       {note && <p className="schedule-tv-note">{note}</p>}
       {bulk && (
         <BulkBar count={bulkH.selection.size} onArchive={bulkH.archiveSelected} onClear={bulkH.selection.clear} />

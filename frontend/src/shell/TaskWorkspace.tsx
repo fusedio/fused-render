@@ -18,7 +18,9 @@ import { prKey, prRefsOf } from "@platform/lib/task-prs";
 import { Popover, PopoverContent, PopoverTrigger } from "@platform/shadcn/ui/popover";
 import { PrPopList } from "@platform/ui/TaskPrChip";
 import { WorkspaceSearch } from "@shell/WorkspaceSearch";
+import { useArchiveConfirm } from "@shell/archive-confirm";
 import { selectableTask } from "@shell/task-selection";
+import { closedToastText } from "@shell/teardown-notice";
 import { BulkBar, GroupCheck, RowCheck, useBulkArchive, type BulkSelect } from "@shell/TaskBulk";
 import { closePeek, openPeek, peekItemProps, PEEK_OPEN_CLASS, usePeekedKey } from "@shell/task-peek-store";
 import { useNow } from "@platform/lib/clock";
@@ -437,7 +439,7 @@ export function TaskWorkspace({
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(readCollapsed);
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
-  const [undo, setUndo] = useState<{ key: string; title: string } | null>(null);
+  const [undo, setUndo] = useState<{ key: string; text: string } | null>(null);
   const undoTimer = useRef<number | null>(null);
 
   const { tasks, selection, archiveSelected, node: bulkNode, bulk } = useBulkArchive({
@@ -512,7 +514,8 @@ export function TaskWorkspace({
     if (intent) navigateUrl(intent.href);
   }, [peekOn]);
 
-  const close = useCallback(
+  const archiveAsk = useArchiveConfirm();
+  const doClose = useCallback(
     (task: Task): void => {
       const { rows: now, peekedKey: peeked } = live.current;
       const at = now.findIndex((t) => t.key === task.key);
@@ -521,8 +524,8 @@ export function TaskWorkspace({
       setSelected(after ? after.key : null);
       if (peeked === task.key) closePeek();
       archiveTask(task.key)
-        .then(() => {
-          setUndo({ key: task.key, title: task.title });
+        .then((res) => {
+          setUndo({ key: task.key, text: closedToastText(`Closed \u201c${task.title}\u201d`, [res.teardown]) });
           if (undoTimer.current !== null) window.clearTimeout(undoTimer.current);
           undoTimer.current = window.setTimeout(() => setUndo(null), UNDO_MS);
           onReload();
@@ -537,6 +540,11 @@ export function TaskWorkspace({
         });
     },
     [onReload],
+  );
+  // The `x` key and the ring-slot button both land here: a running task asks first.
+  const close = useCallback(
+    (task: Task): void => archiveAsk.guard(task, () => doClose(task)),
+    [archiveAsk.guard, doClose],
   );
 
   const reopen = useCallback(
@@ -724,13 +732,14 @@ export function TaskWorkspace({
       )}
       {undo && (
         <div className="ws-undo" role="status">
-          <span className="ws-undo-text">Closed “{undo.title}”</span>
+          <span className="ws-undo-text">{undo.text}</span>
           <button type="button" className="ws-undo-btn" onClick={() => reopen(undo.key, false)}>
             Undo
           </button>
         </div>
       )}
       {bulkNode}
+      {archiveAsk.node}
       {searching && (
         <WorkspaceSearch
           tasks={allTasks}
