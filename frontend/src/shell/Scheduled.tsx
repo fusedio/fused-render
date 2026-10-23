@@ -116,6 +116,7 @@ import {
   DEFAULT_VIEW_TABS,
   TASK_VIEWS,
   VIEW_LABELS,
+  normalizeView,
   applyQueueOverrides,
   emptyTasksLabel,
   groupOfView,
@@ -298,7 +299,7 @@ const VIEW_ICONS: Record<TaskView, React.ReactNode> = {
   board: ICON_VIEW_BOARD,
   cards: ICON_VIEW_CARDS,
   calendar: ICON_VIEW_CALENDAR,
-  workspace: ICON_VIEW_WORKSPACE,
+  detailed: ICON_VIEW_WORKSPACE,
   time: ICON_CLOCK,
   project: ICON_FOLDER,
   pr: ICON_PR,
@@ -788,7 +789,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [view, setView] = useState<TaskView>(() => {
     let saved: TaskView = "list";
-    const stored = getUiLayout().tasks?.view;
+    const stored = normalizeView(getUiLayout().tasks?.view);
     // Against TASK_VIEWS rather than a hand-written list of the non-default
     // ones: this store is untrusted input (an older build wrote it, the one-shot
     // import of an old localStorage value, a hand-edited file), and the one
@@ -1794,7 +1795,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               missing={missing}
               emptyLabel={emptyLabel}
             />
-          ) : view === "workspace" ? (
+          ) : view === "detailed" ? (
             <TaskWorkspace
               tasks={shown}
               resetKey={selectionKey}

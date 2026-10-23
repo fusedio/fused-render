@@ -193,6 +193,7 @@ import {
   jobCountLabel,
   liveJobRow,
   liveJobs,
+  VIEW_LABELS,
 } from "./tasks-lib";
 
 // 2026-08-16 is a Sunday; 2026-08-10 a Monday.
@@ -12087,5 +12088,20 @@ describe("bold unread titles in every view (Revision 2)", () => {
     expect(WS).toContain('(task.unread > 0 ? " is-unread" : "")');
     expect(block(WS_CSS, ".ws-title")).toContain("font-weight: 400");
     expect(block(WS_CSS, ".ws-title.is-unread")).toContain("font-weight: 600");
+  });
+});
+
+describe("the Detailed view (once called workspace)", () => {
+  it("is labelled Detailed and written as ?view=detailed", () => {
+    expect(VIEW_LABELS.detailed).toBe("Detailed");
+    expect(viewUrl("/tasks", "", "detailed")).toBe("/tasks?view=detailed");
+    expect(viewFromSearch("?view=detailed")).toBe("detailed");
+  });
+  it("the old ?view=workspace, a stored tab and a stored filter row still resolve to it", () => {
+    expect(viewFromSearch("?view=workspace")).toBe("detailed");
+    expect(parseViewTabs(["list", "workspace", "detailed"])).toEqual(["list", "detailed"]);
+    expect(parseViewTabs(JSON.stringify(["workspace"]))).toEqual(["detailed"]);
+    const row = { workspace: { statuses: [], projects: ["/p"] } };
+    expect(Object.keys(parseViewFilters(JSON.stringify(row)))).toEqual(["detailed"]);
   });
 });
