@@ -35,20 +35,15 @@ export const tasksTour: Tour = {
     trigger: ".schedule-new",
     steps: () => [
       {
-        element: ".new-task-title",
+        element: ".new-task-ask",
         popover: {
-          title: "Name it",
-          description: "Type a short title so you spot it in the list — ours is just a sample.",
+          title: "Describe it",
+          description: "Say what Claude should do. The first line becomes the task's name in the list — ours is just a sample.",
         },
         // Sample text, not a suggestion the form keeps: prefillInput only fills
         // an empty box, so an edit or a replay never loses the user's words.
-        //
-        // The ask is filled here too, without a step of its own: a title alone
-        // is already saveable (NewJobModal.saveEnabled — the message goes over
-        // the wire as the title), but the next step really does create the task,
-        // and a task whose whole instruction is its name has nothing to do.
+        // The next step really does create the task, so it needs an instruction.
         onEnter: () => {
-          prefillInput(".new-task-title", "My first task");
           prefillInput(".new-task-ask", "Summarize the files in this folder into a NOTES.md.");
         },
       },

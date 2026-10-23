@@ -16,6 +16,9 @@ export interface BotPulseRow {
   id: string;
   status: string;
   seq: number;
+  /** The newest MESSAGE row's seq (bot.py news_seq) — system notes and delivery rows past it are bookkeeping, not
+   *  news. Absent (an older server): `seq` stands in. */
+  news_seq?: number | null;
   /** The seq the reader had read up to when they last opened the bot
    *  (`Bot.seen_seq`, D1386). Absent = never opened = nothing to catch up on,
    *  the same contract apps/bots/lib/unread.unreadOf keeps. */
@@ -40,9 +43,15 @@ export const EMPTY_BOTS_PULSE: BotsPulse = { waiting: 0, running: 0, error: 0, u
 
 /** Is there news in this bot the reader has not opened the bot to see? A bot
  *  never opened has nothing to catch up on (unread.ts's rule: `seen == null`
- *  → 0), so a fresh install does not light a chip over every seeded bot. */
-export function botHasUnread(b: Pick<BotPulseRow, "seq" | "seen_seq">): boolean {
-  return typeof b.seen_seq === "number" && (b.seq || 0) > b.seen_seq;
+ *  → 0), so a fresh install does not light a chip over every seeded bot.
+ *  Compared at the newest MESSAGE row (`news_seq`), not the raw `seq`: the
+ *  page's unreadOf skips system and delivery rows, and until 2026-10-22 this
+ *  did not — an idle-sleep note ("Browser closed after 20 minutes idle")
+ *  appended after you had read everything lit the dot green over a bot whose
+ *  list row showed nothing new, and nothing short of reopening it cleared it. */
+export function botHasUnread(b: Pick<BotPulseRow, "seq" | "seen_seq" | "news_seq">): boolean {
+  const newest = typeof b.news_seq === "number" ? b.news_seq : b.seq || 0;
+  return typeof b.seen_seq === "number" && newest > b.seen_seq;
 }
 
 /** Hidden bots are off every list (the Bots page, the Home widget), so they are

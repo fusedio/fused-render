@@ -2553,8 +2553,11 @@ def _new_task(key: str, session_id: str, path: str | None,
               backend: str = "") -> dict:
     # `backend` is which agent's root the transcript was found under ("" for a
     # row with no transcript yet); `_row_backend` finishes the answer.
+    # `key_filed_at` is the key-keyed archive stamp (`tasks_store.archived_at`)
+    # for a task with no session to file on; `_collect` fills it, `_row` reads
+    # it. 0.0 everywhere else, which reads as "not filed".
     return {"key": key, "session_id": session_id, "path": path, "entries": [],
-            "backend": backend}
+            "backend": backend, "key_filed_at": 0.0}
 
 
 def _entry_session(entry: dict, by_id: dict | None = None) -> str:
@@ -2809,6 +2812,16 @@ def _collect() -> dict[str, dict]:
     # user deleted — is absent from every one of them and no view has to know
     # why.
     deleted = tasks_store.deleted_state()
+    # THE KEY-KEYED FILING, for the rows that have no session to file on
+    # (`tasks_store.ARCHIVED_FILE`): read once per pass like the tombstones,
+    # stashed on the task so `_row` needs no new parameter. A task WITH a
+    # session is filed on its triage record and never reads this — the key
+    # record, if one exists under a pending key the row has since left, is
+    # an orphan nothing consults.
+    archived = tasks_store.archived_state()
+    for key, task in tasks.items():
+        if not task["session_id"]:
+            task["key_filed_at"] = tasks_store.archived_at(archived, key)
     return {key: task for key, task in tasks.items()
             if _is_task(task) and not _deleted(task, deleted)
             and not _bot_session(task) and not _merge_session(task)}
@@ -3943,9 +3956,22 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # it from disk. See `_revived`.
     record = _archive_record(task["session_id"], triage)
     filed = record is not None
-    if record is not None and _revived(merged, _filed_at(record)):
+    filed_at = _filed_at(record) if record is not None else 0.0
+    # A SESSION-LESS TASK IS FILED BY KEY (`tasks_store.archived_at`, stashed
+    # by `_collect`): a failed spawn that never minted a session has no triage
+    # record to carry the filing, and without this the Archive gesture on its
+    # red row did nothing visible. Same revival rule either way — `revived`
+    # carries the session id for a triage filing and the TASK KEY for a key
+    # filing (a session-less key is always `pending:`-prefixed, so the caller
+    # tells them apart by prefix and drops the right record).
+    key_filed = (not filed and not task["session_id"]
+                 and float(task.get("key_filed_at") or 0.0) > 0)
+    if key_filed:
+        filed = True
+        filed_at = float(task["key_filed_at"])
+    if filed and _revived(merged, filed_at):
         filed = False
-        revived.append(task["session_id"])
+        revived.append(task["key"] if key_filed else task["session_id"])
     # Which message the status is reading off — asked once here so the row's
     # `failed` flag and its `status` cannot be reading two different runs.
     speaker = _speaker(merged, filed)
@@ -4113,8 +4139,8 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # (`_row_settings`).
         "model": model,
         "effort": effort,
-        # WHICH AGENT runs this task — "claude" | "copilot", never "" (D2: the
-        # backend is fixed at the first turn and every surface names it). The
+        # WHICH AGENT runs this task — "claude" | "copilot" | "codex", never ""
+        # (D2: the backend is fixed at the first turn and every surface names it). The
         # recorded choice, else the root the transcript sits under, else the
         # entries, else Claude — see `_row_backend`.
         "backend": backend,
@@ -5539,6 +5565,15 @@ def _task_rows(only: frozenset | set | None = None,
     return _narrowed(only, at_least)[0]
 
 
+#: Whether the full listing build files away a task whose folder is gone
+#: (see the pass in `_build_task_rows`). Not a preference — the owner's call
+#: (2026-10-22) is that this is simply what the listing does — but a module
+#: seam, because nearly every transcript the test suite writes names a cwd
+#: that does not exist (`/p`), and `tests/conftest.py` turns it off for the
+#: suite; the one test of the pass turns it back on.
+ARCHIVE_MISSING_FOLDERS = True
+
+
 def _folder_missing(project: object, target: object) -> bool:
     """Is the folder this task's conversation lives in gone from the disk?
 
@@ -5827,9 +5862,13 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
         # the row already reads as its derived lane above, and leaving the
         # record on disk would put the task back in Archive the moment it went
         # quiet again. Best-effort — a filing we could not drop costs one poll's
-        # worth of the row coming back, never the listing.
+        # worth of the row coming back, never the listing. A `pending:` key is
+        # a session-less task's KEY filing (`_row`), dropped from its own store.
         try:
-            sessions.clear_triage(session_id)
+            if session_id.startswith(tasks_store.PENDING_PREFIX):
+                tasks_store.clear_archived(session_id)
+            else:
+                sessions.clear_triage(session_id)
         except OSError:
             pass
     # Day one: everything that already exists is read. Done HERE, from the
@@ -5855,12 +5894,65 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     # hashes replaces stringifying both sides of every row in every window.
     # Stamped here, after the sort and the drafts, so a draft row and a
     # narrowed build carry them too. The hash is of the row WITHOUT itself.
+    # A TASK WHOSE FOLDER IS GONE IS FILED AWAY (owner, 2026-10-22: the
+    # default, not a switch). Decided off the same `folder_missing` stamp the
+    # row is about to carry, by the same gesture the Archive button makes
+    # (`archive_task`: pending runs into the gone folder called off, the
+    # session filed), on the FULL listing only — a narrowed changes answer
+    # stats a few rows and should not be the one filing things. A row that is
+    # in flight (running, parked on a card, standing in the queue) is left to
+    # settle and is caught on a later poll: `archive_task` would stop its run
+    # from inside the builder, and a parked stop can wait. A draft has no
+    # session to file. The filing sticks while the folder is gone — Unarchive
+    # or a reviving message lasts one poll — and "gone" is `exists`, so a
+    # folder on an unmounted volume is filed until the volume is back.
+    # ONLY A TASK WITH A SESSION (CodeRabbit, PR #1863): a pending-only task
+    # — a scheduled message whose run has not happened yet — has nothing to
+    # file, so `archive_task` would cancel its entry and file nothing, and the
+    # next build would drop the task altogether (`_is_task`): work called off
+    # with no archived row to take it back from. It keeps its row, wearing the
+    # "Folder no longer exists" door, for the person to decide.
+    # NOR A ROW THAT IS LIVE OR HOLDING BACKGROUND WORK (CodeRabbit, PR
+    # #1863): a marked-live session with no parsed messages yet reads `done`
+    # (`_status` only asks liveness once there are messages), and
+    # `background_jobs` is a badge beside the status by design — both would
+    # pass the status guard above with a host still running.
+    # THE FILING LANDS FIRST, the cancellations after (CodeRabbit, PR #1863):
+    # `archive_task` cancels the pending entries and then writes the triage,
+    # and a triage write that failed would leave the entries cancelled with
+    # nothing filed to take them back from. Writing the record first and only
+    # then calling `archive_task` (whose own write is the same record again)
+    # means a failure costs nothing but this poll's attempt.
+    # Best-effort like `revived` above: one filing that fails costs the row
+    # coming back next poll, never the page.
+    auto_file = only is None and ARCHIVE_MISSING_FOLDERS
+    auto_filed: set[str] = set()
     for row in rows:
         row["folder_missing"] = _folder_missing(row.get("project"), row.get("target"))
+        if (auto_file and row["folder_missing"] and row.get("kind") != "draft"
+                and row.get("status") not in ("in_progress", "needs_attention",
+                                              "queued", _FILED)
+                and not row.get("live") and not row.get("background_jobs")
+                and row.get("key") in listed
+                and listed[row["key"]].get("session_id")):
+            try:
+                sessions.write_triage(listed[row["key"]]["session_id"], _FILED)
+                _, filed, _ = archive_task(listed[row["key"]], parked)
+            except (OSError, ValueError, KeyError, TypeError):
+                filed = False
+            if filed:
+                # Patched in place so THIS build already reads archived — the
+                # hash below is of the row as filed, and `observe` does not
+                # put the gone folder's app back on the desk off a row that
+                # is about to vanish.
+                row["status"] = _FILED
+                auto_filed.add(row["key"])
         # `repo`: the PR view's "which repository" (and its link), read once
         # here rather than by every window.
         row["repo"] = _repo_slug(row.get("project") or row.get("target"))
         row["row_hash"] = _row_hash(row)
+    if auto_filed:
+        tasks_watch.notify(auto_filed)
     # The Current apps desk (current_apps.py) learns about NEW tasks here —
     # the one place every task on the machine passes, whatever started it.
     # Best-effort: the desk is a side table, and a store that cannot be
@@ -6660,7 +6752,7 @@ def _quoted(body: str, italic: bool = False) -> list[str]:
 def _export_markdown(task: dict, turns: list[dict], backend: str) -> str:
     """The turns as Markdown, in the Bots export's vocabulary. Lossy by
     design (tool results are not inlined); `format=json` is the full record."""
-    who = {"copilot": "Copilot"}.get(str(backend or ""), "Claude")
+    who = {"copilot": "Copilot", "codex": "Codex"}.get(str(backend or ""), "Claude")
     title = " ".join(str(task.get("title") or "Task").split())
     out = [f"# {title} — transcript", ""]
     if task.get("target"):
@@ -7005,9 +7097,10 @@ class SettingsPatch(BaseModel):
     session_id: str
     model: str = ""
     effort: str = ""
-    # "claude" | "copilot" | "" (not saying). Recorded once by the spawn that
-    # starts a conversation; a later POST naming the same value is a no-op and
-    # one naming another is refused — the backend never changes (D2).
+    # "claude" | "copilot" | "codex" | "" (not saying). Recorded once by the
+    # spawn that starts a conversation; a later POST naming the same value is
+    # a no-op and one naming another is refused — the backend never changes
+    # (D2).
     backend: str = ""
     # The Approvals pill: plan | prompt | acceptEdits | auto, "" (not saying).
     permission: str = ""
@@ -7189,10 +7282,11 @@ def api_task_archive(patch: ArchivePatch,
     """File one task away: cancel its pending work, archive its session.
 
     Answers what it actually did — how many messages were called off, and
-    whether the session was filed — rather than a bare ok, because the two
-    halves can legitimately come apart (a task with no session id has only the
-    first, a pure-chat task has only the second) and the client's note line is
-    the place a person finds out which.
+    whether the task was filed — rather than a bare ok, because the two
+    halves can legitimately come apart (a never-ran task with no session has
+    only the first and vanishes with it; a pure-chat task has only the second;
+    a session-less task whose send BROKE is filed by key, `archive_task`) and
+    the client's note line is the place a person finds out which.
     """
     guard = _require_fused(x_fused)
     if guard is not None:
@@ -7266,8 +7360,10 @@ def api_task_rename(patch: RenamePatch,
 
 def archive_task(task: dict, parked: dict) -> tuple[int, bool, bool]:
     """The archive gesture on one collected task: how many messages were
-    called off, whether a session was filed, and whether a run parked on a
-    card was stopped on the way. Shared with the Current apps router
+    called off, whether the task was filed (its session's triage record, or
+    for a session-less task that outlives the cancel, its KEY — see below),
+    and whether a run parked on a card was stopped on the way. Shared with
+    the Current apps router
     (server/routers/current_apps.py), where removing an app archives every
     task under it — `parked` is the caller's one `_parked_runs()` scan, so an
     archive-all pays for the walk once.
@@ -7289,6 +7385,16 @@ def archive_task(task: dict, parked: dict) -> tuple[int, bool, bool]:
     cancel loops reach it — it would run after the filing and `_revived`
     would drop the record. Cancel first, stop second, file last."""
     cancelled = 0
+    # Decided BEFORE the cancel, off the states as collected: will this task
+    # still be a row once its pending work is called off? `_is_task` drops a
+    # session-less task whose every entry never ran, and a PENDING entry is
+    # about to be cancelled into exactly that — so a row made only of those
+    # vanishes on its own and needs no filing (and a key record for it would
+    # be an orphan from birth). What survives is an entry that SENT or BROKE,
+    # which is the shape the key filing exists for.
+    survives = bool(task["session_id"]) or any(
+        _entry_state(e) not in _NEVER_RAN and e.get("state") != schedule.PENDING
+        for e in task["entries"])
     # The rules FIRST: cancelling a template also cancels the occurrence it has
     # already materialised, so doing it the other way round would cancel one
     # occurrence and let the rule mint the next.
@@ -7306,7 +7412,19 @@ def archive_task(task: dict, parked: dict) -> tuple[int, bool, bool]:
     session_id = task["session_id"]
     if session_id:
         sessions.write_triage(session_id, _FILED)
-    return cancelled, bool(session_id), stopped
+    elif survives:
+        # NO SESSION, SO THE FILING GOES ON THE KEY (`tasks_store.ARCHIVED_FILE`;
+        # Akshil, 2026-10-22: failed Copilot tasks "appear as red tasks in the
+        # list, they cannot open it, they cannot archive it"). A send whose
+        # spawn failed is an `error` entry under `pending:<id>` — not PENDING,
+        # so nothing above cancelled it, and with no session nothing filed it:
+        # the route answered `filed: False` and the row stayed red for ever.
+        # Delete already worked on these rows because its tombstone is keyed
+        # by task key; archive now is too. `_row` reads it back, `_revived`
+        # drops it if the task ever runs, and Unarchive clears it.
+        tasks_store.mark_archived(task["key"])
+        task["key_filed_at"] = time.time()
+    return cancelled, survives, stopped
 
 
 class UnarchivePatch(BaseModel):
@@ -7358,6 +7476,12 @@ def api_task_unarchive(patch: UnarchivePatch,
 
     session_id = task["session_id"]
     unfiled = bool(session_id) and sessions.clear_triage(session_id)
+    if not session_id:
+        # The key-keyed filing a session-less task carries (`archive_task`),
+        # and the stash `_collect` read off it, so the row built below reads
+        # the lane it will derive into rather than Archive once more.
+        unfiled = tasks_store.clear_archived(key)
+        task["key_filed_at"] = 0.0
     # Where it landed, read the same way the listing reads it — one row built
     # from the same helpers, AFTER the filing is gone, so the answer is the lane
     # the very next poll will draw rather than a guess about it.
@@ -7872,6 +7996,16 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
     from a terminal after the app said it was erased. That dir is outside every
     projects root, so it is checked on its own: a leaf named exactly the id
     whose parent resolves to the session-state dir, nothing else.
+
+    A transcript that went from under the CODEX root takes Codex CLI's own
+    rollout file(s) with it, for the same reason (docs/CODEX_BACKEND.md D15):
+    `codex resume <sid>` replays from `<CODEX_HOME>/sessions/YYYY/MM/DD/
+    rollout-<ts>-<sid>.jsonl`, and an archived thread from the same name
+    under `archived_sessions/`. Those are FILES named by the id rather than a
+    dir named the id, found by `_codex_rollout_files` under the same
+    discipline: the id already passed the shape check above, and every hit
+    must resolve inside one of the two Codex dirs with a `rollout-*-<sid>.jsonl`
+    leaf, or it is not touched.
     """
     if not _SESSION_ID_SHAPE.match(session_id) or session_id in (".", ".."):
         logger.warning("erase: refusing session id %r", session_id)
@@ -7909,6 +8043,7 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
     targets.sort(key=lambda t: t.endswith(".jsonl"))
     removed, erased, failed, refused = 0, False, 0, 0
     copilot = False  # did a transcript go from under the Copilot root
+    codex = False  # ... or from under the Codex root
     seen: set[str] = set()
     for target in targets:
         resolved = os.path.realpath(target)
@@ -7930,6 +8065,7 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
                 if resolved.endswith(".jsonl"):
                     erased = True
                     copilot = copilot or projects[parent][1] == "copilot"
+                    codex = codex or projects[parent][1] == "codex"
             else:
                 continue
         except OSError:
@@ -7949,6 +8085,14 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
             except OSError:
                 logger.warning("erase: could not remove %s", candidate, exc_info=True)
                 failed += 1
+    if codex and not failed and not refused:
+        for rollout in _codex_rollout_files(session_id):
+            try:
+                os.remove(rollout)
+                removed += 1
+            except OSError:
+                logger.warning("erase: could not remove %s", rollout, exc_info=True)
+                failed += 1
     return removed, erased, failed, refused
 
 
@@ -7962,6 +8106,55 @@ def _copilot_session_state_dir() -> str:
     from fused_render import copilot_health
 
     return os.path.join(copilot_health.config_dir(), "session-state")
+
+
+def _codex_home() -> str:
+    """Codex CLI's own home (`CODEX_HOME`, else `~/.codex`), NOT fused's Codex
+    root (`agent_roots.codex_dir()`) — the CLI keeps this one, and erase is
+    the only reader. Resolved by `codex_health.config_dir`, the one place that
+    reads the CLI's own override, as `_copilot_session_state_dir` resolves
+    Copilot's: the host's spawn leaves `CODEX_HOME` exactly as found
+    (docs/CODEX_BACKEND.md §3), so erase looks where `codex app-server`
+    actually wrote. A function so a test can point it at a tmp dir."""
+    from fused_render import codex_health
+
+    return codex_health.config_dir()
+
+
+def _codex_rollout_files(session_id: str) -> list[str]:
+    """Every rollout file Codex keeps for `session_id` — the realpaths, ready
+    to remove. `<codex home>/sessions/**/rollout-*-<sid>.jsonl` (the live
+    store, dated buckets) and the same under `archived_sessions/` (layout
+    assumed, D15 — `**` matches a flat dir too).
+
+    The id is refused unless it is a name (`_SESSION_ID_SHAPE`, not `.`/`..`)
+    — `_erase_session_files` checked it already; checked again so this helper
+    is safe on its own — and `glob.escape`d so it is never a pattern. A hit is
+    kept only when its REALPATH is a regular file inside the realpath of the
+    dir it was globbed under and its leaf still reads `rollout-…-<sid>.jsonl`:
+    a symlink out of the tree, or one that renames the leaf, is skipped, not
+    followed to wherever it points."""
+    import glob
+
+    if not _SESSION_ID_SHAPE.match(session_id) or session_id in (".", ".."):
+        return []
+    home = _codex_home()
+    suffix = "-" + session_id + ".jsonl"
+    out: list[str] = []
+    for sub in ("sessions", "archived_sessions"):
+        base = os.path.join(home, sub)
+        if not os.path.isdir(base):
+            continue
+        base_real = os.path.realpath(base)
+        pattern = os.path.join(glob.escape(base), "**", "rollout-*" + glob.escape(suffix))
+        for hit in glob.glob(pattern, recursive=True):
+            resolved = os.path.realpath(hit)
+            leaf = os.path.basename(resolved)
+            if (resolved.startswith(base_real + os.sep)
+                    and leaf.startswith("rollout-") and leaf.endswith(suffix)
+                    and os.path.isfile(resolved) and resolved not in out):
+                out.append(resolved)
+    return out
 
 
 def _every_rule_behind(key: str) -> list[str]:
@@ -9433,7 +9626,7 @@ def api_task_create(body: dict = Body(...),
     """Start a task from a page: `{prompt, target?, title?, model?, effort?,
     backend?, permission_mode?, due?, queue?}` -> `{entry_id, key}`.
 
-    `backend` — "claude" or "copilot" — is which agent runs the task (D2).
+    `backend` — "claude", "copilot" or "codex" — is which agent runs the task (D2).
     Omitted, it is the Preferences default AT CREATE: `schedule.create` pins
     `registry.default_id()` on the entry, so the `pending:` row and the run
     both name the agent the user saw, not the default of the day it fires. A

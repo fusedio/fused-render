@@ -336,3 +336,48 @@
   border-radius: 999px;
   color: var(--fg-muted);
 }
+
+/* Custom environment with no settings.toml: the prompt that stands where the
+   sign-in button would, and the editor modal it opens. */
+.canvases-settings-prompt {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.canvases-settings-prompt .canvases-sub {
+  margin: 0;
+}
+
+.canvases-settings-lead {
+  margin: 0 0 8px;
+  font-size: 13px;
+}
+
+.canvases-settings-path {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.canvases-settings-editor {
+  display: block;
+  width: 100%;
+  min-height: 240px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  tab-size: 2;
+  white-space: pre;
+  overflow: auto;
+  box-sizing: border-box;
+}
+
+.canvases-settings-error {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--error);
+  white-space: pre-wrap;
+}

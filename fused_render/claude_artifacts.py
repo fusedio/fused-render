@@ -46,6 +46,7 @@ still openable.
 import glob
 import json
 import os
+import threading
 from datetime import datetime, timezone
 
 from fused_render._view_url_codec import canonical_fs_path
@@ -80,6 +81,10 @@ _CWD_PROBE_LINES = 20
 # transcript's entry. Pruned to the transcripts currently on disk on each
 # listing, so a deleted session doesn't pin its result for the process lifetime.
 _CACHE: dict[str, tuple[float, int, list[dict]]] = {}
+
+# Serializes whole listings: N overlapping requests used to each cold-scan every
+# transcript; now the first scans and the rest hit the warm per-transcript cache.
+_SCAN_LOCK = threading.Lock()
 
 
 def reset_cache() -> None:
@@ -368,7 +373,13 @@ def _max_stamp(a: float | None, b: float | None) -> float | None:
 def list_artifacts() -> list[dict]:
     """Every artifact published from this machine's Claude Code sessions,
     newest update first. [] when there are no transcripts at all — a listing
-    degrades to what it could see and never fails."""
+    degrades to what it could see and never fails. Single-flight: overlapping
+    callers serialize on `_SCAN_LOCK` and the later ones read the warm cache."""
+    with _SCAN_LOCK:
+        return _scan_all()
+
+
+def _scan_all() -> list[dict]:
     merged: dict[str, dict] = {}
     seen: set[str] = set()
     for _backend, root in roots.projects_roots(PROJECTS_DIR):

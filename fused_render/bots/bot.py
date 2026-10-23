@@ -215,7 +215,7 @@ APP_GUIDE = """APP GUIDE (Browser Bots, a local desktop app; every bot has its o
 - Inbox: everything you produce lands in the user's Inbox, a Finder folder at ~/Fused/bots/<your name>/ with one subfolder per task: `save` results, downloads that arrived during the task, and a README with the task and your final answer. The Inbox list under your screenshot shows the most recent items with "Open folder" to reveal them in Finder. Files the user attaches in the composer land in FILES instead, for `upload`. There is no other export path. FOLDERS (when present) are the user's own folders they let you READ (`ls`, `find`, `readfile` with a path); you cannot write, move or delete anything there, and no other path on this Mac is readable.
 - iMessage: only Super Bot takes tasks by text (from the phone number or Apple ID set in its Settings > Advanced) and texts its replies back; it can hand a browsing task to a bot like you, whose final answer goes back to it as the result. Other bots are not reachable by text. "Contacts the bot may text" (Settings > Advanced) is the allowlist your `text` action can message and `texts` can read replies from (shown to you as CONTACTS). You cannot add contacts yourself: tell the user where.
 - Builds (button under the bots list): Claude Code sessions that create fused-render apps. The user can start one there, and you can start one with `build` (say so, then `done` with the link it returns). Apps land under @APPS_ROOT@/<name>; the Builds panel tracks progress and holds Claude's chat for each build; a chat message (and a text, if iMessage is on) arrives when one is ready, and a card when one is stuck (Claude waits for an OK or an answer, fails, or hits its usage limit) whose button opens it under Builds. Settings > Advanced > Builds picks "Scoped" (Claude asks the user before risky steps) or "Full access" (unattended).
-- Apps: every fused app under @APPS_ROOT@ is visible to every bot, whoever built it: the APPS section of your prompt lists them all (folder, name, description, link). `show` any of them as a card, `goto` its link to use it in the browser, or `build` with its exact name to update it. You also OFFER apps on your own (`offer`): an existing one that fits the task, or a new one worth building, as a card with "Use it" / "Build it" / "Not now". A yes starts the build with no further step (the yes is the approval), "Not now" keeps that app out of offers for a week, and an unanswered offer stays clickable in the chat after the task ends (a plain yes or no later settles it). When the user asks for an app in so many words you `build` it straight away and the approval card confirms it with one click. The Marketplace (Preferences › Optional features, off by default) is a catalog of community apps: when it is on, `marketplace_search` finds one and `marketplace_install` installs it under @APPS_ROOT@/<slug> behind an approval card, every time; an installed one is in APPS like any other app.
+- Apps: every fused app under @APPS_ROOT@ is visible to every bot, whoever built it: the APPS section of your prompt lists them all (folder, name, description, link). `show` any of them as a card, `goto` its link to use it in the browser, or `build` with its exact name to update it. You also OFFER apps on your own (`offer`): an existing one that fits the task, or a new one worth building, as a card with "Use it" / "Build it" / "Not now". A yes starts the build with no further step (the yes is the approval), "Not now" keeps that app out of offers for a week, and an unanswered offer stays clickable in the chat after the task ends (a plain yes or no later settles it). When the user asks for an app in so many words you `build` it straight away and the approval card confirms it with one click. The Marketplace (Preferences › Labs, off by default) is a catalog of community apps: when it is on, `marketplace_search` finds one and `marketplace_install` installs it under @APPS_ROOT@/<slug> behind an approval card, every time; an installed one is in APPS like any other app.
 - App tools: local apps that expose MCP tools (an `mcp.toml` curated in fused-render's MCP panel) are available to you through the `tool` action; the APP TOOLS section of your prompt lists them by app. Reading tools run at once; tools that change something ask the user first. Cards in the Apps panel show a tools badge when an app exposes any. Nothing has to be attached: every app with a manifest is available to every bot.
 - App skills: an app that ships a SKILL.md (marked [py] in APPS) tells you what each of its .py files does and how to call it; the `py` action runs one (its main(**args), exactly as the app's page would run it). Skills load only when needed: apps you built this task and apps the task names are mounted under APP SKILLS; `py` with an app and no file loads any other. Apps you build get a SKILL.md as part of the build; an older app without one can get it from an update build. Your own builds run at once; other apps' files ask the user first, showing the file's line from its SKILL.md.
 - Bots list: New bot, search, pin or hide a bot (pinned first, then bots waiting on the user, then most recent); "Clone" makes a new bot on your logins (sharing them, not a copy) with your memory, instructions and skills; "Delete" removes a bot, and its logins unless another bot shares them. The Usage button shows model calls per hour, day and bot. Other local scripts can hand you tasks through botsend.py; they show up as normal tasks.
@@ -480,6 +480,11 @@ def _iter_events(path):
     return store.iter_events(path)
 
 
+# Event roles that are bookkeeping, not a message: never "unread" (news_seq; the page's lib/unread.ts unreadOf keeps
+# the same pair). `delivery` is the "texted to your phone" row joined to a bubble (docs §10 D12).
+NOISE_ROLES = frozenset({"system", "delivery"})
+
+
 def _engine_for(meta) -> str:
     """`steps` | `agent` for this bot's next task (docs §5): the `engine` setting,
     `auto` = steps for a local model or when no `claude` CLI is resolved."""
@@ -548,6 +553,7 @@ MEMORY_LINES_HINT = 200  # Bot.MEMORY_LINES, visible to the class-body prompt st
 class Bot:
     _terminal_id = None  # id of this bot's live pty (terminal_session); class default for __new__-built test bots
     deleted = False  # class default: a Bot built with __new__ (tests) still has it; delete() sets the instance flag
+    _news = None  # class default for __new__-built test bots; __init__ sets it too (news_seq)
 
     def __init__(self, bid):
         self.id = bid
@@ -556,6 +562,7 @@ class Bot:
         self.events_path = os.path.join(self.dir, "events.jsonl")
         self.lock = threading.RLock()
         self._last_user_ts = None  # ts of the newest user event; lazily read from events.jsonl (last_user_ts)
+        self._news = None  # (line count, seq of the newest message row); lazily read from events.jsonl (news_seq)
         self.meta = _read_meta(bid)
         # The browser (its logins) is a folder of its own, maybe shared with other bots (browsers.py).
         # A bot from before browsers existed is adopted: its profile moves, nothing is copied.
@@ -598,6 +605,9 @@ class Bot:
         dirty = False
         if self.meta.pop("channel_forwards", None) is not None:
             dirty = True  # per-bot forwards are gone (docs §10): only a task's origin hears back
+        # Per-tool "Always approve" rules and finished builds become ticks under "Apps it may use without asking".
+        if _tools_mod().migrate_app_rules(self.meta):
+            dirty = True
         if not is_super(self.meta):
             # iMessage is Super Bot's alone (docs §10): an ordinary bot's leftover handle and contacts grant nothing
             # and show nowhere, so they go the way channel_forwards went (and `text`/`texts` leave its roster).
@@ -715,8 +725,27 @@ class Bot:
                 f.write(json.dumps(ev) + "\n")
             if role == "user" and (ev.get("via") or {}).get("kind") != chan.ROUTINE_KIND:
                 self._last_user_ts = ev["ts"]  # a routine's prompt is the schedule's doing, not the user's (last_user_ts)
+            if self._news is not None:  # one line appended: keep the cache in step instead of rescanning (news_seq)
+                self._news = (self._news[0] + 1, ev["seq"] if role not in NOISE_ROLES else self._news[1])
         _registry().on_event(self, ev)
         return ev
+
+    def news_seq(self, nlines=None):
+        """seq of the newest MESSAGE row (0 if none): the unread mark the sidebar compares `seen_seq` against. System
+        notes and delivery rows are bookkeeping, not news — the page's own unread count skips them (lib/unread.ts
+        unreadOf), and before this field the rail counted them: a "Browser closed after 20 minutes idle" note
+        appended after you had read everything lit the Bots dot green over a bot whose list row showed nothing new.
+        One pass over events.jsonl, then kept current by emit(); a line count that moved under the cache (a line
+        another process appended — botsend.py — with no page open to lift it through events_since) rescans."""
+        with self.lock:
+            n = self._count_events() if nlines is None else nlines
+            if self._news is None or self._news[0] != n:
+                seq = 0
+                for _i, ev in _iter_events(self.events_path):
+                    if isinstance(ev, dict) and ev.get("role") not in NOISE_ROLES and isinstance(ev.get("seq"), int):
+                        seq = max(seq, ev["seq"])
+                self._news = (n, seq)
+            return self._news[1]
 
     def last_user_ts(self):
         """ts of the newest message the user sent (0 if none): one pass over events.jsonl, then kept current by
@@ -1890,7 +1919,7 @@ class Bot:
             meta = dict(self.meta)
             if meta.get("handoffs"):
                 meta["handoffs"] = [dict(h) for h in meta["handoffs"]]
-        return {**meta, "id": self.id, "seq": self.seq, "last_user_ts": self.last_user_ts(), "browser": bs, "browser_id": self.browser_id,
+        return {**meta, "id": self.id, "seq": self.seq, "news_seq": self.news_seq(), "last_user_ts": self.last_user_ts(), "browser": bs, "browser_id": self.browser_id,
                 "browser_name": browsers.read_meta(self.browser_id).get("name") or self.meta.get("name") or "",
                 "shared_with": self.shared_with(), "encrypt": bool(self.browser.encrypt),
                 "terminal_id": self.terminal_id(), "terminal_available": _tools_mod().terminal_enabled(self),
@@ -3007,6 +3036,9 @@ class Bot:
                               app={"name": bd["name"], "dir": bd["dir"]}, source="build", via=bd.get("via"))
                     with self.lock:
                         bd["done_at"] = time.time()
+                        # The app it just built is ticked under "Apps it may use without asking": its scripts run
+                        # without a card from here on, and Settings shows that (tools.risk reads only the tick).
+                        apptools.trust_app(self.meta, os.path.basename(str(bd.get("dir") or "").rstrip("/")))
                         self.save()
                     return
                 stable = ""

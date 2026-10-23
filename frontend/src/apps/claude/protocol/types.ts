@@ -55,7 +55,7 @@ export interface StartRequest {
   message: string;
   /** "" = a new session (T:16605-16623). */
   session_id: string;
-  /** WHICH AGENT RUNS THIS CHAT — "claude" (default) | "copilot"
+  /** WHICH AGENT RUNS THIS CHAT — "claude" (default) | "copilot" | "codex"
    *  (docs/COPILOT_BACKEND.md D2). Chosen at the first turn and immutable: a
    *  send into an existing session must name the session's own. */
   backend?: string;
@@ -833,7 +833,24 @@ export interface HistoryErrorTurn {
   /** The transcript's `quotaLimits` on a failed row — only a limit hit has it. */
   quota?: Quota;
 }
-export type HistoryTurn = HistoryUserTurn | HistoryAssistantTurn | HistoryErrorTurn;
+/** Claude Code's compaction summary (`isCompactSummary` user record), lifted
+ *  out of the user stream by agent.py `_history` so it draws as a divider and
+ *  not a screenful-tall bubble. Token counts are absent when the boundary did
+ *  not carry them. */
+export interface HistoryCompactTurn {
+  role: "compact";
+  /** The summary body, preamble stripped. */
+  text: string;
+  uuid?: string;
+  trigger?: string;
+  pre_tokens?: number;
+  post_tokens?: number;
+}
+export type HistoryTurn =
+  | HistoryUserTurn
+  | HistoryAssistantTurn
+  | HistoryErrorTurn
+  | HistoryCompactTurn;
 export interface TranscriptStat {
   path: string;
   mtime: number;

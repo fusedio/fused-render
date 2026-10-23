@@ -11,7 +11,14 @@ callback server's timeout differs.
 Spawned by canvases.py as ``[sys.executable, <this file>]`` when the fused
 package is importable in the server's interpreter (the internal-CLI case);
 an external FUSED_RENDER_FUSED_BIN override keeps the CLI's own login.
+
+FUSED_ENV is honored the same way the CLI does it (fused._env), like the other
+shims: a prod/unstable sign-in goes to fused's hosted tenant and writes
+~/.fused/credentials — the store canvases.py watches for completion — even
+when ~/.fused/settings.toml names a custom deployment's `[auth]`; only a run
+with FUSED_ENV unset (the custom env) signs in against that one.
 """
+import os
 import secrets
 import sys
 import time
@@ -22,10 +29,16 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 # Matches canvases.LOGIN_CHILD_TIMEOUT: the server kills this child at the
 # same deadline, so a longer wait here would never be observed.
-CALLBACK_TIMEOUT_S = 600
+CALLBACK_TIMEOUT_S = 300
 
 
 def main() -> int:
+    import fused
+
+    env_name = os.environ.get("FUSED_ENV")
+    if env_name:
+        fused._env(env_name)
+
     try:
         from fused.workbench import _auth  # fused >= 2.9 layout
     except ImportError:  # pragma: no cover - older package layout
@@ -53,11 +66,26 @@ def main() -> int:
     authorize_url = f"{options.auth.authorize_url}?{urlencode(params)}"
 
     code: str | None = None
+    denied: str | None = None
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802 - http.server API
-            nonlocal code
+            nonlocal code, denied
             qs = parse_qs(urlparse(self.path).query)
+            if "error" in qs:
+                # Auth0 redirects a refused sign-in (Decline on the consent
+                # screen, an account the tenant rejects) back here with
+                # `error=...` and NO code. That is the flow's final word, not
+                # a stray probe: treating it like one left this child — and
+                # the page polling it — waiting out the whole deadline.
+                denied = qs.get("error_description", qs["error"])[0]
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.end_headers()
+                self.wfile.write(
+                    b"Not signed in. You can close this tab and try again from fused-render."
+                )
+                return
             if "code" not in qs:
                 # Favicon probes etc. — answer and keep waiting.
                 self.send_response(404)
@@ -83,10 +111,13 @@ def main() -> int:
 
     print(f"Waiting for browser sign-in on {redirect_uri} ...", flush=True)
     webbrowser.open(authorize_url)
-    while code is None and time.time() < deadline:
+    while code is None and denied is None and time.time() < deadline:
         server.handle_request()
     server.server_close()
 
+    if denied is not None:
+        print(f"Authentication refused — {denied}", file=sys.stderr)
+        return 1
     if code is None:
         print("Authentication timed out — sign-in was not completed.", file=sys.stderr)
         return 1

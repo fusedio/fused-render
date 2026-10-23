@@ -138,6 +138,17 @@ _SAFE = {
     # Category legend colours come from the template's own PALETTE constant,
     # never from the data (the category VALUE beside it goes through esc).
     "i.color",
+    # The raster style dock's histogram and class table (histogramChart /
+    # classTable) are numbers and colours computed from numbers. `bars` and
+    # `marks` are SVG built from arithmetic on the band's histogram counts and
+    # min/max (`x(v)` clamps to 0..100); `colorOf` (valueColor) returns
+    # `rgb(...)` of either interpolated ramp stops or the embedded palette —
+    # an ImageData over a Uint8ClampedArray the vendor bundle builds from the
+    # TIFF's ColorMap, so bytes, never text. `c.share` is count / total, and
+    # "<0.1" is a literal (a `<` before a digit opens no tag).
+    "bars", 'marks.map(v => `<line x1="${x(v)}" x2="${x(v)}" y2="40"/>`).join("")',
+    "colorOf(c.value)", "100 * c.share / top",
+    'c.share < 0.001 ? "<0.1" : Number((100 * c.share).toPrecision(2))',
 }
 
 

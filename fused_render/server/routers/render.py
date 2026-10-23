@@ -6,6 +6,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from fastapi import APIRouter, Header, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from fused_render.server.asset_version import rewrite_asset_refs, versioned
 from fused_render.server.common import _error
 
 router = APIRouter()
@@ -100,8 +101,9 @@ def render(
         except Exception:
             logger.warning("recording app open failed for %s", path, exc_info=True)
 
-    # Always inject the runtime.
-    injection = '<script src="/static/runtime.js"></script>'
+    # Version the template/vendor refs, then always inject the runtime.
+    html = rewrite_asset_refs(html)
+    injection = '<script src="%s"></script>' % versioned("/static/runtime.js")
     lower = html.lower()
     head_idx = lower.find("<head>")
     if head_idx != -1:

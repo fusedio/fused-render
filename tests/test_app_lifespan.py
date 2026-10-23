@@ -19,6 +19,10 @@ import pytest
 
 from fused_render.server import create_app
 from fused_render.server.app import _lifespan
+from fused_render.server.routers.index import (
+    start_startup_scan_and_warm as _REAL_START_SCAN_AND_WARM,  # conftest stubs the attribute
+)
+from fused_render.server.app import _safe_artifacts_scan as _REAL_SAFE_ARTIFACTS_SCAN
 
 #: Same real, spawnable fixture daemon test_background_apps.py uses — stdlib
 #: only, binds :0, publishes {port, token, pid} (see its own docstring).
@@ -134,6 +138,7 @@ EXPECTED_STARTUP = [
     "_startup_queue_manager",
     "_startup_tasks_watch",
     "_startup_tasks_warm",
+    "_startup_artifacts_warm",
     "_startup_ai_hub_metadata_refresh",
     "_startup_ai_hub_catalog_refresh",
     # Event-loop lag gauge + pool/lane snapshots for the Monitor dashboard.
@@ -558,6 +563,8 @@ def test_with_the_flag_on_the_startup_scan_is_not_awaited(monkeypatch):
     monkeypatch.setattr(index_routes, "start_index_job_bridge", lambda: None)
     monkeypatch.setattr(index_routes, "start_deferred_startup_scan",
                         lambda d, ev: calls.append(("deferred", ev)))
+    monkeypatch.setattr(index_routes, "start_startup_scan_and_warm",
+                        lambda d: calls.append("scan+warm"))
 
     monkeypatch.setattr(prefs, "index_low_impact_enabled", lambda: True)
     asyncio.run(_index_scan_handler(app)())
@@ -566,7 +573,47 @@ def test_with_the_flag_on_the_startup_scan_is_not_awaited(monkeypatch):
     calls.clear()
     monkeypatch.setattr(prefs, "index_low_impact_enabled", lambda: False)
     asyncio.run(_index_scan_handler(app)())
-    assert calls == ["scan", "warm"]
+    assert calls == ["scan+warm"]
+
+
+def test_with_the_flag_off_the_startup_scan_is_not_awaited(monkeypatch):
+    import fused_render.shell.prefs as prefs
+    from fused_render import extras
+    from fused_render.server.routers import index as index_routes
+
+    app = create_app(start_dir=".")
+    started = []
+
+    async def must_not_run(start_dir=None):
+        raise AssertionError("startup_scan must not be awaited on the boot path")
+
+    monkeypatch.setattr(extras, "available", lambda name: True)
+    monkeypatch.setattr(index_routes, "startup_scan", must_not_run)
+    monkeypatch.setattr(index_routes, "start_startup_scan_and_warm",
+                        lambda d: started.append(d))
+    monkeypatch.setattr(index_routes, "start_index_job_bridge", lambda: None)
+    monkeypatch.setattr(prefs, "index_low_impact_enabled", lambda: False)
+    asyncio.run(_index_scan_handler(app)())
+    assert started == ["."]
+
+
+def test_start_startup_scan_and_warm_runs_scan_then_warm_off_thread(monkeypatch):
+    import threading
+
+    from fused_render.server.routers import index as index_routes
+
+    order = []
+    release = threading.Event()
+    monkeypatch.setattr(index_routes, "run_startup_scan",
+                        lambda d=None: (release.wait(5), order.append("scan")))
+    monkeypatch.setattr(index_routes, "run_startup_warm",
+                        lambda: order.append("warm"))
+    t = _REAL_START_SCAN_AND_WARM(".")
+    assert t.daemon and t.is_alive()  # returned while the scan still blocks
+    assert order == []
+    release.set()
+    t.join(5)
+    assert order == ["scan", "warm"]
 
 
 @pytest.fixture()
@@ -647,3 +694,76 @@ def test_the_deferred_scan_is_skipped_when_startup_never_finished(deferred):
         ".", threading.Event(), delay_s=0.0, wait=lambda s: None,
         ready_timeout_s=0.01)
     assert calls == []
+
+
+# ------------------------------------------------ housekeeping off the boot path
+
+
+def test_project_venv_gc_is_not_awaited(tmp_path, monkeypatch):
+    """The gc is a disk walk nobody waits on: the handler starts a daemon
+    thread and returns before `projectenv.gc` finishes."""
+    import threading
+
+    from fused_render import projectenv
+
+    release = threading.Event()
+    entered = threading.Event()
+
+    def slow_gc():
+        entered.set()
+        release.wait(10)
+        return 0
+
+    monkeypatch.setattr(projectenv, "gc", slow_gc)
+    handler, run = _grab_startup_handler(
+        tmp_path, monkeypatch, "_startup_gc_project_venvs")
+    run(handler())  # returns although gc is still blocked
+    assert entered.wait(5)
+    assert not release.is_set()
+    thread = next(t for t in threading.enumerate() if t.name == "project-venv-gc")
+    assert thread.daemon
+    release.set()
+    thread.join(5)
+    assert not thread.is_alive()
+
+
+def test_startup_prewarm_ai_defers_the_spawn(tmp_path, monkeypatch):
+    from fused_render.server import app as app_mod
+
+    seen = {}
+
+    def fake_prewarm(app, delay=0.0):
+        seen["delay"] = delay
+
+    monkeypatch.setattr(app_mod, "prewarm_ai", fake_prewarm)
+    handler, run = _grab_startup_handler(tmp_path, monkeypatch, "_startup_prewarm_ai")
+    run(handler())
+    assert seen["delay"] == 5.0
+
+
+def test_artifacts_warm_runs_off_the_startup_path(tmp_path, monkeypatch):
+    import threading
+
+    from fused_render.server import app as app_mod
+
+    from fused_render import claude_artifacts
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocking_list():
+        entered.set()
+        release.wait(10)
+        return []
+
+    monkeypatch.setattr(claude_artifacts, "list_artifacts", blocking_list)
+    # conftest neutralizes the scan target for every app; this test wants the real one.
+    monkeypatch.setattr(app_mod, "_safe_artifacts_scan", _REAL_SAFE_ARTIFACTS_SCAN)
+    handler, run = _grab_startup_handler(
+        tmp_path, monkeypatch, "_startup_artifacts_warm")
+    run(handler())  # returns while the scan is still blocked
+    assert entered.wait(5)
+    assert not release.is_set()
+    release.set()
+    thread = next(t for t in threading.enumerate() if t.name == "artifacts-warm")
+    thread.join(5)

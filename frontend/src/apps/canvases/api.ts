@@ -8,8 +8,10 @@
 // syncing at the same time — the clone lives at ~/Fused/canvas/<env>/<name>
 // and its watcher, CLI runs and embed all target that env. The `workbench_env`
 // preference is only the DEFAULT (the catalog's initial pick); nothing here
-// reads it. login / logout / token / status stay env-less: one credentials
-// file serves both environments.
+// reads it. login / logout / token / status take an OPTIONAL env: prod and
+// unstable share one `fused login` store, but custom has its own `[auth]`
+// (its deployment's tenant), so a caller about one canvas names its env and
+// one that means "this machine's login" (Settings, Share, sidebar) omits it.
 import { getJson, postJson } from "@platform/lib/api";
 import { ownerFromError, type SyncLogEvent, type SyncOwner, type SyncState } from "./sync-state";
 
@@ -19,7 +21,11 @@ const GUARD = { headers: { "X-Fused": "1" } };
 
 export interface CanvasesStatus {
   cli_found: boolean;
+  /** `auth_env`'s `fused login` store exists. */
   logged_in: boolean;
+  /** Which env's login `logged_in` / `creds_stamp` describe: the `env` the
+   *  status was asked about, else the default env. */
+  auth_env: string;
   /** Credentials-file mtime, or null — changes when a (re-)login completes. */
   creds_stamp: number | null;
   login_in_flight: boolean;
@@ -34,22 +40,75 @@ export interface CanvasesStatus {
    *  tab from there would hit real prod), and the catalog disables its
    *  environment dropdown. */
   locked: boolean;
-  /** Per environment: its workbench web origin, its clone folder
-   *  (`~/Fused/canvas/<env>`) and how many clones it holds here. */
-  envs: Record<WorkbenchEnv, { base_url: string; canvases_dir: string; cloned_count: number }>;
+  /** Per environment: its workbench web origin, the origin the workspace
+   *  frames (the same, or — custom env with the embed proxy on — the
+   *  loopback proxy in front of it), its clone folder
+   *  (`~/Fused/canvas/<env>`), how many clones it holds here, and whether it
+   *  is configured (false only for custom whose `~/.fused/settings.toml`
+   *  names no `base_url`). The Settings picker disables an unconfigured
+   *  custom; the Canvases page offers it and opens the settings editor. */
+  envs: Record<
+    WorkbenchEnv,
+    {
+      base_url: string;
+      embed_url?: string;
+      canvases_dir: string;
+      cloned_count: number;
+      available: boolean;
+    }
+  >;
+  /** The custom environment's settings file (`~/.fused/settings.toml`,
+   *  expanded) — what the settings editor edits. */
+  settings_path: string;
 }
 
-export type WorkbenchEnv = "unstable" | "prod";
+/** The settings editor's read. Creates the file EMPTY when there is none,
+ *  so the reader edits a real path from the start; an empty file configures
+ *  nothing, so `configured` stays false until a `base_url` is saved. */
+export const openFusedSettings = () =>
+  postJson<{ path: string; text: string; created: boolean; configured: boolean }>(
+    "/api/canvases/settings/open",
+    {},
+  );
+
+/** Write the settings file. A paste that is not TOML is refused (400,
+ *  code `invalid_toml`, the parser's sentence in `error`) and the file is
+ *  left as it was. */
+export const saveFusedSettings = (text: string) =>
+  postJson<{
+    ok: boolean;
+    path: string;
+    configured: boolean;
+    base_url: string | null;
+    web_url: string;
+  }>("/api/canvases/settings/save", { text });
+
+/** Remove the settings file (only the TOML one); custom is unconfigured
+ *  again afterwards. A missing file is `removed: false`, not an error. */
+export const deleteFusedSettings = () =>
+  postJson<{ ok: boolean; path: string; removed: boolean; configured: boolean }>(
+    "/api/canvases/settings/delete",
+    {},
+  );
+
+/** `custom` (fusedcli.CUSTOM_WORKBENCH_ENV) is no Fused of its own: its CLI
+ *  runs leave FUSED_ENV unset, so they talk to whatever endpoint
+ *  `~/.fused/settings.toml` names, and its `base_url` is that endpoint's web
+ *  origin. */
+export type WorkbenchEnv = "unstable" | "prod" | "custom";
 
 /** fusedcli.WORKBENCH_ENV_CHOICES, in the server's order. */
-export const WORKBENCH_ENVS: readonly WorkbenchEnv[] = ["unstable", "prod"];
+export const WORKBENCH_ENVS: readonly WorkbenchEnv[] = ["unstable", "prod", "custom"];
 
 export const isWorkbenchEnv = (s: unknown): s is WorkbenchEnv =>
   typeof s === "string" && (WORKBENCH_ENVS as readonly string[]).includes(s);
 
-export const ENV_LABELS: Record<WorkbenchEnv, string> = {
-  unstable: "Unstable",
-  prod: "Production",
+/** `label` names the env in full (pickers, headers, tooltips); `tag` is the
+ *  short form for tight spots (a sidebar row's chip). */
+export const ENV_NAMES: Record<WorkbenchEnv, { label: string; tag: string }> = {
+  unstable: { label: "Unstable", tag: "Unstable" },
+  prod: { label: "Production", tag: "Production" },
+  custom: { label: "Custom ~/.fused/settings.toml", tag: "Custom" },
 };
 
 /** A canvas workspace route: the env is a path segment because it is one on
@@ -200,7 +259,10 @@ export interface SyncStatus {
   error: string | null;
 }
 
-export const getCanvasesStatus = () => getJson<CanvasesStatus>("/api/canvases/status");
+/** `logged_in` / `creds_stamp` describe `env`'s login when given (else the
+ *  default env's); `auth_env` says which. */
+export const getCanvasesStatus = (env?: WorkbenchEnv | null) =>
+  getJson<CanvasesStatus>(env ? `/api/canvases/status?env=${env}` : "/api/canvases/status");
 
 /** The account handle. Handles are per environment: the canvas workspace
  *  names its canvas's env (the handle goes into the workbench URL); a caller
@@ -212,10 +274,28 @@ export const getWhoami = (env?: WorkbenchEnv) =>
     GUARD,
   );
 
-export const startLogin = () => postJson<{ ok: boolean }>("/api/canvases/login", {});
+export const startLogin = (env?: WorkbenchEnv | null) =>
+  postJson<{ ok: boolean }>(env ? `/api/canvases/login?env=${env}` : "/api/canvases/login", {});
 
 export const cancelLogin = () =>
   postJson<{ ok: boolean }>("/api/canvases/login/cancel", {});
+
+/** The server kills the `fused login` child at this mark
+ *  (canvases.LOGIN_CHILD_TIMEOUT); status then reads `login_in_flight: false`
+ *  like any other early end, so the page tells the two apart by the clock. */
+export const LOGIN_TIMEOUT_MS = 5 * 60_000;
+
+/** What to tell the reader when a sign-in they started ended without the
+ *  credentials changing: the deadline, or the child quitting early (consent
+ *  declined, tab closed). `startedAt` is when the page started it, or null. */
+export function loginOutcome(startedAt: number | null, now = Date.now()): string {
+  // A few seconds short of the mark: the poll sees the death up to a tick late,
+  // never early, so anything this close is the watchdog.
+  if (startedAt !== null && now - startedAt >= LOGIN_TIMEOUT_MS - 5_000) {
+    return "Sign-in timed out after 5 minutes — try again.";
+  }
+  return "Sign-in was not completed — try again.";
+}
 
 export const listCanvases = (env: WorkbenchEnv) =>
   getJson<{ canvases: CanvasEntry[] }>(`/api/canvases/list?env=${env}`, GUARD);
@@ -232,7 +312,8 @@ export const getCanvasPreviews = (env: WorkbenchEnv, ids: string[]) =>
 export const createCanvas = (env: WorkbenchEnv, name: string) =>
   postJson<{ ok: boolean; name: string }>("/api/canvases/create", { name, env });
 
-export const logout = () => postJson<{ ok: boolean }>("/api/canvases/logout", {});
+export const logout = (env?: WorkbenchEnv | null) =>
+  postJson<{ ok: boolean }>(env ? `/api/canvases/logout?env=${env}` : "/api/canvases/logout", {});
 
 export const cloneCanvas = (env: WorkbenchEnv, name: string) =>
   postJson<{ ok: boolean; dir: string }>("/api/canvases/clone", { name, env });
@@ -377,5 +458,7 @@ export const syncEventsUrl = (env: WorkbenchEnv, name: string) =>
 export const fixWithClaude = (env: WorkbenchEnv, name: string) =>
   postJson<{ ok: boolean; run_id: string }>("/api/canvases/fix", { name, env });
 
-export const getAccessToken = () =>
-  getJson<{ access_token: string }>("/api/canvases/token", GUARD);
+/** The token for `env`'s workbench — the CANVAS's env, so a custom canvas
+ *  gets its own deployment's login, never the hosted one. */
+export const getAccessToken = (env: WorkbenchEnv) =>
+  getJson<{ access_token: string }>(`/api/canvases/token?env=${env}`, GUARD);

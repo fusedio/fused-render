@@ -472,6 +472,104 @@ def test_a_copilot_session_is_recapped_by_copilot_with_no_tools(
     assert os.listdir(copilot_cli / "session-state") == []
 
 
+# A `codex` stand-in for `codex exec`: records argv and stdin, and writes the
+# reply to the `-o` file the way `--output-last-message` does, while its
+# stdout carries only noise (Codex's own banner and progress) — so a run that
+# read stdout instead of the file would get the wrong text.
+_CODEX_STUB = """#!{python}
+import json
+import os
+import sys
+
+stdin_data = sys.stdin.read()
+argv = sys.argv[1:]
+with open(os.environ["RECAP_STUB_CALLS"], "a", encoding="utf-8") as fh:
+    fh.write(json.dumps(dict(argv=argv, stdin=stdin_data)) + "\\n")
+sys.stdout.write("codex-cli banner and progress, not the reply\\n")
+with open(argv[argv.index("-o") + 1], "w", encoding="utf-8") as fh:
+    fh.write(os.environ.get("CODEX_STUB_REPLY",
+                            "Codex's recap, long enough to count as one.\\n"))
+sys.exit(int(os.environ.get("CODEX_STUB_EXIT") or 0))
+"""
+
+
+@pytest.fixture
+def codex_cli(tmp_path, monkeypatch, calls, agent):
+    """`agent._codex_bin` pointed at the stub (`raising=False`: the resolver
+    is agent.py's, and this suite pins the router, not the resolver)."""
+    bin_dir = tmp_path / "codex-bin"
+    bin_dir.mkdir()
+    path = bin_dir / "codex"
+    path.write_text(_CODEX_STUB.format(python=sys.executable))
+    path.chmod(0o755)
+    monkeypatch.setattr(agent, "_codex_bin", lambda: str(path), raising=False)
+    return path
+
+
+def test_a_codex_session_recaps_nothing_with_codex_switched_off(
+        client, project, calls, codex_cli, monkeypatch):
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    monkeypatch.setattr(recap_mod, "_recap_backend", lambda *a: "codex")
+    _switches(monkeypatch, claude=True, copilot=True)
+    assert _get(client, target).json()["text"] == ""
+    assert _spawns(calls) == []
+
+
+def test_a_codex_session_is_recapped_by_codex_exec_ephemeral_and_read_only(
+        client, project, calls, codex_cli, monkeypatch, tmp_path):
+    from fused_render.agent_backends import registry
+
+    target, write = project
+    write(("user", "make the tests pass"), ("assistant", "they pass now"))
+    monkeypatch.setattr(recap_mod, "_recap_backend", lambda *a: "codex")
+    _switches(monkeypatch, codex=True)
+    # The reply is the `-o` file's, not stdout's.
+    assert _get(client, target).json()["text"] == (
+        "Codex's recap, long enough to count as one.")
+    call, = _spawns(calls)
+    argv = call["argv"]
+    assert argv[0] == "exec"
+    # No rollout file left behind (`codex resume` would list it), no git
+    # check against the temp dir, read-only sandbox, the catalog's model.
+    assert "--ephemeral" in argv
+    assert "--skip-git-repo-check" in argv
+    assert argv[argv.index("-s") + 1] == "read-only"
+    # The working root is the run's OWN fresh folder, not the shared temp
+    # dir: Codex reads an `AGENTS.md` from its cwd, and `/tmp/AGENTS.md` is
+    # anyone's to write. Gone afterwards, with the reply file inside it.
+    work_dir = argv[argv.index("-C") + 1]
+    assert work_dir != recap_mod.tempfile.gettempdir()
+    assert os.path.dirname(work_dir) == recap_mod.tempfile.gettempdir()
+    assert os.path.dirname(argv[argv.index("-o") + 1]) == work_dir
+    assert not os.path.exists(work_dir)
+    # ...and Codex never climbs out of it looking for a project root: a
+    # planted `/tmp/.git` + `/tmp/AGENTS.md` must not become the recap's
+    # instructions. The empty marker list is the documented off switch.
+    assert argv[argv.index("-c") + 1] == "project_root_markers=[]"
+    assert argv[argv.index("-m") + 1] == registry.get("codex").default_model
+    # The prompt comes from stdin (`-`, last), the system text leading it.
+    assert argv[-1] == "-"
+    tail = "User: make the tests pass\n\nAssistant: they pass now"
+    assert call["stdin"] == (recap_mod._RECAP_SYSTEM + "\n\n"
+                             + recap_mod._RECAP_PROMPT % tail)
+    assert not any("make the tests pass" in a for a in argv)
+    # The `-o` file is the run's own temp file, and it is gone afterwards.
+    assert not os.path.exists(argv[argv.index("-o") + 1])
+
+
+def test_a_failed_codex_run_is_an_empty_recap(
+        client, project, calls, codex_cli, monkeypatch):
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    monkeypatch.setattr(recap_mod, "_recap_backend", lambda *a: "codex")
+    _switches(monkeypatch, codex=True)
+    monkeypatch.setenv("CODEX_STUB_EXIT", "1")
+    assert _get(client, target).json()["text"] == ""
+    call, = _spawns(calls)
+    assert not os.path.exists(call["argv"][call["argv"].index("-o") + 1])
+
+
 def test_the_recap_asks_the_agent_module_whose_session_it_is(agent, tmp_path):
     target = tmp_path / "t"
     target.mkdir()
@@ -488,8 +586,8 @@ class _FakeProc:
         return self._out, None
 
 
-@pytest.mark.parametrize("backend", ["claude", "copilot"])
-def test_both_recap_spawns_keep_the_posix_spawn_rule(
+@pytest.mark.parametrize("backend", ["claude", "copilot", "codex"])
+def test_every_recap_spawn_keeps_the_posix_spawn_rule(
         project, agent, monkeypatch, backend):
     """No `cwd`, `close_fds=False`, no session/preexec hooks: any of those makes
     CPython fork()+exec, and a fork with libproj resident in the server dies
@@ -501,11 +599,17 @@ def test_both_recap_spawns_keep_the_posix_spawn_rule(
 
     def fake_popen(argv, **kw):
         seen.append(kw)
+        if backend == "codex":
+            # `codex exec -o <file>`: the reply lands in the file.
+            with open(argv[argv.index("-o") + 1], "w", encoding="utf-8") as fh:
+                fh.write(text)
+            return _FakeProc(None)
         return _FakeProc(_ok(text) if backend == "claude" else text)
 
     monkeypatch.setattr(recap_mod.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
     monkeypatch.setattr(agent, "_copilot_bin", lambda: "/bin/copilot")
+    monkeypatch.setattr(agent, "_codex_bin", lambda: "/bin/codex", raising=False)
     assert recap_mod._recap_generate(agent, target, SESSION, backend=backend) == text
     kw, = seen
     assert "cwd" not in kw
@@ -532,7 +636,7 @@ class _HungProc:
         self.killed = True
 
 
-@pytest.mark.parametrize("backend", ["claude", "copilot"])
+@pytest.mark.parametrize("backend", ["claude", "copilot", "codex"])
 def test_a_killed_recap_run_that_will_not_exit_cannot_hang_the_request(
         project, agent, monkeypatch, backend):
     target, write = project
@@ -541,6 +645,7 @@ def test_a_killed_recap_run_that_will_not_exit_cannot_hang_the_request(
     monkeypatch.setattr(recap_mod.subprocess, "Popen", lambda argv, **kw: proc)
     monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
     monkeypatch.setattr(agent, "_copilot_bin", lambda: "/bin/copilot")
+    monkeypatch.setattr(agent, "_codex_bin", lambda: "/bin/codex", raising=False)
     assert recap_mod._recap_generate(agent, target, SESSION, backend=backend) == ""
     assert proc.killed
     assert proc.timeouts == [recap_mod._RECAP_TIMEOUT, recap_mod._RECAP_REAP_TIMEOUT]

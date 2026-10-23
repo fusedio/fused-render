@@ -57,7 +57,7 @@ pip install -e '.[all]'
 ```
 
 Requires Python 3.11+. Building from source and the local dev loop live in
-[CONTRIBUTING.md](CONTRIBUTING.md).
+[CONTRIBUTING.md](https://github.com/fusedio/fused-render/blob/main/CONTRIBUTING.md).
 
 ## What's in it
 
@@ -129,48 +129,48 @@ A page can do a lot through `fused`:
   and keep a string key/value store in sync with the URL, so a refresh or a
   bookmark reproduces the view. `fused.readFile` / `writeFile` / `uploadFile` /
   `mkdir` / `stat` / `rawUrl` work on files directly, no Python needed.
-  → [fused-render-authoring](skills/fused-render-authoring/SKILL.md)
+  → [fused-render-authoring](https://github.com/fusedio/fused-render/blob/main/skills/fused-render-authoring/SKILL.md)
 - `fused.ai.text({prompt, ...})` — ask Claude Code, or a local model when
   `opts.model` is a Hugging Face repo id (or pin the tier with
   `opts.provider: "local" | "claude"`). `fused.ai.image` / `.video` /
   `.transcribe` / `.embed` run locally; `fused.ai.models` lists, downloads,
   loads and unloads them.
-  → [fused-render-ai](skills/fused-render-ai/SKILL.md)
+  → [fused-render-ai](https://github.com/fusedio/fused-render/blob/main/skills/fused-render-ai/SKILL.md)
 - `fused.capture` — record the screen or the microphone, or grab a screenshot.
-  → [fused-render-capture](skills/fused-render-capture/SKILL.md)
+  → [fused-render-capture](https://github.com/fusedio/fused-render/blob/main/skills/fused-render-capture/SKILL.md)
 - `fused.fileIndex` — search and query the machine-wide file index instead of
   walking the filesystem.
-  → [fused-render-index](skills/fused-render-index/SKILL.md)
+  → [fused-render-index](https://github.com/fusedio/fused-render/blob/main/skills/fused-render-index/SKILL.md)
 - `fused.daemon` — start, stop and talk to a folder's background daemon, one
   the server keeps running after the page closes.
-  → [fused-render-background-apps](skills/fused-render-background-apps/SKILL.md)
+  → [fused-render-background-apps](https://github.com/fusedio/fused-render/blob/main/skills/fused-render-background-apps/SKILL.md)
 - `fused.trackJob` / `fused.watchJob` — long-running work in the download
   manager, whether your page is doing it or the server is.
-  → [fused-render-jobs](skills/fused-render-jobs/SKILL.md)
+  → [fused-render-jobs](https://github.com/fusedio/fused-render/blob/main/skills/fused-render-jobs/SKILL.md)
 - `fused.tasks` — list, create, follow up, cancel and observe the app's Claude
   tasks from a page; a handle follows a new task from pending to its session,
   and `ui()` hands back the shell's Tasks page as an iframe URL.
-  → [fused-render-tasks](skills/fused-render-tasks/SKILL.md)
+  → [fused-render-tasks](https://github.com/fusedio/fused-render/blob/main/skills/fused-render-tasks/SKILL.md)
 - App skills — an app ships a `SKILL.md` that tells a bot what each `.py`
   does and how to call it; the bot loads it when a task needs the app and
   runs the file through the same `/api/run` the page uses. The format is the
   "App SKILL.md" section of the authoring skill.
-  → [fused-render-authoring](skills/fused-render-authoring/SKILL.md)
+  → [fused-render-authoring](https://github.com/fusedio/fused-render/blob/main/skills/fused-render-authoring/SKILL.md)
 
 `fused.env` says whether a page is running here (`"local"`) or exported and
 hosted (`"hosted"`). The complete list, with every option, is the header of
-[`fused_render/static/runtime.js`](fused_render/static/runtime.js).
+[`fused_render/static/runtime.js`](https://github.com/fusedio/fused-render/blob/main/fused_render/static/runtime.js).
 
 Every built-in preview template is an HTML file on these same primitives —
 `fused_render/templates/` has 140 of them to copy from.
 
 ## Configuration
 
-[docs/usage.md](docs/usage.md) covers the
-[execution engine](docs/usage.md#execution-engine),
-the [AI Models page](docs/usage.md#ai-models),
-[preferences](docs/usage.md#preferences), and
-[export for hosted serving](docs/usage.md#export-for-hosted-serving).
+[docs/usage.md](https://github.com/fusedio/fused-render/blob/main/docs/usage.md) covers the
+[execution engine](https://github.com/fusedio/fused-render/blob/main/docs/usage.md#execution-engine),
+the [AI Models page](https://github.com/fusedio/fused-render/blob/main/docs/usage.md#ai-models),
+[preferences](https://github.com/fusedio/fused-render/blob/main/docs/usage.md#preferences), and
+[export for hosted serving](https://github.com/fusedio/fused-render/blob/main/docs/usage.md#export-for-hosted-serving).
 
 ## Claude Code plugin
 
@@ -202,10 +202,10 @@ cloned.
 
 ## Security
 
-[SECURITY.md](SECURITY.md) has the trust model and how to report a
+[SECURITY.md](https://github.com/fusedio/fused-render/blob/main/SECURITY.md) has the trust model and how to report a
 vulnerability.
 
 ## License
 
-Open source under the [MIT license](LICENSE), made by
+Open source under the [MIT license](https://github.com/fusedio/fused-render/blob/main/LICENSE), made by
 [Fused](https://www.fused.io).

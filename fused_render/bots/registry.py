@@ -48,6 +48,7 @@ import os
 import threading
 import time
 
+from fused_render import _platform
 from fused_render.bots import paths as bpaths
 
 logger = logging.getLogger(__name__)
@@ -319,18 +320,15 @@ def owner_info() -> dict | None:
 def _try_probe_lock() -> bool:
     """True when the flock is free right now (nobody owns). Takes and releases
     it without keeping it: a probe, not an election — a lean server asks this."""
-    import fcntl
     try:
         fh = open(os.path.join(bpaths.data_root(), "routines.lock"), "a+", encoding="utf-8")
     except OSError:
         return False
-    try:
-        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
+    if not _platform.flock(fh, blocking=False):
         fh.close()
         return False
     try:
-        fcntl.flock(fh, fcntl.LOCK_UN)
+        _platform.funlock(fh)
     finally:
         fh.close()
     return True
@@ -552,15 +550,12 @@ def _take_routines_lock() -> bool:
     to tick routines, and this one never both own. Same flock pattern the
     iMessage channel uses (bots/channels/imessage.py; the owner holds that one
     too, through the router). The fd is kept until shutdown()."""
-    import fcntl
     path = os.path.join(bpaths.data_root(), "routines.lock")
     try:
         fh = open(path, "a+", encoding="utf-8")
     except OSError:
         return False
-    try:
-        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
+    if not _platform.flock(fh, blocking=False):
         fh.close()  # re-tried every pass while standing down: never leak the fd
         return False
     _OWNER["fh"] = fh
@@ -579,8 +574,7 @@ def _drop_routines_lock() -> None:
     except Exception:  # noqa: BLE001
         pass
     try:
-        import fcntl
-        fcntl.flock(fh, fcntl.LOCK_UN)
+        _platform.funlock(fh)
     except Exception:  # noqa: BLE001
         pass
     try:

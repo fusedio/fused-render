@@ -4,7 +4,7 @@
 // `notify` while the composer keeps the words.
 import { LOCAL_COMMANDS, type ClassifiedCommand } from "../protocol/commands";
 import { parseWorktreeCommand } from "../protocol/worktrees";
-import { agentLabel, capsOf, effortsOf, modelLabelsOf, modelsOf } from "@platform/lib/agent-backends";
+import { agentLabel, capsOf, effortsForModel, modelLabelsOf, modelsOf } from "@platform/lib/agent-backends";
 
 /** `/model <name>`'s argument as a model value: a shortlist id or its label
  *  (any case) off the AGENT's catalog row (docs/COPILOT_BACKEND.md D11), or a
@@ -16,14 +16,22 @@ export function localModelArg(arg: string, backend = "claude"): string {
   const labels = modelLabelsOf(backend);
   const short = modelsOf(backend).find((m) => m === want || (labels[m] ?? "").toLowerCase() === want);
   if (short) return short;
-  const full = backend === "copilot" ? /^[a-z][a-z0-9.-]+$/ : /^claude-[a-z0-9.-]+$/;
+  const full = rawModelIds(backend) ? /^[a-z][a-z0-9.-]+$/ : /^claude-[a-z0-9.-]+$/;
   return full.test(want) ? want : "";
 }
 
-/** `/effort <level>`'s argument as a pill value, or "". */
-export function localEffortArg(arg: string, backend = "claude"): string {
+/** The agents whose full model ids are the provider's own, any shape
+ *  ("gpt-5.4", "gpt-6-luna") — not Claude's `claude-…` ones. */
+function rawModelIds(backend: string | undefined): boolean {
+  return backend === "copilot" || backend === "codex";
+}
+
+/** `/effort <level>`'s argument as a pill value, or "" — one of the levels
+ *  the chat's CURRENT MODEL takes (`effortsForModel`; the agent's whole
+ *  list when no model is named). */
+export function localEffortArg(arg: string, backend = "claude", model?: string): string {
   const want = arg.trim().toLowerCase();
-  return effortsOf(backend).includes(want) ? want : "";
+  return effortsForModel(backend, model).includes(want) ? want : "";
 }
 
 const hint = (name: string) => LOCAL_COMMANDS.find((c) => c.name === name)?.hint ?? "";
@@ -42,6 +50,8 @@ export interface LocalContext {
   worktreeReady: boolean;
   /** Whose models `/model` and `/effort` validate against; Claude when absent. */
   backend?: string;
+  /** The chat's current model: `/effort` validates against ITS levels. */
+  model?: string;
   hasSession?: boolean;
 }
 
@@ -62,14 +72,18 @@ export function planLocalCommand(cmd: ClassifiedCommand, ctx: LocalContext): Loc
     case "model": {
       const value = localModelArg(cmd.arg, ctx.backend);
       if (!value) {
-        const full = ctx.backend === "copilot" ? "a full model id" : "a full claude-… model id";
+        const full = rawModelIds(ctx.backend) ? "a full model id" : "a full claude-… model id";
         return { refuse: `Usage: /model ${hint("model")} (${modelsOf(ctx.backend).join(", ")}, or ${full})` };
       }
       return { do: "model", value };
     }
     case "effort": {
-      const value = localEffortArg(cmd.arg, ctx.backend);
-      if (!value) return { refuse: `Usage: /effort ${hint("effort")} (one of ${effortsOf(ctx.backend).join(", ")})` };
+      const value = localEffortArg(cmd.arg, ctx.backend, ctx.model);
+      if (!value) {
+        const levels = effortsForModel(ctx.backend, ctx.model);
+        if (!levels.length) return { refuse: `${ctx.model || "This model"} takes no effort level` };
+        return { refuse: `Usage: /effort ${hint("effort")} (one of ${levels.join(", ")})` };
+      }
       return { do: "effort", value };
     }
     case "worktree": {

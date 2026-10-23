@@ -104,6 +104,14 @@ export interface UseNarrowViewOptions {
    * behaviour and still right whenever the pane fills the window.
    */
   boxRef?: { current: HTMLElement | null };
+  /**
+   * ALWAYS the narrow CHAT view, whatever the box measures (`noAnnTools`, the
+   * canvas node pane). The pane stays mounted — it is the app-state frame that
+   * files the chat under its file and answers `has_pane` — but it is never on
+   * screen, and with the toggle hidden `paneview` cannot reach it either. Not
+   * `chatOnly`: that unmounts the pane and records a folder chat.
+   */
+  chatViewOnly?: boolean;
   /** Injected for tests. */
   matchMedia?: (q: string) => MediaQueryList;
   /** Called after every view/breakpoint change. T calls `renderAnn()` twice here
@@ -138,7 +146,7 @@ export interface NarrowViewState {
 }
 
 export function useNarrowView(opts: UseNarrowViewOptions): NarrowViewState {
-  const { params, noPane } = opts;
+  const { params, noPane, chatViewOnly = false } = opts;
   const mq = useRef<MediaQueryList | null>(null);
   if (mq.current === null) {
     const match = opts.matchMedia ?? (typeof window !== "undefined" ? window.matchMedia : undefined);
@@ -150,10 +158,11 @@ export function useNarrowView(opts: UseNarrowViewOptions): NarrowViewState {
   const measuresBox =
     !!opts.boxRef && typeof ResizeObserver === "function" && !opts.matchMedia;
 
-  const [narrow, setNarrow] = useState<boolean>(() => !!mq.current?.matches);
+  const [measured, setNarrow] = useState<boolean>(() => !!mq.current?.matches);
+  const narrow = chatViewOnly || measured;
   /** The last value published, read by the observer without re-subscribing. */
-  const narrowNow = useRef(narrow);
-  narrowNow.current = narrow;
+  const narrowNow = useRef(measured);
+  narrowNow.current = measured;
   const [param, setParam] = useState<string | undefined>(() => params.get("paneview"));
   /**
    * Crossing DOWN with `paneview` unset: both halves were on screen, and the
@@ -232,7 +241,7 @@ export function useNarrowView(opts: UseNarrowViewOptions): NarrowViewState {
     // re-subscribe per render.
   }, [measuresBox, opts.boxRef, noPane, params]);
 
-  const view = narrowViewOf(param, crossView.current);
+  const view = chatViewOnly ? "chat" : narrowViewOf(param, crossView.current);
 
   // The disarm, and the re-measure. Three clauses, one per thing that must not
   // trigger the disarm (T:8895-8928):
@@ -247,7 +256,12 @@ export function useNarrowView(opts: UseNarrowViewOptions): NarrowViewState {
   //     Preview→Chat FLIP and nothing else, and a media CROSSING is not a flip.
   useEffect(() => {
     if (noPane) return;
-    if (narrow && shown.current !== null && view === "chat") cbs.current.onArriveChat?.();
+    // Pinned to the chat view, the preview can NEVER come on screen, so an
+    // armed mode a URL carried in (`annmode=1`) has nothing to act on and no
+    // toggle to undo it: the boot guard does not apply, disarm on arrival too.
+    if (narrow && (shown.current !== null || chatViewOnly) && view === "chat") {
+      cbs.current.onArriveChat?.();
+    }
     shown.current = view;
     cbs.current.onRemeasure?.();
     const raf =
@@ -257,7 +271,7 @@ export function useNarrowView(opts: UseNarrowViewOptions): NarrowViewState {
     return () => {
       if (raf !== null) cancelAnimationFrame(raf);
     };
-  }, [narrow, view, noPane]);
+  }, [narrow, view, noPane, chatViewOnly]);
 
   const toggle = useCallback(() => {
     // The opposite of the view ON SCREEN, not of the raw param: after a

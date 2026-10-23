@@ -11,7 +11,10 @@
 // never reaches a cross-site iframe, so the workbench's embed-auth mode asks
 // its parent (this page) for a Bearer token over postMessage:
 //   iframe → { type: "fused-embed-auth-ready" }   (also -refresh on a 401)
-//   parent → { type: "fused-embed-auth-token", accessToken }
+//   parent → { type: "fused-embed-auth-token", accessToken, publicOrigin }
+//            publicOrigin is the workbench's real origin, for the links it
+//            builds (share URLs): under the custom env's loopback proxy its
+//            own origin is 127.0.0.1:<port>.
 // The token is the CLI's own `fused login` JWT (GET /api/canvases/token) and
 // is posted with an EXACT targetOrigin — never "*" — so it cannot leak to a
 // frame that navigated elsewhere.
@@ -29,6 +32,26 @@
 //            load; null from the sidebar's close button, so both sides agree)
 //   parent → { type: "fused-embed-pushed", push_seq }  after a push, for the
 //            workbench's save chip ("Published"); it triggers no reload.
+//   iframe → { type: "fused-embed-open-code", udfName, backendId? }  the node
+//            toolbar's code button in embed mode. A TOGGLE: with that node's
+//            Code tab already up, the right pane shuts; otherwise this page
+//            selects the node (fused-embed-select first when it is not the
+//            one shown), opens the right pane if it was hidden, and switches
+//            it to Code. Accepted only from the workbench frame's own window.
+//   iframe → { type: "fused-embed-open-side" } | { type: "fused-embed-close-side" }
+//            the workbench's right-edge chips (its own right pane never shows
+//            embedded): open or shut the right pane here. Accepted only from
+//            the workbench frame's own window.
+//   parent → { type: "fused-embed-side-panel", open, code, width }  whether the
+//            right pane is up, whether it is up on the shown node's Code tab,
+//            and its width in px over the frame — always 0: the pane shares
+//            the row with the frame, it never covers it — on every change and
+//            on every frame load: the frame's expand chip shows while the pane
+//            is shut, its collapse chip while it is up, and the toolbar's code
+//            button reads "Hide" / "Show code panel".
+//   parent → { type: "fused-embed-pan", dx, dy }  on every tick of a seam drag,
+//            half the pane's width change: the canvas pans to keep its visible
+//            centre put, as the workbench's own sidebar drags do.
 // Keyed by UDF NAME, never a React Flow node id (those are regenerated every
 // load): the node's source is `<clone>/<udfName>.py` (widgets: `.json`).
 //
@@ -89,13 +112,13 @@
 // mirrored off the frame's own URL (same origin) as it changes — and the next
 // frame on that node boots on it. In memory only: a reload starts over.
 import { isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { SyntheticEvent } from "react";
 import { createPortal } from "react-dom";
 import { addCurrentApp } from "@platform/lib/api";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { ChatMount } from "@apps/claude";
-import { statPath } from "@platform/lib/api";
+import { rawUrl, statPath, type TemplateEntry } from "@platform/lib/api";
 import { EMBED_PREFIX, NAV_EVENT, VIEW_PREFIX, embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -236,6 +259,30 @@ function nodeTabFromUrl(): NodeTab {
   return new URLSearchParams(window.location.search).get("node_tab") === "code" ? "code" : "claude";
 }
 
+/** Whether the right pane (canvas chat or node pane) is up. Shut rides this
+ *  page's URL as `side=off` — the explorer's own word for a shut companion
+ *  column (`_side=off`, apps/explorer/lib/preview-side.ts) — so a reload keeps
+ *  it; absent means open, the default. */
+const SIDE_OFF = "off";
+
+function sideOpenFromUrl(): boolean {
+  return new URLSearchParams(window.location.search).get("side") !== SIDE_OFF;
+}
+
+/** A node tab's icon: the mode's own template icon.svg off the node file's
+ *  stat, drawn exactly as the explorer's sidebar tabs draw theirs
+ *  (apps/explorer/ModeSwitcher's templateModeIcon, which an app may not
+ *  import): a currentColor mask, else the mode's first letter in a box. */
+function nodeTabIcon(mode: NodeTab, templates: readonly TemplateEntry[]): React.ReactNode {
+  const entry = templates.find((t) => t.mode === mode);
+  if (!entry) return null;
+  if (entry.icon === null) {
+    return <span className="mode-icon-placeholder">{mode.charAt(0).toUpperCase()}</span>;
+  }
+  const mask = `url("${rawUrl(entry.icon)}")`;
+  return <span className="mode-icon-mask" style={{ WebkitMaskImage: mask, maskImage: mask }} />;
+}
+
 /**
  * THE EXPLORER, HEADLESS, on the node's file (owner, 2026-10-17: "use embed —
  * that's the true headless thing"): the explorer's own embed route framed in
@@ -248,7 +295,10 @@ function nodeTabFromUrl(): NodeTab {
 function nodeEmbedSrc(file: string, tab: NodeTab, sessionId: string | null): string {
   // `_noann=1` on the chat: its Screenshot / Annotate seats and view toggle
   // would open the chat's own preview of the file, which is the Code tab's
-  // job here (owner, 2026-10-17). `session_id` when a Recent row on the
+  // job here (owner, 2026-10-17). It also pins the chat to its narrow CHAT
+  // view at every width (useNarrowView `chatViewOnly`): the chat's own file
+  // pane stays mounted — it is what files the session under the file — but
+  // never on screen, so a wide node pane is the chat alone, not code + chat. `session_id` when a Recent row on the
   // canvas chat hopped here: the frame's chat resumes that conversation.
   return embedUrlForFsPath(
     file,
@@ -395,6 +445,10 @@ export default function CanvasWorkspace({
   syncSlot?: HTMLElement | null;
 }) {
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
+  // The workbench's own origin, for links a person opens: `baseUrl` is the
+  // embed proxy's loopback origin while that runs, which changes port on
+  // every restart and is gone once it stops.
+  const [workbenchBase, setWorkbenchBase] = useState<string | null>(null);
   const [handle, setHandle] = useState<string | null>(null);
   const [dir, setDir] = useState<string | null>(null);
   // The claude template's path, from the clone dir's own stat — the same
@@ -402,6 +456,10 @@ export default function CanvasWorkspace({
   // too. Needed because the chat is framed DIRECTLY via /render (below), not
   // through /explorer/embed.
   const [chatTpl, setChatTpl] = useState<string | null>(null);
+  // The clone dir's templates, off the same stat: the node tabs' icons until
+  // the shown node's own stat answers (a template's icon is the template's,
+  // not the file's, so the dir's entries draw the same glyphs).
+  const [dirTemplates, setDirTemplates] = useState<TemplateEntry[] | null>(null);
   // The selected node (null = the canvas chat). Seeded from `?node=` so a
   // reload keeps the node; written back below.
   const [node, setNode] = useState<NodeSel | null>(() => {
@@ -410,6 +468,10 @@ export default function CanvasWorkspace({
     return seeded;
   });
   const [nodeTab, setNodeTab] = useState<NodeTab>(() => nodeTabFromUrl());
+  // The right pane shown or hidden (the sync strip's panel toggle). Hiding it
+  // leaves the selection alone: the canvas goes on selecting, and the pane
+  // opens on whatever node is selected by then.
+  const [sideOpen, setSideOpen] = useState<boolean>(() => sideOpenFromUrl());
   // Bumped when the node pane must REBOOT on a session for the node already
   // shown (a Recent row's hop onto the selected node, below): the frame's src
   // is otherwise frozen per node and tab (`nodeBootSrc`).
@@ -449,6 +511,10 @@ export default function CanvasWorkspace({
   const [repostSeq, setRepostSeq] = useState(0);
   // Splitter position: workbench pane width as a fraction of the row.
   const [leftFrac, setLeftFrac] = useState(0.55);
+  const leftFracRef = useRef(leftFrac);
+  useLayoutEffect(() => {
+    leftFracRef.current = leftFrac;
+  }, [leftFrac]);
   const [dragging, setDragging] = useState(false);
   const rowRef = useRef<HTMLDivElement | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -495,6 +561,8 @@ export default function CanvasWorkspace({
   }, []);
 
   const [nodeFileReady, setNodeFileReady] = useState<string | null>(null);
+  // The node file's templates, off the same stat, for the tab icons.
+  const [nodeTemplates, setNodeTemplates] = useState<{ path: string; templates: TemplateEntry[] } | null>(null);
   const nodePath = node && dir ? nodeFile(dir, node) : null;
   useEffect(() => {
     if (!nodePath || nodeFileReady === nodePath) return;
@@ -503,8 +571,10 @@ export default function CanvasWorkspace({
     const started = Date.now();
     const probe = async () => {
       try {
-        await statPath(nodePath);
-        if (!cancelled) setNodeFileReady(nodePath);
+        const st = await statPath(nodePath);
+        if (cancelled) return;
+        setNodeTemplates({ path: nodePath, templates: st.templates ?? [] });
+        setNodeFileReady(nodePath);
       } catch {
         if (cancelled) return;
         if (Date.now() - started > NODE_FILE_WAIT_MS) {
@@ -558,12 +628,12 @@ export default function CanvasWorkspace({
     }
     return nodeBootRef.current.src;
   };
-  // …and forgotten with the frame: deselecting unmounts the node pane, and
-  // the same node selected again must boot on where its chat got to since,
-  // not on the src the pane was last given.
+  // …and forgotten with the frame: deselecting (or hiding the right pane)
+  // unmounts the node pane, and the same node shown again must boot on where
+  // its chat got to since, not on the src the pane was last given.
   useEffect(() => {
-    if (!node) nodeBootRef.current = null;
-  }, [node]);
+    if (!node || !sideOpen) nodeBootRef.current = null;
+  }, [node, sideOpen]);
   // Mirror the frame's chat session as it changes (see `nodeSessions`). Bound
   // on every load — a new src and the tab remount both replace the window —
   // and only for the Claude tab: the Code tab's URL carries no session.
@@ -625,9 +695,12 @@ export default function CanvasWorkspace({
         const status = await getCanvasesStatus();
         if (cancelled) return;
         // THIS canvas's environment's origin and handle, not the default's:
-        // the token is posted only to this exact origin.
-        const base = status.envs[env].base_url;
+        // the token is posted only to this exact origin. `embed_url` is the
+        // origin to frame — the custom env's loopback proxy when that is on
+        // (canvas_embed_proxy.py); otherwise the workbench itself.
+        const base = status.envs[env].embed_url ?? status.envs[env].base_url;
         setBaseUrl(base);
+        setWorkbenchBase(status.envs[env].base_url);
         baseOriginRef.current = new URL(base).origin;
         // The clone onto the sidebar's desk (its Canvases section, the
         // Projects store): opening a canvas is what puts it there, as a task
@@ -662,7 +735,9 @@ export default function CanvasWorkspace({
     let cancelled = false;
     void statPath(dir)
       .then((st) => {
-        if (!cancelled) setChatTpl(st.templates?.find((t) => t.mode === "claude")?.path ?? null);
+        if (cancelled) return;
+        setChatTpl(st.templates?.find((t) => t.mode === "claude")?.path ?? null);
+        setDirTemplates(st.templates ?? []);
       })
       .catch((e) => {
         if (!cancelled) setError((e as Error).message);
@@ -690,15 +765,38 @@ export default function CanvasWorkspace({
     const origin = baseOriginRef.current;
     if (!frame?.contentWindow || !origin) return;
     try {
-      const { access_token } = await getAccessToken();
+      // THIS canvas's env's login, as the origin is its env's: a custom
+      // deployment has its own `[auth]` tenant (D1412).
+      const { access_token } = await getAccessToken(env);
+      // `publicOrigin`: the workbench's REAL origin. Framed through the custom
+      // env's loopback proxy (canvas_embed_proxy.py) the workbench's own
+      // `window.location.origin` is `http://127.0.0.1:<port>`, and every link
+      // it builds from that — the Share dialog's canvas URL above all — would
+      // name a port on this machine that nobody else can open. The workbench
+      // builds those links from this origin instead (application embed-auth.ts).
+      // Parsed apart from the post: a malformed FUSED_RENDER_WORKBENCH_URL
+      // override reaches here unvalidated, and it must cost the field, not
+      // the token.
+      let publicOrigin: string | undefined;
+      if (workbenchBase) {
+        try {
+          publicOrigin = new URL(workbenchBase).origin;
+        } catch {
+          publicOrigin = undefined;
+        }
+      }
       frame.contentWindow.postMessage(
-        { type: "fused-embed-auth-token", accessToken: access_token },
+        {
+          type: "fused-embed-auth-token",
+          accessToken: access_token,
+          ...(publicOrigin ? { publicOrigin } : {}),
+        },
         origin, // exact origin — this message carries a credential
       );
     } catch (e) {
       setError((e as Error).message);
     }
-  }, []);
+  }, [env, workbenchBase]);
 
   // Ask the workbench to select a node (or, with null, to deselect). Exact
   // targetOrigin, like every message to the frame.
@@ -708,6 +806,36 @@ export default function CanvasWorkspace({
     if (!frame?.contentWindow || !origin) return;
     frame.contentWindow.postMessage({ type: "fused-embed-select", udfName }, origin);
   }, []);
+
+  // Whether the right pane is up, and up on the shown node's Code tab (see
+  // the header): the frame's expand chip and its toolbar code button act on
+  // this pane, so they need the state to show and label themselves. Sent on
+  // every change, and on every frame load below.
+  // The viewer (`embedded`) renders no pane at all: it reports shut, so the
+  // frame draws neither chip and labels its code button "Show".
+  const codePanelOpen = !embedded && sideOpen && nodeTab === "code" && node !== null;
+  // The pane shares the row with the frame (it never covers it), so the
+  // width it reports over the frame is always 0: the frame's collapse chip
+  // sits at its own right edge.
+  // Written after commit, not during render: a discarded render must not
+  // leave a pane state the message handler reads that was never shown.
+  const paneOpen = !embedded && sideOpen;
+  const sidePanelStateRef = useRef({ open: paneOpen, code: codePanelOpen, width: 0 });
+  useLayoutEffect(() => {
+    sidePanelStateRef.current = { open: paneOpen, code: codePanelOpen, width: 0 };
+  }, [paneOpen, codePanelOpen]);
+  const sendCodePanelState = useCallback(() => {
+    const frame = frameRef.current;
+    const origin = baseOriginRef.current;
+    if (!frame?.contentWindow || !origin) return;
+    frame.contentWindow.postMessage(
+      { type: "fused-embed-side-panel", ...sidePanelStateRef.current },
+      origin,
+    );
+  }, []);
+  useEffect(() => {
+    sendCodePanelState();
+  }, [sideOpen, codePanelOpen, embedded, sendCodePanelState]);
 
   // Tell the canvas whether THIS window is focused (see the header): on every
   // change, and whenever the frame (re)loads or re-hydrates, since it starts
@@ -970,6 +1098,10 @@ export default function CanvasWorkspace({
   // without re-subscribing it on every selection.
   const nodeRef = useRef<NodeSel | null>(node);
   nodeRef.current = node;
+  // An open-code for a node not yet shown: the pane switches to Code only
+  // once the workbench's selection echo has set that node, so the old node's
+  // code never shows in between (and a refused select changes nothing).
+  const pendingCodeRef = useRef<string | null>(null);
 
   // A HOP ONTO THIS CANVAS WHILE IT IS MOUNTED — the Tasks page's door on
   // another node of the canvas the reader is already on, a notification —
@@ -993,6 +1125,9 @@ export default function CanvasWorkspace({
       const here = canvasNameFromPath(window.location.pathname);
       if (!here || here.env !== env || here.name !== name) return;
       const next = nodeFromUrl();
+      // A URL naming no node states the pane's own shut/open (`side=off`,
+      // sideOpenFromUrl); one naming a node asks to see its pane (below).
+      if (!next) setSideOpen(sideOpenFromUrl());
       const had = next ? nodeSessions.get(nodeSessionKey(env, name, next.file)) : undefined;
       const sid = next ? seedNodeSessionFromUrl(env, name, next) : null;
       const cur = nodeRef.current;
@@ -1014,6 +1149,8 @@ export default function CanvasWorkspace({
         setNode(null);
         return;
       }
+      // A link naming a node is a request to see its pane: a shut one opens.
+      setSideOpen(true);
       if (cur && cur.file === next.file) {
         // The same node: the link's tab wins (a Code tab left open would
         // otherwise hide the chat the task named), and a session the pane
@@ -1049,6 +1186,7 @@ export default function CanvasWorkspace({
         void seedToken();
         if (type === "fused-embed-auth-ready") {
           sendHostFocus();
+          sendCodePanelState();
           setRepostSeq((n) => n + 1); // a fresh frame has no sync state yet
         }
         // Restore the node this page is on (a reload, or a frame that
@@ -1095,6 +1233,7 @@ export default function CanvasWorkspace({
         // full state, whatever the server thought it held before.
         relayDelta(true);
         sendHostFocus();
+        sendCodePanelState();
         setRepostSeq((n) => n + 1);
       }
       if (type === "fused-embed-delta-applied" || type === "fused-embed-delta-rejected") {
@@ -1141,7 +1280,13 @@ export default function CanvasWorkspace({
           setNode((cur) =>
             cur && cur.udfName === name && cur.file === file ? cur : { udfName: name, kind, file },
           );
+          if (pendingCodeRef.current === name) {
+            pendingCodeRef.current = null;
+            setSideOpen(true);
+            setNodeTab("code");
+          }
         } else {
+          pendingCodeRef.current = null;
           // The canvas deselected (pane click, folder node, multi-select, or
           // the node is gone after a re-hydrate): follow it back to the
           // canvas chat. Owner call — the canvas is the one source of truth
@@ -1149,15 +1294,47 @@ export default function CanvasWorkspace({
           setNode(null);
         }
       }
+      if (type === "fused-embed-open-code") {
+        // The node toolbar's "Show code panel" (header). The workbench frame's
+        // own window only, on top of the origin check above.
+        if (embedded) return;
+        if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
+        const name = event.data?.udfName;
+        if (typeof name !== "string" || !name) return;
+        // That node's Code tab already up: the button is its "Hide".
+        if (sidePanelStateRef.current.code && nodeRef.current?.udfName === name) {
+          setSideOpen(false);
+          return;
+        }
+        // Not the node shown: select it in the workbench, whose selection
+        // echo (above) is what sets `node` — it alone states the node's kind
+        // and file — and opens the Code tab then (`pendingCodeRef`).
+        if (nodeRef.current?.udfName !== name) {
+          pendingCodeRef.current = name;
+          sendSelect(name);
+          return;
+        }
+        setSideOpen(true);
+        setNodeTab("code");
+      }
+      if (type === "fused-embed-open-side" || type === "fused-embed-close-side") {
+        // The workbench's right-edge chips (header). A close also drops a
+        // Code request still waiting on its selection echo: the close wins.
+        if (embedded) return;
+        if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
+        const open = type === "fused-embed-open-side";
+        if (!open) pendingCodeRef.current = null;
+        setSideOpen(open);
+      }
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [seedToken, sendSelect, sendHostFocus, relaySnapshot, relayDelta, enqueueRelay, env, name, embedded]);
+  }, [seedToken, sendSelect, sendHostFocus, sendCodePanelState, relaySnapshot, relayDelta, enqueueRelay, env, name, embedded]);
 
   // The hosted editor's URL, for the project page's header (`onWorkbenchUrl`).
   const workbenchUrl =
-    baseUrl && handle
-      ? `${baseUrl}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}`
+    workbenchBase && handle
+      ? `${workbenchBase}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}`
       : null;
   useEffect(() => {
     onWorkbenchUrl?.(workbenchUrl);
@@ -1202,6 +1379,17 @@ export default function CanvasWorkspace({
       window.history.replaceState(window.history.state, "", url);
     }
   }, [node, nodeTab]);
+
+  // …and the right pane's shut state (`side=off`, see `sideOpenFromUrl`).
+  useEffect(() => {
+    if (embedded) return;
+    const url = new URL(window.location.href);
+    if (sideOpen) url.searchParams.delete("side");
+    else url.searchParams.set("side", SIDE_OFF);
+    if (url.href !== window.location.href) {
+      window.history.replaceState(window.history.state, "", url);
+    }
+  }, [sideOpen, embedded]);
 
   // After every push, tell the workbench's save chip it is published. This
   // is informational only — the frame never reloads or re-fetches on it (the
@@ -1366,12 +1554,28 @@ export default function CanvasWorkspace({
   // pointer-events are disabled on both panes while dragging).
   useEffect(() => {
     if (!dragging) return;
+    // Seeded from the seam's position as the drag starts, so the first tick
+    // pans like every later one.
+    let prevFrac: number | null = leftFracRef.current;
     const onMove = (e: MouseEvent) => {
       const row = rowRef.current;
       if (!row) return;
       const rect = row.getBoundingClientRect();
-      const frac = (e.clientX - rect.left) / rect.width;
-      setLeftFrac(Math.min(0.85, Math.max(0.15, frac)));
+      const frac = Math.min(0.85, Math.max(0.15, (e.clientX - rect.left) / rect.width));
+      setLeftFrac(frac);
+      // Half the pane's width change, to the canvas (header: fused-embed-pan)
+      // — from the drag itself, so a window resize mid-drag never pans twice.
+      if (prevFrac !== null && frac !== prevFrac) {
+        const frame = frameRef.current;
+        const origin = baseOriginRef.current;
+        if (frame?.contentWindow && origin) {
+          frame.contentWindow.postMessage(
+            { type: "fused-embed-pan", dx: (rect.width * (frac - prevFrac)) / 2, dy: 0 },
+            origin,
+          );
+        }
+      }
+      prevFrac = frac;
     };
     const onUp = () => setDragging(false);
     window.addEventListener("mousemove", onMove);
@@ -1423,6 +1627,8 @@ export default function CanvasWorkspace({
         sendSelect(null);
         setNode(null);
       }
+      // …and shown: the button now says "see chat →", so a shut pane opens.
+      setSideOpen(true);
       setFixRunId(run_id);
     } catch (e) {
       setFixError((e as Error).message);
@@ -1449,6 +1655,13 @@ export default function CanvasWorkspace({
   // sync legs, "Published 12 s ago" when all is well, the Pull button when
   // the server moved, and the sync log drawer on click.
   const s2dState = sync?.legs.server_to_disk.state;
+
+  // The node tabs' icons (SideChrome's SideTabs: icon + label): the shown
+  // node's own templates once its stat has answered, the clone dir's before
+  // that (same glyphs, no empty slot while the probe runs); nothing until
+  // either answers.
+  const nodeIcons =
+    nodeTemplates && nodePath !== null && nodeTemplates.path === nodePath ? nodeTemplates.templates : dirTemplates;
   const pushLeg = sync?.legs.disk_to_server;
 
   // The sync chrome. In the editor it sits above the panes (the strip, the
@@ -1599,6 +1812,9 @@ export default function CanvasWorkspace({
       )}
       <div
         ref={rowRef}
+        // The canvas frame and the right pane share the row: the pane never
+        // covers the workbench, so its header, chips and toolbars stay in
+        // view whatever the pane's width.
         style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "row" }}
       >
         <div
@@ -1606,8 +1822,9 @@ export default function CanvasWorkspace({
           // the wrapper's mouseenter still fires as the pointer crosses in.
           onMouseEnter={focusCanvasOnEnter}
           style={{
-            // The viewer has no right pane: the canvas takes the row.
-            flex: embedded ? "1 1 auto" : `0 0 ${leftFrac * 100}%`,
+            // The viewer has no right pane, and a shut pane leaves the row to
+            // the canvas; up, the seam's drag sets the split (`leftFrac`).
+            flex: embedded || !sideOpen ? "1 1 auto" : `0 0 ${leftFrac * 100}%`,
             minWidth: 0,
             position: "relative",
             pointerEvents: dragging ? "none" : "auto",
@@ -1618,6 +1835,13 @@ export default function CanvasWorkspace({
               ref={frameRef}
               src={frameSrc}
               title={`Workbench: ${name}`}
+              // Cross-origin frame: without this the workbench's
+              // navigator.clipboard calls (Copy link, copy/paste UDFs) reject.
+              allow="clipboard-read; clipboard-write"
+              // The custom env's embed proxy admits this frame's load only
+              // with the app's origin as its Referer (canvas_embed_proxy.py),
+              // so the policy is spelled out here rather than inherited.
+              referrerPolicy="origin"
               /* NO `data-fused-annotate-target` here, deliberately: the canvas
                  chat gets this frame as a getter (`annotateTarget` below), and
                  the explorer engine in the right pane finds its own content
@@ -1638,19 +1862,27 @@ export default function CanvasWorkspace({
             ))
           )}
         </div>
-        {!embedded && (
-          <>
+        {!embedded && sideOpen && (
+          <div
+            // The right pane's column: the seam and the pane, the rest of
+            // the row past the canvas's share.
+            style={{
+              flex: "1 1 auto",
+              minWidth: 0,
+              display: "flex",
+              flexDirection: "row",
+              background: "var(--bg)",
+            }}
+          >
         <div
+          // The explorer's preview/side seam, reused as-is: one hairline that
+          // lights `--seam-hot` on hover and drag like every other draggable
+          // seam in the app. It used to be a 6px grey band that turned blue
+          // under the cursor — the only seam styled on its own.
+          className={dragging ? "preview-side-divider dragging" : "preview-side-divider"}
           onMouseDown={(e) => {
             e.preventDefault();
             setDragging(true);
-          }}
-          style={{
-            flex: "0 0 6px",
-            cursor: "col-resize",
-            background: dragging
-              ? "rgba(100,140,255,0.5)"
-              : "rgba(128,128,128,0.25)",
           }}
           title="Drag to resize"
         />
@@ -1694,9 +1926,19 @@ export default function CanvasWorkspace({
                       className="h-full justify-start gap-3 rounded-none border-b-0 p-0"
                     >
                       <TabsTrigger value="claude" className="flex-none px-2 text-[12px]">
+                        {nodeIcons && nodeTabIcon("claude", nodeIcons) && (
+                          <span className="mode-menu-icon" data-icon="inline-start">
+                            {nodeTabIcon("claude", nodeIcons)}
+                          </span>
+                        )}
                         Claude
                       </TabsTrigger>
                       <TabsTrigger value="code" className="flex-none px-2 text-[12px]">
+                        {nodeIcons && nodeTabIcon("code", nodeIcons) && (
+                          <span className="mode-menu-icon" data-icon="inline-start">
+                            {nodeTabIcon("code", nodeIcons)}
+                          </span>
+                        )}
                         Code
                       </TabsTrigger>
                     </TabsList>
@@ -1766,7 +2008,7 @@ export default function CanvasWorkspace({
             !error && <p style={{ padding: 16 }}>Loading editor…</p>
           )}
         </div>
-          </>
+          </div>
         )}
       </div>
     </div>

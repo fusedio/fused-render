@@ -282,8 +282,10 @@ export interface ClaudeChatProps {
   preview?: boolean;
   /** `_noann=1` — no Screenshot / Comment / Annotate seats and no narrow-view
    *  toggle: the host shows this chat where its pane must stay out of reach
-   *  (the canvas node pane, whose Code tab is the file's view). The pane
-   *  itself stays mounted — it is what files the chat under its file. */
+   *  (the canvas node pane, whose Code tab is the file's view), and the chat
+   *  is pinned to its narrow CHAT view at every width (useNarrowView
+   *  `chatViewOnly`). The pane itself stays mounted — it is what files the
+   *  chat under its file — but is never on screen. */
   noAnnTools?: boolean;
   /** `_noopen=1` — this mount must not record the app it frames as OPENED
    *  (D622, the listing pane). Unlike `preview` it is not display-only: the
@@ -292,6 +294,10 @@ export interface ClaudeChatProps {
   noOpen?: boolean;
   /** Replaces `window.top.location` hops (T:12029, 17054, 18222). */
   onNavigate?: (url: string) => void;
+  /** The chat's worktree was removed from its menu. Absent, the chat hops to
+   *  the main checkout's folder chat through `onNavigate`; a host that is not
+   *  the explorer (the tasks page) passes this to stay where it is. */
+  onWorktreeRemoved?: () => void;
   /** Replaces `dataset.chatReady`: fired ONCE, when the view the boot branch
    *  chose has something on screen (T:4520 `markChatReady`). */
   onReady?: () => void;
@@ -713,6 +719,9 @@ function ChatBody(props: ChatBodyProps) {
     // window not one narrow rule fired. `.chat-root` is the box the iframe's
     // viewport used to be.
     boxRef: rootRef,
+    // `_noann=1`: the chat alone on screen at every width; the pane stays
+    // mounted for the app-state block (see `noAnnTools` on the props).
+    chatViewOnly: !!props.noAnnTools,
     // T:8940 — arriving in the narrow CHAT view disarms: the toggle that would
     // undo the mode is hidden there, and an armed mode behind a hidden toggle
     // keeps the frame's click swallower live over a document nobody can see.
@@ -1652,6 +1661,14 @@ function ChatBody(props: ChatBodyProps) {
     recMarkPoint: (cx, cy, win, nearPath) => recorder.markPoint(cx, cy, win, nearPath ?? null),
   });
   annRef.current = ann;
+  // `noAnnTools` PINS THE CHAT VIEW (useNarrowView `chatViewOnly`), so the
+  // preview is never on screen and nothing can undo an armed mode: no seat,
+  // no toggle. The hook's arrival disarm runs at MOUNT, but the mode arms
+  // later, when the target arrives and `bootFromParam` reads `annmode=1` —
+  // so this watches the armed state itself and disarms whenever it comes on.
+  useEffect(() => {
+    if (props.noAnnTools && ann.armed) ann.arriveNarrowChat();
+  }, [props.noAnnTools, ann.armed, ann]);
   // The seam above, parked from an EFFECT — the most recently mounted chat owns
   // it, and a render React discarded must not.
   useEffect(() => {
@@ -3729,6 +3746,8 @@ function ChatBody(props: ChatBodyProps) {
     (cmd: ClassifiedCommand): boolean => {
       const plan = planLocalCommand(cmd, {
         backend: liveBackend.current,
+        // `/effort` validates against the levels THIS model takes.
+        model: defaults.model,
         worktreeReady: worktreeTarget && worktreeReady.current,
         hasSession: !!state.sessionId,
       });
@@ -3760,7 +3779,8 @@ function ChatBody(props: ChatBodyProps) {
           return true;
       }
     },
-    [onBack, setModelPick, setEffortPick, worktreeTarget, onToggleTasks, state.sessionId, rcAsk],
+    [onBack, setModelPick, setEffortPick, worktreeTarget, onToggleTasks, state.sessionId, rcAsk,
+     defaults.model],
   );
   /** SWITCHING WORKTREE IS OPENING THAT FOLDER'S CHAT, FRESH — the URL the Home
    *  lists open a folder chat on (`paneChatUrl`), with no session, through the
@@ -3906,6 +3926,7 @@ function ChatBody(props: ChatBodyProps) {
       request={wtRequest}
       running={running}
       onReady={onWorktreeReady}
+      {...(props.onWorktreeRemoved ? { onRemoved: props.onWorktreeRemoved } : {})}
     />
   ) : null;
   // The picker moves into the shared strip below the breakpoint: there is no

@@ -1,4 +1,4 @@
-// The one-switch settings: Tasks, Apps & sharing, Optional features.
+// The one-switch settings: Chats & tasks, Sharing & sync, Labs.
 //
 // Most of them publish after the PUT as well as saving: the surface the switch
 // governs is usually already on screen (the sidebar beside this page, a grid
@@ -7,6 +7,7 @@
 // navigation. Each flag module's header says why its reader caches.
 import {
   putAppSharingEnabled,
+  putCanvasesEmbedProxy,
   putCanvasesEnabled,
   putGitAutoSyncEnabled,
   putGithubLinkEnabled,
@@ -149,7 +150,7 @@ export function NotifyTerminalControl({ prefs, onChange }: PrefControlProps) {
   );
 }
 
-// ── Apps & sharing ─────────────────────────────────────────────────────────
+// ── Sharing & sync ─────────────────────────────────────────────────────────
 
 // Git auto-sync: default ON (`!== false` — an older server's silence is the
 // default), an opt-OUT. Off is the Update card and the manual git flows only.
@@ -243,7 +244,7 @@ export function ContribRemixControl({ prefs, onChange }: PrefControlProps) {
   );
 }
 
-// ── Optional features ──────────────────────────────────────────────────────
+// ── Labs ───────────────────────────────────────────────────────────────
 // Each is off by default and this is the only place it turns on (Canvases:
 // D427). Each one gates its ENTRY POINTS — a sidebar row, a status-bar chip, a
 // file view — never the routes behind them.
@@ -257,6 +258,32 @@ export function CanvasesControl({ prefs, onChange }: PrefControlProps) {
       // The sidebar beside this page reads the flag from its own store; the
       // row and the Settings-menu entry appear (or go) with the switch.
       after={(next) => publishCanvasesEnabled(next.canvases.enabled)}
+      onChange={onChange}
+    />
+  );
+}
+
+// No publish: the proxy follows the pref on the next canvas status read, which
+// every page that frames a canvas makes before it frames it. Off stops it at
+// once (shell/prefs.py). The settings file can pin it, like the env var that
+// pins the default environment.
+export function CanvasesEmbedProxyControl({ prefs, onChange }: PrefControlProps) {
+  const locked = prefs.canvases.embed_proxy_locked === true;
+  const on = prefs.canvases.embed_proxy === true;
+  return (
+    <PrefToggleRow
+      id="canvases-embed-proxy"
+      checked={on}
+      put={putCanvasesEmbedProxy}
+      disabled={locked}
+      status={
+        locked ? (
+          <>
+            Pinned {on ? "on" : "off"} by <code>[render] canvases_embed_proxy_enabled</code> in{" "}
+            <code>~/.fused/settings.toml</code>.
+          </>
+        ) : undefined
+      }
       onChange={onChange}
     />
   );
