@@ -264,7 +264,9 @@ echo "==> installing ${WHEEL_PATH##*/} [bundled,app,fused] + py2app + dmgbuild i
 # tests/test_bundle_contents.py fails if it would not). Naming [fused] here as
 # well is redundant, and kept deliberately: the extras list should still say out
 # loud that this build wants the engine.
-"$BUILD_VENV/bin/pip" install --quiet "${WHEEL_PATH}[bundled,app,fused]" py2app dmgbuild
+# dmgbuild pinned to the current line: the build venv is reused across
+# builds (warm), so an old dmgbuild would otherwise stay in it forever.
+"$BUILD_VENV/bin/pip" install --quiet "${WHEEL_PATH}[bundled,app,fused]" py2app "dmgbuild>=1.6.7"
 # Force a fresh reinstall of fused-render itself every run so the branch ref
 # baked into $WHEEL_PATH is picked up. The build venv is reused across builds,
 # so pip would otherwise treat an unchanged version as already-satisfied and
@@ -1505,7 +1507,20 @@ window_rect = ((200, 160), (760, 536))
 default_view = "icon-view"
 icon_size = 160
 text_size = 16
-icon_locations = {appname: (225, 218), "Applications": (535, 218)}
+icon_locations = {
+    appname: (225, 218),
+    "Applications": (535, 218),
+    # The image's own housekeeping files. Finder hides dot-files, but a Mac
+    # with "show hidden files" on (Cmd-Shift-.) shows them anyway, the
+    # hidden flag included (only .DS_Store stays invisible), and with no
+    # position of their own they land wherever the grid puts them, on top
+    # of the artwork. Parked below the window's 496pt content area instead:
+    # out of sight on every Mac, reachable only by scrolling down.
+    ".background.tiff": (380, 700),
+    ".fseventsd": (380, 700),
+    ".VolumeIcon.icns": (380, 700),
+    ".Trashes": (380, 700),
+}
 show_status_bar = False
 show_tab_view = False
 show_toolbar = False
