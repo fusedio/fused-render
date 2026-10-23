@@ -32,7 +32,11 @@ export function openTaskKeys(tasks: readonly TaskPulseTask[], ctx: OpenContext):
   if (!ctx.visible) return [];
   let session = "";
   try {
-    session = new URLSearchParams(ctx.search).get("session_id") ?? "";
+    const q = new URLSearchParams(ctx.search);
+    // session_id survives a switch to another side view, so it only counts as
+    // the chat being open when the side is the chat (absent, empty or claude).
+    const side = q.get("_side") ?? "";
+    if (side === "" || side === "claude") session = q.get("session_id") ?? "";
   } catch {
     session = "";
   }

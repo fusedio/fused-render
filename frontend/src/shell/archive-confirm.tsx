@@ -6,15 +6,16 @@ import { useCallback, useState } from "react";
 import type { ReactNode } from "react";
 import { ConfirmDialog } from "@apps/explorer/FsDialogs";
 import { archiveNeedsConfirm, confirmText } from "@shell/task-selection";
+import type { ArchiveFacts } from "@shell/task-selection";
 
 export function useArchiveConfirm(): {
   /** Run `go` now, or after the reader agrees when `task` is running. */
-  guard: (task: { status: string }, go: () => void) => void;
+  guard: (task: ArchiveFacts, go: () => void) => void;
   /** Render once, anywhere in the component. */
   node: ReactNode;
 } {
   const [pending, setPending] = useState<{ go: () => void } | null>(null);
-  const guard = useCallback((task: { status: string }, go: () => void): void => {
+  const guard = useCallback((task: ArchiveFacts, go: () => void): void => {
     if (archiveNeedsConfirm(task)) setPending({ go });
     else go();
   }, []);

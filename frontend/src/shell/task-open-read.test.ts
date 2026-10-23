@@ -38,6 +38,13 @@ describe("openTaskKeys", () => {
     ).toEqual(["s1"]);
   });
 
+  test("session_id left on another side view is not an open chat", () => {
+    expect(
+      openTaskKeys(rows, { peekedKey: null, search: "?_side=git&session_id=s1", visible: true }),
+    ).toEqual([]);
+    expect(openTaskKeys(rows, { peekedKey: null, search: "?session_id=s1", visible: true })).toEqual(["s1"]);
+  });
+
   test("a task with no session never matches an empty session_id param", () => {
     const bare = [task({ key: "pending:x", session_id: "" })];
     expect(openTaskKeys(bare, { peekedKey: null, search: "?session_id=", visible: true })).toEqual([]);

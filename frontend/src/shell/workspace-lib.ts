@@ -70,6 +70,7 @@ export function holdReasons(task: Task, facts: WorkspaceFacts): string[] {
   else if (task.status === "queued") out.push("queued");
   if (task.unread > 0) out.push(`${task.unread} unread`);
   for (const ref of prRefsOf(task)) {
+    if (!ref.repo) continue; // no repo, no status lookup: never resolvable
     const state = facts.prStates[prKey(ref)];
     if (state === "open" || state === "draft") out.push(`PR #${ref.number} ${state}`);
     else if (state !== "merged" && state !== "closed") out.push(`PR #${ref.number} unknown`);
@@ -286,6 +287,7 @@ export function workspaceGroup(task: Task, facts: WorkspaceFacts): WorkspaceGrou
   if (needsYou(task)) return "needs";
   if (task.status === "in_progress") return "running";
   for (const ref of prRefsOf(task)) {
+    if (!ref.repo) continue; // no repo, no status lookup: never resolvable
     const state = facts.prStates[prKey(ref)];
     if (state === "open" || state === "draft") return "review";
   }

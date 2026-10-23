@@ -3,6 +3,7 @@
 // close button, an Undo toast and a keyboard map. Its rules live in
 // workspace-lib; this file draws them and runs the two polls the rows need
 // (ports and holds), asked for the visible rows only.
+import { isMod } from "@platform/lib/platform";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   archiveTask,
@@ -455,7 +456,12 @@ export function TaskWorkspace({
     () => base.flatMap((t) => prRefsOf(t).filter((r) => r.repo).map(prKey)),
     [base],
   );
-  const prStates = usePrStatuses(prKeys);
+  const prStatesRaw = usePrStatuses(prKeys);
+  // A new object every call: keep the identity until a status itself changes, so
+  // factsFor and the grouping do not recompute on every render.
+  const prSig = prKeys.map((k) => `${k}=${prStatesRaw[k] ?? ""}`).join("\n");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const prStates = useMemo(() => prStatesRaw, [prSig]);
   const factsFor = useCallback(
     (t: Task): WorkspaceFacts => ({ holds, holdsReady: covered.has(t.key), holdsFailed: failed.has(t.key), prStates }),
     [holds, covered, failed, prStates],
@@ -594,7 +600,8 @@ export function TaskWorkspace({
           return;
         }
         case "open":
-          if (sel) {
+          // A focused button or link keeps its own Enter.
+          if (sel && !/^(BUTTON|A)$/.test((e.target as HTMLElement | null)?.tagName ?? "")) {
             e.preventDefault();
             open(sel);
           }
@@ -658,6 +665,21 @@ export function TaskWorkspace({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [open, close, onNewTask, peekOn]);
+
+  // Mod+K is App's cheat-sheet chord too, and App's document listener preventDefaults
+  // it before the window handler above could act. This capture listener runs first
+  // and stops the event, so the Workspace search palette is the one owner here.
+  useEffect(() => {
+    const onChord = (e: KeyboardEvent): void => {
+      if (e.isComposing || e.defaultPrevented || !isMod(e) || e.altKey || e.key.toLowerCase() !== "k") return;
+      if (document.querySelector("[aria-modal='true'], dialog[open]") !== null) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setSearching(true);
+    };
+    window.addEventListener("keydown", onChord, true);
+    return () => window.removeEventListener("keydown", onChord, true);
+  }, []);
 
   useEffect(() => {
     if (!selected) return;

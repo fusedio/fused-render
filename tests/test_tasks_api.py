@@ -5718,6 +5718,16 @@ def test_a_worktree_is_recorded_once_however_often_it_is_named(projects_dir):
     assert got == [f"{WT_ROOT}/feat"]
 
 
+def test_a_non_dict_content_block_is_skipped_not_raised(projects_dir):
+    odd = {"type": "assistant", "timestamp": T10, "cwd": "/repo",
+           "message": {"role": "assistant", "content": [
+               "git worktree add .claude/worktrees/x", None,
+               {"type": "tool_use", "id": "t2", "name": "Bash",
+                "input": {"command": "git worktree add .claude/worktrees/ok"}}]}}
+    got = _recorded(projects_dir, [_user("hi", T9), odd])
+    assert got == [f"{WT_ROOT}/ok"]
+
+
 def test_a_windows_style_path_is_recorded_with_forward_slashes():
     rec = {}
     tasks_mod._add_worktree(rec, "C:\\repo\\.claude\\worktrees\\feat")

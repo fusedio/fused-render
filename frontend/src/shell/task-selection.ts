@@ -5,7 +5,7 @@
 //
 // Nothing here reads the DOM or the clock.
 
-import { isDraftTask } from "@shell/tasks-lib";
+import { isDraftTask, liveJobRow } from "@shell/tasks-lib";
 import type { Task } from "@platform/lib/api";
 
 /** Which tasks may be picked: any real task that is not already archived. */
@@ -63,16 +63,22 @@ export function pruned(sel: SelectionSet, visible: Iterable<string>): SelectionS
 /** What the bulk bar's confirm says: how many tasks, and how many of them are
  *  running (a run in flight is stopped by archiving). */
 export function archivePlan(
-  tasks: readonly { key: string; status: string }[],
+  tasks: readonly (ArchiveFacts & { key: string })[],
   keys: SelectionSet,
 ): { keys: string[]; running: number } {
   const picked = tasks.filter((t) => keys.has(t.key));
   return { keys: picked.map((t) => t.key), running: picked.filter(archiveNeedsConfirm).length };
 }
 
-/** Does archiving this ONE task stop something? A run in flight is ended by the
- *  archive, so every single-task door asks first (the bulk bar's `confirmText`). */
-export const archiveNeedsConfirm = (task: { status: string }): boolean => task.status === "in_progress";
+/** The task fields `archiveNeedsConfirm` reads. */
+export type ArchiveFacts = Pick<Task, "status" | "kind" | "background_jobs">;
+
+/** Does archiving this task stop something? A run in flight is ended by the
+ *  archive: running, waiting on a permission or question card (`needs_attention`),
+ *  or a Done chat that still holds a live background job. ONE predicate for the
+ *  bulk bar (`archivePlan`) and every single-task door (the bulk bar's `confirmText`). */
+export const archiveNeedsConfirm = (task: ArchiveFacts): boolean =>
+  task.status === "in_progress" || task.status === "needs_attention" || liveJobRow(task);
 
 /** "Archive 5 tasks? 2 are still running and will be stopped." */
 export function confirmText(count: number, running: number): string {

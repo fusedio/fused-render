@@ -696,7 +696,9 @@ def _note_worktrees(rec: dict, line: str) -> None:
     if obj.get("type") != "assistant" or not isinstance(content, list):
         return
     for block in content:
-        inp = block.get("input") if isinstance(block, dict) else None
+        if not isinstance(block, dict):
+            continue
+        inp = block.get("input")
         cmd = inp.get("command") if isinstance(inp, dict) else None
         if block.get("name") != "Bash" or not isinstance(cmd, str):
             continue

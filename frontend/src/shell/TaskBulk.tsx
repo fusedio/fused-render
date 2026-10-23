@@ -3,7 +3,7 @@
 // views draw (group checkbox, row checkbox, bar). The data rules are in
 // task-selection.ts; the single-task archive is `archiveTask`, unchanged, so a
 // bulk archive tears down exactly what a single one does.
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { archiveTask, unarchiveTask } from "@platform/lib/api";
 import type { TeardownReport } from "@platform/lib/api";
 import type { Task } from "@platform/lib/api";
@@ -65,7 +65,9 @@ export function useBulkArchive({
   }, [tasksIn]);
 
   const latest = useRef({ onReload });
-  latest.current = { onReload };
+  useLayoutEffect(() => {
+    latest.current = { onReload };
+  });
 
   const run = useCallback(
     async (keys: string[]): Promise<void> => {

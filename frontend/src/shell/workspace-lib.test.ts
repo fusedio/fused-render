@@ -91,6 +91,10 @@ describe("holdReasons / holdMarker", () => {
     });
     expect(holdReasons(t, facts())).toEqual(["3 unread", "2 bg jobs", "run pending"]);
   });
+  test("a PR reference with no repo cannot be looked up, so it never holds the task", () => {
+    const t = task({ repo: "", prs: [{ repo: null, number: 12, url: "" }] } as never);
+    expect(holdReasons(t, facts())).toEqual([]);
+  });
   test("an open or draft PR holds it; merged and closed do not", () => {
     const t = task({ prs: [{ repo: "a/b", number: 7, url: "u" }] });
     expect(holdReasons(t, facts({ prStates: { "a/b#7": "open" } }))).toEqual(["PR #7 open"]);

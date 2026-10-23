@@ -43,12 +43,15 @@ test("pruned drops keys that left the visible list, keeping the set when none di
 });
 
 test("archivePlan counts running tasks among the selected; confirmText says so", () => {
-  const tasks = [
+  const tasks: (ArchiveFacts & { key: string })[] = [
     { key: "a", status: "in_progress" },
     { key: "b", status: "done" },
     { key: "c", status: "in_progress" },
+    { key: "d", status: "needs_attention" },
+    { key: "e", status: "done", background_jobs: { count: 1, run_id: "r", jobs: [{ id: "j", title: "" }] } },
   ];
   expect(archivePlan(tasks, new Set(["a", "b"]))).toEqual({ keys: ["a", "b"], running: 1 });
+  expect(archivePlan(tasks, new Set(["b", "d", "e"])).running).toBe(2);
   expect(confirmText(3, 2)).toBe("Archive 3 tasks? 2 are still running and will be stopped.");
   expect(confirmText(1, 1)).toBe("Archive 1 task? 1 is still running and will be stopped.");
 });
@@ -74,9 +77,13 @@ test("runPool never has more than `limit` in flight and reports each outcome", a
 });
 
 import { archiveNeedsConfirm } from "@shell/task-selection";
-test("only a running task needs the stop confirmation", () => {
+import type { ArchiveFacts } from "@shell/task-selection";
+test("a run in flight or a live background job needs the stop confirmation", () => {
   expect(archiveNeedsConfirm({ status: "in_progress" })).toBe(true);
-  for (const status of ["done", "failed", "queued", "needs_attention", "archived"]) {
+  expect(archiveNeedsConfirm({ status: "needs_attention" })).toBe(true);
+  const job = { count: 1, run_id: "r", jobs: [{ id: "j", title: "" }] };
+  expect(archiveNeedsConfirm({ status: "done", background_jobs: job })).toBe(true);
+  for (const status of ["done", "queued", "archived", "blocked"] as const) {
     expect(archiveNeedsConfirm({ status })).toBe(false);
   }
 });
