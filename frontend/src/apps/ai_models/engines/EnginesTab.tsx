@@ -32,8 +32,13 @@
 // is made findable. One card per capability, one row inside it: the name, the
 // control, the reality.
 import { useEffect, useState } from "react";
-import { getPrefs, putAiIdleUnloadMinutes, putEngineForCapability } from "@platform/lib/api";
-import type { CapabilityEngine, Prefs } from "@platform/lib/api";
+import {
+  getPrefs,
+  putAiIdleUnloadMinutes,
+  putEngineForCapability,
+  putEngineForModel,
+} from "@platform/lib/api";
+import type { CapabilityEngine, ModelEngine, Prefs } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import EngineSelect from "@apps/ai_models/engines/EngineSelect";
@@ -89,7 +94,7 @@ function CapabilityEngineRow({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [changed, setChanged] = useState<"switched" | "unloaded" | null>(null);
-  const warning = ignoredWarning(row);
+  const warning = ignoredWarning(row, auto);
   const note = engineNote(row);
   const stranded = strandedSelection(row, auto);
   const label = capabilityLabel(row.capability);
@@ -200,6 +205,69 @@ function CapabilityEngineRow({
           {changed === "unloaded" ? "Switched. Loaded model unloaded." : "Switched."}
         </div>
       )}
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </div>
+  );
+}
+
+// One DOWNLOADED model's own engine pin (D1431), under its capability's row.
+// The same listbox as the capability row, because the choices and the "ignored:
+// reason" sentence are the same facts one level down; a pin outranks the
+// capability's choice when its runner can run here, and is ignored with the
+// reason when it cannot.
+function ModelEngineRow({
+  row,
+  auto,
+  onChange,
+  onSwitched,
+}: {
+  row: ModelEngine;
+  auto: string;
+  onChange: (p: Prefs) => void;
+  onSwitched: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const warning = ignoredWarning(row, auto);
+  const stranded = strandedSelection(row, auto);
+  const labelId = `engine-model-${row.id}-label`;
+
+  const choose = async (code: string) => {
+    if (busy || code === row.selected) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const next = await putEngineForModel(row.id, code);
+      onChange(next);
+      onSwitched();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="am-engine-row">
+      <span id={labelId} className="am-engine-cap">
+        {row.id}
+      </span>
+      <EngineSelect
+        labelId={labelId}
+        auto={auto}
+        selected={row.selected}
+        choices={row.choices}
+        stranded={stranded}
+        strandedLabel={row.strandedLabel}
+        disabled={busy}
+        onChange={choose}
+      />
+      {row.effective && (
+        <span className="am-engine-serving">
+          {`Using ${row.effectiveShortLabel ?? row.effectiveLabel ?? row.effective}.`}
+        </span>
+      )}
+      {warning && <div className="am-engine-note warning">{warning}</div>}
       {error && <ErrorBanner>{error}</ErrorBanner>}
     </div>
   );
@@ -334,13 +402,25 @@ export default function EnginesTab({ onSwitched }: { onSwitched: () => void }) {
               moment it answers a question rather than skimmed past above
               three closed controls. */}
           {prefs.engines.capabilities.map((row) => (
-            <CapabilityEngineRow
-              key={row.capability}
-              row={row}
-              auto={prefs.engines.auto}
-              onChange={setPrefs}
-              onSwitched={onSwitched}
-            />
+            <div key={row.capability}>
+              <CapabilityEngineRow
+                row={row}
+                auto={prefs.engines.auto}
+                onChange={setPrefs}
+                onSwitched={onSwitched}
+              />
+              {(prefs.engines.models ?? [])
+                .filter((m) => m.capability === row.capability)
+                .map((m) => (
+                  <ModelEngineRow
+                    key={m.id}
+                    row={m}
+                    auto={prefs.engines.auto}
+                    onChange={setPrefs}
+                    onSwitched={onSwitched}
+                  />
+                ))}
+            </div>
           ))}
           <AiIdleWindowCard prefs={prefs} onChange={setPrefs} />
         </>

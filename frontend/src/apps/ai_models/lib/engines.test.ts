@@ -152,13 +152,25 @@ describe("ignoredWarning", () => {
   it("is silent while the selection is in force", () => {
     // Including "auto", which is honoured by definition — a warning on every
     // fresh machine teaches the user to ignore warnings.
-    expect(ignoredWarning(mac())).toBeNull();
-    expect(ignoredWarning(mac({ selected: "faster-whisper", effective: "faster-whisper" })))
+    expect(ignoredWarning(mac(), AUTO)).toBeNull();
+    expect(ignoredWarning(mac({ selected: "faster-whisper", effective: "faster-whisper" }), AUTO))
       .toBeNull();
   });
 
+  it("prints just the reason when the selection is auto", () => {
+    const warning = ignoredWarning(
+      mac({
+        selected: AUTO,
+        ignoredReason: "MLX FLUX does not read this model; Diffusers does",
+      }),
+      AUTO,
+    );
+    expect(warning).toBe("MLX FLUX does not read this model; Diffusers does.");
+    expect(warning).not.toContain("is not used here");
+  });
+
   it("names the choice and the reason, in one sentence", () => {
-    const warning = ignoredWarning(linuxBox()) ?? "";
+    const warning = ignoredWarning(linuxBox(), AUTO) ?? "";
     expect(warning).toContain("MLX Whisper");
     // The registry's own sentence, passed through rather than reworded — the
     // page cannot know this and must not paraphrase it.
@@ -202,7 +214,7 @@ describe("ignoredWarning", () => {
         },
       ],
     });
-    expect(ignoredWarning(row)).toBe("Ignored — onnx-embed is not a runner this build knows.");
+    expect(ignoredWarning(row, AUTO)).toBe("Ignored — onnx-embed is not a runner this build knows.");
   });
 
   it("does not say the name twice for the WRONG-CAPABILITY shape either, where the reason names a LABEL and the code alone would not match it", () => {
@@ -234,7 +246,7 @@ describe("ignoredWarning", () => {
         },
       ],
     });
-    expect(ignoredWarning(row)).toBe("Ignored — MLX Whisper does not do text-generation.");
+    expect(ignoredWarning(row, AUTO)).toBe("Ignored — MLX Whisper does not do text-generation.");
   });
 });
 
@@ -313,8 +325,8 @@ describe("strandedSelection", () => {
     // own sentence rather than anything this module composes.
     expect(typeof strandedSelection(withdrawn(), AUTO)).toBe("string");
     expect(typeof strandedSelection(wrongCapability(), AUTO)).toBe("string");
-    expect(ignoredWarning(withdrawn())).toContain("not a runner this build knows");
-    expect(ignoredWarning(wrongCapability())).toContain("does not do text-generation");
+    expect(ignoredWarning(withdrawn(), AUTO)).toContain("not a runner this build knows");
+    expect(ignoredWarning(wrongCapability(), AUTO)).toContain("does not do text-generation");
   });
 
   it("is silent for auto and for a choice that IS in the list", () => {
@@ -332,7 +344,7 @@ describe("strandedSelection", () => {
     // The pair is the whole answer: the option says WHAT is stored, the warning
     // says why it is not in force. Either alone is a page that misleads — a
     // blank control with a reason under it, or a greyed option with no reason.
-    const warning = ignoredWarning(withdrawn()) ?? "";
+    const warning = ignoredWarning(withdrawn(), AUTO) ?? "";
     expect(warning).toContain("transformers-text");
     expect(warning).toContain("not a runner this build knows");
     // The code and the reason both name "transformers-text", so the sentence

@@ -1750,6 +1750,101 @@ def test_fused_render_indexing_env_overrides_both_the_pref_and_the_dev_default(
     assert prefs_mod.indexing_enabled() is expect
 
 
+# -- per-model engine pins (D1431) ----------------------------------------------
+#
+# The sibling of the per-capability preference above: `model_engines` maps a
+# cached repo id to a runner code. Same store/validate/degrade rules; what a pin
+# does to RESOLUTION is `tests/test_ai_runtime.py`'s.
+
+
+def _fake_cache(monkeypatch, models):
+    """`models`: {repo_id: capability}. Patches the two readers prefs uses."""
+    from fused_render.ai import hub_cache
+
+    def reading(repo_id):
+        cap = models.get(repo_id)
+        if cap is None:
+            return hub_cache.CacheReading(False, None, None)
+        return hub_cache.CacheReading(True, cap, None)
+
+    monkeypatch.setattr(hub_cache, "cached_capability", reading)
+    monkeypatch.setattr(
+        hub_cache, "cached_models",
+        lambda: [hub_cache.CachedModel(i, c, 1) for i, c in models.items()])
+
+
+def test_a_model_engine_pin_round_trips_and_persists(tmp_path, monkeypatch):
+    _fake_cache(monkeypatch, {"acme/chat": "text-generation"})
+    client, home = _client(tmp_path, monkeypatch)
+    body = client.put("/api/prefs",
+                      json={"model_engines": {"acme/chat": "llamacpp-text"}},
+                      headers=FUSED).json()
+
+    rows = {m["id"]: m for m in body["engines"]["models"]}
+    assert rows["acme/chat"]["selected"] == "llamacpp-text"
+    assert rows["acme/chat"]["capability"] == "text-generation"
+    assert json.loads((home / "prefs.json").read_text())["model_engines"] == {
+        "acme/chat": "llamacpp-text"}
+    # Per-capability engines are untouched by a model pin.
+    assert "engines" not in json.loads((home / "prefs.json").read_text())
+
+
+def test_a_model_pin_set_back_to_auto_is_removed(tmp_path, monkeypatch):
+    _fake_cache(monkeypatch, {"acme/chat": "text-generation"})
+    client, home = _client(tmp_path, monkeypatch)
+    client.put("/api/prefs", json={"model_engines": {"acme/chat": "llamacpp-text"}},
+               headers=FUSED)
+    body = client.put("/api/prefs", json={"model_engines": {"acme/chat": "auto"}},
+                      headers=FUSED).json()
+
+    assert json.loads((home / "prefs.json").read_text())["model_engines"] == {}
+    assert body["engines"]["models"][0]["selected"] == "auto"
+
+
+def test_a_model_pin_for_an_uncached_or_mismatched_model_is_refused(tmp_path, monkeypatch):
+    _fake_cache(monkeypatch, {"acme/chat": "text-generation"})
+    client, home = _client(tmp_path, monkeypatch)
+
+    gone = client.put("/api/prefs", json={"model_engines": {"acme/gone": "llamacpp-text"}},
+                      headers=FUSED)
+    assert gone.status_code == 400
+    assert "not downloaded" in gone.json()["error"]
+
+    wrong = client.put("/api/prefs", json={"model_engines": {"acme/chat": "mlx-whisper"}},
+                       headers=FUSED)
+    assert wrong.status_code == 400
+    assert "does not serve" in wrong.json()["error"]
+
+    notmap = client.put("/api/prefs", json={"model_engines": ["acme/chat"]}, headers=FUSED)
+    assert notmap.status_code == 400
+    assert not (home / "prefs.json").exists() or "model_engines" not in json.loads(
+        (home / "prefs.json").read_text())
+
+
+def test_a_model_pin_naming_a_withdrawn_engine_still_reports_with_a_reason(
+        tmp_path, monkeypatch):
+    """Written to disk directly (the endpoint would refuse it), like the
+    per-capability sibling: the READ path degrades, never rewrites."""
+    _fake_cache(monkeypatch, {"acme/chat": "text-generation"})
+    client, home = _client(tmp_path, monkeypatch)
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "prefs.json").write_text(
+        json.dumps({"model_engines": {"acme/chat": "transformers-text"}}))
+
+    row = client.get("/api/prefs").json()["engines"]["models"][0]
+    assert row["selected"] == "transformers-text"
+    assert "not a runner this build knows" in row["ignoredReason"]
+    assert json.loads((home / "prefs.json").read_text())["model_engines"] == {
+        "acme/chat": "transformers-text"}
+
+
+def test_the_models_block_lists_every_cached_model_with_a_capability(tmp_path, monkeypatch):
+    _fake_cache(monkeypatch, {"acme/chat": "text-generation", "acme/none": None})
+    client, _ = _client(tmp_path, monkeypatch)
+    rows = client.get("/api/prefs").json()["engines"]["models"]
+    assert [r["id"] for r in rows] == ["acme/chat"]
+    assert rows[0]["selected"] == "auto"
+    assert rows[0]["choices"], "the same choices the capability row carries"
 def test_claude_default_permission_defaults_auto_and_validates(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     assert client.get("/api/prefs").json()["claude_default_permission"] == "auto"

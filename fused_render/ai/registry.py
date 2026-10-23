@@ -47,6 +47,15 @@ one — but the CATALOG does, because what to suggest depends on which backend
 will load it (`catalog.py`), and an MLX checkpoint on a Linux machine is a
 download that cannot be used.
 
+**The runner now follows the MODEL, and the preference below is the
+tie-breaker** (D1431). `resolve_for_model(capability, model_id)` is what every
+caller with a model in hand asks: a per-model pin first (when that runner can
+run here), then the available runners whose format check reads the model's
+cached snapshot — the capability's preference choosing among them, registry
+order failing that — and `resolve(capability)` unchanged for an id nothing is
+cached for. The format classifier (`formats.loaders`) is the single source of
+which runners can read a repo; the preference no longer overrules it.
+
 **A user can override that order, and the override is a REQUEST rather than an
 instruction** (D302). `resolve()` reads a per-capability preference — "auto", or
 a runner code — from `shell/prefs.py`, and a named runner wins only if it can
@@ -67,7 +76,7 @@ import os
 import platform
 import re
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Sequence
 
 # One capability per runner for now. The constants are the vocabulary the whole
 # feature speaks — the API's `capability` parameter, the catalog's grouping, and
@@ -1932,6 +1941,171 @@ def resolve(capability: str) -> Resolution:
                               status.reason or f"{runner.short} cannot run here")
         return Resolution(runner, requested)
     return Resolution(_first_available(capability), AUTO)
+
+
+def model_pin(model_id: str) -> str:
+    """The user's per-MODEL engine pin (D1431) — `AUTO` when there is none.
+    Read per resolution and defended exactly as `preferred_code` is."""
+    try:
+        from fused_render.shell import prefs
+
+        return prefs.engine_for_model(model_id)
+    except Exception:  # noqa: BLE001 - a pin must never break resolution
+        return AUTO
+
+
+def _model_loaders(model_id: str) -> tuple[str, ...]:
+    """Every runner code whose format check accepts the CACHED snapshot of
+    `model_id` — empty when it is not cached or nothing reads it.
+
+    Local only (`hub_cache.cached_capability` reads the snapshot directory and
+    nothing else) and defended: resolution must not fail because a cache read
+    did. Empty is "no evidence", and the callers treat it as exactly that.
+    """
+    try:
+        from fused_render.ai import hub_cache
+
+        reading = hub_cache.cached_capability(model_id)
+    except Exception:  # noqa: BLE001 - evidence is optional, resolution is not
+        return ()
+    return tuple(reading.loaders) if reading.cached else ()
+
+
+def _join_reasons(*reasons: str) -> str:
+    return "; ".join(r for r in reasons if r)
+
+
+def resolve_for_model(capability: str, model_id: str,
+                      pinned: str | None = None) -> Resolution:
+    """Which runner serves `model_id` as `capability` here (D1431).
+
+    The format classifier (`formats.loaders`, via the cached reading) is the one
+    source of which runners can READ a repo, so the runner follows the model
+    rather than one global switch. In order:
+
+    1. a per-model pin, when that runner can run here — it outranks the
+       classifier on purpose, as the escape hatch for classifier gaps (the
+       runner's own load refusal stays the backstop). A pin that cannot be
+       honoured is IGNORED with a reason, never an error (the D302 rule, one
+       level down), and resolution continues as though there were none;
+    2. among the AVAILABLE runners of the capability that read the model, the
+       capability's own preference when it is one of them (it is now the
+       tie-breaker), else registry order — with a reason, because the stored
+       preference was overruled;
+    3. no cached evidence, or no available runner reads it: `resolve(capability)`
+       exactly as before, so an uncached id behaves as it always did.
+    """
+    return resolve_for_loaders(capability, model_id, _model_loaders(model_id),
+                               pinned)
+
+
+def resolve_for_loaders(capability: str, model_id: str,
+                        loaders: tuple[str, ...],
+                        pinned: str | None = None,
+                        base: Resolution | None = None,
+                        available: Sequence[Runner] | None = None) -> Resolution:
+    """`resolve_for_model` with the format evidence handed in.
+
+    `pinned` is the model's pin when the caller has already read it (one
+    prefs.json read for a whole listing); None reads it here. `base` (the
+    capability's `resolve`) and `available` (its `available_runners`) are
+    likewise optional, for a listing that computed them once per capability.
+
+    **Pins are scoped to the model's CACHED capability** (the one the PUT
+    validated against). A route asking for the model under another capability
+    (a VLM cached as text-generation, pinned to mlx-text, asked for as vision)
+    ignores the pin with the usual "does not do <capability>" reason.
+
+    Exists for the one caller that is itself computing that evidence —
+    `hub_cache._engine`, which builds `meta.loaders` and must not ask the cache
+    to read the same snapshot again through `resolve_for_model` (that would
+    recurse). Everyone else wants `resolve_for_model`.
+    """
+    if pinned is None:
+        pinned = model_pin(model_id)
+    pin_reason = ""
+    if pinned and pinned != AUTO:
+        runner = by_code(pinned)
+        if runner is None:
+            pin_reason = f"{pinned} is not a runner this build knows"
+        elif runner.capability != capability:
+            pin_reason = f"{runner.short} does not do {capability}"
+        else:
+            status = runner.available()
+            if status.ok:
+                return Resolution(runner, pinned)
+            pin_reason = status.reason or f"{runner.short} cannot run here"
+
+    if base is None:
+        base = resolve(capability)
+    if available is None:
+        available = available_runners(capability)
+    requested = pinned if pin_reason else base.requested
+    candidates = [r for r in available if r.code in loaders]
+    if not candidates or (base.runner is not None and base.runner in candidates):
+        return Resolution(base.runner, requested,
+                          _join_reasons(pin_reason, base.ignored_reason))
+    chosen = candidates[0]
+    unread = base.runner.short if base.runner else "the selected engine"
+    return Resolution(
+        chosen, requested,
+        _join_reasons(pin_reason, base.ignored_reason,
+                      f"{unread} does not read this model; {chosen.short} does"))
+
+
+def describe_model_engines() -> list[dict]:
+    """One row per DOWNLOADED model whose capability is known: its pin, what
+    serves it, and why a pin is not in force. The per-capability row's shape
+    (`describe_engines`), keyed by repo id, so the Engines tab renders both with
+    the same picker."""
+    from fused_render.ai import hub_cache
+
+    pins = {}
+    try:
+        from fused_render.shell import prefs
+
+        pins = prefs.model_engines()
+    except Exception:  # noqa: BLE001 - a pin must never break the listing
+        pins = {}
+    known = capabilities()
+    choices_by_cap: dict[str, list[dict]] = {}
+    base_by_cap: dict[str, Resolution] = {}
+    available_by_cap: dict[str, tuple[Runner, ...]] = {}
+    rows = []
+    for model in hub_cache.cached_models():
+        capability = model.capability
+        if not capability or capability not in known:
+            continue
+        pinned = pins.get(model.repo_id) or AUTO
+        if capability not in choices_by_cap:
+            choices_by_cap[capability] = [
+                _choice(r) for r in _RUNNERS if r.capability == capability]
+            base_by_cap[capability] = resolve(capability)
+            available_by_cap[capability] = available_runners(capability)
+        base = base_by_cap[capability]
+        resolution = resolve_for_loaders(
+            capability, model.repo_id, tuple(model.loaders), pinned,
+            base, available_by_cap[capability])
+        # Only what is specific to THIS model: the capability preference's own
+        # ignored reason belongs to the capability row, not repeated on every
+        # model beneath it.
+        reason = resolution.ignored_reason or ""
+        if base.ignored_reason:
+            reason = "; ".join(
+                part for part in reason.replace(base.ignored_reason, "\0").split("; ")
+                if part and part != "\0")
+        rows.append({
+            "id": model.repo_id,
+            "capability": capability,
+            "selected": pinned,
+            "effective": resolution.runner.code if resolution.runner else None,
+            "effectiveLabel": resolution.runner.label if resolution.runner else None,
+            "effectiveShortLabel": resolution.runner.short if resolution.runner else None,
+            "ignoredReason": reason or None,
+            "strandedLabel": _stranded_label(capability, pinned),
+            "choices": choices_by_cap[capability],
+        })
+    return rows
 
 
 def for_capability(capability: str) -> Runner | None:

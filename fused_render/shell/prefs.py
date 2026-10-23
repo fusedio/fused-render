@@ -16,7 +16,9 @@ similar the word is: it says which local-model backend serves a capability when
 more than one can, and `"auto"` (the default, and the absence of a key) means
 the registry's own ordering decides. See ``inference_engines``; the resolution,
 including what happens to a preference this machine cannot honour, belongs to
-``ai/registry.py``.
+``ai/registry.py``. Since D1431 that preference is the TIE-BREAKER among the
+runners that can read a given model, no longer the sole selector, and a model
+can carry its own pin (**model_engines**, ``model_engines()``) that outranks it.
 
 Five more preferences are persisted: **reader_enabled** (whether the Reader
 listen-to-files accessibility mode is offered — opt-in, default off; see
@@ -129,6 +131,28 @@ def _path() -> str:
     return os.path.join(storage.home_dir(), "prefs.json")
 
 
+def path() -> str:
+    """Public accessor for the prefs.json path (stat-based change detection)."""
+    return _path()
+
+
+#: Bumped on EVERY in-process write of prefs.json. A same-size rewrite inside one
+#: mtime tick is invisible to a stat; this counter is not.
+_WRITE_GENERATION = 0
+
+
+def write_generation() -> int:
+    return _WRITE_GENERATION
+
+
+def _store(prefs: dict) -> None:
+    global _WRITE_GENERATION
+    try:
+        storage.write_json(_path(), prefs)
+    finally:
+        _WRITE_GENERATION += 1
+
+
 def read_prefs() -> dict:
     data = storage.read_json(_path())
     return data if isinstance(data, dict) else {}
@@ -149,7 +173,7 @@ def write_pref(key: str, value) -> dict:
     with _PREFS_LOCK:
         prefs = read_prefs()
         prefs[key] = value
-        storage.write_json(_path(), prefs)
+        _store(prefs)
         return prefs
 
 
@@ -606,6 +630,46 @@ def engine_for_capability(capability: str) -> str:
     """
     value = inference_engines().get(capability)
     return value if isinstance(value, str) and value else AUTO_ENGINE
+
+
+def model_engines() -> dict:
+    """The per-MODEL engine pins, as stored (D1431): `{repo_id: runner code}`.
+
+    The sibling of `inference_engines()` and read under the same rule — returned
+    raw, validated at the point of USE, non-strings dropped — because a pin
+    travels in a synced prefs.json exactly as the per-capability choice does,
+    and one naming a runner this machine lacks is to be IGNORED with a reason
+    (`registry.resolve_for_model`), never rewritten here. An absent id means
+    "no pin": the model follows the format classifier and the capability's
+    own preference.
+    """
+    stored = read_prefs().get("model_engines")
+    if not isinstance(stored, dict):
+        return {}
+    return {str(k): v for k, v in stored.items() if isinstance(v, str)}
+
+
+def engine_for_model(model_id: str) -> str:
+    """One model's pin — `AUTO_ENGINE` when there is none. Read on every
+    resolution, for the reason `engine_for_capability` is."""
+    value = model_engines().get(model_id)
+    return value if isinstance(value, str) and value else AUTO_ENGINE
+
+
+def _valid_model_engine_choice(model_id: str, code: str) -> str | None:
+    """None if `code` may be stored as `model_id`'s pin, else why not.
+
+    The capability is the one the LOCAL CACHE reads off the snapshot, so a pin
+    can only be set on a model that is downloaded (nothing to pin otherwise) and
+    only to a runner that serves what that model is. Availability stays out of
+    it, as with `_valid_engine_choice`.
+    """
+    from fused_render.ai import hub_cache
+
+    reading = hub_cache.cached_capability(model_id)
+    if not reading.cached or not reading.capability:
+        return f"{model_id!r} is not downloaded, so there is nothing to pin"
+    return _valid_engine_choice(reading.capability, code)
 
 
 def _valid_engine_choice(capability: str, code: str) -> str | None:
@@ -1126,7 +1190,9 @@ def _inference_engines_state() -> dict:
     """
     from fused_render.ai import registry
 
-    return {"capabilities": registry.describe_engines(), "auto": AUTO_ENGINE}
+    return {"capabilities": registry.describe_engines(),
+            "models": registry.describe_model_engines(),
+            "auto": AUTO_ENGINE}
 
 
 def _calls_store() -> dict:
@@ -1286,7 +1352,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             had_previous = "native_windows_enabled" in prefs
             previous = prefs.get("native_windows_enabled")
             prefs["native_windows_enabled"] = value
-            storage.write_json(_path(), prefs)
+            _store(prefs)
 
             from fused_render import window_policy
 
@@ -1296,7 +1362,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                     prefs["native_windows_enabled"] = previous
                 else:
                     del prefs["native_windows_enabled"]
-                storage.write_json(_path(), prefs)
+                _store(prefs)
                 return JSONResponse(
                     {"error": "the window host refused the native-windows preference; try again"},
                     status_code=409,
@@ -1416,6 +1482,34 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                     return JSONResponse({"error": problem}, status_code=400)
                 engines[str(capability)] = code
             prefs["engines"] = engines
+            changed = True
+        if "model_engines" in body:
+            # Same partial-update MAP rule as `engines`, one key per downloaded
+            # model. "auto" REMOVES the pin rather than storing it: an absent
+            # key is the default, and a pin file must not grow a row per model
+            # somebody once touched.
+            value = body.get("model_engines")
+            if not isinstance(value, dict):
+                return JSONResponse(
+                    {"error": "'model_engines' must be an object of repo id -> runner code"},
+                    status_code=400,
+                )
+            pins = model_engines()
+            for model_id, code in value.items():
+                if not isinstance(code, str):
+                    return JSONResponse(
+                        {"error": f"'model_engines[{model_id}]' must be a runner code or "
+                                  f"{AUTO_ENGINE!r}"},
+                        status_code=400,
+                    )
+                if code == AUTO_ENGINE:
+                    pins.pop(str(model_id), None)
+                    continue
+                problem = _valid_model_engine_choice(str(model_id), code)
+                if problem:
+                    return JSONResponse({"error": problem}, status_code=400)
+                pins[str(model_id)] = code
+            prefs["model_engines"] = pins
             changed = True
         if "indexing_enabled" in body:
             value = body.get("indexing_enabled")
@@ -1604,7 +1698,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         if not changed:
             return JSONResponse(
                 {"error": "no known preference in request (expected 'engine', "
-                          "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'monitor_enabled', 'marketplace_enabled', 'github_link_enabled', "
+                          "'engines', 'model_engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'monitor_enabled', 'marketplace_enabled', 'github_link_enabled', "
                           "'native_windows_enabled', 'chromium_windows_enabled', "
                           "'task_notify_terminal_sessions', "
                           "'project_queue_enabled', "
@@ -1626,7 +1720,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'launcher_row_modifier')"},
                 status_code=400,
             )
-        storage.write_json(_path(), prefs)
+        _store(prefs)
     if body.get("canvases_embed_proxy") is False:
         # AFTER the write, like `lan_enabled`: stop the listener now rather
         # than at the next status read. Turning it ON is left to status,
@@ -1682,7 +1776,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
 
         lan.apply(prefs["lan_enabled"])
     unloaded: list[str] | None = None
-    if "engines" in body:
+    if "engines" in body or "model_engines" in body:
         # AFTER the write, because the reconciliation reads the new preference
         # rather than being told what changed — see `evict_stale_engines`. One
         # capability holds one resident model, and it belongs to the backend
