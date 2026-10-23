@@ -270,7 +270,7 @@ function WorkspaceCard({
   // "checking" renders as a shimmer pill in the badge slot, never as text.
   const checking = reasonList.includes("checking");
   const text = reasonList.filter((r) => !DIRTY_REASON.test(r) && r !== "checking").join(" · ");
-  const clear = reasons.length === 0;
+  const clear = task.status !== "archived" && reasons.length === 0;
   const hasPrs = prRefsOf(task).some((r) => r.repo);
   const hasBg = bg !== null;
   const preview = messagePreview(task);
@@ -450,7 +450,7 @@ export function TaskWorkspace({
     onReload,
   });
   const base = useMemo(() => workspaceTasks(tasks).filter((t) => !hidden.has(t.key)), [tasks, hidden]);
-  const keys = useMemo(() => base.map((t) => t.key), [base]);
+  const keys = useMemo(() => base.filter((t) => t.status !== "archived").map((t) => t.key), [base]);
   const { holds, covered, failed } = useRowHolds(keys);
   const prKeys = useMemo(
     () => base.flatMap((t) => prRefsOf(t).filter((r) => r.repo).map(prKey)),
@@ -468,7 +468,7 @@ export function TaskWorkspace({
   );
   // Grouped by state; the flat list below is what j/k/n walk, so the keyboard
   // order is the order on screen. Hidden (just-closed) rows never count.
-  const groups = useMemo(() => groupTasks(base, factsFor), [base, factsFor]);
+  const groups = useMemo(() => groupTasks(base, factsFor, Date.now() / 1000), [base, factsFor]);
   // Only the cards on screen: a folded group has none, a capped one its first 8.
   // j/k/n walk this list, so they never land on a card that is not drawn.
   const shownGroups = useMemo(
@@ -715,7 +715,8 @@ export function TaskWorkspace({
                 </button>
               </li>
               {g.shown.map((t) => {
-                const reasons = blockingReasons(holdReasons(t, factsFor(t)));
+                // A closed task wears no hold markers: its status word is enough.
+                const reasons = t.status === "archived" ? [] : blockingReasons(holdReasons(t, factsFor(t)));
                 return (
                   <WorkspaceCard
                     key={t.key}

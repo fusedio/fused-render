@@ -76,7 +76,7 @@ async function render(tasks: Task[], onReload = () => {}) {
   return r;
 }
 
-test("rows run newest first and archived tasks are left out", async () => {
+test("rows run newest first, archived ones included", async () => {
   serve();
   const r = await render([
     task({ key: "a", task_id: "T1", started: 1 }),
@@ -84,7 +84,19 @@ test("rows run newest first and archived tasks are left out", async () => {
     task({ key: "c", task_id: "T3", started: 3, status: "archived" }),
   ]);
   const rows = r.root.findAll((n) => typeof n.props.className === "string" && /^ws-card( |$)/.test(n.props.className));
-  expect(rows.map((n) => n.props["data-key"])).toEqual(["b", "a"]);
+  expect(rows.map((n) => n.props["data-key"])).toEqual(["b", "a", "c"]);
+});
+
+test("an archived card wears no hold markers and its group has no checkbox", async () => {
+  serve();
+  const r = await render([task({ key: "c", status: "archived" })]);
+  const card = r.root.findByProps({ "data-key": "c" });
+  expect(within(card, "ws-badge ws-clear")).toHaveLength(0);
+  expect(within(card, "ws-marker")).toHaveLength(0);
+  expect(within(card, "ws-skel")).toHaveLength(0);
+  const heads = r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.includes("ws-group-head"));
+  expect(heads.map((h) => text(h))).toEqual(["Archived1"]);
+  expect(byClass(r, "tasks-group-check")).toHaveLength(0);
 });
 
 test("an unread row is marked for bold; a read one is not", async () => {
@@ -371,7 +383,7 @@ test("headers show label and count in order, and keys walk the grouped order", a
     task({ key: "d", started: 1, status: "blocked", blocked_reason: "failed" }),
   ]);
   const heads = r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.includes("ws-group-head"));
-  expect(heads.map((h) => text(h))).toEqual(["Needs you2", "Running1", "Safe to archive1"]);
+  expect(heads.map((h) => text(h))).toEqual(["Needs you2", "Working1", "Safe to archive1"]);
   expect(heads.every((h) => h.props.role === "presentation")).toBe(true);
   expect(heads.every((h) => h.findAllByType("button").length === 1)).toBe(true);
   const cards = r.root.findAll((n) => typeof n.props.className === "string" && /^ws-card( |$)/.test(n.props.className));
@@ -389,7 +401,7 @@ test("a group over 8 cards shows 8 and a Show N more that reveals the rest", asy
   const r = await render(many);
   expect(cardsOf(r)).toHaveLength(8);
   const heads = r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.includes("ws-group-head"));
-  expect(text(heads[0])).toBe("Open11");
+  expect(text(heads[0])).toBe("Working11");
   const btn = moreBtn(r);
   expect(btn).toHaveLength(1);
   expect(text(btn[0])).toBe("Show 3 more");
@@ -403,7 +415,7 @@ test("a group over 8 cards shows 8 and a Show N more that reveals the rest", asy
 test("Safe to archive starts collapsed: header and count, no cards", async () => {
   serve();
   for (const k of Object.keys(store)) delete store[k];
-  const r = await render([task({ key: "a" }), task({ key: "b", started: 0 })]);
+  const r = await render([task({ key: "a" }), task({ key: "b", started: 2 })]);
   const heads = r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.includes("ws-group-head"));
   expect(heads.map((h) => text(h))).toEqual(["Safe to archive2"]);
   expect(cardsOf(r)).toHaveLength(0);
@@ -423,7 +435,7 @@ test("a header click collapses an open group and remembers it", async () => {
     head.findByType("button").props.onClick();
   });
   expect(cardsOf(r)).toHaveLength(0);
-  expect(JSON.parse(store["fused.tasks.workspace.collapsed"]).idle).toBe(true);
+  expect(JSON.parse(store["fused.tasks.workspace.collapsed"]).working).toBe(true);
 });
 
 // ---- Bulk archive ---------------------------------------------------------
