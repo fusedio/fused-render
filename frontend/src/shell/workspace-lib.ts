@@ -291,3 +291,30 @@ export function visibleGroupTasks<T>(items: readonly T[], expanded: boolean): { 
 export function groupCollapsed(key: WorkspaceGroupKey, stored: Readonly<Record<string, boolean>>): boolean {
   return key in stored ? stored[key] : key === "clear";
 }
+
+/** First port of the IANA dynamic (ephemeral) range. */
+const EPHEMERAL_FROM = 49152;
+
+export interface PortBadge {
+  label: string;
+  title: string;
+  /** Set when the badge stands for one port, so the view can link to it. */
+  port?: number;
+}
+
+/** The port badges a row shows: 1-2 ports individually; 3 or more collapse to a
+ *  count, except that one or two ports below the ephemeral range stay visible
+ *  ("port 2439", "+40 ports") so a dev server is never buried under a test
+ *  suite's workers. */
+export function portBadges(ports: number[]): PortBadge[] {
+  const sorted = [...new Set(ports)].sort((a, b) => a - b);
+  const one = (p: number): PortBadge => ({ label: `port ${p}`, title: `Open http://localhost:${p}`, port: p });
+  const count = (list: number[], prefix: string): PortBadge => ({
+    label: `${prefix}${list.length} ${list.length === 1 ? "port" : "ports"}`,
+    title: list.join(", "),
+  });
+  if (sorted.length <= 2) return sorted.map(one);
+  const low = sorted.filter((p) => p < EPHEMERAL_FROM);
+  if (low.length === 0 || low.length > 2) return [count(sorted, "")];
+  return [...low.map(one), count(sorted.slice(low.length), "+")];
+}

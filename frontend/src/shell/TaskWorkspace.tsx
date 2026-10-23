@@ -45,6 +45,7 @@ import {
   needsYou,
   nextNeedingYou,
   pickBranch,
+  portBadges,
   visibleGroupTasks,
   visibleReasons,
   workspaceKeyAction,
@@ -280,19 +281,25 @@ function WorkspaceCard({
               {bg.label}
             </span>
           )}
-          {ports.map((p) => (
-            <a
-              key={p}
-              className="ws-badge ws-port"
-              href={`http://localhost:${p}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              title={`Open http://localhost:${p}`}
-              onClick={(e) => e.stopPropagation()}
-            >
-              port {p}
-            </a>
-          ))}
+          {portBadges(ports).map((b) =>
+            b.port !== undefined ? (
+              <a
+                key={b.label}
+                className="ws-badge ws-port"
+                href={`http://localhost:${b.port}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                title={b.title}
+                onClick={(e) => e.stopPropagation()}
+              >
+                {b.label}
+              </a>
+            ) : (
+              <span key={b.label} className="ws-badge ws-port" title={b.title}>
+                {b.label}
+              </span>
+            ),
+          )}
           {text && (
             <span className="ws-badge ws-marker" data-unknown={reasons.includes("unknown") ? "1" : undefined}>
               {text}

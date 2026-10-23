@@ -9,6 +9,7 @@ import {
   visibleReasons,
   moveSelection,
   nextNeedingYou,
+  portBadges,
   searchTasks,
   statusWord,
   workspaceKeyAction,
@@ -328,4 +329,26 @@ test("only Safe to archive starts collapsed, and a stored choice wins", () => {
 
 test("visibleReasons still drops the unread text: the card draws its own unread badge", () => {
   expect(visibleReasons(["3 unread"], task({ unread: 3 }))).toEqual([]);
+});
+
+describe("portBadges", () => {
+  const eph = (n: number) => Array.from({ length: n }, (_, i) => 50000 + i);
+  test("0, 1 and 2 ports show individually", () => {
+    expect(portBadges([])).toEqual([]);
+    expect(portBadges([2439]).map((b) => b.label)).toEqual(["port 2439"]);
+    expect(portBadges([3000, 2439]).map((b) => b.label)).toEqual(["port 2439", "port 3000"]);
+  });
+  test("3 ephemeral ports make one count badge, titled with all, sorted", () => {
+    expect(portBadges([50370, 50368, 50369])).toEqual([{ label: "3 ports", title: "50368, 50369, 50370" }]);
+  });
+  test("one dev port stays visible beside the ephemeral count", () => {
+    const b = portBadges([...eph(40), 2439]);
+    expect(b.map((x) => x.label)).toEqual(["port 2439", "+40 ports"]);
+    expect(b[0].port).toBe(2439);
+  });
+  test("three low ports collapse into one count", () => {
+    const b = portBadges([8000, 3000, 5173, ...eph(5)]);
+    expect(b.map((x) => x.label)).toEqual(["8 ports"]);
+    expect(b[0].title.startsWith("3000, 5173, 8000, 50000")).toBe(true);
+  });
 });
