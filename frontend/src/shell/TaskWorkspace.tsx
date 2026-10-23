@@ -41,6 +41,7 @@ import {
   MAX_PRS,
   orderPrs,
   messagePreview,
+  blockingReasons,
   holdReasons,
   moveSelection,
   needsYou,
@@ -236,7 +237,6 @@ function WorkspaceCard({
   const text = reasonList.join(" · ");
   const clear = reasons.length === 0;
   const hasPrs = prRefsOf(task).some((r) => r.repo);
-  const unread = task.unread > 0 && reasons.some((r) => /^\d+ unread$/.test(r));
   const hasBg = bg !== null;
   const preview = messagePreview(task);
   const showChip = showProject && task.project !== "";
@@ -248,7 +248,7 @@ function WorkspaceCard({
   );
   // Line 2 exists for a preview/project chip or for real facts. "clear" alone
   // never opens it: it rides line 1's right edge instead.
-  const realFacts = hasPrs || hasBg || ports.length > 0 || unread || text !== "" || branch !== null;
+  const realFacts = hasPrs || hasBg || ports.length > 0 || text !== "" || branch !== null;
   const hasLine2 = hasContext || realFacts;
   const clearTag = clear ? <span className="ws-badge ws-clear" title="Nothing holds this task open, so it is safe to archive">safe to archive</span> : null;
   return (
@@ -306,11 +306,6 @@ function WorkspaceCard({
       )}
       {(realFacts || clear) && (
         <div className="ws-card-facts">
-          {unread && (
-            <span className="ws-badge ws-unread" title={`${task.unread} unread`}>
-              unread
-            </span>
-          )}
           {branch && (
             <span className="ws-badge ws-branch" title={branch.also.length > 0 ? `${branch.name}\nalso: ${branch.also.join(", ")}` : branch.name}>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -631,7 +626,7 @@ export function TaskWorkspace({
                 </button>
               </li>
               {g.shown.map((t) => {
-                const reasons = holdReasons(t, factsFor(t));
+                const reasons = blockingReasons(holdReasons(t, factsFor(t)));
                 return (
                   <WorkspaceCard
                     key={t.key}

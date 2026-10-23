@@ -102,6 +102,12 @@ export function cardStatusWord(task: Task): string {
   return task.status === "in_progress" || needsYou(task) ? statusWord(task) : "";
 }
 
+/** `reasons` without "N unread": unread alone never keeps a task out of "Safe to
+ *  archive" (the server still reports it, and the archive guard is unchanged). */
+export function blockingReasons(reasons: readonly string[]): string[] {
+  return reasons.filter((r) => !/^\d+ unread$/.test(r));
+}
+
 /** The hold reasons a card prints under its chips. Drops what the card already
  *  says elsewhere: "N unread" (the bold title), a PR that is open or draft and
  *  the bg-job count (their chips), and running / needs you when the status word
@@ -276,7 +282,7 @@ export function workspaceGroup(task: Task, facts: WorkspaceFacts): WorkspaceGrou
     const state = facts.prStates[prKey(ref)];
     if (state === "open" || state === "draft") return "review";
   }
-  return holdReasons(task, facts).length > 0 ? "idle" : "clear";
+  return blockingReasons(holdReasons(task, facts)).length > 0 ? "idle" : "clear";
 }
 
 /** `rows` split into the groups above, in that order, empty groups left out;

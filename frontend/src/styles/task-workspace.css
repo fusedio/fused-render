@@ -226,9 +226,6 @@
   color: var(--fg);
   text-decoration: none;
 }
-.ws-unread {
-  --ws-tone: var(--accent-soft);
-}
 .ws-marker {
   --ws-tone: var(--warning);
 }

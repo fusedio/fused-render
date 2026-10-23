@@ -106,7 +106,7 @@ test("the card drops reasons its chips or bold title already say, and the status
   const r = await render([
     task({ key: "a", status: "done", unread: 3, background_jobs: { count: 1, run_id: "r", jobs: [{ id: "j", title: "dev" }] } }),
   ]);
-  // Held (unread + bg), so no "clear" tag, and nothing left to print as text.
+  // Held (bg job), so no "clear" tag, and nothing left to print as text.
   expect(r.root.findAllByProps({ className: "ws-badge ws-clear" })).toHaveLength(0);
   expect(r.root.findAllByProps({ className: "ws-badge ws-marker" })).toHaveLength(0);
   expect(r.root.findAllByProps({ className: "ws-badge ws-status" })).toHaveLength(0);
@@ -287,17 +287,9 @@ const cardsOf = (r: ReturnType<typeof create>) =>
 const moreBtn = (r: ReturnType<typeof create>) =>
   r.root.findAll((n) => n.type === "button" && typeof n.props.className === "string" && n.props.className.includes("ws-more"));
 
-test("a held card with unread shows an unread badge", async () => {
-  serve();
-  const r = await render([task({ key: "a", unread: 2 })]);
-  const badges = r.root.findAll((n) => n.props.className === "ws-badge ws-unread");
-  expect(badges).toHaveLength(1);
-  expect(text(badges[0])).toBe("unread");
-});
-
 test("a group over 8 cards shows 8 and a Show N more that reveals the rest", async () => {
   serve();
-  const many = Array.from({ length: 11 }, (_, i) => task({ key: `k${i}`, task_id: `T${i}`, started: 100 - i, unread: 1 }));
+  const many = Array.from({ length: 11 }, (_, i) => task({ key: `k${i}`, task_id: `T${i}`, started: 100 - i, background_jobs: { count: 1, run_id: "r", jobs: [{ id: "j", title: "dev" }] } }));
   const r = await render(many);
   expect(cardsOf(r)).toHaveLength(8);
   const heads = r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.includes("ws-group-head"));
@@ -328,7 +320,7 @@ test("Safe to archive starts collapsed: header and count, no cards", async () =>
 
 test("a header click collapses an open group and remembers it", async () => {
   serve();
-  const r = await render([task({ key: "a", unread: 1 })]);
+  const r = await render([task({ key: "a", background_jobs: { count: 1, run_id: "r", jobs: [{ id: "j", title: "dev" }] } })]);
   expect(cardsOf(r)).toHaveLength(1);
   const head = r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.includes("ws-group-head"))[0];
   await act(async () => {

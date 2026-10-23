@@ -274,7 +274,7 @@ test("messagePreview is empty when it equals the title", () => {
   expect(messagePreview({ title: "Hi", last_message: { role: "user", text: "Other", at: 1 } } as never)).toBe("Other");
 });
 
-import { orderPrs, pickBranch } from "./workspace-lib";
+import { blockingReasons, orderPrs, pickBranch } from "./workspace-lib";
 
 test("pickBranch: a worktree branch beats the PR head, then the newest PR head", () => {
   expect(pickBranch([{ branch: "wt-a" }, { branch: "wt-b" }, { branch: "wt-a" }], ["pr-x"])).toEqual({ name: "wt-a", more: 1, also: ["wt-b"] });
@@ -291,7 +291,7 @@ describe("workspaceGroup / groupTasks", () => {
     expect(workspaceGroup(task({ status: "blocked", blocked_reason: "usage_limit" }), facts())).toBe("needs");
     expect(workspaceGroup(task({ status: "in_progress" }), facts())).toBe("running");
     expect(workspaceGroup(task({ ...pr }), open)).toBe("review");
-    expect(workspaceGroup(task({ unread: 2 }), facts())).toBe("idle");
+    expect(workspaceGroup(task({ unread: 2 }), facts())).toBe("clear");
     expect(workspaceGroup(task(), facts())).toBe("clear");
   });
   test("priority: running beats review, needs beats holds", () => {
@@ -327,7 +327,13 @@ test("only Safe to archive starts collapsed, and a stored choice wins", () => {
   expect(groupCollapsed("idle", { idle: true })).toBe(true);
 });
 
-test("visibleReasons still drops the unread text: the card draws its own unread badge", () => {
+test("blockingReasons ignores unread only: a lone unread hold is clear, with other holds it is open", () => {
+  expect(blockingReasons(["1 unread"])).toEqual([]);
+  expect(blockingReasons(["1 unread", "2 uncommitted"])).toEqual(["2 uncommitted"]);
+  expect(workspaceGroup(task({ unread: 1 }), facts())).toBe("clear");
+});
+
+test("visibleReasons still drops the unread text", () => {
   expect(visibleReasons(["3 unread"], task({ unread: 3 }))).toEqual([]);
 });
 
