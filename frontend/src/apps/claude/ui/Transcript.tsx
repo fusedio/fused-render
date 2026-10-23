@@ -139,6 +139,11 @@ export interface TranscriptProps {
    * mounted, `null` when it is not.
    */
   followRef?: MutableRefObject<(() => void) | null>;
+  /** Whether the open card is inside the scrollport, reported while a card is
+   *  open (the waiting bar shows its jump button only when it is not). */
+  onOpenCardVisible?: (visible: boolean) => void;
+  /** Filled with the function that brings the open card into view. */
+  jumpRef?: MutableRefObject<(() => void) | null>;
   /** The recap line (ui/RecapFold), drawn after the last turn INSIDE the log so
    *  it scrolls with the conversation — Claude Code prints its `※ recap:` as
    *  the last line of the transcript, and so does this. */
@@ -173,6 +178,8 @@ export const Transcript = memo(function Transcript({
   what,
   comebackPending,
   followRef,
+  onOpenCardVisible,
+  jumpRef,
   recap,
   trailing,
   cwd,
@@ -521,9 +528,20 @@ export const Transcript = memo(function Transcript({
   // resolving while another opens in the same poll leaves the count unchanged —
   // so the new card, which the run is blocked on, never brought the scrollport
   // to itself.
-  useLayoutEffect(() => {
+  // ONE rule for bringing the open card into view, used by the open effect and
+  // by the waiting bar's jump button.
+  const revealOpenCard = useCallback((smooth: boolean) => {
     const wrap = port.current;
-    if (!openCards || !wrap) return;
+    if (!wrap) return;
+    const go = (top: number) => {
+      const reduce =
+        typeof window !== "undefined" &&
+        typeof window.matchMedia === "function" &&
+        window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      if (smooth && !reduce && typeof wrap.scrollTo === "function") {
+        wrap.scrollTo({ top, behavior: "smooth" });
+      } else wrap.scrollTop = top;
+    };
     // A card that fits in the port ends at the bottom, as before. A card taller
     // than the port is brought in TOP-first: its question is the part the
     // reader needs, and the follow must not yank it to its bottom afterwards.
@@ -531,12 +549,42 @@ export const Transcript = memo(function Transcript({
     const view = wrap.getBoundingClientRect?.();
     if (box && view && box.height > wrap.clientHeight) {
       const top = box.top - view.top + wrap.scrollTop;
-      wrap.scrollTop = Math.max(0, top - 12);
+      go(Math.max(0, top - 12));
       followTail.current = false;
       return;
     }
-    wrap.scrollTop = wrap.scrollHeight;
-  }, [openCards]);
+    go(wrap.scrollHeight);
+  }, []);
+  useLayoutEffect(() => {
+    if (!openCards) return;
+    revealOpenCard(false);
+  }, [openCards, revealOpenCard]);
+  useEffect(() => {
+    if (!jumpRef) return;
+    jumpRef.current = () => revealOpenCard(true);
+    return () => {
+      jumpRef.current = null;
+    };
+  }, [jumpRef, revealOpenCard]);
+  // Is the open card on screen? Tests stub the DOM, so no observer means yes.
+  useEffect(() => {
+    if (!openCards || !onOpenCardVisible) return;
+    const root = port.current;
+    const target = pin.current;
+    if (!root || !target || typeof IntersectionObserver === "undefined") {
+      onOpenCardVisible(true);
+      return;
+    }
+    const io = new IntersectionObserver(
+      (entries) => {
+        const last = entries[entries.length - 1];
+        if (last) onOpenCardVisible(last.isIntersecting);
+      },
+      { root, threshold: 0.01 },
+    );
+    io.observe(target);
+    return () => io.disconnect();
+  }, [openCards, onOpenCardVisible]);
 
   // The open card is an ordinary block at the end of the log (user request
   // 2026-10-23); the wrapper is only kept as a handle for scrolling it into view.
