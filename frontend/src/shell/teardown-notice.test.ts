@@ -128,7 +128,7 @@ describe("Remove anyway", () => {
       calls++;
       if (body instanceof Error) throw body;
       return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
-    }) as typeof fetch;
+    }) as unknown as typeof fetch;
   };
   // Raise the batch notice for one kept worktree and return its row.
   const raised = () => {
