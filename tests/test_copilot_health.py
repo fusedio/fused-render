@@ -17,6 +17,7 @@ import time
 import pytest
 
 from fused_render import claude_health, copilot_health
+from fused_render.shell import storage
 
 
 @pytest.fixture(autouse=True)
@@ -1020,6 +1021,17 @@ def test_a_listing_that_could_not_tell_carries_the_last_list_forward(tmp_path, m
     assert len(copilot_health.summary_refreshed()["models"]) == 4
     monkeypatch.setattr(copilot_health, "_acp_probe", lambda p, t: False)
     assert copilot_health.summary_refreshed()["models"] is None
+    # A credential of another KIND (a gh token now where a `copilot login`
+    # answered before) may be another account: its list is not carried.
+    monkeypatch.setattr(copilot_health, "_acp_probe", lambda p, t: True)
+    monkeypatch.setattr(copilot_health, "list_models", lambda p, t: _rows())
+    copilot_health.summary_refreshed()
+    monkeypatch.setattr(copilot_health, "_acp_probe", lambda p, t: True if t else False)
+    monkeypatch.setattr(copilot_health, "gh_token", lambda: "gho_gh")
+    monkeypatch.setattr(copilot_health, "list_models", lambda p, t: None)
+    snap = copilot_health.summary_refreshed()
+    assert snap["account"]["method"] == "gh" and snap["models"] is None
+    monkeypatch.setattr(copilot_health, "gh_token", lambda: None)
     # And a fresh cache (a new config dir = another credential store) starts over.
     monkeypatch.setattr(copilot_health, "_acp_probe", lambda p, t: True)
     monkeypatch.setattr(copilot_health, "list_models", lambda p, t: _rows())
@@ -1027,6 +1039,20 @@ def test_a_listing_that_could_not_tell_carries_the_last_list_forward(tmp_path, m
     monkeypatch.setenv("COPILOT_HOME", str(tmp_path / "other-copilot"))
     monkeypatch.setattr(copilot_health, "list_models", lambda p, t: None)
     assert copilot_health.summary_refreshed()["models"] is None
+
+
+def test_carried_models_need_a_matching_credential(tmp_path, monkeypatch):
+    rows = _rows()
+    storage.write_json(copilot_health._cache_path(), {
+        "config_dir": copilot_health.config_dir(),
+        "account": {"method": "copilot"}, "models": rows})
+    assert copilot_health._carried_models({"method": "copilot"}) == rows
+    assert copilot_health._carried_models({"method": "gh"}) is None
+    assert copilot_health._carried_models(None) is None
+    assert copilot_health._carried_models({"method": None}) is None
+    storage.write_json(copilot_health._cache_path(), {
+        "config_dir": copilot_health.config_dir(), "account": None, "models": rows})
+    assert copilot_health._carried_models({"method": "copilot"}) is None
 
 
 def test_cached_models_reads_the_raw_cache_past_the_freshness_gates(tmp_path, monkeypatch):

@@ -415,9 +415,12 @@ export function HeroComposer({
     setModel(next);
     if (agentRef.current === "claude") void setClaudeDefaults({ model: next });
     // THE EFFORT FOLLOWS THE MODEL: a level the new model does not take
-    // (or a model that takes none) becomes that model's own default.
+    // (or a model that takes none) becomes that model's own default — and
+    // so does an EMPTY effort, left by a model that took none (`auto`),
+    // when the new model takes one: the pick must show the level that is
+    // sent, not a blank the CLI fills in.
     setEffort((e) =>
-      isUnlistedEffort(e, agentRef.current, next)
+      !e || isUnlistedEffort(e, agentRef.current, next)
         ? resolveComposerDefaults(getClaudeDefaults(), agentRef.current, next).effort
         : e);
   };

@@ -3181,9 +3181,14 @@ export default function NewJobModal({
     // THE EFFORT FOLLOWS THE MODEL: a level the new model does not take
     // (per model where the catalog knows it per model — a Copilot model
     // that takes none, or fewer levels) becomes the new model's default,
-    // which is "" for one that takes none. A level it does take stays.
+    // which is "" for one that takes none. So does an EMPTY effort, left
+    // by a model that took none, when the new model takes one: the
+    // Thinking rows must show the level the run gets. A level it does
+    // take stays.
     setEffort((e) =>
-      isUnlistedEffort(e, agentRef.current, value) ? defaultEffortFor(agentRef.current, value) : e);
+      !e || isUnlistedEffort(e, agentRef.current, value)
+        ? defaultEffortFor(agentRef.current, value)
+        : e);
   }, []);
   const pickEffort = useCallback((value: string) => {
     if (tookGlobal.current) tookGlobal.current.effort = false;
@@ -3877,15 +3882,17 @@ export default function NewJobModal({
       !m || (took?.model && !models.includes(m)) ? defaultModelOf(agent) : m;
     setModel(nextModel);
     // THE EFFORT IS THE MODEL'S (per model where the catalog knows it per
-    // model): filled with that model's default — "" for one that takes
-    // none — and corrected to it when the Claude global's level is one the
-    // model does not take.
+    // model) — the model this card RESOLVES to, after the foreign-model
+    // fold above and `nextModel`, not the one it was handed: filled with
+    // that model's default ("" for one that takes none) and corrected to
+    // it for ANY level the model does not take, a stored one included. A
+    // level the spawn would drop is nothing an edit can keep lossless, and
+    // the Thinking rows (hidden for a model that takes none) must agree
+    // with what is sent.
     setEffort((e) => {
-      const forModel = nextModel(model);
+      const forModel = nextModel(isForeignModel(model, agent) ? defaultModelOf(agent) : model);
       const efforts = taskEffortsOf(agent, forModel).map((o) => o.key);
-      return !e || (took?.effort && !efforts.includes(e))
-        ? defaultEffortFor(agent, forModel)
-        : e;
+      return !e || !efforts.includes(e) ? defaultEffortFor(agent, forModel) : e;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent, agents.loaded]);

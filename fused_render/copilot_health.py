@@ -724,12 +724,24 @@ def list_models(path: str, token: Optional[str] = None) -> Optional[list]:
     return rows or None
 
 
-def _carried_models() -> Optional[list]:
+def _carried_models(acct: Optional[dict]) -> Optional[list]:
     """The last snapshot's `models`, for a measure whose listing could not
-    tell — read like `_carried_account`: regardless of the fingerprint, from
-    the same credential store only."""
+    tell — read like `_carried_account`, regardless of the fingerprint,
+    and bound to the same credential: the same store (`config_dir`) AND
+    the same `account.method` as the measure just settled on. The list is
+    the ACCOUNT's, and `method` is the only identity Copilot's probe
+    yields; a credential that changed kind (a `copilot login` replacing a
+    gh token, or the reverse) may be another account, and offering it the
+    old account's models would fail at `--model`. No account on either
+    side → nothing carried."""
+    method = acct.get("method") if isinstance(acct, dict) else None
+    if not method:
+        return None
     prev = _read_cache()
     if not prev or prev.get("config_dir") != config_dir():
+        return None
+    before = prev.get("account")
+    if not isinstance(before, dict) or before.get("method") != method:
         return None
     models = prev.get("models")
     return list(models) if isinstance(models, list) and models else None
@@ -935,11 +947,13 @@ def _measure(allow_shell: bool = True) -> dict:
         acct = (_carried_account() if usable else None) or account(signed, False)
     # WHICH MODELS THE ACCOUNT MAY RUN (see `_headless_models`): asked only of
     # a CLI that just proved a credential, with that credential. A listing
-    # that could not tell keeps the last snapshot's list, as the account is
-    # kept; a definite sign-out drops it (the static shortlist shows again).
+    # that could not tell keeps the last snapshot's list for the SAME
+    # credential (`_carried_models`), as the account is kept; a definite
+    # sign-out, or a credential of another kind, drops it (the static
+    # shortlist shows again until the next listing).
     models = list_models(path, token) if (usable and signed is True) else None
     if models is None and usable and signed is not False:
-        models = _carried_models()
+        models = _carried_models(acct)
 
     return {
         "found": usable,
