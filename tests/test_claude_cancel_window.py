@@ -240,9 +240,12 @@ def test_run_hands_the_future_to_on_cancel_and_reraises():
 # ------------------------------------------------------- the control lane
 
 def test_stop_allow_and_app_state_ride_their_own_lane():
-    for action in ("cancel", "decide", "app_state"):
+    # `canvas_shot` is `app_state`'s twin (a page answering a blocked tool
+    # call), so it rides the control lane too.
+    control = ("cancel", "decide", "app_state", "canvas_shot")
+    for action in control:
         assert pool.pool_for(action) is pool.CONTROL_POOL, action
-    for action in set(router.ACTIONS) - {"cancel", "decide", "app_state"} \
+    for action in set(router.ACTIONS) - set(control) \
             - set(pool.SIDE_POOLS):
         assert pool.pool_for(action) is pool.POOL, action
     for action, lane in pool.SIDE_POOLS.items():
