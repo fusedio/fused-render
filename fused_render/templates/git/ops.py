@@ -1382,7 +1382,7 @@ def _reset(root, sha):
     words, via `_git_ok`) or git itself not running at all (`_run`'s usual
     no-git/timeout refusals) — in neither case has anything moved.
     """
-    blocked = _pull_blocked(root)
+    blocked = _reset_blocked(root)
     if blocked:
         raise _Refused("follows-author", blocked)
     _require_clean(root)
@@ -1607,8 +1607,11 @@ _GITHUB_REPO = re.compile(
     r"([A-Za-z0-9-]+/[A-Za-z0-9._-]+?)(?:\.git)?/?$", re.I)
 
 
-def _push_blocked(root):
-    """The plain sentence Push refuses with on a guarded copy, or None."""
+def _guarded_who(root):
+    """`(who, unknown)` for a copy of someone else's GitHub app (the push
+    guard on origin, or the repo-local `fused.kind=github` marker), else
+    None. `unknown` (`fused.ownerunknown`): whose app this is is not known
+    yet — if it turns out to be the user's own, it publishes as usual."""
     code, out, _err = _run(root, "config", "--get-all", "remote.origin.pushurl")
     guarded = code == 0 and _NO_PUSH_URL in out.decode("utf-8", "replace").split()
     if not guarded:
@@ -1618,13 +1621,48 @@ def _push_blocked(root):
     code, out, _err = _run(root, "config", "--get", "remote.origin.url")
     m = _GITHUB_REPO.match(out.decode("utf-8", "replace").strip()) if code == 0 else None
     who = m.group(1) if m else "its author's version on GitHub"
-    # `fused.ownerunknown`: log.py's twin — whose app this is is not known yet.
     code, out, _err = _run(root, "config", "--local", "--get", "fused.ownerunknown")
     unknown = code == 0 and out.decode("utf-8", "replace").strip() == "true"
+    return who, unknown
+
+
+def _push_blocked(root):
+    """The plain sentence Push refuses with on a guarded copy, or None."""
+    guarded = _guarded_who(root)
+    if guarded is None:
+        return None
+    who, unknown = guarded
     until = " until fused knows whether this app is yours" if unknown else ""
     if _app_page_on():
         return f"This app follows {who}{until}. Send your changes from its app page."
     return f"This copy of {who} has changes of its own, and they stay on this computer{until}."
+
+
+def _pull_blocked(root):
+    """A guarded copy never fast-forwards once it has brought the author's
+    latest in (the loop merges, never rebases — §16.0 P4), so the view's Get
+    latest runs the loop's own Bring in through the server instead
+    (`template.html`, `/api/git-upstream` get-latest); this is the sentence
+    for anything that still reaches the plain pull."""
+    guarded = _guarded_who(root)
+    if guarded is None:
+        return None
+    return (f"This app follows {guarded[0]}. Use Get latest to bring in their version; "
+            "fused combines it with your changes.")
+
+
+def _reset_blocked(root):
+    """Reset-to-commit on a guarded copy: rewinding history under a
+    proposal loses what fused knows about it, and the loop has its own way
+    back to the author's version (with a backup and Undo)."""
+    guarded = _guarded_who(root)
+    if guarded is None:
+        return None
+    who = guarded[0]
+    where = (f"use “Use {who}'s version” on its app page" if _app_page_on()
+             else "turn on Community apps in Settings, then use “Use "
+                  f"{who}'s version” on its app page")
+    return f"This app follows {who}. To go back to their version exactly, {where}."
 
 
 def _app_page_on():

@@ -15,7 +15,7 @@ import pytest
 
 from _contrib_gh_world import PAGE, git
 from test_contrib_acceptance import (  # noqa: F401 — `world` is the fixture
-    H, W, app_open, head, ids, louder, page, read, use, world, alice_publish,
+    ALL_OFF, H, W, app_open, head, ids, louder, page, read, use, world, alice_publish,
 )
 from test_contrib_permutations import (
     accept_in_fused, accept_on_github, first_parent_subjects, propose, setup_world,
@@ -61,6 +61,7 @@ def test_git_panel_get_latest_on_a_contributor_copy(world, method, via):
     assert "terminal" not in got["message"] and "git" not in got["message"], got
     got = ops.main(W.bob.app, op="reset", sha=tip)
     assert got["ok"] is False and got["reason"] == "follows-author", got
+    assert "Use alice/sine's version" in got["message"], got
     assert head(W.bob.app) != tip
     # The button's new path: the loop's Bring in, through the server.
     out = _get_latest(W.bob)
@@ -79,3 +80,26 @@ def test_get_latest_refuses_an_own_app(world):
     out = _get_latest(W.alice)
     assert out == {"ok": False, "reason": "not-a-copy",
                    "message": "This only works for a copy of someone else's app."}
+
+
+def test_get_latest_with_community_apps_off(world):
+    """The switch is off on Bob's machine (the default): Get latest still
+    moves — kind decides (P1) — without row 7 (it and the proposal check are
+    `changes`-gated). Bob's bring-in merge holds the same tree as Alice's
+    accept merge, so row 10 moves him straight onto her tip (backup, Undo);
+    only the proposal record stays unsettled until the switch is on."""
+    setup_world()
+    n = propose(W.bob, {"app.py": louder(3)}, "louder", title="Louder")
+    W.bob.flags = dict(ALL_OFF)
+    alice_publish({"index.html": PAGE.replace("blue", "green")}, "green")
+    app_open(W.bob)
+    first = head(W.bob.app)
+    tip = accept_on_github(n, method="merge")
+    out = _get_latest(W.bob)
+    assert out.get("ok") is True, out
+    assert first != tip and head(W.bob.app) == tip
+    from fused_render.contrib import store
+    assert not (store.get(W.bob.app) or {}).get("proposal", {}).get("returned_at")
+    out = _get_latest(W.bob)
+    assert out.get("ok") is True and "already have" in out["message"], out
+    assert _ops().main(W.bob.app, op="reset", sha=first)["reason"] == "follows-author"
