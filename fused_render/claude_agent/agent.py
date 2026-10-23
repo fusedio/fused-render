@@ -3673,6 +3673,19 @@ def _skill_plugin_roots(target: str | None = None) -> list:
     return [r for r in roots if r]
 
 
+def _link_or_copy(src: str, dst: str) -> None:
+    """Symlink `dst` -> `src`, or copy when the OS refuses the link.
+
+    Windows without Developer Mode / admin raises WinError 1314 on
+    `os.symlink`; the skills are small and the run dir is junk after the
+    session, so a copy is an equal stand-in there.
+    """
+    try:
+        os.symlink(src, dst, target_is_directory=True)
+    except OSError:
+        shutil.copytree(src, dst)
+
+
 def _copilot_plugin_dir(run_dir: str, file: str, pane: bool) -> str:
     """Write `<run_dir>/plugin` and return it.
 
@@ -3706,7 +3719,7 @@ def _copilot_plugin_dir(run_dir: str, file: str, pane: bool) -> str:
     skill_dirs = [d for d in skill_dirs if os.path.isdir(d)]
     link = os.path.join(plugin, "skills")
     if len(skill_dirs) == 1:
-        os.symlink(skill_dirs[0], link)
+        _link_or_copy(skill_dirs[0], link)
     elif skill_dirs:
         os.makedirs(link, exist_ok=True)
         for d in skill_dirs:
@@ -3714,7 +3727,7 @@ def _copilot_plugin_dir(run_dir: str, file: str, pane: bool) -> str:
                 src = os.path.join(d, name)
                 dst = os.path.join(link, name)
                 if os.path.isdir(src) and not os.path.lexists(dst):
-                    os.symlink(src, dst)
+                    _link_or_copy(src, dst)
     return plugin
 
 
