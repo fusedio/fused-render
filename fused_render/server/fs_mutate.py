@@ -805,7 +805,8 @@ def _move_to_recycle_bin(path: str) -> None:
     # succeeds and is still reported `trashed: true` — the honest position, since
     # the shell did do the recoverable delete it was asked for and we cannot
     # promise what the volume does with it.
-    p_from, flags = _recycle_bin_request(path)
+    # The shell wants backslashes; client paths are canonical forward-slash.
+    p_from, flags = _recycle_bin_request(os.path.normpath(os.path.abspath(path)))
     # Our own buffer, held in a local for the whole call: the struct carries a
     # bare pointer, so whatever it points at must outlive SHFileOperationW.
     buf = ctypes.create_unicode_buffer(p_from)

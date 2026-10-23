@@ -651,6 +651,19 @@ def test_delete_win32_recycles_and_reports_no_destination(tmp_path, monkeypatch)
     assert op.pTo is None  # FO_DELETE has no destination
 
 
+def test_move_to_recycle_bin_hands_the_shell_backslashes(monkeypatch):
+    # Client paths are canonical forward-slash; SHFileOperationW rejects them
+    # (DE_INVALIDFILES), so every explorer delete would 500.
+    import ntpath
+
+    shell = _fake_bin(monkeypatch)
+    monkeypatch.setattr(os, "path", ntpath)  # what os.path IS on Windows
+    _server_fs_mutate._move_to_recycle_bin("C:/Users/me/a.txt")
+    [op] = shell.ops
+    want = "C:\\Users\\me\\a.txt\0\0"
+    assert ctypes.wstring_at(op.pFrom, len(want)) == want
+
+
 def test_delete_win32_failure_is_500_not_501(tmp_path, monkeypatch):
     # A nonzero return is a FAILED recoverable delete, never "unsupported" —
     # that signal would route the client into the irreversible hard delete.
