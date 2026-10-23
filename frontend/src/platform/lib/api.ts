@@ -4728,6 +4728,8 @@ export interface TaskHold {
   path: string;
   dirty_files: number | null;
   unpushed: number | null;
+  /** The checked-out branch; null on a git error or a detached HEAD. */
+  branch?: string | null;
   reasons: string[];
 }
 

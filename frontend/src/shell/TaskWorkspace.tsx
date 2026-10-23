@@ -12,7 +12,7 @@ import {
 } from "@platform/lib/api";
 import type { Task, TaskHold } from "@platform/lib/api";
 import { notify } from "@platform/lib/notifications";
-import { usePrStatuses } from "@platform/lib/prStatus";
+import { peekPrHead, usePrStatuses } from "@platform/lib/prStatus";
 import { navigateUrl } from "@platform/lib/router";
 import { prKey, prRefsOf } from "@platform/lib/task-prs";
 import { WorkspaceSearch } from "@shell/WorkspaceSearch";
@@ -40,6 +40,7 @@ import {
   moveSelection,
   needsYou,
   nextNeedingYou,
+  pickBranch,
   visibleReasons,
   workspaceKeyAction,
   workspaceTasks,
@@ -128,6 +129,7 @@ function WorkspaceCard({
   peekOn,
   ports,
   reasons,
+  holdRows,
   states,
   showProject,
   home,
@@ -143,6 +145,7 @@ function WorkspaceCard({
   ports: number[];
   /** The full hold list; the card prints the visible part and "clear" on none. */
   reasons: string[];
+  holdRows: TaskHold[];
   states: ReturnType<typeof usePrStatuses>;
   /** More than one project on the page: the preview wears the folder chip. */
   showProject: boolean;
@@ -163,6 +166,11 @@ function WorkspaceCard({
   const hasContext = preview !== "" || showChip;
   const hasFacts = hasPrs || hasBg || ports.length > 0 || text !== "" || clear;
   const when = taskWhenFor(task, now);
+  const branch = pickBranch(
+    holdRows,
+    prRefsOf(task).filter((r) => r.repo).map((r) => peekPrHead(prKey(r))),
+  );
+  const hasFacts2 = hasFacts || branch !== null;
   return (
     <li
       className={
@@ -220,8 +228,17 @@ function WorkspaceCard({
           {preview && <span className="ws-preview">{preview}</span>}
         </div>
       )}
-      {hasFacts && (
+      {hasFacts2 && (
         <div className="ws-card-facts">
+          {branch && (
+            <span className="ws-branch" title={branch.more > 0 ? `${branch.name} (+${branch.more} more)` : branch.name}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" />
+              </svg>
+              <span className="ws-branch-name">{branch.name}</span>
+              {branch.more > 0 && <span className="ws-branch-more">+{branch.more}</span>}
+            </span>
+          )}
           <PrChips task={task} states={states} />
           {hasBg && (
             <span className="ws-bgs" title="Background jobs still running">
@@ -466,6 +483,7 @@ export function TaskWorkspace({
                 peekOn={peekOn}
                 ports={ports[t.key] ?? []}
                 reasons={reasons}
+                holdRows={holds[t.key] ?? []}
                 states={prStates}
                 showProject={showProject}
                 home={home}

@@ -165,6 +165,14 @@ def _count(path: str, *args: str) -> int | None:
         return None
 
 
+def _branch(path: str) -> str | None:
+    """The checked-out branch (`rev-parse --abbrev-ref HEAD`), None on a git
+    error or a detached HEAD (git prints the word HEAD)."""
+    rc, out = _git(path, "rev-parse", "--abbrev-ref", "HEAD")
+    name = out.strip()
+    return name if rc == 0 and name and name != "HEAD" else None
+
+
 def inspect_worktree(path: str) -> dict:
     """What a worktree would lose if it were removed.
 
@@ -180,7 +188,8 @@ def inspect_worktree(path: str) -> dict:
     unpushed = _count(path, "@{upstream}..HEAD")
     if unpushed is None:
         unpushed = _count(path, "HEAD", "--not", "--remotes")
-    return {"path": path, "exists": True, "dirty_files": dirty, "unpushed": unpushed}
+    return {"path": path, "exists": True, "dirty_files": dirty, "unpushed": unpushed,
+            "branch": _branch(path)}
 
 
 def holds_open(info: dict) -> list[str]:
@@ -254,7 +263,7 @@ def reset_holds_cache() -> None:
 
 def holds_for(paths) -> list[dict]:
     """What each worktree in `paths` holds open, for the Workspace row marker:
-    `[{path, dirty_files, unpushed, reasons}]`, worktrees whose folder is gone
+    `[{path, dirty_files, unpushed, branch, reasons}]`, worktrees whose folder is gone
     left out. Kept off the list payload (git per row per rebuild is too slow);
     asked for by the visible rows only. Blocking: call from a worker thread."""
     out = []
@@ -270,5 +279,6 @@ def holds_for(paths) -> list[dict]:
                 _HOLDS[path] = (now, info)
         if info.get("exists"):
             out.append({"path": path, "dirty_files": info["dirty_files"],
-                        "unpushed": info["unpushed"], "reasons": holds_open(info)})
+                        "unpushed": info["unpushed"], "branch": info.get("branch"),
+                        "reasons": holds_open(info)})
     return out

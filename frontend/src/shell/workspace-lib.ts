@@ -222,3 +222,16 @@ export function messagePreview(task: Task): string {
   if (!text) return "";
   return text === (task.title ?? "").trim() ? "" : text;
 }
+
+/** The branch a card shows: the recorded worktrees' branches first (deduped,
+ *  in order), and only when there are none the head branch of the task's
+ *  newest PR (`prHeads`, newest first). `more` counts the other branches. */
+export function pickBranch(
+  holds: readonly Pick<TaskHold, "branch">[],
+  prHeads: readonly (string | null | undefined)[],
+): { name: string; more: number } | null {
+  const wt = [...new Set(holds.map((h) => h.branch).filter((b): b is string => !!b))];
+  if (wt.length > 0) return { name: wt[0], more: wt.length - 1 };
+  const head = prHeads.find((h): h is string => !!h);
+  return head ? { name: head, more: 0 } : null;
+}

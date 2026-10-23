@@ -5827,6 +5827,7 @@ def test_holds_endpoint_reports_a_tasks_recorded_worktrees(client, projects_dir,
     (row,) = held["sess-a"]
     assert row["path"] == wt and row["reasons"] == ["dirty"]
     assert row["dirty_files"] == 1
+    assert row["branch"] == "wt-holds"
 
 
 def test_holds_are_not_on_the_list_payload(client, projects_dir, tmp_path):

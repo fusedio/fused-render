@@ -6622,7 +6622,13 @@ async def api_tasks_pr_status(body: PrStatusBody,
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    return await run_in_threadpool(pr_status.fetch_statuses, body.refs[:100])
+    refs = body.refs[:100]
+    out = await run_in_threadpool(pr_status.fetch_statuses, refs)
+    # Additive: a `_heads` key (`{ref: head branch}`) only when GitHub named
+    # any; a ref can never be spelled `_heads` (it needs `/` and `#`), so the
+    # flat `{ref: state}` readers are unaffected.
+    heads = pr_status.head_refs(list(out))
+    return {**out, "_heads": heads} if heads else out
 
 
 class PortsBody(BaseModel):

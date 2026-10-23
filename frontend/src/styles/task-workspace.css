@@ -105,6 +105,22 @@
   color: var(--fg-muted);
   font-size: 12px;
 }
+.ws-branch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.ws-branch svg {
+  flex: none;
+}
+.ws-branch-name {
+  max-width: 28ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .ws-prs,
 .ws-bgs {
   display: inline-flex;

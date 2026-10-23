@@ -158,3 +158,24 @@ test("closing archives the task, hides the row and offers Undo, which un-archive
   expect(r.root.findAllByProps({ className: "ws-undo" })).toHaveLength(0);
   expect(r.root.findAllByProps({ "data-key": "a" })).toHaveLength(1);
 });
+
+test("the branch chip shows the worktree branch, with +N for more, and is omitted when unknown", async () => {
+  globalThis.fetch = mock(async (url: string) => {
+    const reply: Record<string, unknown> = {
+      "/api/tasks/ports": { ports: {} },
+      "/api/tasks/holds": {
+        holds: {
+          a: [
+            { path: "/w1", dirty_files: 0, unpushed: 0, branch: "feat/one", reasons: [] },
+            { path: "/w2", dirty_files: 0, unpushed: 0, branch: "feat/two", reasons: [] },
+          ],
+        },
+      },
+    };
+    return new Response(JSON.stringify(reply[url] ?? {}), { status: 200 });
+  }) as unknown as typeof fetch;
+  const r = await render([task({ key: "a" }), task({ key: "b", started: 0 })]);
+  const chip = r.root.findByProps({ "data-key": "a" }).findByProps({ className: "ws-branch" });
+  expect(chip.props.title).toBe("feat/one (+1 more)");
+  expect(r.root.findByProps({ "data-key": "b" }).findAllByProps({ className: "ws-branch" })).toHaveLength(0);
+});

@@ -268,3 +268,11 @@ test("messagePreview is empty when it equals the title", () => {
   expect(messagePreview({ title: "Hi", last_message: { role: "user", text: "Hi", at: 1 } } as never)).toBe("");
   expect(messagePreview({ title: "Hi", last_message: { role: "user", text: "Other", at: 1 } } as never)).toBe("Other");
 });
+
+import { pickBranch } from "./workspace-lib";
+
+test("pickBranch: a worktree branch beats the PR head, then the newest PR head", () => {
+  expect(pickBranch([{ branch: "wt-a" }, { branch: "wt-b" }, { branch: "wt-a" }], ["pr-x"])).toEqual({ name: "wt-a", more: 1 });
+  expect(pickBranch([{ branch: null }], [undefined, "pr-x", "pr-y"])).toEqual({ name: "pr-x", more: 0 });
+  expect(pickBranch([], [])).toBeNull();
+});
