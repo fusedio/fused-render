@@ -280,8 +280,8 @@ test("the landing's menu has no session and reads nothing", async () => {
 // happen, 1.1s after the network round trip it waited on.
 test("the Archive item closes the menu on click, before the call (R2-8)", () => {
   const src = readFileSync(join(import.meta.dir, "Kebab.tsx"), "utf8");
-  const item = src.slice(src.indexOf("onClick={() => void onArchive()}") - 700);
-  const archiveItem = item.slice(0, item.indexOf("onClick={() => void onArchive()}"));
+  const item = src.slice(src.indexOf("onClick={() => void askArchive()}") - 700);
+  const archiveItem = item.slice(0, item.indexOf("onClick={() => void askArchive()}"));
   expect(archiveItem).not.toContain("closeOnClick={false}");
 
   const action = src.slice(src.indexOf("const onArchive ="), src.indexOf("// `rev` is read"));

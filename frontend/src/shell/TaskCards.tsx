@@ -92,6 +92,7 @@ import {
 import { useTaskHeadline } from "./TaskPeekWho";
 import { TaskAgentMark } from "./ScheduleTaskViews";
 import { useMarginWheel } from "./useMarginWheel";
+import { useArchiveConfirm } from "@shell/archive-confirm";
 import { BulkBar, RowCheck, useBulkArchive, type BulkSelect } from "./TaskBulk";
 import { selectableTask } from "./task-selection";
 import { TaskPrChip } from "./TaskPrChip";
@@ -576,7 +577,12 @@ function TaskCard({
    *  so a double press cannot send two. */
   const [discarding, setDiscarding] = useState(false);
   const blocked = eraseBlocked(task);
-  const refile = async () => {
+  const archiveAsk = useArchiveConfirm();
+  const refile = (): void => {
+    if (filing?.kind === "archive") archiveAsk.guard(task, () => void doRefile());
+    else void doRefile();
+  };
+  const doRefile = async () => {
     if (!filing || acting) return;
     setActing(true);
     setNote("");
@@ -604,6 +610,7 @@ function TaskCard({
   const resolving = !chatHere && !folderMissing && !!task.session_id && template === undefined;
 
   return (
+    <>
     <section
       className={"task-card task-card--door" + (peeked ? ` ${PEEK_OPEN_CLASS}` : "")
         + (selected ? " is-selected" : "")}
@@ -927,6 +934,8 @@ function TaskCard({
         />
       )}
     </section>
+    {archiveAsk.node}
+    </>
   );
 }
 
@@ -986,7 +995,12 @@ function TaskPeek({
   // to take the focus it could not take at mount.
   const [chatReady, setChatReady] = useState(0);
 
-  const refile = async () => {
+  const archiveAsk = useArchiveConfirm();
+  const refile = (): void => {
+    if (filing?.kind === "archive") archiveAsk.guard(task, () => void doRefile());
+    else void doRefile();
+  };
+  const doRefile = async () => {
     if (!filing) return;
     setActing(true);
     setNote("");
@@ -1162,6 +1176,7 @@ function TaskPeek({
           }}
         />
       )}
+      {archiveAsk.node}
     </>
   );
 }

@@ -59,6 +59,7 @@ import { copyPendingText } from "@platform/lib/clipboard";
 import { fetchTerminalCommand as fetchAgentTerminalCommand } from "../protocol/agent";
 import { forgetSessionSeed } from "./useRecentTasks";
 import { useAgent } from "./agent-context";
+import { useArchiveConfirm } from "@shell/archive-confirm";
 import { agentNamed, isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
 
 /** Live by the listing's own clock (T:13166-13169). `needs_attention` is NOT
@@ -653,6 +654,14 @@ export function Kebab({
     )
       onArchived?.(sessionId);
   }, [sessionId, hasTask, filed, later, refresh, onArchived]);
+  // A chat parked on a permission or question card is not `live` (its Archive
+  // stays on), but archiving ends that run, so filing it asks first, like the
+  // Tasks page's own doors. Unarchive never asks.
+  const archiveAsk = useArchiveConfirm();
+  const askArchive = useCallback(async (): Promise<void> => {
+    if (!filed && asking) archiveAsk.guard({ status: "needs_attention" }, () => void onArchive());
+    else await onArchive();
+  }, [filed, asking, archiveAsk, onArchive]);
 
   // `rev` is read so a cache write repaints the items it decides.
   void rev;
@@ -758,7 +767,7 @@ export function Kebab({
                  end from here. Said in the label, as the Tasks peek says it. */
               disabled={live || locked}
               title={refusal ?? undefined}
-              onClick={() => void onArchive()}
+              onClick={() => void askArchive()}
             >
               <span className="c-kebab-icon">{filed ? TASK_ICON_UNARCHIVE : TASK_ICON_ARCHIVE}</span>
               {archiveLabel || blockedActionLabel(restingArchive, refusal)}
@@ -817,6 +826,7 @@ export function Kebab({
           }}
         />
       ) : null}
+      {archiveAsk.node}
     </div>
   );
 }
