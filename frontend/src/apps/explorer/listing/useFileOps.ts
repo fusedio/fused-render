@@ -140,7 +140,7 @@ export function useFileOps({
     getConfig().then((c) => {
       guardLoadedRef.current = true;
       setRenameGuard({
-        home: String(c.home ?? "").replace(/\\/g, "/"),
+        home: String(c.home ?? ""),
       });
     }, () => {}).finally(() => {
       guardInFlightRef.current = false;

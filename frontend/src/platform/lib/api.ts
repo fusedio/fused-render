@@ -1,4 +1,5 @@
 // Server API wrappers. Non-ok responses throw with the server's error message.
+import { canonFsPath } from "./path-url";
 import { noteFsMutation, noteIndexLifecycle } from "@platform/lib/index-freshness";
 import { outcomeFrom } from "@platform/lib/index-query";
 import type { IndexQueryOutcome } from "@platform/lib/index-query";
@@ -291,8 +292,15 @@ export const postJson = <T>(
   opts?: { signal?: AbortSignal; headers?: Record<string, string> },
 ) => mutateJson<T>("POST", url, body, opts);
 
+// `home` / `fused_dir` are raw expanduser values and arrive with backslashes on
+// Windows. Folded to the shell's canonical forward-slash form HERE, once, so no
+// consumer has to remember to (drive-letter paths only: see canonFsPath).
 export function getConfig(opts?: { signal?: AbortSignal }): Promise<Config> {
-  return getJson<Config>("/api/config", opts);
+  return getJson<Config>("/api/config", opts).then((c) => ({
+    ...c,
+    home: typeof c.home === "string" ? canonFsPath(c.home) : c.home,
+    fused_dir: typeof c.fused_dir === "string" ? canonFsPath(c.fused_dir) : c.fused_dir,
+  }));
 }
 
 // -- Diagnostics bundle (SPEC §50; Preferences → Diagnostics) ----------------

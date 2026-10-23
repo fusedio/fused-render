@@ -1192,7 +1192,7 @@ export default function App({ config }: { config: Config }) {
         key={epoch + ":" + fsPath}
         fsPath={fsPath}
         epoch={epoch}
-        home={config.home.replace(/\\/g, "/")}
+        home={config.home}
       />
     );
   }
