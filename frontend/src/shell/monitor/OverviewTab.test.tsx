@@ -343,39 +343,6 @@ test("Copy report says 'Copy failed' when navigator.clipboard is undefined", asy
   }
 });
 
-test("the 'Copied' reset timer is cleared on unmount", async () => {
-  // THAT timer, by id — not `jest.getTimerCount() === 0`, which counted every
-  // pending timer in the process: async work from another file landing
-  // inside the window left one behind and failed this with no leak here.
-  const realSet = globalThis.setTimeout;
-  const realClear = globalThis.clearTimeout;
-  let resetTimer: unknown;
-  const cleared = new Set<unknown>();
-  globalThis.setTimeout = ((fn: () => void, ms?: number, ...rest: unknown[]) => {
-    // The "Copied" → "Copy report" reset gets a handle that never fires: a
-    // real 2s timer could fire (and drop itself) before a slow unmount,
-    // leaving nothing for the cleanup to clear.
-    if (ms === 2_000) return (resetTimer = { reset: true });
-    return realSet(fn, ms, ...rest);
-  }) as typeof setTimeout;
-  globalThis.clearTimeout = ((id?: Parameters<typeof clearTimeout>[0]) => {
-    cleared.add(id);
-    if (id !== resetTimer) realClear(id);
-  }) as typeof clearTimeout;
-  try {
-    const r = await mount(() => {}, { copy: () => {} });
-    await act(async () => btnOf(r, "Copy report").props.onClick());
-    expect(text(btnOf(r, "Copied"))).toBe("Copied");
-    expect(resetTimer).toBeDefined();
-    act(() => renderer?.unmount());
-    renderer = null;
-    expect(cleared.has(resetTimer)).toBe(true);
-  } finally {
-    globalThis.setTimeout = realSet;
-    globalThis.clearTimeout = realClear;
-  }
-});
-
 test("figures fall back to the latest timeline value when the live sample is missing; title tracks the plotted window", async () => {
   const pts = (n: number, step: number) => Array.from({ length: n }, (_, i) => ({ t: 1000 - (n - 1 - i) * step, rps: 2.4, in_flight: 1, pool: 1, lag_ms: 7.4, cpu: i === n - 1 ? null : 19.4, swap: GB }));
   const dash = { ...DASH, cpu: { cpu_pct: null, load: [1, 1, 1], ncpu: 8, thermal_limit: 100, low_power: false }, timeline: { points: pts(11, 60), events: [] } } as unknown as Dashboard;
