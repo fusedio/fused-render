@@ -330,7 +330,7 @@ describe("workspaceGroup / groupTasks", () => {
     expect(g(task({ status: "queued" }))).toBe("working");
     expect(g(task({ status: "upcoming" }))).toBe("working");
     expect(g(task({ next_run: 5 }))).toBe("working");
-    expect(g(task({ background_jobs: { count: 1, jobs: [] } as Task["background_jobs"] }))).toBe("working");
+    expect(g(task({ background_jobs: { count: 1, run_id: "r", jobs: [] } }))).toBe("working");
   });
   test("priority: archived and needs beat working, working beats PR open", () => {
     expect(g(task({ status: "archived", ...pr }), open)).toBe("archived");
