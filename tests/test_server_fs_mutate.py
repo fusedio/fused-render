@@ -606,10 +606,20 @@ class _FakeShell32:
         return self.rc
 
 
-def _fake_bin(monkeypatch, **kw):
+class _FakeKernel32:
+    def __init__(self, drive_type=3):
+        self.drive_type, self.asked = drive_type, []
+
+    def GetDriveTypeW(self, root):
+        self.asked.append(root)
+        return self.drive_type
+
+
+def _fake_bin(monkeypatch, drive_type=3, **kw):
     shell = _FakeShell32(**kw)
     _force_platform(monkeypatch, "win32")
     monkeypatch.setattr(_server_fs_mutate, "_shell32", lambda: shell)
+    monkeypatch.setattr(_server_fs_mutate, "_kernel32", lambda: _FakeKernel32(drive_type))
     return shell
 
 
@@ -662,6 +672,40 @@ def test_move_to_recycle_bin_hands_the_shell_backslashes(monkeypatch):
     [op] = shell.ops
     want = "C:\\Users\\me\\a.txt\0\0"
     assert ctypes.wstring_at(op.pFrom, len(want)) == want
+
+
+def test_move_to_recycle_bin_refuses_a_volume_with_no_bin(monkeypatch):
+    # FOF_ALLOWUNDO | FOF_NOCONFIRMATION erases for good on a network share or
+    # removable volume while answering success; those must come back as
+    # "unsupported" so the client asks before a hard delete. 2 removable,
+    # 4 remote, 5 cdrom, 6 ramdisk, 1 no root.
+    for drive_type in (1, 2, 4, 5, 6):
+        shell = _fake_bin(monkeypatch, drive_type=drive_type)
+        with pytest.raises(_server_fs_mutate._TrashUnsupported):
+            _server_fs_mutate._move_to_recycle_bin("E:\\x\\a.txt")
+        assert shell.ops == []  # nothing was asked of the shell
+
+
+def test_recycle_bin_asks_for_the_drive_root_of_the_path(monkeypatch):
+    asked = []
+
+    class K:
+        def GetDriveTypeW(self, root):
+            asked.append(root)
+            return 3
+
+    _fake_bin(monkeypatch)
+    monkeypatch.setattr(_server_fs_mutate, "_kernel32", lambda: K())
+    assert _server_fs_mutate._recycle_bin_supported("D:/a/b.txt")
+    assert asked == ["D:\\"]
+
+
+def test_delete_win32_unsupported_volume_is_501(tmp_path, monkeypatch):
+    _fake_bin(monkeypatch, drive_type=4)
+    f = tmp_path / "f.txt"
+    f.write_text("x")
+    assert _status(DELETE({"path": str(f), "trash": True}, x_fused="1")) == 501
+    assert f.exists()
 
 
 def test_delete_win32_failure_is_500_not_501(tmp_path, monkeypatch):
@@ -1188,3 +1232,18 @@ def test_copy_dir_into_descendant_400(tmp_path):
     resp = COPY({"src": str(src), "dst": str(dst)}, x_fused="1")
     assert _status(resp) == 400
     assert not dst.exists()
+
+
+def test_copying_a_drive_or_share_root_into_itself_is_refused(monkeypatch):
+    # `src` that already ends in a separator (C:\, a UNC share root) must not get
+    # a second one appended before the prefix test.
+    import ntpath
+
+    monkeypatch.setattr(os, "path", ntpath)
+    monkeypatch.setattr(os, "sep", "\\")
+    inside = _server_fs_mutate._is_descendant_or_self
+    assert inside("C:\\", "C:\\copy")
+    assert inside("c:\\", "C:\\Copy\\x")
+    assert inside("\\\\srv\\share\\", "\\\\srv\\share\\copy")
+    assert not inside("C:\\", "D:\\copy")
+    assert not inside("C:\\a", "C:\\ab")

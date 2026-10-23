@@ -785,6 +785,25 @@ def _shell32():
     return ctypes.windll.shell32  # type: ignore[attr-defined]
 
 
+_DRIVE_FIXED = 3  # GetDriveTypeW: a local hard disk, the only volume with a bin
+
+
+def _kernel32():
+    # Isolated like _shell32, so tests can answer GetDriveTypeW.
+    return ctypes.windll.kernel32  # type: ignore[attr-defined]
+
+
+def _recycle_bin_supported(path: str) -> bool:
+    # FOF_ALLOWUNDO | FOF_NOCONFIRMATION erases PERMANENTLY, with a success rc,
+    # on a volume that has no bin (network share, removable or FAT media). Only
+    # a fixed local drive is known to keep a recoverable entry, so everything
+    # else is "unsupported" and the client asks before hard-deleting.
+    import ntpath
+
+    drive = ntpath.splitdrive(ntpath.normpath(ntpath.abspath(path)))[0]
+    return _kernel32().GetDriveTypeW(drive + "\\") == _DRIVE_FIXED
+
+
 def _move_to_recycle_bin(path: str) -> None:
     # Move `path` to the Recycle Bin via the shell, which is the only thing that
     # produces a bin entry Explorer can restore. Raises on failure so the caller
@@ -798,13 +817,13 @@ def _move_to_recycle_bin(path: str) -> None:
     # cross-device Finder fallback already falls under: a destination we cannot
     # name is not a destination we may record.
     #
-    # WHERE FOF_ALLOWUNDO STILL ERASES PERMANENTLY: UNC/network shares, most
-    # removable and FAT-formatted volumes, and items larger than the bin's quota.
-    # None of those are reliably detectable up front, so the delete still
-    # succeeds and is still reported `trashed: true` — the honest position, since
-    # the shell did do the recoverable delete it was asked for and we cannot
-    # promise what the volume does with it.
+    # WHERE FOF_ALLOWUNDO STILL ERASES PERMANENTLY: volumes with no bin (network
+    # shares, removable media), which _recycle_bin_supported refuses up front
+    # as _TrashUnsupported so the client confirms a hard delete. Items larger
+    # than a fixed drive's bin quota are not detectable and still erase.
     # The shell wants backslashes; client paths are canonical forward-slash.
+    if not _recycle_bin_supported(path):
+        raise _TrashUnsupported(path)
     p_from, flags = _recycle_bin_request(os.path.normpath(os.path.abspath(path)))
     # Our own buffer, held in a local for the whole call: the struct carries a
     # bare pointer, so whatever it points at must outlive SHFileOperationW.
