@@ -43,6 +43,7 @@ import os
 import sys
 from dataclasses import dataclass
 
+from fused_render._platform import is_within
 from fused_render.index.ignore import MountGuard
 from fused_render.shell import storage
 
@@ -138,9 +139,9 @@ def load_manifest(folder: str) -> Manifest | None:
         # Containment, realpath-resolved (registered_apps.py's guard shape):
         # a value that climbs out of the folder via `../` or a symlink must
         # not be trusted just because the string join looked contained.
-        real_folder = os.path.normcase(os.path.realpath(folder))
-        real_target = os.path.normcase(os.path.realpath(target))
-        if real_target != real_folder and not real_target.startswith(real_folder + os.sep):
+        real_folder = os.path.realpath(folder)
+        real_target = os.path.realpath(target)
+        if not is_within(real_target, real_folder):
             return None
         # A FILE, not merely a path inside the folder — `daemon = "."` (or
         # any other directory) passes containment trivially (a folder is

@@ -18,6 +18,7 @@ from fastapi.responses import (
     JSONResponse,
 )
 
+from fused_render._platform import is_within
 from fused_render import calls as shell_calls
 from fused_render import tasks_watch
 from fused_render.server.common import _error, _require_fused
@@ -285,9 +286,7 @@ def _is_descendant_or_self(src: str, dst: str) -> bool:
     # Is `dst` the same path as `src` or inside it? Compared in normcase form so
     # a case-folding filesystem (Windows) cannot be fooled by `C:\\A` vs `c:\\a\\b`;
     # normcase is the identity on POSIX.
-    s = os.path.normcase(src)
-    d = os.path.normcase(dst)
-    return d == s or d.startswith(s + os.sep)
+    return is_within(dst, src)
 
 
 def _run_git(args: list[str], cwd: str):

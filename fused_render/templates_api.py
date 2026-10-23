@@ -37,6 +37,7 @@ import zipfile
 from fastapi import APIRouter, Body, File, Header, Query, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from fused_render._platform import is_within
 from fused_render import zip_import
 from fused_render.index.ignore import SHARED_IGNORE_DIRS
 from fused_render.server import templates as _server_templates
@@ -101,9 +102,8 @@ def _source_of_resolved(path: str | None) -> str | None:
     under USER_TEMPLATES_DIR, else "core". None for an unresolved name."""
     if not path:
         return None
-    p = os.path.normcase(os.path.abspath(path))
-    user_root = os.path.normcase(os.path.abspath(_server_templates.USER_TEMPLATES_DIR))
-    if p == user_root or p.startswith(user_root + os.sep):
+    if is_within(os.path.abspath(path),
+                 os.path.abspath(_server_templates.USER_TEMPLATES_DIR)):
         return "user"
     return "core"
 

@@ -100,3 +100,34 @@ def test_kill_tree_spares_the_callers_own_group():
         os.killpg = orig
     leader = os.getpgid(os.getpid()) == os.getpid()
     assert bool(seen) == leader
+
+
+def _as_windows(monkeypatch):
+    # What os.path / os.sep ARE on Windows, so the drive-root and case rules run
+    # on any host.
+    import ntpath
+
+    monkeypatch.setattr(os, "path", ntpath)
+    monkeypatch.setattr(os, "sep", "\\")
+
+
+def test_is_within_posix_is_case_sensitive_and_segment_aware():
+    assert _platform.is_within("/a/b/c", "/a/b")
+    assert _platform.is_within("/a/b", "/a/b")
+    assert not _platform.is_within("/a/b", "/a/b", strict=True)
+    assert not _platform.is_within("/a/bc", "/a/b")
+    assert not _platform.is_within("/A/b/c", "/a/b")
+    assert _platform.is_within("/a", "/")
+    assert _platform.is_within("/", "/")
+
+
+def test_is_within_windows_drive_root_and_case(monkeypatch):
+    _as_windows(monkeypatch)
+    # A drive root already ends in the separator: root + os.sep is "C:\\\\".
+    assert _platform.is_within("C:\\Users\\me", "C:\\")
+    assert _platform.is_within("c:\\users\\me", "C:\\")
+    assert _platform.is_within("C:\\", "C:\\")
+    assert not _platform.is_within("C:\\", "C:\\", strict=True)
+    assert _platform.is_within("C:\\Users\\me\\a", "c:\\USERS")
+    assert not _platform.is_within("C:\\Users2", "C:\\Users")
+    assert not _platform.is_within("D:\\Users", "C:\\")

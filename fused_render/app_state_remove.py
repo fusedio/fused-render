@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import os
 
+from fused_render._platform import is_within
 from fused_render import workspace_migration
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.shell import storage
@@ -56,9 +57,7 @@ def prune_stores(root: str) -> dict:
 def _is_under(path: object, root: str) -> bool:
     if not isinstance(path, str) or not path:
         return False
-    p = os.path.normcase(os.path.abspath(path))
-    r = os.path.normcase(root)
-    return p == r or p.startswith(r.rstrip(os.sep) + os.sep)
+    return is_within(os.path.abspath(path), root)
 
 
 def _url_is_under(url: object, root: str) -> bool:

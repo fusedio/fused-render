@@ -58,6 +58,7 @@ from starlette.responses import (
     FileResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response,
 )
 
+from fused_render._platform import is_within
 from fused_render.logs import uvicorn_log_config
 from fused_render.shell.seed import fused_dir
 
@@ -179,11 +180,11 @@ def allowed_roots() -> list[str]:
 
 def _inside_root(path: str) -> bool:
     try:
-        real = os.path.normcase(os.path.realpath(os.path.abspath(os.path.expanduser(path))))
-        roots = [os.path.normcase(os.path.realpath(r)) for r in allowed_roots()]
+        real = os.path.realpath(os.path.abspath(os.path.expanduser(path)))
+        roots = [os.path.realpath(r) for r in allowed_roots()]
     except (OSError, ValueError):
         return False
-    return any(real == root or real.startswith(root + os.sep) for root in roots)
+    return any(is_within(real, root) for root in roots)
 
 
 def _resolve(value, anchor) -> str | None:
@@ -935,8 +936,8 @@ def lan_apps() -> list[dict]:
             "tag": app.get("tag"),
             "path": folder,
             # A linked app lives outside the workspace (registered_apps).
-            "linked": not os.path.normcase(folder).startswith(
-                os.path.normcase(os.path.realpath(fused_dir())) + os.sep),
+            "linked": not is_within(
+                folder, os.path.realpath(fused_dir()), strict=True),
             "recency": recency,
             "url": "/render?" + urlencode({"path": entry_path}),
             # The author's preview.png (app_dict resolves it), full-bleed on the

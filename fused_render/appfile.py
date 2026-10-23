@@ -56,6 +56,7 @@ import time
 import zipfile
 from datetime import datetime, timezone
 
+from fused_render._platform import is_within
 from fused_render import app_id as app_identity
 from fused_render import app_listing
 from fused_render import appfile_container as container
@@ -788,7 +789,7 @@ def _workspace_spelling(path: str) -> str:
     rp = os.path.realpath(path)
     if rp == real_root:
         return root
-    if os.path.normcase(rp).startswith(os.path.normcase(real_root).rstrip(os.sep) + os.sep):
+    if is_within(rp, real_root, strict=True):
         return os.path.join(root, os.path.relpath(rp, real_root))
     return path
 
@@ -1132,8 +1133,7 @@ def _is_download(fused_path: str) -> bool:
 
     try:
         root = os.path.realpath(os.path.join(storage.home_dir(), "downloads"))
-        return os.path.normcase(os.path.realpath(fused_path)).startswith(
-            os.path.normcase(root) + os.sep)
+        return is_within(os.path.realpath(fused_path), root, strict=True)
     except Exception:  # noqa: BLE001 — a display hint never fails the probe
         return False
 

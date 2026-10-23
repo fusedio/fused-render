@@ -38,6 +38,7 @@ the walk already lists those, and a workspace path here would double-list.
 import os
 from datetime import datetime, timezone
 
+from fused_render._platform import is_within
 from fused_render import app_listing
 from fused_render.index.ignore import MountGuard
 from fused_render.shell import storage
@@ -70,13 +71,9 @@ def _in_or_over_workspace(folder: str) -> bool:
     the two callers that have already passed the guard run as well."""
     from fused_render.shell.seed import fused_dir
 
-    root = os.path.normcase(os.path.abspath(fused_dir()))
-    folder = os.path.normcase(os.path.abspath(folder))
-    return (
-        root == folder
-        or root.startswith(folder + os.sep)
-        or folder.startswith(root + os.sep)
-    )
+    root = os.path.abspath(fused_dir())
+    folder = os.path.abspath(folder)
+    return is_within(root, folder) or is_within(folder, root)
 
 
 def _resolves_into_workspace(folder: str) -> bool:
@@ -94,15 +91,11 @@ def _resolves_into_workspace(folder: str) -> bool:
     from fused_render.shell.seed import fused_dir
 
     try:
-        root = os.path.normcase(os.path.realpath(fused_dir()))
-        folder = os.path.normcase(os.path.realpath(folder))
+        root = os.path.realpath(fused_dir())
+        folder = os.path.realpath(folder)
     except OSError:
         return True
-    return (
-        root == folder
-        or root.startswith(folder + os.sep)
-        or folder.startswith(root + os.sep)
-    )
+    return is_within(root, folder) or is_within(folder, root)
 
 
 def _in_appfiles_cache(folder: str) -> bool:
@@ -111,9 +104,7 @@ def _in_appfiles_cache(folder: str) -> bool:
     `read_entries` runs this per entry with no MountGuard in front."""
     from fused_render.appfile import appfiles_root
 
-    root = os.path.normcase(os.path.abspath(appfiles_root()))
-    folder = os.path.normcase(os.path.abspath(folder))
-    return root == folder or folder.startswith(root + os.sep)
+    return is_within(os.path.abspath(folder), os.path.abspath(appfiles_root()))
 
 
 def read_entries() -> list[dict]:

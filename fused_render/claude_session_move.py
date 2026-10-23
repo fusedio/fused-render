@@ -97,7 +97,7 @@ def _under(path: str, root: str) -> str | None:
     p, r = _norm(path), _norm(root)
     if p == r:
         return ""
-    if os.path.normcase(p).startswith(os.path.normcase(r).rstrip(os.sep) + os.sep):
+    if _platform.is_within(p, r, strict=True):
         return os.path.abspath(path)[len(os.path.abspath(root).rstrip(os.sep)) + 1:]
     return None
 

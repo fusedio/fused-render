@@ -156,6 +156,21 @@ def venv_python(venv_dir: str) -> str:
     return os.path.join(venv_dir, "bin", "python")
 
 
+def is_within(path: str, root: str, *, strict: bool = False) -> bool:
+    """Whether *path* is *root* or lies beneath it, compared as `normcase` forms
+    (case-insensitive and slash-agnostic on Windows, byte-exact on POSIX).
+
+    Tolerates a *root* that already ends in a separator (a drive root `C:\\`
+    or POSIX `/`), which `startswith(root + os.sep)` gets wrong. Segment-aware:
+    `/a/bc` is not within `/a/b`. `strict=True` excludes *root* itself. Pure
+    string work: callers that need symlinks resolved pass realpath'd inputs."""
+    p = os.path.normcase(path)
+    base = os.path.normcase(root).rstrip(os.sep)
+    if p.rstrip(os.sep) == base:
+        return not strict
+    return p.startswith(base + os.sep)
+
+
 def relpath_within(path: str, start: str) -> str:
     """`os.path.relpath(path, start)`, except that a *path* with no relative
     spelling from *start* (a different drive on Windows, where relpath raises)

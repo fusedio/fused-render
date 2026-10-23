@@ -972,7 +972,7 @@ def _shot_path(value, field: str) -> str:
         raise ValueError(f"{field}: expected a list of attachment paths")
     root = os.path.realpath(shots_dir())
     real = os.path.realpath(os.path.expanduser(value.strip()))
-    if not os.path.normcase(real).startswith(os.path.normcase(root) + os.sep):
+    if not _platform.is_within(real, root, strict=True):
         raise ValueError(f"{field}: not a task attachment path")
     if not os.path.isfile(real):
         raise ValueError(f"{field}: attachment no longer exists")

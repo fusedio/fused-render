@@ -55,6 +55,7 @@ import os
 import subprocess
 import time
 
+from fused_render._platform import is_within
 from fused_render.shell.seed import fused_dir
 
 
@@ -171,7 +172,7 @@ def app_dir_for(path: str) -> str | None:
     workspace root, a tag dir, or anything outside the workspace."""
     root = fused_dir()
     ap = os.path.abspath(path)
-    if not os.path.normcase(ap).startswith(os.path.normcase(root) + os.sep):
+    if not is_within(ap, root, strict=True):
         return None
     rel = os.path.relpath(ap, root)
     parts = rel.split(os.sep)

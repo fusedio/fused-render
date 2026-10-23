@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import os
 
+from fused_render._platform import is_within
 from fused_render import _flavor
 
 logger = logging.getLogger(__name__)
@@ -40,8 +41,7 @@ def _nearest_app(page: str, root: str) -> tuple[str, dict | None]:
 
     nroot = norm(root)
     d = os.path.dirname(page)
-    nd = norm(d)
-    if nd != nroot and not nd.startswith(nroot.rstrip(os.sep) + os.sep):
+    if not is_within(os.path.abspath(d), os.path.abspath(root)):
         return root, app_listing.app_icon(root)
     while True:
         found = app_listing.app_icon(d)
