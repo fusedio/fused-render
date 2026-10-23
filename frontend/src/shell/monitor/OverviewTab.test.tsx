@@ -1,5 +1,5 @@
 // The Overview tab (and the tab shell) rendered against a fixed dashboard.
-import { afterEach, expect, jest, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import type { Dashboard } from "@shell/monitor/monitor-api";
@@ -344,17 +344,33 @@ test("Copy report says 'Copy failed' when navigator.clipboard is undefined", asy
 });
 
 test("the 'Copied' reset timer is cleared on unmount", async () => {
-  jest.useFakeTimers();
+  // THAT timer, by id — not `jest.getTimerCount() === 0`, which counted every
+  // pending timer in the process: async work from another file landing
+  // inside the window left one behind and failed this with no leak here.
+  const realSet = globalThis.setTimeout;
+  const realClear = globalThis.clearTimeout;
+  let resetTimer: unknown;
+  const cleared = new Set<unknown>();
+  globalThis.setTimeout = ((fn: () => void, ms?: number, ...rest: unknown[]) => {
+    const id = realSet(fn, ms, ...rest);
+    if (ms === 2_000) resetTimer = id; // the "Copied" → "Copy report" reset
+    return id;
+  }) as typeof setTimeout;
+  globalThis.clearTimeout = ((id?: Parameters<typeof clearTimeout>[0]) => {
+    cleared.add(id);
+    realClear(id);
+  }) as typeof clearTimeout;
   try {
     const r = await mount(() => {}, { copy: () => {} });
     await act(async () => btnOf(r, "Copy report").props.onClick());
     expect(text(btnOf(r, "Copied"))).toBe("Copied");
-    expect(jest.getTimerCount()).toBeGreaterThan(0);
+    expect(resetTimer).toBeDefined();
     act(() => renderer?.unmount());
     renderer = null;
-    expect(jest.getTimerCount()).toBe(0);
+    expect(cleared.has(resetTimer)).toBe(true);
   } finally {
-    jest.useRealTimers();
+    globalThis.setTimeout = realSet;
+    globalThis.clearTimeout = realClear;
   }
 });
 
