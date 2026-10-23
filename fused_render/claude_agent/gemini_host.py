@@ -90,7 +90,7 @@ _GEMINI_MODES = {"default": "default", "acceptEdits": "autoEdit", "auto": "yolo"
 # the middle of a `session/new` (verified in 0.65.0's source).
 _OAUTH_PROMPT_MARK = "Please visit the following URL to authorize"
 _SIGNED_OUT_TEXT = ("gemini is not signed in: the CLI asked for a browser "
-                    "sign-in during session/new")
+                    "sign-in during %s")   # % the handshake request pending
 # The permission wait mirrors permission_server.py: same env knob, same poll,
 # same write window — the card on the other side is the same card.
 _PERM_WAIT = float(os.environ.get("FUSED_RENDER_PERMISSION_TIMEOUT", "3600"))
@@ -646,6 +646,7 @@ class _Host:
         self.context_window = None
         self.replaying = False
         self.last_update_at = 0.0     # monotonic time of the last session/update
+        self.confirmed_mode = None    # the last mode the CLI announced (`[MODE_UPDATE]`)
         self.replay_turns = []
         self.replay_user = None
         self.replay_agent = []
@@ -880,7 +881,7 @@ class _Host:
         Caller holds the lock."""
         cli_mode = _CLI_MODE_OF.get(gemini_mode)
         if cli_mode:
-            self.mode = cli_mode
+            self.mode = self.confirmed_mode = cli_mode
         else:
             sys.stderr.write("gemini_host: unknown mode notice %r\n" % gemini_mode)
 
@@ -1352,7 +1353,12 @@ class _Host:
                     if rpc.error is not None:
                         with self.lock:
                             if self.mode == mode:
-                                self.mode = before
+                                # Back to the last mode the CLI itself
+                                # confirmed (`[MODE_UPDATE]`), else to what
+                                # stood before this card: two refused
+                                # escalations in one turn must not leave the
+                                # first's mode behind.
+                                self.mode = self.confirmed_mode or before
                         sys.stderr.write("gemini_host: session/set_mode %s refused: %r\n"
                                          % (mode, rpc.error))
 
@@ -1572,14 +1578,21 @@ class _Host:
         every handshake request. Answers whether the rpc is DONE (its
         `error` says how)."""
         deadline = time.monotonic() + _HANDSHAKE_SECONDS
+        signed_out = {"code": -32000, "message": _SIGNED_OUT_TEXT % rpc.method}
         while not rpc.done.wait(min(0.2, max(0.0, deadline - time.monotonic()))):
             with self.lock:
                 prompted = self.oauth_prompted
             if prompted:
-                rpc.error = {"code": -32000, "message": _SIGNED_OUT_TEXT}
+                rpc.error = signed_out
                 return True
             if time.monotonic() >= deadline:
                 return False
+        # Settled — but by the CLI dying right after its prompt (EOF inside
+        # the same poll window)? Then the prompt is the story, not the exit.
+        with self.lock:
+            prompted = self.oauth_prompted
+        if prompted and rpc.error is not None:
+            rpc.error = signed_out
         return True
 
     def _mcp_servers(self) -> list:
