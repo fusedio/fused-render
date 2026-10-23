@@ -123,6 +123,7 @@ import logging
 import math
 import os
 import re
+import shlex
 import shutil
 import threading
 import time
@@ -582,6 +583,75 @@ def _note_prs(rec: dict, line: str) -> None:
             _add_prs(rec, _result_text(block.get("content")))
 
 
+_WORKTREES_PER_SCAN = 20
+_MANAGED_WT = os.sep.join(("", ".claude", "worktrees", ""))
+
+
+def _add_worktree(rec: dict, path: str, cwd: str = "") -> None:
+    """Record `path` as a worktree this session made — only when it sits directly
+    under a `.claude/worktrees/` folder, the one place the app (and the CLI's
+    EnterWorktree) ever makes them, so a stray path can never become a removal
+    target. Relative paths resolve against the line's cwd. Deduped, capped."""
+    if not path:
+        return
+    if not os.path.isabs(path):
+        if not cwd:
+            return
+        path = os.path.join(cwd, path)
+    path = os.path.normpath(path).replace("\\", "/")
+    head, _, name = path.rpartition("/")
+    if not name or not (head + "/").endswith(_MANAGED_WT):
+        return
+    paths = rec.setdefault("worktrees", [])
+    if path not in paths and len(paths) < _WORKTREES_PER_SCAN:
+        paths.append(path)
+
+
+_WT_ADD_RE = re.compile(r"\bgit\b[^|;&\n]*?\bworktree\s+add\s+([^|;&\n]+)")
+#: `git worktree add` flags that take a value of their own.
+_WT_VALUE_FLAGS = frozenset({"-b", "-B", "--reason"})
+
+
+def _note_worktrees(rec: dict, line: str) -> None:
+    """Attach the worktrees this session made, from the two places that say so:
+    the result of the CLI's EnterWorktree tool (`toolUseResult.worktreePath`) and
+    a Bash `git worktree add <path>` command. The path is what teardown removes
+    when the task is archived, so it is read only from those, never guessed."""
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        return
+    if not isinstance(obj, dict):
+        return
+    cwd = obj.get("cwd") if isinstance(obj.get("cwd"), str) else ""
+    result = obj.get("toolUseResult")
+    if isinstance(result, dict) and isinstance(result.get("worktreePath"), str):
+        _add_worktree(rec, result["worktreePath"], cwd)
+    message = obj.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if obj.get("type") != "assistant" or not isinstance(content, list):
+        return
+    for block in content:
+        inp = block.get("input") if isinstance(block, dict) else None
+        cmd = inp.get("command") if isinstance(inp, dict) else None
+        if block.get("name") != "Bash" or not isinstance(cmd, str):
+            continue
+        for found in _WT_ADD_RE.findall(cmd):
+            try:
+                words = shlex.split(found)
+            except ValueError:
+                continue
+            skip = False
+            for word in words:
+                if skip:
+                    skip = False
+                elif word in _WT_VALUE_FLAGS:
+                    skip = True
+                elif not word.startswith("-"):
+                    _add_worktree(rec, word, cwd)
+                    break
+
+
 def _absorb(rec: dict, line: str) -> None:
     """Fold one raw transcript line into a scan record. Screened before parsing:
     a transcript is mostly assistant turns and tool results, and `json.loads` on
@@ -590,6 +660,8 @@ def _absorb(rec: dict, line: str) -> None:
     # reason as below. A `gh pr` tool_use line has no URL yet, so screen for it.
     if ("github.com" in line and "pull" in line) or "gh pr " in line:
         _note_prs(rec, line)
+    if '"worktreePath"' in line or "worktree add" in line:
+        _note_worktrees(rec, line)
     # An assistant reply is the one non-user line with a fact to contribute:
     # whether the newest prompt's last answer was an API error. Substring tests
     # only, and it stays on this side of `json.loads`. See `_reply_fate`.
@@ -678,7 +750,7 @@ def _new_scan() -> dict:
     # condensed `reply`; nothing reads it any more, so it is inert.
     return {"offset": 0, "size": -1, "count": 0, "tail": [], "title": "",
             "command": "", "reply_line": "", "reply": "", "reply_at": 0.0,
-            "prs": [], "gh_pr_tool_ids": []}
+            "prs": [], "gh_pr_tool_ids": [], "worktrees": []}
 
 
 def _condense_reply(rec: dict) -> None:
@@ -5926,7 +5998,8 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
                 and listed[row["key"]].get("session_id")):
             try:
                 sessions.write_triage(listed[row["key"]]["session_id"], _FILED)
-                _, filed, _ = archive_task(listed[row["key"]], parked)
+                _, filed, _ = archive_task(listed[row["key"]], parked,
+                                           teardown=False)
             except (OSError, ValueError, KeyError, TypeError):
                 filed = False
             if filed:
@@ -7334,7 +7407,30 @@ def api_task_archive(patch: ArchivePatch,
     # run that would not go leaves the row reading `needs_attention` with the
     # filing kept underneath, and the card is how the reader finds out.
     return {"ok": True, "key": key, "cancelled": cancelled, "filed": filed,
-            "stopped": stopped}
+            "stopped": stopped, "teardown": task.get("teardown") or {}}
+
+
+class WorktreeRemovePatch(BaseModel):
+    key: str
+    paths: list[str] | None = None
+
+
+@router.post("/api/tasks/worktrees/remove")
+def api_task_worktrees_remove(patch: WorktreeRemovePatch,
+        x_fused: str | None = Header(default=None)):
+    """"Remove anyway": delete the worktrees archive KEPT, discarding their
+    changes. Only worktrees this task's transcript recorded are reachable, so the
+    body cannot name an arbitrary folder; `paths` narrows it to some of them."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    key = patch.key.strip()
+    task = _collect().get(key) if key else None
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
+    report = _teardown_task(task, force=True, paths=patch.paths)
+    return {"ok": True, "key": key, "removed": report["removed"],
+            "kept": report["kept"], "gone": report["gone"]}
 
 
 class RenamePatch(BaseModel):
@@ -7377,7 +7473,8 @@ def api_task_rename(patch: RenamePatch,
     return {"ok": True, "title": stored}
 
 
-def archive_task(task: dict, parked: dict) -> tuple[int, bool, bool]:
+def archive_task(task: dict, parked: dict, *,
+                 teardown: bool = True) -> tuple[int, bool, bool]:
     """The archive gesture on one collected task: how many messages were
     called off, whether the task was filed (its session's triage record, or
     for a session-less task that outlives the cancel, its KEY — see below),
@@ -7402,7 +7499,14 @@ def archive_task(task: dict, parked: dict) -> tuple[int, bool, bool]:
     the stop can wait up to `_STOP_PARKED_WAIT_S`, and a due entry the
     scheduler claims inside that window has left PENDING by the time the
     cancel loops reach it — it would run after the filing and `_revived`
-    would drop the record. Cancel first, stop second, file last."""
+    would drop the record. Cancel first, stop second, file last.
+
+    TEARDOWN COMES AFTER THE FILING (Workspace scope, unit 3): the live session
+    and what it started are ended and its clean, pushed worktrees removed
+    (`_teardown_task`), the report left on `task["teardown"]` for the caller that
+    has somewhere to show it. A failure there costs the report, never the
+    filing. `teardown=False` is the listing's auto-file of missing-folder rows,
+    which by its own guard has no live run and no folder to hold a worktree."""
     cancelled = 0
     # Decided BEFORE the cancel, off the states as collected: will this task
     # still be a row once its pending work is called off? `_is_task` drops a
@@ -7443,7 +7547,40 @@ def archive_task(task: dict, parked: dict) -> tuple[int, bool, bool]:
         # drops it if the task ever runs, and Unarchive clears it.
         tasks_store.mark_archived(task["key"])
         task["key_filed_at"] = time.time()
+    if teardown:
+        task["teardown"] = _teardown_task(task)
     return cancelled, survives, stopped
+
+
+def _recorded_worktrees(task: dict) -> list[str]:
+    """The worktrees this task's own transcript says it made (`_note_worktrees`)."""
+    record = _scan(task["path"]) if task.get("path") else None
+    return list((record or {}).get("worktrees") or [])
+
+
+def _teardown_task(task: dict, *, force: bool = False,
+                   paths: list[str] | None = None) -> dict:
+    """Archive's second half (`task_teardown`): end the session's live run and
+    its stray children, then remove each recorded worktree that is clean and
+    pushed. `{"stopped", "killed", "removed", "kept", "gone"}`; `force` removes
+    the kept ones too, limited to `paths` when given — and ALWAYS limited to the
+    worktrees the transcript recorded. Never raises."""
+    from fused_render.server import task_teardown  # noqa: PLC0415
+    out: dict = {"stopped": 0, "killed": [], "removed": [], "kept": [], "gone": []}
+    try:
+        if not force:
+            agent = _agent_module()
+            session_id = str(task.get("session_id") or "")
+            if agent is not None and session_id:
+                out.update(task_teardown.stop_session(
+                    session_id, agent, project_queue.scan_runs(agent)))
+        recorded = _recorded_worktrees(task)
+        if paths is not None:
+            recorded = [p for p in recorded if p in set(paths)]
+        out.update(task_teardown.teardown_worktrees(recorded, force=force))
+    except Exception:  # noqa: BLE001 — the filing already happened
+        logger.warning("teardown: failed for %s", task.get("key"), exc_info=True)
+    return out
 
 
 class UnarchivePatch(BaseModel):

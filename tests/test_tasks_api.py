@@ -3198,8 +3198,13 @@ def test_archiving_a_task_with_no_session_only_cancels(client, tmp_path):
     key = _tasks(client)[0]["key"]
     r = client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": key})
     assert r.status_code == 200, r.text
-    assert r.json() == {"ok": True, "key": key, "cancelled": 1, "filed": False,
-                        "stopped": False}
+    body = r.json()
+    # `teardown` is the report of what archive took down with the task; a task
+    # that never ran has nothing to take down.
+    assert body.pop("teardown") == {"stopped": 0, "killed": [], "removed": [],
+                                    "kept": [], "gone": []}
+    assert body == {"ok": True, "key": key, "cancelled": 1, "filed": False,
+                    "stopped": False}
     assert schedule.list_entries()[0]["state"] == schedule.CANCELLED
     assert _tasks(client) == []
 
@@ -5615,3 +5620,188 @@ def test_a_page_follow_up_unarchives_the_task(client, projects_dir, state_dir,
     assert r.status_code == 200, r.text
     rec = json.loads((state_dir / "triage.json").read_text()).get("sess-a", {})
     assert "status" not in rec
+
+
+# -- worktrees are recorded off the transcript (Workspace scope, unit 3) --------
+# Teardown removes only worktrees the task made, and learns which from the
+# EnterWorktree tool's result and from `git worktree add .claude/worktrees/...`.
+
+WT_ROOT = "/repo/.claude/worktrees"
+
+
+def _enter_worktree_result(path, ts):
+    return {"type": "user", "timestamp": ts,
+            "toolUseResult": {"worktreePath": path,
+                              "worktreeBranch": "worktree-x",
+                              "message": f"Created worktree at {path} on branch worktree-x."},
+            "message": {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1",
+                 "content": f"Created worktree at {path} on branch worktree-x."}]}}
+
+
+def _bash_use(command, ts, cwd="/repo"):
+    return {"type": "assistant", "timestamp": ts, "cwd": cwd,
+            "message": {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t2", "name": "Bash",
+                 "input": {"command": command}}]}}
+
+
+def _recorded(projects_dir, records):
+    path = _write_transcript(projects_dir, "sess-w", "/repo", records)
+    tasks_mod.reset_cache()
+    return tasks_mod._scan(str(path))["worktrees"]
+
+
+def test_an_enter_worktree_result_is_recorded(projects_dir):
+    got = _recorded(projects_dir, [_user("hi", T9),
+                                   _enter_worktree_result(f"{WT_ROOT}/feat", T10)])
+    assert got == [f"{WT_ROOT}/feat"]
+
+
+def test_git_worktree_add_into_the_managed_dir_is_recorded(projects_dir):
+    got = _recorded(projects_dir, [
+        _user("hi", T9),
+        _bash_use(f"git worktree add -b feat {WT_ROOT}/a origin/main", T10),
+        _bash_use("git -C /repo worktree add .claude/worktrees/b -b other", T10),
+    ])
+    assert got == [f"{WT_ROOT}/a", f"{WT_ROOT}/b"]
+
+
+def test_a_worktree_outside_the_managed_dir_is_not_recorded(projects_dir):
+    got = _recorded(projects_dir, [
+        _user("hi", T9),
+        _bash_use("git worktree add /tmp/elsewhere -b x", T10),
+        _enter_worktree_result("/repo/not-managed/x", T10),
+    ])
+    assert got == []
+
+
+def test_a_worktree_is_recorded_once_however_often_it_is_named(projects_dir):
+    got = _recorded(projects_dir, [
+        _user("hi", T9),
+        _enter_worktree_result(f"{WT_ROOT}/feat", T10),
+        _enter_worktree_result(f"{WT_ROOT}/feat", T10),
+    ])
+    assert got == [f"{WT_ROOT}/feat"]
+
+
+# -- archive tears the task down (Workspace scope, unit 3) -----------------------
+
+
+def _git_worktree(tmp_path, name):
+    """A real repo with one managed worktree; returns (worktree path)."""
+    import subprocess
+    root = tmp_path / "wtrepo"
+    git = ["git", "-c", "user.email=t@t", "-c", "user.name=t",
+           "-c", "commit.gpgsign=false"]
+    if not root.exists():
+        root.mkdir()
+        subprocess.run([*git, "init", "-b", "main"], cwd=root, check=True,
+                       capture_output=True)
+        (root / "f").write_text("f")
+        subprocess.run([*git, "add", "."], cwd=root, check=True, capture_output=True)
+        subprocess.run([*git, "commit", "-m", "x"], cwd=root, check=True,
+                       capture_output=True)
+    path = root / ".claude" / "worktrees" / name
+    subprocess.run([*git, "worktree", "add", "-b", f"wt-{name}", str(path)],
+                   cwd=root, check=True, capture_output=True)
+    return str(path)
+
+
+@pytest.fixture()
+def no_runs(monkeypatch):
+    monkeypatch.setattr(tasks_mod, "_agent_module", lambda: None)
+
+
+def _post_archive(client, key):
+    r = client.post("/api/tasks/archive", headers={"X-Fused": "1"}, json={"key": key})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_archive_removes_a_clean_recorded_worktree(client, projects_dir, tmp_path,
+                                                    no_runs):
+    wt = _git_worktree(tmp_path, "clean")
+    # No remote exists, so a remote-tracking ref at HEAD is what makes the
+    # branch count as pushed.
+    import subprocess
+    subprocess.run(["git", "update-ref", "refs/remotes/origin/main", "HEAD"],
+                   cwd=wt, check=True, capture_output=True)
+    _write_transcript(projects_dir, "sess-a", str(tmp_path), [
+        _user("hi", T9), _enter_worktree_result(wt, T10)])
+    body = _post_archive(client, "sess-a")
+    assert body["filed"] is True
+    assert body["teardown"]["removed"] == [wt]
+    assert body["teardown"]["kept"] == []
+    assert not os.path.exists(wt)
+
+
+def test_archive_keeps_and_reports_a_dirty_worktree(client, projects_dir, tmp_path,
+                                                     no_runs):
+    wt = _git_worktree(tmp_path, "dirty")
+    open(os.path.join(wt, "new.txt"), "w").write("x")
+    _write_transcript(projects_dir, "sess-a", str(tmp_path), [
+        _user("hi", T9), _enter_worktree_result(wt, T10)])
+    body = _post_archive(client, "sess-a")
+    assert body["filed"] is True, "a kept worktree never blocks the filing"
+    (kept,) = body["teardown"]["kept"]
+    assert kept["path"] == wt
+    assert "dirty" in kept["reasons"]
+    assert kept["dirty_files"] == 1
+    assert os.path.isdir(wt)
+
+
+def test_an_older_task_with_no_recorded_worktree_tears_nothing_down(
+        client, projects_dir, tmp_path, no_runs):
+    wt = _git_worktree(tmp_path, "unrecorded")
+    _write_transcript(projects_dir, "sess-a", str(tmp_path), [_user("hi", T9)])
+    body = _post_archive(client, "sess-a")
+    assert body["teardown"]["removed"] == [] and body["teardown"]["kept"] == []
+    assert os.path.isdir(wt)
+
+
+def test_remove_anyway_removes_a_kept_worktree(client, projects_dir, tmp_path,
+                                               no_runs):
+    wt = _git_worktree(tmp_path, "dirty")
+    open(os.path.join(wt, "new.txt"), "w").write("x")
+    _write_transcript(projects_dir, "sess-a", str(tmp_path), [
+        _user("hi", T9), _enter_worktree_result(wt, T10)])
+    _post_archive(client, "sess-a")
+    assert os.path.isdir(wt)
+    r = client.post("/api/tasks/worktrees/remove", headers={"X-Fused": "1"},
+                    json={"key": "sess-a", "paths": [wt]})
+    assert r.status_code == 200, r.text
+    assert r.json()["removed"] == [wt]
+    assert not os.path.exists(wt)
+
+
+def test_remove_anyway_refuses_a_path_the_task_never_recorded(
+        client, projects_dir, tmp_path, no_runs):
+    other = _git_worktree(tmp_path, "other")
+    _write_transcript(projects_dir, "sess-a", str(tmp_path), [_user("hi", T9)])
+    r = client.post("/api/tasks/worktrees/remove", headers={"X-Fused": "1"},
+                    json={"key": "sess-a", "paths": [other]})
+    assert r.status_code == 200
+    assert r.json()["removed"] == []
+    assert os.path.isdir(other)
+
+
+def test_archive_stops_the_sessions_live_run(client, projects_dir, tmp_path,
+                                              monkeypatch):
+    seen = {}
+
+    class Agent:
+        RUNS = str(tmp_path / "runs")
+
+    monkeypatch.setattr(tasks_mod, "_agent_module", lambda: Agent)
+    monkeypatch.setattr(tasks_mod.project_queue, "scan_runs",
+                        lambda agent=None, limit=None: [
+                            {"run_id": "r1", "run_dir": "/x/r1", "sessions": ["sess-a"]}])
+    from fused_render.server import task_teardown
+    monkeypatch.setattr(task_teardown, "stop_session",
+                        lambda sid, agent, runs, **k: seen.update(sid=sid, runs=runs)
+                        or {"stopped": 1, "killed": []})
+    _write_transcript(projects_dir, "sess-a", str(tmp_path), [_user("hi", T9)])
+    body = _post_archive(client, "sess-a")
+    assert seen["sid"] == "sess-a" and seen["runs"][0]["run_id"] == "r1"
+    assert body["teardown"]["stopped"] == 1
