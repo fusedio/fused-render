@@ -729,6 +729,11 @@ def _cached_cli(kind: str, env: str, compute, ttl_for=None):
                 # changes its signature: store under the POST signature so the
                 # next call (which reads the new one) hits.
                 post_key = (kind, env, _creds_sig(env))
+                # Credentials gone WHILE the child ran (a logout): the answer
+                # is already stale, so a long TTL (whoami's hour) is capped
+                # to the default — the next minute re-asks (CodeRabbit #1918).
+                if post_key[2] is None:
+                    ttl = min(ttl, _CLI_CACHE_TTL_S)
                 with _CLI_CACHE_LOCK:
                     if gen == _cli_cache_gen:
                         _cli_cache[post_key] = (

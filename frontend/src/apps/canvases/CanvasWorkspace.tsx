@@ -1412,6 +1412,9 @@ export default function CanvasWorkspace({
         );
       }
       if (type === "fused-embed-capture-done") {
+        // From THE workbench frame only: a same-origin window that guessed
+        // the pending `req` must not settle it with its own picture.
+        if (event.source !== frameRef.current?.contentWindow) return;
         const { req, ok, error, blob } = (event.data ?? {}) as {
           req?: unknown; ok?: unknown; error?: unknown; blob?: unknown;
         };
