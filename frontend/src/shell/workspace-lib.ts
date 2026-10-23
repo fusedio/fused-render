@@ -79,13 +79,16 @@ export function holdReasons(task: Task, facts: WorkspaceFacts): string[] {
   if (bg > 0) out.push(count(bg, "bg job", "bg jobs"));
   if ((task.next_run ?? 0) > 0) out.push("run pending");
 
+  // Uncommitted counts tracked changes only (tracked_dirty): untracked agent
+  // scratch (.claude/handoffs/, SPEC-*.md) is ignored on the card. Teardown
+  // still guards every dirty file, untracked included (task_teardown.holds_open).
   const rows = facts.holds[task.key] ?? [];
   let dirty = 0;
   let unpushed = 0;
   let unknown = false;
   for (const w of rows) {
     if (w.dirty_files === null || w.unpushed === null || w.reasons.includes("unknown")) unknown = true;
-    dirty += w.dirty_files ?? 0;
+    dirty += w.tracked_dirty ?? 0;
     unpushed += w.unpushed ?? 0;
   }
   if (dirty > 0) out.push(`${dirty} uncommitted`);

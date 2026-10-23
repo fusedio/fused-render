@@ -6843,11 +6843,13 @@ def _collect_for_holds() -> dict[str, dict]:
 @router.post("/api/tasks/holds")
 async def api_tasks_holds(body: PortsBody,
                           x_fused: str | None = Header(default=None)):
-    """`{"holds": {task key: [{path, dirty_files, unpushed, reasons}]}}` — what
+    """`{"holds": {task key: [{path, dirty_files, tracked_dirty, unpushed,
+    reasons}]}}` — what
     each task's RECORDED worktrees would lose if removed (`task_teardown`), for
-    the Workspace row's "3 uncommitted · 2 unpushed" marker. Tasks with no
-    recorded worktree (or whose folders are gone) are absent. `dirty_files` /
-    `unpushed` are null when git could not answer, and `reasons` then says
+    the Workspace row's "3 uncommitted · 2 unpushed" marker. `tracked_dirty`
+    is `dirty_files` minus untracked paths; the card counts only it. Tasks with
+    no recorded worktree (or whose folders are gone) are absent. `dirty_files` /
+    `tracked_dirty` / `unpushed` are null when git could not answer, and `reasons` then says
     `unknown`. Off the list payload, in the threadpool.
 
     The client polls EVERY open key (the grouping needs them all), in chunks of
