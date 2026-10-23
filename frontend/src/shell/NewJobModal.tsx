@@ -10,6 +10,7 @@
 // Google's: the REPEAT choices are derived from the picked date-time ("Weekly
 // on Monday" because the date IS a Monday), so recurrence needs no fields of
 // its own — only "Custom (cron)…" reveals one extra input.
+import { canonFsPath } from "@platform/lib/path-url";
 import {
   useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState,
   type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject,
@@ -344,7 +345,7 @@ const SESSION_FOLDERS_SHOWN = 5;
 // whose `home` is a raw expanduser and arrives with backslashes there. The
 // server accepts either separator; the PICKER's own string surgery (up(),
 // joins) only understands one.
-const normPath = (p: string) => p.replace(/\\/g, "/");
+const normPath = canonFsPath;
 
 // A path split into the folder it lives in and its last segment. Drive roots
 // keep their slash — bare "C:" reads as cwd-relative elsewhere in the shell,

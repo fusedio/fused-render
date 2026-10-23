@@ -322,3 +322,13 @@ describe("failuresForApp / pullsForApp", () => {
     expect(pullsForApp([pull("/Users/me/a")], null)).toEqual([]);
   });
 });
+
+describe("backslashes outside a drive path", () => {
+  it("are literal filename characters", async () => {
+    const { repoName, appPathInRepo } = await import("./repo-updates-lib");
+    expect(repoName("/Users/me/we\\ird")).toBe("we\\ird");
+    expect(repoName("C:\\Users\\me\\repo")).toBe("repo");
+    expect(appPathInRepo("/r/a\\b/app", "/r/a")).toBe(false);
+    expect(appPathInRepo("C:\\r\\a\\app", "C:/r/a")).toBe(true);
+  });
+});

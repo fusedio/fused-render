@@ -16,6 +16,7 @@
 // The active view is keyed by the nav epoch: every navigation remounts it,
 // which is the React equivalent of the vanilla shell rebuilding the view DOM
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
+import { canonFsPath } from "@platform/lib/path-url";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { subscribeJobDismissed, type Job } from "@platform/lib/jobs";
 import { useThemedIconSrc } from "@platform/lib/app-icon-src";
@@ -148,7 +149,7 @@ const NO_PAGE_PARAMS: readonly string[] = [];
 let urlScope: TasksScope | undefined;
 function tasksScopeFromUrl(): TasksScope | undefined {
   const raw = new URLSearchParams(location.search).get("project");
-  const project = raw ? raw.replace(/\\/g, "/").replace(/(.)\/+$/, "$1") : "";
+  const project = raw ? canonFsPath(raw).replace(/(.)\/+$/, "$1") : "";
   if (!project) return undefined;
   if (urlScope?.project !== project) urlScope = { project, ownFrame: true };
   return urlScope;
