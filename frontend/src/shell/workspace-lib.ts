@@ -235,3 +235,41 @@ export function pickBranch(
   const head = prHeads.find((h): h is string => !!h);
   return head ? { name: head, more: 0 } : null;
 }
+
+export type WorkspaceGroupKey = "needs" | "running" | "review" | "idle" | "clear";
+
+export const WORKSPACE_GROUPS: readonly { key: WorkspaceGroupKey; label: string }[] = [
+  { key: "needs", label: "Needs you" },
+  { key: "running", label: "Running" },
+  { key: "review", label: "In review" },
+  { key: "idle", label: "Open" },
+  { key: "clear", label: "Safe to archive" },
+];
+
+/** The first group that matches: needs you (waiting, failed, usage limit),
+ *  running, in review (a PR known open or draft), open (any hold remains), and
+ *  safe to archive (no holds: the card's "safe to archive" badge, which is
+ *  `holdReasons` empty). */
+export function workspaceGroup(task: Task, facts: WorkspaceFacts): WorkspaceGroupKey {
+  if (needsYou(task)) return "needs";
+  if (task.status === "in_progress") return "running";
+  for (const ref of prRefsOf(task)) {
+    const state = facts.prStates[prKey(ref)];
+    if (state === "open" || state === "draft") return "review";
+  }
+  return holdReasons(task, facts).length > 0 ? "idle" : "clear";
+}
+
+/** `rows` split into the groups above, in that order, empty groups left out;
+ *  each keeps `rows`' order. */
+export function groupTasks(
+  rows: readonly Task[],
+  facts: (task: Task) => WorkspaceFacts,
+): { key: WorkspaceGroupKey; label: string; tasks: Task[] }[] {
+  const by = new Map<WorkspaceGroupKey, Task[]>();
+  for (const t of rows) {
+    const k = workspaceGroup(t, facts(t));
+    by.set(k, [...(by.get(k) ?? []), t]);
+  }
+  return WORKSPACE_GROUPS.filter((g) => by.has(g.key)).map((g) => ({ ...g, tasks: by.get(g.key)! }));
+}

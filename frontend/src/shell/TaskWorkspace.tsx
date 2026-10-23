@@ -3,7 +3,7 @@
 // close button, an Undo toast and a keyboard map. Its rules live in
 // workspace-lib; this file draws them and runs the two polls the rows need
 // (ports and holds), asked for the visible rows only.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   archiveTask,
   fetchTaskHolds,
@@ -33,6 +33,7 @@ import {
 import {
   bgJobChips,
   capList,
+  groupTasks,
   cardStatusWord,
   MAX_PRS,
   messagePreview,
@@ -44,6 +45,7 @@ import {
   visibleReasons,
   workspaceKeyAction,
   workspaceTasks,
+  type WorkspaceFacts,
 } from "@shell/workspace-lib";
 
 /** How long the Undo toast stays up after a close. */
@@ -295,14 +297,22 @@ export function TaskWorkspace({
   const [undo, setUndo] = useState<{ key: string; title: string } | null>(null);
   const undoTimer = useRef<number | null>(null);
 
-  const rows = useMemo(() => workspaceTasks(tasks).filter((t) => !hidden.has(t.key)), [tasks, hidden]);
-  const keys = useMemo(() => rows.map((t) => t.key), [rows]);
+  const base = useMemo(() => workspaceTasks(tasks).filter((t) => !hidden.has(t.key)), [tasks, hidden]);
+  const keys = useMemo(() => base.map((t) => t.key), [base]);
   const { ports, holds, covered, failed } = useRowFacts(keys);
   const prKeys = useMemo(
-    () => rows.flatMap((t) => prRefsOf(t).filter((r) => r.repo).map(prKey)),
-    [rows],
+    () => base.flatMap((t) => prRefsOf(t).filter((r) => r.repo).map(prKey)),
+    [base],
   );
   const prStates = usePrStatuses(prKeys);
+  const factsFor = useCallback(
+    (t: Task): WorkspaceFacts => ({ holds, holdsReady: covered.has(t.key), holdsFailed: failed, prStates }),
+    [holds, covered, failed, prStates],
+  );
+  // Grouped by state; the flat list below is what j/k/n walk, so the keyboard
+  // order is the order on screen. Hidden (just-closed) rows never count.
+  const groups = useMemo(() => groupTasks(base, factsFor), [base, factsFor]);
+  const rows = useMemo(() => groups.flatMap((g) => g.tasks), [groups]);
   const now = useNow();
   const showProject = useMemo(() => spansProjects(rows), [rows]);
 
@@ -460,33 +470,40 @@ export function TaskWorkspace({
         <p className="schedule-tv-empty">{emptyLabel}</p>
       ) : (
         <ul className="ws-list" role="listbox" aria-label="Open tasks">
-          {rows.map((t) => {
-            const covers = covered.has(t.key);
-            const reasons = holdReasons(t, {
-              holds,
-              holdsReady: covers,
-              holdsFailed: failed,
-              prStates: prStates,
-            });
-            return (
-              <WorkspaceCard
-                key={t.key}
-                task={t}
-                selected={selected === t.key}
-                peeked={peekedKey === t.key}
-                peekOn={peekOn}
-                ports={ports[t.key] ?? []}
-                reasons={reasons}
-                holdRows={holds[t.key] ?? []}
-                states={prStates}
-                showProject={showProject}
-                home={home}
-                now={now}
-                onSelect={() => setSelected(t.key)}
-                onOpen={() => open(t)}
-              />
-            );
-          })}
+          {groups.map((g, gi) => (
+            <Fragment key={g.key}>
+              <li
+                role="presentation"
+                className="tasks-group-head ws-group-head"
+                data-group={g.key}
+                data-first={gi === 0 ? "1" : undefined}
+              >
+                <span className="tasks-group-name">{g.label}</span>
+                <span className="tasks-group-count">{g.tasks.length}</span>
+              </li>
+              {g.tasks.map((t) => {
+                const reasons = holdReasons(t, factsFor(t));
+                return (
+                  <WorkspaceCard
+                    key={t.key}
+                    task={t}
+                    selected={selected === t.key}
+                    peeked={peekedKey === t.key}
+                    peekOn={peekOn}
+                    ports={ports[t.key] ?? []}
+                    reasons={reasons}
+                    holdRows={holds[t.key] ?? []}
+                    states={prStates}
+                    showProject={showProject}
+                    home={home}
+                    now={now}
+                    onSelect={() => setSelected(t.key)}
+                    onOpen={() => open(t)}
+                  />
+                );
+              })}
+            </Fragment>
+          ))}
         </ul>
       )}
       {undo && (

@@ -242,3 +242,18 @@ test("the list is the scroller: root fills the pane, list scrolls inside it", ()
   expect(list).toMatch(/overflow-y:\s*auto/);
   expect(list).toMatch(/min-height:\s*0/);
 });
+
+test("headers show label and count in order, and keys walk the grouped order", async () => {
+  serve();
+  const r = await render([
+    task({ key: "a", started: 4 }),
+    task({ key: "b", started: 3, status: "in_progress" }),
+    task({ key: "c", started: 2, status: "needs_attention" }),
+    task({ key: "d", started: 1, status: "blocked", blocked_reason: "failed" }),
+  ]);
+  const heads = r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.includes("ws-group-head"));
+  expect(heads.map((h) => text(h))).toEqual(["Needs you2", "Running1", "Safe to archive1"]);
+  expect(heads.every((h) => h.props.role === "presentation")).toBe(true);
+  const cards = r.root.findAll((n) => typeof n.props.className === "string" && /^ws-card( |$)/.test(n.props.className));
+  expect(cards.map((n) => n.props["data-key"])).toEqual(["c", "d", "b", "a"]);
+});

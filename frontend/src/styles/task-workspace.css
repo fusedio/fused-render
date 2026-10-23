@@ -318,3 +318,19 @@
   border-radius: 5px;
   flex: none;
 }
+
+/* Group headers: the List view's .tasks-group-head, pinned to the top of the
+   scroller with the page behind it. 12px of air above every header but the first;
+   the cards keep the list's 6px gap. */
+.ws-list > .ws-group-head {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  justify-content: flex-start;
+  gap: 6px;
+  padding: 4px 6px;
+  background: var(--bg);
+}
+.ws-list > .ws-group-head:not([data-first]) {
+  margin-top: 12px;
+}

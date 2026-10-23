@@ -13,6 +13,8 @@ import {
   statusWord,
   workspaceKeyAction,
   workspaceTasks,
+  workspaceGroup,
+  groupTasks,
   type WorkspaceFacts,
 } from "@shell/workspace-lib";
 
@@ -275,4 +277,35 @@ test("pickBranch: a worktree branch beats the PR head, then the newest PR head",
   expect(pickBranch([{ branch: "wt-a" }, { branch: "wt-b" }, { branch: "wt-a" }], ["pr-x"])).toEqual({ name: "wt-a", more: 1 });
   expect(pickBranch([{ branch: null }], [undefined, "pr-x", "pr-y"])).toEqual({ name: "pr-x", more: 0 });
   expect(pickBranch([], [])).toBeNull();
+});
+
+describe("workspaceGroup / groupTasks", () => {
+  const pr = { prs: [{ repo: "o/r", number: 1 }] } as Partial<Task>;
+  const open = facts({ prStates: { "o/r#1": "open" } });
+  test("one case per group", () => {
+    expect(workspaceGroup(task({ status: "needs_attention" }), facts())).toBe("needs");
+    expect(workspaceGroup(task({ status: "blocked", blocked_reason: "failed" }), facts())).toBe("needs");
+    expect(workspaceGroup(task({ status: "blocked", blocked_reason: "usage_limit" }), facts())).toBe("needs");
+    expect(workspaceGroup(task({ status: "in_progress" }), facts())).toBe("running");
+    expect(workspaceGroup(task({ ...pr }), open)).toBe("review");
+    expect(workspaceGroup(task({ unread: 2 }), facts())).toBe("idle");
+    expect(workspaceGroup(task(), facts())).toBe("clear");
+  });
+  test("priority: running beats review, needs beats holds", () => {
+    expect(workspaceGroup(task({ status: "in_progress", ...pr }), open)).toBe("running");
+    expect(workspaceGroup(task({ status: "needs_attention", unread: 3 }), facts())).toBe("needs");
+  });
+  test("groups come in order, empty ones omitted, rows keep their order", () => {
+    const rows = [
+      task({ key: "a" }),
+      task({ key: "b", status: "needs_attention" }),
+      task({ key: "c" }),
+      task({ key: "d", status: "needs_attention" }),
+    ];
+    const g = groupTasks(rows, () => facts());
+    expect(g.map((x) => [x.key, x.label, x.tasks.map((t) => t.key)])).toEqual([
+      ["needs", "Needs you", ["b", "d"]],
+      ["clear", "Safe to archive", ["a", "c"]],
+    ]);
+  });
 });
