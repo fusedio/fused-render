@@ -38,6 +38,6 @@ export function fileUrlToPath(url: string): string {
   if (!path) throw new Error("That file:// URL names no path");
   // A Windows file URL roots the drive under the authority's slash
   // ("file:///C:/Users/x") — drop it; on POSIX the leading slash IS the root.
-  if (/^\/[A-Za-z]:/.test(path)) path = path.slice(1);
+  if (/^\/[A-Za-z]:[\\/]/.test(path)) path = path.slice(1);
   return path;
 }
