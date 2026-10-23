@@ -209,19 +209,26 @@ def inspect_worktree(path: str) -> dict:
     """What a worktree would lose if it were removed.
 
     `dirty_files`: changed plus untracked paths (the `git status --porcelain`
-    lines), None when git did not answer. `unpushed`: commits on HEAD that the
+    lines), None when git did not answer. `tracked_dirty`: the subset that are
+    not untracked (`??`): staged, modified, deleted, renamed. The Workspace card
+    counts only these; teardown still guards every `dirty_files` path.
+    `unpushed`: commits on HEAD that the
     upstream does not have — `@{upstream}..HEAD`, and where there is no upstream
     `HEAD --not --remotes` (what no remote branch holds) — None when git errors
     both ways. `exists` False means the folder is already gone: nothing held."""
     if not os.path.isdir(path):
-        return {"path": path, "exists": False, "dirty_files": 0, "unpushed": 0}
+        return {"path": path, "exists": False, "dirty_files": 0,
+                "tracked_dirty": 0, "unpushed": 0}
     rc, out = _git(path, "status", "--porcelain")
-    dirty = len([ln for ln in out.splitlines() if ln.strip()]) if rc == 0 else None
+    lines = [ln for ln in out.splitlines() if ln.strip()] if rc == 0 else None
+    dirty = len(lines) if lines is not None else None
+    tracked = (len([ln for ln in lines if not ln.startswith("??")])
+               if lines is not None else None)
     unpushed = _count(path, "@{upstream}..HEAD")
     if unpushed is None:
         unpushed = _count(path, "HEAD", "--not", "--remotes")
-    return {"path": path, "exists": True, "dirty_files": dirty, "unpushed": unpushed,
-            "branch": _branch(path)}
+    return {"path": path, "exists": True, "dirty_files": dirty,
+            "tracked_dirty": tracked, "unpushed": unpushed, "branch": _branch(path)}
 
 
 def holds_open(info: dict) -> list[str]:
@@ -307,7 +314,7 @@ def reset_holds_cache() -> None:
 
 def holds_for(paths) -> list[dict]:
     """What each worktree in `paths` holds open, for the Workspace row marker:
-    `[{path, dirty_files, unpushed, branch, reasons}]`, worktrees whose folder is gone
+    `[{path, dirty_files, tracked_dirty, unpushed, branch, reasons}]`, worktrees whose folder is gone
     left out. Kept off the list payload (git per row per rebuild is too slow);
     asked for by the visible rows only. Blocking: call from a worker thread."""
     out = []
@@ -323,6 +330,7 @@ def holds_for(paths) -> list[dict]:
                 _HOLDS[path] = (now, info)
         if info.get("exists"):
             out.append({"path": path, "dirty_files": info["dirty_files"],
+                        "tracked_dirty": info.get("tracked_dirty"),
                         "unpushed": info["unpushed"], "branch": info.get("branch"),
                         "reasons": holds_open(info)})
     return out

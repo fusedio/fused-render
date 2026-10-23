@@ -61,7 +61,18 @@ def test_untracked_and_modified_files_are_counted(repo):
     open(os.path.join(path, "a.txt"), "w").write("changed")
     got = td.inspect_worktree(path)
     assert got["dirty_files"] == 2
+    assert got["tracked_dirty"] == 1
     assert td.holds_open(got) == ["dirty"]
+
+
+def test_untracked_only_counts_no_tracked_dirty_but_still_holds_open(repo):
+    path = _worktree(repo, "scratch")
+    open(os.path.join(path, "SPEC-x.md"), "w").write("x")
+    got = td.inspect_worktree(path)
+    assert got["dirty_files"] == 1
+    assert got["tracked_dirty"] == 0
+    assert td.holds_open(got) == ["dirty"]
+    assert td.holds_for([path])[0]["tracked_dirty"] == 0
 
 
 def test_a_commit_past_the_upstream_is_unpushed(repo):
