@@ -774,11 +774,22 @@ export default function CanvasWorkspace({
       // it builds from that — the Share dialog's canvas URL above all — would
       // name a port on this machine that nobody else can open. The workbench
       // builds those links from this origin instead (application embed-auth.ts).
+      // Parsed apart from the post: a malformed FUSED_RENDER_WORKBENCH_URL
+      // override reaches here unvalidated, and it must cost the field, not
+      // the token.
+      let publicOrigin: string | undefined;
+      if (workbenchBase) {
+        try {
+          publicOrigin = new URL(workbenchBase).origin;
+        } catch {
+          publicOrigin = undefined;
+        }
+      }
       frame.contentWindow.postMessage(
         {
           type: "fused-embed-auth-token",
           accessToken: access_token,
-          ...(workbenchBase ? { publicOrigin: new URL(workbenchBase).origin } : {}),
+          ...(publicOrigin ? { publicOrigin } : {}),
         },
         origin, // exact origin — this message carries a credential
       );
