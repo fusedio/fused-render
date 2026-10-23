@@ -439,9 +439,10 @@ def api_contrib_push_main(body: dict = Body(...), x_fused: str | None = Header(d
     return _call("push-main", _mod("engine").push_to_main, t.app_dir)
 
 
-# The phase that offers each kind of merge (v1 and v2 purpose names). An
-# own app's own-sync overlap is offered whenever its panel is (P5/P6).
-_MERGE_PHASE = {"needs-merge": "changes", "update": "changes", "return": "changes",
+# The phase that offers each kind of merge (v1 and v3 purpose names; v2's
+# `return` is gone, §17.7). An own app's own-sync overlap is offered
+# whenever its panel is (P5/P6).
+_MERGE_PHASE = {"needs-merge": "changes", "update": "changes",
                 "proposal": "changes", "own-sync": "sources", "original": "remix"}
 
 
@@ -862,8 +863,10 @@ _DISPATCH = {
     "merge-claude": lambda t, a: _merge_claude(t),
     "choose-mine": _choose("mine"),
     "choose-theirs": _choose("theirs"),
-    "keep-mine": _now("engine", "keep_mine"),
-    "use-theirs": _now("engine", "use_theirs"),
+    # §17.3: Use <who>'s version (pin, back to the author's) and Keep working
+    # on it (forget a declined proposal; nothing moves).
+    "match": _now("engine", "match"),
+    "keep-working": _now("engine", "keep_working"),
     "go-back-main": _now("engine", "go_back_main"),
     "move-aside": _as_job("engine", "move_aside"),
     "discard": _discard,

@@ -43,7 +43,9 @@ export interface ContribEvent {
   who: string | null;
 }
 
-export type MergePurpose = "needs-merge" | "update" | "return" | "proposal" | "own-sync" | "original";
+/** v3 (CONTRIB_LOOP.md §17.4): a GitHub-link copy merges `update` (the
+ *  author's latest) or `proposal` (the PR head); v2's `return` is gone. */
+export type MergePurpose = "needs-merge" | "update" | "proposal" | "own-sync" | "original";
 
 export interface MergeJobView {
   id: string;
@@ -64,6 +66,8 @@ export interface MergeJobView {
   error?: string | null;
 }
 
+/** `engine.status`'s state (§17.2) for a GitHub-link copy; `remix`/`own`
+ *  for an own app. */
 export type CopyState =
   | "following"
   | "changes"
@@ -71,6 +75,9 @@ export type CopyState =
   | "needs-merge"
   | "merged"
   | "declined"
+  | "blocked"
+  | "other-branch"
+  | "merging"
   | "remix"
   | "own";
 
@@ -229,7 +236,7 @@ export interface SourcePanel {
   /** App-relative files the Propose dialog offers unticked (never sent
    *  unless the user ticks them); filled only while `propose` is offered. */
   untracked?: string[];
-  /** Claude's merge for this copy (github update/return, own-sync) — the
+  /** Claude's merge for this copy (github update/proposal, own-sync) — the
    *  same object as `copy.merge_job`; the panel draws its review. */
   merge?: MergeJobView | null;
 }

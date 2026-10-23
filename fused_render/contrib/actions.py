@@ -1,4 +1,5 @@
-"""Which buttons an app's Source panel shows (docs/CONTRIB_LOOP.md §16.9).
+"""Which buttons an app's Source panel shows (docs/CONTRIB_LOOP.md §16.9,
+§17.2 for a GitHub-link copy).
 
 THE ONE PLACE THAT DECIDES. `for_app(app_dir)` answers `{panel, actions}`:
 the panel's state and sentence, and every button the page may draw. The
@@ -42,19 +43,28 @@ import logging
 logger = logging.getLogger(__name__)
 
 #: Every id the action route dispatches (§16.9).
-IDS = ("check", "bring-in", "merge-claude", "keep-mine", "use-theirs", "move-aside",
+IDS = ("check", "bring-in", "merge-claude", "match", "keep-working", "move-aside",
        "go-back-main", "propose", "update-proposal", "withdraw", "remix", "discard",
        "push-main", "publish-now", "use-github", "put-on-top", "publish-over",
        "save-edits", "sign-in", "retry", "choose-mine", "choose-theirs")
 
 #: The merge purposes whose jobs land in the folder, per kind — what a
 #: "choice" job's per-file buttons (`merge_job.choose`) act on.
-CHOICE_PURPOSES = {"github": ("update", "return", "proposal"), "own": ("own-sync", "original")}
+CHOICE_PURPOSES = {"github": ("update", "proposal"), "own": ("own-sync", "original")}
 
 _OPEN_JOB = ("running", "landing", "ready")
 
 USE_GITHUB_CONFIRM = ("Your copy becomes the version on GitHub. Your edits are kept in "
                       "Activity so you can bring them back.")
+
+
+def _moved_message() -> str:
+    """merge_job's own sentence for a Keep that found the copy moved since
+    the job started (§17.4) — read from there, never copied."""
+    mod = _safely("import merge_job", _mod, "merge_job")
+    text = getattr(mod, "MOVED_MESSAGE", None)
+    return text if isinstance(text, str) and text else (
+        "Your copy changed meanwhile; run it again.")
 
 
 def _publish_over_confirm() -> str:
@@ -287,8 +297,8 @@ def _github(f: dict, flags: dict) -> dict:
     state = copy.get("state") or "following"
     lets_bring_in = True
 
-    theirs_confirm = (f"Your copy becomes {who}'s version. Your changes are kept in "
-                      "Activity so you can bring them back.")
+    match_confirm = (f"Your copy becomes {who}'s version. Your changes are kept in "
+                     "Activity so you can bring them back.")
     push_confirm = (f"Your changes go straight into {who}'s app, without a proposal for "
                     f"{who} to look at first.")
 
@@ -300,6 +310,9 @@ def _github(f: dict, flags: dict) -> dict:
     def remix_button():
         if remix_on and not signed_out:
             b.add("remix", "Publish as remix", dialog="remix")
+
+    def match_button():
+        b.add("match", f"Use {who}'s version", danger=True, confirm=match_confirm)
 
     def push_button():
         if changes_on and can_push and not signed_out:
@@ -329,48 +342,44 @@ def _github(f: dict, flags: dict) -> dict:
         # merge_job's routes) — nothing else may move this copy meanwhile.
         return {"panel": panel, "actions": b.done()}
 
-    if copy.get("off_default"):
+    if copy.get("off_default") or state == "other-branch":
+        # §17.1 I4: HEAD is not the copy's own branch.
         lets_bring_in = False
         state = "other-branch"
         sentence = f"This copy is showing a different version of the app than {who}'s usual one"
         sentence += (f", which has {_plural(behind, 'newer change')}." if behind else ".")
         b.add("go-back-main", "Go back to the usual version of this app", primary=True)
     elif copy.get("needs_merge") or (job is not None and job.get("status") == "choice"):
-        # A "choice" job is open (it holds syncs) while it waits for a pick.
+        # §17.2 `needs-merge`: merging the author's latest into this copy
+        # overlaps it (`conflict`, derived — nothing recorded). A "choice"
+        # job is open (it holds syncs) while it waits for a pick.
         lets_bring_in = False
         nm_files = _strs(copy.get("needs_merge_files"))
-        purpose = copy.get("needs_merge_purpose") or "update"
         where = f": {_file_words(nm_files)}" if nm_files else ""
         state = "needs-merge"
         panel["files"] = nm_files or files
-        choice = job is not None and job.get("status") == "choice"
-        if choice:
+        if job is not None and job.get("status") == "choice":
             # A file removed on one side and changed on the other, or not
-            # text: Claude can't combine it — the person picks a side.
+            # text: Claude can't combine it — the person picks a side, per
+            # file first (the rest of the merge carries on).
             panel["files"] = _strs(job.get("files")) or panel["files"]
             fw = _file_words(panel["files"]) or "these files"
             sentence = (job.get("error") or "").strip() or (
                 f"{who} and you changed {fw} in ways that can't be combined.")
-            # Per file first (the rest of the merge carries on); the whole
-            # copy either way stays offered.
             b.add("choose-mine", f"Keep mine for {fw}", primary=True)
             b.add("choose-theirs", f"Use {who}'s for {fw}")
-            b.add("keep-mine", "Keep mine")
-            b.add("use-theirs", f"Use {who}'s version", danger=True, confirm=theirs_confirm)
-        elif purpose == "return":
-            sentence = f"{who} merged your change, and your newer edits overlap it{where}."
-            b.add("merge-claude", "Merge with Claude", primary=True)
-            b.add("use-theirs", f"Use {who}'s version", danger=True, confirm=theirs_confirm)
-        elif purpose == "proposal":
-            sentence = f"Your proposal no longer fits {who}'s latest{where}."
-            b.add("merge-claude", "Merge with Claude", primary=True)
         else:
             sentence = f"{who} changed the same parts you did{where}."
-            b.add("merge-claude", "Merge with Claude", primary=True)
-            b.add("keep-mine", "Keep mine")
-            b.add("use-theirs", f"Use {who}'s version", danger=True, confirm=theirs_confirm)
-        if job is not None and job.get("status") == "failed":
-            sentence += " Claude couldn't combine them last time."
+            failed = job is not None and job.get("status") == "failed"
+            b.add("merge-claude", "Merge with Claude again" if failed else "Merge with Claude",
+                  primary=True)
+            if failed and (job.get("error") or "").strip() == _moved_message():
+                # §17.4: Keep found the copy moved since the job started —
+                # nothing was combined wrongly; it just has to run again.
+                sentence += f" {_moved_message()}"
+            elif failed:
+                sentence += " Claude couldn't combine them last time."
+        match_button()
     elif blocked:
         lets_bring_in = False
         state = "blocked"
@@ -378,11 +387,10 @@ def _github(f: dict, flags: dict) -> dict:
         verb = "is" if len(blocked) == 1 else "are"
         sentence = f"{_file_words(blocked)} {verb} in the way of {who}'s update."
         b.add("move-aside", "Move my file aside and update", primary=True)
-        b.add("keep-mine", "Keep mine")
     elif state == "merged":
-        if copy.get("taken_back"):
-            sentence = f"{who} merged your change, then took it back."
-        elif not copy.get("merged_in_tip"):
+        if behind:
+            # Not in yet (Claude busy, automatic updates off): the next sync
+            # or Bring in brings it, then settles onto the author's version.
             sentence = (f"{who} merged your change. It comes into your copy the next time "
                         "you open the app, or when you press Check now.")
         else:
@@ -394,6 +402,9 @@ def _github(f: dict, flags: dict) -> dict:
     elif state == "declined" and changes_on:
         sentence = f"{who} declined your proposal. Your changes are still here."
         send_buttons("Propose again")
+        # Leaves the closed proposal behind (nothing moves); the copy reads
+        # as plain changes again. Proposal UI, so `changes`-gated with it.
+        b.add("keep-working", "Keep working on it")
     elif state == "proposed" and changes_on and proposal is not None:
         comment = proposal.get("comment") if isinstance(proposal.get("comment"), dict) else None
         asked = bool(proposal.get("asked_update"))
@@ -437,7 +448,10 @@ def _github(f: dict, flags: dict) -> dict:
 
     if lets_bring_in and behind > 0:
         if copy.get("kept_mine"):
-            extra.append(f"You kept your version; {who}'s latest is waiting.")
+            # §17.2 undo hold: the user undid an automatic bring-in (or ff,
+            # or settle) and the author's tip has not moved since — nothing
+            # comes in on its own until they ask.
+            extra.append(f"You undid that; {who}'s latest is waiting.")
         b.add("bring-in", f"Bring in {who}'s latest")
     if copy.get("claude_busy"):
         extra.append("Claude is still working on this app.")
