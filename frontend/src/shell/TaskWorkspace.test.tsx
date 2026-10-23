@@ -78,7 +78,7 @@ test("an unread row is marked for bold; a read one is not", async () => {
 test("a clear task says clear once its holds have loaded", async () => {
   serve();
   const r = await render([task({ key: "a" })]);
-  expect(r.root.findByProps({ className: "ws-clear" }).children.join("")).toBe("clear");
+  expect(r.root.findByProps({ className: "ws-badge ws-clear" }).children.join("")).toBe("safe to archive");
 });
 
 test("the card drops reasons its chips or bold title already say, and the status word for Done", async () => {
@@ -87,10 +87,10 @@ test("the card drops reasons its chips or bold title already say, and the status
     task({ key: "a", status: "done", unread: 3, background_jobs: { count: 1, run_id: "r", jobs: [{ id: "j", title: "dev" }] } }),
   ]);
   // Held (unread + bg), so no "clear" tag, and nothing left to print as text.
-  expect(r.root.findAllByProps({ className: "ws-clear" })).toHaveLength(0);
-  expect(r.root.findAllByProps({ className: "ws-marker" })).toHaveLength(0);
-  expect(r.root.findAllByProps({ className: "ws-status" })).toHaveLength(0);
-  expect(r.root.findByProps({ className: "ws-bg" }).children.join("")).toBe("⧗ dev");
+  expect(r.root.findAllByProps({ className: "ws-badge ws-clear" })).toHaveLength(0);
+  expect(r.root.findAllByProps({ className: "ws-badge ws-marker" })).toHaveLength(0);
+  expect(r.root.findAllByProps({ className: "ws-badge ws-status" })).toHaveLength(0);
+  expect(r.root.findByProps({ className: "ws-badge ws-bg" }).children.join("")).toBe("jobdev");
 });
 
 const text = (n: { children: unknown[] }): string =>
@@ -100,8 +100,8 @@ test("background jobs show their titles, three at most, then +N bg", async () =>
   serve();
   const jobs = ["a", "b", "c", "d", "e"].map((t) => ({ id: t, title: t }));
   const r = await render([task({ key: "a", background_jobs: { count: 5, run_id: "r", jobs } })]);
-  const chips = r.root.findAllByProps({ className: "ws-bg" }).map(text);
-  expect(chips).toEqual(["⧗ a", "⧗ b", "⧗ c", "+2 bg"]);
+  const chips = r.root.findAllByProps({ className: "ws-badge ws-bg" }).map(text);
+  expect(chips).toEqual(["joba", "jobb", "jobc", "+2 bg"]);
 });
 
 test("PR chips cap at 8 and the dot sits inside the .task-pr-num pill", async () => {
@@ -129,8 +129,8 @@ test("the message preview shows unless it repeats the title", async () => {
 test("a running card shows its status word and not the running reason", async () => {
   serve();
   const r = await render([task({ key: "a", status: "in_progress" })]);
-  expect(r.root.findByProps({ className: "ws-status" }).children.join("")).toBe("Running");
-  expect(r.root.findAllByProps({ className: "ws-marker" })).toHaveLength(0);
+  expect(r.root.findByProps({ className: "ws-badge ws-status" }).children.join("")).toBe("Running");
+  expect(r.root.findAllByProps({ className: "ws-badge ws-marker" })).toHaveLength(0);
 });
 
 test("an empty set says why", async () => {
@@ -188,9 +188,9 @@ test("the branch chip shows the worktree branch, with +N for more, and is omitte
     return new Response(JSON.stringify(reply[url] ?? {}), { status: 200 });
   }) as unknown as typeof fetch;
   const r = await render([task({ key: "a" }), task({ key: "b", started: 0 })]);
-  const chip = r.root.findByProps({ "data-key": "a" }).findByProps({ className: "ws-branch" });
+  const chip = r.root.findByProps({ "data-key": "a" }).findByProps({ className: "ws-badge ws-branch" });
   expect(chip.props.title).toBe("feat/one (+1 more)");
-  expect(r.root.findByProps({ "data-key": "b" }).findAllByProps({ className: "ws-branch" })).toHaveLength(0);
+  expect(r.root.findByProps({ "data-key": "b" }).findAllByProps({ className: "ws-badge ws-branch" })).toHaveLength(0);
 });
 
 // -- Revision 4: two lines per card ---------------------------------------------
@@ -202,7 +202,7 @@ test("a card with only 'clear' is one line: clear rides line 1's right, after th
   const r = await render([task({ key: "a" })]);
   const card = r.root.findByProps({ "data-key": "a" });
   expect(within(card, "ws-card-line2")).toHaveLength(0);
-  expect(within(head(card), "ws-clear")).toHaveLength(1);
+  expect(within(head(card), "ws-badge ws-clear")).toHaveLength(1);
 });
 
 test("a preview plus clear: clear sits at line 2's right end, not on its own line", async () => {
@@ -211,8 +211,8 @@ test("a preview plus clear: clear sits at line 2's right end, not on its own lin
   const card = r.root.findByProps({ "data-key": "a" });
   const line2 = card.findByProps({ className: "ws-card-line2" });
   expect(within(line2, "ws-preview")).toHaveLength(1);
-  expect(within(line2.findByProps({ className: "ws-card-facts" }), "ws-clear")).toHaveLength(1);
-  expect(within(head(card), "ws-clear")).toHaveLength(0);
+  expect(within(line2.findByProps({ className: "ws-card-facts" }), "ws-badge ws-clear")).toHaveLength(1);
+  expect(within(head(card), "ws-badge ws-clear")).toHaveLength(0);
   expect(within(card, "ws-card-facts")).toHaveLength(1);
 });
 
@@ -223,7 +223,7 @@ test("facts sit in line 2's right group, clear last; a fact-only card has no lef
   const facts = card.findByProps({ className: "ws-card-facts" });
   expect(within(facts, "ws-prs")).toHaveLength(1);
   expect(within(card, "ws-card-ctx")).toHaveLength(0);
-  expect(within(head(card), "ws-clear")).toHaveLength(0);
+  expect(within(head(card), "ws-badge ws-clear")).toHaveLength(0);
 });
 
 test("no hover x is rendered on a card", async () => {

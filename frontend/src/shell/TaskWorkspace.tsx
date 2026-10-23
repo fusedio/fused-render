@@ -155,7 +155,8 @@ function WorkspaceCard({
 }) {
   const bg = bgJobChips(task);
   const word = cardStatusWord(task);
-  const text = visibleReasons(reasons, task).join(" · ");
+  const reasonList = visibleReasons(reasons, task);
+  const text = reasonList.join(" · ");
   const clear = reasons.length === 0;
   const hasPrs = prRefsOf(task).some((r) => r.repo);
   const hasBg = (task.background_jobs?.count ?? 0) > 0;
@@ -171,7 +172,7 @@ function WorkspaceCard({
   // never opens it: it rides line 1's right edge instead.
   const realFacts = hasPrs || hasBg || ports.length > 0 || text !== "" || branch !== null;
   const hasLine2 = hasContext || realFacts;
-  const clearTag = clear ? <span className="ws-clear">clear</span> : null;
+  const clearTag = clear ? <span className="ws-badge ws-clear" title="Nothing holds this task open, so it is safe to archive">safe to archive</span> : null;
   return (
     <li
       className={
@@ -199,7 +200,7 @@ function WorkspaceCard({
         <IdChip id={task.task_id} kind="task" />
         <span className={"ws-title" + (task.unread > 0 ? " is-unread" : "")}>{task.title || "(untitled)"}</span>
         {word && (
-          <span className="ws-status" data-status={task.status}>
+          <span className="ws-badge ws-status" data-status={task.status}>
             {word}
           </span>
         )}
@@ -221,7 +222,7 @@ function WorkspaceCard({
       {(realFacts || clear) && (
         <div className="ws-card-facts">
           {branch && (
-            <span className="ws-branch" title={branch.more > 0 ? `${branch.name} (+${branch.more} more)` : branch.name}>
+            <span className="ws-badge ws-branch" title={branch.more > 0 ? `${branch.name} (+${branch.more} more)` : branch.name}>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" />
               </svg>
@@ -233,28 +234,29 @@ function WorkspaceCard({
           {hasBg && (
             <span className="ws-bgs" title="Background jobs still running">
               {bg.titles.map((t, i) => (
-                <span key={i} className="ws-bg">
-                  ⧗ {t}
+                <span key={i} className="ws-badge ws-bg" title={t}>
+                  <span className="ws-badge-label">job</span>
+                  <span className="ws-bg-title">{t}</span>
                 </span>
               ))}
-              {bg.more > 0 && <span className="ws-bg">{bg.titles.length ? `+${bg.more} bg` : `⧗ ${bg.more} bg`}</span>}
+              {bg.more > 0 && <span className="ws-badge ws-bg">{bg.titles.length ? `+${bg.more} bg` : `${bg.more} bg`}</span>}
             </span>
           )}
           {ports.map((p) => (
             <a
               key={p}
-              className="ws-port"
+              className="ws-badge ws-port"
               href={`http://localhost:${p}`}
               target="_blank"
               rel="noopener noreferrer"
               title={`Open http://localhost:${p}`}
               onClick={(e) => e.stopPropagation()}
             >
-              :{p}
+              port {p}
             </a>
           ))}
           {text && (
-            <span className="ws-marker" data-unknown={reasons.includes("unknown") ? "1" : undefined}>
+            <span className="ws-badge ws-marker" data-unknown={reasons.includes("unknown") ? "1" : undefined}>
               {text}
             </span>
           )}

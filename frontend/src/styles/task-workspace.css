@@ -78,23 +78,47 @@
 .ws-title.is-unread {
   font-weight: 600;
 }
-.ws-status,
 .ws-time {
   flex: none;
   font-size: 12px;
   color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+/* One badge shape for every fact: same height, radius, font and gap. The tone
+   is --ws-tone; the wash is a color-mix of that same palette token. */
+.ws-badge {
+  --ws-tone: var(--fg-muted);
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  box-sizing: border-box;
+  height: 20px;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, var(--ws-tone) 35%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--ws-tone) 12%, transparent);
+  color: var(--ws-tone);
+  font-size: 11px;
+  line-height: 1;
+  white-space: nowrap;
+  text-decoration: none;
+}
+.ws-badge-label {
+  opacity: 0.7;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.04em;
 }
 .ws-status {
   font-weight: 600;
 }
-.ws-time {
-  font-variant-numeric: tabular-nums;
-}
 .ws-card[data-status="in_progress"] .ws-status {
-  color: var(--status-progress);
+  --ws-tone: var(--status-progress);
 }
 .ws-card[data-needs-you] .ws-status {
-  color: var(--status-failed);
+  --ws-tone: var(--status-failed);
 }
 .ws-card-line2 {
   display: flex;
@@ -126,15 +150,11 @@
   flex-wrap: wrap;
   justify-content: flex-end;
   align-items: center;
-  gap: 4px 12px;
+  gap: 4px 6px;
   min-width: 0;
   color: var(--fg-muted);
 }
 .ws-branch {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
   font-family: var(--font-mono, ui-monospace, monospace);
 }
 .ws-branch svg {
@@ -162,35 +182,30 @@
   align-items: center;
   gap: 5px;
 }
-.ws-pr-more,
-.ws-bg {
+.ws-pr-more {
   color: var(--fg-muted);
 }
 .ws-bg {
+  max-width: 34ch;
+}
+.ws-bg-title {
   max-width: 24ch;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .ws-port {
-  color: var(--fg-muted);
-  text-decoration: none;
   font-variant-numeric: tabular-nums;
 }
 .ws-port:hover {
-  color: var(--fg);
-  text-decoration: underline;
+  --ws-tone: var(--fg);
+  text-decoration: none;
 }
 .ws-marker {
-  min-width: 0;
-  overflow-wrap: anywhere;
-}
-.ws-marker[data-unknown] {
-  color: var(--warning);
+  --ws-tone: var(--warning);
 }
 .ws-clear {
-  flex: none;
-  color: var(--fg-faint);
+  --ws-tone: var(--success);
 }
 .ws-undo {
   position: fixed;
