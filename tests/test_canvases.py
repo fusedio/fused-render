@@ -141,7 +141,7 @@ def main():
             sys.stderr.write("error: node 'x' has no source file\n")
             sys.exit(1)
         return
-    if plain[:2] == ["canvas", "create"]:
+    if plain[:2] in (["canvas", "create"], ["canvas", "delete"]):
         return
     if plain[:1] == ["logout"]:
         os.remove(os.environ.get("FUSED_STUB_LOGOUT_FILE")
@@ -583,6 +583,55 @@ def test_logout_clears_credentials_and_stops_watchers(harness):
     assert not harness.creds.exists()
     assert manager.stop_event.is_set()
     assert canvases_mod._syncs == {}
+
+
+def test_delete_canvas_stops_sync_runs_cli_and_removes_clone(harness):
+    harness.log_in()
+    harness.client.post("/api/canvases/clone", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    manager = canvases_mod._syncs.get((ENV, "alpha"))
+    assert manager is not None
+    sync = harness.root / ".sync"
+    (sync / "push" / "alpha").mkdir(parents=True)
+    (sync / "trash" / "alpha").mkdir(parents=True)
+    (sync / "alpha.json").write_text("{}", encoding="utf-8")
+    res = harness.client.post("/api/canvases/delete", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    assert res.status_code == 200, res.text
+    assert res.json() == {"ok": True, "name": "alpha", "env": ENV, "removed_local": True}
+    assert ["workbench", "canvas", "delete", "alpha"] in harness.calls()
+    assert manager.stop_event.is_set()
+    assert (ENV, "alpha") not in canvases_mod._syncs
+    assert not (harness.root / "alpha").exists()
+    for leftover in ("push/alpha", "trash/alpha", "alpha.json", "alpha.lock"):
+        assert not (sync / leftover).exists(), leftover
+    # The root itself, and the other clones' state, are untouched.
+    assert harness.root.is_dir()
+
+
+def test_delete_canvas_cli_failure_keeps_clone(harness, monkeypatch):
+    harness.log_in()
+    harness.client.post("/api/canvases/clone", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+
+    def failing_cli(args, timeout, env):
+        if args[:3] == ["workbench", "canvas", "delete"]:
+            return None, canvases_mod._error("server said no", 502)
+        return real_cli(args, timeout, env)
+
+    real_cli = canvases_mod._run_cli
+    monkeypatch.setattr(canvases_mod, "_run_cli", failing_cli)
+    res = harness.client.post("/api/canvases/delete", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    assert res.status_code == 502
+    assert (harness.root / "alpha" / "canvas.toml").is_file()
+
+
+def test_delete_canvas_rejects_bad_names(harness):
+    harness.log_in()
+    harness.client.post("/api/canvases/clone", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    for bad in ("a-b", "../x", "", ".", "alpha/.."):
+        res = harness.client.post("/api/canvases/delete", json={"env": ENV, "name": bad}, headers=GUARD)
+        assert res.status_code == 400, bad
+    assert not any(c[:3] == ["workbench", "canvas", "delete"] for c in harness.calls())
+    assert (harness.root / "alpha" / "canvas.toml").is_file()
 
 
 def test_logout_failure_keeps_sync_alive_and_preserves_pending_edit(harness, monkeypatch):

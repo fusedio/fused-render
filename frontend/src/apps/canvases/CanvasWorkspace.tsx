@@ -38,6 +38,11 @@
 //            selects the node (fused-embed-select first when it is not the
 //            one shown), opens the right pane if it was hidden, and switches
 //            it to Code. Accepted only from the workbench frame's own window.
+//   iframe → { type: "fused-embed-delete", id, name }  the canvas menu's
+//            "Delete canvas", after the frame's own two confirmations: the
+//            host deletes (POST /api/canvases/delete — sync stopped, server
+//            delete, clone removed) and leaves for the canvas list. The frame
+//            writes nothing itself (embed-canvas-gates).
 //   iframe → { type: "fused-embed-open-side" } | { type: "fused-embed-close-side" }
 //            the workbench's right-edge chips (its own right pane never shows
 //            embedded): open or shut the right pane here. Accepted only from
@@ -130,6 +135,7 @@ import {
   catalogPath,
   canvasProjectPath,
   fixWithClaude,
+  deleteCanvas,
   getDelta,
   getAccessToken,
   getCanvasesStatus,
@@ -1517,6 +1523,22 @@ export default function CanvasWorkspace({
         }
         setSideOpen(true);
         setNodeTab("code");
+      }
+      if (type === "fused-embed-delete") {
+        // The canvas menu's confirmed "Delete canvas" (header). The editor
+        // frame's own window only; the project page's viewer never sends it.
+        if (embedded) return;
+        if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
+        if (event.data?.name !== name) return;
+        void deleteCanvas(env, name)
+          .then(() => {
+            // `replace`: Back must not land on the deleted canvas's editor.
+            navigateUrl(catalogPath(env), { replace: true });
+          })
+          .catch((e) => {
+            setError(`Delete canvas failed: ${(e as Error).message}`);
+          });
+        return;
       }
       if (type === "fused-embed-open-side" || type === "fused-embed-close-side") {
         // The workbench's right-edge chips (header). A close also drops a
