@@ -40,6 +40,7 @@ import { useEffect, useState, type ReactNode } from "react";
 // window comes back from an installer (focus — visibilitychange alone does
 // not fire when a native window merely regains focus). One Check again
 // re-runs the Claude probe and the server read together.
+import { toolsLead } from "./tools-lead";
 import { Check, Circle, Copy, Download, Minus, RefreshCw } from "lucide-react";
 
 import { installGit, type ClaudeHealth, type GitInstallResult } from "@platform/lib/api";
@@ -347,11 +348,7 @@ export function ToolsStep({
           ? "Everything is in place."
           : "Nothing here will block you — carry on.";
   // Fused Bot builds no apps and clones nothing: its lead names what it has.
-  const lead = isBot()
-    ? "Bots think with Claude Code running on this machine and drive a real Google Chrome window of their own. Nothing here blocks you — each row says what it is for, and you can finish any of it later."
-    : showGit
-      ? `${bundleName()} hands your brief to Claude Code to build apps, fetches showcase apps with git, and drives Google Chrome for bots. Nothing here blocks you — each row says what it is for, and you can finish any of it later.`
-      : `${bundleName()} hands your brief to Claude Code to build apps and drives Google Chrome for bots. Nothing here blocks you — each row says what it is for, and you can finish any of it later.`;
+  const lead = toolsLead({ isBot: isBot(), showGit, chromeApplies, bundleName: bundleName() });
 
   return (
     <div className="flex flex-col gap-6">

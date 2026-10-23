@@ -309,6 +309,17 @@ describe("appPathInRepo", () => {
   });
 });
 
+describe("appPathInRepo on Windows paths", () => {
+  it("compares drive paths case-insensitively and slash-agnostically", () => {
+    expect(appPathInRepo("c:\\work\\repo\\app", "C:\\Work\\repo")).toBe(true);
+    expect(appPathInRepo("C:/Work/Repo", "c:/work/repo/")).toBe(true);
+    expect(appPathInRepo("C:/Work/repo-two", "C:/Work/repo")).toBe(false);
+  });
+  it("keeps POSIX paths case-sensitive", () => {
+    expect(appPathInRepo("/Users/me/Repo/x", "/Users/me/repo")).toBe(false);
+  });
+});
+
 describe("failuresForApp / pullsForApp", () => {
   it("keeps only the repo containing this window's app", () => {
     const app = "/Users/me/a/apps/x/index.html";

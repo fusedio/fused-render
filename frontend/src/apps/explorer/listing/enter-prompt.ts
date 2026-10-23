@@ -29,9 +29,10 @@
 // search on a missing folder instead of failing, which this prompt cannot
 // know about synchronously. Recorded as a known limitation in
 // DECISIONS-one-field-search.md rather than solved here.
-import { isDriveAbs } from "@platform/lib/path-url";
+import { canonFsPath, isDriveAbs } from "@platform/lib/path-url";
 export function folderToOpen(query: string): string | null {
-  const segments = query.split("/");
+  // Backslashes separate only a drive-letter query (canonFsPath gates on it).
+  const segments = canonFsPath(query).split("/");
   const globIdx = segments.findIndex((s) => /[*?]/.test(s));
   const folderSegments = globIdx === -1 ? segments.slice(0, -1) : segments.slice(0, globIdx);
   const folder = folderSegments.join("/");
@@ -86,7 +87,7 @@ export function folderToOpen(query: string): string | null {
 // access at all, so it stays the one case worth the (already-documented,
 // already-accepted) risk that the named folder itself does not exist yet.
 export function resolveFolderToOpen(query: string, home: string | undefined): string | null {
-  if (query.split("/").includes("..")) return null;
+  if (canonFsPath(query).split("/").includes("..")) return null;
   const folder = folderToOpen(query);
   if (folder === null) return null;
   if (folder === "~" || folder.startsWith("~/")) {

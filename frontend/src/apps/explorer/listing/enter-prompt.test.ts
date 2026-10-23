@@ -94,3 +94,16 @@ describe("pathNotFoundMessage", () => {
     expect(pathNotFoundMessage("~/Work/nope")).toBe("No such file or folder: nope");
   });
 });
+
+describe("backslash drive queries", () => {
+  test("a drive query splits on backslashes", () => {
+    expect(folderToOpen("C:\\Work\\notes")).toBe("C:/Work");
+    expect(folderToOpen("C:\\Work\\*\\x.json")).toBe("C:/Work");
+  });
+  test("a `..` behind backslashes is still refused", () => {
+    expect(resolveFolderToOpen("C:\\Work\\..\\x\\*.md", "C:/Users")).toBeNull();
+  });
+  test("a POSIX query keeps a literal backslash", () => {
+    expect(folderToOpen("/tmp/a\\b/notes")).toBe("/tmp/a\\b");
+  });
+});
