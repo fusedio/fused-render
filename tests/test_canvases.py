@@ -18,6 +18,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
+import fused_render.canvas_sync_state as canvas_sync_state_mod
 import fused_render.canvases as canvases_mod
 import fused_render.fusedcli as fusedcli_mod
 from fused_render.server import create_app
@@ -625,6 +626,11 @@ def test_delete_canvas_holds_sync_start_off_mid_delete(harness, monkeypatch):
                                       json={"env": ENV, "name": "alpha"}, headers=GUARD)
             seen.append(res.status_code)
             assert res.json().get("code") == "deleting"
+            # And the clone's writer lock is this request's for the whole
+            # delete: the stopped manager released nothing, another process
+            # would be refused.
+            held = canvas_sync_state_mod.read_lock(str(harness.root / ".sync" / "alpha.lock"))
+            assert held is not None and held["pid"] == os.getpid()
         return real_cli(args, timeout, env)
 
     monkeypatch.setattr(canvases_mod, "_run_cli", cli_with_heal)
