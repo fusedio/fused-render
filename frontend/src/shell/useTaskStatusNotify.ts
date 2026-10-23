@@ -79,6 +79,7 @@ import { useTasksPulseRows } from "@shell/tasksPulse";
 import { taskColumn } from "@shell/tasks-lib";
 import { notificationForTransition } from "@shell/task-status-notify";
 import { useTaskNotifyTerminalSessions } from "@shell/task-notify-terminal-flag";
+import { useAutoReadOpenTasks, useOpenTaskKeys } from "@shell/task-open-read";
 
 // NOT EVEN SUBSCRIBED IN AN EMBED PANE (2026-10-08). The effect guard below
 // stopped an embed from RAISING, but `useTasksPulseRows()` above it still
@@ -109,6 +110,14 @@ export function useTaskStatusNotify(): void {
   // flipping it in Preferences takes effect on the very next tick without a
   // reload.
   const notifyTerminalSessions = useTaskNotifyTerminalSessions();
+  // A TASK YOU HAVE OPEN IS NEVER NEWS (task-open-read.ts): while the peek or a
+  // full chat page shows it and this window is visible, its unread messages are
+  // marked read as they arrive, and no notice is raised for it below. Hidden,
+  // it is an ordinary task again.
+  const open = useOpenTaskKeys(READS_TASK_ROWS ? tasks : []);
+  useAutoReadOpenTasks(READS_TASK_ROWS ? tasks : [], open);
+  const openRef = useRef<string[]>(open);
+  openRef.current = open;
 
   useEffect(() => {
     if (IS_EMBED && !IS_TOP_EMBED) return;
@@ -131,7 +140,7 @@ export function useTaskStatusNotify(): void {
       const input = notificationForTransition(
         was, task, watchStartS.current, notifyTerminalSessions, isOpenAnywhere);
       prev.set(task.key, column);
-      if (input) notify(input);
+      if (input && !openRef.current.includes(task.key)) notify(input);
     }
     for (const key of Array.from(prev.keys())) {
       if (!liveKeys.has(key)) prev.delete(key);
