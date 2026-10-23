@@ -128,6 +128,7 @@ def world(tmp_path, monkeypatch):
         mp.setenv(k, v)
     mp.setattr(gh, "_FORK_POLL_STEP_S", 0.01)
     mp.setattr(flags, "_raw", lambda: dict(CUR[0].flags))
+    mp.setattr(flags, "effective", lambda raw: dict(raw))  # five phases, as faked
     mp.setattr(github_setup, "cached_summary",
                lambda: {"signed_in": True, "account": CUR[0].login, "stale": False})
     mp.setattr(github_setup, "summary", lambda *a, **k: None)
@@ -149,8 +150,10 @@ def world(tmp_path, monkeypatch):
     W.alice, W.bob, W.carol = (Machine(n, base) for n in ("alice", "bob", "carol"))
 
     from fused_render.server.routers.contrib import router
+    from fused_render.server.routers.git_upstream import router as gu_router
     fapp = FastAPI()
     fapp.include_router(router)
+    fapp.include_router(gu_router)  # the Git panel's get-latest on a copy (§16.8)
     W.client = TestClient(fapp)
     yield W
     quiesce()

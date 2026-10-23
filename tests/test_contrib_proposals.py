@@ -360,6 +360,7 @@ def test_disabled_wording(w, monkeypatch):
     from fused_render.contrib import flags, remix
     monkeypatch.setattr(flags, "_raw", lambda: dict.fromkeys(
         ("sources", "changes", "inbox", "loop", "remix"), False))
+    monkeypatch.setattr(flags, "effective", lambda raw: dict(raw))
     assert _p().preflight(w.app)["message"] == "This isn't turned on."
     assert remix.start_draft(w.app)["message"] == "This isn't turned on."
 

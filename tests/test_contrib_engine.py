@@ -155,6 +155,7 @@ def _flags(monkeypatch, **on):
     vals = dict.fromkeys(("sources", "changes", "inbox", "loop", "remix"), True)
     vals.update(on)
     monkeypatch.setattr(flags, "_raw", lambda: dict(vals))
+    monkeypatch.setattr(flags, "effective", lambda raw: dict(raw))  # five phases, as faked
 
 
 def _alice(w, files, msg):

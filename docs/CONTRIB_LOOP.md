@@ -820,6 +820,13 @@ failure row is recorded unchanged.
   colliding local file names the file. No git words anywhere on the page.
 - Git panel (`templates/git/ops.py` + its UI): Push hidden/refused with a plain
   sentence for `github` kind. Explorer ↑N marks need no change (P3).
+  Get latest (2026-10-23): a `github` copy merges the author's updates in
+  (P4), so after its first bring-in it never fast-forwards again and the
+  panel's `pull --ff-only` could only say "diverged — do it in a terminal"
+  (P6 broken). On a guarded copy the button posts `/api/git-upstream`
+  `{action: "get-latest", path}` → `engine.bring_in` (kind decides, no flag
+  gate), answering the engine's words; `ops.py` refuses the plain pull and
+  reset-to-commit on such a copy with one sentence.
 - App Doctor: `github` copies → "Open app page"; own `github-changed`/`edits`
   rows → the page's fix buttons.
 

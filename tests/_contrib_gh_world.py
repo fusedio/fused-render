@@ -77,6 +77,7 @@ def make_world(tmp_path, monkeypatch) -> World:
         monkeypatch.setenv(k, v)
     monkeypatch.setattr(flags, "_raw", lambda: dict.fromkeys(
         ("sources", "changes", "inbox", "loop", "remix"), True))
+    monkeypatch.setattr(flags, "effective", lambda raw: dict(raw))  # five phases, as faked
     gh.forget_identity()
     monkeypatch.setattr(gh, "_FORK_POLL_STEP_S", 0.01)
 

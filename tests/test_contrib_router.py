@@ -54,6 +54,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_DIR", str(ws))
     on = {"sources": True, "changes": True, "inbox": True, "loop": True, "remix": True}
     monkeypatch.setattr(flags, "_raw", lambda: dict(on))
+    monkeypatch.setattr(flags, "effective", lambda raw: dict(raw))  # five phases, as faked
     monkeypatch.setattr(refresh, "_INLINE", True)
     refresh._reset()
 

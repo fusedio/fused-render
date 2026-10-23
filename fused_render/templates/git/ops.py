@@ -1382,6 +1382,9 @@ def _reset(root, sha):
     words, via `_git_ok`) or git itself not running at all (`_run`'s usual
     no-git/timeout refusals) — in neither case has anything moved.
     """
+    blocked = _pull_blocked(root)
+    if blocked:
+        raise _Refused("follows-author", blocked)
     _require_clean(root)
     _git_ok(root, "reset", "--hard", sha)
     out = _git_ok(root, "log", "-1", "--no-color", f"--format={_COMMIT_FORMAT}")
@@ -1559,6 +1562,9 @@ def _upstream_target(root, remote, branch):
 
 
 def _pull(root):
+    blocked = _pull_blocked(root)
+    if blocked:
+        raise _Refused("follows-author", blocked)
     branch = _current_branch(root)
     if not branch:
         raise _Refused("detached",
@@ -1635,6 +1641,22 @@ def _app_page_on():
         return isinstance(prefs, dict) and prefs.get("contrib_enabled") is True
     except Exception:  # noqa: BLE001 — the plain sentence is always true
         return False
+
+
+def _pull_blocked(root):
+    """A guarded copy never fast-forwards once it has brought the author's
+    latest in (the loop merges, never rebases — §16.0 P4), so the view's Get
+    latest runs the loop's own Bring in through the server instead
+    (`template.html`, `/api/git-upstream` get-latest); this is the sentence
+    for anything that still reaches the plain pull. Reset gets the same one:
+    rewinding history under a proposal loses what fused knows about it."""
+    blocked = _push_blocked(root)
+    if not blocked:
+        return None
+    who = blocked.split(" follows ", 1)[1].split(".", 1)[0] if " follows " in blocked \
+        else blocked.split("This copy of ", 1)[1].split(" has ", 1)[0]
+    return (f"This app follows {who}. Use Get latest to bring in their version; "
+            "fused combines it with your changes.")
 
 
 def _push(root):

@@ -526,6 +526,7 @@ def test_own_merge_reaches_the_panel_through_the_real_registry(tmp_path, monkeyp
     app = tmp_path / "ws" / "tag" / "mine"
     app.mkdir(parents=True)
     monkeypatch.setattr(flags, "_raw", lambda: dict(ALL))
+    monkeypatch.setattr(flags, "effective", lambda raw: dict(raw))  # five phases, as faked
     rec = store.new_record("own", repo="bob/mine", branch="main", classified_by="migration")
     rec["own_state"] = {"state": "needs-merge"}  # the overlap still stands
     store.put(str(app), rec)

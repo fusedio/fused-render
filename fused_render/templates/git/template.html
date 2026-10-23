@@ -2035,6 +2035,21 @@ function toolbar(data) {
       expanded: panel === "publish",
       onClick: () => setParams({ panel: panel === "publish" ? null : "publish" }),
     }));
+  } else if (behind && repo.push_blocked) {
+    /* A copy of someone else's app (contrib §16.8) brings the author's latest
+       in by MERGING it with the copy's own commits (P4), so after the first
+       one it can never fast-forward again: `git pull --ff-only` would only
+       ever say "diverged — do it in a terminal". The server's get-latest runs
+       the loop's own Bring in instead (the same move auto-sync makes on app
+       open, with its backup and Activity line), and answers in plain words. */
+    group.append(action("pull", [icon(PULL_GLYPH, 14), btnLabel("Get latest")], {
+      className: "primary",
+      label: "Get the latest — " + plural(behind, "commit") + " to bring in",
+      count: behind,
+      title: "Bring in the author's latest; your changes are kept",
+      onClick: () => run("pull", { server: "/api/git-upstream",
+                                   body: { action: "get-latest", path: file } }),
+    }));
   } else if (behind) {
     group.append(action("pull", [icon(PULL_GLYPH, 14), btnLabel("Get latest")], {
       className: "primary",
@@ -4626,7 +4641,15 @@ async function run(key, args, then, context) {
   draw(true);                       // repaint with the control disabled
   let payload;
   try {
-    payload = await fused.runPython(OPS, Object.assign({ file }, args));
+    if (args && args.server) {
+      /* A move the server owns (a guarded copy's Get latest): the answer is
+         already `{ok, message}` in plain words — the receipt below reads
+         `detail` on success, so the message is copied there. */
+      payload = await ghFetch(args.server, { method: "POST", body: args.body });
+      if (payload && payload.ok && !payload.detail) payload.detail = payload.message;
+    } else {
+      payload = await fused.runPython(OPS, Object.assign({ file }, args));
+    }
   } catch (err) {
     /* A crash in ops.py is still a message in this view, not the red traceback
        overlay: the overlay is a debugging affordance for a view's own bug. */
