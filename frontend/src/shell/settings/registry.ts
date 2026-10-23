@@ -385,9 +385,9 @@ const ENTRIES = [
     section: "Community (preview)",
     label: "Community apps",
     description:
-      "Cards say whether an app is yours or follows someone else's, and Share offers its GitHub link. Your edits to someone else's app stay on top of theirs and you can propose them to the author; proposals to your apps show up on the app with a safety review to try, accept or decline. Once accepted, your copy goes back to following theirs and you're credited.",
+      "Cards say whether an app is yours or follows someone else's, and Share offers its install link. Your edits to someone else's app stay on top of theirs and you can propose them to the author; proposals to your apps show up on the app with a safety review to try, accept or decline. Once accepted, your copy goes back to following theirs and you're credited.",
     keywords:
-      "community contribute github follow author source origin propose proposals proposal edits pull request inbox review accept decline merged accepted credit contributors",
+      "community contribute follow author source origin propose proposals proposal edits pull request inbox review accept decline merged accepted credit contributors",
     renderOnly: true,
     badge: "Beta",
   },
