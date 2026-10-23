@@ -90,7 +90,7 @@ test("the card drops reasons its chips or bold title already say, and the status
   expect(r.root.findAllByProps({ className: "ws-badge ws-clear" })).toHaveLength(0);
   expect(r.root.findAllByProps({ className: "ws-badge ws-marker" })).toHaveLength(0);
   expect(r.root.findAllByProps({ className: "ws-badge ws-status" })).toHaveLength(0);
-  expect(r.root.findByProps({ className: "ws-badge ws-bg" }).children.join("")).toBe("jobdev");
+  expect(r.root.findByProps({ className: "ws-badge ws-bg" }).findByProps({ className: "ws-bg-title" }).children.join("")).toBe("dev");
 });
 
 const text = (n: { children: unknown[] }): string =>
