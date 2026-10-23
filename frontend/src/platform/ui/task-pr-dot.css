@@ -9,14 +9,14 @@
   background: var(--fg-muted);
 }
 .task-pr-dot[data-status="open"] {
-  background: var(--status-done);
+  background: var(--pr-open);
 }
 .task-pr-dot[data-status="draft"] {
-  background: var(--fg-muted);
+  background: var(--pr-draft);
 }
 .task-pr-dot[data-status="merged"] {
-  background: var(--status-background);
+  background: var(--pr-merged);
 }
 .task-pr-dot[data-status="closed"] {
-  background: var(--status-failed);
+  background: var(--pr-closed);
 }
