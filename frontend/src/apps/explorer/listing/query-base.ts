@@ -154,10 +154,10 @@ export function escapesFsPath(
     if (home === undefined) return true;
     abs = home + query.slice(1);
   } else {
-    // A leading "/" or a drive letter — backslashes are only separators on
-    // a drive-letter path (completion-target.ts's `completionTarget` makes
-    // the same normalisation for the same reason).
-    abs = query.replace(/\\/g, "/");
+    // Backslashes are only separators on a drive-letter path; on a "/"-rooted
+    // POSIX query they are literal filename characters (completion-target.ts's
+    // `completionTarget` makes the same distinction).
+    abs = DRIVE_ABS.test(query) ? query.replace(/\\/g, "/") : query;
   }
 
   // The query's own BASE: the segments before its first glob-bearing one,
