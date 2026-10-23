@@ -562,11 +562,15 @@ def _frame(msg: dict) -> bytes:
     return b"Content-Length: %d\r\n\r\n%s" % (len(body), body)
 
 
-def _read_frames(stream, want_id: int, out: list) -> None:
+def _read_frames(stream, want_ids, out: list) -> None:
     """Read Content-Length frames off `stream`, collecting every REPLY in
-    `out`, until the reply to `want_id` arrives or EOF. Runs on a thread;
-    the deadline is the caller's join."""
+    `out`, until a reply to EACH id in `want_ids` has arrived or EOF. The
+    server may answer out of order (the account question is local, the
+    model listing goes to the Copilot API), so stopping at the last id
+    sent could drop an earlier one still in flight. Runs on a thread; the
+    deadline is the caller's join."""
     buf = b""
+    pending = set(want_ids)
     try:
         while True:
             chunk = stream.read1(65536) if hasattr(stream, "read1") else stream.read(1)
@@ -596,7 +600,8 @@ def _read_frames(stream, want_id: int, out: list) -> None:
                     continue
                 if isinstance(msg, dict) and "id" in msg and "method" not in msg:
                     out.append(msg)  # a reply; notifications are skipped
-                    if msg.get("id") == want_id:
+                    pending.discard(msg.get("id"))
+                    if not pending:
                         return
     except (OSError, ValueError):
         return
@@ -607,7 +612,7 @@ def _read_frames(stream, want_id: int, out: list) -> None:
 #: host, Copilot plan — verified 2026-10-23 on 1.0.103 to answer
 #: `{authInfo: {type, host, login, copilotUser{login, copilot_plan,
 #: access_type_sku, …}}, authErrors[]}`; signed out, `authErrors` alone),
-#: then `models.list`. The reader stops at the last one.
+#: then `models.list`. The reader waits for both replies, in any order.
 _RPC_CONNECT, _RPC_AUTH, _RPC_MODELS = 1, 2, 3
 
 
@@ -644,7 +649,7 @@ def _headless_session(path: str, token: Optional[str]) -> dict:
             "jsonrpc": "2.0", "id": _RPC_MODELS, "method": "models.list", "params": {}}))
         proc.stdin.flush()
         thread = threading.Thread(target=_read_frames,
-                                  args=(proc.stdout, _RPC_MODELS, answers),
+                                  args=(proc.stdout, (_RPC_AUTH, _RPC_MODELS), answers),
                                   daemon=True)
         thread.start()
         thread.join(_HEADLESS_TIMEOUT_S)

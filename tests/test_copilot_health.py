@@ -851,6 +851,12 @@ _FAKE_HEADLESS = textwrap.dedent("""\
                 send({"jsonrpc": "2.0", "id": msg["id"],
                       "result": {"ok": True, "protocolVersion": 3, "version": "1.0.103"}})
             elif msg["method"] == "account.getCurrentAuth":
+                if mode == "swapped":
+                    # Answer the LATER request first: the listing is out
+                    # before the account question (the server may order
+                    # replies by readiness, not by arrival).
+                    send({"jsonrpc": "2.0", "id": msg["id"] + 1,
+                          "result": {"models": models}})
                 if mode in ("auth", "anon"):
                     # Signed out (1.0.103): errors, no authInfo.
                     send({"jsonrpc": "2.0", "id": msg["id"], "result": {
@@ -863,6 +869,8 @@ _FAKE_HEADLESS = textwrap.dedent("""\
                                         "access_type_sku": "copilot_for_individuals",
                                         "chat_enabled": True}}}})
             elif msg["method"] == "models.list":
+                if mode == "swapped":
+                    continue  # already answered, ahead of the account reply
                 if mode == "hang":
                     time.sleep(60)
                 elif mode == "auth":
@@ -972,6 +980,10 @@ def test_discover_account_names_the_user_and_never_the_token(fake_headless):
                                  "sku": "copilot_for_individuals"}
     assert "token" not in json.dumps(found)
     assert [m["id"] for m in found["models"]][0] == "gpt-5.4"
+    # Replies out of order (the listing before the account question): both
+    # still land — the reader waits for each id, not for the last one sent.
+    swapped = fake_headless.account("swapped")
+    assert swapped["identity"]["login"] == "octocat" and len(swapped["models"]) == 4
     # Signed out: no identity, no models — and the shape still holds.
     assert fake_headless.account("auth") == {"identity": None, "models": None}
     # A session that stops speaking the protocol halfway keeps the replies
