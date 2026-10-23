@@ -15,7 +15,7 @@
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 12px;
-  align-items: start;
+  align-items: stretch;
 }
 .ws-card {
   position: relative;
@@ -75,8 +75,16 @@
   align-items: center;
   gap: 6px 10px;
   min-width: 0;
+  margin-top: auto;
   color: var(--fg-muted);
   font-size: 12px;
+}
+.ws-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  min-width: 0;
 }
 .ws-status {
   color: var(--fg-muted);
@@ -112,29 +120,18 @@
   color: var(--fg);
   text-decoration: underline;
 }
-.ws-holds {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 8px;
-  min-width: 0;
-  font-size: 12px;
-  color: var(--fg-muted);
-}
-.ws-holds[data-clear] {
-  justify-content: flex-end;
-}
 .ws-marker {
+  margin-left: auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  text-align: right;
+  overflow-wrap: anywhere;
 }
 .ws-marker[data-unknown] {
   color: var(--warning);
 }
 .ws-clear {
   flex: none;
+  margin-left: auto;
   color: var(--fg-faint);
 }
 /* The close door is the Archive hover door's own skin (task-cards.css

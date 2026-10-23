@@ -758,26 +758,6 @@
 .task-pr-pop a:hover {
   text-decoration: underline;
 }
-.task-pr-dot {
-  flex: none;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--fg-muted);
-}
-.task-pr-dot[data-status="open"] {
-  background: var(--status-done);
-}
-.task-pr-dot[data-status="draft"] {
-  background: var(--fg-muted);
-}
-.task-pr-dot[data-status="merged"] {
-  background: var(--status-background);
-}
-.task-pr-dot[data-status="closed"] {
-  background: var(--status-failed);
-}
-
 /* THE MERGED HEAD (`mergedHead`, the explorer's folder sidebar): `Back` leads
    the identity row and the menu closes it, so the chat draws one header line.
    The title gives way first; the two controls never shrink. */

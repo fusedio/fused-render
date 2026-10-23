@@ -3,6 +3,7 @@
 // close button, an Undo toast and a keyboard map. Its rules live in
 // workspace-lib; this file draws them and runs the two polls the rows need
 // (ports and holds), asked for the visible rows only.
+import "../styles/task-pr-dot.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   archiveTask,
@@ -138,7 +139,8 @@ function WorkspaceCard({
   const text = visibleReasons(reasons, task).join(" · ");
   const clear = reasons.length === 0;
   const hasPrs = prRefsOf(task).some((r) => r.repo);
-  const hasFoot = word !== "" || hasPrs || bg > 0 || ports.length > 0;
+  const hasChips = word !== "" || hasPrs || bg > 0 || ports.length > 0;
+  const hasFoot = hasChips || text !== "" || clear;
   return (
     <li
       className={
@@ -168,34 +170,34 @@ function WorkspaceCard({
       </div>
       {hasFoot && (
         <div className="ws-card-foot">
-          {word && (
-            <span className="ws-status" data-status={task.status}>
-              {word}
+          {hasChips && (
+            <span className="ws-chips">
+              {word && (
+                <span className="ws-status" data-status={task.status}>
+                  {word}
+                </span>
+              )}
+              <PrDots task={task} states={states} />
+              {bg > 0 && (
+                <span className="ws-bg" title={bgTitles.length ? bgTitles.join("\n") : "Background jobs still running"}>
+                  ⧗ {bg} bg
+                </span>
+              )}
+              {ports.map((p) => (
+                <a
+                  key={p}
+                  className="ws-port"
+                  href={`http://localhost:${p}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={`Open http://localhost:${p}`}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  :{p}
+                </a>
+              ))}
             </span>
           )}
-          <PrDots task={task} states={states} />
-          {bg > 0 && (
-            <span className="ws-bg" title={bgTitles.length ? bgTitles.join("\n") : "Background jobs still running"}>
-              ⧗ {bg} bg
-            </span>
-          )}
-          {ports.map((p) => (
-            <a
-              key={p}
-              className="ws-port"
-              href={`http://localhost:${p}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              title={`Open http://localhost:${p}`}
-              onClick={(e) => e.stopPropagation()}
-            >
-              :{p}
-            </a>
-          ))}
-        </div>
-      )}
-      {(text || clear) && (
-        <div className="ws-holds" data-clear={clear ? "1" : undefined}>
           {text && (
             <span className="ws-marker" data-unknown={reasons.includes("unknown") ? "1" : undefined}>
               {text}

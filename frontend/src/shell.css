@@ -82,3 +82,5 @@
 @import "./styles/scrollbars.css";
 /* The Workspace view (shell/TaskWorkspace.tsx): its own rows, not the List's. */
 @import "./styles/task-workspace.css";
+/* The PR status dot, shared with the chat header (platform/ui/TaskPrChip.tsx imports it too). */
+@import "./styles/task-pr-dot.css";

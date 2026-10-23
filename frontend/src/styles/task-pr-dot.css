@@ -1,0 +1,22 @@
+/* The PR status dot: shared by the chat header (PrPopList) and the Tasks
+   Workspace card. One copy, imported by both components, because the chat and
+   the shell load different stylesheet sets. */
+.task-pr-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fg-muted);
+}
+.task-pr-dot[data-status="open"] {
+  background: var(--status-done);
+}
+.task-pr-dot[data-status="draft"] {
+  background: var(--fg-muted);
+}
+.task-pr-dot[data-status="merged"] {
+  background: var(--status-background);
+}
+.task-pr-dot[data-status="closed"] {
+  background: var(--status-failed);
+}
