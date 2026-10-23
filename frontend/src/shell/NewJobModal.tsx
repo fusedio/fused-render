@@ -27,6 +27,7 @@ import {
   agentLabel,
   agentNamed,
   capsOf,
+  defaultEffortFor,
   defaultModelOf,
   AGENT_PREFS_URL,
   isBackendEnabled,
@@ -3177,6 +3178,17 @@ export default function NewJobModal({
   const pickModel = useCallback((value: string) => {
     if (tookGlobal.current) tookGlobal.current.model = false;
     setModel(value);
+    // THE EFFORT FOLLOWS THE MODEL: a level the new model does not take
+    // (per model where the catalog knows it per model — a Copilot model
+    // that takes none, or fewer levels) becomes the new model's default,
+    // which is "" for one that takes none. So does an EMPTY effort, left
+    // by a model that took none, when the new model takes one: the
+    // Thinking rows must show the level the run gets. A level it does
+    // take stays.
+    setEffort((e) =>
+      !e || isUnlistedEffort(e, agentRef.current, value)
+        ? defaultEffortFor(agentRef.current, value)
+        : e);
   }, []);
   const pickEffort = useCallback((value: string) => {
     if (tookGlobal.current) tookGlobal.current.effort = false;
@@ -3844,7 +3856,9 @@ export default function NewJobModal({
     && (sessionAgent ? agent !== sessionAgent : pickedHere.current);
   const continuesSession = !leavesSession;
   const runModels = taskModelsOf(agent);
-  const runEfforts = taskEffortsOf(agent);
+  // The Thinking rows are the CHOSEN MODEL's (per model where the catalog
+  // knows them per model); empty, the section is not drawn.
+  const runEfforts = taskEffortsOf(agent, model);
   // ANOTHER AGENT'S CARD OPENS ON ITS OWN DEFAULTS: the global pair above is
   // Claude's, so a Copilot card fills (or corrects) a value its list does not
   // hold from its catalog row. Waits for the catalog — before it lands every
@@ -3859,19 +3873,32 @@ export default function NewJobModal({
     setEffort((e) => (isUnlistedEffort(e, agent) ? "" : e));
     if (agent === "claude") return;
     const models = runModels.map((o) => o.key);
-    const efforts = runEfforts.map((o) => o.key);
     // An EMPTY value is filled; a value the list does not hold is corrected
     // only when it came from the Claude global (`tookGlobal`, the race before
     // the catalog landed). A draft's or an entry's own value is carried
     // through as `taskRunOptions` carries it, so an edit stays lossless.
     const took = tookGlobal.current;
-    setModel((m) => (!m || (took?.model && !models.includes(m)) ? defaultModelOf(agent) : m));
-    setEffort((e) =>
-      !e || (took?.effort && !efforts.includes(e))
-        ? efforts.includes("medium") ? "medium" : efforts[0] ?? ""
-        : e);
+    const nextModel = (m: string) =>
+      !m || (took?.model && !models.includes(m)) ? defaultModelOf(agent) : m;
+    setModel(nextModel);
+    // THE EFFORT IS THE MODEL'S (per model where the catalog knows it per
+    // model) — the model this card RESOLVES to, after the foreign-model
+    // fold above and `nextModel`, not the one it was handed: filled with
+    // that model's default ("" for one that takes none) and corrected to
+    // it for ANY level the model does not take, a stored one included. A
+    // level the spawn would drop is nothing an edit can keep lossless, and
+    // the Thinking rows (hidden for a model that takes none) must agree
+    // with what is sent.
+    setEffort((e) => {
+      const forModel = nextModel(isForeignModel(model, agent) ? defaultModelOf(agent) : model);
+      const efforts = taskEffortsOf(agent, forModel).map((o) => o.key);
+      return !e || !efforts.includes(e) ? defaultEffortFor(agent, forModel) : e;
+    });
+    // `agents` itself, not only `loaded`: the catalog changes again when the
+    // account's discovered model list lands after the first read (D11a),
+    // and the effort must follow the levels that list gives the model.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agent, agents.loaded]);
+  }, [agent, agents]);
   const pickBackend = useCallback((value: string) => {
     if (value === agentRef.current) return;
     pickedHere.current = true;
@@ -5259,23 +5286,30 @@ export default function NewJobModal({
             {/* "Thinking", not "Effort" (the CLI's word for the flag): what the
                 user is choosing is how long Claude gets to think before it
                 acts, and the chat's own pill says the same thing. The wire is
-                untouched — this is the label. */}
-            <div className="nt-pop-h">Thinking</div>
-            <div className="nt-menu" role="group" aria-label="Thinking">
-              {taskRunOptions(runEfforts, effort).map((o) => (
-                <button
-                  key={o.key}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={effort === o.key}
-                  disabled={(o as { disabled?: boolean }).disabled}
-                  onClick={() => pickEffort(o.key)}
-                >
-                  {o.label}
-                  {effort === o.key && ICON_CHECK}
-                </button>
-              ))}
-            </div>
+                untouched — this is the label. NOT DRAWN for a model that
+                takes no effort (a Copilot model whose catalog row lists
+                none): a section of levels the spawn would drop is a choice
+                that does nothing. */}
+            {runEfforts.length ? (
+              <>
+                <div className="nt-pop-h">Thinking</div>
+                <div className="nt-menu" role="group" aria-label="Thinking">
+                  {taskRunOptions(runEfforts, effort).map((o) => (
+                    <button
+                      key={o.key}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={effort === o.key}
+                      disabled={(o as { disabled?: boolean }).disabled}
+                      onClick={() => pickEffort(o.key)}
+                    >
+                      {o.label}
+                      {effort === o.key && ICON_CHECK}
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : null}
           </PropPill>
           <PropPill
             k="Access"

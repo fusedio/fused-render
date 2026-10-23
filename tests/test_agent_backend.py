@@ -805,6 +805,66 @@ def test_copilot_argv_drops_the_effort_for_a_model_that_takes_none(
     assert argv[argv.index("--reasoning-effort") + 1] == "high"
 
 
+def test_copilot_argv_takes_the_effort_rule_from_the_accounts_model_list(
+        agent, target, home, tmp_path, monkeypatch):
+    """Once the Copilot health snapshot lists the account's models (the
+    CLI's own `models.list`), THAT list says per model whether and at which
+    levels `--reasoning-effort` rides: a level the model does not take is
+    dropped like a model that takes none, and the static
+    `_COPILOT_NO_EFFORT_MODELS` rule is consulted only for a model the list
+    does not name."""
+    file, _ = target
+    _copilot_bin(tmp_path, monkeypatch)
+    with open(os.path.join(home["resolved"], agent._COPILOT_HEALTH_FILE), "w") as fh:
+        json.dump({"found": True, "models": [
+            {"id": "gpt-5.4", "label": "GPT-5.4", "reasoning": True,
+             "efforts": ["low", "medium", "high"]},
+            {"id": "claude-sonnet-4.5", "label": "Claude Sonnet 4.5",
+             "reasoning": False, "efforts": []},
+            {"id": "gemini-3-pro", "label": "Gemini 3 Pro", "reasoning": True},
+            # The list outranks the static rule both ways.
+            {"id": "claude-opus-4.5", "label": "Claude Opus 4.5", "reasoning": True,
+             "efforts": ["high"]},
+        ]}, fh)
+
+    def argv(model, effort):
+        run_dir = tmp_path / ("run-" + model.replace(".", "_") + "-" + effort)
+        run_dir.mkdir()
+        return agent._copilot_argv(str(run_dir), False, None, "", model, effort, [], file)
+
+    def effort_of(cmd):
+        return cmd[cmd.index("--reasoning-effort") + 1] if "--reasoning-effort" in cmd else None
+
+    assert effort_of(argv("gpt-5.4", "high")) == "high"
+    assert effort_of(argv("gpt-5.4", "max")) is None        # not a level it takes
+    assert effort_of(argv("claude-sonnet-4.5", "high")) is None
+    assert effort_of(argv("gemini-3-pro", "max")) == "max"  # no list: every level
+    assert effort_of(argv("claude-opus-4.5", "high")) == "high"  # the list wins
+    assert effort_of(argv("claude-opus-4.5", "low")) is None
+    # Not in the list: the static rule, as before.
+    assert effort_of(argv("auto", "high")) is None
+    assert effort_of(argv("", "high")) is None
+    assert effort_of(argv("gpt-9", "high")) == "high"
+    assert agent._copilot_listed_efforts("gpt-5.4") == ("low", "medium", "high")
+    assert agent._copilot_listed_efforts("claude-sonnet-4.5") == ()
+    assert agent._copilot_listed_efforts("gpt-9") is None
+
+
+def test_copilot_argv_with_a_malformed_health_file_falls_back_to_the_static_rule(
+        agent, target, home, tmp_path, monkeypatch):
+    file, _ = target
+    _copilot_bin(tmp_path, monkeypatch)
+    path = os.path.join(home["resolved"], agent._COPILOT_HEALTH_FILE)
+    for body in ("not json", json.dumps({"models": "nope"}), json.dumps({"models": [1, 2]})):
+        with open(path, "w") as fh:
+            fh.write(body)
+        assert agent._copilot_listed_efforts("gpt-5.4") is None
+        run_dir = tmp_path / ("run-" + str(abs(hash(body))))
+        run_dir.mkdir()
+        cmd = agent._copilot_argv(str(run_dir), False, None, "", "gpt-5.4", "high", [], file)
+        assert cmd[cmd.index("--reasoning-effort") + 1] == "high"
+
+
 def test_two_plugins_make_skills_a_dir_of_links(agent, home, tmp_path, monkeypatch):
     """A canvas target gets the workbench skills beside fused's — one
     `skills/` name, so it is a real dir of per-skill symlinks."""

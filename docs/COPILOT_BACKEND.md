@@ -123,9 +123,15 @@ claude_enabled(), copilot_enabled(), default_backend() -> "claude" unless stored
   with `--reasoning-effort` for `auto` and both Claude ids; GPT and Gemini
   accept every level; 1.0.98 accepted all. `Model.reasoning=False` marks those
   and `_copilot_argv` drops the flag for them (an uncataloged id passes
-  through). The UI still offers and defaults an effort for them; the spawn
-  discards it. `--add-dir` is emitted only for directories that exist (both
-  versions exit at startup otherwise; SHOTS is created on first screenshot).
+  through). **Since 2026-10-23 the rule is the account's own list** (D11a):
+  when the health snapshot carries `models`, `_copilot_argv` reads per model
+  whether the flag applies and which levels it takes (`_copilot_listed_efforts`),
+  drops a level the model does not take the same way, and falls back to the
+  static tuple only for a model the list does not name. The UI offers only
+  the levels the chosen model takes and hides the effort control for a model
+  that takes none (`effortsForModel`, platform/lib/agent-backends). `--add-dir`
+  is emitted only for directories that exist (both versions exit at startup
+  otherwise; SHOTS is created on first screenshot).
 - **D8** System prompt via generated `run_dir/plugin/{plugin.json,
   agents/fused.agent.md}` + `--agent fused:fused`; `skills/` symlinked from the
   fused skill plugin (and workbench plugin for canvases). Slash commands from
@@ -150,8 +156,44 @@ claude_enabled(), copilot_enabled(), default_backend() -> "claude" unless stored
   snapshot's `account` and reports `signed_in: null`, never "Sign in".
 - **D11** `GET /api/agent-backends` → `registry.catalog()`:
   `{"backends":[<enabled, in order>], "default": id, "all":[<every backend>]}`,
-  each `{id,label,enabled,models[{id,label}],default_model,efforts,modes,caps{...},health}`.
+  each `{id,label,enabled,models[{id,label,reasoning,efforts[],default_effort,
+  category,vendor,multiplier}],default_model,efforts,modes,caps{...},health}`.
   Frontend model/effort/mode vocab reads THIS, replacing the hand-synced copies.
+  A model's `efforts` is the list THAT model takes (`[]` = none; the pickers
+  hide the control); the row's `efforts` stays the agent's whole vocabulary.
+- **D11a** (2026-10-23) **Copilot's models are the ACCOUNT's, discovered, not a
+  shortlist.** Which ids `--model` takes depends on the plan (Free / Pro / Pro+
+  / Business / Enterprise) and an org's model policy, and moves with every
+  release. ACP has no `models.list`; the CLI's headless SDK server does
+  (`copilot --headless --stdio`, JSON-RPC with `Content-Length` framing:
+  `connect {clientInfo:{editorName,editorVersion}, supportedTaskKinds}` →
+  `{ok, protocolVersion:3, version}`, then `models.list {}` → `{models:[{id,
+  name, capabilities{supports{reasoningEffort,…}}, policy{state}, billing{
+  multiplier}, supportedReasoningEfforts?, defaultReasoningEffort?,
+  modelPickerCategory?, vendor?}]}`; signed out → `-32603 "… Not
+  authenticated"`). `copilot_health._measure` asks it right after the sign-in
+  probe, with the credential that probe proved (the gh token when
+  `account.method == "gh"`), in one headless session with
+  `account.getCurrentAuth` (→ `{authInfo{type, host, login, copilotUser{
+  copilot_plan, access_type_sku}}, authErrors[]}`; the gh/env variants carry
+  the token itself, so ONLY login/host/type/plan/sku are copied, onto
+  `account.{login, host, plan}`), and stores `copilot_health.
+  normalize_models`'s rows under the snapshot's `models` (policy-`disabled`
+  models dropped; levels cut to this app's five-word vocabulary; a listing
+  that could not tell carries the last list forward ONLY for the same
+  login+host — two `copilot login`s in one store are two plans — and a
+  definite sign-out, another user or no user named drops it).
+  `agent_backends/copilot.discovered_models` serves them in the
+  catalog row with `auto` kept first (the server never lists the virtual
+  `auto`); the static `MODELS` are the first frame and the no-cache fallback.
+  `registry.foreign_model_error` admits a discovered id, so a GPT id Codex
+  also lists is not refused on a Copilot task. The catalog never probes: the
+  list appears once the startup warm-up or a health read (`/api/copilot/health`,
+  a sign-in, "Check again") has measured; the frontend re-reads the catalog
+  a few times while an enabled agent's `health` is still `null`, and after
+  every health answer (`useAgentSetup.load`). `models.getBuiltInCatalog`
+  (ids only, no auth) exists but is not used: it names every id the binary
+  knows, not what the account may run.
 - **D12** no-equivalent table (see §caps): AskUserQuestion → none (prose);
   bg tasks → none; snapshots/artifacts/worktrees → hidden; recap → `copilot -p -s
   --model auto`; terminal continue → `copilot --resume=<sid>`; plan → hidden;
@@ -337,6 +379,24 @@ each prompt text byte-identical, machinery blocks included, so the backfill's
 text match never duplicates a fused turn (checked with a live-app-state +
 terminal-hint prompt and two resumes: 3 user rows). End-to-end through
 `agent.py` (start, live send, permission card, Stop, resume, history): 22/22.
+
+Verified 2026-10-23 (Copilot 1.0.103, D11a): `copilot --headless --stdio
+--no-auto-update` speaks Content-Length-framed JSON-RPC; `connect` refuses
+ACP's `{name, version}` clientInfo ("expected one of `editorName`,
+`editorVersion`, `extensionName`, `extensionVersion`") and answers `{ok,
+protocolVersion: 3, version: "1.0.103", taskKinds}`; `models.list` signed
+out answers `-32603 "Request models.list failed with message: Not
+authenticated. Please authenticate first."` within a second (no device
+flow is started); `models.getBuiltInCatalog` answers 68 ids unauthenticated;
+`--reasoning-effort`'s own vocabulary is `none, minimal, low, medium, high,
+xhigh, max` (the two extra levels are cut from a model's list, see D11a). The
+model rows' shape is the bundled `copilot-sdk` `ModelInfo` type
+(`supportedReasoningEfforts`, `defaultReasoningEffort`, `capabilities.
+supports.reasoningEffort`, `policy.state`, `billing.multiplier`,
+`modelPickerCategory`, `vendor`). NOT verified live: a signed-in
+`models.list` reply (no credential in the build environment) — the
+normalizer is driven by the SDK's published shape and a fake server in
+tests/test_copilot_health.py.
 
 Assumed (design absorbs each): signed-out ACP error code (fallback: `-p "ping"`
 20 s probe); `COPILOT_GITHUB_TOKEN` as login substitute; Copilot error texts;
