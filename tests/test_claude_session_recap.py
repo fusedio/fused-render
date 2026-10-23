@@ -985,3 +985,17 @@ def test_every_backend_gets_the_title_prompt_and_its_raw_reply(
         ask={"want_recap": True, "current": "Cur title", "first": "First msg"})
     assert raw == _TITLE_REPLY  # line structure intact, not folded
     assert "Current title: Cur title" in sent[0]
+
+
+def test_a_switched_off_agent_is_not_asked_but_stamps_the_cooldown(
+        agent, project, calls, store, monkeypatch):
+    """Else the worker's wake-up would re-queue the same title on every listing."""
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    from fused_render.agent_backends import registry
+
+    monkeypatch.setattr(registry, "is_enabled", lambda backend: False)
+    assert recap_mod._title_and_recap(agent, target, SESSION, "u-1",
+                                      prompts_seen=3) == ("", "")
+    assert _spawns(calls) == []
+    assert store.session_ai_title(store.settings_state(), SESSION)["failed_at"] > 0

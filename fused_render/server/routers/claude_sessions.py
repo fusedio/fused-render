@@ -1500,15 +1500,18 @@ def _title_and_recap(agent, file: str, session_id: str, for_uuid: str,
     try:
         backend = _recap_backend(agent, file, session_id, transcript)
         from fused_render.agent_backends import registry
-        if not registry.is_enabled(backend):
-            return "", ""  # never asked: nothing stored, so a switch-on retries
-        try:
-            raw = _recap_generate(
-                agent, file, session_id, transcript, True, backend,
-                ask={"want_recap": want_recap, "current": current, "first": first})
-            title, recap = _title_parse(raw, want_recap)
-        except _NothingToRecap:
-            empty = True
+        # An agent switched off in Preferences is not asked, and counts as a
+        # failure below: the stamp is what keeps the worker's wake-up from
+        # re-queueing the same title on every listing.
+        if registry.is_enabled(backend):
+            try:
+                raw = _recap_generate(
+                    agent, file, session_id, transcript, True, backend,
+                    ask={"want_recap": want_recap, "current": current,
+                         "first": first})
+                title, recap = _title_parse(raw, want_recap)
+            except _NothingToRecap:
+                empty = True
     except Exception:  # noqa: BLE001 — see NOTHING HERE RAISES above
         logger.warning("could not title session %s", session_id, exc_info=True)
         title = recap = ""
