@@ -6625,6 +6625,30 @@ async def api_tasks_pr_status(body: PrStatusBody,
     return await run_in_threadpool(pr_status.fetch_statuses, body.refs[:100])
 
 
+class PortsBody(BaseModel):
+    ids: list[str] = []
+
+
+@router.post("/api/tasks/ports")
+async def api_tasks_ports(body: PortsBody,
+                          x_fused: str | None = Header(default=None)):
+    """`{"ports": {task key: [port, ...]}}` — the TCP ports each task's live
+    session (and what it started) is listening on, for the rows the Workspace is
+    showing. Absent keys have no live run or no listener. Not on the list payload
+    (see `task_ports`); blocking lsof, so it runs in the threadpool."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render.server import task_ports  # noqa: PLC0415
+
+    def work() -> dict:
+        agent = _agent_module()
+        runs = project_queue.scan_runs(agent) if agent is not None else []
+        return task_ports.ports_for(body.ids[:100], agent, runs)
+
+    return {"ports": await run_in_threadpool(work)}
+
+
 def _unarchive_for_reply(key: str, session_id: str = "") -> bool:
     """A reply to an archived task files it back (Workspace scope, exception 2).
 
