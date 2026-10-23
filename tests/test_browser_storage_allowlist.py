@@ -55,6 +55,7 @@ ALLOWED = {
     "apps/ai_models/local/HubSearchScreen.tsx": "cache",
     "apps/bots/lib/layout.ts": "display",           # bots column layout (per viewer)
     "apps/bots/state/store.ts": "import",
+    "apps/canvases/CanvasWorkspace.tsx": "cache",   # last fused whoami handle per env
     "apps/claude/ClaudeChat.tsx": "signal",
     "apps/claude/feature-flag.ts": "signal",
     "apps/claude/protocol/run-controller.ts": "tab",
