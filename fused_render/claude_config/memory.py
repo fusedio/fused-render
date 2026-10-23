@@ -133,13 +133,21 @@ def _project_path(slug: str) -> Optional[str]:
     # it is where those sessions ran, not a guess we are making now.
     if cwd:
         return cwd
-    # A munged absolute path carries its root as a recognizable prefix: the
-    # leading "/" munges to a leading "-". Without it there is no anchor to
-    # walk from.
-    if not slug.startswith("-"):
+    # A munged absolute path carries its root as a recognizable prefix: POSIX's
+    # leading "/" munges to a leading "-", while Windows' "C:\" munges to a
+    # leading "C--" (the drive letter survives — it's alnum — then ":" and the
+    # first "\" each become their own "-"). Without one of these there is no
+    # anchor to walk from. The drive form is Windows-only: on POSIX a slug like
+    # "C--x" has no anchor.
+    drive_match = re.match(r"^([A-Za-z])--", slug) if os.sep == "\\" else None
+    if drive_match:
+        base = drive_match.group(1) + ":" + os.sep
+        rest = slug[drive_match.end():]
+    elif slug.startswith("-"):
+        base = os.sep
+        rest = slug[1:]
+    else:
         return None
-    base = os.sep
-    rest = slug[1:]
     parts = rest.split("-") if rest else []
     if not parts or len(parts) > _MAX_SEGMENTS:
         return None
