@@ -1,6 +1,7 @@
 // Archiving removes a task's clean worktrees and KEEPS the rest. The reader is
 // told about what was kept, and why, in words: a silent keep is a leaked folder.
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { _resetNotificationsForTest, getPopupNotification, getRetainedNotifications } from "@platform/lib/notifications";
 import type { TeardownKept, TeardownReport } from "@platform/lib/api";
 import {
   batchKeptNotice,
@@ -114,5 +115,70 @@ describe("closedToastText", () => {
     const one = { ...report([]), stopped: 1 };
     expect(teardownSummary([one, one, undefined])).toBe("stopped 2 processes");
     expect(closedToastText("Archived 2 tasks", [report([]), undefined])).toBe("Archived 2 tasks");
+  });
+});
+
+// "Remove anyway": whatever the server answers, the click must visibly do
+// something. The real notifications store is used; only fetch is stubbed.
+describe("Remove anyway", () => {
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  const answer = (body: unknown | Error) => {
+    globalThis.fetch = (async () => {
+      calls++;
+      if (body instanceof Error) throw body;
+      return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+    }) as typeof fetch;
+  };
+  // Raise the batch notice for one kept worktree and return its row.
+  const raised = () => {
+    const b = beginArchiveBatch(["t1"]);
+    routeArchiveReport("t1", report([kept()]));
+    b.end();
+    const row = getRetainedNotifications().find((n) => n.title.startsWith("Kept"))!;
+    return row;
+  };
+  const settle = () => new Promise((r) => setTimeout(r, 20));
+  const titles = () => getRetainedNotifications().map((n) => n.title);
+
+  beforeEach(() => { calls = 0; _resetNotificationsForTest(); });
+  afterEach(() => { globalThis.fetch = realFetch; });
+
+  test("removed: the Kept notice leaves and Removed 1 worktree appears", async () => {
+    answer({ ok: true, key: "t1", removed: ["/r/.claude/worktrees/feat-x"], kept: [], gone: [] });
+    raised().action!.onClick();
+    await settle();
+    expect(titles().some((t) => t.startsWith("Kept"))).toBe(false);
+    expect(getPopupNotification()?.title).toBe("Removed 1 worktree");
+  });
+  test("already gone counts as removed", async () => {
+    answer({ ok: true, key: "t1", removed: [], kept: [], gone: ["/a", "/b"] });
+    raised().action!.onClick();
+    await settle();
+    expect(titles().some((t) => t.startsWith("Kept"))).toBe(false);
+    expect(getPopupNotification()?.title).toBe("Removed 2 worktrees");
+  });
+  test("still kept: error notice with the reason, original dismissed", async () => {
+    answer({ ok: true, key: "t1", removed: [], kept: [kept({ reasons: ["remove-failed"] })], gone: [] });
+    raised().action!.onClick();
+    await settle();
+    const rows = getRetainedNotifications();
+    expect(rows.map((n) => n.title)).toEqual(["Could not remove"]);
+    expect(rows[0].detail).toBe("git would not remove it");
+    expect(rows[0].tone).toBe("error");
+  });
+  test("request fails: error notice, original stays for a retry", async () => {
+    answer(new Error("offline"));
+    raised().action!.onClick();
+    await settle();
+    expect(titles().sort()).toEqual(["Could not remove the worktrees", "Kept worktree feat-x"].sort());
+  });
+  test("a second click while one request is in flight is ignored", async () => {
+    answer({ ok: true, key: "t1", removed: ["/x"], kept: [], gone: [] });
+    const row = raised();
+    row.action!.onClick();
+    row.action!.onClick();
+    await settle();
+    expect(calls).toBe(1);
   });
 });

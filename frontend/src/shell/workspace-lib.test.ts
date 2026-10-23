@@ -20,6 +20,8 @@ import {
   type WorkspaceFacts,
 } from "@shell/workspace-lib";
 
+const NOW = 1_000_000;
+
 function task(over: Partial<Task> = {}): Task {
   return {
     key: "s1",
@@ -42,14 +44,14 @@ const facts = (over: Partial<WorkspaceFacts> = {}): WorkspaceFacts => ({
 });
 
 describe("workspaceTasks", () => {
-  test("every non-archived, non-draft task, newest creation first", () => {
+  test("every non-draft task (archived included), newest creation first", () => {
     const rows = workspaceTasks([
       task({ key: "a", started: 10 }),
       task({ key: "b", started: 30 }),
       task({ key: "c", started: 20, status: "archived" }),
       task({ key: "d", started: 40, kind: "draft" }),
     ]);
-    expect(rows.map((t) => t.key)).toEqual(["b", "a"]);
+    expect(rows.map((t) => t.key)).toEqual(["b", "c", "a"]);
   });
   test("a status change never moves a row", () => {
     const a = workspaceTasks([task({ key: "a", started: 1, status: "done" }), task({ key: "b", started: 2 })]);
@@ -128,11 +130,18 @@ describe("holdReasons / holdMarker", () => {
   test("untracked files are ignored: dirty_files without tracked_dirty holds nothing", () => {
     const holds = { s1: [{ path: "/w", dirty_files: 2, tracked_dirty: 0, unpushed: 0, reasons: ["dirty"] }] };
     expect(holdReasons(task(), facts({ holds }))).toEqual([]);
-    expect(workspaceGroup(task(), facts({ holds }))).toBe("clear");
+    expect(workspaceGroup(task(), facts({ holds }), NOW)).toBe("clear");
   });
-  test("a tracked edit holds the task Open, not Safe to archive", () => {
+  test("a server that sends no tracked_dirty falls back to dirty_files, never reading as clean", () => {
+    const holds = { s1: [{ path: "/w", dirty_files: 5, tracked_dirty: undefined, unpushed: 0, reasons: [] }] };
+    expect(holdReasons(task(), facts({ holds }))).toContain("5 uncommitted");
+    const zero = { s1: [{ path: "/w", dirty_files: 5, tracked_dirty: 0, unpushed: 0, reasons: [] }] };
+    expect(holdReasons(task(), facts({ holds: zero }))).not.toContain("5 uncommitted");
+    expect(holdReasons(task(), facts({ holds: zero })).some((r) => r.includes("uncommitted"))).toBe(false);
+  });
+  test("a tracked edit holds the task in Your turn, not Safe to archive", () => {
     const holds = { s1: [{ path: "/w", dirty_files: 3, tracked_dirty: 1, unpushed: 0, reasons: ["dirty"] }] };
-    expect(workspaceGroup(task(), facts({ holds }))).toBe("idle");
+    expect(workspaceGroup(task(), facts({ holds }), NOW)).toBe("turn");
   });
   test("before the holds have loaded, a task is never reported clear", () => {
     expect(holdReasons(task(), facts({ holdsReady: false }))).toEqual(["checking"]);
@@ -287,31 +296,74 @@ test("pickBranch: a worktree branch beats the PR head, then the newest PR head",
 describe("workspaceGroup / groupTasks", () => {
   const pr = { prs: [{ repo: "o/r", number: 1 }] } as Partial<Task>;
   const open = facts({ prStates: { "o/r#1": "open" } });
+  const idle = { last_active: NOW - 25 * 3600 };
+  const g = (t: Task, f: WorkspaceFacts = facts(), now = NOW) => workspaceGroup(t, f, now);
   test("one case per group", () => {
-    expect(workspaceGroup(task({ status: "needs_attention" }), facts())).toBe("needs");
-    expect(workspaceGroup(task({ status: "blocked", blocked_reason: "failed" }), facts())).toBe("needs");
-    expect(workspaceGroup(task({ status: "blocked", blocked_reason: "usage_limit" }), facts())).toBe("needs");
-    expect(workspaceGroup(task({ status: "in_progress" }), facts())).toBe("running");
-    expect(workspaceGroup(task({ ...pr }), open)).toBe("review");
-    expect(workspaceGroup(task({ unread: 2 }), facts())).toBe("clear");
-    expect(workspaceGroup(task(), facts())).toBe("clear");
+    expect(g(task({ status: "needs_attention" }))).toBe("needs");
+    expect(g(task({ status: "blocked", blocked_reason: "failed" }))).toBe("needs");
+    expect(g(task({ status: "blocked", blocked_reason: "usage_limit" }))).toBe("needs");
+    expect(g(task({ status: "in_progress" }))).toBe("working");
+    expect(g(task({ ...pr, ...idle }), open)).toBe("pr");
+    expect(g(task({ unread: 2, ...idle }))).toBe("clear");
+    expect(g(task({ last_active: NOW - 3600 }))).toBe("turn");
+    expect(g(task({ status: "archived" }))).toBe("archived");
   });
-  test("priority: running beats review, needs beats holds", () => {
-    expect(workspaceGroup(task({ status: "in_progress", ...pr }), open)).toBe("running");
-    expect(workspaceGroup(task({ status: "needs_attention", unread: 3 }), facts())).toBe("needs");
+  test("done, an hour idle, nothing holding it: your turn", () => {
+    expect(g(task({ last_active: NOW - 3600 }))).toBe("turn");
+  });
+  test("done, 25 h idle, clean, holds ready: safe to archive", () => {
+    expect(g(task({ ...idle }))).toBe("clear");
+  });
+  test("done, 25 h idle, PR open: PR open", () => {
+    expect(g(task({ ...pr, ...idle }), open)).toBe("pr");
+  });
+  test("done, 25 h idle, 2 uncommitted: your turn", () => {
+    const holds = { s1: [{ path: "/w", dirty_files: 2, tracked_dirty: 2, unpushed: 0, reasons: ["dirty"] }] };
+    expect(g(task({ ...idle }), facts({ holds }))).toBe("turn");
+  });
+  test("done, 25 h idle, holds not ready: your turn", () => {
+    expect(g(task({ ...idle }), facts({ holdsReady: false }))).toBe("turn");
+  });
+  test("an unknown PR state keeps an idle task in your turn", () => {
+    expect(g(task({ ...pr, ...idle }))).toBe("turn");
+  });
+  test("no activity time at all is never idle", () => {
+    expect(g(task({ last_active: 0, started: 0 }), facts(), 1e12)).toBe("turn");
+  });
+  test("last_active falls back to started", () => {
+    expect(g(task({ last_active: 0, started: NOW - 25 * 3600 }))).toBe("clear");
+  });
+  test("queued, upcoming, bg jobs and a pending run are working", () => {
+    expect(g(task({ status: "queued" }))).toBe("working");
+    expect(g(task({ status: "upcoming" }))).toBe("working");
+    expect(g(task({ next_run: 5 }))).toBe("working");
+    expect(g(task({ background_jobs: { count: 1, run_id: "r", jobs: [] } }))).toBe("working");
+  });
+  test("priority: archived and needs beat working, working beats PR open", () => {
+    expect(g(task({ status: "archived", ...pr }), open)).toBe("archived");
+    expect(g(task({ status: "in_progress", ...pr }), open)).toBe("working");
+    expect(g(task({ status: "needs_attention", unread: 3 }))).toBe("needs");
   });
   test("groups come in order, empty ones omitted, rows keep their order", () => {
     const rows = [
-      task({ key: "a" }),
+      task({ key: "a", ...idle }),
       task({ key: "b", status: "needs_attention" }),
-      task({ key: "c" }),
-      task({ key: "d", status: "needs_attention" }),
+      task({ key: "c", ...idle }),
+      task({ key: "d", status: "archived" }),
+      task({ key: "e", last_active: NOW - 60 }),
+      task({ key: "f", status: "queued" }),
+      task({ key: "h", ...pr, ...idle }),
     ];
-    const g = groupTasks(rows, () => facts());
-    expect(g.map((x) => [x.key, x.label, x.tasks.map((t) => t.key)])).toEqual([
-      ["needs", "Needs you", ["b", "d"]],
+    const grouped = groupTasks(rows, (t) => (t.key === "h" ? open : facts()), NOW);
+    expect(grouped.map((x) => [x.key, x.label, x.tasks.map((t) => t.key)])).toEqual([
+      ["needs", "Needs you", ["b"]],
+      ["working", "Working", ["f"]],
+      ["pr", "PR open", ["h"]],
+      ["turn", "Your turn", ["e"]],
       ["clear", "Safe to archive", ["a", "c"]],
+      ["archived", "Archived", ["d"]],
     ]);
+    expect(groupTasks([rows[1], rows[3]], () => facts(), NOW).map((x) => x.key)).toEqual(["needs", "archived"]);
   });
 });
 
@@ -324,15 +376,16 @@ test("a group shows GROUP_CAP cards until expanded", () => {
 
 test("only Safe to archive starts collapsed, and a stored choice wins", () => {
   expect(groupCollapsed("clear", {})).toBe(true);
-  expect(groupCollapsed("idle", {})).toBe(false);
+  expect(groupCollapsed("turn", {})).toBe(false);
+  expect(groupCollapsed("archived", {})).toBe(false);
   expect(groupCollapsed("clear", { clear: false })).toBe(false);
-  expect(groupCollapsed("idle", { idle: true })).toBe(true);
+  expect(groupCollapsed("turn", { turn: true })).toBe(true);
 });
 
-test("blockingReasons ignores unread only: a lone unread hold is clear, with other holds it is open", () => {
+test("blockingReasons ignores unread only: a lone unread hold is clear, with other holds it is not", () => {
   expect(blockingReasons(["1 unread"])).toEqual([]);
   expect(blockingReasons(["1 unread", "2 uncommitted"])).toEqual(["2 uncommitted"]);
-  expect(workspaceGroup(task({ unread: 1 }), facts())).toBe("clear");
+  expect(workspaceGroup(task({ unread: 1, last_active: NOW - 25 * 3600 }), facts(), NOW)).toBe("clear");
 });
 
 test("visibleReasons still drops the unread text", () => {

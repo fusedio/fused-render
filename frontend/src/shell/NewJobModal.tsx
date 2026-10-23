@@ -142,6 +142,14 @@ import { onDraftChange } from "./tasksPulse";
 export const defaultTargetOf = (c: Pick<Config, "home" | "fused_dir">) =>
   canonFsPath(c.fused_dir || c.home);
 
+// What a fresh form opens on: the last folder used when the user turned
+// "Remember last folder" on and there is one, else the workspace default.
+export const openingTargetOf = (
+  c: Pick<Config, "home" | "fused_dir">,
+  remember: boolean,
+  recents: string[],
+) => (remember && recents[0] ? recents[0] : defaultTargetOf(c));
+
 // ---- Recent paths --------------------------------------------------------
 // The path field's dropdown offers the last folders the user actually used,
 // newest first, five shown. It draws on two sources — the app-wide one the home
@@ -3323,6 +3331,9 @@ export default function NewJobModal({
   // through a bunch of folders but recents didn't update" (Akshil, 2026-08-16).
   // It is a single in-memory read on a user gesture, so per-open costs nothing.
   const [recentsOpen, setRecentsOpen] = useState(false);
+  const [rememberLast, setRememberLast] = useState(
+    () => getUiLayout().rememberLastFolder === true,
+  );
   const [recents, setRecents] = useState<string[]>([]);
   // Tier 1 is a fetch, so it is asked for once on mount and held. Exactly as
   // Home.tsx asks for it, and fire-and-forget for the same reason: a suggestion
@@ -3665,7 +3676,11 @@ export default function NewJobModal({
       (c) => {
         setHome(c.home);
         if (!editing) {
-          const fallback = defaultTargetOf(c);
+          const fallback = openingTargetOf(
+            c,
+            getUiLayout().rememberLastFolder === true,
+            readRecents(),
+          );
           setTarget((prev) => (prev === "" ? fallback : prev));
           setInitial((prev) =>
             prev.target === "" ? { ...prev, target: fallback } : prev,
@@ -5666,6 +5681,31 @@ export default function NewJobModal({
                         the list (Akshil, 2026-08-20). */}
                     {ICON_PLUS}
                     New folder
+                  </button>
+                  {/* "Open on the last folder" switch. A checkable row, not a
+                      navigation verb: it flips the flag and leaves the popover
+                      open and the current target alone — it only changes what
+                      the NEXT New task opens on. Like Browse and New folder it
+                      sits outside the option ring, so no arrow-key stop. */}
+                  <button
+                    type="button"
+                    role="menuitemcheckbox"
+                    aria-checked={rememberLast}
+                    className="schedule-picker-row schedule-recents-remember"
+                    onClick={() => {
+                      const next = !rememberLast;
+                      setRememberLast(next);
+                      patchUiLayout((d) => ({ ...d, rememberLastFolder: next }));
+                    }}
+                  >
+                    {rememberLast ? (
+                      <span className="schedule-picker-gutter" aria-hidden="true">
+                        {ICON_CHECK}
+                      </span>
+                    ) : (
+                      <span className="schedule-picker-gutter" aria-hidden="true" />
+                    )}
+                    Remember last folder
                   </button>
                   </div>
                   {/* THE HOVER TOOLTIP, portalled to `<body>` from here —
