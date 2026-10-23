@@ -132,8 +132,41 @@ test("PR chips cap at 3, open first, and the dot sits inside the .task-pr-num pi
   const pills = r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.includes("task-pr-num"));
   expect(pills).toHaveLength(3);
   for (const pill of pills) expect(pill.findAllByProps({ className: "task-pr-dot" }).length).toBe(1);
-  expect(text(r.root.findByProps({ className: "ws-pr-more" }))).toBe("+7");
-  expect(r.root.findByProps({ className: "ws-pr-more" }).props.title.split("\n")).toHaveLength(7);
+  expect(text(r.root.findByProps({ className: "task-pr-more" }))).toBe("+7");
+});
+
+test("5 PRs: 3 chips plus a popover trigger '+2'; clicking it does not open the task", async () => {
+  serve();
+  const prs = Array.from({ length: 5 }, (_, i) => ({ repo: "o/r", number: i + 1 }));
+  const r = await render([task({ key: "a", prs } as Partial<Task>)]);
+  const pills = r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.includes("task-pr-num"));
+  expect(pills).toHaveLength(3);
+  const trigger = r.root.findByProps({ className: "task-pr-more" });
+  expect(text(trigger)).toBe("+2");
+  let stopped = false;
+  await act(async () => {
+    trigger.props.onClick({ stopPropagation() { stopped = true; } });
+  });
+  // The card opens on a bubbled click; the trigger swallows it.
+  expect(stopped).toBe(true);
+});
+
+test("the dirty facts collapse to one word badge with the counts in its tooltip", async () => {
+  globalThis.fetch = mock(async (url: string) => {
+    const reply: Record<string, unknown> = {
+      "/api/tasks/ports": { ports: {} },
+      "/api/tasks/holds": {
+        holds: { a: [{ path: "/w", dirty_files: 3, unpushed: 2, branch: "b", reasons: ["dirty", "unpushed"] }] },
+      },
+    };
+    return new Response(JSON.stringify(reply[url] ?? {}), { status: 200 });
+  }) as unknown as typeof fetch;
+  const r = await render([task({ key: "a" })]);
+  const badges = r.root.findByProps({ "data-key": "a" }).findAllByProps({ className: "ws-badge ws-marker ws-dirty" });
+  expect(badges).toHaveLength(1);
+  expect(text(badges[0])).toBe("uncommitted");
+  expect(/\d/.test(text(badges[0]))).toBe(false);
+  expect(badges[0].props.title).toBe("3 uncommitted, 2 unpushed");
 });
 
 test("the message preview shows unless it repeats the title", async () => {

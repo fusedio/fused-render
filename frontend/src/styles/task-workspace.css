@@ -193,9 +193,26 @@
   align-items: center;
   gap: 5px;
 }
-.ws-pr-more {
+/* The "+N" overflow trigger is the chat header's .task-pr-more (the popover is
+   platform/ui/TaskPrChip's); here it wears the neutral badge look. */
+.ws-prs .task-pr-more {
+  display: inline-flex;
+  align-items: center;
+  box-sizing: border-box;
+  height: 20px;
+  margin: 0;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
   color: var(--fg-muted);
+  font: inherit;
   font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.ws-prs .task-pr-more:hover {
+  color: var(--fg);
 }
 /* A narrow card drops the message preview: line 2 is the project chip on the
    left and the facts on the right. */

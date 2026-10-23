@@ -15,6 +15,8 @@ import { notify } from "@platform/lib/notifications";
 import { peekPrHead, usePrStatuses } from "@platform/lib/prStatus";
 import { navigateUrl } from "@platform/lib/router";
 import { prKey, prRefsOf } from "@platform/lib/task-prs";
+import { Popover, PopoverContent, PopoverTrigger } from "@platform/shadcn/ui/popover";
+import { PrPopList } from "@platform/ui/TaskPrChip";
 import { WorkspaceSearch } from "@shell/WorkspaceSearch";
 import { selectableTask } from "@shell/task-selection";
 import { BulkBar, GroupCheck, RowCheck, useBulkArchive, type BulkSelect } from "@shell/TaskBulk";
@@ -55,6 +57,9 @@ import {
   workspaceTasks,
   type WorkspaceFacts,
   type WorkspaceGroupKey,
+  DIRTY_REASON,
+  dirtyBadge,
+  dirtyTitle,
 } from "@shell/workspace-lib";
 
 /** How long the Undo toast stays up after a close. */
@@ -191,9 +196,27 @@ function PrChips({ task, states }: { task: Task; states: ReturnType<typeof usePr
         );
       })}
       {more > 0 && (
-        <span className="ws-pr-more" title={rest.map((r) => `${prKey(r)} (${states[prKey(r)] ?? "unknown"})`).join("\n")}>
-          +{more}
-        </span>
+        // The chat header's overflow popover (platform/ui/TaskPrChip): the rest
+        // as links with their GitHub status. Clicks stop here so they never
+        // reach the card's open/peek handler (the popover renders in a portal,
+        // but React still bubbles its events through this tree).
+        <Popover>
+          <PopoverTrigger
+            render={
+              <button
+                type="button"
+                className="task-pr-more"
+                aria-label={`${more} more pull requests`}
+                onClick={(e) => e.stopPropagation()}
+              />
+            }
+          >
+            +{more}
+          </PopoverTrigger>
+          <PopoverContent className="task-pr-pop" align="start" onClick={(e) => e.stopPropagation()}>
+            <PrPopList refs={rest} />
+          </PopoverContent>
+        </Popover>
       )}
     </span>
   );
@@ -237,8 +260,11 @@ function WorkspaceCard({
 }) {
   const file = filingIntent(task);
   const bg = bgJobBadge(task);
+  // The worktree counts collapse to one word badge (dirtyBadge); the exact counts
+  // ride in its tooltip. "unknown", "checking" and the rest stay as text.
   const reasonList = visibleReasons(reasons);
-  const text = reasonList.join(" · ");
+  const dirty = dirtyBadge(reasonList);
+  const text = reasonList.filter((r) => !DIRTY_REASON.test(r)).join(" · ");
   const clear = reasons.length === 0;
   const hasPrs = prRefsOf(task).some((r) => r.repo);
   const hasBg = bg !== null;
@@ -252,7 +278,7 @@ function WorkspaceCard({
   );
   // Line 2 exists for a preview/project chip or for real facts. "clear" alone
   // never opens it: it rides line 1's right edge instead.
-  const realFacts = hasPrs || hasBg || ports.length > 0 || text !== "" || branch !== null;
+  const realFacts = hasPrs || hasBg || ports.length > 0 || dirty !== null || text !== "" || branch !== null;
   const hasLine2 = hasContext || realFacts;
   const clearTag = clear ? <span className="ws-badge ws-clear" title="Nothing holds this task open, so it is safe to archive">safe to archive</span> : null;
   return (
@@ -355,6 +381,11 @@ function WorkspaceCard({
                 {b.label}
               </span>
             ),
+          )}
+          {dirty && (
+            <span className="ws-badge ws-marker ws-dirty" title={dirtyTitle(reasonList)}>
+              {dirty}
+            </span>
           )}
           {text && (
             <span className="ws-badge ws-marker" data-unknown={reasons.includes("unknown") ? "1" : undefined}>
@@ -524,6 +555,9 @@ export function TaskWorkspace({
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.defaultPrevented) return;
+      // Keys inside the PR overflow popover (a portal) are the popover's own:
+      // Space/Enter on a link must not select or archive the card behind it.
+      if ((e.target as HTMLElement | null)?.closest?.(".task-pr-pop")) return;
       const st = live.current;
       const modal =
         typeof document !== "undefined" &&

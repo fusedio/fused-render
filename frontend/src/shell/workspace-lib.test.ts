@@ -6,6 +6,8 @@ import {
   holdReasons,
   holdMarker,
   visibleReasons,
+  dirtyBadge,
+  dirtyTitle,
   moveSelection,
   nextNeedingYou,
   portBadges,
@@ -343,4 +345,17 @@ test("orderPrs: open first, then draft, unknown, closed and merged; stable insid
   const refs = [1, 2, 3, 4, 5, 6].map((number) => ({ repo: "o/r", number }));
   const states = { "o/r#1": "merged", "o/r#2": "open", "o/r#3": "closed", "o/r#4": "draft", "o/r#6": "open" };
   expect(orderPrs(refs, states).map((r) => r.number)).toEqual([2, 6, 4, 5, 1, 3]);
+});
+
+describe("dirtyBadge", () => {
+  test("uncommitted wins; unpushed alone; none is null", () => {
+    expect(dirtyBadge(["3 uncommitted"])).toBe("uncommitted");
+    expect(dirtyBadge(["3 uncommitted", "2 unpushed", "unknown"])).toBe("uncommitted");
+    expect(dirtyBadge(["2 unpushed"])).toBe("unpushed");
+    expect(dirtyBadge(["unknown", "queued"])).toBeNull();
+    expect(dirtyBadge([])).toBeNull();
+  });
+  test("dirtyTitle keeps the exact counts", () => {
+    expect(dirtyTitle(["running", "3 uncommitted", "2 unpushed"])).toBe("3 uncommitted, 2 unpushed");
+  });
 });

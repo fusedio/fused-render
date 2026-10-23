@@ -114,6 +114,23 @@ export function visibleReasons(reasons: readonly string[]): string[] {
   });
 }
 
+/** The hold reasons the worktree counts produce ("3 uncommitted", "2 unpushed"). */
+export const DIRTY_REASON = /^\d+ (uncommitted|unpushed)$/;
+
+/** The one word the card shows for the worktree counts: "uncommitted" wins over
+ *  "unpushed"; null when neither is held. Display only: the reasons themselves
+ *  (and so Open vs Safe to archive) are unchanged. */
+export function dirtyBadge(reasons: readonly string[]): "uncommitted" | "unpushed" | null {
+  if (reasons.some((r) => /^\d+ uncommitted$/.test(r))) return "uncommitted";
+  if (reasons.some((r) => /^\d+ unpushed$/.test(r))) return "unpushed";
+  return null;
+}
+
+/** The badge's tooltip: the exact counts, "3 uncommitted, 2 unpushed". */
+export function dirtyTitle(reasons: readonly string[]): string {
+  return reasons.filter((r) => DIRTY_REASON.test(r)).join(", ");
+}
+
 /** The marker text: the reasons joined by a middle dot, or "clear". */
 export function holdMarker(reasons: readonly string[]): string {
   return reasons.length ? reasons.join(" · ") : "clear";
