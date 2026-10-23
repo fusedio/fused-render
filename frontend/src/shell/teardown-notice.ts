@@ -11,7 +11,7 @@
 import { useEffect } from "react";
 import { onTaskArchived, removeTaskWorktrees } from "@platform/lib/api";
 import type { TeardownKept, TeardownReport } from "@platform/lib/api";
-import { notify } from "@platform/lib/notifications";
+import { dismissNotification, notify } from "@platform/lib/notifications";
 
 const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
 
@@ -128,23 +128,35 @@ export function routeArchiveReport(key: string, report: TeardownReport | undefin
   return false;
 }
 
-function removeAnyway(byKey: { key: string; paths: string[] }[], noun: string): void {
+// Notices whose "Remove anyway" request is in flight: a second click waits.
+const removing = new Set<number>();
+
+function removeAnyway(byKey: { key: string; paths: string[] }[], noun: string, id: number): void {
+  if (removing.has(id)) return;
+  removing.add(id);
   void Promise.all(byKey.map((b) => removeTaskWorktrees(b.key, b.paths)))
     .then((rs) => {
+      // The request was answered: the "Kept..." notice is stale either way.
+      dismissNotification(id);
       const left = rs.flatMap((r) => r.kept);
       if (left.length > 0) {
         notify({ title: "Could not remove", detail: keptReasonText(left[0]), tone: "error" });
+        return;
       }
+      // A `gone` worktree is already what the reader asked for.
+      const n = rs.reduce((t, r) => t + (r.removed?.length ?? 0) + (r.gone?.length ?? 0), 0);
+      notify({ title: `Removed ${plural(n, "worktree", "worktrees")}`, tone: "info" });
     })
-    .catch(() => notify({ title: `Could not remove the ${noun}`, tone: "error" }));
+    .catch(() => notify({ title: `Could not remove the ${noun}`, tone: "error" }))
+    .finally(() => removing.delete(id));
 }
 
 function raise(n: KeptNotice & { byKey: { key: string; paths: string[] }[] }, noun: string): void {
-  notify({
+  const id: number = notify({
     title: n.title,
     detail: n.detail,
     tier: "attention",
-    action: { label: "Remove anyway", onClick: () => removeAnyway(n.byKey, noun) },
+    action: { label: "Remove anyway", onClick: () => removeAnyway(n.byKey, noun, id) },
   });
 }
 
