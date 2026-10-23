@@ -39,6 +39,7 @@ import {
   groupTasks,
   cardStatusWord,
   MAX_PRS,
+  orderPrs,
   messagePreview,
   holdReasons,
   moveSelection,
@@ -175,7 +176,8 @@ function useRowPorts(keys: string[]): Record<string, number[]> {
 function PrChips({ task, states }: { task: Task; states: ReturnType<typeof usePrStatuses> }) {
   const refs = prRefsOf(task).filter((r) => r.repo);
   if (refs.length === 0) return null;
-  const { shown, more } = capList(refs, MAX_PRS);
+  const { shown, more } = capList(orderPrs(refs, states), MAX_PRS);
+  const rest = orderPrs(refs, states).slice(MAX_PRS);
   return (
     <span className="ws-prs">
       {shown.map((r) => {
@@ -186,7 +188,11 @@ function PrChips({ task, states }: { task: Task; states: ReturnType<typeof usePr
           </span>
         );
       })}
-      {more > 0 && <span className="ws-pr-more">+{more}</span>}
+      {more > 0 && (
+        <span className="ws-pr-more" title={rest.map((r) => `${prKey(r)} (${states[prKey(r)] ?? "unknown"})`).join("\n")}>
+          +{more}
+        </span>
+      )}
     </span>
   );
 }
@@ -306,12 +312,11 @@ function WorkspaceCard({
             </span>
           )}
           {branch && (
-            <span className="ws-badge ws-branch" title={branch.more > 0 ? `${branch.name} (+${branch.more} more)` : branch.name}>
+            <span className="ws-badge ws-branch" title={branch.also.length > 0 ? `${branch.name}\nalso: ${branch.also.join(", ")}` : branch.name}>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <line x1="6" y1="3" x2="6" y2="15" /><circle cx="18" cy="6" r="3" /><circle cx="6" cy="18" r="3" /><path d="M18 9a9 9 0 0 1-9 9" />
               </svg>
               <span className="ws-branch-name">{branch.name}</span>
-              {branch.more > 0 && <span className="ws-branch-more">+{branch.more}</span>}
             </span>
           )}
           <PrChips task={task} states={states} />
@@ -614,6 +619,7 @@ export function TaskWorkspace({
                 data-group={g.key}
                 data-first={gi === 0 ? "1" : undefined}
                 data-collapsed={g.folded ? "1" : "0"}
+                data-selecting={bulk.selection.size > 0 ? "1" : undefined}
               >
                 <GroupCheck select={bulk} keys={g.tasks.filter(selectableTask).map((t) => t.key)} name={g.label} />
                 <button type="button" className="tasks-group-toggle ws-group-toggle" aria-expanded={!g.folded} onClick={() => toggleGroup(g.key)}>

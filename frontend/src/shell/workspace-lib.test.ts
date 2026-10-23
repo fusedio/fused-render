@@ -274,11 +274,11 @@ test("messagePreview is empty when it equals the title", () => {
   expect(messagePreview({ title: "Hi", last_message: { role: "user", text: "Other", at: 1 } } as never)).toBe("Other");
 });
 
-import { pickBranch } from "./workspace-lib";
+import { orderPrs, pickBranch } from "./workspace-lib";
 
 test("pickBranch: a worktree branch beats the PR head, then the newest PR head", () => {
-  expect(pickBranch([{ branch: "wt-a" }, { branch: "wt-b" }, { branch: "wt-a" }], ["pr-x"])).toEqual({ name: "wt-a", more: 1 });
-  expect(pickBranch([{ branch: null }], [undefined, "pr-x", "pr-y"])).toEqual({ name: "pr-x", more: 0 });
+  expect(pickBranch([{ branch: "wt-a" }, { branch: "wt-b" }, { branch: "wt-a" }], ["pr-x"])).toEqual({ name: "wt-a", more: 1, also: ["wt-b"] });
+  expect(pickBranch([{ branch: null }], [undefined, "pr-x", "pr-y"])).toEqual({ name: "pr-x", more: 0, also: [] });
   expect(pickBranch([], [])).toBeNull();
 });
 
@@ -344,4 +344,10 @@ describe("portBadges", () => {
     expect(b[1].title).toBe("3000, 4000, 5173, 8000");
     expect(portBadges([3, 1, 2])[1].label).toBe("+2 ports");
   });
+});
+
+test("orderPrs: open first, then draft, unknown, closed and merged; stable inside a band", () => {
+  const refs = [1, 2, 3, 4, 5, 6].map((number) => ({ repo: "o/r", number }));
+  const states = { "o/r#1": "merged", "o/r#2": "open", "o/r#3": "closed", "o/r#4": "draft", "o/r#6": "open" };
+  expect(orderPrs(refs, states).map((r) => r.number)).toEqual([2, 6, 4, 5, 1, 3]);
 });

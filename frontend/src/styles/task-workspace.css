@@ -32,6 +32,7 @@
   gap: 6px;
 }
 .ws-card {
+  container-type: inline-size;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -108,6 +109,16 @@
 .ws-status {
   font-weight: 600;
 }
+/* Neutral facts recede: no border, a soft fill, muted ink. The badges that carry
+   meaning (status, uncommitted, unread, safe to archive, the PR pills) keep their
+   colour. */
+.ws-branch,
+.ws-bg,
+.ws-port {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  color: var(--fg-muted);
+}
 .ws-card[data-status="in_progress"] .ws-status {
   --ws-tone: var(--status-progress);
 }
@@ -141,7 +152,7 @@
   max-width: 65%;
   margin-left: auto;
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: flex-end;
   align-items: center;
   gap: 4px 6px;
@@ -154,7 +165,17 @@
 .ws-branch svg {
   flex: none;
 }
+/* The branch is the one shrinkable fact; everything else keeps its width, so the
+   facts stay on one line. */
+.ws-card-facts > * {
+  flex: none;
+}
+.ws-card-facts > .ws-branch {
+  flex: 0 1 auto;
+  min-width: 8ch;
+}
 .ws-branch-name {
+  min-width: 0;
   max-width: 28ch;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -163,7 +184,7 @@
 .ws-prs,
 .ws-bgs {
   display: inline-flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
   gap: 6px;
 }
@@ -178,6 +199,17 @@
 }
 .ws-pr-more {
   color: var(--fg-muted);
+  font-size: 11px;
+}
+/* A narrow card drops the message preview: line 2 is the project chip on the
+   left and the facts on the right. */
+@container (max-width: 640px) {
+  .ws-preview {
+    display: none;
+  }
+  .ws-card-facts {
+    max-width: 100%;
+  }
 }
 .ws-bg {
   max-width: 34ch;
@@ -186,7 +218,7 @@
   font-variant-numeric: tabular-nums;
 }
 .ws-port:hover {
-  --ws-tone: var(--fg);
+  color: var(--fg);
   text-decoration: none;
 }
 .ws-unread {
@@ -305,8 +337,10 @@
   box-sizing: border-box;
   height: 20px;
   padding: 0 7px;
-  border: 0.5px solid color-mix(in srgb, var(--fg) 25%, transparent);
-  border-radius: 5px;
+  border: 0;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  color: var(--fg-muted);
   flex: none;
 }
 
@@ -352,6 +386,20 @@
 }
 .tasks-group-check {
   margin-left: 2px;
+}
+/* Workspace group headers read as plain labels at rest: the select-all shows on
+   hover or focus-within, or while a selection exists, like the card checkboxes. */
+.ws-group-head > .tasks-group-check {
+  opacity: 0;
+  pointer-events: none;
+}
+.ws-group-head:hover > .tasks-group-check,
+.ws-group-head:focus-within > .tasks-group-check,
+.ws-group-head[data-selecting] > .tasks-group-check,
+.ws-group-head > .tasks-group-check:checked,
+.ws-group-head > .tasks-group-check:indeterminate {
+  opacity: 1;
+  pointer-events: auto;
 }
 /* The Workspace puts the checkbox where the ring stands and swaps the two. */
 .ws-mark {

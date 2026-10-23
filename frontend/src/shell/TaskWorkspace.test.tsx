@@ -125,14 +125,15 @@ test("background jobs show one count badge whose tooltip lists the titles", asyn
   expect(chips[0].props.title).toBe("a\nb\nc\nd\ne");
 });
 
-test("PR chips cap at 8 and the dot sits inside the .task-pr-num pill", async () => {
+test("PR chips cap at 3, open first, and the dot sits inside the .task-pr-num pill", async () => {
   serve();
   const prs = Array.from({ length: 10 }, (_, i) => ({ repo: "o/r", number: i + 1 }));
   const r = await render([task({ key: "a", prs } as Partial<Task>)]);
   const pills = r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.includes("task-pr-num"));
-  expect(pills).toHaveLength(8);
+  expect(pills).toHaveLength(3);
   for (const pill of pills) expect(pill.findAllByProps({ className: "task-pr-dot" }).length).toBe(1);
-  expect(text(r.root.findByProps({ className: "ws-pr-more" }))).toBe("+2");
+  expect(text(r.root.findByProps({ className: "ws-pr-more" }))).toBe("+7");
+  expect(r.root.findByProps({ className: "ws-pr-more" }).props.title.split("\n")).toHaveLength(7);
 });
 
 test("the message preview shows unless it repeats the title", async () => {
@@ -193,7 +194,7 @@ test("pressing x archives the task, hides the row and offers Undo, which un-arch
   expect(r.root.findAllByProps({ "data-key": "a" })).toHaveLength(1);
 });
 
-test("the branch chip shows the worktree branch, with +N for more, and is omitted when unknown", async () => {
+test("the branch chip shows the worktree branch, naming the others in its title, and is omitted when unknown", async () => {
   globalThis.fetch = mock(async (url: string) => {
     const reply: Record<string, unknown> = {
       "/api/tasks/ports": { ports: {} },
@@ -210,7 +211,8 @@ test("the branch chip shows the worktree branch, with +N for more, and is omitte
   }) as unknown as typeof fetch;
   const r = await render([task({ key: "a" }), task({ key: "b", started: 0 })]);
   const chip = r.root.findByProps({ "data-key": "a" }).findByProps({ className: "ws-badge ws-branch" });
-  expect(chip.props.title).toBe("feat/one (+1 more)");
+  expect(chip.props.title).toBe("feat/one\nalso: feat/two");
+  expect(r.root.findByProps({ "data-key": "a" }).findAllByProps({ className: "ws-branch-more" })).toHaveLength(0);
   expect(r.root.findByProps({ "data-key": "b" }).findAllByProps({ className: "ws-badge ws-branch" })).toHaveLength(0);
 });
 

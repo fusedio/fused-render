@@ -7,7 +7,7 @@
 // stops a Workspace rule from leaking into them.
 import type { Task, TaskHold } from "@platform/lib/api";
 import type { PrState } from "@platform/lib/prStatus";
-import { prKey, prRefsOf } from "@platform/lib/task-prs";
+import { prKey, prRefsOf, type PrRef } from "@platform/lib/task-prs";
 import { cardTitleLine, isDraftTask, usageLimitCaption } from "@shell/tasks-lib";
 
 /** What the rows' markers need beyond the task itself. */
@@ -204,7 +204,23 @@ export function capList<T>(items: readonly T[], max: number): { shown: T[]; more
   return { shown: items.slice(0, max), more: Math.max(0, items.length - max) };
 }
 
-export const MAX_PRS = 8;
+export const MAX_PRS = 3;
+
+/** `refs` with the open pull requests first, then drafts, then those whose state
+ *  is not known yet, then closed and merged; each band keeps its own order. */
+export function orderPrs<T extends PrRef>(
+  refs: readonly T[],
+  states: Readonly<Record<string, string | null | undefined>>,
+): T[] {
+  const rank = (r: T): number => {
+    const st = states[prKey(r)];
+    return st === "open" ? 0 : st === "draft" ? 1 : st === "closed" || st === "merged" ? 3 : 2;
+  };
+  return refs
+    .map((r, i) => ({ r, i, k: rank(r) }))
+    .sort((a, b) => a.k - b.k || a.i - b.i)
+    .map((x) => x.r);
+}
 
 /** The card's one background-job badge: "1 job" / "N jobs" (the running count,
  *  not the titles), and a tooltip naming every titled job, one per line. */
@@ -232,11 +248,11 @@ export function messagePreview(task: Task): string {
 export function pickBranch(
   holds: readonly Pick<TaskHold, "branch">[],
   prHeads: readonly (string | null | undefined)[],
-): { name: string; more: number } | null {
+): { name: string; more: number; also: string[] } | null {
   const wt = [...new Set(holds.map((h) => h.branch).filter((b): b is string => !!b))];
-  if (wt.length > 0) return { name: wt[0], more: wt.length - 1 };
+  if (wt.length > 0) return { name: wt[0], more: wt.length - 1, also: wt.slice(1) };
   const head = prHeads.find((h): h is string => !!h);
-  return head ? { name: head, more: 0 } : null;
+  return head ? { name: head, more: 0, also: [] } : null;
 }
 
 export type WorkspaceGroupKey = "needs" | "running" | "review" | "idle" | "clear";
