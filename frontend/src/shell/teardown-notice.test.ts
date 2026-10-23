@@ -2,7 +2,7 @@
 // told about what was kept, and why, in words: a silent keep is a leaked folder.
 import { describe, expect, test } from "bun:test";
 import type { TeardownKept, TeardownReport } from "@platform/lib/api";
-import { keptWorktreeNotice, keptReasonText } from "@shell/teardown-notice";
+import { batchKeptNotice, keptWorktreeNotice, keptReasonText } from "@shell/teardown-notice";
 
 const kept = (over: Partial<TeardownKept> = {}): TeardownKept => ({
   path: "/r/.claude/worktrees/feat-x",
@@ -50,5 +50,22 @@ describe("keptWorktreeNotice", () => {
     expect(n.title).toBe("Kept 2 worktrees");
     expect(n.detail).toBe("feat-x: 3 uncommitted files; b: 2 unpushed commits");
     expect(n.paths.length).toBe(2);
+  });
+});
+
+describe("batchKeptNotice", () => {
+  test("a bulk archive raises ONE notice naming every kept worktree", () => {
+    const n = batchKeptNotice([
+      { key: "a", report: report([kept({ path: "/r/w/one" })]) },
+      { key: "b", report: report([]) },
+      { key: "c", report: report([kept({ path: "/r/w/two", reasons: ["unpushed"], unpushed: 2 })]) },
+    ]);
+    expect(n?.title).toBe("Kept 2 worktrees from 2 archived tasks");
+    expect(n?.detail).toBe("one: 3 uncommitted files; two: 2 unpushed commits");
+    expect(n?.byKey.map((b) => b.key)).toEqual(["a", "c"]);
+  });
+  test("nothing kept is no notice; one kept is the single notice", () => {
+    expect(batchKeptNotice([{ key: "a", report: report([]) }, { key: "b", report: undefined }])).toBeNull();
+    expect(batchKeptNotice([{ key: "a", report: report([kept()]) }])?.title).toBe("Kept worktree feat-x");
   });
 });

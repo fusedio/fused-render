@@ -58,11 +58,74 @@ export function keptWorktreeNotice(
   };
 }
 
+export interface BatchKeptNotice extends KeptNotice {
+  /** Which task's worktrees to remove, for the one "Remove anyway". */
+  byKey: { key: string; paths: string[] }[];
+}
+
+/** ONE notice for a bulk archive: every task's kept worktrees together, or
+ *  null when nothing was kept. A batch of one is the single archive's notice. */
+export function batchKeptNotice(entries: { key: string; report: TeardownReport | undefined }[]): BatchKeptNotice | null {
+  const withKept = entries.filter((e) => (e.report?.kept ?? []).length > 0);
+  if (withKept.length === 0) return null;
+  const byKey = withKept.map((e) => ({ key: e.key, paths: e.report!.kept.map((k) => k.path) }));
+  if (withKept.length === 1) {
+    const one = keptWorktreeNotice(withKept[0].key, withKept[0].report);
+    return one ? { ...one, byKey } : null;
+  }
+  const kept = withKept.flatMap((e) => e.report!.kept);
+  return {
+    title: `Kept ${kept.length} worktrees from ${withKept.length} archived tasks`,
+    detail: kept.map((k) => `${folderName(k.path)}: ${keptReasonText(k)}`).join("; "),
+    paths: kept.map((k) => k.path),
+    byKey,
+  };
+}
+
+// While a bulk archive runs, the listener below collects instead of speaking,
+// so N archives raise one notice (`beginArchiveBatch().end()`), not N.
+let batch: { key: string; report: TeardownReport | undefined }[] | null = null;
+
+/** Start collecting kept-worktree reports; `end()` raises the one notice. */
+export function beginArchiveBatch(): { end: () => void } {
+  const mine: { key: string; report: TeardownReport | undefined }[] = [];
+  batch = mine;
+  return {
+    end: () => {
+      if (batch === mine) batch = null;
+      const n = batchKeptNotice(mine);
+      if (!n) return;
+      notify({
+        title: n.title,
+        detail: n.detail,
+        tier: "attention",
+        action: {
+          label: "Remove anyway",
+          onClick: () => {
+            void Promise.all(n.byKey.map((b) => removeTaskWorktrees(b.key, b.paths)))
+              .then((rs) => {
+                const left = rs.flatMap((r) => r.kept);
+                if (left.length > 0) {
+                  notify({ title: "Could not remove", detail: keptReasonText(left[0]), tone: "error" });
+                }
+              })
+              .catch(() => notify({ title: "Could not remove the worktrees", tone: "error" }));
+          },
+        },
+      });
+    },
+  };
+}
+
 /** Mounted once at the app root: renders nothing. */
 export function TeardownNotifier(): null {
   useEffect(
     () =>
       onTaskArchived((key, res) => {
+        if (batch) {
+          batch.push({ key, report: res.teardown });
+          return;
+        }
         const n = keptWorktreeNotice(key, res.teardown);
         if (!n) return;
         notify({
