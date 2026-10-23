@@ -89,17 +89,66 @@ function isTyping(target: EventTarget | null): boolean {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || el.isContentEditable === true;
 }
 
-/** Ports and holds for `keys`, refreshed on a timer while the page is visible. */
-function useRowFacts(keys: string[]): {
-  ports: Record<string, number[]>;
+/** `keys` in runs of at most `size`, the server's per-read cap. */
+function chunked(keys: string[], size: number): string[][] {
+  const out: string[][] = [];
+  for (let i = 0; i < keys.length; i += size) out.push(keys.slice(i, i + size));
+  return out;
+}
+
+/** Holds for EVERY key, read in chunks of MAX_IDS one after another and merged
+ *  as each lands. A chunk that fails marks only its own keys failed. */
+function useRowHolds(keys: string[]): {
   holds: Record<string, TaskHold[]>;
   covered: ReadonlySet<string>;
-  failed: boolean;
+  failed: ReadonlySet<string>;
 } {
-  const [ports, setPorts] = useState<Record<string, number[]>>({});
   const [holds, setHolds] = useState<Record<string, TaskHold[]>>({});
   const [covered, setCovered] = useState<ReadonlySet<string>>(new Set());
-  const [failed, setFailed] = useState(false);
+  const [failed, setFailed] = useState<ReadonlySet<string>>(new Set());
+  const joined = keys.join("\n");
+  useEffect(() => {
+    const ids = joined ? joined.split("\n") : [];
+    if (ids.length === 0) return;
+    let dead = false;
+    let busy = false;
+    const tick = async (): Promise<void> => {
+      if (busy || (typeof document !== "undefined" && document.visibilityState === "hidden")) return;
+      busy = true;
+      try {
+        for (const chunk of chunked(ids, MAX_IDS)) {
+          if (dead) return;
+          try {
+            const h = await fetchTaskHolds(chunk);
+            if (dead) return;
+            setHolds((prev) => {
+              const next = { ...prev };
+              for (const k of chunk) delete next[k];
+              return Object.assign(next, h);
+            });
+            setCovered((prev) => new Set([...prev, ...chunk]));
+            setFailed((prev) => (chunk.some((k) => prev.has(k)) ? new Set([...prev].filter((k) => !chunk.includes(k))) : prev));
+          } catch {
+            if (!dead) setFailed((prev) => new Set([...prev, ...chunk]));
+          }
+        }
+      } finally {
+        busy = false;
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => void tick(), POLL_MS);
+    return () => {
+      dead = true;
+      window.clearInterval(id);
+    };
+  }, [joined]);
+  return { holds, covered, failed };
+}
+
+/** Ports for the cards on screen only (at most MAX_IDS), on a timer. */
+function useRowPorts(keys: string[]): Record<string, number[]> {
+  const [ports, setPorts] = useState<Record<string, number[]>>({});
   const joined = keys.slice(0, MAX_IDS).join("\n");
   useEffect(() => {
     const ids = joined ? joined.split("\n") : [];
@@ -112,16 +161,6 @@ function useRowFacts(keys: string[]): {
           if (!dead) setPorts(p);
         })
         .catch(() => {});
-      fetchTaskHolds(ids)
-        .then((h) => {
-          if (dead) return;
-          setHolds(h);
-          setCovered((prev) => new Set([...prev, ...ids]));
-          setFailed(false);
-        })
-        .catch(() => {
-          if (!dead) setFailed(true);
-        });
     };
     tick();
     const id = window.setInterval(tick, POLL_MS);
@@ -130,7 +169,7 @@ function useRowFacts(keys: string[]): {
       window.clearInterval(id);
     };
   }, [joined]);
-  return { ports, holds, covered, failed };
+  return ports;
 }
 
 function PrChips({ task, states }: { task: Task; states: ReturnType<typeof usePrStatuses> }) {
@@ -353,14 +392,14 @@ export function TaskWorkspace({
   });
   const base = useMemo(() => workspaceTasks(tasks).filter((t) => !hidden.has(t.key)), [tasks, hidden]);
   const keys = useMemo(() => base.map((t) => t.key), [base]);
-  const { ports, holds, covered, failed } = useRowFacts(keys);
+  const { holds, covered, failed } = useRowHolds(keys);
   const prKeys = useMemo(
     () => base.flatMap((t) => prRefsOf(t).filter((r) => r.repo).map(prKey)),
     [base],
   );
   const prStates = usePrStatuses(prKeys);
   const factsFor = useCallback(
-    (t: Task): WorkspaceFacts => ({ holds, holdsReady: covered.has(t.key), holdsFailed: failed, prStates }),
+    (t: Task): WorkspaceFacts => ({ holds, holdsReady: covered.has(t.key), holdsFailed: failed.has(t.key), prStates }),
     [holds, covered, failed, prStates],
   );
   // Grouped by state; the flat list below is what j/k/n walk, so the keyboard
@@ -378,6 +417,7 @@ export function TaskWorkspace({
     [groups, expanded, collapsed],
   );
   const rows = useMemo(() => shownGroups.flatMap((g) => g.shown), [shownGroups]);
+  const ports = useRowPorts(useMemo(() => rows.map((t) => t.key), [rows]));
   const now = useNow();
   const showProject = useMemo(() => spansProjects(rows), [rows]);
 

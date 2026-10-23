@@ -428,3 +428,23 @@ test("a failed archive shows that task again and sends one error", async () => {
   expect(text(byClass(r, "ws-undo-text")[0])).toBe("Archived 2 tasks");
   expect(posts.length).toBeGreaterThan(0);
 });
+
+test("holds are read for every task, in chunks of at most 100; one chunk failing marks only its keys", async () => {
+  const posts = serve();
+  const base = globalThis.fetch;
+  globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
+    const ids: string[] = init?.body ? JSON.parse(String(init.body)).ids ?? [] : [];
+    if (url === "/api/tasks/holds" && ids.includes("k149")) {
+      posts.push({ url, body: { ids } });
+      return new Response("{}", { status: 500 });
+    }
+    return base(url, init);
+  }) as unknown as typeof fetch;
+  const tasks = Array.from({ length: 150 }, (_, i) => task({ key: `k${i}`, task_id: `T${i}`, started: 1000 - i }));
+  await render(tasks);
+  const asked = posts.filter((p) => p.url === "/api/tasks/holds").map((p) => (p.body as { ids: string[] }).ids);
+  expect(asked.every((ids) => ids.length <= 100)).toBe(true);
+  expect(new Set(asked.flat()).size).toBe(150);
+  const ports = posts.filter((p) => p.url === "/api/tasks/ports").flatMap((p) => (p.body as { ids: string[] }).ids);
+  expect(ports.length).toBeLessThanOrEqual(100);
+});
