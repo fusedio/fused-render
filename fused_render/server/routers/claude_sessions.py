@@ -1376,10 +1376,21 @@ def _gemini_recap_policy_path() -> str:
     except OSError:
         pass
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        fh.write(_GEMINI_RECAP_POLICY)
-    os.replace(tmp, path)
+    # A unique temp name per writer: two recaps refreshing the file at once
+    # must not race each other's rename (a shared `.tmp` would make the
+    # second `os.replace` raise FileNotFoundError).
+    fd, tmp = tempfile.mkstemp(prefix=_GEMINI_RECAP_POLICY_NAME + ".",
+                               dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(_GEMINI_RECAP_POLICY)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
     return path
 
 
