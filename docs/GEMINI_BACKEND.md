@@ -278,7 +278,14 @@ agent.py:      _HOST_FILES["gemini"] = gemini_host.py; _SELF_MINTED_ID_BACKENDS 
   into every record), and every hit must resolve inside the `tmp` dir it was
   globbed under (`_gemini_chat_files`). Relocate moves the fused transcript
   bucket only.
-- **D16** ACP only for sessions; `-p` only for the recap one-shot.
+- **D16** ACP only for sessions; `-p` only for the recap one-shot — which
+  runs with `--policy <deny-all>` (one rule: every tool denied, priority 999,
+  the engine's ceiling) besides `--approval-mode default` and `--skip-trust`:
+  the transcript tail it summarises is untrusted text, and the read-only
+  tools (read_file, glob, grep, web fetch) would otherwise run without
+  asking under `default` and could carry the server's cwd into the model's
+  context. Claude's recap has `--tools ""`, Codex's `-s read-only`; this is
+  Gemini's spelling of the same rule.
 - **D17** a fourth Preferences toggle `gemini_enabled` (default off). The PUT
   rule becomes "at least one of the four on"; `default_backend` re-pointed to
   the first enabled in ORDER. Everything else in COPILOT D17 applies with

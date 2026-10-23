@@ -8670,9 +8670,11 @@ def _gemini_chat_files(session_id: str) -> list[str]:
     (and `.json`, the older shape), where `<short>` is the id's first eight
     characters (`deriveSessionShortId` in the CLI; verified in 0.65.0's
     source, D15). Eight characters are not an id, so a hit counts only when
-    its text carries the WHOLE session id — the CLI writes `sessionId` into
-    every chat record — which also keeps a neighbour that happens to share
-    the prefix.
+    the chat's OWN recorded `sessionId` is this id: the first record of a
+    `.jsonl` (the CLI's metadata line) or the top-level key of a `.json` —
+    never a substring of the text, which another chat could carry in a
+    message that merely mentions this id. A neighbour sharing the prefix
+    stays, and so does an unreadable file.
 
     Same discipline as `_codex_rollout_files`: the id is refused unless it is
     a name, `glob.escape`d so it is never a pattern, and a hit is kept only
@@ -8706,9 +8708,32 @@ def _gemini_chat_files(session_id: str) -> list[str]:
                     head = fh.read(1 << 20).decode("utf-8", "replace")
             except OSError:
                 continue
-            if session_id in head:
+            if _gemini_chat_owner(head, ext) == session_id:
                 out.append(resolved)
     return out
+
+
+def _gemini_chat_owner(head: str, ext: str) -> str:
+    """The `sessionId` a Gemini chat file records as its own, from its first
+    MiB: the first line's record for `.jsonl`, the top-level object's key
+    for `.json` (the whole object when it fits, else the key where the CLI
+    writes it — first in the object). "" when the file does not say."""
+    if ext == ".jsonl":
+        first = head.lstrip().split("\n", 1)[0]
+        try:
+            record = json.loads(first)
+        except ValueError:
+            return ""
+    else:
+        try:
+            record = json.loads(head)
+        except ValueError:
+            m = re.match(r'\s*\{\s*"sessionId"\s*:\s*"([^"\\]*)"', head)
+            return m.group(1) if m else ""
+    if not isinstance(record, dict):
+        return ""
+    sid = record.get("sessionId")
+    return sid if isinstance(sid, str) else ""
 
 
 def _every_rule_behind(key: str) -> list[str]:

@@ -4130,9 +4130,11 @@ def _gemini_argv(run_dir: str, pane: bool, cli_mode: str | None,
         as two fragments that do not exist, and the spawn would die;
       * the permission bridge → NOTHING here: ACP carries permission
         requests to the host itself (D4). `mcp.json` is written when the
-        pane or terminal tools exist, with `--no-approve`, and the HOST
-        hands it to `session/new` as the request's `mcpServers` — ACP's
-        own way to add a stdio server, so no flag;
+        pane or terminal tools exist, or the target sits in a canvas clone
+        (the `canvas_screenshot` channel, D235 — the GEMINI.md names that
+        tool, so the server must offer it), with `--no-approve`, and the
+        HOST hands it to `session/new` as the request's `mcpServers` —
+        ACP's own way to add a stdio server, so no flag;
       * `--skip-trust`: fused is the client that chose this folder, as it
         is for Claude's spawn; without it a user who turned folder trust on
         gets a CLI that dies at startup in an untrusted cwd."""
@@ -4159,8 +4161,9 @@ def _gemini_argv(run_dir: str, pane: bool, cli_mode: str | None,
                              "--include-directories on commas\n" % d)
             continue
         cmd += ["--include-directories", d]
-    if pane or _terminal_tools_supported():
-        _write_mcp_config(run_dir, pane, approve=False)
+    canvas = _in_workbench_root(file)
+    if pane or _terminal_tools_supported() or canvas:
+        _write_mcp_config(run_dir, pane, approve=False, canvas=canvas)
     return cmd
 
 

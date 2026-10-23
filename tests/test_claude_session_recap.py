@@ -1056,6 +1056,14 @@ def test_a_gemini_recap_is_headless_trusted_in_process_and_cleans_its_chat_file(
     assert argv[argv.index("--approval-mode") + 1] == "default"
     assert "--skip-trust" in argv and argv[argv.index("-m") + 1] == "auto"
     assert kw["env"]["GEMINI_CLI_NO_RELAUNCH"] == "1" and kw["env"]["NO_BROWSER"] == "1"
+    # No tool at all: a deny-all policy file, under fused's own home, at the
+    # highest priority the engine accepts (<= 999).
+    policy = argv[argv.index("--policy") + 1]
+    assert policy.startswith(os.environ["FUSED_RENDER_HOME"])
+    with open(policy) as fh:
+        text = fh.read()
+    assert 'toolName = "*"' in text and 'decision = "deny"' in text and "priority = 999" in text
+    assert "priority = 1000" not in text
     assert removed == [sid_ok] and not chat.exists()
     # The failed run: "" — and its stderr JSON still names the file to remove.
     assert recap_mod._recap_generate(agent, target, SESSION, backend="gemini") == ""

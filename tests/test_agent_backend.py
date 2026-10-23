@@ -2240,6 +2240,26 @@ def test_the_gemini_prompt_never_speaks_claude(agent, home, tmp_path, monkeypatc
     assert "mcp__fused_approvals__" not in text
     assert "mcp_fused_approvals_app_state" in text
     assert not claude_only.search(text)
+    # A canvas target (D235): the GEMINI.md names `canvas_screenshot`, so the
+    # pane server must offer it — mcp.json is written even with no pane and
+    # no terminal origin, with the `--canvas-shots=` channel.
+    monkeypatch.delenv("FUSED_RENDER_ORIGIN", raising=False)
+    monkeypatch.setattr(agent, "_terminal_tools_supported", lambda: False)
+    _gemini_bin(tmp_path, monkeypatch)
+    canvas_run = tmp_path / "run-canvas"
+    canvas_run.mkdir()
+    agent._gemini_argv(str(canvas_run), False, "default", SID_GEMINI, "", "", [],
+                       str(clone / "index.html"))
+    assert "mcp_fused_approvals_canvas_screenshot" in \
+        (canvas_run / "gemini" / "GEMINI.md").read_text()
+    with open(canvas_run / "mcp.json") as fh:
+        server = json.load(fh)["mcpServers"]["fused_approvals"]
+    assert any(a.startswith("--canvas-shots=") for a in server["args"])
+    # ...and a plain file with neither stays without one.
+    plain_run = tmp_path / "run-plain"
+    plain_run.mkdir()
+    agent._gemini_argv(str(plain_run), False, "default", SID_GEMINI, "", "", [], str(page))
+    assert not (plain_run / "mcp.json").exists()
 
 
 def test_a_fresh_gemini_chat_learns_its_id_from_the_stream(

@@ -908,15 +908,24 @@ def test_erase_under_the_gemini_root_takes_the_cli_chat_files_too(
     other = _chat(gemini_home, "proj-a", "00000000-0000-4000-8000-000000000000")
     lookalike = _chat(gemini_home, "proj-a", GEMINI_SID, ts="2026-10-21T08-00",
                       body_sid="3f2c6c1e-ffff-4fff-8fff-ffffffffffff")
+    # Another chat that shares the prefix AND quotes this id in a message:
+    # its own recorded sessionId is what counts, so it stays.
+    mentions = _chat(gemini_home, "proj-a", GEMINI_SID, ts="2026-10-20T07-00",
+                     body_sid="3f2c6c1e-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+    with open(mentions, "a") as fh:
+        fh.write(json.dumps({"type": "user", "content": "resume %s please" % GEMINI_SID}) + "\n")
+    big_json = _chat(gemini_home, "proj-a", GEMINI_SID, ts="2026-10-19T06-00", ext=".json")
+    big_json.write_text(json.dumps({"sessionId": GEMINI_SID, "messages": ["x" * 3000000]}))
     assert tasks_mod._gemini_home() == str(gemini_home)
     assert sorted(tasks_mod._gemini_chat_files(GEMINI_SID)) == sorted(
-        os.path.realpath(str(p)) for p in (live, older, elsewhere))
+        os.path.realpath(str(p)) for p in (live, older, elsewhere, big_json))
     assert client.get("/api/tasks").json()["tasks"][0]["key"] == GEMINI_SID
     r = client.post("/api/tasks/erase", headers=FUSED, json={"key": GEMINI_SID})
     assert r.status_code == 200, r.text
     assert not path.exists()
     assert not live.exists() and not older.exists() and not elsewhere.exists()
-    assert other.exists() and lookalike.exists()
+    assert not big_json.exists()
+    assert other.exists() and lookalike.exists() and mentions.exists()
 
 
 def test_erase_of_a_claude_session_leaves_the_gemini_chat_files_alone(

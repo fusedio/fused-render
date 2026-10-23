@@ -1414,6 +1414,25 @@ def test_skills_list_marks_plugin_skills_as_read_by_claude(client, claude_dir, t
     assert _rows(client)["unslop"]["readers"] == ["claude"]
 
 
+def test_a_new_skill_is_placed_where_every_agent_that_is_on_reads_it(monkeypatch, tmp_path):
+    """`_placement`: with Gemini on (alone, or with Copilot/Codex) a new skill's
+    home is the shared `~/.agents/skills`, which Gemini reads; Claude gets a
+    link there only when it is on too. Claude alone keeps `~/.claude/skills`."""
+    from fused_render.claude_config import skills as skills_mod
+    agents = tmp_path / ".agents" / "skills"
+    monkeypatch.setattr(skills_mod, "_agents_dir", lambda: str(agents))
+    monkeypatch.setattr(skills_mod, "SKILLS_DIR", str(tmp_path / ".claude" / "skills"))
+    for on, home_in_agents, linked in (
+            (["gemini"], True, False),
+            (["gemini", "claude"], True, True),
+            (["codex"], True, False),
+            (["claude"], False, False)):
+        monkeypatch.setattr(skills_mod, "_enabled_clis", lambda on=on: list(on))
+        home, link = skills_mod._placement("my-skill")
+        assert (home.startswith(str(agents))) is home_in_agents, on
+        assert (link is not None) is linked, on
+
+
 def test_skills_read_write_address_a_user_skill_in_any_cli_dir(client, claude_dir, tmp_path):
     _skill(tmp_path / ".agents" / "skills" / "shared")
     r = _post(client, "skills", action="read", slug="shared").json()

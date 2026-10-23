@@ -294,7 +294,7 @@ def _placement(slug: str) -> tuple:
     """(home, link): where the one copy of a new skill lives, and the link
     that lets Claude read it from there (None when none is needed)."""
     on = _enabled_clis()
-    if "copilot" in on or "codex" in on:
+    if "copilot" in on or "codex" in on or "gemini" in on:
         return (lib.safe_subdir(_agents_dir(), slug),
                 lib.safe_subdir(SKILLS_DIR, slug) if "claude" in on else None)
     return lib.safe_subdir(SKILLS_DIR, slug), None

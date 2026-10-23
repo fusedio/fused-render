@@ -47,6 +47,7 @@ from pydantic import BaseModel
 from fused_render import _platform
 from fused_render import claude_health, session_liveness, tasks_store
 from fused_render.agent_backends import roots
+from fused_render.shell import storage
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server.common import _require_fused
 
@@ -1347,6 +1348,39 @@ def _recap_codex(agent, tail: str, titles: bool | None = None,
 #: What `-p` says when the whole prompt rides stdin: the CLI appends the flag's
 #: text AFTER the stdin input, so the pointer closes the message.
 _GEMINI_RECAP_POINTER = "Answer as the instructions above say."
+#: The recap's policy (Gemini's policy engine, `--policy <file>`): NO TOOL
+#: AT ALL. `--approval-mode default` only decides what asks; the read-only
+#: tools (read_file, glob, grep, web fetch) run without asking under it, so
+#: a transcript tail that carries an instruction to read something could
+#: pull the server's cwd into the model's context. One rule, every tool,
+#: the highest priority the engine takes (<= 999, verified 0.65.0 — 1000
+#: is refused as "tier overflow"); a denied call answers the model with
+#: "denied by policy" and the run goes on. Written once under fused's own
+#: home (the file must exist on disk for the flag).
+_GEMINI_RECAP_POLICY = (
+    "# fused-render: the recap one-shot takes no tools (claude_sessions._recap_gemini).\n"
+    "[[rule]]\n"
+    'toolName = "*"\n'
+    'decision = "deny"\n'
+    "priority = 999\n")
+_GEMINI_RECAP_POLICY_NAME = "gemini-recap-policy.toml"
+
+
+def _gemini_recap_policy_path() -> str:
+    """`<fused home>/gemini-recap-policy.toml`, written when missing or stale."""
+    path = os.path.join(storage.home_dir(), _GEMINI_RECAP_POLICY_NAME)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            if fh.read() == _GEMINI_RECAP_POLICY:
+                return path
+    except OSError:
+        pass
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(_GEMINI_RECAP_POLICY)
+    os.replace(tmp, path)
+    return path
 
 
 def _recap_gemini(agent, tail: str, titles: bool | None = None,
@@ -1367,6 +1401,11 @@ def _recap_gemini(agent, tail: str, titles: bool | None = None,
       (`JsonFormatter` in the CLI's source) — so the reply is read off a
       field, never scraped from a stream that also carries the CLI's own
       lines.
+    * `--policy <deny-all>`: no tool at all (`_GEMINI_RECAP_POLICY`) — the
+      Gemini twin of Claude's `--tools ""` and Codex's `-s read-only`: a
+      transcript tail is untrusted text, and the read-only tools would
+      otherwise run without asking and could carry the server's cwd into
+      the model's context;
     * `--approval-mode default`: a headless run never stops to ask, and a
       tool that would ask is refused instead of granted — the recap only has
       to read the prompt.
@@ -1397,6 +1436,7 @@ def _recap_gemini(agent, tail: str, titles: bool | None = None,
         proc = subprocess.Popen(
             [agent._gemini_bin(), "-p", _GEMINI_RECAP_POINTER, "-o", "json",
              "--approval-mode", "default", "--skip-trust",
+             "--policy", _gemini_recap_policy_path(),
              "-m", registry.get("gemini").default_model],
             env=agent._spawn_env(backend="gemini"),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,

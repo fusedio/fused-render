@@ -545,8 +545,8 @@ def test_tool_mapping_table(host_mod, tmp_path):
     assert (inp["id"], inp["text"]) == ("t1", "ls -la")
     name, inp = m("other", "terminal_send(id: t3, text: echo a, b; date: now)", None, [], "")
     assert (inp["id"], inp["text"]) == ("t3", "echo a, b; date: now")
-    name, inp = m("other", "canvas_shot(what: udf, udf: my_udf)", None, [], "")
-    assert name == "mcp__fused_approvals__canvas_shot" and inp["udf"] == "my_udf"
+    name, inp = m("other", "canvas_screenshot(what: udf, udf: my_udf)", None, [], "")
+    assert name == "mcp__fused_approvals__canvas_screenshot" and inp["udf"] == "my_udf"
     assert m("other", "app_state(keys: [a, b])", None, [], "")[1]["keys"] == "[a, b]"
     assert m("other", "other_tool(x: 1)", None, [], "")[0] == "other_tool(x: 1)"
     assert m("other", "echo (weather MCP Server)", None, [], "")[0] == "weather-echo"
