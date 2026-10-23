@@ -703,10 +703,10 @@ export async function stopJobs(
 }
 
 /**
- * STOP A ROW'S LIVE BACKGROUND JOB — the hover strip's "Stop job", on the List
- * row and the Board card alike (the card is a button, so its Stop could never
- * sit inside it; the row's strip floats over the right end of the row and
- * would cover an inline one — found in the live app). Same `.tasks-act` skin,
+ * STOP A ROW'S LIVE BACKGROUND JOB — the hover strip's "Stop job", on the Board
+ * card and the Cards wall (the card is a button, so its Stop could never sit
+ * inside it). Not on the List row since 2026-10-23 (Akshil: no Stop on the
+ * blue-ring row's hover). Same `.tasks-act` skin,
  * same hover reveal, same keyboard reach as Force start beside it.
  *
  * No local "stopped" state beyond the press: the CLI re-sends its background
@@ -4522,7 +4522,7 @@ function TaskNode({
             is `position: fixed` on <body>, so this element's own clipping has no
             say in whether the caption is readable. */}
         <span
-          className={"tasks-title" + (ahead ? " is-upcoming" : "") + (line.kind === "recap" ? " is-recap" : "") + (unread > 0 ? " is-unread" : "")}
+          className={"tasks-title" + (ahead ? " is-upcoming" : "") + (unread > 0 ? " is-unread" : "")}
           /* The caption is the WHOLE of whatever this line is one line of — the
              untruncated message when the row is showing one, the title when it
              is not — because what a caption is for is the text the clamp hides. */
@@ -4711,7 +4711,7 @@ function TaskNode({
             with the blue ring, and this says what Claude is still holding for
             it, naming the jobs on hover.
             The words spend the row's press (`pressRow`), like the marks above;
-            the Stop is in the hover strip (`StopJobButton`). */}
+            there is no Stop on the List row (see the hover strip below). */}
         {jobs && (
           <span
             className="tasks-row-queue tasks-row-queue--bg tasks-job-badge"
@@ -4801,16 +4801,10 @@ function TaskNode({
             CAPABILITY rather than a missing shortcut. Hover-revealed all the
             same (`.tasks-act`), so a list at rest grows no chrome — and by
             opacity rather than display, so a keyboard still reaches it. */}
-        {/* STOP THE LIVE BACKGROUND JOB (tasks-lib.jobBadge), the badge's
-            press — here and not inline, see `StopJobButton`. */}
-        {jobs && (
-          <StopJobButton
-            badge={jobs}
-            taskId={task.task_id}
-            className="tasks-act tasks-act--skip"
-            disabled={acting}
-          />
-        )}
+        {/* NO STOP FOR THE BACKGROUND JOB ON THE LIST ROW (Akshil,
+            2026-10-23). The blue-ring row's hover strip used to carry
+            `StopJobButton`; a job is stopped from its chat (or the Board
+            card's strip), and the List hover stays Archive-only for it. */}
         {canForceStart(task) && (
           <button
             type="button"
@@ -6457,8 +6451,9 @@ function TaskCard({
   const limit = usageLimitCaption(task);
   /** …and a live background job under this finished turn (tasks-lib.jobBadge;
    *  the card is drawn In Progress):
-   *  the List row's words on a line of their own, and its Stop in the hover
-   *  strip — the card IS a button, so the Stop cannot sit inside it. */
+   *  the List row's words on a line of their own, and a Stop in the hover
+   *  strip (the List row has none) — the card IS a button, so the Stop cannot
+   *  sit inside it. */
   const jobs = limit ? null : jobBadge(task);
   /** …and what a waiting card is waiting on — the List row's sentence. */
   const asking = attentionCaption(task);

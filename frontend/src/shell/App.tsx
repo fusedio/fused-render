@@ -991,7 +991,7 @@ export default function App({ config }: { config: Config }) {
                 navigateUrl("/preferences?s=monitor");
               }}
             >
-              Preferences › Labs
+              Preferences › Experimental flags
             </a>
             .
           </div>
@@ -1022,7 +1022,7 @@ export default function App({ config }: { config: Config }) {
                 navigateUrl("/preferences?s=marketplace");
               }}
             >
-              Preferences › Labs
+              Preferences › Experimental flags
             </a>
             .
           </div>

@@ -2528,10 +2528,18 @@ describe("the unread mark", () => {
     expect(TASKS_CSS).toMatch(
       /\.tasks-msg\.is-unread \.tasks-msg-body \{[^}]*font-weight: 600/,
     );
-    // A List row bolds its title too since Revision 2 (2026-10-23), on the same
-    // `unread > 0` that fills its ring, so the two never disagree.
+    // …and on a List row and a Cards-wall card too (Akshil, 2026-10-23: bold
+    // while unread, weight 100 once read) — the weight is the same claim on every
+    // surface, and it replaced the recap/message weight split.
     expect(ROW).toContain('(unread > 0 ? " is-unread" : "")');
+    expect(block(TASKS_CSS, ".tasks-title")).toContain("font-weight: 100");
     expect(block(TASKS_CSS, ".tasks-title.is-unread")).toContain("font-weight: 600");
+    expect(TASKS_CSS).not.toContain(".tasks-title.is-recap");
+    expect(CARDS).toContain('className={"task-card-title" + (task.unread > 0 ? " is-unread" : "")}');
+    expect(block(CARDS_CSS, ".task-card-title")).toContain("font-weight: 100");
+    expect(block(CARDS_CSS, ".task-card-title.is-unread")).toContain("font-weight: 600");
+    // …and says it: weight is not in the accessibility tree (CodeRabbit, #1913).
+    expect(CARDS).toContain("${task.unread > 0 ? `, ${taskUnreadLabel(task.unread)}` : \"\"}");
     // ...and the title is still a title: the words, then nothing an eye can see.
     // The words are `cardTitleLine`'s (tasks-lib) — the reader's newest
     // message, else the task's name — the same function the List row and the
@@ -2693,7 +2701,7 @@ describe("the unread mark", () => {
     // Akshil, 2026-08-18. The List is mostly history and the rows scheduled ahead
     // are the ones a reader is not being asked to read yet — so they recede
     // without leaving the list. The predicate is the lib's, asked once per row.
-    expect(ROW).toContain('className={"tasks-title" + (ahead ? " is-upcoming" : "") + (line.kind === "recap" ? " is-recap" : "") + (unread > 0 ? " is-unread" : "")}');
+    expect(ROW).toContain('className={"tasks-title" + (ahead ? " is-upcoming" : "") + (unread > 0 ? " is-unread" : "")}');
     // …and a DRAFT row reads the same (Akshil, 2026-09-15): unsent words are
     // work further ahead than a scheduled run, in the same lane.
     expect(VIEWS).toContain("const ahead = isUpcomingTask(task) || isDraftTask(task);");
@@ -12074,10 +12082,10 @@ describe("bold unread titles in every view (Revision 2)", () => {
     const CARDS_CSS = readFileSync(join(SHELL, "../styles/task-cards.css"), "utf8");
     const WS_CSS = readFileSync(join(SHELL, "../styles/task-workspace.css"), "utf8");
     expect(CARDS).toContain('(task.unread > 0 ? " is-unread" : "")');
-    expect(block(CARDS_CSS, ".task-card-title")).toContain("font-weight: 400");
+    expect(block(CARDS_CSS, ".task-card-title")).toContain("font-weight: 100");
     expect(block(CARDS_CSS, ".task-card-title.is-unread")).toContain("font-weight: 600");
     expect(WS).toContain('(task.unread > 0 ? " is-unread" : "")');
-    expect(block(WS_CSS, ".ws-title")).toContain("font-weight: 400");
+    expect(block(WS_CSS, ".ws-title")).toContain("font-weight: 100");
     expect(block(WS_CSS, ".ws-title.is-unread")).toContain("font-weight: 600");
   });
 });
