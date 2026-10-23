@@ -116,6 +116,12 @@ const SHARED_APPS = new Set(["apps/claude"]);
  * browser's six-socket budget, and the page's boot reads queueing behind them.
  */
 /*
+ * `shell/archive-confirm` is the fifth: the "this task is running, stop it and
+ * archive?" predicate and confirm hook the Tasks page's Archive doors share,
+ * and the chat's Kebab is one more door. One predicate, so the chat's Archive
+ * asks exactly when the cards, peek and calendar do; a copy would drift.
+ */
+/*
  * `terminalDockStore` (the one-boolean + one-slot-pending-request store the
  * status-bar terminal drawer and chip share) lives in `platform/lib`, not
  * shell, even though `TerminalDrawer.tsx` and the explorer's "Open in
@@ -130,6 +136,7 @@ const SHELL_OPEN_TO_APPS = new Set([
   "shell/tasks-lib",
   "shell/tasksPulse",
   "shell/TaskPeekWho",
+  "shell/archive-confirm",
 ]);
 
 const violations = [];
