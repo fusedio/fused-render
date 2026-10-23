@@ -7,6 +7,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { archiveTask, unarchiveTask } from "@platform/lib/api";
 import type { TeardownReport } from "@platform/lib/api";
 import type { Task } from "@platform/lib/api";
+import { Checkbox } from "@platform/shadcn/ui/checkbox";
 import { notify } from "@platform/lib/notifications";
 import { ConfirmDialog } from "@apps/explorer/FsDialogs";
 import { beginArchiveBatch, closedToastText } from "@shell/teardown-notice";
@@ -182,25 +183,23 @@ export function BulkBar({
   );
 }
 
+/** The app's styled checkbox, trimmed to the ring's scale (14px box, 10px mark). */
+const CHECK_SIZE = "size-3.5 [&_svg]:size-2.5";
+
 /** A group heading's select-all. Outside the fold's button, or stopped before
  *  it, so it never folds the group. `keys` is EVERY selectable task in the
  *  group, drawn or not (a capped or folded group included). */
 export function GroupCheck({ select, keys, name }: { select: BulkSelect; keys: readonly string[]; name: string }) {
-  const ref = useRef<HTMLInputElement | null>(null);
   const state = groupState(select.selection.selected, keys);
-  useEffect(() => {
-    if (ref.current) ref.current.indeterminate = state === "some";
-  }, [state]);
   if (keys.length === 0) return null;
   return (
-    <input
-      ref={ref}
-      type="checkbox"
-      className="tasks-check tasks-group-check"
+    <Checkbox
+      className={CHECK_SIZE + " tasks-check tasks-group-check"}
       aria-label={`Select all in ${name}`}
       checked={state === "all"}
+      indeterminate={state === "some"}
       onClick={(e) => e.stopPropagation()}
-      onChange={() => select.selection.setMany(keys, state !== "all")}
+      onCheckedChange={() => select.selection.setMany(keys, state !== "all")}
     />
   );
 }
@@ -210,13 +209,12 @@ export function GroupCheck({ select, keys, name }: { select: BulkSelect; keys: r
 export function RowCheck({ select, task, className = "" }: { select: BulkSelect; task: Task; className?: string }) {
   if (!select.selectable(task)) return null;
   return (
-    <input
-      type="checkbox"
-      className={("tasks-check tasks-row-check " + className).trim()}
+    <Checkbox
+      className={(CHECK_SIZE + " tasks-check tasks-row-check " + className).trim()}
       aria-label={`Select ${task.title || "task"}`}
       checked={select.selection.has(task.key)}
       onClick={(e) => e.stopPropagation()}
-      onChange={() => select.selection.toggle(task.key)}
+      onCheckedChange={() => select.selection.toggle(task.key)}
     />
   );
 }

@@ -394,19 +394,37 @@
 }
 
 /* -- Bulk select (Workspace, List and the grouped views) ----------------------
-   One checkbox look everywhere: a native input in the accent. It is hidden
-   until the row or card is hovered or holds focus, and stays drawn while any
-   task is selected, so the reader can see what is picked. */
+   One checkbox look everywhere: the app's shadcn Checkbox (a role=checkbox
+   button, 14px; TaskBulk.tsx), never a native input. It is hidden until the row
+   or card is hovered or holds focus, and stays drawn while any task is
+   selected, so the reader can see what is picked. */
 .tasks-check {
   margin: 0;
-  width: 14px;
-  height: 14px;
   flex: 0 0 auto;
-  accent-color: var(--accent);
   cursor: pointer;
 }
 .tasks-group-check {
   margin-left: 2px;
+}
+/* A heading's select-all (List, Board lanes) is quiet at rest too. It keeps its
+   box (opacity, not display), so showing it moves no caret or label. */
+.tasks-group-head .tasks-group-check,
+.schedule-tv-lane-headwrap > .tasks-group-check {
+  opacity: 0;
+  pointer-events: none;
+}
+.tasks-group-head:hover .tasks-group-check,
+.tasks-group-head:focus-within .tasks-group-check,
+.schedule-tv-lane-headwrap:hover > .tasks-group-check,
+.schedule-tv-lane-headwrap:focus-within > .tasks-group-check,
+[data-selecting] .tasks-group-head .tasks-group-check,
+[data-selecting] .schedule-tv-lane-headwrap > .tasks-group-check,
+.tasks-group-head .tasks-group-check[data-checked],
+.tasks-group-head .tasks-group-check[data-indeterminate],
+.schedule-tv-lane-headwrap > .tasks-group-check[data-checked],
+.schedule-tv-lane-headwrap > .tasks-group-check[data-indeterminate] {
+  opacity: 1;
+  pointer-events: auto;
 }
 /* Workspace group headers read as plain labels at rest: the select-all shows on
    hover or focus-within, or while a selection exists, like the card checkboxes. */
@@ -424,8 +442,8 @@
 .ws-group-head:hover > .tasks-group-check,
 .ws-group-head:focus-within > .tasks-group-check,
 .ws-group-head[data-selecting] > .tasks-group-check,
-.ws-group-head > .tasks-group-check:checked,
-.ws-group-head > .tasks-group-check:indeterminate {
+.ws-group-head > .tasks-group-check[data-checked],
+.ws-group-head > .tasks-group-check[data-indeterminate] {
   opacity: 1;
   pointer-events: auto;
 }
@@ -471,16 +489,21 @@
 .ws-card:hover .ws-check,
 .ws-card:focus-within .ws-check,
 .ws-card[data-selecting] .ws-check,
-.ws-card-head > .ws-check:checked {
+.ws-card-head > .ws-check[data-checked] {
   opacity: 1;
   pointer-events: auto;
 }
-/* The List's row: the checkbox sits in the row's own left padding, so no
-   column moves when it shows. */
+/* The List's row: the checkbox sits in the row's own left padding, inside the
+   list box and left of the caret, so no column moves when it shows. The padding
+   is 14px elsewhere; a row that carries a checkbox gets 24px (the thread's
+   offsets derive from it, so they follow) so the 14px box clears both edges. */
+.tasks-node:has(> .tasks-row > .tasks-row-check) {
+  --tasks-row-pad: 24px;
+}
 .tasks-row .tasks-row-check {
   position: absolute;
   top: 50%;
-  left: 0;
+  left: 5px;
   transform: translateY(-50%);
   z-index: 3;
   opacity: 0;
@@ -489,7 +512,7 @@
 .tasks-row:hover > .tasks-row-check,
 .tasks-row:focus-within > .tasks-row-check,
 [data-selecting] .tasks-row .tasks-row-check,
-.tasks-row .tasks-row-check:checked {
+.tasks-row .tasks-row-check[data-checked] {
   opacity: 1;
   pointer-events: auto;
 }
@@ -559,8 +582,8 @@
 .task-card:focus-within > .tasks-row-check,
 [data-selecting] .tasks-card-wrap > .tasks-row-check,
 [data-selecting] .task-card > .tasks-row-check,
-.tasks-card-wrap > .tasks-row-check:checked,
-.task-card > .tasks-row-check:checked {
+.tasks-card-wrap > .tasks-row-check[data-checked],
+.task-card > .tasks-row-check[data-checked] {
   opacity: 1;
 }
 .tasks-card-wrap[data-checked],

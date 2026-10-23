@@ -413,7 +413,8 @@ test("a header click collapses an open group and remembers it", async () => {
 
 // ---- Bulk archive ---------------------------------------------------------
 const byClass = (r: ReturnType<typeof create>, c: string) =>
-  r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.split(" ").includes(c) && typeof n.type === "string");
+  // The checkboxes are the shadcn Checkbox: match its element (the one carrying onCheckedChange), not the host button under it.
+  r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.split(" ").includes(c) && (/check/.test(c) ? (n.type as { name?: string }).name === "Checkbox" : typeof n.type === "string"));
 const press = async (el: { props: Record<string, (...a: unknown[]) => void> }, fn = "onClick") => {
   await act(async () => {
     el.props[fn]({ stopPropagation() {} });
@@ -432,9 +433,9 @@ test("the group checkbox selects the whole group, cards past the cap included", 
   expect(byClass(r, "ws-card")).toHaveLength(8);
   const head = byClass(r, "tasks-group-check");
   expect(head).toHaveLength(1);
-  await press(head[0] as never, "onChange");
+  await press(head[0] as never, "onCheckedChange");
   expect(text(byClass(r, "tasks-bulk-count")[0])).toBe("10 selected");
-  expect(r.root.findByProps({ className: "tasks-check tasks-group-check" }).props.checked).toBe(true);
+  expect(byClass(r, "tasks-group-check")[0].props.checked).toBe(true);
 });
 
 test("a folded group still selects all of its tasks, and the header does not fold", async () => {
@@ -446,7 +447,7 @@ test("a folded group still selects all of its tasks, and the header does not fol
   const check = byClass(r, "tasks-group-check")[0] as never as { props: Record<string, (...a: unknown[]) => void> };
   await act(async () => check.props.onClick({ stopPropagation: () => (stopped = true) }));
   expect(stopped).toBe(true);
-  await press(check, "onChange");
+  await press(check, "onCheckedChange");
   expect(text(byClass(r, "tasks-bulk-count")[0])).toBe("3 selected");
   expect(byClass(r, "ws-card")).toHaveLength(0);
 });
@@ -454,7 +455,7 @@ test("a folded group still selects all of its tasks, and the header does not fol
 test("a card checkbox toggles only that task; Clear empties the selection", async () => {
   serve();
   const r = await render(many(3));
-  await press(byClass(r, "ws-check")[1] as never, "onChange");
+  await press(byClass(r, "ws-check")[1] as never, "onCheckedChange");
   expect(text(byClass(r, "tasks-bulk-count")[0])).toBe("1 selected");
   await press(barButton(r, "Clear"));
   expect(byClass(r, "tasks-bulk-bar")).toHaveLength(0);
@@ -463,7 +464,7 @@ test("a card checkbox toggles only that task; Clear empties the selection", asyn
 test("Archive calls the archive once per selected key and raises ONE Undo for the batch", async () => {
   const posts = serve();
   const r = await render(many(5));
-  await press(byClass(r, "tasks-group-check")[0] as never, "onChange");
+  await press(byClass(r, "tasks-group-check")[0] as never, "onCheckedChange");
   await press(barButton(r, "Archive"));
   expect(archived(posts)).toEqual(["k0", "k1", "k2", "k3", "k4"]);
   expect(byClass(r, "ws-card")).toHaveLength(0);
@@ -479,7 +480,7 @@ test("a running task in the selection asks first, and nothing is archived until 
   const posts = serve();
   const r = await render([...many(2), ...many(1, { key: "run", task_id: "T9", status: "in_progress", started: 500 })]);
   const heads = byClass(r, "tasks-group-check");
-  for (const h of heads) await press(h as never, "onChange");
+  for (const h of heads) await press(h as never, "onCheckedChange");
   await press(barButton(r, "Archive"));
   expect(archived(posts)).toEqual([]);
   const dlg = r.root.findAllByProps({ title: "Archive tasks" })[0];
@@ -497,7 +498,7 @@ test("a failed archive shows that task again and sends one error", async () => {
       : (base as typeof fetch)(url, init),
   ) as unknown as typeof fetch;
   const r = await render(many(3));
-  await press(byClass(r, "tasks-group-check")[0] as never, "onChange");
+  await press(byClass(r, "tasks-group-check")[0] as never, "onCheckedChange");
   await press(barButton(r, "Archive"));
   expect(byClass(r, "ws-card").map((n) => n.props["data-key"])).toEqual(["k1"]);
   expect(text(byClass(r, "ws-undo-text")[0])).toBe("Archived 2 tasks");
@@ -530,7 +531,7 @@ test("the card's ring slot holds the List's Archive button, and pressing it arch
   const mark = r.root.findByProps({ className: "tasks-rowmark ws-mark" });
   const btn = mark.findByProps({ className: "tasks-act tasks-act--archive" });
   expect(btn.props["aria-label"]).toBe("Archive");
-  expect(r.root.findAllByProps({ className: "tasks-check tasks-row-check ws-check" }).length).toBeGreaterThan(0);
+  expect(byClass(r, "ws-check").length).toBeGreaterThan(0);
   await act(async () => {
     btn.props.onClick({ stopPropagation() {} });
   });
