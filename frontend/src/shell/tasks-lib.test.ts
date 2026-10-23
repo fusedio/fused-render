@@ -2529,14 +2529,14 @@ describe("the unread mark", () => {
       /\.tasks-msg\.is-unread \.tasks-msg-body \{[^}]*font-weight: 600/,
     );
     // …and on a List row and a Cards-wall card too (Akshil, 2026-10-23: bold
-    // while unread, regular once read) — the weight is the same claim on every
+    // while unread, weight 100 once read) — the weight is the same claim on every
     // surface, and it replaced the recap/message weight split.
     expect(ROW).toContain('(unread > 0 ? " is-unread" : "")');
-    expect(block(TASKS_CSS, ".tasks-title")).toContain("font-weight: 400");
+    expect(block(TASKS_CSS, ".tasks-title")).toContain("font-weight: 100");
     expect(block(TASKS_CSS, ".tasks-title.is-unread")).toContain("font-weight: 600");
     expect(TASKS_CSS).not.toContain(".tasks-title.is-recap");
     expect(CARDS).toContain('className={"task-card-title" + (task.unread > 0 ? " is-unread" : "")}');
-    expect(block(CARDS_CSS, ".task-card-title")).toContain("font-weight: 400");
+    expect(block(CARDS_CSS, ".task-card-title")).toContain("font-weight: 100");
     expect(block(CARDS_CSS, ".task-card-title.is-unread")).toContain("font-weight: 600");
     // ...and the title is still a title: the words, then nothing an eye can see.
     // The words are `cardTitleLine`'s (tasks-lib) — the reader's newest
