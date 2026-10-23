@@ -1912,7 +1912,7 @@ describe("where the when-row lives", () => {
   test("it is the WHEN property pill; the More options fold is gone", () => {
     const s = src();
     expect(s).toContain('<div className="nt-pills">');
-    expect(s).toContain('k="When"');
+    expect(s).toContain('ariaLabel="When"');
     expect(s).not.toContain("schedule-form-more");
     expect(s).not.toContain("<details");
     // No disclosure state either: a planning card or a draft with a saved time
@@ -2647,7 +2647,7 @@ describe("the path locks to the app the card was opened in", () => {
     // hide the path field". It used to sit disabled with a line saying why; the
     // whole row goes now, and the target is still what the scope seeded.
     const src = card();
-    expect(src).toMatch(/\{!lockTarget && \(\s*<PropPill\s+k="Where"/);
+    expect(src).toMatch(/\{!lockTarget && \(\s*<PropPill\s+k=""\s+icon=\{ICON_FOLDER\}\s+ariaLabel="Folder"/);
     expect(src).not.toContain("Tasks here run against this project.");
   });
 });
@@ -2905,7 +2905,7 @@ describe("property pills", () => {
 
   test("the pill row starts with Model, then Access, Where, When", () => {
     const s = src();
-    const order = ["Model", "Access", "Where", "When"].map((k) => s.indexOf(`k="${k}"`));
+    const order = ["Model", "Permissions", "Folder", "When"].map((k) => s.indexOf(`ariaLabel="${k}"`));
     expect(order[0]).toBeGreaterThan(-1);
     expect(order[0]).toBeLessThan(order[1]);
     expect(order[1]).toBeLessThan(order[2]);
@@ -2916,9 +2916,9 @@ describe("property pills", () => {
     expect(src()).toMatch(/pastNoteFor\(timePicked && pickedOk \? picked : null,/);
   });
 
-  test("the MODEL pill shows the model alone; Thinking stays in the popover", () => {
+  test("the MODEL pill shows the model and its thinking level, never with a ·", () => {
     const s = src();
-    expect(s).toContain('const modelText = taskRunLabel(runModels, model) || "Default";');
+    expect(s).toContain('const modelText = (taskRunLabel(runModels, model) || "Default")');
     expect(s).not.toMatch(/modelText[^;]*·/);
   });
 
@@ -2951,7 +2951,7 @@ describe("property pills", () => {
 
   test("four pills, in source order: Model, Access, Where, When", () => {
     const s = src();
-    const at = ["Model", "Access", "Where", "When"].map((k) => s.indexOf(`k="${k}"`));
+    const at = ["Model", "Permissions", "Folder", "When"].map((k) => s.indexOf(`ariaLabel="${k}"`));
     expect(at.every((i) => i > -1)).toBe(true);
     expect([...at].sort((a, b) => a - b)).toEqual(at);
     // …and they sit in the row that replaced the folder row.
