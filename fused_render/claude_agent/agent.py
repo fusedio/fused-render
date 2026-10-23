@@ -336,10 +336,11 @@ APP_STATE_TOOL = "app_state"
 # one kind of target whose page frames a workbench it can photograph.
 CANVAS_SHOT_TOOL = "canvas_screenshot"
 # How long the tool waits for the canvas page (permission_server
-# CANVAS_SHOT_TIMEOUT; one env var, read in both places). The MCP client's
-# per-call ceiling for a canvas session is set above this in
-# `_write_mcp_config`, so the tool's own "no page answered" sentence reaches
-# the model instead of the CLI's MCP-timeout error.
+# CANVAS_SHOT_TIMEOUT): the env var is read here AND forwarded into the
+# server's environment by `_write_mcp_config`, which also sets the MCP
+# client's per-call ceiling above it for a canvas session, so the tool's own
+# "no page answered" sentence reaches the model instead of the CLI's
+# MCP-timeout error.
 CANVAS_SHOT_WAIT = float(os.environ.get("FUSED_RENDER_CANVAS_SHOT_TIMEOUT", "100"))
 # The delimiters the PAGE wraps its send-time snapshot in. Stripped from every
 # user-facing copy of a message (the run's `meta.json`, hence the commit
@@ -2104,6 +2105,9 @@ def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True,
         # an allowlist of env vars plus exactly this dict, so an ambient
         # PYTHONUTF8 would not survive the spawn.
         "PYTHONUTF8": "1",
+        # The screenshot wait, so an override reaches the server (its default
+        # matches ours; the MCP ceiling below is computed from the same value).
+        "FUSED_RENDER_CANVAS_SHOT_TIMEOUT": str(CANVAS_SHOT_WAIT),
     }
     allow_path = _chat_allow_path(chat_id)
     if allow_path and approve:
@@ -3778,12 +3782,14 @@ def _canvas_shot_note(file: str) -> str:
     return (
         f" You can SEE this canvas: `{tool}` returns a screenshot — "
         "`what: \"canvas\"` for the whole graph as the user's viewport shows "
-        "it, `what: \"udf\"` for one UDF node's rendered output (map, table, "
-        "chart; `udf` names the node, else the node whose file you are on). "
-        "After you change a UDF, call it to check the output looks right "
-        "before you say it does; call it too when the user asks about what "
-        "they see. It needs the canvas open in Fused Render — if the result "
-        "says no page answered, ask the user to open the canvas and try again."
+        "it, `what: \"udf\"` for one UDF node's rendered output (table, "
+        "chart, text; `udf` names the node — required from the canvas chat, "
+        "optional on a node's own chat). After you change a UDF, call it once "
+        "to check the output looks right before you say it does; call it too "
+        "when the user asks about what they see. It needs the canvas open in "
+        "Fused Render: if the result says no page answered, do not call it "
+        "again this turn — ask the user to open the canvas. Map nodes (WebGL) "
+        "may come out blank or fail to capture; say so rather than guess."
     )
 
 

@@ -661,7 +661,7 @@ export default function CanvasWorkspace({
       );
       shotTimerRef.current = setTimeout(() => {
         if (shotPendingRef.current?.req === req) {
-          settleShot({ ok: false, error: "the workbench did not answer" });
+          settleShot({ ok: false, error: "the workbench did not answer — it may still be drawing a slow capture (map nodes); wait a minute before asking again" });
         }
       }, THUMBNAIL_TIMEOUT_MS);
     });

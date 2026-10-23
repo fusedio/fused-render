@@ -25,8 +25,12 @@ import { shotExt } from "../shots/encode";
  *  Under the server's 100 s timeout, so the sentence still arrives first. */
 export const CANVAS_SHOT_WAIT_S = 88;
 
-/** The pause before the one retry of a capture the workbench refused. */
+/** The pause before the one retry of a capture the workbench refused… */
 export const CAPTURE_RETRY_MS = 1500;
+/** …and how far into the request a retry may still start: a first attempt
+ *  that itself took the frame wait plus most of the capture window has no
+ *  room left for a second. */
+export const CAPTURE_RETRY_BUDGET_MS = 40_000;
 
 export const NO_CANVAS_SENTENCE =
   "no canvas page is open in Fused Render for this chat — ask the user to open the canvas, then try again";
@@ -59,11 +63,15 @@ export async function takeCanvasShot(shot: CanvasShot, row: CanvasShotRow): Prom
     }
     what = "udf";
   }
+  const began = Date.now();
   let a = await shot.capture(what, row.udf || undefined);
-  if (!a.ok && /could not be captured/.test(a.error)) {
-    // The workbench's html-to-image draws nothing once in a while — seen
-    // right after another capture restored the DOM. One more try, a beat
-    // later; a second refusal is the answer.
+  // The workbench's html-to-image draws nothing once in a while — seen right
+  // after another capture restored the DOM — and the host refuses while the
+  // user's own Screenshot seat has a capture out. One more try, a beat later,
+  // but only while the retry still fits the budget the canvas-less page and
+  // the tool wait out (CANVAS_SHOT_WAIT_S / 100 s): a late picture would lose
+  // the latch to a refusal anyway.
+  if (!a.ok && /could not be captured|already being taken/.test(a.error) && Date.now() - began < CAPTURE_RETRY_BUDGET_MS) {
     await new Promise((res) => setTimeout(res, CAPTURE_RETRY_MS));
     a = await shot.capture(what, row.udf || undefined);
   }

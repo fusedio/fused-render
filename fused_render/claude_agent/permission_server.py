@@ -79,6 +79,7 @@ stdout carries protocol only — diagnostics go to stderr.
 import base64
 import json
 import os
+import stat
 import sys
 import threading
 import time
@@ -109,12 +110,15 @@ APP_STATE_TIMEOUT = float(os.environ.get("FUSED_RENDER_APP_STATE_TIMEOUT", "20")
 # html-to-image (seconds, tens on a loaded Mac) under the page's own 45 s
 # relay timeout — 85 s of page budget, and a canvas-less page answers "open
 # the canvas" at 88 s. This sits above all of them, so whichever page answers,
-# its sentence lands before this fallback does.
+# its sentence lands before this fallback does. agent.py forwards the env var
+# into this server's environment and reads the same value for the MCP ceiling.
 CANVAS_SHOT_TIMEOUT = float(os.environ.get("FUSED_RENDER_CANVAS_SHOT_TIMEOUT", "100"))
 # The picture rides one stdio JSON line, base64, into the model's context: a
 # cap keeps a runaway capture from being that line. The page downsizes a
 # canvas shot already; a UDF node's PNG is a few hundred KB.
-CANVAS_SHOT_MAX_BYTES = 8 * 1024 * 1024
+# Under the model API's ~5 MB per-image limit, with room for base64 growth:
+# an oversized block in a tool_result fails the whole turn.
+CANVAS_SHOT_MAX_BYTES = int(4.5 * 1024 * 1024)
 POLL_INTERVAL = 0.15
 # How long a decision file that exists but has not parsed is treated as a write
 # in flight rather than as no answer. Mirrors agent.py's DECISION_WRITE_WINDOW.
@@ -847,9 +851,13 @@ def _handle_canvas_shot(args: dict) -> dict:
         # The containment check (agent.py: inside SHOTS) ran at answer time;
         # the leaf is opened WITHOUT following a symlink and sized from the
         # same descriptor, so nothing swapped in between is what gets read.
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        flags = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                 | getattr(os, "O_NONBLOCK", 0))
         with os.fdopen(os.open(image, flags), "rb") as fh:
-            size = os.fstat(fh.fileno()).st_size
+            st = os.fstat(fh.fileno())
+            if not stat.S_ISREG(st.st_mode):
+                return _text({"error": "the picture is not a regular file"})
+            size = st.st_size
             if size > CANVAS_SHOT_MAX_BYTES:
                 return _text({"error": "the picture is too large to hand over (%d MB; "
                                        "the cap is %d MB) — zoom the canvas out or ask "
@@ -1098,11 +1106,13 @@ CANVAS_SHOT_SCHEMA = {
         "Take a screenshot of the Fused canvas the user has open in "
         "fused-render and look at it: `what: \"canvas\"` is the whole graph as "
         "their viewport shows it, `what: \"udf\"` is ONE UDF node's rendered "
-        "output (map, table, chart) — the node named by `udf`, or the node "
-        "whose file this chat is on when `udf` is omitted. Call it after you "
-        "change a UDF to check that the output looks right, or when the user "
-        "asks about what they see. Returns the picture inline. Read-only; "
-        "the canvas must be open in Fused Render (the result says so if not)."
+        "output (table, chart, text) — the node named by `udf`, or on a node's "
+        "own chat the node whose file it is on. Call it after you change a UDF "
+        "to check that the output looks right, or when the user asks about what "
+        "they see. Returns the picture inline. Read-only. The canvas must be "
+        "open in Fused Render: if the result says no page answered, do not "
+        "call again this turn — tell the user to open the canvas. Map nodes "
+        "(WebGL) may come out blank or fail to capture."
     ),
     "inputSchema": {
         "type": "object",
@@ -1112,7 +1122,7 @@ CANVAS_SHOT_SCHEMA = {
             "udf": {"type": "string",
                     "description": "The UDF (node) name for `what: \"udf\"`; defaults to this chat's node."},
             "reason": {"type": "string",
-                       "description": "Optionally, what you are checking — shown to the user."},
+                       "description": "Optionally, what you are checking (recorded with the request)."},
         },
     },
 }
