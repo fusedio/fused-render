@@ -132,6 +132,13 @@ describe("holdReasons / holdMarker", () => {
     expect(holdReasons(task(), facts({ holds }))).toEqual([]);
     expect(workspaceGroup(task(), facts({ holds }), NOW)).toBe("clear");
   });
+  test("a server that sends no tracked_dirty falls back to dirty_files, never reading as clean", () => {
+    const holds = { s1: [{ path: "/w", dirty_files: 5, tracked_dirty: undefined, unpushed: 0, reasons: [] }] };
+    expect(holdReasons(task(), facts({ holds }))).toContain("5 uncommitted");
+    const zero = { s1: [{ path: "/w", dirty_files: 5, tracked_dirty: 0, unpushed: 0, reasons: [] }] };
+    expect(holdReasons(task(), facts({ holds: zero }))).not.toContain("5 uncommitted");
+    expect(holdReasons(task(), facts({ holds: zero })).some((r) => r.includes("uncommitted"))).toBe(false);
+  });
   test("a tracked edit holds the task in Your turn, not Safe to archive", () => {
     const holds = { s1: [{ path: "/w", dirty_files: 3, tracked_dirty: 1, unpushed: 0, reasons: ["dirty"] }] };
     expect(workspaceGroup(task(), facts({ holds }), NOW)).toBe("turn");
