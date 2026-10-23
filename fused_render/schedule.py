@@ -103,11 +103,13 @@ import contextlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
 
 from fused_render import _platform
+from fused_render._view_url_codec import canonical_fs_path
 from fused_render import (_startonce, claude_remote, claude_spawn, cron, recur,
                           session_cap, tasks_store)
 from fused_render.shell import storage
@@ -1534,7 +1536,14 @@ def _names_a_place(target: str) -> bool:
         return False
     if raw.startswith(("/", "~")):
         return True
-    return raw.startswith(("./", "../")) or raw in (".", "..")
+    if raw.startswith(("./", "../")) or raw in (".", ".."):
+        return True
+    if _platform.IS_WINDOWS:
+        # Backslash-relative forms and drive paths: on POSIX a backslash is a
+        # filename character, so those stay bare names there.
+        return (raw.startswith((".\\", "..\\"))
+                or bool(re.match(r"^[A-Za-z]:[\\/]", raw)))
+    return False
 
 
 def create(target: str, message: str, due=None, session_id: str = "",
@@ -2770,7 +2779,7 @@ def _attachments_block(entry: dict) -> str:
         noun = "a picture" if len(shots) == 1 else "pictures"
     what = noun if len(shots) == 1 and noun.startswith("a ") \
         else f"{len(shots)} {noun}"
-    payload = json.dumps([{"kind": a["kind"], "view": a["path"],
+    payload = json.dumps([{"kind": a["kind"], "view": canonical_fs_path(a["path"]),
                            "name": a["name"], "viewNote": ""} for a in shots])
     # The chat's own two kind sentences, minus the two kinds a scheduled run
     # cannot have: "pane" and "overview" are pictures of a screen taken at send

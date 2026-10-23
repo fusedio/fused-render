@@ -49,6 +49,7 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 from fused_render import _flavor
 from fused_render._branch import branch_dir
+from fused_render._view_url_codec import canonical_fs_path
 from fused_render.shell import storage
 from fused_render.shell.seed import fused_dir
 
@@ -171,26 +172,46 @@ def _remap(path: object, src: str, dst: str) -> str | None:
     migration part-way and leave the state half-rewritten. Annotating `str`
     made a type checker call that guard unreachable, which is an invitation to
     delete it.
+
+    The two sides arrive in different shapes and are compared in
+    ``_view_url_codec.canonical_fs_path`` form so they can meet: `src`/`dst`
+    come from ``os.path.abspath`` and are backslashed on Windows, while a path
+    that came back out of a view url is forward-slashed on every platform.
+    Comparing the raw strings matched nothing at all on Windows.
+
+    The result takes its separator style from `path`, so a url value goes back
+    canonical and an OS-native record keeps ``os.sep``. Canonicalization is a
+    1:1 character substitution, which is what lets the tail be spliced by
+    offset off the original string.
     """
     if not isinstance(path, str) or not path:
         return None
-    if path != src and not path.startswith(src + "/"):
+    csrc, cpath = canonical_fs_path(src), canonical_fs_path(path)
+    if cpath != csrc and not cpath.startswith(csrc + "/"):
         return None
-    return dst + path[len(src):]
+    return (canonical_fs_path(dst) if cpath == path else dst) + path[len(src):]
 
 
 def _rooted(segments: list[str]) -> str:
     """Decoded url segments -> the absolute path they name, mirroring
-    bookmarks._decode_fs_path (the leading slash goes back on)."""
-    return "/" + "/".join(segments)
+    bookmarks._decode_fs_path (a Windows drive path is already absolute; a
+    POSIX one needs its leading slash back)."""
+    joined = "/".join(segments)
+    if len(joined) == 2 and joined[0].isalpha() and joined[1] == ":":
+        return joined + "/"
+    if len(joined) >= 3 and joined[0].isalpha() and joined[1] == ":" and joined[2] == "/":
+        return joined
+    return "/" + joined
 
 
 def _encode(path: str) -> str:
     """Absolute path -> url path segments, mirroring
-    _view_url_codec.view_url_path. A backslash is a legal filename character
-    ("weird\\name.html") and stays inside its segment."""
+    _view_url_codec.view_url_path — including its rule that ONLY a drive-letter
+    path has its backslashes normalized. An unconditional replace here split a
+    legal POSIX filename ("weird\\name.html") into two segments and wrote a
+    bookmark for a path that does not exist."""
     return "/".join(quote(seg, safe="!*'()")
-                    for seg in path.lstrip("/").split("/") if seg)
+                    for seg in canonical_fs_path(path).lstrip("/").split("/") if seg)
 
 
 def _remap_url(url: object, src: str, dst: str) -> str | None:
