@@ -3,7 +3,6 @@
 // close button, an Undo toast and a keyboard map. Its rules live in
 // workspace-lib; this file draws them and runs the two polls the rows need
 // (ports and holds), asked for the visible rows only.
-import "../styles/task-pr-dot.css";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   archiveTask,
