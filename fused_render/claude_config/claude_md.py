@@ -24,7 +24,7 @@ Python round-trip); this module only discovers, deletes, and reveals.
 
 main(action=...):
   list   -> {files: [{path, dir, name, size, mtime, empty, scope}], engine}
-  delete -> {ok, committed?}  params: path  (basename-allowlisted)
+  delete -> {ok}  params: path  (basename-allowlisted)
   open   -> {ok}              params: path  (reveal in OS explorer)
 """
 import json
@@ -140,33 +140,9 @@ def main(action: str = "list", path: str = "") -> dict:
         lib.reveal(os.path.dirname(real))
         return {"ok": True}
 
-    if action == "commit":
-        # Fold an already-written edit into the config repo's history. The
-        # page saves file content through the shell's own /api/fs/write (this
-        # module never handles content), so a save landing inside ~/.claude
-        # would otherwise sit as uncommitted drift with nothing on the page
-        # surfacing it. Outside the config repo there is nothing to commit —
-        # a no-op, not an error, so the caller doesn't need to know where the
-        # boundary is.
-        claude_root = os.path.realpath(lib.CLAUDE_DIR) + os.sep
-        if not real.startswith(claude_root):
-            return {"ok": True, "committed": None}
-        rel = real[len(claude_root):]
-        with lib.config_lock():
-            committed = lib.commit(f"Edit {rel}", pathspec=rel)
-        return {"ok": True, "committed": committed}
-
     if action == "delete":
-        # Inside the config repo the deletion is committed like any other
-        # config change; project files live in their own repos — plain unlink.
-        claude_root = os.path.realpath(lib.CLAUDE_DIR) + os.sep
-        if real.startswith(claude_root):
-            rel = real[len(claude_root):]
-            with lib.config_lock():
-                os.remove(real)
-                committed = lib.commit(f"Delete {rel}", pathspec=rel)
-            return {"ok": True, "committed": committed}
-        os.remove(real)
+        with lib.config_lock():
+            os.remove(real)
         return {"ok": True}
 
     return {"ok": False, "error": f"unknown action: {action}"}

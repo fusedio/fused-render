@@ -19,7 +19,7 @@ What differs, by design:
   renderer per window), started on the first Chromium window and shut down
   at quit (`shutdown`) — CEF cannot be initialised twice in a process, so
   switching the preference off does NOT shut it down;
-* its own profile (`<base home>/chromium/profile`): Chromium's localStorage
+* its own profile (`chromium.profile_dir()`): Chromium's localStorage
   is not WebKit's, so the shell's state (sidebar, bookmarks cache) is per
   engine; the server-side state is shared as always;
 * `evaluateJavaScript:` cannot return a value (CEF has no synchronous eval
@@ -103,14 +103,13 @@ def load_error() -> str | None:
 
 
 def _load() -> None:
-    art = chromium.artifact()
-    if art is None or not chromium.is_ready(art):
+    if not chromium.is_ready():
         raise RuntimeError("engine not on disk")
-    engine_dir = chromium.engine_dir(art)
-    fw = chromium.framework_path(art)
+    engine_dir = chromium.engine_dir()
+    fw = chromium.framework_path()
     objc.loadBundle("FusedChromium", globals(), bundle_path=fw)
     engine_cls = objc.lookUpClass("FRChromiumEngine")
-    cache = os.path.join(chromium.engines_root(), "profile")
+    cache = chromium.profile_dir()
     # Owner-only, and enforced on an existing dir too: with the mock keychain
     # the file mode is what guards the profile (cookies, local storage).
     os.makedirs(cache, mode=0o700, exist_ok=True)

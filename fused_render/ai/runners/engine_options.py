@@ -23,7 +23,18 @@ one instead.
 does not: an ignored option is refused here because it is undetectable, and word
 timings are detectable — honouring them puts a `words` list on the segment and
 declining leaves the key off, so a caller reads which happened off the reply.
-It is answered best-effort in `mlx_whisper/worker.py`, where the decline lives.
+It is answered best-effort in `mlx_whisper/worker.py` and `faster_whisper/worker.py`
+(both formats there, D1423), where the decline lives.
+
+**Parakeet on the faster-whisper runner (D1423) is refused by MODEL, not by
+runner code** (`transcribe_only_or_raise`, below): that code also serves
+Whisper, which answers all three options, so only the MODEL can say no. The
+endpoint asks it of the cached snapshot's layout (`hub_cache.is_sherpa_
+transducer`) or, for a model not downloaded yet, the curated row's
+`transcribeOnly` flag, and `faster_whisper/worker.py` asks it again on a sherpa
+model before a row is touched. `task: "translate"`, a pinned `language`
+(anything but unset or `"auto"`) and `initialPrompt` are refused; its reply
+carries `language: null`.
 
 **This module is where that rule lives, once**, for exactly the reason
 `diarize.speakers_or_raise` sits where it does. The endpoint refuses first,
@@ -156,4 +167,38 @@ def unsupported_or_raise(runner_code, *, task=None, language=None,
         raise ValueError(rules["mask"])
     if image and "image" in rules:
         raise ValueError(rules["image"])
+    return None
+
+
+#: What a TRANSCRIBE-ONLY MODEL (Parakeet, D1423) cannot do, keyed like a
+#: `UNSUPPORTED` row but looked up by what the MODEL is rather than by runner
+#: code — the faster-whisper runner's code also serves Whisper, which does all
+#: three. The sentences name the way out, a Whisper model, as the table's do.
+_WHISPER_WAY_OUT = "a Whisper model such as deepdml/faster-whisper-large-v3-turbo-ct2"
+TRANSCRIBE_ONLY_MODEL = {
+    "task": ("Parakeet transcribes only; 'translate' needs " + _WHISPER_WAY_OUT),
+    "language": (
+        "Parakeet detects its own language and cannot be pinned to one; "
+        "'language' needs " + _WHISPER_WAY_OUT),
+    "initialPrompt": (
+        "Parakeet is a transducer with no text to condition on, so "
+        "'initialPrompt' is not supported; it needs " + _WHISPER_WAY_OUT),
+}
+
+
+def transcribe_only_or_raise(*, task=None, language=None, initial_prompt=None):
+    """`ValueError` if a transcribe-only MODEL was asked for `translate`, a
+    pinned language or an initial prompt, else None.
+
+    `"auto"` is "not pinned" (the one spelling of "detect it", SPEC AI-10g) and
+    is treated as unset. Asked at the endpoint — from the model's cached layout,
+    or its curated row when it is not downloaded yet — before any job row exists,
+    and again by the worker on arrival: the same rule, so one sentence.
+    """
+    if task and task != TRANSCRIBE:
+        raise ValueError(TRANSCRIBE_ONLY_MODEL["task"])
+    if language and str(language).lower() != "auto":
+        raise ValueError(TRANSCRIBE_ONLY_MODEL["language"])
+    if initial_prompt:
+        raise ValueError(TRANSCRIBE_ONLY_MODEL["initialPrompt"])
     return None

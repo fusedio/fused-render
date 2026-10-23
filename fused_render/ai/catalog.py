@@ -315,8 +315,9 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "comfortable on 16GB.",
         },
         # Bonsai 27B (prism-ml). The family ships eight repos and most of them
-        # cannot run here: the GGUF builds are llama.cpp's format, and the AWQ
-        # builds are both AWQ and image-text-to-text. The MLX ones are what is
+        # cannot run here: the Bonsai 2 PQ2_0 GGUF fails to load on 0.3.29's
+        # llama.cpp with "invalid ggml type 142" (see D1413 before re-testing;
+        # the v1 GGUFs and PTQ1_0 were not tested), and the AWQ builds are both AWQ and image-text-to-text. The MLX ones are what is
         # left, and only the 2-bit is listed — the 1-bit sibling is omitted
         # deliberately rather than forgotten (see the note below).
         #
@@ -1067,6 +1068,26 @@ SUGGESTIONS: dict[str, list[dict]] = {
                     "punctuation turbo gets right.",
         },
         {
+            # The runner's SECOND format (D1423): a sherpa-onnx int8 transducer,
+            # not a CTranslate2 conversion — `faster_whisper/worker.py` reads it
+            # beside Whisper. Not `recommended`: it has no translate and covers
+            # 25 European languages, so turbo stays the answer for anyone who
+            # does not know they want this one.
+            "id": "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
+            "params": "600M",
+            "quantization": "ONNX int8",
+            "label": "Parakeet TDT 0.6B v3 (sherpa-onnx int8)",
+            "nickname": "Parakeet v3",
+            "size_gb": 0.67,
+            # Read by `/api/ai/transcribe` to refuse `translate`, a pinned
+            # `language` and `initialPrompt` before a job exists, for a model
+            # that is not downloaded yet (a cached one is read off its files).
+            "transcribeOnly": True,
+            "note": "25 European languages with punctuation and word timings, "
+                    "several times faster than Whisper turbo on a CPU. "
+                    "Transcribes only (no translate). CC-BY-4.0.",
+        },
+        {
             "id": "deepdml/faster-whisper-large-v3-turbo-ct2",
             "params": "809M",
             "recommended": True,
@@ -1643,6 +1664,8 @@ SUGGESTIONS: dict[str, list[dict]] = {
 _SHARED_SUGGESTIONS = {
     "diffusers-image-cuda": "diffusers-image",
     "diffusers-image-rocm": "diffusers-image",
+    # Same recipes, same safetensors; only the torch wheel differs.
+    "vision-torch-cuda": "vision-torch",
     "llamacpp-text-vulkan": "llamacpp-text",
     # Hardware variants of `onnx-embed` — same repos, same `onnx/` graphs, a
     # different execution provider — for the identical reason. The three ONNX

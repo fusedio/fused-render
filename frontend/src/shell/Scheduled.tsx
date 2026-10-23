@@ -1068,10 +1068,9 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
       return;
     }
     const key = q.get("draft") ?? "";
-    const at = new Date(Date.now() + NEW_LINK_LEAD_MS);
     // A `?new=1` WITH NO KEY is the app page's own "+ New task" link: there is
-    // no chat behind it and nothing to read, so the card opens on the lead date
-    // in this tick, exactly as it always has.
+    // no chat behind it and nothing to read, so the card opens on Now ("blank",
+    // the same as the page's own "+ New task" button), not on a lead time.
     if (!key) {
       // …THOUGH IT MAY STILL SAY WHERE IT CAME FROM. A Schedule pressed in an
       // EMPTY never-sent composer has no record to hand over — a draft with no
@@ -1086,7 +1085,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
       // empty id as a form nobody has minted — so a settings-only change on this
       // blank card still writes no Untitled row. See `NewJobModal`'s `draftId`.
       openForm(
-        at,
+        "blank",
         null,
         from ? { key: "", from } : NO_HOP,
         at0 ? { id: "", form: { target: at0 } } : null,

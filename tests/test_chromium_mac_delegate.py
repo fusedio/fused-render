@@ -238,9 +238,9 @@ def test_delegate_methods_carry_explicit_objc_signatures():
 def test_available_is_false_and_sticky_when_the_engine_is_not_on_disk(mac, monkeypatch):
     from fused_render import chromium
 
-    monkeypatch.setattr(chromium, "artifact", lambda *a, **k: None)
+    monkeypatch.setattr(chromium, "is_ready", lambda *a, **k: False)
     assert mac.available() is False
     assert "not on disk" in mac.load_error()
     # sticky: a later call does not retry (CEF init is once per process)
-    monkeypatch.setattr(chromium, "artifact", lambda *a, **k: (_ for _ in ()).throw(AssertionError("retried")))
+    monkeypatch.setattr(chromium, "is_ready", lambda *a, **k: (_ for _ in ()).throw(AssertionError("retried")))
     assert mac.available() is False

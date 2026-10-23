@@ -48,7 +48,7 @@ will load it (`catalog.py`), and an MLX checkpoint on a Linux machine is a
 download that cannot be used.
 
 **The runner now follows the MODEL, and the preference below is the
-tie-breaker** (D1423). `resolve_for_model(capability, model_id)` is what every
+tie-breaker** (D1431). `resolve_for_model(capability, model_id)` is what every
 caller with a model in hand asks: a per-model pin first (when that runner can
 run here), then the available runners whose format check reads the model's
 cached snapshot — the capability's preference choosing among them, registry
@@ -1296,8 +1296,8 @@ _RUNNERS: tuple[Runner, ...] = (
     # **This row's own history is worth keeping rather than deleting.** It
     # shipped BELOW three `transformers-text*` rows precisely so `auto` could
     # never reach it: `llamacpp_text/pyproject.toml` records that the
-    # maintainer's wheel index is a coin-flip per release on macOS arm64 (4 of
-    # 16 sampled releases fail `testzip()`), and a capability whose INSTALL can
+    # maintainer's wheel index is a coin-flip per release on macOS arm64 (13 of
+    # 17 sampled releases fail `testzip()`), and a capability whose INSTALL can
     # silently fail is a poor thing to hand a machine that did not ask for it.
     # D416 removed the rows that made "never a fallthrough" possible, on a
     # measurement this engine won outright — 4.2x the throughput of transformers
@@ -1515,8 +1515,12 @@ _RUNNERS: tuple[Runner, ...] = (
         # machine gets whenever the MLX row above it is unavailable — and
         # that CPU path is still, in the module's own words, "several times
         # faster than real time".
-        note="Transcribes on an NVIDIA GPU when available, otherwise the "
-             "CPU. Several times faster than real time.",
+        # Whisper takes CUDA when there is one; Parakeet (D1423, the runner's
+        # second format) is CPU-only here — so the GPU clause is scoped to
+        # Whisper and the CPU fallback is what both share.
+        note="Transcribes with Whisper or Parakeet — Whisper on an NVIDIA GPU "
+             "when available, otherwise the CPU. Several times faster than "
+             "real time.",
         _available=_always,
     ),
     # Embeddings, the fourth capability, arranged like the other three: MLX takes
@@ -1675,8 +1679,25 @@ _RUNNERS: tuple[Runner, ...] = (
              "probabilities. Under 1 GB of RAM.",
         _available=_apple_silicon,
     ),
-    # Image understanding on torch (SPEC AI-33). Apple Silicon only for now:
-    # it is the one platform the MPS path was measured on.
+    # Image understanding on torch (SPEC AI-33). The CUDA row below is the
+    # NVIDIA variant, shipped UNMEASURED (nobody on the team has an NVIDIA box;
+    # the worker's `cuda` device branch is its only evidence). The Apple row
+    # after it stays the measured one. It leads by the GPU-first ordering rule
+    # (the comment block above this table). This pair is accelerated vs
+    # accelerated, and `_cuda` and `_apple_silicon` never both pass on one
+    # machine, so the order is convention here, not resolution.
+    Runner(
+        code="vision-torch-cuda",
+        capability=VISION,
+        folder=os.path.join(RUNNERS_DIR, "vision_torch_cuda"),
+        label="PyTorch Vision (CUDA)",
+        short_label="PyTorch Vision (CUDA)",
+        family_label="PyTorch Vision",
+        note="Captions, answers questions about, and finds objects in images "
+             "on an NVIDIA GPU. 1 to 9 GB of GPU memory. Not yet measured on real "
+             "hardware.",
+        _available=_cuda,
+    ),
     Runner(
         code="vision-torch",
         capability=VISION,
@@ -1923,7 +1944,7 @@ def resolve(capability: str) -> Resolution:
 
 
 def model_pin(model_id: str) -> str:
-    """The user's per-MODEL engine pin (D1423) — `AUTO` when there is none.
+    """The user's per-MODEL engine pin (D1431) — `AUTO` when there is none.
     Read per resolution and defended exactly as `preferred_code` is."""
     try:
         from fused_render.shell import prefs
@@ -1956,7 +1977,7 @@ def _join_reasons(*reasons: str) -> str:
 
 def resolve_for_model(capability: str, model_id: str,
                       pinned: str | None = None) -> Resolution:
-    """Which runner serves `model_id` as `capability` here (D1423).
+    """Which runner serves `model_id` as `capability` here (D1431).
 
     The format classifier (`formats.loaders`, via the cached reading) is the one
     source of which runners can READ a repo, so the runner follows the model

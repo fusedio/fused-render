@@ -1233,3 +1233,107 @@ def test_spawn_helper_forwards_isolate_mcp_only_when_true(monkeypatch):
     claude_spawn.spawn_helper("/t", "p", "auto", isolate_mcp=True)
     assert "isolate_mcp" not in seen[0]
     assert seen[1]["isolate_mcp"] is True
+
+
+def _account_models():
+    """What `copilot_health.normalize_models` stores for an account whose
+    plan carries a GPT id Codex also lists, a Claude id that takes no
+    effort, and a GPT id with its own effort list and default."""
+    return [
+        {"id": "gpt-6-luna", "label": "GPT-6 Luna", "reasoning": True,
+         "efforts": ["low", "medium", "high", "xhigh"], "default_effort": "high",
+         "category": "powerful", "vendor": "Azure OpenAI", "multiplier": 1},
+        {"id": "claude-sonnet-4.5", "label": "Claude Sonnet 4.5", "reasoning": False,
+         "efforts": [], "default_effort": "", "category": "versatile",
+         "vendor": "Anthropic", "multiplier": 1},
+        {"id": "gpt-5.4-mini", "label": "GPT-5.4 mini", "reasoning": True,
+         "efforts": ["low", "medium", "high"], "default_effort": "",
+         "category": "lightweight", "vendor": None, "multiplier": 0},
+    ]
+
+
+def test_the_catalog_serves_the_accounts_models_when_the_snapshot_has_them(
+        client, monkeypatch):
+    """Copilot's model list is per account: once the health snapshot carries
+    the CLI's `models.list`, the catalog row serves THAT, `auto` first, each
+    model with the efforts it takes — and the static shortlist otherwise."""
+    from fused_render import claude_health, codex_health, copilot_health
+    monkeypatch.setattr(claude_health, "cached", lambda: None)
+    monkeypatch.setattr(codex_health, "cached", lambda: None)
+    snap = {"found": True, "signed_in": True, "fingerprint": "x",
+            "models": _account_models()}
+    monkeypatch.setattr(copilot_health, "cached", lambda: snap)
+    _enable_copilot()
+    row = next(b for b in client.get("/api/agent-backends").json()["all"]
+               if b["id"] == "copilot")
+    assert [m["id"] for m in row["models"]] == [
+        "auto", "gpt-6-luna", "claude-sonnet-4.5", "gpt-5.4-mini"]
+    auto, luna, sonnet, mini = row["models"]
+    assert auto["reasoning"] is False and auto["efforts"] == []
+    assert luna == {"id": "gpt-6-luna", "label": "GPT-6 Luna", "reasoning": True,
+                    "efforts": ["low", "medium", "high", "xhigh"],
+                    "default_effort": "high", "category": "powerful",
+                    "vendor": "Azure OpenAI", "multiplier": 1.0}
+    assert sonnet["reasoning"] is False and sonnet["efforts"] == []
+    assert mini["efforts"] == ["low", "medium", "high"] and mini["multiplier"] == 0.0
+    # The row's efforts list is still the agent's whole vocabulary; the
+    # per-model lists are the narrowing. The health row does not repeat the
+    # models it was read from.
+    assert row["efforts"] == ["low", "medium", "high", "xhigh", "max"]
+    assert "models" not in row["health"] and row["health"]["signed_in"] is True
+    # Static when nothing is cached, and in the static catalog.
+    monkeypatch.setattr(copilot_health, "cached", lambda: None)
+    monkeypatch.setattr(copilot_health, "cached_models", lambda: None)
+    row = next(b for b in client.get("/api/agent-backends").json()["all"]
+               if b["id"] == "copilot")
+    assert [m["id"] for m in row["models"]] == [m.id for m in registry.get("copilot").models]
+    static = registry.catalog(with_health=False)["all"][1]
+    assert [m["id"] for m in static["models"]] == [m.id for m in registry.get("copilot").models]
+
+
+def test_the_catalog_falls_back_to_the_raw_cache_for_the_model_list(monkeypatch):
+    """`cached()` says None after a PATH change (its fingerprint); the model
+    list is still the account's, so the row reads it off the raw cache."""
+    from fused_render import claude_health, codex_health, copilot_health
+    monkeypatch.setattr(claude_health, "cached", lambda: None)
+    monkeypatch.setattr(codex_health, "cached", lambda: None)
+    monkeypatch.setattr(copilot_health, "cached", lambda: None)
+    monkeypatch.setattr(copilot_health, "cached_models", _account_models)
+    row = registry.catalog()["all"][1]
+    assert row["health"] is None
+    assert [m["id"] for m in row["models"]] == [
+        "auto", "gpt-6-luna", "claude-sonnet-4.5", "gpt-5.4-mini"]
+
+
+def test_a_discovered_model_passes_the_foreign_model_gate(monkeypatch):
+    """A GPT id Codex's static list also names is NOT foreign to Copilot once
+    the account's own list carries it — the gate would otherwise 400 a model
+    the CLI itself offered. An id on nobody's list still passes; an id only
+    Codex lists is still refused."""
+    from fused_render import copilot_health
+    monkeypatch.setattr(copilot_health, "cached_models", lambda: None)
+    assert registry.foreign_model_error("copilot", "gpt-6-luna")["reason"] == "unsupported"
+    monkeypatch.setattr(copilot_health, "cached_models", _account_models)
+    assert registry.foreign_model_error("copilot", "gpt-6-luna") is None
+    assert registry.foreign_model_error("copilot", "gpt-5.4-mini") is None
+    assert registry.foreign_model_error("copilot", "gpt-9") is None
+    assert registry.foreign_model_error("copilot", "gpt-6.1-sol")["reason"] == "unsupported"
+    # The static shortlist still passes its own ids (an old record).
+    assert registry.foreign_model_error("copilot", "gemini-3-pro") is None
+    # Nothing leaks the other way: a Codex task cannot run Copilot's models.
+    assert registry.foreign_model_error("codex", "claude-sonnet-4.5")["reason"] == "unsupported"
+
+
+def test_discovered_models_skips_malformed_rows_and_keeps_auto_first():
+    from fused_render.agent_backends import copilot
+    rows = [{"id": "gpt-5.4", "label": "GPT-5.4", "efforts": ["high", "bogus"]},
+            {"id": "auto", "label": "the server never lists it, but if it did"},
+            {"id": "", "label": "no id"}, "garbage",
+            {"id": "x-1", "label": "no efforts key", "reasoning": False}]
+    models = copilot.discovered_models({"models": rows})
+    assert [m.id for m in models] == ["auto", "gpt-5.4", "x-1"]
+    assert models[0] is copilot.AUTO
+    assert models[1].efforts == ("high",) and models[1].reasoning is True
+    assert models[2].reasoning is False and models[2].efforts == ()
+    assert copilot.discovered_models({"models": []}) is None
+    assert copilot.discovered_models({"models": ["garbage"]}) is None

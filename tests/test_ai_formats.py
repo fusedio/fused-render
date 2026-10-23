@@ -342,6 +342,31 @@ def test_a_video_binary_runner_is_no_longer_in_DECISIVE():
     assert "ltx-video" in formats.DECISIVE
 
 
+_SHERPA_NAMES = {"encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx",
+                 "tokens.txt", "test_wavs", ".gitattributes"}
+
+
+def test_a_sherpa_transducer_export_is_claimed_by_faster_whisper_and_nothing_else():
+    """The sherpa-onnx Parakeet export has NO `config.json` at all, so the
+    NeMo branch cannot see it and recognition keys on the four file names. The
+    claim must be exclusive: an ONNX file in a snapshot is otherwise the
+    ONNX embedding runners' format (`onnx_weights`)."""
+    assert formats.is_sherpa_transducer_snapshot(_SHERPA_NAMES)
+    codes = formats.loaders(
+        repo_id="csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
+        names=_SHERPA_NAMES, dirnames=set(), config={}, torch_weights=False,
+        onnx_weights=True)
+    assert codes == ("faster-whisper",)
+
+
+@pytest.mark.parametrize("missing", list(formats.SHERPA_TRANSDUCER_FILES))
+def test_a_sherpa_export_missing_any_one_file_is_not_recognised(missing):
+    names = _SHERPA_NAMES - {missing}
+    assert not formats.is_sherpa_transducer_snapshot(names)
+    assert formats.loaders(repo_id="x/y", names=names, dirnames=set(), config={},
+                           torch_weights=False) == ()
+
+
 def test_a_parakeet_repo_is_no_longer_in_DECISIVE():
     """`parakeet-mlx` was withdrawn (D406) and was never re-added to
     `DECISIVE` — there is no code left for that table to name. The NeMo ASR
@@ -1401,7 +1426,7 @@ def test_a_flat_index_snapshot_has_the_diffusers_loaders():
     ({"modular_model_index.json"}, {"library_name": "diffusers"}),
 ])
 def test_modular_only_and_library_name_snapshots_have_no_diffusers_loader(names, config):
-    """The worker has no ModularPipeline path (D1422) and `library_name` is
+    """The worker has no ModularPipeline path (D1430) and `library_name` is
     on every LoRA repo."""
     assert formats.loaders(
         repo_id="org/m", names=names, dirnames=set(), config=config,

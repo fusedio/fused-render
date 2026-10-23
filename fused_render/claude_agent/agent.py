@@ -284,6 +284,18 @@ _SELF_MINTED_ID_BACKENDS = ("copilot", "codex")
 # `agent_backends/<id>.py` `default_model`, pinned equal by a test.
 _NEW_CHAT_MODELS = {"copilot": "auto", "codex": "gpt-6-luna"}
 
+# Copilot models the CLI refuses `--reasoning-effort` for (1.0.102 fails
+# `session/new`: "Reasoning effort is not supported when using the "auto"
+# model" / "does not support reasoning effort configuration"). A COPY of
+# `agent_backends/copilot.py` `NO_EFFORT_MODELS`, pinned equal by a test. THE
+# FALLBACK RULE: when the cached Copilot health snapshot lists the account's
+# models (`copilot_health` asks the CLI's `models.list`; see
+# `_copilot_listed_efforts`), that list says per model whether and at which
+# levels the flag applies, and this tuple is consulted only for a model the
+# list does not name. An id outside both is passed through with its effort,
+# as the catalog's own passthrough stance says.
+_COPILOT_NO_EFFORT_MODELS = ("auto", "claude-sonnet-4.5", "claude-opus-4.5")
+
 # Error-text markers per backend — substrings (lower-cased) of a `result` row
 # or stderr that mean "signed out / no access" and "usage or credit limit".
 # COPIED from `agent_backends/claude.py`, `copilot.py` and `codex.py`
@@ -3733,20 +3745,56 @@ def _copilot_argv(run_dir: str, pane: bool, cli_mode: str | None,
         with"; verified 2026-10-16, the CLI exits). Copilot mints the id in
         its `session/new` reply and the host announces it on the init row,
         which `_poll` records (D2);
-      * `--effort` → `--reasoning-effort`.
+      * `--effort` → `--reasoning-effort`, except for a model the CLI takes
+        no effort for, or a level it does not take for that model — per the
+        cached `models.list` (`_copilot_listed_efforts`), else per
+        `_COPILOT_NO_EFFORT_MODELS` — where it is dropped;
+      * `--add-dir` only for directories that exist: the CLI exits at startup
+        on one that does not. SHOTS is made (and secured) here through
+        `_shots_dir`, since the grant cannot be added after the spawn.
     """
     cmd = [_copilot_bin(), "--acp", "--no-auto-update"]
     if model:
         cmd += ["--model", model]
+    # An empty model is the backend default (`auto`). The CLI fails
+    # `session/new` when an effort rides with a model that takes none, so
+    # the effort is dropped rather than the session. WHICH models take
+    # which levels is the account's own list when the health snapshot has
+    # it (`_copilot_listed_efforts`: a level the model does not list is
+    # dropped the same way), else the static `_COPILOT_NO_EFFORT_MODELS`
+    # rule. The settings record still keeps what was asked for.
     if effort:
-        cmd += ["--reasoning-effort", effort]
+        spawn_model = model or _NEW_CHAT_MODELS["copilot"]
+        listed = _copilot_listed_efforts(spawn_model)
+        takes_effort = (effort in listed if listed is not None
+                        else spawn_model not in _COPILOT_NO_EFFORT_MODELS)
+        if takes_effort:
+            cmd += ["--reasoning-effort", effort]
     cmd += ["--plugin-dir", _copilot_plugin_dir(run_dir, file, pane),
             "--agent", "fused:fused"]
     if pane or _terminal_tools_supported():
         cmd += ["--additional-mcp-config",
                 "@" + _write_mcp_config(run_dir, pane, approve=False)]
-    for d in [SHOTS, *(extra_read_dirs or [])]:
-        cmd += ["--add-dir", d]
+    # SHOTS is made HERE, not left to the first screenshot: `--add-dir` is the
+    # session's only read grant on it, the CLI exits at startup on a directory
+    # that does not exist, and there is no post-start grant over ACP. A refusal
+    # (`_require_private`: somebody else's directory planted there) or a full
+    # disk costs the session its screenshots, never the session.
+    try:
+        shots = _shots_dir()
+    except Exception as exc:  # noqa: BLE001
+        shots = {"error": str(exc)}
+    # SHOTS is granted only on `_shots_dir`'s say-so, never on `isdir`: a
+    # refused directory exists too, and granting it would hand the session a
+    # directory `_require_private` just declined to vouch for.
+    if shots.get("error"):
+        sys.stderr.write("copilot: no screenshot grant: %s\n" % shots["error"])
+        dirs = []
+    else:
+        dirs = [SHOTS]
+    for d in [*dirs, *(extra_read_dirs or [])]:
+        if os.path.isdir(d):
+            cmd += ["--add-dir", d]
     if _fused_cli_dir():
         cmd += ["--allow-tool", "shell(fused:*)"]
     if cli_mode == "acceptEdits":
@@ -3805,6 +3853,37 @@ def _codex_argv(run_dir: str, pane: bool, cli_mode: str | None,
         for key in ("command", "args", "env"):
             cmd += ["-c", prefix + key + "=" + _toml_inline(server[key])]
     return cmd
+
+
+def _copilot_listed_efforts(model: str):
+    """The effort levels the cached Copilot health snapshot says `model`
+    takes — a tuple (empty: the CLI takes no `--reasoning-effort` for it),
+    or None when the snapshot lists no models or not this one, which sends
+    `_copilot_argv` to the static `_COPILOT_NO_EFFORT_MODELS` rule. The
+    snapshot's `models` rows are `copilot_health.normalize_models`'s
+    (`{id, efforts, reasoning, ...}`), measured from the CLI's own
+    `models.list` for the signed-in account. Read raw like
+    `_copilot_signs_in_with_gh`: which levels a model takes is a fact about
+    the plan, not about the probe's freshness. Absent, unreadable or
+    malformed → None."""
+    try:
+        with open(os.path.join(_home_dir(), _COPILOT_HEALTH_FILE),
+                  encoding="utf-8") as fh:
+            snap = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    rows = snap.get("models") if isinstance(snap, dict) else None
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        if isinstance(row, dict) and row.get("id") == model:
+            if row.get("reasoning") is False:
+                return ()
+            efforts = row.get("efforts")
+            if isinstance(efforts, list):
+                return tuple(str(e) for e in efforts)
+            return tuple(_EFFORT_LEVELS)
+    return None
 
 
 def _copilot_signs_in_with_gh() -> bool:
@@ -6999,6 +7078,19 @@ def _segments_from_rows(rows: list, shape: tuple = (),
                 if _row_ts(row) is not None:
                     seg["ts"] = _row_ts(row)
                 segments.append(seg)
+        elif t == "system" and row.get("subtype") == "compact_boundary":
+            # Live shape is snake_case `compact_metadata`; the persisted
+            # transcript's camelCase twin is read by `_history`.
+            meta = row.get("compact_metadata")
+            meta = meta if isinstance(meta, dict) else {}
+            seg = {"kind": "notice",
+                   "text": [_compact_label(meta.get("pre_tokens"),
+                                           meta.get("post_tokens"),
+                                           meta.get("trigger"))],
+                   "status": ""}
+            if _row_ts(row) is not None:
+                seg["ts"] = _row_ts(row)
+            segments.append(seg)
         elif t == "user" and isinstance(content, str):
             note = _task_notification(content)
             if note:
@@ -9776,7 +9868,8 @@ def _cli_preview(path: str, workdir: str) -> tuple[str, str]:
                 if os.path.abspath(cwd) != workdir:
                     return "", ""
                 cwd_seen = True
-        if row.get("type") != "user" or row.get("isMeta") or row.get("isSidechain"):
+        if (row.get("type") != "user" or row.get("isMeta")
+                or row.get("isSidechain") or row.get("isCompactSummary")):
             continue
         content = (row.get("message") or {}).get("content")
         if isinstance(content, list):
@@ -10193,6 +10286,38 @@ def _transcript_stat(path: str) -> dict:
         return {"path": path, "mtime": st.st_mtime, "size": st.st_size}
     except OSError:
         return {"path": path, "mtime": 0.0, "size": 0}
+
+
+def _compact_summary_text(text: str) -> str:
+    """The summary body of a compaction row, without the CLI's preamble
+    ("This session is being continued ... Summary:"). Unchanged when there is
+    no `Summary:` line."""
+    lines = text.split("\n")
+    for i, line in enumerate(lines):
+        if line.strip().startswith("Summary:"):
+            rest = line.strip()[len("Summary:"):].strip()
+            body = ([rest] if rest else []) + lines[i + 1:]
+            return "\n".join(body).strip()
+    return text.strip()
+
+
+def _compact_token_str(n) -> str:
+    n = int(n)
+    return f"{int(n / 1000 + 0.5)}k" if n >= 1000 else str(n)
+
+
+def _compact_label(pre=None, post=None, trigger=None) -> str:
+    """`Context compacted · 167k → 16k tokens`; the numbers drop out when the
+    boundary did not carry them. The frontend has the same helper."""
+    label = "Context compacted"
+    if isinstance(pre, (int, float)) and not isinstance(pre, bool):
+        label += f" · {_compact_token_str(pre)}"
+        if isinstance(post, (int, float)) and not isinstance(post, bool):
+            label += f" → {_compact_token_str(post)}"
+        label += " tokens"
+    if trigger == "manual":
+        label += " · manual"
+    return label
 
 
 def _row_ts(row: dict) -> float | None:
@@ -10630,6 +10755,9 @@ def _history(file: str, session_id: str, app_reads: bool = False,
     # is the estimate that replaces them (spec §6). Reset by the next real
     # reading, which is the API's own count of what the summary actually cost.
     compacted = None
+    # The newest boundary's trigger / token counts, held until the
+    # `isCompactSummary` user row that follows it turns into the divider turn.
+    pending_compact = None
 
     def close_stretch():
         """Attach the stretch's segments to the assistant turn they belong to.
@@ -10723,6 +10851,7 @@ def _history(file: str, session_id: str, app_reads: bool = False,
         if row.get("type") == "system" and row.get("subtype") == "compact_boundary":
             meta = row.get("compactMetadata")
             compacted = meta if isinstance(meta, dict) else {}
+            pending_compact = compacted
         if (_non_claude(backend) and row.get("type") == "system"
                 and row.get("subtype") == "task_notification"):
             # The LIVE notice shape, persisted: each non-Claude host writes
@@ -10765,7 +10894,28 @@ def _history(file: str, session_id: str, app_reads: bool = False,
             # Everything filtered here falls to `stretch`, where
             # `_segments_from_rows` turns a task-notification into its chip and
             # ignores the others.
-            if text.strip() and not _LEADING_DROP_OPEN.match(text.lstrip()):
+            if row.get("isCompactSummary") and text.strip():
+                # THE CLI'S COMPACTION SUMMARY, not something the human said.
+                # It drew as a screenful-tall user bubble; it is its own
+                # `role: "compact"` turn, which the page draws as a divider
+                # with the summary folded away.
+                close_stretch()
+                meta = pending_compact or {}
+                pending_compact = None
+                ctrn = {"role": "compact", "text": _compact_summary_text(text),
+                        "uuid": str(row.get("uuid") or "")}
+                if meta.get("trigger"):
+                    ctrn["trigger"] = str(meta["trigger"])
+                for src, dst in (("preTokens", "pre_tokens"),
+                                 ("postTokens", "post_tokens")):
+                    n = meta.get(src)
+                    if isinstance(n, (int, float)) and not isinstance(n, bool):
+                        ctrn[dst] = int(n)
+                ts = _row_ts(row)
+                if ts is not None:
+                    ctrn["ts"] = ts
+                turns.append(ctrn)
+            elif text.strip() and not _LEADING_DROP_OPEN.match(text.lstrip()):
                 close_stretch()  # before the user turn, or the segments land on it
                 turn = {"role": "user", "text": text,
                         "uuid": str(row.get("uuid") or "")}

@@ -2236,8 +2236,14 @@ export function ComposerCard({
             data-testid="composer-meta"
           >
             <span>{modelLabelsOf(controls.backend)[controls.model] ?? MODEL_LABELS[controls.model] ?? controls.model}</span>
-            <span className="c-composer-meta-dot" aria-hidden="true" />
-            <span>{controls.effort}</span>
+            {/* No effort to say for a model that takes none (the pill is
+                hidden too): the model alone, without a dangling dot. */}
+            {controls.effort ? (
+              <>
+                <span className="c-composer-meta-dot" aria-hidden="true" />
+                <span>{controls.effort}</span>
+              </>
+            ) : null}
           </div>
         ) : null}
         {menuOpen ? (
@@ -2383,6 +2389,7 @@ export function ComposerCard({
           />
           <EffortSelect
             backend={controls.backend}
+            model={controls.model}
             value={controls.effort}
             onChange={controls.setEffort}
             loading={controls.ready === false}

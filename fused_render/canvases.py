@@ -94,6 +94,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import tomllib
@@ -155,7 +156,11 @@ PUSH_TIMEOUT = 180.0
 TOKEN_TIMEOUT = 30.0
 # `fused login` blocks on its browser callback; its own HTTP server times out
 # after ~30s per request, but give the child room for slow human sign-ins.
-LOGIN_CHILD_TIMEOUT = 600.0
+# Five minutes: long enough to find the window and a password manager, short
+# enough that an abandoned or wedged attempt frees the page (and the one-at-a-
+# time login slot) before the person gives up on it. The page watches
+# `login_in_flight` and reports the timeout when the child dies at this mark.
+LOGIN_CHILD_TIMEOUT = 300.0
 # Quiet period after the last observed file change before a push fires.
 DEBOUNCE_S = 1.5
 # Folder fingerprint poll cadence.
@@ -289,11 +294,87 @@ def _fused_settings_credentials_path() -> str:
     return value if isinstance(value, str) and value else "~/.fused/credentials"
 
 
+def fused_settings_embed_proxy() -> bool | None:
+    """`[render] canvases_embed_proxy_enabled` in the settings file: True or
+    False when the file sets it (it then wins over the Preferences switch,
+    shell/prefs.py), None when it does not. fused ignores a table it does not
+    know, so the deployment's own file can carry it."""
+    render = _fused_settings().get("render")
+    value = render.get("canvases_embed_proxy_enabled") if isinstance(render, dict) else None
+    return value if isinstance(value, bool) else None
+
+
 def fused_settings_present() -> bool:
     """Whether there is a `~/.fused/settings.toml` (or `settings.json`) for
-    the custom environment to follow. Without one a custom run is just prod
-    under another clone folder, so the pickers offer it disabled."""
+    the custom environment to follow."""
     return any(os.path.isfile(os.path.expanduser(raw)) for raw in _FUSED_SETTINGS_FILES)
+
+
+def fused_settings_configured() -> bool:
+    """Whether the settings file actually points the custom environment
+    somewhere: present AND naming a `base_url`. Without one a custom run is
+    just prod under another clone folder. The Canvases page offers custom
+    regardless and opens the settings editor when this is false (the empty
+    file the editor starts from must NOT count as configured, or dismissing
+    it would leave custom silently equal to prod); the Settings picker
+    offers it too."""
+    value = _fused_settings().get("base_url")
+    return isinstance(value, str) and bool(value.strip())
+
+
+def fused_settings_path() -> str:
+    """The file the settings editor reads and writes: fused's TOML settings
+    file (the first in its load order), expanded."""
+    return os.path.expanduser(_FUSED_SETTINGS_FILES[0])
+
+
+def _read_fused_settings_text() -> tuple[str, bool]:
+    """(text, exists) of the TOML settings file. A missing file is ("", False);
+    one that cannot be read raises OSError for the caller to report."""
+    try:
+        with open(fused_settings_path(), encoding="utf-8") as fh:
+            return fh.read(), True
+    except FileNotFoundError:
+        return "", False
+
+
+def _write_fused_settings_text(text: str) -> None:
+    """Write the TOML settings file atomically (temp + os.replace): a status
+    poll reading it mid-write must never see half a file. The temp name is
+    unique per call (handlers run in FastAPI's threadpool, so two Saves can
+    overlap), and a failed write leaves no temp behind."""
+    path = fused_settings_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=os.path.dirname(path),
+            prefix=f"{os.path.basename(path)}.", suffix=".tmp", delete=False,
+        ) as fh:
+            tmp = fh.name
+            fh.write(text)
+        os.replace(tmp, path)
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+
+
+def _create_fused_settings_empty() -> bool:
+    """Create the TOML settings file empty, exclusively. True when this call
+    created it; False when another writer (an overlapping open, a Save) got
+    there first — in which case the caller re-reads rather than clobbering
+    what was just written."""
+    path = fused_settings_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        with open(path, "x", encoding="utf-8"):
+            pass
+    except FileExistsError:
+        return False
+    return True
 
 
 def _fused_settings_web_url() -> str:
@@ -344,6 +425,53 @@ def log_url_override_without_pin() -> None:
     if os.environ.get(_WORKBENCH_URL_VAR) and not workbench_env_locked():
         logger.warning("%s is ignored without %s: the URL override applies only to "
                        "the pinned environment", _WORKBENCH_URL_VAR, WORKBENCH_ENV_VAR)
+
+
+def _embed_proxy_wanted() -> bool:
+    """The custom env's embed goes through the loopback proxy
+    (canvas_embed_proxy.py) when the preference is on and custom is usable."""
+    from fused_render.shell.prefs import canvases_embed_proxy_enabled
+
+    return canvases_embed_proxy_enabled() and fused_settings_present()
+
+
+def _custom_token() -> str:
+    """The proxy's token source: the custom env's own login, or an exception
+    whose text the proxy relays as a 502 (it runs off the event loop)."""
+    token, problem, _status = access_token(CUSTOM_WORKBENCH_ENV)
+    if token is None:
+        raise RuntimeError(problem or "could not read the fused access token")
+    return token
+
+
+def _custom_creds_sig() -> tuple | None:
+    """The proxy's credentials stamp: a sign-out, sign-in or account switch
+    on the custom env changes it, and the proxy drops its cached token."""
+    return _creds_sig(CUSTOM_WORKBENCH_ENV)
+
+
+def _apply_embed_proxy() -> None:
+    """Start, retarget or stop the proxy to match the preference and the
+    settings file's current origin. Idempotent; called from status."""
+    from fused_render.canvas_embed_proxy import controller
+
+    if _embed_proxy_wanted():
+        controller.apply(workbench_base_url(CUSTOM_WORKBENCH_ENV), _custom_token,
+                         _custom_creds_sig)
+    else:
+        controller.apply(None, None)
+
+
+def embed_base_url(env: str) -> str:
+    """The origin the workspace frames for `env` and posts its messages to:
+    `workbench_base_url(env)`, except the custom env while its proxy runs."""
+    if env == CUSTOM_WORKBENCH_ENV:
+        from fused_render.canvas_embed_proxy import controller
+
+        url = controller.url()
+        if url:
+            return url
+    return workbench_base_url(env)
 
 
 def _cli_env(cli, env: str) -> dict[str, str]:
@@ -609,87 +737,6 @@ def _err_of(response: JSONResponse) -> tuple:
     return ("err", message, response.status_code)
 
 
-def _creds_sig() -> tuple | None:
-    """`(mtime_ns, size)` of the credentials store, None when absent. A login,
-    logout or on-disk token refresh changes it, which invalidates cached CLI
-    results by construction."""
-    try:
-        st = os.stat(_credentials_file())
-    except OSError:
-        return None
-    return (st.st_mtime_ns, st.st_size)
-
-
-def _cli_cache_clear() -> None:
-    global _cli_cache_gen
-    with _CLI_CACHE_LOCK:
-        _cli_cache.clear()
-        _cli_cache_gen += 1
-
-
-def _fresh(result):
-    """A result with its payload deep-copied (`api_canvases_list` mutates its
-    entries, so a hit must never hand out the stored object)."""
-    if result is not None and result[0] == "ok":
-        return ("ok", copy.deepcopy(result[1]))
-    return result
-
-
-def _cached_cli(kind: str, env: str, compute, ttl_for=None):
-    """Run `compute()` once per (kind, env, credentials signature) per TTL, and
-    share one run between concurrent callers (single flight).
-
-    `compute()` returns `("ok", payload)` or `("err", message, status)`; the
-    same shape comes back, payload deep-copied on every return. Errors reach
-    the running caller and its current waiters but are never stored. `ttl_for(
-    payload)` overrides the TTL (<= 0 means do not store)."""
-    key = (kind, env, _creds_sig())
-    with _CLI_CACHE_LOCK:
-        hit = _cli_cache.get(key)
-        if hit is not None and hit[0] > time.monotonic():
-            return _fresh(("ok", hit[1]))
-        flight = _cli_flights.get(key)
-        leader = flight is None
-        if leader:
-            flight = _cli_flights[key] = _Flight()
-            gen = _cli_cache_gen
-    if not leader:
-        flight.event.wait(TOKEN_TIMEOUT + LIST_SHIM_TIMEOUT)
-        if flight.result is not None:
-            return _fresh(flight.result)
-        return _fresh(compute())
-    result = None
-    try:
-        result = compute()
-        return _fresh(result)
-    finally:
-        flight.result = result
-        flight.event.set()
-        with _CLI_CACHE_LOCK:
-            if _cli_flights.get(key) is flight:
-                del _cli_flights[key]
-        if result is not None and result[0] == "ok" and gen == _cli_cache_gen:
-            ttl = ttl_for(result[1]) if ttl_for is not None else _CLI_CACHE_TTL_S
-            if ttl > 0:
-                # The child may have refreshed the credentials file, which
-                # changes its signature: store under the POST signature so the
-                # next call (which reads the new one) hits.
-                post_key = (kind, env, _creds_sig())
-                with _CLI_CACHE_LOCK:
-                    if gen == _cli_cache_gen:
-                        _cli_cache[post_key] = (
-                            time.monotonic() + ttl, copy.deepcopy(result[1]))
-
-
-def _err_of(response: JSONResponse) -> tuple:
-    """`("err", message, status)` from an `_error(...)` response."""
-    try:
-        message = json.loads(response.body)["error"]
-    except (ValueError, KeyError, TypeError):
-        message = "request failed"
-    return ("err", message, response.status_code)
-
-
 def _require_fused(x_fused: str | None) -> JSONResponse | None:
     # Same D3 guard as server's _require_fused, duplicated to stay acyclic.
     if x_fused != "1":
@@ -837,6 +884,10 @@ def api_canvases_status(env: str = ""):
         stamp = os.path.getmtime(credentials_file(auth_env))
     except OSError:
         stamp = None
+    # The one place the embed proxy's lifecycle is driven: every page that
+    # frames a canvas reads status first, so the proxy is up (or retargeted
+    # after a settings.toml edit) by the time `embed_url` below is used.
+    _apply_embed_proxy()
     return {
         "cli_found": cli is not None,
         "logged_in": _logged_in(auth_env),
@@ -855,18 +906,102 @@ def api_canvases_status(env: str = ""):
         "workbench_env": workbench_env(),
         "locked": workbench_env_locked(),
         # Clone counts are a local listdir, no CLI — informational on the
-        # Preferences row. `available` is false only for custom without a
-        # settings file: the pickers disable it.
+        # Preferences row. `available` is false only for custom whose
+        # settings file names no `base_url` (`fused_settings_configured`):
+        # both pickers still offer it; the Canvases page opens the settings
+        # editor instead of the sign-in.
         "envs": {
             env: {
                 "base_url": workbench_base_url(env),
+                # Where the workspace's iframe loads from and posts to: the
+                # workbench origin itself, or — custom env, embed proxy on —
+                # the loopback proxy standing in front of it.
+                "embed_url": embed_base_url(env),
                 "canvases_dir": canvases_root(env),
                 "cloned_count": len(_cloned_names(env)),
-                "available": env != CUSTOM_WORKBENCH_ENV or fused_settings_present(),
+                "available": env != CUSTOM_WORKBENCH_ENV or fused_settings_configured(),
             }
             for env in WORKBENCH_ENV_CHOICES
         },
+        # Where the custom environment's settings live — what the Canvases
+        # page's editor shows the reader.
+        "settings_path": fused_settings_path(),
     }
+
+
+@router.post("/api/canvases/settings/open")
+def api_canvases_settings_open(x_fused: str | None = Header(default=None)):
+    """The settings editor's read: the TOML settings file's text, creating
+    it EMPTY when there is none so the reader is editing a real file at a
+    real path from the first keystroke. An empty file configures nothing
+    (`fused_settings_configured`), so creating it changes no answer."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    try:
+        text, exists = _read_fused_settings_text()
+        created = False
+        if not exists:
+            created = _create_fused_settings_empty()
+            if not created:
+                text, _ = _read_fused_settings_text()
+    except OSError as exc:
+        return _error(f"could not open {fused_settings_path()}: {exc}", 500)
+    return {"path": fused_settings_path(), "text": text, "created": created,
+            "configured": fused_settings_configured()}
+
+
+@router.post("/api/canvases/settings/save")
+def api_canvases_settings_save(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Write the TOML settings file. Parsed first, so a paste that is not
+    TOML is refused with the parser's own sentence (400) and the file on disk
+    stays what it was; fused itself would silently skip an unparsable file
+    and fall through to prod."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    text = body.get("text")
+    if not isinstance(text, str):
+        return _error("'text' must be a string")
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        return JSONResponse({"error": f"not valid TOML: {exc}", "code": "invalid_toml"},
+                            status_code=400)
+    try:
+        _write_fused_settings_text(text)
+    except OSError as exc:
+        return _error(f"could not write {fused_settings_path()}: {exc}", 500)
+    # Cached CLI answers (whoami, listings) were computed against the old
+    # endpoint; the next call must run afresh.
+    _cli_cache_clear()
+    base_url = data.get("base_url")
+    return {"ok": True, "path": fused_settings_path(),
+            "configured": fused_settings_configured(),
+            "base_url": base_url if isinstance(base_url, str) else None,
+            "web_url": workbench_base_url(CUSTOM_WORKBENCH_ENV)}
+
+
+@router.post("/api/canvases/settings/delete")
+def api_canvases_settings_delete(x_fused: str | None = Header(default=None)):
+    """Remove the TOML settings file: the custom environment goes back to
+    unconfigured and the Canvases page offers the editor again. Only the
+    TOML file — a `settings.json` beside it is fused's own fallback and not
+    something this editor wrote. An already-missing file is a no-op."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    path = fused_settings_path()
+    try:
+        os.remove(path)
+        removed = True
+    except FileNotFoundError:
+        removed = False
+    except OSError as exc:
+        return _error(f"could not delete {path}: {exc}", 500)
+    _cli_cache_clear()
+    return {"ok": True, "path": path, "removed": removed,
+            "configured": fused_settings_configured()}
 
 
 def _cloned_names(env: str) -> set[str]:
@@ -1105,8 +1240,20 @@ def api_canvases_token(env: str = "", x_fused: str | None = Header(default=None)
     env, bad = _optional_env(env)
     if bad is not None:
         return bad
+    token, problem, status = access_token(env)
+    if token is None:
+        return _error(problem or "could not read the fused access token", status)
+    return {"access_token": token}
+
+
+def access_token(env: str) -> tuple[str | None, str | None, int]:
+    """`env`'s `fused login` access token, refreshed through the package's
+    own child when the CLI is our interpreter: `(token, None, 200)`, or
+    `(None, reason, http_status)`. Shared by /api/canvases/token and the
+    custom env's embed proxy (canvas_embed_proxy.py), so the two never
+    disagree on which store an env reads or how a refresh runs."""
     if not _logged_in(env):
-        return _error("not signed in to Fused — sign in from the Canvases page", 409)
+        return None, "not signed in to Fused — sign in from the Canvases page", 409
     cli = fused_cli()
     if cli is not None and not cli.external:
         shim = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_fused_token.py")
@@ -1132,7 +1279,7 @@ def api_canvases_token(env: str = "", x_fused: str | None = Header(default=None)
             token = proc.stdout.strip()
             if not token:
                 return ("err", "the token helper printed nothing", 502)
-            return ("ok", {"access_token": token})
+            return ("ok", token)
 
         def ttl_for(_payload):
             # Reuse only while the stored token stays comfortably valid: one
@@ -1149,18 +1296,18 @@ def api_canvases_token(env: str = "", x_fused: str | None = Header(default=None)
 
         result = _cached_cli("token", env, compute, ttl_for)
         if result[0] == "err":
-            return _error(result[1], result[2])
-        return result[1]
+            return None, result[1], result[2]
+        return result[1], None, 200
     # External-CLI fallback: the raw store, no refresh.
     try:
         with open(credentials_file(env), encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, ValueError) as e:
-        return _error(f"could not read the fused credentials file: {e}", 502)
+        return None, f"could not read the fused credentials file: {e}", 502
     token = data.get("access_token") if isinstance(data, dict) else None
     if not isinstance(token, str) or not token:
-        return _error("the fused credentials file has no access token", 502)
-    return {"access_token": token}
+        return None, "the fused credentials file has no access token", 502
+    return token, None, 200
 
 
 # -- listing and cloning -----------------------------------------------------------
@@ -3183,7 +3330,6 @@ class _SyncManager:
         # list answers. Module-level, called with no lock held.
         _cli_cache_clear()
         with self._op_lock:
-            self.push_seq += 1
             self.last_push_at = time.time()
             self.last_error = None
             self.error_detail = []
@@ -3195,8 +3341,12 @@ class _SyncManager:
             if moved:
                 # Written while the CLI ran: not in the copy, so not pushed.
                 self._dirty_since = self._dirty_since or time.time()
-        self._push_started_at = None
-        self.push_state = "pending" if moved else "idle"
+            self._push_started_at = None
+            self.push_state = "pending" if moved else "idle"
+            # Last: `status()` reads without the lock, so a reader that sees
+            # the new push_seq must already see the push settled, not
+            # push_seq 1 with push_state still "pushing".
+            self.push_seq += 1
         self.log_event("disk_to_server", "push end", ms=(time.time() - started) * 1000,
                        detail=f"push_seq {self.push_seq}"
                               + ("; the clone changed during the push, pushing again"

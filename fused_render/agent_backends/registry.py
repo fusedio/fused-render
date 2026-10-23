@@ -77,7 +77,10 @@ def foreign_model_error(backend_id: str, model: str) -> Optional[dict]:
     opus`: 'Model "opus" from --model flag is not available.')."""
     model = str(model or "").strip()
     own = get(backend_id)
-    if not model or model in own.model_ids():
+    # The DISCOVERED ids where the cache has them (Copilot's plan list), so
+    # a model the CLI itself offers — one another agent's static list also
+    # names, say a GPT id Codex runs too — is never refused as foreign.
+    if not model or model in own.model_ids() or model in own.model_ids(discovered=True):
         return None
     for b in BACKENDS.values():
         if b.id != own.id and model in b.model_ids():
@@ -108,7 +111,15 @@ def catalog(with_health: bool = True) -> dict:
                 health = b.health_cached()
             except Exception:  # noqa: BLE001 - a probe failure is "unknown", not a 500
                 health = None
-        row = b.to_catalog(enabled=bid in ids, health=health)
+        # The account's own model list rides in place of the static one when
+        # the cached snapshot carries it (`Backend.discovered_models`) — off
+        # the same read as `health`, never a probe. `with_health=False` is
+        # the static catalog: what the first frame and the pins test see.
+        models = b.effective_models(health) if with_health else b.models
+        if isinstance(health, dict) and "models" in health:
+            # Served once, as the row's `models`; not again under `health`.
+            health = {k: v for k, v in health.items() if k != "models"}
+        row = b.to_catalog(enabled=bid in ids, health=health, models=models)
         everything.append(row)
         if bid in ids:
             out.append(row)

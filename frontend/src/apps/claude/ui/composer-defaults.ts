@@ -47,8 +47,9 @@ import { listedModelIn, normalizeModel } from "@platform/lib/model-vocab";
 import { narrowPermission, useDefaultPermission } from "../feature-flag";
 import {
   capsOf,
+  defaultEffortFor,
   defaultModelOf,
-  effortsOf,
+  effortsForModel,
   isBackendEnabled,
   modelsOf,
   useAgentBackends,
@@ -61,7 +62,7 @@ import { useChatParams } from "../params/useChatParams";
 /** `claude --model`'s vocabulary, one entry per model (T:11823).
  *
  *  THE STATIC CLAUDE ROW since the agent catalog (docs/COPILOT_BACKEND.md
- *  D11): the live lists are `modelsOf(backend)` / `effortsOf(backend)` off
+ *  D11): the live lists are `modelsOf(backend)` / `effortsForModel(backend, model)` off
  *  `platform/lib/agent-backends`, and these constants are what every reader
  *  sees before the catalog lands and what the Claude row says once it has.
  *
@@ -169,8 +170,15 @@ export function resolveEffort(
   detected?: string,
   recorded?: string,
   list: readonly string[] = EFFORTS,
+  preferred?: string,
 ): string {
-  const fallback = list.includes(DEFAULT_EFFORT) ? DEFAULT_EFFORT : list[0] || DEFAULT_EFFORT;
+  // A model that takes no effort has NO value here — "" is "no flag", and the
+  // pill is not drawn — whatever a record or a param still carries from a
+  // model that did.
+  if (!list.length) return "";
+  const fallback = preferred && list.includes(preferred)
+    ? preferred
+    : list.includes(DEFAULT_EFFORT) ? DEFAULT_EFFORT : list[0];
   return pick(list, recorded || param || detected || fallback, fallback);
 }
 /** `syncSelects`'s permission branch (T:12171). The first ABSENT value ends
@@ -196,7 +204,7 @@ export interface ComposerDefaults {
    * session's own, once the wire has named it (`ChatState.backend`, handed in
    * as `sessionBackend`), else the `backend` param — the Agent pill's pick for
    * a chat that has no session yet — else the catalog's default. The model
-   * and effort lists are THIS agent's (`modelsOf`/`effortsOf`), so a value the
+   * and effort lists are THIS agent's (`modelsOf`/`effortsForModel`), so a value the
    * other agent recorded folds to this one's default rather than a blank pill.
    */
   backend: string;
@@ -279,7 +287,6 @@ export function useComposerDefaults(
   const paramBackend = snapshot.backend && isBackendEnabled(snapshot.backend) ? snapshot.backend : "";
   const backend = ownBackend || paramBackend || catalog.default;
   const models = modelsOf(backend);
-  const efforts = effortsOf(backend);
   const fallbackModel = defaultModelOf(backend);
   const [detected, setDetected] = useState<{ model: string; effort: string }>({
     model: "",
@@ -565,7 +572,6 @@ export function useComposerDefaults(
   // per read before the list depended on the agent). Only the PARAM folds to
   // the default instead — see `resolveModel`'s header.
   const lm = (v: string) => listedModelIn(v, models);
-  const le = (v: string) => (efforts.includes(v) ? v : "");
   const model = resolveModel(
     paramModel,
     lm(globModel) || lm(detected.model),
@@ -573,11 +579,18 @@ export function useComposerDefaults(
     models,
     fallbackModel,
   );
+  // THE EFFORTS ARE THE MODEL'S, so they are read once the model is known:
+  // per model where the catalog knows them per model (Copilot's `auto` and
+  // Claude ids take none; its GPT ids each name their levels), the agent's
+  // list otherwise. An empty list resolves to "" and hides the pill.
+  const efforts = effortsForModel(backend, model);
+  const le = (v: string) => (efforts.includes(v) ? v : "");
   const effort = resolveEffort(
     paramEffort,
     le(globEffort) || le(detected.effort),
     le(recorded.effort) || le(local.effort),
     efforts,
+    defaultEffortFor(backend, model),
   );
   // An agent with no plan mode (§7 `plan_mode`) never shows "plan": the pill
   // has no such row for it, and the send would be refused.
@@ -616,9 +629,12 @@ export function useComposerDefaults(
     recordAnswered &&
     (!!lm(recorded.model) || !!lm(local.model) || !!paramModel || !!lm(globModel) ||
       (globalReady && detectionReady));
+  // A model that takes no effort has nothing in flight that could change the
+  // (absent) pill, so its field is settled with the model's.
   const effortSettled =
     recordAnswered &&
-    (!!le(recorded.effort) || !!le(local.effort) || !!paramEffort || !!le(globEffort) ||
+    (efforts.length === 0 ||
+      !!le(recorded.effort) || !!le(local.effort) || !!paramEffort || !!le(globEffort) ||
       (globalReady && detectionReady));
   const pillsReady = modelSettled && effortSettled;
 

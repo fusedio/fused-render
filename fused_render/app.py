@@ -25,7 +25,7 @@ import urllib.error
 import urllib.request
 import webbrowser
 
-from fused_render import _flavor, _platform, desktop_probe, relaunch_windows
+from fused_render import _flavor, _platform, bundle_exec, desktop_probe, relaunch_windows
 from fused_render._branch import branch_dir, branch_port
 from fused_render.logs import log_dir, setup_logging, uvicorn_fast_kwargs, uvicorn_log_config
 
@@ -1594,6 +1594,11 @@ def main() -> None:
     # The boot id joins this line to /api/health, server.json and
     # outages.jsonl rows (health.py docstring, D1).
     logger.info("app starting (pid %s, boot %s)", os.getpid(), boot_id())
+    # The launcher that got us here never execs `Contents/MacOS/python`; every
+    # worker, agent and engine run spawned below does. If that file arrived
+    # non-executable (seen after an in-app update, 2026-10-23), log its state
+    # and set the bits now, before the first spawn — see bundle_exec.
+    bundle_exec.repair_own_bundle()
 
     existing = find_running_server()
     if existing is not None:
@@ -2169,29 +2174,6 @@ def main() -> None:
 
         window_policy.native_hooks["windows_not_on"] = _windows_not_on
         window_policy.native_hooks["reopen_windows"] = _reopen_windows
-
-        # The preference is on but the engine this build pins is not on
-        # disk (an app update moved the pin, or the update's prefetch did
-        # not finish): fetch it now rather than at the next visit to
-        # Preferences — windows opened meanwhile are WebKit, and the row
-        # offers "Reopen windows" once it lands. Ready: drop older engines.
-        def _settle_chromium_engine() -> None:
-            try:
-                from fused_render import chromium
-                from fused_render.shell.prefs import chromium_windows_enabled
-
-                if not chromium_windows_enabled():
-                    return
-                st = chromium.status()["state"]
-                if st == chromium.MISSING:
-                    chromium.install()
-                elif st == chromium.READY:
-                    chromium.prune_others()
-            except Exception:  # noqa: BLE001 — never part of the boot path's failures
-                logger.debug("chromium engine check at start failed", exc_info=True)
-
-        threading.Thread(target=_settle_chromium_engine, daemon=True,
-                         name="chromium-engine-settle").start()
 
         def _open_window(target: str) -> None:
             # A menu-bar surface's `window.open` / target=_blank, main

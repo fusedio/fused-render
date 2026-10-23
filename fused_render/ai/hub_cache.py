@@ -622,6 +622,11 @@ def _format_task(repo_id: str, names, dirnames, config: dict) -> tuple[str, str]
         return "automatic-speech-recognition", "its CTranslate2 Whisper layout"
     if formats.is_mlx_whisper_snapshot(names, config):
         return "automatic-speech-recognition", "its MLX Whisper weights"
+    if formats.is_sherpa_transducer_snapshot(names):
+        # The Parakeet export (D1423). It has no config.json, so the `target`
+        # check cannot see it, and an `encoder.int8.onnx` + `joiner` + `decoder`
+        # triple is a transducer — speech recognition and nothing else.
+        return "automatic-speech-recognition", "its sherpa-onnx transducer export"
     # Either mflux table — a Fill checkpoint is as much text-to-image here as
     # a Klein one; `mflux_native_mode` is the one membership test for both.
     if formats.mflux_native_mode(repo_id) and formats.has_mflux_components(dirnames):
@@ -1333,7 +1338,7 @@ def _engine(meta: _RepoMeta, reading: _tasks.Classification,
     # a Diffusers repo on a Mac whose image engine is MLX FLUX, and a Load there
     # reaches a runner that refuses it by name. That is the exact promise this
     # field exists to stop the page making.
-    # Resolved FOR THIS REPO (D1423): a pin, then the engines that read it, then
+    # Resolved FOR THIS REPO (D1431): a pin, then the engines that read it, then
     # the capability's preference. `resolve_for_loaders`, not `resolve_for_model`,
     # because `meta.loaders` is the evidence being handed in — asking the cache
     # for it again from here would recurse.
@@ -1455,7 +1460,7 @@ class CacheReading(NamedTuple):
     #: EVERY runner code whose format check accepts this snapshot
     #: (`_RepoMeta.loaders`), not only the one `_engine` named: two runners of
     #: one capability can both read a repo (mflux and diffusers on FLUX.2), and
-    #: `registry.resolve_for_model` picks among them (D1423).
+    #: `registry.resolve_for_model` picks among them (D1431).
     loaders: tuple[str, ...] = ()
 
 
@@ -1612,6 +1617,26 @@ def speech_traits(repo_id: str) -> dict | None:
     if snapshot_dir is None:
         return None
     return formats.speech_traits(_read_json(os.path.join(snapshot_dir, "config.json")) or {})
+
+
+def is_sherpa_transducer(repo_id: str) -> bool | None:
+    """Is the cached snapshot of `repo_id` a sherpa-onnx transducer export
+    (Parakeet, D1423)? None when nothing is cached to read, so a caller can tell
+    "no" from "not downloaded yet" and fall back to the curated row.
+
+    Read off the snapshot's top-level NAMES (`formats.is_sherpa_transducer_
+    snapshot`), the same test the runner's `load()` and `download()` use — the
+    export carries no config for anything subtler. Same path-segment guard as
+    every other reader here (`_embed_snapshot_dir`).
+    """
+    snapshot_dir = _embed_snapshot_dir(repo_id)
+    if snapshot_dir is None:
+        return None
+    try:
+        names = set(os.listdir(snapshot_dir))
+    except OSError:
+        return None
+    return formats.is_sherpa_transducer_snapshot(names)
 
 
 def has_cached_snapshot(repo_id: str) -> bool:

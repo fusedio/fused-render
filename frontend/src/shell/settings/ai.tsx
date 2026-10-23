@@ -1,4 +1,4 @@
-// AI & agents: which coding agents may run chats and tasks, and the pointers
+// Coding agents: which coding agents may run chats and tasks, and the pointers
 // to the model and engine settings that live on their own pages.
 import { useContext, useSyncExternalStore } from "react";
 import { ArrowUpRight } from "lucide-react";
@@ -189,13 +189,12 @@ export function PointerRow({ id, to, label }: { id: SettingId; to: string | (() 
   );
 }
 
-export function ClaudeModelPointer() {
-  const view = useContext(SettingsViewContext);
-  return <PointerRow id="claude-model" to={() => view.jump("claude-pref:model")} label="Claude Code" />;
-}
+export const ClaudeModelPointer = () => (
+  <PointerRow id="claude-model" to="/preferences?tab=claude-cli&s=claude-pref:model" label="Claude Code" />
+);
 export const EnginesPointer = () => <PointerRow id="engines" to="/ai-models/engines" label="AI Models › Engines" />;
 
 export function AgentSigninPointer() {
   const view = useContext(SettingsViewContext);
-  return <PointerRow id="agent-signin" to={() => view.jump("agent-claude")} label="AI & agents" />;
+  return <PointerRow id="agent-signin" to={() => view.jump("agent-claude")} label="Coding agents" />;
 }

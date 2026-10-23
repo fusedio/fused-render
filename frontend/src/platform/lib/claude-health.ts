@@ -164,10 +164,13 @@ export function agentAccountLine(
     return "Signed in";
   }
   if (backend !== "copilot") return claudeLine(health);
-  if (method === "copilot") return "Signed in with copilot login";
-  if (method === "gh") return "Signed in through gh";
-  if (method === "token") return "Signed in with a token from the environment";
-  return "Signed in";
+  // The user, when the CLI named one (`account.login`), and the plan.
+  const who = health.account?.login ? ` as ${health.account.login}` : "";
+  const plan = health.account?.plan ? ` (${health.account.plan} plan)` : "";
+  if (method === "copilot") return `Signed in with copilot login${who}${plan}`;
+  if (method === "gh") return `Signed in through gh${who}${plan}`;
+  if (method === "token") return `Signed in with a token from the environment${who}${plan}`;
+  return `Signed in${who}${plan}`;
 }
 
 export function claudeIssues(health: ClaudeHealth | null): ClaudeIssue[] {

@@ -183,6 +183,48 @@ def test_put_rejects_bad_canvases_enabled(tmp_path, monkeypatch):
     assert not (home / "prefs.json").exists()
 
 
+def _fused_settings(tmp_path, monkeypatch, text):
+    from fused_render import canvases
+
+    path = tmp_path / "settings.toml"
+    path.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(canvases, "_FUSED_SETTINGS_FILES", (str(path),))
+
+
+def test_canvases_embed_proxy_follows_the_switch_when_the_settings_file_is_silent(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    _fused_settings(tmp_path, monkeypatch, 'base_url = "https://acme.fused.io/server/v1"\n')
+    body = client.get("/api/prefs").json()["canvases"]
+    assert body["embed_proxy"] is False and body["embed_proxy_locked"] is False
+    body = client.put("/api/prefs", json={"canvases_embed_proxy": True}, headers=FUSED).json()
+    assert body["canvases"]["embed_proxy"] is True
+    assert prefs_mod.canvases_embed_proxy_enabled() is True
+
+
+def test_canvases_embed_proxy_settings_file_wins_both_ways(tmp_path, monkeypatch):
+    client, home = _client(tmp_path, monkeypatch)
+    client.put("/api/prefs", json={"canvases_embed_proxy": True}, headers=FUSED)
+    _fused_settings(tmp_path, monkeypatch, "[render]\ncanvases_embed_proxy_enabled = false\n")
+    body = client.get("/api/prefs").json()["canvases"]
+    assert body["embed_proxy"] is False and body["embed_proxy_locked"] is True
+    assert prefs_mod.canvases_embed_proxy_enabled() is False
+    _fused_settings(tmp_path, monkeypatch, "[render]\ncanvases_embed_proxy_enabled = true\n")
+    assert prefs_mod.canvases_embed_proxy_enabled() is True
+    # The switch cannot change a pinned value, and the stored pref is left alone.
+    r = client.put("/api/prefs", json={"canvases_embed_proxy": False}, headers=FUSED)
+    assert r.status_code == 423 and "canvases_embed_proxy_enabled" in r.json()["error"]
+    assert json.loads((home / "prefs.json").read_text(encoding="utf-8"))["canvases_embed_proxy"] is True
+
+
+def test_canvases_embed_proxy_ignores_a_non_boolean_settings_value(tmp_path, monkeypatch):
+    client, _ = _client(tmp_path, monkeypatch)
+    _fused_settings(tmp_path, monkeypatch, '[render]\ncanvases_embed_proxy_enabled = "yes"\n')
+    body = client.get("/api/prefs").json()["canvases"]
+    assert body["embed_proxy"] is False and body["embed_proxy_locked"] is False
+    assert client.put("/api/prefs", json={"canvases_embed_proxy": True},
+                      headers=FUSED).status_code == 200
+
+
 def test_monitor_enabled_defaults_off_and_toggles(tmp_path, monkeypatch):
     client, home = _client(tmp_path, monkeypatch)
     # Default off: the System chip and /monitor page are opt-in.
@@ -1708,7 +1750,7 @@ def test_fused_render_indexing_env_overrides_both_the_pref_and_the_dev_default(
     assert prefs_mod.indexing_enabled() is expect
 
 
-# -- per-model engine pins (D1423) ----------------------------------------------
+# -- per-model engine pins (D1431) ----------------------------------------------
 #
 # The sibling of the per-capability preference above: `model_engines` maps a
 # cached repo id to a runner code. Same store/validate/degrade rules; what a pin
@@ -1820,38 +1862,33 @@ def test_claude_default_permission_defaults_auto_and_validates(tmp_path, monkeyp
     assert prefs_mod.claude_default_permission() == "auto"
 
 
-# -- chromium_windows_enabled (experimental) ----------------------------------------
+# -- chromium_windows_enabled -------------------------------------------------------
 
 
-def _chromium_fakes(monkeypatch, state="missing"):
-    """`fused_render.chromium` with no disk or network: a canned status and
-    a recording `install`/`remove`."""
+def _chromium_fakes(monkeypatch, state="ready"):
+    """`fused_render.chromium` with no engine on disk: a canned status."""
     from fused_render import chromium
 
-    calls = []
     monkeypatch.setattr(chromium, "status", lambda *a, **k: {
-        "state": state, "progress": 0.0, "error": None, "engine_version": "1",
-        "cef_version": "x", "path": "/p"})
-    monkeypatch.setattr(chromium, "install", lambda *a, **k: calls.append("install"))
-    monkeypatch.setattr(chromium, "remove", lambda *a, **k: calls.append("remove") or True)
-    return calls
+        "state": state, "cef_version": "x" if state == "ready" else None, "path": "/p"})
 
 
-def test_chromium_windows_defaults_off_and_unavailable_without_native_windows(tmp_path, monkeypatch):
-    """Opt-in like the other optional features; `available` needs the
+def test_chromium_windows_defaults_on_and_unavailable_without_native_windows(tmp_path, monkeypatch):
+    """Default on (D1415: the app ships the engine); `available` needs the
     native-window hook (the macOS app) AND a platform that can host CEF."""
     _chromium_fakes(monkeypatch)
     client, _ = _client(tmp_path, monkeypatch)
     body = client.get("/api/prefs").json()["chromium_windows"]
-    assert body["enabled"] is False
+    assert body["enabled"] is True
     assert body["available"] is False
-    assert body["engine"]["state"] == "missing"
+    assert body["engine"]["state"] == "ready"
+    assert prefs_mod.chromium_windows_enabled() is True
 
 
 def test_chromium_windows_available_only_with_hook_and_supported_platform(tmp_path, monkeypatch):
     from fused_render import window_policy
 
-    calls = _chromium_fakes(monkeypatch)
+    _chromium_fakes(monkeypatch)
     client, _ = _client(tmp_path, monkeypatch)
     window_policy.native_hooks["apply"] = lambda on: None
     try:
@@ -1860,36 +1897,30 @@ def test_chromium_windows_available_only_with_hook_and_supported_platform(tmp_pa
         assert client.get("/api/prefs").json()["chromium_windows"]["available"] is False
     finally:
         window_policy.native_hooks.clear()
-    assert calls == []
 
 
-def test_chromium_windows_enabled_put_saves_and_starts_the_download(tmp_path, monkeypatch):
-    calls = _chromium_fakes(monkeypatch)
+def test_chromium_windows_enabled_put_saves(tmp_path, monkeypatch):
+    _chromium_fakes(monkeypatch)
     client, home = _client(tmp_path, monkeypatch)
-    body = client.put("/api/prefs", json={"chromium_windows_enabled": True}, headers=FUSED).json()
-    assert body["chromium_windows"]["enabled"] is True
-    assert json.loads((home / "prefs.json").read_text())["chromium_windows_enabled"] is True
-    assert calls == ["install"]
-    # off writes false and starts nothing
     body = client.put("/api/prefs", json={"chromium_windows_enabled": False}, headers=FUSED).json()
     assert body["chromium_windows"]["enabled"] is False
-    assert calls == ["install"]
+    assert json.loads((home / "prefs.json").read_text())["chromium_windows_enabled"] is False
+    assert prefs_mod.chromium_windows_enabled() is False
+    body = client.put("/api/prefs", json={"chromium_windows_enabled": True}, headers=FUSED).json()
+    assert body["chromium_windows"]["enabled"] is True
     assert client.put("/api/prefs", json={"chromium_windows_enabled": "yes"}, headers=FUSED).status_code == 400
 
 
 def test_chromium_engine_routes(tmp_path, monkeypatch):
-    calls = _chromium_fakes(monkeypatch, state="failed")
-    client, home = _client(tmp_path, monkeypatch)
-    assert client.get("/api/prefs/chromium").json()["engine"]["state"] == "failed"
-    # the POSTs need the X-Fused header (D3)
-    assert client.post("/api/prefs/chromium/install").status_code == 403
-    assert client.post("/api/prefs/chromium/install", headers=FUSED).status_code == 200
-    assert calls == ["install"]
-    client.put("/api/prefs", json={"chromium_windows_enabled": True}, headers=FUSED)
-    body = client.post("/api/prefs/chromium/remove", headers=FUSED).json()
-    assert body["enabled"] is False
-    assert json.loads((home / "prefs.json").read_text())["chromium_windows_enabled"] is False
-    assert calls[-1] == "remove"
+    _chromium_fakes(monkeypatch)
+    client, _ = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs/chromium").json()["engine"]["state"] == "ready"
+    # the download-era routes are gone (D1415: nothing to install or remove)
+    assert client.post("/api/prefs/chromium/install", headers=FUSED).status_code == 404
+    assert client.post("/api/prefs/chromium/remove", headers=FUSED).status_code == 404
+    # reopen needs the X-Fused header (D3) and a window host
+    assert client.post("/api/prefs/chromium/reopen-windows").status_code == 403
+    assert client.post("/api/prefs/chromium/reopen-windows", headers=FUSED).status_code == 409
 
 
 # -- warm_run_enabled (SPEC PY-20) --------------------------------------------

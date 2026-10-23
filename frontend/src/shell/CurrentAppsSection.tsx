@@ -64,7 +64,7 @@ import {
   type CurrentApp,
 } from "@shell/current-apps-lib";
 import {
-  ENV_LABELS,
+  ENV_NAMES,
   canvasNameFromPath,
   canvasPagePath,
   canvasPageTabFromSearch,
@@ -353,7 +353,7 @@ function CurrentAppRow({
   };
   const tip =
     app.path +
-    (app.canvas && isWorkbenchEnv(app.canvas.env) ? " — " + ENV_LABELS[app.canvas.env] : "") +
+    (app.canvas && isWorkbenchEnv(app.canvas.env) ? " — " + ENV_NAMES[app.canvas.env].label : "") +
     (app.kind === "linked" ? " — linked app" : "") +
     (app.exists ? "" : " — folder missing") +
     (app.running ? " — running" : "") +
@@ -428,7 +428,7 @@ function CurrentAppRow({
         // aria-hidden, so the link's own name says which (CodeRabbit).
         aria-label={
           showEnv && app.canvas && isWorkbenchEnv(app.canvas.env)
-            ? `${app.name} (${ENV_LABELS[app.canvas.env]})`
+            ? `${app.name} (${ENV_NAMES[app.canvas.env].label})`
             : undefined
         }
         onClick={onOpen}
@@ -437,7 +437,7 @@ function CurrentAppRow({
       </a>
       {showEnv && app.canvas && isWorkbenchEnv(app.canvas.env) && (
         <span className="canvas-row-env" aria-hidden="true">
-          {ENV_LABELS[app.canvas.env]}
+          {ENV_NAMES[app.canvas.env].tag}
         </span>
       )}
       {/* The running dot sits AFTER the name (owner, 2026-08-27), so it never

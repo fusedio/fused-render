@@ -148,6 +148,14 @@ def euid() -> int:
     return os.geteuid() if hasattr(os, "geteuid") else 0
 
 
+def venv_python(venv_dir: str) -> str:
+    """Where a venv keeps its own interpreter: `Scripts\\python.exe` on Windows,
+    `bin/python` elsewhere."""
+    if IS_WINDOWS:
+        return os.path.join(venv_dir, "Scripts", "python.exe")
+    return os.path.join(venv_dir, "bin", "python")
+
+
 def relpath_within(path: str, start: str) -> str:
     """`os.path.relpath(path, start)`, except that a *path* with no relative
     spelling from *start* (a different drive on Windows, where relpath raises)

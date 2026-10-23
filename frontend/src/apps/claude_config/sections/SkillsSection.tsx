@@ -1,122 +1,319 @@
-// Skills section: a read-only viewer of the user's own skills under
-// skills/*/SKILL.md — name + description from the frontmatter, source (when
-// the `skills` CLI recorded one), and a `bunx skills add` command to match.
+// Skills section: Installed (what the CLIs on this machine read) and Discover
+// (skills the registered marketplaces' plugins publish).
 //
-// Round 2 fixed four defects the live page showed:
+// Installed lists the user's own skills first, then the skills that arrive
+// with enabled plugins, which are read-only. Each row names the CLIs that read
+// the skill, but only when more than one CLI is on (see ../readers). Discover
+// groups the skills by plugin: a section's header installs the whole plugin,
+// and each skill under it is copied into the user's directories on its own.
 //
-//   1. The expanded row repeated its own description verbatim, adding only a
-//      "Source" line — one line of new information is not worth a
-//      disclosure, so there is none any more. The description gets the room
-//      to be read on the row itself instead of ellipsizing mid-sentence —
-//      a skill's description IS its whole contract with the model. Source,
-//      when recorded, sits in the meta slot instead of behind a second click.
-//   2. `linked` (installed via the `skills` CLI, a symlink into .agents) was a
-//      badge on 9 of 10 rows, distinguishing almost nothing from its position
-//      right after the name. It now marks the EXCEPTION — a skill that is
-//      NOT linked, i.e. authored or dropped in by hand rather than managed —
-//      because that is the one worth calling out.
-//   3. "no recorded source" used to render as right-aligned italic meta on
-//      the rows lacking one, creating a ragged second column that existed
-//      only to say nothing was there. Absent data now renders nothing.
-//
-// Round 2 FOLLOW-UP after a live look at the page fixed three more: the name
-// column had no shared left edge (it shrink-wrapped against the description
-// instead of sitting in a fixed column — .cc-skills-list gives it one, and
-// tops the row instead of centering it, since the description can now be two
-// lines); the description was let wrap UNBOUNDED, so one long entry ran ~4x
-// taller than its neighbours (clamped to 2 lines, `.cc-lrow-sub-clamp2` —
-// shared with Memory's file rows so the two tabs agree); and at a narrow
-// width the description was the thing that disappeared while the source
-// (lower-value, repetitive across a marketplace) stayed — inverted below.
-//
-// A SECOND follow-up: the "not linked" badge rode as a `pills` sibling of the
-// name inside the row's flex flow, so on cocoindex — the one row that has it
-// — it pushed the description's start x rightward, the exact same class of
-// defect the fixed name column had just fixed for the other nine. It moves
-// into the name box itself now (stacked under the name, `.cc-skills-namebox`
-// below), so it can never again be the thing that breaks the shared left
-// edge, no matter how many rows end up carrying it.
-import { useCallback } from "react";
-import { copyToClipboard } from "@platform/lib/clipboard";
+// `?skill=` selects between the list and a skill's page (../skill-detail). The
+// value is `<location>/<slug>` for a user skill and `plugin:<plugin>/<slug>`
+// for a plugin's.
+import { useCallback, useEffect, useState } from "react";
+import { Button } from "@platform/shadcn/ui/button";
+import { Input } from "@platform/shadcn/ui/input";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import * as cc from "../api";
 import {
   Empty,
-  Icon,
-  List,
-  ListRow,
+  Head,
   ListSkeleton,
-  Pill,
+  PAGE_SIZE,
+  Pager,
   SKELETON_ROWS,
-  SectionToolbar,
+  Seg,
+  plural,
   guard,
   toastErr,
   toastOk,
   useModuleData,
 } from "../bits";
+import type { SectionProps } from "../bits";
+import { useEnabledClis } from "../readers";
+import { SkillDetail } from "../skill-detail";
+import { SkillGroupSection, groupSkills, type SkillGroup } from "../skill-discover";
+import { SkillRow } from "../skill-row";
 
-export default function SkillsSection() {
+type Tab = "installed" | "discover";
+
+const skillKey = (s: cc.SkillRef) =>
+  s.source === "plugin" ? `plugin:${s.plugin}/${s.slug}` : `${s.location}/${s.slug}`;
+
+function readSkill(): string | null {
+  return new URLSearchParams(location.search).get("skill");
+}
+
+function writeSkill(key: string | null) {
+  const p = new URLSearchParams(location.search);
+  if (key) p.set("skill", key);
+  else p.delete("skill");
+  history.replaceState(history.state, "", `${location.pathname}?${p.toString()}`);
+}
+
+const BLURB = "Skills your coding CLIs read.";
+
+export default function SkillsSection({
+  filter = "",
+  onOpenPluginsDiscover,
+}: SectionProps & {
+  /** Switch the page to the Plugins tab with its Discover list selected. */
+  onOpenPluginsDiscover?: () => void;
+}) {
   const load = useCallback(() => cc.skills.list(), []);
   const { data, error, reload } = useModuleData(load);
+  const enabledClis = useEnabledClis();
+  const [skill, setSkill] = useState<string | null>(readSkill);
+  const [tab, setTab] = useState<Tab>("installed");
+  const [creating, setCreating] = useState(false);
+  const [name, setName] = useState("");
+  const [page, setPage] = useState(0);
+  const [busy, setBusy] = useState<string | null>(null);
 
-  const share = async (command: string) => {
-    if (await copyToClipboard(command)) toastOk("Copied install command");
-    else toastErr("Copy failed");
+  // The catalog read is deferred until Discover is asked for, and kept once
+  // fetched: switching tabs back and forth must not re-read every marketplace.
+  const [avail, setAvail] = useState<cc.AvailableSkills | null>(null);
+  const [availError, setAvailError] = useState<string | null>(null);
+  const loadAvail = useCallback(() => {
+    cc.skills.available().then(
+      (a) => {
+        setAvail(a);
+        setAvailError(null);
+      },
+      (e: Error) => setAvailError(e.message),
+    );
+  }, []);
+  useEffect(() => {
+    if (tab === "discover" && !avail && !availError) loadAvail();
+  }, [tab, avail, availError, loadAvail]);
+
+  const open = (key: string | null) => {
+    setSkill(key);
+    writeSkill(key);
   };
 
-  if (error) return <ErrorBanner>{error}</ErrorBanner>;
-  if (!data) return <ListSkeleton rows={SKELETON_ROWS} label="Loading skills" />;
+  const pick = (next: Tab) => {
+    setTab(next);
+    setPage(0);
+    setAvailError(null);
+  };
+
+  const create = async () => {
+    const res = await guard(cc.skills.create(name.trim()));
+    if (!res) return;
+    if (!res.ok) {
+      toastErr(res.error || "Create failed");
+      return;
+    }
+    toastOk(`Created ${name.trim()}`);
+    setName("");
+    setCreating(false);
+    reload();
+  };
+
+  const addSkill = async (s: cc.AvailableSkill) => {
+    setBusy(`${s.plugin}@${s.marketplace}/${s.slug}`);
+    try {
+      const res = await cc.skills.add(s);
+      if (!res.ok) {
+        toastErr(res.error || "Add failed");
+        return;
+      }
+      toastOk(`Added ${s.slug}`);
+      reload();
+      loadAvail();
+    } catch (e) {
+      toastErr((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const installPlugin = async (g: SkillGroup) => {
+    setBusy(g.key);
+    try {
+      const res = await cc.plugins.install(g.key);
+      if (!res.ok) {
+        toastErr(res.error || "Install failed");
+        return;
+      }
+      toastOk(`Installed ${g.plugin}`);
+      reload();
+      loadAvail();
+    } catch (e) {
+      toastErr((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  if (error)
+    return (
+      <>
+        <Head title="Skills" blurb={BLURB} />
+        <ErrorBanner>{error}</ErrorBanner>
+      </>
+    );
+  if (!data)
+    return (
+      <>
+        <Head title="Skills" blurb={BLURB} />
+        <ListSkeleton rows={SKELETON_ROWS} label="Loading skills" />
+      </>
+    );
+
+  const picked = skill ? data.skills.find((s) => skillKey(s) === skill) : undefined;
+  if (skill && picked) {
+    return (
+      <SkillDetail
+        key={skill}
+        skill={picked}
+        enabledClis={enabledClis}
+        onBack={() => open(null)}
+        onChanged={reload}
+        onDeleted={() => {
+          reload();
+          open(null);
+        }}
+      />
+    );
+  }
+
+  const needle = filter.trim().toLowerCase();
+  const matches = (s: { name: string; slug: string; description: string; plugin?: string }) =>
+    !needle || `${s.name} ${s.slug} ${s.description} ${s.plugin ?? ""}`.toLowerCase().includes(needle);
+  const mine = data.skills.filter((s) => s.source === "user");
+  const bundled = data.skills
+    .filter((s) => s.source === "plugin")
+    .sort((a, b) => (a.plugin ?? "").localeCompare(b.plugin ?? "") || a.slug.localeCompare(b.slug));
+  const pluginCount = new Set(bundled.map((s) => `${s.plugin}@${s.marketplace}`)).size;
+  const shownMine = mine.filter(matches);
+  const shownBundled = bundled.filter(matches);
+  const total = data.skills.length;
+  const shown = shownMine.length + shownBundled.length;
+
+  const groups = groupSkills(avail?.skills ?? [], filter);
+  const skillCount = groups.reduce((n, g) => n + g.skills.length, 0);
+  const pages = Math.max(1, Math.ceil(groups.length / PAGE_SIZE));
+  const safePage = Math.min(page, pages - 1);
+  const paged = groups.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
+
+  const row = (s: cc.Skill) => (
+    <SkillRow key={skillKey(s)} skill={s} enabledClis={enabledClis} onOpen={() => open(skillKey(s))} />
+  );
 
   return (
     <>
-      <SectionToolbar summary={`${data.skills.length} skill(s)`} onRefresh={reload} />
-      {!data.skills.length && <Empty>No local skills under skills/*/SKILL.md.</Empty>}
-      {data.skills.length > 0 && (
-        <div className="cc-skills-list">
-          <List>
-            {data.skills.map((s) => (
-              <ListRow
-                key={s.slug}
-                name={
-                  <span className="cc-skills-namebox">
-                    <span className="cc-skills-namebox-text">{s.name}</span>
-                    {!s.linked && <Pill>not linked</Pill>}
-                  </span>
-                }
-                secondary={s.description || undefined}
-                secondaryClass="cc-lrow-sub-clamp2"
-                secondaryTitle={s.description || undefined}
-                meta={
-                  s.source ? <span className="cc-lrow-meta cc-mono">{s.source}</span> : null
-                }
-                actions={
-                  <>
-                    <button
-                      type="button"
-                      className="cc-iconbtn"
-                      title="Reveal in Finder"
-                      aria-label={`Reveal ${s.name} in Finder`}
-                      onClick={() => guard(cc.skills.open(s.slug))}
-                    >
-                      <Icon name="folder" />
-                    </button>
-                    {s.shareCommand && (
-                      <button
-                        type="button"
-                        className="cc-iconbtn"
-                        title={`Copy install command — ${s.shareCommand}`}
-                        aria-label={`Copy the install command for ${s.name}`}
-                        onClick={() => share(s.shareCommand as string)}
-                      >
-                        <Icon name="copy" />
-                      </button>
-                    )}
-                  </>
-                }
+      <Head
+        title="Skills"
+        blurb={
+          tab === "discover"
+            ? avail
+              ? `${plural(skillCount, "skill")} in ${plural(groups.length, "plugin")}`
+              : "reading marketplace catalogs…"
+            : needle
+              ? `${shown} of ${plural(total, "skill")} match`
+              : `${plural(total, "skill")} · ${mine.length} yours, ${bundled.length} from ${plural(pluginCount, "plugin")}`
+        }
+        aside={
+          <>
+            <Seg
+              label="Skill source"
+              value={tab}
+              onChange={pick}
+              options={[
+                { id: "installed", label: "Installed", title: "Skills on this machine" },
+                { id: "discover", label: "Discover", title: "Skills your marketplaces publish" },
+              ]}
+            />
+            {tab === "installed" && (
+              <Button size="sm" onClick={() => setCreating((v) => !v)}>
+                {creating ? "Cancel" : "New skill"}
+              </Button>
+            )}
+          </>
+        }
+      />
+      {tab === "installed" && (
+        <>
+          {creating && (
+            <div className="cc-skill-new">
+              <Input
+                aria-label="New skill name"
+                placeholder="skill-name"
+                value={name}
+                autoFocus
+                onChange={(e) => setName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && name.trim() && void create()}
+                className="max-w-64"
               />
-            ))}
-          </List>
-        </div>
+              <Button size="sm" disabled={!name.trim()} onClick={() => void create()}>
+                Create
+              </Button>
+            </div>
+          )}
+          {needle && !shown && <Empty>No skills match.</Empty>}
+          {(shownMine.length > 0 || !needle) && (
+            <section className="settings-section">
+              <h3 className="settings-section-title">Your skills</h3>
+              {shownMine.length > 0 ? (
+                <div className="settings-card">{shownMine.map(row)}</div>
+              ) : (
+                !needle && (
+                  <div className="settings-card">
+                    <p className="cc-skill-empty">No skills of your own yet.</p>
+                  </div>
+                )
+              )}
+            </section>
+          )}
+          {shownBundled.length > 0 && (
+            <section className="settings-section">
+              <h3 className="settings-section-title">From plugins</h3>
+              <div className="settings-card">{shownBundled.map(row)}</div>
+            </section>
+          )}
+        </>
+      )}
+      {tab === "discover" && (
+        <>
+          {availError && <ErrorBanner>{availError}</ErrorBanner>}
+          {avail && avail.skipped > 0 && (
+            <p className="cc-skill-note-line">
+              {plural(avail.skipped, "plugin")} fetch their skills from elsewhere and are not listed.{" "}
+              {onOpenPluginsDiscover && (
+                <button type="button" className="cc-link" onClick={onOpenPluginsDiscover}>
+                  Browse them in Plugins → Discover
+                </button>
+              )}
+            </p>
+          )}
+          {!avail && !availError && (
+            <ListSkeleton rows={SKELETON_ROWS} label="Reading marketplace catalogs" />
+          )}
+          {paged.map((g) => (
+            <SkillGroupSection
+              key={g.key}
+              group={g}
+              busy={busy}
+              onAdd={(sk) => void addSkill(sk)}
+              onInstall={(grp) => void installPlugin(grp)}
+            />
+          ))}
+          <Pager
+            page={safePage}
+            total={groups.length}
+            label="Discover results pages"
+            onPage={setPage}
+          />
+          {avail && groups.length === 0 && (
+            <Empty>
+              {avail.skills.length === 0
+                ? "No marketplace skills to read. Add a marketplace in Plugins and its skills show up here."
+                : "No skills match."}
+            </Empty>
+          )}
+        </>
       )}
     </>
   );

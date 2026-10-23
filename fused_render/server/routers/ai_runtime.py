@@ -62,7 +62,7 @@ from fused_render.server.common import (
 from fused_render.ai.hub_cache import (
     CachedModel, cached_capability, cached_models, embed_family, embed_media,
     has_cached_snapshot,
-    has_vision_tower, is_downloaded, speech_traits,
+    has_vision_tower, is_downloaded, is_sherpa_transducer, speech_traits,
 )
 from fused_render.ai import hub_metadata
 
@@ -752,6 +752,16 @@ def _transcripts_dir() -> str:
     directory = os.path.join(home_dir(), "ai", "transcripts")
     os.makedirs(directory, exist_ok=True)
     return directory
+
+
+def _is_transcribe_only(model: str) -> bool:
+    """Is `model` one that only transcribes (Parakeet)? The cached snapshot's
+    layout answers when there is one; otherwise the curated row's
+    `transcribeOnly` flag, for a model the user has not downloaded yet."""
+    if is_sherpa_transducer(model):
+        return True
+    entry = catalog.entry_for(registry.SPEECH_TO_TEXT, model)
+    return bool(entry and entry.get("transcribeOnly"))
 
 
 def _model_of(body: dict) -> str:
@@ -2005,7 +2015,7 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
             "'mask' needs 'image' — a mask says which region of a base image "
             "to repaint (white = repaint, black = keep), so fused.ai.image("
             "{image, mask}) needs both", status=400)
-    # The runner for THIS model (D1423): a pin, then the engines that read it,
+    # The runner for THIS model (D1431): a pin, then the engines that read it,
     # then the capability's preference — the same resolution the load makes.
     active_runner = registry.resolve_for_model(registry.IMAGE_GENERATION, model).runner
     # A FLUX.1 Fill checkpoint asked for a plain render or a whole-image
@@ -2382,7 +2392,7 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
                       or "no video model is configured", status=409)
 
     # The runner that will actually SERVE this request, for THIS model
-    # (D1423): a pin, then the engines whose format check reads it, then the
+    # (D1431): a pin, then the engines whose format check reads it, then the
     # capability's preference — the same call `start_video`'s
     # `_runner_or_raise` makes a few lines down, made here too because the
     # request SHAPE (frame grid, canvas/step defaults) is that runner's fact,
@@ -2717,6 +2727,20 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
         # facts, and only the first one tells the user what to do.
         return _error(registry.unavailable_reason(registry.SPEECH_TO_TEXT)
                       or "no transcription model is configured", status=409)
+
+    # …and what the MODEL cannot do, which the runner code cannot say: the
+    # faster-whisper runner also serves Parakeet, a transducer with no
+    # translate, no language to pin and no prompt. Read off the cached
+    # snapshot's files, else off the curated row for a model not downloaded yet;
+    # the worker refuses again on arrival, but a refusal there is a job that
+    # already exists.
+    if _is_transcribe_only(model):
+        try:
+            engine_options.transcribe_only_or_raise(
+                task=task, language=body.get("language"),
+                initial_prompt=body.get("initialPrompt"))
+        except ValueError as e:
+            return _error(str(e), status=400)
 
     uid = secrets.token_hex(6)
     job = supervisor.transcribe_job_id(uid)

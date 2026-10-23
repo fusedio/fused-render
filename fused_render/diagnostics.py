@@ -53,7 +53,7 @@ import tempfile
 import time
 import zipfile
 
-from fused_render import _flavor, _platform
+from fused_render import _flavor, _platform, bundle_exec
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +71,7 @@ LOG_SHOW_MAX_SPAN_S = 2 * 3600
 #: Slice size for the newest-first read; one slice is ~8 s on a busy machine.
 LOG_SHOW_CHUNK_S = 30 * 60
 CMD_TIMEOUT_S = 5
+BUNDLE_PROBE_TIMEOUT_S = 20
 WINDOW_S = 24 * 3600
 INDEX_RUNS = 5
 
@@ -669,6 +670,32 @@ def _memory_text() -> str | None:
     return None
 
 
+def _bundle_exec_text() -> str | None:
+    """The bundle's executables as the kernel sees them, plus one real spawn
+    of its python. Settles "mode bits or a refused exec" for a bundle whose
+    children all die with EACCES (2026-10-23) — the app log says only that
+    the spawn failed. None outside a packaged mac app."""
+    contents = bundle_exec.own_contents()
+    if contents is None:
+        return None
+    python = bundle_exec.interpreter(contents)
+    text = _run(["id"])
+    text += "stat:\n" + "\n".join(
+        bundle_exec.describe(os.path.join(contents, "MacOS", n))
+        for n in sorted(os.listdir(os.path.join(contents, "MacOS")))) + "\n\n"
+    for argv in (["ls", "-la@e", os.path.join(contents, "MacOS")],
+                 ["ls", "-la@e", os.path.join(contents, "Resources", "bin")],
+                 ["xattr", python],  # names only: values can carry download URLs
+                 ["codesign", "-dv", "--verbose=2", python],
+                 ["spctl", "--assess", "--type", "execute", "--verbose=2", python]):
+        text += _run(argv)
+    # Its own timeout, not CMD_TIMEOUT_S: a cold spawn on a loaded Mac can
+    # take longer than 5 s, and "timed out" here would read as a refusal.
+    reason, _conclusive = bundle_exec.probe(contents, timeout=BUNDLE_PROBE_TIMEOUT_S)
+    text += f"spawn {python}: {'ok' if reason is None else reason}\n"
+    return text
+
+
 def _ps_text() -> str | None:
     if sys.platform.startswith("win"):
         return None
@@ -710,10 +737,17 @@ def _unified_log(w: _Writer, window_start: float, now: float, tmp_dir: str) -> N
       written in chronological order.
     """
     source = "log show"
+    # The last clause is the exec-policy trail for the bundle's python: a
+    # Sandbox `deny(1) process-exec`, an AMFI or syspolicyd refusal all name
+    # the path, and none of them reach the app log (the spawn just says
+    # EACCES). Scoped to those three senders, not a bare CONTAINS over
+    # everything.
     predicate = ('(sender == "kernel" AND eventMessage CONTAINS "memorystatus") OR '
                  'subsystem == "com.apple.memorystatus" OR '
                  f'(process == "{_flavor.app_name()}" AND subsystem == "com.apple.runningboard") OR '
-                 'process == "fused-apple-ai"')
+                 'process == "fused-apple-ai" OR '
+                 '((process == "kernel" OR process == "syspolicyd" OR process == "amfid") '
+                 f'AND eventMessage CONTAINS "{_flavor.app_name()}.app/Contents/MacOS/python")')
     span = min(now - window_start, LOG_SHOW_MAX_SPAN_S)
     deadline = time.monotonic() + LOG_SHOW_TIMEOUT_S
 
@@ -898,6 +932,14 @@ def build_bundle(since_s: float | None = None, out_dir: str | None = None, *,
                 w.skipped.append({"source": "os/ps-tree.txt", "reason": "not supported"})
             else:
                 _add_text(w, "os/ps-tree.txt", ps, "ps -axo …")
+            try:
+                bundle = _bundle_exec_text()
+            except Exception as e:  # noqa: BLE001 - evidence, never a reason to fail
+                bundle = f"bundle inspection failed: {e}\n"
+            if bundle is None:
+                w.skipped.append({"source": "os/bundle-exec.txt", "reason": "not a packaged mac app"})
+            else:
+                _add_text(w, "os/bundle-exec.txt", bundle, "bundle executables")
 
             if sys.platform == "darwin" and system_log:
                 say("Reading the system log (15-45 s)…")

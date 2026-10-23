@@ -486,6 +486,10 @@ export interface ClaudeHealth {
     org: string | null;
     plan: string | null;
     planType?: string | null;
+    /** The COPILOT snapshot's user, from the CLI's own `account.getCurrentAuth`
+     *  (login and GitHub host); absent or null when it could not say. */
+    login?: string | null;
+    host?: string | null;
   } | null;
   config_dir: string;
   /** `sys.platform`. Here so the UI never guesses which install line to show. */
@@ -708,7 +712,25 @@ export interface AgentBackendRow {
   /** "Claude" / "Copilot" / "Codex" — the word every surface names the agent by. */
   label: string;
   enabled: boolean;
-  models: { id: string; label: string }[];
+  /** `reasoning: false` marks a model its CLI takes no effort for (the spawn
+   *  drops a chosen effort rather than fail); absent reads as true. `efforts`
+   *  is the list THIS model takes when the server knows it per model
+   *  (Copilot's `models.list`, carried in its health snapshot): `[]` means
+   *  none — the effort pill is hidden — and absent means the row's
+   *  `efforts`. `default_effort` is the CLI's own default for the model when
+   *  it said. `category` / `vendor` / `multiplier` are facts the CLI
+   *  published beside the id (Copilot's picker category and billing
+   *  multiplier), carried, not acted on. */
+  models: {
+    id: string;
+    label: string;
+    reasoning?: boolean;
+    efforts?: string[];
+    default_effort?: string;
+    category?: string | null;
+    vendor?: string | null;
+    multiplier?: number | null;
+  }[];
   default_model: string;
   efforts: string[];
   modes: string[];
@@ -1460,7 +1482,10 @@ export interface Prefs {
   // Whether the Canvases feature is OFFERED (opt-in, default off — D427). Gates
   // the shell's entry points to it (the sidebar row and the Settings menu
   // entry), not the /canvases routes, which keep answering a deep link.
-  canvases: { enabled: boolean };
+  // `embed_proxy`: the custom env's workbench frames through the loopback
+  // proxy (opt-in, default off — canvas_embed_proxy.py). `embed_proxy_locked`:
+  // `[render] canvases_embed_proxy_enabled` in ~/.fused/settings.toml sets it.
+  canvases: { enabled: boolean; embed_proxy?: boolean; embed_proxy_locked?: boolean };
   // Whether the unified Share sheet (public link + .fused file) is OFFERED in
   // place of the plain Export / Download action (opt-in, default off). Gates
   // the five share surfaces, not the /api/share routes.
@@ -1609,10 +1634,10 @@ export interface Prefs {
   // section is not rendered. OPTIONAL like `launcher`.
   native_windows?: { enabled: boolean; available: boolean };
   // Chromium (CEF) engine for app windows (fused_render/shell/prefs.py's
-  // `chromium_windows_enabled`): experimental, off by default. `available` is
-  // false unless this is the macOS app with native windows, where the row is
-  // not rendered. `engine` is the on-disk engine's download state. OPTIONAL:
-  // an older server answers without it.
+  // `chromium_windows_enabled`): on by default, the app ships the engine
+  // (D1415). `available` is false unless this is the macOS app with native
+  // windows, where the row is not rendered. OPTIONAL: an older server answers
+  // without it.
   chromium_windows?: ChromiumWindowsState;
   // The DEFAULT Fused environment (fusedcli.workbench_env): the canvas
   // catalog's initial pick, the `fused` wrapper's env outside a canvas clone,
@@ -1630,23 +1655,12 @@ export interface Prefs {
   agents?: { claude: boolean; copilot: boolean; codex: boolean; default: string };
 }
 
-export type ChromiumEngineState =
-  | "unsupported"
-  | "unpublished"
-  | "missing"
-  | "downloading"
-  | "ready"
-  | "failed";
+export type ChromiumEngineState = "unsupported" | "missing" | "ready";
 
 export interface ChromiumEngineStatus {
+  /** "ready": this build ships the engine; "missing": it does not (an Intel
+   *  build, a dev checkout); "unsupported": not macOS. */
   state: ChromiumEngineState;
-  /** 0..1 while downloading (download ~0..0.9, then verify/unpack). */
-  progress: number;
-  /** "download" | "verify" | "unpack" while downloading. */
-  phase?: string;
-  /** Set when `state` is "failed". */
-  error: string | null;
-  engine_version: string | null;
   cef_version: string | null;
   path: string | null;
 }
@@ -1689,7 +1703,7 @@ export interface EnginesPrefs {
   // One row per capability the registry knows, servable here or not — a
   // preference the user cannot see is one they cannot fix.
   capabilities: CapabilityEngine[];
-  // One row per DOWNLOADED model with a known capability (D1423): its own pin
+  // One row per DOWNLOADED model with a known capability (D1431): its own pin
   // and what actually serves it. Optional so an older server's payload, which
   // has no such block, still reads as "no model rows".
   models?: ModelEngine[];
@@ -1882,6 +1896,10 @@ export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvases_enabled: enabled });
 }
 
+export function putCanvasesEmbedProxy(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { canvases_embed_proxy: enabled });
+}
+
 /** The default Fused environment (`prefs.workbench.env`). 400 outside
  *  `unstable` / `prod` / `custom`, 423 while FUSED_RENDER_WORKBENCH_ENV pins
  *  it. The server re-exports the `fused` wrapper so its default follows. */
@@ -1912,29 +1930,13 @@ export function putNativeWindowsEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { native_windows_enabled: enabled });
 }
 
-/** Turning it ON also starts the engine download server-side. */
 export function putChromiumWindowsEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { chromium_windows_enabled: enabled });
-}
-
-/** Just the `chromium_windows` slice — the cheap poll while downloading. */
-export function getChromiumEngine(): Promise<ChromiumWindowsState> {
-  return getJson<ChromiumWindowsState>("/api/prefs/chromium");
-}
-
-/** Retry the engine download after a failure. */
-export function installChromiumEngine(): Promise<ChromiumWindowsState> {
-  return postJson<ChromiumWindowsState>("/api/prefs/chromium/install", {});
 }
 
 /** Close every app window and open one Home window on the current engine. */
 export function reopenChromiumWindows(): Promise<ChromiumWindowsState> {
   return postJson<ChromiumWindowsState>("/api/prefs/chromium/reopen-windows", {});
-}
-
-/** Delete the engine from disk; the server also turns the preference off. */
-export function removeChromiumEngine(): Promise<ChromiumWindowsState> {
-  return postJson<ChromiumWindowsState>("/api/prefs/chromium/remove", {});
 }
 
 export function putAppSharingEnabled(enabled: boolean): Promise<Prefs> {
