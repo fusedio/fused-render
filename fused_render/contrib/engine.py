@@ -566,9 +566,15 @@ def _step(root, fol, tip, *, user, done) -> tuple[dict, bool]:
             return _out("deferred", "merge", **done), False
         if not mt["clean"]:
             return _out("needs-merge", "needs-merge", files=list(mt["files"]), **done), False
-        if base and mt["tree"] == replay.tree_of(root, main):
-            # Everything of Bob's is in the author's version already: settle
-            # straight onto it (files move only where the author edited since).
+        p = _proposal(rec)
+        if mt["tree"] == replay.tree_of(root, main) and (
+                base or (p and not p.get("landed_at") and _landed_in(root, p, main))):
+            # Everything of Bob's is in the author's version already (a
+            # squash/rebase accept seen through the PR-head base, or a
+            # merge-commit accept whose merge is a sibling of his own
+            # bring-in): settle straight onto it rather than record one more
+            # bookkeeping merge first — files move only where the author
+            # edited since, and Undo pins Bob's own tip.
             with replay.slot() as held:
                 if not held:
                     return _out("deferred", "slot-busy", **done), False

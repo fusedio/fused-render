@@ -845,6 +845,52 @@ def test_migration_from_a_v2_record_with_a_diverged_main(v2):
     assert [e["text"] for e in store.get(w.app)["activity"]].count(classify.MOVED_TEXT) == 1
 
 
+def test_migration_of_the_2026_10_23_stuck_copy(v2):
+    """The case that started v3 (sine-starter, PR #13): a v2 copy whose HEAD
+    is Bob's bring-in merge M1 (parents: his sent commit B1, the author's
+    v4), while GitHub's main is the accept merge M (parents v4, B1) — a
+    sibling of M1, not a descendant — and the proposal is merged. The first
+    v3 sync migrates silently, settles onto M (M1 pinned with Undo), says
+    "merged your change", and both invariants hold; the next sync is a
+    noop."""
+    w = v2
+    b1 = claude_commit(w.app, {"app.py": APP_PY.replace("return 1", "return 3")}, "louder")
+    v4 = _alice(w, {"index.html": PAGE.replace("blue", "green")}, "v4")
+    git(w.app, "fetch", "-q", "origin")
+    git(w.app, "merge", "-q", "--no-edit", "-m", "Bring in alice's latest", v4)
+    m1 = git(w.app, "rev-parse", "HEAD")
+    assert git(w.app, "rev-list", "--parents", "-1", m1).split()[1:] == [b1, v4]
+    # GitHub's merge commit: same tree, parents (v4, B1), on the author's main.
+    m = git(w.app, "commit-tree", git(w.app, "rev-parse", f"{m1}^{{tree}}"), "-p", v4, "-p", b1,
+            "-m", "Merge pull request #13 from bob/fused-sine")
+    # The bare repo pulls it from Bob's clone (a copy never pushes: its hook).
+    git(w.app, "update-ref", "refs/fused/tmp-m", m)
+    git(w.fake.bare_path(REPO), "fetch", "-q", w.app, "refs/fused/tmp-m:refs/heads/main")
+    git(w.app, "update-ref", "-d", "refs/fused/tmp-m")
+    store.update(w.app, lambda r: r.__setitem__("proposal", {
+        "repo": REPO, "number": 13, "sent": b1, "checked_tip": v4, "returned_at": None,
+        "settled_seen": False, "cache": {"state": "merged", "merge_commit_sha": m,
+                                         "head_sha": b1}}))
+    assert git_upstream._current_branch(w.app) == "main"
+    res = w.sync()
+    assert res["status"] == "synced", res
+    inv(w)
+    assert git(w.app, "rev-parse", "HEAD") == m
+    assert engine.status(w.app)["state"] == "merged"
+    rec = store.get(w.app)
+    assert rec["v"] == 3 and rec["proposal"]["landed_at"]
+    line = next(e for e in store.activity(w.app) if "merged your change" in e["text"])
+    assert line["undo"], line
+    raw = next(e for e in rec["activity"] if e["id"] == line["id"])
+    assert replay.rev(w.app, raw["backup"]) == m1
+    lines = len(rec["activity"])
+    w.sync()  # nothing more to do: no move, no second line, the stamp once
+    assert git(w.app, "rev-parse", "HEAD") == m
+    assert len(store.get(w.app)["activity"]) == lines
+    assert store.get(w.app)["proposal"]["landed_at"] == rec["proposal"]["landed_at"]
+    inv(w)
+
+
 def test_migration_of_a_following_v2_copy_is_silent(v2):
     w = v2
     assert w.sync()["status"] == "synced"
