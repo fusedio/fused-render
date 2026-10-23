@@ -6,7 +6,7 @@
 import type { Task } from "@platform/lib/api";
 import { usePrStatuses } from "@platform/lib/prStatus";
 import { prKey, prRefsOf, prUrl, type PrRef } from "@platform/lib/task-prs";
-import "../../styles/task-pr-dot.css";
+import "./task-pr-dot.css";
 import { Popover, PopoverContent, PopoverTrigger } from "@platform/shadcn/ui/popover";
 
 /** The "other pull requests" list. Mounted only while the popover is open
