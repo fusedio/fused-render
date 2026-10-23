@@ -1648,6 +1648,91 @@ def test_sync_merges_remote_changes_while_dirty(harness, tmp_path, monkeypatch, 
     _stop_sync("alpha")
 
 
+def test_stamp_only_move_with_unchanged_files_is_adopted_not_stale(
+    harness, tmp_path, monkeypatch, fake_agent
+):
+    # The workbench's share settings (access scope / passcode) bump the
+    # collection stamp and change no file. The server re-serializes
+    # canvas.toml, so its bytes differ while it parses the same: that is
+    # still "nothing to pull" — the probe becomes the baseline, no chip.
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)
+    shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    assert _wait_for(lambda: _manager()._remote is not None)
+
+    with _staged():
+        shims.set_remote_files({**_BASE_FILES, "canvas.toml": "type = 'canvas'\n"})
+        shims.set_manifest("t2")
+
+    assert _wait_for(lambda: _manager()._remote["last_updated"] == "t2"), _watcher_diag()
+    assert _sync_view("alpha")["server_stale"] is None
+    # _save_base runs just after _rotate_remote: wait for the file, too.
+    assert _wait_for(lambda: json.loads(
+        (harness.root / ".sync" / "alpha.json").read_text())["remote"]["last_updated"] == "t2")
+    _stop_sync("alpha")
+
+
+def test_stamp_only_move_is_adopted_over_an_unpushed_layout_edit(
+    harness, tmp_path, monkeypatch, fake_agent
+):
+    # The local canvas.toml was edited (not pushed yet) when the share
+    # settings bumped the stamp: the server's toml is checked against the
+    # sync point's rows instead of the edited local file — still adopted.
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)
+    shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    assert _wait_for(lambda: _manager()._remote is not None)
+    m = _manager()
+    with m._op_lock:
+        m._base_toml = canvases_mod.canvas_snapshot.rows_of_doc({"type": "canvas"})
+        m._save_base()
+
+    with _staged():
+        (harness.root / "alpha" / "canvas.toml").write_text(
+            'type = "canvas"\n\n[canvas]\nx = 1\n', encoding="utf-8")
+        shims.set_remote_files({**_BASE_FILES, "canvas.toml": "type = 'canvas'\n"})
+        shims.set_manifest("t2")
+
+    assert _wait_for(lambda: _manager()._remote["last_updated"] == "t2"), _watcher_diag()
+    assert _sync_view("alpha")["server_stale"] is None
+    _stop_sync("alpha")
+
+
+def test_stamp_only_move_with_a_layout_change_still_reads_stale(
+    harness, tmp_path, monkeypatch, fake_agent
+):
+    # Same stamp-only manifest move, but canvas.toml really changed (a layout
+    # save): the chip goes up as before, and the bundle is downloaded once
+    # for that stamp, not on every poll.
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)
+    shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    assert _wait_for(lambda: _manager()._remote is not None)
+    fetches = []
+    real_fetch = canvases_mod._SyncManager._fetch_bundle
+    monkeypatch.setattr(
+        canvases_mod._SyncManager, "_fetch_bundle",
+        lambda self, probe: fetches.append(probe.get("last_updated")) or real_fetch(self, probe),
+    )
+
+    with _staged():
+        shims.set_remote_files({**_BASE_FILES, "canvas.toml": 'type = "canvas"\nx = 1\n'})
+        shims.set_manifest("t2")
+
+    status = _wait_sync(lambda s: s["server_stale"] is not None)
+    assert status["server_stale"] is not None, f"{status} | {_watcher_diag()}"
+    time.sleep(0.5)  # several more polls
+    assert fetches == ["t2"], fetches
+    assert _manager()._remote["last_updated"] == "t1"
+    _stop_sync("alpha")
+
+
 def test_sync_merge_keeps_local_delete(harness, tmp_path, monkeypatch, fake_agent):
     # Local deleted b.py; the bundle still carries it. The merge must NOT
     # recreate it — the push propagates the delete.
@@ -1752,9 +1837,9 @@ def test_sync_shim_poll_pulls_clean_via_cli_force(harness, tmp_path, monkeypatch
     harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
 
     assert _wait_for(lambda: getattr(_manager(), "_remote", None) is not None)
-    harness.set_scenario(
-        {"pull_files": {**_BASE_FILES, "remote_udf.py": "print('from workbench')\n"}}
-    )
+    remote = {**_BASE_FILES, "remote_udf.py": "print('from workbench')\n"}
+    harness.set_scenario({"pull_files": remote})
+    shims.set_remote_files(remote)  # a stamp move over unchanged files is adopted
     shims.set_manifest("t2")
 
     body = _pull_when_stale(harness)
@@ -1803,6 +1888,7 @@ def test_sync_shim_force_pull_rechecks_before_adopting_clean(harness, tmp_path, 
         "pull_files": {**_BASE_FILES, "remote_udf.py": "print('from workbench')\n"},
         "pull_dry": "Would write 1 file (local differs from the canvas).",
     })
+    shims.set_remote_files({**_BASE_FILES, "remote_udf.py": "print('from workbench')\n"})
     shims.set_manifest("t2")
 
     body = _pull_when_stale(harness)
@@ -2784,6 +2870,7 @@ def test_sync_state_reports_pulling_during_a_clean_pull(harness, tmp_path, monke
         "pull_files": {**_BASE_FILES, "remote_udf.py": "print('x')\n"},
         "pull_delay": 0.6,
     })
+    shims.set_remote_files({**_BASE_FILES, "remote_udf.py": "print('x')\n"})
     shims.set_manifest("t2")
     assert _wait_sync(lambda s: s["server_stale"] is not None)["server_stale"] is not None
     monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 30.0)
