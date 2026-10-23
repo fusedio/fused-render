@@ -451,9 +451,17 @@ test("gemini's own markers classify a Gemini session's failure", () => {
     "invalid_grant: Token has been expired or revoked.",
     "login required",
     "Please sign in again",
-    "PERMISSION_DENIED",
-    "HTTP 401",
+    "HTTP 401 Unauthorized",
   ]) expect(troubleKind(msg, "gemini")).toBe("login");
+  // Not login failures (review on #1939): Google's PERMISSION_DENIED is an
+  // API-not-enabled / IAM refusal a signed-in user gets, a bare 401 is a
+  // number, "design in" is not "sign in".
+  for (const msg of [
+    "PERMISSION_DENIED: Generative Language API has not been used in project 1234 before or it is disabled",
+    "Read 401 bytes from stdout",
+    "Could not apply the design in index.html",
+    "Could not assign input",
+  ]) expect(troubleKind(msg, "gemini")).toBe("raw");
   // The limit markers, likewise.
   for (const msg of [
     "RESOURCE_EXHAUSTED: quota exceeded",
@@ -473,6 +481,14 @@ test("gemini's markers are Gemini's alone, and a shape counts when it names Gemi
   expect(troubleKind("spawn gemini ENOENT", "gemini")).toBe("notfound");
   expect(troubleKind("could not write the file: no such file or directory", "gemini")).toBe("raw");
   expect(troubleKind("claude: command not found", "gemini")).toBe("raw");
+  // A missing file INSIDE the CLI's own config dir is an installed CLI's
+  // problem, not a missing CLI — for every agent.
+  expect(troubleKind("ENOENT: no such file or directory, open '/Users/me/.gemini/settings.json'", "gemini")).toBe("raw");
+  expect(troubleKind("ENOENT: no such file or directory, open 'C:\\Users\\me\\.gemini\\trusted_folders.json'", "gemini")).toBe("raw");
+  expect(troubleKind("ENOENT: open '/Users/me/.codex/config.toml'", "codex")).toBe("raw");
+  expect(troubleKind("claude: ENOENT /Users/me/.claude/settings.json", "claude")).toBe("raw");
+  // ...while the binary itself missing still reads as notfound.
+  expect(troubleKind("/usr/local/bin/gemini: No such file or directory", "gemini")).toBe("notfound");
 });
 
 test("the Gemini brief installs with npm and signs in with Google", () => {

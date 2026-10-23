@@ -121,11 +121,15 @@ GEMINI = Backend(
     # Seeded from the CLI's own wording (`session/new` signed out: "Gemini API
     # key is missing or not configured." / "Authentication required."; the
     # OAuth client's "invalid_grant" on a revoked token) and the Google API's
-    # error vocabulary; widened from real logs (D13).
+    # error vocabulary; widened from real logs (D13). NOT here on purpose:
+    # `PERMISSION_DENIED` (Google's word for "this API is not enabled on
+    # that project" and for IAM, a signed-in user's problem that Sign in
+    # does not fix) and the bare number 401 (a byte count or a port is not
+    # a login failure) — "unauthorized" is the word an HTTP 401 carries.
     account_error_markers=(
         "api key is missing", "authentication required", "not logged in",
         "not signed in", "unauthenticated", "invalid_grant", "login required",
-        "sign in", "permission_denied", "401",
+        "sign in", "unauthorized",
     ),
     limit_error_markers=(
         "resource_exhausted", "rate limit", "quota", "too many requests", "429",

@@ -75,7 +75,9 @@ def _user_dirs() -> list:
     that read it, in the order a row's readers are listed."""
     dirs = [
         (SKILLS_DIR, ["claude"]),
-        (_agents_dir(), ["copilot", "codex"]),
+        # Gemini too: `discoverSkills` loads `~/.gemini/skills` AND the
+        # shared `~/.agents/skills` (0.65.0 source, `getUserAgentSkillsDir`).
+        (_agents_dir(), ["copilot", "codex", "gemini"]),
         (os.path.join(copilot_health.config_dir(), "skills"), ["copilot"]),
         (os.path.join(codex_health.config_dir(), "skills"), ["codex"]),
         (os.path.join(gemini_health.config_dir(), "skills"), ["gemini"]),

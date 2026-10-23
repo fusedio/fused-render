@@ -326,7 +326,7 @@ durable, has settings, and lives in `~/.fused-render/logs/`.)
 four tabs, each with its own filter box at the top of the page.
 
 - **Skills** has **Installed** and **Discover**. Installed lists the skills in
-  `~/.claude/skills`, `~/.agents/skills` (read by Copilot and Codex),
+  `~/.claude/skills`, `~/.agents/skills` (read by Copilot, Codex and Gemini),
   `~/.copilot/skills`, `~/.codex/skills` and `~/.gemini/skills`, then the skills that come with
   enabled Claude plugins (read-only). A skill reachable through a link and a
   copy is one row. When more than one coding agent is on in Preferences, each

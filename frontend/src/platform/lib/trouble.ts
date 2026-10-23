@@ -90,10 +90,14 @@ const CODEX_NAMED: [TroubleKind, RegExp][] = [
 
 // GEMINI'S OWN MARKERS (docs/GEMINI_BACKEND.md D13, §8), unconditional for a
 // Gemini session. KEEP IN SYNC BY HAND with `account_error_markers` /
-// `limit_error_markers` in fused_render/agent_backends/gemini.py. `401` and
-// `429` are matched as whole numbers here, as Codex's `429` is.
+// `limit_error_markers` in fused_render/agent_backends/gemini.py. `429` is
+// matched as a whole number here, as Codex's is; "sign in" needs word
+// boundaries ("design in" is not a login failure). Not markers, on purpose:
+// PERMISSION_DENIED (Google's "API not enabled on this project" / IAM
+// refusal, which Sign in does not fix) and the bare number 401 (a byte count
+// or a port) — "unauthorized" is the word an HTTP 401 carries.
 const GEMINI_NAMED: [TroubleKind, RegExp][] = [
-  ["login", /api key is missing|authentication required|not logged in|not signed in|unauthenticated|invalid_grant|login required|sign in|permission_denied|\b401\b/i],
+  ["login", /api key is missing|authentication required|not logged in|not signed in|unauthenticated|unauthorized|invalid_grant|login required|\bsign in\b/i],
   ["limit", /resource_exhausted|rate limit|quota|too many requests|\b429\b/i],
 ];
 
@@ -104,6 +108,11 @@ const AGENT_TROUBLE: Record<string, { named: [TroubleKind, RegExp][]; about: Reg
   codex: { named: CODEX_NAMED, about: ABOUT_CODEX },
   gemini: { named: GEMINI_NAMED, about: ABOUT_GEMINI },
 };
+
+// An ENOENT whose path sits INSIDE an agent's own config dir is a missing
+// settings or credentials file of an installed CLI, not a missing CLI: the
+// notfound shape must not read it as "install the CLI".
+const AGENT_CONFIG_PATH = /[\\/]\.(?:claude|copilot|codex|gemini)[\\/]/i;
 
 // Only when the message is about Claude — see above.
 const SHAPES: [TroubleKind, RegExp][] = [
@@ -127,7 +136,11 @@ export function troubleKind(message: string, backend = "claude"): TroubleKind {
   }
   for (const [kind, re] of NAMED) if (re.test(text)) return kind;
   if ((agent ? agent.about : ABOUT_CLAUDE).test(text)) {
-    for (const [kind, re] of SHAPES) if (re.test(text)) return kind;
+    for (const [kind, re] of SHAPES) {
+      if (!re.test(text)) continue;
+      if (kind === "notfound" && AGENT_CONFIG_PATH.test(text)) return "raw";
+      return kind;
+    }
   }
   return "raw";
 }

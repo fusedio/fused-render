@@ -110,6 +110,27 @@ _KIND_TO_TOOL = {"execute": "Bash", "read": "Read", "fetch": "WebFetch",
 # How Gemini titles an MCP tool call: `<tool> (<server> MCP Server)`.
 _MCP_TITLE = re.compile(r"^(?P<tool>[A-Za-z0-9_.-]+) \((?P<server>[A-Za-z0-9_.-]+) MCP Server\)$")
 _MCP_SERVER = "fused_approvals"
+#: ...and an MCP call WITH arguments: `<tool>(key: value, …)`
+#: (`formatToolDisplayTitle`, verified 0.65.0). A call whose arguments hold a
+#: non-empty `command` is titled by that command alone, which no regex can
+#: tell from prose — fused's own tools have no such argument.
+_MCP_CALL = re.compile(r"^(?P<tool>[A-Za-z0-9_.-]+)\((?P<args>.*)\)$", re.S)
+_CALL_ARG = re.compile(r'(?P<key>[A-Za-z_][A-Za-z0-9_]*):\s*(?P<val>"(?:[^"\\]|\\.)*"|[^,]*)')
+#: fused's own pane-server tools (permission_server.py): the names an
+#: argument-bearing title is matched against, since it names no server.
+_FUSED_TOOLS = frozenset({"app_state", "canvas_shot", "terminal_list",
+                          "terminal_read", "terminal_send"})
+#: The CLI's own mode notice (D4): on every approval-mode change it sends an
+#: `agent_message_chunk` whose text is `[MODE_UPDATE] <ApprovalMode id>`
+#: (`Session.handleApprovalModeChanged`, verified 0.65.0).
+_MODE_UPDATE = re.compile(r"^\s*\[MODE_UPDATE\]\s+(?P<mode>[A-Za-z_]+)\s*$")
+_CLI_MODE_OF = {v: k for k, v in _GEMINI_MODES.items()}
+#: D3: `session/load` answers BEFORE most of its replay has streamed
+#: (`streamHistory` is not awaited; the first update is queued ahead of the
+#: reply, the rest land after it), so the replay is over only once the
+#: updates have been quiet for a beat — bounded, in case it never is.
+_REPLAY_QUIET_S = float(os.environ.get("FUSED_GEMINI_HOST_REPLAY_QUIET_SECONDS", "0.4"))
+_REPLAY_SETTLE_S = float(os.environ.get("FUSED_GEMINI_HOST_REPLAY_SETTLE_SECONDS", "10"))
 _EDIT_TOOLS = frozenset({"Edit", "Write"})
 _FD_CLOSE_CAP = 65536
 
@@ -493,10 +514,25 @@ def _map_tool(kind: str, title: str, raw, locations=None, cwd: str = "",
         inp = dict(raw)
         acp["raw"] = raw
         m = _MCP_TITLE.match(title)
+        call = None if m else _MCP_CALL.match(title)
         if m and m.group("server") == _MCP_SERVER:
             name = "mcp__%s__%s" % (_MCP_SERVER, m.group("tool"))
         elif m:
             name = "%s-%s" % (m.group("server"), m.group("tool"))
+        elif call and call.group("tool") in _FUSED_TOOLS:
+            # `<tool>(key: value, …)`: fused's own tool with arguments. The
+            # pairs are parsed best-effort into the input the card shows
+            # (a quoted value as JSON, else the bare text).
+            name = "mcp__%s__%s" % (_MCP_SERVER, call.group("tool"))
+            for arg in _CALL_ARG.finditer(call.group("args")):
+                val = arg.group("val").strip()
+                if val.startswith('"'):
+                    try:
+                        val = json.loads(val)
+                    except ValueError:
+                        val = val[1:-1]
+                if val != "":
+                    inp.setdefault(arg.group("key"), val)
         else:
             name = title or kind or "tool"
     inp["_acp"] = acp
@@ -610,6 +646,7 @@ class _Host:
         self.last_usage = {}          # newest usage_update {used, size}
         self.context_window = None
         self.replaying = False
+        self.last_update_at = 0.0     # monotonic time of the last session/update
         self.replay_turns = []
         self.replay_user = None
         self.replay_agent = []
@@ -816,6 +853,11 @@ class _Host:
         self.tail_closed = True
 
     def _on_chunk(self, kind: str, text: str) -> None:
+        if kind == "text":
+            notice = _MODE_UPDATE.match(text)
+            if notice:
+                self._note_cli_mode(notice.group("mode"))
+                return
         if self.replaying:
             if kind == "text":
                 self.replay_agent.append(text)
@@ -831,6 +873,17 @@ class _Host:
             delta = {"type": "thinking_delta", "thinking": text}
         self._emit_out({"type": "stream_event", "event": {
             "type": "content_block_delta", "index": 0, "delta": delta}})
+
+    def _note_cli_mode(self, gemini_mode: str) -> None:
+        """`[MODE_UPDATE] <id>` (D4): the CLI's own word on its approval
+        mode, on every change — one the host asked for, or one the CLI made
+        itself. The host's `mode` follows it and the text reaches no row.
+        Caller holds the lock."""
+        cli_mode = _CLI_MODE_OF.get(gemini_mode)
+        if cli_mode:
+            self.mode = cli_mode
+        else:
+            sys.stderr.write("gemini_host: unknown mode notice %r\n" % gemini_mode)
 
     def _on_tool_call(self, update: dict) -> None:
         if self.replaying or not self.turn_open:
@@ -1024,6 +1077,7 @@ class _Host:
             return
         kind = str(update.get("sessionUpdate") or "")
         with self.lock:
+            self.last_update_at = time.monotonic()
             if self.replaying and kind != "user_message_chunk":
                 self.replay_gap = True
             if kind == "agent_message_chunk":
@@ -1066,6 +1120,12 @@ class _Host:
         if _OAUTH_PROMPT_MARK in line:
             with self.lock:
                 self.oauth_prompted = True
+        if "://" in line:
+            # The authorize URL carries OAuth `state` and a `code_challenge`
+            # (D13, invariant 15): it reaches no row, and not err.log either —
+            # the diagnostics bundle ships that file's tail.
+            sys.stderr.write("gemini: <a line with a URL, not logged>\n")
+            return
         sys.stderr.write("gemini: %s\n" % line.strip()[:500])
 
     def _refresh_commands(self) -> None:
@@ -1267,23 +1327,25 @@ class _Host:
             return  # answered elsewhere (a cancel), card already cleared
         mode = decision.get("mode") if decision.get("decision") == "allow" else None
         if mode == "acceptEdits":
-            # D5, narrowed (Copilot's rule, kept): "allow, and accept edits"
-            # WIDENS EDITS ONLY. On an edit card it is that card's
-            # allow_always — Gemini stops asking for edits — and never a
-            # session-wide mode; on any other card (a shell command) it is a
-            # plain allow_once, whatever scope the card sent.
-            decision = dict(decision, scope="session" if name in _EDIT_TOOLS else "once")
+            # D4/D5: "allow, and accept edits" is this card's allow_once and
+            # then an EXPLICIT `session/set_mode autoEdit` below — a session
+            # mode the host records, as Claude's own acceptEdits is. Never
+            # the card's allow_always: for an edit tool + ProceedAlways the
+            # CLI's `updatePolicy` switches the session to AUTO_EDIT itself,
+            # behind the host's back (verified 0.65.0).
+            decision = dict(decision, scope="once")
         if self._answer_perm(rid, _permission_outcome(options, decision)):
             # Only the answer that won announces the card gone: a cancel
             # that beat it here has posted its own `card_cleared`.
             _post_card(self.run_dir, "card_cleared", perm_id)
-            if mode == "auto":
-                # "…and stop asking" (D5): after the RPC reply, so the tool
-                # that asked runs first and everything after it is allowed
-                # — Gemini's `yolo` mode, by `session/set_mode`.
+            if mode in ("auto", "acceptEdits"):
+                # "…and stop asking" / "…and accept edits" (D5): after the
+                # RPC reply, so the tool that asked runs first and what
+                # follows runs under the new mode — Gemini's `yolo` /
+                # `autoEdit`, by `session/set_mode`.
                 with self.lock:
-                    self.mode = "auto"
-                self._set_mode("auto")
+                    self.mode = mode
+                self._set_mode(mode)
 
     def _await_decision(self, entry: dict):
         """permission_server's `_await_answer`, with one extra exit: the
@@ -1542,6 +1604,8 @@ class _Host:
             rpc = self.peer.request("session/load", {
                 "sessionId": self.sid, "cwd": self.cwd, "mcpServers": servers})
             ok = self._wait_session(rpc)
+            if ok and rpc.error is None:
+                self._await_replay_quiet()
             with self.lock:
                 self.replaying = False
                 if ok and rpc.error is None:
@@ -1601,6 +1665,23 @@ class _Host:
         if isinstance(cur, str) and cur:
             with self.lock:
                 self.model = cur
+
+    def _await_replay_quiet(self) -> None:
+        """D3: the `session/load` reply is not the end of the replay — the
+        CLI does not await `streamHistory` before answering, so most of the
+        history lands after it. Wait until no `session/update` has arrived
+        for `_REPLAY_QUIET_S`, bounded by `_REPLAY_SETTLE_S`; only then is
+        the backfill complete and the first prompt safe to send."""
+        deadline = time.monotonic() + _REPLAY_SETTLE_S
+        with self.lock:
+            self.last_update_at = max(self.last_update_at, time.monotonic())
+        while True:
+            now = time.monotonic()
+            with self.lock:
+                quiet_for = now - self.last_update_at
+            if quiet_for >= _REPLAY_QUIET_S or now >= deadline:
+                return
+            time.sleep(min(0.05, max(0.005, _REPLAY_QUIET_S - quiet_for)))
 
     def _apply_mode(self) -> None:
         """D5 at spawn: the mode the request carries, as `session/set_mode`

@@ -2234,7 +2234,11 @@ def test_the_gemini_prompt_never_speaks_claude(agent, home, tmp_path, monkeypatc
     ctx = agent._gemini_context_dir(str(run_dir), str(page), True)
     assert ctx == str(run_dir / "gemini")
     text = (run_dir / "gemini" / "GEMINI.md").read_text()
-    assert "mcp__fused_approvals__" not in text and "app_state" in text
+    # The model-facing MCP name is `mcp_<server>_<tool>` (single underscores:
+    # Gemini's `generateValidName` of `<server>_<tool>`), never Claude's
+    # `mcp__<server>__<tool>` and never the bare tool name alone.
+    assert "mcp__fused_approvals__" not in text
+    assert "mcp_fused_approvals_app_state" in text
     assert not claude_only.search(text)
 
 
@@ -2256,7 +2260,9 @@ def test_a_fresh_gemini_chat_learns_its_id_from_the_stream(
     assert req["backend"] == "gemini"
     assert req["session_id"] == "" and req["new_session_id"] == ""
     assert req["argv"][:3] == [binary, "--acp", "--skip-trust"]
-    assert req["argv"][3:7] == ["-m", "gemini-2.5-pro", "--approval-mode", "autoEdit"]
+    # The FLAG spells the mode `auto_edit` (yargs choices); `autoEdit` is the
+    # wire's enum id and is refused on argv ("Invalid values", 0.65.0).
+    assert req["argv"][3:7] == ["-m", "gemini-2.5-pro", "--approval-mode", "auto_edit"]
     assert req["cli_mode"] == "acceptEdits"
     with open(os.path.join(run_dir, "meta.json")) as fh:
         meta = json.load(fh)
@@ -2355,13 +2361,24 @@ def test_gemini_argv_composition(agent, target, home, tmp_path, monkeypatch):
     run_dir.mkdir()
     extra = tmp_path / "extra"
     extra.mkdir()
+    comma = tmp_path / "foo, bar"   # the CLI splits the flag's value on commas
+    comma.mkdir()
     argv = agent._gemini_argv(str(run_dir), True, "auto", SID_GEMINI,
-                              "gemini-2.5-pro", "", [str(extra), str(tmp_path / "gone")], file)
+                              "gemini-2.5-pro", "",
+                              [str(extra), str(tmp_path / "gone"), str(comma)], file)
     assert argv[:7] == [binary, "--acp", "--skip-trust", "-m", "gemini-2.5-pro",
                         "--approval-mode", "yolo"]
     included = [argv[i + 1] for i, a in enumerate(argv) if a == "--include-directories"]
     assert included[0] == str(run_dir / "gemini")
     assert str(extra) in included and str(tmp_path / "gone") not in included
+    assert str(comma) not in included and not any("," in d for d in included)
+    # acceptEdits is `auto_edit` on the FLAG (yargs choices) though `autoEdit`
+    # on the wire; prompt is the CLI's default and names no flag.
+    other = tmp_path / "run2"   # its own run dir: a pane-less spawn rewrites mcp.json
+    other.mkdir()
+    edits = agent._gemini_argv(str(other), False, "acceptEdits", SID_GEMINI, "", "", [], file)
+    assert edits[edits.index("--approval-mode") + 1] == "auto_edit"
+    assert "--approval-mode" not in agent._gemini_argv(str(other), False, "default", SID_GEMINI, "", "", [], file)
     assert (run_dir / "gemini" / "GEMINI.md").read_text().strip()
     with open(run_dir / "mcp.json") as fh:
         server = json.load(fh)["mcpServers"]["fused_approvals"]

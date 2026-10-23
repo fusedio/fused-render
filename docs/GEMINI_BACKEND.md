@@ -77,8 +77,12 @@ agent.py:      _HOST_FILES["gemini"] = gemini_host.py; _SELF_MINTED_ID_BACKENDS 
   `gemini_dir()/sessions/<pid>.json` (same `{sessionId, cwd, status,
   updatedAt, pid}`). A resume is `session/load {sessionId, cwd, mcpServers}`,
   which streams the history back as `user_message_chunk` /
-  `agent_message_chunk` updates before its reply (`streamHistory`, verified in
-  the source); turns taken in a terminal (`gemini --resume <sid>`) are
+  `agent_message_chunk` updates — `streamHistory` is NOT awaited before the
+  reply (verified: the first update is queued ahead of the reply, the rest
+  land after it), so the host keeps `replaying` past the reply until the
+  updates have been quiet for `_REPLAY_QUIET_S`, bounded by
+  `_REPLAY_SETTLE_S`, and only then backfills and sends the first prompt;
+  turns taken in a terminal (`gemini --resume <sid>`) are
   backfilled by the same text-match diff `copilot_host.backfill_replay` does.
 - **D4** Permissions through `perm/<id>.req.json` / `.res.json` (COPILOT D4).
   Gemini's `session/request_permission` carries `options` whose kinds are
@@ -87,14 +91,24 @@ agent.py:      _HOST_FILES["gemini"] = gemini_host.py; _SELF_MINTED_ID_BACKENDS 
   FIRST and per tool type says "Allow for this session"). Answered by KIND, as
   Copilot's: allow + scope `session` → `allow_always`, allow → `allow_once`,
   deny / expired / timeout / cancel → `reject_once`; no usable option →
-  `{"outcome": {"outcome": "cancelled"}}`. "Allow, and accept edits" on an
-  edit card → that card's `allow_always` (Gemini stops asking for that file),
-  never a session mode; on a command card → plain `allow_once`. "Allow, and
-  stop asking" (mode `auto`) → the card's answer, then `session/set_mode
-  yolo`. `fs/*`, `terminal/*` and anything else the client is asked for →
+  `{"outcome": {"outcome": "cancelled"}}`. "Allow, and accept edits" (mode
+  `acceptEdits`) → the card's `allow_once`, then `session/set_mode autoEdit`
+  — an EXPLICIT session mode the host records, on any card, as Claude's own
+  acceptEdits is. (Not `allow_always` on an edit card: for `replace` /
+  `write_file` + ProceedAlways the CLI's `updatePolicy` calls
+  `setApprovalMode(AUTO_EDIT)` itself, verified — a session-wide switch
+  behind the host's back; the explicit request keeps the host authoritative.)
+  "Allow, and stop asking" (mode `auto`) → the card's answer, then
+  `session/set_mode yolo`. Every mode change the CLI makes arrives as an
+  `agent_message_chunk` whose text is `[MODE_UPDATE] <ApprovalMode id>`
+  (`Session.handleApprovalModeChanged`, verified): the host reads it as the
+  CLI's authoritative mode notice (`self.mode` follows it) and never as
+  assistant text. `fs/*`, `terminal/*` and anything else the client is asked for →
   JSON-RPC error `-32601` (`clientCapabilities` is empty). `permission_server.py`
   stays for pane tools only (`--no-approve`), reached as an MCP server (D8).
-- **D5** Modes → Gemini's approval modes, on argv at spawn (`--approval-mode`)
+- **D5** Modes → Gemini's approval modes, on argv at spawn (`--approval-mode`,
+  which spells them in snake case: `auto_edit`, `yolo` — `_GEMINI_ARGV_MODES`;
+  the enum ids below are the wire's and are refused on the flag)
   AND as `session/set_mode` after the handshake and on every switch (so a live
   switch is one request, `caps.live_mode_switch = True`, `acceptEdits` needs
   NO respawn — unlike Copilot):
@@ -131,10 +145,15 @@ agent.py:      _HOST_FILES["gemini"] = gemini_host.py; _SELF_MINTED_ID_BACKENDS 
   directory's `GEMINI.md` is read into the system prompt
   (`discoverMemoryPaths` → `getEnvironmentMemoryPaths(workspaceContext.
   getDirectories())`, verified in the source; gated on `isTrustedFolder()`,
-  which `--skip-trust` makes true). The pane tool is named by its BARE name in
-  that file (`mcp__fused_approvals__` stripped), since Gemini offers an MCP
-  tool to the model under the tool's own name (assumed from the source, where
-  the display title is `<tool> (<server> MCP Server)`). Pane tools
+  which `--skip-trust` makes true). The pane tool is named
+  `mcp_fused_approvals_<tool>` in that file (Claude's `mcp__<server>__<tool>`
+  with single underscores): `DiscoveredMCPTool` declares an MCP tool to the
+  model as `generateValidName("<server>_<tool>")`, which prefixes `mcp_`
+  (verified in the source). The display title is a different string: `<tool>
+  (<server> MCP Server)` for a call with no arguments, the `command` value
+  alone when the call has one, else `<tool>(key: value, …)`
+  (`formatToolDisplayTitle`) — `gemini_host._map_tool` reads all three for
+  fused's own tools. Pane tools
   (`app_state`, `terminal_*`) via `session/new`'s `mcpServers:[{name, command,
   args, env:[{name, value}]}]` — ACP's own stdio-server shape, which Gemini
   merges into its MCP config (verified in `newSessionConfig`) — built by the
@@ -204,7 +223,15 @@ agent.py:      _HOST_FILES["gemini"] = gemini_host.py; _SELF_MINTED_ID_BACKENDS 
 - **D13** errors: a JSON-RPC error on `session/prompt` → `assistant` row
   `isApiErrorMessage: true` + `result is_error` (COPILOT D13). Markers in
   `Backend.account_error_markers` / `limit_error_markers` (seeded from the
-  CLI's own wording and Google's API vocabulary; see `gemini.py`). **The OAuth
+  CLI's own wording and Google's API vocabulary; see `gemini.py`). Not
+  markers, after review: `PERMISSION_DENIED` (Google's "API not enabled on
+  this project" / IAM refusal — a signed-in user's problem that Sign in does
+  not fix) and the bare number `401` (byte counts, ports); "unauthorized" is
+  the word an HTTP 401 carries. The frontend twin (`trouble.ts`) also binds
+  "sign in" to word boundaries ("design in" is not a login failure) and
+  reads an ENOENT on a path inside an agent's own config dir
+  (`~/.gemini/settings.json`) as `raw`, never as "the CLI is not
+  installed". **The OAuth
   prompt**: with `NO_BROWSER=1` on the spawn env (`_spawn_env(backend=
   "gemini")`, setdefault), a login whose token cannot be refreshed makes
   `session/new` print "Please visit the following URL to authorize…" on
@@ -225,7 +252,10 @@ agent.py:      _HOST_FILES["gemini"] = gemini_host.py; _SELF_MINTED_ID_BACKENDS 
   title}`, which the frontend already strips.
 - **D15** erase removes the fused transcript + Gemini's own chat file(s):
   `<gemini home>/tmp/<project>/chats/session-<ts>-<sid[:8]>.jsonl` (and
-  `.json`, the older shape), where `<gemini home>` is `<GEMINI_CLI_HOME|~>/.gemini`
+  `.json`, the older shape; a name collision adds `-<n>` before the short
+  id, which the glob still matches), where `<project>` is the slug
+  `projects.json` assigns the cwd (`ProjectRegistry.getShortId`, not a hash)
+  and `<gemini home>` is `<GEMINI_CLI_HOME|~>/.gemini`
   (verified in the source: `GEMINI_DIR`, `homedir()`, `SESSION_FILE_PREFIX`,
   `deriveSessionShortId`). Eight characters are not an id, so a file counts
   only when its text carries the whole session id (the CLI writes `sessionId`
@@ -259,7 +289,7 @@ agent.py:      _HOST_FILES["gemini"] = gemini_host.py; _SELF_MINTED_ID_BACKENDS 
 ## 3. Gemini host: spawn
 
 ```
-gemini --acp --skip-trust [-m <id>] [--approval-mode autoEdit|yolo]
+gemini --acp --skip-trust [-m <id>] [--approval-mode auto_edit|yolo]
        --include-directories <run_dir>/gemini [--include-directories <shots>] [--include-directories <extra>]...
 cwd = _workdir(file); env = _spawn_env("", backend="gemini"); stdin/stdout = JSON-RPC pipes; stderr -> err.log
 ```
@@ -281,7 +311,8 @@ currentModeId}, models{availableModels, currentModelId}}` (or `session/load
 {sessionId, cwd, mcpServers}` → `{modes, models}` after the replay) →
 `session/set_mode {sessionId, modeId}` → per turn `session/prompt {sessionId,
 prompt:[{type:"text", text}]}` → reply `{stopReason: end_turn | cancelled |
-max_tokens | max_turn_requests | refusal}` (no `usage`). Notifications
+max_tokens | max_turn_requests | refusal, usage: {inputTokens, outputTokens,
+cachedReadTokens, thoughtTokens, totalTokens}}`. Notifications
 `session/update {sessionId, update:{sessionUpdate: ...}}` kinds:
 `user_message_chunk` (replay), `agent_message_chunk`, `agent_thought_chunk`,
 `tool_call`, `tool_call_update`, `plan`, `available_commands_update`,
@@ -358,7 +389,7 @@ models: auto "Auto (Gemini picks)" (default; the CLI's own), gemini-3-pro-previe
         gemini-2.5-flash "Gemini 2.5 Flash", gemini-2.5-flash-lite "Gemini 2.5 Flash-Lite" — every row reasoning=False
 default_model "auto"; efforts (); modes ("prompt","acceptEdits","auto")
 account_error_markers: ("api key is missing", "authentication required", "not logged in", "not signed in",
-                        "unauthenticated", "invalid_grant", "login required", "sign in", "permission_denied", "401")
+                        "unauthenticated", "invalid_grant", "login required", "sign in", "unauthorized")
 limit_error_markers:   ("resource_exhausted", "rate limit", "quota", "too many requests", "429")
 terminal_resume: cd <cwd> && gemini --resume <sid>
 routes_prefix "/api/gemini"; pref_key "gemini_enabled"
@@ -404,7 +435,10 @@ a seed; the account's own list replaces it once measured, D11a.)
 
 Verified 2026-10-23 (Gemini CLI 0.65.0): `--help` (every flag named here:
 `--acp`, `--experimental-acp` deprecated, `-m`, `-p` "appended to input on
-stdin", `-o json`, `--approval-mode default|auto_edit|yolo|plan`,
+stdin", `-o json`, `--approval-mode default|auto_edit|yolo|plan` — the
+flag's snake-case spelling, where `session/set_mode` takes the enum id
+`autoEdit`; fed `autoEdit`, the flag answers "Invalid values" and exits,
+verified live (`_GEMINI_ARGV_MODES` keeps the two apart),
 `--include-directories`, `--skip-trust`, `--resume`, `--session-id`);
 `--version` → `0.65.0`; a live `initialize` reply (`authMethods` with
 `oauth-personal` / `gemini-api-key` / `vertex-ai` / `gateway`, `agentInfo`,
@@ -438,5 +472,25 @@ Assumed (design absorbs each): `--resume <full uuid>` in the interactive CLI
 honoured in ACP mode as `session/new`'s initial mode (D5 — the host sets it
 again right after); the recap's `-o json` carrying `session_id` for the
 cleanup (D12); the exact wording of a signed-in turn's quota and sign-out
-errors (D13); that `session/new` on the probe dir leaves nothing behind but
-the project registry entry (D10).
+errors (D13).
+
+Corrected after the adversarial fact-check of the branch (2026-10-23, bundle
++ live runs): the `--approval-mode` flag takes `auto_edit`, not the enum id
+(D5, `_GEMINI_ARGV_MODES`); `session/load` replays AFTER its reply (D3,
+quiet period); the model-facing MCP name is `mcp_<server>_<tool>` (D8); MCP
+titles with arguments are `<tool>(key: value, …)` or the bare `command`
+value (D8, `_map_tool`); `allow_always` on an edit card is a session-wide
+`AUTO_EDIT` switch inside the CLI, and every mode change is announced as an
+`agent_message_chunk` `[MODE_UPDATE] <id>` (D4); the `session/prompt` reply
+carries `usage` (§3); `<project>` in the chat path is a registry slug, not a
+hash (D15); a missing `--include-directories` entry is NOT a startup error
+(live exit 0 — the `isdir` filter stays, for the comma rule and tidiness);
+`session/load` of an unknown id answers `-32603` with `data.details`, not
+`-32000` (the host treats any error there as a failed handshake, so no code
+is assumed); the probe's `session/new` leaves `projects.json`,
+`tmp/<slug>/{chats,logs,.project_root}`, `history/<slug>/.project_root` and
+`installation_id` under the CLI home (D10 — all inside the CLI's own store,
+nothing in the probe dir); Gemini also reads skills from the shared
+`~/.agents/skills` (`claude_config/skills.py`'s reader list); the launcher's relaunch and signal
+swallowing, `GEMINI_CLI_NO_RELAUNCH` (D19); on Linux without a display the
+OAuth flow takes the paste-a-code road even without `NO_BROWSER`.

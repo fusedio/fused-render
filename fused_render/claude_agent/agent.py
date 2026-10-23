@@ -326,7 +326,7 @@ _ACCOUNT_ERROR_MARKERS = {
               "unauthorized", "authentication", "login required", "sign in"),
     "gemini": ("api key is missing", "authentication required", "not logged in",
                "not signed in", "unauthenticated", "invalid_grant", "login required",
-               "sign in", "permission_denied", "401"),
+               "sign in", "unauthorized"),
 }
 _LIMIT_ERROR_MARKERS = {
     # Claude's are the two this function matched before a second backend
@@ -4068,6 +4068,12 @@ def _codex_argv(run_dir: str, pane: bool, cli_mode: str | None,
 #: by the CLI-wire mode `_start` records (GEMINI D5). `prompt` is Gemini's
 #: `default`; `plan` is never sent (refused before the spawn).
 _GEMINI_MODES = {"default": "default", "acceptEdits": "autoEdit", "auto": "yolo"}
+#: The SAME modes as the `--approval-mode` FLAG spells them: the CLI's yargs
+#: choices are `default|auto_edit|yolo|plan` (snake case, `--help` 0.65.0,
+#: and "Invalid values: Given autoEdit" when fed the enum id), while
+#: `session/set_mode` takes the `ApprovalMode` enum id `autoEdit`. Two
+#: spellings for one mode; keyed by the enum id `_GEMINI_MODES` yields.
+_GEMINI_ARGV_MODES = {"default": "default", "autoEdit": "auto_edit", "yolo": "yolo"}
 
 
 def _gemini_context_dir(run_dir: str, file: str, pane: bool) -> str:
@@ -4080,13 +4086,16 @@ def _gemini_context_dir(run_dir: str, file: str, pane: bool) -> str:
     adds a directory to the workspace — so the run dir's own folder, named
     on the spawn line, is how the prompt reaches the model (GEMINI D8). The
     prompt names the pane tool in Claude's MCP spelling
-    (`mcp__<server>__<tool>`); Gemini offers an MCP tool to the model by its
-    bare name, so the prefix comes off (assumed from the CLI's source, where
-    the display title is `<tool> (<server> MCP Server)`)."""
+    (`mcp__<server>__<tool>`); Gemini declares an MCP tool to the model as
+    `mcp_<server>_<tool>` (`DiscoveredMCPTool`: `generateValidName` of
+    `<server>_<tool>`, which prefixes `mcp_` — verified in the 0.65.0
+    source), so the double underscores become single ones. The card's
+    display title is another thing again (`<tool> (<server> MCP Server)`,
+    or `<tool>(key: value, …)` with arguments — `gemini_host._map_tool`)."""
     ctx = os.path.join(run_dir, "gemini")
     os.makedirs(ctx, exist_ok=True)
     body = _appended_prompt(file, pane, "gemini").replace(
-        f"mcp__{PERMISSION_SERVER}__", "")
+        f"mcp__{PERMISSION_SERVER}__", f"mcp_{PERMISSION_SERVER}_")
     with _private_open(os.path.join(ctx, "GEMINI.md")) as fh:
         fh.write(body + "\n")
     return ctx
@@ -4107,13 +4116,18 @@ def _gemini_argv(run_dir: str, pane: bool, cli_mode: str | None,
         a flag;
       * `--model` → `-m <id>`; the host switches it live later
         (`session/set_model`, D7). No effort: Gemini has none;
-      * the mode → `--approval-mode <default|autoEdit|yolo>` (D5), so the
-        first prompt already runs under it; the host re-sends it as
-        `session/set_mode` after the handshake and on every live switch;
+      * the mode → `--approval-mode <auto_edit|yolo>` (D5; the flag's
+        snake-case spelling, `_GEMINI_ARGV_MODES`, not the enum id the wire
+        takes), so the first prompt already runs under it; the host
+        re-sends it as `session/set_mode autoEdit|yolo` after the handshake
+        and on every live switch;
       * `--allowed-tools Read(<dir>)` → `--include-directories` for SHOTS
         and every `extra_read_dirs` entry (D9): Gemini's file tools read
         the workspace only, and this is how a directory joins it. Only
-        directories that exist, since a missing one is a startup error;
+        directories that exist, since a missing one is a startup error —
+        and none whose path holds a comma: the CLI splits the flag's value
+        on commas (`coerceCommaSeparated`), so such a path would reach it
+        as two fragments that do not exist, and the spawn would die;
       * the permission bridge → NOTHING here: ACP carries permission
         requests to the host itself (D4). `mcp.json` is written when the
         pane or terminal tools exist, with `--no-approve`, and the HOST
@@ -4127,7 +4141,7 @@ def _gemini_argv(run_dir: str, pane: bool, cli_mode: str | None,
         cmd += ["-m", model]
     gemini_mode = _GEMINI_MODES.get(cli_mode or "default")
     if gemini_mode and gemini_mode != "default":
-        cmd += ["--approval-mode", gemini_mode]
+        cmd += ["--approval-mode", _GEMINI_ARGV_MODES[gemini_mode]]
     dirs = [_gemini_context_dir(run_dir, file, pane)]
     try:
         shots = _shots_dir()
@@ -4138,8 +4152,13 @@ def _gemini_argv(run_dir: str, pane: bool, cli_mode: str | None,
     else:
         dirs.append(SHOTS)
     for d in [*dirs, *(extra_read_dirs or [])]:
-        if os.path.isdir(d):
-            cmd += ["--include-directories", d]
+        if not os.path.isdir(d):
+            continue
+        if "," in d:
+            sys.stderr.write("gemini: not including %r: the CLI splits "
+                             "--include-directories on commas\n" % d)
+            continue
+        cmd += ["--include-directories", d]
     if pane or _terminal_tools_supported():
         _write_mcp_config(run_dir, pane, approve=False)
     return cmd

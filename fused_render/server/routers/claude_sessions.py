@@ -1376,7 +1376,12 @@ def _recap_gemini(agent, tail: str, titles: bool | None = None,
     under `<gemini home>/tmp/<project>/chats/`, which `gemini --resume`
     lists. The reply names the run's `session_id`, so that one file is
     removed afterwards through the same helper erase uses
-    (`routers.tasks._gemini_chat_files`), whatever the outcome.
+    (`routers.tasks._gemini_chat_files`) whenever the reply named the
+    session; a timeout or an unparsable reply leaves it, since nothing else
+    knows the id. `--skip-trust` as the session spawn has it (§3): `-p` is
+    headless, and a user with folder trust on would otherwise get a CLI that
+    dies at startup in the server's untrusted cwd — every failure here reads
+    as "", so that would be a silent loss of every recap.
 
     `_spawn_env(backend="gemini")` leaves `GEMINI_CLI_HOME` and the Google
     credential variables exactly as found and sets `NO_BROWSER`, so a
@@ -1391,20 +1396,29 @@ def _recap_gemini(agent, tail: str, titles: bool | None = None,
     try:
         proc = subprocess.Popen(
             [agent._gemini_bin(), "-p", _GEMINI_RECAP_POINTER, "-o", "json",
-             "--approval-mode", "default",
+             "--approval-mode", "default", "--skip-trust",
              "-m", registry.get("gemini").default_model],
             env=agent._spawn_env(backend="gemini"),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, **claude_health.SUBPROCESS_KWARGS)
+            stderr=subprocess.PIPE, **claude_health.SUBPROCESS_KWARGS)
         try:
-            stdout, _ = proc.communicate(input=prompt, timeout=_RECAP_TIMEOUT)
+            stdout, stderr = proc.communicate(input=prompt, timeout=_RECAP_TIMEOUT)
         except subprocess.TimeoutExpired:
             _recap_reap(proc)
             return ""
-        try:
-            body = json.loads(stdout or "")
-        except ValueError:
-            return ""
+        # A result rides stdout; a FAILED run's JSON (with its `session_id`,
+        # and `error`) goes to STDERR (verified 0.65.0, exit 41 signed out),
+        # so that one is read too — for the cleanup in `finally`, since the
+        # answer to a failure is "" either way.
+        body = None
+        for text in (stdout, stderr):
+            try:
+                body = json.loads(text or "")
+            except ValueError:
+                continue
+            if isinstance(body, dict):
+                break
+            body = None
         if not isinstance(body, dict):
             return ""
         sid = str(body.get("session_id") or "")

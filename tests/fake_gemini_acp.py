@@ -79,6 +79,12 @@ IGNORE_EOF = "--ignore-eof" in ARGS
 IGNORE_CANCEL = "--ignore-cancel" in ARGS        # a prompt that never stops
 PERM_AFTER_CANCEL = "--perm-after-cancel" in ARGS
 REPLAY_GAP = "--replay-gap" in ARGS
+#: The real CLI's ordering: `session/load` replies first, the history
+#: streams after it (`streamHistory` is not awaited).
+REPLAY_AFTER_REPLY = "--replay-after-reply" in ARGS
+#: The real CLI's `[MODE_UPDATE] <id>` agent_message_chunk on every
+#: approval-mode change.
+MODE_NOTICES = "--mode-notices" in ARGS
 CHECK_ECHO = _flag("--check-echo")
 DUMP_ENV = _flag("--dump-env")
 TEXT = _flag("--text", "Hello")
@@ -156,23 +162,35 @@ def _session_blocks():
 
 
 def _load(rid):
-    """The replay a real `session/load` streams before its reply — prompts,
-    answers, and the rest a turn leaves (thoughts, a tool, usage)."""
-    if REPLAY_GAP:
-        _text("user_message_chunk", "gap q0")
-        _update("tool_call", toolCallId="gap", title="ls (list)", kind="execute",
-                status="completed", content=[], locations=[])
-    for i in range(REPLAY):
-        _text("user_message_chunk", "replayed q%d" % (i + 1))
-        _text("agent_thought_chunk", "thinking about q%d" % (i + 1))
-        _update("tool_call", toolCallId="old-%d" % i, title="ls (list)",
-                kind="execute", status="completed", content=[], locations=[])
-        _update("tool_call_update", toolCallId="old-%d" % i, status="completed",
-                content=[{"type": "content",
-                          "content": {"type": "text", "text": "x"}}])
-        _text("agent_message_chunk", "replayed a%d" % (i + 1))
-    _update("usage_update", used=50, size=1048576)
-    _reply(rid, _session_blocks())
+    """The replay a real `session/load` streams — prompts, answers, and the
+    rest a turn leaves (thoughts, a tool, usage). Before its reply by
+    default; AFTER it, spread over a few beats, under `--replay-after-reply`
+    (the real 0.65.0 ordering: the first update is queued ahead of the
+    reply, the rest land after it)."""
+    def stream(pause):
+        if REPLAY_GAP:
+            _text("user_message_chunk", "gap q0")
+            _update("tool_call", toolCallId="gap", title="ls (list)", kind="execute",
+                    status="completed", content=[], locations=[])
+        for i in range(REPLAY):
+            _text("user_message_chunk", "replayed q%d" % (i + 1))
+            time.sleep(pause)
+            _text("agent_thought_chunk", "thinking about q%d" % (i + 1))
+            _update("tool_call", toolCallId="old-%d" % i, title="ls (list)",
+                    kind="execute", status="completed", content=[], locations=[])
+            _update("tool_call_update", toolCallId="old-%d" % i, status="completed",
+                    content=[{"type": "content",
+                              "content": {"type": "text", "text": "x"}}])
+            time.sleep(pause)
+            _text("agent_message_chunk", "replayed a%d" % (i + 1))
+        _update("usage_update", used=50, size=1048576)
+    if REPLAY_AFTER_REPLY:
+        _reply(rid, _session_blocks())
+        time.sleep(0.05)
+        stream(0.08)
+    else:
+        stream(0)
+        _reply(rid, _session_blocks())
 
 
 def _serve(msg):
@@ -233,6 +251,8 @@ def _serve(msg):
             _error(rid, -32602, "Invalid or unavailable mode: %s" % mode_id)
             return
         _mode[0] = mode_id
+        if MODE_NOTICES:
+            _text("agent_message_chunk", "[MODE_UPDATE] %s" % mode_id)
         _update("current_mode_update", currentModeId=mode_id)
         _reply(rid, {})
     elif method == "session/set_model":

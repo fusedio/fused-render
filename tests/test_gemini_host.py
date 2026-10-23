@@ -533,6 +533,18 @@ def test_a_tool_call_becomes_the_claude_tool_rows(start, agent):
 
 def test_tool_mapping_table(host_mod, tmp_path):
     m = host_mod._map_tool
+    # fused's own MCP tools, in the three title shapes Gemini uses: no
+    # arguments → `<tool> (<server> MCP Server)`; arguments →
+    # `<tool>(key: value, …)`, parsed into the input the card shows.
+    assert m("other", "app_state (fused_approvals MCP Server)", None, [], "")[0] == \
+        "mcp__fused_approvals__app_state"
+    name, inp = m("other", 'terminal_send(id: "t1", text: "ls -la")', None, [], "")
+    assert name == "mcp__fused_approvals__terminal_send"
+    assert (inp["id"], inp["text"]) == ("t1", "ls -la")
+    name, inp = m("other", 'canvas_shot(what: "udf", udf: my_udf)', None, [], "")
+    assert name == "mcp__fused_approvals__canvas_shot" and inp["udf"] == "my_udf"
+    assert m("other", "other_tool(x: 1)", None, [], "")[0] == "other_tool(x: 1)"
+    assert m("other", "echo (weather MCP Server)", None, [], "")[0] == "weather-echo"
     assert m("execute", "Run", {"command": "ls"}, [], str(tmp_path))[0] == "Bash"
     assert m("read", "Read", {"path": "a.py"}, [], "")[:1] == ("Read",)
     assert m("read", "Read", {}, [{"path": "b.py"}], "")[1]["file_path"] == "b.py"
@@ -1041,6 +1053,11 @@ def test_an_oauth_prompt_mid_handshake_reads_as_signed_out(start, agent):
     _assert_failed_start(s, agent, "asked for a browser sign-in")
     assert time.monotonic() - began < 15, "the OAuth prompt must cut the wait short"
     assert "accounts.google.com" not in json.dumps(s.out())
+    # ...nor the host's err.log, whose tail the diagnostics bundle ships.
+    for name in os.listdir(s.run_dir):
+        if name.endswith(".log"):
+            with open(os.path.join(s.run_dir, name), errors="replace") as fh:
+                assert "accounts.google.com" not in fh.read(), name
     assert agent._account_error(s.results()[0]["result"], "gemini").startswith(
         "Gemini CLI isn't signed in.")
 
@@ -1288,13 +1305,16 @@ def test_lone_surrogates_survive_both_directions(start, agent):
     assert p["text"] == "Hello\ud83d world!"
 
 
-def test_accept_edits_on_an_edit_card_is_that_cards_allow_always(start):
-    """M8 (D5 narrowed): "allow, accept edits" on an EDIT card answers
-    allow_always on that card and never switches the session's mode — only
-    `auto` does. The card is Gemini's edit shape: no `rawInput` at all, the
-    path in `locations`, the change as a `content` diff entry (M2), and the
-    card shows it."""
-    s = start(fake_args=["--perm-edit", "there.txt"])
+def test_accept_edits_on_an_edit_card_is_allow_once_then_an_explicit_mode(start):
+    """D4/D5: "allow, accept edits" on an EDIT card answers allow_once on
+    that card and then switches the session EXPLICITLY (`session/set_mode
+    autoEdit`, after the reply) — never the card's allow_always, which the
+    CLI's `updatePolicy` turns into a session-wide AUTO_EDIT of its own. The
+    card is Gemini's edit shape: no `rawInput` at all, the path in
+    `locations`, the change as a `content` diff entry (M2), and the card
+    shows it. With `--mode-notices` the fake also sends the CLI's
+    `[MODE_UPDATE] autoEdit` chunk, which reaches no row."""
+    s = start(fake_args=["--perm-edit", "there.txt", "--mode-notices"])
     with open(os.path.join(s.cwd, "there.txt"), "w") as fh:
         fh.write("one\ntwo\nthree\n")
     s.say("change it")
@@ -1305,13 +1325,19 @@ def test_accept_edits_on_an_edit_card_is_that_cards_allow_always(start):
     s.decide(card["id"], decision="allow", scope="once", mode="acceptEdits")
     s.wait_results(1)
     answers = _perm_answers(s, _perm_rpc_id(s))
-    assert [a["result"]["outcome"]["optionId"] for a in answers] == ["o-always"]
-    assert s.mode_values() == ["default"]   # the spawn's own, nothing after
+    assert [a["result"]["outcome"]["optionId"] for a in answers] == ["o-once"]
+    assert _wait_for(lambda: s.mode_values() == ["default", "autoEdit"])
+    cfg = [e for e in s.fake() if e.get("msg", {}).get("method") == "session/set_mode"
+           and e["msg"]["params"]["modeId"] == "autoEdit"]
+    answered_at = next(e["t"] for e in s.fake() if e.get("msg") == answers[0])
+    assert cfg[0]["t"] > answered_at, "the mode switch must follow the RPC reply"
+    assert "[MODE_UPDATE]" not in json.dumps(s.out()) + json.dumps(s.tx())
 
 
-def test_accept_edits_on_a_shell_card_is_allow_once(start):
-    """L3: acceptEdits widens EDITS only. On a Bash card it is a plain
-    allow_once, even if the card said "for the session"."""
+def test_accept_edits_on_a_shell_card_is_allow_once_and_the_same_mode(start):
+    """D4/D5: on a Bash card "allow, accept edits" is a plain allow_once (even
+    if the card said "for the session") and the same explicit `autoEdit`
+    switch — Claude's own acceptEdits is a session mode on any card."""
     s = start(fake_args=["--perm"])
     s.say("clean")
     assert _wait_for(lambda: s.perm_requests())
@@ -1321,7 +1347,43 @@ def test_accept_edits_on_a_shell_card_is_allow_once(start):
     s.wait_results(1)
     answers = _perm_answers(s, _perm_rpc_id(s))
     assert [a["result"]["outcome"]["optionId"] for a in answers] == ["o-once"]
-    assert s.mode_values() == ["default"]
+    assert _wait_for(lambda: s.mode_values() == ["default", "autoEdit"])
+
+
+def test_the_clis_mode_notice_chunk_moves_the_mode_and_reaches_no_row(start):
+    """D4: every approval-mode change makes the CLI send an
+    `agent_message_chunk` `[MODE_UPDATE] <id>`. Mid-turn ("allow, and stop
+    asking" → `yolo`) it must not become assistant text, and the host's mode
+    follows it."""
+    s = start(fake_args=["--perm", "--mode-notices"])
+    s.say("clean")
+    assert _wait_for(lambda: s.perm_requests())
+    s.decide(s.perm_requests()[0]["id"], decision="allow", scope="session", mode="auto")
+    s.wait_results(1)
+    assert _wait_for(lambda: s.mode_values() == ["default", "yolo"])
+    blob = json.dumps(s.out()) + json.dumps(s.tx())
+    assert "[MODE_UPDATE]" not in blob and "MODE_UPDATE" not in blob
+    assert s.results()[0]["is_error"] is False
+
+
+def test_a_replay_that_lands_after_the_load_reply_is_still_backfilled(start):
+    """D3, the real ordering: `session/load` answers first and the history
+    streams after it. The host waits for the replay to go quiet before it
+    backfills and before the first prompt goes out, so the terminal turns
+    land in the transcript and none of the replay reaches out.jsonl."""
+    s = start(resume=True, fake_args=["--replay", "2", "--replay-after-reply"],
+              messages=["more"])
+    s.wait_results(1)
+    out = s.out()
+    assert [r["type"] for r in out if r["type"] != "result"][:1] == ["system"]
+    assert not any("replayed" in json.dumps(r) for r in out), out
+    users = [r["message"]["content"][0]["text"] for r in s.tx() if r["type"] == "user"]
+    assert users == ["replayed q1", "replayed q2", "more"]
+    agents = [r["message"]["content"][0]["text"] for r in s.tx()
+              if r["type"] == "assistant" and r["message"]["content"][0].get("type") == "text"]
+    assert agents[:2] == ["replayed a1", "replayed a2"]
+    # (Had the prompt gone out before the replay settled, `replaying` would
+    # have been False for the late updates and `users` would be ["more"].)
 
 
 def test_an_old_cancelled_marker_does_not_turn_a_crash_into_a_stop(start):

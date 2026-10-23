@@ -739,12 +739,15 @@ def _measure(allow_shell: bool = True) -> dict:
     signed, reply = _sign_in(path) if usable else (None, None)
     acct = account(signed)
     models = _models_of(reply) if signed else None
+    current_model = _current_model_of(reply) if signed else None
     if signed is None and usable:
         # A probe that could not tell is no news about the credential, so the
-        # last snapshot's account and list stand: one slow read must not
-        # blank the strip's "Signed in as …" row or the pickers' list.
+        # last snapshot's account, list and current model stand: one slow
+        # read must not blank the strip's "Signed in as …" row, the pickers'
+        # list or the current-model line.
         acct = _carried_account()
         models = cached_models()
+        current_model = _carried_current_model()
 
     return {
         "found": usable,
@@ -769,7 +772,7 @@ def _measure(allow_shell: bool = True) -> dict:
         # The account's own model list off `session/new` (D11a's twin), or
         # None: the static catalog stands.
         "models": models,
-        "current_model": _current_model_of(reply) if signed else None,
+        "current_model": current_model,
         "on_shell_path": on_shell_path,
         "path_fix_command": fix["command"] if fix else None,
         "checked_at": time.time(),
@@ -780,6 +783,16 @@ def _measure(allow_shell: bool = True) -> dict:
 def _read_cache() -> Optional[dict]:
     data = storage.read_json(_cache_path())
     return data if isinstance(data, dict) else None
+
+
+def _carried_current_model() -> Optional[str]:
+    """The last snapshot's `current_model`, for a measure whose probe could
+    not tell — the same store rule as `_carried_account`."""
+    prev = _read_cache()
+    if not prev or prev.get("config_dir") != config_dir():
+        return None
+    model = prev.get("current_model")
+    return model if isinstance(model, str) and model else None
 
 
 def _carried_account() -> Optional[dict]:
