@@ -33,6 +33,7 @@ import {
 import {
   bgJobChips,
   capList,
+  groupCollapsed,
   groupTasks,
   cardStatusWord,
   MAX_PRS,
@@ -42,10 +43,12 @@ import {
   needsYou,
   nextNeedingYou,
   pickBranch,
+  visibleGroupTasks,
   visibleReasons,
   workspaceKeyAction,
   workspaceTasks,
   type WorkspaceFacts,
+  type WorkspaceGroupKey,
 } from "@shell/workspace-lib";
 
 /** How long the Undo toast stays up after a close. */
@@ -53,6 +56,28 @@ export const UNDO_MS = 8000;
 const POLL_MS = 15000;
 /** The server answers at most this many ids per read. */
 const MAX_IDS = 100;
+const COLLAPSED_KEY = "fused.tasks.workspace.collapsed";
+
+/** Group headers the reader folded (true) or unfolded (false); absent = default. */
+function readCollapsed(): Record<string, boolean> {
+  try {
+    const v: unknown = JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? "{}");
+    if (v && typeof v === "object" && !Array.isArray(v)) {
+      return Object.fromEntries(Object.entries(v).filter(([, b]) => typeof b === "boolean")) as Record<string, boolean>;
+    }
+  } catch {
+    // no storage, or not JSON
+  }
+  return {};
+}
+
+function writeCollapsed(v: Record<string, boolean>): void {
+  try {
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify(v));
+  } catch {
+    // no storage
+  }
+}
 
 function isTyping(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
@@ -161,6 +186,7 @@ function WorkspaceCard({
   const text = reasonList.join(" · ");
   const clear = reasons.length === 0;
   const hasPrs = prRefsOf(task).some((r) => r.repo);
+  const unread = task.unread > 0 && reasons.some((r) => /^\d+ unread$/.test(r));
   const hasBg = (task.background_jobs?.count ?? 0) > 0;
   const preview = messagePreview(task);
   const showChip = showProject && task.project !== "";
@@ -172,7 +198,7 @@ function WorkspaceCard({
   );
   // Line 2 exists for a preview/project chip or for real facts. "clear" alone
   // never opens it: it rides line 1's right edge instead.
-  const realFacts = hasPrs || hasBg || ports.length > 0 || text !== "" || branch !== null;
+  const realFacts = hasPrs || hasBg || ports.length > 0 || unread || text !== "" || branch !== null;
   const hasLine2 = hasContext || realFacts;
   const clearTag = clear ? <span className="ws-badge ws-clear" title="Nothing holds this task open, so it is safe to archive">safe to archive</span> : null;
   return (
@@ -223,6 +249,11 @@ function WorkspaceCard({
       )}
       {(realFacts || clear) && (
         <div className="ws-card-facts">
+          {unread && (
+            <span className="ws-badge ws-unread" title={`${task.unread} unread`}>
+              unread
+            </span>
+          )}
           {branch && (
             <span className="ws-badge ws-branch" title={branch.more > 0 ? `${branch.name} (+${branch.more} more)` : branch.name}>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -293,6 +324,8 @@ export function TaskWorkspace({
   const peekedKey = usePeekedKey();
   const [selected, setSelected] = useState<string | null>(null);
   const [searching, setSearching] = useState(false);
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(readCollapsed);
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
   const [undo, setUndo] = useState<{ key: string; title: string } | null>(null);
   const undoTimer = useRef<number | null>(null);
@@ -312,13 +345,30 @@ export function TaskWorkspace({
   // Grouped by state; the flat list below is what j/k/n walk, so the keyboard
   // order is the order on screen. Hidden (just-closed) rows never count.
   const groups = useMemo(() => groupTasks(base, factsFor), [base, factsFor]);
-  const rows = useMemo(() => groups.flatMap((g) => g.tasks), [groups]);
+  // Only the cards on screen: a folded group has none, a capped one its first 8.
+  // j/k/n walk this list, so they never land on a card that is not drawn.
+  const shownGroups = useMemo(
+    () =>
+      groups.map((g) => {
+        const { shown, more } = visibleGroupTasks(g.tasks, expanded.has(g.key));
+        const folded = groupCollapsed(g.key, collapsed);
+        return { ...g, folded, shown: folded ? [] : shown, more: folded ? 0 : more };
+      }),
+    [groups, expanded, collapsed],
+  );
+  const rows = useMemo(() => shownGroups.flatMap((g) => g.shown), [shownGroups]);
   const now = useNow();
   const showProject = useMemo(() => spansProjects(rows), [rows]);
 
   // What the key handler reads, kept current without re-binding it.
-  const live = useRef({ rows, selected, peekedKey, searching });
-  live.current = { rows, selected, peekedKey, searching };
+  const live = useRef({ rows, groups, collapsed, selected, peekedKey, searching });
+  live.current = { rows, groups, collapsed, selected, peekedKey, searching };
+
+  const toggleGroup = useCallback((key: WorkspaceGroupKey): void => {
+    const next = { ...live.current.collapsed, [key]: !groupCollapsed(key, live.current.collapsed) };
+    writeCollapsed(next);
+    setCollapsed(next);
+  }, []);
 
   useEffect(
     () => () => {
@@ -436,7 +486,21 @@ export function TaskWorkspace({
           setSearching(true);
           return;
         case "needs": {
-          const to = nextNeedingYou(st.rows, st.selected);
+          let to = nextNeedingYou(st.rows, st.selected);
+          if (!to) {
+            // Every drawn card is checked first; a "Needs you" group that is
+            // folded or capped may hold one that is not drawn.
+            const g = st.groups.find((x) => x.key === "needs");
+            if (g && g.tasks.length > 0) {
+              to = g.tasks[0].key;
+              if (groupCollapsed("needs", st.collapsed)) {
+                const next = { ...st.collapsed, needs: false };
+                writeCollapsed(next);
+                setCollapsed(next);
+              }
+              setExpanded((x) => new Set([...x, "needs"]));
+            }
+          }
           if (to) {
             e.preventDefault();
             setSelected(to);
@@ -466,22 +530,28 @@ export function TaskWorkspace({
 
   return (
     <div className="ws-root" data-workspace>
-      {rows.length === 0 ? (
+      {groups.length === 0 ? (
         <p className="schedule-tv-empty">{emptyLabel}</p>
       ) : (
         <ul className="ws-list" role="listbox" aria-label="Open tasks">
-          {groups.map((g, gi) => (
+          {shownGroups.map((g, gi) => (
             <Fragment key={g.key}>
               <li
                 role="presentation"
                 className="tasks-group-head ws-group-head"
                 data-group={g.key}
                 data-first={gi === 0 ? "1" : undefined}
+                data-collapsed={g.folded ? "1" : "0"}
               >
-                <span className="tasks-group-name">{g.label}</span>
-                <span className="tasks-group-count">{g.tasks.length}</span>
+                <button type="button" className="tasks-group-toggle ws-group-toggle" aria-expanded={!g.folded} onClick={() => toggleGroup(g.key)}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <path d="m9 18 6-6-6-6" />
+                  </svg>
+                  <span className="tasks-group-name">{g.label}</span>
+                  <span className="tasks-group-count">{g.tasks.length}</span>
+                </button>
               </li>
-              {g.tasks.map((t) => {
+              {g.shown.map((t) => {
                 const reasons = holdReasons(t, factsFor(t));
                 return (
                   <WorkspaceCard
@@ -502,6 +572,17 @@ export function TaskWorkspace({
                   />
                 );
               })}
+              {g.more > 0 && (
+                <li role="presentation" className="ws-more-row">
+                  <button
+                    type="button"
+                    className="schedule-tv-more ws-more"
+                    onClick={() => setExpanded((x) => new Set([...x, g.key]))}
+                  >
+                    Show {g.more} more
+                  </button>
+                </li>
+              )}
             </Fragment>
           ))}
         </ul>

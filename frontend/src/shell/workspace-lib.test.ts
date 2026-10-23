@@ -252,7 +252,7 @@ describe("visibleReasons", () => {
   });
 });
 
-import { bgJobChips, capList, messagePreview } from "./workspace-lib";
+import { bgJobChips, capList, groupCollapsed, GROUP_CAP, messagePreview, visibleGroupTasks } from "./workspace-lib";
 
 test("capList keeps the first max and counts the rest", () => {
   expect(capList([1, 2, 3, 4], 3)).toEqual({ shown: [1, 2, 3], more: 1 });
@@ -308,4 +308,22 @@ describe("workspaceGroup / groupTasks", () => {
       ["clear", "Safe to archive", ["a", "c"]],
     ]);
   });
+});
+
+test("a group shows GROUP_CAP cards until expanded", () => {
+  const items = Array.from({ length: GROUP_CAP + 3 }, (_, i) => i);
+  expect(visibleGroupTasks(items, false)).toEqual({ shown: items.slice(0, GROUP_CAP), more: 3 });
+  expect(visibleGroupTasks(items, true)).toEqual({ shown: items, more: 0 });
+  expect(visibleGroupTasks([1, 2], false)).toEqual({ shown: [1, 2], more: 0 });
+});
+
+test("only Safe to archive starts collapsed, and a stored choice wins", () => {
+  expect(groupCollapsed("clear", {})).toBe(true);
+  expect(groupCollapsed("idle", {})).toBe(false);
+  expect(groupCollapsed("clear", { clear: false })).toBe(false);
+  expect(groupCollapsed("idle", { idle: true })).toBe(true);
+});
+
+test("visibleReasons still drops the unread text: the card draws its own unread badge", () => {
+  expect(visibleReasons(["3 unread"], task({ unread: 3 }))).toEqual([]);
 });

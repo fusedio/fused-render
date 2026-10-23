@@ -3,7 +3,7 @@
 // has no event dispatch, so the key handler is not driven from here.)
 import { installDomShim } from "@platform/lib/testDomShim";
 installDomShim();
-import { afterEach, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, expect, mock, test } from "bun:test";
 import { createElement } from "react";
 import { act, create } from "react-test-renderer";
 import type { Task } from "@platform/lib/api";
@@ -16,7 +16,27 @@ const realFetch = globalThis.fetch;
 // for the rest of the process, firing reads into whichever file's fetch stub is
 // installed (useTaskId.test.tsx counted them: 10 reads instead of 2).
 const mounted: ReturnType<typeof create>[] = [];
+// The DOM shim has no storage. Most tests want "Safe to archive" open, so a
+// stub says so; the collapsed-default test removes it.
+const store: Record<string, string> = {};
+const stubStorage = (): void => {
+  (globalThis as { localStorage?: unknown }).localStorage = {
+    getItem: (k: string) => store[k] ?? null,
+    setItem: (k: string, v: string) => {
+      store[k] = v;
+    },
+    removeItem: (k: string) => {
+      delete store[k];
+    },
+  };
+};
+beforeEach(() => {
+  for (const k of Object.keys(store)) delete store[k];
+  store["fused.tasks.workspace.collapsed"] = JSON.stringify({ clear: false });
+  stubStorage();
+});
 afterEach(() => {
+  delete (globalThis as { localStorage?: unknown }).localStorage;
   for (const r of mounted.splice(0)) act(() => r.unmount());
   globalThis.fetch = realFetch;
 });
@@ -254,6 +274,63 @@ test("headers show label and count in order, and keys walk the grouped order", a
   const heads = r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.includes("ws-group-head"));
   expect(heads.map((h) => text(h))).toEqual(["Needs you2", "Running1", "Safe to archive1"]);
   expect(heads.every((h) => h.props.role === "presentation")).toBe(true);
+  expect(heads.every((h) => h.findAllByType("button").length === 1)).toBe(true);
   const cards = r.root.findAll((n) => typeof n.props.className === "string" && /^ws-card( |$)/.test(n.props.className));
   expect(cards.map((n) => n.props["data-key"])).toEqual(["c", "d", "b", "a"]);
+});
+
+const cardsOf = (r: ReturnType<typeof create>) =>
+  r.root.findAll((n) => typeof n.props.className === "string" && /^ws-card( |$)/.test(n.props.className));
+const moreBtn = (r: ReturnType<typeof create>) =>
+  r.root.findAll((n) => n.type === "button" && typeof n.props.className === "string" && n.props.className.includes("ws-more"));
+
+test("a held card with unread shows an unread badge", async () => {
+  serve();
+  const r = await render([task({ key: "a", unread: 2 })]);
+  const badges = r.root.findAll((n) => n.props.className === "ws-badge ws-unread");
+  expect(badges).toHaveLength(1);
+  expect(text(badges[0])).toBe("unread");
+});
+
+test("a group over 8 cards shows 8 and a Show N more that reveals the rest", async () => {
+  serve();
+  const many = Array.from({ length: 11 }, (_, i) => task({ key: `k${i}`, task_id: `T${i}`, started: 100 - i, unread: 1 }));
+  const r = await render(many);
+  expect(cardsOf(r)).toHaveLength(8);
+  const heads = r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.includes("ws-group-head"));
+  expect(text(heads[0])).toBe("Open11");
+  const btn = moreBtn(r);
+  expect(btn).toHaveLength(1);
+  expect(text(btn[0])).toBe("Show 3 more");
+  await act(async () => {
+    btn[0].props.onClick();
+  });
+  expect(cardsOf(r)).toHaveLength(11);
+  expect(moreBtn(r)).toHaveLength(0);
+});
+
+test("Safe to archive starts collapsed: header and count, no cards", async () => {
+  serve();
+  for (const k of Object.keys(store)) delete store[k];
+  const r = await render([task({ key: "a" }), task({ key: "b", started: 0 })]);
+  const heads = r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.includes("ws-group-head"));
+  expect(heads.map((h) => text(h))).toEqual(["Safe to archive2"]);
+  expect(cardsOf(r)).toHaveLength(0);
+  await act(async () => {
+    heads[0].findByType("button").props.onClick();
+  });
+  expect(cardsOf(r)).toHaveLength(2);
+  expect(JSON.parse(store["fused.tasks.workspace.collapsed"])).toEqual({ clear: false });
+});
+
+test("a header click collapses an open group and remembers it", async () => {
+  serve();
+  const r = await render([task({ key: "a", unread: 1 })]);
+  expect(cardsOf(r)).toHaveLength(1);
+  const head = r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.includes("ws-group-head"))[0];
+  await act(async () => {
+    head.findByType("button").props.onClick();
+  });
+  expect(cardsOf(r)).toHaveLength(0);
+  expect(JSON.parse(store["fused.tasks.workspace.collapsed"]).idle).toBe(true);
 });

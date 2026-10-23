@@ -273,3 +273,18 @@ export function groupTasks(
   }
   return WORKSPACE_GROUPS.filter((g) => by.has(g.key)).map((g) => ({ ...g, tasks: by.get(g.key)! }));
 }
+
+/** A group shows this many cards until its "Show N more" is pressed. */
+export const GROUP_CAP = 8;
+
+/** The cards a group draws: all of them once `expanded`, else the first
+ *  GROUP_CAP; `more` is how many "Show N more" would add. */
+export function visibleGroupTasks<T>(items: readonly T[], expanded: boolean): { shown: T[]; more: number } {
+  return expanded ? { shown: [...items], more: 0 } : capList(items, GROUP_CAP);
+}
+
+/** Does a group start folded? Only "Safe to archive" does. A stored choice
+ *  (`stored[key]`, true = collapsed) wins over this default. */
+export function groupCollapsed(key: WorkspaceGroupKey, stored: Readonly<Record<string, boolean>>): boolean {
+  return key in stored ? stored[key] : key === "clear";
+}

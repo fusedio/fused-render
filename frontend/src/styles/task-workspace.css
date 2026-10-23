@@ -201,6 +201,9 @@
   --ws-tone: var(--fg);
   text-decoration: none;
 }
+.ws-unread {
+  --ws-tone: var(--accent-soft);
+}
 .ws-marker {
   --ws-tone: var(--warning);
 }
@@ -333,4 +336,16 @@
 }
 .ws-list > .ws-group-head:not([data-first]) {
   margin-top: 12px;
+}
+
+/* The header is a toggle button; the chevron turns with the group. */
+.ws-group-toggle > svg {
+  transform: rotate(90deg);
+}
+.ws-group-head[data-collapsed="1"] .ws-group-toggle > svg {
+  transform: rotate(0deg);
+}
+.ws-more-row {
+  list-style: none;
+  display: flex;
 }
