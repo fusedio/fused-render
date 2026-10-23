@@ -55,6 +55,7 @@ let pastNoteFor: typeof import("./NewJobModal").pastNoteFor;
 let PAST_NOTE_ONE_OFF: typeof import("./NewJobModal").PAST_NOTE_ONE_OFF;
 let PAST_NOTE_CATCH_UP: typeof import("./NewJobModal").PAST_NOTE_CATCH_UP;
 let defaultTargetOf: typeof import("./NewJobModal").defaultTargetOf;
+let openingTargetOf: typeof import("./NewJobModal").openingTargetOf;
 let targetVerdict: typeof import("./NewJobModal").targetVerdict;
 let folderFieldRows: typeof import("./NewJobModal").folderFieldRows;
 let splitTargetPath: typeof import("./NewJobModal").splitTargetPath;
@@ -97,6 +98,7 @@ beforeAll(async () => {
   PAST_NOTE_ONE_OFF = mod.PAST_NOTE_ONE_OFF;
   PAST_NOTE_CATCH_UP = mod.PAST_NOTE_CATCH_UP;
   defaultTargetOf = mod.defaultTargetOf;
+  openingTargetOf = mod.openingTargetOf;
   targetVerdict = mod.targetVerdict;
   splitTargetPath = mod.splitTargetPath;
   PATH_MISSING = mod.PATH_MISSING;
@@ -1565,6 +1567,22 @@ describe("defaultTargetOf", () => {
     expect(
       defaultTargetOf({ home: "C:\\Users\\v", fused_dir: "C:\\Users\\v\\Fused" }),
     ).toBe("C:/Users/v/Fused");
+  });
+});
+
+describe("openingTargetOf (Remember last folder)", () => {
+  const cfg = { home: "/Users/x", fused_dir: "/data/work" };
+
+  test("flag off: the Fused workspace, whatever the recents say", () => {
+    expect(openingTargetOf(cfg, false, ["/a/b"])).toBe("/data/work");
+  });
+
+  test("flag on with recents: the most recent folder", () => {
+    expect(openingTargetOf(cfg, true, ["/a/b", "/c"])).toBe("/a/b");
+  });
+
+  test("flag on with no recents: the workspace", () => {
+    expect(openingTargetOf(cfg, true, [])).toBe("/data/work");
   });
 });
 

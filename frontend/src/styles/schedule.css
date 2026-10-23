@@ -1617,6 +1617,13 @@ body.embed .schedule-page {
   height: 14px;
 }
 
+/* The check in the "Remember last folder" row centres in the gutter. */
+.schedule-recents-remember .schedule-picker-gutter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
 /* -- Google-style when-row: date + time fields with dropdowns -------------- */
 
 .schedule-when {

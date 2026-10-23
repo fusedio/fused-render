@@ -2028,6 +2028,8 @@ export interface UiLayoutDoc {
     calRange?: string;
   };
   recentPaths?: string[];
+  /** New task opens on the last folder used instead of the workspace. */
+  rememberLastFolder?: boolean;
 }
 
 export function getUiLayout(): Promise<{ exists: boolean; layout: UiLayoutDoc | null }> {
