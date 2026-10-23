@@ -74,11 +74,25 @@ if "__file__" not in globals():
     __file__ = os.path.join(sys.path[0], "log.py")
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-# `../shared/appenv.py` is how a template asks the app about its environment
-# (SPEC PY-15): env vars only, stdlib only, no `fused_render` import. The import
-# stays LAZY at its use site so an unreachable appenv is still the "cannot tell"
-# case that must read as a refusal.
-sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "shared"))
+
+
+def _load_shared(name):
+    """`../shared/<name>.py` BY PATH (the adding-a-shared-template-utility
+    rule; ops.py's twin): a same-named module elsewhere on `sys.path` can
+    never stand in. Stdlib only, no `fused_render` import (SPEC PY-15)."""
+    import importlib.util
+
+    path = os.path.join(os.path.dirname(_HERE), "shared", name + ".py")
+    spec = importlib.util.spec_from_file_location("_git_log_" + name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# The contribution loop's push/pull/reset guard (docs/CONTRIB_LOOP.md §17.8):
+# one copy, shared with ops.py and the server's classify.py. Loaded EAGERLY —
+# a guard that failed to load must not read as "not guarded".
+contrib_guard = _load_shared("contrib_guard")
 
 
 # ------------------------------------------------------------------- the bounds
@@ -544,55 +558,43 @@ def _identity(root):
     return {"name": name, "email": email}
 
 
-# The contribution loop's push guard (docs/CONTRIB_LOOP.md §16.0 P2,
-# fused_render/contrib/classify.py — mirrored, not imported, PY-15; ops.py's
-# `_push_blocked` is the twin and refuses Push with the same sentence): a copy
-# of someone else's GitHub app carries this pushurl on `origin` (and the
-# repo-local `fused.kind=github` marker). Its changes leave the machine only
-# as a proposal from the app page, so the view hides Push and says why.
-_NO_PUSH_URL = "no-push://fused"
-_GITHUB_REPO = re.compile(
-    r"^(?:git@github\.com:|(?:https?|ssh)://(?:[^@/]+@)?(?:www\.)?github\.com/)"
-    r"([A-Za-z0-9-]+/[A-Za-z0-9._-]+?)(?:\.git)?/?$", re.I)
-
-
-def _push_blocked(root):
-    """The plain sentence the Push button is replaced by, or None."""
-    guard = _git(root, "config", "--get-all", "remote.origin.pushurl",
-                 allow=(0, 1)).decode("utf-8", "replace").split()
-    kind = _git(root, "config", "--local", "--get", "fused.kind",
-                allow=(0, 1)).decode("utf-8", "replace").strip()
-    if _NO_PUSH_URL not in guard and kind != "github":
-        return None
-    url = _git(root, "config", "--get", "remote.origin.url",
-               allow=(0, 1)).decode("utf-8", "replace").strip()
-    m = _GITHUB_REPO.match(url)
-    who = m.group(1) if m else "its author's version on GitHub"
-    # `fused.ownerunknown`: fused could not ask GitHub whose app this is yet —
-    # if it turns out to be yours, it publishes as usual from then on.
-    unknown = _git(root, "config", "--local", "--get", "fused.ownerunknown",
-                   allow=(0, 1)).decode("utf-8", "replace").strip() == "true"
-    until = " until fused knows whether this app is yours" if unknown else ""
-    if _app_page_on():
-        return f"This app follows {who}{until}. Send your changes from its app page."
-    return f"This copy of {who} has changes of its own, and they stay on this computer{until}."
-
-
-def _app_page_on():
-    """Whether the app page has the panel the Push sentence can point at —
-    the contribution loop's switch (`contrib_enabled` in the
-    app's prefs.json; docs/CONTRIB_LOOP.md §16.12). Read through appenv
-    (PY-15); unreadable reads as off. ops.py's twin."""
+def _guard_run(root, *args):
+    """`contrib_guard`'s injected runner: `(returncode, stdout_bytes)` for
+    one bounded git call. `_git` turns an unexpected exit code into a
+    refusal, but here every code is an answer (exit 1: a config key that is
+    not set; 128: no upstream, no HEAD) — only the ways git can fail to RUN
+    refuse, exactly as in `_git`."""
     try:
-        import json
+        proc = subprocess.run(_argv(root, args), stdout=subprocess.PIPE,
+                              stderr=subprocess.PIPE, timeout=TIMEOUT_S,
+                              **_popen_kwargs())
+    except FileNotFoundError as exc:
+        raise _Refused("no-git", "git is not installed, or not on this app's PATH.") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise _Refused("timeout", f"git took longer than {TIMEOUT_S:.0f}s to answer.") from exc
+    except OSError as exc:
+        raise _Refused("no-git", f"git could not be started: {exc}") from exc
+    return proc.returncode, proc.stdout
 
-        import appenv
 
-        with open(os.path.join(appenv.home_dir(), "prefs.json"), encoding="utf-8") as f:
-            prefs = json.load(f)
-        return isinstance(prefs, dict) and prefs.get("contrib_enabled") is True
-    except Exception:  # noqa: BLE001 — the plain sentence is always true
-        return False
+def _guard(root):
+    """The contribution loop's guard facts for the overview
+    (docs/CONTRIB_LOOP.md §17.8, `contrib_guard`, ops.py refuses with the same
+    sentences): `{push_blocked, home_branch, follows, bring_in_label}`. A copy
+    of someone else's GitHub app never sends from here — its edits go out as a
+    proposal from the app page — so the view hides Push and says why; its
+    Get latest is a plain pull while it has nothing of its own, else the
+    loop's Bring in (`bring_in_label`). `home_branch` is the branch whose
+    history is the user's own there (reset is allowed on it only)."""
+    guarded = contrib_guard.guarded_who(root, _guard_run)
+    if guarded is None:
+        return {"push_blocked": None, "home_branch": None, "follows": None,
+                "bring_in_label": None}
+    who = guarded[0]
+    return {"push_blocked": contrib_guard.push_blocked(root, _guard_run),
+            "home_branch": contrib_guard.HOME_BRANCH,
+            "follows": contrib_guard.owner_of(who),
+            "bring_in_label": contrib_guard.bring_in_label(who)}
 
 
 def _status(root, rel, is_dir):
@@ -1417,7 +1419,7 @@ def main(
                 "ahead": ahead,
                 "behind": behind,
                 "remote": remote,
-                "push_blocked": _push_blocked(root),
+                **_guard(root),
             },
             "changes": changes,
             "changes_truncated": changes_truncated,

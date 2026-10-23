@@ -2035,18 +2035,20 @@ function toolbar(data) {
       expanded: panel === "publish",
       onClick: () => setParams({ panel: panel === "publish" ? null : "publish" }),
     }));
-  } else if (behind && repo.push_blocked) {
-    /* A copy of someone else's app (contrib §16.8) brings the author's latest
-       in by MERGING it with the copy's own commits (P4), so after the first
-       one it can never fast-forward again: `git pull --ff-only` would only
-       ever say "diverged — do it in a terminal". The server's get-latest runs
-       the loop's own Bring in instead (the same move auto-sync makes on app
-       open, with its backup and Activity line), and answers in plain words. */
-    group.append(action("pull", [icon(PULL_GLYPH, 14), btnLabel("Get latest")], {
+  } else if (behind && repo.push_blocked && ahead) {
+    /* A copy of someone else's app (contrib §17.8) with commits of its own the
+       author's version lacks can't fast-forward onto it: `git pull --ff-only`
+       would only ever say "diverged — do it in a terminal". The server's
+       get-latest runs the loop's own Bring in instead (the same move
+       auto-sync makes on app open, with its backup and Activity line), and
+       answers in plain words. With nothing of its own (`ahead` 0) such a copy
+       is just behind, and the plain pull below runs. */
+    const bringIn = repo.bring_in_label || "Bring in the latest";
+    group.append(action("pull", [icon(PULL_GLYPH, 14), btnLabel(bringIn)], {
       className: "primary",
-      label: "Get the latest — " + plural(behind, "commit") + " to bring in",
+      label: bringIn + " — " + plural(behind, "commit") + " to bring in",
       count: behind,
-      title: "Bring in the author's latest; your changes are kept",
+      title: "Combine the author's latest with your changes; your changes are kept",
       onClick: () => run("pull", { server: "/api/git-upstream",
                                    body: { action: "get-latest", path: file } }),
     }));

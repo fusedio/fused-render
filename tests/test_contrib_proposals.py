@@ -1,9 +1,15 @@
 """Proposals against a real temp clone and FakeGitHub (contract §8, v2
-§16.5): credit once, send with ticked new files, Update as a plain push that
-merges edits made on GitHub, Withdraw, the status refresh, a collaborator's
-direct publish, the Claude-busy gate, and the audit repros (R1 R4 R6 R7 R8
-R9 R10 R11 R13) asserting the FIXED behaviour; plus gh.py's error mapping
-and contributors."""
+§16.5, v3 §17.5): send pushes `fused/mine` as it is (no rewrite ever) with
+ticked new files, Update as a plain push that merges edits made on GitHub
+(landed by fast-forward), `unproposed` as a first-parent no-merges count,
+Withdraw, the status refresh, a collaborator's direct publish, the
+Claude-busy gate, and the audit repros (R1 R4 R6 R7 R8 R9 R10 R11 R13)
+asserting the FIXED behaviour; plus gh.py's error mapping and contributors.
+
+Bob's copy is v3-shaped (`make_world`): HEAD on `fused/mine`,
+`refs/heads/main` a fetch-only mirror of `origin/main`. `_fetch` here does
+what a sync's fetch does (both refs move); tests assert I3/I4 at the steps
+they touch (`assert_home_invariants`)."""
 from __future__ import annotations
 
 import os
@@ -11,7 +17,9 @@ import subprocess
 
 import pytest
 
-from _contrib_gh_world import APP_PY, PAGE, claude_commit, edit, git, make_world, read
+from _contrib_gh_world import (APP_PY, PAGE, assert_home_invariants, claude_commit, edit,
+                               git, make_world, mirror_main, on_home_branch, read,
+                               write_prefs)
 
 
 @pytest.fixture
@@ -68,18 +76,30 @@ def _anc(w, a, b) -> bool:
 
 
 def _fetch(w):
+    """A sync's fetch (§17.3): `origin/main`, then the `main` mirror (I3)."""
     from fused_render.contrib import follow
     got = follow.fetch(w.app, follow.for_record(w.store.get(w.app)))
+    mirror_main(w.app)
     return got[0] if isinstance(got, tuple) else got
 
 
 def _bring_in(w):
-    """What the engine's row 11 does with the author's latest: MERGE it into
-    Bob's copy as Bob (never a rebase)."""
+    """What the engine's bring-in does with the author's latest (§17.3):
+    MERGE the `main` mirror into `fused/mine` as Bob (never a rebase)."""
     _fetch(w)
     me = w.gh.identity()
     git(w.app, "-c", f"user.name={me['name']}", "-c", f"user.email={me['email']}",
-        "merge", "-q", "--no-ff", "-m", "Bring in alice's latest", "refs/remotes/origin/main")
+        "merge", "-q", "--no-ff", "-m", "Bring in alice's latest", "refs/heads/main")
+    assert_home_invariants(w.app)
+
+
+def _sent(w):
+    """What GitHub has from Bob, as this copy last saw it (v2's `sent`)."""
+    return _proposal(w)["cache"]["head_sha"]
+
+
+def _pr_head_ref(w):
+    return git(w.app, "rev-parse", "--verify", "-q", _p().PR_HEAD_REF, check=False) or None
 
 
 def _activity(w):
@@ -92,32 +112,59 @@ APP_PY_LOUD = "def amplitude():\n    return 9\n\n\ndef frequency():\n    return 
 # ------------------------------------------------------------------ send
 
 
-def test_send_credits_bob_and_claude_and_changes_no_file(w):
-    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "make the wave red")
-    old = _head(w)
-    tree_before = git(w.app, "rev-parse", "HEAD^{tree}")
+def test_send_pushes_fused_mine_as_it_is(w):
+    """§17.5: no rewrite ever — the commit ids Bob has are the ones GitHub
+    shows, pushed from `fused/mine` to a new branch of his own copy."""
+    red = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "make the wave red")
     view = _send(w, note="Hope you like it")
     assert view["state"] == "waiting" and view["number"] == 1
     p = _proposal(w)
     assert p["head_repo"] == "bob/sine" and p["head_branch"].startswith("fused-sine-")
-    # Same files, new commit: Bob authored, Claude credited exactly once.
     head = _head(w)
-    assert git(w.app, "rev-parse", "HEAD^{tree}") == tree_before
-    assert head == p["sent"] and p["checked_tip"] == _tip(w)
-    assert git(w.app, "log", "-1", "--format=%an <%ae>") == \
-        f"Bob <{w.fake.email_of('bob')}>"
-    body = git(w.app, "log", "-1", "--format=%B")
-    assert body.count("Co-authored-by: Claude <noreply@anthropic.com>") == 1
-    # The old tip is pinned (no Undo on the line: §16.12).
-    assert old in git(w.app, "for-each-ref", "--format=%(objectname)",
-                      "refs/fused/backup/").split()
-    assert [k for k, _t in _activity(w)][:2] == ["proposal-sent", "proposal-credit"]
+    assert head == red                                          # nothing re-created
+    assert git(w.app, "log", "-1", "--format=%ae") == "apps@fused.io"
+    assert git(w.app, "for-each-ref", "refs/fused/backup/") == ""
+    assert "proposal-credit" not in [k for k, _t in _activity(w)]
+    assert [k for k, _t in _activity(w)][:1] == ["proposal-sent"]
+    # The v3 record: no `sent`, `checked_tip`, `returned_at`; `landed_at` unset.
+    for gone in ("sent", "checked_tip", "returned_at"):
+        assert gone not in p, gone
+    assert p["landed_at"] is None and p["cache"]["head_sha"] == head
+    assert _pr_head_ref(w) == head
     # On GitHub: the PR from Bob's own copy, exactly that commit, footer + note.
     pr = w.gh.get_pr("alice/sine", 1)
     assert pr["head_sha"] == head and pr["user"] == "bob"
     assert pr["body"].endswith(w.gh.PROPOSAL_MARKER)
     assert "**Note from bob:** Hope you like it" in pr["body"]
     assert w.fake.tip("bob/sine", p["head_branch"]) == head
+    assert_home_invariants(w.app)
+
+
+def test_send_refuses_off_the_home_branch(w):
+    """I4: HEAD on any other branch is "a different version" — nothing is
+    committed or sent from it."""
+    from fused_render.contrib.jobs import PlainError
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    git(w.app, "switch", "-q", "-c", "elsewhere")
+    edit(w.app, "app.py", APP_PY_LOUD)
+    with pytest.raises(PlainError, match="different version"):
+        _send(w)
+    # Even when the author's latest overlaps this other version, the
+    # sentence is "go back", never "Merge with Claude first".
+    from fused_render.contrib import engine
+    git(w.app, "commit", "-q", "-am", "loud, on the other version")
+    edit(w.app, "index.html", PAGE.replace("blue", "teal"))
+    w.fake.commit("alice/sine", "main", {"app.py": APP_PY.replace("return 1", "return 3")},
+                  "three", author="alice")
+    _fetch(w)
+    assert engine.conflict(w.app)["files"] == ["app.py"]             # a real overlap here
+    assert _p().conflict(w.app) is False
+    with pytest.raises(PlainError, match="different version"):
+        _send(w)
+    assert _p().dirty(w.app)
+    assert w.store.get(w.app).get("proposal") is None
+    assert w.fake.state()["pulls"].get("alice/sine", []) == [] or \
+        len(w.fake.state()["pulls"]["alice/sine"]) == 0
 
 
 def test_send_commits_tracked_edits_and_only_the_new_files_ticked(w):
@@ -217,6 +264,7 @@ def test_a_second_copy_never_adopts_the_first_copys_proposal(w, tmp_path):
     (tmp_path / "apps2").mkdir()
     two = str(tmp_path / "apps2" / "sine")
     git(tmp_path / "apps2", "clone", "-q", "https://github.com/alice/sine", two)
+    on_home_branch(two)
     rec = w.store.new_record("github", repo="alice/sine", branch="main")
     w.store.put(two, rec)
     two = w.store.key(two)
@@ -224,7 +272,7 @@ def test_a_second_copy_never_adopts_the_first_copys_proposal(w, tmp_path):
     claude_commit(two, {"app.py": APP_PY_LOUD}, "louder")
     view = _p().send(two, title="Louder", description="d")
     assert view["number"] == 2
-    assert w.gh.get_pr("alice/sine", 1)["head_sha"] == _proposal(w)["sent"]
+    assert w.gh.get_pr("alice/sine", 1)["head_sha"] == _sent(w)
 
 
 def test_branch_names_carry_a_random_tail(w):
@@ -356,11 +404,9 @@ def test_offline_identity_is_cached_for_gated_posts_but_not_for_strict(w):
     assert asks() == n + 1
 
 
-def test_disabled_wording(w, monkeypatch):
-    from fused_render.contrib import flags, remix
-    monkeypatch.setattr(flags, "_raw", lambda: dict.fromkeys(
-        ("sources", "changes", "inbox", "loop", "remix"), False))
-    monkeypatch.setattr(flags, "effective", lambda raw: dict(raw))
+def test_disabled_wording(w):
+    from fused_render.contrib import remix
+    write_prefs(contrib_enabled=False, contrib_remix_enabled=False)   # §17.9: the real switch
     assert _p().preflight(w.app)["message"] == "This isn't turned on."
     assert remix.start_draft(w.app)["message"] == "This isn't turned on."
 
@@ -392,15 +438,16 @@ def test_r8_nothing_moves_or_leaves_while_claude_works(w, monkeypatch):
     claude_commit(w.app, {"app.py": APP_PY_LOUD}, "louder")
     edit(w.app, "app.py", "def amplitude(:\n")      # half-written by the running turn
     head, pr_head = _head(w), w.gh.get_pr("alice/sine", 1)["head_sha"]
-    monkeypatch.setattr(_p(), "claude_busy", lambda root: True)
+    from fused_render.contrib import engine
+    # The one busy rule (§16.0 P8): proposals asks the engine's.
+    monkeypatch.setattr(engine, "_claude_busy", lambda root: True)
     assert _p().preflight(w.app)["reason"] == "claude"
     for call in (lambda: _p().update(w.app), lambda: _p().withdraw(w.app),
                  lambda: remix.publish(w.app, name="sine-remix", credit="Remixed.")):
         with pytest.raises(PlainError) as e:
             call()
         assert e.value.reason == "claude" and "Claude is still working" in e.value.message
-    assert _p().credit_once(w.app)["reason"] == "claude"
-    from fused_render.contrib import engine
+    assert not hasattr(_p(), "credit_once")                       # §17.7: no credit rewrite
     w.fake.add_collaborator("alice/sine", "bob")
     assert engine.push_to_main(w.app)["reason"] == "claude"       # end to end
     w.store.update(w.app, lambda r: r.update(proposal=None))
@@ -419,17 +466,18 @@ def test_update_is_a_plain_push_that_github_sees_as_added(w):
     from fused_render.contrib.jobs import PlainError
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     _send(w)
-    first = _proposal(w)["sent"]
+    first = _sent(w)
     assert _p().view(w.app)["unproposed"] == 0
     claude_commit(w.app, {"app.py": APP_PY_LOUD}, "louder")
     assert _p().view(w.app)["unproposed"] == 1
+    louder = _head(w)
     _p().update(w.app)
     p = _proposal(w)
-    assert p["sent"] == _head(w) and p["number"] == 1
+    assert _sent(w) == _head(w) == louder and p["number"] == 1
+    assert _pr_head_ref(w) == louder and "sent" not in p and "checked_tip" not in p
     remote = w.gh.get_pr("alice/sine", 1)["head_sha"]
-    assert remote == p["sent"] and _anc(w, first, remote)     # added to, never replaced
-    # Credit never runs after the first send: the Fused-authored "louder"
-    # went exactly as it was.
+    assert remote == louder and _anc(w, first, remote)        # added to, never replaced
+    # No rewrite: the Fused-authored "louder" went exactly as it was.
     assert git(w.app, "log", "-1", "--format=%ae") == "apps@fused.io"
     assert git(w.app, "rev-parse", "HEAD~1") == first
     assert _p().view(w.app)["unproposed"] == 0
@@ -450,19 +498,95 @@ def test_update_sends_uncommitted_tracked_edits(w):
                                      f"refs/heads/{_proposal(w)['head_branch']}")
 
 
-def test_r1_an_author_push_never_rewrites_the_proposal(w):
-    """R1 fixed: Alice's unrelated push is MERGED into Bob's copy; the page
-    has nothing new to offer and Update refuses — no force push, no new
-    commit ids for what GitHub already has."""
+def test_unproposed_ignores_bring_ins_and_the_authors_commits_through_them(w):
+    """§17.5: `--first-parent --no-merges <pr-head>..HEAD`. Two bring-ins of
+    three author commits add nothing; each of Bob's own commits after the
+    proposal's head is one; an uncommitted edit is one more."""
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    rec = lambda: w.store.get(w.app)                      # noqa: E731
+    for i in range(3):
+        w.fake.commit("alice/sine", "main", {f"N{i}.md": f"{i}\n"}, f"n{i}", author="alice")
+        if i != 1:
+            _bring_in(w)
+    assert git(w.app, "rev-list", "--count", f"{_sent(w)}..HEAD") == "5"   # 2 merges + 3 hers
+    assert _p().unproposed(w.app, rec()) == 0
+    claude_commit(w.app, {"app.py": APP_PY_LOUD}, "louder")
+    assert _p().unproposed(w.app, rec()) == 1
+    edit(w.app, "index.html", PAGE.replace("blue", "green"))
+    assert _p().unproposed(w.app, rec()) == 2
+    assert_home_invariants(w.app)
+
+
+def test_pr_head_falls_back_to_the_cache_then_the_mirror(w):
+    """`pr-head` = `refs/fused/pr-head`, else the cache's `head_sha` when it
+    is here, else `refs/heads/<b>` (§17.5)."""
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    red = _head(w)
+    claude_commit(w.app, {"app.py": APP_PY_LOUD}, "louder")
+    rec = lambda: w.store.get(w.app)                      # noqa: E731
+    assert _p().pr_head(w.app, rec()) == red and _p().unproposed(w.app, rec()) == 1
+    git(w.app, "update-ref", "-d", _p().PR_HEAD_REF)
+    assert _p().pr_head(w.app, rec()) == red and _p().unproposed(w.app, rec()) == 1
+    w.store.update(w.app, lambda r: r["proposal"]["cache"].update(head_sha="f" * 40))
+    main = git(w.app, "rev-parse", "refs/heads/main")
+    assert _p().pr_head(w.app, rec()) == main and _p().unproposed(w.app, rec()) == 2
+
+
+def test_pr_head_ref_is_dropped_when_the_proposal_ends(w):
+    """A stale `refs/fused/pr-head` from an ended proposal must never count
+    against the next one (§17.5)."""
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    assert _pr_head_ref(w)
+    _p().withdraw(w.app)
+    assert _pr_head_ref(w) is None
+    claude_commit(w.app, {"app.py": APP_PY_LOUD}, "louder")
+    _send(w)
+    assert _pr_head_ref(w) == _head(w) and _p().view(w.app)["unproposed"] == 0
+
+
+def test_settle_direct_stamps_landed_at_and_drops_the_pr_head(w):
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    assert _p().settle_direct(w.app, _head(w)) == {"ok": True}
+    p = _proposal(w)
+    assert p["direct"] and p["landed_at"] and p["settled_seen"] and "returned_at" not in p
+    assert p["cache"]["state"] == "merged" and _pr_head_ref(w) is None
+
+
+def test_update_refuses_while_the_authors_latest_overlaps(w):
+    """v3 records no overlap; Send/Update derive it (§17.2 `conflict`) from
+    the `main` mirror, before anything leaves."""
     from fused_render.contrib.jobs import PlainError
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     _send(w)
-    first = _proposal(w)["sent"]
+    w.fake.commit("alice/sine", "main", {"index.html": PAGE.replace("blue", "green")},
+                  "green", author="alice")
+    _fetch(w)
+    assert _p().conflict(w.app) is True
+    claude_commit(w.app, {"app.py": APP_PY_LOUD}, "louder")
+    with pytest.raises(PlainError, match="Merge with Claude first"):
+        _p().update(w.app)
+    assert w.gh.get_pr("alice/sine", 1)["head_sha"] == _sent(w) != _head(w)
+
+
+def test_r1_an_author_push_never_rewrites_the_proposal(w):
+    """R1 fixed: Alice's unrelated push is MERGED into Bob's copy; nothing of
+    his is new (`unproposed` 0 — a bring-in merge never counts), the page has
+    nothing to offer (`head_differs` False, §17.5) and Update refuses — no
+    push, what GitHub has keeps its ids."""
+    from fused_render.contrib.jobs import PlainError
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    first = _sent(w)
     w.fake.commit("alice/sine", "main", {"NOTES.md": "n\n"}, "notes", author="alice")
     _bring_in(w)
     assert _anc(w, first, _head(w))
-    view = _p().view(w.app)
-    assert view["unproposed"] == 0 and "stale" not in view
+    view = _p().refresh(w.app, force=True)
+    assert view["unproposed"] == 0 and view["head_differs"] is False and "stale" not in view
+    assert view["fits"] is True
     with pytest.raises(PlainError, match="already has all your changes"):
         _p().update(w.app)
     assert w.gh.get_pr("alice/sine", 1)["head_sha"] == first
@@ -498,8 +622,8 @@ def test_r9_github_update_branch_is_merged_in_not_replayed(w):
     assert pr["head_sha"] == head and _anc(w, gh_head, pr["head_sha"])
     assert read(w.app, "NOTES.md") == "n\n" and "return 9" in read(w.app, "app.py")
     _fetch(w)
-    from fused_render.contrib import proposals
-    assert proposals.count_unproposed(w.app, _proposal(w)["sent"], _tip(w)) == 0
+    assert _p().unproposed(w.app, w.store.get(w.app)) == 0
+    assert_home_invariants(w.app)
 
 
 def test_update_keeps_alices_edit_to_the_proposal(w):
@@ -509,10 +633,15 @@ def test_update_keeps_alices_edit_to_the_proposal(w):
     # Alice fixes something on github.com, straight onto Bob's branch.
     hers = w.fake.commit("bob/sine", p["head_branch"], {"NOTES.md": "thanks!\n"},
                          "Add notes", author="alice")
-    claude_commit(w.app, {"app.py": APP_PY_LOUD}, "louder")
+    louder = claude_commit(w.app, {"app.py": APP_PY_LOUD}, "louder")
     _p().update(w.app)
     head = _head(w)
-    assert w.gh.get_pr("alice/sine", 1)["head_sha"] == _proposal(w)["sent"] == head
+    assert w.gh.get_pr("alice/sine", 1)["head_sha"] == _sent(w) == head
+    # Landed by fast-forward (§17.5): Bob's commit is the merge's first
+    # parent, nothing was reset, so nothing was pinned.
+    assert git(w.app, "rev-parse", f"{head}^1") == louder
+    assert git(w.app, "for-each-ref", "refs/fused/backup/") == ""
+    assert_home_invariants(w.app)
     assert _anc(w, hers, head)                             # her commit, same id
     assert git(w.app, "log", "-1", "--format=%an", hers) == "alice"
     assert read(w.app, "NOTES.md") == "thanks!\n"          # Bob now runs her edit
@@ -620,12 +749,18 @@ def test_refresh_shows_alices_newest_comment_only(w):
     assert view["comment"]["body"] == "Can you make it darker?"
 
 
-def test_refresh_records_the_tip_it_checked(w):
+def test_refresh_records_no_checked_tip(w):
+    """v3 keeps no `checked_tip`, and `refresh` takes no `tip` (review #12)."""
+    import inspect
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     _send(w)
-    new = w.fake.commit("alice/sine", "main", {"NOTES.md": "n\n"}, "notes", author="alice")
-    _p().refresh(w.app, force=True, tip=new)
-    assert _proposal(w)["checked_tip"] == new
+    w.fake.commit("alice/sine", "main", {"NOTES.md": "n\n"}, "notes", author="alice")
+    assert _p().refresh(w.app, force=True)["state"] == "waiting"
+    assert "checked_tip" not in _proposal(w)
+    for fn in (_p().refresh, _p()._apply_pr, _p()._ingest, _p()._prepare, _p().head_differs):
+        params = inspect.signature(fn).parameters
+        assert "tip" not in params and not any(
+            x.kind is inspect.Parameter.VAR_KEYWORD for x in params.values()), fn
 
 
 def test_asked_to_update_is_shown_and_update_answers_it(w):
@@ -662,11 +797,11 @@ def test_declined_keeps_changes_and_says_so_once(w):
     events = [e["kind"] for e in w.store.get(w.app)["events"]]
     assert events.count("declined") == 1
     assert _head(w) == head
-    # Declined is settled: a fresh Send is allowed — and never re-credits
-    # what was already sent.
+    # Declined is settled: a fresh Send is allowed — from the same branch,
+    # what was already sent kept as it is, the pr-head moved to the new one.
     claude_commit(w.app, {"app.py": APP_PY_LOUD}, "louder")
     assert _send(w)["number"] == 2
-    assert _anc(w, head, _head(w))
+    assert _anc(w, head, _head(w)) and _pr_head_ref(w) == _head(w)
 
 
 def test_declined_shows_the_authors_closing_note(w):
@@ -702,7 +837,7 @@ def test_a_declined_proposal_stops_being_polled(w):
     assert not _proposal(w)["cache"]["note_checked"]
 
 
-def test_merged_keeps_polling_until_returned_then_stops(w):
+def test_merged_keeps_polling_until_landed_then_stops(w):
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     _send(w)
     w.fake.merge("alice/sine", 1, "squash")
@@ -710,8 +845,8 @@ def test_merged_keeps_polling_until_returned_then_stops(w):
     before = _api_calls(w)
     _p()._last_refresh.clear()
     _p().refresh(w.app)
-    assert _api_calls(w) > before                    # the engine has not returned it yet
-    w.store.update(w.app, lambda r: r["proposal"].update(returned_at=1.0))   # engine row 7
+    assert _api_calls(w) > before                    # the engine has not landed it yet
+    w.store.update(w.app, lambda r: r["proposal"].update(landed_at=1.0))   # engine §17.2
     before = _api_calls(w)
     _p().refresh(w.app, force=True)
     assert _api_calls(w) == before
@@ -761,7 +896,7 @@ def test_r7_direct_publish_keeps_the_proposal_commits_and_settles_it(sw):
     w.fake.add_collaborator("alice/sine", "bob")
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     _send(w)
-    sent = _proposal(w)["sent"]
+    sent = _sent(w)
     w.fake.commit("alice/sine", "main", {"NOTES.md": "n\n"}, "notes", author="alice")
     claude_commit(w.app, {"app.py": APP_PY_LOUD}, "louder")
     out = engine.push_to_main(w.app)
@@ -779,79 +914,21 @@ def test_r7_direct_publish_keeps_the_proposal_commits_and_settles_it(sw):
     assert _api_calls(w) == before
     assert "declined" not in [e["kind"] for e in w.store.get(w.app)["events"]]
     assert w.fake.tip("bob/sine", _proposal(w)["head_branch"]) is None    # tidied
+    assert _proposal(w)["landed_at"] and _pr_head_ref(w) is None
+    assert_home_invariants(w.app)
 
 
-def test_direct_publish_before_any_send_credits_bob(sw):
+def test_direct_publish_sends_the_commits_as_they_are(sw):
+    """§17.7: no credit rewrite before a direct publish either — the
+    commit Bob has is the one the author's app gets."""
     from fused_render.contrib import engine
     w = sw
     w.fake.add_collaborator("alice/sine", "bob")
-    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    red = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     assert engine.push_to_main(w.app)["ok"]
     bare = w.fake.bare_path("alice/sine")
-    assert git(bare, "log", "-1", "--format=%ae", "main") == w.fake.email_of("bob")
-    assert "proposal-credit" in [k for k, _t in _activity(w)]
-
-
-def test_credit_once_is_refused_while_claude_works(w, monkeypatch):
-    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
-    head = _head(w)
-    monkeypatch.setattr(_p(), "claude_busy", lambda root: True)
-    assert _p().credit_once(w.app)["reason"] == "claude"
-    assert _head(w) == head
-
-
-# ------------------------------------------------------- credit, pure parts
-
-
-def test_with_trailer_is_idempotent():
-    p = _p()
-    once = p.with_trailer("Claude: red\n\nbody text\n")
-    assert once == p.with_trailer(once)
-    assert once.count("Co-authored-by: Claude") == 1
-    joined = p.with_trailer("Subject\n\nSigned-off-by: Bob <b@x>\n")
-    assert joined.endswith("Signed-off-by: Bob <b@x>\nCo-authored-by: Claude <noreply@anthropic.com>\n")
-
-
-def test_credit_keeps_other_peoples_commits(w):
-    base = _head(w)
-    claude_commit(w.app, {"a.txt": "1\n"}, "one")
-    edit(w.app, "b.txt", "2\n")
-    git(w.app, "add", "b.txt")
-    git(w.app, "-c", "user.name=Carol", "-c", "user.email=carol@example.com",
-        "commit", "-q", "-m", "by hand")
-    me = w.gh.identity()
-    tip = _p().credit(w.app, base, _head(w), me)
-    assert git(w.app, "log", "-1", "--format=%an", tip) == "Carol"
-    assert git(w.app, "log", "-1", "--format=%an", f"{tip}~1") == "Bob"
-    assert _p().credit(w.app, base, tip, me) == tip
-
-
-def test_credit_keeps_a_merge_in_bobs_range_as_a_merge(w):
-    base = _head(w)
-    claude_commit(w.app, {"a.txt": "1\n"}, "one")
-    git(w.app, "checkout", "-q", "-b", "side", base)
-    claude_commit(w.app, {"b.txt": "2\n"}, "two")
-    git(w.app, "checkout", "-q", "main")
-    git(w.app, "-c", "user.name=Fused", "-c", "user.email=apps@fused.io",
-        "merge", "-q", "--no-ff", "-m", "Claude: combine", "side")
-    head = _head(w)
-    me = w.gh.identity()
-    tip = _p().credit(w.app, base, head, me)
-    assert git(w.app, "rev-parse", f"{tip}^{{tree}}") == git(w.app, "rev-parse", f"{head}^{{tree}}")
-    assert len(git(w.app, "rev-list", "--parents", "-n1", tip).split()) == 3   # still a merge
-    authors = set(git(w.app, "log", "--format=%an", f"{base}..{tip}").splitlines())
-    assert authors == {"Bob"}
-    assert _p().credit(w.app, base, tip, me) == tip                          # idempotent
-
-
-def test_credit_skips_what_was_sent_and_the_authors_side(w):
-    base = _head(w)
-    sent = claude_commit(w.app, {"a.txt": "1\n"}, "sent already")
-    claude_commit(w.app, {"b.txt": "2\n"}, "not yet")
-    me = w.gh.identity()
-    tip = _p().credit(w.app, base, _head(w), me, exclude=[sent])
-    assert git(w.app, "rev-parse", f"{tip}~1") == sent
-    assert git(w.app, "log", "-1", "--format=%an", tip) == "Bob"
+    assert git(bare, "rev-parse", "main") == red
+    assert "proposal-credit" not in [k for k, _t in _activity(w)]
 
 
 # ----------------------------------------------------------------- gh.py
@@ -965,7 +1042,10 @@ def test_no_git_words_in_messages():
             assert not re.search(rf"\b{word}\b", low), (word, msg)
 
 
-# ------------------------------------------- with the engine's sync (v2 table)
+# ------------------------------------------- with the engine's sync (v3, §17.3)
+#
+# Everything below runs WS-1's engine for real (`sw.sync()`); a red here
+# with the tests above green points at the engine, not at proposals.
 
 
 def _pr_head(w):
@@ -973,38 +1053,66 @@ def _pr_head(w):
 
 
 @pytest.mark.parametrize("method", ["merge", "squash", "rebase"])
-def test_lifecycle_propose_update_merge_return(sw, method):
-    """The whole loop on the v2 model: propose → the author pushes (the
-    engine MERGES her latest in; the proposal on GitHub is not rewritten)
-    → Update is a fast-forward push → she merges (any method) → the copy
-    returns to her latest keeping exactly the edits made after the last
-    send."""
+def test_lifecycle_propose_update_merge_land(sw, method):
+    """The whole loop on the v3 model: propose → the author pushes (the
+    engine MERGES her latest into fused/mine; the proposal on GitHub is not
+    rewritten, nothing new to send) → Update is a fast-forward push → she
+    merges (any method) → the engine brings her merge in and stamps
+    `landed_at` once; an edit made after the last send stays the only
+    difference from her latest. I3/I4 at every step."""
     w = sw
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     _send(w)
-    sent1 = _proposal(w)["sent"]
+    sent1 = _sent(w)
+    assert_home_invariants(w.app)
     w.fake.commit("alice/sine", "main", {"NOTES.md": "n\n"}, "notes", author="alice")
     w.sync()
+    assert_home_invariants(w.app)
     assert _anc(w, sent1, _head(w)) and read(w.app, "NOTES.md") == "n\n"
     assert _pr_head(w) == sent1                                     # untouched
     assert _p().view(w.app)["unproposed"] == 0
     claude_commit(w.app, {"app.py": APP_PY_LOUD}, "louder")
+    assert _p().view(w.app)["unproposed"] == 1
     _p().update(w.app)
-    sent2 = _proposal(w)["sent"]
+    sent2 = _sent(w)
     assert _pr_head(w) == sent2 == _head(w) and _anc(w, sent1, sent2)   # fast-forward
     w.fake.merge("alice/sine", 1, method)
     claude_commit(w.app, {"EXTRA.md": "after sending\n"}, "extra")  # never proposed
+    extra = _head(w)
     w.sync()
+    assert_home_invariants(w.app)
     p = _proposal(w)
-    assert p["cache"]["state"] == "merged" and p["returned_at"], p
+    assert p["cache"]["state"] == "merged" and p["landed_at"], p
     tip = _tip(w)
     assert tip == w.fake.tip("alice/sine", "main")
+    assert _anc(w, tip, _head(w)) and _anc(w, extra, _head(w))      # merged in, nothing lost
     assert git(w.app, "diff", "--name-only", tip, "HEAD").split() == ["EXTRA.md"]
-    # In history too: exactly the one edit made after the last send.
-    assert git(w.app, "log", "--first-parent", "--no-merges", "--format=%s", "HEAD",
-               f"^{tip}").splitlines() == ["Claude: extra"]
+    if method == "merge":
+        # Her merge holds Bob's commits: only the later edit is his alone.
+        assert git(w.app, "log", "--first-parent", "--no-merges", "--format=%s", "HEAD",
+                   f"^{tip}").splitlines() == ["Claude: extra"]
     assert "red" in read(w.app, "index.html") and "return 9" in read(w.app, "app.py")
     assert _p().view(w.app)["state"] == "merged"
+    stamped = p["landed_at"]
+    w.sync()
+    assert _proposal(w)["landed_at"] == stamped                    # once
+
+
+@pytest.mark.parametrize("method", ["merge", "squash"])
+def test_a_merged_proposal_settles_onto_the_authors_latest(sw, method):
+    """§17.3 settle: nothing of Bob's beyond what she merged — once her
+    merge is brought in the trees match, so fused/mine is moved onto her
+    latest (old tip pinned), no file changes."""
+    w = sw
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _send(w)
+    w.fake.merge("alice/sine", 1, method)
+    w.sync()
+    assert_home_invariants(w.app)
+    assert _head(w) == _tip(w) == w.fake.tip("alice/sine", "main")
+    assert _proposal(w)["landed_at"]
+    assert git(w.app, "for-each-ref", "refs/fused/backup/") != ""
+    assert "red" in read(w.app, "index.html")
 
 
 def test_r11_an_author_push_racing_send_keeps_the_sent_commit(sw, monkeypatch):
@@ -1022,21 +1130,22 @@ def test_r11_an_author_push_racing_send_keeps_the_sent_commit(sw, monkeypatch):
 
     monkeypatch.setattr(w.gh, "open_pr", racing)
     _send(w)
-    sent = _proposal(w)["sent"]
+    sent = _sent(w)
     assert _anc(w, sent, _head(w))
     w.fake.commit("alice/sine", "main", {"MORE.md": "m\n"}, "more", author="alice")
     w.sync()
     assert _anc(w, sent, _head(w)) and _pr_head(w) == sent
     assert _p().view(w.app)["unproposed"] == 0
+    assert_home_invariants(w.app)
 
 
-def test_r10_everything_sent_is_bobs(sw):
-    """R10 fixed: the engine's "Your edits" commit and its merge carry the
-    copy's own identity (Bob's GitHub one, set at install) and the credit
-    covers Fused-authored commits — no machine or Fused identity reaches the
-    proposal."""
+def test_r10_everything_fused_commits_is_bobs(sw):
+    """R10, v3: the engine's "Your edits" commit and its bring-in merge carry
+    the copy's own identity (Bob's GitHub one, set at install) — no machine
+    identity reaches the proposal. There is no credit rewrite (§17.7): a
+    commit made before Bob signed in goes exactly as it was."""
     w = sw
-    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    red = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     edit(w.app, "app.py", APP_PY_LOUD)              # uncommitted; Alice changes app.py too
     w.fake.commit("alice/sine", "main", {"app.py": APP_PY + "\n# alice\n"}, "alice app.py",
                   author="alice")
@@ -1045,9 +1154,10 @@ def test_r10_everything_sent_is_bobs(sw):
     branch = _proposal(w)["head_branch"]
     fork = w.fake.bare_path("bob/sine")
     git(fork, "fetch", "-q", w.fake.bare_path("alice/sine"), "+main:refs/tmp/alice")
-    emails = set(git(fork, "log", "--format=%ae", f"refs/heads/{branch}", "^refs/tmp/alice"
-                     ).split())
-    assert emails == {w.fake.email_of("bob")}, emails
+    log = git(fork, "log", "--format=%H %ae", f"refs/heads/{branch}", "^refs/tmp/alice")
+    by = dict(line.split() for line in log.splitlines())
+    assert by.pop(red) == "apps@fused.io"                    # the same commit, unrewritten
+    assert set(by.values()) == {w.fake.email_of("bob")}, by
 
 
 def test_fetch_detail_says_why(w):
@@ -1118,9 +1228,9 @@ def test_s2_wildcard_key_in_an_included_file_or_worktree_config(w, tmp_path):
 def test_v1_update_is_offered_and_sent_after_merge_with_claude(sw, monkeypatch):
     """V1 fixed: Alice's latest overlaps Bob's open proposal; Bob's Merge
     with Claude resolves it. The resolution is a merge (never counted in
-    `unproposed`), yet the page learns the proposal no longer fits and that
-    HEAD holds more than GitHub has — and Update sends it."""
-    from fused_render.contrib import engine, merge_job
+    `unproposed`, never `head_differs`), yet the page learns from GitHub
+    that the proposal no longer fits (`fits` False) — and Update sends it."""
+    from fused_render.contrib import merge_job
     w = sw
     monkeypatch.setattr(_p(), "merge_accepted", lambda app_dir: {"ok": True})
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
@@ -1128,47 +1238,62 @@ def test_v1_update_is_offered_and_sent_after_merge_with_claude(sw, monkeypatch):
     w.fake.commit("alice/sine", "main", {"index.html": PAGE.replace("blue", "green")},
                   "green", author="alice")
     w.sync()
-    plan = engine.merge_plan(w.app)
-    assert plan, w.store.get(w.app).get("needs_merge")
+    assert_home_invariants(w.app)
+    assert _p().conflict(w.app)      # derived, nothing recorded
 
     def resolver(wt, files, ctx):
         with open(os.path.join(wt, "index.html"), "w", encoding="utf-8") as fh:
             fh.write(PAGE.replace("blue", "red-green"))
         return {"ok": True, "summary": "Kept both."}
 
-    job = merge_job.start(w.app, purpose=plan["purpose"], ours=plan["ours"],
-                          theirs=plan["theirs"], resolver=resolver)
+    # No `theirs`: an `update` merges the `main` mirror into fused/mine.
+    job = merge_job.start(w.app, purpose="update", resolver=resolver)
     import time
     deadline = time.time() + 30
     while merge_job.get(job)["status"] == "running" and time.time() < deadline:
         time.sleep(0.05)
     assert merge_job.accept(job)["ok"]
+    assert_home_invariants(w.app)
     view = _p().refresh(w.app, force=True)
     assert view["unproposed"] == 0
-    assert view["fits"] is False and view["head_differs"] is True
+    assert view["fits"] is False and view["head_differs"] is False
     _p().update(w.app)
     assert w.gh.get_pr("alice/sine", 1)["mergeable"] is True
-    assert _p().refresh(w.app, force=True)["head_differs"] is False
+    view = _p().refresh(w.app, force=True)
+    assert view["head_differs"] is False and view["fits"] is True
 
 
-def test_head_differs_is_false_after_a_clean_bring_in(w):
+def test_head_differs_never_fires_on_a_bring_in(w):
+    """§17.5: `head_differs` = the proposal's head is not in HEAD, or
+    `unproposed > 0`. A clean bring-in changes the files Bob runs but is
+    nothing to send; a commit of his after it is."""
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     _send(w)
     assert _p().view(w.app)["head_differs"] is False
     w.fake.commit("alice/sine", "main", {"NOTES.md": "n\n"}, "notes", author="alice")
     _bring_in(w)
     view = _p().refresh(w.app, force=True)
-    assert view["head_differs"] is False and view["fits"] is True
+    assert view["head_differs"] is False and view["unproposed"] == 0 and view["fits"] is True
+    claude_commit(w.app, {"app.py": APP_PY_LOUD}, "louder")
+    view = _p().view(w.app)
+    assert view["head_differs"] is True and view["unproposed"] == 1
 
 
-def test_v2_the_credit_line_has_no_undo_but_the_backup_stays(w):
+def test_head_differs_when_the_proposal_was_edited_on_github(w):
+    """Edits made to the proposal on GitHub (maintainer edits, GitHub's
+    "Update branch") that HEAD lacks offer Update — seen from the refreshed
+    cache before anything is fetched, and from the fetched ref after."""
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
-    old = _head(w)
     _send(w)
-    line = next(a for a in w.store.activity(w.app) if a["kind"] == "proposal-credit")
-    assert line["undo"] is False
-    refs = git(w.app, "for-each-ref", "--format=%(objectname)", "refs/fused/backup/").split()
-    assert old in refs
+    p = _proposal(w)
+    hers = w.fake.commit("bob/sine", p["head_branch"], {"NOTES.md": "thanks!\n"},
+                         "Add notes", author="alice")
+    view = _p().refresh(w.app, force=True)
+    assert _proposal(w)["cache"]["head_sha"] == hers
+    assert view["unproposed"] == 0 and view["head_differs"] is True
+    _p().update(w.app)                               # brings hers in, sends nothing of Bob's
+    assert _anc(w, hers, _head(w))
+    assert _p().refresh(w.app, force=True)["head_differs"] is False
 
 
 def test_v5_update_takes_ticked_new_files(w):
@@ -1200,26 +1325,27 @@ def test_fused_transfers_never_run_the_repos_hooks(w):
 
 
 def test_r2f_a_newer_tip_only_fetched_is_nothing_to_send(w):
-    """Round 2 (F): Bob brought in tip1; tip2 is fetched but NOT brought in
-    (auto-sync off, Keep mine). head_differs judges HEAD against the
-    author's latest HEAD actually holds, so nothing of Bob's reads as new."""
+    """Round 2 (F), v3: tip2 is fetched (the mirror moves, I3) but NOT
+    brought in. Nothing of Bob's reads as new: `unproposed` counts from the
+    proposal's head, `head_differs` compares with it — the author's latest
+    is in neither."""
     from fused_render.contrib.jobs import PlainError
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     _send(w)
-    w.fake.commit("alice/sine", "main", {"N1.md": "1\n"}, "n1", author="alice")
-    _bring_in(w)
     tip2 = w.fake.commit("alice/sine", "main", {"N2.md": "2\n"}, "n2", author="alice")
     assert _fetch(w) == tip2 and not _anc(w, tip2, _head(w))
+    assert_home_invariants(w.app)
     view = _p().refresh(w.app, force=True)
     assert view["head_differs"] is False and view["unproposed"] == 0
     with pytest.raises(PlainError, match="already has all your changes"):
         _p().update(w.app)
 
 
-def test_r2f_a_resolution_still_differs_when_a_newer_tip_is_only_fetched(sw, monkeypatch):
+def test_r2f_a_resolution_is_still_offered_when_a_newer_tip_is_only_fetched(sw, monkeypatch):
     """The other side of (F): after a Merge with Claude resolution against
-    tip1, a fetched-only tip2 must not hide it — head_differs stays True."""
-    from fused_render.contrib import engine, merge_job
+    tip1, a fetched-only tip2 must not hide it — GitHub still says the
+    proposal does not fit, so Update is offered and sends the resolution."""
+    from fused_render.contrib import merge_job
     w = sw
     monkeypatch.setattr(_p(), "merge_accepted", lambda app_dir: {"ok": True})
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
@@ -1227,15 +1353,13 @@ def test_r2f_a_resolution_still_differs_when_a_newer_tip_is_only_fetched(sw, mon
     w.fake.commit("alice/sine", "main", {"index.html": PAGE.replace("blue", "green")},
                   "green", author="alice")
     w.sync()
-    plan = engine.merge_plan(w.app)
 
     def resolver(wt, files, ctx):
         with open(os.path.join(wt, "index.html"), "w", encoding="utf-8") as fh:
             fh.write(PAGE.replace("blue", "red-green"))
         return {"ok": True, "summary": "Kept both."}
 
-    job = merge_job.start(w.app, purpose=plan["purpose"], ours=plan["ours"],
-                          theirs=plan["theirs"], resolver=resolver)
+    job = merge_job.start(w.app, purpose="update", resolver=resolver)
     import time
     deadline = time.time() + 30
     while merge_job.get(job)["status"] == "running" and time.time() < deadline:
@@ -1243,7 +1367,12 @@ def test_r2f_a_resolution_still_differs_when_a_newer_tip_is_only_fetched(sw, mon
     assert merge_job.accept(job)["ok"]
     w.fake.commit("alice/sine", "main", {"N2.md": "2\n"}, "n2", author="alice")
     _fetch(w)                                       # fetched, not brought in
-    assert _p().view(w.app)["head_differs"] is True
+    assert_home_invariants(w.app)
+    view = _p().refresh(w.app, force=True)
+    assert view["fits"] is False and view["head_differs"] is False
+    resolved = _head(w)
+    _p().update(w.app)
+    assert w.gh.get_pr("alice/sine", 1)["head_sha"] == resolved
 
 
 def arm_repo_config(root, tmp_path):
@@ -1281,3 +1410,90 @@ def test_r2_proposal_git_calls_never_run_repo_configured_commands(w, tmp_path):
     contributors.list(w.app)
     _p().withdraw(w.app)
     assert not marker.exists(), marker.read_text()
+
+
+# ------------------------- after a squash accept (review #5, §17.3 round 3c)
+
+
+def _squash_then_author_edits(w, monkeypatch, *, bob_after=None, author=None):
+    """Bob proposes red + app.py 9; the author squash-merges it and edits
+    again (`author` files); `bob_after` = Bob's edit made after sending.
+    Auto-sync off, so nothing settles: the sync only fetches."""
+    from fused_render import git_upstream
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red"), "app.py": APP_PY_LOUD},
+                  "red and loud")
+    _send(w)
+    w.fake.merge("alice/sine", 1, "squash")
+    if bob_after:
+        claude_commit(w.app, bob_after, "after sending")
+    w.fake.commit("alice/sine", "main", author, "author edits", author="alice")
+    monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: False)
+    w.sync()
+    assert_home_invariants(w.app)
+    assert _p().refresh(w.app, force=True)["state"] == "merged"
+
+
+def test_after_a_squash_the_authors_edit_of_bobs_lines_is_no_overlap(sw, monkeypatch):
+    """Review #5: git's own base predates Bob's squashed change, so a plain
+    merge-tree says his app.py line overlaps her later edit of it. Send
+    asks the engine's overlap (merged proposal's head as the base): none,
+    so Send never points at a Merge with Claude the page does not show."""
+    from fused_render.contrib import engine, replay
+    w = sw
+    _squash_then_author_edits(w, monkeypatch,
+                              author={"app.py": APP_PY.replace("return 1", "return 7")})
+    head, main = _head(w), git(w.app, "rev-parse", "refs/heads/main")
+    assert not replay.merge_tree(w.app, head, main)["clean"]          # the trap
+    assert _p().conflict(w.app) is False
+    assert engine.merge_plan(w.app) is None
+    claude_commit(w.app, {"EXTRA.md": "more\n"}, "more")
+    assert _send(w)["number"] == 2                                    # not refused
+
+
+def test_after_a_squash_a_real_overlap_merges_on_the_proposals_head(sw, monkeypatch):
+    """Both changed the index line AFTER the squash: that overlap stands, the
+    plan names the merged proposal's head as the base, and the Merge with
+    Claude job shows only those later edits — never Bob's merged app.py."""
+    from fused_render.contrib import engine, merge_job
+    from fused_render.contrib.jobs import PlainError
+    w = sw
+    _squash_then_author_edits(
+        w, monkeypatch, bob_after={"index.html": PAGE.replace("blue", "crimson")},
+        author={"index.html": PAGE.replace("blue", "ruby"),
+                "app.py": APP_PY.replace("return 1", "return 7")})
+    sent = _sent(w)
+    assert _p().conflict(w.app) is True
+    plan = engine.merge_plan(w.app)
+    assert plan["base"] == sent and plan["files"] == ["index.html"], plan
+    claude_commit(w.app, {"EXTRA.md": "more\n"}, "more")
+    with pytest.raises(PlainError, match="Merge with Claude first"):
+        _send(w)
+    seen = {}
+
+    def resolver(wt, files, ctx):
+        seen["files"] = list(files)
+        seen["text"] = read(wt, "index.html")
+        edit(wt, "index.html", PAGE.replace("blue", "crimson-ruby"))
+        return {"ok": True, "summary": "Kept both colours."}
+
+    import time
+    job = merge_job.start(w.app, purpose="update", ours=_head(w), theirs=plan["theirs"],
+                          base=plan["base"], resolver=resolver)
+    deadline = time.time() + 30
+    while merge_job.get(job)["status"] == "running" and time.time() < deadline:
+        time.sleep(0.05)
+    assert merge_job.get(job)["status"] == "ready", merge_job.get(job)
+    assert seen["files"] == ["index.html"]
+    assert "crimson" in seen["text"] and "ruby" in seen["text"]
+    assert "|||||||" in seen["text"] and ">red<" in seen["text"] and ">blue<" not in seen["text"]
+    assert merge_job.accept(job)["ok"]
+    assert_home_invariants(w.app)
+    assert "crimson-ruby" in read(w.app, "index.html") and "return 7" in read(w.app, "app.py")
+    assert _p().conflict(w.app) is False
+
+
+def test_home_branch_is_the_one_constant(w):
+    """Review #11: no literal of its own."""
+    from fused_render.contrib import classify
+    assert _p().home_branch() == classify.HOME_BRANCH
+    assert not hasattr(_p(), "_HOME_BRANCH")

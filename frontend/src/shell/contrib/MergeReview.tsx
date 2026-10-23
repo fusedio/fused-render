@@ -53,8 +53,16 @@ export function MergeReview({
     setBusy(key);
     setError(null);
     const r = key === "keep" ? await acceptMerge(dir, job.id) : await discardMerge(dir, job.id);
-    if (!r.ok) setError(plainMessage(r));
-    else if (r.message) notify({ title: r.message, tone: "info" });
+    if (!r.ok) {
+      const m = plainMessage(r);
+      setError(m);
+      /* Keep found the copy moved since Claude started (CONTRIB_LOOP §17.4,
+         reason "stale"): the job is failed and dropped, so the refresh below
+         unmounts this review and its inline error with it. The sentence
+         ("…run it again.") rides a notification instead; the panel then
+         offers Merge with Claude again. */
+      if (r.reason === "stale") notify({ title: m, tone: "error" });
+    } else if (r.message) notify({ title: r.message, tone: "info" });
     await refresh();
     setBusy(null);
   };

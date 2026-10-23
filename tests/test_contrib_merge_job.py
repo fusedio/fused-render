@@ -1,7 +1,9 @@
-"""Merge with Claude jobs (§16.4) against real temp git repos: merge-only,
-one resolution, the server's checks. The resolver seam stands in for
-Claude: each fake edits the conflicted files the way a resolution would (or
-misbehaves the way Claude might)."""
+"""Merge with Claude jobs (§16.4, v3 §17.4) against real temp git repos:
+merge-only, one resolution, the server's checks. The resolver seam stands in
+for Claude: each fake edits the conflicted files the way a resolution would
+(or misbehaves the way Claude might). Bob's copy is v3-shaped: HEAD on
+`fused/mine`, `refs/heads/main` the mirror of `origin/main` (I3/I4,
+asserted after every accept); a `github` purpose lands by fast-forward."""
 from __future__ import annotations
 
 import json
@@ -48,6 +50,24 @@ def home(tmp_path, monkeypatch):
     return h
 
 
+HOME = "fused/mine"
+
+
+def to_home(bob, theirs):
+    """Bob's HEAD (on main so far) becomes `fused/mine`; `main` and
+    `origin/main` both name the author's latest (`theirs`) — I3/I4."""
+    git(bob, "switch", "-q", "-c", HOME)
+    git(bob, "update-ref", "refs/remotes/origin/main", theirs)
+    git(bob, "update-ref", "refs/heads/main", theirs)
+
+
+def invariants(bob):
+    """I3 + I4 (§17.1)."""
+    assert git(bob, "symbolic-ref", "HEAD") == f"refs/heads/{HOME}"
+    assert git(bob, "rev-parse", "refs/heads/main") == \
+        git(bob, "rev-parse", "refs/remotes/origin/main")
+
+
 def _repo(tmp_path, author_text, bob_text):
     """Bob's copy with one commit of his; the author's latest (`theirs`)
     is a side commit it has. Returns (bob_dir, ours, theirs)."""
@@ -69,9 +89,9 @@ def _repo(tmp_path, author_text, bob_text):
     theirs = git(bob, "rev-parse", "HEAD")
     git(bob, "checkout", "-q", "main")
     git(bob, "branch", "-q", "-D", "author")
-    git(bob, "update-ref", "refs/remotes/origin/main", theirs)
     write(bob / "index.html", bob_text)
     git(bob, "commit", "-q", "-am", "Make the greeting friendlier")
+    to_home(bob, theirs)
     return str(bob), git(bob, "rev-parse", "HEAD"), theirs
 
 
@@ -127,9 +147,10 @@ def parents(repo, sha):
 
 def test_conflict_resolved_merges_and_keeps_bobs_commit(overlap):
     bob, ours, theirs = overlap
-    jid = merge_job.start(bob, purpose="update", ours=ours, theirs=theirs,
-                          resolver=resolve_with(COMBINED))
+    # No `theirs`: an `update` merges the mirror of the author's branch.
+    jid = merge_job.start(bob, purpose="update", resolver=resolve_with(COMBINED))
     job = wait(jid)
+    assert job["ours"] == ours and job["theirs"] == theirs
     assert job["status"] == "ready", job
     assert job["summary"] == "Kept both greetings." and job["files"] == ["index.html"]
     assert git(bob, "rev-parse", "HEAD") == ours           # nothing moved yet
@@ -141,11 +162,12 @@ def test_conflict_resolved_merges_and_keeps_bobs_commit(overlap):
     assert read(os.path.join(bob, "NOTES.md")) == "author notes\n"
     assert git(bob, "log", "-1", "--format=%an <%ae>|%s") == \
         "Bob Noreply <bob@users.noreply.github.com>|Bring in alice's latest"
-    # ours is the merge's first parent: nothing dropped, so no backup.
+    # A fast-forward of fused/mine: nothing dropped, so no backup; main untouched.
     assert git(bob, "for-each-ref", "refs/fused/backup/") == ""
+    assert git(bob, "rev-parse", "refs/heads/main") == theirs
+    invariants(bob)
     assert worktrees(bob) == [f"worktree {os.path.realpath(bob)}"]
     rec = store.get(bob)
-    assert rec["needs_merge"] is None
     assert rec["activity"][-1]["text"] == "Combined your changes with alice's latest."
 
 
@@ -218,7 +240,9 @@ def test_resolver_that_abandons_the_merge_fails(overlap):
     assert git(bob, "rev-parse", "HEAD") == ours
 
 
-def test_accept_after_the_copy_moved_is_stale(overlap):
+def test_accept_after_the_copy_moved_fails_and_says_run_it_again(overlap):
+    """§17.4: a HEAD that moved since the job started is never reset — the
+    job fails with one plain sentence and the copy keeps the newer commit."""
     bob, ours, theirs = overlap
     job = wait(merge_job.start(bob, purpose="update", ours=ours, theirs=theirs,
                                resolver=resolve_with(COMBINED)))
@@ -226,9 +250,41 @@ def test_accept_after_the_copy_moved_is_stale(overlap):
     git(bob, "commit", "-q", "-am", "newer")
     newer = git(bob, "rev-parse", "HEAD")
     res = merge_job.accept(job["id"])
-    assert not res["ok"] and res["reason"] == "stale"
+    assert res == {"ok": False, "reason": "stale",
+                   "message": "Your copy changed meanwhile; run it again."}
     assert git(bob, "rev-parse", "HEAD") == newer
-    assert merge_job.get(job["id"])["status"] == "discarded"
+    got = merge_job.get(job["id"])
+    assert got["status"] == "failed" and got["error"] == merge_job.MOVED_MESSAGE
+    assert worktrees(bob) == [f"worktree {os.path.realpath(bob)}"]
+    assert git(bob, "for-each-ref", "refs/fused/backup/") == ""
+    invariants(bob)
+    # HEAD is no longer the job's `ours`: the failed job is not shown again.
+    assert merge_job.current(bob) is None
+
+
+def test_accept_after_head_went_back_is_refused_too(overlap):
+    """HEAD moved to an ANCESTOR of the result (a fast-forward would still
+    succeed) — the job's `ours` is the CAS, so it fails rather than land a
+    merge whose first parent is not HEAD."""
+    bob, ours, theirs = overlap
+    job = wait(merge_job.start(bob, purpose="update", ours=ours, theirs=theirs,
+                               resolver=resolve_with(COMBINED)))
+    git(bob, "reset", "-q", "--hard", "HEAD~1")
+    back = git(bob, "rev-parse", "HEAD")
+    res = merge_job.accept(job["id"])
+    assert not res["ok"] and res["reason"] == "stale"
+    assert git(bob, "rev-parse", "HEAD") == back
+
+
+def test_accept_off_the_home_branch_is_refused(overlap):
+    bob, ours, theirs = overlap
+    job = wait(merge_job.start(bob, purpose="update", ours=ours, theirs=theirs,
+                               resolver=resolve_with(COMBINED)))
+    git(bob, "switch", "-q", "-c", "elsewhere")
+    res = merge_job.accept(job["id"])
+    assert not res["ok"] and res["reason"] == "stale"
+    assert git(bob, "rev-parse", "HEAD") == ours
+    assert git(bob, "rev-parse", f"refs/heads/{HOME}") == ours
 
 
 def test_overlapping_unsaved_edit_defers_accept(overlap):
@@ -240,8 +296,10 @@ def test_overlapping_unsaved_edit_defers_accept(overlap):
     assert not res["ok"] and res["reason"] == "busy"
     assert merge_job.get(job["id"])["status"] == "ready"
     assert read(os.path.join(bob, "index.html")) == "unsaved\n"
+    assert git(bob, "rev-parse", "HEAD") == ours
     git(bob, "checkout", "--", "index.html")
     assert merge_job.accept(job["id"])["ok"]
+    invariants(bob)
 
 
 def test_land_false_only_answers_the_tip(overlap):
@@ -292,16 +350,50 @@ def test_head_moved_before_start_fails_stale(overlap):
     assert job["status"] == "failed" and job["error"] == merge_job.STALE_MESSAGE
 
 
-def test_return_purpose_sets_returned(overlap):
+def test_return_purpose_is_gone(overlap):
+    """§17.7: a merged proposal comes back by the engine's bring-in + settle;
+    there is no `return` merge any more."""
     bob, ours, theirs = overlap
-    store.update(bob, lambda r: r.update(
-        proposal={"number": 1, "sent": ours, "cache": {"state": "merged"}},
-        needs_merge={"purpose": "return", "tip": theirs, "head": ours, "files": []}))
-    job = wait(merge_job.start(bob, purpose="return", ours=ours, theirs=theirs,
-                               resolver=resolve_with(COMBINED)))
-    assert merge_job.accept(job["id"])["ok"]
-    rec = store.get(bob)
-    assert rec["needs_merge"] is None and rec["proposal"]["returned_at"]
+    assert "return" not in merge_job.PURPOSES
+    with pytest.raises(ValueError):
+        merge_job.start(bob, purpose="return", ours=ours, theirs=theirs)
+
+
+def test_proposal_merge_lands_by_fast_forward_then_sends(overlap, monkeypatch):
+    """Update's overlap with edits made to the proposal on GitHub (§17.5):
+    with no `theirs`, the job merges `refs/fused/pr-head`; keeping it
+    fast-forwards fused/mine and hands the send to `proposals.merge_accepted`."""
+    from fused_render.contrib import proposals
+    bob, ours, theirs = overlap
+    git(bob, "update-ref", proposals.PR_HEAD_REF, theirs)
+    git(bob, "update-ref", "refs/heads/main", ours)        # pr-head is not the mirror
+    git(bob, "update-ref", "refs/remotes/origin/main", ours)
+    sent = []
+    monkeypatch.setattr(proposals, "merge_accepted", lambda root: sent.append(root) or {})
+    job = wait(merge_job.start(bob, purpose="proposal", resolver=resolve_with(COMBINED),
+                               sides={"first": "your version of the app",
+                                      "second": "alice's latest version"}))
+    assert job["status"] == "ready" and job["theirs"] == theirs
+    res = merge_job.accept(job["id"])
+    assert res["ok"], res
+    head = git(bob, "rev-parse", "HEAD")
+    assert parents(bob, head) == [ours, theirs] and res["tip"] == head
+    assert sent == [store.key(bob)]
+    invariants(bob)
+
+
+def test_a_failed_job_is_shown_while_its_overlap_stands(overlap):
+    """v3 records no overlap (§17.2): a failed `update` job stays the app's
+    `current` while HEAD is still its `ours` and `theirs` is not in it."""
+    bob, ours, theirs = overlap
+
+    def fails(wt, files, context):
+        return {"ok": False, "error": "Claude stopped."}
+    job = wait(merge_job.start(bob, purpose="update", resolver=fails))
+    assert job["status"] == "failed"
+    assert merge_job.current(bob)["id"] == job["id"]
+    git(bob, "commit", "-q", "--allow-empty", "-m", "a newer turn")
+    assert merge_job.current(bob) is None
 
 
 def test_old_git_path_resolves_the_same(overlap, monkeypatch):
@@ -407,6 +499,7 @@ def planted(tmp_path, home):
                       ("index.html", "<p>hello there</p>\n")):
         write(bob / rel, text)
     git(bob, "commit", "-q", "-am", "mine")
+    to_home(bob, theirs)
     store.put(bob, store.new_record("github", repo="alice/sine", branch="main",
                                     classified_by="install"))
     return str(bob), git(bob, "rev-parse", "HEAD"), theirs, marker
@@ -514,6 +607,7 @@ def _two_sides(tmp_path, base, mine, theirs):
     git(bob, "checkout", "-q", "main")
     put(mine)
     git(bob, "commit", "-q", "-m", "mine")
+    to_home(bob, t)
     store.put(bob, store.new_record("github", repo="alice/sine", branch="main",
                                     classified_by="install"))
     return str(bob), git(bob, "rev-parse", "HEAD"), t
@@ -567,6 +661,7 @@ def test_overlaps_without_markers_are_the_persons_choice(tmp_path, home, mine, t
     assert parents(bob, job["tip"]) == [ours, t]
     assert merge_job.accept(jid)["ok"]
     assert git(bob, "rev-parse", "HEAD") == job["tip"]
+    invariants(bob)
 
 
 def test_mixed_choice_and_text_overlap(tmp_path, home):
@@ -700,8 +795,158 @@ def test_one_job_per_app_and_purpose(overlap):
     assert own != prop
     assert merge_job.start(bob, purpose="own-sync", ours=ours, theirs=theirs) == own
     assert merge_job.current(bob, purpose="own-sync")["id"] == own
-    assert merge_job.for_app(bob, purpose=("update", "return")) is None
+    assert merge_job.for_app(bob, purpose=("update",)) is None
     assert merge_job.current(bob, purpose=("proposal",))["id"] == prop
     merge_job.discard(prop)
     merge_job.discard(own)
     gate.append(1)
+
+
+# ------------------------------------- a base of its own (review #5, §17.3 3c)
+
+
+RED = "<title>A</title>\n<p>red</p>\n"
+
+
+def _squashed(tmp_path):
+    """Bob proposed P (index red, app.py 5); the author squash-merged it (S)
+    and then edited both lines again (A2: index ruby, app.py 7); Bob, after
+    sending, changed the index line once more (C: crimson). Returns
+    (bob_dir, ours=C, theirs=A2, base=P)."""
+    bob = tmp_path / "bob"
+    bob.mkdir()
+    git(bob, "init", "-q", "-b", "main")
+    git(bob, "remote", "add", "origin", "https://github.com/alice/sine")
+    git(bob, "config", "user.name", "Bob Noreply")
+    git(bob, "config", "user.email", "bob@users.noreply.github.com")
+    write(bob / "index.html", "<title>A</title>\n<p>blue</p>\n")
+    write(bob / "app.py", "x = 1\n")
+    git(bob, "add", "-A")
+    git(bob, "commit", "-q", "-m", "base")
+    git(bob, "checkout", "-q", "-b", "author")
+    write(bob / "index.html", RED)
+    write(bob / "app.py", "x = 5\n")
+    git(bob, "commit", "-q", "-am", "Squashed: red")
+    write(bob / "index.html", "<title>A</title>\n<p>ruby</p>\n")
+    write(bob / "app.py", "x = 7\n")
+    git(bob, "commit", "-q", "-am", "author: ruby, 7")
+    theirs = git(bob, "rev-parse", "HEAD")
+    git(bob, "checkout", "-q", "main")
+    git(bob, "branch", "-q", "-D", "author")
+    write(bob / "index.html", RED)
+    write(bob / "app.py", "x = 5\n")
+    git(bob, "commit", "-q", "-am", "Claude: red")
+    base = git(bob, "rev-parse", "HEAD")
+    write(bob / "index.html", "<title>A</title>\n<p>crimson</p>\n")
+    git(bob, "commit", "-q", "-am", "Claude: crimson")
+    to_home(bob, theirs)
+    store.put(bob, store.new_record("github", repo="alice/sine", branch="main",
+                                    classified_by="install"))
+    return str(bob), git(bob, "rev-parse", "HEAD"), theirs, base
+
+
+def test_a_named_base_shows_only_the_later_edits(tmp_path, home):
+    """After a squash accept, git's own base (before Bob's change) makes his
+    already-merged app.py line "overlap" with the author's later edit. On the
+    merged proposal's head only the line both changed AFTER it overlaps, and
+    its markers' base is Bob's merged version, not the original."""
+    bob, ours, theirs, base = _squashed(tmp_path)
+    plain = replay.merge_tree(bob, ours, theirs)
+    assert sorted(plain["files"]) == ["app.py", "index.html"]          # the trap
+    seen = {}
+
+    def resolver(wt, files, context):
+        seen["files"] = list(files)
+        seen["text"] = read(os.path.join(wt, "index.html"))
+        write(os.path.join(wt, "index.html"), "<title>A</title>\n<p>crimson ruby</p>\n")
+        return {"ok": True, "summary": "Kept both colours."}
+    job = wait(merge_job.start(bob, purpose="update", base=base, resolver=resolver))
+    assert job["status"] == "ready", job
+    assert job["base"] == base and job["files"] == ["index.html"]
+    assert seen["files"] == ["index.html"]
+    text = seen["text"]
+    assert "<<<<<<<" in text and "crimson" in text and "ruby" in text
+    assert "|||||||" in text and "<p>red</p>" in text and "blue" not in text
+    tip = job["tip"]
+    assert parents(bob, tip) == [ours, theirs]
+    assert _blob(bob, tip, "app.py") == b"x = 7\n"                # her later edit, no question
+    assert merge_job.accept(job["id"])["ok"]
+    assert read(os.path.join(bob, "index.html")) == "<title>A</title>\n<p>crimson ruby</p>\n"
+    assert read(os.path.join(bob, "app.py")) == "x = 7\n"
+    invariants(bob)
+
+
+def test_a_named_base_that_leaves_nothing_overlapping_is_a_clean_merge(tmp_path, home):
+    bob, _ours, theirs, base = _squashed(tmp_path)
+    git(bob, "reset", "-q", "--hard", base)                     # no crimson: only P
+    ours = git(bob, "rev-parse", "HEAD")
+
+    def never(*_a):
+        raise AssertionError("nothing overlaps on the merged proposal's head")
+    job = wait(merge_job.start(bob, purpose="update", ours=ours, base=base, resolver=never))
+    assert job["status"] == "ready" and job["summary"] == merge_job.CLEAN_MERGE_SUMMARY
+    assert _blob(bob, job["tip"], "index.html") == b"<title>A</title>\n<p>ruby</p>\n"
+    assert parents(bob, job["tip"]) == [ours, theirs]
+
+
+def test_a_named_base_keeps_the_persons_choice(tmp_path, home):
+    """A file removed on one side after the base and changed on the other is
+    still the person's choice (stages seeded from merge-tree's answer)."""
+    bob, ours, theirs, base = _squashed(tmp_path)
+    git(bob, "rm", "-q", "app.py")
+    git(bob, "commit", "-q", "-m", "drop app.py")
+    ours = git(bob, "rev-parse", "HEAD")
+    job = wait(merge_job.start(bob, purpose="update", ours=ours, base=base,
+                               resolver=resolve_with(COMBINED)))
+    assert job["status"] == "choice" and job["files"] == ["app.py"], job
+    assert "removed in your version" in job["error"]
+    merge_job.choose(job["id"], "theirs")
+    job = wait(job["id"])                  # then Claude takes the index.html overlap
+    assert job["status"] == "ready", job
+    assert job["summary"].startswith("For app.py, kept alice's latest version.")
+    assert _blob(bob, job["tip"], "app.py") == b"x = 7\n"
+    assert parents(bob, job["tip"]) == [ours, theirs]
+    assert merge_job.accept(job["id"])["ok"]
+    invariants(bob)
+
+
+def test_an_old_git_falls_back_to_its_own_base(tmp_path, home, monkeypatch):
+    bob, ours, theirs, base = _squashed(tmp_path)
+    monkeypatch.setattr(merge_job, "_merge_tree_on_base", lambda *a: None)
+    seen = {}
+
+    def resolver(wt, files, context):
+        seen["files"] = sorted(files)
+        write(os.path.join(wt, "index.html"), "<title>A</title>\n<p>crimson ruby</p>\n")
+        write(os.path.join(wt, "app.py"), "x = 7\n")
+        return {"ok": True, "summary": "Kept both."}
+    job = wait(merge_job.start(bob, purpose="update", base=base, resolver=resolver))
+    assert job["status"] == "ready", job
+    assert job["base"] is None and seen["files"] == ["app.py", "index.html"]
+
+
+def test_base_is_only_for_a_github_copys_purposes(overlap):
+    bob, ours, theirs = overlap
+    jid = merge_job.start(bob, purpose="own-sync", ours=ours, theirs=theirs, base=ours,
+                          resolver=resolve_with(COMBINED))
+    assert merge_job.get(jid)["base"] is None
+    merge_job.discard(jid)
+
+
+def test_accept_rechecks_claude_inside_the_slot(overlap, monkeypatch):
+    """Review #17: a turn that opens between `accept`'s first check and the
+    slot keeps the result ready, the folder untouched."""
+    from fused_render.contrib import engine
+    bob, ours, theirs = overlap
+    job = wait(merge_job.start(bob, purpose="update", ours=ours, theirs=theirs,
+                               resolver=resolve_with(COMBINED)))
+    calls = []
+    monkeypatch.setattr(engine, "_claude_busy", lambda root: calls.append(1) or len(calls) > 1)
+    res = merge_job.accept(job["id"])
+    assert res["ok"] is False and res["reason"] == "claude", res
+    assert len(calls) == 2
+    assert merge_job.get(job["id"])["status"] == "ready"
+    assert git(bob, "rev-parse", "HEAD") == ours
+    monkeypatch.setattr(engine, "_claude_busy", lambda root: False)
+    assert merge_job.accept(job["id"])["ok"]
+    invariants(bob)

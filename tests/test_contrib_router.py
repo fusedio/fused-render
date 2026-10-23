@@ -299,14 +299,14 @@ def test_discard_and_push_main_answer_the_engine(env):
 
 
 def _v2(state="changes", **over):
-    """A v2 engine.status for a GitHub-link copy."""
+    """An engine.status for a GitHub-link copy (the v2 keys §17.2 keeps)."""
     files = ["a.py"] if state == "changes" else []
     s = {"kind": "github", "state": state, "who": "alice", "author": "alice",
          "repo": "alice/x", "behind": 0, "changes_files": files, "changes": len(files),
          "dirty": False, "unproposed": 0, "needs_merge": state == "needs-merge",
          "needs_merge_purpose": "update" if state == "needs-merge" else None,
          "needs_merge_files": [], "merge_job": None, "blocked_files": [],
-         "kept_mine": False, "off_default": False, "claude_busy": False,
+         "off_default": False, "claude_busy": False,
          "last_checked": 5.0, "sync_error": None, "sync_error_code": None,
          "can_push": False, "pending": False}
     s.update(over)
@@ -406,13 +406,26 @@ def test_long_actions_are_jobs(env):
 
 
 def test_quick_fixes_answer_inline(env):
+    """§17.3: Use <who>'s version (`match`, confirmed first) and Keep working
+    on it (`keep_working`, after a declined proposal) answer inline, the
+    engine called with the app folder only. v2's Keep mine / Use theirs are
+    not ids any more (§17.7)."""
     d = env.app("a")
+    seen = []
     env.engine.status = lambda app_dir: _v2("needs-merge", needs_merge_files=["a"])
-    env.engine.keep_mine = lambda app_dir: {"ok": True, "message": "Kept yours."}
-    assert _act(env, d, "keep-mine") == {"ok": True, "message": "Kept yours."}
-    env.engine.use_theirs = lambda app_dir: {"ok": True}
-    assert _act(env, d, "use-theirs")["reason"] == "confirm"
-    assert _act(env, d, "use-theirs", confirm=True) == {"ok": True}
+    env.engine.match = lambda app_dir: seen.append(("match", app_dir)) or {
+        "ok": True, "message": "Switched to alice's version. Your version is saved."}
+    env.engine.keep_working = lambda app_dir: seen.append(("keep", app_dir)) or {"ok": True}
+    out = _act(env, d, "match")
+    assert out["reason"] == "confirm" and "alice's version" in out["message"] and seen == []
+    assert _act(env, d, "match", confirm=True) == {
+        "ok": True, "message": "Switched to alice's version. Your version is saved."}
+    assert _act(env, d, "keep-working")["reason"] == "not-offered"
+    env.engine.status = lambda app_dir: _v2("declined", changes_files=["a.py"], changes=1)
+    assert _act(env, d, "keep-working") == {"ok": True}
+    assert seen == [("match", d), ("keep", d)]
+    for gone in ("keep-mine", "use-theirs"):
+        assert _act(env, d, gone, confirm=True)["reason"] == "unknown-action", gone
 
 
 def test_merge_claude_starts_the_planned_merge(env):
@@ -433,6 +446,45 @@ def test_merge_claude_starts_the_planned_merge(env):
     assert _act(env, d, "merge-claude")["reason"] == "nothing-to-merge"
 
 
+def test_merge_claude_passes_the_plans_base_through(env):
+    """§17.4: the engine's plan names the merge-base; `merge_job.start`
+    receives it as `base=` when it takes one, and a start (or a plan)
+    without it still works — either workstream may land first."""
+    d = env.app("a")
+    env.engine.status = lambda app_dir: _v2("needs-merge")
+    plan = {"purpose": "update", "ours": "h", "theirs": "t", "onto": "t", "base": "b0",
+            "files": ["a"]}
+    env.engine.merge_plan = lambda app_dir: dict(plan)
+    got = []
+
+    def start_with_base(app_dir, *, purpose, ours, theirs, onto=None, base=None):
+        got.append(base)
+        return "mj-b"
+
+    env.merge_job.start = start_with_base
+    assert _act(env, d, "merge-claude") == {"ok": True, "job": "mj-b", "merge": True}
+    env.engine.merge_plan = lambda app_dir: {k: v for k, v in plan.items() if k != "base"}
+    assert _act(env, d, "merge-claude")["ok"] is True
+    assert got == ["b0", None]
+
+    def start_before(app_dir, *, purpose, ours, theirs, onto=None):
+        return "mj-old"
+
+    env.merge_job.start = start_before
+    env.engine.merge_plan = lambda app_dir: dict(plan)
+    assert _act(env, d, "merge-claude") == {"ok": True, "job": "mj-old", "merge": True}
+
+    seen = {}
+
+    def start_open(app_dir, *, purpose, ours=None, theirs=None, **rest):
+        seen.update(rest)
+        return "mj-open"
+
+    env.merge_job.start = start_open  # today's real shape: **_legacy
+    assert _act(env, d, "merge-claude")["job"] == "mj-open"
+    assert seen.get("base") == "b0" and "files" not in seen
+
+
 def test_choose_decides_only_the_choice_files(env):
     """choose-mine / choose-theirs → merge_job.choose on THIS copy's choice
     job (its purposes per kind); the answer is the merge job, for the review."""
@@ -446,7 +498,7 @@ def test_choose_decides_only_the_choice_files(env):
     assert _act(env, d, "choose-mine") == {"ok": True, "job": "mj-c", "merge": True}
     assert _act(env, d, "choose-theirs")["ok"] is True
     assert chosen == [("mj-c", "mine"), ("mj-c", "theirs")]
-    assert asked[-1] == ("update", "return", "proposal")
+    assert asked[-1] == ("update", "proposal")
     # Once the job moved on, the per-file buttons are gone.
     env.engine.status = lambda app_dir: _v2("needs-merge")
     assert _act(env, d, "choose-mine")["reason"] == "not-offered"
@@ -627,6 +679,13 @@ def test_merge_accept_only_for_this_apps_job(env):
     assert _post(env, "merge/accept", path=b, job="mj")["reason"] == "unknown-job"
     assert _post(env, "merge/accept", path=a, job="nope")["reason"] == "unknown-job"
     assert _post(env, "merge/accept", path=a, job="mj") == {"ok": True, "message": "Kept."}
+    # §17.4: the copy moved since the job started — merge_job's refusal
+    # reaches the page untouched (MergeReview shows it; the panel then
+    # offers Merge with Claude again).
+    moved = {"ok": False, "reason": "stale",
+             "message": "Your copy changed meanwhile; run it again."}
+    env.merge_job.accept = lambda i: dict(moved)
+    assert _post(env, "merge/accept", path=a, job="mj") == moved
 
 
 def test_keeping_an_inbox_merge_sends_it_to_the_proposal(env):

@@ -36,7 +36,7 @@ import pytest
 from fastapi import FastAPI
 from starlette.testclient import TestClient
 
-from _contrib_gh_world import APP_PY, PAGE, claude_commit, git
+from _contrib_gh_world import APP_PY, PAGE, assert_home_invariants, claude_commit, git
 
 H = {"X-Fused": "1"}
 URL = "https://github.com/alice/sine"
@@ -192,7 +192,7 @@ def use(m: Machine):
     W.gh.forget_identity()
     refresh._reset()
     for mod, names in ((classify, ("_kind_memo", "_guarded")), (store, ("_bind_memo",)),
-                       (engine, ("_status_cache", "_taken_cache")),
+                       (engine, ("_status_cache",)),
                        (git_upstream, ("_checked", "_state", "_last_fetch")),
                        (inbox, ("_lists", "_asked")), (proposals, ("_last_refresh",))):
         for n in names:
@@ -290,12 +290,21 @@ def wait_merge(job_id, timeout=90):
 # -- triggers the page cannot make -------------------------------------------------
 
 
+def invariants(m: Machine):
+    """§17.1 I3 + I4 on a GitHub-link copy, after every step that touches it."""
+    from fused_render.contrib import classify
+
+    if classify.kind_of(m.app) == "github":
+        assert_home_invariants(m.app)
+
+
 def app_open(m: Machine):
     from fused_render import git_upstream
 
     use(m)
     res = git_upstream.sync_repo(m.app, action="Auto-update on app open", push=False)
     quiesce()
+    invariants(m)
     return res
 
 
@@ -308,6 +317,7 @@ def turn_committed(m: Machine, files, message):
     claude_commit(m.app, files, message)
     res = git_upstream.sync_repo(m.app, action="Claude turn", push=True)
     quiesce()
+    invariants(m)
     return res
 
 
@@ -413,6 +423,7 @@ def _step1_publish_and_install():
         assert p["kind"] == "github" and p["state"] == "following", p
         assert ids(out) == ["check"], ids(out)
         assert head(m.app) == tip_of()
+        invariants(m)
     no_pushes(before, "install / first open")
 
 
@@ -508,9 +519,9 @@ def _step3_propose_overlap_merge_update():
     out = page(W.bob)
     p = out["panel"]
     assert p["state"] == "needs-merge", p
-    want = {"merge-claude", "keep-mine", "use-theirs"}
+    want = {"merge-claude", "match"}
     assert want <= set(ids(out)), ids(out)
-    assert any(a["id"] == "use-theirs" and "alice" in a["label"] for a in out["actions"])
+    assert any(a["id"] == "match" and "alice" in a["label"] for a in out["actions"])
 
     r = act(W.bob, "merge-claude")
     assert r.get("ok") and r.get("job"), r
@@ -591,10 +602,19 @@ def _step4_accept_squash_return():
     git(W.bob.app, "merge-base", "--is-ancestor", tip, "HEAD")
     diff = git(W.bob.app, "diff", "--name-only", tip, "HEAD").split()
     assert diff == ["later.txt"], diff
-    first_parent = git(W.bob.app, "log", "--first-parent", "--format=%H", f"{tip}..HEAD").split()
-    assert len(first_parent) == 1, first_parent
+    # v3 (§17.2): Bob's branch holds his merge of Alice's accept; nothing of
+    # his was rewritten, only later.txt is his own beyond her tip.
+    own = git(W.bob.app, "log", "--first-parent", "--no-merges", "--format=%s",
+              f"{tip}..HEAD").splitlines()
+    # Q7 (§17.10): a squash accept leaves his sent commits in the branch's
+    # own history until it settles; nothing of Alice's is among them.
+    assert own[0] == "Claude: later idea", own
+    assert set(own[1:]) <= {"Your edits", "Claude: louder wave"}, own
     assert any(x.get("undo") and "merged your change" in x.get("text", "")
                for x in out["activity"]), out["activity"]
+    from fused_render.contrib import store
+    assert (store.get(W.bob.app) or {}).get("proposal", {}).get("landed_at")
+    invariants(W.bob)
     app_open(W.carol)
     assert head(W.carol.app) == tip
     out = page(W.carol)
@@ -651,18 +671,20 @@ def _step6_flags_off_hand_edit():
     alice_publish({"index.html": PAGE.replace("blue", "purple")}, "purple wave")
     before = refs()
     app_open(W.carol)
-    assert head(W.carol.app) == carol_head
+    # §17.3: the unsaved overlapping edit is saved as "Your edits" on her
+    # own branch whatever the switch; the overlap itself stands as a row.
+    assert git(W.carol.app, "rev-parse", "HEAD^") == carol_head
+    assert git(W.carol.app, "log", "-1", "--format=%s").strip() == "Your edits"
     assert read(W.carol.app, "index.html") == PAGE.replace("blue", "red")
     rec = store.get(W.carol.app) or {}
     assert not rec.get("needs_merge"), rec.get("needs_merge")
     rows = [r for r in git_upstream.sync_failures() if os.path.realpath(
         str(r.get("root") or r.get("path") or "")) == W.carol.app]
-    assert rows and rows[0].get("reason") in ("dirty", "diverged", "git-failed"), \
+    assert rows and rows[0].get("reason") in ("diverged", "git-failed"), \
         git_upstream.sync_failures()
     out = page(W.carol)
     assert out.get("reason") == "disabled", out
-    # The same overlap, committed by hand.
-    git(W.carol.app, "commit", "-q", "-am", "red")
+    # The same overlap, now a commit: still the row, nothing moves.
     carol_head = head(W.carol.app)
     git_upstream._checked.clear()
     app_open(W.carol)

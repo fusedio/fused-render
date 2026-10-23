@@ -93,11 +93,29 @@ if "__file__" not in globals():
     __file__ = os.path.join(sys.path[0], "ops.py")
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-# `../shared/appenv.py` is how a template asks the app about its environment
-# (SPEC PY-15): env vars only, stdlib only, no `fused_render` import. The import
-# stays LAZY at its use site so an unreachable appenv is still the "cannot tell"
-# case that must read as a refusal.
+# `../shared/` is how a template reaches the one copy of a helper it shares
+# with the app (SPEC PY-15): stdlib only, no `fused_render` import. `app_entry`
+# is imported LAZILY through this hop at its use site; `contrib_guard` (below)
+# is loaded by path.
 sys.path.insert(0, os.path.join(os.path.dirname(_HERE), "shared"))
+
+
+def _load_shared(name):
+    """`../shared/<name>.py` BY PATH (the adding-a-shared-template-utility
+    rule): a same-named module elsewhere on `sys.path` can never stand in."""
+    import importlib.util
+
+    path = os.path.join(os.path.dirname(_HERE), "shared", name + ".py")
+    spec = importlib.util.spec_from_file_location("_git_ops_" + name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# The contribution loop's push/pull/reset guard (docs/CONTRIB_LOOP.md §17.8):
+# one copy, shared with log.py and the server's classify.py. Loaded EAGERLY —
+# a guard that failed to load must not read as "not guarded".
+contrib_guard = _load_shared("contrib_guard")
 
 
 # ------------------------------------------------------------------- the bounds
@@ -1581,6 +1599,12 @@ def _pull(root):
     if code == 0:
         return _ok("pull", f"Pulled {remote}/{target} — the branch fast-forwarded.")
     if _NOT_FF in _said(out, err) or "diverge" in _said(out, err):
+        guarded = contrib_guard.guarded_who(root, _guard_run)
+        if guarded is not None:
+            # `ahead` counts no merges (§17.2), so a copy whose only commit
+            # the author lacks is a bring-in merge reaches here: it is the
+            # loop's Bring in, not a terminal, that combines them.
+            raise _Refused("follows-author", contrib_guard.pull_sentence(guarded[0]))
         # A divergence is a decision, not an error. Both automatic answers are
         # wrong to take on someone's behalf: a merge writes a commit they did not
         # ask for, a rebase rewrites commits they already have. So this stops.
@@ -1593,108 +1617,37 @@ def _pull(root):
                    with_output=True)
 
 
-# The contribution loop's push guard (docs/CONTRIB_LOOP.md §16.0 P2,
-# fused_render/contrib/classify.py — mirrored, not imported: PY-15): a copy of
-# someone else's GitHub app carries this pushurl on `origin` and the
-# `fused.kind=github` marker, and its changes leave the machine only as a
-# proposal from the app's page. Without this refusal the button would end in
-# git's "remote helper" error about a URL the user never wrote. log.py's
-# `_push_blocked` is the twin (the view's `repo.push_blocked`): same test, same
-# sentence.
-_NO_PUSH_URL = "no-push://fused"
-_GITHUB_REPO = re.compile(
-    r"^(?:git@github\.com:|(?:https?|ssh)://(?:[^@/]+@)?(?:www\.)?github\.com/)"
-    r"([A-Za-z0-9-]+/[A-Za-z0-9._-]+?)(?:\.git)?/?$", re.I)
-
-
-def _guarded_who(root):
-    """`(who, unknown)` for a copy of someone else's GitHub app (the push
-    guard on origin, or the repo-local `fused.kind=github` marker), else
-    None. `unknown` (`fused.ownerunknown`): whose app this is is not known
-    yet — if it turns out to be the user's own, it publishes as usual."""
-    code, out, _err = _run(root, "config", "--get-all", "remote.origin.pushurl")
-    guarded = code == 0 and _NO_PUSH_URL in out.decode("utf-8", "replace").split()
-    if not guarded:
-        code, out, _err = _run(root, "config", "--local", "--get", "fused.kind")
-        if not (code == 0 and out.decode("utf-8", "replace").strip() == "github"):
-            return None
-    code, out, _err = _run(root, "config", "--get", "remote.origin.url")
-    m = _GITHUB_REPO.match(out.decode("utf-8", "replace").strip()) if code == 0 else None
-    who = m.group(1) if m else "its author's version on GitHub"
-    code, out, _err = _run(root, "config", "--local", "--get", "fused.ownerunknown")
-    unknown = code == 0 and out.decode("utf-8", "replace").strip() == "true"
-    return who, unknown
+def _guard_run(root, *args):
+    """`contrib_guard`'s injected runner: this module's bounded `_run`, as
+    `(returncode, stdout_bytes)`. A guard read is never "the last command" a
+    refusal quotes (`_LAST_RUN`): the git call the op itself made is."""
+    last = getattr(_LAST_RUN, "value", None)
+    try:
+        code, out, _err = _run(root, *args)
+    finally:
+        _LAST_RUN.value = last
+    return code, out
 
 
 def _push_blocked(root):
-    """The plain sentence Push refuses with on a guarded copy, or None."""
-    guarded = _guarded_who(root)
-    if guarded is None:
-        return None
-    who, unknown = guarded
-    until = " until fused knows whether this app is yours" if unknown else ""
-    if _app_page_on():
-        return f"This app follows {who}{until}. Send your changes from its app page."
-    return f"This copy of {who} has changes of its own, and they stay on this computer{until}."
+    """The plain sentence Push refuses with on a guarded copy, or None —
+    `contrib_guard` (log.py's `repo.push_blocked` is the same call)."""
+    return contrib_guard.push_blocked(root, _guard_run)
 
 
 def _pull_blocked(root):
-    """A guarded copy never fast-forwards once it has brought the author's
-    latest in (the loop merges, never rebases — §16.0 P4), so the view's Get
-    latest runs the loop's own Bring in through the server instead
-    (`template.html`, `/api/git-upstream` get-latest); this is the sentence
-    for anything that still reaches the plain pull."""
-    guarded = _guarded_who(root)
-    if guarded is None:
-        return None
-    return (f"This app follows {guarded[0]}. Use Get latest to bring in their version; "
-            "fused combines it with your changes.")
+    """A guarded copy with commits of its own the author's version lacks
+    (`ahead > 0`) cannot fast-forward onto it; the view's Get latest then
+    posts `/api/git-upstream` get-latest (the loop's Bring in) instead, and
+    this is the sentence for anything that still reaches the plain pull.
+    With nothing of its own (`ahead == 0`) the plain pull runs (§17.8)."""
+    return contrib_guard.pull_blocked(root, _guard_run)
 
 
 def _reset_blocked(root):
-    """Reset-to-commit on a guarded copy: rewinding history under a
-    proposal loses what fused knows about it, and the loop has its own way
-    back to the author's version (with a backup and Undo)."""
-    guarded = _guarded_who(root)
-    if guarded is None:
-        return None
-    who = guarded[0]
-    where = (f"use “Use {who}'s version” on its app page" if _app_page_on()
-             else "turn on Community apps in Settings, then use “Use "
-                  f"{who}'s version” on its app page")
-    return f"This app follows {who}. To go back to their version exactly, {where}."
-
-
-def _app_page_on():
-    """Whether the app page has the panel the sentence can point at (the
-    contribution loop's A1 switch in the app's prefs.json, §16.12) — read
-    through appenv (PY-15); unreadable reads as off. log.py's twin."""
-    try:
-        import json
-
-        import appenv
-
-        with open(os.path.join(appenv.home_dir(), "prefs.json"), encoding="utf-8") as f:
-            prefs = json.load(f)
-        return isinstance(prefs, dict) and prefs.get("contrib_enabled") is True
-    except Exception:  # noqa: BLE001 — the plain sentence is always true
-        return False
-
-
-def _pull_blocked(root):
-    """A guarded copy never fast-forwards once it has brought the author's
-    latest in (the loop merges, never rebases — §16.0 P4), so the view's Get
-    latest runs the loop's own Bring in through the server instead
-    (`template.html`, `/api/git-upstream` get-latest); this is the sentence
-    for anything that still reaches the plain pull. Reset gets the same one:
-    rewinding history under a proposal loses what fused knows about it."""
-    blocked = _push_blocked(root)
-    if not blocked:
-        return None
-    who = blocked.split(" follows ", 1)[1].split(".", 1)[0] if " follows " in blocked \
-        else blocked.split("This copy of ", 1)[1].split(" has ", 1)[0]
-    return (f"This app follows {who}. Use Get latest to bring in their version; "
-            "fused combines it with your changes.")
+    """Reset-to-commit on a guarded copy is the user's own on `fused/mine`
+    and refused anywhere else (§17.8)."""
+    return contrib_guard.reset_blocked(root, _guard_run)
 
 
 def _push(root):

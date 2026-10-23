@@ -100,6 +100,8 @@ export const STEPS_FOR: Record<string, Step[]> = {
   "publish-over": [{ key: "run", label: "Publishing…" }],
   "move-aside": [{ key: "run", label: "Moving your file aside and updating…" }],
   discard: [{ key: "run", label: "Discarding…" }],
+  match: [{ key: "run", label: "Switching to the author's version…" }],
+  "keep-working": [{ key: "run", label: "Setting the proposal aside…" }],
   remix: [{ key: "run", label: "Publishing your remix…" }],
 };
 
