@@ -4185,6 +4185,9 @@ input.schedule-when-field {
 .schedule-toolbar[data-fit] {
   flex-wrap: nowrap;
   flex: 0 0 auto;
+  /* The task rows' right inset (14px, the row's own padding), so + New task never
+     touches the edge at a narrow width. */
+  padding-right: 14px;
 }
 
 /* NO `min-width: 0` on the filter group while the ladder is live: the zero
@@ -4195,6 +4198,12 @@ input.schedule-when-field {
    the group may honestly go. */
 .schedule-toolbar[data-fit] .schedule-tv-filters {
   min-width: auto;
+  /* WIDTH THE LADDER FREES GOES TO THE SEARCH, not to the empty gap the toggle's
+     auto margin would otherwise hold: the group grows into the free space (an
+     auto margin only takes what growth leaves), its controls stay at its right
+     end, and the field below grows back towards its 260 basis. */
+  flex: 1 1 auto;
+  justify-content: flex-end;
 }
 
 /* The search is the toolbar's designed slack, and it publishes two numbers:
@@ -4237,9 +4246,10 @@ input.schedule-when-field {
   --fit-natural: 140px;
   /* Opens at 260 and gives that slack up first — everything between the basis
      and the floor is spent before any word in the row folds. */
-  flex: 0 1 260px;
+  flex: 1 1 260px;
   width: auto;
   min-width: var(--fit-natural);
+  max-width: 260px;
   /* A SIZE CONTAINER, so the rule below can ask how wide this field actually
      ended up — see it for what the question is for. */
   container: tasks-search / inline-size;

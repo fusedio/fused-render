@@ -580,14 +580,14 @@ describe("pickLevelFromNeeds — the toolbar's fixed point", () => {
     }
   });
 
-  it("keeps the count and the ✕ on a folded filter chip", () => {
+  it("keeps the count on a folded filter chip", () => {
     // The badge is the only thing on a folded trigger that says a filter is ON,
-    // and the ✕ is the one way to turn it off without opening the menu — so the
+    // (clearing is a row in the menu now, so there is no ✕ to keep) — so the
     // ladder folds the WORD and the pill's padding, and nothing else.
     expect(FLAT).toContain(
       `.schedule-toolbar:is(${levelsFrom(1).join(",")}) .schedule-tv-filter-btn {`,
     );
-    for (const kept of [".schedule-tv-filter-count", ".schedule-tv-filter-x"]) {
+    for (const kept of [".schedule-tv-filter-count"]) {
       expect(SCHEDULE_CSS).not.toContain(`${kept} {\n  display: none;`);
       expect(TOOLBAR_DROPS.some((sel) => sel.includes(kept))).toBe(false);
     }
