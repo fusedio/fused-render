@@ -302,9 +302,9 @@ const ENTRIES = [
     id: "task-summary-titles",
     group: "tasks",
     section: "Titles",
-    label: "Summary-only titles",
-    description: "Keep each task's title fixed to Claude's one-line summary of the session (or its first message). Titles no longer change with your latest message or Claude's latest reply. Overrides AI recap titles.",
-    keywords: "summary title name fixed stable rename",
+    label: "Stable AI titles",
+    description: "Name each task with a short AI title for what the conversation is about. The title is refreshed every few turns as the work moves on, never with each new message or reply. Uses Haiku. Overrides AI recap titles.",
+    keywords: "summary title name fixed stable rename ai stable haiku",
   },
   {
     id: "claude-strict-mcp",

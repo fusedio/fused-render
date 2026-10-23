@@ -1529,7 +1529,7 @@ export interface Prefs {
   // (`task_recap_titles_enabled`, shell/prefs.py; opt-in, off by default).
   // Optional like `queue`: absent reads as off.
   task_recap?: { enabled: boolean };
-  // Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
+  // Stable AI titles: Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
   // shell/prefs.py; off by default). Optional: absent reads as off.
   task_summary_titles?: { enabled: boolean };
   // Lean Claude sessions (`claude_strict_mcp_enabled`, shell/prefs.py; ON by
@@ -4135,7 +4135,7 @@ export type TaskPulseTask = Pick<
   | "canvas"
   | "background_jobs"
   // What the notice titles a task by (tasks-lib `taskNoticeTitle`: the newest
-  // user message, unless renamed / summary-only) — optional, each absent with
+  // user message, unless renamed / stable AI titles) — optional, each absent with
   // its flag off or on an older server. Recap titles are deliberately NOT
   // here: the notice ignores them, the Tasks cards do not.
   | "title_mode"
