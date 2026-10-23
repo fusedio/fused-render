@@ -109,3 +109,20 @@ def test_the_endpoint_is_guarded(tmp_path):
     client = TestClient(create_app(start_dir=str(tmp_path)))
     r = client.post("/api/tasks/ports", json={"ids": ["s1"]})
     assert r.status_code in (400, 403)
+
+
+def test_ephemeral_ports_are_dropped_and_repeats_collapse(monkeypatch):
+    monkeypatch.setattr(task_ports, "_run_pid", lambda run_dir: 100)
+    monkeypatch.setattr(task_ports, "_tree", lambda pid: [pid])
+    monkeypatch.setattr(task_ports.detail, "lsof_ports",
+                        lambda pids: [8000, 49151, 49152, 50123, 65535, 5173, 8000, 5173])
+    out = task_ports.ports_for(["s1"], _Agent(), _runs(("s1", 0)))
+    assert out == {"s1": [5173, 8000, 49151]}
+
+
+def test_a_task_listening_only_on_ephemeral_ports_has_no_entry(monkeypatch):
+    monkeypatch.setattr(task_ports, "_run_pid", lambda run_dir: 100)
+    monkeypatch.setattr(task_ports, "_tree", lambda pid: [pid])
+    monkeypatch.setattr(task_ports.detail, "lsof_ports",
+                        lambda pids: [50000 + i for i in range(196)])
+    assert task_ports.ports_for(["s1"], _Agent(), _runs(("s1", 0))) == {}

@@ -25,6 +25,10 @@ from fused_render.sysmon import detail
 logger = logging.getLogger(__name__)
 
 TTL_S = 10.0
+# First port of the IANA dynamic range. Port-0 binds (test workers, daemons,
+# anything that asks the kernel for a port) land here on macOS and Linux, and a
+# user never opens one of those, so they are not reported.
+EPHEMERAL_FROM = 49152
 _CACHE: dict[str, tuple[float, list[int]]] = {}
 _LOCK = threading.Lock()
 
@@ -32,6 +36,12 @@ _LOCK = threading.Lock()
 def reset_cache() -> None:
     with _LOCK:
         _CACHE.clear()
+
+
+def _user_ports(ports) -> list[int]:
+    """`ports` without the dynamic range and without repeats (one listener
+    shows up once per address family), ascending."""
+    return sorted({int(p) for p in ports if 0 < int(p) < EPHEMERAL_FROM})
 
 
 def _run_pid(run_dir: str) -> int:
@@ -78,7 +88,7 @@ def ports_for(ids, agent, runs) -> dict[str, list[int]]:
             try:
                 pid = _live_pid(key, agent, runs)
                 if pid:
-                    ports = detail.lsof_ports(_tree(pid))
+                    ports = _user_ports(detail.lsof_ports(_tree(pid)))
             except Exception:  # noqa: BLE001 — ports are a garnish
                 logger.debug("task ports: %s failed", key, exc_info=True)
             with _LOCK:
