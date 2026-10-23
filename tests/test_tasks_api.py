@@ -5622,6 +5622,39 @@ def test_a_page_follow_up_unarchives_the_task(client, projects_dir, state_dir,
     assert "status" not in rec
 
 
+def test_a_turn_announced_on_a_pinned_session_keeps_the_pin_and_rings_nothing(
+        client, projects_dir, state_dir, monkeypatch):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    (state_dir / "triage.json").write_text(json.dumps(
+        {"sess-a": {"status": "in_progress", "at": "1"}}))
+    rung = []
+    monkeypatch.setattr(tasks_mod.tasks_watch, "notify",
+                        lambda keys: rung.append(set(keys)))
+    r = client.post("/api/tasks/running", headers={"X-Fused": "1"},
+                    json={"session_id": "sess-a"})
+    assert r.status_code == 200
+    rec = json.loads((state_dir / "triage.json").read_text())["sess-a"]
+    assert rec["status"] == "in_progress"
+    assert tasks_mod._unarchive_for_reply("sess-a", "sess-a") is False
+    assert rung == [], "nothing changed, so nothing rings"
+
+
+def test_a_held_page_follow_up_leaves_the_task_archived(
+        client, projects_dir, state_dir, monkeypatch, tmp_path):
+    _write_transcript(projects_dir, "sess-a", str(tmp_path), [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "x", T9, state=schedule.SENT, fired=T9,
+                           turn="ok", claude_session_id="sess-a",
+                           target=str(tmp_path))])
+    _filed_now(state_dir, at=time.time() + 3600)
+    monkeypatch.setattr(tasks_mod.claude_remote, "admit",
+                        lambda ids, fn, *a, **k: {"error": tasks_mod.claude_remote.HELD})
+    r = client.post("/api/tasks/sess-a/send", headers={"X-Fused": "1"},
+                    json={"text": "ping"})
+    assert r.status_code == 409
+    rec = json.loads((state_dir / "triage.json").read_text()).get("sess-a", {})
+    assert rec.get("status") == "archived"
+
+
 # -- worktrees are recorded off the transcript (Workspace scope, unit 3) --------
 # Teardown removes only worktrees the task made, and learns which from the
 # EnterWorktree tool's result and from `git worktree add .claude/worktrees/...`.

@@ -6700,7 +6700,11 @@ def _unarchive_for_reply(key: str, session_id: str = "") -> bool:
     dropped = False
     try:
         if session_id:
-            dropped = bool(sessions.clear_triage(session_id))
+            # ONLY AN ARCHIVE FILING GOES. `done` and `in_progress` are pins the
+            # reader set by hand; a reply is no reason to lift them.
+            rec = sessions._load_state("triage.json").get(session_id)
+            if isinstance(rec, dict) and rec.get("status") == _FILED:
+                dropped = bool(sessions.clear_triage(session_id))
         if not session_id or tasks_store.pending_entry(key):
             dropped = bool(tasks_store.clear_archived(key)) or dropped
     except Exception:  # noqa: BLE001 — see above
@@ -10076,11 +10080,14 @@ def api_task_send(key: str, body: dict = Body(...),
     if refusal is not None:
         return refusal
 
-    _unarchive_for_reply(key, str(task.get("session_id") or ""))
     delivered = claude_remote.admit([session], _deliver_page_send, key, task, target,
                                     session, text, model, effort, owner)
     if delivered == {"error": claude_remote.HELD}:
         return _error(claude_remote.HELD, status=409)
+    # THE FILING GOES ONLY ONCE THE MESSAGE WAS TAKEN: a held or failed send
+    # leaves an archived task archived.
+    if isinstance(delivered, dict) and not delivered.get("error"):
+        _unarchive_for_reply(key, str(task.get("session_id") or ""))
     return delivered
 
 
