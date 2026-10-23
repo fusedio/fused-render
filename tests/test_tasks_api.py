@@ -5563,3 +5563,55 @@ def test_a_pending_only_task_in_a_gone_folder_is_not_cancelled(client, tmp_path,
     assert row["status"] != "archived"
     states = {e["id"]: e["state"] for e in schedule.list_entries()}
     assert states["e-only"] == schedule.PENDING
+
+
+# -- replying to an archived task un-archives it (Workspace scope, exception 2) --
+# The revival rule above waits for a message that RAN after the filing. A reply
+# is the reader saying "I am back", so the sender's own announcement files the
+# task back the moment the turn starts, and the page's follow-up route does too.
+
+
+def test_a_turn_announced_on_an_archived_session_unarchives_it(
+        client, projects_dir, state_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    # Stamped far ahead: no message could have run after it, so the revival
+    # rule alone would leave the task in Archive.
+    _filed_now(state_dir, at=time.time() + 3600)
+    assert _by_key(client)["sess-a"]["status"] == "archived"
+
+    r = client.post("/api/tasks/running", headers={"X-Fused": "1"},
+                    json={"session_id": "sess-a", "text": "one more thing"})
+    assert r.status_code == 200
+    rec = json.loads((state_dir / "triage.json").read_text()).get("sess-a", {})
+    assert "status" not in rec, "the filing is dropped by the reply itself"
+    assert _by_key(client)["sess-a"]["status"] != "archived"
+
+
+def test_a_turn_announced_on_a_live_session_touches_no_triage(
+        client, projects_dir, state_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("hi", T9)])
+    (state_dir / "triage.json").write_text(
+        json.dumps({"sess-a": {"note": "keep me"}}))
+    client.post("/api/tasks/running", headers={"X-Fused": "1"},
+                json={"session_id": "sess-a"})
+    rec = json.loads((state_dir / "triage.json").read_text())["sess-a"]
+    assert rec == {"note": "keep me"}
+
+
+def test_a_page_follow_up_unarchives_the_task(client, projects_dir, state_dir,
+                                              monkeypatch, tmp_path):
+    _write_transcript(projects_dir, "sess-a", str(tmp_path), [_user("hi", T9)])
+    _seed_schedule([_entry("e1", "x", T9, state=schedule.SENT, fired=T9,
+                           turn="ok", claude_session_id="sess-a",
+                           target=str(tmp_path))])
+    _filed_now(state_dir, at=time.time() + 3600)
+    assert _by_key(client)["sess-a"]["status"] == "archived"
+    monkeypatch.setattr(tasks_mod, "_deliver_page_send",
+                        lambda *a, **k: {"queued": False, "key": "sess-a"})
+    monkeypatch.setattr(tasks_mod.claude_remote, "admit",
+                        lambda ids, fn, *a, **k: fn(*a, **k))
+    r = client.post("/api/tasks/sess-a/send", headers={"X-Fused": "1"},
+                    json={"text": "ping"})
+    assert r.status_code == 200, r.text
+    rec = json.loads((state_dir / "triage.json").read_text()).get("sess-a", {})
+    assert "status" not in rec

@@ -6552,6 +6552,34 @@ async def api_tasks_pr_status(body: PrStatusBody,
     return await run_in_threadpool(pr_status.fetch_statuses, body.refs[:100])
 
 
+def _unarchive_for_reply(key: str, session_id: str = "") -> bool:
+    """A reply to an archived task files it back (Workspace scope, exception 2).
+
+    The revival rule (`_revived`) only notices a message that RAN after the
+    filing, which is a poll or two behind the reader typing, and a turn that was
+    already in flight when the task was filed never revives it at all. So the
+    two doors a reply comes through (the sender's own `POST /api/tasks/running`
+    and the page's follow-up route) say it outright: drop the filing now.
+
+    Only the filing goes, exactly as `api_task_unarchive` does it — a note, a
+    tag or a read mark on the session stays. True when there was one to drop;
+    best-effort, since a filing we could not drop costs one poll of the row
+    still reading Archive and is never worth failing the send over."""
+    dropped = False
+    try:
+        if session_id:
+            dropped = bool(sessions.clear_triage(session_id))
+        if not session_id or tasks_store.pending_entry(key):
+            dropped = bool(tasks_store.clear_archived(key)) or dropped
+    except Exception:  # noqa: BLE001 — see above
+        logger.debug("reply: could not drop the filing of %s", key,
+                     exc_info=True)
+        return False
+    if dropped:
+        tasks_watch.notify({key, session_id} - {""})
+    return dropped
+
+
 class RunningPatch(BaseModel):
     session_id: str
     # The client's `Date.now()` at send (`run-controller.ts` `noteTurnRunning`).
@@ -6614,6 +6642,8 @@ def api_task_running(patch: RunningPatch,
         raise HTTPException(status_code=400, detail="missing session_id")
     tasks_watch.mark_running(session_id, turn=patch.turn,
                              text=patch.text.strip(), file=patch.file.strip())
+    # A turn starting on an archived task is a reply: the filing goes now.
+    _unarchive_for_reply(session_id, session_id)
     return {"ok": True, "session_id": session_id}
 
 
@@ -9836,6 +9866,9 @@ def api_task_send(key: str, body: dict = Body(...),
     if task is None:
         return _error(f"no task with key {key!r}", status=404)
     session = str(task.get("session_id") or key)
+    # `_collect` hands back the bare task: its project and target are `_place`'s
+    # answers, and without them every follow-up read "no target to resume in".
+    _place(task)
     target = str(task.get("target") or task.get("project") or "")
     if not target:
         return _error("this task has no target to resume in", status=409)
@@ -9847,6 +9880,7 @@ def api_task_send(key: str, body: dict = Body(...),
     if refusal is not None:
         return refusal
 
+    _unarchive_for_reply(key, str(task.get("session_id") or ""))
     delivered = claude_remote.admit([session], _deliver_page_send, key, task, target,
                                     session, text, model, effort, owner)
     if delivered == {"error": claude_remote.HELD}:
