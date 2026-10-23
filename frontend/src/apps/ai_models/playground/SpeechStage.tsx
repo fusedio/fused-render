@@ -87,12 +87,20 @@ export function SpeechStage({ model, entry, transcribeModel }: {
   model: string; entry: AiCatalogModel; transcribeModel?: string;
 }) {
   const mode: VoiceMode = entry.voiceMode ?? "preset";
+  // A style line exists for design and for most preset models; Kokoro has none.
+  const styled = mode !== "clone" && !(mode === "preset" && entry.instructable === false);
   const voices = entry.voices ?? [];
   const languages = entry.languages ?? [];
 
   const [text, setText] = useState(() => readParam("prompt") ?? STARTERS[0].prompt);
   const [voice, setVoice] = useState(() => readParam("voice") ?? "");
   const [language, setLanguage] = useState(() => readParam("lang") ?? AUTO);
+  // A model with no language list (Kokoro) takes none: a `lang` left over from a
+  // Qwen session must neither show the field nor be sent.
+  const spoken = languages.length > 0 ? language : AUTO;
+  useEffect(() => {
+    if (languages.length === 0) setLanguage(AUTO);
+  }, [languages.length]);
   const [instruct, setInstruct] = useState(() => readParam("instruct") ?? (mode === "design"
     ? STARTERS[0].voice : "Speak clearly, warmly, and at a natural pace."));
   const [refAudio, setRefAudio] = useState<string | null>(() => readParam("ref"));
@@ -157,14 +165,14 @@ export function SpeechStage({ model, entry, transcribeModel }: {
       writeParams({
         prompt: text ? text : null,
         voice: mode === "preset" && voice ? voice : null,
-        lang: language !== AUTO ? language : null,
+        lang: spoken !== AUTO ? spoken : null,
         ref: mode === "clone" && refAudio ? refAudio : null,
         reftext: mode === "clone" && refText.trim() ? refText : null,
-        instruct: mode !== "clone" && instruct.trim() ? instruct : null,
+        instruct: styled && instruct.trim() ? instruct : null,
       });
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [text, voice, language, refAudio, refText, instruct, mode]);
+  }, [text, voice, spoken, refAudio, refText, instruct, mode, styled]);
 
   const { ref: boxRef } = useAutoGrow(text);
 
@@ -207,9 +215,9 @@ export function SpeechStage({ model, entry, transcribeModel }: {
     const request: SpeechRequest = {
       text: wanted,
       model,
-      ...(language !== AUTO ? { language } : {}),
+      ...(spoken !== AUTO ? { language: spoken } : {}),
       ...(mode === "preset" && voice ? { voice } : {}),
-      ...(mode !== "clone" && style.trim() ? { instruct: style.trim() } : {}),
+      ...(styled && style.trim() ? { instruct: style.trim() } : {}),
       ...(mode === "clone" && refAudio ? { refAudio, refText: refText.trim() } : {}),
     };
     setStarting(true);
@@ -346,7 +354,7 @@ export function SpeechStage({ model, entry, transcribeModel }: {
             <div>
               <strong>{mode === "design" ? "Designed voice" : voice ? nameOf(voice) : voices.length ? nameOf(voices[0]) : "Default voice"}</strong>
               <p className="text-muted-foreground text-sm">
-                {mode === "design" ? instruct.trim() || STARTERS[0].voice : instruct.trim() || "Natural delivery"}
+                {mode === "design" ? instruct.trim() || STARTERS[0].voice : !styled ? "Preset voice" : instruct.trim() || "Natural delivery"}
               </p>
             </div>
             <button type="button" className="pg-ghost-btn" aria-expanded={configOpen} onClick={toggleConfig}>
@@ -366,9 +374,11 @@ export function SpeechStage({ model, entry, transcribeModel }: {
                   ...(voice && !voices.includes(voice) ? [{ value: voice, label: nameOf(voice) }] : []),
                 ]} />
               </RailField>
-              <RailField label="Delivery">
-                <Input value={instruct} placeholder="Natural delivery" onChange={(e) => setInstruct(e.target.value)} />
-              </RailField>
+              {styled && (
+                <RailField label="Delivery">
+                  <Input value={instruct} placeholder="Natural delivery" onChange={(e) => setInstruct(e.target.value)} />
+                </RailField>
+              )}
             </>
           )}
           {mode === "design" && (
@@ -377,13 +387,16 @@ export function SpeechStage({ model, entry, transcribeModel }: {
                 placeholder={STARTERS[0].voice} onChange={(e) => setInstruct(e.target.value)} />
             </RailField>
           )}
-          <RailField label="Language" hint="Auto finds the language from the text.">
-            <RailSelect aria-label="Language" value={language} onValueChange={setLanguage} options={[
-              { value: AUTO, label: "Auto" },
-              ...languages.map((l) => ({ value: l, label: nameOf(l) })),
-              ...(language !== AUTO && !languages.includes(language) ? [{ value: language, label: nameOf(language) }] : []),
-            ]} />
-          </RailField>
+          {/* A model that lists no languages (Kokoro picks it from the voice) has nothing to choose. */}
+          {languages.length > 0 && (
+            <RailField label="Language" hint="Auto finds the language from the text.">
+              <RailSelect aria-label="Language" value={language} onValueChange={setLanguage} options={[
+                { value: AUTO, label: "Auto" },
+                ...languages.map((l) => ({ value: l, label: nameOf(l) })),
+                ...(language !== AUTO && !languages.includes(language) ? [{ value: language, label: nameOf(language) }] : []),
+              ]} />
+            </RailField>
+          )}
         </ConfigPanel>
 
         {!busy && <StarterCards samples={STARTERS} onPick={(sample) => {

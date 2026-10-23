@@ -137,6 +137,11 @@ def test_every_registered_runner_appears_in_loaders():
         repo_id="x/y", names={"config.json", "model.safetensors"},
         dirnames={formats.QWEN3_TTS_TOKENIZER_DIR},
         config={"model_type": formats.QWEN3_TTS_MODEL_TYPE}, torch_weights=True))
+    # Kokoro on sherpa-onnx: three root files plus the espeak-ng data folder.
+    seen |= set(formats.loaders(
+        repo_id="x/y", names=set(formats.KOKORO_FILES) | {"lexicon-us-en.txt"},
+        dirnames={formats.KOKORO_DATA_DIR, formats.KOKORO_DICT_DIR}, config={},
+        torch_weights=False, onnx_weights=True))
     missing = _codes() - seen
     assert not missing, (
         f"{sorted(missing)} are registered runners that `loaders()` never "
@@ -1411,3 +1416,70 @@ def test_speech_options_auto_bypasses_the_language_catalog():
     assert formats.speech_options("org/tts", {**PRESET, "languages": ["English"]},
                                   {"language": "AUTO"}) == {
         "voice": "aiden", "language": "auto"}
+
+
+# -- Kokoro on sherpa-onnx (`sherpa-tts`) ---------------------------------------
+
+KOKORO_NAMES = {"model.onnx", "voices.bin", "tokens.txt", "lexicon-us-en.txt", "LICENSE"}
+
+
+def test_kokoro_voice_table_has_one_name_per_voices_bin_row():
+    # voices.bin is 103 voices x 510 style rows x 256 float32 = 53,790,720 bytes
+    # (the repo file is 53.8 MB); the count rests on that arithmetic, not on a call.
+    assert 53790720 == 103 * 510 * 256 * 4
+    assert len(formats.KOKORO_VOICES) == 103
+    assert len(set(formats.KOKORO_VOICES)) == 103
+    # sid order, from the sherpa-onnx v1.1 table: 3 English, then Chinese.
+    assert formats.KOKORO_VOICES[:3] == ("af_maple", "af_sol", "bf_vale")
+    assert formats.KOKORO_VOICES[3] == "zf_001" and formats.KOKORO_VOICES[-1] == "zm_100"
+
+
+def test_a_kokoro_snapshot_needs_its_three_files_and_espeak_data():
+    assert formats.is_kokoro_snapshot(KOKORO_NAMES, {"espeak-ng-data", "dict"})
+    assert not formats.is_kokoro_snapshot(KOKORO_NAMES, {"dict"})
+    # `load` hands sherpa-onnx `dict/`; a claim without it would die in the engine.
+    assert not formats.is_kokoro_snapshot(KOKORO_NAMES, {"espeak-ng-data"})
+    assert not formats.is_kokoro_snapshot(KOKORO_NAMES - {"voices.bin"}, {"espeak-ng-data"})
+    assert not formats.is_kokoro_snapshot({"model.onnx"}, {"espeak-ng-data"})
+    # `load` passes the lexicons to sherpa-onnx; an export with none is not Kokoro's.
+    assert not formats.is_kokoro_snapshot(
+        KOKORO_NAMES - {"lexicon-us-en.txt"}, {"espeak-ng-data", "dict"})
+    assert formats.is_kokoro_snapshot(
+        (KOKORO_NAMES - {"lexicon-us-en.txt"}) | {"lexicon-zh.txt"}, {"espeak-ng-data", "dict"})
+
+
+def test_kokoro_claims_only_the_sherpa_tts_runner():
+    kwargs = dict(repo_id="csukuangfj/kokoro-multi-lang-v1_1", names=KOKORO_NAMES,
+                  dirnames={"espeak-ng-data", "dict"}, config={}, torch_weights=False,
+                  onnx_weights=True)
+    assert formats.loaders(**kwargs) == ("sherpa-tts",)
+    assert formats.loaders(**{**kwargs, "dirnames": {"dict"}}) != ("sherpa-tts",)
+    assert "sherpa-tts" in formats.DECISIVE
+
+
+def test_kokoro_traits_are_preset_voices_without_a_style_line():
+    traits = formats.kokoro_traits()
+    assert traits["mode"] == "preset"
+    assert traits["voices"] == list(formats.KOKORO_VOICES)
+    # No language input on the engine: an empty list hides the selector.
+    assert traits["languages"] == []
+    assert traits["instructable"] is False
+    assert formats.kokoro_traits_from_names(KOKORO_NAMES, {"espeak-ng-data", "dict"}) == traits
+    assert formats.kokoro_traits_from_names({"model.onnx"}, set()) is None
+
+
+def test_speech_options_refuse_a_style_line_the_model_has_no_use_for():
+    traits = formats.kokoro_traits()
+    with pytest.raises(ValueError) as error:
+        formats.speech_options("org/kokoro", traits, {"instruct": "calm"})
+    assert str(error.value) == "org/kokoro has no style line; it takes 'voice', not 'instruct'"
+    # Qwen3 preset traits carry no `instructable` key and keep their style line.
+    assert formats.speech_options("org/q", PRESET, {"instruct": "calm"})["instruct"] == "calm"
+
+
+def test_speech_options_default_a_kokoro_voice_and_accept_either_language():
+    resolved = formats.speech_options("org/kokoro", formats.kokoro_traits(), {})
+    assert resolved == {"voice": "af_maple", "language": "auto"}
+    chosen = formats.speech_options("org/kokoro", formats.kokoro_traits(),
+                                    {"voice": "ZF_001", "language": "Chinese"})
+    assert chosen == {"voice": "zf_001", "language": "chinese"}
