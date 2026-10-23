@@ -222,3 +222,11 @@ test("the close x overlays the corner: absolute, no layout space in the head", (
   expect(css).toMatch(/\.ws-card-facts \{[^}]*max-width:\s*65%/);
   expect(css).toMatch(/\.prefs-page\.schedule-page\[data-view="workspace"\] > \*/);
 });
+
+test("the list is the scroller: root fills the pane, list scrolls inside it", () => {
+  const css = require("node:fs").readFileSync(require("node:path").join(import.meta.dir, "../styles/task-workspace.css"), "utf8") as string;
+  expect(/\.schedule-page \.schedule-main > \.ws-root \{([^}]*)\}/.exec(css)![1]).toMatch(/min-height:\s*0/);
+  const list = /\.ws-root > \.ws-list \{([^}]*)\}/.exec(css)![1];
+  expect(list).toMatch(/overflow-y:\s*auto/);
+  expect(list).toMatch(/min-height:\s*0/);
+});

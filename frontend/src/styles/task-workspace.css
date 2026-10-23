@@ -8,6 +8,21 @@
   flex-direction: column;
   min-height: 0;
 }
+/* The page is overflow: hidden and every view owns its scroller, like
+   `.schedule-tv-tree` (schedule.css): the root fills what the toolbar leaves
+   and the list scrolls inside it. The undo toast and search palette are fixed,
+   so they stay outside the scrolling element. */
+.schedule-page .schedule-main > .ws-root {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.ws-root > .ws-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--sb-thumb) transparent;
+}
 .ws-list {
   list-style: none;
   margin: 0;
