@@ -36,7 +36,7 @@ import pytest
 from fastapi import FastAPI
 from starlette.testclient import TestClient
 
-from _contrib_gh_world import APP_PY, PAGE, claude_commit, git
+from _contrib_gh_world import APP_PY, PAGE, assert_home_invariants, claude_commit, git
 
 H = {"X-Fused": "1"}
 URL = "https://github.com/alice/sine"
@@ -290,12 +290,21 @@ def wait_merge(job_id, timeout=90):
 # -- triggers the page cannot make -------------------------------------------------
 
 
+def invariants(m: Machine):
+    """§17.1 I3 + I4 on a GitHub-link copy, after every step that touches it."""
+    from fused_render.contrib import classify
+
+    if classify.kind_of(m.app) == "github":
+        assert_home_invariants(m.app)
+
+
 def app_open(m: Machine):
     from fused_render import git_upstream
 
     use(m)
     res = git_upstream.sync_repo(m.app, action="Auto-update on app open", push=False)
     quiesce()
+    invariants(m)
     return res
 
 
@@ -308,6 +317,7 @@ def turn_committed(m: Machine, files, message):
     claude_commit(m.app, files, message)
     res = git_upstream.sync_repo(m.app, action="Claude turn", push=True)
     quiesce()
+    invariants(m)
     return res
 
 
@@ -413,6 +423,7 @@ def _step1_publish_and_install():
         assert p["kind"] == "github" and p["state"] == "following", p
         assert ids(out) == ["check"], ids(out)
         assert head(m.app) == tip_of()
+        invariants(m)
     no_pushes(before, "install / first open")
 
 
@@ -508,9 +519,9 @@ def _step3_propose_overlap_merge_update():
     out = page(W.bob)
     p = out["panel"]
     assert p["state"] == "needs-merge", p
-    want = {"merge-claude", "keep-mine", "use-theirs"}
+    want = {"merge-claude", "match"}
     assert want <= set(ids(out)), ids(out)
-    assert any(a["id"] == "use-theirs" and "alice" in a["label"] for a in out["actions"])
+    assert any(a["id"] == "match" and "alice" in a["label"] for a in out["actions"])
 
     r = act(W.bob, "merge-claude")
     assert r.get("ok") and r.get("job"), r
@@ -591,10 +602,19 @@ def _step4_accept_squash_return():
     git(W.bob.app, "merge-base", "--is-ancestor", tip, "HEAD")
     diff = git(W.bob.app, "diff", "--name-only", tip, "HEAD").split()
     assert diff == ["later.txt"], diff
-    first_parent = git(W.bob.app, "log", "--first-parent", "--format=%H", f"{tip}..HEAD").split()
-    assert len(first_parent) == 1, first_parent
+    # v3 (§17.2): Bob's branch holds his merge of Alice's accept; nothing of
+    # his was rewritten, only later.txt is his own beyond her tip.
+    own = git(W.bob.app, "log", "--first-parent", "--no-merges", "--format=%s",
+              f"{tip}..HEAD").splitlines()
+    # Q7 (§17.10): a squash accept leaves his sent commits in the branch's
+    # own history until it settles; nothing of Alice's is among them.
+    assert own[0] == "Claude: later idea", own
+    assert set(own[1:]) <= {"Your edits", "Claude: louder wave"}, own
     assert any(x.get("undo") and "merged your change" in x.get("text", "")
                for x in out["activity"]), out["activity"]
+    from fused_render.contrib import store
+    assert (store.get(W.bob.app) or {}).get("proposal", {}).get("landed_at")
+    invariants(W.bob)
     app_open(W.carol)
     assert head(W.carol.app) == tip
     out = page(W.carol)

@@ -67,17 +67,17 @@ class World(types.SimpleNamespace):
     pass
 
 
-def make_world(tmp_path, monkeypatch) -> World:
-    from fused_render.contrib import flags, follow, gh, store
+def make_world(tmp_path, monkeypatch, *, home_branch: bool = True) -> World:
+    """`home_branch` (v3, §17.6): Bob's clone is on `fused/mine` like a real
+    install leaves it; False keeps the v2 shape (HEAD on main)."""
+    from fused_render.contrib import follow, gh, store
 
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
     monkeypatch.setenv(gh.FAKE_ENV, str(tmp_path / "github"))
     fake = gh.fake()
     for k, v in fake.git_env().items():
         monkeypatch.setenv(k, v)
-    monkeypatch.setattr(flags, "_raw", lambda: dict.fromkeys(
-        ("sources", "changes", "inbox", "loop", "remix"), True))
-    monkeypatch.setattr(flags, "effective", lambda raw: dict(raw))  # five phases, as faked
+    write_prefs(contrib_enabled=True, contrib_remix_enabled=True)  # §17.9: no flag fakes
     gh.forget_identity()
     monkeypatch.setattr(gh, "_FORK_POLL_STEP_S", 0.01)
 
@@ -90,8 +90,13 @@ def make_world(tmp_path, monkeypatch) -> World:
     apps.mkdir()
     app = str(apps / "sine")
     git(apps, "clone", "-q", "https://github.com/alice/sine", app)
+    if home_branch:
+        on_home_branch(app)
     rec = store.new_record("github", repo="alice/sine", branch="main", classified_by="install")
     store.put(app, rec)
+    # The copy id an install's first settle stamps (`classify._stamp_copy`):
+    # what keeps the record bound while its origin is re-pointed (§17.6).
+    git(app, "config", "--local", "fused.copyid", rec["copy_id"])
     f = follow.for_record(rec)
     got = follow.fetch(app, f)
     assert (got[0] if isinstance(got, tuple) else got), "follow fetch through the fake failed"
@@ -102,3 +107,49 @@ def make_world(tmp_path, monkeypatch) -> World:
     if hasattr(classify, "apply_identity"):
         classify.apply_identity(app, block=True)
     return World(fake=fake, repo=repo, app=store.key(app), gh=gh, store=store)
+
+
+# ------------------------------------------------- v3 (§17) helpers — WS-2
+
+
+HOME = "fused/mine"
+
+
+def write_prefs(**values) -> None:
+    """Merge `values` into this test's prefs.json (`FUSED_RENDER_HOME` set
+    first) — how a test turns the contribution loop on (§17.9), never a
+    monkeypatch of `flags`."""
+    from fused_render.shell import prefs, storage
+    path = prefs._path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    cur = prefs.read_prefs()
+    cur.update(values)
+    # Atomic replace, as `prefs.write_pref` does: a new inode every write, so
+    # `flags._raw`'s stat memo always sees it (a same-size rewrite too).
+    storage.write_json(path, cur)
+
+
+def on_home_branch(root, branch: str = "main") -> None:
+    """What an install does right after the clone (§17.6): HEAD on
+    `fused/mine` at the clone's commit, tracking `origin/<branch>`;
+    `refs/heads/<branch>` stays the fetch-only mirror."""
+    git(root, "switch", "-q", "-c", HOME)
+    git(root, "config", f"branch.{HOME}.remote", "origin")
+    git(root, "config", f"branch.{HOME}.merge", f"refs/heads/{branch}")
+
+
+def mirror_main(root, branch: str = "main") -> str:
+    """What every sync does after the fetch (I3): `refs/heads/<branch>` set
+    to `refs/remotes/origin/<branch>` as a ref update (never checked out).
+    Answers the tip."""
+    tip = git(root, "rev-parse", f"refs/remotes/origin/{branch}")
+    git(root, "update-ref", f"refs/heads/{branch}", tip)
+    return tip
+
+
+def assert_home_invariants(root, branch: str = "main") -> None:
+    """I3 + I4 (§17.1): the mirror equals origin's ref and HEAD is
+    `fused/mine`."""
+    assert git(root, "symbolic-ref", "HEAD") == f"refs/heads/{HOME}", "I4: HEAD off fused/mine"
+    assert git(root, "rev-parse", f"refs/heads/{branch}") == \
+        git(root, "rev-parse", f"refs/remotes/origin/{branch}"), "I3: mirror != origin"

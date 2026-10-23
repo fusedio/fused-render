@@ -172,27 +172,24 @@ def _check_return(kind, tip, *, method):
     assert "merged your change" in p["sentence"], p
     git(W.bob.app, "merge-base", "--is-ancestor", tip, "HEAD")
     diff = git(W.bob.app, "diff", "--name-only", tip, "HEAD").split()
+    # §17.10 Q7: a squash/rebase accept never puts Bob's own commit id into
+    # main, so while later work keeps the branch off main his sent commit
+    # stays in its first-parent history (the next PR's diff is still only
+    # the later work). A merge-commit accept has his id in main already.
+    sent = [] if method == "merge" else ["Claude: louder wave"]
     if kind == "committed":
         assert diff == ["later.txt"], diff
-        assert first_parent_subjects(W.bob.app, tip) == ["Claude: later idea"]
+        assert first_parent_subjects(W.bob.app, tip) == ["Claude: later idea"] + sent
         assert "propose" in ids(out), ids(out)
     elif kind == "dirty-on-top":
-        # An unsaved edit on the proposed file. A merge commit keeps Bob's
-        # own commit in the author's history, so the file reads the same on
-        # both sides and the edit rides along, still unsaved. A squash or
-        # rebase re-creates the change, so the author's latest "changes"
-        # that file: row 6 saves the edit as "Your edits" first, and the
-        # return keeps it as a commit on top. Either way nothing is lost
-        # and it is still Bob's to propose.
+        # An unsaved edit on the proposed file. Whatever the accept method,
+        # the merged proposal's head is the merge base (§17.3), so the file
+        # reads the same on both sides, the copy settles onto the tip and
+        # the edit rides along, still unsaved and still Bob's to propose.
         assert "return 7" in read(W.bob.app, "app.py")
         assert "propose" in ids(out), ids(out)
-        if method == "merge":
-            assert diff == [] and dirty_paths(W.bob.app) == ["app.py"], (diff, dirty_paths(W.bob.app))
-            assert first_parent_subjects(W.bob.app, tip) == []
-        else:
-            assert diff == ["app.py"] and dirty_paths(W.bob.app) == [], (diff, dirty_paths(W.bob.app))
-            assert first_parent_subjects(W.bob.app, tip) == ["Your edits"]
-            assert any("Saved your edit" in x["text"] for x in out["activity"]), out["activity"]
+        assert diff == [] and dirty_paths(W.bob.app) == ["app.py"], (diff, dirty_paths(W.bob.app))
+        assert first_parent_subjects(W.bob.app, tip) == []
     else:
         assert diff == [], diff
         assert first_parent_subjects(W.bob.app, tip) == []
@@ -256,7 +253,7 @@ def test_second_proposal_after_a_return(world):
     assert pr_row(n2)["head_branch"] != pr_row(n1)["head_branch"]
     from fused_render.contrib import store
     rec = store.get(W.bob.app)
-    assert rec["proposal"]["number"] == n2 and not rec["proposal"].get("returned_at"), rec["proposal"]
+    assert rec["proposal"]["number"] == n2 and not rec["proposal"].get("landed_at"), rec["proposal"]
     tip2 = accept_in_fused(n2, method="rebase")
     assert tip2 != tip1
     app_open(W.bob)
@@ -380,7 +377,8 @@ def test_update_after_maintainer_edit_then_accept(world):
     out = page(W.bob)
     assert out["panel"]["state"] == "merged", out["panel"]
     assert git(W.bob.app, "diff", "--name-only", tip, "HEAD").split() == ["even_later.txt"]
-    assert first_parent_subjects(W.bob.app, tip) == ["Claude: even later"]
+    assert first_parent_subjects(W.bob.app, tip) == [  # Q7: a rebase accept, later work kept
+        "Claude: even later", "Claude: later idea", "Claude: louder"]
     app_open(W.alice)
     alice_clean()
 
@@ -527,7 +525,7 @@ def test_two_senders_on_the_same_line(world):
     out = page(W.carol)
     p = out["panel"]
     assert p["state"] == "needs-merge", p
-    assert {"merge-claude", "keep-mine", "use-theirs"} <= set(ids(out)), ids(out)
+    assert {"merge-claude", "match"} <= set(ids(out)), ids(out)
     r = act(W.carol, "merge-claude")
     assert r.get("ok") and r.get("job"), r
     j = wait_merge(r["job"])
@@ -588,9 +586,11 @@ def test_merged_then_taken_back_then_undo_and_propose_again(world):
     app_open(W.bob)
     out = page(W.bob)
     p = out["panel"]
-    assert p["state"] == "merged" and "took it back" in p["sentence"], p
+    # v3: no take-back detection; Alice's revert is just her latest, and the
+    # merged line's Undo brings Bob's version back.
+    assert p["state"] == "merged" and "merged your change" in p["sentence"], p
     assert head(W.bob.app) == tip and read(W.bob.app, "app.py") == APP_PY
-    line = next(x for x in out["activity"] if x.get("undo") and "took it back" in x["text"])
+    line = next(x for x in out["activity"] if x.get("undo") and "merged your change" in x["text"])
     r = post(W.bob, "restore", id=line["id"])
     assert r.get("ok"), r
     assert "return 3" in read(W.bob.app, "app.py")
@@ -771,32 +771,58 @@ def test_delete_versus_change_is_a_choice(world):
     assert out["panel"]["state"] == "changes" and "propose" in ids(out), out["panel"]
 
 
-def test_keep_mine_then_bring_in_later(world):
+def test_overlap_then_match_then_undo(world):
+    """An overlap stands until Bob decides: nothing moves on its own; Use
+    alice's version (match) lands him on her tip with his version saved;
+    Undo brings his back."""
     setup_world()
     turn_committed(W.bob, {"app.py": louder(3)}, "louder")
     alice_publish({"app.py": louder(5)}, "five")
     app_open(W.bob)
     out = page(W.bob)
     assert out["panel"]["state"] == "needs-merge", out["panel"]
-    r = act(W.bob, "keep-mine")
-    assert r.get("ok"), r
     bob_head = head(W.bob.app)
-    out = page(W.bob)
-    assert out["panel"]["state"] == "changes" and "bring-in" in ids(out), (out["panel"], ids(out))
     app_open(W.bob)
-    assert head(W.bob.app) == bob_head, "Keep mine was overridden by the next open"
-    # A newer tip from Alice is offered again.
+    assert head(W.bob.app) == bob_head, "an overlap moved the copy on its own"
+    # A newer tip from Alice: still an overlap, still nothing moves.
     alice_publish({"index.html": PAGE.replace("blue", "green")}, "green")
     app_open(W.bob)
     out = page(W.bob)
     assert out["panel"]["state"] == "needs-merge", out["panel"]
-    r = act(W.bob, "use-theirs", confirm=True)
+    assert "match" in ids(out), ids(out)
+    r = act(W.bob, "match", confirm=True)
     assert r.get("ok"), r
     assert head(W.bob.app) == tip_of() and read(W.bob.app, "app.py") == louder(5)
     out = page(W.bob)
     line = next(x for x in out["activity"] if x.get("undo") and "alice" in x["text"])
     r = post(W.bob, "restore", id=line["id"])
     assert r.get("ok") and head(W.bob.app) == bob_head, r
+
+
+def test_undo_of_an_automatic_bring_in_holds_until_the_author_moves(world):
+    """§17.2: Undo of an automatic bring-in is an answer; the next open does
+    not redo it. Bring in (the button) does, and so does a newer tip."""
+    setup_world()
+    turn_committed(W.bob, {"app.py": louder(3)}, "louder")
+    bob_mine = head(W.bob.app)
+    alice_publish({"index.html": PAGE.replace("blue", "green")}, "green")
+    app_open(W.bob)
+    assert read(W.bob.app, "index.html") == PAGE.replace("blue", "green")
+    out = page(W.bob)
+    line = next(x for x in out["activity"] if x.get("undo") and "alice" in x["text"])
+    r = post(W.bob, "restore", id=line["id"])
+    assert r.get("ok"), r
+    assert head(W.bob.app) == bob_mine
+    app_open(W.bob)
+    assert head(W.bob.app) == bob_mine, "auto-sync re-merged right after Undo"
+    out = page(W.bob)
+    assert "bring-in" in ids(out) and "waiting" in out["panel"]["sentence"], out["panel"]
+    # A newer tip from Alice lifts the hold.
+    alice_publish({"README.md": "hi\n"}, "readme")
+    app_open(W.bob)
+    assert read(W.bob.app, "index.html") == PAGE.replace("blue", "green")
+    assert read(W.bob.app, "README.md") == "hi\n"
+    assert read(W.bob.app, "app.py") == louder(3)
 
 
 # == merge commits on GitHub vs a copy whose history drifted ===========================
@@ -826,7 +852,9 @@ def test_merge_commit_when_the_senders_local_ids_were_rewritten(world):
     assert out["panel"]["state"] == "merged", out["panel"]
     git(W.bob.app, "merge-base", "--is-ancestor", tip, "HEAD")
     assert git(W.bob.app, "diff", "--name-only", tip, "HEAD").split() == ["later.txt"]
-    assert first_parent_subjects(W.bob.app, tip) == ["Claude: later idea"]
+    # The amended commit is not the id GitHub merged, so (Q7) it stays in the
+    # branch's history while later work keeps the branch off main.
+    assert first_parent_subjects(W.bob.app, tip) == ["Claude: later idea", "Claude: louder"]
     assert "return 3" in read(W.bob.app, "app.py")
     no_pushes(before, "the return")
     app_open(W.alice)
