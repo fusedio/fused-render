@@ -312,6 +312,17 @@ export const getCanvasPreviews = (env: WorkbenchEnv, ids: string[]) =>
 export const createCanvas = (env: WorkbenchEnv, name: string) =>
   postJson<{ ok: boolean; name: string }>("/api/canvases/create", { name, env });
 
+/** Delete the canvas on the server AND this machine (the embed's "Delete
+ *  canvas" hands the confirmed delete to the host): sync stopped, CLI
+ *  delete, clone folder + `.sync` leftovers + desk row removed. 409 `owned`
+ *  while another fused-render process syncs the clone; a CLI failure leaves
+ *  the clone untouched. */
+export const deleteCanvas = (env: WorkbenchEnv, name: string) =>
+  postJson<{ ok: boolean; name: string; env: WorkbenchEnv; removed_local: boolean }>(
+    "/api/canvases/delete",
+    { name, env },
+  );
+
 export const logout = (env?: WorkbenchEnv | null) =>
   postJson<{ ok: boolean }>(env ? `/api/canvases/logout?env=${env}` : "/api/canvases/logout", {});
 
