@@ -123,7 +123,14 @@ router = APIRouter()
 
 # `fused canvas list/whoami` are one control-plane call each.
 LIST_TIMEOUT = 30.0
-WHOAMI_TIMEOUT = 20.0
+# 40 s, not 20: the CLI child is an interpreter importing `fused` before one
+# round trip, and on a loaded Mac (load avg 20+, 2026-10-23) that alone took
+# 17 s — the old 20 s tripped, the workspace bannered, and the workbench frame
+# never loaded. The answer is the user's handle, which does not change.
+WHOAMI_TIMEOUT = 40.0
+# …and that answer is kept for an hour rather than 45 s: every reopen of a
+# canvas within the hour frames the workbench without spawning anything.
+_WHOAMI_CACHE_TTL_S = 3600.0
 # whoami / list / token each spawn an interpreter (importing `fused`) for a
 # control-plane answer that rarely changes: the parsed RESULT is reused this
 # long (see `_cached_cli`). Errors are never reused.
@@ -1120,7 +1127,12 @@ def api_canvases_whoami(env: str = "", x_fused: str | None = Header(default=None
         )
         return ("ok", {"handle": handle, "raw": data})
 
-    result = _cached_cli("whoami", env, compute)
+    # An hour only for an answer WITH a handle; a logged-out "no handle" keeps
+    # the short default so a login lands within a minute.
+    result = _cached_cli(
+        "whoami", env, compute,
+        lambda payload: _WHOAMI_CACHE_TTL_S if payload.get("handle") else _CLI_CACHE_TTL_S,
+    )
     if result[0] == "err":
         return _error(result[1], result[2])
     return result[1]

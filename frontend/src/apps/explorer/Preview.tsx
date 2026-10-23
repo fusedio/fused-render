@@ -96,7 +96,7 @@ import { useCanRunInTerminal, openTerminal } from "@platform/lib/terminalDockSto
 import { runOrCopyInTerminal } from "@platform/lib/runOrCopyInTerminal";
 import { McpDialog } from "@apps/explorer/McpDialog";
 import PreviewSidebar from "@apps/explorer/PreviewSidebar";
-import { ChatMount } from "@apps/claude";
+import { CANVAS_SHOT_FROM_PARENT, ChatMount } from "@apps/claude";
 import { OPEN_CHAT_EVENT, armFocusOnRegister } from "@platform/lib/chat-focus";
 
 /** The chat companion's mode key, in `templates` and in `_side` alike. */
@@ -104,6 +104,10 @@ const CHAT_MODE = "claude";
 // `?_noann=1` on this document's URL (an embed a host frames): the content-pane
 // chat renders without its annotate seats (ChatMount `noAnnTools`).
 const NO_ANN_TOOLS = new URLSearchParams(location.search).get("_noann") === "1";
+// `?_canvasshot=1`: the host is a canvas page that can photograph its
+// workbench on request (CanvasWorkspace's `fused-canvas-shot`) — the chat's
+// Screenshot seat takes that picture (ChatMount `canvasShot`).
+const CANVAS_SHOT = new URLSearchParams(location.search).get("_canvasshot") === "1";
 import { subscribePreviewSideSlot, previewSideSlot } from "@apps/explorer/preview-side-slot";
 import { subscribeTopbarSlot, topbarSlot } from "@apps/explorer/topbar-slot";
 import ContextMenu, { type MenuEntry, type MenuItem } from "@platform/ui/ContextMenu";
@@ -2260,6 +2264,7 @@ function TemplatePreview({
                       // document's URL, the embed's own.
                       { noAnnTools: true }
                     : {})}
+                  {...(CANVAS_SHOT ? { canvasShot: CANVAS_SHOT_FROM_PARENT } : {})}
                   {...(nativeAsk && claudeAskRoute === "content"
                     ? { initialAsk: nativeAsk }
                     : {})}

@@ -825,3 +825,20 @@
   align-items: center;
   flex-shrink: 0;
 }
+
+/* The seat with its shutter open (`ScreenshotSeat capturing`): the word has
+   already turned to "Capturing…"; the glyph pulses so a wait of seconds reads
+   as work, not as a dead button. */
+.chat-root .c-anncta .c-viewshot.is-capturing svg {
+  animation: c-shutter 1s ease-in-out infinite;
+}
+@keyframes c-shutter {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-root .c-anncta .c-viewshot.is-capturing svg {
+    animation: none;
+  }
+}
