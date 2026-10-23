@@ -867,7 +867,11 @@ def test_the_grace_ends_on_the_watcher_tick_without_any_cut(
     rev = m.disk_rev
     assert "fresh" in m._rowless
     assert _wait_for(lambda: "fresh" not in m._rowless, timeout=3)
-    assert m.disk_rev > rev, "the grace ended without waking the delta leg"
+    # Wait for the bump itself, not just the expiry: `_rowless_in_grace`
+    # drops the entry under its lock, then logs and `_force_rev`s (which
+    # fingerprints the clone) — a loaded runner read disk_rev in that gap.
+    assert _wait_for(lambda: m.disk_rev > rev, timeout=3), (
+        "the grace ended without waking the delta leg")
     assert "row grace elapsed" in _actions(harness)
 
 
