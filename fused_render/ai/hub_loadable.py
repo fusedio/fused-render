@@ -77,9 +77,9 @@ here" chip over a repo someone already has would be redundant, not helpful.
 """
 from __future__ import annotations
 
-import ast
 import glob
 import os
+import time
 
 from fused_render.ai.hub_architecture import Architecture, is_diffusers_repo
 from fused_render.ai.runners import formats
@@ -94,7 +94,10 @@ _MLX_VLM_TYPES_CACHE: dict[str, frozenset | None] = {}
 #: runner venv dir -> the repo ids mflux's own installed `AVAILABLE_MODELS`
 #: registry recognises, or `None` if that venv is not installed yet. Same
 #: cache shape and same reason as `_MLX_VLM_TYPES_CACHE` above.
-_MFLUX_REPOS_CACHE: dict[str, frozenset | None] = {}
+_MFLUX_REPOS_CACHE: dict[str, tuple[int | None, dict[str, str]]] = {}
+
+#: runner venv dir -> its `model_config.py`, once found.
+_MFLUX_PATH_CACHE: dict[str, str] = {}
 
 
 def reset_cache() -> None:
@@ -102,6 +105,9 @@ def reset_cache() -> None:
     a stale reading across them."""
     _MLX_VLM_TYPES_CACHE.clear()
     _MFLUX_REPOS_CACHE.clear()
+    _MFLUX_PATH_CACHE.clear()
+    global _STAMP_MEMO
+    _STAMP_MEMO = None
 
 
 def mlx_vlm_model_types() -> frozenset | None:
@@ -149,94 +155,108 @@ def mlx_vlm_model_types() -> frozenset | None:
     return result
 
 
-def _repo_ids_from_available_models(source: str) -> frozenset[str]:
-    """Statically parse mflux's `AVAILABLE_MODELS` dict literal out of its
-    OWN `model_config.py` source text — every entry's `model_name` keyword
-    (the HF repo id each `ModelConfig` loads), plus any `aliases` entry that
-    is itself repo-shaped (contains `/`; none currently are, but the brief
-    calls for it defensively).
+def _find_mflux_registry(venv_dir: str) -> str | None:
+    pattern = os.path.join(venv_dir, "lib", "python3.*", "site-packages", "mflux",
+                            "models", "common", "config", "model_config.py")
+    matches = glob.glob(pattern)
+    return matches[0] if matches else None
 
-    **Parsed with `ast`, never imported.** Importing `mflux.models.common.
-    config.model_config` pulls in `mlx.core` (Metal/Accelerate init) — a
-    runner-venv dependency this server process must not carry, per the
-    brief's own instruction and mirroring `mlx_vlm_model_types`'s choice to
-    read the filesystem rather than import `mlx_vlm`.
 
-    Deliberately a SET, not a `repo_id -> variant` dict: `resolve_key`'s own
-    docstring in `config_resolution.py` warns that several registry entries
-    SHARE a repo id (the FLUX.1-dev ControlNets; z-image-turbo and its
-    ControlNet) and are matched by object identity, not by name — a flat
-    dict keyed by repo id cannot represent that, and would have to silently
-    pick one entry over another. Admission only asks "would ANY entry with
-    this id resolve", never "which one", so a de-duplicating set answers it
-    exactly and the identity ambiguity never arises here.
+#: `(expires_at, path, stamp)` — one short-lived reading of the registry file's
+#: identity, shared by `mflux_registry_stamp` and `mflux_available_models`, so
+#: one listing pass (a `_repo_meta` per cached repo) pays one registry lookup
+#: and one stat rather than one per repo. Monotonic clock, 1 s window.
+_STAMP_MEMO: tuple[float, str | None, int | None] | None = None
+_STAMP_WINDOW = 1.0
 
-    Returns an empty set on anything unparsable (syntax error, no
-    `AVAILABLE_MODELS` assignment found) — the caller reads that the same
-    way as "nothing found", i.e. still `None` overall, never "matches
-    nothing" for an installed-but-unreadable venv."""
+
+def _mflux_registry_reading() -> tuple[str | None, int | None]:
+    """`(path, st_mtime_ns)` of the installed mflux's `model_config.py`, or
+    `(None, None)` when the venv is not installed. A cached path whose stat
+    fails is dropped and re-globbed once in the same call (a venv rebuilt
+    under a different `python3.X` dir moves the file)."""
+    global _STAMP_MEMO
+    now = time.monotonic()
+    memo = _STAMP_MEMO
+    if memo is not None and now < memo[0]:
+        return memo[1], memo[2]
+    from fused_render import envinstall
+    from fused_render.ai import registry
+
+    path: str | None = None
+    stamp: int | None = None
+    runner = registry.by_code("mflux-image")
+    if runner is not None:
+        venv_dir = envinstall.venv_dir_for(runner.folder)
+        path = _MFLUX_PATH_CACHE.get(venv_dir)
+        if path is not None:
+            try:
+                stamp = os.stat(path).st_mtime_ns
+            except OSError:
+                _MFLUX_PATH_CACHE.pop(venv_dir, None)
+                path = None
+        if path is None:
+            path = _find_mflux_registry(venv_dir)
+            if path is not None:
+                try:
+                    stamp = os.stat(path).st_mtime_ns
+                except OSError:
+                    path = None
+        if path is not None:
+            _MFLUX_PATH_CACHE[venv_dir] = path
+    if path is not None:
+        # Only an installed registry is memoised: "not installed" stays a
+        # live answer so an install made while the server runs is seen.
+        _STAMP_MEMO = (now + _STAMP_WINDOW, path, stamp)
+    return path, stamp
+
+
+def mflux_registry_stamp() -> int | None:
+    """Identity of the installed mflux registry (`st_mtime_ns` of its
+    `model_config.py`), `None` when not installed. `hub_cache` folds it into
+    its per-snapshot memo so installing or upgrading mflux re-derives the
+    loaders of repos already cached."""
+    return _mflux_registry_reading()[1]
+
+
+def mflux_available_models() -> dict[str, str] | None:
+    """`{repo id: registry key}` from the installed mflux's `AVAILABLE_MODELS`
+    (see `formats.MFLUX_FAMILIES` for the registry's shape), or `None` when the
+    mflux venv is not installed. The single reader: `mflux_loadable_repos`
+    is its key set, and `formats`' default registry reader calls it so
+    `formats.loaders()` / `mflux_variant_recipe` derive the same variants the
+    admission rule admits. Only a parsed dict is cached (keyed by path and
+    mtime); `None` is not, so a later install is picked up."""
+    path, stamp = _mflux_registry_reading()
+    if path is None:
+        return None
+    cached = _MFLUX_REPOS_CACHE.get(path)
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
     try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return frozenset()
-    repos: set[str] = set()
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        if not any(isinstance(t, ast.Name) and t.id == "AVAILABLE_MODELS" for t in node.targets):
-            continue
-        if not isinstance(node.value, ast.Dict):
-            continue
-        for value_node in node.value.values:
-            if not isinstance(value_node, ast.Call):
-                continue
-            for kw in value_node.keywords:
-                if kw.arg == "model_name":
-                    if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
-                        repos.add(kw.value.value)
-                elif kw.arg == "aliases":
-                    if isinstance(kw.value, ast.List):
-                        for elt in kw.value.elts:
-                            if (isinstance(elt, ast.Constant) and isinstance(elt.value, str)
-                                    and "/" in elt.value):
-                                repos.add(elt.value)
-    return frozenset(repos)
+        with open(path, encoding="utf-8") as fh:
+            source = fh.read()
+    except OSError:
+        return None
+    parsed = formats.parse_mflux_available_models(source)
+    if not parsed:
+        return None
+    _MFLUX_REPOS_CACHE[path] = (stamp, parsed)
+    return parsed
 
 
 def mflux_loadable_repos() -> frozenset[str] | None:
     """The repo ids mflux's own installed `AVAILABLE_MODELS` registry
     recognises — read off its `model_config.py` source (see
-    `_repo_ids_from_available_models` for why statically, never imported).
+    `formats.parse_mflux_available_models` for why statically, never imported).
 
     Returns `None` — "unknown", meaning no filtering — when the mflux venv
     has not been installed yet, NEVER an empty set, for the same reason as
     `mlx_vlm_model_types`: an uninstalled venv must not read as "this
     runner can load nothing", which would flag the entire image capability
     on a machine that has not installed mflux yet."""
-    from fused_render import envinstall
-    from fused_render.ai import registry
-
-    runner = registry.by_code("mflux-image")
-    if runner is None:
-        return None
-    venv_dir = envinstall.venv_dir_for(runner.folder)
-    if venv_dir in _MFLUX_REPOS_CACHE:
-        return _MFLUX_REPOS_CACHE[venv_dir]
-    pattern = os.path.join(venv_dir, "lib", "python3.*", "site-packages", "mflux",
-                            "models", "common", "config", "model_config.py")
-    matches = glob.glob(pattern)
-    result: frozenset[str] | None = None
-    if matches:
-        try:
-            with open(matches[0], encoding="utf-8") as fh:
-                source = fh.read()
-        except OSError:
-            source = ""
-        repos = _repo_ids_from_available_models(source)
-        if repos:
-            result = repos
-    _MFLUX_REPOS_CACHE[venv_dir] = result
-    return result
+    models = mflux_available_models()
+    return None if models is None else frozenset(models)
 
 
 def loadable_kind(code: str) -> tuple[str, frozenset[str] | None]:
@@ -307,17 +327,14 @@ def _admits(kind: str, data, *, model_id: str, model_type: str | None,
             return True, None
         return False, None
     if kind == "diffusers":
-        # A Diffusers runner admits a repo the SAME way `hub_architecture.
-        # _resolve_engine` recognises one — `model_index.json`,
-        # `modular_model_index.json`, or `library_name == "diffusers"`
-        # (`is_diffusers_repo`, shared with that module so the two can
-        # never drift). The catch: `names`/`library_name` being absent must
+        # A Diffusers runner admits by `is_diffusers_repo` (flat index,
+        # modular index or `library_name`): Hub rows carry only metadata.
+        # Wider than loading by design (D1430). The catch: `names`/`library_name` being absent must
         # NEVER read as "therefore not Diffusers" — that would flag every
         # row a caller has not yet read siblings/library for, exactly the
         # module docstring's "never drops a row" guarantee this would
-        # otherwise break. Only refuse when at least one of the two signals
-        # was actually supplied; both absent (the empty-`names`-default
-        # PLUS no `library_name`) stays loadable instead.
+        # otherwise break. Only refuse when at least one of the two inputs
+        # was actually supplied; both absent stays loadable instead.
         if not names and library_name is None:
             return True, None
         if is_diffusers_repo(names, library_name):

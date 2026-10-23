@@ -273,21 +273,22 @@ def _normalize_for_stutter_check(value: str) -> str:
     return value.lower().replace("-", " ").replace("_", " ").strip()
 
 
-def is_diffusers_repo(names: frozenset[str], library_name: str | None) -> bool:
-    """Whether `names` (a repo's own sibling filenames) or `library_name`
-    identifies this row as a Diffusers repo — a flat `model_index.json`, a
-    modular `modular_model_index.json`, or `library_name == "diffusers"`.
+def is_diffusers_repo(names: frozenset[str], library_name: str | None = None) -> bool:
+    """Whether `names` (a repo's sibling filenames) or `library_name`
+    identifies a row as a Diffusers repo: a flat `model_index.json`, a modular
+    `modular_model_index.json`, or `library_name == "diffusers"`.
 
-    Extracted so `_resolve_engine` below and `hub_loadable`'s Diffusers
-    admission rule share exactly one copy of this predicate and can never
-    drift apart (round: "Diffusers admission is unconditional"). Callers
-    that lack one of the two signals still get a sound answer from
-    whichever signal they DO have — an empty `names` with a real
-    `library_name` still correctly reads "diffusers" when that library is
-    set, and vice versa; it is up to each CALLER to decide what an absence
-    of BOTH signals should mean (this module always treats it as "not
-    recognisable as Diffusers", `hub_loadable`'s never-drops-a-row guard is
-    what turns that into "stay loadable" for its own admission rule)."""
+    This is ADMISSION, the Hub-metadata net: catalog, pool and live-search
+    rows carry only metadata (`library_name`, often no sibling list), so a
+    rule that needed a filename could never admit them. It is deliberately
+    wider than LOADING (`formats.is_diffusers_snapshot`, the flat index only,
+    which `formats.loaders()` uses): a modular-only or `library_name`-only repo
+    is admitted but not loadable until a `ModularPipeline` adapter exists. The
+    gap is deliberate and recorded in D1430. `_resolve_engine` and
+    `hub_loadable._admits('diffusers')` share this one copy. A caller lacking
+    one signal still gets a sound answer from the other; what an absence of
+    BOTH means is the caller's call (`hub_loadable`'s never-drops-a-row guard
+    reads it as "stay loadable")."""
     return (formats.DIFFUSERS_INDEX in names
             or formats.DIFFUSERS_MODULAR_INDEX in names
             or library_name == "diffusers")

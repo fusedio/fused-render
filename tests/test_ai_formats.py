@@ -1411,3 +1411,166 @@ def test_speech_options_auto_bypasses_the_language_catalog():
     assert formats.speech_options("org/tts", {**PRESET, "languages": ["English"]},
                                   {"language": "AUTO"}) == {
         "voice": "aiden", "language": "auto"}
+
+
+def test_a_flat_index_snapshot_has_the_diffusers_loaders():
+    assert formats.loaders(
+        repo_id="org/m", names={"model_index.json"}, dirnames=set(), config={},
+        torch_weights=False) == tuple(formats.DIFFUSERS_RUNNERS)
+    assert formats.is_diffusers_snapshot({"model_index.json"})
+
+
+@pytest.mark.parametrize("names,config", [
+    ({"modular_model_index.json"}, {}),
+    (set(), {"library_name": "diffusers"}),
+    ({"modular_model_index.json"}, {"library_name": "diffusers"}),
+])
+def test_modular_only_and_library_name_snapshots_have_no_diffusers_loader(names, config):
+    """The worker has no ModularPipeline path (D1430) and `library_name` is
+    on every LoRA repo."""
+    assert formats.loaders(
+        repo_id="org/m", names=names, dirnames=set(), config=config,
+        torch_weights=False) == ()
+    assert not formats.is_diffusers_snapshot(names)
+
+
+def test_admission_is_wider_than_the_loading_predicate():
+    """Admission is the Hub-metadata net; only the flat index is loadable."""
+    from fused_render.ai import hub_architecture
+    assert hub_architecture.is_diffusers_repo(frozenset({"model_index.json"}), None)
+    assert hub_architecture.is_diffusers_repo(frozenset({"modular_model_index.json"}), None)
+    assert hub_architecture.is_diffusers_repo(frozenset(), "diffusers")
+    assert not hub_architecture.is_diffusers_repo(frozenset({"x"}), None)
+    assert not formats.is_diffusers_snapshot(frozenset({"modular_model_index.json"}))
+
+
+def test_installed_registry_reader_only_swallows_a_missing_fused_render(monkeypatch):
+    import builtins
+    import sys
+
+    monkeypatch.setitem(sys.modules, "fused_render.ai.hub_loadable", None)
+    monkeypatch.delitem(sys.modules, "fused_render.ai.hub_loadable")
+    real_import = builtins.__import__
+    state = {"exc": ImportError("boom")}
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "fused_render.ai" and "hub_loadable" in (fromlist or ()):
+            raise state["exc"]
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    with pytest.raises(ImportError, match="boom"):
+        formats._installed_mflux_registry()
+    state["exc"] = ModuleNotFoundError("no fused_render", name="fused_render")
+    monkeypatch.setattr(formats, "_in_process_mflux_registry", lambda: {"a/b": "k"})
+    assert formats._installed_mflux_registry() == {"a/b": "k"}
+
+
+# -- mflux variants derived from the installed AVAILABLE_MODELS ------------------
+
+_MFLUX_SOURCE = '''
+class ModelConfig: ...
+AVAILABLE_MODELS = {
+    "dev": ModelConfig(priority=0, aliases=["dev"],
+                       model_name="black-forest-labs/FLUX.1-dev", base_model=None),
+    "flux3-image-klein": ModelConfig(
+        priority=11, aliases=["flux3"],
+        model_name="black-forest-labs/flux-3-image-klein", base_model=None),
+    "flux3-image-klein-base": ModelConfig(
+        priority=11, aliases=["flux3-base"],
+        model_name="black-forest-labs/flux-3-image-klein-base", base_model=None),
+    "flux2-klein-base-4b": ModelConfig(
+        priority=11, aliases=["k"],
+        model_name="black-forest-labs/FLUX.2-klein-base-4B", base_model=None),
+    "dev-controlnet-canny": ModelConfig(
+        priority=1, aliases=["x"],
+        model_name="black-forest-labs/FLUX.1-dev", base_model=None),
+}
+'''
+
+
+def test_parse_mflux_available_models_maps_repo_id_to_registry_key():
+    parsed = formats.parse_mflux_available_models(_MFLUX_SOURCE)
+    assert parsed["black-forest-labs/flux-3-image-klein"] == "flux3-image-klein"
+    assert parsed["black-forest-labs/flux-3-image-klein-base"] == "flux3-image-klein-base"
+    # A shared repo id keeps the FIRST entry in source order.
+    assert parsed["black-forest-labs/FLUX.1-dev"] == "dev"
+    assert formats.parse_mflux_available_models("not python (") == {}
+
+
+def test_a_repo_only_the_installed_mflux_lists_derives_a_recipe():
+    formats.set_mflux_registry_reader(
+        lambda: formats.parse_mflux_available_models(_MFLUX_SOURCE))
+    recipe = formats.mflux_variant_recipe("black-forest-labs/flux-3-image-klein")
+    assert recipe == {"variant": "Flux3Klein", "module": "mflux.models.flux3.variants",
+                      "config": "flux3_image_klein"}
+    base = formats.mflux_variant_recipe("black-forest-labs/flux-3-image-klein-base")
+    assert base["config"] == "flux3_image_klein_base"
+    klein2 = formats.mflux_variant_recipe("black-forest-labs/FLUX.2-klein-base-4B")
+    assert (klein2["variant"], klein2["config"], klein2["vae"]) == (
+        "Flux2Klein", "flux2_klein_base_4b", "AutoencoderKLFlux2")
+    edit = formats.mflux_edit_recipe("black-forest-labs/flux-3-image-klein")
+    assert (edit["variant"], edit["config"]) == ("Flux3KleinEdit", "flux3_image_klein")
+    assert formats.mflux_native_mode("black-forest-labs/flux-3-image-klein") == "generate"
+    # A registry entry in a family nobody named classes for is not guessed at.
+    assert formats.mflux_variant_recipe("black-forest-labs/FLUX.1-dev") is None
+
+
+def test_the_override_table_wins_over_the_derived_map(monkeypatch):
+    mlx_id = "mlx-community/FLUX.2-Klein-4B-4bit"
+    formats.set_mflux_registry_reader(lambda: {mlx_id: "flux3-image-klein"})
+    assert formats.mflux_variant_recipe(mlx_id)["config"] == "flux2_klein_4b"
+    assert formats.mflux_edit_recipe(mlx_id)["variant"] == "Flux2KleinEdit"
+
+
+def test_a_cached_flux3_repo_gets_the_mflux_runner_once_the_registry_lists_it():
+    repo = "black-forest-labs/flux-3-image-klein"
+    kwargs = dict(repo_id=repo, names={"model_index.json"},
+                  dirnames={"transformer", "text_encoder", "vae"}, config={},
+                  torch_weights=False)
+    assert "mflux-image" not in formats.loaders(**kwargs)
+    formats.set_mflux_registry_reader(
+        lambda: formats.parse_mflux_available_models(_MFLUX_SOURCE))
+    assert "mflux-image" in formats.loaders(**kwargs)
+
+
+def test_default_registry_reader_finds_hub_loadable_without_hub_cache(monkeypatch):
+    """The server's reader is lazy: no caller has to import `hub_cache` first."""
+    from fused_render.ai import hub_loadable
+    monkeypatch.setattr(hub_loadable, "mflux_available_models",
+                        lambda: formats.parse_mflux_available_models(_MFLUX_SOURCE))
+    formats.set_mflux_registry_reader(None)
+    assert "mflux-image" in formats.loaders(
+        repo_id="black-forest-labs/flux-3-image-klein", names={"model_index.json"},
+        dirnames={"transformer", "text_encoder", "vae"}, config={},
+        torch_weights=False)
+
+
+def test_in_process_registry_is_parsed_once_per_file_version(tmp_path, monkeypatch):
+    import builtins
+    import sys
+    cfg = tmp_path / "mflux" / "models" / "common" / "config"
+    cfg.mkdir(parents=True)
+    for d in (tmp_path / "mflux", tmp_path / "mflux" / "models",
+              tmp_path / "mflux" / "models" / "common", cfg):
+        (d / "__init__.py").write_text("")
+    (cfg / "model_config.py").write_text(_MFLUX_SOURCE)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    for name in [m for m in sys.modules if m == "mflux" or m.startswith("mflux.")]:
+        monkeypatch.delitem(sys.modules, name)
+    formats.set_mflux_registry_reader(formats._in_process_mflux_registry)
+    real_open = builtins.open
+    opens = []
+
+    def counting(path, *a, **kw):
+        if str(path).endswith("model_config.py"):
+            opens.append(path)
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr(builtins, "open", counting)
+    rid = "black-forest-labs/flux-3-image-klein"
+    for _ in range(3):
+        assert formats.mflux_variant_recipe(rid)
+        assert formats.mflux_native_mode(rid) == "generate"
+        assert formats.mflux_edit_recipe(rid)
+    assert len(opens) == 1
