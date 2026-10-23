@@ -78,29 +78,22 @@ logger = logging.getLogger(__name__)
 KINDS = ("github", "own", "scratch")
 
 def _load_guard():
-    """`templates/shared/contrib_guard.py`, by path (templates/shared is not a
-    package; the Git panel's ops.py/log.py load the same file) — the one copy
-    of the guard's constants (§17.8)."""
-    import importlib.util
-
-    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                        "templates", "shared", "contrib_guard.py")
-    spec = importlib.util.spec_from_file_location("fused_render_contrib_guard", path)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+    """`templates/shared/contrib_guard.py` (§17.8) — the one copy of the
+    guard's constants, loaded once by path (`replay._guard_module`, the one
+    loader; templates/shared is not a package)."""
+    return replay._guard_module()
 
 
-_guard = _load_guard()
+_guard_mod = _load_guard()
 
 #: A `github` copy's own branch (§17.1 I4): HEAD is always here; the
 #: author's branch is a fetch-only mirror (I3). One value, the guard's.
-HOME_BRANCH = _guard.HOME_BRANCH
+HOME_BRANCH = _guard_mod.HOME_BRANCH
 HOME_REF = "refs/heads/" + HOME_BRANCH
 
 #: The push guard's value (§16.0 P2): not a URL any git transport speaks, so
 #: every push by remote name fails before it leaves the machine.
-NO_PUSH_URL = _guard.NO_PUSH_URL
+NO_PUSH_URL = _guard_mod.NO_PUSH_URL
 
 #: Repo-local marker of the recorded kind, for the one reader that cannot
 #: import this module (claude_agent/agent.py's turn commit, D166): it picks
@@ -981,14 +974,16 @@ def _migrate_v3_git_locked(root, rec, kind) -> bool:
     branch = rec.get("branch")
     if kind != "github" or not _valid_branch(branch):
         return True
+    _migrate_pr_head(root, rec)
     main_ref = f"refs/heads/{branch}"
     origin = replay.rev(root, f"refs/remotes/origin/{branch}")
     main = replay.rev(root, main_ref)
     cur = gu._current_branch(root)
     ahead = bool(main and origin and not replay.is_ancestor(root, main, origin))
+    pin = None
     if cur == branch:
         if ahead:
-            replay.backup_locked(root, main, why="v3-move")
+            pin = (replay.backup_locked(root, main, why="v3-move") or [None])[0]
         if not ensure_home_locked(root, branch):
             return False
     elif not replay.rev(root, HOME_REF) and main:
@@ -998,50 +993,88 @@ def _migrate_v3_git_locked(root, rec, kind) -> bool:
             return False
         _set_upstream(root, branch)
         if ahead:
-            replay.backup_locked(root, main, why="v3-move")
+            pin = (replay.backup_locked(root, main, why="v3-move") or [None])[0]
         if origin and gu._current_branch(root) != branch:
             _g(root, "update-ref", main_ref, origin, main)
     if ahead:
-        store.add_activity(root, "moved", MOVED_TEXT)
+        store.add_activity(root, "moved", MOVED_TEXT, backup=pin)
     return True
+
+
+#: The proposal head ref (proposals.PR_HEAD_REF).
+_PR_HEAD_REF = "refs/fused/pr-head"
+
+
+def _migrate_pr_head(root, rec) -> None:
+    """v2 wrote `refs/fused/pr-head` only on Update's fetch of maintainer
+    edits and kept pushing past it; v3 reads it as what the proposal holds
+    (§17.5). So the move points it at what v2 last sent (`sent`, or v1's
+    `pushed_head`/`proposed_head`) when that is a local commit, else
+    deletes it (v3 then falls back to the cache's head)."""
+    p = rec.get("proposal") if isinstance(rec.get("proposal"), dict) else {}
+    sent = p.get("sent") or p.get("pushed_head") or p.get("proposed_head")
+    sha = replay.rev(root, sent) if isinstance(sent, str) and sent else None
+    if sha and p.get("number"):
+        _g(root, "update-ref", _PR_HEAD_REF, sha)
+    elif replay.rev(root, _PR_HEAD_REF):
+        _g(root, "update-ref", "-d", _PR_HEAD_REF)
+
+
+#: The Activity line when an own copy's default branch had work of its own
+#: that fused/mine lacked (pinned, Undo). No git words (§0.1).
+OWN_MOVE_TEXT = ("This is your app: your changes are back on its usual version. A version "
+                 "that was there before is saved.")
 
 
 def _unhome_locked(root, rec) -> None:
     """An `own` copy still on `fused/mine` — it was a `github` copy until
     sign-in said it is the author's (`_recheck`), or an install fused put
-    there before it knew: back to its default branch (today's plain sync
-    and ownsync work there), every commit carried. The default branch
-    moves to `fused/mine`'s tip when that has work it lacks (its old tip
-    pinned if that drops anything), then it is checked out and `fused/mine`
-    deleted. An uncommitted edit in the way: nothing moves; the next sync
-    tries again. Slot held."""
+    there before it knew: back to its default branch, where today's plain
+    sync and ownsync work, every commit carried — and NO FILE MOVES here
+    (review P0 #1): the default branch is pointed at `fused/mine`'s commit
+    (`update-ref`, compare-and-set), so the `switch` is a same-commit move.
+    When the default branch was AHEAD, those commits are the author's
+    (`origin/<b>`'s): nothing is lost, and `_sync_plain` fast-forwards to
+    them later under its own gates. Only commits found nowhere else (not in
+    `fused/mine`, not in `origin/<b>`) are pinned, with an Activity line
+    (Undo). Waits while a Claude turn is open. Slot held."""
     branch = rec.get("branch")
     if gu._current_branch(root) != HOME_BRANCH or not _valid_branch(branch):
         return
     if gu._operation_in_flight(root) is not None:
+        return
+    try:
+        from fused_render.contrib import engine
+
+        if engine.claude_busy(root):
+            return
+    except Exception:  # noqa: BLE001 — unknown reads as busy: try next sync
         return
     home = replay.rev(root, HOME_REF)
     main_ref = f"refs/heads/{branch}"
     main = replay.rev(root, main_ref)
     if not home:
         return
-    if main is None:
-        if not gu._ok(_g(root, "update-ref", main_ref, home, "")):
+    pin = None
+    if main != home:
+        origin = replay.rev(root, f"refs/remotes/origin/{branch}")
+        if main and not replay.is_ancestor(root, main, home) and \
+                not (origin and replay.is_ancestor(root, main, origin)):
+            pin = (replay.backup_locked(root, main, why="own-move") or [None])[0]
+            if not pin:
+                return
+        if not gu._ok(_g(root, "update-ref", main_ref, home, main or "")):
+            if pin:
+                replay.unbackup_locked(root, [pin, pin + "-wip"])
             return
-    elif not replay.is_ancestor(root, home, main):
-        if not replay.is_ancestor(root, main, home) and \
-                not replay.backup_locked(root, main, why="own-move"):
-            return
-        if not gu._ok(_g(root, "update-ref", main_ref, home, main)):
-            return
-    target = replay.rev(root, main_ref)
-    with replay.fused_aside(root, target):
-        r = _g(root, "switch", "-q", branch)
+    r = _g(root, "switch", "-q", branch)  # same commit: no file changes
     if not gu._ok(r) or gu._current_branch(root) != branch:
         logger.info("contrib: %s stays on %s for now: %s", root, HOME_BRANCH, gu._text(r))
         return
     _g(root, "branch", "-q", "-D", HOME_BRANCH)
     replay.protect_after_move(root)
+    if pin:
+        store.add_activity(root, "own-move", OWN_MOVE_TEXT, backup=pin)
 
 
 def _sources_on() -> bool:

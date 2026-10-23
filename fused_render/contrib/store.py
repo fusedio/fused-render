@@ -132,11 +132,10 @@ def _write(data: dict) -> bool:
 
 
 def new_record(kind: str, *, repo: str | None = None, branch: str | None = None,
-               classified_by: str = "migration", owner_checked: bool = True,
-               root_commit: str | None = None) -> dict:
+               classified_by: str = "migration", owner_checked: bool = True) -> dict:
     """A fresh Record with every §3/§17.6 field present (callers never have
-    to `.get` a field into existence). `root_commit` is accepted and
-    ignored (v3 binds by origin, §17.6); v2's `needs_merge` is not written
+    to `.get` a field into existence). v2's `root_commit` (v3 binds by
+    origin or copy id, §17.6) and `needs_merge` are not written
     (`_view` still shows it as None for one release). `skip_tip` is the
     undo hold (engine: an Undo of an automatic move holds that tip)."""
     return {
@@ -309,6 +308,15 @@ def _bound(k: str, rec: dict) -> bool | None:
     return ans
 
 
+def _root_present(k: str, root_commit: str) -> bool | None:
+    """v2's binding, for an old row only: whether `root_commit` is in the
+    repo at `k` (None: git cannot say)."""
+    if root_commit in (_roots(k) or ()):
+        return True
+    r = _git(k, "cat-file", "-e", root_commit)
+    return None if r is None else True if r[0] == 0 else False if r[0] == 1 else None
+
+
 def _forget_binding(k: str) -> None:
     with _bind_lock:
         _bind_memo.pop(k, None)
@@ -339,6 +347,14 @@ def _bind(k: str, rec: dict) -> dict | None:
         return rec
     if _bound(k, rec) is not False:
         return rec
+    if rec.get("kind") == "github" and not rec.get("copy_id") and rec.get("v") != RECORD_V:
+        # A v1/v2 row that never got a copy id, over a re-pointed origin
+        # (review P2 #19): v2's root-commit binding decides — a definite
+        # stranger is dropped; otherwise the row is kept and
+        # `classify._point_back` sets origin back.
+        rc = rec.get("root_commit")
+        if not rc or _root_present(k, rc) is not False:
+            return rec
     with _lock:
         data = _read()
         cur = data["apps"].get(k)
@@ -661,26 +677,30 @@ def note_head(app_dir: str, head: str | None) -> None:
     update(app_dir, lambda r: r.__setitem__("last_head", head))
 
 
-def add_activity(app_dir: str, kind: str, text: str, *, backup=None, aside=None) -> str | None:
+def add_activity(app_dir: str, kind: str, text: str, *, backup=None, aside=None,
+                 ref=None) -> str | None:
     """Append one Activity line (§16.9) — a plain-words sentence (§0.1) for
     something fused did to this copy — and answer its id (None when there is
     no record, or the write failed). `backup` (a backup ref, or a list of
     them: a tip and its `-wip`) and/or `aside` (where moved-aside files
     went) make the line undoable, and a ref a line names is never pruned
-    (`referenced_backups`). Capped at ACTIVITY_KEEP."""
-    entry = new_activity(kind, text, backup=backup, aside=aside)
+    (`referenced_backups`). `ref`: a pinned ref the line names WITHOUT
+    offering Undo (the mirror's old tip after an author rewind — restoring
+    it would put the author's old version over Bob's own; review P1 #3);
+    never pruned either. Capped at ACTIVITY_KEEP."""
+    entry = new_activity(kind, text, backup=backup, aside=aside, ref=ref)
     return entry["id"] if update(app_dir, lambda rec: append_activity(rec, entry)) is not None \
         else None
 
 
-def new_activity(kind: str, text: str, *, backup=None, aside=None) -> dict:
+def new_activity(kind: str, text: str, *, backup=None, aside=None, ref=None) -> dict:
     """One Activity line, not stored yet — for a caller that must write it
     in the SAME `update` as another field (the engine's `landed_at`
     once-stamp, §17.2): `update(app_dir, fn)` with `append_activity(rec,
     line)` inside `fn`."""
     return {"id": f"{int(time.time() * 1000)}-{secrets.token_hex(3)}",
             "at": time.time(), "kind": str(kind), "text": str(text),
-            "backup": backup, "aside": aside, "restored_at": None}
+            "backup": backup, "aside": aside, "ref": ref, "restored_at": None}
 
 
 def append_activity(rec: dict, entry: dict) -> None:
@@ -734,10 +754,12 @@ def referenced_backups(app_dir: str) -> set:
     rec = get(app_dir)
     refs: set = set()
     for e in (rec or {}).get("activity") or []:
-        b = e.get("backup") if isinstance(e, dict) else None
-        for r in (b if isinstance(b, list) else [b]):
-            if isinstance(r, str) and r:
-                refs.add(r)
+        if not isinstance(e, dict):
+            continue
+        for b in (e.get("backup"), e.get("ref")):
+            for r in (b if isinstance(b, list) else [b]):
+                if isinstance(r, str) and r:
+                    refs.add(r)
     return refs
 
 
@@ -814,8 +836,8 @@ def migrate_v3(app_dir: str) -> tuple[dict | None, bool]:
     git side of the move (`fused/mine`, the mirror, the v1 refs) is
     `classify.settle_locked`'s, which calls this LAST so a git step that
     failed is retried on the next sync. v1 first goes through `migrate_v2`.
-    Drops `root_commit` and `needs_merge` (`skip_tip`, the undo hold, stays:
-    an own row's is ownsync's, a github row's means the same tip), the proposal's
+    Drops `root_commit`, `needs_merge` and a `github` row's `skip_tip` (v2's
+    Keep mine is not an undo hold; an own row's is ownsync's and stays), the proposal's
     `sent`/`pushed_head`/`proposed_head`/`checked_tip`/credit (its
     `returned_at` becomes `landed_at`), stamps `v: 3`. Answers `(record,
     migrated)`; `migrated` is False for a record already v3 (or none) — one
@@ -835,6 +857,10 @@ def migrate_v3(app_dir: str) -> tuple[dict | None, bool]:
         did.append(True)
         rec.pop("root_commit", None)
         rec.pop("needs_merge", None)
+        if rec.get("kind") != "own":
+            # v2's Keep mine is not v3's undo hold (review P2 #9); an own
+            # copy's `skip_tip` is ownsync's and stays.
+            rec["skip_tip"] = None
         if isinstance(rec.get("proposal"), dict):
             _v3_proposal(rec["proposal"])
         rec["v"] = RECORD_V

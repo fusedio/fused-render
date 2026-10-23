@@ -149,6 +149,18 @@ def test_send_refuses_off_the_home_branch(w):
     edit(w.app, "app.py", APP_PY_LOUD)
     with pytest.raises(PlainError, match="different version"):
         _send(w)
+    # Even when the author's latest overlaps this other version, the
+    # sentence is "go back", never "Merge with Claude first".
+    from fused_render.contrib import engine
+    git(w.app, "commit", "-q", "-am", "loud, on the other version")
+    edit(w.app, "index.html", PAGE.replace("blue", "teal"))
+    w.fake.commit("alice/sine", "main", {"app.py": APP_PY.replace("return 1", "return 3")},
+                  "three", author="alice")
+    _fetch(w)
+    assert engine.conflict(w.app)["files"] == ["app.py"]             # a real overlap here
+    assert _p().conflict(w.app) is False
+    with pytest.raises(PlainError, match="different version"):
+        _send(w)
     assert _p().dirty(w.app)
     assert w.store.get(w.app).get("proposal") is None
     assert w.fake.state()["pulls"].get("alice/sine", []) == [] or \
@@ -553,7 +565,7 @@ def test_update_refuses_while_the_authors_latest_overlaps(w):
     w.fake.commit("alice/sine", "main", {"index.html": PAGE.replace("blue", "green")},
                   "green", author="alice")
     _fetch(w)
-    assert _p().conflict(w.app, w.store.get(w.app)) is True
+    assert _p().conflict(w.app) is True
     claude_commit(w.app, {"app.py": APP_PY_LOUD}, "louder")
     with pytest.raises(PlainError, match="Merge with Claude first"):
         _p().update(w.app)
@@ -737,14 +749,18 @@ def test_refresh_shows_alices_newest_comment_only(w):
     assert view["comment"]["body"] == "Can you make it darker?"
 
 
-def test_refresh_takes_a_tip_but_records_none(w):
-    """The engine still passes `tip` (or None); v3 keeps no `checked_tip`."""
+def test_refresh_records_no_checked_tip(w):
+    """v3 keeps no `checked_tip`, and `refresh` takes no `tip` (review #12)."""
+    import inspect
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     _send(w)
-    new = w.fake.commit("alice/sine", "main", {"NOTES.md": "n\n"}, "notes", author="alice")
-    assert _p().refresh(w.app, force=True, tip=new)["state"] == "waiting"
-    assert _p().refresh(w.app, force=True, tip=None)["state"] == "waiting"
+    w.fake.commit("alice/sine", "main", {"NOTES.md": "n\n"}, "notes", author="alice")
+    assert _p().refresh(w.app, force=True)["state"] == "waiting"
     assert "checked_tip" not in _proposal(w)
+    for fn in (_p().refresh, _p()._apply_pr, _p()._ingest, _p()._prepare, _p().head_differs):
+        params = inspect.signature(fn).parameters
+        assert "tip" not in params and not any(
+            x.kind is inspect.Parameter.VAR_KEYWORD for x in params.values()), fn
 
 
 def test_asked_to_update_is_shown_and_update_answers_it(w):
@@ -1223,7 +1239,7 @@ def test_v1_update_is_offered_and_sent_after_merge_with_claude(sw, monkeypatch):
                   "green", author="alice")
     w.sync()
     assert_home_invariants(w.app)
-    assert _p().conflict(w.app, w.store.get(w.app))      # derived, nothing recorded
+    assert _p().conflict(w.app)      # derived, nothing recorded
 
     def resolver(wt, files, ctx):
         with open(os.path.join(wt, "index.html"), "w", encoding="utf-8") as fh:
@@ -1394,3 +1410,90 @@ def test_r2_proposal_git_calls_never_run_repo_configured_commands(w, tmp_path):
     contributors.list(w.app)
     _p().withdraw(w.app)
     assert not marker.exists(), marker.read_text()
+
+
+# ------------------------- after a squash accept (review #5, §17.3 round 3c)
+
+
+def _squash_then_author_edits(w, monkeypatch, *, bob_after=None, author=None):
+    """Bob proposes red + app.py 9; the author squash-merges it and edits
+    again (`author` files); `bob_after` = Bob's edit made after sending.
+    Auto-sync off, so nothing settles: the sync only fetches."""
+    from fused_render import git_upstream
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red"), "app.py": APP_PY_LOUD},
+                  "red and loud")
+    _send(w)
+    w.fake.merge("alice/sine", 1, "squash")
+    if bob_after:
+        claude_commit(w.app, bob_after, "after sending")
+    w.fake.commit("alice/sine", "main", author, "author edits", author="alice")
+    monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: False)
+    w.sync()
+    assert_home_invariants(w.app)
+    assert _p().refresh(w.app, force=True)["state"] == "merged"
+
+
+def test_after_a_squash_the_authors_edit_of_bobs_lines_is_no_overlap(sw, monkeypatch):
+    """Review #5: git's own base predates Bob's squashed change, so a plain
+    merge-tree says his app.py line overlaps her later edit of it. Send
+    asks the engine's overlap (merged proposal's head as the base): none,
+    so Send never points at a Merge with Claude the page does not show."""
+    from fused_render.contrib import engine, replay
+    w = sw
+    _squash_then_author_edits(w, monkeypatch,
+                              author={"app.py": APP_PY.replace("return 1", "return 7")})
+    head, main = _head(w), git(w.app, "rev-parse", "refs/heads/main")
+    assert not replay.merge_tree(w.app, head, main)["clean"]          # the trap
+    assert _p().conflict(w.app) is False
+    assert engine.merge_plan(w.app) is None
+    claude_commit(w.app, {"EXTRA.md": "more\n"}, "more")
+    assert _send(w)["number"] == 2                                    # not refused
+
+
+def test_after_a_squash_a_real_overlap_merges_on_the_proposals_head(sw, monkeypatch):
+    """Both changed the index line AFTER the squash: that overlap stands, the
+    plan names the merged proposal's head as the base, and the Merge with
+    Claude job shows only those later edits — never Bob's merged app.py."""
+    from fused_render.contrib import engine, merge_job
+    from fused_render.contrib.jobs import PlainError
+    w = sw
+    _squash_then_author_edits(
+        w, monkeypatch, bob_after={"index.html": PAGE.replace("blue", "crimson")},
+        author={"index.html": PAGE.replace("blue", "ruby"),
+                "app.py": APP_PY.replace("return 1", "return 7")})
+    sent = _sent(w)
+    assert _p().conflict(w.app) is True
+    plan = engine.merge_plan(w.app)
+    assert plan["base"] == sent and plan["files"] == ["index.html"], plan
+    claude_commit(w.app, {"EXTRA.md": "more\n"}, "more")
+    with pytest.raises(PlainError, match="Merge with Claude first"):
+        _send(w)
+    seen = {}
+
+    def resolver(wt, files, ctx):
+        seen["files"] = list(files)
+        seen["text"] = read(wt, "index.html")
+        edit(wt, "index.html", PAGE.replace("blue", "crimson-ruby"))
+        return {"ok": True, "summary": "Kept both colours."}
+
+    import time
+    job = merge_job.start(w.app, purpose="update", ours=_head(w), theirs=plan["theirs"],
+                          base=plan["base"], resolver=resolver)
+    deadline = time.time() + 30
+    while merge_job.get(job)["status"] == "running" and time.time() < deadline:
+        time.sleep(0.05)
+    assert merge_job.get(job)["status"] == "ready", merge_job.get(job)
+    assert seen["files"] == ["index.html"]
+    assert "crimson" in seen["text"] and "ruby" in seen["text"]
+    assert "|||||||" in seen["text"] and ">red<" in seen["text"] and ">blue<" not in seen["text"]
+    assert merge_job.accept(job)["ok"]
+    assert_home_invariants(w.app)
+    assert "crimson-ruby" in read(w.app, "index.html") and "return 7" in read(w.app, "app.py")
+    assert _p().conflict(w.app) is False
+
+
+def test_home_branch_is_the_one_constant(w):
+    """Review #11: no literal of its own."""
+    from fused_render.contrib import classify
+    assert _p().home_branch() == classify.HOME_BRANCH
+    assert not hasattr(_p(), "_HOME_BRANCH")

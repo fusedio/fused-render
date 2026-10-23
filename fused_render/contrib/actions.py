@@ -296,6 +296,7 @@ def _github(f: dict, flags: dict) -> dict:
     extra: list[str] = []
     state = copy.get("state") or "following"
     lets_bring_in = True
+    held_said = False  # the sentence already says Bring in is the user's move
 
     match_confirm = (f"Your copy becomes {who}'s version. Your changes are kept in "
                      "Activity so you can bring them back.")
@@ -388,9 +389,15 @@ def _github(f: dict, flags: dict) -> dict:
         sentence = f"{_file_words(blocked)} {verb} in the way of {who}'s update."
         b.add("move-aside", "Move my file aside and update", primary=True)
     elif state == "merged":
-        if behind:
-            # Not in yet (Claude busy, automatic updates off): the next sync
-            # or Bring in brings it, then settles onto the author's version.
+        if behind and (copy.get("auto_sync") is False or copy.get("kept_mine")):
+            # Automatic updates off, or the user undid one (§17.3: buttons
+            # only) — neither opening the app nor Check now moves anything;
+            # Bring in (offered below) does.
+            sentence = f"{who} merged your change. Bring it in when you're ready."
+            held_said = True
+        elif behind:
+            # Not in yet (Claude was busy): the next sync or Bring in brings
+            # it, then settles onto the author's version.
             sentence = (f"{who} merged your change. It comes into your copy the next time "
                         "you open the app, or when you press Check now.")
         else:
@@ -447,7 +454,7 @@ def _github(f: dict, flags: dict) -> dict:
                     f"Following {who}'s latest.")
 
     if lets_bring_in and behind > 0:
-        if copy.get("kept_mine"):
+        if copy.get("kept_mine") and not held_said:
             # §17.2 undo hold: the user undid an automatic bring-in (or ff,
             # or settle) and the author's tip has not moved since — nothing
             # comes in on its own until they ask.

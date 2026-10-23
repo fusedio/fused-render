@@ -2138,8 +2138,8 @@ def test_reset_is_the_users_own_on_fused_mine(ops, wired):
 
 def test_reset_is_refused_off_fused_mine(ops, wired, tmp_path, monkeypatch):
     """The author's branch is a mirror only the fetch writes (§17.1 I3), so
-    reset there is refused, naming the user's own branch and the app page's
-    real button (the author's login, as `actions.py` labels it)."""
+    reset there is refused in plain words (no branch name) naming the app
+    page's real button (the author's login, as `actions.py` labels it)."""
     import json
 
     root, _, _ = wired
@@ -2152,13 +2152,13 @@ def test_reset_is_refused_off_fused_mine(ops, wired, tmp_path, monkeypatch):
     _mine(root, "top.txt", "on the author's branch\n")
     got = ops.main(root, op="reset", sha=first)
     assert got["ok"] is False and got["reason"] == "follows-author", got
-    assert "fused/mine" in got["message"]
+    assert "fused/mine" not in got["message"]  # §0.1: no branch names
     assert "turn on Community apps" in got["message"]
     (home / "prefs.json").write_text(json.dumps({"contrib_enabled": True}))
     got = ops.main(root, op="reset", sha=first)
     assert got["message"] == (
-        "This app follows alice/x, and only fused/mine holds your own history: switch to "
-        "it to reset. To go back to their version exactly, use “Use alice's version” on "
+        "This app follows alice/x. Only your own version can be reset here: go back to it "
+        "first. To go back to their version exactly, use “Use alice's version” on "
         "its app page.")
     assert git(root, "rev-parse", "HEAD").strip() != first
 

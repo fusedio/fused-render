@@ -446,6 +446,45 @@ def test_merge_claude_starts_the_planned_merge(env):
     assert _act(env, d, "merge-claude")["reason"] == "nothing-to-merge"
 
 
+def test_merge_claude_passes_the_plans_base_through(env):
+    """§17.4: the engine's plan names the merge-base; `merge_job.start`
+    receives it as `base=` when it takes one, and a start (or a plan)
+    without it still works — either workstream may land first."""
+    d = env.app("a")
+    env.engine.status = lambda app_dir: _v2("needs-merge")
+    plan = {"purpose": "update", "ours": "h", "theirs": "t", "onto": "t", "base": "b0",
+            "files": ["a"]}
+    env.engine.merge_plan = lambda app_dir: dict(plan)
+    got = []
+
+    def start_with_base(app_dir, *, purpose, ours, theirs, onto=None, base=None):
+        got.append(base)
+        return "mj-b"
+
+    env.merge_job.start = start_with_base
+    assert _act(env, d, "merge-claude") == {"ok": True, "job": "mj-b", "merge": True}
+    env.engine.merge_plan = lambda app_dir: {k: v for k, v in plan.items() if k != "base"}
+    assert _act(env, d, "merge-claude")["ok"] is True
+    assert got == ["b0", None]
+
+    def start_before(app_dir, *, purpose, ours, theirs, onto=None):
+        return "mj-old"
+
+    env.merge_job.start = start_before
+    env.engine.merge_plan = lambda app_dir: dict(plan)
+    assert _act(env, d, "merge-claude") == {"ok": True, "job": "mj-old", "merge": True}
+
+    seen = {}
+
+    def start_open(app_dir, *, purpose, ours=None, theirs=None, **rest):
+        seen.update(rest)
+        return "mj-open"
+
+    env.merge_job.start = start_open  # today's real shape: **_legacy
+    assert _act(env, d, "merge-claude")["job"] == "mj-open"
+    assert seen.get("base") == "b0" and "files" not in seen
+
+
 def test_choose_decides_only_the_choice_files(env):
     """choose-mine / choose-theirs → merge_job.choose on THIS copy's choice
     job (its purposes per kind); the answer is the merge job, for the review."""

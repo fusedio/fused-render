@@ -1029,8 +1029,11 @@ every step it touches)
   The pushurl guard stays; fused pushes a `github` copy only to the fork, and
   the author's branch only from `push_to_main` (collaborator, by URL).
 - **I3** `refs/heads/main` (the record's `branch`) on a `github` copy equals
-  `refs/remotes/origin/<branch>` after every sync. It is never checked out
-  and is written only by the fetch (a ref update, never a worktree move).
+  `refs/remotes/origin/<branch>` after every fetch, whoever fetched
+  (`follow.fetch` updates the mirror itself). It is never checked out and
+  is written only by that ref update, never a worktree move. A rewind is
+  detected there (`ff: False`), pinned, and its Activity line has no Undo
+  (Bob's branch never moved).
 - **I4** HEAD on a `github` copy is `refs/heads/fused/mine` (`HOME_BRANCH`).
   Anything else is the `other-branch` state ("a different version").
 - **I5** Every state is recoverable from git and GitHub alone. The record
@@ -1054,7 +1057,7 @@ status time, cached on `(head, main, pr)`: `conflict` =
 | `proposed` | pr open | as `changes` | Update proposal · Withdraw · Bring in · Discard(+withdraw) |
 | `merged` | pr merged, not `settled_seen` | ff or bring-in merge, then settle when tree(HEAD)==tree(main) (17.3). A merge-commit accept is NOT a fast-forward of Bob's own bring-in merge (same parents, different commit): settle is the normal path on almost every accept. `proposal.landed_at` is set ONCE, in the same store update that writes the Activity line "<who> merged your change. You're on <who>'s latest version." · Undo; the state stays `merged` until `settled_seen` | Propose (if ahead after settle) · Check |
 | `declined` | pr closed, not `settled_seen` | nothing | Keep working · Discard · Propose again |
-| `needs-merge` | `conflict` | nothing | Merge with Claude · Match <who> (danger, confirm) |
+| `needs-merge` | `conflict` (derived with the merged-proposal base, 17.3; `engine.conflict` is the one source proposals and the merge plan read) | nothing | Merge with Claude · Use <who>'s version (id `match`, danger, confirm) |
 | `blocked` | `blocked` non-empty | nothing | Move my file aside and update |
 | `other-branch` | HEAD ≠ fused/mine | fetch only | Go back to the usual version |
 | `merging` | merge job running/ready | nothing (job holds syncs) | the merge review |
@@ -1081,7 +1084,7 @@ check-then-act window of its own. All under `replay.slot()`.
 | bring in | `replay.merge_tree(HEAD, main)` — with the PR head as the merge base (`base=`) when the proposal is merged and the PR head ⊆ HEAD, so a squash/rebase accept's content counts as common ground and Bob's sent commit never conflicts with the author's later edits of the same lines; result tree == tree(main) → settle instead — clean → `commit-tree <tree> -p HEAD -p main` ("Bring in <who>'s latest", Bob's identity) → `replay.land_ff_locked(root, new)` = `merge --ff-only <new>` | ff needs HEAD == new^1 (CAS); dirty overlap → commit "Your edits" first (row 6 kept, on the branch) |
 | settle | after a bring-in with pr merged: when tree(HEAD) == tree(main) and clean: `replay.settle_locked(root)` = pin HEAD, `update-ref refs/heads/fused/mine main HEAD` (CAS), `reset --hard` (same tree: no file changes) | CAS; requires clean; skipped otherwise (cosmetic) |
 | discard | pin HEAD (+wip), `reset --hard main`, remove backed-up untracked files; `withdraw` closes the PR | button + confirm |
-| match | same as discard with text "Switched to <who>'s version. Your version is saved." (replaces use_theirs) | button + confirm |
+| match ("Use <who>'s version") | same as discard with text "Switched to <who>'s version. Your version is saved." (replaces use_theirs) | button + confirm |
 | keep working | `proposal = None` after a declined/withdrawn PR; nothing moves | button |
 | move aside | as v2 `move_aside`, then ff/bring-in | button |
 | go back | `switch fused/mine` when clean (create from main if missing) | button |
@@ -1106,7 +1109,10 @@ later PR).
 
 Purposes: `update` (theirs = main, into fused/mine), `proposal` (theirs =
 PR head, into fused/mine), `own-sync`, `original`. `return` deleted. `ours`
-is HEAD at job start. `accept` lands with `replay.land_ff_locked(root,
+is HEAD at job start. An `update` job carries the plan's `base` (the
+merged-proposal base of 17.3): the conflicted worktree is built from
+`merge-tree --write-tree --merge-base=<base>` so Claude never re-resolves
+lines the author already merged (git < 2.40: plain merge, logged). `accept` lands with `replay.land_ff_locked(root,
 new_tip)`; a HEAD that moved since means "re-run" (job `failed` with
 "Your copy changed meanwhile; run it again"), never a reset. `choose`
 (per-file Keep mine / Use theirs) unchanged. `engine.merge_landed` only
@@ -1146,6 +1152,8 @@ writes the Activity line and notes the head.
   `skip_tip`; `_view` fills them as None for old readers for one release.
   Binding: a record is bound to `(origin url == repo url)`; `root_commit`
   checks deleted (`_bind` by URL only).
+- With auto-sync off or an undo hold standing, the `merged` sentence says
+  "Bring it in when you're ready." (nothing automatic will run).
 - `classify.HOME_BRANCH = "fused/mine"`. `settle_locked` (every sync, slot
   held) runs `migrate_v3` once per record without `v: 3`: if HEAD is a
   branch other than HOME_BRANCH and HOME_BRANCH is absent → `branch

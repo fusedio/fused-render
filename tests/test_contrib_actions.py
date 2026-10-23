@@ -121,6 +121,10 @@ TABLE = [
      ["choose-mine", "choose-theirs", "match", "check"]),
     ("merged", gh("merged"), ["check"]),
     ("merged, not in yet", gh("merged", behind=2), ["bring-in", "check"]),
+    ("merged, not in yet, automatic updates off", gh("merged", behind=2, auto_sync=False),
+     ["bring-in", "check"]),
+    ("merged, not in yet, undo hold", gh("merged", behind=2, kept_mine=True),
+     ["bring-in", "check"]),
     # §16.12: edits kept after a merge can go in a new proposal.
     ("merged, kept edits", gh("merged", **CH), ["propose", "remix", "discard", "check"]),
     ("merged, kept edits, A1", gh("merged", flags=A1, **CH), ["discard", "check"]),
@@ -403,6 +407,12 @@ def test_nothing_to_show_is_null():
     (gh("merged"), "merged", "alice merged your change. You're on alice's latest version."),
     (gh("merged", behind=1), "merged",
      "alice merged your change. It comes into your copy the next time you open the app, or when you press Check now."),
+    # Review #8: with automatic updates off or an undo hold, neither opening
+    # nor Check now brings it in — only Bring in does.
+    (gh("merged", behind=1, auto_sync=False), "merged",
+     "alice merged your change. Bring it in when you're ready."),
+    (gh("merged", behind=1, kept_mine=True), "merged",
+     "alice merged your change. Bring it in when you're ready."),
     (gh("needs-merge", merge_job={"id": "m", "status": "choice",
                                   "error": "logo.png isn't text, so it can't be combined."}),
      "needs-merge", "logo.png isn't text, so it can't be combined."),
@@ -552,6 +562,15 @@ def test_v2_ids_and_facts_are_gone():
     assert ids(held) == ids(gh("changes", behind=1, **CH))
     assert actions.decide({**held, "copy": {**held["copy"], "behind": 0}})["panel"]["sentence"] \
         == "Your changes: 1 file."  # nothing waiting: nothing to say
+
+
+def test_merged_with_an_undo_hold_says_it_once():
+    """The held `merged` sentence already says Bring in is theirs to press;
+    the undo-hold line is not repeated after it."""
+    p = actions.decide(gh("merged", behind=1, kept_mine=True))["panel"]
+    assert p["sentence"] == "alice merged your change. Bring it in when you're ready."
+    assert actions.decide(gh("merged", behind=0, auto_sync=False))["panel"]["sentence"] \
+        == "alice merged your change. You're on alice's latest version."
 
 
 def test_moved_merge_offers_merge_with_claude_again():

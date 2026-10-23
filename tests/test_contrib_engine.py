@@ -87,7 +87,6 @@ def w(tmp_path, monkeypatch):
     monkeypatch.setattr(classify, "ensure_in_background", lambda app_dir: False)
     monkeypatch.setattr(engine, "_claude_busy", lambda root: False)
     engine._status_cache.clear()
-    engine._taken_cache.clear()
     world = make_world(tmp_path, monkeypatch)
     fake = _Proposals(world)
     import fused_render.contrib as pkg
@@ -328,7 +327,8 @@ def test_conflict_is_needs_merge_derived_and_match_resolves_it(w):
     assert st["state"] == "needs-merge" and st["needs_merge"]
     assert st["needs_merge_files"] == ["index.html"] and st["needs_merge_purpose"] == "update"
     assert engine.merge_plan(w.app) == {"purpose": "update", "ours": mine, "theirs": tip,
-                                        "onto": tip, "files": ["index.html"]}
+                                        "onto": tip, "base": None, "files": ["index.html"]}
+    assert engine.conflict(w.app) == {"files": ["index.html"], "base": None}
     assert w.sync()["why"] == "needs-merge" and w.head() == mine
     out = engine.match(w.app)
     assert out["ok"] and w.head() == tip
@@ -410,22 +410,17 @@ def test_loop_off_still_brings_in_cleanly(w):
 
 
 def test_loop_off_stuck_states_are_todays_failure_rows(w):
-    """§16.12/§17.7: an edit in the way, an overlap, a file in the way —
-    git_upstream's failure row in plain words, nothing committed for him,
-    tree untouched."""
+    """§17.7 (review P2 #16): with the loop off an edit in the way is still
+    saved as "Your edits" on Bob's own branch and the update comes in; an
+    overlap or a file in the way is git_upstream's failure row in plain
+    words, tree untouched."""
     _off()
-    head = w.head()
     edit(w.app, "app.py", APP_LOUD)
     tip = _alice(w, {"app.py": APP_PY + "# a\n"}, "a2")
-    res = w.sync(push=True)
-    assert res["status"] == "failed" and res["failure"]["reason"] == "dirty"
-    assert _failures(w) == [("dirty", "You have unsaved edits to app.py, and alice's "
-                                      "update changes that file too. Save or undo them to "
-                                      "get the update.")]
-    assert w.head() == head and read(w.app, "app.py") == APP_LOUD
+    assert w.sync(push=True)["status"] == "synced" and _failures(w) == []
     inv(w)
-    git(w.app, "checkout", "--", "app.py")        # undone: the row goes, the update lands
-    assert w.sync()["status"] == "synced" and _failures(w) == []
+    assert git(w.app, "log", "-1", "--format=%s", "HEAD^1") == "Your edits"
+    assert read(w.app, "app.py") == APP_LOUD + "# a\n"
     mine = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     _alice(w, {"index.html": PAGE.replace("blue", "green")}, "green")
     res = w.sync(push=True)
@@ -587,8 +582,43 @@ def test_author_rewind_pins_the_old_mirror(w):
     pins = [b for b in _backups(w) if b.endswith("-rewound")]
     assert len(pins) == 1 and replay.rev(w.app, pins[0]) == a2
     line = _activity(w)[-1]
-    assert line["kind"] == "rewound" and line["backup"] == pins[0]
-    assert "earlier version" in line["text"]
+    assert line["kind"] == "rewound" and line["ref"] == pins[0] and not line["backup"]
+    assert line["text"] == ("alice went back to an earlier version of their app. Your copy "
+                            "and your changes are untouched.")
+    assert pins[0] in store.referenced_backups(w.app)      # never pruned
+    w.sync()
+    assert len([e for e in _activity(w) if e["kind"] == "rewound"]) == 1
+
+
+def test_the_rewound_line_has_no_undo(w):
+    """Review P1 #3: Undo there would put the author's old version over
+    Bob's own branch."""
+    a1 = w.alice()
+    _alice(w, {"NOTES.md": "n\n"}, "notes")
+    w.sync()
+    mine = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _rewind(w, a1)
+    w.sync()
+    line = next(e for e in store.activity(w.app) if e["kind"] == "rewound")
+    assert line["undo"] is False
+    assert engine.restore(w.app, line["id"])["reason"] == "nothing"
+    assert _anc(w, mine, w.head())
+
+
+def test_every_fetch_keeps_the_mirror_and_names_a_rewind(w):
+    """Review P1 #4: a fetch outside the engine (Send/Update/remix's
+    `proposals.tip_of(fetch=True)`) moves the mirror too, and a rewind it
+    absorbs still gets its line, naming the pin."""
+    a1 = w.alice()
+    _alice(w, {"NOTES.md": "n\n"}, "notes")
+    w.sync()
+    _rewind(w, a1)
+    rec, fol = engine._record(w.app)
+    with replay.slot():
+        follow.fetch(w.app, fol)
+    inv(w)
+    lines = [e for e in _activity(w) if e["kind"] == "rewound"]
+    assert len(lines) == 1 and lines[0]["ref"] in store.referenced_backups(w.app)
     w.sync()
     assert len([e for e in _activity(w) if e["kind"] == "rewound"]) == 1
 
@@ -808,6 +838,8 @@ def test_migration_from_a_v2_record_with_a_diverged_main(v2):
     assert len(pins) == 1 and replay.rev(w.app, pins[0]) == mine
     texts = [e["text"] for e in rec["activity"]]
     assert texts.count(classify.MOVED_TEXT) == 1
+    moved = next(e for e in rec["activity"] if e["text"] == classify.MOVED_TEXT)
+    assert moved["backup"] == pins[0]                      # review P2 #20
     assert git(w.app, "config", f"branch.{HOME}.merge") == "refs/heads/main"
     w.sync()
     assert [e["text"] for e in store.get(w.app)["activity"]].count(classify.MOVED_TEXT) == 1
@@ -1068,3 +1100,103 @@ def test_settle_locked_needs_the_same_tree_only(w):
     assert read(w.app, "app.py") == APP_LOUD
     inv(w)
     assert mine
+
+
+# ------------------------------------------------------------- review round 4
+
+
+def test_settle_onto_a_merged_tree_refuses_a_raced_commit(w):
+    """Review P1 #2: `settle_locked(merged=)` is computed for one HEAD; a
+    commit that landed since makes it refuse, nothing moved."""
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    n = _propose(w)
+    w.fake.merge(REPO, n, "squash")
+    _alice(w, {"index.html": PAGE.replace("blue", "ruby")}, "ruby")
+    rec, fol = engine._record(w.app)
+    with replay.slot():
+        follow.fetch(w.app, fol)
+    w.proposals.refresh(w.app)
+    head, main = w.head(), replay.rev(w.app, "refs/heads/main")
+    base = engine._merged_base(w.app, store.get(w.app), head, main)
+    mt = replay.merge_tree(w.app, head, main, base=base)
+    assert base and mt["clean"] and mt["tree"] == replay.tree_of(w.app, main)
+    raced = claude_commit(w.app, {"app.py": APP_LOUD}, "raced")
+    with replay.slot():
+        assert replay.settle_locked(w.app, main="refs/heads/main", merged=mt["tree"],
+                                    head=head) == (False, None)
+    assert w.head() == raced
+    with replay.slot():
+        assert replay.settle_locked(w.app, main="refs/heads/main", merged=mt["tree"]) \
+            == (False, None)                                # no head: refused too
+
+
+def test_conflict_uses_the_merged_proposals_base(w, monkeypatch):
+    """Review P1 #5: after a squash accept and the author editing the same
+    lines, git's own base sees an overlap that is not there; `conflict` and
+    `merge_plan` use the proposal's head, like status."""
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    n = _propose(w)
+    w.fake.merge(REPO, n, "squash")
+    _alice(w, {"index.html": PAGE.replace("blue", "ruby")}, "ruby")
+    monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: False)
+    w.sync()
+    w.proposals.refresh(w.app)
+    head, main = w.head(), replay.rev(w.app, "refs/heads/main")
+    assert not replay.merge_tree(w.app, head, main)["clean"]      # git's own base
+    c = engine.conflict(w.app)
+    assert c["files"] == [] and c["base"] == store.get(w.app)["proposal"]["cache"]["head_sha"]
+    assert engine.merge_plan(w.app) is None
+    st = engine.status(w.app)
+    assert st["state"] == "merged" and not st["needs_merge"]
+
+
+def test_blocked_follows_the_working_tree_not_the_cache(w):
+    """Review P1 #6: a colliding local file removed by hand clears
+    `blocked` at once (the cache holds history facts only)."""
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    edit(w.app, "notes.md", "my own notes\n")
+    _alice(w, {"notes.md": "author notes\n"}, "notes")
+    w.sync()
+    assert engine.status(w.app)["state"] == "blocked"
+    os.remove(os.path.join(w.app, "notes.md"))
+    st = engine.status(w.app)
+    assert st["state"] == "changes" and st["blocked_files"] == []
+    edit(w.app, "notes.md", "again\n")
+    assert engine.status(w.app)["blocked_files"] == ["notes.md"]
+
+
+def test_move_aside_refuses_on_another_version(w):
+    """Review P1 #7: nothing leaves the folder while another version is
+    checked out."""
+    git(w.app, "checkout", "-q", "-b", "side")
+    edit(w.app, "notes.md", "mine\n")
+    _alice(w, {"notes.md": "author\n"}, "notes")
+    w.sync()
+    assert engine.move_aside(w.app)["reason"] == "off-default"
+    assert read(w.app, "notes.md") == "mine\n"
+    assert not [e for e in _activity(w) if e["kind"] == "aside"]
+
+
+def test_buttons_end_an_undo_hold(w):
+    """Review P2 #15: Keep working and Go back end the hold as every button
+    does."""
+    _alice(w, {"NOTES.md": "n\n"}, "notes")
+    w.sync()
+    assert engine.restore(w.app, store.activity(w.app)[0]["id"])["ok"]
+    assert store.get(w.app)["skip_tip"]
+    assert engine.keep_working(w.app)["ok"]
+    assert store.get(w.app)["skip_tip"] is None
+    assert engine.restore(w.app, next(e["id"] for e in store.activity(w.app)
+                                      if e["kind"] == "update"))["reason"] == "nothing"
+    _alice(w, {"MORE.md": "m\n"}, "more")
+    w.sync()
+    assert engine.restore(w.app, store.activity(w.app)[0]["id"])["ok"]
+    git(w.app, "checkout", "-q", "-b", "side")
+    assert engine.go_back_main(w.app)["ok"]
+    assert store.get(w.app)["skip_tip"] is None
+
+
+def test_one_guard_module():
+    """Review P2 #11: classify and replay share one loaded guard module."""
+    assert classify._guard_mod is replay._guard_module()
+    assert classify.HOME_BRANCH == replay.HOME_BRANCH == classify._guard_mod.HOME_BRANCH

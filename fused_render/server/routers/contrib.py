@@ -726,7 +726,10 @@ def _retry(t: _Target) -> dict:
 def _start_merge(t: _Target, plan) -> dict:
     """Merge with Claude for the engine's `plan`. Only the keys
     `merge_job.start` takes are passed, by its signature (the plan's
-    bookkeeping — `files` — never reaches it)."""
+    bookkeeping — `files` — never reaches it). That is how v3's merge-base
+    (`plan["base"]`, §17.4) reaches `start(..., base=)`: passed when the
+    plan carries it and `start` takes it, absent otherwise — so either side
+    may land first."""
     if not isinstance(plan, dict) or not plan.get("purpose"):
         return _refuse("nothing-to-merge", "There's nothing to combine right now.")
     start = _mod("merge_job").start

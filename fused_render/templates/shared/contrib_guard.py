@@ -182,5 +182,7 @@ def reset_blocked(root, run, home_dir=None):
     button = f"“{match_label(who)}”"
     where = (f"use {button} on its app page" if app_page_on(home_dir)
              else f"turn on Community apps in Settings, then use {button} on its app page")
-    return (f"This app follows {who}, and only {HOME_BRANCH} holds your own history: "
-            f"switch to it to reset. To go back to their version exactly, {where}.")
+    # No branch name (§0.1): the Git panel's other guard sentences avoid
+    # them too.
+    return (f"This app follows {who}. Only your own version can be reset here: go back "
+            f"to it first. To go back to their version exactly, {where}.")

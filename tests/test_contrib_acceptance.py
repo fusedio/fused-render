@@ -192,7 +192,7 @@ def use(m: Machine):
     W.gh.forget_identity()
     refresh._reset()
     for mod, names in ((classify, ("_kind_memo", "_guarded")), (store, ("_bind_memo",)),
-                       (engine, ("_status_cache", "_taken_cache")),
+                       (engine, ("_status_cache",)),
                        (git_upstream, ("_checked", "_state", "_last_fetch")),
                        (inbox, ("_lists", "_asked")), (proposals, ("_last_refresh",))):
         for n in names:
@@ -671,18 +671,20 @@ def _step6_flags_off_hand_edit():
     alice_publish({"index.html": PAGE.replace("blue", "purple")}, "purple wave")
     before = refs()
     app_open(W.carol)
-    assert head(W.carol.app) == carol_head
+    # §17.3: the unsaved overlapping edit is saved as "Your edits" on her
+    # own branch whatever the switch; the overlap itself stands as a row.
+    assert git(W.carol.app, "rev-parse", "HEAD^") == carol_head
+    assert git(W.carol.app, "log", "-1", "--format=%s").strip() == "Your edits"
     assert read(W.carol.app, "index.html") == PAGE.replace("blue", "red")
     rec = store.get(W.carol.app) or {}
     assert not rec.get("needs_merge"), rec.get("needs_merge")
     rows = [r for r in git_upstream.sync_failures() if os.path.realpath(
         str(r.get("root") or r.get("path") or "")) == W.carol.app]
-    assert rows and rows[0].get("reason") in ("dirty", "diverged", "git-failed"), \
+    assert rows and rows[0].get("reason") in ("diverged", "git-failed"), \
         git_upstream.sync_failures()
     out = page(W.carol)
     assert out.get("reason") == "disabled", out
-    # The same overlap, committed by hand.
-    git(W.carol.app, "commit", "-q", "-am", "red")
+    # The same overlap, now a commit: still the row, nothing moves.
     carol_head = head(W.carol.app)
     git_upstream._checked.clear()
     app_open(W.carol)

@@ -440,6 +440,15 @@ def _run_env(root, env, *args, timeout=gu.TIMEOUT_S):
     return proc.returncode, proc.stdout, proc.stderr
 
 
+def added_paths(root, head, target) -> list[str]:
+    """Paths `target` adds over `head` (history only, `.fused/` left out) —
+    the cacheable half of `clobber_paths`."""
+    if not head or not target:
+        return []
+    return names(git(root, "diff", "--name-only", "-z", "--diff-filter=A", head, target, "--",
+                     ".", ":(exclude).fused"))
+
+
 def clobber_paths(root, head, target) -> list[str]:
     """Paths `target` adds over `head` that exist in the working tree but
     are not tracked — ignored ones included (a `.env`, a data file): a
@@ -1021,7 +1030,8 @@ def mirror_ref(root) -> str | None:
     return ref if ref.startswith("refs/heads/") and ref != HOME_REF else None
 
 
-def settle_locked(root, *, why="settle", main=None, merged=None) -> tuple[bool, str | None]:
+def settle_locked(root, *, why="settle", main=None, merged=None,
+                  head=None) -> tuple[bool, str | None]:
     """Settle (§17.3): `fused/mine` holds the author's version (same tree as
     `main`) by other commits — Bob's own, a bring-in merge, a squash on
     GitHub — so `fused/mine` becomes `main`. HEAD is pinned first
@@ -1040,12 +1050,17 @@ def settle_locked(root, *, why="settle", main=None, merged=None) -> tuple[bool, 
     it does not move), and a commit that raced in is put back
     (`undo_race_locked`).
 
+    `head`: the HEAD the caller computed `merged` for — refused when HEAD
+    is anywhere else now (a commit raced in; review P1 #2). Required with
+    `merged`.
+
     Requires HEAD on `fused/mine`. `main` defaults to `mirror_ref`. `(True,
     backup)` when it settled; `(False, None)` and nothing moved otherwise.
     The caller holds the slot."""
     main = main or mirror_ref(root)
     if gu._current_branch(root) != HOME_BRANCH or gu._operation_in_flight(root) is not None:
         return False, None
+    expected = rev(root, head) if head else None
     head = rev(root, "HEAD")
     main = rev(root, main)
     if not head or not main or head == main:
@@ -1068,7 +1083,7 @@ def settle_locked(root, *, why="settle", main=None, merged=None) -> tuple[bool, 
                         gu._text(r))
         protect_after_move(root)
         return True, refs[0]
-    if not merged or merged != want:
+    if not merged or merged != want or not expected or head != expected:
         return False, None
     clobber = clobber_paths(root, head, main)
     refs = backup_locked(root, head, why=why, also=clobber)

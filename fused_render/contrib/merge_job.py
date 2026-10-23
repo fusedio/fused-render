@@ -27,6 +27,19 @@ When nothing overlaps (`merge-tree` clean) the merge commit is built
 directly — no worktree, no Claude — and still shown for confirmation
 (CLEAN_MERGE_SUMMARY) rather than landed unasked.
 
+A MERGE BASE OF ITS OWN (§17.3 round 3c). After the author accepted Bob's
+proposal by squash or rebase, git's own merge base predates his change, so
+the author's later edits of those lines would "conflict" with his own,
+already-merged change. `engine.merge_plan` then names `base` (the merged
+proposal's head) and an `update`/`proposal` job merges on it:
+`merge-tree --write-tree --merge-base=<base>` decides clean/overlap, and
+for an overlap the scratch worktree is SEEDED from that answer — its tree
+read in (`read-tree --reset -u`), each conflicted path's stages put in the
+index, `MERGE_HEAD` = theirs — so Claude, the person's choices and the
+final `git commit` see exactly the overlaps that base gives, and nothing
+of Bob's merged change. A git without `--merge-base` (< 2.40) falls back to
+git's own base, logged.
+
 THE REAL APP FOLDER NEVER HOLDS A HALF-DONE MERGE (§0.3). The worktree is
 `<home>/contrib/work/<job_id>/`, outside the workspace, so no Claude turn
 auto-commits there and auto-sync never sees it. Only `accept` touches the
@@ -111,7 +124,8 @@ def _git_bin():
     return git_upstream._git_bin()
 
 
-def _git(root: str, *args, env: dict | None = None, timeout: float = _GIT_TIMEOUT_S):
+def _git(root: str, *args, env: dict | None = None, timeout: float = _GIT_TIMEOUT_S,
+         input: bytes | None = None):
     """`(rc, stdout, stderr)` as text, or None when git could not run. The
     git_upstream discipline (absolute git, `-C`, close_fds=False, no cwd=,
     non-interactive env) plus per-call env overrides — `GIT_EDITOR=true` for
@@ -123,9 +137,10 @@ def _git(root: str, *args, env: dict | None = None, timeout: float = _GIT_TIMEOU
     try:
         proc = subprocess.run(
             [_git_bin(), "-C", root, *replay.SAFE_CONFIG, *args], stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, stdin=subprocess.DEVNULL, timeout=timeout,
+            stderr=subprocess.PIPE, timeout=timeout,
             env={**os.environ, **git_upstream._ENV, **(env or {})},
-            close_fds=False)
+            close_fds=False,
+            **({"input": input} if input is not None else {"stdin": subprocess.DEVNULL}))
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return None
     return (proc.returncode, proc.stdout.decode("utf-8", "replace"),
@@ -243,7 +258,8 @@ def _public(job: dict) -> dict:
             "summary": job["summary"], "files": list(job["files"]),
             "error": job["error"], "purpose": job["purpose"],
             "ours": job["ours"], "theirs": job["theirs"], "tip": job["new_tip"],
-            "land": job["land"], "started_at": job["started_at"]}
+            "land": job["land"], "started_at": job["started_at"],
+            "base": job.get("base")}
 
 
 def _prune_locked(now: float) -> list:
@@ -307,7 +323,8 @@ def _canon(app_dir: str) -> str:
 
 def start(app_dir: str, *, purpose: str, ours: str | None = None, theirs: str | None = None,
           land: bool = True, sides: dict | None = None, identity: dict | None = None,
-          resolver=None, onto: str | None = None, **_legacy) -> str:
+          resolver=None, onto: str | None = None, base: str | None = None,
+          **_legacy) -> str:
     """Start (or return the open) merge job for `app_dir`: merge `theirs`
     into `ours` (default: HEAD now). `land` False: `accept` never touches
     the folder and only answers the merged `tip` (the inbox's merge of a
@@ -318,7 +335,9 @@ def start(app_dir: str, *, purpose: str, ours: str | None = None, theirs: str | 
     v1 name of `theirs`; v1's `upstream`/`strategy`/`mark` are ignored.
     Without `theirs`, a `github` copy's purpose names its own (§17.4):
     `update` → `refs/heads/<b>` (the fetch-only mirror of the author's
-    branch), `proposal` → `refs/fused/pr-head`."""
+    branch), `proposal` → `refs/fused/pr-head`. `base` (an `update` or
+    `proposal` job only; `engine.merge_plan`'s `base`) merges on that
+    commit instead of git's own merge base (module docstring)."""
     purpose = _ALIASES.get(purpose, purpose)
     if purpose not in PURPOSES:
         raise ValueError(f"unknown purpose {purpose!r}")
@@ -335,6 +354,7 @@ def start(app_dir: str, *, purpose: str, ours: str | None = None, theirs: str | 
         job = {"id": job_id, "root": root, "purpose": purpose, "ours": ours,
                "theirs": theirs, "land": bool(land), "sides": sides,
                "identity": identity, "branch": None,
+               "base": base if purpose in FF_PURPOSES else None,
                "new_tip": None, "worktree": None,
                "status": "running", "summary": "", "files": [], "error": None,
                "started_at": time.time(), "ended_at": None,
@@ -500,15 +520,22 @@ def _run_inner(job: dict, resolver) -> None:
         if not job["branch"] or head != job["ours"]:
             _finish(job, "failed", error=STALE_MESSAGE)
             return
-    deadline = job["started_at"] + MAX_SECONDS
     message = _message(job)
+    commit_args = _commit_args(root, job["identity"])
 
-    mt = replay.merge_tree(root, job["ours"], job["theirs"])
+    seeded = None
+    if job["base"]:
+        job["base"] = replay.rev(root, job["base"])
+        seeded = _merge_tree_on_base(root, job, commit_args) if job["base"] else None
+        if seeded is None:
+            logger.warning("merge job %s: no merge on a named base in %s (git too old?); "
+                           "using git's own base", job["id"], root)
+            job["base"] = None
+    mt = seeded or replay.merge_tree(root, job["ours"], job["theirs"])
     if not mt["supported"]:
         logger.warning("merge job %s: no merge answer in %s", job["id"], root)
         _finish(job, "failed", error=FAILED_MESSAGE)
         return
-    commit_args = _commit_args(root, job["identity"])
     if mt["clean"]:
         made = _git(root, *commit_args, "commit-tree", mt["tree"], "-p", job["ours"],
                     "-p", job["theirs"], "-m", message)
@@ -527,11 +554,16 @@ def _run_inner(job: dict, resolver) -> None:
         _finish(job, "failed", error=FAILED_MESSAGE)
         return
     job["worktree"] = wt
-    res = _git(wt, *commit_args, "merge", "--no-commit", "--no-ff", job["theirs"],
-               env=_NO_EDITOR, timeout=180.0)
-    if res is None:
-        _finish(job, "failed", error=FAILED_MESSAGE)
-        return
+    if seeded is not None:
+        if not _seed_conflicts(wt, job, seeded):
+            _finish(job, "failed", error=FAILED_MESSAGE)
+            return
+    else:
+        res = _git(wt, *commit_args, "merge", "--no-commit", "--no-ff", job["theirs"],
+                   env=_NO_EDITOR, timeout=180.0)
+        if res is None:
+            _finish(job, "failed", error=FAILED_MESSAGE)
+            return
 
     job["expected_tree"], job["conflicted"] = expected_tree, conflicted
     # Only text overlaps with markers go to Claude. A file removed on one
@@ -548,6 +580,64 @@ def _run_inner(job: dict, resolver) -> None:
         _finish(job, "choice", error=" ".join(why for _p, why in choice[:3]))
         return
     _resolve(job, resolver)
+
+
+_NULL_SHA = "0" * 40
+
+
+def _merge_tree_on_base(root: str, job: dict, commit_args: tuple) -> dict | None:
+    """`merge-tree --write-tree --merge-base=<base> ours theirs` (zdiff3
+    markers, like the scratch merge), with each conflicted path's stage
+    entries: `{"supported", "clean", "tree", "files", "entries"}` where
+    `entries` = `[(mode, sha, stage, path)]`. None when this git cannot
+    (`--merge-base` needs git 2.40)."""
+    res = _git(root, *commit_args, "merge-tree", "--write-tree", "--no-messages", "-z",
+               f"--merge-base={job['base']}", job["ours"], job["theirs"], timeout=180.0)
+    if res is None or res[0] not in (0, 1):
+        return None
+    fields = res[1].split("\0")
+    tree = fields[0].strip() if fields else ""
+    if not tree:
+        return None
+    entries, files = [], []
+    if res[0] == 1:
+        for field in fields[1:]:
+            if not field:
+                break
+            meta, _, path = field.partition("\t")
+            parts = meta.split()
+            if len(parts) != 3 or not path:
+                return None
+            entries.append((parts[0], parts[1], parts[2], path))
+            if path not in files:
+                files.append(path)
+    return {"supported": True, "clean": res[0] == 0, "tree": tree, "files": files,
+            "entries": entries}
+
+
+def _seed_conflicts(wt: str, job: dict, mt: dict) -> bool:
+    """Put the scratch worktree (at `ours`) where `git merge --no-commit`
+    would have left it had git used the job's base: `mt["tree"]` read in
+    and checked out (markers in the conflicted text files), each conflicted
+    path's stage 1/2/3 entries in the index, `MERGE_HEAD` = theirs — so
+    `_unmerged`, `_stages`, `choose` and the final `git commit` (parents
+    ours, theirs) work exactly as for a plain merge."""
+    if not _ok(_git(wt, "read-tree", "--reset", "-u", mt["tree"], timeout=180.0)):
+        return False
+    lines = [f"0 {_NULL_SHA}\t{path}" for path in mt["files"]]
+    lines += [f"{mode} {sha} {stage}\t{path}" for mode, sha, stage, path in mt["entries"]]
+    feed = ("\0".join(lines) + "\0").encode("utf-8")
+    if not _ok(_git(wt, "update-index", "-z", "--index-info", input=feed)):
+        return False
+    gd = _git_dir(wt)
+    if not gd:
+        return False
+    try:
+        with open(os.path.join(gd, "MERGE_HEAD"), "w", encoding="utf-8") as fh:
+            fh.write(job["theirs"] + "\n")
+    except OSError:
+        return False
+    return True
 
 
 def _apply_choice(job: dict, side: str) -> bool:
@@ -833,7 +923,8 @@ def _accept_ff(job: dict) -> dict:
     that moved fails the job — never a reset; the next status shows the
     overlap again and the person runs it again. A busy slot or a refusal
     that is not a move (an unsaved edit in a file the result changes) keeps
-    the job ready."""
+    the job ready. A Claude turn is re-checked INSIDE the slot (review #17:
+    `accept`'s check before it leaves a window for a turn to open)."""
     from fused_render import git_upstream as gu
     from fused_render.contrib import engine, replay
 
@@ -843,6 +934,8 @@ def _accept_ff(job: dict) -> dict:
         with replay.slot() as held:
             if not held:
                 why = "slot-busy"
+            elif engine.claude_busy(root):
+                why = "claude"
             elif (gu._current_branch(root) != job["branch"]
                   or replay.rev(root, "HEAD") != job["ours"]):
                 why = "moved"
@@ -851,6 +944,10 @@ def _accept_ff(job: dict) -> dict:
     except Exception:  # noqa: BLE001
         logger.exception("merge job %s: fast-forward failed", job["id"])
         why = "failed"
+    if why == "claude":
+        with _lock:
+            job["status"] = "ready"
+        return {"ok": False, "reason": "claude", "message": engine.CLAUDE_BUSY_MESSAGE}
     if why and why != "moved":
         with _lock:
             job["status"] = "ready"

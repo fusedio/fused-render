@@ -77,8 +77,6 @@ REFRESH_TTL_S = 60.0
 #: count from it.
 PR_HEAD_REF = "refs/fused/pr-head"
 
-#: HEAD on a `github` copy (§17.1 I4); `home_branch()` reads replay's.
-_HOME_BRANCH = "fused/mine"
 
 CLAUDE_BUSY = "Claude is still working on this app. Try again when it's done."
 _MOVED = "Something changed on GitHub in the meantime. Try again."
@@ -128,9 +126,10 @@ def _gu():
 
 
 def home_branch() -> str:
-    """HEAD's branch on a `github` copy (§17.1 I4): `replay.HOME_BRANCH`
-    (`classify.HOME_BRANCH` is the same constant)."""
-    return getattr(_replay(), "HOME_BRANCH", None) or _HOME_BRANCH
+    """HEAD's branch on a `github` copy (§17.1 I4): `classify.HOME_BRANCH`,
+    the one constant (the guard module's), read lazily."""
+    from fused_render.contrib import classify
+    return classify.HOME_BRANCH
 
 
 # ---------------------------------------------------------------- git bits
@@ -337,12 +336,13 @@ def _commit_tree(root, tree, parents, message, *, author, committer) -> str:
     return sha
 
 
-def _prepare(root, record, ident: dict, *, tip: str | None = None, include=(),
-             commit: bool = True, **_legacy) -> str:
-    """Under the slot: commit the edits that go (`commit`) on HEAD, and
-    answer the HEAD to send. A `github` copy sends only from `fused/mine`
-    (§17.1 I4): on any other branch ("a different version") it refuses.
-    `tip` is unused (v2's credit rewrite took it; Remix still passes it)."""
+def _prepare(root, record, ident: dict, *, include=(), commit: bool = True) -> str:
+    """Under the slot: commit the edits that go (`commit`: the tracked
+    edits plus the ticked new files in `include`, as one "Your edits"
+    commit in the copy's identity) on HEAD, and answer the HEAD to send.
+    Nothing is re-created (§17.7). A `github` copy sends only from
+    `fused/mine` (§17.1 I4): on any other branch ("a different version")
+    it refuses. Send, Update and Remix publish all go through here."""
     gu = _gu()
     ident = commit_identity(root, ident)
     with _replay().slot() as held:
@@ -508,7 +508,7 @@ def unproposed(root, record) -> int:
     return n + (1 if dirty(root) else 0)
 
 
-def head_differs(root, record, tip: str | None = None) -> bool:
+def head_differs(root, record) -> bool:
     """Update has something to do beyond what GitHub already has (§17.5):
     the proposal's head is NOT in HEAD (edits made to it on GitHub —
     maintainer edits, GitHub's "Update branch" — that Bob's copy lacks), or
@@ -516,8 +516,7 @@ def head_differs(root, record, tip: str | None = None) -> bool:
     of the author's latest alone never counts: the author has her own
     version already, and GitHub's `mergeable` (`fits`) says when the
     proposal stopped fitting it. False without an open proposal or when
-    the head is unknown here. `tip` is unused (kept for callers). No
-    network.
+    the head is unknown here. No network.
 
     "The proposal's head" is both what this copy last pushed or fetched
     (`PR_HEAD_REF`) and what GitHub last said (`cache.head_sha`): a cached
@@ -537,16 +536,20 @@ def head_differs(root, record, tip: str | None = None) -> bool:
     return unproposed(root, record) > 0
 
 
-def conflict(root, record) -> bool:
-    """The author's latest (`refs/heads/<b>`) is not in HEAD and does not
-    merge into it cleanly — the engine's `needs-merge` fact (§17.2),
-    derived the same way. No network."""
-    replay = _replay()
-    head, main = _rev(root, "HEAD"), mirror_of(root, record)
-    if not head or not main or replay.is_ancestor(root, main, head):
+def conflict(root) -> bool:
+    """The author's latest overlaps what Bob runs — the engine's one
+    derived fact (`engine.conflict`, §17.2 `needs-merge`), so Send/Update
+    refuse exactly when the page shows Merge with Claude. It merges on the
+    merged proposal's head when there is one (round 3c): after a squash
+    accept, the author's later edits of Bob's own lines are no overlap.
+    Off `fused/mine` it is False: there Send/Update refuse with the
+    "different version" sentence (`_prepare`), never pointing at a Merge
+    with Claude the page does not offer. No network."""
+    from fused_render.contrib import engine
+    if _gu()._current_branch(root) != home_branch():
         return False
-    mt = replay.merge_tree(root, head, main)
-    return bool(mt.get("supported")) and not mt.get("clean")
+    got = engine.conflict(root)
+    return bool(got and got.get("files"))
 
 
 def _set_pr_head(root, sha: str | None) -> None:
@@ -724,7 +727,7 @@ def send(app_dir, *, title: str, description: str, note: str | None = None,
         if _is_open(record.get("proposal")):
             raise PlainError("You already have a proposal waiting. "
                              "Use Update proposal to send your newer edits.")
-    if conflict(root, record):
+    if conflict(root):
         raise PlainError(f"{_owner_name(record)} changed the same parts you did. "
                          "Merge with Claude first, then send.")
     include = _check_include(root, include)
@@ -743,7 +746,7 @@ def send(app_dir, *, title: str, description: str, note: str | None = None,
     adopt = _adoptable(root, record, repo, fork)
 
     _say(step, "send")
-    head = _prepare(root, record, me, tip=tip, include=include)
+    head = _prepare(root, record, me, include=include)
     if _same_tree(root, head, tip):
         raise PlainError("There's nothing to send yet. Ask Claude for a change first.")
 
@@ -877,7 +880,7 @@ def update(app_dir, *, include=None, step=None) -> dict:
     _gate(root)
     me = _require_identity()
     who = _owner_name(record)
-    if conflict(root, record):
+    if conflict(root):
         raise PlainError(f"{who} changed the same parts you did. "
                          "Merge with Claude first, then update.")
     pr = gh.get_pr(p["repo"], p["number"])
@@ -1114,10 +1117,9 @@ def _newest_comment(comments: list, bob: str | None, since: float | None, *,
             "at": best.get("at") or ""}
 
 
-def _apply_pr(root, pr: dict, comments: list | None,
-              tip: str | None = None) -> tuple[dict | None, str | None]:
+def _apply_pr(root, pr: dict, comments: list | None) -> tuple[dict | None, str | None]:
     """Write GitHub's answer into the record's cache. Answers `(proposal,
-    previous state)`. `tip` is unused (v2's `checked_tip` is gone)."""
+    previous state)`."""
     state = "merged" if pr.get("merged") else ("closed" if pr.get("state") == "closed" else "open")
     holder = {}
 
@@ -1154,10 +1156,10 @@ def _apply_pr(root, pr: dict, comments: list | None,
     return holder.get("p"), holder.get("prev")
 
 
-def _ingest(root, record, pr: dict, comments: list | None, tip: str | None = None) -> None:
+def _ingest(root, record, pr: dict, comments: list | None) -> None:
     """`_apply_pr`, plus the one-time "declined" event on the open → closed
     transition (a reopened-then-closed proposal says it again, as it should)."""
-    q, prev = _apply_pr(root, pr, comments, tip)
+    q, prev = _apply_pr(root, pr, comments)
     if q is not None and prev == "open" and q["cache"]["state"] == "closed":
         try:
             _store().add_event(root, "declined", who=_owner_name(record))
@@ -1165,12 +1167,11 @@ def _ingest(root, record, pr: dict, comments: list | None, tip: str | None = Non
             logger.exception("proposals: declined event failed for %s", root)
 
 
-def refresh(app_dir, *, force: bool = False, tip: str | None = None) -> dict | None:
+def refresh(app_dir, *, force: bool = False) -> dict | None:
     """Re-read the proposal from GitHub (throttled to one read per
     REFRESH_TTL_S per app unless `force`) and cache what it says: open
     (+ the author's newest comment, and whether she asked for an update),
     closed without merging (declined — Bob's changes untouched), merged.
-    `tip` is accepted and ignored (the engine passes None; v2 recorded it).
     Answers the page's proposal object. Never raises for a GitHub problem —
     the cached state stands until the next read.
 
@@ -1220,7 +1221,7 @@ def refresh(app_dir, *, force: bool = False, tip: str | None = None) -> dict | N
 
         store.update(root, mark)
         return view(root)
-    _ingest(root, record, pr, comments, tip)
+    _ingest(root, record, pr, comments)
     return view(root)
 
 

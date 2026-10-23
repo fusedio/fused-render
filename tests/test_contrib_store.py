@@ -690,14 +690,17 @@ def test_first_v3_sync_migrates_a_v1_record_and_deletes_v1_refs(world):
     assert not {"sent", "pushed_head", "proposed_head"} & set(rec["proposal"])
     assert rec["proposal"]["number"] == 3
     assert store.referenced_backups(bob) == {"refs/fused/backup/1-update"}
+    # Review P2 #10: the proposal head ref names what v1/v2 last sent.
     assert git(bob, "for-each-ref", "--format=%(refname)", "refs/fused/").split() \
-        == ["refs/fused/backup/1-update"]
+        == ["refs/fused/backup/1-update", "refs/fused/pr-head"]
+    assert git(bob, "rev-parse", "refs/fused/pr-head").strip() == head
 
 
 def test_v2_proposal_reads_landed_at_and_migrates(home, tmp_path):
     """§17.5: `returned_at` reads as `landed_at`; `migrate_v3` drops what v3
     no longer keeps (the sent version, the tip check, root commit, the
-    overlap) and stamps v3 — record only. `skip_tip` (the undo hold) stays."""
+    overlap, a github row's v2 Keep mine — not an undo hold) and stamps v3 —
+    record only. An own row's `skip_tip` is ownsync's and stays."""
     d = tmp_path / "a"
     d.mkdir()
     store.put(str(d), {"v": 2, "kind": "github", "repo": "alice/x", "root_commit": "r" * 40,
@@ -708,7 +711,7 @@ def test_v2_proposal_reads_landed_at_and_migrates(home, tmp_path):
     rec, migrated = store.migrate_v3(str(d))
     assert migrated and rec["v"] == 3
     raw = store.get_raw(store.key(str(d)))
-    assert not {"root_commit", "needs_merge"} & set(raw) and raw["skip_tip"] == "s" * 40
+    assert not {"root_commit", "needs_merge"} & set(raw) and raw["skip_tip"] is None
     assert raw["proposal"] == {"number": 1, "landed_at": 5.0}
     assert store.migrate_v3(str(d))[1] is False
     own = tmp_path / "own"
@@ -978,12 +981,14 @@ def test_sign_in_upgrade_holds_unpublished_work_until_publish_now(world, monkeyp
 
 
 def test_v1_record_over_a_different_repo_is_dropped_not_bound(world):
-    """Audit V11: a v1 record (no root commit) whose folder now holds a
-    different repo got bound to it and pointed its origin at Alice."""
+    """Audit V11: an old record (no copy id; its root commit, as v1's first
+    read filled it) whose folder now holds a different repo got bound to it
+    and pointed its origin at Alice."""
     a = os.path.join(str(world.ws), "app", "sine")
     rec = store.new_record("github", repo=REPO, branch="main", classified_by="install")
     for v2_only in ("v", "copy_id"):
         rec.pop(v2_only)
+    rec["root_commit"] = git(world.alice, "rev-list", "--max-parents=0", "HEAD").strip()
     other = str(world.tmp / "other.git")
     git(str(world.tmp), "init", "-q", "--bare", "-b", "main", other)
     w = str(world.tmp / "ow")
@@ -1335,3 +1340,68 @@ def test_sign_in_upgrade_carries_the_home_branch_back_to_main(world, monkeypatch
     assert git(bob, "rev-parse", "main").strip() == mine or \
         subprocess.run(["git", "-C", bob, "merge-base", "--is-ancestor", mine, "main"]).returncode == 0
     assert git(bob, "branch", "--list", classify.HOME_BRANCH).strip() == ""
+
+
+# ------------------------------------------------------------- review round 4
+
+
+def test_own_copy_leaves_fused_mine_without_moving_a_file(world, monkeypatch):
+    """Review P0 #1: an own copy back on its default branch is a same-commit
+    move — an ignored local file the author's newer tip adds is never
+    overwritten there (the plain sync's own gates decide that later)."""
+    bob = _install(world)
+    monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: False)
+    tip = _alice_push(world, "data.csv", "author\n", "data")
+    _sync(bob)                                   # fetch + mirror only
+    assert git(bob, "rev-parse", "refs/heads/main").strip() == tip
+    with open(os.path.join(bob, ".git", "info", "exclude"), "a") as f:
+        f.write("data.csv\n")
+    write(bob, "data.csv", "BOB LOCAL SECRET\n")
+    home = git(bob, "rev-parse", "HEAD").strip()
+    store.update(bob, lambda r: r.update(kind="own"))
+    from fused_render.contrib import replay
+    with replay.slot():
+        classify.settle_locked(bob, "own")
+    assert git(bob, "symbolic-ref", "--short", "HEAD").strip() == "main"
+    assert git(bob, "rev-parse", "HEAD").strip() == home
+    with open(os.path.join(bob, "data.csv")) as f:
+        assert f.read() == "BOB LOCAL SECRET\n"
+    assert git(bob, "branch", "--list", classify.HOME_BRANCH).strip() == ""
+    assert not [a for a in store.activity(bob) if a["kind"] == "own-move"]  # nothing pinned
+
+
+def test_own_move_pins_commits_found_nowhere_else(world):
+    """Review P2 #20: commits only the default branch had are pinned, with
+    an Activity line (Undo)."""
+    bob = _install(world)
+    git(bob, "checkout", "-q", "main")
+    lone = _commit(bob, "lone.txt", "x\n", "lone")
+    git(bob, "checkout", "-q", classify.HOME_BRANCH)
+    store.update(bob, lambda r: r.update(kind="own"))
+    from fused_render.contrib import replay
+    with replay.slot():
+        classify.settle_locked(bob, "own")
+    assert git(bob, "symbolic-ref", "--short", "HEAD").strip() == "main"
+    line = next(a for a in store.activity(bob) if a["kind"] == "own-move")
+    assert line["undo"] and line["text"] == classify.OWN_MOVE_TEXT
+    entry = store.activity_entry(bob, line["id"])
+    assert replay.rev(bob, entry["backup"]) == lone
+
+
+def test_an_old_record_over_a_repointed_origin_is_kept_and_pointed_back(world):
+    """Review P2 #19: a v1/v2 row that never got a copy id, over an origin an
+    app re-pointed, is kept (its root commit is there) and `_point_back`
+    sets origin back — never dropped with its Activity."""
+    bob = _install(world)
+    root = git(bob, "rev-list", "--max-parents=0", "HEAD").strip()
+
+    def old(r):
+        r.update(v=2, copy_id=None, root_commit=root)
+    store.update(bob, old)
+    git(bob, "config", "--local", "--unset", classify.COPY_ID_CONFIG)
+    store.add_activity(bob, "update", "an old line")
+    git(bob, "remote", "set-url", "origin", "https://github.com/mallory/evil")
+    assert store.get(bob) is not None
+    _sync(bob)
+    assert git(bob, "config", "--get", "remote.origin.url").strip() == URL
+    assert any(a["text"] == "an old line" for a in store.activity(bob))

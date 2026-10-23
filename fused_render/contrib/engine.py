@@ -47,9 +47,9 @@ THE ENGINE NEVER PUSHES (P2) except `push_to_main` (a collaborator's
 explicit act, by URL). Tree moves wait while a Claude turn is open in the
 folder (P8) and run on their own only with `git_upstream.auto_sync_enabled()`
 (a button runs them anyway). With the loop switched off (`flags.sources()`)
-the moves still run when clean; a stuck state (overlap, a file in the way,
-an edit in the way) is git_upstream's failure row in plain words instead of
-a page state, and no "Your edits" commit is made for him (§16.12).
+the moves still run — "Your edits" included: it is a commit on Bob's own
+branch (§17.7) — and a stuck state (overlap, a file in the way) is
+git_upstream's failure row in plain words instead of a page state.
 
 WHERE IT RUNS. git_upstream's intercept hands a `github` root to `sync`,
 slot held (after `classify.settle_locked`: the v2 → v3 move, the guards).
@@ -105,7 +105,7 @@ def _who(rec) -> str:
 
 def _out(status, why=None, **extra) -> dict:
     """A run's outcome: `status` is `synced` | `noop` | `skipped` |
-    `offline` | `needs-merge` | `blocked` | `dirty` | `deferred` (and
+    `offline` | `needs-merge` | `blocked` | `deferred` (and
     `failed` once `sync` recorded a flags-off failure row), plus `why`,
     `move` (`ff` | `merge` | `settle`), `pulled`, `files`, `tip`,
     `branch`."""
@@ -351,7 +351,7 @@ def sync(root, *, action, push) -> dict:
                 lock.release()
             if replay.slot_lost() and res["status"] not in ("synced", "failed"):
                 return gu._skipped("busy")
-            if res["status"] in ("needs-merge", "blocked", "dirty") and not flags.sources():
+            if res["status"] in ("needs-merge", "blocked") and not flags.sources():
                 res = _failure_row(root, rec, res, action=action)
             return _as_sync_result(root, res)
         finally:
@@ -377,15 +377,11 @@ def _housekeep(root, rec) -> None:
 
 
 #: A stuck state with the loop off → git_upstream's failure reason (§16.12).
-_FAILURE_REASONS = {"dirty": "dirty", "blocked": "git-failed", "needs-merge": "diverged"}
+_FAILURE_REASONS = {"blocked": "git-failed", "needs-merge": "diverged"}
 
 
 def _stuck_words(who, status, files) -> str:
     names = _files_words(files)
-    if status == "dirty":
-        return (f"You have unsaved edits to {names}, and {who}'s update changes "
-                f"{'that file' if len(files) == 1 else 'those files'} too. Save or undo "
-                "them to get the update.")
     if status == "blocked":
         return (f"{who}'s update adds {names}, which you already have here. Rename "
                 "yours to get the update.")
@@ -464,12 +460,14 @@ def _run_inner(root, *, user, action) -> dict:
             return _out("deferred", "slot-busy")
         if rec.get("v") != store.RECORD_V:
             rec = classify.settle_locked(root, "github") or rec
-        old_origin = follow.tip(root, fol)
         old_main = replay.rev(root, _mirror(fol))
         # Fetch first whatever is checked out, so the page can still say how
-        # far behind the copy is; only a move needs fused/mine.
+        # far behind the copy is; only a move needs fused/mine. The fetch
+        # moves the mirror (and names an author's rewind) on fused/mine;
+        # `update_mirror` again covers another version checked out.
         tip, reason = follow.fetch(root, fol)
-        mirror = follow.update_mirror(root, fol) if tip else None
+        if tip:
+            follow.update_mirror(root, fol)
         on_home = _on_home(root)
         in_flight = gu._operation_in_flight(root) is not None
     if tip is None:
@@ -478,11 +476,6 @@ def _run_inner(root, *, user, action) -> dict:
         _note_sync_error(root, reason)
         return _out("skipped", reason)
     _note_checked(root)
-    if old_origin and not replay.is_ancestor(root, old_origin, tip) and mirror \
-            and mirror.get("backup"):
-        _activity(root, "rewound", f"{_who(rec)} went back to an earlier version of their app. "
-                                   "The version you had before is saved.",
-                  backup=mirror["backup"])
     done = {"branch": fol.branch, "tip": tip}
     if not on_home:
         return _out("skipped", "not-default", **done)
@@ -559,9 +552,6 @@ def _step(root, fol, tip, *, user, done) -> tuple[dict, bool]:
     blocking = sorted(tracked & _changed(root, base or _merge_base(root, head, main), main)) \
         if tracked else []
     if blocking:
-        if not flags.sources():
-            # The loop is off: nothing is committed for him (§16.12).
-            return _out("dirty", "dirty", files=blocking, **done), False
         if not _commit_edits(root, head, blocking, who):
             return _out("deferred", "edits", **done), False
         return _out("deferred", "edits", **done), True
@@ -585,7 +575,7 @@ def _step(root, fol, tip, *, user, done) -> tuple[dict, bool]:
                 if _claude_busy(root):
                     return _out("deferred", "claude", **done), False
                 ok, backup = replay.settle_locked(root, why="settle", main=_mirror(fol),
-                                                  merged=mt["tree"])
+                                                  merged=mt["tree"], head=head)
             if not ok:
                 return _out("deferred", "reset-refused", **done), False
             gu._record_pull(root, pulled)
@@ -790,9 +780,6 @@ def _bring_in_answer(res, who) -> dict:
         return _refuse("blocked", f"{who}'s update adds {_files_words(files)}, which you "
                                   "already have here. Move yours aside to get the update.",
                        files=files)
-    if st == "dirty":
-        files = res.get("files") or []
-        return _refuse("dirty", _stuck_words(who, st, files), files=files)
     return _deferred_message(res, who)
 
 
@@ -880,7 +867,11 @@ def keep_working(root) -> dict:
     p = _proposal(rec)
     if p and _pr_state(p) == "open":
         return _refuse("open", "Your proposal is still open. Withdraw it first.")
-    store.update(root, lambda r: r.__setitem__("proposal", None))
+
+    def fn(r):
+        r["proposal"] = None
+        r["skip_tip"] = None  # a button ends an undo hold (§17.2)
+    store.update(root, fn)
     return {"ok": True, "message": "Your changes are still here. Propose them again any time."}
 
 
@@ -906,6 +897,11 @@ def move_aside(root) -> dict:
         with replay.slot() as held:
             if not held:
                 return _refuse("busy", BUSY_MESSAGE), None
+            if not _on_home(root):
+                return _refuse("off-default", OTHER_VERSION_MESSAGE), None
+            if _claude_busy(root):
+                return _refuse("claude", CLAUDE_BUSY_MESSAGE), None
+            _clear_hold(root)
             main, head = _main(root, fol), replay.rev(root, "HEAD")
             tracked = set(replay.tracked_edits(root))
             files = [p for p in replay.clobber_paths(root, head, main) if p not in tracked]
@@ -967,9 +963,12 @@ def go_back_main(root) -> dict:
                 return _refuse("busy", BUSY_MESSAGE)
             if gu._operation_in_flight(root) is not None:
                 return _refuse("in-progress", ELSEWHERE_MESSAGE)
+            if _claude_busy(root):
+                return _refuse("claude", CLAUDE_BUSY_MESSAGE)
             if replay.tracked_edits(root):
                 return _refuse("dirty", "You have unsaved edits in this version. Save or undo "
                                         "them, then try again.")
+            _clear_hold(root)
             head = replay.rev(root, "HEAD")
             home = replay.rev(root, classify.HOME_REF)
             backup = None
@@ -997,7 +996,15 @@ def go_back_main(root) -> dict:
                                          "is in the way. Nothing was changed.")
             classify.ensure_home_locked(root, fol.branch)
             replay.protect_after_move(root)
-            # The author's branch is not checked out any more: the mirror again.
+            # The author's branch is not checked out any more: the mirror
+            # again. Commits made on it are on fused/mine now (or in the
+            # saved version): reset it straight to the author's tip — that is
+            # not the author rewinding (no line, no pin).
+            old, tip = replay.rev(root, _mirror(fol)), follow.tip(root, fol)
+            if old and tip and old != tip and not replay.is_ancestor(root, old, tip) and (
+                    replay.is_ancestor(root, old, replay.rev(root, "HEAD"))
+                    or (backup and replay.is_ancestor(root, old, backup))):
+                replay.git(root, "update-ref", _mirror(fol), tip, old)
             follow.update_mirror(root, fol)
         _note_head(root)
         _activity(root, "go-back", text, backup=backup)
@@ -1049,6 +1056,8 @@ def restore(root, activity_id) -> dict:
         with replay.slot() as held:
             if not held:
                 return _refuse("busy", BUSY_MESSAGE)
+            if _claude_busy(root):
+                return _refuse("claude", CLAUDE_BUSY_MESSAGE)
             new_backup = None
             if backup:
                 target = replay.rev(root, backup)
@@ -1068,13 +1077,23 @@ def restore(root, activity_id) -> dict:
                     return _refuse("failed", "Couldn't save what's here first; nothing was "
                                              "changed.")
                 new_backup = refs[0]
+                held_wip = any(x.endswith("-wip") for x in refs)
                 with replay.fused_aside(root, target):
                     r = replay.git(root, "reset", "-q", "--keep", target)
-                    if not gu._ok(r):
+                    # `--hard` only when everything it drops is in the backup
+                    # (`reset_hard_locked`'s guard, review P2 #18).
+                    if not gu._ok(r) and (held_wip or not (replay.dirty(root) or clobber)):
                         r = replay.git(root, "reset", "-q", "--hard", target)
                 if not gu._ok(r):
+                    if not held_wip:
+                        replay.unbackup_locked(root, refs)
+                        return _refuse("failed", "Couldn't bring that version back; unsaved "
+                                                 "edits are in the way. Nothing was changed.")
                     return _refuse("failed", "Couldn't bring that version back; what you had is "
                                              "saved in Activity.")
+                if not replay.undo_race_locked(root, head, refs, hard=True):
+                    return _refuse("moved", "Something changed in this app meanwhile; what you "
+                                            "had is saved in Activity. Try again.")
                 wip = replay.rev(root, backup + "-wip")
                 if wip:
                     _apply_wip_locked(root, target, wip)
@@ -1202,26 +1221,47 @@ def push_to_main(root) -> dict:
 # ------------------------------------------------------- Merge with Claude
 
 
+def conflict(root) -> dict:
+    """The overlap between fused/mine and the author's latest, derived now
+    (§17.2) exactly as `status` derives it — with the merged proposal's
+    head as the merge base after a squash/rebase accept (`_merged_base`):
+    `{"files": [...], "base": sha|None}`; `files` empty when the two merge
+    cleanly or main is already in. No network. For proposals (Send/Update
+    refuse on an overlap) and Merge with Claude (`merge_plan`)."""
+    rec, fol = _record(root)
+    none = {"files": [], "base": None}
+    if rec is None or fol is None:
+        return none
+    head, main = replay.rev(root, "HEAD"), _main(root, fol)
+    if not head or not main or replay.is_ancestor(root, main, head):
+        return none
+    base = _merged_base(root, rec, head, main)
+    mt = replay.merge_tree(root, head, main, base=base)
+    if not mt["supported"] or mt["clean"]:
+        return {"files": [], "base": base}
+    return {"files": list(mt["files"]) or ["(unknown)"], "base": base}
+
+
 def merge_plan(root) -> dict | None:
     """What a Merge with Claude job for `root` should do (§17.4): the
     author's latest into fused/mine when the two overlap —
     `{"purpose": "update", "ours": HEAD, "theirs": main, "onto": main,
-    "files"}` — derived now from `merge-tree` (nothing is recorded), or
-    None when there is no overlap. No network."""
+    "base": sha|None, "files"}` (`base`: the merge base to use — the merged
+    proposal's head after a squash/rebase accept, else None for git's own;
+    `conflict`) — derived now (nothing is recorded), or None when there is
+    no overlap. No network."""
+    if not _on_home(root):
+        return None
+    c = conflict(root)
+    if not c["files"]:
+        return None
     rec, fol = _record(root)
-    if rec is None or fol is None or not _on_home(root):
-        return None
     head, main = replay.rev(root, "HEAD"), _main(root, fol)
-    if not head or not main or replay.is_ancestor(root, main, head):
-        return None
-    mt = replay.merge_tree(root, head, main)
-    if not mt["supported"] or mt["clean"]:
-        return None
     return {"purpose": "update", "ours": head, "theirs": main, "onto": main,
-            "files": list(mt["files"])}
+            "base": c["base"], "files": c["files"]}
 
 
-def merge_landed(root, *, purpose, old_tip, new_tip, backup=None, **_legacy) -> None:
+def merge_landed(root, *, purpose, old_tip, new_tip, backup=None) -> None:
     """A Merge with Claude result just landed in the folder (`merge_job.accept`,
     §17.4): the Activity line for its purpose and the head noted. Never
     raises, never pushes — own-sync and remix bring-in hand the push to the
@@ -1268,9 +1308,6 @@ def merge_landed(root, *, purpose, old_tip, new_tip, backup=None, **_legacy) -> 
 _status_lock = threading.Lock()
 #: root -> ((head, main, pr state, pr head), derived history facts)
 _status_cache: dict = {}
-#: v2's taken-back memo; v3 never says "taken back" (kept so callers that
-#: clear it keep working).
-_taken_cache: dict = {}
 _STATUS_CACHE_MAX = 256
 
 #: CopyStatus states (§17.2).
@@ -1301,7 +1338,7 @@ def _history(root, head, main, pr_head, base=None) -> dict:
     """The facts status derives from history alone — no network, cached on
     `(HEAD, main, pr)` by the caller. `base`: the merged proposal's head
     (`_merged_base`), the merge base a bring-in uses after a squash."""
-    facts = {"ahead": 0, "behind": 0, "files": [], "conflict": [], "clobber": [],
+    facts = {"ahead": 0, "behind": 0, "files": [], "conflict": [], "added": [],
              "unproposed": 0, "contains": True}
     if not main:
         return facts
@@ -1316,7 +1353,9 @@ def _history(root, head, main, pr_head, base=None) -> dict:
         mt = replay.merge_tree(root, head, main, base=base)
         if mt["supported"] and not mt["clean"]:
             facts["conflict"] = list(mt["files"]) or ["(unknown)"]
-        facts["clobber"] = replay.clobber_paths(root, head, main)
+        # History only: which paths main adds. Whether a local file sits
+        # there is a working-tree fact, checked on every status (P1 #6).
+        facts["added"] = replay.added_paths(root, head, main)
     base = pr_head or main
     facts["unproposed"] = replay.count(root, "--first-parent", "--no-merges",
                                        f"{base}..{head}") or 0
@@ -1390,7 +1429,8 @@ def status(root) -> dict:
             _status_cache[root] = (key, facts)
     tracked = replay.tracked_edits(root)
     changes = sorted(set(facts["files"]) | set(tracked))
-    blocked = [p_ for p_ in facts["clobber"] if p_ not in tracked]
+    blocked = [p_ for p_ in facts["added"]
+               if p_ not in tracked and os.path.lexists(os.path.join(root, p_))]
     conflict = list(facts["conflict"])
     on_home = _on_home(root)
     view.update(
