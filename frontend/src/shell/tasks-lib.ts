@@ -141,10 +141,11 @@ export function recapTitlesOn(task: { recap?: unknown }): boolean {
  *  where some cards carried a message and others were simply blank would read
  *  as a wall of broken cards.
  *
- *  SUMMARY-ONLY TITLES (prefs `task_summary_titles.enabled`; the server puts
+ *  STABLE AI TITLES (prefs `task_summary_titles.enabled`; the server puts
  *  `title_mode: "summary"` on every row with it on) beat everything below:
  *  the row is titled by the server's stable `title` alone (user-set title,
- *  else Claude Code's ai-title summary, else the first message), never by the
+ *  else the app's own AI title, else Claude Code's ai-title, else the first
+ *  message), never by the
  *  newest message, the recap or the reply. An empty title falls through.
  *
  *  A RENAMED TASK beats all of it (`title_source: "renamed"`: the server's
@@ -5433,7 +5434,7 @@ export function samePulse(a: TasksPulse, b: TasksPulse): boolean {
 /** What a notice calls the task: the reader's OWN newest message, so the card
  *  names the thing they remember asking for, and stays put until they say
  *  something new (a recap or reply line lands later and reads as a title that
- *  changed under them). A renamed task, summary-only titles and a task nothing
+ *  changed under them). A renamed task, stable AI titles and a task nothing
  *  has been said in yet keep the server `title` — `cardTitleLine` already
  *  answers those. One short line. */
 export function taskNoticeTitle(task: TaskPulseTask): string {
