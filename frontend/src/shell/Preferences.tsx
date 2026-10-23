@@ -30,7 +30,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Search,
   SlidersHorizontal,
-  Terminal,
+  Bot,
   Sparkles,
   ListChecks,
   LayoutGrid,
@@ -73,7 +73,7 @@ const GROUP_ICONS: Record<GroupId, LucideIcon> = {
   general: SlidersHorizontal,
   features: ToggleRight,
   ai: Sparkles,
-  "claude-cli": Terminal,
+  "claude-cli": Bot,
   tasks: ListChecks,
   apps: LayoutGrid,
   indexing: FolderSearch,
