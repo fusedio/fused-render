@@ -37,6 +37,7 @@ import { ENV_NAMES, canvasNameFromPath, canvasProjectFromPath } from "@apps/canv
 import {
   appIconUrl,
   getAppIcon,
+  botsAvailable,
   statPath,
   type Config,
   type HttpError,
@@ -680,6 +681,12 @@ export default function App({ config }: { config: Config }) {
   if (location.pathname === "/") {
     history.replaceState(null, "", frontDoor);
   }
+  // The server runs no bots on Windows: a bookmarked /bots URL goes Home rather
+  // than to a page whose every call answers 503.
+  const botsOn = botsAvailable(config);
+  if (!botsOn && isBotsPath(location.pathname)) {
+    history.replaceState(null, "", "/home");
+  }
   // A fresh install's first load lands on the setup wizard instead (its own
   // route, shell/onboarding). Once per page load and only from the front
   // door: a deep link (a bookmark, an app URL from the CLI) is honoured, and
@@ -768,7 +775,7 @@ export default function App({ config }: { config: Config }) {
   // Preferences pages are sub-paths (apps/bots/routes.ts), asked through the
   // app's own predicate so the route is spelled once. test_shell_routes.py
   // derives this page's paths from that module, as it does for AI Models.
-  const isBots = isBotsPath(pathname);
+  const isBots = isBotsPath(pathname) && botsOn;
   // `/canvases/<env>/<name>` (see canvasNameFromPath): the old one-segment
   // `/canvases/<name>` matches nothing and falls to the "Unrecognized URL"
   // branch below, deliberately unredirected.

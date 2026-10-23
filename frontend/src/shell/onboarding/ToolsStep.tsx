@@ -305,13 +305,16 @@ export function ToolsStep({
   // Chrome owns the yellow button while missing. (`n/a` was Render with bots
   // off; the flag is gone, the server never writes it now, the guard stays
   // cheap.)
+  // Windows runs no bots, so the server answers `n/a` and the group has nothing
+  // to say; any other answer (or none yet) keeps it.
+  const chromeApplies = chrome?.status !== "n/a";
   const chromeNeeded = isBot() || chrome?.status === "pending";
 
   // ---- The step -----------------------------------------------------------
   // Tell the wizard whether this step still has a button of its own to
   // press: while it does, Next is not the yellow one.
   const gitWork = showGit && !gitFound;
-  const chromeWork = chromeNeeded && !chromeFound;
+  const chromeWork = chromeApplies && chromeNeeded && !chromeFound;
   useEffect(() => onWork(claudeActionable || gitWork || chromeWork), [onWork, claudeActionable, gitWork, chromeWork]);
 
   // Fresh on arrival, and again whenever the window comes back from an
@@ -333,7 +336,7 @@ export function ToolsStep({
   // ANSWERED for (bugbot: "Git and Chrome are in place" on a Bot, or before
   // the chrome record arrived, was a false all-clear).
   const otherRows = [showGit && gitFound ? "Git" : null, chromeFound ? "Chrome" : null].filter(Boolean);
-  const othersPending = (showGit && !git) || !chrome;
+  const othersPending = (showGit && !git) || (chromeApplies && !chrome);
   const status = !loaded
     ? "Checking this machine…"
     : gitWork || chromeWork
@@ -443,6 +446,8 @@ export function ToolsStep({
           </>
         )}
 
+        {chromeApplies && (
+          <>
         <Group label="Chrome" />
         <Row
           state={chromeFound ? "done" : chrome ? "open" : "unknown"}
@@ -473,6 +478,8 @@ export function ToolsStep({
             </div>
           )}
         </Row>
+          </>
+        )}
       </ol>
     </div>
   );

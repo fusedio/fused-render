@@ -33,6 +33,10 @@ export interface Config {
   // session, where `pickFile`/pick-folder answer 501 and a caller needs its own
   // fallback. One backend set raises both dialogs, hence the one flag.
   native_dir_picker: boolean;
+  // Whether this server runs bots at all (server/routers/config.py) — false on
+  // Windows, where the bot process manager is POSIX-only and every /api/bots
+  // call answers 503. Absent from an older server: treated as available.
+  bots_available?: boolean;
   // Self-update state (fused_render/update/mac.py) — present only when the
   // packaged mac app started the update manager; absent on dev servers and
   // the Linux package (it updates through its supervisor).
@@ -6777,4 +6781,10 @@ export function getScheduleEvents(): Promise<{ events: ScheduleEvent[] }> {
 // silently consume the user's notifications with a no-cors fetch.
 export function ackScheduleEvents(id: number): Promise<{ delivered: number }> {
   return postJson<{ delivered: number }>("/api/schedule/events/ack", { id });
+}
+
+/** Does this server offer Bots? Only an explicit `false` hides them, so a server
+ *  that predates the flag keeps its Bots page. */
+export function botsAvailable(config: Pick<Config, "bots_available"> | null | undefined): boolean {
+  return config?.bots_available !== false;
 }
