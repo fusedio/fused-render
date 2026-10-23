@@ -1186,7 +1186,6 @@ export default function App({ config }: { config: Config }) {
         </div>
       );
   } else {
-    // Windows expanduser returns backslashes; fsPath is always forward-slash.
     main = (
       <StatView
         key={epoch + ":" + fsPath}

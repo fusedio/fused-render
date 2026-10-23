@@ -762,7 +762,11 @@ export function Breadcrumb({
   // Strictly below home only — home itself shows its full path, not a lone "~".
   const underHome = home !== undefined && fsPath.startsWith(home + "/");
   const rest = underHome ? fsPath.slice(home.length) : fsPath;
-  const parts = rest.split("/").filter((s) => s.length > 0);
+  const allParts = rest.split("/").filter((s) => s.length > 0);
+  // A Windows path's first segment is the drive ("C:"): that drive IS the root
+  // crumb and targets "C:/" (bare "C:" is cwd-relative, "/" is no root there).
+  const isDrive = !underHome && /^[A-Za-z]:$/.test(allParts[0] || "");
+  const parts = isDrive ? allParts.slice(1) : allParts;
 
   // Edit mode seeds the same "~"-contracted path the crumbs display; Enter
   // expands a leading "~" back to the real home before navigating. Ctrl/Cmd+L
@@ -795,7 +799,7 @@ export function Breadcrumb({
     // stat/error handling covers a bad path (see plan: no pre-validation).
     if (path) navigate(path);
   };
-  const rootTarget = underHome ? (home as string) : "/";
+  const rootTarget = underHome ? (home as string) : isDrive ? allParts[0] + "/" : "/";
   const pieces: React.ReactNode[] = [
     <a
       key="root"
@@ -820,21 +824,15 @@ export function Breadcrumb({
         // `sel` lands the ancestor with the child we came out of highlighted
         // and scrolled to — the file-manager rule, shared with the keyboard's
         // go-up chord (listing/useListingShortcuts) through one pure decision.
-        const target = underHome ? (home as string) : "/";
-        navigate(target, { isDir: true, sel: cameFromSelParam(target, fsPath) });
+        navigate(rootTarget, { isDir: true, sel: cameFromSelParam(rootTarget, fsPath) });
       }}
     >
-      {underHome ? "~" : "/"}
+      {underHome ? "~" : isDrive ? allParts[0] : "/"}
     </a>,
   ];
-  // A Windows path's first segment is the drive ("C:"); its crumb must target
-  // "C:/" (bare "C:" is cwd-relative to os.stat) and later segments append
-  // without re-rooting at "/".
-  const isDrive = !underHome && /^[A-Za-z]:$/.test(parts[0] || "");
-  let acc = underHome ? home : "";
+  let acc = rootTarget === "/" ? "" : rootTarget;
   parts.forEach((part, i) => {
-    if (i === 0 && isDrive) acc = part + "/";
-    else acc = acc + (acc.endsWith("/") ? "" : "/") + part;
+    acc = acc + (acc.endsWith("/") ? "" : "/") + part;
     const target = acc;
     const isLast = i === parts.length - 1;
     // GNOME path-bar compression (nautilus-pathbar.c): a crumb may flex-shrink
@@ -848,7 +846,7 @@ export function Breadcrumb({
     // Separator only between segments (root already carries the leading
     // slash) — matches the panel path bar's tight `/Users/name/...` format.
     // The "~" crumb carries no slash, so its first segment needs one too.
-    if (i > 0 || underHome) pieces.push(<span key={"sep" + i} className="path-crumb-sep">/</span>);
+    if (i > 0 || underHome || isDrive) pieces.push(<span key={"sep" + i} className="path-crumb-sep">/</span>);
     if (isLast) {
       pieces.push(
         // Not a link (you are already here) and not a spring target, but a DROP

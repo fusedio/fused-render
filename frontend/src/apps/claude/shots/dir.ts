@@ -107,5 +107,8 @@ export function shotBase(path: string): string {
 export function shotDirOf(path: string): string {
   const norm = String(path || "").replace(/\\/g, "/");
   const cut = norm.lastIndexOf("/");
-  return cut > 0 ? norm.slice(0, cut) : norm;
+  if (cut <= 0) return norm;
+  const parent = norm.slice(0, cut);
+  // A drive root keeps its slash: bare "C:" is cwd-relative.
+  return /^[A-Za-z]:$/.test(parent) ? parent + "/" : parent;
 }

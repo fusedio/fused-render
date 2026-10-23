@@ -1479,9 +1479,8 @@ function ShowMoreButton({ expanded, onClick }: { expanded: boolean; onClick: () 
 }
 
 export default function FilesHome({ config }: { config: Config }) {
-  // Same normalization every other config.home consumer applies (App.tsx,
-  // Panel.tsx): backslashed on Windows, while search hits and path helpers
-  // (basename, the "home + /" strip below) are forward-slash-only.
+  // getConfig already folded `home` to the forward-slash form the search hits
+  // and path helpers (basename, the "home + /" strip below) expect.
   const home = config.home;
   useRecentsVersion();
   // The active tab lives entirely in the URL (?tab=recents) — read fresh on

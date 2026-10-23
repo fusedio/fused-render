@@ -2,7 +2,7 @@
 // shell registered a route() handler here; the React shell instead listens for
 // the "fused:navigate" event (useNavEpoch in lib/hooks.ts) — navigate/
 // navigateUrl dispatch it after pushState, popstate is subscribed alongside it.
-import { canonFsPath } from "./path-url";
+import { encodeFsPathSegments, rootedFsPath } from "./path-url";
 import { carries as snapshotCarries, getSnapshotAppDir } from
   "@platform/lib/snapshot-param";
 import { ORIGIN_BY_ROUTE } from "@platform/lib/originRoutes";
@@ -548,15 +548,9 @@ export function pushHistory(state: unknown, url: string): void {
   else history.pushState(state, "", url);
 }
 
-// Windows fs paths are rooted at a drive letter ("C:/…"), not at "/" — the
-// shell's canonical form keeps forward slashes and adds a leading slash only
-// for POSIX paths. A bare drive ("C:", how a drive root decodes from a URL,
-// whose segment split drops the trailing slash) canonicalizes to "C:/" —
-// bare "C:" is cwd-relative for os.stat on Windows.
-export function rootedFsPath(joined: string): string {
-  if (/^[A-Za-z]:$/.test(joined)) return joined + "/";
-  return /^[A-Za-z]:\//.test(joined) ? joined : "/" + joined;
-}
+// rootedFsPath / encodeFsPathSegments live in ./path-url (DOM-free, so the
+// shell libs share them); re-exported for existing importers.
+export { rootedFsPath, encodeFsPathSegments };
 
 export function fsPathFromLocation(): string | null {
   const p = location.pathname;
@@ -568,24 +562,6 @@ export function fsPathFromLocation(): string | null {
     .map(decodeURIComponent)
     .join("/");
   return rootedFsPath(decoded);
-}
-
-// Shared by urlForFsPath/embedUrlForFsPath below: normalize ONLY drive-letter
-// paths — on POSIX a backslash is a legal filename character and must
-// round-trip untouched — then split into encoded segments.
-// Restated (not imported) by shell/current-apps-lib for the app page's
-// `/apps/<folder>` address: that lib must stay DOM-free for bun, and this
-// module touches `location` at import. Keep the two in step. Exported for the
-// explorer topbar's Migrate button, which builds the same `/apps/<folder>`
-// address and may not import the shell.
-export function encodeFsPathSegments(fsPath: string): string {
-  const norm = canonFsPath(fsPath);
-  return norm
-    .replace(/^\/+/, "")
-    .split("/")
-    .filter((s) => s.length > 0)
-    .map(encodeURIComponent)
-    .join("/");
 }
 
 export function urlForFsPath(fsPath: string, search?: string): string {

@@ -40,7 +40,7 @@
 // debounce, the pending threshold, the backspace memo — are NOT here: they are
 // shared with the listing's in-folder box, which is now the same kind of box,
 // and they live in platform/lib/instant-search.
-import { canonFsPath } from "@platform/lib/path-url";
+import { canonFsPath, dropFileUrlDriveSlash } from "@platform/lib/path-url";
 import type { IndexRankResult, RankReason } from "@platform/lib/api";
 import { globMatch, substringMatch } from "@platform/lib/fuzzy";
 
@@ -550,7 +550,7 @@ export function pathShortcut(query: string, home: string): string | null {
     // full confidence instead of falling back to search. A bare POSIX
     // file:// URL has no such extra slash: file:///home/x really is
     // "/home/x", and is left untouched.
-    if (/^\/[A-Za-z]:[\\/]/.test(q)) q = q.slice(1);
+    q = dropFileUrlDriveSlash(q);
   }
   q = q.replace(/\\ /g, " ");
   if (!/^(\/|~\/|~$|[A-Za-z]:[\\/])/.test(q)) return null;

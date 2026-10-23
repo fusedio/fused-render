@@ -61,6 +61,7 @@
 import type { TaskPulseTask } from "@platform/lib/api";
 import type { NotificationInput } from "@platform/lib/notifications";
 import { labelForSource } from "@platform/lib/format";
+import { rootedFsPath } from "@platform/lib/path-url";
 import { agentLabel, agentNamed } from "@platform/lib/agent-backends";
 import { taskColumn, taskNoticeTitle as noticeTitle } from "@shell/tasks-lib";
 import { taskHref } from "@shell/tasks-lib";
@@ -90,15 +91,6 @@ import { folderHref } from "@shell/schedule-lib";
 // same output for every case that matters here, verified against
 // `recentFsPath` directly before this change shipped.
 const VIEW_PREFIX = "/explorer/view/";
-
-// Windows-drive rooting, copied from `platform/lib/router.ts`'s
-// `rootedFsPath` rather than imported — importing ANY export from
-// `router.ts`, even a pure one, still runs that module's location-reading
-// top-level code (see the comment above).
-function rootedFsPath(joined: string): string {
-  if (/^[A-Za-z]:$/.test(joined)) return joined + "/";
-  return /^[A-Za-z]:\//.test(joined) ? joined : "/" + joined;
-}
 
 // Same decode `recentFsPath` (apps/explorer/lib/recents.ts) performs, as a
 // pure function of a string.

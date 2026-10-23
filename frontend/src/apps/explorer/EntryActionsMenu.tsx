@@ -74,10 +74,6 @@ const LUCIDE = { size: 16, strokeWidth: 1.5, "aria-hidden": true } as const;
 // the shell's canonical forward-slash form — same drive-letter-only
 // normalization rule as the URL codec (a backslash in a POSIX filename must not
 // be rewritten).
-// Exported for the folder listing, which hands this component the server's own
-// entry answer as `fsPath` and has to canonicalise it the same way first.
-export const canonEntryPath = canonFsPath;
-const canon = canonEntryPath;
 
 export interface EntryActionsMenuProps {
   // The app's ENTRY PAGE, or the page that might be one. Over a file preview
@@ -171,7 +167,7 @@ export function useAppActionRows({
     if (isEntryKnown !== undefined) return; // the caller answered; nothing to ask
     getAppEntry(dir)
       .then((r) => {
-        if (alive) setIsEntry(r.entry != null && canon(r.entry) === fsPath);
+        if (alive) setIsEntry(r.entry != null && canonFsPath(r.entry) === fsPath);
       })
       .catch(() => {
         /* indeterminate reads as "not an entry" — no rows for nothing */

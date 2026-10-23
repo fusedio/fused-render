@@ -102,6 +102,7 @@ describe("shotBase / shotDirOf", () => {
     expect(shotDirOf("/a/b/c.png")).toBe("/a/b");
     expect(shotDirOf("C:\\a\\b\\c.png")).toBe("C:/a/b");
     expect(shotDirOf("c.png")).toBe("c.png");
+    expect(shotDirOf("C:\\shot.png")).toBe("C:/");
   });
 });
 

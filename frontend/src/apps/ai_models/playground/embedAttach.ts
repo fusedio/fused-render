@@ -13,6 +13,7 @@
 // refuse by name must not get into the list; and the list is deduplicated and
 // capped here, in one place, so the dialog and both drops cannot disagree.
 import { getConfig, mkdir, uploadFile } from "@platform/lib/api";
+import { dropFileUrlDriveSlash } from "@platform/lib/path-url";
 
 export type MediaKind = "picture" | "audio" | "video" | "text" | "other";
 
@@ -101,7 +102,7 @@ export function pathsFromDrop(data: DataTransfer): string[] {
         // `file:///C:/x` keeps the authority's slash before the drive
         // letter; a Windows path has none.
         const path = decodeURIComponent(uri.replace(/^file:\/\/(localhost)?/, ""));
-        out.push(/^\/[A-Za-z]:[\\/]/.test(path) ? path.slice(1) : path);
+        out.push(dropFileUrlDriveSlash(path));
       } catch {
         /* a malformed escape: not a path, skip it */
       }

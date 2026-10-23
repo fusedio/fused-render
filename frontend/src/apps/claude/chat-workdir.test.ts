@@ -20,3 +20,8 @@ test("no target, or a kind not decided yet, gives no cwd", () => {
   expect(chatWorkdir(null, "file")).toBe(null);
   expect(chatWorkdir("/w/p", "")).toBe(null);
 });
+
+test("a file at a drive root works in the drive root, never bare C:", () => {
+  expect(chatWorkdir("C:\\notes.md", "file")).toBe("C:\\");
+  expect(chatWorkdir("C:/notes.md", "file")).toBe("C:/");
+});

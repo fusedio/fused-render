@@ -13,27 +13,8 @@
 // the drag-ordered sequence layer.
 //
 // EVERY app is rendered — the list is not capped (owner, 2026-08-26).
-import { canonFsPath } from "@platform/lib/path-url";
+import { encodeFsPathSegments, rootedFsPath } from "@platform/lib/path-url";
 import type { CurrentAppEntry } from "@platform/lib/api";
-
-// The explorer's fs-path codec (router.ts encodeFsPathSegments / rootedFsPath),
-// restated here rather than imported: router.ts rewrites `location` at import
-// and this lib must stay DOM-free for its bun tests. Same rules — only a
-// drive-letter path has its backslashes folded, a bare drive re-roots to `C:/`.
-function encodeFsPathSegments(fsPath: string): string {
-  const norm = canonFsPath(fsPath);
-  return norm
-    .replace(/^\/+/, "")
-    .split("/")
-    .filter((s) => s.length > 0)
-    .map(encodeURIComponent)
-    .join("/");
-}
-
-function rootedFsPath(joined: string): string {
-  if (/^[A-Za-z]:$/.test(joined)) return joined + "/";
-  return /^[A-Za-z]:\//.test(joined) ? joined : "/" + joined;
-}
 
 export interface CurrentApp {
   /** Absolute app folder, forward-slash (canonical server form) — the key. */

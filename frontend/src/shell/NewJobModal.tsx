@@ -140,7 +140,7 @@ import { onDraftChange } from "./tasksPulse";
 // not one that may not exist (whose only symptom is the server's 400 naming
 // the path). The picker makes changing it a click.
 export const defaultTargetOf = (c: Pick<Config, "home" | "fused_dir">) =>
-  normPath(c.fused_dir || c.home);
+  canonFsPath(c.fused_dir || c.home);
 
 // ---- Recent paths --------------------------------------------------------
 // The path field's dropdown offers the last folders the user actually used,
@@ -340,18 +340,15 @@ const SESSION_FOLDERS_SHOWN = 5;
 // IS the pick (a task can target a file); "Use this folder" picks where you
 // stand.
 
-// Forward slashes throughout, including for Windows drive paths — the same
-// normalization every other shell caller applies to `/api/config` values,
-// whose `home` is a raw expanduser and arrives with backslashes there. The
-// server accepts either separator; the PICKER's own string surgery (up(),
-// joins) only understands one.
-const normPath = canonFsPath;
+// Paths here are forward-slash throughout, including Windows drive paths
+// (`canonFsPath`): the server accepts either separator, but the PICKER's own
+// string surgery (up(), joins) only understands one.
 
 // A path split into the folder it lives in and its last segment. Drive roots
 // keep their slash — bare "C:" reads as cwd-relative elsewhere in the shell,
 // not as the root (the same trap the picker's climb fixed in PR #548).
 export function splitTargetPath(path: string): { parent: string; base: string } {
-  const norm = normPath(path).trim().replace(/\/+$/, "");
+  const norm = canonFsPath(path).trim().replace(/\/+$/, "");
   const cut = norm.lastIndexOf("/");
   const parent = cut > 0 ? norm.slice(0, cut) : "/";
   return {
@@ -688,8 +685,9 @@ function ExplorerPanel({
   // A file target starts the panel in its PARENT — listing a file's "children"
   // is a guaranteed error banner.
   const [path, setPath] = useState(() => {
-    const p = normPath(start).replace(/\/+$/, "");
-    return p || "/";
+    const p = canonFsPath(start).replace(/\/+$/, "");
+    // A drive root keeps its slash: bare "C:" is cwd-relative.
+    return /^[A-Za-z]:$/.test(p) ? p + "/" : p || "/";
   });
   const [rows, setRows] = useState<{ name: string; dir: boolean }[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -3337,7 +3335,7 @@ export default function NewJobModal({
       (r) => {
         if (!alive) return;
         setSessionFolders(
-          r.folders.slice(0, SESSION_FOLDERS_SHOWN).map((f) => normPath(f.path)),
+          r.folders.slice(0, SESSION_FOLDERS_SHOWN).map((f) => canonFsPath(f.path)),
         );
       },
       () => {},
