@@ -950,7 +950,7 @@ export function IdentityChip({ name, title, onPick, active = false }: {
  *  the folder chip's own classes so it sits in the row exactly where that
  *  chip does; the link is lifted over the row's stretched link (`.task-pr-num`)
  *  and its press never counts as a press on the row. */
-function PrNumChip({ prRef }: { prRef: PrRef }) {
+export function PrNumChip({ prRef }: { prRef: PrRef }) {
   const body = <span className="schedule-tv-id-name">#{prRef.number}</span>;
   const href = prUrl(prRef);
   if (!href) return <span className="schedule-tv-id">{body}</span>;
@@ -1000,7 +1000,7 @@ export function TaskAgentMark({ backend }: { backend?: string | null }) {
 /** TASK-002 / MSG-003. These are DESIGNED identifiers (§3) — allocated once,
  * never renumbered — so unlike a session uuid they are meant to be read, said
  * out loud and searched for. Monospaced, because a column of them is scanned. */
-function IdChip({ id, kind }: {
+export function IdChip({ id, kind }: {
   id: string;
   kind: "task" | "message";
 }) {
@@ -4485,7 +4485,7 @@ function TaskNode({
             is `position: fixed` on <body>, so this element's own clipping has no
             say in whether the caption is readable. */}
         <span
-          className={"tasks-title" + (ahead ? " is-upcoming" : "") + (line.kind === "recap" ? " is-recap" : "")}
+          className={"tasks-title" + (ahead ? " is-upcoming" : "") + (line.kind === "recap" ? " is-recap" : "") + (unread > 0 ? " is-unread" : "")}
           /* The caption is the WHOLE of whatever this line is one line of — the
              untruncated message when the row is showing one, the title when it
              is not — because what a caption is for is the text the clamp hides. */

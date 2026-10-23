@@ -455,6 +455,13 @@ button.tasks-caret,
   font-weight: 100;
 }
 
+/* An UNREAD task's title reads bold in every view (Revision 2, 2026-10-23), on
+   the same count that fills the ring: the Board's card and the Cards wall say
+   it the same way. After the recap rule on purpose, so unread wins over it. */
+.tasks-title.is-unread {
+  font-weight: 600;
+}
+
 /* First line of Claude's newest reply, filling the space after the title in the
    List row only: grey, italic, same size. Gives way before the title does. */
 .tasks-title-reply {

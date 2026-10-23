@@ -2528,12 +2528,10 @@ describe("the unread mark", () => {
     expect(TASKS_CSS).toMatch(
       /\.tasks-msg\.is-unread \.tasks-msg-body \{[^}]*font-weight: 600/,
     );
-    // NOT on a List row: it carries the ring-dot, and bolding its title too would
-    // state one fact twice on one line.
-    expect(ROW).not.toContain("is-unread");
-    expect(TASKS_CSS.replace(/\/\*[\s\S]*?\*\//g, "")).not.toContain(
-      ".tasks-title.is-unread",
-    );
+    // A List row bolds its title too since Revision 2 (2026-10-23), on the same
+    // `unread > 0` that fills its ring, so the two never disagree.
+    expect(ROW).toContain('(unread > 0 ? " is-unread" : "")');
+    expect(block(TASKS_CSS, ".tasks-title.is-unread")).toContain("font-weight: 600");
     // ...and the title is still a title: the words, then nothing an eye can see.
     // The words are `cardTitleLine`'s (tasks-lib) — the reader's newest
     // message, else the task's name — the same function the List row and the
@@ -2695,7 +2693,7 @@ describe("the unread mark", () => {
     // Akshil, 2026-08-18. The List is mostly history and the rows scheduled ahead
     // are the ones a reader is not being asked to read yet — so they recede
     // without leaving the list. The predicate is the lib's, asked once per row.
-    expect(ROW).toContain('className={"tasks-title" + (ahead ? " is-upcoming" : "") + (line.kind === "recap" ? " is-recap" : "")}');
+    expect(ROW).toContain('className={"tasks-title" + (ahead ? " is-upcoming" : "") + (line.kind === "recap" ? " is-recap" : "") + (unread > 0 ? " is-unread" : "")}');
     // …and a DRAFT row reads the same (Akshil, 2026-09-15): unsent words are
     // work further ahead than a scheduled run, in the same lane.
     expect(VIEWS).toContain("const ahead = isUpcomingTask(task) || isDraftTask(task);");
@@ -12066,5 +12064,20 @@ describe("Sort by: Created", () => {
     (globalThis as any).localStorage = { getItem: () => { throw new Error("blocked"); } };
     expect(readTaskSort()).toBe("changed");
     delete (globalThis as any).localStorage;
+  });
+});
+
+describe("bold unread titles in every view (Revision 2)", () => {
+  it("bolds an unread title on the List row, the Cards wall and the Workspace card", () => {
+    const CARDS = readFileSync(join(SHELL, "TaskCards.tsx"), "utf8");
+    const WS = readFileSync(join(SHELL, "TaskWorkspace.tsx"), "utf8");
+    const CARDS_CSS = readFileSync(join(SHELL, "../styles/task-cards.css"), "utf8");
+    const WS_CSS = readFileSync(join(SHELL, "../styles/task-workspace.css"), "utf8");
+    expect(CARDS).toContain('(task.unread > 0 ? " is-unread" : "")');
+    expect(block(CARDS_CSS, ".task-card-title")).toContain("font-weight: 400");
+    expect(block(CARDS_CSS, ".task-card-title.is-unread")).toContain("font-weight: 600");
+    expect(WS).toContain('(task.unread > 0 ? " is-unread" : "")');
+    expect(block(WS_CSS, ".ws-title")).toContain("font-weight: 400");
+    expect(block(WS_CSS, ".ws-title.is-unread")).toContain("font-weight: 600");
   });
 });
