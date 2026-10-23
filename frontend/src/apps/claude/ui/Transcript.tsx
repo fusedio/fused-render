@@ -63,18 +63,6 @@ const TOUCH_MS = 1500;
  *  that a reader who is being held off the tail by something else is not
  *  fought over. */
 const SETTLE_FRAMES = 4;
-/** The pinned card's ceiling is the port's measured height, as a custom
- *  property (`.chat-tailpin.is-pinned { max-height: var(--c-port-h) }`) —
- *  measured rather than said in CSS as `100cqh`, because making the port a
- *  size container is what lost WebKit the scroll offset (styles/transcript.css).
- *  A port with no layout yet (0px) keeps the fallback: a set variable would
- *  otherwise pin the card to nothing. `style` is absent on a stub port. */
-function portHeight(wrap: HTMLDivElement): void {
-  if (!wrap.style) return;
-  const h = wrap.clientHeight;
-  if (h > 0) wrap.style.setProperty("--c-port-h", h + "px");
-  else wrap.style.removeProperty("--c-port-h");
-}
 /** The keys that scroll a focused port, and which way. */
 const KEY_DIR: Record<string, number> = {
   ArrowUp: -1,
@@ -260,24 +248,8 @@ export const Transcript = memo(function Transcript({
       if (dir < 0) followTail.current = false;
       else if (nearBottom()) followTail.current = true;
     };
-    // A gesture the PINNED CARD owns is not the transcript's (CodeRabbit, PR
-    // #1748): wheel and touch bubble up from `.chat-tailpin.is-pinned`, whose
-    // own scroller answers them (`overscroll-behavior: contain` stops the
-    // chaining, not the event), and a flick up inside the card must not drop
-    // the follow of the reply behind it.
-    const ownedByPin = (target: EventTarget | null) => {
-      const box = pin.current;
-      // Optional reads: the pin is a bare stub in a suite.
-      return (
-        !!box &&
-        !!box.classList?.contains?.("is-pinned") &&
-        typeof Node !== "undefined" &&
-        target instanceof Node &&
-        !!box.contains?.(target)
-      );
-    };
     const onWheel = (e: WheelEvent) => {
-      if (e.deltaY === 0 || ownedByPin(e.target)) return;
+      if (e.deltaY === 0) return;
       barDrag = false; // a wheel means the bar was let go, whatever we missed
       gesture(e.deltaY < 0 ? -1 : 1, GESTURE_MS);
     };
@@ -299,7 +271,7 @@ export const Transcript = memo(function Transcript({
     let touchY: number | null = null;
     let touchMoved = false;
     const onTouchStart = (e: TouchEvent) => {
-      touchY = ownedByPin(e.target) ? null : e.touches[0] ? e.touches[0].clientY : null;
+      touchY = e.touches[0] ? e.touches[0].clientY : null;
       touchMoved = false;
       barDrag = false;
       // A fresh finger carries no direction: a tap after an earlier drag up
@@ -428,12 +400,8 @@ export const Transcript = memo(function Transcript({
     // flag decides what to do about it exactly as before, so a reader who has
     // scrolled up is not moved by the composer.
     if (grown) grown.observe(wrap);
-    // THE PINNED CARD'S CEILING follows the port (`portHeight`, above).
-    const sized = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => portHeight(wrap));
-    if (sized) sized.observe(wrap);
     return () => {
       if (settle && typeof cancelAnimationFrame !== "undefined") cancelAnimationFrame(settle);
-      sized?.disconnect();
       wrap.removeEventListener("wheel", onWheel);
       wrap.removeEventListener("touchstart", onTouchStart);
       wrap.removeEventListener("touchmove", onTouchMove);
@@ -451,14 +419,6 @@ export const Transcript = memo(function Transcript({
       clearGesture.current = null;
     };
   }, [followRef]);
-  // The first measurement lands BEFORE the first paint (Bugbot, PR #1748): the
-  // observer above is armed from an effect, which runs after the frame a
-  // restored session with an open card is painted in, and that frame drew the
-  // pin at the `100vh` fallback — taller than a cards-wall tile or Peek.
-  useLayoutEffect(() => {
-    if (port.current) portHeight(port.current);
-  }, []);
-
   // A new turn is the reader asking for the tail again: sending re-arms the
   // follow that scrolling up turned off, so the answer to what they just asked
   // streams in front of them (T:13466-13470). Layout effect, so the write lands
@@ -562,65 +522,25 @@ export const Transcript = memo(function Transcript({
   // so the new card, which the run is blocked on, never brought the scrollport
   // to itself.
   useLayoutEffect(() => {
-    if (openCards && port.current) port.current.scrollTop = port.current.scrollHeight;
-  }, [openCards]);
-
-  // ── ONE SCROLLER, NEVER TWO (R3-4) ───────────────────────────────────────
-  //
-  // The pin used to be capped at 70% of the scrollport, which bought a second
-  // scrollbar on every card taller than that — the transcript's behind the
-  // card's, side by side, and the reader's wheel answered by whichever box the
-  // pointer happened to be over (owner: "remove the 70% cap — it causes double
-  // scroll"). The cap is gone: a pinned card may now be as tall as the whole
-  // scrollport, and a card TALLER than that becomes the only thing that scrolls.
-  //
-  // Which of those two states we are in cannot be asked in CSS, so it is
-  // MEASURED — overflow, off the two boxes, never a breakpoint or a fraction.
-  // A card that fits leaves the transcript scrollable, because that is what the
-  // pin is for: re-reading the reply the card is asking about. A card that does
-  // not fit covers the transcript completely, so locking it costs the reader
-  // nothing and takes the second scrollbar away.
-  const pin = useRef<HTMLDivElement>(null);
-  const [pinFull, setPinFull] = useState(false);
-  /** Where the transcript was when the lock went on. `overflow: hidden` clamps
-   *  `scrollTop` to 0, and handing back the TOP of a conversation the reader was
-   *  part-way down is its own bug — so the offset is parked across the lock and
-   *  put back when the card is answered. */
-  const parkedTop = useRef(0);
-  const locked = useRef(false);
-  useEffect(() => {
-    const box = pin.current;
     const wrap = port.current;
-    if (!box || !wrap || !openCards) {
-      setPinFull(false);
-      locked.current = false;
+    if (!openCards || !wrap) return;
+    // A card that fits in the port ends at the bottom, as before. A card taller
+    // than the port is brought in TOP-first: its question is the part the
+    // reader needs, and the follow must not yank it to its bottom afterwards.
+    const box = pin.current?.getBoundingClientRect?.();
+    const view = wrap.getBoundingClientRect?.();
+    if (box && view && box.height > wrap.clientHeight) {
+      const top = box.top - view.top + wrap.scrollTop;
+      wrap.scrollTop = Math.max(0, top - 12);
+      followTail.current = false;
       return;
     }
-    const measure = () => {
-      // `+ 1` because both numbers are rounded off fractional layout, and a
-      // half-pixel is not an overflow worth locking a scroller for.
-      const full = box.scrollHeight > wrap.clientHeight + 1;
-      // Read BEFORE the class lands: by the time an effect keyed on `pinFull`
-      // runs, the browser has already clamped this to 0.
-      if (full && !locked.current) parkedTop.current = wrap.scrollTop;
-      locked.current = full;
-      setPinFull(full);
-    };
-    measure();
-    // OBSERVED, not measured once: a card grows after it mounts (an "Other"
-    // field opening, a diff arriving, a question's options wrapping), which is
-    // the same argument the follow-bottom rules make above.
-    const ro = new ResizeObserver(measure);
-    ro.observe(box);
-    ro.observe(wrap);
-    return () => ro.disconnect();
+    wrap.scrollTop = wrap.scrollHeight;
   }, [openCards]);
-  useLayoutEffect(() => {
-    const wrap = port.current;
-    if (!wrap || pinFull || !parkedTop.current) return;
-    wrap.scrollTop = parkedTop.current;
-    parkedTop.current = 0;
-  }, [pinFull]);
+
+  // The open card is an ordinary block at the end of the log (user request
+  // 2026-10-23); the wrapper is only kept as a handle for scrolling it into view.
+  const pin = useRef<HTMLDivElement>(null);
 
   // ── the first paint lands at the bottom (#26) ────────────────────────────
   //
@@ -913,7 +833,7 @@ export const Transcript = memo(function Transcript({
   }, []));
 
   return (
-    <div className={cn("chat-logwrap", pinFull && "is-locked")} ref={port}>
+    <div className={"chat-logwrap"} ref={port}>
       <div className={cn("chat-log", !settled && "is-settling")} ref={log}>
         {state.historyLoading ? (
           <HistorySkeleton />
@@ -987,15 +907,14 @@ export const Transcript = memo(function Transcript({
                 said, so it goes where the newest thing goes. */}
             {recap ?? null}
             {trailing ?? null}
-            {/* THE TAIL PIN (#17). An OPEN card sticks to the bottom of the
-                scrollport for as long as it is open, because the run cannot
-                continue without it and a reader who has scrolled up to re-read
-                the reply cannot otherwise find it. The working line comes with
+            {/* THE TAIL (#17). An OPEN card is an ordinary block at the end of
+                the log, scrolled into view when it opens (not pinned over the
+                transcript: user request 2026-10-23). The working line sits with
                 it — "Waiting for your approval" and the thing to approve are one
                 statement. Answered cards are NOT in here: they have already been
                 parked back into their turn above, at the chip they answered. */}
             <div
-              className={cn("chat-tailpin", openCards && "is-pinned")}
+              className={cn("chat-tailpin", openCards && "has-open")}
               ref={pin}
             >
               <CardStack

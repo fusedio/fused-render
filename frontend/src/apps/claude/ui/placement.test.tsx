@@ -347,7 +347,7 @@ function pin(r: ReturnType<typeof create>): string[] {
   return cls(found);
 }
 
-/** The `.chat-logwrap` scroller's classes (R3-4's lock rides here). */
+/** The `.chat-logwrap` scroller's classes. */
 function wrap(r: ReturnType<typeof create>): string[] {
   let found: Json | undefined;
   walk(r.toJSON() as Json, (n) => {
@@ -375,7 +375,7 @@ const toolTurn = (key: string, tools: Array<{ id: string; name: string }>) => ({
   ],
 });
 
-test("an OPEN card is STICKY above the composer, whatever the scroll (#17)", () => {
+test("an OPEN card is an ordinary block at the end of the log (#17)", () => {
   const r = mount(
     <Transcript
       state={state({
@@ -385,12 +385,12 @@ test("an OPEN card is STICKY above the composer, whatever the scroll (#17)", () 
       actions={actions}
     />,
   );
-  expect(pin(r)).toContain("is-pinned");
+  expect(pin(r)).toContain("has-open");
   // …and still in the bottom stack, not filed into a turn.
   expect(cards(r)[0].inTurn).toBe(null);
 });
 
-test("answering it UNSTICKS the pin and moves the card into the transcript (#17)", () => {
+test("answering it clears the open marker and moves the card into the transcript (#17)", () => {
   const open = mount(
     <Transcript
       state={state({
@@ -400,11 +400,11 @@ test("answering it UNSTICKS the pin and moves the card into the transcript (#17)
       actions={actions}
     />,
   );
-  expect(pin(open)).toContain("is-pinned");
+  expect(pin(open)).toContain("has-open");
   expect(cards(open)[0].inTurn).toBe(null);
 
   // The same card, answered: the controller parks it in the turn it was
-  // answered in, and nothing is pinned any more.
+  // answered in, and nothing is open any more.
   const done = mount(
     <Transcript
       state={state({
@@ -416,7 +416,7 @@ test("answering it UNSTICKS the pin and moves the card into the transcript (#17)
       actions={actions}
     />,
   );
-  expect(pin(done)).not.toContain("is-pinned");
+  expect(pin(done)).not.toContain("has-open");
   expect(cards(done)[0].inTurn).not.toBe(null);
 });
 
@@ -510,8 +510,8 @@ test("`[Request interrupted by user]` renders as a note, not a user bubble (R2-2
   expect(isInterruptMark("why did [Request interrupted by user] appear?")).toBe(false);
 });
 
-// ── R3-4: ONE scroller, and R2-4's 70% cap is gone ─────────────────────────
-test("a pinned card may fill the scrollport, and past it nothing else scrolls (R3-4)", () => {
+// ── the open card is part of the conversation, not an overlay (2026-10-23) ──
+test("an open card is plain flow after the turns: nothing sticks, caps or locks", () => {
   const r = mount(
     <Transcript
       state={state({
@@ -521,35 +521,21 @@ test("a pinned card may fill the scrollport, and past it nothing else scrolls (R
       actions={actions}
     />,
   );
-  // The ceiling and the inner scroll are one rule keyed off `is-pinned` (see
-  // styles/transcript.css) — a card that is not blocking the run must not take
-  // a ceiling, because nothing is sticking it anywhere.
-  expect(pin(r)).toContain("is-pinned");
+  expect(pin(r)).toContain("has-open");
   const sheet = readFileSync(join(import.meta.dir, "../styles/transcript.css"), "utf8");
-  const rule = sheet.slice(sheet.indexOf(".chat-root .chat-tailpin.is-pinned {"));
+  const rule = sheet.slice(sheet.indexOf(".chat-root .chat-tailpin.has-open {"));
   const body = rule.slice(0, rule.indexOf("}"));
-  // R2-4's 70% ceiling is exactly what put a second scrollbar beside the
-  // transcript's, so it is gone and the pin may be the whole port.
-  expect(body).not.toContain("70cqh");
-  // The ceiling is the port's MEASURED height (`Transcript` writes
-  // `--c-port-h`), not `100cqh`: a scroll container that is also a size
-  // container loses its scroll offset in WebKit whenever the streaming reply
-  // rewrites its markup (Akshil 2026-10-19).
-  expect(body).toContain("max-height: var(--c-port-h");
-  expect(body).not.toMatch(/max-height:\s*\d+cqh/);
-  expect(body).toContain("overflow-y: auto");
-  // …and past that the transcript behind it stops scrolling altogether, which
-  // is the half of the rule that makes "no double scroll" TRUE rather than
-  // merely quieter.
-  const lock = sheet.slice(sheet.indexOf(".chat-root .chat-logwrap.is-locked {"));
-  expect(lock).not.toBe("");
-  expect(lock.slice(0, lock.indexOf("}"))).toContain("overflow-y: hidden");
-  // …and the scrollport is NOT a size container, for the WebKit reason above.
+  expect(body).not.toContain("position: sticky");
+  expect(body).not.toContain("max-height");
+  expect(body).not.toContain("overflow");
+  expect(sheet).not.toContain(".is-pinned");
+  expect(sheet).not.toContain(".is-locked");
+  expect(sheet).not.toContain("--c-port-h");
+  // The scrollport is NOT a size container (WebKit loses its scroll offset).
   expect(sheet).not.toMatch(/^\s*container-type:/m);
-  // The lock is MEASURED and starts OFF: this renderer has no layout to
-  // overflow, and a transcript locked because nothing could be measured would
-  // be the worse of the two bugs.
   expect(wrap(r)).not.toContain("is-locked");
+  // The card renders inside the tail wrapper, which follows the turns.
+  expect(cards(r)[0].inTurn).toBe(null);
 });
 
 // ── R2-11: one paint, not two ─────────────────────────────────────────────
