@@ -1460,6 +1460,16 @@ fi  # FUSED_RENDER_SKIP_CODESIGN
 # ---------------------------------------------------------------------------
 # 6. DMG via dmgbuild: app + Applications symlink, compressed ULFO
 # ---------------------------------------------------------------------------
+# The window the user sees on open is part of the deliverable: a fixed-size
+# icon view, the app on the left, the Applications link on the right and an
+# arrow between them, so "drag this onto that" is drawn rather than assumed.
+# Before this the image carried no layout at all: whatever view the user's
+# Finder was last in, both icons wherever it put them, and no cue that
+# anything had to be dragged. The arrow is dmgbuild's bundled 640x240pt image
+# (retina-enabled), and the window and icon coordinates below are the ones
+# dmgbuild's own example tunes to it. People who double-click the app in the
+# image instead of dragging are a separate case (an installer, or an in-app
+# "move to Applications" prompt), not this layout's job.
 
 echo "==> building dmg"
 DMGBUILD_SETTINGS="$BUILD_DIR/dmgbuild_settings.py"
@@ -1476,6 +1486,23 @@ symlinks = {"Applications": "/Applications"}
 # (zlib) and mounts faster; needs macOS 10.11+ to open, well under the app's
 # own LSMinimumSystemVersion of 11.0 (setup_py2app.py).
 format = "ULFO"
+
+# Finder window layout (see the step comment in build_dmg.sh). Coordinates
+# are points; window_rect's origin is measured from the bottom of the screen.
+background = "builtin-arrow"
+window_rect = ((100, 100), (640, 280))
+default_view = "icon-view"
+icon_size = 128
+text_size = 16
+icon_locations = {appname: (140, 120), "Applications": (500, 120)}
+show_status_bar = False
+show_tab_view = False
+show_toolbar = False
+show_pathbar = False
+show_sidebar = False
+show_icon_preview = False
+arrange_by = None
+label_pos = "bottom"
 PYEOF
 
 rm -f "$DMG_PATH"
