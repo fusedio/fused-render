@@ -146,6 +146,7 @@ import {
   type Viewable,
   AgentProvider,
 } from "./ui";
+import { ComposerGate, waitingKind } from "./ui/WaitingBar";
 import { AGENT_PREFS_URL, agentLabel, capsOf, isBackendEnabled, useAgentBackends } from "@platform/lib/agent-backends";
 import { debugSentEnabled } from "./ui/debug-sent";
 import { sessionSeed } from "./ui/useRecentTasks";
@@ -2290,6 +2291,11 @@ function ChatBody(props: ChatBodyProps) {
   // NO-PANE target: there is no second view to be in, so T makes no write at
   // all (T:14661) and a bookmarked `paneview=preview` must not be rewritten.
   const openCards = openCardIds(state.permissions);
+  // The waiting bar replaces the composer while a card is open; it offers a jump
+  // only when the card is outside the transcript's scrollport.
+  const waitKind = waitingKind(state.permissions);
+  const [openCardVisible, setOpenCardVisible] = useState(true);
+  const jumpToCard = useRef<(() => void) | null>(null);
   useEffect(() => {
     if (openCards && !pane.noPane && narrowView.narrow && narrowView.view === "preview") {
       params.set({ paneview: "chat" });
@@ -5306,6 +5312,8 @@ function ChatBody(props: ChatBodyProps) {
             <TasksContext.Provider value={tasksById}>
             <Transcript
               followRef={transcriptFollow}
+              onOpenCardVisible={setOpenCardVisible}
+              jumpRef={jumpToCard}
               cwd={chatWorkdir(file, pane.noun)}
               state={state}
               comebackPending={sched.blocked}
@@ -5462,10 +5470,17 @@ function ChatBody(props: ChatBodyProps) {
                 and stands alone in the compact tile that has none. */}
             {/* The artifacts strip is Claude's (§7 `artifacts`). */}
             {!compact ? (
-              <Composer
-                {...card}
-                artStrip={agentCaps.artifacts ? <ArtStrip items={art.items} /> : null}
-              />
+              <ComposerGate
+                kind={waitKind}
+                agentName={agentLabel(chatBackend)}
+                showJump={!openCardVisible}
+                onJump={() => jumpToCard.current?.()}
+              >
+                <Composer
+                  {...card}
+                  artStrip={agentCaps.artifacts ? <ArtStrip items={art.items} /> : null}
+                />
+              </ComposerGate>
             ) : agentCaps.artifacts ? (
               <ArtStrip items={art.items} />
             ) : null}

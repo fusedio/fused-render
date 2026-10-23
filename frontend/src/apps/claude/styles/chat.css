@@ -517,11 +517,8 @@
 .chat-root.chat-compact .turn {
   margin-bottom: 12px;
 }
-/* The tail pin's opaque ground has to reach the tile's own padding, which is
-   12px here rather than the full column's 20px (styles/transcript.css). */
-.chat-root.chat-compact .chat-tailpin.is-pinned {
-  margin: 0 -12px;
-  padding: 8px 12px 0;
+.chat-root.chat-compact .chat-tailpin.has-open {
+  padding-top: 8px;
 }
 
 /* CHAT ONLY (`chat_only=1`): no pane column and no divider, from the first
