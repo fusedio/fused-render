@@ -135,6 +135,7 @@ import {
 } from "./tasks-lib";
 import type { QueueOverride, QueueOverrides, TaskSortBy, TaskView, ViewFacets } from "./tasks-lib";
 import { TaskCards } from "./TaskCards";
+import { TaskWorkspace } from "./TaskWorkspace";
 import { TasksSkeleton } from "./TasksSkeleton";
 import { missingFolders } from "./useMissingFolders";
 import { TOOLBAR_MERGE_LEVEL, useToolbarFit } from "./row-fit";
@@ -288,12 +289,16 @@ const ICON_TUNE = svg(
   <><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
     <circle cx="12" cy="12" r="3" /></>,
 );
+const ICON_VIEW_WORKSPACE = svg(
+  <><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18" /><path d="M8 14h8" /><path d="M8 17.5h5" /></>,
+);
 const ICON_X = svg(<><path d="M18 6 6 18" /><path d="m6 6 12 12" /></>);
 const VIEW_ICONS: Record<TaskView, React.ReactNode> = {
   list: ICON_VIEW_LIST,
   board: ICON_VIEW_BOARD,
   cards: ICON_VIEW_CARDS,
   calendar: ICON_VIEW_CALENDAR,
+  workspace: ICON_VIEW_WORKSPACE,
   time: ICON_CLOCK,
   project: ICON_FOLDER,
   pr: ICON_PR,
@@ -1722,6 +1727,15 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               draftOn={filters.draft}
               missing={missing}
               emptyLabel={emptyLabel}
+            />
+          ) : view === "workspace" ? (
+            <TaskWorkspace
+              tasks={shown}
+              allTasks={inScope}
+              emptyLabel={emptyLabel}
+              peekOn={peekOn}
+              onReload={reload}
+              onNewTask={() => openForm("blank", null)}
             />
           ) : view === "cards" ? (
             <TaskCards

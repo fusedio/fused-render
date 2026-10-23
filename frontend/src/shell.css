@@ -80,3 +80,5 @@
    from the /apps cards, reusing their hairline/--bg-alt card vocabulary. */
 @import "./styles/marketplace.css";
 @import "./styles/scrollbars.css";
+/* The Workspace view (shell/TaskWorkspace.tsx): its own rows, not the List's. */
+@import "./styles/task-workspace.css";

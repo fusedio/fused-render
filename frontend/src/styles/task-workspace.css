@@ -1,0 +1,233 @@
+/* The Workspace view: one line per open task. Every heading-free rule here
+   spells out its own margins, because Tailwind runs without preflight. */
+.ws-root {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.ws-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.ws-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  font-weight: 400;
+}
+.ws-row:hover {
+  background: color-mix(in srgb, var(--bg-alt) 70%, var(--bg));
+}
+.ws-row.is-selected {
+  background: var(--bg-alt);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.ws-row.is-peeked {
+  background: var(--bg-alt);
+}
+.ws-num {
+  flex: none;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+  min-width: 3.5em;
+}
+.ws-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 400;
+}
+.ws-row[data-unread] .ws-title {
+  font-weight: 700;
+}
+.ws-status {
+  flex: none;
+  color: var(--fg-muted);
+}
+.ws-row[data-status="in_progress"] .ws-status {
+  color: var(--status-progress);
+}
+.ws-row[data-needs-you] .ws-status {
+  color: var(--status-failed);
+  font-weight: 600;
+}
+.ws-row[data-needs-you] {
+  box-shadow: inset 2px 0 0 var(--status-failed);
+}
+.ws-row[data-needs-you].is-selected {
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.ws-prs {
+  flex: none;
+  display: inline-flex;
+  gap: 6px;
+}
+.ws-pr,
+.ws-port {
+  color: var(--fg-muted);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-variant-numeric: tabular-nums;
+}
+.ws-pr:hover,
+.ws-port:hover {
+  color: var(--fg);
+  text-decoration: underline;
+}
+.ws-pr-more,
+.ws-bg {
+  flex: none;
+  color: var(--fg-muted);
+}
+.ws-ports {
+  flex: none;
+  display: inline-flex;
+  gap: 6px;
+}
+.ws-marker {
+  flex: none;
+  max-width: 34ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+}
+.ws-marker[data-clear] {
+  color: var(--fg-faint);
+}
+.ws-marker[data-unknown] {
+  color: var(--warning);
+}
+.ws-close {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+}
+.ws-row:hover .ws-close,
+.ws-row.is-selected .ws-close,
+.ws-close:focus-visible {
+  opacity: 1;
+}
+.ws-close:hover {
+  background: var(--bg-panel);
+  color: var(--fg);
+}
+.ws-undo {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-popover);
+  color: var(--fg);
+  z-index: 60;
+}
+.ws-undo-text {
+  max-width: 40ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-undo-btn {
+  border: 0;
+  background: transparent;
+  color: var(--accent-soft);
+  font-weight: 600;
+  cursor: pointer;
+}
+.ws-search-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 12vh;
+  background: rgba(0, 0, 0, 0.35);
+}
+.ws-search {
+  width: min(640px, calc(100vw - 32px));
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-popover);
+  overflow: hidden;
+}
+.ws-search-input {
+  padding: 12px 14px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  outline: none;
+}
+.ws-search-list {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  overflow: auto;
+}
+.ws-search-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.ws-search-item.is-active {
+  background: var(--bg-alt);
+}
+.ws-search-item[data-closed] .ws-search-title {
+  color: var(--fg-muted);
+}
+.ws-search-num {
+  flex: none;
+  min-width: 3.5em;
+  color: var(--fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.ws-search-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ws-search-meta {
+  flex: none;
+  color: var(--fg-muted);
+}
+.ws-search-empty {
+  padding: 12px 10px;
+  color: var(--fg-muted);
+}

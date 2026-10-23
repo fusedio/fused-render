@@ -1580,8 +1580,9 @@ export function isExpanded(expanded: Set<string>, key: string): boolean {
 // second spelling of `/tasks` that would show up in every share and every
 // bookmark while saying nothing at all.
 
-/** Which of the page's four views is up. */
-export type TaskView = "list" | "board" | "calendar" | "cards" | TaskGroupBy;
+/** Which of the page's views is up. `workspace` is the open-work view
+ *  (workspace-lib.ts): not a default tab, reached from the switcher's `+`. */
+export type TaskView = "list" | "board" | "calendar" | "cards" | "workspace" | TaskGroupBy;
 
 /** The three GROUPED LISTS (Akshil, 2026-10-16): the List's own rows, in the
  *  List's own order, cut into sections by when they last moved, by the folder
@@ -1596,7 +1597,7 @@ export const GROUP_VIEWS: TaskGroupBy[] = ["time", "project", "pr"];
 export const DEFAULT_VIEW_TABS: TaskView[] = ["list", "board"];
 
 /** Every view the switcher's `+` can add, in the order the menu lists them. */
-export const BASE_VIEWS: TaskView[] = ["list", "board", "cards", "calendar"];
+export const BASE_VIEWS: TaskView[] = ["list", "board", "cards", "calendar", "workspace"];
 
 /** The word each view wears on its tab (and in the editor's chips). */
 export const VIEW_LABELS: Record<TaskView, string> = {
@@ -1604,6 +1605,7 @@ export const VIEW_LABELS: Record<TaskView, string> = {
   board: "Board",
   cards: "Cards",
   calendar: "Calendar",
+  workspace: "Workspace",
   time: "Recent",
   project: "Project",
   pr: "PR",
@@ -1648,7 +1650,7 @@ export const VIEW_PARAM = "view";
  * read by the parser below and by the test that holds the switcher's buttons to
  * it — a view that exists in the union and not here is a view a link cannot
  * reach, which is exactly the bug a second hand-written list invites. */
-export const TASK_VIEWS: TaskView[] = ["list", "board", "cards", "calendar", "time", "project", "pr"];
+export const TASK_VIEWS: TaskView[] = ["list", "board", "cards", "calendar", "workspace", "time", "project", "pr"];
 
 /**
  * The view a URL asks for, or `fallback` when it asks for nothing this page

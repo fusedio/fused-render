@@ -10922,12 +10922,13 @@ describe("provisionalTasks", () => {
     expect(taskUnread(none, new Set())).toBe(0);
   });
 
-  it("the four views print the PAGE's one empty sentence, full width, centred", () => {
-    // One `emptyLabel` computed in Scheduled and handed to List, Board, Cards
-    // and Calendar; each prints it as the same `.schedule-tv-empty` paragraph.
+  it("the views print the PAGE's one empty sentence, full width, centred", () => {
+    // One `emptyLabel` computed in Scheduled and handed to List, Board, Cards,
+    // Calendar and the Workspace; each prints it as the same
+    // `.schedule-tv-empty` paragraph.
     // The Board used to show five bare rails and the Calendar a bare grid.
     const SCHED = readFileSync(join(SHELL, "Scheduled.tsx"), "utf8");
-    expect((SCHED.match(/emptyLabel=\{emptyLabel\}/g) ?? []).length).toBe(4);
+    expect((SCHED.match(/emptyLabel=\{emptyLabel\}/g) ?? []).length).toBe(5);
     // The Board keeps its `note` beside the sentence: a move that emptied the
     // board is when "where did it go" matters most (Bugbot).
     const boardEmpty = VIEWS.slice(VIEWS.indexOf("if (tasks.length === 0) {"));
