@@ -42,6 +42,7 @@ import signal
 import socket
 import struct
 import subprocess
+import sys
 import threading
 import time
 import urllib.request
@@ -49,6 +50,26 @@ import urllib.request
 from fused_render.bots import paths as bpaths
 
 log = logging.getLogger(__name__)
+
+IS_WINDOWS = sys.platform == "win32"
+
+
+def _windows_chrome_candidates(env, which, join=os.path.join):
+    """Chrome, then Edge, then Brave under the Program Files / Local AppData
+    roots, then whatever `which` finds. Pure (env, which and join are passed in)
+    so the Windows list is testable from any OS. Roots missing from `env` are
+    skipped rather than joined onto an empty string."""
+    roots = [env.get(k) for k in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA")]
+    roots = [r for r in roots if r]
+    rels = [
+        ("Google", "Chrome", "Application", "chrome.exe"),
+        ("Microsoft", "Edge", "Application", "msedge.exe"),
+        ("BraveSoftware", "Brave-Browser", "Application", "brave.exe"),
+    ]
+    out = [join(root, *rel) for rel in rels for root in roots]
+    out += [which("chrome") or "", which("msedge") or ""]
+    return out
+
 
 CHROME_CANDIDATES = [
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -58,6 +79,8 @@ CHROME_CANDIDATES = [
     shutil.which("google-chrome") or "",
     shutil.which("chromium") or "",
 ]
+if IS_WINDOWS:
+    CHROME_CANDIDATES += _windows_chrome_candidates(os.environ, shutil.which)
 VIEWPORT = (1280, 800)
 # Headless pages render at this device scale so the live view is crisp on a
 # Retina display. The window is VIEWPORT; screenshots for the agent are scaled
@@ -124,7 +147,7 @@ def find_chrome():
     for p in CHROME_CANDIDATES:
         if p and os.path.exists(p):
             return p
-    raise RuntimeError("No Chrome/Chromium found in /Applications")
+    raise RuntimeError("No Chrome, Chromium, Edge or Brave browser found")
 
 
 def write_json_atomic(path, obj):
