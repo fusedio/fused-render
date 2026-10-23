@@ -108,7 +108,31 @@ def _run_pid(run_dir: str) -> int:
         return 0
 
 
-def stop_session(session_id: str, agent, runs, grace_s: float = KILL_GRACE_S) -> dict:
+def snapshot_session(session_id: str, agent, runs) -> list[int]:
+    """The pids of every LIVE run of `session_id` and everything under each,
+    read now. A caller that is about to end the run by another road (archive's
+    `_stop_parked_run`) takes this first and hands it to `stop_session` as
+    `pre_tree`: once the CLI is dead its children re-parent to init and can no
+    longer be found from it, so the stray sweep would otherwise find nothing."""
+    pids: list[int] = []
+    for run in runs or []:
+        if session_id not in (run.get("sessions") or []):
+            continue
+        try:
+            run_dir = str(run.get("run_dir") or "")
+            if not (run_dir and agent._alive(run_dir)):
+                continue
+            pid = _run_pid(run_dir)
+            if pid:
+                pids += [pid, *_descendants(pid)]
+        except Exception:  # noqa: BLE001 — see the module docstring
+            logger.debug("teardown: could not snapshot run %s", run.get("run_id"),
+                         exc_info=True)
+    return pids
+
+
+def stop_session(session_id: str, agent, runs, grace_s: float = KILL_GRACE_S,
+                 pre_tree=()) -> dict:
     """End every LIVE run of `session_id` in `runs` (`project_queue.scan_runs`
     records) and anything those runs left behind.
 
@@ -140,6 +164,14 @@ def stop_session(session_id: str, agent, runs, grace_s: float = KILL_GRACE_S) ->
         except Exception:  # noqa: BLE001 — see the module docstring
             logger.warning("teardown: could not stop run %s of %s",
                            run.get("run_id"), session_id, exc_info=True)
+    # What `snapshot_session` saw before another road ended the agent: the same
+    # sweep, for a run that is no longer alive to be found above.
+    try:
+        strays += [p for p in kill_pids(pre_tree or (), grace_s=grace_s)
+                   if p not in strays]
+    except Exception:  # noqa: BLE001
+        logger.warning("teardown: pre-snapshot sweep failed for %s", session_id,
+                       exc_info=True)
     return {"stopped": stopped, "killed": strays}
 
 
@@ -215,14 +247,16 @@ def _managed(path: str) -> bool:
         os.path.basename(os.path.dirname(parent)) == ".claude"
 
 
-def teardown_worktrees(paths, force: bool = False) -> dict:
+def teardown_worktrees(paths, force: bool = False, in_use=()) -> dict:
     """Remove each worktree in `paths` that holds nothing open (or every managed
     one when `force`). `{"removed": [...], "kept": [{path, reasons, dirty_files,
     unpushed}], "gone": [...]}`. `reasons` adds `not-managed` for a path outside
-    `.claude/worktrees/` and `remove-failed` for a git refusal."""
+    `.claude/worktrees/`, `in use` for a path in `in_use` (never removed, even
+    forced), and `remove-failed` for a git refusal."""
     removed: list[str] = []
     kept: list[dict] = []
     gone: list[str] = []
+    busy = {os.path.realpath(str(p)) for p in in_use or ()}
     for path in dict.fromkeys(str(p) for p in paths or []):
         info = inspect_worktree(path)
         if not info["exists"]:
@@ -232,6 +266,11 @@ def teardown_worktrees(paths, force: bool = False) -> dict:
                  "unpushed": info["unpushed"]}
         if not _managed(path):
             kept.append({**entry, "reasons": ["not-managed"]})
+            continue
+        if os.path.realpath(path) in busy:
+            # Another open task records it, or a live session works in it:
+            # removing it would pull the floor out from under that one.
+            kept.append({**entry, "reasons": ["in use"]})
             continue
         reasons = holds_open(info)
         if reasons and not force:

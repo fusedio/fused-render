@@ -7458,12 +7458,16 @@ def api_task_settings(patch: SettingsPatch,
 #     recurring RULE behind one, because a rule that keeps materialising
 #     occurrences is a rule that keeps un-archiving the task.
 #
-# WHAT IS NOT TOUCHED is a run that is happening. `sending` is not cancellable
-# (schedule.cancel refuses it, and rightly: the helper is away and the turn may
-# have started) and neither is a live turn. Those keep going, the task keeps
-# reading In Progress while they do, and it settles into Archive by itself when
-# they end — see `_message_archived`. Nothing has to come back and finish the
-# job; the derivation simply answers differently once nothing is running.
+# A RUN THAT IS HAPPENING IS ENDED, since the Workspace work (`task_teardown`):
+# archiving the task stops its live session and every process that session
+# started, and removes its clean, pushed worktrees (the report rides on the
+# answer so the client can say what went). The client asks before it files a
+# task that is still running, and Undo only un-files — it does not restart what
+# was stopped. `sending` is still not cancellable by `schedule.cancel` (the
+# helper is away and the turn may have started), but the stop below reaches the
+# run itself, and anything that still settles late lands in Archive by itself
+# (`_message_archived`). The one caller that must NOT tear down is the desk's
+# remove-app door (`current_apps._archive_folder`): it files, nothing more.
 #
 # Deleting exists now (Akshil, 2026-08-19) and D306 still holds, because the
 # two were never actually in tension: what the user asks to delete is the ROW —
@@ -7645,6 +7649,9 @@ def archive_task(task: dict, parked: dict, *,
         if entry_id and schedule.cancel(entry_id) is not None:
             cancelled += 1
 
+    # The run's process tree, read BEFORE the parked stop ends the agent: its
+    # children are unreachable from it afterwards (`task_teardown.snapshot_session`).
+    pre_tree = _snapshot_tree(task) if teardown else []
     stopped = _stop_parked_run(task, parked)
     session_id = task["session_id"]
     if session_id:
@@ -7662,7 +7669,7 @@ def archive_task(task: dict, parked: dict, *,
         tasks_store.mark_archived(task["key"])
         task["key_filed_at"] = time.time()
     if teardown:
-        task["teardown"] = _teardown_task(task)
+        task["teardown"] = _teardown_task(task, pre_tree=pre_tree)
     return cancelled, survives, stopped
 
 
@@ -7672,8 +7679,60 @@ def _recorded_worktrees(task: dict) -> list[str]:
     return list((record or {}).get("worktrees") or [])
 
 
+def _snapshot_tree(task: dict) -> list[int]:
+    """`task_teardown.snapshot_session` for this task's session; [] on any miss."""
+    from fused_render.server import task_teardown  # noqa: PLC0415
+    try:
+        agent = _agent_module()
+        session_id = str(task.get("session_id") or "")
+        if agent is None or not session_id:
+            return []
+        return task_teardown.snapshot_session(
+            session_id, agent, project_queue.scan_runs(agent))
+    except Exception:  # noqa: BLE001 — a missing snapshot is a missed sweep
+        logger.debug("teardown: snapshot failed for %s", task.get("key"),
+                     exc_info=True)
+        return []
+
+
+def _worktrees_in_use(task: dict) -> set[str]:
+    """Recorded worktrees of `task` that something else still needs: another task
+    that is not archived also records it, or a live run works inside it."""
+    mine = {os.path.realpath(p) for p in _recorded_worktrees(task)}
+    if not mine:
+        return set()
+    busy: set[str] = set()
+    try:
+        triage = sessions._load_state("triage.json")
+        key_filed = tasks_store.archived_state()
+        for other in _collect().values():
+            if other.get("key") == task.get("key") or not other.get("path"):
+                continue
+            sid = str(other.get("session_id") or "")
+            if (triage.get(sid) or {}).get("status") == _FILED \
+                    or str(other.get("key")) in key_filed:
+                continue
+            busy |= mine & {os.path.realpath(p) for p in _recorded_worktrees(other)}
+        agent = _agent_module()
+        if agent is not None:
+            for run in project_queue.scan_runs(agent):
+                if not project_queue.run_alive(agent, str(run.get("run_dir") or "")):
+                    continue
+                meta = run.get("meta") or {}
+                for where in (meta.get("cwd"), meta.get("file")):
+                    if not where:
+                        continue
+                    real = os.path.realpath(str(where))
+                    busy |= {w for w in mine
+                             if real == w or real.startswith(w + os.sep)}
+    except Exception:  # noqa: BLE001 — see `_teardown_task`
+        logger.debug("teardown: in-use check failed", exc_info=True)
+    return busy
+
+
 def _teardown_task(task: dict, *, force: bool = False,
-                   paths: list[str] | None = None) -> dict:
+                   paths: list[str] | None = None,
+                   pre_tree: list[int] | None = None) -> dict:
     """Archive's second half (`task_teardown`): end the session's live run and
     its stray children, then remove each recorded worktree that is clean and
     pushed. `{"stopped", "killed", "removed", "kept", "gone"}`; `force` removes
@@ -7687,11 +7746,13 @@ def _teardown_task(task: dict, *, force: bool = False,
             session_id = str(task.get("session_id") or "")
             if agent is not None and session_id:
                 out.update(task_teardown.stop_session(
-                    session_id, agent, project_queue.scan_runs(agent)))
+                    session_id, agent, project_queue.scan_runs(agent),
+                    pre_tree=pre_tree or ()))
         recorded = _recorded_worktrees(task)
         if paths is not None:
             recorded = [p for p in recorded if p in set(paths)]
-        out.update(task_teardown.teardown_worktrees(recorded, force=force))
+        out.update(task_teardown.teardown_worktrees(
+            recorded, force=force, in_use=_worktrees_in_use(task)))
     except Exception:  # noqa: BLE001 — the filing already happened
         logger.warning("teardown: failed for %s", task.get("key"), exc_info=True)
     return out

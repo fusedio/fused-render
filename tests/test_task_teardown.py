@@ -226,6 +226,41 @@ def test_stop_session_cancels_the_live_run_and_kills_a_stray_child(tmp_path):
     assert not td._alive(child_pid)
 
 
+def test_a_parked_runs_stray_child_is_killed_after_the_agent_is_already_dead(tmp_path):
+    runs = tmp_path / "runs"
+    (runs / "r1").mkdir(parents=True)
+    child_code = "import time; time.sleep(60)"
+    parent = _spawn(
+        "import subprocess, sys, time; "
+        f"c = subprocess.Popen([sys.executable, '-c', {child_code!r}], start_new_session=True); "
+        "print(c.pid, flush=True); time.sleep(60)")
+    child_pid = int(parent.stdout.readline())
+    (runs / "r1" / "pid").write_text(str(parent.pid))
+    agent = _Agent(runs)
+    scanned = [{"run_id": "r1", "run_dir": str(runs / "r1"), "sessions": ["s1"]}]
+    pre = td.snapshot_session("s1", agent, scanned)
+    assert child_pid in pre
+    # `_stop_parked_run` ends the agent first; the child escaped the group.
+    parent.terminate()
+    parent.wait(timeout=5)
+    assert td._alive(child_pid)
+    out = td.stop_session("s1", agent, scanned, grace_s=2.0, pre_tree=pre)
+    assert out["stopped"] == 0
+    assert child_pid in out["killed"]
+    deadline = time.monotonic() + 5
+    while td._alive(child_pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not td._alive(child_pid)
+
+
+def test_a_worktree_in_use_is_kept_even_when_forced(repo):
+    path = _worktree(repo, "shared", push=True)
+    got = td.teardown_worktrees([path], force=True, in_use=[path])
+    assert got["removed"] == []
+    assert got["kept"][0]["reasons"] == ["in use"]
+    assert os.path.isdir(path)
+
+
 def test_stop_session_leaves_other_sessions_runs_alone(tmp_path):
     runs = tmp_path / "runs"
     (runs / "r1").mkdir(parents=True)

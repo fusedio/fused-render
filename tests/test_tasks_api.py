@@ -5870,6 +5870,59 @@ def test_archive_stops_the_sessions_live_run(client, projects_dir, tmp_path,
     assert body["teardown"]["stopped"] == 1
 
 
+def test_removing_a_folder_from_the_desk_files_tasks_without_teardown(
+        client, projects_dir, tmp_path, no_runs, monkeypatch):
+    from fused_render.server.routers import current_apps
+    _write_transcript(projects_dir, "sess-a", str(tmp_path), [_user("hi", T9)])
+    task = tasks_mod._collect()["sess-a"]
+    monkeypatch.setattr(current_apps, "_folder_tasks", lambda folder: [task])
+    called = []
+    monkeypatch.setattr(tasks_mod, "_teardown_task",
+                        lambda *a, **k: called.append(1) or {})
+    out = current_apps._archive_folder(str(tmp_path))
+    assert out["archived"] == 1
+    assert called == [], "the desk door files; it never stops or removes anything"
+    assert "teardown" not in task
+
+
+def test_a_worktree_another_open_task_records_is_kept_in_use(
+        client, projects_dir, tmp_path, no_runs):
+    wt = _git_worktree(tmp_path, "shared")
+    import subprocess
+    subprocess.run(["git", "update-ref", "refs/remotes/origin/main", "HEAD"],
+                   cwd=wt, check=True, capture_output=True)
+    for sid in ("sess-a", "sess-b"):
+        _write_transcript(projects_dir, sid, str(tmp_path), [
+            _user("hi", T9), _enter_worktree_result(wt, T10)])
+    body = _post_archive(client, "sess-a")
+    assert body["teardown"]["removed"] == []
+    assert body["teardown"]["kept"][0]["reasons"] == ["in use"]
+    assert os.path.isdir(wt)
+
+
+def test_a_worktree_that_is_a_live_runs_cwd_is_kept_in_use(
+        client, projects_dir, tmp_path, monkeypatch):
+    wt = _git_worktree(tmp_path, "live")
+    import subprocess
+    subprocess.run(["git", "update-ref", "refs/remotes/origin/main", "HEAD"],
+                   cwd=wt, check=True, capture_output=True)
+
+    class Agent:
+        RUNS = str(tmp_path / "runs")
+
+    monkeypatch.setattr(tasks_mod, "_agent_module", lambda: Agent)
+    monkeypatch.setattr(tasks_mod.project_queue, "scan_runs",
+                        lambda agent=None, limit=None: [
+                            {"run_id": "r9", "run_dir": "/x/r9", "sessions": ["zzz"],
+                             "meta": {"cwd": wt}}])
+    monkeypatch.setattr(tasks_mod.project_queue, "run_alive", lambda a, d: True)
+    _write_transcript(projects_dir, "sess-a", str(tmp_path), [
+        _user("hi", T9), _enter_worktree_result(wt, T10)])
+    body = _post_archive(client, "sess-a")
+    assert body["teardown"]["kept"][0]["reasons"] == ["in use"]
+    assert os.path.isdir(wt)
+
+
 def test_holds_endpoint_reports_a_tasks_recorded_worktrees(client, projects_dir,
                                                            tmp_path):
     from fused_render.server import task_teardown
