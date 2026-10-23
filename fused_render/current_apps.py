@@ -49,22 +49,21 @@ the migration of what the derived section showed, widened from `local/` to all
 app kinds. `seen` is pruned to the keys still listed, so it is bounded by the
 machine's transcripts and a deleted task's key does not live here forever.
 
-`apps` is stored in DISPLAY order, top first (D1386). A new app — a task's
-(`observe`) or the explorer's button (`add`) — goes in at index 0, and a drag
-in the sidebar rewrites the whole order (`set_order`, POST
-/api/current-apps/order). The order used to be the browser's: the sidebar kept
-a per-app sequence map in localStorage and the server's list was only the
-"added" seed. That lost the user's arrangement on every relaunch that landed
-on a different port — the desktop app walks ports 1777..1787 then an ephemeral
-one, and each port is a new origin with empty storage — so the order moved
-here, and the client's old key is imported once and removed.
+The desk is listed BY RECENCY (owner, 2026-10-23): `list_apps` sorts the rows
+on their newest task activity (``activeAt``, recomputed by `observe` from the
+``happened_at`` of the tasks under each folder), falling back to ``addedAt``
+for a row with no tasks, newest first. Nothing is dragged and no user order is
+kept — a server-held drag order (D1386, `set_order`, POST
+/api/current-apps/order) existed from 2026-10-18 to 2026-10-23 and was
+removed with the drag. The stored array is still newest-added first (`add`
+and `observe` insert at index 0), which is the tiebreak.
 
 The file used to be ADDED order (oldest first, `append`). A file without the
-``"order": "top_first"`` stamp is that legacy layout and is read REVERSED, so a
-desk nobody ever dragged keeps showing newest on top; `write_state` writes the
-stamp, so the first write after the upgrade settles the file. The two outside
-writers that edit this file in place (`app_state_move`, `app_state_remove`)
-keep whatever top-level keys they found, stamp included, and never reorder.
+``"order": "top_first"`` stamp is that legacy layout and is read REVERSED, so
+the tiebreak keeps newest on top; `write_state` writes the stamp, so the first
+write after the upgrade settles the file. The two outside writers that edit
+this file in place (`app_state_move`, `app_state_remove`) keep whatever
+top-level keys they found, stamp included, and never reorder.
 
 Paths are stored CANONICAL (forward-slash, `_view_url_codec.canonical_fs_path`)
 — the form a task row's `project` already has, so the containment test is
@@ -87,12 +86,12 @@ FILENAME = "current_apps.json"
 #: The stamp that says `apps` is top-first display order (module docstring).
 ORDER_STAMP = "top_first"
 
-# Serialises every read-modify-write of the file in this process. Before the
-# order moved here only the listing (`observe`) and one-off gestures wrote it;
-# now a drag (`set_order`) rewrites the whole list, and a drag that read the
-# desk just before an `observe` pass inserted a new app would otherwise write
-# that app away — and `observe` never re-adds it, because its task key is
-# already `seen`. Re-entrant so a mutator may call `read_state` under it.
+# Serialises every read-modify-write of the file in this process: the listing
+# (`observe`) and the one-off gestures (`add`, `remove`, `mark_opened`) all
+# rewrite the whole file, and a gesture that read the desk just before an
+# `observe` pass inserted a new app would otherwise write that app away — and
+# `observe` never re-adds it, because its task key is already `seen`.
+# Re-entrant so a mutator may call `read_state` under it.
 _LOCK = threading.RLock()
 
 
@@ -239,6 +238,29 @@ def _unread(folder: str, opened_at: float, rows: list[dict]) -> bool:
     return False
 
 
+# ---- recency ------------------------------------------------------------------
+#
+# ``activeAt`` — the newest ``happened_at`` of any task under the folder that is
+# not archived (a running task counts: it is the most recent thing happening).
+# Recomputed on every `observe` pass like ``unread``, and it is what `list_apps`
+# sorts on (owner, 2026-10-23: the sidebar lists by recency, no user order).
+# Archived rows are left out so hiding an app's tasks lets it sink; the row
+# then falls back to ``addedAt``. 0.0 when no task under the folder has
+# happened yet (a form never submitted carries ``happened_at`` 0.0 too).
+
+
+def _active_at(folder: str, rows: list[dict]) -> float:
+    newest = 0.0
+    for row in rows:
+        if row.get("status") == "archived":
+            continue
+        project = str(row.get("project") or "")
+        if not project or not is_under(project, folder):
+            continue
+        newest = max(newest, float(row.get("happened_at") or 0.0))
+    return newest
+
+
 def observe(rows: list[dict]) -> None:
     """Look at every task row once: a key not seen before is a new task, and a
     new task that is not archived adds its app. Then recompute every row's
@@ -292,6 +314,10 @@ def _observe_locked(rows: list[dict]) -> None:
         if a.get("unread") is not flag:
             a["unread"] = flag
             changed = True
+        active = _active_at(a["path"], rows)
+        if a.get("activeAt") != active:
+            a["activeAt"] = active
+            changed = True
     pruned = seen & live_keys
     if changed or pruned != set(state["seen"]):
         state["seen"] = sorted(pruned)
@@ -337,45 +363,6 @@ def ensure(project: str) -> tuple[str | None, bool]:
     if folder is None or not os.path.isdir(folder):
         return None, False
     return folder, add(folder)
-
-
-def set_order(paths) -> list[dict]:
-    """Reorder the desk after a drag in the sidebar: ``paths`` is the order
-    the user arranged, top first (any spelling of each path). The new order
-    is every desk app the list does NOT name, in its current relative order,
-    followed by the named apps in ``paths`` order. Unknown paths (not on the
-    desk, or not absolute) and repeats are dropped.
-
-    Unnamed apps go FIRST on purpose: the one way an app reaches the desk
-    without the client knowing is `observe` inserting it at the top while the
-    drag was in flight, and that app belongs where `observe` put it — on top —
-    not shuffled under the arrangement the user made of the older ones. This
-    is the reverse of `dock.set_order`, whose stragglers are old pins.
-
-    The order lives here, not in the browser, since D1386: localStorage is per
-    origin and the desktop app's port walk (1777..1787, then ephemeral) makes
-    a relaunch a new origin with an empty store. Writes only when the order
-    changed. Returns `list_apps()`. ValueError when ``paths`` is not a list
-    of strings."""
-    if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
-        raise ValueError("paths must be a list of app paths")
-    with _LOCK:
-        state = read_state()
-        by_path = {a["path"]: a for a in state["apps"]}
-        named: list[str] = []
-        for p in paths:
-            if not p or not os.path.isabs(p):
-                continue
-            folder = canonical_fs_path(os.path.abspath(p)).rstrip("/")
-            if folder in by_path and folder not in named:
-                named.append(folder)
-        chosen = set(named)
-        ordered = ([a for a in state["apps"] if a["path"] not in chosen]
-                   + [by_path[p] for p in named])
-        if [a["path"] for a in ordered] != [a["path"] for a in state["apps"]]:
-            state["apps"] = ordered
-            write_state(state)
-    return list_apps()
 
 
 def remove(path: str) -> bool:
@@ -459,14 +446,26 @@ def _canvas_of(path: str) -> dict | None:
     return {"env": env, "name": name}
 
 
+def _recency(a: dict) -> float:
+    """The clock a row is listed by: its newest task activity, else when it
+    was added (a row with no tasks yet — the explorer's button put it here).
+    `_added_epoch` is None for an unparseable stamp; that row sorts last."""
+    active = a.get("activeAt")
+    active = float(active) if isinstance(active, (int, float)) else 0.0
+    added = _added_epoch(a.get("addedAt")) or 0.0
+    return max(active, added)
+
+
 def list_apps() -> list[dict]:
-    """The desk, in stored order — display order, top first (D1386: new apps
-    are inserted at the top, a drag rewrites it via `set_order`). Each: ``path`` (canonical), ``name``
+    """The desk, newest activity first (the recency section above): a row's
+    newest task ``happened_at``, else its ``added_at``; ties keep the stored
+    (newest-added-first) order. Each: ``path`` (canonical), ``name``
     (folder name), ``kind`` (``linked`` for a registry folder, ``workspace``
     otherwise), ``entry`` (the page to run, or None), ``exists``, ``icon`` /
     ``icon_mtime`` (the optional ``icon.svg`` / ``icon.png``, see `app_icon`), ``added_at``
     (epoch), ``opened_at`` (epoch of the last `mark_opened`; 0 for a row a task
-    put here that has never been opened), ``unread`` (a task finished under it
+    put here that has never been opened), ``active_at`` (epoch of the newest
+    task activity under it, 0 for none), ``unread`` (a task finished under it
     since that open — the sidebar's green dot, see the unread section). A
     folder that is gone or unreadable still lists — the row is the user's to
     remove — with ``exists`` false and no entry."""
@@ -476,7 +475,8 @@ def list_apps() -> list[dict]:
     }
     guard = MountGuard()
     out = []
-    for a in read_state()["apps"]:
+    # `sorted` is stable, so equal clocks keep the stored order.
+    for a in sorted(read_state()["apps"], key=_recency, reverse=True):
         path = a["path"]
         entry = None
         exists = False
@@ -504,6 +504,8 @@ def list_apps() -> list[dict]:
             "added_at": _added_epoch(a.get("addedAt")),
             "opened_at": (a["openedAt"] if isinstance(a.get("openedAt"), (int, float))
                           else None),
+            "active_at": (float(a["activeAt"]) if isinstance(a.get("activeAt"), (int, float))
+                          else 0.0),
             "unread": bool(a.get("unread")),
         })
     return out

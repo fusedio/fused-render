@@ -9,8 +9,7 @@
 // counts — any workspace folder with a declared page (`~/Fused/local`,
 // `~/Fused/showcase`, …) and linked apps anywhere on disk (the registered-apps
 // registry). What this file keeps is the CLIENT half: the row shape, the
-// containment test the app page's Tasks tab applies, the page's URL codec, and
-// the drag-ordered sequence layer.
+// containment test the app page's Tasks tab applies, and the page's URL codec.
 //
 // EVERY app is rendered — the list is not capped (owner, 2026-08-26).
 import { encodeFsPathSegments, rootedFsPath } from "@platform/lib/path-url";
@@ -79,8 +78,8 @@ export function isUnderDir(project: string, dir: string): boolean {
 // ×2, 2026-09-07). The only client-side input is `clearedHere`: the rows the
 // user opened in THIS window ahead of the refetch, so the dot dies on the click.
 
-/** The store's rows as sidebar rows, in the store's ADDED order (oldest
- *  first), with the running dot read off the projects of the tasks currently
+/** The store's rows as sidebar rows, in the order the server answers (by
+ *  recency — see below), with the running dot read off the projects of the tasks currently
  *  in progress, the queued count off the projects of the tasks waiting on their
  *  folder, and the unread dot the server's flag, minus the rows opened here
  *  since the last fetch. */
@@ -211,65 +210,12 @@ export function appPageTabFromSearch(search: string): AppPageTab {
 
 // ---- the displayed order: the server's array --------------------------------
 //
-// The order is the server's `apps` array, top first (`current_apps.json`,
-// D1386) — the client never numbers anything. `GET /api/current-apps` answers
-// in display order, a drag POSTs the WHOLE list (`setCurrentAppsOrder`) and
-// adopts the table that comes back, and the server inserts a new app (an
-// `observe` from a fresh task, an `add` from the explorer) at index 0 — on top,
-// where the "+ New app" row sits — so new work still lands where the user
-// looks, and nothing reshuffles the rows under the cursor in between.
-//
-// It used to be a per-browser sequence map in localStorage. That made the
-// arrangement a fact of the ORIGIN, and the desktop app's origin is not fixed:
-// it walks ports 1777..1787 and then an ephemeral one, and every port is a new
-// origin with empty storage — so a relaunch that landed on another port lost
-// the order the user dragged (D1386). The old key is read ONCE, pushed through
-// the same POST, and removed (CurrentAppsSection's one-shot import); the
-// parser below survives only for that.
-//
-// The cross-window story is unchanged in shape: a drag is one user gesture, so
-// there is still exactly one writer per gesture, and the other windows hear the
-// existing `DESK_CHANGED_KEY` nudge and refetch the table (Q4: the nudge says
-// "look again", never carries the order itself).
-
-/** import-only (D1386) — the pre-server saved order, read back once so the
- *  one-shot import can POST it. The string was written by SOMEONE ELSE (an
- *  older build, a hand-edited devtools row), so anything unreadable degrades to
- *  "no saved order" — nothing is imported and the server's order stands —
- *  rather than throwing. Non-string entries are dropped and duplicates collapse
- *  to their first appearance, so the POST names each path at most once. */
-export function parseSavedOrder(raw: string | null): string[] {
-  if (!raw) return [];
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(parsed)) return [];
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const path of parsed) {
-    if (typeof path !== "string" || !path || seen.has(path)) continue;
-    seen.add(path);
-    out.push(path);
-  }
-  return out;
-}
-
-/** `paths` with `from` lifted out and re-inserted at `to`'s slot — the list a
- *  drop produces. `below` puts it after the target rather than before. Returns
- *  the input untouched when the drag cannot move anything. */
-export function moveSlug(
-  paths: string[],
-  from: string,
-  to: string,
-  below: boolean,
-): string[] {
-  if (from === to) return paths;
-  const rest = paths.filter((s) => s !== from);
-  const at = rest.indexOf(to);
-  if (at === -1) return paths;
-  rest.splice(at + (below ? 1 : 0), 0, from);
-  return rest;
-}
+// The order is the server's `apps` array as `GET /api/current-apps` answers it
+// — BY RECENCY: the newest task activity under each folder first, a row with
+// no tasks by when it was added (current_apps.py `list_apps`, owner
+// 2026-10-23). The client never numbers, sorts or remembers anything. There is
+// no user order and no drag: the server-held drag order (D1386, 2026-10-18 to
+// 2026-10-23) and the localStorage sequence map before it are both gone. The
+// cross-window story stays: the other windows hear the `DESK_CHANGED_KEY`
+// nudge and refetch the table (the nudge says "look again", never carries the
+// order itself).

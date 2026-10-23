@@ -3,13 +3,11 @@ import { readFileSync } from "node:fs";
 import type { CurrentAppEntry } from "@platform/lib/api";
 import {
   APP_PAGE_TABS,
-  moveSlug,
   appPageTabFromSearch,
   appPageUrl,
   appPathFromPath,
   currentApps,
   isUnderDir,
-  parseSavedOrder,
 } from "./current-apps-lib";
 
 function entry(path: string, kind: CurrentAppEntry["kind"] = "workspace"): CurrentAppEntry {
@@ -56,35 +54,11 @@ describe("currentApps", () => {
 });
 
 describe("the displayed order", () => {
-  it("is the server's array, drawn as it arrives (D1386)", () => {
+  it("is the server's array, drawn as it arrives (by recency, server-sorted)", () => {
     // No client numbering: whatever order GET /api/current-apps answers in is
-    // the order on screen, newest-on-top included (the server inserts at 0).
+    // the order on screen — the server sorts by newest task activity.
     const out = currentApps([entry(L, "linked"), entry(B), entry(A)], []);
     expect(out.map((a) => a.path)).toEqual([L, B, A]);
-  });
-});
-
-describe("the import-only saved-order parser", () => {
-  it("reads a pre-D1386 row back as a path list", () => {
-    expect(parseSavedOrder(JSON.stringify([B, A]))).toEqual([B, A]);
-    expect(parseSavedOrder(null)).toEqual([]);
-  });
-
-  it("degrades a corrupt row to no order", () => {
-    expect(parseSavedOrder("nope")).toEqual([]);
-    expect(parseSavedOrder(JSON.stringify({ a: 1 }))).toEqual([]);
-    expect(parseSavedOrder(JSON.stringify([1, A, A, ""]))).toEqual([A]);
-  });
-});
-
-describe("moveSlug", () => {
-  it("inserts above or below the target", () => {
-    expect(moveSlug([A, B, L], L, A, false)).toEqual([L, A, B]);
-    expect(moveSlug([A, B, L], A, B, true)).toEqual([B, A, L]);
-  });
-  it("is a no-op for a drag onto itself or onto an unknown target", () => {
-    expect(moveSlug([A, B], A, A, false)).toEqual([A, B]);
-    expect(moveSlug([A, B], A, "/x", false)).toEqual([A, B]);
   });
 });
 
@@ -94,45 +68,20 @@ describe("CurrentAppsSection's half of the order", () => {
     "utf8",
   );
 
-  it("keeps no order of its own — nothing sorts, nothing numbers", () => {
-    for (const gone of ["assignSequences", "bySequence", "reorderTo", "orderedSlugs", "appOrder"]) {
+  it("keeps no order of its own — nothing sorts, numbers, drags or imports one", () => {
+    // Recency is the server's (owner, 2026-10-23: no user order, no dragging).
+    for (const gone of [
+      "assignSequences", "bySequence", "reorderTo", "orderedSlugs", "appOrder",
+      "setCurrentAppsOrder", "moveSlug", "parseSavedOrder", "LEGACY_ORDER_KEY",
+      "onDragStart", "onDrop", "draggable",
+    ]) {
       expect(SECTION).not.toContain(gone);
     }
-    expect(SECTION).not.toContain("localStorage.setItem(LEGACY_ORDER_KEY");
   });
 
-  it("POSTs the whole list ONLY from the drop handler", () => {
-    const calls = SECTION.split("setCurrentAppsOrder(").length - 1;
-    expect(calls).toBe(2); // the one-shot import, and the drop
-    const drop = SECTION.indexOf("onDrop: (e) => {");
-    const dropEnd = SECTION.indexOf("onDragEnd:", drop);
-    const handler = SECTION.slice(drop, dropEnd);
-    expect(handler).toContain("moveSlug(paths, from, path, isBelow(e))");
-    expect(handler).toContain("setCurrentAppsOrder(next)");
-    // The answer is adopted and the other windows are nudged to refetch.
-    expect(handler).toContain("adopt(r.apps ?? [])");
-    expect(handler).toContain("announceDeskChanged(");
-  });
-
-  it("imports the old order once at module load, then removes the key", () => {
-    const imp = SECTION.indexOf("parseSavedOrder(localStorage.getItem(LEGACY_ORDER_KEY))");
-    expect(imp).toBeGreaterThan(-1);
-    expect(imp).toBeLessThan(SECTION.indexOf("export default function"));
-    expect(SECTION).toContain('LEGACY_ORDER_KEY = "fused-render:current-apps-order:v2"');
-    expect(SECTION).toContain("localStorage.removeItem(LEGACY_ORDER_KEY)");
-  });
-
-  it("imports the old order ONLY over a desk nobody has arranged (D1386)", () => {
-    // A stale origin left behind by the port walk must not overwrite an order
-    // the user dragged since: the server's rows are read first, and the old
-    // list goes up only while they are still in added order, newest first.
-    const imp = SECTION.slice(
-      SECTION.indexOf("parseSavedOrder(localStorage.getItem(LEGACY_ORDER_KEY))"),
-      SECTION.indexOf("/** The desk's table, fetched on mount"),
-    );
-    expect(imp.indexOf("getCurrentApps()")).toBeLessThan(imp.indexOf("setCurrentAppsOrder(legacy)"));
-    expect(imp).toContain("if (!neverArranged(current.apps ?? [])) {\n          dropLegacyOrder();\n          return;");
-    expect(SECTION).toContain("return y.at - x.at || x.i - y.i;");
+  it("keeps the cross: the row's ✕ hides the app and archives its tasks", () => {
+    expect(SECTION).toContain("current-app-archive");
+    expect(SECTION).toContain("await removeCurrentApp(app.path);");
   });
 
   it("keeps the fold in the ui-layout doc, not in localStorage", () => {
