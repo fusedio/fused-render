@@ -63,7 +63,7 @@ test("rows run newest first and archived tasks are left out", async () => {
     task({ key: "b", task_id: "T2", started: 2 }),
     task({ key: "c", task_id: "T3", started: 3, status: "archived" }),
   ]);
-  const rows = r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.startsWith("ws-row"));
+  const rows = r.root.findAll((n) => typeof n.props.className === "string" && /^ws-card( |$)/.test(n.props.className));
   expect(rows.map((n) => n.props["data-key"])).toEqual(["b", "a"]);
 });
 
@@ -78,7 +78,26 @@ test("an unread row is marked for bold; a read one is not", async () => {
 test("a clear task says clear once its holds have loaded", async () => {
   serve();
   const r = await render([task({ key: "a" })]);
-  expect(r.root.findByProps({ className: "ws-marker" }).children.join("")).toBe("clear");
+  expect(r.root.findByProps({ className: "ws-clear" }).children.join("")).toBe("clear");
+});
+
+test("the card drops reasons its chips or bold title already say, and the status word for Done", async () => {
+  serve();
+  const r = await render([
+    task({ key: "a", status: "done", unread: 3, background_jobs: { count: 1, run_id: "r", jobs: [{ id: "j", title: "dev" }] } }),
+  ]);
+  // Held (unread + bg), so no "clear" tag, and nothing left to print as text.
+  expect(r.root.findAllByProps({ className: "ws-clear" })).toHaveLength(0);
+  expect(r.root.findAllByProps({ className: "ws-marker" })).toHaveLength(0);
+  expect(r.root.findAllByProps({ className: "ws-status" })).toHaveLength(0);
+  expect(r.root.findByProps({ className: "ws-bg" }).props.title).toBe("dev");
+});
+
+test("a running card shows its status word and not the running reason", async () => {
+  serve();
+  const r = await render([task({ key: "a", status: "in_progress" })]);
+  expect(r.root.findByProps({ className: "ws-status" }).children.join("")).toBe("Running");
+  expect(r.root.findAllByProps({ className: "ws-marker" })).toHaveLength(0);
 });
 
 test("an empty set says why", async () => {
@@ -94,7 +113,7 @@ test("closing archives the task, hides the row and offers Undo, which un-archive
     reloads++;
   });
   await act(async () => {
-    r.root.findByProps({ className: "ws-close" }).props.onClick({ stopPropagation() {} });
+    r.root.findByProps({ className: "task-card-door ws-close" }).props.onClick({ stopPropagation() {} });
   });
   expect(posts.some((p) => p.url === "/api/tasks/archive" && (p.body as { key: string }).key === "a")).toBe(true);
   expect(r.root.findAllByProps({ "data-key": "a" })).toHaveLength(0);

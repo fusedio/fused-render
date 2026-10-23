@@ -5,6 +5,8 @@ import type { Task } from "@platform/lib/api";
 import {
   holdReasons,
   holdMarker,
+  cardStatusWord,
+  visibleReasons,
   moveSelection,
   nextNeedingYou,
   searchTasks,
@@ -215,5 +217,35 @@ describe("workspaceKeyAction", () => {
     expect(press("c", { metaKey: true })).toBeNull();
     expect(press("x", { ctrlKey: true })).toBeNull();
     expect(press("j", { altKey: true })).toBeNull();
+  });
+});
+
+describe("cardStatusWord", () => {
+  test("is spoken only for running and needs-you tasks", () => {
+    expect(cardStatusWord(task({ status: "in_progress" }))).toBe("Running");
+    expect(cardStatusWord(task({ status: "needs_attention" }))).toBe("Needs attention");
+    expect(cardStatusWord(task({ status: "blocked", blocked_reason: "failed" }))).toBe("Failed");
+    expect(cardStatusWord(task({ status: "blocked", blocked_reason: "usage_limit" }))).toContain("Usage limit");
+    expect(cardStatusWord(task({ status: "done" }))).toBe("");
+    expect(cardStatusWord(task({ status: "stopped" as Task["status"] }))).toBe("");
+  });
+});
+
+describe("visibleReasons", () => {
+  test("drops unread and chip-duplicate reasons, keeps worktree facts", () => {
+    const all = ["3 unread", "PR #7 open", "PR #8 draft", "2 bg jobs", "1 uncommitted", "2 unpushed", "unknown"];
+    expect(visibleReasons(all, task())).toEqual(["1 uncommitted", "2 unpushed", "unknown"]);
+  });
+  test("keeps an unknown PR, queued and a pending run", () => {
+    expect(visibleReasons(["PR #7 unknown", "queued", "run pending"], task())).toEqual([
+      "PR #7 unknown",
+      "queued",
+      "run pending",
+    ]);
+  });
+  test("drops running / needs you only while the status word is shown", () => {
+    expect(visibleReasons(["running"], task({ status: "in_progress" }))).toEqual([]);
+    expect(visibleReasons(["needs you"], task({ status: "needs_attention" }))).toEqual([]);
+    expect(visibleReasons(["running"], task({ status: "done" }))).toEqual(["running"]);
   });
 });

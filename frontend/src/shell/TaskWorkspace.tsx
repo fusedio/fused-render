@@ -1,5 +1,5 @@
-// The Workspace view: every task that is not closed, newest first, each row
-// saying what it is doing and what keeps it open (workspace-lib.ts), with a
+// The Workspace view: every task that is not closed, newest first, each one a
+// card saying what it is doing and what keeps it open (workspace-lib.ts), with a
 // close button, an Undo toast and a keyboard map. Its rules live in
 // workspace-lib; this file draws them and runs the two polls the rows need
 // (ports and holds), asked for the visible rows only.
@@ -14,17 +14,18 @@ import type { Task, TaskHold } from "@platform/lib/api";
 import { notify } from "@platform/lib/notifications";
 import { usePrStatuses } from "@platform/lib/prStatus";
 import { navigateUrl } from "@platform/lib/router";
-import { prKey, prRefsOf, prUrl } from "@platform/lib/task-prs";
+import { prKey, prRefsOf } from "@platform/lib/task-prs";
 import { WorkspaceSearch } from "@shell/WorkspaceSearch";
 import { closePeek, openPeek, peekItemProps, PEEK_OPEN_CLASS, usePeekedKey } from "@shell/task-peek-store";
-import { openThreadIntent, peekOpenable } from "@shell/tasks-lib";
+import { IdChip, PrNumChip, StatusIcon } from "@shell/ScheduleTaskViews";
+import { liveJobRow, openThreadIntent, peekOpenable, ringFailed, taskColumn } from "@shell/tasks-lib";
 import {
-  holdMarker,
+  cardStatusWord,
   holdReasons,
   moveSelection,
   needsYou,
   nextNeedingYou,
-  statusWord,
+  visibleReasons,
   workspaceKeyAction,
   workspaceTasks,
 } from "@shell/workspace-lib";
@@ -96,17 +97,10 @@ function PrDots({ task, states }: { task: Task; states: ReturnType<typeof usePrS
       {shown.map((r) => {
         const state = states[prKey(r)];
         return (
-          <a
-            key={prKey(r)}
-            className="ws-pr"
-            href={prUrl(r) ?? undefined}
-            target="_blank"
-            rel="noopener noreferrer"
-            title={`${r.repo} #${r.number}${state ? ` · ${state}` : ""}`}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <span className="task-pr-dot" data-status={state ?? undefined} />#{r.number}
-          </a>
+          <span key={prKey(r)} className="ws-pr" title={state ?? undefined}>
+            <span className="task-pr-dot" data-status={state ?? undefined} />
+            <PrNumChip prRef={r} />
+          </span>
         );
       })}
       {refs.length > shown.length && <span className="ws-pr-more">+{refs.length - shown.length}</span>}
@@ -114,14 +108,13 @@ function PrDots({ task, states }: { task: Task; states: ReturnType<typeof usePrS
   );
 }
 
-function WorkspaceRow({
+function WorkspaceCard({
   task,
   selected,
   peeked,
   peekOn,
   ports,
-  marker,
-  unknown,
+  reasons,
   states,
   onSelect,
   onOpen,
@@ -132,18 +125,24 @@ function WorkspaceRow({
   peeked: boolean;
   peekOn: boolean;
   ports: number[];
-  marker: string;
-  unknown: boolean;
+  /** The full hold list; the card prints the visible part and "clear" on none. */
+  reasons: string[];
   states: ReturnType<typeof usePrStatuses>;
   onSelect: () => void;
   onOpen: () => void;
   onClose: () => void;
 }) {
   const bg = task.background_jobs?.count ?? 0;
+  const bgTitles = (task.background_jobs?.jobs ?? []).map((j) => j.title).filter(Boolean);
+  const word = cardStatusWord(task);
+  const text = visibleReasons(reasons, task).join(" · ");
+  const clear = reasons.length === 0;
+  const hasPrs = prRefsOf(task).some((r) => r.repo);
+  const hasFoot = word !== "" || hasPrs || bg > 0 || ports.length > 0;
   return (
     <li
       className={
-        "ws-row" + (selected ? " is-selected" : "") + (peeked ? ` ${PEEK_OPEN_CLASS}` : "")
+        "ws-card" + (selected ? " is-selected" : "") + (peeked ? ` ${PEEK_OPEN_CLASS}` : "")
       }
       data-key={task.key}
       data-status={task.status}
@@ -156,47 +155,69 @@ function WorkspaceRow({
         onOpen();
       }}
     >
-      <span className="ws-num">{task.task_id}</span>
-      <span className="ws-title">{task.title}</span>
-      <span className="ws-status" data-status={task.status}>
-        {statusWord(task)}
-      </span>
-      <PrDots task={task} states={states} />
-      {bg > 0 && (
-        <span className="ws-bg" title="Background jobs still running">
-          ⧗ {bg} bg
-        </span>
+      <div className="ws-card-head">
+        <StatusIcon
+          status={taskColumn(task)}
+          failed={ringFailed(task)}
+          unread={task.unread > 0}
+          count={task.unread}
+          background={liveJobRow(task)}
+        />
+        <IdChip id={task.task_id} kind="task" />
+        <span className={"ws-title" + (task.unread > 0 ? " is-unread" : "")}>{task.title || "(untitled)"}</span>
+      </div>
+      {hasFoot && (
+        <div className="ws-card-foot">
+          {word && (
+            <span className="ws-status" data-status={task.status}>
+              {word}
+            </span>
+          )}
+          <PrDots task={task} states={states} />
+          {bg > 0 && (
+            <span className="ws-bg" title={bgTitles.length ? bgTitles.join("\n") : "Background jobs still running"}>
+              ⧗ {bg} bg
+            </span>
+          )}
+          {ports.map((p) => (
+            <a
+              key={p}
+              className="ws-port"
+              href={`http://localhost:${p}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={`Open http://localhost:${p}`}
+              onClick={(e) => e.stopPropagation()}
+            >
+              :{p}
+            </a>
+          ))}
+        </div>
       )}
-      <span className="ws-ports">
-        {ports.map((p) => (
-          <a
-            key={p}
-            className="ws-port"
-            href={`http://localhost:${p}`}
-            target="_blank"
-            rel="noopener noreferrer"
-            title={`Open http://localhost:${p}`}
-            onClick={(e) => e.stopPropagation()}
-          >
-            :{p}
-          </a>
-        ))}
+      {(text || clear) && (
+        <div className="ws-holds" data-clear={clear ? "1" : undefined}>
+          {text && (
+            <span className="ws-marker" data-unknown={reasons.includes("unknown") ? "1" : undefined}>
+              {text}
+            </span>
+          )}
+          {clear && <span className="ws-clear">clear</span>}
+        </div>
+      )}
+      <span className="task-card-doors ws-doors">
+        <button
+          type="button"
+          className="task-card-door ws-close"
+          aria-label={`Close ${task.task_id || task.title}`}
+          title="Close (x)"
+          onClick={(e) => {
+            e.stopPropagation();
+            onClose();
+          }}
+        >
+          ×
+        </button>
       </span>
-      <span className="ws-marker" data-clear={marker === "clear" ? "1" : undefined} data-unknown={unknown ? "1" : undefined}>
-        {marker}
-      </span>
-      <button
-        type="button"
-        className="ws-close"
-        aria-label={`Close ${task.task_id || task.title}`}
-        title="Close (x)"
-        onClick={(e) => {
-          e.stopPropagation();
-          onClose();
-        }}
-      >
-        ×
-      </button>
     </li>
   );
 }
@@ -377,7 +398,7 @@ export function TaskWorkspace({
 
   useEffect(() => {
     if (!selected) return;
-    for (const el of Array.from(document.querySelectorAll<HTMLElement>(".ws-row"))) {
+    for (const el of Array.from(document.querySelectorAll<HTMLElement>(".ws-card"))) {
       if (el.dataset.key === selected) el.scrollIntoView?.({ block: "nearest" });
     }
   }, [selected]);
@@ -397,15 +418,14 @@ export function TaskWorkspace({
               prStates: prStates,
             });
             return (
-              <WorkspaceRow
+              <WorkspaceCard
                 key={t.key}
                 task={t}
                 selected={selected === t.key}
                 peeked={peekedKey === t.key}
                 peekOn={peekOn}
                 ports={ports[t.key] ?? []}
-                marker={holdMarker(reasons)}
-                unknown={reasons.includes("unknown")}
+                reasons={reasons}
                 states={prStates}
                 onSelect={() => setSelected(t.key)}
                 onOpen={() => open(t)}

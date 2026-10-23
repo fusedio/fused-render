@@ -1,5 +1,7 @@
-/* The Workspace view: one line per open task. Every heading-free rule here
-   spells out its own margins, because Tailwind runs without preflight. */
+/* The Workspace view: a grid of cards, one per open task. The chrome mirrors the
+   Board card (schedule.css `.schedule-tv-card`): same ground, hairline, radius,
+   padding, hover and peeked fill. Every rule here spells out its own margins,
+   because Tailwind runs without preflight. */
 .ws-root {
   position: relative;
   display: flex;
@@ -10,128 +12,153 @@
   list-style: none;
   margin: 0;
   padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+.ws-card {
+  position: relative;
   display: flex;
   flex-direction: column;
-}
-.ws-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+  gap: 8px;
   min-width: 0;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
+  box-sizing: border-box;
+  padding: 12px 14px;
+  color: var(--fg);
+  background: var(--tasks-card-bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 1px 2px var(--shadow-sm);
   cursor: pointer;
-  font-weight: 400;
+  transition: background-color 0.08s ease, border-color 0.08s ease;
 }
-.ws-row:hover {
-  background: color-mix(in srgb, var(--bg-alt) 70%, var(--bg));
+.ws-card:hover {
+  background: color-mix(in srgb, var(--fg) 6%, var(--tasks-card-bg));
+  border-color: color-mix(in srgb, var(--fg-muted) 40%, var(--border));
 }
-.ws-row.is-selected {
-  background: var(--bg-alt);
-  box-shadow: inset 2px 0 0 var(--accent);
+.ws-card.is-peeked,
+.ws-card.is-peeked:hover {
+  background: var(--row-bg-selected);
 }
-.ws-row.is-peeked {
-  background: var(--bg-alt);
+.ws-card.is-selected {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
 }
-.ws-num {
-  flex: none;
-  color: var(--fg-muted);
-  font-variant-numeric: tabular-nums;
-  min-width: 3.5em;
+.ws-card-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+.ws-card-head > .tasks-id {
+  line-height: 1.4;
 }
 .ws-title {
   flex: 1 1 auto;
   min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
   font-weight: 400;
 }
-.ws-row[data-unread] .ws-title {
-  font-weight: 700;
-}
-.ws-status {
-  flex: none;
-  color: var(--fg-muted);
-}
-.ws-row[data-status="in_progress"] .ws-status {
-  color: var(--status-progress);
-}
-.ws-row[data-needs-you] .ws-status {
-  color: var(--status-failed);
+.ws-title.is-unread {
   font-weight: 600;
 }
-.ws-row[data-needs-you] {
-  box-shadow: inset 2px 0 0 var(--status-failed);
+.ws-card-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  min-width: 0;
+  color: var(--fg-muted);
+  font-size: 12px;
 }
-.ws-row[data-needs-you].is-selected {
-  box-shadow: inset 2px 0 0 var(--accent);
+.ws-status {
+  color: var(--fg-muted);
+  font-weight: 600;
+}
+.ws-card[data-status="in_progress"] .ws-status {
+  color: var(--status-progress);
+}
+.ws-card[data-needs-you] .ws-status {
+  color: var(--status-failed);
 }
 .ws-prs {
-  flex: none;
   display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 6px;
 }
-.ws-pr,
-.ws-port {
-  color: var(--fg-muted);
-  text-decoration: none;
+.ws-pr {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+}
+.ws-pr-more,
+.ws-bg {
+  color: var(--fg-muted);
+}
+.ws-port {
+  color: var(--fg-muted);
+  text-decoration: none;
   font-variant-numeric: tabular-nums;
 }
-.ws-pr:hover,
 .ws-port:hover {
   color: var(--fg);
   text-decoration: underline;
 }
-.ws-pr-more,
-.ws-bg {
-  flex: none;
+.ws-holds {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
   color: var(--fg-muted);
 }
-.ws-ports {
-  flex: none;
-  display: inline-flex;
-  gap: 6px;
+.ws-holds[data-clear] {
+  justify-content: flex-end;
 }
 .ws-marker {
-  flex: none;
-  max-width: 34ch;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  color: var(--fg);
-}
-.ws-marker[data-clear] {
-  color: var(--fg-faint);
 }
 .ws-marker[data-unknown] {
   color: var(--warning);
 }
-.ws-close {
+.ws-clear {
   flex: none;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--fg-muted);
-  font-size: 16px;
-  line-height: 1;
-  cursor: pointer;
-  opacity: 0;
+  color: var(--fg-faint);
 }
-.ws-row:hover .ws-close,
-.ws-row.is-selected .ws-close,
-.ws-close:focus-visible {
+/* The close door is the Archive hover door's own skin (task-cards.css
+   `.task-card-doors > .task-card-door`), moved to the card's top-right and shown
+   only on hover or keyboard focus. Not visibility-hidden, so Tab can reach it. */
+.ws-card .ws-doors {
+  top: 8px;
+  right: 8px;
+  bottom: auto;
+  padding-left: 0;
+  background: transparent;
+  visibility: visible;
+}
+.ws-card .ws-doors::before {
+  display: none;
+}
+.ws-card:hover .ws-doors,
+.ws-card:focus-within .ws-doors {
   opacity: 1;
 }
-.ws-close:hover {
-  background: var(--bg-panel);
-  color: var(--fg);
+.ws-card .ws-doors > .ws-close {
+  font-size: 16px;
+  line-height: 1;
+  background: var(--tasks-card-bg);
 }
 .ws-undo {
   position: fixed;

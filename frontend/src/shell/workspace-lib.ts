@@ -94,6 +94,30 @@ export function holdReasons(task: Task, facts: WorkspaceFacts): string[] {
   return out;
 }
 
+/** The status word a card prints, or "" when the circle already says it. Only
+ *  a task that is running or needs the reader gets one (Running, Needs
+ *  attention, Failed, Usage limit, Blocked); Done, Stopped and the rest stay
+ *  silent. */
+export function cardStatusWord(task: Task): string {
+  return task.status === "in_progress" || needsYou(task) ? statusWord(task) : "";
+}
+
+/** The hold reasons a card prints under its chips. Drops what the card already
+ *  says elsewhere: "N unread" (the bold title), a PR that is open or draft and
+ *  the bg-job count (their chips), and running / needs you when the status word
+ *  is shown. Worktree facts, "unknown", "checking", "queued" and "run pending"
+ *  stay. The task still counts as held: "clear" is decided on the full list. */
+export function visibleReasons(reasons: readonly string[], task: Task): string[] {
+  const word = cardStatusWord(task) !== "";
+  return reasons.filter((r) => {
+    if (/^\d+ unread$/.test(r)) return false;
+    if (/^PR #\d+ (open|draft)$/.test(r)) return false;
+    if (/^\d+ bg jobs?$/.test(r)) return false;
+    if (word && (r === "running" || r === "needs you")) return false;
+    return true;
+  });
+}
+
 /** The marker text: the reasons joined by a middle dot, or "clear". */
 export function holdMarker(reasons: readonly string[]): string {
   return reasons.length ? reasons.join(" · ") : "clear";
