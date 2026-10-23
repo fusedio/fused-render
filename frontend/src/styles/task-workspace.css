@@ -192,31 +192,6 @@
   flex: none;
   color: var(--fg-faint);
 }
-/* The close door overlays the card's top-right corner instead of owning a gutter
-   in the head row, so the time sits flush to the card's right padding. It paints
-   a solid backdrop over whatever is under it and shows only on hover or keyboard
-   focus (opacity, not visibility, so Tab can still reach it). */
-.ws-card .ws-doors {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  z-index: 1;
-  padding-left: 0;
-  background: transparent;
-  visibility: visible;
-}
-.ws-card .ws-doors::before {
-  display: none;
-}
-.ws-card:hover .ws-doors,
-.ws-card:focus-within .ws-doors {
-  opacity: 1;
-}
-.ws-card .ws-doors > .ws-close {
-  font-size: 16px;
-  line-height: 1;
-  background: var(--tasks-card-bg);
-}
 /* The Workspace lifts the page's content column so the cards use the whole
    middle pane. Scoped on the page's data-view, so List, Board and the rest keep
    the cap. Same selector weight as the schedule opt-out it overrides. */

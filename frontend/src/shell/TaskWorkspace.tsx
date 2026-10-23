@@ -136,7 +136,6 @@ function WorkspaceCard({
   now,
   onSelect,
   onOpen,
-  onClose,
 }: {
   task: Task;
   selected: boolean;
@@ -153,7 +152,6 @@ function WorkspaceCard({
   now: number;
   onSelect: () => void;
   onOpen: () => void;
-  onClose: () => void;
 }) {
   const bg = bgJobChips(task);
   const word = cardStatusWord(task);
@@ -211,20 +209,6 @@ function WorkspaceCard({
           </span>
         )}
         {!hasLine2 && clearTag}
-        <span className="task-card-doors ws-doors">
-          <button
-            type="button"
-            className="task-card-door ws-close"
-            aria-label={`Close ${task.task_id || task.title}`}
-            title="Close (x)"
-            onClick={(e) => {
-              e.stopPropagation();
-              onClose();
-            }}
-          >
-            ×
-          </button>
-        </span>
       </div>
       {hasLine2 && (
         <div className="ws-card-line2">
@@ -498,7 +482,6 @@ export function TaskWorkspace({
                 now={now}
                 onSelect={() => setSelected(t.key)}
                 onOpen={() => open(t)}
-                onClose={() => close(t)}
               />
             );
           })}

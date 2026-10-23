@@ -139,14 +139,27 @@ test("an empty set says why", async () => {
   expect(r.root.findByProps({ className: "schedule-tv-empty" }).children.join("")).toBe("Nothing.");
 });
 
-test("closing archives the task, hides the row and offers Undo, which un-archives", async () => {
+test("pressing x archives the task, hides the row and offers Undo, which un-archives", async () => {
   const posts = serve();
   let reloads = 0;
+  const handlers: ((e: unknown) => void)[] = [];
+  const realAdd = window.addEventListener;
+  window.addEventListener = ((type: string, fn: (e: unknown) => void) => {
+    if (type === "keydown") handlers.push(fn);
+  }) as typeof window.addEventListener;
   const r = await render([task({ key: "a", title: "Fix it" })], () => {
     reloads++;
   });
+  window.addEventListener = realAdd;
+  const press = (key: string) =>
+    handlers.forEach((h) =>
+      h({ key, defaultPrevented: false, target: null, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, preventDefault() {} }),
+    );
   await act(async () => {
-    r.root.findByProps({ className: "task-card-door ws-close" }).props.onClick({ stopPropagation() {} });
+    press("j");
+  });
+  await act(async () => {
+    press("x"); // the card's hover x is gone; the keyboard still archives
   });
   expect(posts.some((p) => p.url === "/api/tasks/archive" && (p.body as { key: string }).key === "a")).toBe(true);
   expect(r.root.findAllByProps({ "data-key": "a" })).toHaveLength(0);
@@ -213,12 +226,11 @@ test("facts sit in line 2's right group, clear last; a fact-only card has no lef
   expect(within(head(card), "ws-clear")).toHaveLength(0);
 });
 
-test("the close x overlays the corner: absolute, no layout space in the head", () => {
+test("no hover x is rendered on a card", async () => {
+  const r = await render([task({ key: "a", title: "Fix it" })]);
+  expect(r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.includes("ws-close"))).toHaveLength(0);
   const css = require("node:fs").readFileSync(require("node:path").join(import.meta.dir, "../styles/task-workspace.css"), "utf8") as string;
-  const rule = /\.ws-card \.ws-doors \{([^}]*)\}/.exec(css)![1];
-  expect(rule).toMatch(/position:\s*absolute/);
-  expect(rule).toMatch(/top:\s*6px/);
-  expect(rule).toMatch(/right:\s*6px/);
+  expect(css).not.toMatch(/ws-close|ws-doors/);
   expect(css).toMatch(/\.ws-card-facts \{[^}]*max-width:\s*65%/);
   expect(css).toMatch(/\.prefs-page\.schedule-page\[data-view="workspace"\] > \*/);
 });
