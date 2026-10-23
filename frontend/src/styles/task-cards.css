@@ -250,7 +250,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 15px;
-  font-weight: 100;
+  font-weight: 400;
   line-height: 1.3;
   color: var(--fg);
 }
@@ -617,7 +617,7 @@
 }
 
 /* Same rule as .tasks-title.is-unread (tasks.css): bold while the task has
-   anything unread, weight 100 once it is read (Akshil, 2026-10-23). */
+   anything unread, weight 400 once it is read (Akshil, 2026-10-23). */
 .task-card-title.is-unread {
   font-weight: 600;
 }

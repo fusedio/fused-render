@@ -439,9 +439,9 @@ button.tasks-caret,
 
 .tasks-title {
   min-width: 0;
-  /* Read: the lightest weight (Akshil, 2026-10-23 — the 100 recaps used to
-     wear); unread lifts it to 600 below. */
-  font-weight: 100;
+  /* Read: regular weight (Akshil, 2026-10-23 — 100 read too light); unread
+     lifts it to 600 below. */
+  font-weight: 400;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

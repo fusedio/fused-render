@@ -2529,14 +2529,14 @@ describe("the unread mark", () => {
       /\.tasks-msg\.is-unread \.tasks-msg-body \{[^}]*font-weight: 600/,
     );
     // …and on a List row and a Cards-wall card too (Akshil, 2026-10-23: bold
-    // while unread, weight 100 once read) — the weight is the same claim on every
+    // while unread, weight 400 once read) — the weight is the same claim on every
     // surface, and it replaced the recap/message weight split.
     expect(ROW).toContain('(unread > 0 ? " is-unread" : "")');
-    expect(block(TASKS_CSS, ".tasks-title")).toContain("font-weight: 100");
+    expect(block(TASKS_CSS, ".tasks-title")).toContain("font-weight: 400");
     expect(block(TASKS_CSS, ".tasks-title.is-unread")).toContain("font-weight: 600");
     expect(TASKS_CSS).not.toContain(".tasks-title.is-recap");
     expect(CARDS).toContain('className={"task-card-title" + (task.unread > 0 ? " is-unread" : "")}');
-    expect(block(CARDS_CSS, ".task-card-title")).toContain("font-weight: 100");
+    expect(block(CARDS_CSS, ".task-card-title")).toContain("font-weight: 400");
     expect(block(CARDS_CSS, ".task-card-title.is-unread")).toContain("font-weight: 600");
     // …and says it: weight is not in the accessibility tree (CodeRabbit, #1913).
     expect(CARDS).toContain("${task.unread > 0 ? `, ${taskUnreadLabel(task.unread)}` : \"\"}");
@@ -12082,10 +12082,10 @@ describe("bold unread titles in every view (Revision 2)", () => {
     const CARDS_CSS = readFileSync(join(SHELL, "../styles/task-cards.css"), "utf8");
     const WS_CSS = readFileSync(join(SHELL, "../styles/task-workspace.css"), "utf8");
     expect(CARDS).toContain('(task.unread > 0 ? " is-unread" : "")');
-    expect(block(CARDS_CSS, ".task-card-title")).toContain("font-weight: 100");
+    expect(block(CARDS_CSS, ".task-card-title")).toContain("font-weight: 400");
     expect(block(CARDS_CSS, ".task-card-title.is-unread")).toContain("font-weight: 600");
     expect(WS).toContain('(task.unread > 0 ? " is-unread" : "")');
-    expect(block(WS_CSS, ".ws-title")).toContain("font-weight: 100");
+    expect(block(WS_CSS, ".ws-title")).toContain("font-weight: 400");
     expect(block(WS_CSS, ".ws-title.is-unread")).toContain("font-weight: 600");
   });
 });
