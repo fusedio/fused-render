@@ -989,7 +989,9 @@ def test_a_wholesale_pull_waits_for_a_live_claude_session(
     shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
     _start(harness)
     assert _wait_for(lambda: (_manager()._remote or {}).get("last_updated") == "t1")
-    harness.set_scenario({"pull_files": {**_BASE_FILES, "remote_udf.py": "print('x')\n"}})
+    remote = {**_BASE_FILES, "remote_udf.py": "print('x')\n"}
+    harness.set_scenario({"pull_files": remote})
+    shims.set_remote_files(remote)  # a stamp move over unchanged files is adopted
     shims.set_manifest("t2")
     fake_agent.live = "run-abc"
 

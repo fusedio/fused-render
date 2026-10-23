@@ -2139,6 +2139,10 @@ class _SyncManager:
         self._base_path = os.path.join(self.root, ".sync", f"{name}.json")
         self._base_files: dict[str, str] | None = None
         self._remote: dict | None = None
+        # The collection stamp the poll leg last downloaded a bundle for to
+        # check a stamp-only move (_stamp_only_move): one download per stamp,
+        # not one per poll while a real layout change stays unpulled.
+        self._stamp_checked: str | None = None
         # The compact rows of canvas.toml at the sync point (merge_toml's base).
         self._base_toml: dict | None = None
         self.merge_rollback_seq = 0
@@ -2665,17 +2669,74 @@ class _SyncManager:
         nothing (_note_server_stale compares hashes and finds no change)."""
         if prev.get("last_updated") != cur.get("last_updated"):
             return True
+        return _SyncManager._udf_edits(prev) != _SyncManager._udf_edits(cur)
 
-        def edits(udfs) -> dict:
-            if not isinstance(udfs, dict):
-                return {}
-            return {
-                slug: ((info.get("hash"), info.get("last_updated"))
-                       if isinstance(info, dict) else info)
-                for slug, info in udfs.items()
-            }
+    @staticmethod
+    def _udf_edits(manifest: dict) -> dict:
+        """Each UDF's (hash, stamp) — the edit half of _remote_moved."""
+        udfs = manifest.get("udfs")
+        if not isinstance(udfs, dict):
+            return {}
+        return {
+            slug: ((info.get("hash"), info.get("last_updated"))
+                   if isinstance(info, dict) else info)
+            for slug, info in udfs.items()
+        }
 
-        return edits(prev.get("udfs")) != edits(cur.get("udfs"))
+    def _stamp_only_move(self, probe: dict) -> bool:
+        """Did only the collection stamp move — no UDF edit — on a stamp this
+        leg has not checked yet? The server bumps `last_updated` on writes
+        that change no file: the workbench's share settings (access scope,
+        passcode) are the common one. Worth a bundle download to tell such a
+        bump from a real layout save (_bundle_matches_sync_point)."""
+        remote = self._remote
+        stamp = probe.get("last_updated")
+        return (
+            remote is not None
+            and self._base_files is not None
+            and stamp != remote.get("last_updated")
+            and stamp != self._stamp_checked
+            and self._udf_edits(remote) == self._udf_edits(probe)
+        )
+
+    def _bundle_matches_sync_point(self, bundle: dict[str, bytes]) -> bool:
+        """Is the server's bundle the sync point's files? Same paths, and each
+        file's md5 equals the base hash — except a .toml the server
+        re-serialized (canvas.toml comes back from its database, not as the
+        bytes pushed). That one counts when it parses equal to the local file
+        that is still the base; or, the local file edited since (an unpushed
+        layout change), when its [canvas] rows equal the sync point's
+        (`_base_toml`) and every other table equals the local file's.
+        Under _op_lock."""
+        base = self._base_files
+        if base is None or set(bundle) != set(base):
+            return False
+        for rel, data in bundle.items():
+            if hashlib.md5(data).hexdigest() == base[rel]:
+                continue
+            if not rel.endswith(".toml"):
+                return False
+            try:
+                with open(os.path.join(self.dir, rel), "rb") as f:
+                    local = f.read()
+            except OSError:
+                return False
+            try:
+                remote_doc = tomllib.loads(data.decode("utf-8"))
+                local_doc = tomllib.loads(local.decode("utf-8"))
+            except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+                return False
+            if hashlib.md5(local).hexdigest() == base[rel]:
+                if remote_doc != local_doc:
+                    return False
+                continue
+            if rel != "canvas.toml" or self._base_toml is None:
+                return False
+            rest = lambda doc: {k: v for k, v in doc.items() if k != "canvas"}  # noqa: E731
+            if (canvas_snapshot.rows_of_doc(remote_doc) != self._base_toml
+                    or rest(remote_doc) != rest(local_doc)):
+                return False
+        return True
 
     def _download_zip(self, collection_id: str) -> zipfile.ZipFile | None:
         cli = fused_cli()
@@ -2900,9 +2961,12 @@ class _SyncManager:
             self.last_pull_at = time.time()
         return True
 
-    def _poll_remote(self, probe: dict) -> None:
+    def _poll_remote(self, probe: dict, bundle: dict[str, bytes] | None = None) -> None:
         """Shim-backed poll leg: adopt a baseline on the first look; after
-        that only DETECT a remote move (`server_stale`). Read-only."""
+        that only DETECT a remote move (`server_stale`). Read-only — except
+        a stamp-only move whose `bundle` (fetched by the caller when
+        _stamp_only_move) is the sync point's files: nothing to pull, so the
+        probe becomes the baseline instead of a "server changed" chip."""
         if self._remote is None:
             # First look (fresh manager, or right after clone/push dropped
             # it): adopt as baseline. A remote edit made before this first
@@ -2926,6 +2990,16 @@ class _SyncManager:
             return
         if not self._remote_moved(self._remote, probe):
             self.server_stale = None
+            return
+        if (
+            bundle is not None
+            and self._udf_edits(self._remote) == self._udf_edits(probe)
+            and self._bundle_matches_sync_point(bundle)
+        ):
+            self._rotate_remote(probe)
+            self._save_base()
+            self.log_event("server_to_disk", "probe adopt",
+                           detail="the server's stamp moved; its files did not")
             return
         # The remote moved: do what a hosted tab does — stop writing the
         # server and say so. Nothing is pulled or merged here; pull() is the
@@ -3551,8 +3625,13 @@ class _SyncManager:
                         # the answer takes it.
                         probe = self._probe_remote()
                         if probe is not None:
+                            bundle = None
+                            if self._stamp_only_move(probe):
+                                bundle = self._fetch_bundle(probe)
+                                if bundle is not None:  # a failed download retries
+                                    self._stamp_checked = probe.get("last_updated")
                             with self._op_lock:
-                                self._poll_remote(probe)
+                                self._poll_remote(probe, bundle)
                     elif self._dirty_since is None and self.push_state == "idle":
                         # External CLI (no shims): legacy dry-run probe, detect
                         # only, and CLEAN clones only — a `pull --dry-run` cannot
