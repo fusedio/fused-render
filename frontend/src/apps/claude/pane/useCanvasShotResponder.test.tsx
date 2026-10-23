@@ -190,3 +190,24 @@ test("a capture the workbench refused once is tried once more", async () => {
   expect(n).toBe(2);
   expect(answers).toEqual([["r1", { error: "still no" }]]);
 });
+
+test("the answer carries the run that asked", async () => {
+  const shot: CanvasShot = { targets: ["canvas"], capture: async () => ({ ok: false, error: "nope" }) };
+  const seen: Array<string | undefined> = [];
+  function Probe() {
+    useCanvasShotResponder({
+      rows: [{ ...row("r1", 1), runId: "run-A" }],
+      shot,
+      answer: async (_id, _a, runId) => {
+        seen.push(runId);
+        return true;
+      },
+    });
+    return null;
+  }
+  act(() => {
+    create(<Probe />);
+  });
+  await settle();
+  expect(seen).toEqual(["run-A"]);
+});

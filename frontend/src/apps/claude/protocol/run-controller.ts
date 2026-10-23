@@ -3435,9 +3435,12 @@ export function createChatController(deps: ControllerDeps): ChatController {
   async function answerCanvasShot(
     id: string,
     answer: { image: string; mime: string; udf?: string } | { error: string },
+    askedBy?: string,
   ): Promise<boolean> {
     if (disposed) return false;
-    const runId = state.canvasShot.find((r) => r.id === id)?.runId || activeRun;
+    // The run that asked, as the responder remembers it; the row's own, else
+    // the current run — never a later run for a request a former one made.
+    const runId = askedBy || state.canvasShot.find((r) => r.id === id)?.runId || activeRun;
     if (!runId) return false;
     if (answeredShots.has(id)) return true;
     answeredShots.add(id); // claimed before the await: polls overlap

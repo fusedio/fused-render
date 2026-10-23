@@ -37,9 +37,10 @@ export interface CanvasShotResponderOptions {
   shot: CanvasShot | null;
   /** Resolves true once the answer is on record; false when it must be
    *  retried (the controller un-claims the id and the row re-surfaces). */
-    answer(
+  answer(
     id: string,
     answer: { image: string; mime: string; udf?: string } | { error: string },
+    runId?: string,
   ): Promise<boolean>;
 }
 
@@ -93,9 +94,13 @@ export function useCanvasShotResponder(opts: CanvasShotResponderOptions): void {
     // `answer` is read when the picture is READY, not when the effect ran: a
     // capture takes seconds, and the controller behind the callback may have
     // been replaced meanwhile (a session swap) — the current one must get it.
-    const deliver = (id: string, result: Answer) => {
+    const deliver = (row: CanvasShotRow, result: Answer) => {
+      const { id } = row;
       taken.current.set(id, result);
-      void live.current.answer(id, result).then(
+      // The run that ASKED rides along: by the time the picture is ready the
+      // row may be gone from state (a session swap), and the controller must
+      // not answer at whatever run is current (CodeRabbit, #1924).
+      void live.current.answer(id, result, row.runId).then(
         (ok) => {
           if (ok) taken.current.delete(id);
           else claimed.current.delete(id); // the next poll re-surfaces the row; re-answer from `taken`
@@ -110,13 +115,13 @@ export function useCanvasShotResponder(opts: CanvasShotResponderOptions): void {
       const held = taken.current.get(row.id);
       if (held) {
         claimed.current.add(row.id);
-        deliver(row.id, held);
+        deliver(row, held);
         continue;
       }
       if (!shot) {
         if (Date.now() / 1000 - (row.created_at || 0) < CANVAS_SHOT_WAIT_S) continue;
         claimed.current.add(row.id);
-        deliver(row.id, { error: NO_CANVAS_SENTENCE });
+        deliver(row, { error: NO_CANVAS_SENTENCE });
         continue;
       }
       // CLAIMED, THEN RUN TO THE END — never tied to this effect's lifetime.
@@ -125,9 +130,9 @@ export function useCanvasShotResponder(opts: CanvasShotResponderOptions): void {
       // tool call blocked for its whole timeout with the picture in hand.
       claimed.current.add(row.id);
       void takeCanvasShot(shot, row).then(
-        (result) => deliver(row.id, result),
+        (result) => deliver(row, result),
         (err: unknown) =>
-          deliver(row.id, { error: err instanceof Error ? err.message : String(err) }),
+          deliver(row, { error: err instanceof Error ? err.message : String(err) }),
       );
     }
   }, [rowsKey, ready]);

@@ -565,7 +565,7 @@ export interface ChatController {
   answerAppState(id: string, block: string): Promise<void>;
   /** Answer a `canvas_screenshot` request: the uploaded picture's path (in the
    *  shots dir) and mime, or a sentence saying why there is none. */
-  answerCanvasShot(id: string, answer: { image: string; mime: string; udf?: string } | { error: string }): Promise<boolean>;
+  answerCanvasShot(id: string, answer: { image: string; mime: string; udf?: string } | { error: string }, askedBy?: string): Promise<boolean>;
 
   /** Load a session's history and make it current (T:17984 loadHistory). */
   /** `backend`: the arriving conversation's agent, when the opener knows it
