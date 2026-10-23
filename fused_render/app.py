@@ -25,7 +25,7 @@ import urllib.error
 import urllib.request
 import webbrowser
 
-from fused_render import _flavor, _platform, desktop_probe, relaunch_windows
+from fused_render import _flavor, _platform, bundle_exec, desktop_probe, relaunch_windows
 from fused_render._branch import branch_dir, branch_port
 from fused_render.logs import log_dir, setup_logging, uvicorn_fast_kwargs, uvicorn_log_config
 
@@ -1594,6 +1594,11 @@ def main() -> None:
     # The boot id joins this line to /api/health, server.json and
     # outages.jsonl rows (health.py docstring, D1).
     logger.info("app starting (pid %s, boot %s)", os.getpid(), boot_id())
+    # The launcher that got us here never execs `Contents/MacOS/python`; every
+    # worker, agent and engine run spawned below does. If that file arrived
+    # non-executable (seen after an in-app update, 2026-10-23), log its state
+    # and set the bits now, before the first spawn — see bundle_exec.
+    bundle_exec.repair_own_bundle()
 
     existing = find_running_server()
     if existing is not None:
