@@ -1,6 +1,8 @@
 """contrib/store.py, classify.py and flags.py (docs/CONTRIB_LOOP.md §1, §3,
-§4): the record outside the folder, its move/prune/adoption self-healing,
-the ownership rule, and the prerequisite chain. Real folders and repos."""
+§4, §17.6): the record outside the folder, its binding and
+move/prune/adoption self-healing, the ownership rule, the v3 home branch
+(`fused/mine`) an install and a migration leave, and the prerequisite
+chain. Real folders and repos."""
 import json
 import os
 import sys
@@ -208,7 +210,8 @@ def test_record_install_and_finder_move_adoption(home, tmp_path):
     assert rec["proposal"]["number"] == 9 and rec["classified_by"] == "install"
     # The old folder's git state does not travel (it names its refs).
     assert rec["needs_merge"] is None and rec["activity"] == [] and "protected" not in rec
-    assert "backups" not in rec and rec["root_commit"]
+    assert "backups" not in rec and rec["copy_id"]
+    assert git(moved, "symbolic-ref", "--short", "HEAD").strip() == classify.HOME_BRANCH
     assert len(store.find_by_repo("alice/x")) == 1
 
 
@@ -384,11 +387,23 @@ def _ident():
     return {"login": "bob", "id": 7, "name": "Bob B", "email": "7+bob@users.noreply.github.com"}
 
 
-def test_install_records_root_commit_and_push_guard(world):
+def _invariants(root, branch="main"):
+    """I3 + I4 (§17.1): HEAD on fused/mine; the author's branch equals
+    origin's."""
+    assert git(root, "symbolic-ref", "HEAD").strip() == classify.HOME_REF
+    assert git(root, "rev-parse", f"refs/heads/{branch}").strip() == \
+        git(root, "rev-parse", f"refs/remotes/origin/{branch}").strip()
+
+
+def test_install_records_v3_home_branch_and_push_guard(world):
     bob = _install(world)
     rec = store.get(bob)
-    assert rec["v"] == 2 and rec["kind"] == "github"
-    assert rec["root_commit"] == git(bob, "rev-list", "--max-parents=0", "HEAD").strip()
+    assert rec["v"] == 3 and rec["kind"] == "github"
+    raw = store.get_raw(store.key(bob))
+    assert "root_commit" not in raw and raw["skip_tip"] is None
+    _invariants(bob)
+    assert git(bob, "config", f"branch.{classify.HOME_BRANCH}.merge").strip() == "refs/heads/main"
+    assert git(bob, "config", f"branch.{classify.HOME_BRANCH}.remote").strip() == "origin"
     assert git(bob, "config", "--get", "remote.origin.pushurl").strip() == classify.NO_PUSH_URL
     assert git(bob, "config", "--local", "--get", "fused.kind").strip() == "github"
     assert classify.kind_of(bob) == "github"
@@ -599,12 +614,15 @@ def test_a_new_local_app_with_the_same_name_is_not_a_copy(world):
     assert classify.kind_of(a) is None
 
 
-def test_v1_record_gets_its_root_commit_filled_on_first_read(world):
+def test_binding_is_the_origin_or_the_copy_id(world):
+    """§17.6: a record is about the repo whose origin names its repo — or,
+    re-pointed (`.git/config` is app-writable), the folder that carries its
+    copy id. Neither: a stranger lives there; the row is dropped."""
     bob = _install(world)
-    store.update(bob, lambda r: r.pop("root_commit"))
-    assert store.get_raw(store.key(bob)).get("root_commit") is None
-    assert store.get(bob)["root_commit"]
-    assert store.get_raw(store.key(bob))["root_commit"]
+    git(bob, "remote", "set-url", "origin", "https://github.com/mallory/evil")
+    assert store.get(bob)["repo"] == REPO  # its copy id: still this copy
+    git(bob, "config", "--local", "--unset", classify.COPY_ID_CONFIG)
+    assert store.get(bob) is None and store.get_raw(store.key(bob)) is None
 
 
 def test_fresh_reinstall_at_the_same_path_starts_clean(world):
@@ -622,7 +640,7 @@ def test_fresh_reinstall_at_the_same_path_starts_clean(world):
     assert rec["proposal"] is None and rec["needs_merge"] is None
 
 
-def test_adoption_needs_the_same_root_commit_and_prefers_the_moved_copy(world):
+def test_adoption_needs_the_copy_id_and_prefers_the_moved_copy(world):
     """Audit R1: of two orphans of one repo, adoption took the newest — the
     deleted sibling — not the moved copy holding the proposal."""
     import time as _t
@@ -637,7 +655,7 @@ def test_adoption_needs_the_same_root_commit_and_prefers_the_moved_copy(world):
     os.rename(a, c)
     shutil.rmtree(b)
     assert classify.ensure(c)["proposal"]["number"] == 7
-    # An orphan with another root commit is never adopted.
+    # An orphan with another copy id is never adopted by a folder without it.
     d = os.path.join(str(world.ws), "app", "unrelated")
     os.makedirs(d)
     git(d, "init", "-q", "-b", "main")
@@ -645,14 +663,14 @@ def test_adoption_needs_the_same_root_commit_and_prefers_the_moved_copy(world):
     git(d, "remote", "add", "origin", URL)
     store.put(os.path.join(str(world.ws), "app", "gone"),
               {**store.new_record("github", repo=REPO, branch="main"),
-               "root_commit": "f" * 40, "proposal": {"number": 9}})
+               "proposal": {"number": 9}})
     assert classify.ensure(d) is None  # signed out: neither adopted nor classified
 
 
 # ---------------------------------------------------------- v1 -> v2 + activity
 
 
-def test_first_v2_sync_migrates_a_v1_record_and_deletes_v1_refs(world):
+def test_first_v3_sync_migrates_a_v1_record_and_deletes_v1_refs(world):
     bob = _install(world)
     head = git(bob, "rev-parse", "HEAD").strip()
     for ref in store.V1_REFS:
@@ -668,20 +686,36 @@ def test_first_v2_sync_migrates_a_v1_record_and_deletes_v1_refs(world):
     store.update(bob, v1)
     _sync(bob)
     rec = store.get(bob)
-    assert rec["v"] == 2 and rec["needs_merge"] is None and "backups" not in rec
-    assert rec["proposal"]["sent"] == head and "pushed_head" not in rec["proposal"]
+    assert rec["v"] == 3 and rec["needs_merge"] is None and "backups" not in rec
+    assert not {"sent", "pushed_head", "proposed_head"} & set(rec["proposal"])
+    assert rec["proposal"]["number"] == 3
     assert store.referenced_backups(bob) == {"refs/fused/backup/1-update"}
     assert git(bob, "for-each-ref", "--format=%(refname)", "refs/fused/").split() \
         == ["refs/fused/backup/1-update"]
 
 
-def test_v1_proposal_reads_as_sent(home, tmp_path):
+def test_v2_proposal_reads_landed_at_and_migrates(home, tmp_path):
+    """§17.5: `returned_at` reads as `landed_at`; `migrate_v3` drops what v3
+    no longer keeps (the sent version, the tip check, root commit, the
+    overlap) and stamps v3 — record only. `skip_tip` (the undo hold) stays."""
     d = tmp_path / "a"
     d.mkdir()
-    store.put(str(d), {"kind": "github", "repo": "alice/x",
-                       "proposal": {"number": 1, "proposed_head": "abc"}})
-    assert store.get(str(d))["proposal"]["sent"] == "abc"
-    assert store.get(str(d))["proposal"]["checked_tip"] is None
+    store.put(str(d), {"v": 2, "kind": "github", "repo": "alice/x", "root_commit": "r" * 40,
+                       "needs_merge": {"purpose": "update"}, "skip_tip": "s" * 40,
+                       "proposal": {"number": 1, "sent": "abc", "checked_tip": "t",
+                                    "returned_at": 5.0}})
+    assert store.get(str(d))["proposal"]["landed_at"] == 5.0
+    rec, migrated = store.migrate_v3(str(d))
+    assert migrated and rec["v"] == 3
+    raw = store.get_raw(store.key(str(d)))
+    assert not {"root_commit", "needs_merge"} & set(raw) and raw["skip_tip"] == "s" * 40
+    assert raw["proposal"] == {"number": 1, "landed_at": 5.0}
+    assert store.migrate_v3(str(d))[1] is False
+    own = tmp_path / "own"
+    own.mkdir()
+    store.put(str(own), {"v": 2, "kind": "own", "skip_tip": "s" * 40})
+    store.migrate_v3(str(own))
+    assert store.get(str(own))["skip_tip"] == "s" * 40  # ownsync's, kept
 
 
 def test_activity_api(home, tmp_path):
@@ -948,7 +982,7 @@ def test_v1_record_over_a_different_repo_is_dropped_not_bound(world):
     different repo got bound to it and pointed its origin at Alice."""
     a = os.path.join(str(world.ws), "app", "sine")
     rec = store.new_record("github", repo=REPO, branch="main", classified_by="install")
-    for v2_only in ("root_commit", "v", "copy_id"):
+    for v2_only in ("v", "copy_id"):
         rec.pop(v2_only)
     other = str(world.tmp / "other.git")
     git(str(world.tmp), "init", "-q", "--bare", "-b", "main", other)
@@ -1159,17 +1193,15 @@ def test_a_github_record_without_root_commit_over_an_unrelated_repo_is_dropped(w
     assert git(a, "remote", "get-url", "origin").strip() == other
 
 
-def test_binding_never_drops_a_v2_record_over_its_origin(world):
-    """§16.1: binding is on the root commit ONLY. An own copy's origin is its
-    author's to change (a rename, a transfer); a v2 row missing its root
-    commit is filled whatever the origin says. Only a v1 row is judged by
-    origin (round-1 item 5)."""
+def test_binding_keeps_an_own_copy_whose_origin_was_renamed(world):
+    """§17.6: an own copy's origin is its author's to change (a rename, a
+    transfer); the copy id that travels in its `.git/config` keeps the row
+    bound, and its origin is never pointed back."""
     a = _install(world)
     store.update(a, lambda r: r.update({"kind": "own"}))
     git(a, "remote", "set-url", "origin", "https://github.com/alice/renamed")
-    store.update(a, lambda r: r.__setitem__("root_commit", None))
     rec = store.get(a)
-    assert rec is not None and rec["kind"] == "own" and rec["root_commit"]
+    assert rec is not None and rec["kind"] == "own"
     _sync(a)
     assert store.get(a)["repo"] == REPO
     assert git(a, "remote", "get-url", "origin").strip() == "https://github.com/alice/renamed"
@@ -1229,8 +1261,7 @@ def test_an_orphan_from_before_copy_ids_needs_its_last_head(world):
     os.rename(a, c)
     store.put(os.path.join(str(world.ws), "app", "other"),
               {**store.new_record("github", repo=REPO, branch="main"),
-               "copy_id": None, "root_commit": store.get_raw(store.key(a))["root_commit"],
-               "last_head": "e" * 40, "classified_at": 9e12})
+               "copy_id": None, "last_head": "e" * 40, "classified_at": 9e12})
     rec = classify.ensure(c)
     assert rec is not None and rec["last_head"] == mine
 
@@ -1244,7 +1275,7 @@ def test_link_install_place_drops_the_old_record_and_guards_the_clone(world, mon
     dest = os.path.join(str(world.ws), "app", "sine")
     os.makedirs(dest)
     store.put(dest, {**store.new_record("github", repo=REPO, branch="main"),
-                     "root_commit": None, "proposal": {"number": 7, "sent": "d" * 40}})
+                     "proposal": {"number": 7, "sent": "d" * 40}})
     shutil.rmtree(dest)
     tip = git(world.alice, "rev-parse", "HEAD").strip()
     stage = os.path.join(appfile_git._staging_root(URL), "sine")
@@ -1262,3 +1293,45 @@ def test_link_install_place_drops_the_old_record_and_guards_the_clone(world, mon
     assert classify.is_push_guarded(dest)
     assert classify.HOOK_MARK in open(os.path.join(dest, ".git", "hooks", "pre-push")).read()
     assert git(dest, "config", "--local", "--get", classify.COPY_ID_CONFIG).strip() == rec["copy_id"]
+    # §17.6: the clone came in on its own branch; main is the mirror.
+    _invariants(dest)
+    assert git(dest, "rev-parse", "HEAD").strip() == tip
+
+
+def test_link_install_of_your_own_app_stays_on_its_default_branch(world, monkeypatch):
+    """An install fused cannot yet tell is yours lands on `fused/mine`
+    (§17.6, before any hook); classification as `own` puts it back on its
+    default branch — today's plain sync works there — and drops fused/mine."""
+    from fused_render import app_fused_dir, appfile
+
+    monkeypatch.setattr(classify, "_identity", lambda: {"login": "alice"})
+    _all_on(world.home)
+    dest = os.path.join(str(world.ws), "app", "sine")
+    tip = git(world.alice, "rev-parse", "HEAD").strip()
+    stage = os.path.join(appfile_git._staging_root(URL), "sine")
+    os.makedirs(os.path.dirname(stage), exist_ok=True)
+    git(str(world.tmp), "clone", "-q", URL, stage)
+    name, app_id = appfile_git.expected_identity(stage, URL)
+    monkeypatch.setattr(appfile, "write_stamp", lambda *a, **k: None)
+    monkeypatch.setattr(app_fused_dir, "ensure", lambda *a, **k: None)
+    target = {"git": {"url": URL, "commit": tip}, "state": "new", "path": dest, "found_by": None}
+    appfile_git.install("x.fused", target, {"name": name, "app_id": app_id,
+                                            "entry": "index.html"}, force=False)
+    assert store.get(dest)["kind"] == "own"
+    assert git(dest, "symbolic-ref", "--short", "HEAD").strip() == "main"
+    assert git(dest, "branch", "--list", classify.HOME_BRANCH).strip() == ""
+
+
+def test_sign_in_upgrade_carries_the_home_branch_back_to_main(world, monkeypatch):
+    """A `github` copy that sign-in says is the author's own (`own`): its
+    work on fused/mine moves to its default branch, which it is back on —
+    nothing lost, fused/mine gone."""
+    bob = _install(world)
+    mine = _commit(bob, "b1.txt", "x\n", "l1")
+    monkeypatch.setattr(classify, "_owns", lambda owner, ident: True)
+    classify.after_sign_in({"login": "alice", "id": 1})
+    _sync(bob)
+    assert git(bob, "symbolic-ref", "--short", "HEAD").strip() == "main"
+    assert git(bob, "rev-parse", "main").strip() == mine or \
+        subprocess.run(["git", "-C", bob, "merge-base", "--is-ancestor", mine, "main"]).returncode == 0
+    assert git(bob, "branch", "--list", classify.HOME_BRANCH).strip() == ""

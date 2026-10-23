@@ -1,5 +1,5 @@
-"""What a GitHub-link copy follows, and the one fetch of it
-(docs/CONTRIB_LOOP.md §5, §16.2).
+"""What a GitHub-link copy follows, the one fetch of it, and its mirror
+(docs/CONTRIB_LOOP.md §5, §16.2, §17.3).
 
 ONE UPSTREAM (§16.0 P3). The author's latest lives in git's own
 `refs/remotes/origin/<branch>` — the ref every git tool, the Explorer's ↑N
@@ -139,6 +139,37 @@ def tip(root, fol: Follow) -> str | None:
 
 #: v1 name; one upstream now, so the same answer as `tip`.
 tip_or_origin = tip
+
+
+def update_mirror(root, fol: Follow) -> dict:
+    """The second half of §17.3's fetch row (I3): `refs/heads/<b>` follows
+    `refs/remotes/origin/<b>` as a REF update — never a worktree move —
+    with git's compare-and-set (`update-ref <ref> <new> <old>`). A non-fast-
+    forward (the author rewound, or commits made on the mirror while it was
+    checked out) pins the old tip under `refs/fused/backup/<ms>-rewound`
+    first and moves the ref anyway. While HEAD IS `<b>` (the `other-branch`
+    state) the local ref is left alone: a checked-out branch is never moved
+    under its worktree. The caller holds the slot. Answers `{"moved",
+    "backup", "ff", "old"}` — `ff` False for a pinned non-fast-forward, `old`
+    the ref's tip before."""
+    res = {"moved": False, "backup": None, "ff": True, "old": None}
+    new = tip(root, fol)
+    ref = f"refs/heads/{fol.branch}"
+    old = replay.rev(root, ref)
+    res["old"] = old
+    if not new or old == new or gu._current_branch(root) == fol.branch:
+        return res
+    if old and not replay.is_ancestor(root, old, new):
+        res["ff"] = False
+        pin = replay._new_backup_ref(root, "rewound")
+        if not replay.ok(replay.git(root, "update-ref", pin, old)):
+            return res
+        res["backup"] = pin
+    r = replay.git(root, "update-ref", "-m", "fused: mirror", ref, new, old or "")
+    res["moved"] = replay.ok(r)
+    if not res["moved"]:
+        logger.info("contrib: mirror of %s in %s not moved: %s", ref, root, gu._text(r))
+    return res
 
 
 def is_repo_root(app_dir) -> str | None:

@@ -1,15 +1,16 @@
-"""contrib/engine.py + replay.py + follow.py — the v2 git model
-(docs/CONTRIB_LOOP.md §16.3) against REAL git: Alice's repo on the
-FakeGitHub (real bare repos), Bob's GitHub-link copy cloned from it
-(`_contrib_gh_world`). Every row of `decide`'s table, the fix buttons, the
-v1 → v2 cleanup, and the audit repros (R1 R3 R4 R9 R11 R14 …) asserting the
-FIXED behaviour: Bob's commits keep their ids, a merged proposal returns
-keeping exactly the edits made after sending, flags off never creates a
-state that needs a hidden button, and the engine never pushes.
+"""contrib/engine.py + replay.py + follow.py — the v3 git model
+(docs/CONTRIB_LOOP.md §17) against REAL git: Alice's repo on the FakeGitHub
+(real bare repos), Bob's GitHub-link copy cloned from it on its own branch
+`fused/mine` (`_contrib_gh_world`). Every move of §17.3 (ff, bring in,
+settle, discard/match, keep working, move aside, go back, restore,
+push_to_main), the derived states of §17.2, the fetch row's mirror and its
+checked-out rule, the v2 → v3 migration, and the audit repros that still
+apply. Every step that moves something asserts I3 and I4 (`inv`).
 
 proposals.py is another workstream's: a stand-in module answers `refresh`
 from the FakeGitHub's pull request (GitHub is the truth) and records
-`settle_direct`/`withdraw` calls.
+`settle_direct`/`withdraw` calls. Flags are prefs.json (`write_prefs`),
+never a monkeypatch.
 """
 from __future__ import annotations
 
@@ -21,64 +22,16 @@ import pytest
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
-from _contrib_gh_world import APP_PY, PAGE, claude_commit, edit, git, make_world, read  # noqa: E402
+from _contrib_gh_world import (  # noqa: E402
+    APP_PY, PAGE, assert_home_invariants, claude_commit, edit, git, make_world, read,
+    write_prefs)
 
 from fused_render import git_upstream  # noqa: E402
-from fused_render.contrib import classify, engine, flags, replay, store  # noqa: E402
-from fused_render.contrib.engine import Action, Facts, decide  # noqa: E402
+from fused_render.contrib import classify, engine, follow, replay, store  # noqa: E402
 
 REPO = "alice/sine"
+HOME = classify.HOME_BRANCH
 APP_LOUD = APP_PY.replace("return 1", "return 9")
-
-
-# ------------------------------------------------------------ the pure table
-
-
-def _f(**kw):
-    base = dict(head="h", tip="t", who="alice", user=False, sources_on=True, changes_on=True,
-                claude_busy=False, job_open=False, standing=False, kept_mine=False,
-                clobber=(), blocking=(), merged=False, tip_in_head=False,
-                head_in_tip=False, same_tree=False)
-    base.update(kw)
-    return Facts(**base)
-
-
-@pytest.mark.parametrize("facts,action", [
-    (_f(claude_busy=True, head_in_tip=True), Action("wait", "claude")),            # 1
-    (_f(job_open=True, head_in_tip=True), Action("skip", "merge-job")),            # 2
-    (_f(standing=True), Action("standing", "needs-merge")),                        # 3
-    (_f(kept_mine=True), Action("skip", "kept-mine")),                             # 4
-    (_f(kept_mine=True, user=True), Action("merge")),                              # 4, a button
-    (_f(clobber=("data.csv",), blocking=("a",)), Action("blocked", "clobber")),    # 5
-    (_f(blocking=("app.py",), merged=True), Action("commit-edits")),               # 6 before 7
-    (_f(merged=True, tip_in_head=True), Action("return")),                         # 7
-    (_f(tip_in_head=True), Action("noop")),                                        # 8
-    (_f(head_in_tip=True), Action("ff")),                                          # 9
-    (_f(same_tree=True), Action("move")),                                          # 10
-    (_f(), Action("merge")),                                                       # 11
-])
-def test_decide_rows(facts, action):
-    assert decide(facts) == action
-
-
-_OFF = dict(sources_on=False, changes_on=False)
-
-
-@pytest.mark.parametrize("facts,action", [
-    (_f(**_OFF, clobber=("x",)), Action("fail", "git-failed")),                    # 5
-    (_f(**_OFF, blocking=("x",)), Action("fail", "dirty")),                        # 6
-    (_f(**_OFF, merged=True), Action("merge")),                                    # 7 needs A2
-    (_f(sources_on=True, changes_on=False, merged=True), Action("merge")),         # 7 needs A2
-    (_f(**_OFF, same_tree=True), Action("move")),                                  # 10 runs
-    (_f(**_OFF), Action("merge")),                                                 # 11 runs
-    (_f(**_OFF, tip_in_head=True), Action("noop")),                                # 8 runs
-    (_f(**_OFF, head_in_tip=True), Action("ff")),                                  # 9 runs
-    (_f(**_OFF, standing=True), Action("standing", "needs-merge")),                # 3 runs
-])
-def test_decide_flags_off_records_todays_failures(facts, action):
-    """§16.12: rows 8–11 run whatever the flags; 5 and 6 (and an
-    overlapping 11, `_execute`) become today's failure rows."""
-    assert decide(facts) == action
 
 
 # ---------------------------------------------------------------- the world
@@ -99,19 +52,15 @@ class _Proposals(types.ModuleType):
     def refresh(self, app_dir, *, force=False, tip=None):
         self.refreshes += 1
         p = (store.get(app_dir) or {}).get("proposal")
-        if not isinstance(p, dict):
+        if not isinstance(p, dict) or self.offline:
             return None
+        pr = self.w.gh.get_pr(p["repo"], p["number"])
 
         def fn(r):
             q = r["proposal"]
-            if self.offline:
-                q.setdefault("cache", {})["error"] = "offline"
-                return
-            pr = self.w.gh.get_pr(q["repo"], q["number"])
             q["cache"] = {"state": "merged" if pr["merged"] else pr["state"],
-                          "merge_commit_sha": pr["merge_commit_sha"] if pr["merged"] else None}
-            if tip:
-                q["checked_tip"] = tip
+                          "merge_commit_sha": pr["merge_commit_sha"] if pr["merged"] else None,
+                          "head_sha": pr.get("head_sha")}
         store.update(app_dir, fn)
         return {}
 
@@ -138,6 +87,7 @@ def w(tmp_path, monkeypatch):
     monkeypatch.setattr(classify, "ensure_in_background", lambda app_dir: False)
     monkeypatch.setattr(engine, "_claude_busy", lambda root: False)
     engine._status_cache.clear()
+    engine._taken_cache.clear()
     world = make_world(tmp_path, monkeypatch)
     fake = _Proposals(world)
     import fused_render.contrib as pkg
@@ -151,15 +101,22 @@ def w(tmp_path, monkeypatch):
     return world
 
 
-def _flags(monkeypatch, **on):
-    vals = dict.fromkeys(("sources", "changes", "inbox", "loop", "remix"), True)
-    vals.update(on)
-    monkeypatch.setattr(flags, "_raw", lambda: dict(vals))
-    monkeypatch.setattr(flags, "effective", lambda raw: dict(raw))  # five phases, as faked
+def inv(w):
+    """I3 + I4 (§17.1) after a move."""
+    assert_home_invariants(w.app)
+
+
+def _off():
+    write_prefs(contrib_enabled=False)
 
 
 def _alice(w, files, msg):
     return w.fake.commit(REPO, "main", files, msg, author="alice")
+
+
+def _rewind(w, sha):
+    """Alice force-pushes her main back to `sha` (a rewind on GitHub)."""
+    git(w.fake.bare_path(REPO), "update-ref", "refs/heads/main", sha)
 
 
 def _backups(w):
@@ -186,49 +143,57 @@ def _remote_untouched(w, alice_tip):
 
 
 def _propose(w, title="Red wave"):
-    """What Send leaves behind (WS-P's), done directly: Bob's HEAD on a
-    branch of his fork, a pull request, the record's proposal."""
+    """What Send leaves behind (WS-2's), done directly: Bob's HEAD on a
+    branch of his fork, a pull request, the record's v3 proposal."""
     gh = w.gh
     head = w.head()
     fork = gh.ensure_fork(REPO)
-    branch = "fused-sine-20261016-1200-ab12"
+    branch = "fused-sine-20261023-1200-ab12"
     gh.push(w.app, head, fork, branch)
     pr = gh.open_pr(REPO, title=title, body="b", head=f"{fork.split('/')[0]}:{branch}",
                     base="main")
-    tip = w.alice()
 
     def fn(r):
         r["proposal"] = {"repo": REPO, "number": pr["number"], "url": pr.get("url"),
-                         "head_repo": fork, "head_branch": branch, "sent": head,
-                         "checked_tip": tip, "title": title, "cache": {"state": "open"}}
+                         "head_repo": fork, "head_branch": branch, "title": title,
+                         "sent_at": 1.0, "settled_seen": False, "landed_at": None,
+                         "cache": {"state": "open", "head_sha": head}}
     store.update(w.app, fn)
     return pr["number"]
 
 
-# ------------------------------------------------------------- rows 8–11
+def _merged_lines(w):
+    return [e for e in _activity(w) if e["kind"] == "merged"]
 
 
-def test_row9_fast_forward_says_what_came_in(w):
+# ------------------------------------------------------------- ff / bring in
+
+
+def test_ff_on_following_says_what_came_in(w):
+    inv(w)
     a = _alice(w, {"NOTES.md": "n\n"}, "Add notes")
     res = w.sync(push=True)
     assert res["status"] == "synced"
     assert w.head() == a
+    inv(w)
     assert _texts(w)[-1] == "Got alice's latest: “Add notes”."
     assert store.activity(w.app)[0]["undo"]             # every automatic move has Undo
     _remote_untouched(w, a)
     assert (store.get(w.app) or {}).get("last_checked")
     assert store.get(w.app)["last_head"] == a           # adoption after a Finder move
-    mine = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
-    engine.status(w.app)
-    assert store.get(w.app)["last_head"] == mine
+    st = engine.status(w.app)
+    assert st["state"] == "following" and st["ahead"] == 0 and st["behind"] == 0
+    # The sync's check_repo-shaped state (§17.6).
+    assert res["state"]["on_default"] is True and res["state"]["branch"] == HOME
+    assert res["state"]["default_branch"] == "main"
 
 
 @pytest.mark.parametrize("bob_has_changes", [False, True])
-def test_undo_of_an_automatic_update_holds_that_tip(w, bob_has_changes):
-    """Acceptance step 2: an automatic fast-forward / clean merge line has
-    Undo; Undo goes back to the old HEAD and the next sync does not bring
-    the same update straight back (Keep mine), while Bring in still does.
-    fused's own "Claude: " commit prefix never reaches the line."""
+def test_undo_of_an_automatic_move_holds(w, bob_has_changes):
+    """Acceptance step 2: Undo of an automatic ff / bring-in holds — opening
+    the app does not bring the same tip straight back (`kept-mine`); the
+    Bring in button does, and clears the hold. fused's own "Claude: "
+    commit prefix never reaches the line."""
     before = w.head()
     if bob_has_changes:
         before = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
@@ -237,117 +202,90 @@ def test_undo_of_an_automatic_update_holds_that_tip(w, bob_has_changes):
     line = store.activity(w.app)[0]
     assert line["undo"] and "Claude:" not in line["text"] and "“Add notes”" in line["text"]
     assert engine.restore(w.app, line["id"])["ok"]
+    inv(w)
+    assert w.head() == before and store.get(w.app)["skip_tip"] == tip
+    git_upstream.note_app_opened(w.app, _runner=lambda fn: fn())
     assert w.head() == before
-    assert store.get(w.app)["skip_tip"] == tip
     assert w.sync()["why"] == "kept-mine" and w.head() == before
-    assert engine.status(w.app)["kept_mine"]
+    st = engine.status(w.app)
+    assert st["kept_mine"] and st["behind"] == 1
     assert engine.bring_in(w.app)["ok"] and _anc(w, tip, w.head())
+    inv(w)
+    assert store.get(w.app)["skip_tip"] is None and not engine.status(w.app)["kept_mine"]
 
 
-def test_row8_noop_keeps_bobs_commit(w):
+def test_a_newer_tip_ends_the_undo_hold(w):
+    tip = _alice(w, {"NOTES.md": "n\n"}, "notes")
+    w.sync()
+    assert engine.restore(w.app, store.activity(w.app)[0]["id"])["ok"]
+    assert w.sync()["why"] == "kept-mine"
+    newer = _alice(w, {"MORE.md": "m\n"}, "more")
+    assert w.sync()["status"] == "synced" and w.head() == newer
+    inv(w)
+    assert store.get(w.app)["skip_tip"] is None and _anc(w, tip, w.head())
+
+
+def test_undo_of_a_settle_holds_too(w):
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    n = _propose(w)
+    w.fake.merge(REPO, n, "squash")
+    w.sync()
+    line = _merged_lines(w)[0]
+    held = w.alice()
+    assert engine.restore(w.app, line["id"])["ok"]
+    undone = w.head()
+    assert undone != held and store.get(w.app)["skip_tip"] == held
+    assert w.sync()["why"] == "kept-mine" and w.head() == undone   # no settle again
+    inv(w)
+    assert engine.status(w.app)["kept_mine"] and len(_merged_lines(w)) == 1
+
+
+def test_bring_in_merge_on_changes_keeps_bobs_commit_ids_r14(w):
+    """R14: three unrelated author pushes; Bob's turn commits keep their
+    ids, one bring-in merge each (first parent Bob's), one line each, and
+    the merges never count as his (`ahead` is --no-merges)."""
+    t1 = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "turn 1")
+    t2 = claude_commit(w.app, {"app.py": APP_LOUD}, "turn 2")
+    for i in range(3):
+        before = w.head()
+        tip = _alice(w, {f"N{i}.md": "n\n"}, f"notes {i}")
+        res = w.sync(push=True)
+        assert res["status"] == "synced"
+        inv(w)
+        head = w.head()
+        assert _anc(w, t1, head) and _anc(w, t2, head) and _anc(w, tip, head)
+        assert w.g("rev-list", "--parents", "-n", "1", "HEAD").split()[1:] == [before, tip]
+        assert w.g("log", "-1", "--format=%s") == "Bring in alice's latest"
+        _remote_untouched(w, tip)
+    assert len(_backups(w)) == 3 and all(e["backup"] for e in _activity(w))
+    assert _texts(w)[-1] == "Brought in alice's “notes 2”, your changes kept."
+    assert read(w.app, "index.html") == PAGE.replace("blue", "red")
+    st = engine.status(w.app)
+    assert st["state"] == "changes" and st["behind"] == 0 and st["ahead"] == 2
+    assert st["changes_files"] == ["app.py", "index.html"]
+    # The ↑N state counts the merges too, for one release (§17.6).
+    assert res["state"]["ahead"] == 5 and res["state"]["on_default"]
+
+
+def test_noop_keeps_bobs_commit(w):
     t = w.alice()
     mine = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     assert w.sync(push=True)["status"] == "synced"
     assert w.head() == mine
+    inv(w)
     assert _activity(w) == []
     _remote_untouched(w, t)
     st = engine.status(w.app)
-    assert st["state"] == "changes" and st["changes_files"] == ["index.html"]
+    assert st["state"] == "changes" and st["changes_files"] == ["index.html"] and st["ahead"] == 1
 
 
-def test_row11_clean_merge_keeps_bobs_commit_ids_r14(w):
-    """R14 fixed: three unrelated author pushes; Bob's turn commits keep
-    their ids (his version links keep working), no backups, one Activity
-    line per bring-in."""
-    t1 = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "turn 1")
-    t2 = claude_commit(w.app, {"app.py": APP_LOUD}, "turn 2")
-    for i in range(3):
-        tip = _alice(w, {f"N{i}.md": "n\n"}, f"notes {i}")
-        assert w.sync(push=True)["status"] == "synced"
-        head = w.head()
-        assert _anc(w, t1, head) and _anc(w, t2, head) and _anc(w, tip, head)
-        assert w.g("rev-list", "--parents", "-n", "1", "HEAD").split()[1:] == \
-            [w.g("rev-parse", "HEAD^1"), tip]
-        _remote_untouched(w, tip)
-    # Every automatic bring-in is undoable: one pin of the old HEAD each.
-    assert len(_backups(w)) == 3 and all(e["backup"] for e in _activity(w))
-    assert _texts(w)[-1] == "Brought in alice's “notes 2”, your changes kept."
-    assert read(w.app, "index.html") == PAGE.replace("blue", "red")
-    assert read(w.app, "app.py") == APP_LOUD
-    st = engine.status(w.app)
-    assert st["state"] == "changes" and st["behind"] == 0
-    assert st["changes_files"] == ["app.py", "index.html"]
-
-
-def test_row11_conflict_records_needs_merge_and_touches_nothing(w):
-    mine = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
-    tip = _alice(w, {"index.html": PAGE.replace("blue", "green")}, "green")
-    res = w.sync()
-    assert res["status"] == "skipped" and res["why"] == "needs-merge"
-    assert w.head() == mine and "red" in read(w.app, "index.html")
-    nm = store.get(w.app)["needs_merge"]
-    assert nm["purpose"] == "update" and nm["files"] == ["index.html"]
-    assert nm["tip"] == tip and nm["head"] == mine
-    st = engine.status(w.app)
-    assert st["state"] == "needs-merge" and st["needs_merge_files"] == ["index.html"]
-    plan = engine.merge_plan(w.app)
-    assert plan == {"purpose": "update", "ours": mine, "theirs": tip, "onto": tip,
-                    "files": ["index.html"]}
-    # Row 3: standing — the next sync changes nothing.
-    since = nm["since"]
-    assert w.sync()["why"] == "needs-merge"
-    assert store.get(w.app)["needs_merge"]["since"] == since
-    _remote_untouched(w, tip)
-
-
-def test_row10_same_tree_moves_to_tip_with_undo(w):
-    tip = _alice(w, {"index.html": PAGE.replace("blue", "green")}, "green")
-    mine = claude_commit(w.app, {"index.html": PAGE.replace("blue", "green")}, "same green")
-    assert w.sync()["status"] == "synced"
-    assert w.head() == tip
-    line = _activity(w)[-1]
-    assert line["text"] == "Got alice's latest. Your copy already matched it."
-    assert replay.rev(w.app, line["backup"]) == mine
-    assert engine.restore(w.app, line["id"])["ok"]
-    assert w.head() == mine
-
-
-# ------------------------------------------------------------- rows 5, 6
-
-
-def test_row5_clobber_blocks_then_move_aside_and_restore(w):
-    edit(w.app, ".gitignore", "data.csv\n")
-    git(w.app, "add", ".gitignore")
-    git(w.app, "-c", "user.name=B", "-c", "user.email=b@x", "commit", "-qm", "ignore data")
-    edit(w.app, "data.csv", "bob's numbers\n")
-    tip = _alice(w, {"data.csv": "alice's numbers\n"}, "ship data")
-    head = w.head()
-    res = w.sync()
-    assert res["status"] == "skipped" and res["why"] == "clobber"
-    assert w.head() == head and read(w.app, "data.csv") == "bob's numbers\n"
-    assert store.get(w.app)["needs_merge"] is None
-    assert engine.status(w.app)["blocked_files"] == ["data.csv"]
-    out = engine.bring_in(w.app)
-    assert out["reason"] == "blocked" and "data.csv" in out["message"]
-
-    out = engine.move_aside(w.app)
-    assert out["ok"], out
-    assert read(w.app, "data.csv") == "alice's numbers\n"
-    assert _anc(w, tip, w.head()) and _anc(w, head, w.head())
-    aside = next(e for e in _activity(w) if e["kind"] == "aside")
-    assert aside["aside"]["files"] == ["data.csv"]
-    assert engine.restore(w.app, aside["id"])["ok"]
-    assert read(w.app, "data.csv") == "bob's numbers\n"
-    _remote_untouched(w, tip)
-
-
-def test_row6_saves_blocking_edit_then_merges(w):
+def test_your_edits_then_merge(w):
     edit(w.app, "app.py", APP_LOUD)              # uncommitted, line 2
     edit(w.app, "index.html", PAGE + "<!-- mine -->\n")  # uncommitted, Alice never touches it
     tip = _alice(w, {"app.py": APP_PY + "\n# alice\n"}, "alice app.py")
     assert w.sync()["status"] == "synced"
-    head = w.head()
-    assert _anc(w, tip, head)
+    inv(w)
+    assert _anc(w, tip, w.head())
     assert git(w.app, "log", "-1", "--format=%s", "HEAD^1") == "Your edits"
     assert read(w.app, "app.py") == APP_LOUD + "\n# alice\n"
     assert git(w.app, "status", "--porcelain").splitlines() == ["M index.html"]
@@ -358,54 +296,99 @@ def test_untracked_file_is_never_committed(w):
     edit(w.app, "creds.json", "secret\n")
     _alice(w, {"NOTES.md": "n\n"}, "notes")
     assert w.sync()["status"] == "synced"
+    inv(w)
     assert read(w.app, "creds.json") == "secret\n"
     assert "creds.json" not in w.g("ls-files")
 
 
-# ------------------------------------------------------------- rows 1–4
+def test_auto_sync_off_fetches_only_and_bring_in_works(w, monkeypatch):
+    monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: False)
+    head = w.head()
+    tip = _alice(w, {"NOTES.md": "n\n"}, "notes")
+    assert w.sync()["why"] == "auto-sync-off"
+    inv(w)                                         # the mirror moved; the tree did not
+    assert w.head() == head and engine.status(w.app)["behind"] == 1
+    assert engine.bring_in(w.app)["message"] == "You're on alice's latest."
+    assert w.head() == tip
+    inv(w)
 
 
-def test_row1_claude_busy_waits(w, monkeypatch):
+# ------------------------------------------------------------- stuck states
+
+
+def test_conflict_is_needs_merge_derived_and_match_resolves_it(w):
+    mine = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    tip = _alice(w, {"index.html": PAGE.replace("blue", "green")}, "green")
+    res = w.sync()
+    assert res["status"] == "skipped" and res["why"] == "needs-merge"
+    inv(w)
+    assert w.head() == mine and "red" in read(w.app, "index.html")
+    assert "needs_merge" not in store.get_raw(store.key(w.app))   # nothing recorded
+    st = engine.status(w.app)
+    assert st["state"] == "needs-merge" and st["needs_merge"]
+    assert st["needs_merge_files"] == ["index.html"] and st["needs_merge_purpose"] == "update"
+    assert engine.merge_plan(w.app) == {"purpose": "update", "ours": mine, "theirs": tip,
+                                        "onto": tip, "files": ["index.html"]}
+    assert w.sync()["why"] == "needs-merge" and w.head() == mine
+    out = engine.match(w.app)
+    assert out["ok"] and w.head() == tip
+    inv(w)
+    line = _activity(w)[-1]
+    assert line["text"] == "Switched to alice's version. Your version is saved."
+    assert replay.rev(w.app, line["backup"]) == mine
+    assert engine.status(w.app)["state"] == "following"
+    _remote_untouched(w, tip)
+
+
+def test_blocked_then_move_aside_and_restore(w):
+    edit(w.app, ".gitignore", "data.csv\n")
+    git(w.app, "add", ".gitignore")
+    git(w.app, "-c", "user.name=B", "-c", "user.email=b@x", "commit", "-qm", "ignore data")
+    edit(w.app, "data.csv", "bob's numbers\n")
+    tip = _alice(w, {"data.csv": "alice's numbers\n"}, "ship data")
+    head = w.head()
+    res = w.sync()
+    assert res["status"] == "skipped" and res["why"] == "clobber"
+    inv(w)
+    assert w.head() == head and read(w.app, "data.csv") == "bob's numbers\n"
+    st = engine.status(w.app)
+    assert st["state"] == "blocked" and st["blocked_files"] == ["data.csv"]
+    out = engine.bring_in(w.app)
+    assert out["reason"] == "blocked" and "data.csv" in out["message"]
+    out = engine.move_aside(w.app)
+    assert out["ok"], out
+    inv(w)
+    assert read(w.app, "data.csv") == "alice's numbers\n"
+    assert _anc(w, tip, w.head()) and _anc(w, head, w.head())
+    aside = next(e for e in _activity(w) if e["kind"] == "aside")
+    assert aside["aside"]["files"] == ["data.csv"]
+    assert engine.restore(w.app, aside["id"])["ok"]
+    assert read(w.app, "data.csv") == "bob's numbers\n"
+    _remote_untouched(w, tip)
+
+
+def test_claude_busy_waits(w, monkeypatch):
     monkeypatch.setattr(engine, "_claude_busy", lambda root: True)
     head = w.head()
     _alice(w, {"NOTES.md": "n\n"}, "notes")
     assert w.sync()["why"] == "claude"
+    inv(w)
     assert w.head() == head
     assert engine.bring_in(w.app)["message"] == engine.CLAUDE_BUSY_MESSAGE
-    assert engine.use_theirs(w.app)["reason"] == "claude"
+    assert engine.match(w.app)["reason"] == "claude"
 
 
-def test_row2_open_merge_job_skips(w, monkeypatch):
+def test_open_merge_job_skips_and_reads_merging(w, monkeypatch):
     monkeypatch.setattr(engine, "_job_open", lambda root: True)
+    monkeypatch.setattr(engine, "_merge_job", lambda root: {"id": "j", "status": "ready"})
     head = w.head()
     _alice(w, {"NOTES.md": "n\n"}, "notes")
     assert w.sync()["why"] == "merge-job"
     assert w.head() == head
+    assert engine.status(w.app)["state"] == "merging"
 
 
-def test_row4_keep_mine_skips_until_bring_in_or_a_newer_tip(w):
-    mine = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
-    _alice(w, {"index.html": PAGE.replace("blue", "green")}, "green")
-    w.sync()
-    assert engine.keep_mine(w.app)["ok"]
-    rec = store.get(w.app)
-    assert rec["needs_merge"] is None and rec["skip_tip"] == w.alice()
-    assert w.sync()["why"] == "kept-mine"
-    assert w.head() == mine and store.get(w.app)["needs_merge"] is None
-    st = engine.status(w.app)
-    assert st["kept_mine"] and st["state"] == "changes"
-    # The button still works (row 4 is for background syncs only).
-    assert engine.bring_in(w.app)["needs_merge"]
-    engine.keep_mine(w.app)
-    # A newer tip is a new decision.
-    _alice(w, {"NOTES.md": "n\n"}, "notes")
-    assert w.sync()["why"] == "needs-merge"
-
-
-# ------------------------------------------------------------- flags off
-
-
-_ALL_OFF = dict(sources=False, changes=False, inbox=False, loop=False, remix=False)
+# ------------------------------------------------------------- loop switched off
 
 
 def _failures(w):
@@ -413,24 +396,24 @@ def _failures(w):
             if f["root"] == w.app]
 
 
-def test_v1_flags_off_one_claude_commit_still_gets_updates(w, monkeypatch):
-    """V1 fixed: flags off (the shipping default), one Claude commit, then
-    author pushes: a clean merge runs whatever the flags (§16.12)."""
-    _flags(monkeypatch, **_ALL_OFF)
+def test_loop_off_still_brings_in_cleanly(w):
+    """§17.7: with the switch off the engine still ff's and brings in."""
+    _off()
     mine = claude_commit(w.app, {"tweak.txt": "mine\n"}, "tweak")
     for i in range(2):
         tip = _alice(w, {f"c{i}.txt": "alice\n"}, f"a{i}")
         assert w.sync(push=True)["status"] == "synced"
+        inv(w)
         assert _anc(w, tip, w.head()) and _anc(w, mine, w.head())
         _remote_untouched(w, tip)
     assert _failures(w) == []
 
 
-def test_v2_flags_off_overlapping_hand_edit_is_todays_dirty_row(w, monkeypatch):
-    """V2 fixed: flags off, an uncommitted edit to a file the author's
-    update changes → today's `dirty` failure row in plain words; nothing
-    committed for him, tree untouched, no v2 state."""
-    _flags(monkeypatch, **_ALL_OFF)
+def test_loop_off_stuck_states_are_todays_failure_rows(w):
+    """§16.12/§17.7: an edit in the way, an overlap, a file in the way —
+    git_upstream's failure row in plain words, nothing committed for him,
+    tree untouched."""
+    _off()
     head = w.head()
     edit(w.app, "app.py", APP_LOUD)
     tip = _alice(w, {"app.py": APP_PY + "# a\n"}, "a2")
@@ -440,74 +423,80 @@ def test_v2_flags_off_overlapping_hand_edit_is_todays_dirty_row(w, monkeypatch):
                                       "update changes that file too. Save or undo them to "
                                       "get the update.")]
     assert w.head() == head and read(w.app, "app.py") == APP_LOUD
-    assert store.get(w.app)["needs_merge"] is None
-    _remote_untouched(w, tip)
+    inv(w)
     git(w.app, "checkout", "--", "app.py")        # undone: the row goes, the update lands
     assert w.sync()["status"] == "synced" and _failures(w) == []
-
-
-def test_flags_off_overlap_is_todays_diverged_row(w, monkeypatch):
-    _flags(monkeypatch, **_ALL_OFF)
     mine = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
-    tip = _alice(w, {"index.html": PAGE.replace("blue", "green")}, "green")
+    _alice(w, {"index.html": PAGE.replace("blue", "green")}, "green")
     res = w.sync(push=True)
     assert res["status"] == "failed" and res["failure"]["reason"] == "diverged"
-    assert "index.html" in _failures(w)[0][1]
-    assert w.head() == mine and store.get(w.app)["needs_merge"] is None
+    assert "index.html" in _failures(w)[0][1] and w.head() == mine
     out = engine.bring_in(w.app)
     assert out["reason"] == "diverged" and "index.html" in out["message"]
-    _remote_untouched(w, tip)
+    assert _anc(w, tip, w.head())
+    _remote_untouched(w, w.alice())
 
 
-def test_flags_off_still_fast_forwards_and_fetches(w, monkeypatch):
-    _flags(monkeypatch, changes=False, sources=False, inbox=False, loop=False, remix=False)
-    tip = _alice(w, {"NOTES.md": "n\n"}, "notes")
-    assert w.sync(push=True)["status"] == "synced"
-    assert w.head() == tip
-    _remote_untouched(w, tip)
-
-
-def test_auto_sync_off_fetches_only_and_bring_in_works(w, monkeypatch):
-    monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: False)
+def test_loop_off_never_overwrites_an_ignored_file(w):
+    edit(w.app, ".git/info/exclude", "data.csv\n")
+    edit(w.app, "data.csv", "bob's numbers\n")
+    _off()
     head = w.head()
+    _alice(w, {"data.csv": "alice's numbers\n"}, "ship data")
+    res = w.sync()
+    assert res["status"] == "failed" and res["failure"]["reason"] == "git-failed"
+    assert _failures(w)[0][1] == ("alice's update adds data.csv, which you already have "
+                                  "here. Rename yours to get the update.")
+    assert w.head() == head and read(w.app, "data.csv") == "bob's numbers\n"
+
+
+def test_github_kind_goes_to_the_engine_whatever_the_flags(w, monkeypatch):
+    """P1/P2: the recorded kind decides — with the loop off a `github` copy
+    is synced by `engine.sync` (never the plain, pushing body)."""
+    _off()
+    assert classify.kind_of(w.app) == "github"
+    calls = []
+    real = engine.sync
+    monkeypatch.setattr(engine, "sync", lambda root, **kw: calls.append(root) or real(root, **kw))
+    monkeypatch.setattr(git_upstream, "_sync_plain",
+                        lambda *a, **k: pytest.fail("plain sync of a github copy"))
     tip = _alice(w, {"NOTES.md": "n\n"}, "notes")
-    assert w.sync()["why"] == "auto-sync-off"
-    assert w.head() == head and engine.status(w.app)["behind"] == 1
-    assert engine.bring_in(w.app)["message"] == "You're on alice's latest."
-    assert w.head() == tip
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    assert w.sync(push=True)["status"] == "synced"
+    assert calls == [w.app]
+    inv(w)
+    _remote_untouched(w, tip)
 
 
 # ------------------------------------------------------------- the fixes
 
 
-def test_use_theirs_backs_up_everything_and_restore_undoes(w):
+def test_match_backs_up_everything_and_restore_undoes(w):
     mine = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     edit(w.app, "app.py", APP_LOUD)
     edit(w.app, "scratch.txt", "my notes\n")
     tip = _alice(w, {"index.html": PAGE.replace("blue", "green")}, "green")
     w.sync()
-    out = engine.use_theirs(w.app)
+    out = engine.match(w.app)
     assert out["ok"] and "Activity" in out["message"]
+    inv(w)
     assert w.head() == tip and not os.path.exists(os.path.join(w.app, "scratch.txt"))
     assert w.g("status", "--porcelain") == ""
-    rec = store.get(w.app)
-    assert rec["needs_merge"] is None
     line = _activity(w)[-1]
-    assert line["kind"] == "use-theirs" and replay.rev(w.app, line["backup"]) == mine
+    assert line["kind"] == "match" and replay.rev(w.app, line["backup"]) == mine
     assert engine.restore(w.app, line["id"])["ok"]
+    inv(w)
     assert w.head() == mine
     assert read(w.app, "app.py") == APP_LOUD
     assert read(w.app, "scratch.txt") == "my notes\n"
     assert "Brought back your version" in _texts(w)[-1]
 
 
-def test_discard_withdraws_only_when_asked_r4(w):
-    """R4 fixed at the engine's end: Discard without withdraw leaves the
-    proposal open and Bob's copy equal to the author's — `sent` still names
-    what GitHub has, so nothing re-sends an empty proposal."""
+def test_discard_withdraws_only_when_asked(w):
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     _propose(w)
     assert engine.discard(w.app, withdraw=False)["ok"]
+    inv(w)
     assert w.proposals.withdrawn == []
     assert w.head() == w.alice()
     st = engine.status(w.app)
@@ -517,170 +506,238 @@ def test_discard_withdraws_only_when_asked_r4(w):
     assert w.proposals.withdrawn == [w.app]
 
 
-def test_go_back_main_moves_main_along_when_it_is_contained(w):
+def test_keep_working_after_a_declined_proposal(w):
+    mine = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    n = _propose(w)
+    assert engine.keep_working(w.app)["reason"] == "open"
+    w.fake.close(REPO, n)
+    w.proposals.refresh(w.app, force=True)
+    assert engine.status(w.app)["state"] == "declined"
+    out = engine.keep_working(w.app)
+    assert out["ok"] and store.get(w.app)["proposal"] is None
+    assert w.head() == mine                       # nothing moves
+    inv(w)
+    assert engine.status(w.app)["state"] == "changes"
+
+
+def test_go_back_from_a_branch_claude_made_carries_its_commits(w):
     git(w.app, "checkout", "-q", "-b", "go-back")
     mine = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     _alice(w, {"NOTES.md": "n\n"}, "notes")
     assert w.sync()["why"] == "not-default"
-    assert engine.status(w.app)["off_default"]
+    st = engine.status(w.app)
+    assert st["off_default"] and st["state"] == "other-branch" and st["behind"] == 1
     edit(w.app, "app.py", APP_LOUD)
     out = engine.go_back_main(w.app)
     assert out["reason"] == "dirty" and git_upstream._current_branch(w.app) == "go-back"
     git(w.app, "checkout", "--", "app.py")
     assert engine.go_back_main(w.app)["ok"]
-    assert git_upstream._current_branch(w.app) == "main" and w.head() == mine
+    inv(w)
+    assert w.head() == mine
     assert w.sync()["status"] == "synced"
+    inv(w)
     assert _anc(w, mine, w.head())
 
 
-def test_go_back_main_saves_a_diverged_version(w):
+def test_go_back_saves_a_diverged_version(w):
     git(w.app, "checkout", "-q", "--detach")
     mine = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
-    git(w.app, "-c", "user.name=B", "-c", "user.email=b@x", "branch", "-f", "main", "HEAD~1")
-    git(w.app, "checkout", "-q", "main")
-    other = claude_commit(w.app, {"app.py": APP_LOUD}, "on main")
+    git(w.app, "checkout", "-q", HOME)
+    other = claude_commit(w.app, {"app.py": APP_LOUD}, "on mine")
     git(w.app, "checkout", "-q", mine)
     out = engine.go_back_main(w.app)
     assert out["ok"] and "saved" in out["message"]
+    inv(w)
     assert w.head() == other
     line = _activity(w)[-1]
     assert replay.rev(w.app, line["backup"]) == mine
 
 
-# ------------------------------------------------------------- the return (row 7)
+def test_checked_out_main_is_never_moved_and_go_back_carries_its_commits(w):
+    """§17.3 fetch row: with the author's branch checked out, only
+    `origin/<b>` moves (a checked-out branch is never moved under its
+    worktree); Go back puts Bob on fused/mine with the commits he made on
+    main, and main becomes the mirror again."""
+    git(w.app, "checkout", "-q", "main")
+    before = w.g("rev-parse", "refs/heads/main")
+    tip = _alice(w, {"NOTES.md": "n\n"}, "notes")
+    assert w.sync()["why"] == "not-default"
+    assert w.g("rev-parse", "refs/heads/main") == before
+    assert w.g("rev-parse", "refs/remotes/origin/main") == tip
+    st = engine.status(w.app)
+    assert st["state"] == "other-branch" and st["behind"] == 1
+    on_main = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "on main")
+    assert engine.go_back_main(w.app)["ok"]
+    inv(w)
+    assert w.head() == on_main
+    assert w.sync()["status"] == "synced"
+    inv(w)
+    assert _anc(w, on_main, w.head()) and _anc(w, tip, w.head())
 
 
-def test_row7_squash_of_two_commits_returns_before_merging_r3(w):
-    """R3 fixed: a two-commit proposal squash-merged; the very next sync
-    (no refresh had run) asks GitHub first, then returns — no false
-    overlap with Bob's own merged change."""
+def test_author_rewind_pins_the_old_mirror(w):
+    a1 = w.alice()
+    a2 = _alice(w, {"NOTES.md": "n\n"}, "notes")
+    w.sync()
+    assert w.head() == a2
+    _rewind(w, a1)
+    assert w.sync()["status"] == "synced"
+    inv(w)
+    assert w.g("rev-parse", "refs/heads/main") == a1
+    pins = [b for b in _backups(w) if b.endswith("-rewound")]
+    assert len(pins) == 1 and replay.rev(w.app, pins[0]) == a2
+    line = _activity(w)[-1]
+    assert line["kind"] == "rewound" and line["backup"] == pins[0]
+    assert "earlier version" in line["text"]
+    w.sync()
+    assert len([e for e in _activity(w) if e["kind"] == "rewound"]) == 1
+
+
+# ------------------------------------------------------------- merged → settle
+
+
+def test_settle_after_squash_landed_at_once(w):
+    """§17.2 merged row: a two-commit proposal squash-merged; the next sync
+    asks GitHub first, brings the squash in (same tree) and SETTLES —
+    fused/mine is the author's tip, the line says so once, with Undo."""
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
-    claude_commit(w.app, {"index.html": PAGE.replace("blue", "crimson")}, "crimson")
+    sent = claude_commit(w.app, {"index.html": PAGE.replace("blue", "crimson")}, "crimson")
     n = _propose(w)
     w.fake.merge(REPO, n, "squash")
     assert w.sync()["status"] == "synced"
-    rec = store.get(w.app)
-    assert rec["needs_merge"] is None and rec["proposal"]["returned_at"]
-    assert rec["proposal"]["checked_tip"] == w.alice()
+    inv(w)
+    assert w.proposals.refreshes >= 1
     assert w.head() == w.alice()
-    assert _texts(w)[-1] == "alice merged your change. You're on alice's latest version."
+    rec = store.get(w.app)
+    assert rec["proposal"]["landed_at"]
+    lines = _merged_lines(w)
+    assert [e["text"] for e in lines] == [
+        "alice merged your change. You're on alice's latest version."]
+    assert _anc(w, sent, replay.rev(w.app, lines[0]["backup"]))   # Undo has his commits
+    assert not any(t.startswith("Brought in") for t in _texts(w))
     st = engine.status(w.app)
-    assert st["state"] == "merged" and st["merged_in_tip"] and not st["taken_back"]
-    assert w.sync()["status"] == "synced" and w.head() == w.alice()  # returns once
+    assert st["state"] == "merged" and st["merged_in_tip"] and st["ahead"] == 0
+    assert not st["taken_back"] and not st["kept_mine"]
+    landed = rec["proposal"]["landed_at"]
+    assert w.sync()["status"] == "synced" and w.head() == w.alice()
+    assert store.get(w.app)["proposal"]["landed_at"] == landed and len(_merged_lines(w)) == 1
+    assert engine.restore(w.app, lines[0]["id"])["ok"]
+    inv(w)
 
 
-@pytest.mark.parametrize("method", ["merge", "squash", "rebase"])
-def test_row7_return_keeps_exactly_the_edits_after_sending(w, method):
-    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+def test_settle_after_a_merge_commit_accept_that_is_a_sibling(w):
+    """A merge-commit accept is NOT a fast-forward of Bob's own bring-in
+    merge: same parents, different commit (§17.2). Bring-in, then settle."""
+    b1 = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     n = _propose(w)
+    m1 = _alice(w, {"NOTES.md": "n\n"}, "M1 notes")
+    w.sync()
+    x = w.head()
+    assert w.g("rev-list", "--parents", "-n", "1", "HEAD").split()[1:] == [b1, m1]
+    m2 = w.fake.merge(REPO, n, "merge")
+    parents = git(w.fake.bare_path(REPO), "rev-list", "--parents", "-n", "1", m2).split()[1:]
+    assert parents == [m1, b1] and m2 != x          # same parents as X, another commit
+    assert w.sync()["status"] == "synced"
+    inv(w)
+    assert not _anc(w, x, m2) and not _anc(w, m2, x)  # never a fast-forward
+    assert w.head() == m2 == w.alice()
+    lines = _merged_lines(w)
+    assert len(lines) == 1 and _anc(w, x, replay.rev(w.app, lines[0]["backup"]))
+    assert engine.status(w.app)["ahead"] == 0
+
+
+@pytest.mark.parametrize("method", ["squash", "rebase"])
+def test_merged_with_edits_since_keeps_them(w, method):
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _propose(w)
+    n = store.get(w.app)["proposal"]["number"]
     after = claude_commit(w.app, {"app.py": APP_LOUD}, "louder")
     edit(w.app, "NOTES.md", "draft\n")                      # untracked, carried
     w.fake.merge(REPO, n, method)
     assert w.sync()["status"] == "synced"
-    head, tip = w.head(), w.alice()
-    assert w.g("rev-parse", "HEAD^") == tip                  # tip + one re-applied edit
-    assert git(w.app, "log", "-1", "--format=%s%n%an") == git(
-        w.app, "log", "-1", "--format=%s%n%an", after)
-    assert w.g("diff", "--name-only", tip, head) == "app.py"
+    inv(w)
+    tip = w.alice()
+    assert _anc(w, tip, w.head()) and _anc(w, after, w.head())
+    assert w.g("diff", "--name-only", tip, "HEAD") == "app.py"
     assert read(w.app, "NOTES.md") == "draft\n"
-    line = _activity(w)[-1]
-    assert line["text"].endswith("1 edit you made since kept.")
-    assert replay.rev(w.app, line["backup"]) == after
-    assert engine.status(w.app)["unproposed"] == 1
+    lines = _merged_lines(w)
+    assert len(lines) == 1 and lines[0]["text"].endswith("Edits you made since are kept.")
+    assert store.get(w.app)["proposal"]["landed_at"]
+    w.sync()
+    assert len(_merged_lines(w)) == 1
 
 
-def test_row7_return_with_maintainer_edits(w):
-    """Alice edits Bob's proposal on GitHub, then squashes: the return lands
-    her version of his change plus only what he did since."""
+def test_settle_keeps_an_unsaved_edit(w):
+    """Round 3b: a settle needs tree(HEAD) == tree(main) only — `reset
+    --keep` keeps an unsaved edit beside, so a squash accept settles even
+    while Bob has one."""
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     n = _propose(w)
-    p = store.get(w.app)["proposal"]
-    w.fake.commit(p["head_repo"], p["head_branch"], {"index.html": PAGE.replace("blue", "ruby")},
-                  "alice polish", author="alice")
-    claude_commit(w.app, {"app.py": APP_LOUD}, "louder")
     w.fake.merge(REPO, n, "squash")
+    edit(w.app, "app.py", APP_LOUD)
     assert w.sync()["status"] == "synced"
+    inv(w)
+    assert w.head() == w.alice() and len(_merged_lines(w)) == 1
+    assert read(w.app, "app.py") == APP_LOUD
+    assert w.g("status", "--porcelain", "--", "app.py").endswith("M app.py")
+    assert store.get(w.app)["proposal"]["landed_at"]
+
+
+@pytest.mark.parametrize("method", ["squash", "rebase"])
+def test_squash_accept_then_author_edits_the_proposed_lines(w, method):
+    """Round 3c: after a squash/rebase accept the author edits the very
+    lines Bob proposed. With git's own merge base Bob's pre-squash commit
+    would conflict with that; with the proposal's head as the base his
+    change is common ground — he lands on the author's version, settled."""
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    n = _propose(w)
+    w.fake.merge(REPO, n, method)
+    _alice(w, {"index.html": PAGE.replace("blue", "ruby")}, "ruby, not red")
+    assert w.sync()["status"] == "synced"
+    inv(w)
+    assert w.head() == w.alice() and "ruby" in read(w.app, "index.html")
+    assert len(_merged_lines(w)) == 1 and _merged_lines(w)[0]["backup"]
+    st = engine.status(w.app)
+    assert not st["needs_merge"] and st["ahead"] == 0
+
+
+def test_squash_accept_then_author_edits_with_a_later_edit_of_bobs(w):
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    n = _propose(w)
+    later = claude_commit(w.app, {"app.py": APP_LOUD}, "louder")
+    w.fake.merge(REPO, n, "squash")
+    _alice(w, {"index.html": PAGE.replace("blue", "ruby")}, "ruby, not red")
+    assert engine.status(w.app)["state"] in ("proposed", "changes", "merged")
+    assert w.sync()["status"] == "synced"
+    inv(w)
+    tip = w.alice()
+    assert w.g("rev-list", "--parents", "-n", "1", "HEAD").split()[1:] == [later, tip]
     assert "ruby" in read(w.app, "index.html") and read(w.app, "app.py") == APP_LOUD
-    assert w.g("diff", "--name-only", w.alice(), "HEAD") == "app.py"
+    assert w.g("diff", "--name-only", tip, "HEAD") == "app.py"
+    lines = _merged_lines(w)
+    assert len(lines) == 1 and lines[0]["text"].endswith("Edits you made since are kept.")
+    st = engine.status(w.app)
+    assert not st["needs_merge"] and st["changes_files"] == ["app.py"]
 
 
-def test_row7_github_update_branch_then_merge_r9(w):
-    """R9 fixed: GitHub's Update branch merges Alice's M2 into the PR; after
-    the merge Bob's history never carries a re-created copy of M2."""
-    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
-    n = _propose(w)
-    m2 = _alice(w, {"NOTES.md": "n\n"}, "M2 notes")
-    w.fake.update_branch(REPO, n)
-    claude_commit(w.app, {"app.py": APP_LOUD}, "louder")
-    w.fake.merge(REPO, n, "merge")
-    assert w.sync()["status"] == "synced"
-    subjects = w.g("log", "--format=%H %s", f"{w.alice()}..HEAD").splitlines()
-    assert [s.split(" ", 1)[1] for s in subjects] == ["Claude: louder"]
-    assert _anc(w, m2, w.head())
-
-
-def test_row7_conflict_records_a_return_overlap(w):
-    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
-    n = _propose(w)
-    claude_commit(w.app, {"app.py": APP_LOUD}, "louder")
-    _alice(w, {"app.py": APP_PY.replace("return 1", "return 5")}, "alice amplitude")
-    w.fake.merge(REPO, n, "squash")
-    head = w.head()
-    assert w.sync()["why"] == "needs-merge"
-    assert w.head() == head
-    nm = store.get(w.app)["needs_merge"]
-    assert nm["purpose"] == "return" and nm["files"] == ["app.py"]
-    assert engine.merge_plan(w.app)["purpose"] == "return"
-
-
-def test_row7_flags_off_never_returns(w, monkeypatch):
-    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
-    n = _propose(w)
-    w.fake.merge(REPO, n, "squash")
-    _flags(monkeypatch, changes=False)
-    head = w.head()
-    assert w.sync()["status"] == "synced"          # rows 8–11 still run
-    assert w.proposals.refreshes == 0               # no proposal UI, no GitHub poll
-    assert not store.get(w.app)["proposal"].get("returned_at")
-    # Same tree as the squash: row 10, the tip with an Undo for his commit.
-    assert w.head() == w.alice()
-    assert replay.rev(w.app, _activity(w)[-1]["backup"]) == head
-
-
-def test_offline_refresh_keeps_asking(w):
-    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
-    _propose(w)
-    old = store.get(w.app)["proposal"]["checked_tip"]
-    _alice(w, {"NOTES.md": "n\n"}, "notes")
-    w.proposals.offline = True
-    w.sync()
-    assert store.get(w.app)["proposal"]["checked_tip"] == old
-    w.proposals.offline = False
-    w.sync()
-    assert store.get(w.app)["proposal"]["checked_tip"] == w.alice()
-    calls = w.proposals.refreshes
-    w.sync()
-    assert w.proposals.refreshes == calls        # same tip: no GitHub read
-
-
-def test_sent_survives_author_pushes_r1_r11(w):
-    """R1/R11 fixed: author pushes while (and after) Bob proposes; his
-    proposed commit stays in HEAD, nothing is "unproposed", and the PR
-    branch needs no rewrite."""
+def test_sent_commit_survives_author_pushes(w):
+    """R1/R11: author pushes while Bob proposes; his proposed commit stays
+    in HEAD, nothing is "unproposed" (bring-in merges never count)."""
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     _alice(w, {"NOTES.md": "n\n"}, "notes")
     w.sync()
     _propose(w)
-    sent = store.get(w.app)["proposal"]["sent"]
+    sent = w.head()
     for i in range(2):
         _alice(w, {f"M{i}.md": "m\n"}, f"more {i}")
         w.sync()
+        inv(w)
         assert _anc(w, sent, w.head())
     st = engine.status(w.app)
     assert st["unproposed"] == 0 and st["state"] == "proposed"
 
 
-# ------------------------------------------------------------- push / v1 / guards
+# ------------------------------------------------------------- push / migration
 
 
 def test_push_to_main_for_a_collaborator(w):
@@ -690,8 +747,9 @@ def test_push_to_main_for_a_collaborator(w):
     _alice(w, {"NOTES.md": "n\n"}, "notes")
     out = engine.push_to_main(w.app)
     assert out["ok"], out
+    inv(w)
     head = w.head()
-    assert w.alice() == head
+    assert w.alice() == head == w.g("rev-parse", "refs/heads/main")
     assert w.proposals.settled == [head]
     assert engine.status(w.app)["changes_files"] == []
     assert _texts(w)[-1] == "Published your changes straight to alice's app."
@@ -700,28 +758,87 @@ def test_push_to_main_for_a_collaborator(w):
 def test_push_to_main_refused_without_rights(w):
     tip = w.alice()
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
-    out = engine.push_to_main(w.app)
-    assert out["reason"] == "forbidden"
+    assert engine.push_to_main(w.app)["reason"] == "forbidden"
     _remote_untouched(w, tip)
 
 
-def test_first_v2_sync_cleans_up_v1_state(w):
-    head = w.head()
-    for ref in replay.V1_REFS:
-        w.g("update-ref", ref, head)
-    w.g("update-ref", "refs/fused/backup/1-update", head)
+@pytest.fixture
+def v2(tmp_path, monkeypatch):
+    """A v2 copy: HEAD on main (Bob's work there), a v2 record."""
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    monkeypatch.setenv("FUSED_RENDER_DIR", str(ws))
+    for name, value in (("_checked", {}), ("_state", {}), ("_sync_failures", {}),
+                        ("_pulled_events", []), ("_pending", {})):
+        monkeypatch.setattr(git_upstream, name, value)
+    monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: True)
+    monkeypatch.setattr(classify, "ensure_in_background", lambda app_dir: False)
+    monkeypatch.setattr(engine, "_claude_busy", lambda root: False)
+    engine._status_cache.clear()
+    world = make_world(tmp_path, monkeypatch, home_branch=False)
+    head = git(world.app, "rev-parse", "HEAD")
 
-    def fn(r):
-        r.pop("v", None)
-        r["needs_merge"] = {"onto": head, "upstream": head, "purpose": "needs-merge"}
-        r["backups"] = [{"ref": "refs/fused/backup/1-update", "at": 1.0, "why": "update"}]
-    store.update(w.app, fn)
+    def as_v2(r):
+        r["v"] = 2
+        r.update(root_commit=head, needs_merge={"purpose": "update", "tip": head},
+                 skip_tip=head, proposal={"repo": REPO, "number": 4, "sent": head,
+                                          "checked_tip": head, "returned_at": None,
+                                          "cache": {"state": "closed"}, "settled_seen": True})
+    store.update(world.app, as_v2)
+    world.sync = lambda: git_upstream.sync_repo(world.app, action="test", push=False)
+    return world
+
+
+def test_migration_from_a_v2_record_with_a_diverged_main(v2):
+    w = v2
+    mine = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    tip = _alice(w, {"NOTES.md": "n\n"}, "notes")
+    assert git_upstream._current_branch(w.app) == "main"
+    assert w.sync()["status"] == "synced"
+    inv(w)
+    head = git(w.app, "rev-parse", "HEAD")
+    assert replay.is_ancestor(w.app, mine, head) and replay.is_ancestor(w.app, tip, head)
+    rec = store.get(w.app)
+    assert rec["v"] == 3
+    raw = store.get_raw(store.key(w.app))
+    assert not {"root_commit", "needs_merge"} & set(raw)   # skip_tip: the undo hold
+    assert not {"sent", "checked_tip", "returned_at"} & set(raw["proposal"])
+    pins = [b for b in git(w.app, "for-each-ref", "--format=%(refname)",
+                           replay.BACKUP_PREFIX).split() if "v3-move" in b]
+    assert len(pins) == 1 and replay.rev(w.app, pins[0]) == mine
+    texts = [e["text"] for e in rec["activity"]]
+    assert texts.count(classify.MOVED_TEXT) == 1
+    assert git(w.app, "config", f"branch.{HOME}.merge") == "refs/heads/main"
+    w.sync()
+    assert [e["text"] for e in store.get(w.app)["activity"]].count(classify.MOVED_TEXT) == 1
+
+
+def test_migration_of_a_following_v2_copy_is_silent(v2):
+    w = v2
+    assert w.sync()["status"] == "synced"
+    inv(w)
+    assert store.get(w.app)["v"] == 3 and store.get(w.app)["activity"] == []
+
+
+def test_v1_refs_go_on_the_first_v3_sync(v2):
+    w = v2
+    head = git(w.app, "rev-parse", "HEAD")
+    for ref in replay.V1_REFS:
+        git(w.app, "update-ref", ref, head)
+    store.update(w.app, lambda r: r.pop("v", None))
     w.sync()
     for ref in replay.V1_REFS:
         assert replay.rev(w.app, ref) is None
-    rec = store.get(w.app)
-    assert rec["v"] == 2 and rec["needs_merge"] is None and "backups" not in rec
-    assert [e["backup"] for e in _activity(w)] == ["refs/fused/backup/1-update"]
+    assert store.get(w.app)["v"] == 3
+    inv(w)
+
+
+def test_install_world_starts_on_fused_mine(w):
+    inv(w)
+    assert engine.status(w.app)["state"] == "following"
+
+
+# ------------------------------------------------------------- odds and ends
 
 
 def test_redirected_config_is_never_fetched(w):
@@ -733,25 +850,7 @@ def test_redirected_config_is_never_fetched(w):
     assert engine.status(w.app)["sync_error_code"] == "redirected"
 
 
-def test_github_kind_goes_to_the_engine_whatever_the_flags(w, monkeypatch):
-    """P1/P2: the recorded kind decides — with every flag off a `github`
-    copy is synced by `engine.sync` (never the plain, pushing body)."""
-    _flags(monkeypatch, sources=False, changes=False, inbox=False, loop=False, remix=False)
-    assert classify.kind_of(w.app) == "github"
-    calls = []
-    real = engine.sync
-    monkeypatch.setattr(engine, "sync", lambda root, **kw: calls.append(root) or real(root, **kw))
-    monkeypatch.setattr(git_upstream, "_sync_plain",
-                        lambda *a, **k: pytest.fail("plain sync of a github copy"))
-    tip = _alice(w, {"NOTES.md": "n\n"}, "notes")
-    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
-    assert w.sync(push=True)["status"] == "synced"
-    assert calls == [w.app]
-    _remote_untouched(w, tip)
-
-
 def test_fetch_errors_reach_status_offline_stays_silent(w, monkeypatch):
-    from fused_render.contrib import follow
     real = follow.fetch
     monkeypatch.setattr(follow, "fetch", lambda root, fol: (None, "not-found"))
     assert w.sync()["why"] == "not-found"
@@ -768,7 +867,6 @@ def test_fetch_errors_reach_status_offline_stays_silent(w, monkeypatch):
 
 
 def test_gh_fetch_reasons_map_to_codes(w, monkeypatch):
-    from fused_render.contrib import follow
     monkeypatch.setattr(w.gh, "fetch_detail", lambda root, url, spec: (False, "signed-out"),
                         raising=False)
     fol = follow.for_record(store.get(w.app))
@@ -791,12 +889,13 @@ def test_merge_landed_proposal_hands_the_send_to_proposals(w):
     assert _activity(w)[-1]["kind"] == "proposal"
 
 
-def test_status_counts_only_bobs_files_when_behind(w):
+def test_status_counts_only_bobs_files_when_behind(w, monkeypatch):
+    monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: False)
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     _alice(w, {"app.py": APP_LOUD}, "alice app")
-    git_upstream._run(w.app, "fetch", "-q", "origin")
+    w.sync()
     st = engine.status(w.app)
-    assert st["changes_files"] == ["index.html"] and st["behind"] == 1
+    assert st["changes_files"] == ["index.html"] and st["behind"] == 1 and st["ahead"] == 1
 
 
 def test_old_git_scratch_merge_gives_the_same_answers(w, monkeypatch):
@@ -815,86 +914,28 @@ def test_old_git_scratch_merge_gives_the_same_answers(w, monkeypatch):
     assert os.listdir(replay.work_dir()) == []
 
 
-def test_flags_off_fast_forward_never_overwrites_an_ignored_file(w, monkeypatch):
-    """A plain fast-forward would overwrite Bob's ignored file silently;
-    with sources off it is today's failure row instead, file untouched."""
-    edit(w.app, ".git/info/exclude", "data.csv\n")
-    edit(w.app, "data.csv", "bob's numbers\n")
-    _flags(monkeypatch, **_ALL_OFF)
-    head = w.head()
-    _alice(w, {"data.csv": "alice's numbers\n"}, "ship data")
-    res = w.sync()
-    assert res["status"] == "failed" and res["failure"]["reason"] == "git-failed"
-    assert _failures(w)[0][1] == ("alice's update adds data.csv, which you already have "
-                                  "here. Rename yours to get the update.")
-    assert w.head() == head and read(w.app, "data.csv") == "bob's numbers\n"
-    assert store.get(w.app)["needs_merge"] is None
-
-
-@pytest.mark.parametrize("method", ["merge", "squash"])
-def test_row7_return_through_the_old_git_path(w, monkeypatch, method):
-    monkeypatch.setattr(replay, "_FORCE_SCRATCH_MERGE", True)
-    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
-    n = _propose(w)
-    claude_commit(w.app, {"app.py": APP_LOUD}, "louder")
-    w.fake.merge(REPO, n, method)
-    assert w.sync()["status"] == "synced"
-    assert w.g("rev-parse", "HEAD^") == w.alice()
-    assert w.g("diff", "--name-only", w.alice(), "HEAD") == "app.py"
-    assert os.listdir(replay.work_dir()) == []
-
-
-# ------------------------------------------------------- review round 1
-
-
-_SOURCES_ONLY = dict(_ALL_OFF, sources=True)
-
-
-def test_v3_sources_only_status_says_how_far_behind(w, monkeypatch):
-    """V3: with A1 only, an overlap is a v2 state (its buttons live under
-    sources) and the status still says the author's update is waiting."""
-    _flags(monkeypatch, **_SOURCES_ONLY)
-    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
-    _alice(w, {"index.html": PAGE.replace("blue", "green")}, "green")
-    assert w.sync()["why"] == "needs-merge"
-    st = engine.status(w.app)
-    assert st["behind"] == 1 and st["state"] == "needs-merge" and st["needs_merge"]
-    assert _failures(w) == []
-
-
-def test_v4_sources_only_collision_is_blocked_with_move_aside(w, monkeypatch):
-    """V4 fixed: an untracked file the author's update adds is the blocked
-    state with the Move aside fix — Bring in says so, never "changes-off"."""
-    _flags(monkeypatch, **_SOURCES_ONLY)
-    edit(w.app, "data.json", "{}\n")
-    _alice(w, {"data.json": '{"seed": 1}\n'}, "seed")
-    assert w.sync()["why"] == "clobber"
-    assert engine.status(w.app)["blocked_files"] == ["data.json"]
-    out = engine.bring_in(w.app)
-    assert out["reason"] == "blocked" and "Move yours aside" in out["message"]
-    assert engine.move_aside(w.app)["ok"] and read(w.app, "data.json") == '{"seed": 1}\n'
-
-
-@pytest.mark.parametrize("on", [True, False])
-def test_v5_off_default_fetches_first_and_shows_behind(w, monkeypatch, on):
-    if not on:
-        _flags(monkeypatch, **_ALL_OFF)
+def test_off_default_with_the_loop_off_keeps_the_switch_card(w):
+    """R5 with v3's rule (§17.6): "default" for a github copy is fused/mine;
+    another version with A1 off gets a check_repo-shaped state, and Switch
+    is the engine's Go back (never the author's branch)."""
+    _off()
     git(w.app, "checkout", "-q", "-b", "feature")
-    head = w.head()
     _alice(w, {"c.txt": "alice\n"}, "a2")
-    assert w.sync()["why"] == "not-default"
-    st = engine.status(w.app)
-    assert st["behind"] == 1 and st["off_default"] and st["last_checked"]
-    assert w.head() == head
+    res = w.sync()
+    assert res["why"] == "not-default"
+    assert (res["state"]["branch"], res["state"]["default_branch"], res["state"]["on_default"],
+            res["state"]["behind"]) == ("feature", "main", False, 1)
+    assert git_upstream.switch_repo(w.app)["ok"] is True
+    inv(w)
 
 
 def test_s3_restore_backs_up_an_ignored_file_it_overwrites(w):
-    """rev-sec S3 fixed: Undo of an older line restores a version that
-    tracks a path Bob now has as an IGNORED file — that file rides in the
-    restore's own backup, and undoing the restore brings it back."""
+    """rev-sec S3: Undo of an older line restores a version that tracks a
+    path Bob now has as an IGNORED file — that file rides in the restore's
+    own backup, and undoing the restore brings it back."""
     mine = claude_commit(w.app, {"settings.json": "old\n"}, "settings")
     _alice(w, {".gitignore": "settings.json\n", "NOTES.md": "n\n"}, "ignore settings")
-    assert engine.use_theirs(w.app)["ok"]
+    assert engine.match(w.app)["ok"]
     line = _activity(w)[-1]
     assert replay.rev(w.app, line["backup"]) == mine
     edit(w.app, "settings.json", "BOB-PRECIOUS-TOKEN\n")
@@ -907,26 +948,27 @@ def test_s3_restore_backs_up_an_ignored_file_it_overwrites(w):
     assert read(w.app, "settings.json") == "BOB-PRECIOUS-TOKEN\n"
 
 
-def test_s3b_go_back_main_backs_up_an_ignored_file_it_overwrites(w):
+def test_s3b_go_back_backs_up_an_ignored_file_it_overwrites(w):
     git(w.app, "checkout", "-q", "-b", "side")
     git(w.app, "rm", "-q", "--cached", "app.py")
     edit(w.app, ".gitignore", "app.py\n")
     git(w.app, "add", ".gitignore")
     git(w.app, "-c", "user.name=B", "-c", "user.email=b@x", "commit", "-q", "-m", "untrack")
-    git(w.app, "checkout", "-q", "main")
-    claude_commit(w.app, {"NOTES.md": "m\n"}, "on main")
+    git(w.app, "checkout", "-q", HOME)
+    claude_commit(w.app, {"NOTES.md": "m\n"}, "on mine")
     git(w.app, "checkout", "-q", "side")
     edit(w.app, "app.py", "BOB-PRECIOUS-TOKEN\n")
     assert w.g("status", "--porcelain") == ""
     assert engine.go_back_main(w.app)["ok"]
+    inv(w)
     line = _activity(w)[-1]
     wip = replay.rev(w.app, line["backup"] + "-wip")
     assert wip and w.g("show", f"{wip}:app.py") == "BOB-PRECIOUS-TOKEN"
 
 
 def test_s4_repo_config_commands_never_run_from_fused_git_calls(w, tmp_path):
-    """rev-sec S4 fixed: an app-written `core.fsmonitor` / `core.hooksPath`
-    never runs from fused's reads, scratch checkouts or moves."""
+    """rev-sec S4: an app-written `core.fsmonitor` / `core.hooksPath` never
+    runs from fused's reads, scratch checkouts or moves."""
     marker, hmark = tmp_path / "fsmon-FIRED", tmp_path / "hook-FIRED"
     script = tmp_path / "fsmon.sh"
     script.write_text(f"#!/bin/sh\ntouch {marker}\nexit 1\n")
@@ -951,8 +993,6 @@ def test_s4_repo_config_commands_never_run_from_fused_git_calls(w, tmp_path):
 
 
 def test_race_put_back_failure_gets_an_activity_line(w):
-    """rev-sec minor (a): when a commit that raced an update cannot be put
-    back, its pin is named on an Activity line (Restore), never silent."""
     head = w.head()
     raced = claude_commit(w.app, {"index.html": PAGE.replace("blue", "raced")}, "raced")
     git(w.app, "reset", "-q", "--hard", head)
@@ -963,9 +1003,7 @@ def test_race_put_back_failure_gets_an_activity_line(w):
     assert line["kind"] == "race" and replay.rev(w.app, line["backup"]) == raced
 
 
-def test_refused_use_theirs_keeps_a_ready_merge(w, monkeypatch):
-    """rev-sec minor (b): the slot is checked before a ready Merge with
-    Claude result is thrown away."""
+def test_refused_match_keeps_a_ready_merge(w, monkeypatch):
     import contextlib
     dropped = []
     monkeypatch.setattr(engine, "_discard_job", lambda root: dropped.append(root))
@@ -974,13 +1012,11 @@ def test_refused_use_theirs_keeps_a_ready_merge(w, monkeypatch):
     def busy(**_kw):
         yield False
     monkeypatch.setattr(replay, "slot", busy)
-    assert engine.use_theirs(w.app)["reason"] == "busy"
+    assert engine.match(w.app)["reason"] == "busy"
     assert dropped == []
 
 
 def test_partial_unaside_keeps_restore(w, tmp_path):
-    """rev-sec minor (c): a set-aside line is marked restored only when
-    every file came back."""
     box = tmp_path / "aside"
     box.mkdir()
     (box / "a.txt").write_text("A\n")
@@ -998,24 +1034,37 @@ def test_partial_unaside_keeps_restore(w, tmp_path):
     assert store.activity_entry(w.app, lid)["restored_at"]
 
 
-@pytest.mark.parametrize("method", ["merge", "squash"])
-def test_merged_then_taken_back_says_so(w, method):
-    """V4 wording: Alice merges, then reverts — the return lands and the
-    line says she took it back; Bob's later edit is kept."""
-    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
-    n = _propose(w)
-    claude_commit(w.app, {"app.py": APP_LOUD}, "louder")
-    w.fake.merge(REPO, n, method)
-    _alice(w, {"index.html": PAGE}, "Revert red")
-    assert w.sync()["status"] == "synced"
-    assert "blue" in read(w.app, "index.html") and read(w.app, "app.py") == APP_LOUD
-    assert _texts(w)[-1] == ("alice merged your change, then took it back. You're on "
-                             "alice's latest version. 1 edit you made since kept.")
-    st = engine.status(w.app)
-    assert st["merged_in_tip"] and st["taken_back"]
+# ------------------------------------------------------------- replay primitives
 
 
-def test_merged_in_tip_false_without_a_merged_proposal(w):
-    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
-    _propose(w)
-    assert engine.status(w.app)["merged_in_tip"] is False
+def test_land_ff_locked_refuses_a_raced_commit_and_a_wrong_branch(w):
+    head = w.head()
+    tip = _alice(w, {"NOTES.md": "n\n"}, "notes")
+    git_upstream._run(w.app, "fetch", "-q", "origin")
+    raced = claude_commit(w.app, {"app.py": APP_LOUD}, "raced")
+    assert replay.land_ff_locked(w.app, tip) == ("moved", None)
+    assert w.head() == raced
+    git(w.app, "reset", "-q", "--hard", head)
+    edit(w.app, "NOTES.md", "mine\n")            # untracked, in the way
+    assert replay.land_ff_locked(w.app, tip) == ("reset-refused", None)
+    os.remove(os.path.join(w.app, "NOTES.md"))
+    git(w.app, "checkout", "-q", "--detach")
+    assert replay.land_ff_locked(w.app, tip) == ("moved", None)
+    git(w.app, "checkout", "-q", HOME)
+    assert replay.land_ff_locked(w.app, tip) == (None, None) and w.head() == tip
+
+
+def test_settle_locked_needs_the_same_tree_only(w):
+    tip = _alice(w, {"index.html": PAGE.replace("blue", "green")}, "green")
+    git_upstream._run(w.app, "fetch", "-q", "origin")
+    follow.update_mirror(w.app, follow.for_record(store.get(w.app)))
+    mine = claude_commit(w.app, {"app.py": APP_LOUD}, "loud")
+    assert replay.settle_locked(w.app, main="refs/heads/main") == (False, None)  # trees differ
+    git(w.app, "reset", "-q", "--hard", "HEAD~1")
+    same = claude_commit(w.app, {"index.html": PAGE.replace("blue", "green")}, "same green")
+    edit(w.app, "app.py", APP_LOUD)               # an unsaved edit is kept (round 3b)
+    ok, backup = replay.settle_locked(w.app)      # main from fused/mine's upstream
+    assert ok and w.head() == tip and replay.rev(w.app, backup) == same
+    assert read(w.app, "app.py") == APP_LOUD
+    inv(w)
+    assert mine

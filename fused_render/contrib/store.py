@@ -1,4 +1,4 @@
-"""The contribution loop's record store (docs/CONTRIB_LOOP.md §3, §16.1).
+"""The contribution loop's record store (docs/CONTRIB_LOOP.md §3, §16.1, §17.6).
 
 ONE FILE, OUTSIDE EVERY APP: `<home>/contrib/apps.json`,
 `{"version": 2, "apps": {<key>: Record}}`. What a copy follows, who owns it
@@ -9,18 +9,22 @@ out of the folder would let the app (or the author) re-point where Bob's
 changes go. Nothing here reads the app folder beyond `os.path.isdir` and
 one git question, the binding below.
 
-BOUND TO A ROOT COMMIT (§16.1). A record names `root_commit`, a root commit
-of HEAD when it was classified. `get` treats a record as absent — and drops
-it — when that commit is not in the repo at the path any more (`git
-cat-file -e` answers "missing" in a repo): a different repository now lives
-there (deleted and re-cloned, replaced, a new app of the same name), and
-everything the record says about the old one — what it follows, a proposal,
-an overlap — would be applied to a stranger. Only a definite "missing"
-drops: git not running, or the folder no longer a repo at all, keeps the
-row. A v1 record without `root_commit` gets it filled on its first read.
-The answer is memoised per folder on the folder's and its `.git`'s inode, so
-a re-clone at the same path is seen at once and an unchanged repo costs a
-stat.
+BOUND TO THE REPO AT THE PATH (§17.6). A `github`/`own` record is about
+the repository whose `origin` names the record's repo. `get` treats a
+record as absent — and drops it — when the folder's origin names another
+repo AND the folder does not carry the record's own copy id (`fused.copyid`,
+written into `.git/config` by `classify._stamp_copy`): a different
+repository now lives there (deleted and re-cloned from elsewhere, replaced,
+a new app of the same name), and everything the record says about the old
+one would be applied to a stranger. The copy id is what keeps a record whose
+origin was merely RE-POINTED (`git remote set-url` by an app, a README, a
+Claude session — `.git/config` is app-writable): that copy is still this
+record's, and `classify._point_back` sets its origin back (audit O5); a
+fresh clone carries no copy id. Only a definite answer drops: git not
+running, or the folder no longer a repo at all, keeps the row. v1/v2's
+root-commit binding is gone (v3). The answer is memoised per folder on the
+folder's, its `.git`'s and its `.git/config`'s stat, so a re-clone or a
+re-pointed origin is seen at once and an unchanged repo costs a stat.
 
 KEYED BY FOLDER, realpath'd. Two copies of one repo on one machine are two
 records (`find_by_repo` lists both), and every caller — git_upstream's repo
@@ -54,9 +58,12 @@ from fused_render.shell import storage
 logger = logging.getLogger(__name__)
 
 VERSION = 2
-#: The record schema stamp (§16.0 P3): a record without it is a v1 record,
-#: which `migrate_v2` converts on its repo's first v2 sync.
-RECORD_V = 2
+#: The record schema stamp (§17.6): a record without it is a v1 record, one
+#: with `v: 2` a v2 record; `migrate_v3` converts both (the git side of the
+#: move is `classify.settle_locked`'s).
+RECORD_V = 3
+#: v2's stamp, which `migrate_v2` writes (the first step of `migrate_v3`).
+_V2 = 2
 
 #: Newest last; the page says each once. Ten is far more than one copy
 #: accumulates between two visits.
@@ -82,7 +89,7 @@ ORPHAN_TTL_S = 30 * 24 * 3600
 
 #: The record fields `adopt` carries to a new folder.
 ADOPT_KEEP = ("kind", "repo", "branch", "remix_of", "proposal", "classified_by",
-              "classified_at", "owner_checked", "root_commit", "copy_id", "last_head",
+              "classified_at", "owner_checked", "copy_id", "last_head",
               "seen_tips", "hold")
 
 #: How long a binding answer is trusted for an unchanged folder (its memo
@@ -127,8 +134,11 @@ def _write(data: dict) -> bool:
 def new_record(kind: str, *, repo: str | None = None, branch: str | None = None,
                classified_by: str = "migration", owner_checked: bool = True,
                root_commit: str | None = None) -> dict:
-    """A fresh Record with every §3/§16.1 field present (callers never have
-    to `.get` a field into existence)."""
+    """A fresh Record with every §3/§17.6 field present (callers never have
+    to `.get` a field into existence). `root_commit` is accepted and
+    ignored (v3 binds by origin, §17.6); v2's `needs_merge` is not written
+    (`_view` still shows it as None for one release). `skip_tip` is the
+    undo hold (engine: an Undo of an automatic move holds that tip)."""
     return {
         "v": RECORD_V,
         "kind": kind,
@@ -137,11 +147,9 @@ def new_record(kind: str, *, repo: str | None = None, branch: str | None = None,
         "classified_by": classified_by,
         "classified_at": time.time(),
         "owner_checked": owner_checked,
-        "root_commit": root_commit,
         "remix_of": None,
         "proposal": None,
         "events": [],
-        "needs_merge": None,
         "original_update": None,
         "activity": [],
         "skip_tip": None,
@@ -163,26 +171,39 @@ def new_record(kind: str, *, repo: str | None = None, branch: str | None = None,
 
 
 def _view(rec: dict) -> dict:
-    """What a reader sees: `rec` (a copy) with every v2 field present, and a
-    v1 proposal's `pushed_head or proposed_head` read as `sent` (§16.1) — no
-    reader has to know which schema wrote the row. Nothing persists here;
-    `migrate_v2` does that."""
-    for name, default in (("root_commit", None), ("activity", []),
+    """What a reader sees: `rec` (a copy) with every field present — v2's
+    `root_commit` and `needs_merge` as None when the row has none (old
+    readers, one release), `skip_tip` (the undo hold) as None — and an
+    older proposal's `returned_at` read as `landed_at`
+    (§17.5): no reader has to know which schema wrote the row. Nothing
+    persists here; `migrate_v3` does that."""
+    for name, default in (("root_commit", None), ("needs_merge", None), ("activity", []),
                           ("skip_tip", None), ("own_state", None), ("hold", None), ("seen_tips", []),
                           ("last_head", None), ("copy_id", None)):
         rec.setdefault(name, default)
     p = rec.get("proposal")
-    if isinstance(p, dict):
-        if "sent" not in p:
-            p["sent"] = p.get("pushed_head") or p.get("proposed_head")
-        p.setdefault("checked_tip", None)
+    if isinstance(p, dict) and "landed_at" not in p:
+        p["landed_at"] = p.get("returned_at")
+    return rec
+
+
+#: Fields `_view` shows as None for old readers that v3 does not store
+#: (§17.6): written back only when something set them.
+_VIEW_ONLY = ("root_commit", "needs_merge")
+
+
+def _stored(rec: dict) -> dict:
+    """`rec` as persisted: `_VIEW_ONLY` fields left out while None."""
+    for name in _VIEW_ONLY:
+        if name in rec and rec[name] is None:
+            del rec[name]
     return rec
 
 
 # --------------------------------------------------------------------- binding
 
 _bind_lock = threading.Lock()
-_bind_memo: dict = {}  # key -> (folder stamp, root_commit, at, bound: bool | None)
+_bind_memo: dict = {}  # key -> (stamp, (repo, copy_id), at, bound: bool | None)
 
 
 def _git(path, *args, timeout=10.0):
@@ -246,24 +267,45 @@ def _folder_stamp(k: str):
         return (st.st_ino, st.st_mtime_ns, None)
 
 
-def _bound(k: str, root_commit: str) -> bool | None:
-    """True when `root_commit` is in the repo at `k`, False when that repo
-    definitely lacks it (`cat-file -e` exit 1), None when git cannot say
-    (not a repo any more, git missing, timed out). Memoised (module
-    docstring)."""
-    stamp = _folder_stamp(k)
+def _config_stamp(k: str):
+    """`.git/config`'s stat (a re-pointed origin, a copy id written)."""
+    try:
+        st = os.stat(os.path.join(k, ".git", "config"))
+        return (st.st_ino, st.st_mtime_ns, st.st_size)
+    except OSError:
+        return None
+
+
+def _bound(k: str, rec: dict) -> bool | None:
+    """True when the repo at `k` is still `rec`'s (module docstring "BOUND
+    TO THE REPO AT THE PATH"): its origin names the record's repo, or its
+    `fused.copyid` is the record's. False when neither holds; None when git
+    cannot say (not a repo, git missing, timed out). Memoised."""
+    from fused_render import git_upstream as gu
+    from fused_render.contrib import classify
+
+    want = ((rec.get("repo") or "").lower(), rec.get("copy_id"))
+    stamp = (_folder_stamp(k), _config_stamp(k))
     now = time.time()
     with _bind_lock:
         hit = _bind_memo.get(k)
-    if hit and hit[0] == stamp and hit[1] == root_commit and now - hit[2] < BIND_TTL_S:
+    if hit and hit[0] == stamp and hit[1] == want and now - hit[2] < BIND_TTL_S:
         return hit[3]
-    if root_commit in (_roots(k) or ()):
-        ans = True  # the common case, one local walk
+    # Only a folder heading its own repo is judged: one nested in another
+    # repo (an app in the shared `local` repo) would read the parent's.
+    r = (_git(k, "config", "--local", "--get-regexp", r"^(remote\.origin\.url|fused\.copyid)$")
+         if os.path.lexists(os.path.join(k, ".git")) else None)
+    if r is None or r[0] not in (0, 1):
+        ans = None  # not a repo (any more), or git could not run
     else:
-        r = _git(k, "cat-file", "-e", root_commit)
-        ans = None if r is None else True if r[0] == 0 else False if r[0] == 1 else None
+        have = {}
+        for line in (gu._out(r) if r[0] == 0 else "").splitlines():
+            name, _, value = line.partition(" ")
+            have.setdefault(name.lower(), value.strip())
+        origin = (classify.repo_of_url(have.get("remote.origin.url")) or "").lower()
+        ans = origin == want[0] or (bool(want[1]) and have.get("fused.copyid") == want[1])
     with _bind_lock:
-        _bind_memo[k] = (stamp, root_commit, now, ans)
+        _bind_memo[k] = (stamp, want, now, ans)
     return ans
 
 
@@ -289,52 +331,24 @@ def _origin_matches(k: str, rec: dict) -> bool:
 
 def _bind(k: str, rec: dict) -> dict | None:
     """`rec` when it is still about the repo at `k`; None, after dropping
-    the row, when it is not; a v1 row gets its `root_commit` filled (module
-    docstring). Git runs OUTSIDE the store lock; the drop and the fill are
-    compare-and-set against the row as read."""
-    rc = rec.get("root_commit")
-    if rc:
-        if _bound(k, rc) is False:
-            with _lock:
-                data = _read()
-                cur = data["apps"].get(k)
-                if isinstance(cur, dict) and cur.get("root_commit") == rc:
-                    del data["apps"][k]
-                    _write(data)
-            logger.info("contrib store: %s now holds a different repository; "
-                        "dropped its record", k)
-            _forget_binding(k)
-            return None
+    the row, when it is not (module docstring). Only `github`/`own` rows are
+    judged — a Try copy's origin is fused's own scratch remote. Git runs
+    OUTSIDE the store lock; the drop is a compare-and-set against the row as
+    read."""
+    if rec.get("kind") not in ("github", "own"):
         return rec
-    found = root_commit_of(k)
-    if found and (rec.get("v") != RECORD_V or rec.get("kind") == "github") \
-            and not _origin_matches(k, rec):
-        # A row with no root commit yet — v1, or a github row made without
-        # one — over a repo whose origin is not the record's: a different
-        # repository may have moved in before the first bound read (§16.12,
-        # audit V11/R8). Binding it now would hand the stranger the old
-        # record — drop it instead; the folder is classified afresh. A BOUND
-        # row (root commit known) is never dropped over its origin (§16.1: a
-        # github copy's is pointed back), and a v2 own row is filled whatever
-        # its origin says (its author's to change).
-        with _lock:
-            data = _read()
-            cur = data["apps"].get(k)
-            if isinstance(cur, dict) and not cur.get("root_commit"):
-                del data["apps"][k]
-                _write(data)
-        logger.info("contrib store: %s no longer holds %s; dropped its v1 record",
-                    k, rec.get("repo"))
-        return None
-    if found:
-        with _lock:
-            data = _read()
-            cur = data["apps"].get(k)
-            if isinstance(cur, dict) and not cur.get("root_commit"):
-                cur["root_commit"] = found
-                _write(data)
-        rec["root_commit"] = found
-    return rec
+    if _bound(k, rec) is not False:
+        return rec
+    with _lock:
+        data = _read()
+        cur = data["apps"].get(k)
+        if isinstance(cur, dict) and cur.get("repo") == rec.get("repo") \
+                and cur.get("copy_id") == rec.get("copy_id"):
+            del data["apps"][k]
+            _write(data)
+    logger.info("contrib store: %s no longer holds %s; dropped its record", k, rec.get("repo"))
+    _forget_binding(k)
+    return None
 
 
 # ----------------------------------------------------------------------- reads
@@ -440,9 +454,9 @@ def update(app_dir: str, fn) -> dict | None:
             rec = data["apps"].get(k)
             if not isinstance(rec, dict):
                 return None
-            rec = _view(copy.deepcopy(rec))  # `fn` sees the v2 shape, like `get`
+            rec = _view(copy.deepcopy(rec))  # `fn` sees the full shape, like `get`
             fn(rec)
-            data["apps"][k] = rec
+            data["apps"][k] = _stored(copy.deepcopy(rec))
             if not _write(data):
                 return None
             return _view(copy.deepcopy(rec))
@@ -494,12 +508,8 @@ def adopt(old_key: str, app_dir: str) -> dict | None:
             del data["apps"][old_key]
             rec = new_record(old.get("kind") or "own")
             rec.update({k: old[k] for k in ADOPT_KEEP if k in old})
-            p = rec.get("proposal")
-            if isinstance(p, dict):  # a v1 row's proposal, persisted v2-shaped
-                p.setdefault("sent", p.get("pushed_head") or p.get("proposed_head"))
-                p.setdefault("checked_tip", None)
-                p.pop("pushed_head", None)
-                p.pop("proposed_head", None)
+            if isinstance(rec.get("proposal"), dict):  # persisted v3-shaped
+                _v3_proposal(rec["proposal"])
             data["apps"][new_key] = rec
             if not _write(data):
                 return None
@@ -658,16 +668,27 @@ def add_activity(app_dir: str, kind: str, text: str, *, backup=None, aside=None)
     them: a tip and its `-wip`) and/or `aside` (where moved-aside files
     went) make the line undoable, and a ref a line names is never pruned
     (`referenced_backups`). Capped at ACTIVITY_KEEP."""
-    entry = {"id": f"{int(time.time() * 1000)}-{secrets.token_hex(3)}",
-             "at": time.time(), "kind": str(kind), "text": str(text),
-             "backup": backup, "aside": aside, "restored_at": None}
+    entry = new_activity(kind, text, backup=backup, aside=aside)
+    return entry["id"] if update(app_dir, lambda rec: append_activity(rec, entry)) is not None \
+        else None
 
-    def fn(rec):
-        lines = rec.get("activity") if isinstance(rec.get("activity"), list) else []
-        lines.append(entry)
-        rec["activity"] = lines[-ACTIVITY_KEEP:]
 
-    return entry["id"] if update(app_dir, fn) is not None else None
+def new_activity(kind: str, text: str, *, backup=None, aside=None) -> dict:
+    """One Activity line, not stored yet — for a caller that must write it
+    in the SAME `update` as another field (the engine's `landed_at`
+    once-stamp, §17.2): `update(app_dir, fn)` with `append_activity(rec,
+    line)` inside `fn`."""
+    return {"id": f"{int(time.time() * 1000)}-{secrets.token_hex(3)}",
+            "at": time.time(), "kind": str(kind), "text": str(text),
+            "backup": backup, "aside": aside, "restored_at": None}
+
+
+def append_activity(rec: dict, entry: dict) -> None:
+    """Append `entry` (`new_activity`) to `rec` in place, capped at
+    ACTIVITY_KEEP. For use inside an `update` function."""
+    lines = rec.get("activity") if isinstance(rec.get("activity"), list) else []
+    lines.append(entry)
+    rec["activity"] = lines[-ACTIVITY_KEEP:]
 
 
 def _undoable(e: dict) -> bool:
@@ -735,15 +756,15 @@ def migrate_v2(app_dir: str) -> tuple[dict | None, bool]:
     line naming the ref, map the proposal's `pushed_head or proposed_head`
     to `sent` (+ `checked_tip`), drop the v1-only fields, stamp `v: 2`.
     Answers `(record, migrated)` — `migrated` is False for a record already
-    v2 (or no record). The caller deletes V1_REFS when it is True. A v2
-    record costs one read, no write (this runs on every sync)."""
+    v2 or newer (or no record). The caller deletes V1_REFS when it is True.
+    A newer record costs one read, no write. The first step of `migrate_v3`."""
     cur = get(app_dir)
-    if cur is None or cur.get("v") == RECORD_V:
+    if cur is None or cur.get("v") in (_V2, RECORD_V):
         return cur, False
     did = []
 
     def fn(rec):
-        if rec.get("v") == RECORD_V:
+        if rec.get("v") in (_V2, RECORD_V):
             return
         did.append(True)
         rec["needs_merge"] = None
@@ -767,6 +788,55 @@ def migrate_v2(app_dir: str) -> tuple[dict | None, bool]:
         rec.pop("protected", None)
         for name, default in (("root_commit", None), ("skip_tip", None), ("own_state", None)):
             rec.setdefault(name, default)
+        rec["v"] = _V2
+
+    rec = update(app_dir, fn)
+    return (_view(rec) if rec is not None else None), bool(did)
+
+
+# ------------------------------------------------------------------ v2 -> v3
+
+#: Proposal fields v3 no longer keeps (§17.5): what was sent lives on GitHub
+#: (the PR head), and the credit rewrite and the tip check are gone.
+_V2_PROPOSAL_FIELDS = ("sent", "pushed_head", "proposed_head", "checked_tip", "credit",
+                       "returned_at")
+
+
+def _v3_proposal(p: dict) -> None:
+    if "landed_at" not in p:
+        p["landed_at"] = p.get("returned_at")
+    for name in _V2_PROPOSAL_FIELDS:
+        p.pop(name, None)
+
+
+def migrate_v3(app_dir: str) -> tuple[dict | None, bool]:
+    """Convert a v1/v2 record in place to v3 (§17.6) — the RECORD only; the
+    git side of the move (`fused/mine`, the mirror, the v1 refs) is
+    `classify.settle_locked`'s, which calls this LAST so a git step that
+    failed is retried on the next sync. v1 first goes through `migrate_v2`.
+    Drops `root_commit` and `needs_merge` (`skip_tip`, the undo hold, stays:
+    an own row's is ownsync's, a github row's means the same tip), the proposal's
+    `sent`/`pushed_head`/`proposed_head`/`checked_tip`/credit (its
+    `returned_at` becomes `landed_at`), stamps `v: 3`. Answers `(record,
+    migrated)`; `migrated` is False for a record already v3 (or none) — one
+    read, no write."""
+    cur = get(app_dir)
+    if cur is None or cur.get("v") == RECORD_V:
+        return cur, False
+    if cur.get("v") != _V2:
+        cur, _ = migrate_v2(app_dir)
+        if cur is None:
+            return None, False
+    did = []
+
+    def fn(rec):
+        if rec.get("v") == RECORD_V:
+            return
+        did.append(True)
+        rec.pop("root_commit", None)
+        rec.pop("needs_merge", None)
+        if isinstance(rec.get("proposal"), dict):
+            _v3_proposal(rec["proposal"])
         rec["v"] = RECORD_V
 
     rec = update(app_dir, fn)

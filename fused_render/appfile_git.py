@@ -433,6 +433,7 @@ def _place(staged: str, dest: str, *, park_existing: bool) -> None:
             shutil.move(staged, clone_in)                       # 1. STAGE
         except OSError as exc:
             raise GitInstallError(f"could not copy the clone into {root}: {exc}")
+        _home_branch(clone_in)
         parked = None
         undo: list[tuple[str, str]] = []
         try:
@@ -469,6 +470,37 @@ def _place(staged: str, dest: str, *, park_existing: bool) -> None:
                     logger.warning("replace: no Trash for the old copy; kept at %s", keep)
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def _home_name() -> str:
+    """A GitHub-link copy's own branch (docs/CONTRIB_LOOP.md §17.1 I4):
+    `classify.HOME_BRANCH`."""
+    from fused_render.contrib import classify
+
+    return classify.HOME_BRANCH
+
+
+def _home_branch(clone_dir: str) -> None:
+    """Right after the clone, before any hook or sync can see it (§17.6): HEAD
+    on `fused/mine` at the clone's commit (no file changes), tracking the
+    author's branch, which stays behind as the fetch-only mirror. Whose app
+    it is is not known yet: `classify.record_install` puts an `own` copy back
+    on its default branch. A failure is logged, never fatal — the first
+    settle creates the branch (`classify.ensure_home_locked`)."""
+    _HOME_BRANCH = _home_name()
+    try:
+        branch = _out(_git("symbolic-ref", "--short", "HEAD", cwd=clone_dir, timeout=20))
+        if not branch or branch == _HOME_BRANCH:
+            return
+        r = _git("switch", "-q", "-c", _HOME_BRANCH, cwd=clone_dir, timeout=20)
+        if r.returncode != 0:
+            logger.warning("install: could not create %s in %s: %s", _HOME_BRANCH, clone_dir, _err(r))
+            return
+        _git("config", "--local", f"branch.{_HOME_BRANCH}.remote", "origin", cwd=clone_dir, timeout=20)
+        _git("config", "--local", f"branch.{_HOME_BRANCH}.merge", f"refs/heads/{branch}",
+             cwd=clone_dir, timeout=20)
+    except GitInstallError:
+        logger.warning("install: could not set up %s in %s", _HOME_BRANCH, clone_dir, exc_info=True)
 
 
 def install(fused_path: str, target: dict, manifest: dict, *, force: bool) -> dict:
@@ -572,8 +604,11 @@ def _update_clone(dest: str, src: dict, *, aside) -> None:
     (`aside` given): the merge runs inside `aside()`, only the FOLLOWED
     branch is fetched (not every branch the author ever pushed), and git's
     own words go to the log, never to the install page — a plain sentence
-    does (§0.1)."""
+    does (§0.1). A copy on `fused/mine` (§17.6) lands the commit there and
+    then moves the author's branch — its fetch-only mirror — to what was
+    fetched, as a ref update (I3)."""
     fetch = ("fetch", "-q", "origin")
+    branch = None
     if aside is not None:
         from fused_render.contrib import classify
 
@@ -592,6 +627,14 @@ def _update_clone(dest: str, src: dict, *, aside) -> None:
                 raise GitInstallError("Couldn't update this app right now. Check your "
                                       "connection and open the link again.")
             raise GitInstallError(f"git {args[0]} failed: {_err(r)}")
+    if branch and _out(_git("symbolic-ref", "--short", "HEAD", cwd=dest, timeout=20)) == _home_name():
+        tip = _out(_git("rev-parse", "-q", "--verify", f"refs/remotes/origin/{branch}^{{commit}}",
+                        cwd=dest, timeout=20))
+        old = _out(_git("rev-parse", "-q", "--verify", f"refs/heads/{branch}^{{commit}}",
+                        cwd=dest, timeout=20))
+        if tip and old != tip and (not old or _git("merge-base", "--is-ancestor", old, tip,
+                                                   cwd=dest, timeout=20).returncode == 0):
+            _git("update-ref", f"refs/heads/{branch}", tip, old or "", cwd=dest, timeout=20)
 
 
 def _contrib_sources() -> bool:

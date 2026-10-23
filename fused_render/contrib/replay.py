@@ -3,12 +3,13 @@
 worktree), land a result with a backup, clean up — plus the mutation slot
 and the committed-`.fused/` guard they share.
 
-v2 (§16): a GitHub-link copy is MERGED, never rebased. Nothing here rewrites
-a commit of Bob's except `pick`, which A4's return uses to re-apply exactly
-the edits he made after sending (and the credit rewrite in proposals.py).
-The v1 rebase machinery — `replay`, the base/proposed/origin-seen refs, the
-split replay and its soundness check — is gone; the four v1 ref names stay
-below only so the first v2 sync can delete them (`V1_REFS`).
+v3 (§17): a GitHub-link copy's work lives on `fused/mine` (`HOME_BRANCH`)
+and is MERGED, never rebased; its moves are `land_ff_locked` (bring in,
+Merge with Claude's accept) and `settle_locked` (a merged proposal), each one
+git command with git's own guard. `land_locked`, `undo_race_locked`,
+`reset_hard_locked`, `pick` and `merge_into` stay for own copies (ownsync)
+and Discard. The v1 rebase machinery is gone; the four v1 ref names stay
+below only so the first v3 sync can delete them (`V1_REFS`).
 
 THE REAL APP FOLDER NEVER HAS A MERGE IN FLIGHT (§0.3). A three-way merge
 runs in memory (`git merge-tree --write-tree`, git >= 2.38; `--merge-base`
@@ -941,3 +942,147 @@ def _remove_untracked(root, rel) -> None:
 _protect_after_move = protect_after_move
 _unbackup_locked = unbackup_locked
 _undo_race_locked = undo_race_locked
+
+
+# ------------------------------------------------------- v3 moves (§17.3)
+#
+# A `github` copy's own branch is `fused/mine` (`HOME_BRANCH`, I4); its
+# `refs/heads/<b>` is a fetch-only mirror of the author's branch (I3). Both
+# moves below are ONE git command each with git's own guard: `merge
+# --ff-only` refuses unless HEAD is in the new tip's history (a commit that
+# raced in makes it refuse — nothing to undo), and `update-ref <ref> <new>
+# <old>` refuses unless the ref is still at `old`.
+
+def _guard_module():
+    """`templates/shared/contrib_guard.py` (§17.8, stdlib-only, loaded by
+    path: templates/shared is not a package) — the one copy of
+    `HOME_BRANCH`; `classify` loads the same file."""
+    import importlib.util
+    import sys
+
+    name = "fused_render_contrib_guard"
+    if name in sys.modules:
+        return sys.modules[name]
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "templates", "shared", "contrib_guard.py")
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    sys.modules[name] = mod
+    return mod
+
+
+#: The contributor's own branch on a `github` copy (§17.1 I4), from the
+#: guard module (`classify.HOME_BRANCH` is the same value).
+HOME_BRANCH = _guard_module().HOME_BRANCH
+HOME_REF = "refs/heads/" + HOME_BRANCH
+
+
+def land_ff_locked(root, new_tip) -> tuple[str | None, None]:
+    """Move the checked-out `fused/mine` forward to `new_tip` with `git
+    merge --ff-only` (inside `fused_aside`): a bring-in commit (first
+    parent HEAD), the author's tip, a Merge with Claude result. Nothing is
+    dropped, so no backup. `(None, None)` when it landed, else `(why,
+    None)`: `moved` (HEAD is not `fused/mine`, or is no longer in
+    `new_tip`'s history — a commit raced in), `in-progress` (an operation
+    in flight), `reset-refused` (git refused: an uncommitted edit or a
+    local file in the way, or an ignored local file the move would
+    overwrite — never overwritten silently). The caller holds the slot."""
+    if gu._current_branch(root) != HOME_BRANCH:
+        return "moved", None
+    if gu._operation_in_flight(root) is not None:
+        return "in-progress", None
+    new = rev(root, new_tip)
+    head = rev(root, "HEAD")
+    if not new or not head or not is_ancestor(root, head, new):
+        return "moved", None
+    if new == head:
+        return None, None
+    if clobber_paths(root, head, new):
+        return "reset-refused", None
+    # Without the S bit a set-aside `.fused/` file reads as a deletion.
+    protect_after_move(root)
+    with fused_aside(root, new):
+        r = git(root, *COMMIT_CONFIG, "merge", "--ff-only", "-q", new, timeout=REPLAY_TIMEOUT_S)
+    protect_after_move(root)
+    if ok(r):
+        return None, None
+    logger.info("contrib ff deferred in %s: %s", root, gu._text(r))
+    if rev(root, "HEAD") != head:
+        return "moved", None
+    return "reset-refused", None
+
+
+def mirror_ref(root) -> str | None:
+    """`refs/heads/<b>`, the mirror of the author's branch `fused/mine`
+    follows (its upstream config, `branch.fused/mine.merge`), or None."""
+    r = git(root, "config", "--get", f"branch.{HOME_BRANCH}.merge")
+    ref = out(r) if ok(r) else ""
+    return ref if ref.startswith("refs/heads/") and ref != HOME_REF else None
+
+
+def settle_locked(root, *, why="settle", main=None, merged=None) -> tuple[bool, str | None]:
+    """Settle (§17.3): `fused/mine` holds the author's version (same tree as
+    `main`) by other commits — Bob's own, a bring-in merge, a squash on
+    GitHub — so `fused/mine` becomes `main`. HEAD is pinned first
+    (`backup_locked`: its tip, and any uncommitted edits at `-wip`; Undo).
+
+    Same tree: a compare-and-set `update-ref fused/mine <main> <HEAD>`, then
+    `reset --keep main`. No file differs between the two commits, so every
+    unsaved edit is kept and git never refuses: no clean tree is needed.
+
+    `merged` — a merge result the caller computed with the proposal's head
+    as the merge base (the engine, after a squash/rebase accept) — equal to
+    tree(main) while tree(HEAD) is not: Bob's change is already in `main`,
+    the author edited it since. Then the move changes files: `reset --keep
+    main` (git refuses rather than drop an unsaved edit on a file the move
+    changes; an ignored local file it would overwrite rides in the backup or
+    it does not move), and a commit that raced in is put back
+    (`undo_race_locked`).
+
+    Requires HEAD on `fused/mine`. `main` defaults to `mirror_ref`. `(True,
+    backup)` when it settled; `(False, None)` and nothing moved otherwise.
+    The caller holds the slot."""
+    main = main or mirror_ref(root)
+    if gu._current_branch(root) != HOME_BRANCH or gu._operation_in_flight(root) is not None:
+        return False, None
+    head = rev(root, "HEAD")
+    main = rev(root, main)
+    if not head or not main or head == main:
+        return False, None
+    want = tree_of(root, main)
+    if tree_of(root, head) == want:
+        refs = backup_locked(root, head, why=why)
+        if not refs:
+            return False, None
+        if not ok(git(root, "update-ref", "-m", "fused: settle", HOME_REF, main, head)):
+            unbackup_locked(root, refs)
+            return False, None
+        protect_after_move(root)
+        with fused_aside(root, main):
+            r = git(root, "reset", "-q", "--keep", main, timeout=REPLAY_TIMEOUT_S)
+        if not ok(r):
+            # The ref moved and the tree is the same: only the index's stat
+            # cache is stale, which git refreshes on its next read.
+            logger.info("contrib settle: reset after the ref move failed in %s: %s", root,
+                        gu._text(r))
+        protect_after_move(root)
+        return True, refs[0]
+    if not merged or merged != want:
+        return False, None
+    clobber = clobber_paths(root, head, main)
+    refs = backup_locked(root, head, why=why, also=clobber)
+    if not refs or (clobber and not any(r.endswith("-wip") for r in refs)):
+        unbackup_locked(root, refs)
+        return False, None
+    protect_after_move(root)
+    with fused_aside(root, main):
+        r = git(root, "reset", "-q", "--keep", main, timeout=REPLAY_TIMEOUT_S)
+    if not ok(r):
+        unbackup_locked(root, refs)
+        logger.info("contrib settle deferred in %s: %s", root, gu._text(r))
+        return False, None
+    if not undo_race_locked(root, head, refs, hard=True):
+        return False, None
+    protect_after_move(root)
+    return True, refs[0]
