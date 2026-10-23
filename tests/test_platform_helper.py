@@ -131,3 +131,28 @@ def test_is_within_windows_drive_root_and_case(monkeypatch):
     assert _platform.is_within("C:\\Users\\me\\a", "c:\\USERS")
     assert not _platform.is_within("C:\\Users2", "C:\\Users")
     assert not _platform.is_within("D:\\Users", "C:\\")
+
+
+def test_is_within_fs_root_refused_when_asked_posix():
+    assert _platform.is_within("/etc/passwd", "/")
+    assert not _platform.is_within("/etc/passwd", "/", fs_root_ok=False)
+    assert not _platform.is_within("/", "/", fs_root_ok=False)
+    assert _platform.is_within("/a/b", "/a", fs_root_ok=False)
+
+
+def test_is_within_fs_root_refused_when_asked_windows(monkeypatch):
+    _as_windows(monkeypatch)
+    for root in ("C:\\", "D:\\"):
+        assert not _platform.is_within(root + "secrets\\x", root, fs_root_ok=False)
+    assert not _platform.is_within("\\\\srv\\share\\a", "\\\\srv\\share\\", fs_root_ok=False)
+    assert _platform.is_within("D:\\apps\\x", "D:\\apps", fs_root_ok=False)
+
+
+def test_is_within_empty_and_trailing_separator():
+    assert not _platform.is_within("", "/")
+    assert not _platform.is_within("/a", "")
+    # Old `path.startswith(root + "/")` semantics: a trailing slash is "beneath".
+    assert _platform.is_within("/a/b/", "/a/b", strict=True)
+    assert _platform.is_within("/a/b/", "/a/b")
+    assert not _platform.is_within("/", "/", strict=True)
+    assert not _platform.is_within("/a/b", "/a/b", strict=True)

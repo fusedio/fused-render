@@ -141,7 +141,7 @@ def load_manifest(folder: str) -> Manifest | None:
         # not be trusted just because the string join looked contained.
         real_folder = os.path.realpath(folder)
         real_target = os.path.realpath(target)
-        if not is_within(real_target, real_folder):
+        if not is_within(real_target, real_folder, fs_root_ok=False):
             return None
         # A FILE, not merely a path inside the folder — `daemon = "."` (or
         # any other directory) passes containment trivially (a folder is

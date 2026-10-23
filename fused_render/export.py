@@ -304,7 +304,8 @@ def _within_page_dir(page_dir: str, target: str) -> bool:
     would follow it into the bundle. Compare resolved real paths so such a symlink is
     caught before it is bundled.
     """
-    return is_within(os.path.realpath(target), os.path.realpath(page_dir))
+    return is_within(os.path.realpath(target), os.path.realpath(page_dir),
+                     fs_root_ok=False)
 
 
 def _extract_bundle_manifest(html: str, errors: list[str], warnings: list[str]) -> tuple[list[str], str]:

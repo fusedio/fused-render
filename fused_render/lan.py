@@ -184,7 +184,7 @@ def _inside_root(path: str) -> bool:
         roots = [os.path.realpath(r) for r in allowed_roots()]
     except (OSError, ValueError):
         return False
-    return any(is_within(real, root) for root in roots)
+    return any(is_within(real, root, fs_root_ok=False) for root in roots)
 
 
 def _resolve(value, anchor) -> str | None:
