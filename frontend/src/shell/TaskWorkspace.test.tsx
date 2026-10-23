@@ -11,7 +11,13 @@ import type { Task } from "@platform/lib/api";
 const { TaskWorkspace } = await import("./TaskWorkspace");
 
 const realFetch = globalThis.fetch;
+// Every tree rendered here is unmounted after its test: TaskWorkspace polls
+// ports and holds on an interval, and a tree left mounted keeps that timer alive
+// for the rest of the process, firing reads into whichever file's fetch stub is
+// installed (useTaskId.test.tsx counted them: 10 reads instead of 2).
+const mounted: ReturnType<typeof create>[] = [];
 afterEach(() => {
+  for (const r of mounted.splice(0)) act(() => r.unmount());
   globalThis.fetch = realFetch;
 });
 
@@ -46,6 +52,7 @@ async function render(tasks: Task[], onReload = () => {}) {
       }),
     );
   });
+  mounted.push(r);
   return r;
 }
 
