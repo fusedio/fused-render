@@ -608,6 +608,38 @@ def test_delete_canvas_stops_sync_runs_cli_and_removes_clone(harness):
     assert harness.root.is_dir()
 
 
+def test_delete_canvas_holds_sync_start_off_mid_delete(harness, monkeypatch):
+    # Stopping the manager wakes the page, which reads "no watcher" and asks
+    # sync/start to heal — while canvas.toml still exists. Mid-delete that
+    # must be refused, or a fresh watcher (and lock) runs under the rmtree.
+    harness.log_in()
+    harness.client.post("/api/canvases/clone", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    assert (ENV, "alpha") in canvases_mod._syncs
+    seen: list[int] = []
+    real_cli = canvases_mod._run_cli
+
+    def cli_with_heal(args, timeout, env):
+        if args[:3] == ["workbench", "canvas", "delete"]:
+            res = harness.client.post("/api/canvases/sync/start",
+                                      json={"env": ENV, "name": "alpha"}, headers=GUARD)
+            seen.append(res.status_code)
+            assert res.json().get("code") == "deleting"
+        return real_cli(args, timeout, env)
+
+    monkeypatch.setattr(canvases_mod, "_run_cli", cli_with_heal)
+    res = harness.client.post("/api/canvases/delete", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    assert res.status_code == 200, res.text
+    assert seen == [409]
+    assert (ENV, "alpha") not in canvases_mod._syncs
+    assert not (harness.root / "alpha").exists()
+    assert not (harness.root / ".sync" / "alpha.lock").exists()
+    # The hold lifts with the delete: a clone of the same name syncs again.
+    harness.client.post("/api/canvases/clone", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    res = harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    assert res.status_code == 200, res.text
+
+
 def test_delete_canvas_cli_failure_keeps_clone(harness, monkeypatch):
     harness.log_in()
     harness.client.post("/api/canvases/clone", json={"env": ENV, "name": "alpha"}, headers=GUARD)

@@ -4431,6 +4431,12 @@ _QUITTING = False
 # canvas would run two `pull --force` into one folder. Per canvas, not
 # global, so a slow clone of one canvas never holds up another's.
 _CLONE_GATES: dict[tuple[str, str], threading.Lock] = {}
+# Canvases mid-delete (api_canvases_delete), under _SYNC_LOCK: stopping the
+# manager wakes the page's events socket, which reads "no watcher" and asks
+# sync/start to heal — while canvas.toml still exists. Without this, a new
+# manager (and lock) would start under the delete, and the folder would be
+# removed from under a live watcher.
+_DELETING: set[tuple[str, str]] = set()
 
 
 def _clone_gate(env: str, name: str) -> threading.Lock:
@@ -4559,7 +4565,9 @@ def api_canvases_delete(body: dict = Body(...), x_fused: str | None = Header(def
     frame-side DELETE would race the host's push.
 
     Order: refuse while another fused-render process owns the clone; stop
-    this process's sync (so no push lands on a canvas being deleted); delete
+    this process's sync (so no push lands on a canvas being deleted) and hold
+    sync/start off with `_DELETING` (the stop wakes the page, which would
+    otherwise heal a new watcher under the delete); delete
     on the server through the CLI; only then remove the clone, its `.sync`
     leftovers and its desk row (tasks under it archived, as the desk's own
     remove does). A CLI failure leaves the clone untouched — the page's
@@ -4590,27 +4598,34 @@ def api_canvases_delete(body: dict = Body(...), x_fused: str | None = Header(def
             {"error": f"canvas {_sync_key(env, name)!r} is synced by another fused-render "
                       f"(pid {owner['pid']}, port {owner['port']}); delete it from there",
              "code": "owned", "owner": owner}, status_code=409)
-    _stop_manager(env, name)
-    proc, err = _run_cli(["workbench", "canvas", "delete", name], LIST_TIMEOUT, env)
-    _cli_cache_clear()
-    if err is not None:
-        return err
-    removed_local = False
-    if os.path.isdir(clone):
-        try:
-            shutil.rmtree(clone)
-        except OSError as exc:
-            return _error(f"canvas {name!r} was deleted on the server, but its folder "
-                          f"could not be removed ({clone}): {exc}", 500)
-        removed_local = True
-    for path in _clone_leftovers(env, name):
-        if os.path.isdir(path):
-            _rmtree_quiet(path)
-        else:
+    key = (env, name)
+    with _SYNC_LOCK:
+        _DELETING.add(key)
+    try:
+        _stop_manager(env, name)
+        proc, err = _run_cli(["workbench", "canvas", "delete", name], LIST_TIMEOUT, env)
+        _cli_cache_clear()
+        if err is not None:
+            return err  # the page's self-heal re-arms sync/start once this lifts
+        removed_local = False
+        if os.path.isdir(clone):
             try:
-                os.unlink(path)
-            except OSError:
-                pass
+                shutil.rmtree(clone)
+            except OSError as exc:
+                return _error(f"canvas {name!r} was deleted on the server, but its folder "
+                              f"could not be removed ({clone}): {exc}", 500)
+            removed_local = True
+        for path in _clone_leftovers(env, name):
+            if os.path.isdir(path):
+                _rmtree_quiet(path)
+            else:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+    finally:
+        with _SYNC_LOCK:
+            _DELETING.discard(key)
     try:
         from fused_render import current_apps
         from fused_render.server.routers.current_apps import _archive_folder
@@ -4637,6 +4652,11 @@ def api_canvases_sync_start(body: dict = Body(...), x_fused: str | None = Header
         return bad
     if not os.path.isfile(os.path.join(_canvas_dir(env, name), "canvas.toml")):
         return _error(f"canvas {name!r} is not cloned yet (no canvas.toml)", 409)
+    with _SYNC_LOCK:
+        deleting = (env, name) in _DELETING
+    if deleting:
+        return JSONResponse({"error": f"canvas {_sync_key(env, name)!r} is being deleted",
+                             "code": "deleting"}, status_code=409)
     # The writer lock FIRST: a refused start must not touch a folder another
     # process owns (the seeding below writes into it).
     try:
