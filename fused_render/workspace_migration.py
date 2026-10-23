@@ -49,7 +49,7 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 from fused_render import _flavor
 from fused_render._branch import branch_dir
-from fused_render._view_url_codec import canonical_fs_path, rooted_fs_path
+from fused_render._view_url_codec import _is_drive_path, canonical_fs_path, rooted_fs_path
 from fused_render.shell import storage
 from fused_render.shell.seed import fused_dir
 
@@ -187,7 +187,11 @@ def _remap(path: object, src: str, dst: str) -> str | None:
     if not isinstance(path, str) or not path:
         return None
     csrc, cpath = canonical_fs_path(src), canonical_fs_path(path)
-    if cpath != csrc and not cpath.startswith(csrc + "/"):
+    # A drive path is compared case-insensitively (the volume is); the suffix
+    # below is spliced from the ORIGINAL string, so it keeps its spelling.
+    ksrc = csrc.lower() if _is_drive_path(csrc) else csrc
+    kpath = cpath.lower() if _is_drive_path(cpath) else cpath
+    if kpath != ksrc and not kpath.startswith(ksrc + "/"):
         return None
     return (canonical_fs_path(dst) if cpath == path else dst) + path[len(src):]
 

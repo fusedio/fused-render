@@ -90,7 +90,7 @@ def _munge(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9]", "-", name)
 
 
-def _rejoin(parts: list, base: str) -> Optional[str]:
+def _rejoin(parts: list, base: str, fold: bool = False) -> Optional[str]:
     """Rebuild a path from munged segments, guided by what exists on disk.
 
     Matches MUNGED-TO-MUNGED against the real directory entries rather than
@@ -104,6 +104,10 @@ def _rejoin(parts: list, base: str) -> Optional[str]:
     Fewest segments first, extending only when that doesn't resolve (which is
     how "fused", "render" becomes "fused-render"), and backtracking, because a
     shorter prefix that happens to match can still be a dead end further down.
+
+    `fold` compares case-insensitively: a drive-rooted slug lives on a
+    case-insensitive filesystem, where the slug's spelling of a folder need not
+    be the one on disk. POSIX never folds.
     """
     if not parts:
         return base
@@ -114,12 +118,13 @@ def _rejoin(parts: list, base: str) -> Optional[str]:
     for take in range(1, len(parts) + 1):
         want = "-".join(parts[:take])
         for entry in entries:
-            if _munge(entry) != want:
+            got = _munge(entry)
+            if (got.lower() != want.lower()) if fold else (got != want):
                 continue
             candidate = os.path.join(base, entry)
             if not os.path.isdir(candidate):
                 continue
-            found = _rejoin(parts[take:], candidate)
+            found = _rejoin(parts[take:], candidate, fold)
             if found:
                 return found
     return None
@@ -151,7 +156,7 @@ def _project_path(slug: str) -> Optional[str]:
     parts = rest.split("-") if rest else []
     if not parts or len(parts) > _MAX_SEGMENTS:
         return None
-    return _rejoin(parts, base)
+    return _rejoin(parts, base, fold=bool(drive_match))
 
 
 def _memory_dir(project: str) -> str:

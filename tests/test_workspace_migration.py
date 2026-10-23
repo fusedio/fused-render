@@ -552,6 +552,19 @@ def test_a_posix_sibling_is_not_matched_through_a_backslash():
     assert wm._remap("/Users/x/Documents/Fused\\evil", src, dst) is None
 
 
+def test_drive_paths_match_case_insensitively_and_keep_their_suffix_spelling():
+    src = "C:\\Users\\x\\Documents\\Fused"
+    dst = "C:\\Users\\x\\Fused"
+
+    assert wm._remap("c:\\users\\X\\documents\\fused\\App\\Index.html", src, dst) \
+        == "C:\\Users\\x\\Fused\\App\\Index.html"
+    assert wm._remap("c:/USERS/x/documents/fused-two/a", src, dst) is None
+
+
+def test_posix_paths_stay_case_sensitive():
+    assert wm._remap("/users/x/Documents/Fused/a", "/Users/x/Documents/Fused", "/Users/x/Fused") is None
+
+
 # --------------------------------------------- untrusted values in state JSON
 
 def test_a_corrupt_value_does_not_abort_the_rewrite(machine, monkeypatch):
