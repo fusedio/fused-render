@@ -1,0 +1,167 @@
+#!/bin/bash
+# postinstall for the macOS network installer (scripts/build_pkg.sh).
+#
+# The .pkg carries no payload: this script IS the install. It downloads the
+# release's DMG from the CDN, checks it against the sha256 build_pkg.sh pinned
+# into release.env beside this file, mounts it, copies the app into
+# /Applications (replacing an older copy the way the in-app updater does),
+# hands the bundle to the person who ran Installer, and opens it. The pkg is
+# tiny and shareable because the ~hundreds of MB come from the CDN at install
+# time, and the pinned hash keeps a CDN or bucket compromise from swapping
+# the payload: a mismatch fails the install before anything is mounted.
+#
+# Installer runs this as root. stdout/stderr go to /var/log/install.log, so
+# every line printed here is for that log (Installer's own "The installation
+# failed" dialog shows no detail). Arguments Installer passes: $1 package
+# path, $2 install destination, $3 target volume, $4 system root; only $3 is
+# used. Static on purpose: build_pkg.sh writes release.env next to it rather
+# than templating this file, so what runs on the user's Mac is what is
+# reviewed in the repo.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# APP_NAME, DISPLAY_NAME, VERSION, ARCH, DMG_URL, DMG_SHA256 — written by
+# build_pkg.sh for this one release.
+# shellcheck source=/dev/null
+source "$HERE/release.env"
+
+TARGET_VOLUME="${3:-/}"
+APPS_DIR="${TARGET_VOLUME%/}/Applications"
+DEST="$APPS_DIR/$APP_NAME.app"
+
+log() { echo "$APP_NAME installer: $*"; }
+fail() { echo "$APP_NAME installer: ERROR: $*" >&2; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Preconditions
+# ---------------------------------------------------------------------------
+# The arm64 pkg carries an arm64 DMG. distribution.xml's installation-check
+# already refuses Intel Macs in the Installer window with a message; this
+# covers `installer -pkg` from a shell, which runs no installation-check.
+if [[ "$ARCH" == "arm64" ]]; then
+  if [[ "$(/usr/sbin/sysctl -n hw.optional.arm64 2>/dev/null || echo 0)" != "1" ]]; then
+    fail "this installer is for Apple silicon Macs; on an Intel Mac download the Intel .dmg from https://github.com/fusedio/fused-render/releases"
+  fi
+fi
+
+# The bundle must end up owned by the person, not root: a Finder drag gives
+# that, and the in-app updater (fused_render/update/mac.py) renames the old
+# bundle aside and removes it on a later boot, which a root-owned tree in
+# /Applications would refuse to a normal account. Installer exports USER as
+# the person who launched it; `sudo installer` from a shell gives root, so
+# fall back to whoever owns the console.
+OWNER="${USER:-}"
+if [[ -z "$OWNER" || "$OWNER" == "root" ]]; then
+  OWNER="$(/usr/bin/stat -f %Su /dev/console 2>/dev/null || true)"
+fi
+if [[ "$OWNER" == "root" ]]; then
+  OWNER=""
+fi
+
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/$APP_NAME-installer.XXXXXX")"
+MOUNT="$WORK/mnt"
+MOUNTED=""
+cleanup() {
+  if [[ -n "$MOUNTED" ]]; then
+    local i
+    for i in 1 2 3 4 5; do
+      if /usr/bin/hdiutil detach "$MOUNT" -quiet 2>/dev/null; then
+        MOUNTED=""
+        break
+      fi
+      sleep 1
+    done
+    if [[ -n "$MOUNTED" ]]; then
+      /usr/bin/hdiutil detach "$MOUNT" -force -quiet 2>/dev/null || true
+    fi
+  fi
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
+
+# ---------------------------------------------------------------------------
+# Download + verify
+# ---------------------------------------------------------------------------
+log "downloading $APP_NAME $VERSION ($ARCH) from $DMG_URL"
+DMG="$WORK/$APP_NAME.dmg"
+if ! /usr/bin/curl --fail --location --silent --show-error \
+    --retry 3 --retry-delay 2 --connect-timeout 20 \
+    --output "$DMG" "$DMG_URL"; then
+  fail "download failed — check the internet connection and run the installer again"
+fi
+
+ACTUAL_SHA256="$(/usr/bin/shasum -a 256 "$DMG" | /usr/bin/cut -d' ' -f1)"
+if [[ "$ACTUAL_SHA256" != "$DMG_SHA256" ]]; then
+  fail "sha256 mismatch for $DMG_URL: expected $DMG_SHA256, got $ACTUAL_SHA256 — the download is corrupt or is not the file this installer was built for"
+fi
+log "sha256 verified"
+
+# ---------------------------------------------------------------------------
+# Mount + copy + swap
+# ---------------------------------------------------------------------------
+mkdir -p "$MOUNT"
+# -noverify: the image's own checksum is redundant after the sha256 above.
+if ! /usr/bin/hdiutil attach "$DMG" -nobrowse -readonly -noautoopen -noverify \
+    -mountpoint "$MOUNT" -quiet; then
+  fail "could not mount the downloaded image"
+fi
+MOUNTED=1
+SRC="$MOUNT/$APP_NAME.app"
+[[ -d "$SRC" ]] || fail "$APP_NAME.app not found in the downloaded image"
+
+mkdir -p "$APPS_DIR"
+STAGE="$APPS_DIR/.$APP_NAME-installing-$$.app"
+rm -rf "$STAGE"
+log "copying into $DEST"
+/usr/bin/ditto "$SRC" "$STAGE"
+if [[ -n "$OWNER" ]]; then
+  GROUP="$(/usr/bin/id -gn "$OWNER" 2>/dev/null || echo staff)"
+  /usr/sbin/chown -R "$OWNER:$GROUP" "$STAGE"
+fi
+
+# Same swap as the updater: the new bundle appears in one rename, and an
+# older copy is renamed aside first rather than deleted underneath a running
+# process. The aside name is exactly the `.<Bundle>-old-<pid>.app` shape
+# update/mac.py's sweep_old_bundles() looks for, so if the app was running
+# during the install the leftover is cleaned up on its next launch (the
+# running copy keeps executing from the renamed inode until then). When no
+# copy is running it is removed here.
+WAS_RUNNING=""
+if /usr/bin/pgrep -f "$DEST/Contents/MacOS/" >/dev/null 2>&1; then
+  WAS_RUNNING=1
+fi
+OLD="$APPS_DIR/.$APP_NAME-old-$$.app"
+if [[ -e "$DEST" || -L "$DEST" ]]; then
+  mv "$DEST" "$OLD"
+fi
+mv "$STAGE" "$DEST"
+if [[ -e "$OLD" ]]; then
+  if [[ -n "$WAS_RUNNING" ]]; then
+    log "$APP_NAME was running during the install; quit and reopen it to finish (the old copy is removed on the next launch)"
+  else
+    rm -rf "$OLD"
+  fi
+fi
+log "installed $APP_NAME $VERSION to $DEST"
+
+# ---------------------------------------------------------------------------
+# Register + open
+# ---------------------------------------------------------------------------
+# Register the bundle with LaunchServices now (URL scheme, file types) rather
+# than on Finder's next pass. Best effort.
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+if [[ -x "$LSREGISTER" ]]; then
+  "$LSREGISTER" -f "$DEST" >/dev/null 2>&1 || true
+fi
+
+# Open the app for the person at the end of a GUI install, like Zoom's and
+# Office's installers do; not for `installer -pkg` from a shell or an MDM
+# (COMMAND_LINE_INSTALL is set there) and not over a copy that is still
+# running.
+if [[ -n "$OWNER" && -z "$WAS_RUNNING" && -z "${COMMAND_LINE_INSTALL:-}" ]]; then
+  OWNER_UID="$(/usr/bin/id -u "$OWNER")"
+  if ! /bin/launchctl asuser "$OWNER_UID" /usr/bin/sudo -u "$OWNER" /usr/bin/open "$DEST" >/dev/null 2>&1; then
+    log "could not open $APP_NAME automatically; open it from the Applications folder"
+  fi
+fi
+exit 0

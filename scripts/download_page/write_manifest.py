@@ -13,8 +13,14 @@ EXISTING_MANIFEST_PATH (if given) — a workflow_dispatch that rebuilds a
 single platform must not blank out the other platforms' still-good links on
 the live page.
 
-    VERSION=0.3.2 DMG_URL=... DMG_SHA256=... WHL_URL=... LINUX_URL=... \
+    VERSION=0.3.2 DMG_URL=... DMG_SHA256=... PKG_URL=... WHL_URL=... LINUX_URL=... \
         python3 scripts/download_page/write_manifest.py
+
+PKG_URL is the macOS network installer (scripts/build_pkg.sh), present only
+for releases whose pkg was signed; it carries forward like the rest, so a
+release that could not sign one keeps showing the previous release's
+installer (which installs that version, and the app updates itself from
+there) rather than dropping the link.
 """
 import json
 import os
@@ -26,6 +32,7 @@ import time
 OPTIONAL_FIELDS = [
     ("dmg_url", "DMG_URL"),
     ("dmg_sha256", "DMG_SHA256"),
+    ("pkg_url", "PKG_URL"),
     ("wheel_url", "WHL_URL"),
     ("linux_url", "LINUX_URL"),
 ]

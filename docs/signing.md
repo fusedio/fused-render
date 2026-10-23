@@ -126,6 +126,78 @@ Then build with `FUSED_RENDER_NOTARY_PROFILE=FUSED_RENDER_NOTARY`.
   `FUSED_RENDER_CODESIGN_IDENTITY` explicitly (don't rely on auto-detect in CI).
 - Prefer the **API-key** notary profile over an app-specific password.
 
+## Installer package (.pkg)
+
+`scripts/build_pkg.sh` builds the **network installer**: a .pkg of a few
+hundred KB whose postinstall downloads the release's DMG from the CDN,
+verifies the sha256 pinned into the pkg at build time, and copies the app into
+`/Applications` (`scripts/pkg/postinstall`; background in
+`docs/MACOS_INSTALLER_RESEARCH.md`). It needs a **second certificate type**:
+
+| | signs | certificate |
+|---|---|---|
+| app + DMG | `codesign` | **Developer ID Application** |
+| .pkg | `productbuild --sign` | **Developer ID Installer** |
+
+Only the Apple Developer **account holder** can create a Developer ID
+Installer certificate (Xcode → Settings → Accounts → Manage Certificates → `+`
+→ "Developer ID Installer", or the certificates page at developer.apple.com).
+Export it with its private key as a `.p12`. To check it is usable:
+
+```bash
+security find-identity -v | grep 'Developer ID Installer'
+```
+
+(no `-p codesigning` — that policy filter hides installer identities.)
+
+| Variable | Purpose |
+|---|---|
+| `FUSED_RENDER_INSTALLER_IDENTITY` | `Developer ID Installer: NAME (TEAMID)` or the cert's SHA-1. Auto-detected when exactly one such identity is in the keychain; several → set it; none → the pkg is built **unsigned**. |
+| `FUSED_RENDER_CODESIGN_KEYCHAIN` | Same keychain as for codesign. |
+| `FUSED_RENDER_NOTARY_PROFILE` | Same notary profile; the pkg is notarized and stapled as its own container (Apple: notarize the outermost container). Unsigned + profile set is a skip with a message, not an error, so a release never fails over the optional pkg. |
+
+```bash
+bash scripts/build_dmg.sh                                    # the DMG, stapled
+bash scripts/build_pkg.sh dist/FusedRender-X.Y.Z.dmg \
+  https://d2ic19jpchjovp.cloudfront.net/fused-render-dmgs/FusedRender-X.Y.Z.dmg
+sudo installer -pkg dist/FusedRender-X.Y.Z.pkg -target /    # try it
+tail -50 /var/log/install.log                                # the postinstall's log
+```
+
+Gatekeeper refuses an **unsigned** pkg downloaded from the internet, so
+`release.yml` publishes the pkg (download page, S3, GitHub Release) only when
+`pkgutil --check-signature` reports it signed. In CI the certificate comes
+from three repository secrets, all optional until the cert exists:
+
+| Secret | Value |
+|---|---|
+| `INSTALLER_CERT_P12` | the Developer ID Installer `.p12`, base64 |
+| `INSTALLER_CERT_PASSWORD` | its export password |
+| `INSTALLER_IDENTITY` | `Developer ID Installer: NAME (TEAMID)` |
+
+They are imported into the same ephemeral keychain as the application cert
+(`-T /usr/bin/productbuild -T /usr/bin/productsign`), before the partition
+list is set.
+
+**What the postinstall does, in order:** download the DMG; compare its
+sha256 to the pinned one and stop on a mismatch before anything is mounted;
+mount it; `ditto` the app into `/Applications` and swap it in with the same
+rename-aside the in-app updater uses (an older copy that was running is
+left as `.<App>-old-<pid>.app`, which the updater's sweep removes on the
+next launch); `chown` the bundle to the person who ran Installer (a
+root-owned bundle would block the updater's later rename and sweep);
+register it with LaunchServices; open it, except under `installer -pkg` or
+an MDM (`COMMAND_LINE_INSTALL`). The wizard refuses macOS before 11, and the
+arm64 pkg refuses an Intel Mac with a message pointing at the Intel DMG.
+
+**First-run checklist** (the pkg pieces were written and structurally
+tested, tests/test_build_pkg.py, without a Mac): on a clean Mac, check the
+wizard pages render; the Intel refusal message (or `installer -pkg` on an
+Intel Mac); a fresh install lands in `/Applications` owned by the user; an
+install over a running copy leaves the `-old-` sibling and the next launch
+removes it; `pkgutil --check-signature` and `stapler validate` pass on the
+published pkg; and the in-app updater then updates the pkg-installed copy.
+
 ## Troubleshooting
 
 - **`errSecInternalComponent` / signing hangs** — the keychain is locked or the
@@ -138,3 +210,9 @@ Then build with `FUSED_RENDER_NOTARY_PROFILE=FUSED_RENDER_NOTARY`.
   disallows for Developer ID.
 - **"multiple Developer ID Application identities"** — the build stops on
   purpose; set `FUSED_RENDER_CODESIGN_IDENTITY` to the one you want.
+- **pkg: "The installation failed"** — Installer's dialog never says why;
+  `grep 'installer:' /var/log/install.log | tail` has the postinstall's own
+  line (download failed, sha256 mismatch, image would not mount, …).
+- **pkg: "this identity cannot be used for signing code"** — the Developer
+  ID *Application* cert was given to `productbuild`; it needs the *Installer*
+  one.
