@@ -233,6 +233,7 @@ function WorkspaceCard({
   ports,
   reasons,
   holdRows,
+  group,
   states,
   showProject,
   home,
@@ -243,6 +244,8 @@ function WorkspaceCard({
   bulk,
 }: {
   task: Task;
+  /** The section the card sits in: only Safe to archive says "safe to archive". */
+  group: WorkspaceGroupKey;
   bulk: BulkSelect;
   selected: boolean;
   peeked: boolean;
@@ -270,7 +273,7 @@ function WorkspaceCard({
   // "checking" renders as a shimmer pill in the badge slot, never as text.
   const checking = reasonList.includes("checking");
   const text = reasonList.filter((r) => !DIRTY_REASON.test(r) && r !== "checking").join(" · ");
-  const clear = task.status !== "archived" && reasons.length === 0;
+  const clear = group === "clear";
   const hasPrs = prRefsOf(task).some((r) => r.repo);
   const hasBg = bg !== null;
   const preview = messagePreview(task);
@@ -727,6 +730,7 @@ export function TaskWorkspace({
                     ports={ports[t.key] ?? []}
                     reasons={reasons}
                     holdRows={holds[t.key] ?? []}
+                    group={g.key}
                     states={prStates}
                     showProject={showProject}
                     home={home}

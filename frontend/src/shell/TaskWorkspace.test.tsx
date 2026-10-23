@@ -109,8 +109,14 @@ test("an unread row is marked for bold; a read one is not", async () => {
 
 test("a clear task says clear once its holds have loaded", async () => {
   serve();
-  const r = await render([task({ key: "a" })]);
+  const r = await render([task({ key: "a", last_active: Math.floor(Date.now() / 1000) - 25 * 3600 })]);
   expect(r.root.findByProps({ className: "ws-badge ws-clear" }).children.join("")).toBe("safe to archive");
+});
+
+test("a fresh done task with no holds sits in Your turn and wears no safe-to-archive badge", async () => {
+  serve();
+  const r = await render([task({ key: "a", last_active: Math.floor(Date.now() / 1000) - 3600 })]);
+  expect(r.root.findAllByProps({ className: "ws-badge ws-clear" })).toHaveLength(0);
 });
 
 test("the card drops reasons its chips or bold title already say, and the status word for Done", async () => {
