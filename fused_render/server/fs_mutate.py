@@ -1,3 +1,4 @@
+import ctypes
 import datetime
 import logging
 import errno
@@ -300,6 +301,8 @@ def _run_git(args: list[str], cwd: str):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=_GIT_TIMEOUT_S,
+            creationflags=(subprocess.CREATE_NO_WINDOW
+                           if sys.platform == "win32" else 0),
         )
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -483,22 +486,22 @@ def _platform() -> str:
     # `sys.platform` at each site so tests can force a platform by patching THIS,
     # and only this: `monkeypatch.setattr(module.sys, "platform", …)` patches the
     # real `sys` module (a module's `sys` attribute IS `sys`), and other code in
-    # the process branches on it live, so a Linux-forcing test would
-    # have any concurrent thread on a Mac believing it was on Linux.
+    # the process branches on it live, so a Windows-forcing test would
+    # have any concurrent thread on a Mac believing it was on win32.
     return sys.platform
 
 
 def _trash_supported() -> bool:
     # Every desktop platform we run on has an OS-level bin, and each gets its own
-    # backend below: macOS ~/.Trash and the freedesktop.org XDG trash on Linux.
-    # Isolated as one predicate so tests can force each platform on/off, through
-    # _platform().
+    # backend below: macOS ~/.Trash, the freedesktop.org XDG trash on Linux, the
+    # Recycle Bin on Windows. Isolated as one predicate so tests can force each
+    # platform on/off, through _platform().
     #
     # A `True` here promises only that a backend EXISTS, never that this
     # particular path can use it: a Linux cross-device delete is
     # answered 501 later, which is the same signal the client
     # already routes into its confirm-then-hard-delete fallback.
-    return _platform() in ("darwin", "linux")
+    return _platform() in ("darwin", "linux", "win32")
 
 
 def _trash_dest_name(name: str, counter: int) -> str:
@@ -710,6 +713,108 @@ def _unlink_quietly(path: str | Path) -> None:
         pass
 
 
+# -- Windows: the Recycle Bin ----------------------------------------------
+
+_FO_DELETE = 0x0003
+_FOF_SILENT = 0x0004
+_FOF_NOCONFIRMATION = 0x0010
+_FOF_ALLOWUNDO = 0x0040
+_FOF_NOERRORUI = 0x0400
+
+
+class _SHFILEOPSTRUCTW(ctypes.Structure):
+    # Declared with plain ctypes types rather than ctypes.wintypes on purpose:
+    # importing wintypes raises outside Windows, and this struct is built (and
+    # asserted on) by tests that force the win32 branch from any host.
+    _fields_ = [
+        ("hwnd", ctypes.c_void_p),
+        ("wFunc", ctypes.c_uint),
+        # VOID pointers, not c_wchar_p, and that is about the double NUL rather
+        # than about types: reading a c_wchar_p field back gives a Python str
+        # truncated at the first NUL, so the list terminator becomes invisible —
+        # to a reader and to a test. A void pointer to a buffer we own keeps the
+        # terminator inspectable (ctypes.wstring_at) and keeps the buffer's
+        # lifetime explicit instead of resting on a str's internal storage.
+        ("pFrom", ctypes.c_void_p),
+        ("pTo", ctypes.c_void_p),
+        ("fFlags", ctypes.c_uint16),
+        ("fAnyOperationsAborted", ctypes.c_int),
+        ("hNameMappings", ctypes.c_void_p),
+        ("lpszProgressTitle", ctypes.c_wchar_p),
+    ]
+
+
+def _recycle_bin_request(path: str) -> tuple[str, int]:
+    # The (pFrom, fFlags) pair SHFileOperationW is asked for, split out so the
+    # two things easy to get silently wrong are testable without Windows.
+    #
+    # pFrom is a DOUBLE-NULL-TERMINATED list, not a string: the API reads paths
+    # until it meets an empty one, so a single terminator leaves it reading past
+    # the buffer. One absolute path plus its own terminator plus the list's.
+    #
+    # FOF_ALLOWUNDO is the flag that makes this the Recycle Bin instead of an
+    # erase; NOCONFIRMATION and SILENT keep the shell from putting its own dialog
+    # and progress window in front of a local web app's delete, which the app has
+    # already decided (and, for the hard delete, confirmed itself).
+    #
+    # NOERRORUI IS NOT OPTIONAL HERE, and it is the flag that keeps this a SERVER
+    # call. The other two suppress confirmations and progress only: a locked or
+    # in-use file still raises an ERROR dialog, and with `hwnd = NULL` that dialog
+    # is unowned — SHFileOperationW does not return until somebody dismisses it.
+    # These are synchronous FastAPI routes running on a BOUNDED anyio threadpool,
+    # so one such delete parks a worker indefinitely and takes a slice of the
+    # server's concurrency with it, over a dialog nobody may even be able to see.
+    # With NOERRORUI the failure comes back as a nonzero `rc` and becomes the 500
+    # this backend is written to report.
+    return path + "\0\0", (
+        _FOF_ALLOWUNDO | _FOF_NOCONFIRMATION | _FOF_SILENT | _FOF_NOERRORUI
+    )
+
+
+def _shell32():
+    # The one Windows-only line, isolated so the tests can hand the backend a
+    # fake shell32 and assert what it was asked to do.
+    return ctypes.windll.shell32  # type: ignore[attr-defined]
+
+
+def _move_to_recycle_bin(path: str) -> None:
+    # Move `path` to the Recycle Bin via the shell, which is the only thing that
+    # produces a bin entry Explorer can restore. Raises on failure so the caller
+    # reports it as a 500 (a failed recoverable delete, never "unsupported").
+    #
+    # RETURNS NO DESTINATION, and that is the mechanism rather than an omission:
+    # the bin stores an item as `$R…` beside a `$I…` metadata file under
+    # `C:\$Recycle.Bin\<SID>\`, and restoring goes through the shell's own
+    # undo — there is no path a rename could put the entry back from. So no
+    # `trashed_to`, so no undo pair, which is the SAME rule the macOS
+    # cross-device Finder fallback already falls under: a destination we cannot
+    # name is not a destination we may record.
+    #
+    # WHERE FOF_ALLOWUNDO STILL ERASES PERMANENTLY: UNC/network shares, most
+    # removable and FAT-formatted volumes, and items larger than the bin's quota.
+    # None of those are reliably detectable up front, so the delete still
+    # succeeds and is still reported `trashed: true` — the honest position, since
+    # the shell did do the recoverable delete it was asked for and we cannot
+    # promise what the volume does with it.
+    p_from, flags = _recycle_bin_request(path)
+    # Our own buffer, held in a local for the whole call: the struct carries a
+    # bare pointer, so whatever it points at must outlive SHFileOperationW.
+    buf = ctypes.create_unicode_buffer(p_from)
+    op = _SHFILEOPSTRUCTW(
+        None, _FO_DELETE, ctypes.cast(buf, ctypes.c_void_p), None, flags, 0, None, None
+    )
+    # A pointer rather than byref: `.contents` is public API, so a test's fake
+    # shell32 can read the struct it was handed and set the aborted flag on it.
+    rc = _shell32().SHFileOperationW(ctypes.pointer(op))
+    if rc != 0:
+        raise OSError(f"SHFileOperationW failed with code {rc}")
+    if op.fAnyOperationsAborted:
+        # A zero return with the abort flag set is the shell's "I stopped": the
+        # entry may still be there, so reporting success would tell the user their
+        # file is in the bin when it is not.
+        raise OSError("the shell aborted the move to the Recycle Bin")
+
+
 def _move_to_trash(path: str) -> str | None:
     # THE one trash entry point, dispatching on the platform and returning the
     # destination when — and only when — WE named it. `_fs_delete` reports that
@@ -722,6 +827,9 @@ def _move_to_trash(path: str) -> str | None:
     # moved), and OSError when the attempt failed. The caller answers 501 and 500
     # respectively, and the difference matters: only the 501 routes the client
     # into the irreversible hard-delete flow.
+    if _platform() == "win32":
+        _move_to_recycle_bin(path)
+        return None
     if _platform() == "linux":
         dest = _move_to_xdg_trash(path)
         if dest is None:
@@ -758,7 +866,7 @@ def _record_app_removal(path: str) -> None:
 def _fs_delete(body: dict, x_fused: str | None):
     # Remove a file or directory. With trash=true the target is moved to the
     # user's OS bin instead of being erased (recoverable; ~/.Trash on macOS, the
-    # XDG trash on Linux — see _move_to_trash, which
+    # XDG trash on Linux, the Recycle Bin on Windows — see _move_to_trash, which
     # also decides whether the destination can be NAMED back, i.e. undone).
     # Otherwise
     # a hard delete: a directory needs recursive=true unless it is empty (an
