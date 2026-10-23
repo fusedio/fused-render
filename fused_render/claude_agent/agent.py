@@ -3698,7 +3698,8 @@ def _copilot_plugin_dir(run_dir: str, file: str, pane: bool) -> str:
       when the workbench plugin's canvas skills ride along too (two roots, one
       `skills/` name), so a canvas session sees both sets side by side exactly
       as two `--plugin-dir`s give Claude. Nothing is copied: the roots are the
-      app's own export dirs and the run dir is junk once the session ends.
+      app's own export dirs and the run dir is junk once the session ends (where the OS refuses
+      symlinks, Windows w/o privilege, `_link_or_copy` copies instead).
     """
     plugin = os.path.join(run_dir, "plugin")
     agents = os.path.join(plugin, "agents")
