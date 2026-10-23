@@ -1,5 +1,5 @@
 // Row labels and links for the landing page's Recent list — `sessionTitle`,
-// `taskPane`, `taskInPane`, `ago`, `openPaneChat`'s URL
+// `paneSlashes`, `taskPane`, `taskInPane`, `ago`, `openPaneChat`'s URL
 // (T:18088-18225).
 //
 // `sessionTitle` is NOT spelled here. It lives in `protocol/history.ts`, which
@@ -24,6 +24,7 @@
 //
 // `protocol/history.ts`'s copy already had all three right and was imported by
 // nothing but its own test, while the live rows rendered this one.
+import { canonFsPath } from "@platform/lib/path-url";
 import type { Task } from "@platform/lib/api";
 import { urlForFsPath } from "@platform/lib/router";
 import { schedulerUrl } from "../sched/scheduled";
@@ -32,10 +33,16 @@ import { sessionTitle } from "../protocol/history";
 
 export { sessionTitle };
 
+/** Only a DRIVE-LETTER path has its backslashes rewritten: a backslash is a
+ *  legal POSIX filename char and must round-trip (T:18104). */
+export function paneSlashes(path: string): string {
+  return canonFsPath(path);
+}
+
 /** Trailing slashes off, so a folder that arrives spelled either way compares
  *  equal to itself (tasks-lib.taskFile asks the same of the same two fields). */
 function trimSlash(path: string): string {
-  return String(path || "").replace(/\/+$/, "");
+  return paneSlashes(path || "").replace(/\/+$/, "");
 }
 
 /**
@@ -85,7 +92,7 @@ export function taskInPane(
  *  same shell route the Tasks list opens a task on (T:18210). */
 export function paneChatUrl(pane: string, sessionId: string): string {
   return urlForFsPath(
-    pane,
+    paneSlashes(pane),
     `?_side=claude&session_id=${encodeURIComponent(sessionId)}`,
   );
 }

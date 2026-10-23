@@ -13,23 +13,8 @@
 // the drag-ordered sequence layer.
 //
 // EVERY app is rendered — the list is not capped (owner, 2026-08-26).
+import { encodeFsPathSegments, rootedFsPath } from "@platform/lib/path-url";
 import type { CurrentAppEntry } from "@platform/lib/api";
-
-// The explorer's fs-path codec (router.ts encodeFsPathSegments / rootedFsPath),
-// restated here rather than imported: router.ts rewrites `location` at import
-// and this lib must stay DOM-free for its bun tests. Same rules.
-function encodeFsPathSegments(fsPath: string): string {
-  return fsPath
-    .replace(/^\/+/, "")
-    .split("/")
-    .filter((s) => s.length > 0)
-    .map(encodeURIComponent)
-    .join("/");
-}
-
-function rootedFsPath(joined: string): string {
-  return "/" + joined;
-}
 
 export interface CurrentApp {
   /** Absolute app folder, forward-slash (canonical server form) — the key. */
@@ -139,7 +124,8 @@ function iconUrlFor(icon: string, mtime?: number | null): string {
 // ---- the app page's address (D488) ------------------------------------------
 //
 // `/apps/<folder path>?_tab=<tab>` — the folder as path segments in the
-// explorer's own codec (router.ts `encodeFsPathSegments` / `rootedFsPath`),
+// explorer's own codec (router.ts `encodeFsPathSegments` / `rootedFsPath`, so
+// a Windows drive rides as `C:/…` exactly as it does under /explorer/view),
 // and the tab as the `_tab` QUERY param, absent for the default. It was
 // `/apps/<slug>/<tab>` — one folder name under <fused_dir>/local, tab as the
 // last segment — until 2026-08-26, when the desk widened to every app kind and

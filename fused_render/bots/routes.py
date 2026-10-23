@@ -25,6 +25,7 @@ import time
 from fastapi import APIRouter, Body, Header, Query, Request, Response
 from starlette.responses import StreamingResponse
 
+from fused_render._platform import is_within
 from fused_render.bots import paths as bpaths
 from fused_render.bots import registry
 from fused_render.server.common import _error, _require_fused
@@ -1136,7 +1137,7 @@ def _under_apps_root(d: str) -> str:
     if not d or not os.path.isabs(d):
         raise ValueError("dir must be an absolute path")
     real = os.path.realpath(d)
-    if real != root and not real.startswith(root + os.sep):
+    if not is_within(real, root, fs_root_ok=False):
         raise ValueError(f"dir must be under {root}")
     return real
 
@@ -1244,7 +1245,7 @@ def apps_starter_icon(key: str):
         return _error("no icon", 404)
     base = os.path.realpath(st.STARTERS_DIR)
     p = os.path.realpath(os.path.join(s["src"], s["icon"]))
-    if not p.startswith(base + os.sep) or not os.path.isfile(p):
+    if not is_within(p, base, strict=True, fs_root_ok=False) or not os.path.isfile(p):
         return _error("no icon", 404)
     mime = "image/svg+xml" if p.endswith(".svg") else "image/png"
     with open(p, "rb") as f:

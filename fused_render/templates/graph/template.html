@@ -151,7 +151,8 @@
       return "/explorer/view/";
     }
     function navigateShell(fsPath) {
-      const url = shellPrefix() + fsPath.replace(/^\/+/, "").split("/").filter(Boolean)
+      const norm = /^[A-Za-z]:[\\/]/.test(fsPath) ? fsPath.replace(/\\/g, "/") : fsPath;
+      const url = shellPrefix() + norm.replace(/^\/+/, "").split("/").filter(Boolean)
         .map(encodeURIComponent).join("/");
       try {
         const top = window.top;
@@ -165,8 +166,10 @@
 
     // Join an absolute POSIX dir with a relative path and collapse "." / ".."
     // segments — pure string work, the same helper the note view uses.
-    // Mirrors the note view's copy deliberately: both surfaces must agree about
-    // where a target lands.
+    // No leading "/" on a Windows drive path (`C:/Users/…` is the shell's
+    // canonical form) — `/C:/…` would fail createGhost's root boundary check and
+    // refuse every create there. Mirrors the note view's copy deliberately:
+    // both surfaces must agree about where a target lands.
     function resolvePath(dir, rel) {
       const out = [];
       for (const p of dir.split("/").concat(rel.split("/"))) {
@@ -174,7 +177,8 @@
         if (p === "..") out.pop();
         else out.push(p);
       }
-      return "/" + out.join("/");
+      const joined = out.join("/");
+      return /^[A-Za-z]:$/.test(out[0] || "") ? joined : "/" + joined;
     }
 
     // Creating a missing note from the graph is the same affordance the note
@@ -196,7 +200,7 @@
       // CREATE-ONLY, and the server decides (`create: true` → 409 on an
       // existing path). Load-bearing, and deliberately identical to the note
       // view's copy in markdown/template.html — the two must agree, and they
-      // have drifted apart once already. A
+      // have drifted apart once already (the Windows `resolvePath` fix). A
       // ghost is not proof the target is missing: this payload is one scan old,
       // and an ambiguous target is a ghost BY DESIGN (graph.py's `_only`),
       // which is exactly when a real note sits at this path. A plain write

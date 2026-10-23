@@ -1627,3 +1627,11 @@ def test_plugins_list_carries_the_description_from_the_cloned_catalog(client, cl
     assert by_id["widget@acme"]["description"] == "Widgets."
     assert by_id["gadget@acme"]["description"] == ""
     assert by_id["orphan@gone"]["description"] == ""
+
+
+def test_rejoin_folds_case_only_for_drive_rooted_slugs(tmp_path):
+    (tmp_path / "Work" / "Repo").mkdir(parents=True)
+    # A drive-rooted slug (case-insensitive volume): the slug may spell it any way.
+    assert memory._rejoin(["work", "repo"], str(tmp_path), fold=True) == str(tmp_path / "Work" / "Repo")
+    # POSIX stays exact: "work" is not "Work".
+    assert memory._rejoin(["work", "repo"], str(tmp_path)) is None

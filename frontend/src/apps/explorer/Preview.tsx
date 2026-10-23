@@ -3,6 +3,7 @@
 //   2. else                      -> fallback metadata card
 // No file-type checks live in the shell — html arrives through stat.templates
 // like everything else, via the "_render" sentinel (SPEC PT-12).
+import { canonFsPath } from "@platform/lib/path-url";
 import { isBackendEnabled, useAgentBackends } from "@platform/lib/agent-backends";
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -96,7 +97,7 @@ import { useCanRunInTerminal, openTerminal } from "@platform/lib/terminalDockSto
 import { runOrCopyInTerminal } from "@platform/lib/runOrCopyInTerminal";
 import { McpDialog } from "@apps/explorer/McpDialog";
 import PreviewSidebar from "@apps/explorer/PreviewSidebar";
-import { ChatMount } from "@apps/claude";
+import { CANVAS_SHOT_FROM_PARENT, ChatMount } from "@apps/claude";
 import { OPEN_CHAT_EVENT, armFocusOnRegister } from "@platform/lib/chat-focus";
 
 /** The chat companion's mode key, in `templates` and in `_side` alike. */
@@ -104,6 +105,10 @@ const CHAT_MODE = "claude";
 // `?_noann=1` on this document's URL (an embed a host frames): the content-pane
 // chat renders without its annotate seats (ChatMount `noAnnTools`).
 const NO_ANN_TOOLS = new URLSearchParams(location.search).get("_noann") === "1";
+// `?_canvasshot=1`: the host is a canvas page that can photograph its
+// workbench on request (CanvasWorkspace's `fused-canvas-shot`) — the chat's
+// Screenshot seat takes that picture (ChatMount `canvasShot`).
+const CANVAS_SHOT = new URLSearchParams(location.search).get("_canvasshot") === "1";
 import { subscribePreviewSideSlot, previewSideSlot } from "@apps/explorer/preview-side-slot";
 import { subscribeTopbarSlot, topbarSlot } from "@apps/explorer/topbar-slot";
 import ContextMenu, { type MenuEntry, type MenuItem } from "@platform/ui/ContextMenu";
@@ -347,8 +352,8 @@ function usePreviewFileMenu(
         // top entry describing an older op, so Cmd+Z after it would undo that
         // one instead — and the file stayed unreachable in the Trash.
         //
-        // `to` is absent wherever the OS owns the location (the macOS
-        // cross-device Finder fallback), and then there is no pair to
+        // `to` is absent wherever the OS owns the location (the Recycle Bin, the
+        // macOS cross-device Finder fallback), and then there is no pair to
         // record — recoverable from the OS, just not from here.
         if (r.to) recordFsOp({ kind: "delete", pairs: [{ from: fsPath, to: r.to }] });
         notePathDeleted(fsPath);
@@ -465,7 +470,7 @@ function usePreviewFileMenu(
     if (stat.is_dir) return;
     getAppEntry(parent)
       .then((r) => {
-        if (alive) setIsAppEntry(r.entry != null && r.entry === fsPath);
+        if (alive) setIsAppEntry(r.entry != null && canonFsPath(r.entry) === fsPath);
       })
       .catch(() => {
         /* indeterminate reads as "not an entry" — no verb for nothing */
@@ -593,7 +598,7 @@ function usePreviewFileMenu(
         onClick: () => window.open(urlForFsPath(fsPath), "_blank", "noopener"),
       },
       // Absent where no TerminalDrawer is mounted to open (an embedded pane,
-      // App.tsx).
+      // App.tsx) or on Windows, where the drawer's shell isn't offered.
       ...(canRun
         ? [
             {
@@ -2260,6 +2265,7 @@ function TemplatePreview({
                       // document's URL, the embed's own.
                       { noAnnTools: true }
                     : {})}
+                  {...(CANVAS_SHOT ? { canvasShot: CANVAS_SHOT_FROM_PARENT } : {})}
                   {...(nativeAsk && claudeAskRoute === "content"
                     ? { initialAsk: nativeAsk }
                     : {})}

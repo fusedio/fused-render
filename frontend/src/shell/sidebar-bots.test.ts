@@ -18,6 +18,7 @@ import {
   sameBotsPulse,
 } from "@platform/lib/botsPulse";
 import type { BotPulseRow } from "@platform/lib/botsPulse";
+import { botsAvailable } from "@platform/lib/api";
 
 const SHELL = new URL(".", import.meta.url).pathname;
 const SIDEBAR = readFileSync(join(SHELL, "GlobalSidebar.tsx"), "utf8");
@@ -89,7 +90,7 @@ describe("the words", () => {
 
 describe("wiring", () => {
   it("the Bots row wears the Tasks row's dot, words and chip — the same classes", () => {
-    const row = SIDEBAR.slice(SIDEBAR.indexOf("const botsPulse = useBotsPulse()"), SIDEBAR.indexOf("const menuEntries"));
+    const row = SIDEBAR.slice(SIDEBAR.indexOf("const botsPulse = useBotsPulse(botsOn)"), SIDEBAR.indexOf("const menuEntries"));
     // One dot, red over yellow over green — the Tasks precedence.
     expect(row.indexOf('"sidebar-rail-dot is-attention"')).toBeLessThan(row.indexOf('"sidebar-rail-dot is-running"'));
     expect(row.indexOf('"sidebar-rail-dot is-running"')).toBeLessThan(row.indexOf('"sidebar-rail-dot is-unread"'));
@@ -138,5 +139,44 @@ describe("wiring", () => {
     const fn = ROUTES.slice(ROUTES.indexOf("def bots_pulse"), ROUTES.indexOf('@router.post("/api/bots")'));
     expect(fn).not.toContain("_status_bot(");
     expect(fn).not.toContain("usage_summary");
+  });
+});
+
+describe("Bots are hidden where the server runs none (Windows)", () => {
+  const APP = readFileSync(join(import.meta.dir, "App.tsx"), "utf8");
+  const TOOLS = readFileSync(join(import.meta.dir, "onboarding/ToolsStep.tsx"), "utf8");
+
+  it("only an explicit false hides Bots", () => {
+    expect(botsAvailable({ bots_available: false })).toBe(false);
+    expect(botsAvailable({ bots_available: true })).toBe(true);
+    expect(botsAvailable({})).toBe(true); // an older server without the flag
+    expect(botsAvailable(null)).toBe(true);
+  });
+
+  it("the sidebar drops the row, the rail item and the poll", () => {
+    expect(SIDEBAR).toContain("useBotsPulse(botsOn)");
+    expect(SIDEBAR).toContain("{botsOn && (");
+    expect(SIDEBAR).toMatch(/\.\.\.\(botsOn\s*\?\s*\[\s*\{\s*key: "bots"/);
+  });
+
+  it("the route redirects Home and the page never mounts", () => {
+    expect(APP).toContain("isBotsPath(pathname) && botsOn");
+    expect(APP).toMatch(/!botsOn && isBotsPath\(location\.pathname\)/);
+  });
+
+  it("onboarding hides the Chrome group on n/a", () => {
+    expect(TOOLS).toContain('chrome?.status !== "n/a"');
+    expect(TOOLS).toContain("{chromeApplies && (");
+  });
+
+  it("no pulse request is made while disabled", async () => {
+    const calls: string[] = [];
+    const orig = globalThis.fetch;
+    globalThis.fetch = (async (u: unknown) => { calls.push(String(u)); return new Response("{}", { status: 503 }); }) as typeof fetch;
+    try {
+      const src = readFileSync(join(import.meta.dir, "../platform/lib/botsPulse.ts"), "utf8");
+      expect(src).toContain("if (!enabled) return;");
+    } finally { globalThis.fetch = orig; }
+    expect(calls).toEqual([]);
   });
 });

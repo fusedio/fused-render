@@ -1,4 +1,5 @@
 // Server API wrappers. Non-ok responses throw with the server's error message.
+import { canonFsPath } from "./path-url";
 import { noteFsMutation, noteIndexLifecycle } from "@platform/lib/index-freshness";
 import { outcomeFrom } from "@platform/lib/index-query";
 import type { IndexQueryOutcome } from "@platform/lib/index-query";
@@ -33,6 +34,10 @@ export interface Config {
   // session, where `pickFile`/pick-folder answer 501 and a caller needs its own
   // fallback. One backend set raises both dialogs, hence the one flag.
   native_dir_picker: boolean;
+  // Whether this server runs bots at all (server/routers/config.py) — false on
+  // Windows, where the bot process manager is POSIX-only and every /api/bots
+  // call answers 503. Absent from an older server: treated as available.
+  bots_available?: boolean;
   // Self-update state (fused_render/update/mac.py) — present only when the
   // packaged mac app started the update manager; absent on dev servers and
   // the Linux package (it updates through its supervisor).
@@ -287,8 +292,15 @@ export const postJson = <T>(
   opts?: { signal?: AbortSignal; headers?: Record<string, string> },
 ) => mutateJson<T>("POST", url, body, opts);
 
+// `home` / `fused_dir` are raw expanduser values and arrive with backslashes on
+// Windows. Folded to the shell's canonical forward-slash form HERE, once, so no
+// consumer has to remember to (drive-letter paths only: see canonFsPath).
 export function getConfig(opts?: { signal?: AbortSignal }): Promise<Config> {
-  return getJson<Config>("/api/config", opts);
+  return getJson<Config>("/api/config", opts).then((c) => ({
+    ...c,
+    home: typeof c.home === "string" ? canonFsPath(c.home) : c.home,
+    fused_dir: typeof c.fused_dir === "string" ? canonFsPath(c.fused_dir) : c.fused_dir,
+  }));
 }
 
 // -- Diagnostics bundle (SPEC §50; Preferences → Diagnostics) ----------------
@@ -1529,7 +1541,7 @@ export interface Prefs {
   // (`task_recap_titles_enabled`, shell/prefs.py; opt-in, off by default).
   // Optional like `queue`: absent reads as off.
   task_recap?: { enabled: boolean };
-  // Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
+  // Stable AI titles: Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
   // shell/prefs.py; off by default). Optional: absent reads as off.
   task_summary_titles?: { enabled: boolean };
   // Lean Claude sessions (`claude_strict_mcp_enabled`, shell/prefs.py; ON by
@@ -4135,7 +4147,7 @@ export type TaskPulseTask = Pick<
   | "canvas"
   | "background_jobs"
   // What the notice titles a task by (tasks-lib `taskNoticeTitle`: the newest
-  // user message, unless renamed / summary-only) — optional, each absent with
+  // user message, unless renamed / stable AI titles) — optional, each absent with
   // its flag off or on an older server. Recap titles are deliberately NOT
   // here: the notice ignores them, the Tasks cards do not.
   | "title_mode"
@@ -6851,4 +6863,10 @@ export function getScheduleEvents(): Promise<{ events: ScheduleEvent[] }> {
 // silently consume the user's notifications with a no-cors fetch.
 export function ackScheduleEvents(id: number): Promise<{ delivered: number }> {
   return postJson<{ delivered: number }>("/api/schedule/events/ack", { id });
+}
+
+/** Does this server offer Bots? Only an explicit `false` hides them, so a server
+ *  that predates the flag keeps its Bots page. */
+export function botsAvailable(config: Pick<Config, "bots_available"> | null | undefined): boolean {
+  return config?.bots_available !== false;
 }

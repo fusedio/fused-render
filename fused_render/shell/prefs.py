@@ -428,9 +428,11 @@ def task_recap_titles_enabled() -> bool:
 
 def task_summary_titles_enabled() -> bool:
     """Whether Tasks rows are titled ONLY by the server's stable `title` (a
-    user-set title, else Claude Code's `ai-title` summary, else the first
-    line of the first message) — never by the newest message, the haiku
-    recap or Claude's reply (default off; only a stored `true` is on).
+    name the reader chose, else the app's own haiku AI title refreshed every
+    few prompts, else Claude Code's `ai-title`, else the first line of the
+    first message) — never by the newest message, the haiku recap or
+    Claude's reply (default off; only a stored `true` is on). Shown as
+    "Stable AI titles"; the key predates that name.
     Rows then carry `title_mode: "summary"`; the key is absent when off."""
     return read_prefs().get("task_summary_titles_enabled") is True
 # ---- moved off localStorage (D1386) -----------------------------------------
@@ -998,7 +1000,7 @@ def _prefs_response() -> dict:
         # Whether finished turns are recapped by haiku and the Tasks rows
         # titled by it (opt-in beta, `task_recap_titles_enabled`).
         "task_recap": {"enabled": task_recap_titles_enabled()},
-        # Summary-only Tasks titles (`task_summary_titles_enabled`).
+        # Stable AI Tasks titles (`task_summary_titles_enabled`).
         "task_summary_titles": {"enabled": task_summary_titles_enabled()},
         # Lean Claude sessions (`claude_strict_mcp_enabled`, default on).
         "claude_strict_mcp": {"enabled": claude_strict_mcp_enabled()},

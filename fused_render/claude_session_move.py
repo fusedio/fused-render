@@ -94,12 +94,12 @@ def _under(path: str, root: str) -> str | None:
     """`path` relative to `root` ("" for root itself), or None when `path` is
     not `root` and not inside it. A directory boundary, not a string prefix:
     `/A/app-old` is not under `/A/app`."""
-    p, r = _norm(path), _norm(root)
-    if p == r:
+    ap, ar = os.path.abspath(path), os.path.abspath(root)
+    if not _platform.is_within(ap, ar):
+        return None
+    if not _platform.is_within(ap, ar, strict=True):
         return ""
-    if p.startswith(r.rstrip(os.sep) + os.sep):
-        return os.path.abspath(path)[len(os.path.abspath(root).rstrip(os.sep)) + 1:]
-    return None
+    return ap[len(ar.rstrip(os.sep)) + 1:]
 
 
 def transcript_cwd(path: str) -> str | None:

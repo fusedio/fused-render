@@ -26,6 +26,7 @@ import threading
 import time
 import uuid
 
+from fused_render._platform import is_within
 from fused_render.bots import apptools, imessage, store
 from fused_render.bots import browser as browser_mod
 from fused_render.bots import browsers
@@ -3923,10 +3924,10 @@ def clean_folders(raw) -> list:
         whole = (os.path.sep, os.path.realpath(os.path.expanduser("~")))
         if r in whole or (_ids(r) is not None and _ids(r) in {_ids(w) for w in whole}):
             continue  # the whole disk or the whole home is not a folder grant: not by string, symlink or case (APFS)
-        if any(r == x or r.startswith(x + os.sep) for x in reals):
+        if any(is_within(r, x) for x in reals):
             continue
         # a parent arriving after its child replaces it
-        keep = [(o, x) for o, x in zip(out, reals) if not x.startswith(r + os.sep)]
+        keep = [(o, x) for o, x in zip(out, reals) if not is_within(x, r, strict=True)]
         out, reals = [o for o, _ in keep] + [p], [x for _, x in keep] + [r]
         if len(out) > FOLDERS_MAX:
             raise ValueError(f"at most {FOLDERS_MAX} folders per bot; grant a parent folder instead")
@@ -3951,7 +3952,7 @@ def inside(path: str, roots) -> str | None:
     real = os.path.realpath(path)
     rr = [(os.path.realpath(r), _ids(os.path.realpath(r))) for r in roots]
     for root, _ in rr:
-        if real == root or real.startswith(root.rstrip(os.sep) + os.sep):
+        if is_within(real, root, fs_root_ok=False):
             return root
     cur = real
     while True:

@@ -112,12 +112,12 @@
 // mirrored off the frame's own URL (same origin) as it changes — and the next
 // frame on that node boots on it. In memory only: a reload starts over.
 import { isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { SyntheticEvent } from "react";
 import { createPortal } from "react-dom";
 import { addCurrentApp } from "@platform/lib/api";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
-import { ChatMount } from "@apps/claude";
+import { ChatMount, ShotViewer, type CanvasShot, type CanvasShotAnswer, type CanvasShotWhat, type Viewable } from "@apps/claude";
 import { rawUrl, statPath, type TemplateEntry } from "@platform/lib/api";
 import { EMBED_PREFIX, NAV_EVENT, VIEW_PREFIX, embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
@@ -154,6 +154,11 @@ import {
   type SyncOwner,
   type SyncState,
 } from "./sync-state";
+
+// How long a canvas screenshot waits for the frame's answer. html-to-image
+// over a big graph takes seconds; a frame without the handler never answers,
+// and the chat's camera must come back.
+const THUMBNAIL_TIMEOUT_MS = 45_000;
 
 // Fallback cadence for GET sync/state while the events socket is down.
 const SYNC_POLL_MS = 2000;
@@ -292,6 +297,32 @@ function nodeTabIcon(mode: NodeTab, templates: readonly TemplateEntry[]): React.
  * explorer does (the app-state block names the file); its `session_id` lives
  * on the frame's URL, not this page's.
  */
+// The last `fused whoami` handle per env (localStorage): see the whoami
+// step in the boot effect. A bare string, no JSON — nothing to parse wrong.
+const HANDLE_KEY = "canvases:handle:";
+function rememberedHandle(env: string): string | null {
+  try {
+    const v = localStorage.getItem(HANDLE_KEY + env);
+    return v && v.trim() ? v : null;
+  } catch {
+    return null;
+  }
+}
+function forgetHandle(env: string): void {
+  try {
+    localStorage.removeItem(HANDLE_KEY + env);
+  } catch {
+    // nothing to forget
+  }
+}
+function rememberHandle(env: string, handle: string): void {
+  try {
+    localStorage.setItem(HANDLE_KEY + env, handle);
+  } catch {
+    // private mode / quota: the next open just asks whoami again.
+  }
+}
+
 function nodeEmbedSrc(file: string, tab: NodeTab, sessionId: string | null): string {
   // `_noann=1` on the chat: its Screenshot / Annotate seats and view toggle
   // would open the chat's own preview of the file, which is the Code tab's
@@ -303,7 +334,10 @@ function nodeEmbedSrc(file: string, tab: NodeTab, sessionId: string | null): str
   return embedUrlForFsPath(
     file,
     "?_mode=" + tab + "&_side=off" +
-      (tab === "claude" ? "&_noann=1" : "") +
+      // `_canvasshot=1`: the chat's Screenshot seat asks THIS page (its
+      // parent) for a picture of the canvas — see the `fused-canvas-shot`
+      // handler below.
+      (tab === "claude" ? "&_noann=1&_canvasshot=1" : "") +
       (sessionId ? "&session_id=" + encodeURIComponent(sessionId) : ""),
   );
 }
@@ -541,6 +575,124 @@ export default function CanvasWorkspace({
   // is the user's pull. The result reaches the embed as a delta like any other
   // disk change.
   const [pullBusy, setPullBusy] = useState(false);
+  // A PICTURE FROM THE WORKBENCH, on request from a chat's Screenshot seat
+  // (the in-page canvas chat, or the node pane's framed one, `_canvasshot=1`).
+  // The frame is cross-origin, so nothing here can photograph it; the frame
+  // captures with its own tools — the graph as the viewport shows it, or one
+  // node's output — uploads nothing, and answers `fused-embed-capture-done`
+  // with the Blob, which goes on to the chat as a pane attachment. One request
+  // at a time, matched to its answer by `req`; a frame that never answers (an
+  // older workbench build without the handler) is released by the timer.
+  type ShotAnswer = CanvasShotAnswer;
+  const shotPendingRef = useRef<{ req: number; resolve: (a: ShotAnswer) => void } | null>(null);
+  const shotTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const settleShot = useCallback((answer: ShotAnswer) => {
+    if (shotTimerRef.current) clearTimeout(shotTimerRef.current);
+    shotTimerRef.current = null;
+    const pending = shotPendingRef.current;
+    shotPendingRef.current = null;
+    pending?.resolve(answer);
+  }, []);
+  const requestCanvasShot = useCallback((what: CanvasShotWhat): Promise<ShotAnswer> => {
+    if (shotPendingRef.current) {
+      return Promise.resolve({ ok: false, error: "a canvas screenshot is already being taken" });
+    }
+    const frame = frameRef.current;
+    const origin = baseOriginRef.current;
+    if (!frame?.contentWindow || !origin) {
+      return Promise.resolve({ ok: false, error: "the workbench is not loaded yet" });
+    }
+    const win = frame.contentWindow;
+    return new Promise<ShotAnswer>((resolve) => {
+      const req = Date.now();
+      shotPendingRef.current = { req, resolve };
+      win.postMessage(
+        { type: "fused-embed-capture", req, what, udfName: nodeRef.current?.udfName ?? null },
+        origin,
+      );
+      shotTimerRef.current = setTimeout(() => {
+        if (shotPendingRef.current?.req === req) {
+          settleShot({ ok: false, error: "the workbench did not answer" });
+        }
+      }, THUMBNAIL_TIMEOUT_MS);
+    });
+  }, [settleShot]);
+  // The in-page canvas chat's contract: the canvas view only (no node is
+  // selected while that chat shows).
+  const canvasShot = useMemo<CanvasShot>(
+    () => ({ capture: requestCanvasShot, targets: ["canvas"] }),
+    [requestCanvasShot],
+  );
+  useEffect(
+    () => () => {
+      // A request still out when the page goes: answer it, so the asking
+      // tray's `capture()` resolves and its seat comes back.
+      settleShot({ ok: false, error: "the canvas page closed" });
+    },
+    [settleShot],
+  );
+  // THE FRAMED CHAT'S PICTURE, shown here: the node pane's chat posts
+  // `fused-shot-view` instead of opening its own viewer, which an iframe
+  // would box into the pane (ClaudeChat `hoistViewer`). Same origin only.
+  const [hostViewing, setHostViewing] = useState<Viewable | null>(null);
+  useEffect(() => {
+    const onShotView = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      if (event.data?.type !== "fused-shot-view") return;
+      // From one of THIS page's frames only (the node pane), and the picture
+      // is a blob: URL of that frame's or a same-origin path — never a URL
+      // pointing elsewhere.
+      const fromChild = [...document.querySelectorAll("iframe")].some(
+        (f) => f.contentWindow === event.source,
+      );
+      if (!fromChild) return;
+      const shot = event.data.shot;
+      if (!shot || typeof shot !== "object" || typeof shot.kind !== "string") return;
+      const src = typeof shot.src === "string" ? shot.src : undefined;
+      if (src !== undefined) {
+        let ok = src.startsWith("blob:");
+        if (!ok) {
+          try {
+            ok = new URL(src, window.location.href).origin === window.location.origin;
+          } catch {
+            ok = false;
+          }
+        }
+        if (!ok) return;
+      }
+      setHostViewing(shot as Viewable);
+    };
+    window.addEventListener("message", onShotView);
+    return () => window.removeEventListener("message", onShotView);
+  }, []);
+  // The picture is the node frame's blob: URL, which dies with that
+  // document: a node switch or tab switch remounts the frame, so the viewer
+  // shuts rather than show a broken image.
+  useEffect(() => {
+    setHostViewing(null);
+  }, [node, nodeTab]);
+  // The framed chat's ask, from a same-origin child frame (the node pane). The
+  // answer goes back to the asking window — `event.source` — so a pane that
+  // swapped frames meanwhile never receives a picture it did not ask for.
+  useEffect(() => {
+    const onShotAsk = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      if (event.data?.type !== "fused-canvas-shot") return;
+      const source = event.source as Window | null;
+      const req = event.data.req;
+      const what = event.data.what;
+      if (!source) return;
+      if (what !== "canvas" && what !== "udf") return;
+      void requestCanvasShot(what).then((answer) => {
+        source.postMessage(
+          { type: "fused-canvas-shot-done", req, ...answer },
+          window.location.origin,
+        );
+      });
+    };
+    window.addEventListener("message", onShotAsk);
+    return () => window.removeEventListener("message", onShotAsk);
+  }, [requestCanvasShot]);
   const [pullError, setPullError] = useState<string | null>(null);
 
   // The node pane frames the node's FILE, and a node the user just added in
@@ -712,13 +864,44 @@ export default function CanvasWorkspace({
         void addCurrentApp(cloneDir)
           .then(() => window.dispatchEvent(new Event(CURRENT_APPS_CHANGED_EVENT)))
           .catch(() => undefined);
-        const who = await getWhoami(env);
+        // THE HANDLE IS REMEMBERED (per env): it is the one fact the frame
+        // URL needs, it does not change, and `fused whoami` is a CLI child
+        // that can take 20 s+ on a loaded Mac. A remembered handle frames the
+        // workbench NOW; whoami still runs and corrects it if it ever differs.
+        // Only a first-ever open with no memory waits on it — and a timeout
+        // there is retried once before it becomes the page's error.
+        const remembered = rememberedHandle(env);
+        if (remembered) setHandle(remembered);
+        let who: Awaited<ReturnType<typeof getWhoami>> | null = null;
+        let lastErr: Error | null = null;
+        for (let attempt = 0; attempt < 2 && !who; attempt++) {
+          try {
+            who = await getWhoami(env);
+          } catch (e) {
+            lastErr = e as Error;
+            if (cancelled) return;
+          }
+        }
         if (cancelled) return;
-        if (!who.handle) {
-          setError("could not determine your Fused username (fused whoami)");
+        if (!who?.handle) {
+          // whoami ANSWERED with no handle: nobody is logged in any more, so
+          // the memory is stale — forget it and say so, framed or not. Only
+          // a whoami that could not answer at all (the timeout) lets a
+          // remembered frame stand.
+          if (who) {
+            forgetHandle(env);
+            setHandle(null);
+            setError("could not determine your Fused username (fused whoami)");
+            return;
+          }
+          if (remembered) return; // framed on memory; the correction can wait
+          setError(
+            lastErr?.message ?? "could not determine your Fused username (fused whoami)",
+          );
           return;
         }
-        setHandle(who.handle);
+        rememberHandle(env, who.handle);
+        if (who.handle !== remembered) setHandle(who.handle);
       } catch (e) {
         if (!cancelled) setError((e as Error).message);
       }
@@ -1228,6 +1411,24 @@ export default function CanvasWorkspace({
           }),
         );
       }
+      if (type === "fused-embed-capture-done") {
+        // From THE workbench frame only: a same-origin window that guessed
+        // the pending `req` must not settle it with its own picture.
+        if (event.source !== frameRef.current?.contentWindow) return;
+        const { req, ok, error, blob } = (event.data ?? {}) as {
+          req?: unknown; ok?: unknown; error?: unknown; blob?: unknown;
+        };
+        // Only the answer to OUR request: a stale one (after the timer gave
+        // up) must not settle a later request.
+        if (!shotPendingRef.current || req !== shotPendingRef.current.req) return;
+        if (ok === true && blob instanceof Blob) settleShot({ ok: true, blob });
+        else {
+          settleShot({
+            ok: false,
+            error: typeof error === "string" ? error : "the workbench sent no picture",
+          });
+        }
+      }
       if (type === "fused-embed-hello") {
         // The frame (re)hydrated from the server: bring it to disk with a
         // full state, whatever the server thought it held before.
@@ -1329,7 +1530,7 @@ export default function CanvasWorkspace({
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [seedToken, sendSelect, sendHostFocus, sendCodePanelState, relaySnapshot, relayDelta, enqueueRelay, env, name, embedded]);
+  }, [seedToken, sendSelect, sendHostFocus, sendCodePanelState, relaySnapshot, relayDelta, enqueueRelay, env, name, embedded, settleShot]);
 
   // The hosted editor's URL, for the project page's header (`onWorkbenchUrl`).
   const workbenchUrl =
@@ -1983,6 +2184,9 @@ export default function CanvasWorkspace({
               paramsSource="url"
               {...(fixRunId ? { runId: fixRunId } : {})}
               annotateTarget={() => frameRef.current}
+              // The Screenshot seat photographs the canvas through the frame's
+              // own capture (`requestCanvasShot`), not a cross-origin DOM walk.
+              canvasShot={canvasShot}
               // A Recent row that is a FILE chat on one of this canvas's nodes
               // does not leave for the explorer: it selects the node in the
               // workbench and opens that chat in the node pane. Everything
@@ -2011,6 +2215,7 @@ export default function CanvasWorkspace({
           </div>
         )}
       </div>
+      <ShotViewer shot={hostViewing} paneNoun="canvas" onClose={() => setHostViewing(null)} />
     </div>
   );
 }

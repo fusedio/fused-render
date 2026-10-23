@@ -105,6 +105,7 @@ from fastapi import APIRouter, Body, Header, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
 from fused_render import canvas_snapshot, canvas_sync_state
+from fused_render._platform import is_within
 from fused_render.fusedcli import (
     CUSTOM_WORKBENCH_ENV,
     WORKBENCH_ENV_CHOICES,
@@ -123,7 +124,14 @@ router = APIRouter()
 
 # `fused canvas list/whoami` are one control-plane call each.
 LIST_TIMEOUT = 30.0
-WHOAMI_TIMEOUT = 20.0
+# 40 s, not 20: the CLI child is an interpreter importing `fused` before one
+# round trip, and on a loaded Mac (load avg 20+, 2026-10-23) that alone took
+# 17 s — the old 20 s tripped, the workspace bannered, and the workbench frame
+# never loaded. The answer is the user's handle, which does not change.
+WHOAMI_TIMEOUT = 40.0
+# …and that answer is kept for an hour rather than 45 s: every reopen of a
+# canvas within the hour frames the workbench without spawning anything.
+_WHOAMI_CACHE_TTL_S = 3600.0
 # whoami / list / token each spawn an interpreter (importing `fused`) for a
 # control-plane answer that rarely changes: the parsed RESULT is reused this
 # long (see `_cached_cli`). Errors are never reused.
@@ -722,6 +730,11 @@ def _cached_cli(kind: str, env: str, compute, ttl_for=None):
                 # changes its signature: store under the POST signature so the
                 # next call (which reads the new one) hits.
                 post_key = (kind, env, _creds_sig(env))
+                # Credentials gone WHILE the child ran (a logout): the answer
+                # is already stale, so a long TTL (whoami's hour) is capped
+                # to the default — the next minute re-asks (CodeRabbit #1918).
+                if post_key[2] is None:
+                    ttl = min(ttl, _CLI_CACHE_TTL_S)
                 with _CLI_CACHE_LOCK:
                     if gen == _cli_cache_gen:
                         _cli_cache[post_key] = (
@@ -1065,7 +1078,7 @@ def clone_dir_for(path: str) -> tuple[str, str, str] | None:
     for env in WORKBENCH_ENV_CHOICES:
         root = canvases_root(env)
         for base in {os.path.normpath(root), os.path.realpath(root)}:
-            if cand == base or not cand.startswith(base + os.sep):
+            if not is_within(cand, base, strict=True):
                 continue
             name = cand[len(base) + 1:].split(os.sep)[0]
             if not _NAME_RE.match(name):
@@ -1120,7 +1133,12 @@ def api_canvases_whoami(env: str = "", x_fused: str | None = Header(default=None
         )
         return ("ok", {"handle": handle, "raw": data})
 
-    result = _cached_cli("whoami", env, compute)
+    # An hour only for an answer WITH a handle; a logged-out "no handle" keeps
+    # the short default so a login lands within a minute.
+    result = _cached_cli(
+        "whoami", env, compute,
+        lambda payload: _WHOAMI_CACHE_TTL_S if payload.get("handle") else _CLI_CACHE_TTL_S,
+    )
     if result[0] == "err":
         return _error(result[1], result[2])
     return result[1]

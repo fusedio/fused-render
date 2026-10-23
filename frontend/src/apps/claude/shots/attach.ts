@@ -184,6 +184,55 @@ export async function attachPane(
   return uploadCapture(shot, "pane", SHOT_SUFFIX_VIEW, dir);
 }
 
+/** One picture of the pane that SOMEONE ELSE took — the canvas host's shot
+ *  of its workbench (`shots/canvas-shot`) — uploaded as the pane seat exactly
+ *  as `attachPane` would have: same chip, same receipt, same wire entry, with
+ *  `note` as its caveat. A refusal (`blob: null`) is a chip too, with `why` as
+ *  the sentence, so a canvas that would not answer is still on the record. */
+export async function attachPaneFromBlob(
+  shot: { blob: Blob | null; why?: string; note?: string },
+): Promise<Attachment> {
+  const dir = beginShotsDir();
+  if (!shot.blob) {
+    const why = shot.why ?? "the canvas sent no picture";
+    const att = await uploadCapture(
+      { blob: null, width: 0, height: 0, notes: [], via: "none", why },
+      "pane",
+      SHOT_SUFFIX_VIEW,
+      dir,
+    );
+    // The chip's own words (`failLabel`): "no pane screenshot — <why>", so a
+    // workbench that was still loading, or a node that was not there, is
+    // named on the chip and not only in the hover.
+    att.why = why;
+    return att;
+  }
+  let width = 0;
+  let height = 0;
+  try {
+    const bmp = await createImageBitmap(shot.blob);
+    width = bmp.width;
+    height = bmp.height;
+    bmp.close();
+  } catch {
+    // Undecodable here is not a refusal: the bytes still upload and the
+    // agent's Read decides. The size only feeds the caveat line.
+  }
+  return uploadCapture(
+    {
+      blob: shot.blob,
+      width,
+      height,
+      notes: shot.note ? [shot.note] : [],
+      via: "native",
+      thumb: URL.createObjectURL(shot.blob),
+    },
+    "pane",
+    SHOT_SUFFIX_VIEW,
+    dir,
+  );
+}
+
 /** T:10083 asks `shotDirPath()` BEFORE `shotPane()`, so an unresolvable shots
  *  dir costs nothing. Here it is started ALONGSIDE the capture instead: the
  *  round trip overlaps the style walk in the ordinary case, and the dead-dir

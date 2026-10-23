@@ -11436,7 +11436,7 @@ describe("the optimistic queue claim", () => {
   });
 });
 
-describe("cardTitleLine — summary-only titles (title_mode: summary)", () => {
+describe("cardTitleLine — stable AI titles (title_mode: summary)", () => {
   const base = {
     title: "Fix login\nsecond line",
     last_message: { text: "newest message" },

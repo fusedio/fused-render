@@ -10,6 +10,7 @@
 // NOTHING HERE THROWS AT THE UI. An unreachable index is not news on a landing
 // page whose subject is the composer above it, so a failed read is an absent
 // section — `[]` — and a console warning, exactly as in T.
+import { canonFsPath } from "@platform/lib/path-url";
 import { runArtifacts } from "./agent";
 
 /** One row of `{action:"list"}` (artifacts.py:43-47). Every field is optional
@@ -39,17 +40,18 @@ export function artLabel(a: Artifact): string {
   return (
     a.title ||
     String(a.file_path || "")
-      .split("/")
+      .split(/[\\/]/)
       .pop() ||
     a.remote_url
   );
 }
 
 /** The shell route for the LOCAL source, mirroring `router.ts urlForFsPath`:
- *  a backslash is a legal POSIX filename char and must round-trip
- *  (T:18485-18491). */
+ *  only a DRIVE-LETTER path has its backslashes rewritten, because a backslash
+ *  is a legal POSIX filename char and must round-trip (T:18485-18491). */
 export function artOpenHref(path: string): string {
-  const segs = String(path)
+  const norm = canonFsPath(path);
+  const segs = norm
     .replace(/^\/+/, "")
     .split("/")
     .filter(Boolean)

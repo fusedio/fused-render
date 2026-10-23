@@ -872,3 +872,130 @@ def test_flag_off_endpoint_still_generates_with_no_pending_key(
     body = _get(client, target).json()
     assert body["text"] and "pending" not in body
     assert len(_spawns(calls)) == 1
+
+
+# --- stable AI titles: one haiku call for the title (and the recap) ---
+
+_TITLE_REPLY = "TITLE: Fixing the login redirect\nRECAP: Login redirect fixed, tests pass"
+
+
+def test_title_parse_reads_both_lines_and_tolerates_formatting():
+    parse = recap_mod._title_parse
+    assert parse(_TITLE_REPLY, True) == (
+        "Fixing the login redirect", "Login redirect fixed, tests pass")
+    # Title only: a RECAP line nobody asked for is dropped.
+    assert parse(_TITLE_REPLY, False) == ("Fixing the login redirect", "")
+    assert parse("TITLE: Only a title here", True) == ("Only a title here", "")
+    # Lowercase labels, extra whitespace, markdown and bullets around them.
+    assert parse("  title :   Fix the  login   redirect.  \n- recap: Login redirect fixed now",
+                 True) == ("Fix the login redirect", "Login redirect fixed now")
+    assert parse("**TITLE:** `Fixing login`\n**RECAP:** **Login** fixed, tests pass",
+                 True) == ("Fixing login", "Login fixed, tests pass")
+    assert parse('Title: "Quoted title words"', False)[0] == "Quoted title words"
+    # Capped at 80 chars, refused under 3, none when there is no label at all.
+    assert len(parse("TITLE: " + "word " * 40, False)[0]) <= 80
+    assert parse("TITLE: ab", False) == ("", "")
+    assert parse("just some prose", True) == ("", "")
+    assert parse("", True) == ("", "")
+    # A too-short recap is refused by the recap rules, the title survives.
+    assert parse("TITLE: Fixing login\nRECAP: ok", True) == ("Fixing login", "")
+
+
+def test_title_prompt_carries_the_current_title_first_message_and_tail():
+    system, template = recap_mod._title_prompts(True, "Fix login", "please fix 100% of login")
+    assert "Current title: Fix login" in template
+    assert "First message: please fix 100%% of login" in template  # `%`-escaped
+    assert "<transcript>" in template and "TITLE and RECAP" in template
+    assert "DATA" in system and "RECAP:" in system and "TITLE:" in system
+    assert "verbatim" in system
+    assert "RECAP:" not in recap_mod._title_prompts(False, "x", "y")[0]
+    out = template % "User: hi\n\nAssistant: hello"
+    assert "User: hi" in out and "100% of login" in out
+    assert "(none)" in recap_mod._title_prompts(False, "", "")[1]
+    # The first message is capped.
+    assert len(recap_mod._title_prompts(False, "t", "x" * 5000)[1]) < 2200
+
+
+def test_one_call_titles_and_recaps_and_stores_both(
+        agent, project, calls, store, monkeypatch):
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    monkeypatch.setenv("RECAP_STUB_OUT", _ok(_TITLE_REPLY))
+    title, recap = recap_mod._title_and_recap(
+        agent, target, SESSION, "u-1", want_recap=True, current="go",
+        first="go and fix it", prompts_seen=5)
+    assert (title, recap) == ("Fixing the login redirect",
+                              "Login redirect fixed, tests pass")
+    spawn, = _spawns(calls)
+    prompt = _prompt(spawn)
+    assert "Current title: go" in prompt and "First message: go and fix it" in prompt
+    assert "User: go" in prompt
+    argv = spawn["argv"]
+    assert "--no-session-persistence" in argv and argv[argv.index("--tools") + 1] == ""
+    state = store.settings_state()
+    assert store.session_ai_title(state, SESSION)["text"] == "Fixing the login redirect"
+    assert store.session_ai_title(state, SESSION)["turns"] == 5
+    assert store.session_recap(state, SESSION)["text"] == "Login redirect fixed, tests pass"
+
+
+def test_title_only_call_stores_no_recap_and_a_failure_keeps_the_title(
+        agent, project, calls, store, monkeypatch):
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    monkeypatch.setenv("RECAP_STUB_OUT", _ok(_TITLE_REPLY))
+    title, recap = recap_mod._title_and_recap(
+        agent, target, SESSION, "u-1", want_recap=False, prompts_seen=2)
+    assert (title, recap) == ("Fixing the login redirect", "")
+    assert "RECAP:" not in json.loads(_spawns(calls)[0]["stdin"])["message"]["content"][0]["text"]
+    assert store.session_recap(store.settings_state(), SESSION) is None
+
+    monkeypatch.setenv("RECAP_STUB_OUT", _ok("no labels, just prose"))
+    assert recap_mod._title_and_recap(agent, target, SESSION, "u-1",
+                                      prompts_seen=6) == ("", "")
+    got = store.session_ai_title(store.settings_state(), SESSION)
+    assert got["text"] == "Fixing the login redirect"
+    assert got["turns"] == 2 and got["failed_at"] > 0
+
+
+@pytest.mark.parametrize("backend", ["claude", "copilot", "codex"])
+def test_every_backend_gets_the_title_prompt_and_its_raw_reply(
+        project, agent, monkeypatch, backend):
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    sent = []
+
+    class Proc(_FakeProc):
+        def communicate(self, input=None, timeout=None):
+            sent.append(input)
+            return super().communicate(input, timeout)
+
+    def fake_popen(argv, **kw):
+        if backend == "codex":
+            with open(argv[argv.index("-o") + 1], "w", encoding="utf-8") as fh:
+                fh.write(_TITLE_REPLY)
+            return Proc(None)
+        return Proc(_ok(_TITLE_REPLY) if backend == "claude" else _TITLE_REPLY)
+
+    monkeypatch.setattr(recap_mod.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
+    monkeypatch.setattr(agent, "_copilot_bin", lambda: "/bin/copilot")
+    monkeypatch.setattr(agent, "_codex_bin", lambda: "/bin/codex", raising=False)
+    raw = recap_mod._recap_generate(
+        agent, target, SESSION, ended=True, backend=backend,
+        ask={"want_recap": True, "current": "Cur title", "first": "First msg"})
+    assert raw == _TITLE_REPLY  # line structure intact, not folded
+    assert "Current title: Cur title" in sent[0]
+
+
+def test_a_switched_off_agent_is_not_asked_but_stamps_the_cooldown(
+        agent, project, calls, store, monkeypatch):
+    """Else the worker's wake-up would re-queue the same title on every listing."""
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    from fused_render.agent_backends import registry
+
+    monkeypatch.setattr(registry, "is_enabled", lambda backend: False)
+    assert recap_mod._title_and_recap(agent, target, SESSION, "u-1",
+                                      prompts_seen=3) == ("", "")
+    assert _spawns(calls) == []
+    assert store.session_ai_title(store.settings_state(), SESSION)["failed_at"] > 0

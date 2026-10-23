@@ -1216,6 +1216,61 @@ def record_recap(session_id: str, for_uuid: str, text: str,
     return _update(SETTINGS_FILE, mutate)
 
 
+# THE STABLE AI TITLE (prefs `task_summary_titles_enabled`) is one more field
+# on the same record, under `ai_title`:
+#
+#     {"<session-id>": {..., "ai_title": {"text": "…", "at": 1.0, "turns": 4,
+#                                         "failed_at": 0.0}}}
+#
+# `turns` is how many of the reader's prompts the session had when the title
+# was written (even when haiku repeated the old one), so the next refresh waits
+# for more prompts. `failed_at` is the last failed attempt; it never blanks
+# `text`, because the row is already showing that title.
+
+
+def session_ai_title(state: dict, session_id: str) -> dict | None:
+    """The stored AI title — `{"text", "at", "turns", "failed_at"}` — or None
+    when there is none (or the record is not that shape). `text` is "" when
+    only failures have been recorded."""
+    rec = state.get(str(session_id or ""))
+    title = rec.get("ai_title") if isinstance(rec, dict) else None
+    if not isinstance(title, dict):
+        return None
+    return {"text": str(title.get("text") or ""),
+            "at": float(title.get("at") or 0.0),
+            "turns": int(title.get("turns") or 0),
+            "failed_at": float(title.get("failed_at") or 0.0)}
+
+
+def record_ai_title(session_id: str, text: str, turns: int,
+                    now: float | None = None) -> dict:
+    """Store a title (or, for an empty `text`, a failed attempt) on the
+    session's record. A failure keeps the previous text/at/turns and only sets
+    `failed_at`; a success clears it. Nothing for an empty session id."""
+    session_id = str(session_id or "").strip()
+    if not session_id:
+        return {}
+    stamp = time.time() if now is None else float(now)
+    text = str(text or "").strip()
+
+    def mutate(state: dict):
+        rec = state.get(session_id)
+        rec = dict(rec) if isinstance(rec, dict) else {}
+        old = rec.get("ai_title") if isinstance(rec.get("ai_title"), dict) else {}
+        if text:
+            title = {"text": text, "at": stamp, "turns": int(turns), "failed_at": 0.0}
+        else:
+            title = {"text": str(old.get("text") or ""),
+                     "at": float(old.get("at") or 0.0),
+                     "turns": int(old.get("turns") or 0),
+                     "failed_at": stamp}
+        rec["ai_title"] = title
+        state[session_id] = rec
+        return title, True
+
+    return _update(SETTINGS_FILE, mutate)
+
+
 # EVERY GITHUB PR A SESSION HAS TOUCHED rides on the same record too, under
 # `prs`, oldest first:
 #

@@ -16,6 +16,7 @@
 // The active view is keyed by the nav epoch: every navigation remounts it,
 // which is the React equivalent of the vanilla shell rebuilding the view DOM
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
+import { canonFsPath } from "@platform/lib/path-url";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { subscribeJobDismissed, type Job } from "@platform/lib/jobs";
 import { useThemedIconSrc } from "@platform/lib/app-icon-src";
@@ -37,6 +38,7 @@ import { ENV_NAMES, canvasNameFromPath, canvasProjectFromPath } from "@apps/canv
 import {
   appIconUrl,
   getAppIcon,
+  botsAvailable,
   statPath,
   type Config,
   type HttpError,
@@ -148,7 +150,7 @@ const NO_PAGE_PARAMS: readonly string[] = [];
 let urlScope: TasksScope | undefined;
 function tasksScopeFromUrl(): TasksScope | undefined {
   const raw = new URLSearchParams(location.search).get("project");
-  const project = raw ? raw.replace(/(.)\/+$/, "$1") : "";
+  const project = raw ? canonFsPath(raw).replace(/(.)\/+$/, "$1") : "";
   if (!project) return undefined;
   if (urlScope?.project !== project) urlScope = { project, ownFrame: true };
   return urlScope;
@@ -681,6 +683,12 @@ export default function App({ config }: { config: Config }) {
   if (location.pathname === "/") {
     history.replaceState(null, "", frontDoor);
   }
+  // The server runs no bots on Windows: a bookmarked /bots URL goes Home rather
+  // than to a page whose every call answers 503.
+  const botsOn = botsAvailable(config);
+  if (!botsOn && isBotsPath(location.pathname)) {
+    history.replaceState(null, "", "/home");
+  }
   // A fresh install's first load lands on the setup wizard instead (its own
   // route, shell/onboarding). Once per page load and only from the front
   // door: a deep link (a bookmark, an app URL from the CLI) is honoured, and
@@ -769,7 +777,7 @@ export default function App({ config }: { config: Config }) {
   // Preferences pages are sub-paths (apps/bots/routes.ts), asked through the
   // app's own predicate so the route is spelled once. test_shell_routes.py
   // derives this page's paths from that module, as it does for AI Models.
-  const isBots = isBotsPath(pathname);
+  const isBots = isBotsPath(pathname) && botsOn;
   // `/canvases/<env>/<name>` (see canvasNameFromPath): the old one-segment
   // `/canvases/<name>` matches nothing and falls to the "Unrecognized URL"
   // branch below, deliberately unredirected.
