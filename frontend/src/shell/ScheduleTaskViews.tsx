@@ -950,8 +950,16 @@ export function IdentityChip({ name, title, onPick, active = false }: {
  *  the folder chip's own classes so it sits in the row exactly where that
  *  chip does; the link is lifted over the row's stretched link (`.task-pr-num`)
  *  and its press never counts as a press on the row. */
-export function PrNumChip({ prRef }: { prRef: PrRef }) {
-  const body = <span className="schedule-tv-id-name">#{prRef.number}</span>;
+export function PrNumChip({ prRef, status }: { prRef: PrRef; status?: string | null }) {
+  // `status` (even "") puts the state dot INSIDE the pill, first; omitted, no dot.
+  const body = (
+    <>
+      {status !== undefined && (
+        <span className="task-pr-dot" data-status={status || undefined} />
+      )}
+      <span className="schedule-tv-id-name">#{prRef.number}</span>
+    </>
+  );
   const href = prUrl(prRef);
   if (!href) return <span className="schedule-tv-id">{body}</span>;
   // The same shield + pill the project chip wears (`IdentityChip` with `onPick`),

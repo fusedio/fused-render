@@ -249,3 +249,22 @@ describe("visibleReasons", () => {
     expect(visibleReasons(["running"], task({ status: "done" }))).toEqual(["running"]);
   });
 });
+
+import { bgJobChips, capList, messagePreview } from "./workspace-lib";
+
+test("capList keeps the first max and counts the rest", () => {
+  expect(capList([1, 2, 3, 4], 3)).toEqual({ shown: [1, 2, 3], more: 1 });
+  expect(capList([1], 3)).toEqual({ shown: [1], more: 0 });
+});
+
+test("bgJobChips names up to three jobs and counts the rest", () => {
+  const t = (count: number, titles: string[]) =>
+    ({ background_jobs: { count, run_id: "r", jobs: titles.map((x) => ({ id: x, title: x })) } }) as never;
+  expect(bgJobChips(t(4, ["a", "b", "c", "d"]))).toEqual({ titles: ["a", "b", "c"], more: 1 });
+  expect(bgJobChips(t(2, []))).toEqual({ titles: [], more: 2 });
+});
+
+test("messagePreview is empty when it equals the title", () => {
+  expect(messagePreview({ title: "Hi", last_message: { role: "user", text: "Hi", at: 1 } } as never)).toBe("");
+  expect(messagePreview({ title: "Hi", last_message: { role: "user", text: "Other", at: 1 } } as never)).toBe("Other");
+});

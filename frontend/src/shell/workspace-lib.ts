@@ -8,7 +8,7 @@
 import type { Task, TaskHold } from "@platform/lib/api";
 import type { PrState } from "@platform/lib/prStatus";
 import { prKey, prRefsOf } from "@platform/lib/task-prs";
-import { isDraftTask, usageLimitCaption } from "@shell/tasks-lib";
+import { cardTitleLine, isDraftTask, usageLimitCaption } from "@shell/tasks-lib";
 
 /** What the rows' markers need beyond the task itself. */
 export interface WorkspaceFacts {
@@ -195,4 +195,30 @@ export function workspaceKeyAction(
     default:
       return null;
   }
+}
+
+/** First `max` of `items` and how many were left out. */
+export function capList<T>(items: readonly T[], max: number): { shown: T[]; more: number } {
+  return { shown: items.slice(0, max), more: Math.max(0, items.length - max) };
+}
+
+export const MAX_PRS = 8;
+export const MAX_BG_JOBS = 3;
+
+/** The background-job chips: each job's title (empty ones dropped), at most
+ *  `max`, and how many running jobs the chips do not name. With no titles at
+ *  all, `titles` is [] and `more` is the whole count ("N bg"). */
+export function bgJobChips(task: Task, max: number = MAX_BG_JOBS): { titles: string[]; more: number } {
+  const count = task.background_jobs?.count ?? 0;
+  const titles = (task.background_jobs?.jobs ?? []).map((j) => (j.title ?? "").trim()).filter(Boolean);
+  const { shown } = capList(titles, max);
+  return { titles: shown, more: Math.max(0, count - shown.length) };
+}
+
+/** The card's context line: the newest message (cardTitleLine, the List row's
+ *  own rule), or "" when it would only repeat the title the card already shows. */
+export function messagePreview(task: Task): string {
+  const text = cardTitleLine(task).text.trim();
+  if (!text) return "";
+  return text === (task.title ?? "").trim() ? "" : text;
 }

@@ -17,10 +17,25 @@ import { navigateUrl } from "@platform/lib/router";
 import { prKey, prRefsOf } from "@platform/lib/task-prs";
 import { WorkspaceSearch } from "@shell/WorkspaceSearch";
 import { closePeek, openPeek, peekItemProps, PEEK_OPEN_CLASS, usePeekedKey } from "@shell/task-peek-store";
-import { IdChip, PrNumChip, StatusIcon } from "@shell/ScheduleTaskViews";
-import { liveJobRow, openThreadIntent, peekOpenable, ringFailed, taskColumn } from "@shell/tasks-lib";
+import { useNow } from "@platform/lib/clock";
+import { IdChip, IdentityChip, PrNumChip, StatusIcon } from "@shell/ScheduleTaskViews";
 import {
+  basename,
+  liveJobRow,
+  openThreadIntent,
+  peekOpenable,
+  ringFailed,
+  spansProjects,
+  taskColumn,
+  taskWhenFor,
+  tildePath,
+} from "@shell/tasks-lib";
+import {
+  bgJobChips,
+  capList,
   cardStatusWord,
+  MAX_PRS,
+  messagePreview,
   holdReasons,
   moveSelection,
   needsYou,
@@ -35,7 +50,6 @@ export const UNDO_MS = 8000;
 const POLL_MS = 15000;
 /** The server answers at most this many ids per read. */
 const MAX_IDS = 100;
-const MAX_PR_DOTS = 3;
 
 function isTyping(target: EventTarget | null): boolean {
   const el = target as HTMLElement | null;
@@ -88,22 +102,21 @@ function useRowFacts(keys: string[]): {
   return { ports, holds, covered, failed };
 }
 
-function PrDots({ task, states }: { task: Task; states: ReturnType<typeof usePrStatuses> }) {
+function PrChips({ task, states }: { task: Task; states: ReturnType<typeof usePrStatuses> }) {
   const refs = prRefsOf(task).filter((r) => r.repo);
   if (refs.length === 0) return null;
-  const shown = refs.slice(0, MAX_PR_DOTS);
+  const { shown, more } = capList(refs, MAX_PRS);
   return (
     <span className="ws-prs">
       {shown.map((r) => {
         const state = states[prKey(r)];
         return (
           <span key={prKey(r)} className="ws-pr" title={state ?? undefined}>
-            <span className="task-pr-dot" data-status={state ?? undefined} />
-            <PrNumChip prRef={r} />
+            <PrNumChip prRef={r} status={state ?? ""} />
           </span>
         );
       })}
-      {refs.length > shown.length && <span className="ws-pr-more">+{refs.length - shown.length}</span>}
+      {more > 0 && <span className="ws-pr-more">+{more}</span>}
     </span>
   );
 }
@@ -116,6 +129,9 @@ function WorkspaceCard({
   ports,
   reasons,
   states,
+  showProject,
+  home,
+  now,
   onSelect,
   onOpen,
   onClose,
@@ -128,18 +144,25 @@ function WorkspaceCard({
   /** The full hold list; the card prints the visible part and "clear" on none. */
   reasons: string[];
   states: ReturnType<typeof usePrStatuses>;
+  /** More than one project on the page: the preview wears the folder chip. */
+  showProject: boolean;
+  home: string;
+  now: number;
   onSelect: () => void;
   onOpen: () => void;
   onClose: () => void;
 }) {
-  const bg = task.background_jobs?.count ?? 0;
-  const bgTitles = (task.background_jobs?.jobs ?? []).map((j) => j.title).filter(Boolean);
+  const bg = bgJobChips(task);
   const word = cardStatusWord(task);
   const text = visibleReasons(reasons, task).join(" · ");
   const clear = reasons.length === 0;
   const hasPrs = prRefsOf(task).some((r) => r.repo);
-  const hasChips = word !== "" || hasPrs || bg > 0 || ports.length > 0;
-  const hasFoot = hasChips || text !== "" || clear;
+  const hasBg = (task.background_jobs?.count ?? 0) > 0;
+  const preview = messagePreview(task);
+  const showChip = showProject && task.project !== "";
+  const hasContext = preview !== "" || showChip;
+  const hasFacts = hasPrs || hasBg || ports.length > 0 || text !== "" || clear;
+  const when = taskWhenFor(task, now);
   return (
     <li
       className={
@@ -166,37 +189,63 @@ function WorkspaceCard({
         />
         <IdChip id={task.task_id} kind="task" />
         <span className={"ws-title" + (task.unread > 0 ? " is-unread" : "")}>{task.title || "(untitled)"}</span>
+        {word && (
+          <span className="ws-status" data-status={task.status}>
+            {word}
+          </span>
+        )}
+        {when.kind !== "none" && (
+          <span className="ws-time" title={when.title}>
+            {when.text}
+          </span>
+        )}
+        <span className="task-card-doors ws-doors">
+          <button
+            type="button"
+            className="task-card-door ws-close"
+            aria-label={`Close ${task.task_id || task.title}`}
+            title="Close (x)"
+            onClick={(e) => {
+              e.stopPropagation();
+              onClose();
+            }}
+          >
+            ×
+          </button>
+        </span>
       </div>
-      {hasFoot && (
-        <div className="ws-card-foot">
-          {hasChips && (
-            <span className="ws-chips">
-              {word && (
-                <span className="ws-status" data-status={task.status}>
-                  {word}
+      {hasContext && (
+        <div className="ws-card-ctx">
+          {showChip && <IdentityChip name={basename(task.project)} title={tildePath(task.project, home)} />}
+          {preview && <span className="ws-preview">{preview}</span>}
+        </div>
+      )}
+      {hasFacts && (
+        <div className="ws-card-facts">
+          <PrChips task={task} states={states} />
+          {hasBg && (
+            <span className="ws-bgs" title="Background jobs still running">
+              {bg.titles.map((t, i) => (
+                <span key={i} className="ws-bg">
+                  ⧗ {t}
                 </span>
-              )}
-              <PrDots task={task} states={states} />
-              {bg > 0 && (
-                <span className="ws-bg" title={bgTitles.length ? bgTitles.join("\n") : "Background jobs still running"}>
-                  ⧗ {bg} bg
-                </span>
-              )}
-              {ports.map((p) => (
-                <a
-                  key={p}
-                  className="ws-port"
-                  href={`http://localhost:${p}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  title={`Open http://localhost:${p}`}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  :{p}
-                </a>
               ))}
+              {bg.more > 0 && <span className="ws-bg">{bg.titles.length ? `+${bg.more} bg` : `⧗ ${bg.more} bg`}</span>}
             </span>
           )}
+          {ports.map((p) => (
+            <a
+              key={p}
+              className="ws-port"
+              href={`http://localhost:${p}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={`Open http://localhost:${p}`}
+              onClick={(e) => e.stopPropagation()}
+            >
+              :{p}
+            </a>
+          ))}
           {text && (
             <span className="ws-marker" data-unknown={reasons.includes("unknown") ? "1" : undefined}>
               {text}
@@ -205,20 +254,6 @@ function WorkspaceCard({
           {clear && <span className="ws-clear">clear</span>}
         </div>
       )}
-      <span className="task-card-doors ws-doors">
-        <button
-          type="button"
-          className="task-card-door ws-close"
-          aria-label={`Close ${task.task_id || task.title}`}
-          title="Close (x)"
-          onClick={(e) => {
-            e.stopPropagation();
-            onClose();
-          }}
-        >
-          ×
-        </button>
-      </span>
     </li>
   );
 }
@@ -230,7 +265,9 @@ export function TaskWorkspace({
   peekOn,
   onReload,
   onNewTask,
+  home = "",
 }: {
+  home?: string;
   /** The page's filtered set (Search and Project still narrow it). */
   tasks: Task[];
   /** Every task, archived included: the palette's corpus. */
@@ -255,6 +292,8 @@ export function TaskWorkspace({
     [rows],
   );
   const prStates = usePrStatuses(prKeys);
+  const now = useNow();
+  const showProject = useMemo(() => spansProjects(rows), [rows]);
 
   // What the key handler reads, kept current without re-binding it.
   const live = useRef({ rows, selected, peekedKey, searching });
@@ -428,6 +467,9 @@ export function TaskWorkspace({
                 ports={ports[t.key] ?? []}
                 reasons={reasons}
                 states={prStates}
+                showProject={showProject}
+                home={home}
+                now={now}
                 onSelect={() => setSelected(t.key)}
                 onOpen={() => open(t)}
                 onClose={() => close(t)}

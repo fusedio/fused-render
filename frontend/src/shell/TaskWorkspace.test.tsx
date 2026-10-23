@@ -90,7 +90,40 @@ test("the card drops reasons its chips or bold title already say, and the status
   expect(r.root.findAllByProps({ className: "ws-clear" })).toHaveLength(0);
   expect(r.root.findAllByProps({ className: "ws-marker" })).toHaveLength(0);
   expect(r.root.findAllByProps({ className: "ws-status" })).toHaveLength(0);
-  expect(r.root.findByProps({ className: "ws-bg" }).props.title).toBe("dev");
+  expect(r.root.findByProps({ className: "ws-bg" }).children.join("")).toBe("⧗ dev");
+});
+
+const text = (n: { children: unknown[] }): string =>
+  n.children.map((c) => (typeof c === "string" ? c : text(c as { children: unknown[] }))).join("");
+
+test("background jobs show their titles, three at most, then +N bg", async () => {
+  serve();
+  const jobs = ["a", "b", "c", "d", "e"].map((t) => ({ id: t, title: t }));
+  const r = await render([task({ key: "a", background_jobs: { count: 5, run_id: "r", jobs } })]);
+  const chips = r.root.findAllByProps({ className: "ws-bg" }).map(text);
+  expect(chips).toEqual(["⧗ a", "⧗ b", "⧗ c", "+2 bg"]);
+});
+
+test("PR chips cap at 8 and the dot sits inside the .task-pr-num pill", async () => {
+  serve();
+  const prs = Array.from({ length: 10 }, (_, i) => ({ repo: "o/r", number: i + 1 }));
+  const r = await render([task({ key: "a", prs } as Partial<Task>)]);
+  const pills = r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.includes("task-pr-num"));
+  expect(pills).toHaveLength(8);
+  for (const pill of pills) expect(pill.findAllByProps({ className: "task-pr-dot" }).length).toBe(1);
+  expect(text(r.root.findByProps({ className: "ws-pr-more" }))).toBe("+2");
+});
+
+test("the message preview shows unless it repeats the title", async () => {
+  serve();
+  const r = await render([
+    task({ key: "a", title: "Fix it", last_message: { role: "assistant", text: "Done, merged.", at: 1 } }),
+    task({ key: "b", started: 0, title: "Same", last_message: { role: "user", text: "Same", at: 1 } }),
+  ]);
+  const card = (k: string) => r.root.findByProps({ "data-key": k });
+  expect(card("a").findAllByProps({ className: "ws-preview" })).toHaveLength(1);
+  expect(card("b").findAllByProps({ className: "ws-preview" })).toHaveLength(0);
+  expect(card("b").findAllByProps({ className: "ws-card-ctx" })).toHaveLength(0);
 });
 
 test("a running card shows its status word and not the running reason", async () => {

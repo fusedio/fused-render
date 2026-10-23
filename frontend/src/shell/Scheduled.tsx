@@ -1796,6 +1796,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               allTasks={inScope}
               emptyLabel={emptyLabel}
               peekOn={peekOn}
+              home={home}
               onReload={reload}
               onNewTask={() => openForm("blank", null)}
             />
