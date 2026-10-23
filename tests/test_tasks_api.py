@@ -5805,3 +5805,33 @@ def test_archive_stops_the_sessions_live_run(client, projects_dir, tmp_path,
     body = _post_archive(client, "sess-a")
     assert seen["sid"] == "sess-a" and seen["runs"][0]["run_id"] == "r1"
     assert body["teardown"]["stopped"] == 1
+
+
+def test_holds_endpoint_reports_a_tasks_recorded_worktrees(client, projects_dir,
+                                                           tmp_path):
+    from fused_render.server import task_teardown
+    task_teardown.reset_holds_cache()
+    wt = _git_worktree(tmp_path, "holds")
+    import subprocess
+    subprocess.run(["git", "update-ref", "refs/remotes/origin/main", "HEAD"],
+                   cwd=wt, check=True, capture_output=True)
+    open(os.path.join(wt, "new.txt"), "w").write("x")
+    _write_transcript(projects_dir, "sess-a", str(tmp_path), [
+        _user("hi", T9), _enter_worktree_result(wt, T10)])
+    _write_transcript(projects_dir, "sess-b", str(tmp_path), [_user("yo", T9)])
+    r = client.post("/api/tasks/holds", headers={"X-Fused": "1"},
+                    json={"ids": ["sess-a", "sess-b", "nope"]})
+    assert r.status_code == 200, r.text
+    held = r.json()["holds"]
+    assert list(held) == ["sess-a"], "tasks with no recorded worktree are absent"
+    (row,) = held["sess-a"]
+    assert row["path"] == wt and row["reasons"] == ["dirty"]
+    assert row["dirty_files"] == 1
+
+
+def test_holds_are_not_on_the_list_payload(client, projects_dir, tmp_path):
+    wt = _git_worktree(tmp_path, "lp")
+    _write_transcript(projects_dir, "sess-a", str(tmp_path), [
+        _user("hi", T9), _enter_worktree_result(wt, T10)])
+    row = _by_key(client)["sess-a"]
+    assert "worktrees" not in row and "holds" not in row

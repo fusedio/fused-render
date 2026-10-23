@@ -218,9 +218,12 @@ def test_stop_session_cancels_the_live_run_and_kills_a_stray_child(tmp_path):
     assert agent.cancelled == [("r1", False)]
     assert out["stopped"] == 1
     parent.wait(timeout=5)
-    if child_pid:
-        with pytest.raises(OSError):
-            os.kill(child_pid, 0)
+    assert child_pid
+    # SIGKILL lands asynchronously: give the kernel a moment to reap it.
+    deadline = time.monotonic() + 5
+    while td._alive(child_pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert not td._alive(child_pid)
 
 
 def test_stop_session_leaves_other_sessions_runs_alone(tmp_path):
@@ -236,3 +239,36 @@ def test_stop_session_leaves_other_sessions_runs_alone(tmp_path):
     assert p.poll() is None
     p.kill()
     p.wait()
+
+
+# ------------------------------------------------------------- holds-open data
+
+
+def test_holds_for_reports_each_existing_worktree_with_its_reasons(repo):
+    td.reset_holds_cache()
+    clean = _worktree(repo, "clean")
+    dirty = _worktree(repo, "dirty")
+    open(os.path.join(dirty, "x"), "w").write("x")
+    got = td.holds_for([clean, dirty, str(repo / "gone")])
+    by_path = {w["path"]: w for w in got}
+    assert set(by_path) == {clean, dirty}, "a folder that is gone holds nothing"
+    assert by_path[clean]["reasons"] == []
+    assert by_path[dirty]["reasons"] == ["dirty"]
+    assert by_path[dirty]["dirty_files"] == 1
+
+
+def test_holds_for_is_cached_for_the_ttl(repo, monkeypatch):
+    td.reset_holds_cache()
+    path = _worktree(repo, "c")
+    calls = []
+    real = td.inspect_worktree
+    monkeypatch.setattr(td, "inspect_worktree",
+                        lambda p: calls.append(p) or real(p))
+    clock = [500.0]
+    monkeypatch.setattr(td.time, "monotonic", lambda: clock[0])
+    td.holds_for([path])
+    td.holds_for([path])
+    assert len(calls) == 1
+    clock[0] += td.HOLDS_TTL_S + 1
+    td.holds_for([path])
+    assert len(calls) == 2

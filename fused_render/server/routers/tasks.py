@@ -6649,6 +6649,35 @@ async def api_tasks_ports(body: PortsBody,
     return {"ports": await run_in_threadpool(work)}
 
 
+@router.post("/api/tasks/holds")
+async def api_tasks_holds(body: PortsBody,
+                          x_fused: str | None = Header(default=None)):
+    """`{"holds": {task key: [{path, dirty_files, unpushed, reasons}]}}` — what
+    each task's RECORDED worktrees would lose if removed (`task_teardown`), for
+    the Workspace row's "3 uncommitted · 2 unpushed" marker. Tasks with no
+    recorded worktree (or whose folders are gone) are absent. `dirty_files` /
+    `unpushed` are null when git could not answer, and `reasons` then says
+    `unknown`. Off the list payload, in the threadpool, cached ~10 s."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render.server import task_teardown  # noqa: PLC0415
+
+    def work() -> dict:
+        tasks = _collect()
+        out: dict = {}
+        for key in dict.fromkeys(body.ids[:100]):
+            task = tasks.get(key)
+            if task is None:
+                continue
+            rows = task_teardown.holds_for(_recorded_worktrees(task))
+            if rows:
+                out[key] = rows
+        return out
+
+    return {"holds": await run_in_threadpool(work)}
+
+
 def _unarchive_for_reply(key: str, session_id: str = "") -> bool:
     """A reply to an archived task files it back (Workspace scope, exception 2).
 

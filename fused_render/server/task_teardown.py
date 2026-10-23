@@ -30,6 +30,7 @@ import logging
 import os
 import signal
 import subprocess
+import threading
 import time
 
 from fused_render.claude_agent import worktrees as wt
@@ -234,3 +235,40 @@ def teardown_worktrees(paths, force: bool = False) -> dict:
             kept.append({**entry, "reasons": [*reasons, "remove-failed"],
                          "error": str((res or {}).get("error") or "")})
     return {"removed": removed, "kept": kept, "gone": gone}
+
+
+# ------------------------------------------------------------ holds-open data
+
+#: Seconds `holds_for` reuses one worktree's answer. The Workspace asks for
+#: every visible row on each poll, and each answer is a `git status` and up to
+#: two `rev-list`s per worktree.
+HOLDS_TTL_S = 10.0
+_HOLDS: dict[str, tuple[float, dict]] = {}
+_HOLDS_LOCK = threading.Lock()
+
+
+def reset_holds_cache() -> None:
+    with _HOLDS_LOCK:
+        _HOLDS.clear()
+
+
+def holds_for(paths) -> list[dict]:
+    """What each worktree in `paths` holds open, for the Workspace row marker:
+    `[{path, dirty_files, unpushed, reasons}]`, worktrees whose folder is gone
+    left out. Kept off the list payload (git per row per rebuild is too slow);
+    asked for by the visible rows only. Blocking: call from a worker thread."""
+    out = []
+    now = time.monotonic()
+    for path in dict.fromkeys(str(p) for p in paths or []):
+        with _HOLDS_LOCK:
+            hit = _HOLDS.get(path)
+        if hit is not None and now - hit[0] < HOLDS_TTL_S:
+            info = hit[1]
+        else:
+            info = inspect_worktree(path)
+            with _HOLDS_LOCK:
+                _HOLDS[path] = (now, info)
+        if info.get("exists"):
+            out.append({"path": path, "dirty_files": info["dirty_files"],
+                        "unpushed": info["unpushed"], "reasons": holds_open(info)})
+    return out
