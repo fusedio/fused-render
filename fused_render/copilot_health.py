@@ -33,6 +33,13 @@ snapshot's `account.method == "gh"`. So a `gh` account without Copilot access
 never shadows a working `copilot login`, and a healthy machine never shells
 out to `gh` at all: the second probe costs a spawn only when the first is False.
 
+**The snapshot also carries the account's model list** (`models`), asked of
+the CLI's headless SDK server right after the sign-in probe, with the
+credential that probe proved: which ids `--model` takes on THIS plan, and per
+model whether and at which levels `--reasoning-effort` applies. The catalog
+serves it in place of the static shortlist and `agent.py` reads it to know
+when to drop the effort flag — see the "which models" section below.
+
 **Nothing here raises.** Same doctrine as the Claude module: a health report
 that 500s is worth less than one that says "I could not tell".
 """
@@ -439,8 +446,10 @@ def _user_tokens() -> list:
     return [v for v in ((os.environ.get(n) or "").strip() for n in TOKEN_ENV) if v]
 
 
-def _sign_in(path: str) -> tuple:
-    """`(signed, via_gh)` — the two-step probe the module docstring describes.
+def _sign_in_detail(path: str) -> tuple:
+    """`(signed, via_gh, token)` — the two-step probe the module docstring
+    describes, with the gh token the second step proved (None otherwise) so
+    the model listing that follows can spawn with the same credential.
 
     Step one probes the CLI's own credentials (stored login, or a user-set
     token, which stays in the env). Only a definite False goes on to step two,
@@ -455,14 +464,20 @@ def _sign_in(path: str) -> tuple:
     """
     first = _acp_probe(path, None)
     if first is not False or os.environ.get("COPILOT_GITHUB_TOKEN"):
-        return first, False
+        return first, False, None
     token = gh_token()
     if not token or token in _user_tokens():
-        return first, False
+        return first, False, None
     second = _acp_probe(path, token)
     if second is None:
-        return None, False
-    return (True, True) if second else (first, False)
+        return None, False, None
+    return (True, True, token) if second else (first, False, None)
+
+
+def _sign_in(path: str) -> tuple:
+    """`(signed, via_gh)` — `_sign_in_detail` without the token."""
+    signed, via_gh, _token = _sign_in_detail(path)
+    return signed, via_gh
 
 
 def signed_in(path: Optional[str] = None) -> Optional[bool]:
@@ -501,6 +516,235 @@ def account(signed: Optional[bool], via_gh: bool) -> Optional[dict]:
     else:
         method = "copilot"
     return {"method": method, "email": None, "org": None, "plan": None}
+
+
+# --- which models this account may run, and what each takes ------------------
+#
+# Copilot's model list is PER ACCOUNT: the plan (Free, Pro, Pro+, Business,
+# Enterprise) and an organisation's model policy decide which ids `--model`
+# accepts, and the set moves with every release. ACP has no `models.list`, but
+# the CLI's SDK server (`copilot --headless --stdio`, JSON-RPC with
+# Content-Length framing, the transport the bundled `copilot-sdk` speaks) has
+# one, and it answers with the ids the signed-in account may run and, per
+# model, whether `--reasoning-effort` applies and which levels it takes
+# (verified 2026-10-23 against 1.0.103: `connect` → `{ok, protocolVersion:3,
+# version}`, `models.list` → `{models:[{id, name, capabilities{supports{
+# reasoningEffort}}, policy{state}, billing{multiplier}, supportedReasoning
+# Efforts?, defaultReasoningEffort?, modelPickerCategory?, vendor?}]}`; signed
+# out it answers `-32603 "... Not authenticated. Please authenticate first."`).
+#
+# The list rides in the health snapshot as `models`, measured right after the
+# sign-in probe with the credential that probe found works, and the catalog
+# (`agent_backends/copilot.py`) serves it in place of the static shortlist
+# while `agent.py` reads the same file to know which models take an effort.
+# A listing that could not tell carries the previous snapshot's list forward,
+# the way `account` is carried: a slow read must not shrink the picker.
+
+#: The SDK server: a Node start plus two local RPCs, the second of which asks
+#: the Copilot API for the account's catalog. Bounded like the ACP probe; a
+#: timeout reads as "could not tell", never as "no models".
+_HEADLESS_TIMEOUT_S = 20
+#: How the app introduces itself on `connect` (the server refuses the ACP
+#: `clientInfo` shape: it wants editor/extension names).
+_HEADLESS_CLIENT = {"editorName": "fused-render", "editorVersion": "1"}
+
+
+def _frame(msg: dict) -> bytes:
+    body = json.dumps(msg).encode("utf-8")
+    return b"Content-Length: %d\r\n\r\n%s" % (len(body), body)
+
+
+def _read_frames(stream, want_id: int, out: list) -> None:
+    """Read Content-Length frames off `stream` until the reply to `want_id`
+    arrives (appended to `out`) or EOF. Runs on a thread; the deadline is the
+    caller's join."""
+    buf = b""
+    try:
+        while True:
+            chunk = stream.read1(65536) if hasattr(stream, "read1") else stream.read(1)
+            if not chunk:
+                return
+            buf += chunk
+            while True:
+                cut = buf.find(b"\r\n\r\n")
+                if cut < 0:
+                    break
+                length = None
+                for header in buf[:cut].decode("ascii", "replace").split("\r\n"):
+                    name, _, value = header.partition(":")
+                    if name.strip().lower() == "content-length":
+                        try:
+                            length = int(value.strip())
+                        except ValueError:
+                            length = None
+                if length is None:
+                    return  # not the protocol we expected: give up, not guess
+                if len(buf) < cut + 4 + length:
+                    break
+                body, buf = buf[cut + 4:cut + 4 + length], buf[cut + 4 + length:]
+                try:
+                    msg = json.loads(body)
+                except ValueError:
+                    continue
+                if isinstance(msg, dict) and msg.get("id") == want_id:
+                    out.append(msg)
+                    return
+    except (OSError, ValueError):
+        return
+
+
+def _headless_models(path: str, token: Optional[str]) -> Optional[list]:
+    """`models.list` over the CLI's headless server — the raw model dicts, or
+    None when it could not tell (timeout, a dead child, an error reply, output
+    that is not the protocol). Never raises. Same child discipline as
+    `_acp_probe`: no process group, no `cwd=`, close-then-wait-then-kill.
+    `token` rides in COPILOT_GITHUB_TOKEN unless the user set that name."""
+    extra = ({"COPILOT_GITHUB_TOKEN": token}
+             if token and not os.environ.get("COPILOT_GITHUB_TOKEN") else None)
+    # BYTES on both pipes: Content-Length counts bytes, so the text mode the
+    # shared kwargs ask for would miscount any non-ASCII model name.
+    kwargs = {k: v for k, v in SUBPROCESS_KWARGS.items()
+              if k not in ("text", "encoding", "errors", "universal_newlines")}
+    proc = None
+    answer: list = []
+    try:
+        proc = subprocess.Popen(
+            [path, "--headless", "--stdio", "--no-auto-update"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, env=_child_env(extra), **kwargs,
+        )
+        proc.stdin.write(_frame({
+            "jsonrpc": "2.0", "id": 1, "method": "connect",
+            "params": {"clientInfo": dict(_HEADLESS_CLIENT),
+                       "supportedTaskKinds": ["agent", "client", "shell"]}}))
+        proc.stdin.write(_frame({
+            "jsonrpc": "2.0", "id": 2, "method": "models.list", "params": {}}))
+        proc.stdin.flush()
+        thread = threading.Thread(target=_read_frames, args=(proc.stdout, 2, answer),
+                                  daemon=True)
+        thread.start()
+        thread.join(_HEADLESS_TIMEOUT_S)
+    except Exception:  # noqa: BLE001 - a listing that fails is "could not tell"
+        return None
+    finally:
+        if proc is not None:
+            try:
+                proc.stdin.close()
+            except (OSError, ValueError):
+                pass
+            try:
+                proc.wait(2)
+            except subprocess.TimeoutExpired:
+                try:
+                    proc.kill()
+                    proc.wait(5)
+                except (OSError, subprocess.SubprocessError):
+                    pass
+            except OSError:
+                pass
+    if not answer:
+        return None
+    result = answer[0].get("result")
+    models = result.get("models") if isinstance(result, dict) else None
+    return models if isinstance(models, list) else None
+
+
+def _effort_vocabulary() -> tuple:
+    """The effort ids every surface of this app speaks (`agent_backends`
+    EFFORTS, one list for all agents — pinned by tests). The CLI's flag also
+    takes `none` and `minimal`, which no picker, record or router here knows,
+    so a model's list is cut to this vocabulary, in this order."""
+    from fused_render.agent_backends.copilot import EFFORTS
+    return tuple(EFFORTS)
+
+
+def normalize_models(raw: list) -> list:
+    """The SDK's model dicts → the rows the snapshot stores and the catalog
+    serves: `{id, label, reasoning, efforts, default_effort, category,
+    vendor, multiplier}`. A model an organisation policy DISABLED is left
+    out (the CLI refuses it at `--model`); `unconfigured` is kept — it is the
+    state of every model on a plan without a policy page. A model whose
+    capabilities say no reasoning effort gets `efforts: []`; one that says
+    yes but names no levels gets the whole vocabulary (what the CLI accepted
+    for every GPT and Gemini id before it published lists). Rows without an
+    id, and duplicate ids, are dropped."""
+    vocab = _effort_vocabulary()
+    out, seen = [], set()
+    for m in raw:
+        if not isinstance(m, dict):
+            continue
+        mid = str(m.get("id") or "").strip()
+        if not mid or mid in seen:
+            continue
+        policy = m.get("policy") if isinstance(m.get("policy"), dict) else {}
+        if str(policy.get("state") or "") == "disabled":
+            continue
+        caps = m.get("capabilities") if isinstance(m.get("capabilities"), dict) else {}
+        supports = caps.get("supports") if isinstance(caps.get("supports"), dict) else {}
+        listed = m.get("supportedReasoningEfforts")
+        listed = [str(e) for e in listed] if isinstance(listed, list) else None
+        flag = supports.get("reasoningEffort")
+        reasoning = bool(flag) if isinstance(flag, bool) else bool(listed)
+        if not reasoning:
+            efforts: list = []
+        elif listed:
+            efforts = [e for e in vocab if e in listed]
+        else:
+            efforts = list(vocab)
+        default = str(m.get("defaultReasoningEffort") or "")
+        if default not in efforts:
+            default = ""
+        billing = m.get("billing") if isinstance(m.get("billing"), dict) else {}
+        multiplier = billing.get("multiplier")
+        if not isinstance(multiplier, (int, float)) or isinstance(multiplier, bool):
+            multiplier = None
+        seen.add(mid)
+        out.append({
+            "id": mid,
+            "label": str(m.get("name") or mid).strip() or mid,
+            "reasoning": bool(efforts),
+            "efforts": efforts,
+            "default_effort": default,
+            "category": str(m.get("modelPickerCategory") or "") or None,
+            "vendor": str(m.get("vendor") or "") or None,
+            "multiplier": multiplier,
+        })
+    return out
+
+
+def list_models(path: str, token: Optional[str] = None) -> Optional[list]:
+    """The account's models, normalized — or None when the CLI could not
+    say (signed out, timed out, an older CLI without the method). An empty
+    answer is None too: no account has no models, so an empty list is a
+    reply we misread, not a catalog to serve."""
+    raw = _headless_models(path, token)
+    if raw is None:
+        return None
+    rows = normalize_models(raw)
+    return rows or None
+
+
+def _carried_models() -> Optional[list]:
+    """The last snapshot's `models`, for a measure whose listing could not
+    tell — read like `_carried_account`: regardless of the fingerprint, from
+    the same credential store only."""
+    prev = _read_cache()
+    if not prev or prev.get("config_dir") != config_dir():
+        return None
+    models = prev.get("models")
+    return list(models) if isinstance(models, list) and models else None
+
+
+def cached_models() -> Optional[list]:
+    """The models the last snapshot listed, or None — read RAW, without the
+    freshness gates `cached()` applies: a moved PATH or an upgraded binary
+    does not change which models the account may run, and the pickers are
+    better served by yesterday's list than by the static shortlist. The
+    catalog (`agent_backends/copilot.py`) and nothing else reads this;
+    `agent.py` reads the same file by hand."""
+    snap = _read_cache()
+    models = snap.get("models") if isinstance(snap, dict) else None
+    return list(models) if isinstance(models, list) and models else None
 
 
 # --- what kind of install is this, and can we repair it ----------------------
@@ -630,7 +874,8 @@ def add_to_shell_path() -> dict:
 
 _CACHE_NAME = "copilot-health.json"
 _LOCK = threading.Lock()
-_CACHE_VERSION = 1
+#: 2: the snapshot carries `models` (2026-10-23); a 1 re-measures once.
+_CACHE_VERSION = 2
 _MAX_AGE_S = 60.0
 
 
@@ -679,7 +924,7 @@ def _measure(allow_shell: bool = True) -> dict:
 
     # One ACP spawn answers "signed in?", two only when the first says no and
     # `gh` has a token to try (`_sign_in`). The token lives inside that call.
-    signed, via_gh = _sign_in(path) if usable else (None, False)
+    signed, via_gh, token = _sign_in_detail(path) if usable else (None, False, None)
     acct = account(signed, via_gh=via_gh)
     if signed is None:
         signed = signed_in(None)
@@ -688,6 +933,13 @@ def _measure(allow_shell: bool = True) -> dict:
         # agent.py's gh-token gate. Dropping it on one slow read would spawn
         # a gh-only machine signed out.
         acct = (_carried_account() if usable else None) or account(signed, False)
+    # WHICH MODELS THE ACCOUNT MAY RUN (see `_headless_models`): asked only of
+    # a CLI that just proved a credential, with that credential. A listing
+    # that could not tell keeps the last snapshot's list, as the account is
+    # kept; a definite sign-out drops it (the static shortlist shows again).
+    models = list_models(path, token) if (usable and signed is True) else None
+    if models is None and usable and signed is not False:
+        models = _carried_models()
 
     return {
         "found": usable,
@@ -709,6 +961,9 @@ def _measure(allow_shell: bool = True) -> dict:
         "update_blocked_reason": plan["reason"],
         # No `copilot doctor` exists; kept so the two snapshots share a shape.
         "doctor": None,
+        # The account's model list (`normalize_models` rows), or None when
+        # the CLI could not say — then the catalog serves its static rows.
+        "models": models,
         "on_shell_path": on_shell_path,
         "path_fix_command": fix["command"] if fix else None,
         "checked_at": time.time(),

@@ -287,9 +287,13 @@ _NEW_CHAT_MODELS = {"copilot": "auto", "codex": "gpt-6-luna"}
 # Copilot models the CLI refuses `--reasoning-effort` for (1.0.102 fails
 # `session/new`: "Reasoning effort is not supported when using the "auto"
 # model" / "does not support reasoning effort configuration"). A COPY of
-# `agent_backends/copilot.py` `NO_EFFORT_MODELS`, pinned equal by a test. An
-# id outside the catalog is passed through with its effort, as the catalog's
-# own passthrough stance says.
+# `agent_backends/copilot.py` `NO_EFFORT_MODELS`, pinned equal by a test. THE
+# FALLBACK RULE: when the cached Copilot health snapshot lists the account's
+# models (`copilot_health` asks the CLI's `models.list`; see
+# `_copilot_listed_efforts`), that list says per model whether and at which
+# levels the flag applies, and this tuple is consulted only for a model the
+# list does not name. An id outside both is passed through with its effort,
+# as the catalog's own passthrough stance says.
 _COPILOT_NO_EFFORT_MODELS = ("auto", "claude-sonnet-4.5", "claude-opus-4.5")
 
 # Error-text markers per backend — substrings (lower-cased) of a `result` row
@@ -3742,7 +3746,9 @@ def _copilot_argv(run_dir: str, pane: bool, cli_mode: str | None,
         its `session/new` reply and the host announces it on the init row,
         which `_poll` records (D2);
       * `--effort` → `--reasoning-effort`, except for a model the CLI takes
-        no effort for (`_COPILOT_NO_EFFORT_MODELS`), where it is dropped;
+        no effort for, or a level it does not take for that model — per the
+        cached `models.list` (`_copilot_listed_efforts`), else per
+        `_COPILOT_NO_EFFORT_MODELS` — where it is dropped;
       * `--add-dir` only for directories that exist: the CLI exits at startup
         on one that does not. SHOTS is made (and secured) here through
         `_shots_dir`, since the grant cannot be added after the spawn.
@@ -3751,11 +3757,19 @@ def _copilot_argv(run_dir: str, pane: bool, cli_mode: str | None,
     if model:
         cmd += ["--model", model]
     # An empty model is the backend default (`auto`). The CLI fails
-    # `session/new` when an effort rides with a model that takes none
-    # (`_COPILOT_NO_EFFORT_MODELS`), so the effort is dropped rather than the
-    # session. The settings record still keeps what was asked for.
-    if effort and (model or _NEW_CHAT_MODELS["copilot"]) not in _COPILOT_NO_EFFORT_MODELS:
-        cmd += ["--reasoning-effort", effort]
+    # `session/new` when an effort rides with a model that takes none, so
+    # the effort is dropped rather than the session. WHICH models take
+    # which levels is the account's own list when the health snapshot has
+    # it (`_copilot_listed_efforts`: a level the model does not list is
+    # dropped the same way), else the static `_COPILOT_NO_EFFORT_MODELS`
+    # rule. The settings record still keeps what was asked for.
+    if effort:
+        spawn_model = model or _NEW_CHAT_MODELS["copilot"]
+        listed = _copilot_listed_efforts(spawn_model)
+        takes_effort = (effort in listed if listed is not None
+                        else spawn_model not in _COPILOT_NO_EFFORT_MODELS)
+        if takes_effort:
+            cmd += ["--reasoning-effort", effort]
     cmd += ["--plugin-dir", _copilot_plugin_dir(run_dir, file, pane),
             "--agent", "fused:fused"]
     if pane or _terminal_tools_supported():
@@ -3839,6 +3853,37 @@ def _codex_argv(run_dir: str, pane: bool, cli_mode: str | None,
         for key in ("command", "args", "env"):
             cmd += ["-c", prefix + key + "=" + _toml_inline(server[key])]
     return cmd
+
+
+def _copilot_listed_efforts(model: str):
+    """The effort levels the cached Copilot health snapshot says `model`
+    takes — a tuple (empty: the CLI takes no `--reasoning-effort` for it),
+    or None when the snapshot lists no models or not this one, which sends
+    `_copilot_argv` to the static `_COPILOT_NO_EFFORT_MODELS` rule. The
+    snapshot's `models` rows are `copilot_health.normalize_models`'s
+    (`{id, efforts, reasoning, ...}`), measured from the CLI's own
+    `models.list` for the signed-in account. Read raw like
+    `_copilot_signs_in_with_gh`: which levels a model takes is a fact about
+    the plan, not about the probe's freshness. Absent, unreadable or
+    malformed → None."""
+    try:
+        with open(os.path.join(_home_dir(), _COPILOT_HEALTH_FILE),
+                  encoding="utf-8") as fh:
+            snap = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    rows = snap.get("models") if isinstance(snap, dict) else None
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        if isinstance(row, dict) and row.get("id") == model:
+            if row.get("reasoning") is False:
+                return ()
+            efforts = row.get("efforts")
+            if isinstance(efforts, list):
+                return tuple(str(e) for e in efforts)
+            return tuple(_EFFORT_LEVELS)
+    return None
 
 
 def _copilot_signs_in_with_gh() -> bool:

@@ -8,6 +8,7 @@
 // rule came over verbatim from the strip, because the rules did.
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { refreshAgentBackends } from "./agent-backends";
 import {
   cancelAgentLogin,
   getAgentHealth,
@@ -131,6 +132,11 @@ export function useAgentSetup(backend: string, watching: boolean): ClaudeSetup {
         setHealth(h);
         setLoaded(true);
         setBusy(false);
+        // The snapshot this measured is what the catalog's rows read their
+        // discovered model list off (Copilot's plan list, D11a): re-read it,
+        // so the pickers follow a sign-in or a "Check again" at once. Not
+        // for Claude, whose row carries nothing the snapshot would change.
+        if (backend !== "claude") void refreshAgentBackends();
       },
       () => {
         // A FAILED PROBE IS NOT A FINDING. If /api/claude/health itself cannot

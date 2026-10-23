@@ -709,8 +709,24 @@ export interface AgentBackendRow {
   label: string;
   enabled: boolean;
   /** `reasoning: false` marks a model its CLI takes no effort for (the spawn
-   *  drops a chosen effort rather than fail); absent reads as true. */
-  models: { id: string; label: string; reasoning?: boolean }[];
+   *  drops a chosen effort rather than fail); absent reads as true. `efforts`
+   *  is the list THIS model takes when the server knows it per model
+   *  (Copilot's `models.list`, carried in its health snapshot): `[]` means
+   *  none — the effort pill is hidden — and absent means the row's
+   *  `efforts`. `default_effort` is the CLI's own default for the model when
+   *  it said. `category` / `vendor` / `multiplier` are facts the CLI
+   *  published beside the id (Copilot's picker category and billing
+   *  multiplier), carried, not acted on. */
+  models: {
+    id: string;
+    label: string;
+    reasoning?: boolean;
+    efforts?: string[];
+    default_effort?: string;
+    category?: string | null;
+    vendor?: string | null;
+    multiplier?: number | null;
+  }[];
   default_model: string;
   efforts: string[];
   modes: string[];

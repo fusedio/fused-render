@@ -27,6 +27,7 @@ import {
   agentLabel,
   agentNamed,
   capsOf,
+  defaultEffortFor,
   defaultModelOf,
   AGENT_PREFS_URL,
   isBackendEnabled,
@@ -3177,6 +3178,12 @@ export default function NewJobModal({
   const pickModel = useCallback((value: string) => {
     if (tookGlobal.current) tookGlobal.current.model = false;
     setModel(value);
+    // THE EFFORT FOLLOWS THE MODEL: a level the new model does not take
+    // (per model where the catalog knows it per model — a Copilot model
+    // that takes none, or fewer levels) becomes the new model's default,
+    // which is "" for one that takes none. A level it does take stays.
+    setEffort((e) =>
+      isUnlistedEffort(e, agentRef.current, value) ? defaultEffortFor(agentRef.current, value) : e);
   }, []);
   const pickEffort = useCallback((value: string) => {
     if (tookGlobal.current) tookGlobal.current.effort = false;
@@ -3844,7 +3851,9 @@ export default function NewJobModal({
     && (sessionAgent ? agent !== sessionAgent : pickedHere.current);
   const continuesSession = !leavesSession;
   const runModels = taskModelsOf(agent);
-  const runEfforts = taskEffortsOf(agent);
+  // The Thinking rows are the CHOSEN MODEL's (per model where the catalog
+  // knows them per model); empty, the section is not drawn.
+  const runEfforts = taskEffortsOf(agent, model);
   // ANOTHER AGENT'S CARD OPENS ON ITS OWN DEFAULTS: the global pair above is
   // Claude's, so a Copilot card fills (or corrects) a value its list does not
   // hold from its catalog row. Waits for the catalog — before it lands every
@@ -3859,17 +3868,25 @@ export default function NewJobModal({
     setEffort((e) => (isUnlistedEffort(e, agent) ? "" : e));
     if (agent === "claude") return;
     const models = runModels.map((o) => o.key);
-    const efforts = runEfforts.map((o) => o.key);
     // An EMPTY value is filled; a value the list does not hold is corrected
     // only when it came from the Claude global (`tookGlobal`, the race before
     // the catalog landed). A draft's or an entry's own value is carried
     // through as `taskRunOptions` carries it, so an edit stays lossless.
     const took = tookGlobal.current;
-    setModel((m) => (!m || (took?.model && !models.includes(m)) ? defaultModelOf(agent) : m));
-    setEffort((e) =>
-      !e || (took?.effort && !efforts.includes(e))
-        ? efforts.includes("medium") ? "medium" : efforts[0] ?? ""
-        : e);
+    const nextModel = (m: string) =>
+      !m || (took?.model && !models.includes(m)) ? defaultModelOf(agent) : m;
+    setModel(nextModel);
+    // THE EFFORT IS THE MODEL'S (per model where the catalog knows it per
+    // model): filled with that model's default — "" for one that takes
+    // none — and corrected to it when the Claude global's level is one the
+    // model does not take.
+    setEffort((e) => {
+      const forModel = nextModel(model);
+      const efforts = taskEffortsOf(agent, forModel).map((o) => o.key);
+      return !e || (took?.effort && !efforts.includes(e))
+        ? defaultEffortFor(agent, forModel)
+        : e;
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agent, agents.loaded]);
   const pickBackend = useCallback((value: string) => {
@@ -5259,23 +5276,30 @@ export default function NewJobModal({
             {/* "Thinking", not "Effort" (the CLI's word for the flag): what the
                 user is choosing is how long Claude gets to think before it
                 acts, and the chat's own pill says the same thing. The wire is
-                untouched — this is the label. */}
-            <div className="nt-pop-h">Thinking</div>
-            <div className="nt-menu" role="group" aria-label="Thinking">
-              {taskRunOptions(runEfforts, effort).map((o) => (
-                <button
-                  key={o.key}
-                  type="button"
-                  role="menuitemradio"
-                  aria-checked={effort === o.key}
-                  disabled={(o as { disabled?: boolean }).disabled}
-                  onClick={() => pickEffort(o.key)}
-                >
-                  {o.label}
-                  {effort === o.key && ICON_CHECK}
-                </button>
-              ))}
-            </div>
+                untouched — this is the label. NOT DRAWN for a model that
+                takes no effort (a Copilot model whose catalog row lists
+                none): a section of levels the spawn would drop is a choice
+                that does nothing. */}
+            {runEfforts.length ? (
+              <>
+                <div className="nt-pop-h">Thinking</div>
+                <div className="nt-menu" role="group" aria-label="Thinking">
+                  {taskRunOptions(runEfforts, effort).map((o) => (
+                    <button
+                      key={o.key}
+                      type="button"
+                      role="menuitemradio"
+                      aria-checked={effort === o.key}
+                      disabled={(o as { disabled?: boolean }).disabled}
+                      onClick={() => pickEffort(o.key)}
+                    >
+                      {o.label}
+                      {effort === o.key && ICON_CHECK}
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : null}
           </PropPill>
           <PropPill
             k="Access"

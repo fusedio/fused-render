@@ -3746,6 +3746,8 @@ function ChatBody(props: ChatBodyProps) {
     (cmd: ClassifiedCommand): boolean => {
       const plan = planLocalCommand(cmd, {
         backend: liveBackend.current,
+        // `/effort` validates against the levels THIS model takes.
+        model: defaults.model,
         worktreeReady: worktreeTarget && worktreeReady.current,
         hasSession: !!state.sessionId,
       });
@@ -3777,7 +3779,8 @@ function ChatBody(props: ChatBodyProps) {
           return true;
       }
     },
-    [onBack, setModelPick, setEffortPick, worktreeTarget, onToggleTasks, state.sessionId, rcAsk],
+    [onBack, setModelPick, setEffortPick, worktreeTarget, onToggleTasks, state.sessionId, rcAsk,
+     defaults.model],
   );
   /** SWITCHING WORKTREE IS OPENING THAT FOLDER'S CHAT, FRESH — the URL the Home
    *  lists open a folder chat on (`paneChatUrl`), with no session, through the

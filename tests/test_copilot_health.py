@@ -800,3 +800,252 @@ def test_refresh_install_and_login_round_trip(monkeypatch):
     assert c.post("/api/copilot/login/cancel", headers=h).json()["canceled"] is False
     assert c.post("/api/copilot/link-path", headers=h).status_code == 409
     assert not any("doctor" in getattr(r, "path", "") for r in c.app.routes)
+
+
+# -- the model listing (`models.list` over the headless SDK server) -----------
+#
+# What the pickers show for Copilot is per account (the plan), so the health
+# measure asks the CLI's own SDK server. The protocol is Content-Length
+# framed JSON-RPC (not ACP's newline-delimited), and the shapes below are the
+# ones 1.0.103 answered with on 2026-10-23.
+
+
+_FAKE_HEADLESS = textwrap.dedent("""\
+    #!@PYTHON@
+    import json, os, sys, time
+    mode = os.environ.get("FAKE_COPILOT_MODE", "ok")
+    assert sys.argv[1:] == ["--headless", "--stdio", "--no-auto-update"], sys.argv
+    with open(os.environ["FAKE_COPILOT_LOG"], "w") as f:
+        json.dump({"token": os.environ.get("COPILOT_GITHUB_TOKEN"), "pid": os.getpid()}, f)
+    models = json.loads(os.environ["FAKE_COPILOT_MODELS"])
+
+    def send(msg):
+        body = json.dumps(msg).encode("utf-8")
+        sys.stdout.buffer.write(b"Content-Length: %d\\r\\n\\r\\n" % len(body) + body)
+        sys.stdout.buffer.flush()
+
+    buf = b""
+    while True:
+        chunk = sys.stdin.buffer.read1(65536)
+        if not chunk:
+            break
+        buf += chunk
+        while True:
+            cut = buf.find(b"\\r\\n\\r\\n")
+            if cut < 0:
+                break
+            n = int(buf[:cut].decode().split(":")[1])
+            if len(buf) < cut + 4 + n:
+                break
+            msg = json.loads(buf[cut + 4:cut + 4 + n])
+            buf = buf[cut + 4 + n:]
+            if msg["method"] == "connect":
+                # 1.0.103 refuses ACP's {name, version} clientInfo shape.
+                assert "editorName" in msg["params"]["clientInfo"], msg
+                send({"jsonrpc": "2.0", "id": msg["id"],
+                      "result": {"ok": True, "protocolVersion": 3, "version": "1.0.103"}})
+            elif msg["method"] == "models.list":
+                if mode == "hang":
+                    time.sleep(60)
+                elif mode == "auth":
+                    send({"jsonrpc": "2.0", "id": msg["id"], "error": {
+                        "code": -32603, "message": "Request models.list failed with "
+                        "message: Not authenticated. Please authenticate first."}})
+                elif mode == "banner":
+                    sys.stdout.write("GitHub Copilot CLI 1.0.103.\\n")
+                    sys.stdout.flush()
+                else:
+                    # A notification first, as the real server interleaves them.
+                    send({"jsonrpc": "2.0", "method": "session.event", "params": {}})
+                    send({"jsonrpc": "2.0", "id": msg["id"], "result": {"models": models}})
+""")
+
+#: `models.list` rows as 1.0.103 shapes them, with the edges the normalizer
+#: has to handle: levels outside this app's vocabulary, a model with the flag
+#: but no list, one disabled by policy, a duplicate id, a row without an id,
+#: and a non-dict.
+_MODELS_REPLY = [
+    {"id": "gpt-5.4", "name": "GPT-5.4",
+     "capabilities": {"supports": {"reasoningEffort": True, "vision": True},
+                      "limits": {"max_context_window_tokens": 400000}},
+     "policy": {"state": "enabled", "terms": ""}, "billing": {"multiplier": 1},
+     "supportedReasoningEfforts": ["low", "medium", "high", "xhigh"],
+     "defaultReasoningEffort": "medium",
+     "modelPickerCategory": "versatile", "vendor": "Azure OpenAI"},
+    {"id": "gpt-5.4-mini", "name": "GPT-5.4 mini",
+     "capabilities": {"supports": {"reasoningEffort": True}},
+     "billing": {"multiplier": 0},
+     "supportedReasoningEfforts": ["none", "minimal", "low", "medium", "high"],
+     "defaultReasoningEffort": "none"},
+    {"id": "claude-sonnet-4.5", "name": "Claude Sonnet 4.5",
+     "capabilities": {"supports": {"reasoningEffort": False}},
+     "policy": {"state": "unconfigured"}, "billing": {"multiplier": 1},
+     "modelPickerCategory": "versatile", "vendor": "Anthropic"},
+    {"id": "gemini-3-pro", "name": "Gemini 3 Pro",
+     "capabilities": {"supports": {"reasoningEffort": True}}},
+    {"id": "grok-4.7", "name": "Grok 4.7", "policy": {"state": "disabled"}},
+    {"id": "gpt-5.4", "name": "a duplicate"},
+    {"name": "no id at all"},
+    "not even a dict",
+]
+
+
+def test_normalize_models_keeps_what_the_pickers_need():
+    rows = copilot_health.normalize_models(_MODELS_REPLY)
+    assert [r["id"] for r in rows] == ["gpt-5.4", "gpt-5.4-mini", "claude-sonnet-4.5",
+                                       "gemini-3-pro"]
+    gpt, mini, sonnet, gemini = rows
+    assert gpt == {"id": "gpt-5.4", "label": "GPT-5.4", "reasoning": True,
+                   "efforts": ["low", "medium", "high", "xhigh"],
+                   "default_effort": "medium", "category": "versatile",
+                   "vendor": "Azure OpenAI", "multiplier": 1}
+    # Levels this app has no word for are cut, in the vocabulary's order; a
+    # default outside the cut list is no default.
+    assert mini["efforts"] == ["low", "medium", "high"]
+    assert mini["default_effort"] == "" and mini["multiplier"] == 0
+    # No reasoning effort: no levels, and the pill is hidden on that.
+    assert sonnet["reasoning"] is False and sonnet["efforts"] == []
+    assert sonnet["category"] == "versatile" and sonnet["vendor"] == "Anthropic"
+    # The flag without a list: the whole vocabulary (what the CLI accepted
+    # for every GPT and Gemini id before it published lists).
+    assert gemini["efforts"] == list(copilot_health._effort_vocabulary())
+    assert gemini["category"] is None and gemini["multiplier"] is None
+
+
+@pytest.fixture
+def fake_headless(tmp_path, monkeypatch):
+    """A `copilot` whose headless server speaks the framed protocol."""
+    p = tmp_path / "headless-bin" / "copilot"
+    p.parent.mkdir()
+    p.write_text(_FAKE_HEADLESS.replace("@PYTHON@", sys.executable))
+    p.chmod(p.stat().st_mode | stat.S_IXUSR)
+    log = tmp_path / "headless.log"
+    monkeypatch.setenv("FAKE_COPILOT_LOG", str(log))
+    monkeypatch.setenv("FAKE_COPILOT_MODELS", json.dumps(_MODELS_REPLY))
+
+    def run(mode, token=None):
+        monkeypatch.setenv("FAKE_COPILOT_MODE", mode)
+        return copilot_health.list_models(str(p), token)
+
+    run.log = lambda: json.loads(log.read_text())
+    run.path = str(p)
+    return run
+
+
+def test_list_models_speaks_the_headless_protocol(fake_headless):
+    rows = fake_headless("ok", token="gho_dummy")
+    assert [r["id"] for r in rows] == ["gpt-5.4", "gpt-5.4-mini", "claude-sonnet-4.5",
+                                       "gemini-3-pro"]
+    assert rows[0]["efforts"] == ["low", "medium", "high", "xhigh"]
+    # The credential the sign-in probe proved reaches the child, and only it.
+    assert fake_headless.log()["token"] == "gho_dummy"
+
+
+def test_list_models_without_a_token_uses_the_clis_own_credential(fake_headless):
+    assert fake_headless("ok") is not None
+    assert fake_headless.log()["token"] is None
+
+
+def test_list_models_signed_out_is_none(fake_headless):
+    assert fake_headless("auth") is None
+
+
+def test_list_models_output_that_is_not_the_protocol_is_none(fake_headless):
+    assert fake_headless("banner") is None
+
+
+def test_list_models_hung_server_is_none_and_is_killed(fake_headless, monkeypatch):
+    monkeypatch.setattr(copilot_health, "_HEADLESS_TIMEOUT_S", 1.5)
+    t0 = time.time()
+    assert fake_headless("hang") is None
+    assert time.time() - t0 < 10  # bounded by the timeout + the kill wait
+    _assert_reaped(fake_headless.log()["pid"])
+
+
+def test_a_missing_cli_lists_nothing(tmp_path):
+    assert copilot_health.list_models(str(tmp_path / "nope"), None) is None
+
+
+def _rows():
+    return copilot_health.normalize_models(_MODELS_REPLY)
+
+
+def test_measure_lists_models_with_the_credential_the_probe_proved(tmp_path, monkeypatch):
+    """The gh flow: step one signed out, step two signed in with gh's token
+    — the listing then spawns with THAT token, and the snapshot carries it
+    under `models` while `account.method` says gh."""
+    cli = _fake_cli(tmp_path)
+    monkeypatch.setenv("PATH", os.path.dirname(cli))
+    monkeypatch.setattr(copilot_health, "probe_version", lambda p: "1.0.103")
+    monkeypatch.setattr(copilot_health, "_acp_probe",
+                        lambda p, t: True if t else False)
+    monkeypatch.setattr(copilot_health, "gh_token", lambda: "gho_gh")
+    asked = []
+    monkeypatch.setattr(copilot_health, "list_models",
+                        lambda p, t: asked.append((p, t)) or _rows())
+    snap = copilot_health._measure()
+    assert asked == [(cli, "gho_gh")]
+    assert snap["account"]["method"] == "gh"
+    assert [m["id"] for m in snap["models"]] == ["gpt-5.4", "gpt-5.4-mini",
+                                                 "claude-sonnet-4.5", "gemini-3-pro"]
+    # The endpoint's shape carries it, the cache bookkeeping does not leak.
+    assert "models" in copilot_health._public(snap)
+
+
+def test_measure_does_not_list_when_signed_out(tmp_path, monkeypatch):
+    cli = _fake_cli(tmp_path)
+    monkeypatch.setenv("PATH", os.path.dirname(cli))
+    monkeypatch.setattr(copilot_health, "probe_version", lambda p: "1.0.103")
+    monkeypatch.setattr(copilot_health, "_acp_probe", lambda p, t: False)
+    monkeypatch.setattr(copilot_health, "list_models",
+                        lambda p, t: pytest.fail("a signed-out CLI cannot list"))
+    snap = copilot_health._measure()
+    assert snap["signed_in"] is False and snap["models"] is None
+
+
+def test_a_listing_that_could_not_tell_carries_the_last_list_forward(tmp_path, monkeypatch):
+    """A slow `models.list` must not shrink the picker to the static
+    shortlist; a definite sign-out does drop the list."""
+    cli = _fake_cli(tmp_path)
+    monkeypatch.setenv("PATH", os.path.dirname(cli))
+    monkeypatch.setattr(copilot_health, "probe_version", lambda p: "1.0.103")
+    monkeypatch.setattr(copilot_health, "_acp_probe", lambda p, t: True)
+    monkeypatch.setattr(copilot_health, "list_models", lambda p, t: _rows())
+    first = copilot_health.summary()
+    assert len(first["models"]) == 4
+    monkeypatch.setattr(copilot_health, "list_models", lambda p, t: None)
+    assert len(copilot_health.summary_refreshed()["models"]) == 4
+    # Could not tell whether signed in either: still carried, like account.
+    monkeypatch.setattr(copilot_health, "_acp_probe", lambda p, t: None)
+    assert len(copilot_health.summary_refreshed()["models"]) == 4
+    monkeypatch.setattr(copilot_health, "_acp_probe", lambda p, t: False)
+    assert copilot_health.summary_refreshed()["models"] is None
+    # And a fresh cache (a new config dir = another credential store) starts over.
+    monkeypatch.setattr(copilot_health, "_acp_probe", lambda p, t: True)
+    monkeypatch.setattr(copilot_health, "list_models", lambda p, t: _rows())
+    copilot_health.summary_refreshed()
+    monkeypatch.setenv("COPILOT_HOME", str(tmp_path / "other-copilot"))
+    monkeypatch.setattr(copilot_health, "list_models", lambda p, t: None)
+    assert copilot_health.summary_refreshed()["models"] is None
+
+
+def test_cached_models_reads_the_raw_cache_past_the_freshness_gates(tmp_path, monkeypatch):
+    """The catalog's pickers are better served by yesterday's list than by
+    the static shortlist, so `cached_models` ignores the fingerprint that
+    makes `cached()` say None after a PATH change."""
+    cli = _fake_cli(tmp_path)
+    monkeypatch.setenv("PATH", os.path.dirname(cli))
+    monkeypatch.setattr(copilot_health, "probe_version", lambda p: "1.0.103")
+    monkeypatch.setattr(copilot_health, "_acp_probe", lambda p, t: True)
+    monkeypatch.setattr(copilot_health, "list_models", lambda p, t: _rows())
+    assert copilot_health.cached_models() is None
+    copilot_health.summary()
+    assert [m["id"] for m in copilot_health.cached_models()][0] == "gpt-5.4"
+    monkeypatch.setenv("PATH", str(tmp_path / "elsewhere"))
+    assert copilot_health.cached() is None
+    assert copilot_health.cached_models() is not None
+
+
+def test_the_effort_vocabulary_is_the_backends_one_list():
+    from fused_render.agent_backends import copilot
+    assert copilot_health._effort_vocabulary() == tuple(copilot.EFFORTS)

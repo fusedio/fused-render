@@ -26,8 +26,9 @@ import {
 import {
   agentLabel,
   defaultBackend,
-  effortsOf,
+  effortsForModel,
   isBackendEnabled,
+  isUnlistedEffort,
   modelLabelsOf,
   modelsOf,
   useAgentBackends,
@@ -205,8 +206,10 @@ const modelChoices = (agent: string): { value: ComposerPicks["model"]; label: st
     label: modelLabelsOf(agent)[m] ?? m,
   }));
 
-const effortChoices = (agent: string): { value: ComposerPicks["effort"]; label: string }[] =>
-  effortsOf(agent).map((e) => ({ value: e as ComposerPicks["effort"], label: e }));
+// THE CHOSEN MODEL'S levels (per model where the catalog knows them per
+// model — a Copilot model may take none, and then no effort pick is drawn).
+const effortChoices = (agent: string, model: string): { value: ComposerPicks["effort"]; label: string }[] =>
+  effortsForModel(agent, model).map((e) => ({ value: e as ComposerPicks["effort"], label: e }));
 
 // A composer attachment — NewJobModal's TaskImage shape. `path` is "" until the
 // upload answers; `thumb` is a blob: URL for a picture the browser can draw.
@@ -411,6 +414,12 @@ export function HeroComposer({
     picked.current.model = true;
     setModel(next);
     if (agentRef.current === "claude") void setClaudeDefaults({ model: next });
+    // THE EFFORT FOLLOWS THE MODEL: a level the new model does not take
+    // (or a model that takes none) becomes that model's own default.
+    setEffort((e) =>
+      isUnlistedEffort(e, agentRef.current, next)
+        ? resolveComposerDefaults(getClaudeDefaults(), agentRef.current, next).effort
+        : e);
   };
   const pickEffort = (next: ComposerPicks["effort"]) => {
     picked.current.effort = true;
@@ -876,14 +885,16 @@ export function HeroComposer({
                 disabled={busy}
                 onPick={pickModel}
               />
-              <ComposerPick
-                glyph="effort"
-                label="Effort"
-                value={effort}
-                choices={effortChoices(agent)}
-                disabled={busy}
-                onPick={pickEffort}
-              />
+              {effortChoices(agent, model).length ? (
+                <ComposerPick
+                  glyph="effort"
+                  label="Effort"
+                  value={effort}
+                  choices={effortChoices(agent, model)}
+                  disabled={busy}
+                  onPick={pickEffort}
+                />
+              ) : null}
               <span className="home-composer-hint">
                 {phase === "naming" && "Naming your app…"}
                 {phase === "creating" && "Creating the app…"}
