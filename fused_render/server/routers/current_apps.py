@@ -92,7 +92,8 @@ def _archive_folder(folder: str) -> dict:
     # card is stopped on the way out, as the single archive stops it.
     parked = tasks_router._parked_runs()
     for task in _folder_tasks(folder):
-        n, filed, _stopped = tasks_router.archive_task(task, parked)
+        n, filed, _stopped = tasks_router.archive_task(task, parked,
+                                                       teardown=False)
         cancelled += n
         if filed or n:
             archived += 1

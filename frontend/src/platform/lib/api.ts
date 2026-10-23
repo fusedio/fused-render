@@ -4677,13 +4677,87 @@ export function recordChatSettings(
 //
 // The way back is `unarchiveTask` below — a drag, not a button. Nothing is
 // destroyed either way: the conversation and its transcript are kept (D306).
-export function archiveTask(
+export interface TeardownKept {
+  path: string;
+  /** "dirty" | "unpushed" | "unknown" | "not-managed" | "remove-failed". */
+  reasons: string[];
+  /** null: git did not answer. */
+  dirty_files: number | null;
+  unpushed: number | null;
+  error?: string;
+}
+
+/** What archiving tore down: the runs it ended, the worktrees it removed, and
+ *  the ones it KEPT (with why). Absent on an older server. */
+export interface TeardownReport {
+  stopped: number;
+  killed: number[];
+  removed: string[];
+  kept: TeardownKept[];
+  gone: string[];
+}
+
+export interface ArchiveResult {
+  ok: boolean;
+  key: string;
+  cancelled: number;
+  filed: boolean;
+  teardown?: TeardownReport;
+}
+
+type ArchiveListener = (key: string, result: ArchiveResult) => void;
+const archiveListeners = new Set<ArchiveListener>();
+
+/** Hear every archive, whichever of the eight call sites made it. A registry
+ *  here (not an import of notifications) because notifications -> jobs -> api:
+ *  this file cannot import it back. Returns the way to stop listening. */
+export function onTaskArchived(fn: ArchiveListener): () => void {
+  archiveListeners.add(fn);
+  return () => {
+    archiveListeners.delete(fn);
+  };
+}
+
+export async function archiveTask(key: string): Promise<ArchiveResult> {
+  const res = await postJson<ArchiveResult>("/api/tasks/archive", { key });
+  for (const fn of [...archiveListeners]) {
+    try {
+      fn(key, res);
+    } catch {
+      // A listener's bug is never the archive's failure: it has happened.
+    }
+  }
+  return res;
+}
+
+/** Live listening ports of each task's process tree, by task key. */
+export async function fetchTaskPorts(ids: string[]): Promise<Record<string, number[]>> {
+  const res = await postJson<{ ports: Record<string, number[]> }>("/api/tasks/ports", { ids });
+  return res.ports ?? {};
+}
+
+export interface TaskHold {
+  path: string;
+  dirty_files: number | null;
+  unpushed: number | null;
+  /** The checked-out branch; null on a git error or a detached HEAD. */
+  branch?: string | null;
+  reasons: string[];
+}
+
+/** What each task's recorded worktrees hold open, by task key. Tasks with no
+ *  recorded worktree are absent. */
+export async function fetchTaskHolds(ids: string[]): Promise<Record<string, TaskHold[]>> {
+  const res = await postJson<{ holds: Record<string, TaskHold[]> }>("/api/tasks/holds", { ids });
+  return res.holds ?? {};
+}
+
+/** "Remove anyway": force-remove a task's recorded worktrees (all, or `paths`). */
+export function removeTaskWorktrees(
   key: string,
-): Promise<{ ok: boolean; key: string; cancelled: number; filed: boolean }> {
-  return postJson<{ ok: boolean; key: string; cancelled: number; filed: boolean }>(
-    "/api/tasks/archive",
-    { key },
-  );
+  paths?: string[],
+): Promise<{ ok: boolean; key: string; removed: string[]; kept: TeardownKept[]; gone: string[] }> {
+  return postJson("/api/tasks/worktrees/remove", paths ? { key, paths } : { key });
 }
 
 /** Give a started task a title of the reader's own; "" takes it back and the

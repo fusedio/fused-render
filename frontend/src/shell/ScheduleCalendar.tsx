@@ -92,6 +92,7 @@
 //
 // The layout maths is all in schedule-lib.ts and tested there; this file adds
 // pixels and nothing else.
+import { useArchiveConfirm } from "@shell/archive-confirm";
 import {
   useCallback,
   useEffect,
@@ -588,7 +589,9 @@ function ChipPopover({
   const canDelete =
     !liveNow && !canArchive && (col === "upcoming" || col === "archived");
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const archive = async () => {
+  const archiveAsk = useArchiveConfirm();
+  const archive = (): void => archiveAsk.guard(task, () => void doArchive());
+  const doArchive = async () => {
     setRunning(true);
     setError("");
     try {
@@ -814,7 +817,7 @@ function ChipPopover({
               title="Archive"
               aria-label="Archive"
               disabled={running}
-              onClick={() => void archive()}
+              onClick={archive}
             >
               {ICON_ARCHIVE}
             </button>
@@ -929,6 +932,7 @@ function ChipPopover({
           </button>
         )}
       </div>
+      {archiveAsk.node}
     </div>
   );
 }

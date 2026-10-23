@@ -92,6 +92,9 @@ import {
 import { useTaskHeadline } from "./TaskPeekWho";
 import { TaskAgentMark } from "./ScheduleTaskViews";
 import { useMarginWheel } from "./useMarginWheel";
+import { useArchiveConfirm } from "@shell/archive-confirm";
+import { BulkBar, RowCheck, useBulkArchive, type BulkSelect } from "./TaskBulk";
+import { selectableTask } from "./task-selection";
 import { TaskPrChip } from "./TaskPrChip";
 
 /** What the page says when there is nothing to draw — the Board's own words,
@@ -220,7 +223,9 @@ export function useChatTemplates(dirs: string[]): Record<string, string | null> 
 }
 
 export function TaskCards({
-  tasks,
+  tasks: tasksIn,
+  bulkSelect = false,
+  selectionResetKey = "",
   home = "",
   onReload,
   onPickProject,
@@ -237,6 +242,10 @@ export function TaskCards({
    * lane (every lane, Archive last), which is the one thing this view does to
    * the set it is handed and the one place it is decided. */
   tasks: Task[];
+  /** Draw the card checkboxes and the bulk bar (the wall has no group heads). */
+  bulkSelect?: boolean;
+  /** Changes when the page's filters or search do: the selection empties. */
+  selectionResetKey?: string;
   home?: string;
   /** After the popup archives or unarchives: the card's lane changed, so the
    * page re-reads — the same call the Board's drops and the List's row make. */
@@ -260,6 +269,10 @@ export function TaskCards({
    * folder door goes disabled. */
   missing?: ReadonlySet<string>;
 }) {
+  // Bulk archive: the cards it has hidden are filtered out of `tasks` here.
+  const bulkH = useBulkArchive({ tasks: tasksIn, selectable: selectableTask, resetKey: selectionResetKey, onReload });
+  const tasks = bulkSelect ? bulkH.tasks : tasksIn;
+  const bulk = bulkSelect ? bulkH.bulk : undefined;
   // THE POPUP (Akshil, 2026-09-05): one task at a time, opened from a card's
   // head. Held as the Task the head was clicked with, then REFRESHED from every
   // poll below: a popup opened in the "Starting…" window — the usual moment,
@@ -384,6 +397,7 @@ export function TaskCards({
       <>
         <p className="schedule-tv-empty">{emptyLabel}</p>
         {popup}
+        {bulk && bulkH.node}
       </>
     );
   }
@@ -394,7 +408,10 @@ export function TaskCards({
     // one child of it, the "Show more" control another, full width beneath. Put
     // inside the grid the control was one cell of a row sized for a chat, with a
     // chat's worth of empty track under it (Akshil, 2026-09-05).
-    <div className="task-cards-scroll" ref={wallRef}>
+    <div className="task-cards-scroll" ref={wallRef} data-selecting={bulk && bulkH.selection.size > 0 ? "1" : undefined}>
+      {bulk && (
+        <BulkBar count={bulkH.selection.size} onArchive={bulkH.archiveSelected} onClear={bulkH.selection.clear} />
+      )}
       <div className="task-cards">
       {cards.map((task) => (
         <TaskCard
@@ -430,10 +447,12 @@ export function TaskCards({
           }
           onPickDraft={onPickDraft}
           draftOn={draftOn}
+          bulk={bulk}
         />
       ))}
       </div>
       {popup}
+      {bulk && bulkH.node}
       {hidden > 0 && (
         <button
           type="button"
@@ -449,6 +468,7 @@ export function TaskCards({
 
 function TaskCard({
   task,
+  bulk,
   home,
   template,
   folderMissing,
@@ -462,6 +482,8 @@ function TaskCard({
   draftOn = false,
 }: {
   task: Task;
+  /** The bulk-select handle: draws the checkbox. */
+  bulk?: BulkSelect | undefined;
   home: string;
   /** The folder is gone from the disk (Scheduled → useMissingFolders). */
   folderMissing: boolean;
@@ -555,7 +577,12 @@ function TaskCard({
    *  so a double press cannot send two. */
   const [discarding, setDiscarding] = useState(false);
   const blocked = eraseBlocked(task);
-  const refile = async () => {
+  const archiveAsk = useArchiveConfirm();
+  const refile = (): void => {
+    if (filing?.kind === "archive") archiveAsk.guard(task, () => void doRefile());
+    else void doRefile();
+  };
+  const doRefile = async () => {
     if (!filing || acting) return;
     setActing(true);
     setNote("");
@@ -583,9 +610,11 @@ function TaskCard({
   const resolving = !chatHere && !folderMissing && !!task.session_id && template === undefined;
 
   return (
+    <>
     <section
       className={"task-card task-card--door" + (peeked ? ` ${PEEK_OPEN_CLASS}` : "")
         + (selected ? " is-selected" : "")}
+      data-checked={bulk?.selection.has(task.key) ? "1" : undefined}
       // The side peek's two hooks on every openable item in every view: the
       // halo's selector and — read in DOM order — the prev/next walk, which on
       // this view is the grid's own order (shell/TaskPeek.tsx). Absent entirely
@@ -602,6 +631,7 @@ function TaskCard({
       // stops its presses, so a door never also opens the popup.
       onClick={() => onPeek(task)}
     >
+      {bulk && <RowCheck select={bulk} task={task} />}
       {/* THE HEAD IS THE DOOR (Akshil, 2026-09-05: "when I click on the heading
           of the card ... it should open the preview"). The whole strip — ring,
           id, time, title — is one button that opens the task's popup; the body
@@ -904,6 +934,8 @@ function TaskCard({
         />
       )}
     </section>
+    {archiveAsk.node}
+    </>
   );
 }
 
@@ -963,7 +995,12 @@ function TaskPeek({
   // to take the focus it could not take at mount.
   const [chatReady, setChatReady] = useState(0);
 
-  const refile = async () => {
+  const archiveAsk = useArchiveConfirm();
+  const refile = (): void => {
+    if (filing?.kind === "archive") archiveAsk.guard(task, () => void doRefile());
+    else void doRefile();
+  };
+  const doRefile = async () => {
     if (!filing) return;
     setActing(true);
     setNote("");
@@ -1139,6 +1176,7 @@ function TaskPeek({
           }}
         />
       )}
+      {archiveAsk.node}
     </>
   );
 }

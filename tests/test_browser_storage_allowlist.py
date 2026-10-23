@@ -44,6 +44,7 @@ ALLOWED = {
     "shell/ScheduleTaskViews.tsx": "tab",           # list memory, board lanes, group folds
     "shell/Scheduled.tsx": "import",
     "shell/TaskCards.tsx": "tab",
+    "shell/TaskWorkspace.tsx": "display",           # group collapse state (per viewer)
     "shell/TerminalDrawer.tsx": "cache",            # pty ids re-checked against GET /api/terminal
     "shell/UpdateCard.tsx": "tab",
     "shell/notifications-seen-store.ts": "import",

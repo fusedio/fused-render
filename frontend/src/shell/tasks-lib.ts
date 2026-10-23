@@ -1582,8 +1582,10 @@ export function isExpanded(expanded: Set<string>, key: string): boolean {
 // second spelling of `/tasks` that would show up in every share and every
 // bookmark while saying nothing at all.
 
-/** Which of the page's four views is up. */
-export type TaskView = "list" | "board" | "calendar" | "cards" | TaskGroupBy;
+/** Which of the page's views is up. `detailed` is the open-work view
+ *  (workspace-lib.ts, TaskWorkspace.tsx): not a default tab, reached from the
+ *  switcher's `+`. It was first called `workspace`; see `normalizeView`. */
+export type TaskView = "list" | "board" | "calendar" | "cards" | "detailed" | TaskGroupBy;
 
 /** The three GROUPED LISTS (Akshil, 2026-10-16): the List's own rows, in the
  *  List's own order, cut into sections by when they last moved, by the folder
@@ -1598,7 +1600,7 @@ export const GROUP_VIEWS: TaskGroupBy[] = ["time", "project", "pr"];
 export const DEFAULT_VIEW_TABS: TaskView[] = ["list", "board"];
 
 /** Every view the switcher's `+` can add, in the order the menu lists them. */
-export const BASE_VIEWS: TaskView[] = ["list", "board", "cards", "calendar"];
+export const BASE_VIEWS: TaskView[] = ["list", "board", "cards", "calendar", "detailed"];
 
 /** The word each view wears on its tab (and in the editor's chips). */
 export const VIEW_LABELS: Record<TaskView, string> = {
@@ -1606,6 +1608,7 @@ export const VIEW_LABELS: Record<TaskView, string> = {
   board: "Board",
   cards: "Cards",
   calendar: "Calendar",
+  detailed: "Detailed",
   time: "Recent",
   project: "Project",
   pr: "PR",
@@ -1614,6 +1617,15 @@ export const VIEW_LABELS: Record<TaskView, string> = {
 /** `time` / `project` / `pr` for a grouped list, null for every other view. */
 export function groupOfView(view: TaskView): TaskGroupBy | null {
   return (GROUP_VIEWS as string[]).includes(view) ? (view as TaskGroupBy) : null;
+}
+
+/** Old spellings of a view name, still read from a link or a stored value. */
+const VIEW_ALIASES: Record<string, TaskView> = { workspace: "detailed" };
+
+/** A stored or linked view name with its old spelling mapped to the current one
+ *  (`workspace` is now `detailed`); anything else passes through unchanged. */
+export function normalizeView<T>(v: T): T | TaskView {
+  return typeof v === "string" && Object.prototype.hasOwnProperty.call(VIEW_ALIASES, v) ? VIEW_ALIASES[v] : v;
 }
 
 /**
@@ -1635,7 +1647,8 @@ export function parseViewTabs(raw: unknown): TaskView[] {
   }
   if (!Array.isArray(parsed)) return DEFAULT_VIEW_TABS;
   const out: TaskView[] = [];
-  for (const v of parsed) {
+  for (const name of parsed) {
+    const v = normalizeView(name);
     if (typeof v === "string" && (TASK_VIEWS as string[]).includes(v) && !out.includes(v as TaskView)) {
       out.push(v as TaskView);
     }
@@ -1650,7 +1663,7 @@ export const VIEW_PARAM = "view";
  * read by the parser below and by the test that holds the switcher's buttons to
  * it — a view that exists in the union and not here is a view a link cannot
  * reach, which is exactly the bug a second hand-written list invites. */
-export const TASK_VIEWS: TaskView[] = ["list", "board", "cards", "calendar", "time", "project", "pr"];
+export const TASK_VIEWS: TaskView[] = ["list", "board", "cards", "calendar", "detailed", "time", "project", "pr"];
 
 /**
  * The view a URL asks for, or `fallback` when it asks for nothing this page
@@ -1661,7 +1674,7 @@ export const TASK_VIEWS: TaskView[] = ["list", "board", "cards", "calendar", "ti
  */
 export function viewFromSearch(search: string, fallback: TaskView = "list"): TaskView {
   const raw = search.startsWith("?") ? search.slice(1) : search;
-  const v = new URLSearchParams(raw).get(VIEW_PARAM);
+  const v = normalizeView(new URLSearchParams(raw).get(VIEW_PARAM));
   return (TASK_VIEWS as string[]).includes(v ?? "") ? (v as TaskView) : fallback;
 }
 
@@ -3333,7 +3346,8 @@ export function parseViewFilters(raw: string | null | undefined): Partial<Record
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
   const lanes = new Set<string>([...BOARD_COLUMNS.map((c) => c.key), "draft"]);
   const out: Partial<Record<TaskView, ViewFacets>> = {};
-  for (const [view, v] of Object.entries(parsed as Record<string, unknown>)) {
+  for (const [name, v] of Object.entries(parsed as Record<string, unknown>)) {
+    const view = normalizeView(name);
     if (!(TASK_VIEWS as string[]).includes(view)) continue;
     if (!v || typeof v !== "object" || Array.isArray(v)) continue;
     const row = v as { statuses?: unknown; projects?: unknown };

@@ -122,7 +122,9 @@ import json
 import logging
 import math
 import os
+import posixpath
 import re
+import shlex
 import shutil
 import threading
 import time
@@ -303,7 +305,8 @@ _WINDOW_MAX = 16
 def reset_cache() -> None:
     """Forget every cached transcript read. For tests, and for any caller that
     wants the next listing to re-read from disk unconditionally."""
-    global _snapshot, _builder_on, _builder_thread
+    global _snapshot, _builder_on, _builder_thread, _HOLDS_COLLECT
+    _HOLDS_COLLECT = None
     _SCAN.clear()
     _FULL.clear()
     _WINDOW.clear()
@@ -583,6 +586,128 @@ def _note_prs(rec: dict, line: str) -> None:
             _add_prs(rec, _result_text(block.get("content")))
 
 
+_WORKTREES_PER_SCAN = 20
+# Forward slashes on every platform: `_add_worktree` normalizes the path to them
+# before comparing, so an `os.sep` here recorded nothing on Windows.
+_MANAGED_WT = "/.claude/worktrees/"
+_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _add_worktree(rec: dict, path: str, cwd: str = "") -> None:
+    """Record `path` as a worktree this session made — only when it sits directly
+    under a `.claude/worktrees/` folder, the one place the app (and the CLI's
+    EnterWorktree) ever makes them, so a stray path can never become a removal
+    target. Relative paths resolve against the line's cwd. Deduped, capped."""
+    if not path:
+        return
+    if not (os.path.isabs(path) or _DRIVE_RE.match(path)):
+        if not cwd:
+            return
+        path = os.path.join(cwd, path)
+    path = posixpath.normpath(path.replace("\\", "/"))
+    head, _, name = path.rpartition("/")
+    if not name or not (head + "/").endswith(_MANAGED_WT):
+        return
+    paths = rec.setdefault("worktrees", [])
+    if path not in paths and len(paths) < _WORKTREES_PER_SCAN:
+        paths.append(path)
+
+
+_WT_ADD_RE = re.compile(r"\bgit\b([^|;&\n]*?)\bworktree\s+add\s+([^|;&\n]+)")
+#: `git worktree add` flags that take a value of their own.
+_WT_VALUE_FLAGS = frozenset({"-b", "-B", "--reason"})
+_LEADING_CD_RE = re.compile(r"^\s*cd\s+(\S+)\s*(?:&&|;)\s*")
+_CD_ANYWHERE_RE = re.compile(r"(?:^|[\s;&|(])cd\s")
+_UNRESOLVABLE = ("$", "`", "~", "(")
+
+
+def _resolve_dir(base: str, d: str) -> str | None:
+    """`d` resolved against `base`; None when it names something a transcript line
+    cannot settle (a variable, a substitution, a home shortcut) or has no base."""
+    if not d or any(ch in d for ch in _UNRESOLVABLE):
+        return None
+    if os.path.isabs(d) or _DRIVE_RE.match(d):
+        return d
+    return os.path.join(base, d) if base else None
+
+
+def _worktree_adds(cmd: str, cwd: str):
+    """`(path word, directory it is relative to)` for each `git worktree add` in
+    one Bash command, honouring a leading `cd <dir> &&` and `git -C <dir>`. Where
+    the shape is ambiguous (a later `cd`, a variable in a directory,
+    `--git-dir`) a RELATIVE path comes back with no base and so is not recorded:
+    a wrong guess is a wrong removal target. Absolute paths always come through."""
+    base: str | None = cwd or None
+    rest = cmd
+    while True:
+        m = _LEADING_CD_RE.match(rest)
+        if not m:
+            break
+        try:
+            word = shlex.split(m.group(1))[0]
+        except (ValueError, IndexError):
+            word = ""
+        base = _resolve_dir(base or "", word)
+        rest = rest[m.end():]
+    ambiguous = base is None or bool(_CD_ANYWHERE_RE.search(rest))
+    for before, found in _WT_ADD_RE.findall(rest):
+        try:
+            pre = shlex.split(before)
+            words = shlex.split(found)
+        except ValueError:
+            continue
+        where = None if ambiguous else base
+        i = 0
+        while i < len(pre):
+            if pre[i] == "-C" and i + 1 < len(pre):
+                where = _resolve_dir(where or "", pre[i + 1])
+                i += 2
+                continue
+            if pre[i].startswith(("--git-dir", "--work-tree")):
+                where = None
+            i += 1
+        skip = False
+        for word in words:
+            if skip:
+                skip = False
+            elif word in _WT_VALUE_FLAGS:
+                skip = True
+            elif not word.startswith("-"):
+                if not any(ch in word for ch in _UNRESOLVABLE):
+                    yield word, where or ""
+                break
+
+
+def _note_worktrees(rec: dict, line: str) -> None:
+    """Attach the worktrees this session made, from the two places that say so:
+    the result of the CLI's EnterWorktree tool (`toolUseResult.worktreePath`) and
+    a Bash `git worktree add <path>` command. The path is what teardown removes
+    when the task is archived, so it is read only from those, never guessed."""
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        return
+    if not isinstance(obj, dict):
+        return
+    cwd = obj.get("cwd") if isinstance(obj.get("cwd"), str) else ""
+    result = obj.get("toolUseResult")
+    if isinstance(result, dict) and isinstance(result.get("worktreePath"), str):
+        _add_worktree(rec, result["worktreePath"], cwd)
+    message = obj.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if obj.get("type") != "assistant" or not isinstance(content, list):
+        return
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        inp = block.get("input")
+        cmd = inp.get("command") if isinstance(inp, dict) else None
+        if block.get("name") != "Bash" or not isinstance(cmd, str):
+            continue
+        for word, base in _worktree_adds(cmd, cwd):
+            _add_worktree(rec, word, base)
+
+
 def _absorb(rec: dict, line: str) -> None:
     """Fold one raw transcript line into a scan record. Screened before parsing:
     a transcript is mostly assistant turns and tool results, and `json.loads` on
@@ -591,6 +716,8 @@ def _absorb(rec: dict, line: str) -> None:
     # reason as below. A `gh pr` tool_use line has no URL yet, so screen for it.
     if ("github.com" in line and "pull" in line) or "gh pr " in line:
         _note_prs(rec, line)
+    if '"worktreePath"' in line or "worktree add" in line:
+        _note_worktrees(rec, line)
     # An assistant reply is the one non-user line with a fact to contribute:
     # whether the newest prompt's last answer was an API error. Substring tests
     # only, and it stays on this side of `json.loads`. See `_reply_fate`.
@@ -679,7 +806,7 @@ def _new_scan() -> dict:
     # condensed `reply`; nothing reads it any more, so it is inert.
     return {"offset": 0, "size": -1, "count": 0, "tail": [], "title": "",
             "command": "", "reply_line": "", "reply": "", "reply_at": 0.0,
-            "prs": [], "gh_pr_tool_ids": []}
+            "prs": [], "gh_pr_tool_ids": [], "worktrees": []}
 
 
 def _condense_reply(rec: dict) -> None:
@@ -6036,7 +6163,8 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
                 and listed[row["key"]].get("session_id")):
             try:
                 sessions.write_triage(listed[row["key"]]["session_id"], _FILED)
-                _, filed, _ = archive_task(listed[row["key"]], parked)
+                _, filed, _ = archive_task(listed[row["key"]], parked,
+                                           teardown=False)
             except (OSError, ValueError, KeyError, TypeError):
                 filed = False
             if filed:
@@ -6659,7 +6787,124 @@ async def api_tasks_pr_status(body: PrStatusBody,
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    return await run_in_threadpool(pr_status.fetch_statuses, body.refs[:100])
+    refs = body.refs[:100]
+    out = await run_in_threadpool(pr_status.fetch_statuses, refs)
+    # Additive: a `_heads` key (`{ref: head branch}`) only when GitHub named
+    # any; a ref can never be spelled `_heads` (it needs `/` and `#`), so the
+    # flat `{ref: state}` readers are unaffected.
+    heads = pr_status.head_refs(list(out))
+    return {**out, "_heads": heads} if heads else out
+
+
+class PortsBody(BaseModel):
+    ids: list[str] = []
+
+
+@router.post("/api/tasks/ports")
+async def api_tasks_ports(body: PortsBody,
+                          x_fused: str | None = Header(default=None)):
+    """`{"ports": {task key: [port, ...]}}` — the TCP ports each task's live
+    session (and what it started) is listening on, for the rows the Workspace is
+    showing. Absent keys have no live run or no listener. Not on the list payload
+    (see `task_ports`); blocking lsof, so it runs in the threadpool."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render.server import task_ports  # noqa: PLC0415
+
+    def work() -> dict:
+        agent = _agent_module()
+        runs = project_queue.scan_runs(agent) if agent is not None else []
+        return task_ports.ports_for(body.ids[:100], agent, runs)
+
+    return {"ports": await run_in_threadpool(work)}
+
+
+_HOLDS_COLLECT_TTL_S = 10.0
+_HOLDS_COLLECT: tuple[float, int, dict] | None = None
+_HOLDS_COLLECT_LOCK = threading.Lock()
+
+
+def _collect_for_holds() -> dict[str, dict]:
+    """`_collect()` shared across the consecutive chunk calls of one holds poll."""
+    global _HOLDS_COLLECT
+    now = time.monotonic()
+    gen = tasks_watch.generation()
+    with _HOLDS_COLLECT_LOCK:
+        hit = _HOLDS_COLLECT
+        if hit is not None and now - hit[0] < _HOLDS_COLLECT_TTL_S and hit[1] == gen:
+            return hit[2]
+    tasks = _collect()
+    with _HOLDS_COLLECT_LOCK:
+        _HOLDS_COLLECT = (now, gen, tasks)
+    return tasks
+
+
+@router.post("/api/tasks/holds")
+async def api_tasks_holds(body: PortsBody,
+                          x_fused: str | None = Header(default=None)):
+    """`{"holds": {task key: [{path, dirty_files, unpushed, reasons}]}}` — what
+    each task's RECORDED worktrees would lose if removed (`task_teardown`), for
+    the Workspace row's "3 uncommitted · 2 unpushed" marker. Tasks with no
+    recorded worktree (or whose folders are gone) are absent. `dirty_files` /
+    `unpushed` are null when git could not answer, and `reasons` then says
+    `unknown`. Off the list payload, in the threadpool.
+
+    The client polls EVERY open key (the grouping needs them all), in chunks of
+    100 ids. Each chunk used to pay its own full `_collect()`, so the collected
+    result is shared for `_HOLDS_COLLECT_TTL_S` (and dropped the moment the tasks
+    watcher's generation moves), and each worktree's git answer has its own
+    ~10 s cache in `task_teardown.holds_for`."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render.server import task_teardown  # noqa: PLC0415
+
+    def work() -> dict:
+        tasks = _collect_for_holds()
+        out: dict = {}
+        for key in dict.fromkeys(body.ids[:100]):
+            task = tasks.get(key)
+            if task is None:
+                continue
+            rows = task_teardown.holds_for(_recorded_worktrees(task))
+            if rows:
+                out[key] = rows
+        return out
+
+    return {"holds": await run_in_threadpool(work)}
+
+
+def _unarchive_for_reply(key: str, session_id: str = "") -> bool:
+    """A reply to an archived task files it back (Workspace scope, exception 2).
+
+    The revival rule (`_revived`) only notices a message that RAN after the
+    filing, which is a poll or two behind the reader typing, and a turn that was
+    already in flight when the task was filed never revives it at all. So the
+    two doors a reply comes through (the sender's own `POST /api/tasks/running`
+    and the page's follow-up route) say it outright: drop the filing now.
+
+    Only the filing goes, exactly as `api_task_unarchive` does it — a note, a
+    tag or a read mark on the session stays. True when there was one to drop;
+    best-effort, since a filing we could not drop costs one poll of the row
+    still reading Archive and is never worth failing the send over."""
+    dropped = False
+    try:
+        if session_id:
+            # ONLY AN ARCHIVE FILING GOES. `done` and `in_progress` are pins the
+            # reader set by hand; a reply is no reason to lift them.
+            rec = sessions._load_state("triage.json").get(session_id)
+            if isinstance(rec, dict) and rec.get("status") == _FILED:
+                dropped = bool(sessions.clear_triage(session_id))
+        if not session_id or tasks_store.pending_entry(key):
+            dropped = bool(tasks_store.clear_archived(key)) or dropped
+    except Exception:  # noqa: BLE001 — see above
+        logger.debug("reply: could not drop the filing of %s", key,
+                     exc_info=True)
+        return False
+    if dropped:
+        tasks_watch.notify({key, session_id} - {""})
+    return dropped
 
 
 class RunningPatch(BaseModel):
@@ -6724,6 +6969,8 @@ def api_task_running(patch: RunningPatch,
         raise HTTPException(status_code=400, detail="missing session_id")
     tasks_watch.mark_running(session_id, turn=patch.turn,
                              text=patch.text.strip(), file=patch.file.strip())
+    # A turn starting on an archived task is a reply: the filing goes now.
+    _unarchive_for_reply(session_id, session_id)
     return {"ok": True, "session_id": session_id}
 
 
@@ -7351,12 +7598,16 @@ def api_task_settings(patch: SettingsPatch,
 #     recurring RULE behind one, because a rule that keeps materialising
 #     occurrences is a rule that keeps un-archiving the task.
 #
-# WHAT IS NOT TOUCHED is a run that is happening. `sending` is not cancellable
-# (schedule.cancel refuses it, and rightly: the helper is away and the turn may
-# have started) and neither is a live turn. Those keep going, the task keeps
-# reading In Progress while they do, and it settles into Archive by itself when
-# they end — see `_message_archived`. Nothing has to come back and finish the
-# job; the derivation simply answers differently once nothing is running.
+# A RUN THAT IS HAPPENING IS ENDED, since the Workspace work (`task_teardown`):
+# archiving the task stops its live session and every process that session
+# started, and removes its clean, pushed worktrees (the report rides on the
+# answer so the client can say what went). The client asks before it files a
+# task that is still running, and Undo only un-files — it does not restart what
+# was stopped. `sending` is still not cancellable by `schedule.cancel` (the
+# helper is away and the turn may have started), but the stop below reaches the
+# run itself, and anything that still settles late lands in Archive by itself
+# (`_message_archived`). The one caller that must NOT tear down is the desk's
+# remove-app door (`current_apps._archive_folder`): it files, nothing more.
 #
 # Deleting exists now (Akshil, 2026-08-19) and D306 still holds, because the
 # two were never actually in tension: what the user asks to delete is the ROW —
@@ -7414,7 +7665,30 @@ def api_task_archive(patch: ArchivePatch,
     # run that would not go leaves the row reading `needs_attention` with the
     # filing kept underneath, and the card is how the reader finds out.
     return {"ok": True, "key": key, "cancelled": cancelled, "filed": filed,
-            "stopped": stopped}
+            "stopped": stopped, "teardown": task.get("teardown") or {}}
+
+
+class WorktreeRemovePatch(BaseModel):
+    key: str
+    paths: list[str] | None = None
+
+
+@router.post("/api/tasks/worktrees/remove")
+def api_task_worktrees_remove(patch: WorktreeRemovePatch,
+        x_fused: str | None = Header(default=None)):
+    """"Remove anyway": delete the worktrees archive KEPT, discarding their
+    changes. Only worktrees this task's transcript recorded are reachable, so the
+    body cannot name an arbitrary folder; `paths` narrows it to some of them."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    key = patch.key.strip()
+    task = _collect().get(key) if key else None
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
+    report = _teardown_task(task, force=True, paths=patch.paths)
+    return {"ok": True, "key": key, "removed": report["removed"],
+            "kept": report["kept"], "gone": report["gone"]}
 
 
 class RenamePatch(BaseModel):
@@ -7457,7 +7731,8 @@ def api_task_rename(patch: RenamePatch,
     return {"ok": True, "title": stored}
 
 
-def archive_task(task: dict, parked: dict) -> tuple[int, bool, bool]:
+def archive_task(task: dict, parked: dict, *,
+                 teardown: bool = True) -> tuple[int, bool, bool]:
     """The archive gesture on one collected task: how many messages were
     called off, whether the task was filed (its session's triage record, or
     for a session-less task that outlives the cancel, its KEY — see below),
@@ -7482,7 +7757,14 @@ def archive_task(task: dict, parked: dict) -> tuple[int, bool, bool]:
     the stop can wait up to `_STOP_PARKED_WAIT_S`, and a due entry the
     scheduler claims inside that window has left PENDING by the time the
     cancel loops reach it — it would run after the filing and `_revived`
-    would drop the record. Cancel first, stop second, file last."""
+    would drop the record. Cancel first, stop second, file last.
+
+    TEARDOWN COMES AFTER THE FILING (Workspace scope, unit 3): the live session
+    and what it started are ended and its clean, pushed worktrees removed
+    (`_teardown_task`), the report left on `task["teardown"]` for the caller that
+    has somewhere to show it. A failure there costs the report, never the
+    filing. `teardown=False` is the listing's auto-file of missing-folder rows,
+    which by its own guard has no live run and no folder to hold a worktree."""
     cancelled = 0
     # Decided BEFORE the cancel, off the states as collected: will this task
     # still be a row once its pending work is called off? `_is_task` drops a
@@ -7507,6 +7789,9 @@ def archive_task(task: dict, parked: dict) -> tuple[int, bool, bool]:
         if entry_id and schedule.cancel(entry_id) is not None:
             cancelled += 1
 
+    # The run's process tree, read BEFORE the parked stop ends the agent: its
+    # children are unreachable from it afterwards (`task_teardown.snapshot_session`).
+    pre_tree = _snapshot_tree(task) if teardown else []
     stopped = _stop_parked_run(task, parked)
     session_id = task["session_id"]
     if session_id:
@@ -7523,7 +7808,94 @@ def archive_task(task: dict, parked: dict) -> tuple[int, bool, bool]:
         # drops it if the task ever runs, and Unarchive clears it.
         tasks_store.mark_archived(task["key"])
         task["key_filed_at"] = time.time()
+    if teardown:
+        task["teardown"] = _teardown_task(task, pre_tree=pre_tree)
     return cancelled, survives, stopped
+
+
+def _recorded_worktrees(task: dict) -> list[str]:
+    """The worktrees this task's own transcript says it made (`_note_worktrees`)."""
+    record = _scan(task["path"]) if task.get("path") else None
+    return list((record or {}).get("worktrees") or [])
+
+
+def _snapshot_tree(task: dict) -> list[int]:
+    """`task_teardown.snapshot_session` for this task's session; [] on any miss."""
+    from fused_render.server import task_teardown  # noqa: PLC0415
+    try:
+        agent = _agent_module()
+        session_id = str(task.get("session_id") or "")
+        if agent is None or not session_id:
+            return []
+        return task_teardown.snapshot_session(
+            session_id, agent, project_queue.scan_runs(agent))
+    except Exception:  # noqa: BLE001 — a missing snapshot is a missed sweep
+        logger.debug("teardown: snapshot failed for %s", task.get("key"),
+                     exc_info=True)
+        return []
+
+
+def _worktrees_in_use(task: dict) -> set[str]:
+    """Recorded worktrees of `task` that something else still needs: another task
+    that is not archived also records it, or a live run works inside it."""
+    mine = {os.path.realpath(p) for p in _recorded_worktrees(task)}
+    if not mine:
+        return set()
+    busy: set[str] = set()
+    try:
+        triage = sessions._load_state("triage.json")
+        key_filed = tasks_store.archived_state()
+        for other in _collect().values():
+            if other.get("key") == task.get("key") or not other.get("path"):
+                continue
+            sid = str(other.get("session_id") or "")
+            if (triage.get(sid) or {}).get("status") == _FILED \
+                    or str(other.get("key")) in key_filed:
+                continue
+            busy |= mine & {os.path.realpath(p) for p in _recorded_worktrees(other)}
+        agent = _agent_module()
+        if agent is not None:
+            for run in project_queue.scan_runs(agent):
+                if not project_queue.run_alive(agent, str(run.get("run_dir") or "")):
+                    continue
+                meta = run.get("meta") or {}
+                for where in (meta.get("cwd"), meta.get("file")):
+                    if not where:
+                        continue
+                    real = os.path.realpath(str(where))
+                    busy |= {w for w in mine
+                             if real == w or real.startswith(w + os.sep)}
+    except Exception:  # noqa: BLE001 — see `_teardown_task`
+        logger.debug("teardown: in-use check failed", exc_info=True)
+    return busy
+
+
+def _teardown_task(task: dict, *, force: bool = False,
+                   paths: list[str] | None = None,
+                   pre_tree: list[int] | None = None) -> dict:
+    """Archive's second half (`task_teardown`): end the session's live run and
+    its stray children, then remove each recorded worktree that is clean and
+    pushed. `{"stopped", "killed", "removed", "kept", "gone"}`; `force` removes
+    the kept ones too, limited to `paths` when given — and ALWAYS limited to the
+    worktrees the transcript recorded. Never raises."""
+    from fused_render.server import task_teardown  # noqa: PLC0415
+    out: dict = {"stopped": 0, "killed": [], "removed": [], "kept": [], "gone": []}
+    try:
+        if not force:
+            agent = _agent_module()
+            session_id = str(task.get("session_id") or "")
+            if agent is not None and session_id:
+                out.update(task_teardown.stop_session(
+                    session_id, agent, project_queue.scan_runs(agent),
+                    pre_tree=pre_tree or ()))
+        recorded = _recorded_worktrees(task)
+        if paths is not None:
+            recorded = [p for p in recorded if p in set(paths)]
+        out.update(task_teardown.teardown_worktrees(
+            recorded, force=force, in_use=_worktrees_in_use(task)))
+    except Exception:  # noqa: BLE001 — the filing already happened
+        logger.warning("teardown: failed for %s", task.get("key"), exc_info=True)
+    return out
 
 
 class UnarchivePatch(BaseModel):
@@ -9947,6 +10319,9 @@ def api_task_send(key: str, body: dict = Body(...),
     if task is None:
         return _error(f"no task with key {key!r}", status=404)
     session = str(task.get("session_id") or key)
+    # `_collect` hands back the bare task: its project and target are `_place`'s
+    # answers, and without them every follow-up read "no target to resume in".
+    _place(task)
     target = str(task.get("target") or task.get("project") or "")
     if not target:
         return _error("this task has no target to resume in", status=409)
@@ -9962,6 +10337,10 @@ def api_task_send(key: str, body: dict = Body(...),
                                     session, text, model, effort, owner)
     if delivered == {"error": claude_remote.HELD}:
         return _error(claude_remote.HELD, status=409)
+    # THE FILING GOES ONLY ONCE THE MESSAGE WAS TAKEN: a held or failed send
+    # leaves an archived task archived.
+    if isinstance(delivered, dict) and not delivered.get("error"):
+        _unarchive_for_reply(key, str(task.get("session_id") or ""))
     return delivered
 
 
