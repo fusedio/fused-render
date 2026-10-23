@@ -192,14 +192,6 @@
   flex: none;
   color: var(--fg-faint);
 }
-/* The Workspace lifts the page's content column so the cards use the whole
-   middle pane. Scoped on the page's data-view, so List, Board and the rest keep
-   the cap. Same selector weight as the schedule opt-out it overrides. */
-.prefs-page.schedule-page[data-view="workspace"] > *,
-.prefs-page.schedule-page[data-view="workspace"] > .prefs-section {
-  max-width: none;
-  margin-inline: 0;
-}
 .ws-undo {
   position: fixed;
   left: 50%;

@@ -232,7 +232,7 @@ test("no hover x is rendered on a card", async () => {
   const css = require("node:fs").readFileSync(require("node:path").join(import.meta.dir, "../styles/task-workspace.css"), "utf8") as string;
   expect(css).not.toMatch(/ws-close|ws-doors/);
   expect(css).toMatch(/\.ws-card-facts \{[^}]*max-width:\s*65%/);
-  expect(css).toMatch(/\.prefs-page\.schedule-page\[data-view="workspace"\] > \*/);
+  expect(css).not.toMatch(/data-view="workspace"/);
 });
 
 test("the list is the scroller: root fills the pane, list scrolls inside it", () => {
