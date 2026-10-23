@@ -107,23 +107,27 @@ describe("holdReasons / holdMarker", () => {
     expect(holdReasons(t, facts())).toEqual(["PR #7 unknown"]);
     expect(holdReasons(t, facts({ prStates: { "a/b#7": null } }))).toEqual(["PR #7 unknown"]);
   });
-  test("worktree git state: uncommitted, unpushed, unknown", () => {
+  test("worktree git state: unpushed, unknown", () => {
     const holds = {
       s1: [
         { path: "/w", dirty_files: 3, unpushed: 2, reasons: ["dirty", "unpushed"] },
         { path: "/x", dirty_files: null, unpushed: null, reasons: ["unknown"] },
       ],
     };
-    expect(holdReasons(task(), facts({ holds }))).toEqual(["3 uncommitted", "2 unpushed", "unknown"]);
+    expect(holdReasons(task(), facts({ holds }))).toEqual(["2 unpushed", "unknown"]);
   });
   test("two worktrees add their counts", () => {
     const holds = {
       s1: [
-        { path: "/w", dirty_files: 1, unpushed: 0, reasons: ["dirty"] },
-        { path: "/x", dirty_files: 2, unpushed: 0, reasons: ["dirty"] },
+        { path: "/w", dirty_files: 0, unpushed: 1, reasons: ["unpushed"] },
+        { path: "/x", dirty_files: 0, unpushed: 2, reasons: ["unpushed"] },
       ],
     };
-    expect(holdReasons(task(), facts({ holds }))).toEqual(["3 uncommitted"]);
+    expect(holdReasons(task(), facts({ holds }))).toEqual(["3 unpushed"]);
+  });
+  test("a dirty working tree alone does not hold the task", () => {
+    const holds = { s1: [{ path: "/w", dirty_files: 2, unpushed: 0, reasons: ["dirty"] }] };
+    expect(holdReasons(task(), facts({ holds }))).toEqual([]);
   });
   test("before the holds have loaded, a task is never reported clear", () => {
     expect(holdReasons(task(), facts({ holdsReady: false }))).toEqual(["checking"]);
@@ -352,14 +356,12 @@ test("orderPrs: open first, then draft, unknown, closed and merged; stable insid
 });
 
 describe("dirtyBadge", () => {
-  test("uncommitted wins; unpushed alone; none is null", () => {
-    expect(dirtyBadge(["3 uncommitted"])).toBe("uncommitted");
-    expect(dirtyBadge(["3 uncommitted", "2 unpushed", "unknown"])).toBe("uncommitted");
-    expect(dirtyBadge(["2 unpushed"])).toBe("unpushed");
+  test("unpushed is the only badge; none is null", () => {
+    expect(dirtyBadge(["2 unpushed", "unknown"])).toBe("unpushed");
     expect(dirtyBadge(["unknown", "queued"])).toBeNull();
     expect(dirtyBadge([])).toBeNull();
   });
-  test("dirtyTitle keeps the exact counts", () => {
-    expect(dirtyTitle(["running", "3 uncommitted", "2 unpushed"])).toBe("3 uncommitted, 2 unpushed");
+  test("dirtyTitle keeps the exact count", () => {
+    expect(dirtyTitle(["running", "2 unpushed", "unknown"])).toBe("2 unpushed");
   });
 });
