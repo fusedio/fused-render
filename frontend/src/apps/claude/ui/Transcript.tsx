@@ -531,6 +531,17 @@ export const Transcript = memo(function Transcript({
   // to itself.
   // ONE rule for bringing the open card into view, used by the open effect and
   // by the waiting bar's jump button.
+  // The NEWEST open card (the one the waiting bar names), not the whole pin
+  // wrapper, which also holds the trailing working line.
+  const newestCard = (): HTMLElement | null => {
+    const wrapper = pin.current;
+    if (!wrapper) return null;
+    const found = wrapper.querySelectorAll?.("[data-perm-id]");
+    const last = found && found.length ? (found[found.length - 1] as HTMLElement) : null;
+    return last ?? wrapper;
+  };
+  const newestCardRef = useRef(newestCard);
+  newestCardRef.current = newestCard;
   const revealOpenCard = useCallback((smooth: boolean) => {
     const wrap = port.current;
     if (!wrap) return;
@@ -546,7 +557,7 @@ export const Transcript = memo(function Transcript({
     // A card that fits in the port ends at the bottom, as before. A card taller
     // than the port is brought in TOP-first: its question is the part the
     // reader needs, and the follow must not yank it to its bottom afterwards.
-    const box = pin.current?.getBoundingClientRect?.();
+    const box = newestCardRef.current()?.getBoundingClientRect?.();
     const view = wrap.getBoundingClientRect?.();
     if (box && view && box.height > wrap.clientHeight) {
       const top = box.top - view.top + wrap.scrollTop;
@@ -559,7 +570,7 @@ export const Transcript = memo(function Transcript({
   useLayoutEffect(() => {
     if (!openCards) return;
     revealOpenCard(false);
-  }, [openCards, revealOpenCard]);
+  }, [openCards, state.historyLoading, revealOpenCard]);
   useEffect(() => {
     if (!jumpRef) return;
     jumpRef.current = () => revealOpenCard(true);
@@ -576,7 +587,7 @@ export const Transcript = memo(function Transcript({
       return;
     }
     const root = port.current;
-    const target = pin.current;
+    const target = newestCardRef.current();
     if (!root || !target || typeof IntersectionObserver === "undefined") {
       onOpenCardVisible(true);
       return;
@@ -593,7 +604,7 @@ export const Transcript = memo(function Transcript({
       io.disconnect();
       onOpenCardVisible(true);
     };
-  }, [openCards, onOpenCardVisible]);
+  }, [openCards, state.historyLoading, onOpenCardVisible]);
 
   // The open card is an ordinary block at the end of the log (user request
   // 2026-10-23); the wrapper is only kept as a handle for scrolling it into view.
@@ -636,9 +647,12 @@ export const Transcript = memo(function Transcript({
   useLayoutEffect(() => {
     if (firstBottom.current || state.historyLoading || adopting) return;
     firstBottom.current = true;
-    if (port.current) port.current.scrollTop = port.current.scrollHeight;
+    // A card present on first render lands top-first (a tall one must not be
+    // overwritten by a bottom landing); otherwise the log lands at the bottom.
+    if (openCards) revealOpenCard(false);
+    else if (port.current) port.current.scrollTop = port.current.scrollHeight;
     setSettled(true);
-  }, [state.historyLoading, adopting, state.rev]);
+  }, [state.historyLoading, adopting, state.rev, openCards, revealOpenCard]);
 
   // ── ?msg= anchor ─────────────────────────────────────────────────────────
   // EVERYTHING here degrades to silence: no param, a uuid from another
