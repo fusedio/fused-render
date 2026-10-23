@@ -5778,3 +5778,14 @@ def test_listing_queues_a_title_job_with_only_the_summary_flag(
     assert job["session_id"] == "sess-a" and job["prompts"] == 1
     _tasks(client)  # polled again: still one job
     assert len(_recap_jobs()) == 1
+
+
+def test_title_candidate_wants_a_title_after_the_scan_count_resets(tmp_path):
+    task = _title_task(tmp_path)
+    stored = {"s": {"ai_title": {"text": "Fixing the login bug", "at": 1.0,
+                                 "turns": 12, "failed_at": 0.0}}}
+    # The scan record restarted (count 1 < stored turns 12): a reset, so wanted.
+    jobs = _title_job(task, _title_rec(count=1), stored)
+    assert len(jobs) == 1 and jobs[0]["prompts"] == 1
+    # Equal count is not a reset: still waits for three more prompts.
+    assert _title_job(task, _title_rec(count=12), stored) == []

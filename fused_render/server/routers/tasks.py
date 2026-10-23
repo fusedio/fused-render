@@ -3650,6 +3650,7 @@ def _title_candidate(task: dict, rec: dict | None, status: str, reply: str,
         if stored["failed_at"] and now - stored["failed_at"] < _RECAP_RETRY_S:
             return
         if not (not stored["text"] or stored["failed_at"]
+                or prompts < stored["turns"]  # scan record reset
                 or prompts - stored["turns"] >= TITLE_REFRESH_PROMPTS):
             return
     reply_at = float(rec.get("reply_at") or 0.0) if rec else 0.0
