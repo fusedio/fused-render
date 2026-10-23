@@ -24,11 +24,12 @@ export interface WorkspaceFacts {
   prStates: Record<string, PrState | null | undefined>;
 }
 
-/** Every task that is not closed, newest first by CREATION time (`started`).
+/** Every task but drafts (archived ones too: the page's Status filter decides
+ *  whether they reach `tasks`), newest first by CREATION time (`started`).
  *  Creation never changes, so a row never moves when its status does. */
 export function workspaceTasks(tasks: readonly Task[]): Task[] {
   return tasks
-    .filter((t) => t.status !== "archived" && !isDraftTask(t))
+    .filter((t) => !isDraftTask(t))
     .sort((a, b) => (b.started ?? 0) - (a.started ?? 0) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 }
 
@@ -62,7 +63,9 @@ export function statusWord(task: Task): string {
 const count = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
 
 /** Why this task cannot simply be closed, in a fixed order; [] means clear.
- *  Informational only: nothing here ever acts or blocks. */
+ *  Informational only: nothing here ever acts or blocks. The group is decided by
+ *  `workspaceGroup`, which routes status first; only the worktree, PR and
+ *  "checking" reasons keep an idle task out of "Safe to archive". */
 export function holdReasons(task: Task, facts: WorkspaceFacts): string[] {
   const out: string[] = [];
   if (task.status === "in_progress") out.push("running");
@@ -98,8 +101,8 @@ export function holdReasons(task: Task, facts: WorkspaceFacts): string[] {
   return out;
 }
 
-/** `reasons` without "N unread": unread alone never keeps a task out of "Safe to
- *  archive" (the server still reports it, and the archive guard is unchanged). */
+/** `reasons` without "N unread": unread alone never keeps an idle task out of
+ *  "Safe to archive" (the server still reports it, and the archive guard is unchanged). */
 export function blockingReasons(reasons: readonly string[]): string[] {
   return reasons.filter((r) => !/^\d+ unread$/.test(r));
 }
@@ -123,7 +126,7 @@ export const DIRTY_REASON = /^\d+ (uncommitted|unpushed)$/;
 
 /** The one word the card shows for the worktree counts: "uncommitted" wins over
  *  "unpushed"; null when neither is held. Display only: the reasons themselves
- *  (and so Open vs Safe to archive) are unchanged. */
+ *  (and so the group) are unchanged. */
 export function dirtyBadge(reasons: readonly string[]): "uncommitted" | "unpushed" | null {
   if (reasons.some((r) => /^\d+ uncommitted$/.test(r))) return "uncommitted";
   if (reasons.some((r) => /^\d+ unpushed$/.test(r))) return "unpushed";
@@ -272,29 +275,46 @@ export function pickBranch(
   return head ? { name: head, more: 0, also: [] } : null;
 }
 
-export type WorkspaceGroupKey = "needs" | "running" | "review" | "idle" | "clear";
+export type WorkspaceGroupKey = "needs" | "working" | "pr" | "turn" | "clear" | "archived";
 
 export const WORKSPACE_GROUPS: readonly { key: WorkspaceGroupKey; label: string }[] = [
   { key: "needs", label: "Needs you" },
-  { key: "running", label: "Running" },
-  { key: "review", label: "In review" },
-  { key: "idle", label: "Open" },
+  { key: "working", label: "Working" },
+  { key: "pr", label: "PR open" },
+  { key: "turn", label: "Your turn" },
   { key: "clear", label: "Safe to archive" },
+  { key: "archived", label: "Archived" },
 ];
 
-/** The first group that matches: needs you (waiting, failed, usage limit),
- *  running, in review (a PR known open or draft), open (any hold remains), and
- *  safe to archive (no holds: the card's "safe to archive" badge, which is
- *  `holdReasons` empty). */
-export function workspaceGroup(task: Task, facts: WorkspaceFacts): WorkspaceGroupKey {
+/** A task Claude has replied to and nobody has touched for a day, with nothing
+ *  holding it, is the archive candidate; before that it is simply your turn. */
+export const ARCHIVE_IDLE_SECONDS = 24 * 3600;
+
+/** The first group that matches: archived (closed), needs you (waiting, failed,
+ *  usage limit), working (running, queued, upcoming, bg jobs or a run pending),
+ *  PR open (a PR known open or draft), safe to archive (idle at least
+ *  ARCHIVE_IDLE_SECONDS and no blocking holds), and otherwise your turn. `now`
+ *  is epoch seconds; a task with no activity time is never idle. */
+export function workspaceGroup(task: Task, facts: WorkspaceFacts, now: number): WorkspaceGroupKey {
+  if (task.status === "archived") return "archived";
   if (needsYou(task)) return "needs";
-  if (task.status === "in_progress") return "running";
+  if (
+    task.status === "in_progress" ||
+    task.status === "queued" ||
+    task.status === "upcoming" ||
+    (task.background_jobs?.count ?? 0) > 0 ||
+    (task.next_run ?? 0) > 0
+  )
+    return "working";
   for (const ref of prRefsOf(task)) {
     if (!ref.repo) continue; // no repo, no status lookup: never resolvable
     const state = facts.prStates[prKey(ref)];
-    if (state === "open" || state === "draft") return "review";
+    if (state === "open" || state === "draft") return "pr";
   }
-  return blockingReasons(holdReasons(task, facts)).length > 0 ? "idle" : "clear";
+  const last = task.last_active || task.started || 0;
+  if (last > 0 && now - last >= ARCHIVE_IDLE_SECONDS && blockingReasons(holdReasons(task, facts)).length === 0)
+    return "clear";
+  return "turn";
 }
 
 /** `rows` split into the groups above, in that order, empty groups left out;
@@ -302,10 +322,11 @@ export function workspaceGroup(task: Task, facts: WorkspaceFacts): WorkspaceGrou
 export function groupTasks(
   rows: readonly Task[],
   facts: (task: Task) => WorkspaceFacts,
+  now: number,
 ): { key: WorkspaceGroupKey; label: string; tasks: Task[] }[] {
   const by = new Map<WorkspaceGroupKey, Task[]>();
   for (const t of rows) {
-    const k = workspaceGroup(t, facts(t));
+    const k = workspaceGroup(t, facts(t), now);
     by.set(k, [...(by.get(k) ?? []), t]);
   }
   return WORKSPACE_GROUPS.filter((g) => by.has(g.key)).map((g) => ({ ...g, tasks: by.get(g.key)! }));
