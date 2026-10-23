@@ -9,9 +9,14 @@ import { ANSWERABLE_TOOL, PLAN_TOOL } from "../protocol/summaries";
 
 export type WaitingKind = "question" | "permission" | "plan";
 
+/** The rows a card is open for: the one rule the card and the bar share. */
+export function openCardRows(rows: PermissionRow[]): PermissionRow[] {
+  return rows.filter((p) => p && p.id && !p.decision);
+}
+
 /** The kind of the NEWEST open row, or null when no card is open. */
 export function waitingKind(rows: PermissionRow[]): WaitingKind | null {
-  const open = rows.filter((p) => p && p.id && !p.decision);
+  const open = openCardRows(rows);
   const last = open[open.length - 1];
   if (!last) return null;
   return last.tool === ANSWERABLE_TOOL ? "question" : last.tool === PLAN_TOOL ? "plan" : "permission";

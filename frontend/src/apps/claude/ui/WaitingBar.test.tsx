@@ -4,7 +4,8 @@ import { afterEach, expect, test } from "bun:test";
 import { act, create, type ReactTestRendererJSON } from "react-test-renderer";
 
 import type { PermissionRow } from "../protocol/types";
-import { ComposerGate, WaitingBar, waitingKind } from "./WaitingBar";
+import { openCardIds } from "./Transcript";
+import { ComposerGate, openCardRows, WaitingBar, waitingKind } from "./WaitingBar";
 
 const mounted: Array<ReturnType<typeof create>> = [];
 function mount(el: React.ReactElement) {
@@ -65,4 +66,11 @@ test("jump button only with showJump, and it calls onJump", () => {
   expect(JSON.stringify(shown.toJSON())).toContain("Jump to plan");
   act(() => btn.props.onClick());
   expect(n).toBe(1);
+});
+
+test("card and bar share one open-row rule", () => {
+  const rows = [row("AskUserQuestion", "allow"), row("Bash"), { ...row("Edit"), id: "" }, row("ExitPlanMode")];
+  expect(openCardRows(rows).map((r) => r.tool)).toEqual(["Bash", "ExitPlanMode"]);
+  expect(openCardIds(rows)).toBe(openCardRows(rows).map((r) => r.id).join(","));
+  expect(waitingKind(rows)).toBe("plan");
 });

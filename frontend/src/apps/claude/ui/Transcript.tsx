@@ -44,6 +44,7 @@ import { TroubleView } from "./TroubleView";
 import type { Viewable } from "./attachApi";
 import { isOneLiner, Turn } from "./Turn";
 import { WorkingLine } from "./WorkingLine";
+import { openCardRows } from "./WaitingBar";
 import "../styles/transcript.css";
 
 /** T:12754 — how close to the tail re-arms the follow. */
@@ -568,7 +569,12 @@ export const Transcript = memo(function Transcript({
   }, [jumpRef, revealOpenCard]);
   // Is the open card on screen? Tests stub the DOM, so no observer means yes.
   useEffect(() => {
-    if (!openCards || !onOpenCardVisible) return;
+    if (!onOpenCardVisible) return;
+    // No open card: nothing to be off screen, so the next card starts visible.
+    if (!openCards) {
+      onOpenCardVisible(true);
+      return;
+    }
     const root = port.current;
     const target = pin.current;
     if (!root || !target || typeof IntersectionObserver === "undefined") {
@@ -583,7 +589,10 @@ export const Transcript = memo(function Transcript({
       { root, threshold: 0.01 },
     );
     io.observe(target);
-    return () => io.disconnect();
+    return () => {
+      io.disconnect();
+      onOpenCardVisible(true);
+    };
   }, [openCards, onOpenCardVisible]);
 
   // The open card is an ordinary block at the end of the log (user request
@@ -1106,8 +1115,7 @@ function chipFor(
  *  "a card the run is blocked on appeared". Exported for the test: the rule is
  *  per card MOUNT, and a count cannot express it (T:14652-14663). */
 export function openCardIds(rows: ChatState["permissions"]): string {
-  return rows
-    .filter((p) => p && p.id && !p.decision)
+  return openCardRows(rows)
     .map((p) => p.id)
     .join(",");
 }
