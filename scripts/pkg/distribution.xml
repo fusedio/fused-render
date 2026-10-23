@@ -40,5 +40,8 @@
   <choice id="@PKG_ID@" visible="false">
     <pkg-ref id="@PKG_ID@"/>
   </choice>
-  <pkg-ref id="@PKG_ID@" version="@VERSION@" onConclusion="none">@COMPONENT_PKG@</pkg-ref>
+  <!-- installKBytes: the pkg has no payload, so without this Installer's
+       "Installation Type" page would say the install takes 0 bytes; this is
+       the app's size, so the figure the person sees is the real one. -->
+  <pkg-ref id="@PKG_ID@" version="@VERSION@" onConclusion="none" installKBytes="@INSTALL_KBYTES@">@COMPONENT_PKG@</pkg-ref>
 </installer-gui-script>
