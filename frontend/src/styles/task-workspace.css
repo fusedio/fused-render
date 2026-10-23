@@ -305,3 +305,16 @@
   padding: 12px 10px;
   color: var(--fg-muted);
 }
+
+/* The project chip on a card is IdentityChip with no onPick, so it is the plain
+   label span and missed the hairline box the List row's tag button wears (the
+   .ws-card .schedule-tv-id--tag skin in tasks.css). Same border, radius and ink,
+   at the 20px height of the badges beside it. */
+.ws-card .schedule-tv-id:not(.schedule-tv-id--tag) {
+  box-sizing: border-box;
+  height: 20px;
+  padding: 0 7px;
+  border: 0.5px solid color-mix(in srgb, var(--fg) 25%, transparent);
+  border-radius: 5px;
+  flex: none;
+}
