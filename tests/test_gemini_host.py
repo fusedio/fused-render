@@ -1196,6 +1196,7 @@ def test_the_cli_gets_geminis_env_not_claudes(start):
     env = json.load(open(s.env_dump))
     assert not [k for k in env if k.startswith("CLAUDE_CODE_")]
     assert env["NO_BROWSER"] == "1"
+    assert env["GEMINI_CLI_NO_RELAUNCH"] == "1"   # D19
     assert env["GEMINI_CLI_HOME"] == "/somewhere/gemini-home"
     assert "COPILOT_GITHUB_TOKEN" not in env
 

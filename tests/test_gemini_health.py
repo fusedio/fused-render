@@ -237,7 +237,8 @@ _FAKE_ACP = textwrap.dedent("""\
             json.dump({{"pid": os.getpid(), "cwd": os.getcwd(), "got": got,
                        "env": {{k: os.environ.get(k) for k in (
                            "NO_BROWSER", "GEMINI_CLI_HOME", "PYTHONPATH",
-                           "GEMINI_CLI_TRUST_WORKSPACE")}}}}, f)
+                           "GEMINI_CLI_TRUST_WORKSPACE",
+                           "GEMINI_CLI_NO_RELAUNCH")}}}}, f)
 
     def send(msg):
         print(json.dumps(msg), flush=True)
@@ -350,6 +351,9 @@ def test_the_child_never_opens_a_browser_and_trusts_the_probe_dir(fake_acp, monk
     fake_acp("in")
     env = fake_acp.log()["env"]
     assert env["NO_BROWSER"] == "1"
+    # D19: in-process, never the relaunching launcher (which ignores SIGTERM
+    # and would leave the real CLI holding our pipes after a kill).
+    assert env["GEMINI_CLI_NO_RELAUNCH"] == "1"
     assert env["GEMINI_CLI_TRUST_WORKSPACE"] == "true"
     assert env["GEMINI_CLI_HOME"] == os.environ["GEMINI_CLI_HOME"]
     assert env["PYTHONPATH"] is None

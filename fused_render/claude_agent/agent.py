@@ -4222,6 +4222,11 @@ def _spawn_env(chat_id: str = "", backend: str = "") -> dict:
             env["PATH"] = os.pathsep.join([cli_dir] + parts)
         if backend == "gemini":
             env.setdefault("NO_BROWSER", "1")
+            # Not setdefault: the `gemini` entry point is a launcher that
+            # otherwise re-spawns the CLI as a grandchild and swallows
+            # SIGTERM, so the host's stop/kill would orphan the real
+            # process (gemini_health._child_env has the account, D19).
+            env["GEMINI_CLI_NO_RELAUNCH"] = "1"
         return env
     if backend == "copilot":
         for name in [k for k in env if k.startswith("CLAUDE_CODE_")]:

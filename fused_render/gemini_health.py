@@ -147,10 +147,19 @@ def _child_env(extra: Optional[dict] = None) -> dict:
     PYTHONHOME/PYTHONPATH scrubbed (the packaged app's bundled interpreter
     exports both), PATH augmented so the CLI finds `node`. GEMINI_CLI_HOME
     and the Google credential variables are passed through exactly as found
-    — nothing here sets, moves or clears them. `extra` lands on top."""
+    — nothing here sets, moves or clears them. `extra` lands on top.
+
+    `GEMINI_CLI_NO_RELAUNCH=1` always (D19): the CLI's `gemini` entry point
+    is a launcher that, unless this is set, re-spawns node as a CHILD with a
+    heap flag and installs no-op SIGINT/SIGTERM/SIGHUP handlers on itself
+    (verified 0.65.0, `bundle/gemini.js`). To a `terminate()` the launcher
+    does nothing; to a `kill()` it dies and ORPHANS the real CLI, which keeps
+    our pipes open, so a reaper waiting on EOF waits forever (the login's
+    Cancel hung that way). In-process, the CLI is the process we hold."""
     env = {k: v for k, v in os.environ.items()
            if k not in ("PYTHONHOME", "PYTHONPATH")}
     env["PATH"] = augmented_path()
+    env["GEMINI_CLI_NO_RELAUNCH"] = "1"
     if extra:
         env.update(extra)
     return env

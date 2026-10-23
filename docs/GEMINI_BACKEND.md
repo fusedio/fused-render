@@ -243,6 +243,18 @@ agent.py:      _HOST_FILES["gemini"] = gemini_host.py; _SELF_MINTED_ID_BACKENDS 
   thinking"; "Gemini wants to use…"; "Gemini finished"; "Continue with Gemini
   in terminal". Gemini mark = **a glyph of our own** (a four-point star), the
   Copilot rule — never Google's Gemini mark.
+- **D19** every Gemini child runs with **`GEMINI_CLI_NO_RELAUNCH=1`** (the
+  host's `_spawn_env`, the health probe, the login, the recap). The `gemini`
+  entry point is a launcher: without that variable it re-spawns node as a
+  child with a `--max-old-space-size` flag, inherits our stdio to it, and
+  installs **no-op SIGINT/SIGTERM/SIGHUP handlers** on itself (verified
+  0.65.0, `bundle/gemini.js`). So `terminate()` on what we spawned does
+  nothing, and `kill()` kills the launcher and orphans the real CLI — which
+  keeps our stdout open, so any reaper that waits for EOF (`_drain` in the
+  login, the host's stop) waits forever. Found live: the Preferences Cancel
+  button left "Working…" on screen with the CLI still running. In-process,
+  the CLI *is* the process we hold, signals land, EOF comes. The variable is
+  the CLI's own and documented; the heap flag it skips is a tuning default.
 
 ## 3. Gemini host: spawn
 
@@ -252,8 +264,8 @@ gemini --acp --skip-trust [-m <id>] [--approval-mode autoEdit|yolo]
 cwd = _workdir(file); env = _spawn_env("", backend="gemini"); stdin/stdout = JSON-RPC pipes; stderr -> err.log
 ```
 
-`_spawn_env(backend="gemini")` = Codex's branch plus `NO_BROWSER=1`:
-`CLAUDE_CODE_*` stripped, `GEMINI_CLI_HOME` and the Google credential
+`_spawn_env(backend="gemini")` = Codex's branch plus `NO_BROWSER=1` and
+`GEMINI_CLI_NO_RELAUNCH=1` (D19, set unconditionally): `CLAUDE_CODE_*` stripped, `GEMINI_CLI_HOME` and the Google credential
 variables left exactly as found, `_fused_cli_dir()` first on PATH when
 present. `--skip-trust` because fused is the client that chose this folder
 (as Claude's spawn is); without it a user who turned folder trust on gets a
@@ -412,7 +424,14 @@ under `GEMINI_CLI_HOME` or the home; `oauth_creds.json`,
 `security.auth.selectedType`; the chat file name `session-<ts>-<sid[:8]>.jsonl`
 under `tmp/<project>/chats`; the `JsonFormatter` shape `{session_id,
 response, stats, error}`; the OAuth web flow's stdout lines and its five-minute
-wait; `authenticate` writing `selectedType`.
+wait; `authenticate` writing `selectedType`; the launcher's relaunch-as-child
+and no-op signal handlers, and `GEMINI_CLI_NO_RELAUNCH` turning both off
+(D19 — reproduced live: SIGTERM to the launcher ignored, the real CLI
+surviving a SIGKILL of it; in-process, `terminate()` exits 0); on Linux with
+no `DISPLAY` the OAuth flow takes the paste-a-code road even without
+`NO_BROWSER` ("Please visit the following URL…", then "Enter the
+authorization code:" on stdin), so on a headless box the Preferences Sign in
+cannot finish — the strip's Cancel is the way out.
 
 Assumed (design absorbs each): `--resume <full uuid>` in the interactive CLI
 (D12); the bare MCP tool name reaching the model (D8); `--approval-mode` being

@@ -2447,11 +2447,18 @@ def test_gemini_spawn_env(agent, home, tmp_path, monkeypatch):
     assert not [k for k in env if k.startswith("CLAUDE_CODE_")]
     assert env["GEMINI_CLI_HOME"] == "/somewhere/gemini-home"
     assert env["GEMINI_API_KEY"] == "k" and env["NO_BROWSER"] == "1"
+    assert env["GEMINI_CLI_NO_RELAUNCH"] == "1"   # D19: no launcher grandchild
     assert "COPILOT_GITHUB_TOKEN" not in env and "FUSED_CLAUDE_CMD_LOG" not in env
     path = env["PATH"].split(os.pathsep)
     assert path[0] == cli and path.count(cli) == 1 and "/usr/bin" in path
     monkeypatch.setenv("NO_BROWSER", "false")
     assert agent._spawn_env(backend="gemini")["NO_BROWSER"] == "false"
+    # ...but NO_RELAUNCH is ours to insist on: an empty value would turn the
+    # launcher's grandchild back on and break every stop.
+    monkeypatch.setenv("GEMINI_CLI_NO_RELAUNCH", "")
+    assert agent._spawn_env(backend="gemini")["GEMINI_CLI_NO_RELAUNCH"] == "1"
+    assert "GEMINI_CLI_NO_RELAUNCH" not in agent._spawn_env(backend="codex") or \
+        agent._spawn_env(backend="codex")["GEMINI_CLI_NO_RELAUNCH"] == ""
     # Codex's and Claude's envs carry no NO_BROWSER of ours.
     assert "NO_BROWSER" not in agent._spawn_env(backend="codex") or \
         agent._spawn_env(backend="codex")["NO_BROWSER"] == "false"
