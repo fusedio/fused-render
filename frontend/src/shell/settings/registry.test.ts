@@ -155,7 +155,7 @@ describe("visibility", () => {
     expect(visibleSettings(on).map((s) => s.id)).toContain("chromium-windows");
   });
 
-  test("Labs keeps its sections in order, Windows last", () => {
+  test("Experimental flags keeps its sections in order, Windows last", () => {
     const on = ctx({}, { chromium_windows: { available: true, enabled: false } } as unknown as Partial<Prefs>);
     const secs = sectionsOf(visibleSettings(on), "features").map((s) => s.section);
     expect(secs).toEqual(["Sidebar", "Windows"]);

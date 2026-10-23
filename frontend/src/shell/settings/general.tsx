@@ -91,7 +91,7 @@ export function NativeWindowsControl({ prefs, onChange }: PrefControlProps) {
 }
 
 // Chromium (CEF) engine for app windows: on by default, the app ships the
-// engine (D1415), lives under Labs. Only drawn where the running
+// engine (D1415), lives under Experimental flags. Only drawn where the running
 // app can honour it (`chromium_windows.available`); where the build carries
 // no engine (Intel) the switch is off and disabled.
 function chromiumStatusLine(engine: ChromiumEngineStatus | undefined, enabled: boolean): string | null {
