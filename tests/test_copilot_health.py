@@ -314,7 +314,12 @@ def test_the_probe_does_not_chdir_the_child(fake_acp):
 
 def test_account_method_names_the_credential_the_host_will_use(monkeypatch):
     assert copilot_health.account(True, via_gh=True) == {
-        "method": "gh", "email": None, "org": None, "plan": None}
+        "method": "gh", "email": None, "org": None, "plan": None,
+        "login": None, "host": None}
+    # The headless server's identity rides on the record when it answered.
+    assert copilot_health.account(True, via_gh=False, identity=_OCTOCAT) == {
+        "method": "copilot", "email": None, "org": None, "plan": "individual",
+        "login": "octocat", "host": "https://github.com"}
     assert copilot_health.account(True, via_gh=False)["method"] == "copilot"
     monkeypatch.setenv("GH_TOKEN", "x")
     assert copilot_health.account(True, via_gh=False)["method"] == "token"
@@ -845,6 +850,18 @@ _FAKE_HEADLESS = textwrap.dedent("""\
                 assert "editorName" in msg["params"]["clientInfo"], msg
                 send({"jsonrpc": "2.0", "id": msg["id"],
                       "result": {"ok": True, "protocolVersion": 3, "version": "1.0.103"}})
+            elif msg["method"] == "account.getCurrentAuth":
+                if mode in ("auth", "anon"):
+                    # Signed out (1.0.103): errors, no authInfo.
+                    send({"jsonrpc": "2.0", "id": msg["id"], "result": {
+                        "authErrors": ["Failed to fetch GitHub CLI user login (403)"]}})
+                else:
+                    send({"jsonrpc": "2.0", "id": msg["id"], "result": {"authInfo": {
+                        "type": "gh-cli", "host": "https://github.com", "login": "octocat",
+                        "token": "gho_never_stored",
+                        "copilotUser": {"login": "octocat", "copilot_plan": "individual",
+                                        "access_type_sku": "copilot_for_individuals",
+                                        "chat_enabled": True}}}})
             elif msg["method"] == "models.list":
                 if mode == "hang":
                     time.sleep(60)
@@ -930,6 +947,9 @@ def fake_headless(tmp_path, monkeypatch):
 
     run.log = lambda: json.loads(log.read_text())
     run.path = str(p)
+    run.account = lambda mode, token=None: (
+        monkeypatch.setenv("FAKE_COPILOT_MODE", mode)
+        or copilot_health.discover_account(str(p), token))
     return run
 
 
@@ -940,6 +960,24 @@ def test_list_models_speaks_the_headless_protocol(fake_headless):
     assert rows[0]["efforts"] == ["low", "medium", "high", "xhigh"]
     # The credential the sign-in probe proved reaches the child, and only it.
     assert fake_headless.log()["token"] == "gho_dummy"
+
+
+def test_discover_account_names_the_user_and_never_the_token(fake_headless):
+    """`account.getCurrentAuth` answers with the credential-free identity
+    the carry rule binds to — and, for a gh or env credential, with the
+    TOKEN itself in the same object; only the five named fields are kept."""
+    found = fake_headless.account("ok")
+    assert found["identity"] == {"login": "octocat", "host": "https://github.com",
+                                 "kind": "gh-cli", "plan": "individual",
+                                 "sku": "copilot_for_individuals"}
+    assert "token" not in json.dumps(found)
+    assert [m["id"] for m in found["models"]][0] == "gpt-5.4"
+    # Signed out: no identity, no models — and the shape still holds.
+    assert fake_headless.account("auth") == {"identity": None, "models": None}
+    # A session that stops speaking the protocol halfway keeps the replies
+    # it got (the identity) and reads the rest as "could not tell".
+    half = fake_headless.account("banner")
+    assert half["identity"]["login"] == "octocat" and half["models"] is None
 
 
 def test_list_models_without_a_token_uses_the_clis_own_credential(fake_headless):
@@ -971,6 +1009,16 @@ def _rows():
     return copilot_health.normalize_models(_MODELS_REPLY)
 
 
+_OCTOCAT = {"login": "octocat", "host": "https://github.com", "kind": "user",
+            "plan": "individual", "sku": "copilot_for_individuals"}
+
+
+def _found(identity=_OCTOCAT, models=True):
+    """What `discover_account` answers: the identity and the rows."""
+    return {"identity": dict(identity) if identity else None,
+            "models": _rows() if models else None}
+
+
 def test_measure_lists_models_with_the_credential_the_probe_proved(tmp_path, monkeypatch):
     """The gh flow: step one signed out, step two signed in with gh's token
     — the listing then spawns with THAT token, and the snapshot carries it
@@ -982,11 +1030,15 @@ def test_measure_lists_models_with_the_credential_the_probe_proved(tmp_path, mon
                         lambda p, t: True if t else False)
     monkeypatch.setattr(copilot_health, "gh_token", lambda: "gho_gh")
     asked = []
-    monkeypatch.setattr(copilot_health, "list_models",
-                        lambda p, t: asked.append((p, t)) or _rows())
+    monkeypatch.setattr(copilot_health, "discover_account",
+                        lambda p, t: asked.append((p, t)) or _found())
     snap = copilot_health._measure()
     assert asked == [(cli, "gho_gh")]
     assert snap["account"]["method"] == "gh"
+    # The identity rides on the account record, credential-free.
+    assert snap["account"]["login"] == "octocat"
+    assert snap["account"]["host"] == "https://github.com"
+    assert snap["account"]["plan"] == "individual"
     assert [m["id"] for m in snap["models"]] == ["gpt-5.4", "gpt-5.4-mini",
                                                  "claude-sonnet-4.5", "gemini-3-pro"]
     # The endpoint's shape carries it, the cache bookkeeping does not leak.
@@ -998,7 +1050,7 @@ def test_measure_does_not_list_when_signed_out(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", os.path.dirname(cli))
     monkeypatch.setattr(copilot_health, "probe_version", lambda p: "1.0.103")
     monkeypatch.setattr(copilot_health, "_acp_probe", lambda p, t: False)
-    monkeypatch.setattr(copilot_health, "list_models",
+    monkeypatch.setattr(copilot_health, "discover_account",
                         lambda p, t: pytest.fail("a signed-out CLI cannot list"))
     snap = copilot_health._measure()
     assert snap["signed_in"] is False and snap["models"] is None
@@ -1006,53 +1058,86 @@ def test_measure_does_not_list_when_signed_out(tmp_path, monkeypatch):
 
 def test_a_listing_that_could_not_tell_carries_the_last_list_forward(tmp_path, monkeypatch):
     """A slow `models.list` must not shrink the picker to the static
-    shortlist; a definite sign-out does drop the list."""
+    shortlist — for the SAME user; a definite sign-out, another user, or a
+    measure that cannot name its user drops the list."""
     cli = _fake_cli(tmp_path)
     monkeypatch.setenv("PATH", os.path.dirname(cli))
     monkeypatch.setattr(copilot_health, "probe_version", lambda p: "1.0.103")
     monkeypatch.setattr(copilot_health, "_acp_probe", lambda p, t: True)
-    monkeypatch.setattr(copilot_health, "list_models", lambda p, t: _rows())
+    monkeypatch.setattr(copilot_health, "discover_account", lambda p, t: _found())
     first = copilot_health.summary()
-    assert len(first["models"]) == 4
-    monkeypatch.setattr(copilot_health, "list_models", lambda p, t: None)
+    assert len(first["models"]) == 4 and first["account"]["login"] == "octocat"
+    # The listing failed but the user is named and the same: carried.
+    monkeypatch.setattr(copilot_health, "discover_account",
+                        lambda p, t: _found(models=False))
     assert len(copilot_health.summary_refreshed()["models"]) == 4
-    # Could not tell whether signed in either: still carried, like account.
+    # Could not tell whether signed in either: the account (user included)
+    # is carried, and so is its list.
     monkeypatch.setattr(copilot_health, "_acp_probe", lambda p, t: None)
-    assert len(copilot_health.summary_refreshed()["models"]) == 4
+    snap = copilot_health.summary_refreshed()
+    assert snap["account"]["login"] == "octocat" and len(snap["models"]) == 4
+    # Signed in, but the session named no user: nothing to bind to, no carry.
+    monkeypatch.setattr(copilot_health, "_acp_probe", lambda p, t: True)
+    monkeypatch.setattr(copilot_health, "discover_account",
+                        lambda p, t: _found(identity=None, models=False))
+    assert copilot_health.summary_refreshed()["models"] is None
+    # Back to a named listing, then ANOTHER user in the same store whose
+    # listing failed: the first user's plan is not offered to the second.
+    monkeypatch.setattr(copilot_health, "discover_account", lambda p, t: _found())
+    copilot_health.summary_refreshed()
+    other = dict(_OCTOCAT, login="hubot")
+    monkeypatch.setattr(copilot_health, "discover_account",
+                        lambda p, t: _found(identity=other, models=False))
+    snap = copilot_health.summary_refreshed()
+    assert snap["account"]["login"] == "hubot" and snap["models"] is None
+    # A definite sign-out drops it.
+    monkeypatch.setattr(copilot_health, "discover_account", lambda p, t: _found())
+    copilot_health.summary_refreshed()
     monkeypatch.setattr(copilot_health, "_acp_probe", lambda p, t: False)
     assert copilot_health.summary_refreshed()["models"] is None
-    # A credential of another KIND (a gh token now where a `copilot login`
-    # answered before) may be another account: its list is not carried.
-    monkeypatch.setattr(copilot_health, "_acp_probe", lambda p, t: True)
-    monkeypatch.setattr(copilot_health, "list_models", lambda p, t: _rows())
-    copilot_health.summary_refreshed()
-    monkeypatch.setattr(copilot_health, "_acp_probe", lambda p, t: True if t else False)
-    monkeypatch.setattr(copilot_health, "gh_token", lambda: "gho_gh")
-    monkeypatch.setattr(copilot_health, "list_models", lambda p, t: None)
-    snap = copilot_health.summary_refreshed()
-    assert snap["account"]["method"] == "gh" and snap["models"] is None
-    monkeypatch.setattr(copilot_health, "gh_token", lambda: None)
     # And a fresh cache (a new config dir = another credential store) starts over.
     monkeypatch.setattr(copilot_health, "_acp_probe", lambda p, t: True)
-    monkeypatch.setattr(copilot_health, "list_models", lambda p, t: _rows())
+    monkeypatch.setattr(copilot_health, "discover_account", lambda p, t: _found())
     copilot_health.summary_refreshed()
     monkeypatch.setenv("COPILOT_HOME", str(tmp_path / "other-copilot"))
-    monkeypatch.setattr(copilot_health, "list_models", lambda p, t: None)
+    monkeypatch.setattr(copilot_health, "discover_account",
+                        lambda p, t: _found(models=False))
     assert copilot_health.summary_refreshed()["models"] is None
 
 
-def test_carried_models_need_a_matching_credential(tmp_path, monkeypatch):
+def test_carried_models_need_the_same_signed_in_user(tmp_path, monkeypatch):
     rows = _rows()
+    me = {"method": "copilot", "login": "octocat", "host": "https://github.com"}
+    storage.write_json(copilot_health._cache_path(), {
+        "config_dir": copilot_health.config_dir(), "account": me, "models": rows})
+    assert copilot_health._carried_models(dict(me)) == rows
+    # The credential KIND may change while the user does not (a gh token
+    # for the same login): still the same plan.
+    assert copilot_health._carried_models(dict(me, method="gh")) == rows
+    assert copilot_health._carried_models(dict(me, login="hubot")) is None
+    assert copilot_health._carried_models(dict(me, host="https://ghe.example")) is None
+    # No identity on either side is never "the same".
+    assert copilot_health._carried_models(dict(me, login=None)) is None
+    assert copilot_health._carried_models({"method": "copilot"}) is None
+    assert copilot_health._carried_models(None) is None
     storage.write_json(copilot_health._cache_path(), {
         "config_dir": copilot_health.config_dir(),
         "account": {"method": "copilot"}, "models": rows})
-    assert copilot_health._carried_models({"method": "copilot"}) == rows
-    assert copilot_health._carried_models({"method": "gh"}) is None
-    assert copilot_health._carried_models(None) is None
-    assert copilot_health._carried_models({"method": None}) is None
-    storage.write_json(copilot_health._cache_path(), {
-        "config_dir": copilot_health.config_dir(), "account": None, "models": rows})
-    assert copilot_health._carried_models({"method": "copilot"}) is None
+    assert copilot_health._carried_models(dict(me)) is None
+
+
+def test_identity_of_keeps_five_fields_and_no_secret():
+    reply = {"result": {"authInfo": {
+        "type": "env", "host": "https://github.com", "token": "ghp_secret",
+        "envVar": "GH_TOKEN", "copilotUser": {"login": "octocat",
+                                              "copilot_plan": "business"}}}}
+    assert copilot_health._identity_of(reply) == {
+        "login": "octocat", "host": "https://github.com", "kind": "env",
+        "plan": "business", "sku": None}
+    assert copilot_health._identity_of({"result": {"authErrors": ["x"]}}) is None
+    assert copilot_health._identity_of({"error": {"code": -32603}}) is None
+    assert copilot_health._identity_of(None) is None
+    assert copilot_health._identity_of({"result": {"authInfo": {"type": "user"}}}) is None
 
 
 def test_cached_models_reads_the_raw_cache_past_the_freshness_gates(tmp_path, monkeypatch):
@@ -1063,7 +1148,7 @@ def test_cached_models_reads_the_raw_cache_past_the_freshness_gates(tmp_path, mo
     monkeypatch.setenv("PATH", os.path.dirname(cli))
     monkeypatch.setattr(copilot_health, "probe_version", lambda p: "1.0.103")
     monkeypatch.setattr(copilot_health, "_acp_probe", lambda p, t: True)
-    monkeypatch.setattr(copilot_health, "list_models", lambda p, t: _rows())
+    monkeypatch.setattr(copilot_health, "discover_account", lambda p, t: _found())
     assert copilot_health.cached_models() is None
     copilot_health.summary()
     assert [m["id"] for m in copilot_health.cached_models()][0] == "gpt-5.4"

@@ -173,11 +173,17 @@ claude_enabled(), copilot_enabled(), default_backend() -> "claude" unless stored
   modelPickerCategory?, vendor?}]}`; signed out → `-32603 "… Not
   authenticated"`). `copilot_health._measure` asks it right after the sign-in
   probe, with the credential that probe proved (the gh token when
-  `account.method == "gh"`), and stores `copilot_health.normalize_models`'s
-  rows under the snapshot's `models` (policy-`disabled` models dropped;
-  levels cut to this app's five-word vocabulary; a listing that could not
-  tell carries the last list forward like `account`; a definite sign-out
-  drops it). `agent_backends/copilot.discovered_models` serves them in the
+  `account.method == "gh"`), in one headless session with
+  `account.getCurrentAuth` (→ `{authInfo{type, host, login, copilotUser{
+  copilot_plan, access_type_sku}}, authErrors[]}`; the gh/env variants carry
+  the token itself, so ONLY login/host/type/plan/sku are copied, onto
+  `account.{login, host, plan}`), and stores `copilot_health.
+  normalize_models`'s rows under the snapshot's `models` (policy-`disabled`
+  models dropped; levels cut to this app's five-word vocabulary; a listing
+  that could not tell carries the last list forward ONLY for the same
+  login+host — two `copilot login`s in one store are two plans — and a
+  definite sign-out, another user or no user named drops it).
+  `agent_backends/copilot.discovered_models` serves them in the
   catalog row with `auto` kept first (the server never lists the virtual
   `auto`); the static `MODELS` are the first frame and the no-cache fallback.
   `registry.foreign_model_error` admits a discovered id, so a GPT id Codex

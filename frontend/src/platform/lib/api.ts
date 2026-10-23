@@ -486,6 +486,10 @@ export interface ClaudeHealth {
     org: string | null;
     plan: string | null;
     planType?: string | null;
+    /** The COPILOT snapshot's user, from the CLI's own `account.getCurrentAuth`
+     *  (login and GitHub host); absent or null when it could not say. */
+    login?: string | null;
+    host?: string | null;
   } | null;
   config_dir: string;
   /** `sys.platform`. Here so the UI never guesses which install line to show. */

@@ -496,12 +496,16 @@ def signed_in(path: Optional[str] = None) -> Optional[bool]:
     return True if _user_tokens() else None
 
 
-def account(signed: Optional[bool], via_gh: bool) -> Optional[dict]:
+def account(signed: Optional[bool], via_gh: bool,
+            identity: Optional[dict] = None) -> Optional[dict]:
     """WHO is signed in, in the shape the wizard's "Signed in" row reads:
-    `{method, email, org, plan}`. Copilot's ACP tells us nothing about the
-    account, so the three identity fields are always None; `method` says
-    which credential the host will spawn with, and agent.py reads it to decide
-    whether to inject the gh token:
+    `{method, email, org, plan, login, host}`. Copilot's ACP tells us
+    nothing about the account (email and org stay None); `login`, `host`
+    and `plan` come from the headless server's `account.getCurrentAuth`
+    (`discover_account`'s `identity`), when it answered — they are what
+    binds a carried model list to its user (`_carried_models`). `method`
+    says which credential the host will spawn with, and agent.py reads it
+    to decide whether to inject the gh token:
 
       * "token"   — a token the user put in the environment, and it works;
       * "copilot" — no such token; the CLI's stored `copilot login` works;
@@ -515,7 +519,11 @@ def account(signed: Optional[bool], via_gh: bool) -> Optional[dict]:
         method = "token"
     else:
         method = "copilot"
-    return {"method": method, "email": None, "org": None, "plan": None}
+    ident = identity if isinstance(identity, dict) else {}
+    return {"method": method, "email": None, "org": None,
+            "plan": ident.get("plan") or None,
+            "login": ident.get("login") or None,
+            "host": ident.get("host") or None}
 
 
 # --- which models this account may run, and what each takes ------------------
@@ -555,9 +563,9 @@ def _frame(msg: dict) -> bytes:
 
 
 def _read_frames(stream, want_id: int, out: list) -> None:
-    """Read Content-Length frames off `stream` until the reply to `want_id`
-    arrives (appended to `out`) or EOF. Runs on a thread; the deadline is the
-    caller's join."""
+    """Read Content-Length frames off `stream`, collecting every REPLY in
+    `out`, until the reply to `want_id` arrives or EOF. Runs on a thread;
+    the deadline is the caller's join."""
     buf = b""
     try:
         while True:
@@ -586,19 +594,31 @@ def _read_frames(stream, want_id: int, out: list) -> None:
                     msg = json.loads(body)
                 except ValueError:
                     continue
-                if isinstance(msg, dict) and msg.get("id") == want_id:
-                    out.append(msg)
-                    return
+                if isinstance(msg, dict) and "id" in msg and "method" not in msg:
+                    out.append(msg)  # a reply; notifications are skipped
+                    if msg.get("id") == want_id:
+                        return
     except (OSError, ValueError):
         return
 
 
-def _headless_models(path: str, token: Optional[str]) -> Optional[list]:
-    """`models.list` over the CLI's headless server — the raw model dicts, or
-    None when it could not tell (timeout, a dead child, an error reply, output
-    that is not the protocol). Never raises. Same child discipline as
-    `_acp_probe`: no process group, no `cwd=`, close-then-wait-then-kill.
-    `token` rides in COPILOT_GITHUB_TOKEN unless the user set that name."""
+#: The request ids of the headless session, in the order they are sent:
+#: `connect`, then `account.getCurrentAuth` (WHO the credential is: login,
+#: host, Copilot plan — verified 2026-10-23 on 1.0.103 to answer
+#: `{authInfo: {type, host, login, copilotUser{login, copilot_plan,
+#: access_type_sku, …}}, authErrors[]}`; signed out, `authErrors` alone),
+#: then `models.list`. The reader stops at the last one.
+_RPC_CONNECT, _RPC_AUTH, _RPC_MODELS = 1, 2, 3
+
+
+def _headless_session(path: str, token: Optional[str]) -> dict:
+    """One headless server session: `connect`, `account.getCurrentAuth`,
+    `models.list` — the raw replies by request id (`{2: <reply>, 3:
+    <reply>}`), fewer or none when the server could not be asked (timeout,
+    a dead child, output that is not the protocol). Never raises. Same
+    child discipline as `_acp_probe`: no process group, no `cwd=`,
+    close-then-wait-then-kill. `token` rides in COPILOT_GITHUB_TOKEN unless
+    the user set that name."""
     extra = ({"COPILOT_GITHUB_TOKEN": token}
              if token and not os.environ.get("COPILOT_GITHUB_TOKEN") else None)
     # BYTES on both pipes: Content-Length counts bytes, so the text mode the
@@ -606,7 +626,7 @@ def _headless_models(path: str, token: Optional[str]) -> Optional[list]:
     kwargs = {k: v for k, v in SUBPROCESS_KWARGS.items()
               if k not in ("text", "encoding", "errors", "universal_newlines")}
     proc = None
-    answer: list = []
+    answers: list = []
     try:
         proc = subprocess.Popen(
             [path, "--headless", "--stdio", "--no-auto-update"],
@@ -614,18 +634,22 @@ def _headless_models(path: str, token: Optional[str]) -> Optional[list]:
             stderr=subprocess.DEVNULL, env=_child_env(extra), **kwargs,
         )
         proc.stdin.write(_frame({
-            "jsonrpc": "2.0", "id": 1, "method": "connect",
+            "jsonrpc": "2.0", "id": _RPC_CONNECT, "method": "connect",
             "params": {"clientInfo": dict(_HEADLESS_CLIENT),
                        "supportedTaskKinds": ["agent", "client", "shell"]}}))
         proc.stdin.write(_frame({
-            "jsonrpc": "2.0", "id": 2, "method": "models.list", "params": {}}))
+            "jsonrpc": "2.0", "id": _RPC_AUTH, "method": "account.getCurrentAuth",
+            "params": {}}))
+        proc.stdin.write(_frame({
+            "jsonrpc": "2.0", "id": _RPC_MODELS, "method": "models.list", "params": {}}))
         proc.stdin.flush()
-        thread = threading.Thread(target=_read_frames, args=(proc.stdout, 2, answer),
+        thread = threading.Thread(target=_read_frames,
+                                  args=(proc.stdout, _RPC_MODELS, answers),
                                   daemon=True)
         thread.start()
         thread.join(_HEADLESS_TIMEOUT_S)
-    except Exception:  # noqa: BLE001 - a listing that fails is "could not tell"
-        return None
+    except Exception:  # noqa: BLE001 - a session that fails is "could not tell"
+        return {}
     finally:
         if proc is not None:
             try:
@@ -642,11 +666,43 @@ def _headless_models(path: str, token: Optional[str]) -> Optional[list]:
                     pass
             except OSError:
                 pass
-    if not answer:
-        return None
-    result = answer[0].get("result")
+    return {m.get("id"): m for m in answers if isinstance(m, dict)}
+
+
+def _headless_models(path: str, token: Optional[str]) -> Optional[list]:
+    """`models.list`'s raw model dicts, or None when it could not tell."""
+    return _models_of(_headless_session(path, token).get(_RPC_MODELS))
+
+
+def _models_of(reply) -> Optional[list]:
+    result = reply.get("result") if isinstance(reply, dict) else None
     models = result.get("models") if isinstance(result, dict) else None
     return models if isinstance(models, list) else None
+
+
+def _identity_of(reply) -> Optional[dict]:
+    """`account.getCurrentAuth`'s reply → the CREDENTIAL-FREE identity the
+    snapshot may store: `{login, host, kind, plan, sku}`, or None when the
+    server named no authenticated user (signed out: `authErrors` alone) or
+    the reply is not the shape. The `authInfo` variants for a gh or an env
+    token CARRY THE TOKEN ITSELF; only these five named fields are copied,
+    so nothing else in that object can reach the cache file."""
+    result = reply.get("result") if isinstance(reply, dict) else None
+    info = result.get("authInfo") if isinstance(result, dict) else None
+    if not isinstance(info, dict):
+        return None
+    user = info.get("copilotUser") if isinstance(info.get("copilotUser"), dict) else {}
+    login = str(info.get("login") or user.get("login") or "").strip()
+    host = str(info.get("host") or "").strip()
+    if not login and not host:
+        return None
+    return {
+        "login": login or None,
+        "host": host or None,
+        "kind": str(info.get("type") or "") or None,
+        "plan": str(user.get("copilot_plan") or "") or None,
+        "sku": str(user.get("access_type_sku") or "") or None,
+    }
 
 
 def _effort_vocabulary() -> tuple:
@@ -712,36 +768,49 @@ def normalize_models(raw: list) -> list:
     return out
 
 
-def list_models(path: str, token: Optional[str] = None) -> Optional[list]:
-    """The account's models, normalized — or None when the CLI could not
+def discover_account(path: str, token: Optional[str] = None) -> dict:
+    """WHO the credential is and WHICH models it may run, from one headless
+    session: `{"identity": {login, host, kind, plan, sku} | None, "models":
+    [normalized rows] | None}`. Either half is None when the CLI could not
     say (signed out, timed out, an older CLI without the method). An empty
-    answer is None too: no account has no models, so an empty list is a
-    reply we misread, not a catalog to serve."""
-    raw = _headless_models(path, token)
-    if raw is None:
-        return None
-    rows = normalize_models(raw)
-    return rows or None
+    model list is None too: no account has no models, so an empty list is
+    a reply we misread, not a catalog to serve."""
+    replies = _headless_session(path, token)
+    raw = _models_of(replies.get(_RPC_MODELS))
+    rows = normalize_models(raw) if raw is not None else []
+    return {"identity": _identity_of(replies.get(_RPC_AUTH)),
+            "models": rows or None}
+
+
+def list_models(path: str, token: Optional[str] = None) -> Optional[list]:
+    """`discover_account`'s models alone."""
+    return discover_account(path, token)["models"]
+
+
+def _same_identity(a: Optional[dict], b: Optional[dict]) -> bool:
+    """Two account records name the SAME signed-in user: both carry a login
+    and they agree on login and host. No login on either side is no
+    identity, and two unknowns are never "the same"."""
+    if not isinstance(a, dict) or not isinstance(b, dict):
+        return False
+    if not a.get("login") or not b.get("login"):
+        return False
+    return (a.get("login"), a.get("host")) == (b.get("login"), b.get("host"))
 
 
 def _carried_models(acct: Optional[dict]) -> Optional[list]:
     """The last snapshot's `models`, for a measure whose listing could not
     tell — read like `_carried_account`, regardless of the fingerprint,
-    and bound to the same credential: the same store (`config_dir`) AND
-    the same `account.method` as the measure just settled on. The list is
-    the ACCOUNT's, and `method` is the only identity Copilot's probe
-    yields; a credential that changed kind (a `copilot login` replacing a
-    gh token, or the reverse) may be another account, and offering it the
-    old account's models would fail at `--model`. No account on either
-    side → nothing carried."""
-    method = acct.get("method") if isinstance(acct, dict) else None
-    if not method:
-        return None
+    from the same store (`config_dir`), and ONLY for the same signed-in
+    user (`_same_identity`: the login and host `account.getCurrentAuth`
+    named, carried on `account`). The list is the account's; two `copilot
+    login`s in one store are two accounts with two plans, so a measure
+    that cannot name its user — or names another — carries nothing and the
+    static shortlist shows until the next listing."""
     prev = _read_cache()
     if not prev or prev.get("config_dir") != config_dir():
         return None
-    before = prev.get("account")
-    if not isinstance(before, dict) or before.get("method") != method:
+    if not _same_identity(prev.get("account"), acct):
         return None
     models = prev.get("models")
     return list(models) if isinstance(models, list) and models else None
@@ -937,7 +1006,12 @@ def _measure(allow_shell: bool = True) -> dict:
     # One ACP spawn answers "signed in?", two only when the first says no and
     # `gh` has a token to try (`_sign_in`). The token lives inside that call.
     signed, via_gh, token = _sign_in_detail(path) if usable else (None, False, None)
-    acct = account(signed, via_gh=via_gh)
+    # WHO THE CREDENTIAL IS AND WHICH MODELS IT MAY RUN (`discover_account`,
+    # one headless session): asked only of a CLI that just proved a
+    # credential, with that credential.
+    found = (discover_account(path, token) if (usable and signed is True)
+             else {"identity": None, "models": None})
+    acct = account(signed, via_gh=via_gh, identity=found["identity"])
     if signed is None:
         signed = signed_in(None)
         # A probe that could not tell is no news about the credential, so the
@@ -945,13 +1019,11 @@ def _measure(allow_shell: bool = True) -> dict:
         # agent.py's gh-token gate. Dropping it on one slow read would spawn
         # a gh-only machine signed out.
         acct = (_carried_account() if usable else None) or account(signed, False)
-    # WHICH MODELS THE ACCOUNT MAY RUN (see `_headless_models`): asked only of
-    # a CLI that just proved a credential, with that credential. A listing
-    # that could not tell keeps the last snapshot's list for the SAME
-    # credential (`_carried_models`), as the account is kept; a definite
-    # sign-out, or a credential of another kind, drops it (the static
+    # A listing that could not tell keeps the last snapshot's list for the
+    # SAME signed-in user (`_carried_models`), as the account is kept; a
+    # definite sign-out, another user, or no user named drops it (the static
     # shortlist shows again until the next listing).
-    models = list_models(path, token) if (usable and signed is True) else None
+    models = found["models"]
     if models is None and usable and signed is not False:
         models = _carried_models(acct)
 
