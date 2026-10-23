@@ -220,3 +220,19 @@ def test_a_canvas_target_is_told_about_the_tool_and_a_plain_one_is_not(
     tool = "mcp__%s__%s" % (agent.PERMISSION_SERVER, agent.CANVAS_SHOT_TOOL)
     assert tool in agent._canvas_shot_note(str(clone / "udf_1.py"))
     assert agent._canvas_shot_note(str(tmp_path / "elsewhere.py")) == ""
+
+
+def test_a_canvas_session_gets_an_mcp_ceiling_above_the_screenshot_wait(
+        agent, tmp_path):
+    """The CLI's per-call MCP timeout must outlast the tool's own wait, or the
+    model sees an MCP-timeout error instead of the tool's "open the canvas"
+    sentence (CodeRabbit on #1924). A plain session keeps the old ceiling."""
+    agent.RUNS = str(tmp_path / "runs")
+    run_dir = tmp_path / "runs" / "r"
+    run_dir.mkdir(parents=True)
+    def ceiling(canvas):
+        with open(agent._write_mcp_config(str(run_dir), pane=False, canvas=canvas),
+                  encoding="utf-8") as fh:
+            return json.load(fh)["mcpServers"][agent.PERMISSION_SERVER]["timeout"]
+    assert ceiling(canvas=True) >= (agent.CANVAS_SHOT_WAIT + 60) * 1000
+    assert ceiling(canvas=False) == (agent.PERMISSION_WAIT + 60) * 1000

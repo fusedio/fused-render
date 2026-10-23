@@ -335,6 +335,12 @@ APP_STATE_TOOL = "app_state"
 # session whose target sits inside a canvas clone (`_in_workbench_root`), the
 # one kind of target whose page frames a workbench it can photograph.
 CANVAS_SHOT_TOOL = "canvas_screenshot"
+# How long the tool waits for the canvas page (permission_server
+# CANVAS_SHOT_TIMEOUT; one env var, read in both places). The MCP client's
+# per-call ceiling for a canvas session is set above this in
+# `_write_mcp_config`, so the tool's own "no page answered" sentence reaches
+# the model instead of the CLI's MCP-timeout error.
+CANVAS_SHOT_WAIT = float(os.environ.get("FUSED_RENDER_CANVAS_SHOT_TIMEOUT", "100"))
 # The delimiters the PAGE wraps its send-time snapshot in. Stripped from every
 # user-facing copy of a message (the run's `meta.json`, hence the commit
 # subject and a re-attach match — plus the restored
@@ -2123,7 +2129,10 @@ def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True,
             # tool call that lasts as long as the user takes to look at it. Set
             # above the server's own wait so an unanswered card returns OUR
             # "nobody answered" deny instead of the CLI's MCP-timeout error.
-            "timeout": (PERMISSION_WAIT + 60) * 1000,
+            # A canvas session's screenshot waits longer than a card may
+            # (CANVAS_SHOT_WAIT, and a canvas-less page answers just under it),
+            # so its ceiling is the larger of the two (CodeRabbit, #1924).
+            "timeout": (max(PERMISSION_WAIT, CANVAS_SHOT_WAIT if canvas else 0) + 60) * 1000,
         }}}, fh)
     return path
 
