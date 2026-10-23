@@ -175,9 +175,9 @@ describe("tasks tour", () => {
     const modal = tasks?.followUp;
     expect(modal?.trigger).toBe(".schedule-new");
     const steps = modal?.steps() ?? [];
-    expect(steps.map((s) => s.element)).toEqual([".new-task-title", ".schedule-save"]);
-    // One onEnter fills BOTH the title and the ask: the create below is real, so
-    // the task has to carry an instruction.
+    expect(steps.map((s) => s.element)).toEqual([".new-task-ask", ".schedule-save"]);
+    // One onEnter fills the box: the create below is real, so the task has
+    // to carry an instruction.
     expect(typeof steps[0].onEnter).toBe("function");
     expect(steps[1].advanceOn).toBe(".schedule-save");
     expect(steps[1].actionText).toBe("Create it");

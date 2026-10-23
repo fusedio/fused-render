@@ -33,7 +33,7 @@ import { useRecentsTracking } from "@apps/explorer/lib/recents";
 import { setSideTab } from "@apps/explorer/lib/side-tab-store";
 // The route parser, not the barrel: api.ts is already in the main bundle (the
 // sidebar's sign-in probe imports it); the barrel would pull the sub-app in.
-import { ENV_LABELS, canvasNameFromPath, canvasProjectFromPath } from "@apps/canvases/api";
+import { ENV_NAMES, canvasNameFromPath, canvasProjectFromPath } from "@apps/canvases/api";
 import {
   appIconUrl,
   getAppIcon,
@@ -123,6 +123,7 @@ const AiModels = lazy(() =>
   import("@apps/ai_models").then((m) => ({ default: m.AiModels })),
 );
 const Scheduled = lazy(() => import("@shell/Scheduled"));
+const ClaudeConfig = lazy(() => import("@shell/ClaudeConfig"));
 const MonitorPage = lazy(() => import("@shell/monitor/MonitorPage"));
 const MarketplacePage = lazy(() =>
   import("@apps/marketplace").then((m) => ({ default: m.MarketplacePage })),
@@ -722,6 +723,9 @@ export default function App({ config }: { config: Config }) {
   // Scheduled Claude messages (shell/Scheduled.tsx) — chrome-free settings
   // pattern.
   const isTasks = pathname === "/tasks";
+  // Claude Code's own configuration (shell/ClaudeConfig.tsx) — chrome-free
+  // settings pattern; the tab is a query param of its own.
+  const isClaudeConfig = pathname === "/claude-config";
   // Every process on the machine, live (shell/monitor/MonitorPage.tsx) —
   // the System chip's "Open Monitor". BEHIND THE FLAG (monitor-flag.ts,
   // `monitor_enabled`, default off): off, the chip is not rendered and the
@@ -794,6 +798,7 @@ export default function App({ config }: { config: Config }) {
     isPrefs ||
     isTemplates ||
     isTasks ||
+    isClaudeConfig ||
     isMonitor ||
     isMarketplace ||
     isAiModels ||
@@ -822,6 +827,8 @@ export default function App({ config }: { config: Config }) {
             ? "Templates"
             : isTasks
                 ? "Tasks"
+                : isClaudeConfig
+                ? "Claude Code"
                 : isMonitor
                 ? "Monitor"
                 : isMarketplace
@@ -844,9 +851,9 @@ export default function App({ config }: { config: Config }) {
                               : isBots
                                 ? "Bots"
                               : canvasWorkspace
-                                ? `Canvas: ${canvasWorkspace.name} · ${ENV_LABELS[canvasWorkspace.env]}`
+                                ? `Canvas: ${canvasWorkspace.name} · ${ENV_NAMES[canvasWorkspace.env].label}`
                               : canvasProject
-                                ? `Canvas: ${canvasProject.name} · ${ENV_LABELS[canvasProject.env]}`
+                                ? `Canvas: ${canvasProject.name} · ${ENV_NAMES[canvasProject.env].label}`
                                 : fsPath
                                   ? undefined
                                   : null,
@@ -950,6 +957,17 @@ export default function App({ config }: { config: Config }) {
         </Suspense>
       </div>
     );
+  } else if (isClaudeConfig) {
+    // Claude Config: config tabs, no topbar. The tab lives in the page's own
+    // query param and is written with replaceState, so only a navigation to
+    // /claude-config remounts it.
+    main = (
+      <div id="content" key={epoch}>
+        <Suspense fallback={<RouteFallback />}>
+          <ClaudeConfig key={epoch} />
+        </Suspense>
+      </div>
+    );
   } else if (isMonitor) {
     // Whole-machine process monitor — chrome-free like Mounts; keyed on epoch
     // so a re-navigation is a fresh read (its poll stops on unmount). Off
@@ -972,7 +990,7 @@ export default function App({ config }: { config: Config }) {
                 navigateUrl("/preferences?s=monitor");
               }}
             >
-              Preferences › Optional features
+              Preferences › Labs
             </a>
             .
           </div>
@@ -981,16 +999,17 @@ export default function App({ config }: { config: Config }) {
     );
   } else if (isMarketplace) {
     // The Marketplace — chrome-free, the page owns its sticky header and
-    // scroll. Keyed on epoch like its neighbours (its catalog is a module
-    // cache, so a remount repaints instantly). Off, nothing is fetched: the
-    // notice is the whole page.
+    // scroll. Not keyed on `epoch`, like AI Models: Discover, Installed and an
+    // app's page are paths, and a hop between them must keep the header and
+    // scroll container mounted. The page reads the path itself. Off, nothing is
+    // fetched: the notice is the whole page.
     main = (
-      <div id="content" key={epoch}>
+      <div id="content">
         {marketplaceOn === null ? (
           <RouteFallback />
         ) : marketplaceOn ? (
           <Suspense fallback={<RouteFallback />}>
-            <MarketplacePage key={epoch} />
+            <MarketplacePage />
           </Suspense>
         ) : (
           <div className="monitor-off deploy-muted">
@@ -1002,7 +1021,7 @@ export default function App({ config }: { config: Config }) {
                 navigateUrl("/preferences?s=marketplace");
               }}
             >
-              Preferences › Optional features
+              Preferences › Labs
             </a>
             .
           </div>

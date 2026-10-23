@@ -268,17 +268,18 @@ place, or follow the path above it to see it in its group. Settings that live
 on another page (the default Claude model in Claude Config, local model
 engines in AI Models) are in the list too, as a row that takes you there.
 
-| Group | What is in it |
-|---|---|
-| **General** | Appearance and colour theme · native windows · the launcher's shortcuts (macOS) · automatic update downloads |
-| **AI & agents** | Which coding agents (Claude Code, GitHub Copilot CLI) run chats and tasks, each with its health, and the default for new ones |
-| **Tasks** | One task at a time per folder (beta) · AI recap titles (beta) · notifications for terminal sessions |
-| **Apps & sharing** | Git sync · the Share sheet and its GitHub link · live previews in thumbnails |
-| **Files & search** | The file index: on/off, ranking, low-impact mode, skipped folders, rebuild |
-| **Optional features** | Canvases · Marketplace · the process Monitor · Reader. All off by default |
-| **Phone & network** | Sharing your apps with a phone on the same Wi-Fi, with QR pairing |
-| **Accounts** | Fused account · Hugging Face |
-| **Advanced** | The [call log](#call-log) · the index query console · diagnostics for a bug report |
+| Heading | Page | What is in it |
+|---|---|---|
+| **App** | **General** | Appearance and colour theme · native windows · the launcher's shortcuts (macOS) · automatic update downloads · the process Monitor · Reader |
+| | **Accounts** | Fused account · default environment · Hugging Face |
+| | **Labs** (beta) | Canvases (and, under it, loading a custom deployment's workbench through a local proxy; `canvases_embed_proxy_enabled` under `[render]` in `~/.fused/settings.toml` overrides that switch) · Marketplace · Chromium engine for windows. All off by default |
+| **Agents** | **Coding agents** | Which coding agents (Claude Code, GitHub Copilot CLI, OpenAI Codex CLI) run chats and tasks, each with its health, and the default for new ones |
+| | **Chats & tasks** | One task at a time per folder (beta) · AI recap titles · summary-only titles · lean Claude sessions · default approvals for new chats · concurrent Claude sessions · notifications for terminal sessions |
+| | **Claude Code** | The `settings.json` keys that shape the Claude sessions this app runs |
+| **Apps & files** | **Sharing & sync** | Git sync · the Share sheet and its GitHub link · live previews in thumbnails |
+| | **File index** | On/off, ranking, low-impact mode, skipped folders, rebuild |
+| | **Phone access** | Sharing your apps with a phone on the same Wi-Fi, with QR pairing |
+| **Developer** | **Debugging** | The [call log](#call-log) · the index query console · diagnostics for a bug report |
 
 Links can open a group (`/preferences?tab=indexing`), a single setting
 (`/preferences?s=monitor`) or a search (`/preferences?q=token`).
@@ -318,6 +319,33 @@ disposable: it rotates so it can't grow without bound, and living in temp means
 the OS reclaims it. Set `FUSED_RENDER_LOG_DIR` to keep logs somewhere
 persistent instead. (Not to be confused with the **call log** below, which is
 durable, has settings, and lives in `~/.fused-render/logs/`.)
+
+## Claude Config
+
+**Claude Config** (in the sidebar) edits what Claude Code reads from `~/.claude`:
+four tabs, each with its own filter box at the top of the page.
+
+- **Skills** has **Installed** and **Discover**. Installed lists the skills in
+  `~/.claude/skills`, `~/.agents/skills` (read by Copilot and Codex),
+  `~/.copilot/skills` and `~/.codex/skills`, then the skills that come with
+  enabled Claude plugins (read-only). A skill reachable through a link and a
+  copy is one row. When more than one coding agent is on in Preferences, each
+  row says which of them read it. **Discover** lists the skills the marketplaces
+  you have cloned publish: **Add** copies one skill into the right place for
+  the agents that are on (`~/.claude/skills`, or `~/.agents/skills` with a link
+  from Claude's directory), and the row's menu installs the whole plugin
+  instead. **New skill** is placed the same way, and deleting a skill names
+  every path it removes.
+- **Plugins** is one full-width list. **Installed** rows show the plugin, its
+  description, its marketplace and version, a menu (update, copy install
+  command, uninstall) and the on/off switch at the right end; the arrow opens
+  its id and what it contains. **Discover** rows end in **Install**. The
+  marketplace menu above the list filters by marketplace, and **Marketplaces**
+  opens a dialog to copy a marketplace's install command, remove it, or add one.
+  A version that is a git commit is not shown in the row; the details give it
+  as `commit` and the first seven characters.
+- **Memory** and **MCP servers** list the memory files Claude Code keeps for
+  each project and the servers it connects to.
 
 ## AI calls (`fused.ai`)
 
@@ -417,7 +445,7 @@ experienced as one. A large stale count next to a small ok count is the sign a
 page is re-running Python far more than it needs to (a slider with no debounce,
 or an `onChange` handler that retriggers itself).
 
-**Getting to it from Preferences.** **Advanced › Record API calls › Browse** opens the store in the
+**Getting to it from Preferences.** **Debugging › Record API calls › Browse** opens the store in the
 explorer: one directory per app, and clicking any `.calls.jsonl` opens it in
 **Log studio**.
 
@@ -464,7 +492,7 @@ query globs `logs/*/*.calls.jsonl`.
 
 **A note on parameters.** A run's parameters are recorded by default: they are
 usually the whole reproduction, and they are already visible in the URL. If a
-page passes something sensitive as a parameter, switch **Preferences → Advanced
+page passes something sensitive as a parameter, switch **Preferences → Debugging
 → Parameters** to *names only* (or off). `FUSED_RENDER_CALLS=0` turns capture
 off entirely for a run, and `FUSED_RENDER_CALLS_RETENTION_DAYS` overrides the
 retention window.

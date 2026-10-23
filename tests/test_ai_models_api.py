@@ -34,6 +34,7 @@ from fused_render.ai import catalog
 from fused_render.ai import registry as _ai_registry
 from fused_render.ai import hub_cache as ai_models_mod
 from fused_render.ai import tasks as ai_tasks
+from fused_render.ai.runners import formats
 from _hardware_probe_helpers import force_no_accelerators
 
 @pytest.fixture()
@@ -1245,9 +1246,22 @@ def test_every_tag_this_module_can_produce_is_in_the_vocabulary():
         ai_models_mod._format_task("mlx-community/FLUX.2-Klein-4B-4bit", set(),
                                    {"transformer", "text_encoder", "vae"}, {}),
         ai_models_mod._format_task("org/w", {"model.bin", "vocabulary.txt"}, set(), {}),
+        ai_models_mod._format_task("org/p", set(formats.SHERPA_TRANSDUCER_FILES),
+                                   set(), {}),
     ) if found}
     unvendored = sorted(tag for tag in produced if tag not in ai_tasks.TASKS)
     assert not unvendored, f"tags this module emits that nothing classifies: {unvendored}"
+
+
+def test_a_cached_sherpa_transducer_export_is_labelled_speech_recognition():
+    """The Parakeet export has no config.json and no card tag a mirror is
+    guaranteed to keep, so the layout alone has to say what it is (D1423)."""
+    found = ai_models_mod._format_task(
+        "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8",
+        set(formats.SHERPA_TRANSDUCER_FILES), set(), {})
+    assert found and found[0] == "automatic-speech-recognition"
+    # …and only the whole set: an encoder alone is a fragment.
+    assert ai_models_mod._format_task("org/p", {"encoder.int8.onnx"}, set(), {}) is None
 
 
 def test_a_vision_language_model_is_still_loadable_as_a_chat_model(client, hub):

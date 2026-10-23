@@ -630,6 +630,10 @@ def _measure(allow_shell: bool = True) -> dict:
         # `codex doctor` exists but is not consulted (D10); kept so the
         # snapshots share a shape.
         "doctor": None,
+        # Copilot's snapshot carries the account's discovered model list
+        # here (COPILOT D11a); Codex's static catalog stands, so None —
+        # kept, again, so the three snapshots share one shape.
+        "models": None,
         "on_shell_path": on_shell_path,
         "path_fix_command": fix["command"] if fix else None,
         "checked_at": time.time(),

@@ -143,7 +143,7 @@ function monogram(name: string) {
   return d;
 }
 function tilde(p: string) { return (p || "").replace(/^\/Users\/[^/]+/, "~"); }
-// @apps/canvases/api ENV_LABELS, copied: this entry must not pull the canvases app into its bundle for two strings.
+// @apps/canvases/api ENV_NAMES labels, copied: this entry must not pull the canvases app into its bundle for two strings.
 const ENV_LABELS: Record<string, string> = { unstable: "Unstable", prod: "Production" };
 function subtitle(app: LauncherRow) {
   if (app.home) return app.kind === "bots" ? "Open your bots" : "Open the shell";

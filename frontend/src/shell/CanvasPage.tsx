@@ -72,7 +72,7 @@ import Scheduled from "./Scheduled";
 import { peekSearch } from "./task-peek-store";
 import {
   CANVAS_PAGE_TABS,
-  ENV_LABELS,
+  ENV_NAMES,
   canvasPagePath,
   canvasPageTabFromSearch,
   canvasProjectPath,
@@ -192,7 +192,7 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
         if (cancelled) return;
         const base = status.envs[env]?.canvases_dir;
         if (!base) {
-          setError(`No clone folder for the ${ENV_LABELS[env]} environment.`);
+          setError(`No clone folder for the ${ENV_NAMES[env].label} environment.`);
           return;
         }
         setDir(base.replace(/\/+$/, "") + "/" + name);
@@ -273,9 +273,9 @@ export default function CanvasPage({ env, name }: { env: WorkbenchEnv; name: str
               {name}
               <span
                 className="canvases-env-chip canvas-page-env"
-                title={`${name} syncs with ${ENV_LABELS[env]}`}
+                title={`${name} syncs with ${ENV_NAMES[env].label}`}
               >
-                {ENV_LABELS[env]}
+                {ENV_NAMES[env].tag}
               </span>
             </h1>
             {/* The hosted workbench editor's URL, as the caption under the

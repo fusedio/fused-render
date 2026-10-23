@@ -69,7 +69,7 @@ import tempfile
 import threading
 import time
 
-from fused_render import __version__, _flavor, jobs
+from fused_render import __version__, _flavor, bundle_exec, jobs
 from fused_render._branch import branch_suffix
 from fused_render.update import common
 # The shared state machine lives in its own module, `_manager.py`, named
@@ -486,13 +486,6 @@ class UpdateManager(_base.UpdateManager):
             mount = self._attach(dmg)
             source = self._find_app(mount)
             self._verify_app_version(source, manifest["version"])
-            # With the Chromium engine on, fetch the engine the NEW app pins
-            # now, so the relaunch finds it on disk (D1408). BEFORE the swap:
-            # this process's modules still import from the current bundle
-            # here; after the rename a lazy import lands on the moved tree
-            # (PR #1645). Best effort — a failed engine download never fails
-            # the app update, the preference row offers it again after.
-            self._prefetch_chromium_engine(source)
             if os.path.exists(swap_in):
                 shutil.rmtree(swap_in)
             # ditto straight from the mounted image into the bundle's own
@@ -502,6 +495,26 @@ class UpdateManager(_base.UpdateManager):
             # volume makes the swap below two same-volume renames.
             subprocess.run(["/usr/bin/ditto", source, swap_in],
                            check=True, capture_output=True, timeout=600)
+            # Prove the staged copy's python SPAWNS before it becomes the
+            # app. A 0.6.84 reached this way on macOS 26.6 (2026-10-23) booted
+            # — the launcher never execs `Contents/MacOS/python` — and then
+            # failed every `posix_spawn` of it with EACCES for six boots:
+            # Claude, the index, the engine, all dead behind a live window.
+            # The same image on another Mac spawned fine, so whatever that
+            # machine does to the copy is only visible by trying it, here,
+            # while the old bundle is still intact. `ensure_spawnable` logs the
+            # file's mode/owner/xattrs, sets 0755 where it can, and tries
+            # again; when it still refuses, the update is NOT installed — the
+            # `finally` below removes the staged copy and `_install` shows the
+            # error — rather than swapped in to produce a working-looking app
+            # that cannot run anything.
+            reason = bundle_exec.ensure_spawnable(
+                os.path.join(swap_in, "Contents"), what="update")
+            if reason is not None:
+                raise RuntimeError(
+                    "the downloaded app's Python cannot be run on this Mac "
+                    f"({reason}); the installed app was left as it was — "
+                    "download the DMG from fused.io and drag it to Applications")
             # The swap: both renames happen inside `parent` so each is atomic
             # on the volume; the running process keeps its open files on the
             # old inode (same situation as a manual DMG drag / brew upgrade).
@@ -532,20 +545,6 @@ class UpdateManager(_base.UpdateManager):
         # path on every protected file access: delete it and Full Disk
         # Access silently stops working until relaunch (see
         # `sweep_old_bundles`, which clears it on a later boot instead).
-
-    def _prefetch_chromium_engine(self, source: str) -> None:
-        try:
-            from fused_render import chromium
-            from fused_render.shell.prefs import chromium_windows_enabled
-
-            if not chromium_windows_enabled():
-                return
-            self._job_report(detail="Downloading Chromium engine", message="",
-                             done=None, total=None, cancellable=False)
-            chromium.prefetch_for_bundle(source)
-        except Exception:  # noqa: BLE001 — the app update must go on
-            logger.warning("chromium engine prefetch failed; the app will fetch it after the relaunch",
-                           exc_info=True)
 
     def _attach(self, dmg: str) -> str:
         result = subprocess.run(

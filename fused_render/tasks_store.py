@@ -963,6 +963,74 @@ def mark_deleted(key: str, now: float | None = None) -> None:
     _update(DELETED_FILE, mutate)
 
 
+# ------------------------------------------------------------ archived.json
+#
+#     {"<task-key>": {"at": 1755300000.0}}
+#
+# THE ARCHIVE FILING FOR A TASK THAT HAS NO SESSION. Archiving normally writes
+# `status: archived` onto the session's triage record (claude_sessions
+# `write_triage`), and a task keyed by a session id always has somewhere for
+# that to land. A task keyed `pending:<entry-id>` does not: it exists because
+# a scheduled message made it and the run never reported a session — the one
+# shape that stays on the board for ever is a send whose spawn FAILED (a
+# Copilot or Codex integration error, a refused model, a disabled agent), an
+# `error` entry with no conversation behind it. Delete already works on those
+# rows because the tombstone is keyed by TASK KEY (`deleted.json` above);
+# archive did not, because it was keyed by session only, so the row answered
+# `filed: False` and came straight back red on the next poll.
+#
+# Same shape as the tombstone and read the same way: `archived_at` carries
+# the WHEN so the router's `_revived` can drop a filing the task has outgrown
+# (a re-send that actually runs postdates the stamp and the row comes back).
+# A filing for a key the task has since left — the watcher stamped a session
+# onto the entry and the row re-keyed — is a few bytes nobody reads, the same
+# price the tombstone pays. `clear_archived` is the Unarchive gesture's half.
+
+ARCHIVED_FILE = "archived.json"
+
+
+def archived_state() -> dict:
+    """The key-keyed archive filings, as saved. Missing/corrupt reads as {} —
+    nothing filed — so a bad file costs a filing, never a row."""
+    return load_state(ARCHIVED_FILE)
+
+
+def archived_at(state: dict, key: str) -> float:
+    """When this key was filed, or 0.0 — which every real timestamp beats, so
+    an unreadable record can never hide a task."""
+    rec = state.get(str(key))
+    if not isinstance(rec, dict):
+        return 0.0
+    try:
+        at = float(rec.get("at"))
+    except (TypeError, ValueError):
+        return 0.0
+    return at if at > 0 else 0.0
+
+
+def mark_archived(key: str, now: float | None = None) -> None:
+    """File one task key away. Idempotent by intent: archiving twice re-stamps
+    the WHEN, which is what the second gesture means."""
+    stamp = time.time() if now is None else float(now)
+
+    def mutate(state: dict):
+        state[str(key)] = {"at": stamp}
+        return None, True
+
+    _update(ARCHIVED_FILE, mutate)
+
+
+def clear_archived(key: str) -> bool:
+    """Take the key-keyed filing back. True when there was one to drop."""
+    def mutate(state: dict):
+        had = str(key) in state
+        if had:
+            del state[str(key)]
+        return had, had
+
+    return bool(_update(ARCHIVED_FILE, mutate))
+
+
 # -------------------------------------------------- session_settings.json
 #
 #     {"<session-id>": {"model": "haiku", "effort": "low", "at": 1755300000.0}}

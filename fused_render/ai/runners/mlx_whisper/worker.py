@@ -51,7 +51,6 @@ is up to 30 seconds of audio away and the phase before it (`av` decoding) has no
 hook at all.
 """
 
-import http.client
 import importlib
 import json
 import math
@@ -67,6 +66,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import diarize  # noqa: E402 - the SHARED speaker labelling; see runners/diarize.py
 import formats  # noqa: E402 - the shared format checks; see formats.py
 import partial  # noqa: E402 - the SHARED progressive transcript; see runners/partial.py
+import stt_common  # noqa: E402 - the VAD policy both STT runners share
 import worker_base  # noqa: E402 - the path insert above is what makes it importable
 
 # `vad` is imported where it is USED rather than here, and stays that way: it is
@@ -161,37 +161,12 @@ def download(model_id):
     """The Whisper snapshot, and the 2MB speech detector beside it.
 
     The detector is fetched HERE rather than lazily on the first transcription,
-    for the reason `runners/torch_image.py` gives about its GGUF recipe: a
-    "Download" that leaves a cache which cannot work offline has not done the
-    thing the button said it would. `vad` defaults to true, so a user who
-    downloads a model on wifi and transcribes on a train would otherwise find
-    the feature quietly degraded at exactly the wrong moment.
-
-    Best-effort, and deliberately so: the detector is an optimisation over a
-    transcription that works without it (see `_speech_regions`), so a Hub
-    hiccup while fetching 2MB must not fail an 8GB model download that has
-    already succeeded.
-
-    **Best-effort stops at the ✕.** `Cancelled` is now something a fetch really
-    raises — the tick carries it back (`worker_base.fetch_with_progress`), where
-    it used to be latent — and it is the one exception here that is not a Hub
-    hiccup. Absorbed, it would print "could not pre-fetch the speech detector:
-    Cancelled" and report the download DONE, so a user who pressed stop would
-    watch the row finish successfully. Re-raised first, and before the broad
-    catch, because `Cancelled` is an ordinary `Exception` and order is the whole
-    of the distinction.
+    best-effort and stopping at the ✕ — `stt_common.prefetch_detector` carries
+    the reasoning, shared with the faster-whisper runner's Parakeet download.
     """
     snapshot = worker_base.download_snapshot(
         model_id, allow_patterns=list(formats.MLX_WHISPER_FILES))
-    try:
-        import vad as vad_module
-
-        vad_module.model_path(worker_base.download_file)
-    except worker_base.Cancelled:
-        raise
-    except Exception as error:  # noqa: BLE001 - see the docstring
-        print(f"could not pre-fetch the speech detector: "
-              f"{error.__class__.__name__}: {error}", file=sys.stderr, flush=True)
+    stt_common.prefetch_detector(worker_base)
     return snapshot
 
 
@@ -781,112 +756,15 @@ def _clip_seconds(position, speech):
 # ------------------------------------------------------------------------- VAD
 
 
-#: What "the detector could not be obtained" is allowed to arrive as.
-#:
-#: `OSError` is almost all of the FETCH: a socket that never connected, a DNS
-#: name that did not resolve, a TLS handshake, a timeout and a full disk all
-#: arrive as one — and so does every huggingface_hub failure worth degrading on,
-#: because `HfHubHTTPError` is declared `(HTTPError, OSError)`, the offline guard
-#: derives from `ConnectionError` and the local-cache miss from
-#: `FileNotFoundError` (which is also what `vad.session` raises when the download
-#: left no file). `http.client.HTTPException` is the one shape that is NOT an
-#: `OSError`: a response malformed rather than merely unhappy.
-#:
-#: `ImportError` is here because onnxruntime is imported inside `vad.session`,
-#: and a venv without it is the same outcome for the user as a detector that
-#: would not download: this runner transcribes perfectly well without one, and
-#: onnxruntime is the dependency in this folder most likely to have no wheel for
-#: some future interpreter. It is still not silent — the reason goes to stderr
-#: and to the row — and it costs absorbing a misspelt import inside `session`,
-#: a four-line function whose only import is a constant.
-#:
-#: Deliberately NOT `ValueError`: hf raises `HFValidationError(ValueError)` for a
-#: repo id that is not a repo id, and the id is a constant in `vad.py` — so that
-#: one is a typo in this codebase, not a bad day on the network.
-_FETCH_FAILED = (OSError, http.client.HTTPException, ImportError)
-
-
-def _onnx_failures():
-    """Every exception ONNX Runtime's C++ layer can raise loading a model.
-
-    Named as "the module that contains exactly these and nothing else" rather
-    than as a list, because there is nothing else to name: onnxruntime registers
-    each of its fifteen error types from pybind with `Exception` as the base, so
-    there is no `OrtError` to catch and no shared ancestor short of `Exception`
-    itself. Enumerating `Fail`, `InvalidProtobuf`, `NoSuchFile`, … here would
-    quietly stop covering a runtime that adds a sixteenth.
-
-    `()` when onnxruntime is absent, which needs no special case: the
-    `ImportError` that then comes out of `vad.session` is degradable on its own
-    account (see `_FETCH_FAILED`).
-    """
-    try:
-        from onnxruntime.capi import onnxruntime_pybind11_state as ort_errors
-    except ImportError:
-        return ()
-    return tuple(value for value in vars(ort_errors).values()
-                 if isinstance(value, type) and issubclass(value, Exception))
-
-
 def _speech_regions(audio, total, job, row):
     """Where the speech is, or `None` when the whole file should be decoded.
 
-    Returns a list of `(start, end)` in seconds. `None` — not an empty list —
-    means "do not filter", and the two are deliberately different answers:
-    an empty list is the detector saying there is no speech in this recording,
-    while None is this function saying it could not ask.
-
-    **A detector that cannot be fetched degrades to no filtering rather than
-    failing the transcription.** The trade is stated rather than assumed: the
-    VAD is an optimisation and a small quality nudge, and mlx-whisper still has
-    its own per-window `no_speech_threshold` underneath — so without Silero a
-    user gets a correct transcript that took longer, which is a much better
-    outcome than a feature that stops working offline. It is NOT silent: the
-    reason goes to the row the user is watching and to the worker log, because
-    a `vad: true` that quietly did nothing is exactly the kind of difference
-    between two engines this runner exists to eliminate.
-
-    **"Could not be fetched" is the whole of what degrades**, and the shape of
-    this function is what keeps it that way. Only OBTAINING the detector — the
-    download and the session that loads the file — sits inside the `try`; the
-    detection itself runs after it. A `TypeError` out of `vad.py`, a tensor
-    reshaped wrong, a state threaded to the wrong argument: those are bugs in
-    this repository, and absorbed here each of them would reach the user as
-    "Speech detection unavailable", a sentence that reads like a flaky network
-    and sends nobody to the defect. They propagate and fail the transcription,
-    which is how they get found. `worker_base.Cancelled` is also an `Exception`
-    and is excluded by the same narrowing — which is no longer a precaution: the
-    fetch below ticks through `report_or_cancel` now that it reports into a
-    transcription row with a live ✕, so a ✕ pressed while the 2MB detector is
-    downloading raises HERE, and a wider catch would answer it by transcribing
-    the whole file for the user who asked to stop.
+    The policy (and its long justification) lives in `stt_common.speech_regions`,
+    shared with the faster-whisper runner; this binds it to THIS worker's base
+    and loaded-model dict. Kept as a module function because the decode loop
+    below, and its tests, address it by this name.
     """
-    import vad as vad_module
-
-    sess = _loaded.get("vad")
-    if sess is None:
-        try:
-            # Bound to THIS row, for the reason `_speaker_turns` gives. `download`
-            # pre-fetches the detector so this is normally a cache hit, but a
-            # machine whose whisper download predates AI-10f reaches the network
-            # here — and used to reopen the model's finished load row to say so.
-            def fetch(repo_id, filename, detail=None):
-                return worker_base.download_file(repo_id, filename, detail=detail,
-                                                 job=job, row=row)
-
-            sess = vad_module.session(vad_module.model_path(fetch))
-        except _FETCH_FAILED + _onnx_failures() as error:
-            print(f"speech detection unavailable, transcribing the whole file: "
-                  f"{error.__class__.__name__}: {error}", file=sys.stderr,
-                  flush=True)
-            worker_base.report(
-                job=job, **row, state="running", done=0, total=total,
-                detail="Speech detection unavailable — transcribing everything…")
-            return None
-        _loaded["vad"] = sess
-    worker_base.report(job=job, **row, state="running", done=0, total=total,
-                       detail="Finding speech…")
-    return vad_module.speech_regions(audio, sess)
+    return stt_common.speech_regions(worker_base, _loaded, audio, total, job, row)
 
 
 # ----------------------------------------------------------------- diarization
@@ -953,44 +831,10 @@ def _speaker_turns(audio, speakers, job, row):
 
 
 def _packs_to_decode(regions, duration):
-    """The clips to transcribe, each as a LIST of `(start, end)` regions in
-    original-recording time whose speech travels in one `transcribe()` call.
-
-    `duration` is the NUMBER of seconds decoded, never the row's `total` — the
-    two differ for a recording so short it rounds to zero, where `total` is None
-    (indeterminate, which is what the row should show) and this arithmetic needs
-    0.0. The wording came from the withdrawn `parakeet_mlx` runner (D406)
-    because the split is: handing the None
-    on made the only pack `[(0.0, None)]`, and the speech sum over the packs then
-    raised a TypeError out of a file the loop below would have skipped in one
-    line.
-
-    A list per clip rather than a single span, because the clip handed to the
-    decoder is those regions CONCATENATED — the silence between them is dropped,
-    which is the whole reason `vad: true` exists (Whisper hallucinates in
-    silence) — and the list is what `vad.original_start`/`original_end` invert to
-    put every timestamp back on the recording's clock. The packing rule and its
-    inverse live in `vad.py`, beside the detector, because how many regions share
-    a call is part of what `vad: true` MEANS and both MLX engines read that from
-    one place (AI-10f).
-
-    One pack of one region spanning everything is what "no VAD" looks like, and
-    that is the point of the shape: the filtered and unfiltered paths are ONE
-    loop, so the timestamp remap, the progress mapping and the cancel behaviour
-    cannot drift between them. `vad: false` is not a different code path, it is
-    a pack list of length one.
-
-    A recording the detector finds NO speech in also decodes whole. Reporting
-    an empty transcript for a file nobody looked at would be the confident
-    version of a wrong answer — the detector is tuned for speech, not for
-    whispering, singing or a bad microphone, and Whisper's own no-speech
-    handling is the better final word.
-    """
-    if not regions:
-        return [[(0.0, duration)]]
-    import vad as vad_module
-
-    return vad_module.pack_regions(list(regions))
+    """The clips to transcribe — `stt_common.packs_to_decode`, shared with the
+    faster-whisper runner (a list per clip of `(start, end)` regions in
+    original-recording time; one pack spanning everything is "no VAD")."""
+    return stt_common.packs_to_decode(regions, duration)
 
 
 def _decode_clip(module, clip, fetched, task, language, initial_prompt,
@@ -1307,62 +1151,17 @@ def _word_span(pack, at, until):
 def _words_in_original_time(pack, segment, at, until):
     """One segment's `words`, remapped into RECORDING time and clamped into it.
 
-    Each word travels the same inverse its segment did, because a word carries
-    the same problem: the library timed it against a packed clip whose silence
-    this runner removed, and a page seeking a player off a clip-relative
-    timestamp lands in the wrong minute. Reusing the packing's one inverse
-    rather than a second of its own is the point (AI-10f). It travels that
-    inverse through `_word_span`, NOT through the segment's endpoint pair: a
-    word that strictly contains a join is a 0.2s token mapped to a 25s span
-    otherwise, and the clamp below cannot catch it because the segment is
-    allowed to straddle that same join.
-
-    **Clamped into the segment, never dropped**, which is the opposite of what
-    `_transcribe_regions` does to a segment that inverts — and the asymmetry is
-    deliberate. A dropped SEGMENT loses text that was never spoken in the
-    recording's timeline. A dropped WORD loses text that IS in the transcript,
-    breaking the one invariant a caller will build on: that the words of a
-    segment are that segment's text, in order, complete. So a word that inverts
-    after mapping (the library timing it into the 30-second padding, the same
-    place a segment can invert) collapses to an INSTANT at the nearest bound
-    rather than vanishing. A zero-length word renders as un-highlightable, which
-    is the honest rendering of "this word is here and its span is not known";
-    a missing word renders as a hole in the sentence.
-
-    `probability` is dropped along with the logprobs and temperatures beside it
-    — the reason the withdrawn `parakeet_mlx` runner (D406) dropped it too: it
-    is an engine-tell. Whisper's DTW alignment has a per-word probability and a
-    transducer's per-token confidence would have been a different number
-    measuring a different thing, so publishing it would make the reply depend
-    on which engine ran (AI-10c). `word` keeps the
-    library's LEADING SPACE — it is how the text reconstructs by concatenation,
-    and stripping it would make a caller guess where spaces went.
+    A thin adapter: the library's word dicts become the `(start, end, text)`
+    tuples `stt_common.words_in_original_time` takes, and that function carries
+    the whole rule (the packing's inverse per word, clamped into the segment and
+    never dropped, `probability` left out) — shared with the faster-whisper
+    runner's Parakeet path so the two cannot drift (AI-10c/AI-10f).
     """
-    out = []
-    for word in (segment.get("words") or []):
-        text = str(word.get("word") or "")
-        if not text:
-            # No text to place. Nothing downstream can render it and it would
-            # only add a phantom interval to the list.
-            continue
-        start, end = _word_span(pack,
-                                float(word.get("start") or 0.0),
-                                float(word.get("end") or 0.0))
-        # Into the SEGMENT's bounds, not the pack's: the segment was already
-        # clamped to the pack, and a word outside its own segment is a span a
-        # caller cannot use — it would highlight text belonging to a
-        # neighbouring line.
-        start = min(max(start, at), until)
-        end = min(max(end, at), until)
-        out.append({
-            "start": round(start, 2),
-            # `max`, so rounding cannot invert a word whose two ends round
-            # across each other — 2dp is the transcript's precision everywhere
-            # and the clamp above cannot see it.
-            "end": round(max(end, start), 2),
-            "word": text,
-        })
-    return out
+    return stt_common.words_in_original_time(
+        pack,
+        [(word.get("start"), word.get("end"), str(word.get("word") or ""))
+         for word in (segment.get("words") or [])],
+        at, until)
 
 
 # --------------------------------------------------------------- transcription

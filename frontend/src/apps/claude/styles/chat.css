@@ -448,6 +448,7 @@
   font-size: var(--c-fs-body);
 }
 .chat-root.chat-compact .turn.note,
+.chat-root.chat-compact .turn.compact,
 .chat-root.chat-compact .turn.working .meta,
 .chat-root.chat-compact .turn.assistant .dot,
 .chat-root.chat-compact .perm .perm-sub,

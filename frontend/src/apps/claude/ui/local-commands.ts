@@ -4,7 +4,7 @@
 // `notify` while the composer keeps the words.
 import { LOCAL_COMMANDS, type ClassifiedCommand } from "../protocol/commands";
 import { parseWorktreeCommand } from "../protocol/worktrees";
-import { agentLabel, capsOf, effortsOf, modelLabelsOf, modelsOf } from "@platform/lib/agent-backends";
+import { agentLabel, capsOf, effortsForModel, modelLabelsOf, modelsOf } from "@platform/lib/agent-backends";
 
 /** `/model <name>`'s argument as a model value: a shortlist id or its label
  *  (any case) off the AGENT's catalog row (docs/COPILOT_BACKEND.md D11), or a
@@ -26,10 +26,12 @@ function rawModelIds(backend: string | undefined): boolean {
   return backend === "copilot" || backend === "codex";
 }
 
-/** `/effort <level>`'s argument as a pill value, or "". */
-export function localEffortArg(arg: string, backend = "claude"): string {
+/** `/effort <level>`'s argument as a pill value, or "" — one of the levels
+ *  the chat's CURRENT MODEL takes (`effortsForModel`; the agent's whole
+ *  list when no model is named). */
+export function localEffortArg(arg: string, backend = "claude", model?: string): string {
   const want = arg.trim().toLowerCase();
-  return effortsOf(backend).includes(want) ? want : "";
+  return effortsForModel(backend, model).includes(want) ? want : "";
 }
 
 const hint = (name: string) => LOCAL_COMMANDS.find((c) => c.name === name)?.hint ?? "";
@@ -48,6 +50,8 @@ export interface LocalContext {
   worktreeReady: boolean;
   /** Whose models `/model` and `/effort` validate against; Claude when absent. */
   backend?: string;
+  /** The chat's current model: `/effort` validates against ITS levels. */
+  model?: string;
   hasSession?: boolean;
 }
 
@@ -74,8 +78,12 @@ export function planLocalCommand(cmd: ClassifiedCommand, ctx: LocalContext): Loc
       return { do: "model", value };
     }
     case "effort": {
-      const value = localEffortArg(cmd.arg, ctx.backend);
-      if (!value) return { refuse: `Usage: /effort ${hint("effort")} (one of ${effortsOf(ctx.backend).join(", ")})` };
+      const value = localEffortArg(cmd.arg, ctx.backend, ctx.model);
+      if (!value) {
+        const levels = effortsForModel(ctx.backend, ctx.model);
+        if (!levels.length) return { refuse: `${ctx.model || "This model"} takes no effort level` };
+        return { refuse: `Usage: /effort ${hint("effort")} (one of ${levels.join(", ")})` };
+      }
       return { do: "effort", value };
     }
     case "worktree": {

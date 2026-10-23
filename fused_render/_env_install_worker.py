@@ -1155,6 +1155,8 @@ def _venv_python(venv_dir):
     Kept in step with `envinstall._venv_python`; duplicated rather than imported
     for the same reason the stage percentages are (D152).
     """
+    if sys.platform == "win32":
+        return os.path.join(venv_dir, "Scripts", "python.exe")
     return os.path.join(venv_dir, "bin", "python")
 
 

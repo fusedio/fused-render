@@ -23,7 +23,9 @@ const navigated: string[] = [];
 // useListingSearch.render.test.ts's own comment on this same export.
 mock.module("@platform/lib/router", () => ({
   navigate: (p: string) => void navigated.push(p),
-  replaceSearch: () => {},
+  // The real one's behaviour, not a no-op: this mock outlives the file, and
+  // snapshot-clear.test.ts, run later, asserts on the URL it writes.
+  replaceSearch: (url: string) => globalThis.history?.replaceState(history.state, "", url),
   navHintQCommitted: () => false,
 }));
 mock.module("@platform/lib/ui-overlay", () => ({ isOverlayOpen: () => false }));

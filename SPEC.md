@@ -621,7 +621,7 @@ Distribute as a DMG containing a menu-bar app. On macOS the UI lives in the app'
 - **DM-6** **DECIDED (v2, D35):** DMG built by **dmgbuild** (app + Applications symlink, UDZO) orchestrated by `scripts/build_dmg.sh`; ~270 MB compressed.
 - **DM-7** `fused_render/app.py`: menu-bar entry point (uvicorn on a daemon thread); py2app entry = `scripts/app_entry.py`; build spec = `scripts/setup_py2app.py`. CLI (`fused-render`) remains for dev.
 - **DM-9** **Quit is an ordered teardown that ends in `os._exit`, never in AppKit's termination (D357).** Every surface — the popover/tray Quit, the `fused-render://relaunch` deep link, and AppKit's own Dock-menu Quit / ⌘Q / logout-restart (via an `applicationShouldTerminate:` added to rumps' delegate class) — funnels through `app.begin_quit`, which claims exactly ONE teardown under `_quit_lock`, removes the pidfile on the calling thread, and runs `quit_teardown` off the AppKit main thread in a fixed order: drain the server → close duckdb (the reader's stashed HTTP connection AND duckdb's default connection). Each step is independently guarded, and the whole thing is bounded by `QUIT_HARD_DEADLINE_S`, DERIVED from the imported budgets of the steps it waits on — an app that cannot be quit is worse than one that quits with a step skipped. When the teardown finishes (or that deadline fires) the shared `quit_ready` event is set and the process dies via `app.hard_exit` → a bounded log flush (`logging.shutdown()` on a daemon thread, joined for `QUIT_LOG_FLUSH_S`) + `os._exit`. Work that must complete before the process can die cannot be sequenced after `begin_quit` returns — a teardown with nothing to unmount can finish first — so it hangs off `begin_quit`'s `on_claim` hook, which runs inside the claim; the `fused-render://relaunch` spawn is the one caller. It must NOT die via `-[NSApplication terminate:]`/`exit()`: that runs `__cxa_finalize` over every dylib's static destructors with the GIL released (pyobjc drops it for the ObjC call), and a native extension's C++ global touching the Python C-API on the way out aborts the process after a teardown that fully succeeded (INCIDENT 2026-07-29 and 2026-08-19; D357 has the measurements). Skipping atexit and Python finalization is sound precisely because the teardown above is the shutdown. The AppKit hook still answers `NSTerminateLater` so the teardown stays off the main thread; `replyToApplicationShouldTerminate:` survives only as the last resort for a hard exit that somehow returned.
-- **DM-10** **The macOS windows' engine is a per-window choice (D1408).** With `chromium_windows_enabled` on and the on-demand CEF engine ready on disk and loaded into the process, a NEW window's content view is an `FRChromiumView` (`fused_render/chromium`) instead of a `WKWebView`; the NSWindow, main menu, Dock, titlebar buttons, focus-or-open and saved frames are the same code, and `window_policy` answers the same questions for both engines. Anything short of "on, ready, loaded" is WebKit. The menu-bar dock, launcher, pinned popover and recording pill are never behind this switch. The engine is fetched from the pinned artifact in `fused_render/chromium/manifest.json`, verified by size and SHA-256, and kept under `<base home>/chromium/`; it starts once per process and stops at quit.
+- **DM-10** **The macOS windows' engine is a per-window choice (D1408, default Chromium since D1415).** With `chromium_windows_enabled` on (the default; `false` opts out) and the CEF engine ready on disk and loaded into the process, a NEW window's content view is an `FRChromiumView` (`fused_render/chromium`) instead of a `WKWebView`; the NSWindow, main menu, Dock, titlebar buttons, focus-or-open and saved frames are the same code, and `window_policy` answers the same questions for both engines. Anything short of "on, ready, loaded" is WebKit. The menu-bar dock, launcher, pinned popover and recording pill are never behind this switch. The arm64 DMG ships the engine at `Contents/Frameworks/FusedChromium/`, built from `fused_render/chromium/native` by `build_dmg.sh` against the CEF `manifest.json` names; nothing is downloaded or pinned separately, and a host without one (Intel, a dev checkout without `FUSED_RENDER_CHROMIUM_ENGINE_DIR`) is WebKit. It starts once per process and stops at quit.
 - **DM-8** **Finder integration:** `CFBundleDocumentTypes` — `.parquet` rank Default, html + all template extensions rank Alternate (never steals user defaults, appears in Open With). Double-clicked files reach the app via the delegate's `application:openFiles:` (implemented by adding the method to rumps's delegate class); each file opens in a window of its own at `/explorer/view/<path>` (a `.fused` at its embed URL, D390). Startup ordering: AppKit run loop starts first, server boots in the background after — the home-vs-file decision happens at server-ready, long after any launch document event has arrived, so a file double-click cold launch opens exactly the file window (no stray Home window). Each app and file remembers its own window frame (`window_policy.frame_autosave_name`); a second window of the same thing cascades from the first.
 
 ## 12b. Milestones
@@ -1235,11 +1235,10 @@ never imports server).
   see that section's tombstone.)* `PUT /api/prefs`
   (X-Fused) applies a **partial** update — any of `engine`,
   `reader_enabled`, `canvases_enabled`, `chromium_windows_enabled` (D1408:
-  the macOS windows' Chromium engine, opt-in; turning it on starts the
-  on-demand engine download, reported under `chromium_windows: {enabled,
-  available, engine: {state, progress, error, …}}` and by `GET
-  /api/prefs/chromium`; `POST /api/prefs/chromium/install|remove` retry or
-  delete it; open windows keep the engine they were born with, so
+  the macOS windows' Chromium engine, default on since D1415, reported
+  under `chromium_windows: {enabled, available, engine: {state,
+  cef_version, path}}` and by `GET /api/prefs/chromium`; open windows keep
+  the engine they were born with, so
   `chromium_windows.stale_windows` counts the ones on the other engine and
   `POST /api/prefs/chromium/reopen-windows` closes every window and opens
   one Home window on the current engine — 409 when this process has no
@@ -6726,7 +6725,8 @@ an AI Models page that could say what was on disk but not what was *running*.
   code lives at the runners ROOT and each folder's `worker.py` is a shell over
   it** (D381). Diffusers is three folders — `diffusers_image`,
   `diffusers_image_cuda`, `diffusers_image_rocm` — llama.cpp is two
-  (`llamacpp_text`, `llamacpp_text_vulkan`), and the transformers embeddings
+  (`llamacpp_text`, `llamacpp_text_vulkan`), the vision runner is two
+  (`vision_torch`, `vision_torch_cuda`, shared body `runners/torch_vision.py`), and the transformers embeddings
   runner is three (`onnx_embed`, `onnx_embed_cuda`, `onnx_embed_rocm`), whose
   manifests are identical except for the
   index the accelerated distribution is resolved from, and whose `worker.py`
@@ -8179,6 +8179,23 @@ an AI Models page that could say what was on disk but not what was *running*.
   as a direction flag on one "audio" capability: AI-4 keeps one resident model
   per capability, so sharing one would have a synthesis model and a Whisper
   model evict each other on every alternation.
+- **AI-10g** **The faster-whisper runner reads two formats, and Parakeet is the
+  second** (D1423). A snapshot with `model.bin` is a CTranslate2 Whisper
+  conversion (`WhisperModel`); one with the sherpa-onnx transducer files
+  (`formats.SHERPA_TRANSDUCER_FILES`) is NVIDIA Parakeet TDT 0.6B v3 int8, run
+  through the sherpa-onnx the runner already carries for diarization, so there is
+  no new venv. `load()` records the kind and `generate()` dispatches on it; the
+  reply, the files and the `words` shape are identical to the other engines
+  (AI-10c). Parakeet has no VAD of its own and decodes one utterance at a time,
+  so it uses the shared VAD policy (`stt_common`, AI-10f) and decodes packed
+  regions in turn; with `vad: false` it cuts the recording into 29-second time
+  slices. `words` is honoured on both formats; `language: "auto"` means "detect"
+  on both. Parakeet has no `translate`, no pinned `language` (only unset or
+  `"auto"`) and no `initialPrompt`, and refuses each rather than ignoring it:
+  `POST /api/ai/transcribe` answers 400 before any job exists (from the cached
+  snapshot's layout, or the curated row's `transcribeOnly` for a model not
+  downloaded yet), and the worker refuses again as the last line of defence; its
+  reply carries `language: null`. CPU only.
 - **AI-10a** **A transcription is job-backed like an image, and its result is a
   FILE.** `POST /api/ai/transcribe` answers immediately with a `jobId` and with
   the output paths already settled, exactly as AI-9 does — a 90-minute recording
@@ -10108,7 +10125,8 @@ an AI Models page that could say what was on disk but not what was *running*.
   `points: [{x, y, label}]`, in 0–1 coordinates of the upright image.
   `POST /api/ai/vision` has decide's shape (closed options, local only,
   synchronous, `model_loading` + job id). Runner `vision-torch` (Apple
-  Silicon, torch MPS) runs only `formats.VISION_TORCH_RECIPES`: Grounding DINO
+  Silicon, torch MPS) and its hardware sibling `vision-torch-cuda` (NVIDIA,
+  gated on `_cuda`, PyPI's CUDA torch; shipped unmeasured) run only `formats.VISION_TORCH_RECIPES`: Grounding DINO
   Tiny/Base (detect) and Moondream 2 (caption, query, detect, point;
   recommended), both via transformers; Moondream at a pinned commit. A new
   model is a recipe (plus a family class for a new kind). Not in onboarding or

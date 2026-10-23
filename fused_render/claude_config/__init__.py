@@ -20,9 +20,8 @@ What the port changed, and nothing else:
   * `lib.config_lock()` also takes a process-local threading lock, because the
     concurrency source is now a threadpool inside ONE process rather than N
     subprocesses (see lib.py).
-  * `settings_catalog.json` is read from a user-writable override when present
-    and only ever WRITTEN there — site-packages must stay read-only (lib.py's
-    catalog helpers).
+  * `settings_catalog.json` is the packaged curated settings list, read-only at
+    runtime (lib.py's catalog helpers).
 
 Every module keeps its `main(action=..., ...)` dispatch signature: that is the
 router's whole contract, and keeping it means the modules stay runnable

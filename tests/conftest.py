@@ -359,6 +359,17 @@ _APPENV_VARS = ("FUSED_RENDER_HOME_DIR", "FUSED_RENDER_ORIGIN",
 
 
 @pytest.fixture(autouse=True)
+def _no_archiving_of_missing_folders(monkeypatch):
+    """The Tasks listing files away a task whose folder is gone from disk
+    (`routers/tasks.py ARCHIVE_MISSING_FOLDERS`), and nearly every transcript
+    the suite writes names a cwd that does not exist (`/p`). Off for the suite;
+    the test of the pass itself (test_tasks_api.py, "gone folder") turns it
+    back on."""
+    from fused_render.server.routers import tasks as tasks_router
+    monkeypatch.setattr(tasks_router, "ARCHIVE_MISSING_FOLDERS", False)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_session_count(monkeypatch):
     """The Claude session cap counts live hosts under the REAL runs tree, which
     on a developer machine with ten chats open would hold every scheduler test.
@@ -486,6 +497,22 @@ def _no_real_fused_credentials(tmp_path_factory, monkeypatch):
     monkeypatch.setenv(
         "FUSED_RENDER_FUSED_CREDENTIALS",
         str(tmp_path_factory.getbasetemp() / "no-fused-credentials"))
+
+
+@pytest.fixture(autouse=True)
+def _no_real_fused_settings(tmp_path_factory, monkeypatch):
+    """The suite sees no `~/.fused/settings.toml`, whatever the machine holds.
+
+    `canvases._fused_settings()` reads it per call, and its `[render]
+    canvases_embed_proxy_enabled` turns the embed proxy on: a developer's own
+    file would otherwise start a real proxy at their deployment from any test
+    that reads canvases status, and make local runs differ from CI's (which
+    has no file). Tests that need one point `_FUSED_SETTINGS_FILES` at it
+    themselves (a later monkeypatch wins over this one)."""
+    from fused_render import canvases
+
+    monkeypatch.setattr(canvases, "_FUSED_SETTINGS_FILES",
+                        (str(tmp_path_factory.getbasetemp() / "no-fused-settings.toml"),))
 
 
 @pytest.fixture(autouse=True)

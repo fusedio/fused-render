@@ -381,6 +381,7 @@ def test_a_breakdown_request_does_not_consume_an_interactive_slot(home, tmp_path
     plain_concurrent = 0
     plain_started = threading.Event()
     plain_release = threading.Event()
+    plain_returned = threading.Event()
 
     def fake_stats(cfg, root="", breakdown=False, token=None):
         nonlocal plain_concurrent
@@ -389,7 +390,10 @@ def test_a_breakdown_request_does_not_consume_an_interactive_slot(home, tmp_path
                 plain_concurrent += 1
                 if plain_concurrent >= 2:
                     plain_started.set()
-            plain_release.wait(timeout=5)
+            # Parked until the test has its breakdown answer. The timeout only
+            # bounds how long a BROKEN (shared) lane hangs the test.
+            plain_release.wait(timeout=30)
+            plain_returned.set()
         return {"empty": True, "location": cfg.dir, "rows": 0, "dirs": 0,
                 "total_size": 0, "types": [], "partitions": []}
 
@@ -403,25 +407,29 @@ def test_a_breakdown_request_does_not_consume_an_interactive_slot(home, tmp_path
                 asyncio.create_task(client.get("/api/index/stats"))
                 for _ in range(2)
             ]
-            for _ in range(50):
-                if plain_started.is_set():
-                    break
-                await asyncio.sleep(0.02)
-            assert plain_started.is_set()  # both interactive-lane slots taken
-            t0 = time.monotonic()
-            breakdown_resp = await client.get(
-                "/api/index/stats", params={"breakdown": "true"})
-            elapsed = time.monotonic() - t0
-            plain_release.set()
+            started = await asyncio.to_thread(plain_started.wait, 30)
+            assert started, "both interactive-lane slots were never taken"
+            try:
+                breakdown_resp = await client.get(
+                    "/api/index/stats", params={"breakdown": "true"})
+                # Ordering, as in the test above: the breakdown answered while
+                # both plain calls were still parked. Sharing their lane, it
+                # could only answer after `plain_release` or its timeout.
+                plain_were_parked = (not plain_returned.is_set()
+                                     and not any(t.done() for t in plain_tasks))
+            finally:
+                plain_release.set()
             plain_resps = await asyncio.gather(*plain_tasks)
-            return breakdown_resp, elapsed, plain_resps
+            return breakdown_resp, plain_were_parked, plain_resps
 
-    breakdown_resp, elapsed, plain_resps = asyncio.run(run())
+    breakdown_resp, plain_were_parked, plain_resps = asyncio.run(run())
     assert breakdown_resp.status_code == 200
-    # Same tightening as above and for the same reason: `fake_stats` is a
-    # pure stub, so this bound should catch a serialised lane, not merely a
-    # multi-second one.
-    assert elapsed < 0.5, elapsed
+    # Previously `elapsed < 0.5`, the same wall-clock bound the test above
+    # dropped for flaking on loaded runners. Ordering catches a shared lane at
+    # any speed.
+    assert plain_were_parked, (
+        "the breakdown request only answered after the plain stats calls "
+        "finished: it is queued in the interactive lane")
     assert all(r.status_code == 200 for r in plain_resps)
 
 
@@ -438,25 +446,23 @@ def test_a_wedged_rank_request_does_not_permanently_hold_its_lane_slot(
     worker so the FIRST call blocks forever on a `threading.Event` that is
     never set (exactly that: an un-killable, permanently parked thread);
     every later call answers immediately. `ABANDON_S` (item 2) is
-    monkeypatched small so the test does not have to wait out the real
-    15-second default to see the permit actually get released — but not
-    razor-thin: a loaded CI runner (this whole file's requests share the
-    process with every other xdist worker) has been observed adding ~500ms
-    of scheduling jitter to a nominal 50ms `wait_for`, which was enough to
-    make even the NON-wedged 'z' request time out and get abandoned too —
-    a false failure of the "does not permanently hold its lane slot" claim,
-    not a real one (`_bounded_index_read` returns, rather than raises, on
-    its own timeout path, so the `async with lane:` around it always
-    releases the permit either way — read `_bounded_index_read` and its
-    caller in index.py before doubting that). 1.5s leaves several times
-    that observed jitter as headroom, while the elapsed bounds below (well
-    under 1.5s) still catch a real regression, which would take until
-    `ABANDON_S` elapses, not a few hundred ms."""
+    monkeypatched small for the wedged request so the test does not wait out
+    the real 15-second default, then large for the healthy ones: a loaded
+    CI runner has been observed adding ~500ms of scheduling jitter to a
+    nominal 50ms `wait_for`, enough to make even a NON-wedged request time
+    out too. No assertion here measures time: the claim is checked on the
+    lane semaphore itself (`_bounded_index_read` returns, rather than
+    raises, on its own timeout path, so the `async with lane:` around it
+    releases the permit — read it and its caller in index.py)."""
     import threading
 
     import httpx
 
-    monkeypatch.setattr(index_router, "ABANDON_S", 1.5)
+    # The wedged request's bounded wait fires fast; the healthy ones below get
+    # a budget no runner jitter can exhaust (ABANDON_S is read per request).
+    # A loaded runner has added ~500ms-1.5s of scheduling jitter, which used
+    # to time out healthy requests too, and to trip wall-clock bounds on them.
+    monkeypatch.setattr(index_router, "ABANDON_S", 0.05)
     lock = threading.Lock()
     calls = {"n": 0}
     first_entered = threading.Event()
@@ -482,71 +488,65 @@ def test_a_wedged_rank_request_does_not_permanently_hold_its_lane_slot(
             first_task = asyncio.create_task(
                 client.get("/api/index/rank",
                           params={"root": str(tmp_path), "q": "x"}))
-            for _ in range(50):
-                if first_entered.is_set():
-                    break
-                await asyncio.sleep(0.02)
-            assert first_entered.is_set()
+            entered = await asyncio.to_thread(first_entered.wait, 30)
+            assert entered, "the wedged request never reached the worker"
+            try:
+                # Its own bounded wait answers it. Pre-fix the permit was held
+                # across an un-killable thread and this never returned.
+                first_resp = await asyncio.wait_for(first_task, 30.0)
 
-            # A later request must not queue behind the wedged one — today
-            # (pre-fix) it would block for the life of the process.
-            t0 = time.monotonic()
-            second_resp = await client.get(
-                "/api/index/rank", params={"root": str(tmp_path), "q": "y"})
-            second_elapsed = time.monotonic() - t0
+                # THE claim, read directly rather than inferred from latency:
+                # the worker thread is still parked, yet both lane permits are
+                # back. (A latency bound could not see a leaked permit at all:
+                # the lane is width 2, so a later request always found the
+                # other slot and stayed fast either way.)
+                still_parked = not never.is_set() and bool(index_router._abandoned_reads)
+                lane = index_router._interactive_lane_loops.get(
+                    asyncio.get_running_loop())
+                free_permits = lane._value if lane is not None else None
 
-            # Both lane permits available afterwards: two further concurrent
-            # requests must both proceed, not serialise behind a lane the
-            # wedged permit never gave back.
-            t0 = time.monotonic()
-            more = await asyncio.gather(*[
-                client.get("/api/index/rank",
-                          params={"root": str(tmp_path), "q": "z"})
-                for _ in range(2)])
-            more_elapsed = time.monotonic() - t0
+                # And the lane is usable at full width: one request, then two
+                # concurrent ones, all answer.
+                monkeypatch.setattr(index_router, "ABANDON_S", 30.0)
+                second_resp = await client.get(
+                    "/api/index/rank", params={"root": str(tmp_path), "q": "y"})
+                more = await asyncio.gather(*[
+                    client.get("/api/index/rank",
+                              params={"root": str(tmp_path), "q": "z"})
+                    for _ in range(2)])
+            finally:
+                # Review finding F: `never` is left unset until here on
+                # purpose (the whole point is a REAL, un-killable OS thread
+                # parked in `_INDEX_READ_POOL`) — but left unset for the rest
+                # of the pytest WORKER PROCESS it degrades every later test
+                # that touches the real pool or `_abandoned_reads`: one fewer
+                # real pool thread, and a permanently non-empty
+                # `_abandoned_reads` (exactly what
+                # `test_index_read_pool_exhaustion_is_a_fast_503` works around
+                # by monkeypatching its OWN isolated set rather than asserting
+                # the real one starts empty). Draining must happen HERE,
+                # inside `run()`, while this event loop is still running: the
+                # abandoned future's done-callback (`_reap_abandoned`) is
+                # chained via `call_soon` on this specific loop, which never
+                # fires once `asyncio.run` has torn it down. In a `finally`,
+                # so a failure above ends the test instead of hanging it.
+                never.set()
+                deadline = time.monotonic() + 5.0
+                while index_router._abandoned_reads and time.monotonic() < deadline:
+                    await asyncio.sleep(0.01)
+            return first_resp, still_parked, free_permits, second_resp, more
 
-            first_resp = await first_task
-
-            # Review finding F: `never` is left unset by the test body on
-            # purpose (the whole point is a REAL, un-killable OS thread
-            # parked in `_INDEX_READ_POOL` forever) — but "forever" left
-            # unset for the rest of the pytest WORKER PROCESS degrades every
-            # later test that touches the real pool or `_abandoned_reads`:
-            # one fewer real pool thread, and a permanently non-empty
-            # `_abandoned_reads` (exactly what
-            # `test_index_read_pool_exhaustion_is_a_fast_503` works around by
-            # monkeypatching its OWN isolated set rather than asserting the
-            # real one starts empty). Draining must happen HERE, inside
-            # `run()`, while this event loop is still running: the abandoned
-            # future's done-callback (`_reap_abandoned`) is chained via
-            # `call_soon` on this specific loop, which never fires once
-            # `asyncio.run` has torn it down — waiting after `asyncio.run`
-            # returns would spin until the timeout with the future stuck at
-            # "pending" forever, exactly what happened before this loop was
-            # moved in here.
-            never.set()
-            deadline = time.monotonic() + 5.0
-            while index_router._abandoned_reads and time.monotonic() < deadline:
-                await asyncio.sleep(0.01)
-            return second_resp, second_elapsed, more, more_elapsed, first_resp
-
-    (second_resp, second_elapsed, more, more_elapsed,
-     first_resp) = asyncio.run(run())
-    assert second_resp.status_code == 200, second_resp.text
-    # Well under `ABANDON_S` (1.5s, above): neither 'y' nor 'z' ever needs to
-    # wait for the wedged request's abandon-timeout to free a permit, since
-    # the lane (width 2) has a free slot the whole time. A regression that
-    # reintroduces the "held for the life of the process" bug would instead
-    # make these wait the full `ABANDON_S`, so 1.0s still catches that while
-    # comfortably clearing the ~500ms of CI scheduling jitter that made the
-    # old 0.3s bound flaky.
-    assert second_elapsed < 1.0, second_elapsed
-    assert all(r.status_code == 200 for r in more)
-    assert more_elapsed < 1.0, more_elapsed
-    # The wedged first request itself eventually gets the abandon-timeout
-    # 503, once ABANDON_S elapses — it just never blocks anything ELSE.
+    first_resp, still_parked, free_permits, second_resp, more = asyncio.run(run())
+    # The wedged request gets the abandon-timeout 503 — it never blocks
+    # anything ELSE.
     assert first_resp.status_code == 503
     assert first_resp.json() == {"error": "index read timed out"}
+    assert still_parked, "the worker was not still parked when the lane was read"
+    assert free_permits == index_router.INTERACTIVE_LANE_WIDTH, (
+        f"{free_permits} of {index_router.INTERACTIVE_LANE_WIDTH} interactive "
+        "permits free after the wedged request was abandoned: it kept its slot")
+    assert second_resp.status_code == 200, second_resp.text
+    assert all(r.status_code == 200 for r in more)
     assert not index_router._abandoned_reads, (
         "the wedged worker's thread never drained; a later test in this "
         "process would inherit a poisoned _abandoned_reads")
@@ -562,8 +562,8 @@ def test_a_burst_of_overlapping_rank_requests_keeps_bounded_latency(
     truly-wedged worker (one un-killable thread every 4th call, reachable
     only via `ABANDON_S`). None of that may leave the interactive lane
     (width 2) short a permit, or `_abandoned_reads` non-empty, once the
-    dust settles — and a final, ordinary request fired afterwards must come
-    back fast, not queued behind any of it.
+    dust settles — and a final, ordinary request fired afterwards must be
+    answered, not queued behind any of it.
 
     Cancelling a client is driven by monkeypatching
     `starlette.requests.Request.is_disconnected` (keyed on the request's own
@@ -580,7 +580,12 @@ def test_a_burst_of_overlapping_rank_requests_keeps_bounded_latency(
     import httpx
     import starlette.requests as starlette_requests
 
-    monkeypatch.setattr(index_router, "ABANDON_S", 0.15)
+    # 20x the 0.05s a healthy burst call works for: at 0.15s, the ~1.5s of
+    # scheduling jitter a loaded runner adds could abandon EVERY healthy call
+    # and fail `200 in statuses` with no bug present. The wedged calls are
+    # all client-cancelled (every 4th is even, and every even one cancels),
+    # so they are abandoned through the cancel path, not by waiting this out.
+    monkeypatch.setattr(index_router, "ABANDON_S", 1.0)
 
     lock = threading.Lock()
     never = threading.Event()
@@ -613,12 +618,14 @@ def test_a_burst_of_overlapping_rank_requests_keeps_bounded_latency(
             # settled: `cancel_proof_entered` tells `run()` this thread is
             # now inside the worker (so the client-cancel signal that
             # follows can only be observed here, from inside, never
-            # pre-submission), and the generous poll window (up to 0.8s,
-            # against the 1.0s `ABANDON_S` `run()` raises just for this
-            # request) leaves comfortable headroom over `DISCONNECT_POLL_S`
-            # (0.1s) even on a loaded machine.
+            # pre-submission). It waits for the cancel as long as it takes,
+            # up to 30s, under a 60s `ABANDON_S` `run()` sets just for this
+            # request — a deadline, not a race against `DISCONNECT_POLL_S`
+            # that a loaded machine could lose. A cancel that never arrives
+            # answers 200 after 30s and fails the 499 assertion.
             cancel_proof_entered.set()
-            for _ in range(80):
+            deadline = time.monotonic() + 30.0
+            while time.monotonic() < deadline:
                 if token is not None and token.cancelled:
                     with lock:
                         worker_cancelled.add(q)
@@ -641,7 +648,7 @@ def test_a_burst_of_overlapping_rank_requests_keeps_bounded_latency(
             never.wait()  # the un-killable, permanently-parked worker thread
             return empty
         # Finding 3: this poll loop must stay MATERIALLY shorter than
-        # `ABANDON_S` (0.15s above) — 5 * 0.01s = 0.05s, not the old
+        # `ABANDON_S` (1.0s above; it was 0.15s) — 5 * 0.01s = 0.05s, not the old
         # 15 * 0.01s = 0.15s, which tied it and made every non-cancelled
         # call lose the abandon race, so no burst request could ever answer
         # 200. It still gives the disconnect watcher (polling every
@@ -704,33 +711,28 @@ def test_a_burst_of_overlapping_rank_requests_keeps_bounded_latency(
             # worker — never the pre-submission `if token.cancelled` check,
             # which already ran (and passed) before this request's worker
             # thread could possibly have started.
-            monkeypatch.setattr(index_router, "ABANDON_S", 1.0)
+            # From here on, budgets no runner jitter can exhaust: these two
+            # requests are about cancellation and lane state, not speed.
+            monkeypatch.setattr(index_router, "ABANDON_S", 60.0)
             cancel_proof_task = asyncio.create_task(client.get(
                 "/api/index/rank",
                 params={"root": str(tmp_path), "q": "cancel-proof"}))
-            for _ in range(200):
-                if cancel_proof_entered.is_set():
-                    break
-                await asyncio.sleep(0.005)
-            assert cancel_proof_entered.is_set()
+            entered = await asyncio.to_thread(cancel_proof_entered.wait, 30)
+            assert entered, "the cancel-proof request never reached the worker"
             to_cancel.add("cancel-proof")
             cancel_proof_resp = await cancel_proof_task
 
-            t0 = time.monotonic()
             final_resp = await client.get(
                 "/api/index/rank",
                 params={"root": str(tmp_path), "q": "final-clean-request"})
-            final_elapsed = time.monotonic() - t0
 
             loop = asyncio.get_running_loop()
             sem = index_router._interactive_lane_loops.get(loop)
             sem_value = sem._value if sem is not None else None
 
-            return (responses, final_resp, final_elapsed, sem_value,
-                    cancel_proof_resp)
+            return responses, final_resp, sem_value, cancel_proof_resp
 
-    (responses, final_resp, final_elapsed, sem_value,
-     cancel_proof_resp) = asyncio.run(run())
+    responses, final_resp, sem_value, cancel_proof_resp = asyncio.run(run())
 
     # Finding 2's fix made this deterministic: "final-clean-request" never
     # matches the `q{N}` shape `fake_rank_worker` keys its wedge decision on,
@@ -738,11 +740,11 @@ def test_a_burst_of_overlapping_rank_requests_keeps_bounded_latency(
     # 200 — regardless of how many burst calls actually reached the worker
     # or in what order, which is what made this flake under load before.
     assert final_resp.status_code == 200, final_resp.text
-    assert final_elapsed < 0.5, final_elapsed
     assert not index_router._abandoned_reads
     # Direct, non-timing proof the lane gave every permit back: not merely
     # "requests eventually returned" but the semaphore itself is at full
-    # width again.
+    # width again. (This replaced a `final_elapsed < 0.5` bound, which
+    # measured the runner more than the lane.)
     assert sem_value == 2
 
     # Finding 4: the dedicated, event-synchronised proof — not a race
@@ -834,16 +836,11 @@ def test_index_read_pool_exhaustion_is_a_fast_503(home, tmp_path, monkeypatch):
         pytest.fail("exhaustion check did not short-circuit before submission")
     monkeypatch.setattr(index_router, "_submit_index_read", _fail_if_submitted)
 
-    t0 = time.monotonic()
     resp = _client(tmp_path).get(
         "/api/index/rank", params={"root": str(tmp_path), "q": "x"})
-    elapsed = time.monotonic() - t0
 
     assert resp.status_code == 503
     assert resp.json() == {"error": "index read pool exhausted"}
-    # Belt-and-suspenders sanity bound, well under ABANDON_S (15.0s) with
-    # real headroom for a loaded runner — not the property assertion itself.
-    assert elapsed < 3.0, elapsed
 
 
 @pytest.mark.parametrize("path,params", [
@@ -870,15 +867,10 @@ def test_stats_and_search_also_get_the_fast_exhaustion_503(
         pytest.fail("exhaustion check did not short-circuit before submission")
     monkeypatch.setattr(index_router, "_submit_index_read", _fail_if_submitted)
 
-    t0 = time.monotonic()
     resp = _client(tmp_path).get(path, params=params)
-    elapsed = time.monotonic() - t0
 
     assert resp.status_code == 503
     assert resp.json() == {"error": "index read pool exhausted"}
-    # Belt-and-suspenders sanity bound, well under ABANDON_S (15.0s) with
-    # real headroom for a loaded runner — not the property assertion itself.
-    assert elapsed < 3.0, elapsed
 
 
 def _make_fake_index_stats(never, calls, lock):
@@ -945,31 +937,38 @@ def test_a_wedged_stats_or_search_request_does_not_permanently_hold_its_lane_slo
             while calls["n"] < 1 and time.monotonic() < deadline:
                 await asyncio.sleep(0.01)
             assert calls["n"] >= 1, "the wedged request never reached the fake"
-            await asyncio.sleep(0.15)  # let the wedged request time out
+            try:
+                # Its own bounded wait answers it (503) after ABANDON_S, not a
+                # sleep's guess at when that happened. Unbounded, it would
+                # hang here, so the wait is capped.
+                wedged_resp = await asyncio.wait_for(wedged_task, 30.0)
 
-            t0 = time.monotonic()
-            second_resp = await client.get(path, params={"root": str(tmp_path)})
-            second_elapsed = time.monotonic() - t0
+                # The healthy request gets a budget no runner jitter can
+                # exhaust: ABANDON_S is read per request, so the wedged one
+                # timed out fast and this one cannot time out by accident (a
+                # wall-clock bound on it, 0.3s, tripped at 1.5s on a loaded
+                # runner). Queued behind the wedged request, it would wait on
+                # a thread that never finishes and answer 503 after 30s.
+                monkeypatch.setattr(index_router, "ABANDON_S", 30.0)
+                second_resp = await client.get(path, params={"root": str(tmp_path)})
+            finally:
+                # Same draining discipline as the rank version of this test
+                # (finding F), and for the same reason: a real, un-killable
+                # OS thread is parked in `never.wait()` until this fires, and
+                # it must happen HERE, inside `run()`, while this loop is
+                # still running — the abandoned future's done-callback is
+                # chained via `call_soon` on this loop and never fires once
+                # `asyncio.run` has torn it down. In a `finally`, so a failure
+                # above ends the test instead of leaving the worker to hang.
+                never.set()
+                deadline = time.monotonic() + 2.0
+                while index_router._abandoned_reads and time.monotonic() < deadline:
+                    await asyncio.sleep(0.01)
+            return second_resp, wedged_resp
 
-            wedged_resp = await wedged_task
-
-            # Same draining discipline as the rank version of this test
-            # (finding F), and for the same reason: a real, un-killable OS
-            # thread is parked in `never.wait()` until this fires, and it
-            # must happen HERE, inside `run()`, while this loop is still
-            # running — the abandoned future's done-callback is chained via
-            # `call_soon` on this loop and never fires once `asyncio.run`
-            # has torn it down.
-            never.set()
-            deadline = time.monotonic() + 2.0
-            while index_router._abandoned_reads and time.monotonic() < deadline:
-                await asyncio.sleep(0.01)
-            return second_resp, second_elapsed, wedged_resp
-
-    second_resp, second_elapsed, wedged_resp = asyncio.run(run())
+    second_resp, wedged_resp = asyncio.run(run())
     # A later request must not queue behind the wedged one.
     assert second_resp.status_code == 200, second_resp.text
-    assert second_elapsed < 0.3, second_elapsed
     assert wedged_resp.status_code == 503
     assert wedged_resp.json() == {"error": "index read timed out"}
     assert not index_router._abandoned_reads
@@ -991,14 +990,21 @@ def test_a_slow_mount_guard_check_does_not_stall_the_event_loop(
     import httpx
 
     entered = threading.Event()
+    release = threading.Event()
+    returned = threading.Event()
 
     def slow_blocks_root(self, root):
         entered.set()
-        import time as _time
-        _time.sleep(1.0)
+        # Parked until the test has its status answer. On the event loop this
+        # would freeze the loop, so nothing could answer until the 30s cap.
+        release.wait(timeout=30)
+        returned.set()
         return False
 
     monkeypatch.setattr(index_router.MountGuard, "blocks_root", slow_blocks_root)
+    # The parked check runs inside the rank worker's bounded wait; keep that
+    # wait clear of the 30s cap so only the ordering below can fail.
+    monkeypatch.setattr(index_router, "ABANDON_S", 60.0)
 
     async def run():
         transport = httpx.ASGITransport(app=_client(tmp_path).app)
@@ -1009,21 +1015,25 @@ def test_a_slow_mount_guard_check_does_not_stall_the_event_loop(
             rank_task = asyncio.create_task(
                 client.get("/api/index/rank",
                           params={"root": str(tmp_path), "q": "x"}))
-            for _ in range(50):
-                if entered.is_set():
-                    break
-                await asyncio.sleep(0.02)
-            assert entered.is_set()
-
-            t0 = time.monotonic()
-            status_resp = await client.get("/api/index/status")
-            elapsed = time.monotonic() - t0
+            started = await asyncio.to_thread(entered.wait, 30)
+            assert started, "the rank request never reached the mount check"
+            try:
+                status_resp = await client.get("/api/index/status")
+                # Ordering, not a wall-clock budget: status answered while the
+                # mount check was still parked.
+                check_was_parked = not returned.is_set()
+            finally:
+                release.set()
             rank_resp = await rank_task
-            return status_resp, elapsed, rank_resp
+            return status_resp, check_was_parked, rank_resp
 
-    status_resp, elapsed, rank_resp = asyncio.run(run())
+    status_resp, check_was_parked, rank_resp = asyncio.run(run())
     assert status_resp.status_code == 200
-    assert elapsed < 0.3, elapsed
+    # Previously `elapsed < 0.3` against a 1s sleep: a wall-clock bound a
+    # loaded runner can trip (0.3s has tripped at 0.37-1.5s in this file).
+    assert check_was_parked, (
+        "/api/index/status only answered after the slow MountGuard check "
+        "returned: the check is stalling the event loop")
     assert rank_resp.status_code == 200
 
 

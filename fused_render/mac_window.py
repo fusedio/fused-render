@@ -51,8 +51,8 @@ and its `pushState` navigations never pass through the policy delegate.
 A main menu is installed too (rumps never builds one): without an Edit menu
 a WKWebView has no ⌘C/⌘V/⌘X/⌘Z/⌘A, and there would be no ⌘W/⌘N/⌘R/⌘P/⌘M.
 
-THE ENGINE IS A PER-WINDOW CHOICE. With the experimental
-``chromium_windows_enabled`` preference on and the on-demand engine on disk
+THE ENGINE IS A PER-WINDOW CHOICE. With the ``chromium_windows_enabled``
+preference on (the default) and the engine the app ships on disk
 (`fused_render.chromium`), a NEW window's content view is an
 `FRChromiumView` (Chromium via CEF, `chromium/mac.py`) instead of a
 `WKWebView`; everything around it — this NSWindow, the menu, the Dock, the

@@ -5374,12 +5374,14 @@ def test_recap_backfill_waits_for_the_delay_then_honours_the_gap(lanes):
     tasks_mod._recap_feed([_job("a", now - 7200), _job("b", now - 8000)])
     t0 = tasks_mod._recap_started
     with tasks_mod._recap_cond:
+        # approx: t0 is time.monotonic(), so `ready - now` carries float
+        # rounding that depends on the machine's uptime (10.000000000000114).
         job, wait = tasks_mod._recap_next(t0 + 10)
-        assert job is None and 109 < wait <= 110
+        assert job is None and wait == pytest.approx(tasks_mod._RECAP_BACKFILL_DELAY_S - 10)
         job, _ = tasks_mod._recap_next(t0 + tasks_mod._RECAP_BACKFILL_DELAY_S)
         assert job["session_id"] == "a"  # newest first
         job, wait = tasks_mod._recap_next(t0 + tasks_mod._RECAP_BACKFILL_DELAY_S + 5)
-        assert job is None and 9 < wait <= 10
+        assert job is None and wait == pytest.approx(tasks_mod._RECAP_BACKFILL_GAP_S - 5)
         job, _ = tasks_mod._recap_next(t0 + tasks_mod._RECAP_BACKFILL_DELAY_S
                                        + tasks_mod._RECAP_BACKFILL_GAP_S)
         assert job["session_id"] == "b"  # both lanes drain
@@ -5511,3 +5513,53 @@ def test_a_task_without_a_session_cannot_be_renamed(client, tmp_path):
     r = _rename(client, key, "x")
     assert r.status_code == 400
     assert r.json() == {"error": "only a started task can be renamed"}
+
+
+# ---------------------------- auto-archive on a gone folder
+
+def test_a_task_whose_folder_is_gone_is_archived(client, projects_dir, state_dir,
+                                                 tmp_path, monkeypatch):
+    """The listing files the task the way the Archive button would: the row
+    reads archived in the SAME build, its pending run is called off, and a
+    task whose folder is still there is untouched. (The suite's conftest turns
+    the pass off because its transcripts name `/p`; this is the one test that
+    wants it on.)"""
+    monkeypatch.setattr(tasks_mod, "ARCHIVE_MISSING_FOLDERS", True)
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    kept = tmp_path / "kept"
+    kept.mkdir()
+    _write_transcript(projects_dir, "sess-gone", str(gone), [_user("hi", T9)])
+    _write_transcript(projects_dir, "sess-kept", str(kept), [_user("hi", T9)])
+    _seed_schedule([
+        _entry("e-gone", "tomorrow", T12, claude_session_id="sess-gone"),
+    ])
+    gone.rmdir()
+    rows = _by_key(client)
+    assert rows["sess-gone"]["status"] == "archived"
+    assert rows["sess-gone"]["folder_missing"] is True
+    assert rows["sess-kept"]["status"] == "done"
+    rec = json.loads((state_dir / "triage.json").read_text())
+    assert rec["sess-gone"]["status"] == "archived"
+    assert "sess-kept" not in rec
+    states = {e["id"]: e["state"] for e in schedule.list_entries()}
+    assert states["e-gone"] == schedule.CANCELLED
+    # And it stays archived on the next build rather than being re-filed.
+    assert _by_key(client)["sess-gone"]["status"] == "archived"
+
+
+def test_a_pending_only_task_in_a_gone_folder_is_not_cancelled(client, tmp_path,
+                                                                monkeypatch):
+    """No session, nothing to file: `archive_task` would only cancel the entry
+    and the next build would drop the task with no archived row to take it
+    back from (CodeRabbit, PR #1863). It keeps its row and its pending run."""
+    monkeypatch.setattr(tasks_mod, "ARCHIVE_MISSING_FOLDERS", True)
+    gone = tmp_path / "gone"
+    gone.mkdir()
+    _seed_schedule([_entry("e-only", "later", T12, target=str(gone / "page.html"))])
+    gone.rmdir()
+    row = _by_key(client)["pending:e-only"]
+    assert row["folder_missing"] is True
+    assert row["status"] != "archived"
+    states = {e["id"]: e["state"] for e in schedule.list_entries()}
+    assert states["e-only"] == schedule.PENDING

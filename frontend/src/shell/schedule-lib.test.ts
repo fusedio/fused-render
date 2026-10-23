@@ -2480,3 +2480,32 @@ describe("what a task can be run with", () => {
     expect(taskRunOptions(TASK_EFFORTS, "max")).toHaveLength(TASK_EFFORTS.length);
   });
 });
+
+describe("taskEffortsOf", () => {
+  it("lists the model's own levels where the catalog knows them, the card's words on each", async () => {
+    const { taskEffortsOf } = await import("./schedule-lib");
+    const { CLAUDE_FALLBACK, CODEX_FALLBACK, COPILOT_FALLBACK, resetAgentBackendsForTests } =
+      await import("@platform/lib/agent-backends");
+    const plan = {
+      ...COPILOT_FALLBACK,
+      enabled: true,
+      models: [
+        { id: "auto", label: "Auto (Copilot picks)", reasoning: false, efforts: [] },
+        { id: "gpt-5.4-mini", label: "GPT-5.4 mini", efforts: ["low", "medium", "high"] },
+      ],
+    };
+    resetAgentBackendsForTests({ backends: [CLAUDE_FALLBACK, plan], default: "claude", all: [CLAUDE_FALLBACK, plan, CODEX_FALLBACK] });
+    try {
+      expect(taskEffortsOf("copilot", "gpt-5.4-mini")).toEqual([
+        { key: "low", label: "Low" }, { key: "medium", label: "Medium" }, { key: "high", label: "High" },
+      ]);
+      // Nothing for a model that takes none: the card draws no Thinking section.
+      expect(taskEffortsOf("copilot", "auto")).toEqual([]);
+      // No model: the agent's whole list, as the card always listed it.
+      expect(taskEffortsOf("copilot").map((o) => o.key)).toEqual(["low", "medium", "high", "xhigh", "max"]);
+      expect(taskEffortsOf("claude", "opus").map((o) => o.key)).toEqual(TASK_EFFORTS.map((o) => o.key));
+    } finally {
+      resetAgentBackendsForTests();
+    }
+  });
+});
