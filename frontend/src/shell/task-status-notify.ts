@@ -91,12 +91,13 @@ import { folderHref } from "@shell/schedule-lib";
 // `recentFsPath` directly before this change shipped.
 const VIEW_PREFIX = "/explorer/view/";
 
-// Rooting, copied from `platform/lib/router.ts`'s
+// Windows-drive rooting, copied from `platform/lib/router.ts`'s
 // `rootedFsPath` rather than imported — importing ANY export from
 // `router.ts`, even a pure one, still runs that module's location-reading
 // top-level code (see the comment above).
 function rootedFsPath(joined: string): string {
-  return "/" + joined;
+  if (/^[A-Za-z]:$/.test(joined)) return joined + "/";
+  return /^[A-Za-z]:\//.test(joined) ? joined : "/" + joined;
 }
 
 // Same decode `recentFsPath` (apps/explorer/lib/recents.ts) performs, as a

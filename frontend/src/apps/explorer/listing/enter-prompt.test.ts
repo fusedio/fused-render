@@ -46,7 +46,7 @@ describe("folderToOpen", () => {
 // FINDINGS 3 & 4 (code review, 2026-09-10): `resolveFolderToOpen` cannot
 // touch the filesystem, so it now declines (returns null) for the two
 // shapes that genuinely need a real walk to answer — a `..` segment, and a
-// bare absolute path with no `~` — rather than handing
+// bare absolute path with no `~` and no drive letter — rather than handing
 // `navigate()` a guess that might not even be an fsPath (finding 3's
 // literal ".."), or might be one nothing backs on disk (finding 4's
 // `/Users` on a machine with no `/Users`). The caller falls back to
@@ -68,9 +68,13 @@ describe("resolveFolderToOpen", () => {
     expect(resolveFolderToOpen("a/../b/*.json", "/home/iamsdas")).toBeNull();
   });
 
-  test("declines a bare absolute guess — no `~`, nothing to verify it against", () => {
+  test("declines a bare absolute guess — no `~`, no drive letter, nothing to verify it against", () => {
     expect(resolveFolderToOpen("/Users/*/notes.md", "/home/iamsdas")).toBeNull();
     expect(resolveFolderToOpen("/tmp/data/*.csv", "/home/iamsdas")).toBeNull();
+  });
+
+  test("still resolves a Windows drive-letter folder unchanged — no ambiguity to decline over", () => {
+    expect(resolveFolderToOpen("C:/data/*.csv", "/home/iamsdas")).toBe("C:/data");
   });
 });
 

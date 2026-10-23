@@ -69,6 +69,16 @@ import type { MenuEntry } from "@platform/ui/ContextMenu";
 // have no MenuIcons glyph sit in the list at the same stroke as the rest.
 const LUCIDE = { size: 16, strokeWidth: 1.5, "aria-hidden": true } as const;
 
+// The server answers os.path.abspath (backslashes on Windows) while fsPath is
+// the shell's canonical forward-slash form — same drive-letter-only
+// normalization rule as the URL codec (a backslash in a POSIX filename must not
+// be rewritten).
+// Exported for the folder listing, which hands this component the server's own
+// entry answer as `fsPath` and has to canonicalise it the same way first.
+export const canonEntryPath = (p: string) =>
+  /^[A-Za-z]:[\\/]/.test(p) ? p.replace(/\\/g, "/") : p;
+const canon = canonEntryPath;
+
 export interface EntryActionsMenuProps {
   // The app's ENTRY PAGE, or the page that might be one. Over a file preview
   // this is the previewed file and the component asks the server whether it is
@@ -161,7 +171,7 @@ export function useAppActionRows({
     if (isEntryKnown !== undefined) return; // the caller answered; nothing to ask
     getAppEntry(dir)
       .then((r) => {
-        if (alive) setIsEntry(r.entry != null && r.entry === fsPath);
+        if (alive) setIsEntry(r.entry != null && canon(r.entry) === fsPath);
       })
       .catch(() => {
         /* indeterminate reads as "not an entry" — no rows for nothing */
@@ -318,8 +328,9 @@ export function useAppActionRows({
   // whose parent IS the folder; the file preview hands it the previewed
   // file, whose parent is the file's own directory — exactly "a folder →
   // that folder, a file → its parent" the row is meant to open.
-  // `useCanRunInTerminal()` is the one place the gate lives
-  // (platform/lib/terminalDockStore.ts).
+  // Also hidden on Windows: the server routes 501 there regardless (see
+  // fused_render/server/routers/terminal.py). `useCanRunInTerminal()` is the
+  // one place both conditions live (platform/lib/terminalDockStore.ts).
   const canRun = useCanRunInTerminal();
   const terminal: MenuEntry[] = !canRun
     ? []

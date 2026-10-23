@@ -29,9 +29,10 @@ export const TEXT_TYPES = ["txt", "md", "markdown", "csv"];
 /** The in-app drag payload: a path, or several newline-separated. */
 export const FUSED_PATH_MIME = "application/x-fused-path";
 
-/** The last segment of a path. */
+/** The last segment of a path, on either separator — `pickFile` hands back a
+ *  NATIVE path, so a Windows one has no "/" to split on. */
 export function basename(path: string): string {
-  const at = path.lastIndexOf("/");
+  const at = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
   return (at >= 0 ? path.slice(at + 1) : path) || path;
 }
 
@@ -97,7 +98,10 @@ export function pathsFromDrop(data: DataTransfer): string[] {
       const uri = line.trim();
       if (!uri || uri.startsWith("#") || !uri.startsWith("file://")) continue;
       try {
-        out.push(decodeURIComponent(uri.replace(/^file:\/\/(localhost)?/, "")));
+        // `file:///C:/x` keeps the authority's slash before the drive
+        // letter; a Windows path has none.
+        const path = decodeURIComponent(uri.replace(/^file:\/\/(localhost)?/, ""));
+        out.push(/^\/[A-Za-z]:[\\/]/.test(path) ? path.slice(1) : path);
       } catch {
         /* a malformed escape: not a path, skip it */
       }

@@ -19,11 +19,13 @@
  *  is three glyphs wide where this is one. */
 export const ELLIPSIS = "…";
 
-/** A trailing separator names the same folder, and would otherwise leave an
- *  EMPTY last segment — i.e. a tail of "", which is the one string no amount
- *  of width can help. */
+/** Windows writes its separators the other way round; everything below counts
+ *  segments, so it has to count them in one alphabet. A trailing separator
+ *  names the same folder, and would otherwise leave an EMPTY last segment —
+ *  i.e. a tail of "", which is the one string no amount of width can help. */
 function normalise(path: string): string {
-  return path.length > 1 ? path.replace(/\/+$/, "") : path;
+  const slashed = path.replace(/\\/g, "/");
+  return slashed.length > 1 ? slashed.replace(/\/+$/, "") : slashed;
 }
 
 /** The longest TAIL of a name that fits behind a leading ellipsis. The last

@@ -147,7 +147,7 @@ const NO_PAGE_PARAMS: readonly string[] = [];
 let urlScope: TasksScope | undefined;
 function tasksScopeFromUrl(): TasksScope | undefined {
   const raw = new URLSearchParams(location.search).get("project");
-  const project = raw ? raw.replace(/(.)\/+$/, "$1") : "";
+  const project = raw ? raw.replace(/\\/g, "/").replace(/(.)\/+$/, "$1") : "";
   if (!project) return undefined;
   if (urlScope?.project !== project) urlScope = { project, ownFrame: true };
   return urlScope;
@@ -1178,12 +1178,13 @@ export default function App({ config }: { config: Config }) {
         </div>
       );
   } else {
+    // Windows expanduser returns backslashes; fsPath is always forward-slash.
     main = (
       <StatView
         key={epoch + ":" + fsPath}
         fsPath={fsPath}
         epoch={epoch}
-        home={config.home}
+        home={config.home.replace(/\\/g, "/")}
       />
     );
   }

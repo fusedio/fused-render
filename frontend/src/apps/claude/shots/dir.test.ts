@@ -70,6 +70,7 @@ describe("shotJoin", () => {
   test("always '/', whatever the dir ended with (T:9039)", () => {
     expect(shotJoin("/tmp/shots", "a.png")).toBe("/tmp/shots/a.png");
     expect(shotJoin("/tmp/shots/", "a.png")).toBe("/tmp/shots/a.png");
+    expect(shotJoin("C:\\shots\\", "a.png")).toBe("C:\\shots/a.png");
   });
 });
 
@@ -95,9 +96,11 @@ describe("shotFileExt", () => {
 });
 
 describe("shotBase / shotDirOf", () => {
-  test("the last segment and the directory part (T:11651, 11658)", () => {
+  test("either separator, one forward-slash spelling out (T:11651, 11658)", () => {
     expect(shotBase("/a/b/c.png")).toBe("c.png");
+    expect(shotBase("C:\\a\\b\\c.png")).toBe("c.png");
     expect(shotDirOf("/a/b/c.png")).toBe("/a/b");
+    expect(shotDirOf("C:\\a\\b\\c.png")).toBe("C:/a/b");
     expect(shotDirOf("c.png")).toBe("c.png");
   });
 });

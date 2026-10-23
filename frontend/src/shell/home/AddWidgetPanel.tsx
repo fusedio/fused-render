@@ -70,8 +70,8 @@ export function allFolders(items: BookmarkItem[], out: BookmarkFolder[] = []): B
   return out;
 }
 
-const joinPath = (dir: string, name: string) => dir.replace(/\/+$/, "") + "/" + name;
-const parentDir = (dir: string) => dir.replace(/\/+$/, "").replace(/[^/]*$/, "").replace(/(.)\/+$/, "$1") || "/";
+const joinPath = (dir: string, name: string) => dir.replace(/[\\/]+$/, "") + "/" + name;
+const parentDir = (dir: string) => dir.replace(/[\\/]+$/, "").replace(/[^\\/]*$/, "").replace(/(.)[\\/]+$/, "$1") || "/";
 
 
 export function AddWidgetPanel({

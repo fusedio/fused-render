@@ -473,7 +473,7 @@ export function FilesSearch({
 
   // -- a query that is really an address --------------------------------------
   //
-  // `pathShortcut` (lib/home-search) detects the SHAPE — `/…`, `~/…` —
+  // `pathShortcut` (lib/home-search) detects the SHAPE — `/…`, `~/…`, `C:\…` —
   // on every render, not just at submit: a pasted `/tmp/report.csv` has to
   // read as a path candidate on the very first render, before Enter, since
   // `showOpenRow` and the AI row below both key off it.
@@ -1479,7 +1479,10 @@ function ShowMoreButton({ expanded, onClick }: { expanded: boolean; onClick: () 
 }
 
 export default function FilesHome({ config }: { config: Config }) {
-  const home = config.home;
+  // Same normalization every other config.home consumer applies (App.tsx,
+  // Panel.tsx): backslashed on Windows, while search hits and path helpers
+  // (basename, the "home + /" strip below) are forward-slash-only.
+  const home = config.home.replace(/\\/g, "/");
   useRecentsVersion();
   // The active tab lives entirely in the URL (?tab=recents) — read fresh on
   // every render, re-triggered by any history write (typed url, back/forward,

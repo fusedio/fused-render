@@ -12,9 +12,9 @@ import {
 } from "./embedAttach";
 
 describe("mediaKindOf reads the extension and nothing else", () => {
-  it("sorts the four kinds, case-insensitively", () => {
+  it("sorts the four kinds, case-insensitively, on either separator", () => {
     expect(mediaKindOf("/x/a.PNG")).toBe("picture");
-    expect(mediaKindOf("/x/song.Mp3")).toBe("audio");
+    expect(mediaKindOf("C:\\x\\song.Mp3")).toBe("audio");
     expect(mediaKindOf("/x/clip.mov")).toBe("video");
     expect(mediaKindOf("/x/notes.md")).toBe("text");
     expect(mediaKindOf("/x/report.pdf")).toBe("other");
@@ -67,6 +67,10 @@ describe("pathsFromDrop reads the two path-carrying payloads", () => {
     expect(pathsFromDrop(transfer({ "text/uri-list": uris })))
       .toEqual(["/Users/ada/my clip.mp4", "/tmp/a.wav"]);
   });
+  it("drops the authority slash before a Windows drive letter", () => {
+    expect(pathsFromDrop(transfer({ "text/uri-list": "file:///C:/Users/ada/a%20b.png\r\n" })))
+      .toEqual(["C:/Users/ada/a b.png"]);
+  });
   it("is empty for a Finder drop, which carries bytes only", () => {
     expect(pathsFromDrop(transfer({}))).toEqual([]);
   });
@@ -85,7 +89,8 @@ describe("linesFromText and basename", () => {
   it("one trimmed non-empty line per entry, either line ending", () => {
     expect(linesFromText("a\r\n\n  b  \nc")).toEqual(["a", "b", "c"]);
   });
-  it("basename takes the last segment", () => {
+  it("basename splits on either separator", () => {
+    expect(basename("C:\\photos\\cat.png")).toBe("cat.png");
     expect(basename("/x/y.mp4")).toBe("y.mp4");
   });
 });

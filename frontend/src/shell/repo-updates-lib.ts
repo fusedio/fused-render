@@ -43,9 +43,9 @@ export interface RepoRow {
   primaryAction: RepoAction;
 }
 
-/** The repo's own last path segment. */
+/** The repo's own last path segment, forward-slash or backslash either way. */
 export function repoName(root: string): string {
-  const norm = (root || "").replace(/\/+$/, "");
+  const norm = (root || "").replace(/\\/g, "/").replace(/\/+$/, "");
   const i = norm.lastIndexOf("/");
   return i === -1 ? norm : norm.slice(i + 1);
 }
@@ -316,7 +316,7 @@ export function syncFailureActions(reason: string): SyncFailureAction[] {
 /** Is `appPath` (the window's entry file or app folder) the repo root or below it? */
 export function appPathInRepo(appPath: string | null, root: string): boolean {
   if (!appPath) return false;
-  const norm = (p: string) => p.replace(/\/+$/, "");
+  const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "");
   const a = norm(appPath);
   const r = norm(root);
   return a === r || a.startsWith(r + "/");

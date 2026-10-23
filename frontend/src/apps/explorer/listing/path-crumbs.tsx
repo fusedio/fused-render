@@ -63,9 +63,13 @@ export function PathCrumbs({
       {underHome ? "~" : "/"}
     </a>,
   ];
+  // A Windows path's first segment is the drive ("C:"); its crumb targets
+  // "C:/" rather than re-rooting at "/" (Breadcrumb.tsx's own crumbs).
+  const isDrive = !underHome && /^[A-Za-z]:$/.test(parts[0] || "");
   let acc = underHome ? (home as string) : "";
   parts.forEach((part, i) => {
-    acc = acc + (acc.endsWith("/") ? "" : "/") + part;
+    if (i === 0 && isDrive) acc = part + "/";
+    else acc = acc + (acc.endsWith("/") ? "" : "/") + part;
     const target = acc;
     const isLast = i === parts.length - 1;
     if (i > 0 || underHome) {

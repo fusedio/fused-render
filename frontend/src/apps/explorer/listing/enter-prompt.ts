@@ -50,8 +50,8 @@ export function folderToOpen(query: string): string | null {
 // `escapesFsPath` (query-base.ts) already does for its own, narrower
 // yes/no question — `home === undefined` returns null (nothing resolvable
 // yet) the same way that predicate stays on the safe side when home has
-// not loaded. Any other folder (no leading "~") passes through unchanged,
-// same as `folderToOpen` leaves it.
+// not loaded. An already-absolute or drive-letter folder (no leading "~")
+// passes through unchanged, same as `folderToOpen` leaves it.
 //
 // FINDINGS 3 & 4 (code review, 2026-09-10) are the same root cause: this
 // function does not touch the filesystem (that's the whole point of it —
@@ -66,7 +66,7 @@ export function folderToOpen(query: string): string | null {
 //   with `_walk_from`, which climbs however many real directories it
 //   actually takes, exactly the computation this function would have to
 //   duplicate — badly, and without seeing the disk — to get right.
-// - A bare, non-`~` absolute path (finding 4):
+// - A bare, non-`~`, non-drive-letter absolute path (finding 4):
 //   `/Users/*/notes.md` typed on a machine with no `/Users` produces the
 //   guessed folder `/Users`, and `navigate` there lands on a folder that
 //   does not exist — an error listing, and the query is gone. The server
@@ -92,7 +92,7 @@ export function resolveFolderToOpen(query: string, home: string | undefined): st
     if (home === undefined) return null;
     return home + folder.slice(1);
   }
-  if (folder.startsWith("/")) return null;
+  if (folder.startsWith("/") && !/^[A-Za-z]:[\\/]/.test(folder)) return null;
   return folder;
 }
 
