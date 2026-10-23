@@ -4097,7 +4097,8 @@ def _spawn_env(chat_id: str = "", backend: str = "") -> dict:
                 if os.path.isdir(log_dir):
                     _require_private(log_dir)
                     # It refuses group/other WRITE only; the log is readable.
-                    if os.lstat(log_dir).st_mode & 0o077:
+                    # (POSIX only: Windows lstat reports every dir as 0o777.)
+                    if hasattr(os, "geteuid") and os.lstat(log_dir).st_mode & 0o077:
                         return env
                 else:
                     try:
