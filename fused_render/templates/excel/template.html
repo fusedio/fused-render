@@ -2624,7 +2624,9 @@ function flistSkelHtml(n = 6) {
 const winFwd = (p) => (/^[A-Za-z]:[\\/]/.test(p) ? p.replace(/\\/g, "/") : p);
 function startDir() {
   const cf = winFwd(currentFile());
-  return cf ? cf.replace(/\/[^/]*$/, "") || "/" : "~";
+  if (!cf) return "~";
+  const dir = cf.replace(/\/[^/]*$/, "");
+  return /^[A-Za-z]:$/.test(dir) ? dir + "/" : dir || "/";  // a drive root keeps its slash
 }
 function crumbHtml(path) {
   const parts = path.split("/").filter(Boolean);
