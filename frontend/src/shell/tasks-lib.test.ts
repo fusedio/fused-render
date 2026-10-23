@@ -5845,14 +5845,18 @@ describe("the Project filter's glyph", () => {
     // radiogroup, which is a different control naming the same facet and comes
     // first in the file. The indent is what tells the two apart.
     const project = VIEWS.slice(VIEWS.indexOf('\n          label={filters.projects.length === 1'));
-    expect(project.slice(0, project.indexOf("onClear"))).toContain("icon={ICON_FOLDER}");
+    expect(project.slice(0, project.indexOf("onClear"))).toContain("icon={ICON_PROJECT}");
+    // Workspace scope, Unit 7: a folded trigger is nothing BUT its glyph, so
+    // Project wears a mark of its own (layers), not the folder that also marks
+    // "open the folder" and the view tab. The folder stays on those.
+    expect(project.slice(0, project.indexOf("onClear"))).not.toContain("ICON_FOLDER");
     // A prop with the ring as its default, so the Status menu is untouched — there
     // the ring IS the vocabulary a status is stated in.
     // The word rides a `.schedule-fit-lbl` span so the toolbar can fold it to
     // an icon when the row runs out of width (shell/row-fit.ts) — the glyph and
     // the label are still one control and still in this order.
     expect(VIEWS).toContain(
-      '{glyph ?? ICON_CIRCLE_DOT} <span className="schedule-fit-lbl">{label}</span>',
+      '{glyph ?? ICON_CIRCLE_DOT} <span className="schedule-fit-lbl">{value && count > 0 ? value : label}</span>',
     );
     const status = VIEWS.slice(VIEWS.indexOf('label="Status"'));
     expect(status.slice(0, status.indexOf("onClear"))).not.toContain("icon=");
@@ -8271,8 +8275,14 @@ describe("the two filter menus", () => {
     // project name in that instead of 'Project 1'") — safe now that the press
     // closes the menu — and the badge stands down there, because a "1" after a
     // name is the same fact twice. Status is untouched: its badge still counts.
+    // Unit 7: the Status trigger names its value ("Running +3"), and the badge
+    // stands down whenever a value is on the trigger.
     expect(VIEWS).toContain(
-      '{badge && count > 0 && <span className="schedule-tv-filter-count">{count}</span>}');
+      '{badge && !(value && count > 0) && count > 0 && <span className="schedule-tv-filter-count">{count}</span>}');
+    expect(VIEWS).toContain("{value && count > 0 ? value : label}");
+    // …and clearing is a row in the menu: the separate ✕ segment is gone.
+    expect(VIEWS).not.toContain('className="schedule-tv-filter-x"');
+    expect(VIEWS).toContain("schedule-tv-pop-clear");
     expect(VIEWS).toContain(
       'label={filters.projects.length === 1 ? basename(filters.projects[0]) : "Project"}');
     expect(VIEWS).toContain("badge={filters.projects.length !== 1}");

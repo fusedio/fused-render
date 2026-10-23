@@ -310,6 +310,64 @@ const VIEW_HINTS: Partial<Record<TaskView, string>> = {
   pr: "List grouped by pull request",
 };
 
+/** The toolbar's `…` (Unit 7). Hidden by the stylesheet until the fit ladder
+ *  folds the cog; its one item is "Edit views". */
+function ToolbarOverflow({ onEditViews }: { onEditViews: () => void }) {
+  const [open, setOpen] = useState(false);
+  const wrap = useRef<HTMLDivElement | null>(null);
+  const [pos, setPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: MouseEvent) => {
+      if (wrap.current && !wrap.current.contains(e.target as Node)) setOpen(false);
+    };
+    const esc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", away);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("mousedown", away);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [open]);
+  return (
+    <div className="schedule-view-more" ref={wrap}>
+      <button
+        type="button"
+        className="btn btn-secondary schedule-view-more-btn"
+        title="More"
+        aria-label="More"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={(e) => {
+          const r = e.currentTarget.getBoundingClientRect();
+          setPos({ top: r.bottom + 4, left: r.left });
+          setOpen((v) => !v);
+        }}
+      >
+        …
+      </button>
+      {open && (
+        <div className="schedule-tv-pop tasks-pop" role="menu" aria-label="More"
+             style={{ position: "fixed", top: pos.top, left: pos.left, right: "auto", bottom: "auto" }}>
+          <button
+            type="button"
+            role="menuitem"
+            className="schedule-tv-pop-item"
+            onClick={() => {
+              setOpen(false);
+              onEditViews();
+            }}
+          >
+            <span>Edit views</span>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * THE TAB EDITOR (Akshil, 2026-10-16): the switcher's row, taken over. Every
  * current tab as a chip with its own remove, a `+` that offers every view not
@@ -1643,6 +1701,10 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
                     onClick={openTabs}>
               {ICON_TUNE}
             </button>
+            {/* THE OVERFLOW (Unit 7): drawn only once the ladder has taken the
+                cog off the row (schedule.css rung 3), and it holds what the cog
+                did. */}
+            <ToolbarOverflow onEditViews={openTabs} />
             {/* Search, Status and Project, on ALL THREE views (2026-08-18). They
                 used to be hidden on the calendar, on the argument that it
                 answers "when" and a week with tasks filtered out of it is a week

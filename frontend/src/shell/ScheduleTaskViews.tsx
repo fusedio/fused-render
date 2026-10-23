@@ -329,6 +329,15 @@ const ICON_CHEVRON = icon(<polyline points="9 18 15 12 9 6" />, 13);
 // is a different glyph and is untouched.
 const ICON_CIRCLE_DOT = icon(
   <><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="1.5" /></>, 13);
+// The Project filter's own mark (Workspace scope, Unit 7): a stack of layers.
+// It stood on ICON_FOLDER, which is also the "open the folder" door and the view
+// tab's glyph; a folded filter trigger is nothing BUT its glyph, so it has to
+// be one no other control on the row wears.
+const ICON_PROJECT = icon(
+  <><polygon points="12 2 2 7 12 12 22 7 12 2" /><polyline points="2 17 12 22 22 17" />
+  <polyline points="2 12 12 17 22 12" /></>,
+  13,
+);
 const ICON_FOLDER = icon(
   <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />,
   12,
@@ -1170,12 +1179,18 @@ function FilterMenu({
   icon: glyph,
   onClear,
   hint,
+  value,
   children,
 }: {
   label: string;
   /** The trigger's instant tooltip (`data-hint`, the page's own layer), or
    *  nothing. The Project menu spells its chosen folders out here. */
   hint?: string;
+  /** THE CHOSEN VALUE, named on the trigger ("Running +3") in place of the
+   *  facet's name once something is chosen, with the count badge standing down
+   *  because the "+3" already says it. Undefined (or no selection) keeps the
+   *  label and badge as before. */
+  value?: string;
   /** WHICH FILTER THIS IS, as a `data-filter` on the trigger's wrapper —
    *  "status", "project", or "all" for the merged one.
    *
@@ -1287,7 +1302,7 @@ function FilterMenu({
         <button
           type="button"
           ref={btn}
-          className={"schedule-tv-filter-btn" + (splittable ? " is-split" : "")}
+          className="schedule-tv-filter-btn"
           aria-expanded={open}
           data-hint={hint}
           onClick={() => setOpen((v) => !v)}
@@ -1302,23 +1317,9 @@ function FilterMenu({
               `close` the children are handed), so the next open measures the
               trigger where it now stands. The observers above still cover a
               reflow under an open menu. */}
-          {glyph ?? ICON_CIRCLE_DOT} <span className="schedule-fit-lbl">{label}</span>
-          {badge && count > 0 && <span className="schedule-tv-filter-count">{count}</span>}
+          {glyph ?? ICON_CIRCLE_DOT} <span className="schedule-fit-lbl">{value && count > 0 ? value : label}</span>
+          {badge && !(value && count > 0) && count > 0 && <span className="schedule-tv-filter-count">{count}</span>}
         </button>
-        {splittable && (
-          <button
-            type="button"
-            className="schedule-tv-filter-x"
-            /* Says WHICH filter it drops. "Clear" on its own was the ambiguity
-               this replaces, and a bare ✕ beside a label is read as belonging
-               to it only if the accessible name agrees. */
-            title={`Clear the ${(name ?? label).toLowerCase()} filter`}
-            aria-label={`Clear the ${(name ?? label).toLowerCase()} filter`}
-            onClick={onClear}
-          >
-            ✕
-          </button>
-        )}
       </span>
       {open && (
         <div
@@ -1327,6 +1328,24 @@ function FilterMenu({
           aria-label={`Filter by ${name ?? label}`}
           style={style}
         >
+          {/* CLEAR LIVES IN THE MENU (Unit 7): the separate ✕ segment is gone
+              — the trigger names its value now, and a second hit target
+              beside it was the widest thing on a folded row. Says WHICH
+              filter it drops. */}
+          {splittable && (
+            <button
+              type="button"
+              className="schedule-tv-pop-item schedule-tv-pop-clear"
+              title={`Clear the ${(name ?? label).toLowerCase()} filter`}
+              aria-label={`Clear the ${(name ?? label).toLowerCase()} filter`}
+              onClick={() => {
+                onClear?.();
+                setOpen(false);
+              }}
+            >
+              <span>Clear</span>
+            </button>
+          )}
           {children(() => setOpen(false))}
         </div>
       )}
@@ -1640,6 +1659,12 @@ export function TaskFilterControls({
   // aiming at it.
   // A FOLDER TOGGLES IN AND OUT OF THE SET (Akshil, 2026-10-19: multi-select),
   // the way a lane does in Status.
+  // "Running +3": the first chosen lane's name and how many more.
+  const shownStatuses = statusColumns.filter((c) => laneOn(c.key));
+  const statusValue = shownStatuses.length
+    ? shownStatuses[0].label + (shownStatuses.length > 1 ? ` +${shownStatuses.length - 1}` : "")
+    : undefined;
+
   const pickProject = (path: string) =>
     onChange({
       ...filters,
@@ -1737,6 +1762,8 @@ export function TaskFilterControls({
       <FilterMenu
         label="Status"
         slot="status"
+        name="Status"
+        value={statusValue}
         count={statusCount}
         onClear={() => onChange({ ...filters, statuses: [] })}
       >
@@ -1768,7 +1795,7 @@ export function TaskFilterControls({
              auto-detected from where each task's work happens, and the same
              glyph now marks a folder-scoped task at the end of its title and
              every folder row in the New-task picker. One mark, one meaning. */
-          icon={ICON_FOLDER}
+          icon={ICON_PROJECT}
           onClear={() => onChange({ ...filters, projects: [] })}
         >
           {/* THE CARET GOES TO THE BOX here and not in the merged menu above:
