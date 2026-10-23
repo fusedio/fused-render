@@ -50,7 +50,7 @@ import sys
 import threading
 from collections.abc import Sequence
 
-from fused_render._view_url_codec import canonical_fs_path, normpath_for_shape
+from fused_render._view_url_codec import _is_drive_path, canonical_fs_path, normpath_for_shape
 from fused_render.server.common import logger
 
 # Long enough that a human really can browse to a folder, short enough that a
@@ -366,18 +366,28 @@ def _canonical_absolute(chosen: str) -> str:
     Three steps, in this order and for three different reasons.
 
     `normpath` first: it is what drops the trailing slash AppleScript's `POSIX
-    path of` puts on a folder, and collapses any `..` a backend hands back.
+    path of` puts on a folder, and collapses any `..` a backend hands back. On a
+    Windows path it is also what makes every separator a backslash — so
+    canonicalizing after it is the only order that catches them all.
 
-    `canonical_fs_path` second. Every path above the OS in this app is in that
-    one canonical form: it is what a /view URL decodes to, what the runtime
-    sends as X-Fused-Page, and what `/api/config` already applies this same call
-    to for `calls_dir`. A backslash is a legal POSIX filename character and is
-    left untouched.
+    `canonical_fs_path` second. Every path above the OS in this app is
+    forward-slashed: it is what a /view URL decodes to, what the runtime sends as
+    X-Fused-Page, and what `/api/config` already applies this same call to for
+    `calls_dir` with the same note attached. The shell and folder-picker.js's
+    `parent`/`join` both assume it, so a backslashed path here would feed mixed
+    separators into clone-destination naming and every /api/fs/* call after it.
+    Conditional, not a blind replace: on POSIX a backslash is a legal filename
+    character. A UNC path is deliberately left alone too — the codec keeps it as
+    one opaque segment, and inventing a second convention here would make this the
+    only place in the app that disagrees.
 
-    The absolute test comes LAST, on the canonical value.
+    The absolute test comes LAST, and classifies rather than asking the running
+    OS. `posixpath.isabs("C:/Users/ada")` is False, and that is exactly the value
+    a Windows server produces — so `os.path.isabs` alone would reject the real
+    answer anywhere but Windows.
     """
     canonical = canonical_fs_path(normpath_for_shape(chosen))
-    if not os.path.isabs(canonical):
+    if not (os.path.isabs(canonical) or _is_drive_path(canonical)):
         raise PickerFailed(
             f"the folder chooser answered a relative path: {canonical!r}")
     return canonical
