@@ -36,9 +36,10 @@ export const CANVAS_SHOT_LABEL: Record<CanvasShotWhat, string> = {
   udf: "Capture this UDF's output",
 };
 
-/** Generous: the frame's capture is seconds on a big graph; the parent's own
- *  timer answers before this does, so this is only the belt to its braces. */
-const ANSWER_TIMEOUT_MS = 60_000;
+/** Above the parent's whole budget — up to 40 s waiting for the workbench
+ *  frame, then 45 s for the capture — so the parent's own sentence always
+ *  arrives first; this is only the belt to its braces. */
+const ANSWER_TIMEOUT_MS = 95_000;
 
 /** The framed chat's ask. */
 export function requestCanvasShotFromParent(

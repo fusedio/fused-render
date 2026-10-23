@@ -844,13 +844,18 @@ def _handle_canvas_shot(args: dict) -> dict:
         return _text({"error": str(answer.get("error")
                                   or "the canvas page could not take the picture")})
     try:
-        size = os.path.getsize(image)
-        if size > CANVAS_SHOT_MAX_BYTES:
-            return _text({"error": "the picture is too large to hand over (%d MB; the "
-                                   "cap is %d MB) — zoom the canvas out or ask for one "
-                                   "UDF's output instead"
-                                   % (size // (1024 * 1024), CANVAS_SHOT_MAX_BYTES // (1024 * 1024))})
-        with open(image, "rb") as fh:
+        # The containment check (agent.py: inside SHOTS) ran at answer time;
+        # the leaf is opened WITHOUT following a symlink and sized from the
+        # same descriptor, so nothing swapped in between is what gets read.
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        with os.fdopen(os.open(image, flags), "rb") as fh:
+            size = os.fstat(fh.fileno()).st_size
+            if size > CANVAS_SHOT_MAX_BYTES:
+                return _text({"error": "the picture is too large to hand over (%d MB; "
+                                       "the cap is %d MB) — zoom the canvas out or ask "
+                                       "for one UDF's output instead"
+                                       % (size // (1024 * 1024),
+                                          CANVAS_SHOT_MAX_BYTES // (1024 * 1024))})
             data = fh.read()
     except OSError as exc:
         return _text({"error": "the picture was taken but could not be read back "

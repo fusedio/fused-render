@@ -89,10 +89,13 @@ export function useCanvasShotResponder(opts: CanvasShotResponderOptions): void {
   const rowsKey = opts.rows.map((r) => `${r.id}:${r.pollsSeen ?? 0}`).join(",");
   const ready = !!opts.shot;
   useEffect(() => {
-    const { rows, shot, answer } = live.current;
+    const { rows, shot } = live.current;
+    // `answer` is read when the picture is READY, not when the effect ran: a
+    // capture takes seconds, and the controller behind the callback may have
+    // been replaced meanwhile (a session swap) — the current one must get it.
     const deliver = (id: string, result: Answer) => {
       taken.current.set(id, result);
-      void answer(id, result).then(
+      void live.current.answer(id, result).then(
         (ok) => {
           if (ok) taken.current.delete(id);
           else claimed.current.delete(id); // the next poll re-surfaces the row; re-answer from `taken`

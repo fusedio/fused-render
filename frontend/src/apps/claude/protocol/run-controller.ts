@@ -3619,6 +3619,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       context: null,
       permissions: [],
       appState: [],
+      canvasShot: [],
       skills: [],
       trouble: null,
       // A restored conversation has no live run, so the picker's param is the
