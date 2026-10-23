@@ -1668,8 +1668,9 @@ def test_stamp_only_move_with_unchanged_files_is_adopted_not_stale(
 
     assert _wait_for(lambda: _manager()._remote["last_updated"] == "t2"), _watcher_diag()
     assert _sync_view("alpha")["server_stale"] is None
-    assert json.loads((harness.root / ".sync" / "alpha.json").read_text())[
-        "remote"]["last_updated"] == "t2"
+    # _save_base runs just after _rotate_remote: wait for the file, too.
+    assert _wait_for(lambda: json.loads(
+        (harness.root / ".sync" / "alpha.json").read_text())["remote"]["last_updated"] == "t2")
     _stop_sync("alpha")
 
 

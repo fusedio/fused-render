@@ -100,6 +100,7 @@ import time
 import tomllib
 import urllib.parse
 import zipfile
+import zlib
 
 from fastapi import APIRouter, Body, Header, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
@@ -2778,7 +2779,13 @@ class _SyncManager:
                 # the local seed.
                 if rel.rsplit("/", 1)[-1] in _SYNC_IGNORED_BASENAMES:
                     continue
-                bundle[os.path.join(*rel.split("/"))] = zf.read(info.filename)
+                try:
+                    data = zf.read(info.filename)
+                except (zipfile.BadZipFile, zlib.error, OSError, EOFError):
+                    # A corrupt member is a transient failure like a failed
+                    # download — never an exception that kills the watcher.
+                    return None
+                bundle[os.path.join(*rel.split("/"))] = data
         return bundle
 
     def _merge_remote(self, probe: dict, bundle: dict[str, bytes] | None) -> bool:
