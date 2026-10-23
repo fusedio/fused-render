@@ -5,7 +5,6 @@ import type { Task } from "@platform/lib/api";
 import {
   holdReasons,
   holdMarker,
-  cardStatusWord,
   visibleReasons,
   moveSelection,
   nextNeedingYou,
@@ -223,33 +222,21 @@ describe("workspaceKeyAction", () => {
   });
 });
 
-describe("cardStatusWord", () => {
-  test("is spoken only for running and needs-you tasks", () => {
-    expect(cardStatusWord(task({ status: "in_progress" }))).toBe("Running");
-    expect(cardStatusWord(task({ status: "needs_attention" }))).toBe("Needs attention");
-    expect(cardStatusWord(task({ status: "blocked", blocked_reason: "failed" }))).toBe("Failed");
-    expect(cardStatusWord(task({ status: "blocked", blocked_reason: "usage_limit" }))).toContain("Usage limit");
-    expect(cardStatusWord(task({ status: "done" }))).toBe("");
-    expect(cardStatusWord(task({ status: "stopped" as Task["status"] }))).toBe("");
-  });
-});
-
 describe("visibleReasons", () => {
   test("drops unread and chip-duplicate reasons, keeps worktree facts", () => {
     const all = ["3 unread", "PR #7 open", "PR #8 draft", "2 bg jobs", "1 uncommitted", "2 unpushed", "unknown"];
-    expect(visibleReasons(all, task())).toEqual(["1 uncommitted", "2 unpushed", "unknown"]);
+    expect(visibleReasons(all)).toEqual(["1 uncommitted", "2 unpushed", "unknown"]);
   });
   test("keeps an unknown PR, queued and a pending run", () => {
-    expect(visibleReasons(["PR #7 unknown", "queued", "run pending"], task())).toEqual([
+    expect(visibleReasons(["PR #7 unknown", "queued", "run pending"])).toEqual([
       "PR #7 unknown",
       "queued",
       "run pending",
     ]);
   });
-  test("drops running / needs you only while the status word is shown", () => {
-    expect(visibleReasons(["running"], task({ status: "in_progress" }))).toEqual([]);
-    expect(visibleReasons(["needs you"], task({ status: "needs_attention" }))).toEqual([]);
-    expect(visibleReasons(["running"], task({ status: "done" }))).toEqual(["running"]);
+  test("always drops running / needs you (the ring shows them)", () => {
+    expect(visibleReasons(["running"])).toEqual([]);
+    expect(visibleReasons(["needs you"])).toEqual([]);
   });
 });
 
@@ -334,7 +321,7 @@ test("blockingReasons ignores unread only: a lone unread hold is clear, with oth
 });
 
 test("visibleReasons still drops the unread text", () => {
-  expect(visibleReasons(["3 unread"], task({ unread: 3 }))).toEqual([]);
+  expect(visibleReasons(["3 unread"])).toEqual([]);
 });
 
 describe("portBadges", () => {

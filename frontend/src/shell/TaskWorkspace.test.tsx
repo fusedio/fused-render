@@ -148,10 +148,10 @@ test("the message preview shows unless it repeats the title", async () => {
   expect(card("b").findAllByProps({ className: "ws-card-ctx" })).toHaveLength(0);
 });
 
-test("a running card shows its status word and not the running reason", async () => {
+test("a running card shows no status word badge and not the running reason", async () => {
   serve();
   const r = await render([task({ key: "a", status: "in_progress" })]);
-  expect(r.root.findByProps({ className: "ws-badge ws-status" }).children.join("")).toBe("Running");
+  expect(r.root.findAllByProps({ className: "ws-badge ws-status" })).toHaveLength(0);
   expect(r.root.findAllByProps({ className: "ws-badge ws-marker" })).toHaveLength(0);
 });
 

@@ -111,9 +111,6 @@
   white-space: nowrap;
   text-decoration: none;
 }
-.ws-status {
-  font-weight: 600;
-}
 /* Neutral facts recede: no border, a soft fill, muted ink. The badges that carry
    meaning (status, uncommitted, unread, safe to archive, the PR pills) keep their
    colour. */
@@ -123,12 +120,6 @@
   border-color: transparent;
   background: color-mix(in srgb, var(--fg) 6%, transparent);
   color: var(--fg-muted);
-}
-.ws-card[data-status="in_progress"] .ws-status {
-  --ws-tone: var(--status-progress);
-}
-.ws-card[data-needs-you] .ws-status {
-  --ws-tone: var(--status-failed);
 }
 .ws-card-line2 {
   display: flex;

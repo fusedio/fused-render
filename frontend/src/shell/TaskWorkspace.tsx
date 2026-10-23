@@ -37,7 +37,6 @@ import {
   capList,
   groupCollapsed,
   groupTasks,
-  cardStatusWord,
   MAX_PRS,
   orderPrs,
   messagePreview,
@@ -232,8 +231,7 @@ function WorkspaceCard({
   onOpen: () => void;
 }) {
   const bg = bgJobBadge(task);
-  const word = cardStatusWord(task);
-  const reasonList = visibleReasons(reasons, task);
+  const reasonList = visibleReasons(reasons);
   const text = reasonList.join(" · ");
   const clear = reasons.length === 0;
   const hasPrs = prRefsOf(task).some((r) => r.repo);
@@ -284,11 +282,6 @@ function WorkspaceCard({
         </span>
         <IdChip id={task.task_id} kind="task" />
         <span className={"ws-title" + (task.unread > 0 ? " is-unread" : "")}>{task.title || "(untitled)"}</span>
-        {word && (
-          <span className="ws-badge ws-status" data-status={task.status}>
-            {word}
-          </span>
-        )}
         {when.kind !== "none" && (
           <span className="ws-time" title={when.title}>
             {when.text}
