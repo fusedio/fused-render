@@ -15,6 +15,7 @@ _SCRIPT = os.path.join(_REPO, "scripts", "dmg_background.py")
 
 
 def _load():
+    """Import the script by path: it is not a package module."""
     spec = importlib.util.spec_from_file_location("dmg_background", _SCRIPT)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
@@ -22,6 +23,7 @@ def _load():
 
 
 def test_writes_both_scales_at_the_window_size(tmp_path):
+    """dmgbuild pairs `name.png` with `name@2x.png`, at the window's size."""
     mod = _load()
     out = tmp_path / "bg.png"
     mod.main([str(out)])
@@ -47,6 +49,7 @@ def test_sparkles_stay_clear_of_the_icons_and_labels():
 
 
 def test_caption_is_optional(tmp_path):
+    """`--caption ''` renders the canvas with no text."""
     mod = _load()
     with_caption = mod.render("Drag Fused Render into Applications")
     without = mod.render("")
@@ -54,6 +57,7 @@ def test_caption_is_optional(tmp_path):
 
 
 def test_refuses_a_non_png_output(tmp_path):
+    """Any other extension would break dmgbuild's @2x pairing."""
     mod = _load()
     with pytest.raises(SystemExit):
         mod.main([str(tmp_path / "bg.tiff")])

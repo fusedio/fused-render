@@ -61,6 +61,7 @@ def sparkle_polygon(cx, cy, outer_r, rotation_deg):
     waists = [(-45, waist_r), (45, waist_r), (135, waist_r), (-135, waist_r)]
 
     def point(angle_deg, r):
+        """Polar to canvas coordinates around the sparkle's center."""
         a = math.radians(angle_deg + rotation_deg)
         return (cx + r * math.cos(a), cy + r * math.sin(a))
 
@@ -78,6 +79,8 @@ def sparkle_polygon(cx, cy, outer_r, rotation_deg):
 
 
 def _font(size_px):
+    """The caption face: the first of FONT_CANDIDATES that exists (Helvetica
+    on the macOS build host), else Pillow's bundled default."""
     for path in FONT_CANDIDATES:
         try:
             return ImageFont.truetype(path, size_px)
@@ -90,6 +93,8 @@ def _font(size_px):
 
 
 def render(caption):
+    """The background at SUPERSAMPLE x WIDTH x HEIGHT as an RGBA image:
+    canvas, shadowed sparkles, and the caption when one is given."""
     s = SUPERSAMPLE
     w, h = WIDTH * s, HEIGHT * s
     img = Image.new("RGBA", (w, h), CANVAS)
@@ -113,6 +118,7 @@ def render(caption):
 
 
 def main(argv=None):
+    """CLI: render and write `<out>` (1x) and `<out>@2x.png` (2x)."""
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("out", help="1x PNG path; the @2x sibling is written beside it")
     ap.add_argument("--caption", default="Drag Fused Render into Applications",
