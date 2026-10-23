@@ -335,3 +335,96 @@ test("a header click collapses an open group and remembers it", async () => {
   expect(cardsOf(r)).toHaveLength(0);
   expect(JSON.parse(store["fused.tasks.workspace.collapsed"]).idle).toBe(true);
 });
+
+// ---- Bulk archive ---------------------------------------------------------
+const byClass = (r: ReturnType<typeof create>, c: string) =>
+  r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.split(" ").includes(c) && typeof n.type === "string");
+const press = async (el: { props: Record<string, (...a: unknown[]) => void> }, fn = "onClick") => {
+  await act(async () => {
+    el.props[fn]({ stopPropagation() {} });
+  });
+};
+const barButton = (r: ReturnType<typeof create>, label: string) =>
+  byClass(r, "tasks-bulk-btn").find((b) => text(b) === label)!;
+const many = (n: number, over: Partial<Task> = {}): Task[] =>
+  Array.from({ length: n }, (_, i) => task({ key: `k${i}`, task_id: `T${i}`, title: `task ${i}`, started: 100 - i, ...over }));
+const archived = (posts: { url: string; body: unknown }[], url = "/api/tasks/archive") =>
+  posts.filter((p) => p.url === url).map((p) => (p.body as { key: string }).key).sort();
+
+test("the group checkbox selects the whole group, cards past the cap included", async () => {
+  serve();
+  const r = await render(many(10));
+  expect(byClass(r, "ws-card")).toHaveLength(8);
+  const head = byClass(r, "tasks-group-check");
+  expect(head).toHaveLength(1);
+  await press(head[0] as never, "onChange");
+  expect(text(byClass(r, "tasks-bulk-count")[0])).toBe("10 selected");
+  expect(r.root.findByProps({ className: "tasks-check tasks-group-check" }).props.checked).toBe(true);
+});
+
+test("a folded group still selects all of its tasks, and the header does not fold", async () => {
+  serve();
+  store["fused.tasks.workspace.collapsed"] = JSON.stringify({ clear: true });
+  const r = await render(many(3));
+  expect(byClass(r, "ws-card")).toHaveLength(0);
+  let stopped = false;
+  const check = byClass(r, "tasks-group-check")[0] as never as { props: Record<string, (...a: unknown[]) => void> };
+  await act(async () => check.props.onClick({ stopPropagation: () => (stopped = true) }));
+  expect(stopped).toBe(true);
+  await press(check, "onChange");
+  expect(text(byClass(r, "tasks-bulk-count")[0])).toBe("3 selected");
+  expect(byClass(r, "ws-card")).toHaveLength(0);
+});
+
+test("a card checkbox toggles only that task; Clear empties the selection", async () => {
+  serve();
+  const r = await render(many(3));
+  await press(byClass(r, "ws-check")[1] as never, "onChange");
+  expect(text(byClass(r, "tasks-bulk-count")[0])).toBe("1 selected");
+  await press(barButton(r, "Clear"));
+  expect(byClass(r, "tasks-bulk-bar")).toHaveLength(0);
+});
+
+test("Archive calls the archive once per selected key and raises ONE Undo for the batch", async () => {
+  const posts = serve();
+  const r = await render(many(5));
+  await press(byClass(r, "tasks-group-check")[0] as never, "onChange");
+  await press(barButton(r, "Archive"));
+  expect(archived(posts)).toEqual(["k0", "k1", "k2", "k3", "k4"]);
+  expect(byClass(r, "ws-card")).toHaveLength(0);
+  const toast = byClass(r, "ws-undo");
+  expect(toast).toHaveLength(1);
+  expect(text(byClass(r, "ws-undo-text")[0])).toBe("Archived 5 tasks");
+  await press(byClass(r, "ws-undo-btn")[0] as never);
+  expect(archived(posts, "/api/tasks/unarchive")).toEqual(["k0", "k1", "k2", "k3", "k4"]);
+  expect(byClass(r, "ws-card")).toHaveLength(5);
+});
+
+test("a running task in the selection asks first, and nothing is archived until it is confirmed", async () => {
+  const posts = serve();
+  const r = await render([...many(2), ...many(1, { key: "run", task_id: "T9", status: "in_progress", started: 500 })]);
+  const heads = byClass(r, "tasks-group-check");
+  for (const h of heads) await press(h as never, "onChange");
+  await press(barButton(r, "Archive"));
+  expect(archived(posts)).toEqual([]);
+  const dlg = r.root.findAllByProps({ title: "Archive tasks" })[0];
+  expect(dlg.props.message).toBe("Archive 3 tasks? 1 is still running and will be stopped.");
+  await act(async () => dlg.props.onConfirm());
+  expect(archived(posts)).toEqual(["k0", "k1", "run"]);
+});
+
+test("a failed archive shows that task again and sends one error", async () => {
+  const posts = serve();
+  const base = globalThis.fetch;
+  globalThis.fetch = mock(async (url: string, init?: RequestInit) =>
+    url === "/api/tasks/archive" && JSON.parse(String(init?.body)).key === "k1"
+      ? new Response(JSON.stringify({ error: "nope" }), { status: 500 })
+      : (base as typeof fetch)(url, init),
+  ) as unknown as typeof fetch;
+  const r = await render(many(3));
+  await press(byClass(r, "tasks-group-check")[0] as never, "onChange");
+  await press(barButton(r, "Archive"));
+  expect(byClass(r, "ws-card").map((n) => n.props["data-key"])).toEqual(["k1"]);
+  expect(text(byClass(r, "ws-undo-text")[0])).toBe("Archived 2 tasks");
+  expect(posts.length).toBeGreaterThan(0);
+});

@@ -1072,6 +1072,8 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     () => ({ ...shared, ...(facets[view] ?? defaultViewFacets(view)) }),
     [shared, facets, view],
   );
+  // What the bulk selection is about: when any filter or the search changes, it empties.
+  const selectionKey = useMemo(() => JSON.stringify(filters), [filters]);
   const setFilters = useCallback(
     (update: TaskFilters | ((f: TaskFilters) => TaskFilters)) => {
       const next = typeof update === "function" ? update(filtersRef.current) : update;
@@ -1793,6 +1795,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           ) : view === "workspace" ? (
             <TaskWorkspace
               tasks={shown}
+              resetKey={selectionKey}
               allTasks={inScope}
               emptyLabel={emptyLabel}
               peekOn={peekOn}
@@ -1832,6 +1835,8 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               // its own memory (tasks-lib.listMemoryKey).
               key={view}
               tasks={shown}
+              bulkSelect
+              selectionResetKey={selectionKey}
               // Time / Project / PR are this List cut into sections.
               groupBy={groupOfView(view)}
               sortBy={sortBy}

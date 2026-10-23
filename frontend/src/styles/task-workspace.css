@@ -337,3 +337,103 @@
   list-style: none;
   display: flex;
 }
+
+/* -- Bulk select (Workspace, List and the grouped views) ----------------------
+   One checkbox look everywhere: a native input in the accent. It is hidden
+   until the row or card is hovered or holds focus, and stays drawn while any
+   task is selected, so the reader can see what is picked. */
+.tasks-check {
+  margin: 0;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.tasks-group-check {
+  margin-left: 2px;
+}
+/* The Workspace puts the checkbox where the ring stands and swaps the two. */
+.ws-mark {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+.ws-mark .ws-check {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  opacity: 0;
+  pointer-events: none;
+}
+.ws-card:hover .ws-check,
+.ws-card:focus-within .ws-check,
+.ws-card[data-selecting] .ws-check,
+.ws-mark .ws-check:checked {
+  opacity: 1;
+  pointer-events: auto;
+}
+.ws-mark > :not(.ws-check) {
+  transition: opacity 0.08s ease;
+}
+.ws-card:hover .ws-mark > :not(.ws-check),
+.ws-card:focus-within .ws-mark > :not(.ws-check),
+.ws-card[data-selecting] .ws-mark > :not(.ws-check) {
+  opacity: 0;
+}
+/* The List's row: the checkbox sits in the row's own left padding, so no
+   column moves when it shows. */
+.tasks-row .tasks-row-check {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  transform: translateY(-50%);
+  z-index: 3;
+  opacity: 0;
+  pointer-events: none;
+}
+.tasks-row:hover > .tasks-row-check,
+.tasks-row:focus-within > .tasks-row-check,
+[data-selecting] .tasks-row .tasks-row-check,
+.tasks-row .tasks-row-check:checked {
+  opacity: 1;
+  pointer-events: auto;
+}
+.tasks-bulk-bar {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 12px;
+}
+.tasks-bulk-count {
+  margin-right: auto;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.tasks-bulk-btn {
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  cursor: pointer;
+}
+.tasks-bulk-btn:hover,
+.tasks-bulk-btn:focus-visible {
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+.tasks-bulk-archive {
+  color: var(--accent-soft);
+  font-weight: 600;
+}

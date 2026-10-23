@@ -157,7 +157,7 @@ export function searchTasks(tasks: readonly Task[], query: string): Task[] {
   return [...open, ...closed];
 }
 
-export type WorkspaceAction = "next" | "prev" | "open" | "close" | "new" | "search" | "needs" | "escape";
+export type WorkspaceAction = "next" | "prev" | "open" | "close" | "check" | "new" | "search" | "needs" | "escape";
 
 export interface KeyLike {
   key: string;
@@ -184,6 +184,8 @@ export function workspaceKeyAction(
       return "open";
     case "x":
       return "close";
+    case " ":
+      return "check";
     case "c":
       return "new";
     case "/":

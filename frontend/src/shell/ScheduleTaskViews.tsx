@@ -23,6 +23,8 @@
 // one page. Those live in styles/schedule.css; everything this file adds (the
 // accordion, the thread rows, the id chips, the unread dot) is in
 // styles/tasks.css.
+import { BulkBar, GroupCheck, RowCheck, useBulkArchive, type BulkSelect } from "@shell/TaskBulk";
+import { selectableTask } from "@shell/task-selection";
 import {
   Fragment,
   memo,
@@ -2229,7 +2231,9 @@ function useStableOpt<A extends unknown[], R>(
 }
 
 export function TaskList({
-  tasks,
+  tasks: tasksIn,
+  bulkSelect = false,
+  selectionResetKey = "",
   home = "",
   stale = false,
   missing,
@@ -2253,6 +2257,11 @@ export function TaskList({
   onNewTaskIn?: (folder: string) => void;
   /** Already filtered, in the SERVER's order. Never re-sorted here. */
   tasks: Task[];
+  /** Draw the checkboxes and the bulk bar (bulk archive). Off for the lent
+   *  lists that are not the Tasks page. */
+  bulkSelect?: boolean;
+  /** Changes when the page's filters or search do: the selection empties. */
+  selectionResetKey?: string;
   /** Cut the list into sections — by day, folder or pull request (the Time /
    *  Project / PR views, tasks-lib.groupRows). null ⇒ the plain List. Rows keep
    *  the List's order inside every section. */
@@ -2340,6 +2349,11 @@ export function TaskList({
   floored?: boolean;
   emptyLabel?: string;
 }) {
+  // Bulk archive: the rows it has hidden are filtered out of `tasks` here, so
+  // every derivation below (order, groups, fold) sees the list as it reads.
+  const bulkH = useBulkArchive({ tasks: tasksIn, selectable: selectableTask, resetKey: selectionResetKey, onReload });
+  const tasks = bulkSelect ? bulkH.tasks : tasksIn;
+  const bulk = bulkSelect ? bulkH.bulk : undefined;
   // Collapsed by default (§8), so the set holds what is OPEN — an empty set is
   // the resting state and needs no seeding from a list that changes on every
   // poll. Seeded from THIS TAB's memory, though: opening a task's chat leaves the
@@ -3126,11 +3140,15 @@ export function TaskList({
         onReadAll={clearAll}
         onUnreadAll={restoreAll}
         onSettleAll={settleAll}
+        bulk={bulk}
       />
   );
 
   return (
     <>
+      {bulk && (
+        <BulkBar count={bulkH.selection.size} onArchive={bulkH.archiveSelected} onClear={bulkH.selection.clear} />
+      )}
       {/* `data-fit` is how many of the row's meta marks have had to go for the
           rows to fit the width the list actually has — measured, never a
           breakpoint (shell/row-fit.ts states the rule and the reason). The
@@ -3139,6 +3157,7 @@ export function TaskList({
       <div
         className={"tasks-list" + (groups ? " is-grouped" : "")}
         ref={listRef}
+        data-selecting={bulk && bulkH.selection.size > 0 ? "1" : undefined}
         {...(peekOn ? { "data-fit": fit.level } : {})}
         // …AND WHAT THE ROWS WOULD NEED IF NOTHING FOLDED, which is what the
         // content is held at once the pane is floored (styles/task-peek.css
@@ -3195,11 +3214,12 @@ export function TaskList({
         groupFrames(groups, rowAt, groupBy, collapsedGroups, onNewTaskIn, (next) => {
           setCollapsedGroups(next);
           writeCollapsedGroups(next);
-        }, expandedGroups, setExpandedGroups)
+        }, expandedGroups, setExpandedGroups, bulk)
       ) : (
         <div className="tasks-list-frame">{rows.map(rowAt)}</div>
       )}
       </div>
+      {bulk && bulkH.node}
     </>
   );
 }
@@ -3395,8 +3415,11 @@ function TaskNode({
   onUnreadAll,
   onSettleAll,
   nodeRef,
+  bulk,
 }: {
   task: Task;
+  /** The bulk-select handle (the Tasks page's List only): draws the checkbox. */
+  bulk?: BulkSelect | undefined;
   home: string;
   /** The List's handle on this row's `.tasks-node`, for the fold's observer.
    *  Absent on a borrowed row. */
@@ -4374,6 +4397,7 @@ function TaskNode({
             that a reader has to pair up. `unread` is the merged count this row is
             DRAWING, so the ring hollows on the row's own press rather than on the
             next poll, and it is the count the tooltip names. */}
+        {bulk && <RowCheck select={bulk} task={task} />}
         {/* THE MARK SLOT: the ring at rest, the Archive button under the pointer,
             in the same box (`.tasks-rowmark`, tasks.css).
 
@@ -6924,6 +6948,17 @@ const ICON_GROUP_LINK = icon(
 /** Rows a project section draws before its "Show N more" row. */
 export const PROJECT_GROUP_ROW_CAP = 10;
 
+/** Every selectable task key under one section, nested sections included. */
+function groupTaskKeys(g: TaskGroup): string[] {
+  const out = new Set<string>();
+  const walk = (x: TaskGroup) => {
+    for (const t of x.rows) if (selectableTask(t)) out.add(t.key);
+    for (const c of x.groups ?? []) walk(c);
+  };
+  walk(g);
+  return [...out];
+}
+
 /** Every task key the sections hold. */
 function groupedKeys(groups: TaskGroup[]): Set<string> {
   const out = new Set<string>();
@@ -6958,6 +6993,7 @@ export function groupFrames(
   setCollapsed: (next: Set<string>) => void,
   expanded: ReadonlySet<string> = new Set(),
   setExpanded: (next: Set<string>) => void = () => {},
+  bulk?: BulkSelect,
 ) {
   const keyOf = (g: TaskGroup) => `${by}:${g.key}`;
   // Every heading at every depth — the PR view nests pull requests under
@@ -7027,6 +7063,10 @@ export function groupFrames(
           {/* Toggle and link travel together at the start; the all-toggle
               sits alone at the end (the head is space-between). */}
           <span className="tasks-group-lead">
+            {/* Select all: every selectable task under this heading, nested
+                sections and rows past the cap included. Beside the fold's
+                button, never inside it. */}
+            {bulk && <GroupCheck select={bulk} keys={groupTaskKeys(g)} name={g.label} />}
             <button
               type="button"
               id={headId}

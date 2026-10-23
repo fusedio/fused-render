@@ -16,6 +16,8 @@ import { peekPrHead, usePrStatuses } from "@platform/lib/prStatus";
 import { navigateUrl } from "@platform/lib/router";
 import { prKey, prRefsOf } from "@platform/lib/task-prs";
 import { WorkspaceSearch } from "@shell/WorkspaceSearch";
+import { selectableTask } from "@shell/task-selection";
+import { BulkBar, GroupCheck, RowCheck, useBulkArchive, type BulkSelect } from "@shell/TaskBulk";
 import { closePeek, openPeek, peekItemProps, PEEK_OPEN_CLASS, usePeekedKey } from "@shell/task-peek-store";
 import { useNow } from "@platform/lib/clock";
 import { IdChip, IdentityChip, PrNumChip, StatusIcon } from "@shell/ScheduleTaskViews";
@@ -163,8 +165,10 @@ function WorkspaceCard({
   now,
   onSelect,
   onOpen,
+  bulk,
 }: {
   task: Task;
+  bulk: BulkSelect;
   selected: boolean;
   peeked: boolean;
   peekOn: boolean;
@@ -207,6 +211,8 @@ function WorkspaceCard({
         "ws-card" + (selected ? " is-selected" : "") + (peeked ? ` ${PEEK_OPEN_CLASS}` : "")
       }
       data-key={task.key}
+      data-checked={bulk.selection.has(task.key) ? "1" : undefined}
+      data-selecting={bulk.selection.size > 0 ? "1" : undefined}
       data-status={task.status}
       data-needs-you={needsYou(task) ? "1" : undefined}
       data-unread={task.unread > 0 ? "1" : undefined}
@@ -218,13 +224,18 @@ function WorkspaceCard({
       }}
     >
       <div className="ws-card-head">
-        <StatusIcon
-          status={taskColumn(task)}
-          failed={ringFailed(task)}
-          unread={task.unread > 0}
-          count={task.unread}
-          background={liveJobRow(task)}
-        />
+        {/* The checkbox takes the ring's place on hover, focus or while anything
+            is selected (task-workspace.css), like Gmail. */}
+        <span className="ws-mark">
+          <StatusIcon
+            status={taskColumn(task)}
+            failed={ringFailed(task)}
+            unread={task.unread > 0}
+            count={task.unread}
+            background={liveJobRow(task)}
+          />
+          <RowCheck select={bulk} task={task} className="ws-check" />
+        </span>
         <IdChip id={task.task_id} kind="task" />
         <span className={"ws-title" + (task.unread > 0 ? " is-unread" : "")}>{task.title || "(untitled)"}</span>
         {word && (
@@ -297,7 +308,8 @@ function WorkspaceCard({
 }
 
 export function TaskWorkspace({
-  tasks,
+  tasks: tasksIn,
+  resetKey = "",
   allTasks,
   emptyLabel,
   peekOn,
@@ -306,6 +318,8 @@ export function TaskWorkspace({
   home = "",
 }: {
   home?: string;
+  /** Changes when the page's filters or search do: the selection empties. */
+  resetKey?: string;
   /** The page's filtered set (Search and Project still narrow it). */
   tasks: Task[];
   /** Every task, archived included: the palette's corpus. */
@@ -324,6 +338,12 @@ export function TaskWorkspace({
   const [undo, setUndo] = useState<{ key: string; title: string } | null>(null);
   const undoTimer = useRef<number | null>(null);
 
+  const { tasks, selection, archiveSelected, node: bulkNode, bulk } = useBulkArchive({
+    tasks: tasksIn,
+    selectable: selectableTask,
+    resetKey,
+    onReload,
+  });
   const base = useMemo(() => workspaceTasks(tasks).filter((t) => !hidden.has(t.key)), [tasks, hidden]);
   const keys = useMemo(() => base.map((t) => t.key), [base]);
   const { ports, holds, covered, failed } = useRowFacts(keys);
@@ -355,8 +375,8 @@ export function TaskWorkspace({
   const showProject = useMemo(() => spansProjects(rows), [rows]);
 
   // What the key handler reads, kept current without re-binding it.
-  const live = useRef({ rows, groups, collapsed, selected, peekedKey, searching });
-  live.current = { rows, groups, collapsed, selected, peekedKey, searching };
+  const live = useRef({ rows, groups, collapsed, selected, peekedKey, searching, selection, archiveSelected });
+  live.current = { rows, groups, collapsed, selected, peekedKey, searching, selection, archiveSelected };
 
   const toggleGroup = useCallback((key: WorkspaceGroupKey): void => {
     const next = { ...live.current.collapsed, [key]: !groupCollapsed(key, live.current.collapsed) };
@@ -465,8 +485,18 @@ export function TaskWorkspace({
             open(sel);
           }
           return;
+        case "check":
+          // A focused button or link keeps its own space.
+          if (sel && selectableTask(sel) && !/^(BUTTON|A)$/.test((e.target as HTMLElement | null)?.tagName ?? "")) {
+            e.preventDefault();
+            st.selection.toggle(sel.key);
+          }
+          return;
         case "close":
-          if (sel) {
+          if (st.selection.size > 0) {
+            e.preventDefault();
+            st.archiveSelected();
+          } else if (sel) {
             e.preventDefault();
             close(sel);
           }
@@ -524,6 +554,7 @@ export function TaskWorkspace({
 
   return (
     <div className="ws-root" data-workspace>
+      <BulkBar count={selection.size} onArchive={archiveSelected} onClear={selection.clear} />
       {groups.length === 0 ? (
         <p className="schedule-tv-empty">{emptyLabel}</p>
       ) : (
@@ -537,6 +568,7 @@ export function TaskWorkspace({
                 data-first={gi === 0 ? "1" : undefined}
                 data-collapsed={g.folded ? "1" : "0"}
               >
+                <GroupCheck select={bulk} keys={g.tasks.filter(selectableTask).map((t) => t.key)} name={g.label} />
                 <button type="button" className="tasks-group-toggle ws-group-toggle" aria-expanded={!g.folded} onClick={() => toggleGroup(g.key)}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                     <path d="m9 18 6-6-6-6" />
@@ -563,6 +595,7 @@ export function TaskWorkspace({
                     now={now}
                     onSelect={() => setSelected(t.key)}
                     onOpen={() => open(t)}
+                    bulk={bulk}
                   />
                 );
               })}
@@ -589,6 +622,7 @@ export function TaskWorkspace({
           </button>
         </div>
       )}
+      {bulkNode}
       {searching && (
         <WorkspaceSearch
           tasks={allTasks}
