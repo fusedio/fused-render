@@ -101,8 +101,8 @@ def _source_of_resolved(path: str | None) -> str | None:
     under USER_TEMPLATES_DIR, else "core". None for an unresolved name."""
     if not path:
         return None
-    p = os.path.abspath(path)
-    user_root = os.path.abspath(_server_templates.USER_TEMPLATES_DIR)
+    p = os.path.normcase(os.path.abspath(path))
+    user_root = os.path.normcase(os.path.abspath(_server_templates.USER_TEMPLATES_DIR))
     if p == user_root or p.startswith(user_root + os.sep):
         return "user"
     return "core"

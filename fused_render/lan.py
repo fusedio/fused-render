@@ -179,8 +179,8 @@ def allowed_roots() -> list[str]:
 
 def _inside_root(path: str) -> bool:
     try:
-        real = os.path.realpath(os.path.abspath(os.path.expanduser(path)))
-        roots = [os.path.realpath(r) for r in allowed_roots()]
+        real = os.path.normcase(os.path.realpath(os.path.abspath(os.path.expanduser(path))))
+        roots = [os.path.normcase(os.path.realpath(r)) for r in allowed_roots()]
     except (OSError, ValueError):
         return False
     return any(real == root or real.startswith(root + os.sep) for root in roots)
@@ -935,7 +935,8 @@ def lan_apps() -> list[dict]:
             "tag": app.get("tag"),
             "path": folder,
             # A linked app lives outside the workspace (registered_apps).
-            "linked": not folder.startswith(os.path.realpath(fused_dir()) + os.sep),
+            "linked": not os.path.normcase(folder).startswith(
+                os.path.normcase(os.path.realpath(fused_dir())) + os.sep),
             "recency": recency,
             "url": "/render?" + urlencode({"path": entry_path}),
             # The author's preview.png (app_dict resolves it), full-bleed on the

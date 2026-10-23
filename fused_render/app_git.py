@@ -171,7 +171,7 @@ def app_dir_for(path: str) -> str | None:
     workspace root, a tag dir, or anything outside the workspace."""
     root = fused_dir()
     ap = os.path.abspath(path)
-    if not ap.startswith(root + os.sep):
+    if not os.path.normcase(ap).startswith(os.path.normcase(root) + os.sep):
         return None
     rel = os.path.relpath(ap, root)
     parts = rel.split(os.sep)

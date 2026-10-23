@@ -8139,7 +8139,7 @@ def _codex_rollout_files(session_id: str) -> list[str]:
         for hit in glob.glob(pattern, recursive=True):
             resolved = os.path.realpath(hit)
             leaf = os.path.basename(resolved)
-            if (resolved.startswith(base_real + os.sep)
+            if (os.path.normcase(resolved).startswith(os.path.normcase(base_real) + os.sep)
                     and leaf.startswith("rollout-") and leaf.endswith(suffix)
                     and os.path.isfile(resolved) and resolved not in out):
                 out.append(resolved)

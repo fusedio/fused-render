@@ -302,8 +302,8 @@ def _within_page_dir(page_dir: str, target: str) -> bool:
     would follow it into the bundle. Compare resolved real paths so such a symlink is
     caught before it is bundled.
     """
-    root = os.path.realpath(page_dir)
-    real = os.path.realpath(target)
+    root = os.path.normcase(os.path.realpath(page_dir))
+    real = os.path.normcase(os.path.realpath(target))
     return real == root or real.startswith(root + os.sep)
 
 

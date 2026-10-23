@@ -97,7 +97,7 @@ def _under(path: str, root: str) -> str | None:
     p, r = _norm(path), _norm(root)
     if p == r:
         return ""
-    if p.startswith(r.rstrip(os.sep) + os.sep):
+    if os.path.normcase(p).startswith(os.path.normcase(r).rstrip(os.sep) + os.sep):
         return os.path.abspath(path)[len(os.path.abspath(root).rstrip(os.sep)) + 1:]
     return None
 

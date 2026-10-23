@@ -70,8 +70,8 @@ def _in_or_over_workspace(folder: str) -> bool:
     the two callers that have already passed the guard run as well."""
     from fused_render.shell.seed import fused_dir
 
-    root = os.path.abspath(fused_dir())
-    folder = os.path.abspath(folder)
+    root = os.path.normcase(os.path.abspath(fused_dir()))
+    folder = os.path.normcase(os.path.abspath(folder))
     return (
         root == folder
         or root.startswith(folder + os.sep)
@@ -94,8 +94,8 @@ def _resolves_into_workspace(folder: str) -> bool:
     from fused_render.shell.seed import fused_dir
 
     try:
-        root = os.path.realpath(fused_dir())
-        folder = os.path.realpath(folder)
+        root = os.path.normcase(os.path.realpath(fused_dir()))
+        folder = os.path.normcase(os.path.realpath(folder))
     except OSError:
         return True
     return (
@@ -111,8 +111,8 @@ def _in_appfiles_cache(folder: str) -> bool:
     `read_entries` runs this per entry with no MountGuard in front."""
     from fused_render.appfile import appfiles_root
 
-    root = os.path.abspath(appfiles_root())
-    folder = os.path.abspath(folder)
+    root = os.path.normcase(os.path.abspath(appfiles_root()))
+    folder = os.path.normcase(os.path.abspath(folder))
     return root == folder or folder.startswith(root + os.sep)
 
 

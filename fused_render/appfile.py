@@ -788,7 +788,7 @@ def _workspace_spelling(path: str) -> str:
     rp = os.path.realpath(path)
     if rp == real_root:
         return root
-    if rp.startswith(real_root.rstrip(os.sep) + os.sep):
+    if os.path.normcase(rp).startswith(os.path.normcase(real_root).rstrip(os.sep) + os.sep):
         return os.path.join(root, os.path.relpath(rp, real_root))
     return path
 
@@ -1132,7 +1132,8 @@ def _is_download(fused_path: str) -> bool:
 
     try:
         root = os.path.realpath(os.path.join(storage.home_dir(), "downloads"))
-        return os.path.realpath(fused_path).startswith(root + os.sep)
+        return os.path.normcase(os.path.realpath(fused_path)).startswith(
+            os.path.normcase(root) + os.sep)
     except Exception:  # noqa: BLE001 — a display hint never fails the probe
         return False
 

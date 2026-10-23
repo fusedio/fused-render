@@ -281,6 +281,15 @@ _GIT_ENV = {
 }
 
 
+def _is_descendant_or_self(src: str, dst: str) -> bool:
+    # Is `dst` the same path as `src` or inside it? Compared in normcase form so
+    # a case-folding filesystem (Windows) cannot be fooled by `C:\\A` vs `c:\\a\\b`;
+    # normcase is the identity on POSIX.
+    s = os.path.normcase(src)
+    d = os.path.normcase(dst)
+    return d == s or d.startswith(s + os.sep)
+
+
 def _run_git(args: list[str], cwd: str):
     """Run git with an argv list (never a shell), no stdin, and a timeout.
     Returns the CompletedProcess, or None when git is missing/hung.
@@ -1122,7 +1131,7 @@ def _fs_rename(body: dict, x_fused: str | None, *, settle: bool = True):
         # (or a child) would build the destination inside the source.
         s = os.path.abspath(src)
         d = os.path.abspath(dst)
-        if d == s or d.startswith(s + os.sep):
+        if _is_descendant_or_self(s, d):
             return _error("cannot move a directory into itself or a descendant")
 
     dst_exists = os.path.exists(dst)
@@ -1245,7 +1254,7 @@ def _fs_copy(body: dict, x_fused: str | None):
         # slashes; the sep suffix stops /a/b matching /a/bc.
         s = os.path.abspath(src)
         d = os.path.abspath(dst)
-        if d == s or d.startswith(s + os.sep):
+        if _is_descendant_or_self(s, d):
             return _error("cannot copy a directory into itself or a descendant")
 
     dst_exists = os.path.exists(dst)

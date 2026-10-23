@@ -76,6 +76,6 @@ def sessions_roots(claude_sessions_dir: str) -> list[tuple[str, str]]:
 def is_under(path: str, root: str) -> bool:
     """Whether `path` resolves to somewhere inside `root` (realpath on both,
     so a project dir that is itself a symlink still counts as inside)."""
-    real = os.path.realpath(path)
-    r = os.path.realpath(root)
+    real = os.path.normcase(os.path.realpath(path))
+    r = os.path.normcase(os.path.realpath(root))
     return real == r or real.startswith(r + os.sep)
