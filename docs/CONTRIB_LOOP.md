@@ -1002,3 +1002,219 @@ folder's state with `useAppContrib` themselves. It is the one shell module
 the app layer may import (`scripts/check-boundaries.mjs`,
 `SHELL_OPEN_TO_APPS`). With the preview off it says where to turn it on.
 
+
+## 17. v3 git model for `github` copies (2026-10-23) — AUTHORITATIVE
+
+Supersedes §16.3, §16.7's github half, the github parts of §16.1/§16.5/§16.9
+and every v2 mechanism named in §17.7. Own copies (§16.7 ownsync), remix,
+inbox review, Merge with Claude's resolver and the Propose dialog keep their
+v2 shape. Design page: claude.ai/artifact/TWMuMa5BeQFzgzVpmntiCV.
+
+### 17.0 Why
+
+v2 keeps a contributor's `main` as the one ref that the author's fetched
+history, the contributor's commits and fused's bookkeeping merges all land
+on. fused then has to *infer* the folder's state (12 facts, an 11-row table)
+and every other git verb (the Git panel's pull/reset, ↑N, GitHub's badge)
+lies or refuses on it once a bring-in merge exists. v3 gives the contributor
+one branch of their own and makes `main` a fetch-only mirror.
+
+### 17.1 Invariants (every workstream; every test asserts I3 and I4 at
+every step it touches)
+
+- **I1** Nothing of the contributor's is lost silently. Only two moves drop a
+  commit (settle, discard); both pin the old tip under
+  `refs/fused/backup/<ms>-<why>` first and write an Activity line with Undo.
+- **I2** The author's history is written only by the author's explicit act.
+  The pushurl guard stays; fused pushes a `github` copy only to the fork, and
+  the author's branch only from `push_to_main` (collaborator, by URL).
+- **I3** `refs/heads/main` (the record's `branch`) on a `github` copy equals
+  `refs/remotes/origin/<branch>` after every sync. It is never checked out
+  and is written only by the fetch (a ref update, never a worktree move).
+- **I4** HEAD on a `github` copy is `refs/heads/fused/mine` (`HOME_BRANCH`).
+  Anything else is the `other-branch` state ("a different version").
+- **I5** Every state is recoverable from git and GitHub alone. The record
+  holds caches: `repo`, `branch`, `proposal` (number, cache), `activity`,
+  `can_push`, `copy_id`, `last_head`, `owner_checked`, `hold` (own only).
+
+### 17.2 Facts and states (`engine.status`, `actions.decide`)
+
+Three facts, all local: `ahead = rev-list --count --no-merges main..HEAD`
+(> 0 means the branch carries commits of Bob's that main does not; bring-in
+merge commits never count), `dirty = replay.tracked_edits`,
+`pr = proposal.cache.state` ∈ {None, open, merged, closed}. Derived at
+status time, cached on `(head, main, pr)`: `conflict` =
+`merge_tree(HEAD, main)` not clean (only when `main` ⊄ HEAD); `blocked` =
+`clobber_paths(HEAD, main)` minus tracked edits.
+
+| state | when | automatic move (sync) | buttons (actions.py) |
+|---|---|---|---|
+| `following` | HEAD ⊇ main or (not ahead, not dirty), pr None | `merge --ff-only main` when main ⊄ HEAD | Bring in (when behind), Check |
+| `changes` | ahead or dirty, pr None/closed-seen | bring-in merge when clean (17.3) | Propose · Bring in (when behind) · Discard · Remix · Update <who>'s app directly (collaborator) |
+| `proposed` | pr open | as `changes` | Update proposal · Withdraw · Bring in · Discard(+withdraw) |
+| `merged` | pr merged, not `settled_seen` | ff or bring-in merge, then settle when tree(HEAD)==tree(main) (17.3). A merge-commit accept is NOT a fast-forward of Bob's own bring-in merge (same parents, different commit): settle is the normal path on almost every accept. `proposal.landed_at` is set ONCE, in the same store update that writes the Activity line "<who> merged your change. You're on <who>'s latest version." · Undo; the state stays `merged` until `settled_seen` | Propose (if ahead after settle) · Check |
+| `declined` | pr closed, not `settled_seen` | nothing | Keep working · Discard · Propose again |
+| `needs-merge` | `conflict` | nothing | Merge with Claude · Match <who> (danger, confirm) |
+| `blocked` | `blocked` non-empty | nothing | Move my file aside and update |
+| `other-branch` | HEAD ≠ fused/mine | fetch only | Go back to the usual version |
+| `merging` | merge job running/ready | nothing (job holds syncs) | the merge review |
+
+Deleted states/fields: the Keep mine button, the `needs_merge` record,
+`merged_in_tip`, `taken_back`. `skip_tip` STAYS as the **undo hold**: Undo of
+an automatic ff / bring-in / settle sets it to the mirror tip; automatic moves
+skip while the mirror still equals it (`kept_mine` True, panel: "You undid
+that; <who>'s latest is waiting." + Bring in); any button clears it, and a new
+author tip clears it by itself. `status()` keeps `merged_in_tip` (= pr
+merged), `taken_back` (False), `needs_merge`/`needs_merge_purpose`/
+`needs_merge_files` (from `conflict`) for one release so `contrib.ts` and
+`actions.py` need no coordinated cut.
+
+### 17.3 Moves — the exact git (`engine.py`, `replay.py`)
+
+Every write is one git command with git's own guard; fused has no
+check-then-act window of its own. All under `replay.slot()`.
+
+| move | command | guard |
+|---|---|---|
+| fetch | `fetch --no-tags <url> +refs/heads/<b>:refs/remotes/origin/<b>` (follow.fetch, unchanged) then `update-ref refs/heads/<b> origin/<b> <old>` only when `old` ⊆ `origin/<b>`; a non-ff (author rewound) pins `old` under `refs/fused/backup/<ms>-rewound`, sets the ref anyway, Activity "alice rewound her app". When HEAD IS `<b>` (other-branch): only `origin/<b>` is updated, the local ref is left alone (a checked-out branch is never moved under its worktree); Go back = `switch fused/mine`, creating it from `<b>`'s CURRENT tip when absent so commits made on main are carried | ref CAS; no worktree move |
+| ff | `merge --ff-only main` (HEAD == fused/mine, main ⊄ HEAD, HEAD ⊆ main) | git refuses on dirty overlap / untracked collision → `blocked` (clobber) or deferred |
+| bring in | `replay.merge_tree(HEAD, main)` — with the PR head as the merge base (`base=`) when the proposal is merged and the PR head ⊆ HEAD, so a squash/rebase accept's content counts as common ground and Bob's sent commit never conflicts with the author's later edits of the same lines; result tree == tree(main) → settle instead — clean → `commit-tree <tree> -p HEAD -p main` ("Bring in <who>'s latest", Bob's identity) → `replay.land_ff_locked(root, new)` = `merge --ff-only <new>` | ff needs HEAD == new^1 (CAS); dirty overlap → commit "Your edits" first (row 6 kept, on the branch) |
+| settle | after a bring-in with pr merged: when tree(HEAD) == tree(main) and clean: `replay.settle_locked(root)` = pin HEAD, `update-ref refs/heads/fused/mine main HEAD` (CAS), `reset --hard` (same tree: no file changes) | CAS; requires clean; skipped otherwise (cosmetic) |
+| discard | pin HEAD (+wip), `reset --hard main`, remove backed-up untracked files; `withdraw` closes the PR | button + confirm |
+| match | same as discard with text "Switched to <who>'s version. Your version is saved." (replaces use_theirs) | button + confirm |
+| keep working | `proposal = None` after a declined/withdrawn PR; nothing moves | button |
+| move aside | as v2 `move_aside`, then ff/bring-in | button |
+| go back | `switch fused/mine` when clean (create from main if missing) | button |
+| restore | pin current, `reset --hard <backup>` (same branch) / re-place aside files | button |
+| push_to_main | bring-in must be clean and HEAD ⊇ main; `gh.push` HEAD → author's `<b>` by URL, no force; sync then ff's main and settles | button + confirm |
+
+Every automatic worktree move (ff, bring-in, settle) runs only when Claude
+is idle (P8) and `git_upstream.auto_sync_enabled()`; a button runs them with
+auto-sync off. Automatic bring-in additionally requires: no merge job open, no
+dirty tracked edit on a path `merge-base..main` changes (else "Your edits"
+commit, as v2 row 6), merge-tree clean. A conflict records nothing: the
+next status derives `needs-merge` from the same merge-tree.
+
+`replay.py` keeps `land_locked`, `undo_race_locked`, `reset_hard_locked`,
+`fused_aside`, `pick`, `backup_locked` — ownsync still uses them. Adds
+`land_ff_locked(root, new_tip) -> (why|None, None)` and
+`settle_locked(root, *, why) -> (ok, backup)`. `fused_aside` wraps the ff /
+settle / discard worktree moves as it wraps v2's (Q4: refuse-on-install is a
+later PR).
+
+### 17.4 Merge with Claude (`merge_job.py`)
+
+Purposes: `update` (theirs = main, into fused/mine), `proposal` (theirs =
+PR head, into fused/mine), `own-sync`, `original`. `return` deleted. `ours`
+is HEAD at job start. `accept` lands with `replay.land_ff_locked(root,
+new_tip)`; a HEAD that moved since means "re-run" (job `failed` with
+"Your copy changed meanwhile; run it again"), never a reset. `choose`
+(per-file Keep mine / Use theirs) unchanged. `engine.merge_landed` only
+writes the Activity line and notes the head.
+
+### 17.5 Proposals (`proposals.py`)
+
+- Record: `proposal = {number, repo, head_branch, head_repo, sent_at, cache,
+  settled_seen, asked_update, comment…}`. Deleted: `sent`, `checked_tip`,
+  `returned_at`, the credit rewrite (`credit`, `_credit_once_locked`,
+  `credit_once`), `_sent_shas`, `count_unproposed(sent)`.
+- `unproposed(root) = rev-list --count --first-parent --no-merges <pr-head>..HEAD`
+  (+1 when dirty) — first-parent and no-merges so the author's commits that
+  reached HEAD through a bring-in merge never count as Bob's;
+  `pr-head` = `refs/fused/pr-head` after Update's fetch, else the cache's
+  `head_sha` when it is a local object, else `main`.
+- Send: refuse while a PR is open; commit dirty tracked + ticked untracked
+  on fused/mine; ensure_fork; push HEAD → `fused-<slug>-<ts>-<4hex>`; open
+  PR; record. No rewrite of history ever.
+- Update: as §16.5 minus `sent`; the PR-head merge lands via
+  `land_ff_locked`.
+- Withdraw / refresh / `settle_direct`: as v2. `returned_at` is renamed
+  `landed_at`: the engine's once-stamp (17.2 `merged` row); `settled_seen`
+  is the page's acknowledgement (`proposals.acknowledge`).
+- `head_differs`: the PR head is not an ancestor of HEAD (maintainer edits
+  or GitHub's Update branch that HEAD lacks) OR `unproposed > 0`. A bring-in
+  merge of the author's latest alone never offers Update.
+- Remix (`remix.py`) on a v3 copy: publish pushes HEAD to the record's
+  `branch` (never the checked-out name); when the copy turns `own` the
+  checkout becomes `<b>` (`branch -f <b> HEAD`, `switch <b>`, `branch -D
+  fused/mine`, upstream origin/<b>, guard removed). No credit rewrite.
+
+### 17.6 Install, migration, guards (`classify.py`, `appfile_git.py`,
+`store.py`, `git_upstream.py`)
+
+- `store.RECORD_V = 3`. `new_record` drops `root_commit`, `needs_merge`,
+  `skip_tip`; `_view` fills them as None for old readers for one release.
+  Binding: a record is bound to `(origin url == repo url)`; `root_commit`
+  checks deleted (`_bind` by URL only).
+- `classify.HOME_BRANCH = "fused/mine"`. `settle_locked` (every sync, slot
+  held) runs `migrate_v3` once per record without `v: 3`: if HEAD is a
+  branch other than HOME_BRANCH and HOME_BRANCH is absent → `branch
+  fused/mine HEAD`, `switch fused/mine` (same commit: no file change, dirty
+  carried); `update-ref refs/heads/<b> origin/<b>` (old tip pinned);
+  `branch.fused/mine.remote=origin`, `.merge=refs/heads/<b>`; delete
+  `refs/fused/follow|base|proposed|origin-seen`; proposal: map `pushed_head
+  or proposed_head or sent` away (drop), keep number/cache; `needs_merge`,
+  `skip_tip` dropped; stamp `v: 3`; Activity "Moved your changes to their
+  own branch" only when HEAD was ahead of origin.
+- `appfile_git._place` / `record_install` / `claim_marked`: right after the
+  clone, before any hook or sync: `switch -c fused/mine`, upstream config as
+  above, push guard, identity.
+- `git_upstream`: for a `github` copy the engine's `state` dict reports
+  `on_default = (HEAD == fused/mine)`, `branch = fused/mine`,
+  `default_branch = <b>`, `ahead/behind = rev-list --left-right --count
+  HEAD...main` (I3 makes `main` == origin). `_with_off_default_state` uses the
+  same rule. `_current_branch` / `_operation_in_flight` unchanged.
+- The explorer's ↑N keeps reading `ahead` from that state (`--left-right`
+  counts merges too for one release; the Source panel's `ahead` is
+  `--no-merges`): on a github copy it is "commits of yours not in the
+  author's version".
+- `appfile_git._update_clone` (reinstall from a link): lands the link's
+  commit on `fused/mine` via `merge --ff-only` AND moves the `<b>` ref with
+  `update-ref` (I3) — WS-1.
+
+### 17.7 Deleted from v2
+
+`engine.decide`/`Facts`/`_facts`/`_execute`/`_return`/`_return_text`/
+`_taken_back`/`_merged_in`/`_merge_in_tip`/`_refresh_if_moved`/`keep_mine`/
+`use_theirs`/`_hard_to_tip`/`_AGAIN`/`_fail`/`_fail_words`; the flag gates
+inside engine (`sources_on`/`changes_on` in behaviour — §16.12's "flags-off
+form of a stuck row" is gone: with the switch off the engine still ff's and
+brings in cleanly; a blocked/conflict state shows the same sentence through
+the git_upstream failure row as today, buttons appear with the switch);
+`replay.pick` callers in engine (ownsync keeps its own); `proposals.credit*`;
+`store` fields above (not `skip_tip`); `classify` `root_commit` binding; `actions` ids
+`keep-mine`, `use-theirs` (→ `match`), new id `keep-working`;
+`merge_job` purpose `return`; `CHOICE_PURPOSES["github"] = ("update",
+"proposal")`.
+
+### 17.8 One guard module (`templates/shared/contrib_guard.py`)
+
+stdlib-only, imported by path (the adding-a-shared-template-utility skill):
+`NO_PUSH_URL`, `HOME_BRANCH`, `GITHUB_REPO` regex, `guarded_who(root) ->
+(who, unknown)|None`, `app_page_on(home_dir) -> bool`, `push_blocked(root)`,
+`pull_blocked(root)`, `reset_blocked(root)`. Call sites: `templates/git/ops.py`,
+`templates/git/log.py`, `contrib/classify.py` (the three copies deleted).
+Git panel on a github copy: Get latest = plain `pull --ff-only` (works
+whenever `ahead == 0`); with `ahead > 0` and behind, the button reads
+"Bring in <who>'s latest" and posts `/api/git-upstream get-latest`
+(engine.bring_in); Push refused as today; reset-to-commit allowed on
+fused/mine (it is Bob's branch), refused when HEAD is `main`. `ops.py:_pull`
+refuses a guarded copy only when `ahead > 0` (the JS picks pull vs
+get-latest from `repo.ahead`); with `ahead == 0` the plain pull runs.
+
+### 17.9 Tests
+
+Unit tests per module rewritten to v3 (engine/store/classify → WS-1;
+proposals/inbox/merge_job → WS-2; actions/router/git_ops/guard → WS-3).
+`test_contrib_acceptance.py`, `test_contrib_permutations.py`,
+`test_contrib_git_panel.py` are the spec and get a shared `invariants(m)`
+helper asserting I3 and I4, called at every step. No test monkeypatches
+`flags._raw`/`flags.effective`: the world writes `prefs.json`.
+
+### 17.10 Decisions (Q1–Q7 of the design page)
+
+Q1 `fused/mine`, fork branch minted at Propose. Q2 Switch card / Doctor / ↑N
+learn `HOME_BRANCH` for github copies. Q3 automatic bring-in when clean and
+Claude idle, Activity + Undo. Q4 keep `fused_aside` in this PR. Q5 silent
+migration with one Activity line. Q6 stacked PR on #1698's branch. Q7 accept
+the squash commit-list noise; no replay anywhere.
