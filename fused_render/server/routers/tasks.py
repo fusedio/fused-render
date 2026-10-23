@@ -122,6 +122,7 @@ import json
 import logging
 import math
 import os
+import posixpath
 import re
 import shlex
 import shutil
@@ -603,7 +604,7 @@ def _add_worktree(rec: dict, path: str, cwd: str = "") -> None:
         if not cwd:
             return
         path = os.path.join(cwd, path)
-    path = os.path.normpath(path.replace("\\", "/"))
+    path = posixpath.normpath(path.replace("\\", "/"))
     head, _, name = path.rpartition("/")
     if not name or not (head + "/").endswith(_MANAGED_WT):
         return

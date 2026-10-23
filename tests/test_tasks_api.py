@@ -6202,3 +6202,14 @@ def test_title_candidate_wants_a_title_after_the_scan_count_resets(tmp_path):
     assert len(jobs) == 1 and jobs[0]["prompts"] == 1
     # Equal count is not a reset: still waits for three more prompts.
     assert _title_job(task, _title_rec(count=12), stored) == []
+
+
+def test_add_worktree_backslash_path_survives_ntpath_normpath(monkeypatch):
+    # On Windows os.path is ntpath, whose normpath turns "/" back into "\";
+    # the managed-folder check splits on "/", so the code must use posixpath.
+    import ntpath
+
+    monkeypatch.setattr(tasks_mod.os, "path", ntpath)
+    rec: dict = {}
+    tasks_mod._add_worktree(rec, "C:\\repo\\.claude\\worktrees\\feat")
+    assert rec["worktrees"] == ["C:/repo/.claude/worktrees/feat"]
