@@ -2,7 +2,15 @@
 // told about what was kept, and why, in words: a silent keep is a leaked folder.
 import { describe, expect, test } from "bun:test";
 import type { TeardownKept, TeardownReport } from "@platform/lib/api";
-import { batchKeptNotice, keptWorktreeNotice, keptReasonText } from "@shell/teardown-notice";
+import {
+  batchKeptNotice,
+  beginArchiveBatch,
+  closedToastText,
+  keptReasonText,
+  keptWorktreeNotice,
+  routeArchiveReport,
+  teardownSummary,
+} from "@shell/teardown-notice";
 
 const kept = (over: Partial<TeardownKept> = {}): TeardownKept => ({
   path: "/r/.claude/worktrees/feat-x",
@@ -67,5 +75,44 @@ describe("batchKeptNotice", () => {
   test("nothing kept is no notice; one kept is the single notice", () => {
     expect(batchKeptNotice([{ key: "a", report: report([]) }, { key: "b", report: undefined }])).toBeNull();
     expect(batchKeptNotice([{ key: "a", report: report([kept()]) }])?.title).toBe("Kept worktree feat-x");
+  });
+});
+
+describe("archive batches", () => {
+  test("two overlapping batches each keep their own reports and keys", () => {
+    const a = beginArchiveBatch(["a1", "a2"]);
+    const b = beginArchiveBatch(["b1"]);
+    expect(routeArchiveReport("a1", report([kept({ path: "/r/.claude/worktrees/A" })]))).toBe(true);
+    expect(routeArchiveReport("b1", report([kept({ path: "/r/.claude/worktrees/B" })]))).toBe(true);
+    expect(routeArchiveReport("a2", report([]))).toBe(true);
+    const nb = b.end();
+    expect(nb!.byKey).toEqual([{ key: "b1", paths: ["/r/.claude/worktrees/B"] }]);
+    // b ending did not close a: its report still lands in a.
+    expect(routeArchiveReport("a2", report([kept({ path: "/r/.claude/worktrees/A2" })]))).toBe(true);
+    const na = a.end();
+    expect(na!.byKey.map((x) => x.key)).toEqual(["a1", "a2"]);
+  });
+
+  test("a single archive during a batch is not swallowed by it", () => {
+    const a = beginArchiveBatch(["a1"]);
+    expect(routeArchiveReport("lone", report([kept()]))).toBe(false);
+    expect(routeArchiveReport("a1", report([]))).toBe(true);
+    expect(a.end()).toBeNull();
+    expect(routeArchiveReport("a1", report([]))).toBe(false);
+  });
+});
+
+describe("closedToastText", () => {
+  test("says what was stopped and removed, and what Undo cannot do", () => {
+    const r = { ...report([]), stopped: 1, killed: [5], removed: ["/x"] };
+    expect(teardownSummary([r])).toBe("stopped 2 processes, removed 1 worktree");
+    expect(closedToastText("Closed T123", [r])).toBe(
+      "Closed T123 \u2014 stopped 2 processes, removed 1 worktree; Undo won't restart them",
+    );
+  });
+  test("sums a bulk archive, and stays plain when nothing was torn down", () => {
+    const one = { ...report([]), stopped: 1 };
+    expect(teardownSummary([one, one, undefined])).toBe("stopped 2 processes");
+    expect(closedToastText("Archived 2 tasks", [report([]), undefined])).toBe("Archived 2 tasks");
   });
 });

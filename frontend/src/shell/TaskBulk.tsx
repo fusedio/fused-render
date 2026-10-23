@@ -71,7 +71,7 @@ export function useBulkArchive({
       if (keys.length === 0) return;
       setHidden((h) => new Set([...h, ...keys]));
       selection.clear();
-      const batch = beginArchiveBatch();
+      const batch = beginArchiveBatch(keys);
       const results = await runPool(keys, BULK_CONCURRENCY, (k) => archiveTask(k));
       batch.end();
       const failed = results.filter((r) => !r.ok).map((r) => r.item);

@@ -24,6 +24,7 @@ export function keptReasonText(k: TeardownKept): string {
     else if (r === "unknown") out.push("could not read its git state");
     else if (r === "not-managed") out.push("not made by Fused Render");
     else if (r === "remove-failed") out.push("git would not remove it");
+    else if (r === "in use") out.push("another task or a live session is using it");
   }
   return out.join(", ");
 }
@@ -82,37 +83,82 @@ export function batchKeptNotice(entries: { key: string; report: TeardownReport |
   };
 }
 
-// While a bulk archive runs, the listener below collects instead of speaking,
-// so N archives raise one notice (`beginArchiveBatch().end()`), not N.
-let batch: { key: string; report: TeardownReport | undefined }[] | null = null;
+/** What an archive actually did, for the Undo toast: "stopped 2 processes,
+ *  removed 1 worktree", or "" when it did neither. Undo only un-files the task,
+ *  so the toast says out loud what it cannot bring back. */
+export function teardownSummary(reports: readonly (TeardownReport | undefined)[]): string {
+  let procs = 0;
+  let removed = 0;
+  for (const r of reports) {
+    if (!r) continue;
+    procs += (r.stopped ?? 0) + (r.killed?.length ?? 0);
+    removed += r.removed?.length ?? 0;
+  }
+  const parts: string[] = [];
+  if (procs > 0) parts.push(`stopped ${plural(procs, "process", "processes")}`);
+  if (removed > 0) parts.push(`removed ${plural(removed, "worktree", "worktrees")}`);
+  return parts.join(", ");
+}
 
-/** Start collecting kept-worktree reports; `end()` raises the one notice. */
-export function beginArchiveBatch(): { end: () => void } {
-  const mine: { key: string; report: TeardownReport | undefined }[] = [];
-  batch = mine;
+/** The toast line: `label` alone when nothing was torn down, else the label, what
+ *  went, and the Undo caveat. */
+export function closedToastText(label: string, reports: readonly (TeardownReport | undefined)[]): string {
+  const did = teardownSummary(reports);
+  return did ? `${label} \u2014 ${did}; Undo won't restart them` : label;
+}
+
+// While a batch (a bulk archive) runs, its keys' reports are collected by the
+// batch instead of spoken, so N archives raise one notice. Each batch owns its
+// key set: two overlapping batches never swallow each other's reports, and an
+// archive of a key in NO batch is a single archive and speaks for itself.
+interface Batch {
+  keys: Set<string>;
+  entries: { key: string; report: TeardownReport | undefined }[];
+}
+const batches = new Set<Batch>();
+
+/** Route one archive's report: true when a batch holding `key` collected it. */
+export function routeArchiveReport(key: string, report: TeardownReport | undefined): boolean {
+  for (const b of batches) {
+    if (b.keys.has(key)) {
+      b.entries.push({ key, report });
+      return true;
+    }
+  }
+  return false;
+}
+
+function removeAnyway(byKey: { key: string; paths: string[] }[], noun: string): void {
+  void Promise.all(byKey.map((b) => removeTaskWorktrees(b.key, b.paths)))
+    .then((rs) => {
+      const left = rs.flatMap((r) => r.kept);
+      if (left.length > 0) {
+        notify({ title: "Could not remove", detail: keptReasonText(left[0]), tone: "error" });
+      }
+    })
+    .catch(() => notify({ title: `Could not remove the ${noun}`, tone: "error" }));
+}
+
+function raise(n: KeptNotice & { byKey: { key: string; paths: string[] }[] }, noun: string): void {
+  notify({
+    title: n.title,
+    detail: n.detail,
+    tier: "attention",
+    action: { label: "Remove anyway", onClick: () => removeAnyway(n.byKey, noun) },
+  });
+}
+
+/** Start collecting kept-worktree reports for `keys`; `end()` raises the one
+ *  notice for THIS batch (and returns it), and its "Remove anyway" targets this batch's keys. */
+export function beginArchiveBatch(keys: readonly string[]): { end: () => BatchKeptNotice | null } {
+  const mine: Batch = { keys: new Set(keys), entries: [] };
+  batches.add(mine);
   return {
     end: () => {
-      if (batch === mine) batch = null;
-      const n = batchKeptNotice(mine);
-      if (!n) return;
-      notify({
-        title: n.title,
-        detail: n.detail,
-        tier: "attention",
-        action: {
-          label: "Remove anyway",
-          onClick: () => {
-            void Promise.all(n.byKey.map((b) => removeTaskWorktrees(b.key, b.paths)))
-              .then((rs) => {
-                const left = rs.flatMap((r) => r.kept);
-                if (left.length > 0) {
-                  notify({ title: "Could not remove", detail: keptReasonText(left[0]), tone: "error" });
-                }
-              })
-              .catch(() => notify({ title: "Could not remove the worktrees", tone: "error" }));
-          },
-        },
-      });
+      batches.delete(mine);
+      const n = batchKeptNotice(mine.entries);
+      if (n) raise(n, "worktrees");
+      return n;
     },
   };
 }
@@ -122,29 +168,9 @@ export function TeardownNotifier(): null {
   useEffect(
     () =>
       onTaskArchived((key, res) => {
-        if (batch) {
-          batch.push({ key, report: res.teardown });
-          return;
-        }
+        if (routeArchiveReport(key, res.teardown)) return;
         const n = keptWorktreeNotice(key, res.teardown);
-        if (!n) return;
-        notify({
-          title: n.title,
-          detail: n.detail,
-          tier: "attention",
-          action: {
-            label: "Remove anyway",
-            onClick: () => {
-              void removeTaskWorktrees(key, n.paths)
-                .then((r) => {
-                  if (r.kept.length > 0) {
-                    notify({ title: "Could not remove", detail: keptReasonText(r.kept[0]), tone: "error" });
-                  }
-                })
-                .catch(() => notify({ title: "Could not remove the worktree", tone: "error" }));
-            },
-          },
-        });
+        if (n) raise({ ...n, byKey: [{ key, paths: n.paths }] }, "worktree");
       }),
     [],
   );
