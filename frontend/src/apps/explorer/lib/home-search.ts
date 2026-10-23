@@ -40,6 +40,7 @@
 // debounce, the pending threshold, the backspace memo — are NOT here: they are
 // shared with the listing's in-folder box, which is now the same kind of box,
 // and they live in platform/lib/instant-search.
+import { canonFsPath } from "@platform/lib/path-url";
 import type { IndexRankResult, RankReason } from "@platform/lib/api";
 import { globMatch, substringMatch } from "@platform/lib/fuzzy";
 
@@ -556,7 +557,7 @@ export function pathShortcut(query: string, home: string): string | null {
   let fsPath = q === "~" || q.startsWith("~/") ? home + q.slice(1) : q;
   // Backslashes are only separators in drive-letter paths (same rule as the
   // shell's path codec) — on POSIX "\" is a legal filename char.
-  if (/^[A-Za-z]:[\\/]/.test(fsPath)) fsPath = fsPath.replace(/\\/g, "/");
+  fsPath = canonFsPath(fsPath);
   // Strip a trailing slash but keep roots whole: "/" stays "/", and a drive
   // root keeps its slash (bare "C:" reads as cwd-relative).
   fsPath = fsPath.replace(/\/+$/, "") || "/";

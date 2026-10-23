@@ -48,6 +48,7 @@
 //     (McpDialog) rather than in the sidebar, whose two remaining companions are
 //     tabs now (SideChrome's SideTabs). The dialog's open state lives in
 //     Preview.tsx because Open With → MCP has to reach it too.
+import { canonFsPath } from "@platform/lib/path-url";
 import { useEffect, useState, type ReactNode } from "react";
 import { Plug, Stethoscope } from "lucide-react";
 import { addCurrentApp, getAppEntry } from "@platform/lib/api";
@@ -75,8 +76,7 @@ const LUCIDE = { size: 16, strokeWidth: 1.5, "aria-hidden": true } as const;
 // be rewritten).
 // Exported for the folder listing, which hands this component the server's own
 // entry answer as `fsPath` and has to canonicalise it the same way first.
-export const canonEntryPath = (p: string) =>
-  /^[A-Za-z]:[\\/]/.test(p) ? p.replace(/\\/g, "/") : p;
+export const canonEntryPath = canonFsPath;
 const canon = canonEntryPath;
 
 export interface EntryActionsMenuProps {

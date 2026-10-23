@@ -24,6 +24,7 @@
 //
 // `protocol/history.ts`'s copy already had all three right and was imported by
 // nothing but its own test, while the live rows rendered this one.
+import { canonFsPath } from "@platform/lib/path-url";
 import type { Task } from "@platform/lib/api";
 import { urlForFsPath } from "@platform/lib/router";
 import { schedulerUrl } from "../sched/scheduled";
@@ -35,9 +36,7 @@ export { sessionTitle };
 /** Only a DRIVE-LETTER path has its backslashes rewritten: a backslash is a
  *  legal POSIX filename char and must round-trip (T:18104). */
 export function paneSlashes(path: string): string {
-  return /^[A-Za-z]:[\\/]/.test(path)
-    ? String(path).replace(/\\/g, "/")
-    : String(path);
+  return canonFsPath(path);
 }
 
 /** Trailing slashes off, so a folder that arrives spelled either way compares

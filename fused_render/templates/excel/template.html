@@ -2621,7 +2621,7 @@ function flistSkelHtml(n = 6) {
   ).join("");
 }
 // Drive paths (C:\\...) use forward slashes in the shell; POSIX backslashes are filename characters.
-const winFwd = (p) => (/^[A-Za-z]:\\/.test(p) ? p.replace(/\\/g, "/") : p);
+const winFwd = (p) => (/^[A-Za-z]:[\\/]/.test(p) ? p.replace(/\\/g, "/") : p);
 function startDir() {
   const cf = winFwd(currentFile());
   return cf ? cf.replace(/\/[^/]*$/, "") || "/" : "~";

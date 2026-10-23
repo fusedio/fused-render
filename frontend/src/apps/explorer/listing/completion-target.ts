@@ -1,3 +1,5 @@
+import { DRIVE_ABS } from "@platform/lib/path-url";
+
 // Decision 2: what the field's completion dropdown asks about. A path-shaped
 // query names a directory to list and a partial name to narrow it by — this
 // function is the pure split, the same address resolution `listing-address.ts`
@@ -13,11 +15,6 @@ export interface CompletionTarget {
   dir: string;
   partial: string;
 }
-
-// Same drive-letter shape listing-address.ts tests, query.py's `_DRIVE_ABS`
-// mirrors server-side, and home-search.ts's `pathShortcut` already accepts
-// for the home box.
-const DRIVE_ABS = /^[A-Za-z]:[\\/]/;
 
 export function completionTarget(
   query: string,

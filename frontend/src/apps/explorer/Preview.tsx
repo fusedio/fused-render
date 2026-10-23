@@ -3,6 +3,7 @@
 //   2. else                      -> fallback metadata card
 // No file-type checks live in the shell — html arrives through stat.templates
 // like everything else, via the "_render" sentinel (SPEC PT-12).
+import { canonFsPath } from "@platform/lib/path-url";
 import { isBackendEnabled, useAgentBackends } from "@platform/lib/agent-backends";
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -463,10 +464,9 @@ function usePreviewFileMenu(
     let alive = true;
     setIsAppEntry(false);
     if (stat.is_dir) return;
-    const canon = (p: string) => (/^[A-Za-z]:[\\/]/.test(p) ? p.replace(/\\/g, "/") : p);
     getAppEntry(parent)
       .then((r) => {
-        if (alive) setIsAppEntry(r.entry != null && canon(r.entry) === fsPath);
+        if (alive) setIsAppEntry(r.entry != null && canonFsPath(r.entry) === fsPath);
       })
       .catch(() => {
         /* indeterminate reads as "not an entry" — no verb for nothing */

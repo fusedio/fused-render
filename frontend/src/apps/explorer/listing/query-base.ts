@@ -20,9 +20,8 @@
 // escaping is the safe side of the ambiguity: a genuine absolute path is
 // the expensive case and it does get gated, while `/foo` used as an anchor
 // only costs one extra keypress.
+import { DRIVE_ABS } from "@platform/lib/path-url";
 import { expandWhitespaceQuery } from "@apps/explorer/lib/home-search";
-
-const DRIVE_ABS = /^[A-Za-z]:[\\/]/;
 
 export function escapesBase(query: string): boolean {
   if (query === "~" || query.startsWith("~/")) return true;

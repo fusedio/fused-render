@@ -2,6 +2,7 @@
 // shell registered a route() handler here; the React shell instead listens for
 // the "fused:navigate" event (useNavEpoch in lib/hooks.ts) — navigate/
 // navigateUrl dispatch it after pushState, popstate is subscribed alongside it.
+import { canonFsPath } from "./path-url";
 import { carries as snapshotCarries, getSnapshotAppDir } from
   "@platform/lib/snapshot-param";
 import { ORIGIN_BY_ROUTE } from "@platform/lib/originRoutes";
@@ -578,7 +579,7 @@ export function fsPathFromLocation(): string | null {
 // explorer topbar's Migrate button, which builds the same `/apps/<folder>`
 // address and may not import the shell.
 export function encodeFsPathSegments(fsPath: string): string {
-  const norm = /^[A-Za-z]:[\\/]/.test(fsPath) ? fsPath.replace(/\\/g, "/") : fsPath;
+  const norm = canonFsPath(fsPath);
   return norm
     .replace(/^\/+/, "")
     .split("/")

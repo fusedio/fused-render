@@ -13,6 +13,7 @@
 // the drag-ordered sequence layer.
 //
 // EVERY app is rendered — the list is not capped (owner, 2026-08-26).
+import { canonFsPath } from "@platform/lib/path-url";
 import type { CurrentAppEntry } from "@platform/lib/api";
 
 // The explorer's fs-path codec (router.ts encodeFsPathSegments / rootedFsPath),
@@ -20,7 +21,7 @@ import type { CurrentAppEntry } from "@platform/lib/api";
 // and this lib must stay DOM-free for its bun tests. Same rules — only a
 // drive-letter path has its backslashes folded, a bare drive re-roots to `C:/`.
 function encodeFsPathSegments(fsPath: string): string {
-  const norm = /^[A-Za-z]:[\\/]/.test(fsPath) ? fsPath.replace(/\\/g, "/") : fsPath;
+  const norm = canonFsPath(fsPath);
   return norm
     .replace(/^\/+/, "")
     .split("/")

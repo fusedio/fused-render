@@ -53,6 +53,7 @@
  *  where it stands, so a caller holding an admission answer rather than a row
  *  (the chat, whose message has no `/api/tasks` row yet) can ask the same
  *  question of it. */
+import { canonFsPath } from "./path-url";
 export interface QueueFacts {
   /** The row's status word. Anything but `"queued"` has no place in a line. */
   status?: string;
@@ -251,7 +252,7 @@ export const CHAT_ENTRY_ORIGIN = "chat";
  *  opened by the entry it is waiting as. Never both — a session outranks it, and
  *  a chat that has one has nothing left to open by entry. */
 export function chatUrl(target: string, sessionId: string, queuedEntryId = "", backend = ""): string {
-  const norm = /^[A-Za-z]:[\\/]/.test(target) ? target.replace(/\\/g, "/") : target;
+  const norm = canonFsPath(target);
   const encoded = norm
     .replace(/^\/+/, "")
     .split("/")

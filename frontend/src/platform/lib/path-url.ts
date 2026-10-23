@@ -41,3 +41,19 @@ export function fileUrlToPath(url: string): string {
   if (/^\/[A-Za-z]:[\\/]/.test(path)) path = path.slice(1);
   return path;
 }
+
+// A Windows drive-letter absolute path ("C:\x" or "C:/x"). The ONE definition
+// of that shape for the frontend: a backslash is a legal POSIX filename
+// character, so anything that rewrites backslashes must gate on this first.
+export const DRIVE_ABS = /^[A-Za-z]:[\\/]/;
+
+export function isDriveAbs(p: string): boolean {
+  return DRIVE_ABS.test(p);
+}
+
+// The shell's canonical forward-slash spelling of a path: backslashes become
+// "/" ONLY for a drive-letter path; every other string is returned untouched.
+export function canonFsPath(p: string): string {
+  const s = String(p);
+  return DRIVE_ABS.test(s) ? s.replace(/\\/g, "/") : s;
+}

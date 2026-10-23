@@ -1,3 +1,5 @@
+import { DRIVE_ABS } from "@platform/lib/path-url";
+
 // Decision 5: whether a typed query in the listing's merged search field
 // names one exact filesystem path, as opposed to a pattern to search for.
 //
@@ -14,11 +16,6 @@
 // field's queries are implicitly scoped to.
 // The caller still has to `statPath` it — this function only says what to
 // ask about, not whether it exists.
-// A Windows drive-letter path (`C:\` or `C:/`) — same test query.py's
-// `_DRIVE_ABS` runs server-side, and the same shape home-search.ts's
-// `pathShortcut` already accepts for the home box.
-const DRIVE_ABS = /^[A-Za-z]:[\\/]/;
-
 export function listingAddress(
   query: string,
   fsPath: string,

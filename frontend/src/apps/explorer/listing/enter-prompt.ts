@@ -29,6 +29,7 @@
 // search on a missing folder instead of failing, which this prompt cannot
 // know about synchronously. Recorded as a known limitation in
 // DECISIONS-one-field-search.md rather than solved here.
+import { isDriveAbs } from "@platform/lib/path-url";
 export function folderToOpen(query: string): string | null {
   const segments = query.split("/");
   const globIdx = segments.findIndex((s) => /[*?]/.test(s));
@@ -92,7 +93,7 @@ export function resolveFolderToOpen(query: string, home: string | undefined): st
     if (home === undefined) return null;
     return home + folder.slice(1);
   }
-  if (folder.startsWith("/") && !/^[A-Za-z]:[\\/]/.test(folder)) return null;
+  if (folder.startsWith("/") && !isDriveAbs(folder)) return null;
   return folder;
 }
 
