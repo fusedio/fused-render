@@ -111,7 +111,7 @@ import {
   taskRunLabel,
   taskRunOptions,
 } from "./schedule-lib";
-import { ICON_CLOCK, ICON_FOLDER, ICON_PLUS } from "./ScheduleCalendar";
+import { ICON_CLOCK, ICON_CPU, ICON_FOLDER, ICON_PLUS, ICON_SHIELD } from "./ScheduleCalendar";
 // `~/…` for a path under home — the one way this app shortens a folder, shared
 // with the Tasks page rather than written a second time here.
 // …and `projectMatches`, which is the Tasks toolbar's Project filter's OWN
@@ -4730,9 +4730,13 @@ export default function NewJobModal({
     // No plan mode for an agent without one (§7 `plan_mode`).
     .filter((m) => m !== "plan" || capsOf(agent).plan_mode)
     .sort((a, b) => permissionRank(a) - permissionRank(b));
-  // MODEL's value: the model alone — Thinking lives in the popover, so the four
-  // pills keep to one line.
-  const modelText = taskRunLabel(runModels, model) || "Default";
+  // MODEL's value: the model, then how hard it thinks in brackets — "Fable
+  // (med)" (owner, 2026-10-23: the effort was invisible outside the popover).
+  // Short and lowercase so the four pills keep to one line; nothing for a
+  // model that takes no effort.
+  const effortText = runEfforts.length ? taskRunLabel(runEfforts, effort) : "";
+  const modelText = (taskRunLabel(runModels, model) || "Default")
+    + (effortText ? ` (${effortText.toLowerCase().replace(/^medium$/, "med")})` : "");
 
   // THE WHERE POPOVER'S KEYS (arrows, Tab, Enter). On the pill's wrapper, not the
   // input: a row reached by Tab is focusable too. Escape is PropPill's — it
@@ -5253,7 +5257,8 @@ export default function NewJobModal({
               task row or the calendar chip (design: the card asks, the list
               stays quiet). */}
           <PropPill
-            k="Model"
+            k=""
+            icon={ICON_CPU}
             ariaLabel="Model"
             value={modelText}
             open={modelOpen}
@@ -5312,7 +5317,8 @@ export default function NewJobModal({
             ) : null}
           </PropPill>
           <PropPill
-            k="Access"
+            k=""
+            icon={ICON_SHIELD}
             ariaLabel="Permissions"
             value={permissionLabel(permission)}
             open={accessOpen}
@@ -5357,7 +5363,7 @@ export default function NewJobModal({
               last row (Akshil, 2026-08-15). */}
           {!lockTarget && (
             <PropPill
-              k="Where"
+              k=""
               icon={ICON_FOLDER}
               ariaLabel="Folder"
               value={target.trim() ? leafOf(target.trim()) : "Choose folder"}
@@ -5653,7 +5659,7 @@ export default function NewJobModal({
             </PropPill>
           )}
           <PropPill
-            k="When"
+            k=""
             icon={ICON_CLOCK}
             ariaLabel="When"
             value={timePicked
