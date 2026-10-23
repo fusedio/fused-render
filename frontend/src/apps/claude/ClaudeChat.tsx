@@ -157,6 +157,7 @@ import { planLocalCommand } from "./ui/local-commands";
 import { REMOTE_CONTROL_CONNECTING, RemoteControlConfirm, RemoteControlNote, useRemoteControl } from "./ui/RemoteControl";
 import { notify } from "@platform/lib/notifications";
 import { ScreenshotSeat } from "./ui/AnnStrip";
+import { useCanvasShotResponder } from "./pane/useCanvasShotResponder";
 import type { CanvasShot, CanvasShotWhat } from "./shots/canvas-shot";
 import { CanvasShotSeat } from "./ui/CanvasShotSeat";
 import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
@@ -1896,6 +1897,16 @@ function ChatBody(props: ChatBodyProps) {
     //
     // Both paths are pinned: `run-controller.test.ts` for the live one,
     // `useAppStateResponder.test.tsx` for the seam.
+  });
+
+  // ── the canvas-screenshot pull channel (`canvas_screenshot` tool) ──────────
+  // Every chat polls its run, so every chat sees the rows; only a canvas page
+  // (`canvasShot`) can take the picture, the rest answer "open the canvas"
+  // after giving it its chance (`useCanvasShotResponder`).
+  useCanvasShotResponder({
+    rows: state.canvasShot,
+    shot: props.canvasShot ?? null,
+    answer: controller.answerCanvasShot,
   });
 
   // ── the ask, LATCHED PER MOUNT ─────────────────────────────────────────────

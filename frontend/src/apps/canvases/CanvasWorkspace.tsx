@@ -168,6 +168,10 @@ import {
 // over a big graph takes seconds; a frame without the handler never answers,
 // and the chat's camera must come back.
 const THUMBNAIL_TIMEOUT_MS = 45_000;
+// How long a screenshot request waits for the workbench frame's first hello
+// before giving up: a page still framing the workbench (a fresh open, a
+// slow `fused whoami`) answers within this on an ordinary day.
+const FRAME_UP_WAIT_MS = 40_000;
 
 // Fallback cadence for GET sync/state while the events socket is down.
 const SYNC_POLL_MS = 2000;
@@ -602,21 +606,57 @@ export default function CanvasWorkspace({
     shotPendingRef.current = null;
     pending?.resolve(answer);
   }, []);
-  const requestCanvasShot = useCallback((what: CanvasShotWhat): Promise<ShotAnswer> => {
-    if (shotPendingRef.current) {
-      return Promise.resolve({ ok: false, error: "a canvas screenshot is already being taken" });
+  // Whether the workbench frame has hydrated (its first hello). A request that
+  // arrives before that — the agent's tool fires the moment its turn starts,
+  // often before the page has framed the workbench — waits for it rather than
+  // failing with "not loaded yet" at a moment that fixes itself in seconds.
+  const frameUpRef = useRef(false);
+  const frameUpWaitersRef = useRef<Array<() => void>>([]);
+  const awaitFrameUp = useCallback((timeoutMs: number): Promise<boolean> => {
+    if (frameUpRef.current && frameRef.current?.contentWindow && baseOriginRef.current) {
+      return Promise.resolve(true);
+    }
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => {
+        frameUpWaitersRef.current = frameUpWaitersRef.current.filter((w) => w !== wake);
+        resolve(false);
+      }, timeoutMs);
+      const wake = () => {
+        clearTimeout(timer);
+        resolve(true);
+      };
+      frameUpWaitersRef.current.push(wake);
+    });
+  }, []);
+  // One request at a time, claimed BEFORE the frame wait: two asks landing
+  // during that wait would otherwise both pass the check, and the second's
+  // `shotPendingRef` would bury the first, whose promise then never settled.
+  const shotBusyRef = useRef(false);
+  const requestCanvasShot = useCallback(async (what: CanvasShotWhat, udf?: string): Promise<ShotAnswer> => {
+    if (shotBusyRef.current || shotPendingRef.current) {
+      return { ok: false, error: "a canvas screenshot is already being taken" };
+    }
+    shotBusyRef.current = true;
+    try {
+      if (!(await awaitFrameUp(FRAME_UP_WAIT_MS))) {
+        return { ok: false, error: "the workbench has not loaded in this canvas page yet — reload the canvas page and try again" };
+      }
+    } finally {
+      shotBusyRef.current = false;
     }
     const frame = frameRef.current;
     const origin = baseOriginRef.current;
     if (!frame?.contentWindow || !origin) {
-      return Promise.resolve({ ok: false, error: "the workbench is not loaded yet" });
+      return { ok: false, error: "the workbench is not loaded yet" };
     }
     const win = frame.contentWindow;
     return new Promise<ShotAnswer>((resolve) => {
       const req = Date.now();
       shotPendingRef.current = { req, resolve };
       win.postMessage(
-        { type: "fused-embed-capture", req, what, udfName: nodeRef.current?.udfName ?? null },
+        // The named node when the asker names one (the agent's tool may ask
+        // for any UDF on the canvas); else the node this page shows.
+        { type: "fused-embed-capture", req, what, udfName: udf || nodeRef.current?.udfName || null },
         origin,
       );
       shotTimerRef.current = setTimeout(() => {
@@ -625,7 +665,7 @@ export default function CanvasWorkspace({
         }
       }, THUMBNAIL_TIMEOUT_MS);
     });
-  }, [settleShot]);
+  }, [settleShot, awaitFrameUp]);
   // The in-page canvas chat's contract: the canvas view only (no node is
   // selected while that chat shows).
   const canvasShot = useMemo<CanvasShot>(
@@ -690,9 +730,10 @@ export default function CanvasWorkspace({
       const source = event.source as Window | null;
       const req = event.data.req;
       const what = event.data.what;
+      const udf = typeof event.data.udf === "string" ? event.data.udf : undefined;
       if (!source) return;
       if (what !== "canvas" && what !== "udf") return;
-      void requestCanvasShot(what).then((answer) => {
+      void requestCanvasShot(what, udf).then((answer) => {
         source.postMessage(
           { type: "fused-canvas-shot-done", req, ...answer },
           window.location.origin,
@@ -1439,6 +1480,10 @@ export default function CanvasWorkspace({
         }
       }
       if (type === "fused-embed-hello") {
+        frameUpRef.current = true;
+        const waiters = frameUpWaitersRef.current;
+        frameUpWaitersRef.current = [];
+        for (const wake of waiters) wake();
         // The frame (re)hydrated from the server: bring it to disk with a
         // full state, whatever the server thought it held before.
         relayDelta(true);
@@ -1887,6 +1932,10 @@ export default function CanvasWorkspace({
         // (application embed-auth.ts), so the editor never inherits it.
         (embedded ? "&fused_embed_readonly=1" : "")
       : null;
+  // A frame that reloads (new src) is down again until its next hello.
+  useEffect(() => {
+    frameUpRef.current = false;
+  }, [frameSrc]);
 
   // No header bar (owner call): the workspace is the two panes, full height,
   // under ONE line — the sync strip (SyncStrip.tsx): the worst of the four

@@ -76,6 +76,7 @@ composes. Whatever the page sends as an ANSWER is still refused for it, by the
 The JSON-RPC framing is newline-delimited JSON on stdin/stdout (MCP stdio).
 stdout carries protocol only — diagnostics go to stderr.
 """
+import base64
 import json
 import os
 import sys
@@ -87,6 +88,7 @@ PROTOCOL_VERSION = "2025-06-18"
 SERVER_NAME = "fused_approvals"
 TOOL_NAME = "approve"
 APP_STATE_TOOL = "app_state"
+CANVAS_SHOT_TOOL = "canvas_screenshot"
 
 # How long a request may sit unanswered before it denies itself. The chat frame
 # can die (mode switch, reload) while a card is on screen; without a ceiling the
@@ -102,6 +104,17 @@ WAIT_TIMEOUT = float(os.environ.get("FUSED_RENDER_PERMISSION_TIMEOUT", "3600"))
 # far below the permission wait, since the per-server MCP `timeout` in the run
 # dir's mcp.json is sized for that one.
 APP_STATE_TIMEOUT = float(os.environ.get("FUSED_RENDER_APP_STATE_TIMEOUT", "20"))
+# A canvas screenshot is slower than a state read: the page waits up to 40 s
+# for its workbench frame, then the frame draws a big graph through
+# html-to-image (seconds, tens on a loaded Mac) under the page's own 45 s
+# relay timeout — 85 s of page budget, and a canvas-less page answers "open
+# the canvas" at 88 s. This sits above all of them, so whichever page answers,
+# its sentence lands before this fallback does.
+CANVAS_SHOT_TIMEOUT = float(os.environ.get("FUSED_RENDER_CANVAS_SHOT_TIMEOUT", "100"))
+# The picture rides one stdio JSON line, base64, into the model's context: a
+# cap keeps a runaway capture from being that line. The page downsizes a
+# canvas shot already; a UDF node's PNG is a few hundred KB.
+CANVAS_SHOT_MAX_BYTES = 8 * 1024 * 1024
 POLL_INTERVAL = 0.15
 # How long a decision file that exists but has not parsed is treated as a write
 # in flight rather than as no answer. Mirrors agent.py's DECISION_WRITE_WINDOW.
@@ -125,7 +138,14 @@ ANSWERABLE_TOOL = "AskUserQuestion"
 # `argv[1]`/`argv[2]` keep meaning what they always did. Only this exact
 # token: a dir is never mistaken for a flag, whatever it is named.
 NO_APPROVE = "--no-approve" in sys.argv[1:]
-_POSITIONAL = [a for a in sys.argv[1:] if a != "--no-approve"]
+# `--canvas-shots=<dir>`: the canvas-screenshot channel (one token, so the two
+# positionals below keep their places). Present only for a target inside a
+# canvas clone — the one kind of target whose page can photograph a workbench.
+_CANVAS_FLAG = "--canvas-shots="
+CANVAS_SHOT_DIR = next((os.path.abspath(a[len(_CANVAS_FLAG):])
+                        for a in sys.argv[1:] if a.startswith(_CANVAS_FLAG)), "")
+_POSITIONAL = [a for a in sys.argv[1:]
+               if a != "--no-approve" and not a.startswith(_CANVAS_FLAG)]
 PERM_DIR = os.path.abspath(_POSITIONAL[0]) if len(_POSITIONAL) > 0 else ""
 STATE_DIR = os.path.abspath(_POSITIONAL[1]) if len(_POSITIONAL) > 1 else ""
 
@@ -787,6 +807,68 @@ def _handle_app_state(args: dict) -> dict:
                               or "the window could not read the app")})
 
 
+def _handle_canvas_shot(args: dict) -> dict:
+    """Ask the canvas page for a picture of the workbench — the graph as the
+    viewport shows it, or one UDF node's output — and hand the bytes to the
+    model as an image block.
+
+    Same file round trip as `app_state`: the request parks in CANVAS_SHOT_DIR,
+    the page (fused-render's canvas page, which frames the workbench and can
+    ask it to capture itself) uploads the picture into the shots dir and
+    answers with its path; this reads the file and returns it inline, plus a
+    text block naming what was photographed. Every failure is a text block
+    with `error`, never a JSON-RPC error — a sentence the model can act on
+    ("open the canvas page") beats a tool that looks broken.
+    """
+    if not CANVAS_SHOT_DIR:
+        return _text({"error": "this session has no canvas-screenshot channel"})
+    what = args.get("what")
+    what = what if what in ("canvas", "udf") else "canvas"
+    udf = args.get("udf")
+    udf = str(udf).strip() if isinstance(udf, str) and udf.strip() else ""
+    req_id = _request_id()
+    _write_atomic(os.path.join(CANVAS_SHOT_DIR, req_id + ".req.json"), {
+        "id": req_id,
+        "what": what,
+        "udf": udf,
+        "reason": str(args.get("reason") or ""),
+        "created_at": time.time(),
+    })
+    answer = _await_answer(
+        os.path.join(CANVAS_SHOT_DIR, req_id + ".res.json"), CANVAS_SHOT_TIMEOUT,
+        {"error": "no fused-render canvas page answered within %d seconds — the "
+                  "canvas must be open in Fused Render for a screenshot; ask the "
+                  "user to open it, then try again" % CANVAS_SHOT_TIMEOUT})
+    image = answer.get("image")
+    if not isinstance(image, str) or not image:
+        return _text({"error": str(answer.get("error")
+                                  or "the canvas page could not take the picture")})
+    try:
+        size = os.path.getsize(image)
+        if size > CANVAS_SHOT_MAX_BYTES:
+            return _text({"error": "the picture is too large to hand over (%d MB; the "
+                                   "cap is %d MB) — zoom the canvas out or ask for one "
+                                   "UDF's output instead"
+                                   % (size // (1024 * 1024), CANVAS_SHOT_MAX_BYTES // (1024 * 1024))})
+        with open(image, "rb") as fh:
+            data = fh.read()
+    except OSError as exc:
+        return _text({"error": "the picture was taken but could not be read back "
+                               "(%s)" % (exc.strerror or exc)})
+    mime = answer.get("mime")
+    if not isinstance(mime, str) or not mime.startswith("image/"):
+        mime = "image/png"
+    note = {"what": what, "udf": answer.get("udf") or udf or None, "path": image,
+            "note": ("one UDF node's output as the workbench draws it"
+                     if what == "udf" else
+                     "the canvas graph as the workbench viewport shows it right now")}
+    return {"content": [
+        {"type": "image", "data": base64.b64encode(data).decode("ascii"),
+         "mimeType": mime},
+        {"type": "text", "text": json.dumps(note)},
+    ]}
+
+
 # ------------------------------------------------------------- the terminals
 #
 # Three tools over fused-render's own /api/terminal routes: the user's
@@ -1005,6 +1087,31 @@ APP_STATE_SCHEMA = {
     },
 }
 
+CANVAS_SHOT_SCHEMA = {
+    "name": CANVAS_SHOT_TOOL,
+    "description": (
+        "Take a screenshot of the Fused canvas the user has open in "
+        "fused-render and look at it: `what: \"canvas\"` is the whole graph as "
+        "their viewport shows it, `what: \"udf\"` is ONE UDF node's rendered "
+        "output (map, table, chart) — the node named by `udf`, or the node "
+        "whose file this chat is on when `udf` is omitted. Call it after you "
+        "change a UDF to check that the output looks right, or when the user "
+        "asks about what they see. Returns the picture inline. Read-only; "
+        "the canvas must be open in Fused Render (the result says so if not)."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "what": {"type": "string", "enum": ["canvas", "udf"],
+                     "description": "\"canvas\" for the whole graph, \"udf\" for one node's output."},
+            "udf": {"type": "string",
+                    "description": "The UDF (node) name for `what: \"udf\"`; defaults to this chat's node."},
+            "reason": {"type": "string",
+                       "description": "Optionally, what you are checking — shown to the user."},
+        },
+    },
+}
+
 
 def _dispatch(method: str, params: dict) -> dict:
     if method == "initialize":
@@ -1029,6 +1136,8 @@ def _dispatch(method: str, params: dict) -> dict:
         tools = [] if NO_APPROVE else [TOOL_SCHEMA]
         if STATE_DIR:
             tools.append(APP_STATE_SCHEMA)
+        if CANVAS_SHOT_DIR:
+            tools.append(CANVAS_SHOT_SCHEMA)
         if _terminal_origin():
             tools.extend(TERMINAL_SCHEMAS)
         return {"tools": tools}
@@ -1037,6 +1146,8 @@ def _dispatch(method: str, params: dict) -> dict:
         known = () if NO_APPROVE else (TOOL_NAME,)
         if STATE_DIR:
             known = known + (APP_STATE_TOOL,)
+        if CANVAS_SHOT_DIR:
+            known = known + (CANVAS_SHOT_TOOL,)
         if _terminal_origin():
             known = known + TERMINAL_TOOLS
         if name not in known:
@@ -1045,6 +1156,8 @@ def _dispatch(method: str, params: dict) -> dict:
         args = args if isinstance(args, dict) else {}
         if name in _TERMINAL_HANDLERS:
             return _TERMINAL_HANDLERS[name](args)
+        if name == CANVAS_SHOT_TOOL:
+            return _handle_canvas_shot(args)
         return _handle_approve(args) if name == TOOL_NAME \
             else _handle_app_state(args)
     if method == "ping":

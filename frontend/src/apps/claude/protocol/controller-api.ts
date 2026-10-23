@@ -9,6 +9,7 @@
 import type {
   Activity,
   AppStateRow,
+  CanvasShotRow,
   ContextUsage,
   Decision,
   DecisionScope,
@@ -266,6 +267,8 @@ export interface ChatState {
   permissions: PermissionRow[];
   /** Unanswered app-state requests the pane must answer (T:15758-15869). */
   appState: AppStateRow[];
+  /** Unanswered `canvas_screenshot` requests a canvas page must answer. */
+  canvasShot: CanvasShotRow[];
   skills: SkillRow[];
   working: Working | null;
   trouble: Trouble | null;
@@ -560,6 +563,9 @@ export interface ChatController {
 
   /** Answer an app-state request with a snapshot block (T:15804 answerAppState). */
   answerAppState(id: string, block: string): Promise<void>;
+  /** Answer a `canvas_screenshot` request: the uploaded picture's path (in the
+   *  shots dir) and mime, or a sentence saying why there is none. */
+  answerCanvasShot(id: string, answer: { image: string; mime: string; udf?: string } | { error: string }): Promise<boolean>;
 
   /** Load a session's history and make it current (T:17984 loadHistory). */
   /** `backend`: the arriving conversation's agent, when the opener knows it
