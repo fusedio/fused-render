@@ -1,7 +1,7 @@
-"""Proposals (contract §8, v2 §16.5): Bob's changes to Alice's app, sent to
-her for review as a pull request from his own copy of the repo on GitHub, in
-his name, with Claude credited — plus Update, Withdraw, the status refresh
-that follows the proposal on GitHub, and `settle_direct` for a collaborator
+"""Proposals (contract §8, v2 §16.5, v3 §17.5): Bob's changes to Alice's
+app, sent to her for review as a pull request from his own copy of the repo
+on GitHub, in his name — plus Update, Withdraw, the status refresh that
+follows the proposal on GitHub, and `settle_direct` for a collaborator
 publishing straight to the author's app.
 
 GITHUB IS THE TRUTH (§0.4). The record's `proposal` is the proposal's
@@ -12,22 +12,16 @@ store reset) is recovered from GitHub too: Send adopts the open proposal
 from Bob's account that carries fused's footer marker instead of opening a
 second one.
 
-MERGE, NEVER REBASE (§16.0 P4). Bob's commits keep their ids forever. What
-GitHub has from him is `proposal.sent` — the exact commit last sent — and it
-stays an ancestor of his HEAD however often the author's latest is brought
-in (the engine merges it). So an Update is always a plain, non-force push
-that GitHub sees as "added commits", and "nothing new to send" is a count:
-`unproposed` = Bob's own first-parent commits after `sent` that the author's
-latest lacks.
-
-CREDIT, ONCE (§16.5). Commits made before this machine knew Bob's GitHub
-identity carry `Fused <apps@fused.io>`. Before the FIRST thing leaves the
-machine (Send, Remix publish, a collaborator's direct publish), every
-Fused-authored commit Bob has that the author's latest and any earlier send
-lack is re-created with Bob as author and committer and ONE `Co-authored-by:
-Claude` trailer — merges too, every parent mapped. Same trees, so landing
-the result (backup ref first, `reset --keep`) changes no file. Never again
-after that: a commit that was sent is never rewritten.
+ONE BRANCH OF BOB'S OWN, NO REWRITE EVER (§17). A `github` copy's HEAD is
+`fused/mine`; `refs/heads/<b>` is a fetch-only mirror of the author's
+branch. Send pushes `fused/mine` as it is to a NEW branch on Bob's copy on
+GitHub — no commit is re-created, so every id Bob sees locally is the one
+GitHub shows. The author's latest reaches `fused/mine` only by merge (the
+engine's bring-in), so what was sent stays an ancestor of HEAD and an
+Update is always a plain, non-force push. "Nothing new to send" is a count
+(`unproposed`): Bob's own first-parent, non-merge commits after the
+proposal's head — a bring-in merge, and the author's commits reached through
+one, never count as his.
 
 WHAT IS SENT IS WHAT BOB RUNS, AS HE CHOSE (D16, §16.5). Send/Update commit
 the uncommitted edits to tracked files first, as one "Your edits" commit.
@@ -42,6 +36,8 @@ github.com, GitHub's "Update branch", the author's Merge with Claude
 it is MERGED into his copy (clean → landed; overlap → Merge with Claude,
 purpose "proposal", after which `merge_accepted` sends) — never replayed,
 so Alice's commits keep their ids and nothing of hers becomes "his change".
+The merge is built in memory (`replay.merge_tree` + `commit-tree`) and
+landed by fast-forward (`replay.land_ff_locked`).
 
 CLAUDE BUSY (§16.0 P8). Send, Update, Withdraw, Remix and settle_direct
 refuse with one plain sentence while a Claude turn is open in the folder:
@@ -69,16 +65,20 @@ from fused_render.contrib.jobs import PlainError
 
 logger = logging.getLogger(__name__)
 
-CO_AUTHOR = "Co-authored-by: Claude <noreply@anthropic.com>"
-FUSED_EMAIL = "apps@fused.io"
 FOOTER = "\n\n---\nSent from Fused\n" + gh.PROPOSAL_MARKER
 
 #: Proposal status from GitHub is re-read at most this often per app,
 #: however many pages poll (contract §8: 60 s).
 REFRESH_TTL_S = 60.0
 
-#: Where the proposal's head on GitHub is fetched to (Update, adoption).
+#: The proposal's head as this copy last saw it on GitHub: written by Send
+#: and Update after their push, and by Update's fetch of edits made there;
+#: deleted when the proposal ends (§17.5). `unproposed`/`head_differs`
+#: count from it.
 PR_HEAD_REF = "refs/fused/pr-head"
+
+#: HEAD on a `github` copy (§17.1 I4); `home_branch()` reads replay's.
+_HOME_BRANCH = "fused/mine"
 
 CLAUDE_BUSY = "Claude is still working on this app. Try again when it's done."
 _MOVED = "Something changed on GitHub in the meantime. Try again."
@@ -91,9 +91,6 @@ _NOTE_MAX = 2000
 _DRAFT_DIFF_CHARS = 60000
 _ASK_CHARS = 600
 _ASKS_MAX = 12
-
-_TRAILER_LINE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*: .+$")
-_CO_AUTHOR_RE = re.compile(r"^co-authored-by:\s*claude\s*<noreply@anthropic\.com>\s*$", re.I)
 
 _refresh_lock = threading.Lock()
 _last_refresh: dict[str, float] = {}
@@ -128,6 +125,12 @@ def _follow():
 def _gu():
     from fused_render import git_upstream
     return git_upstream
+
+
+def home_branch() -> str:
+    """HEAD's branch on a `github` copy (§17.1 I4): `replay.HOME_BRANCH`
+    (`classify.HOME_BRANCH` is the same constant)."""
+    return getattr(_replay(), "HOME_BRANCH", None) or _HOME_BRANCH
 
 
 # ---------------------------------------------------------------- git bits
@@ -296,68 +299,7 @@ def commit_edits_locked(root, ident: dict, include=(), message: str = "Your edit
     return _rev(root, "HEAD")
 
 
-# ----------------------------------------------------------------- credit
-
-
-def with_trailer(message: str) -> str:
-    """`message` carrying exactly one Claude co-author trailer, at the end of
-    its trailer block. Idempotent."""
-    lines = [ln for ln in (message or "").rstrip().splitlines()
-             if not _CO_AUTHOR_RE.match(ln.strip())]
-    while lines and not lines[-1].strip():
-        lines.pop()
-    text = "\n".join(lines).rstrip()
-    paragraphs = text.split("\n\n")
-    last = paragraphs[-1].splitlines() if text else []
-    in_block = len(paragraphs) > 1 and last and all(_TRAILER_LINE_RE.match(ln) for ln in last)
-    sep = "\n" if in_block else "\n\n"
-    return (text + sep + CO_AUTHOR + "\n") if text else (CO_AUTHOR + "\n")
-
-
-_SEP = "\x1e"
-
-
-def credit(root, base: str, head: str, ident: dict, *, exclude=()) -> str:
-    """The tip of `head ^base ^exclude…` re-created with Fused-authored
-    commits credited to `ident` + Claude (module docstring). Writes objects
-    only; moves no ref. Answers `head` itself when nothing needed changing."""
-    fmt = "%H%x00%P%x00%T%x00%an%x00%ae%x00%aI%x00%cn%x00%ce%x00%cI%x00%B" + "%x1e"
-    nots = [f"^{x}" for x in (base, *exclude) if x]
-    res = _git(root, "log", "--reverse", "--topo-order", f"--format={fmt}", head, *nots)
-    if not _ok(res):
-        raise PlainError("Your changes couldn't be prepared for sending. Try again.")
-    raw = res[1].decode("utf-8", "replace")
-    commits = []
-    for chunk in raw.split(_SEP):
-        chunk = chunk.lstrip("\n")
-        if not chunk:
-            continue
-        parts = chunk.split("\x00", 9)
-        if len(parts) != 10:
-            continue
-        commits.append(parts)
-    if not commits:
-        return head
-    # Merges are re-created too, every parent mapped (a "Bring in" merge the
-    # engine made before Bob signed in is Fused-authored). A parent outside
-    # the range (the author's side, an earlier send) maps to itself;
-    # `--topo-order --reverse` visits every parent before its child.
-    parent_map: dict[str, str] = {}
-    for sha, parents, tree, an, ae, ad, cn, ce, cd, body in commits:
-        old_parents = parents.split()
-        new_parents = [parent_map.get(x, x) for x in old_parents]
-        if ae.strip().lower() == FUSED_EMAIL:
-            author = (ident["name"], ident["email"], ad)
-            committer = (ident["name"], ident["email"], cd)
-            message = with_trailer(body)
-            changed = True
-        else:
-            author, committer, message = (an, ae, ad), (cn, ce, cd), body
-            changed = new_parents != old_parents
-        parent_map[sha] = (_commit_tree(root, tree, new_parents, message, author=author,
-                                        committer=committer) if changed else sha)
-    tip = _rev(root, head)
-    return parent_map.get(tip, tip) if tip else head
+# ------------------------------------------------------------- commit-tree
 
 
 def _commit_tree(root, tree, parents, message, *, author, committer) -> str:
@@ -395,46 +337,12 @@ def _commit_tree(root, tree, parents, message, *, author, committer) -> str:
     return sha
 
 
-def _land_locked(root, *, branch, old_tip, new_tip, why) -> tuple[str | None, str | None]:
-    """`replay.land_locked`: `(None, backup ref|None)` when the branch moved,
-    else `(reason, None)`. Caller holds the slot."""
-    return _replay().land_locked(root, branch=branch, old_tip=old_tip, new_tip=new_tip,
-                                 why=why)
-
-
-def _sent_shas(root, record) -> list[str]:
-    """Commits that already left this machine and are never rewritten: the
-    open or settled proposal's `sent`, when this repo still has it."""
-    p = (record or {}).get("proposal")
-    sent = p.get("sent") if isinstance(p, dict) else None
-    return [sent] if sent and _rev(root, sent) else []
-
-
-def _credit_once_locked(root, record, ident: dict, tip: str, branch: str) -> None:
-    """The credit rewrite (module docstring), landed. Caller holds the slot."""
-    p = record.get("proposal") if isinstance(record.get("proposal"), dict) else None
-    if p and p.get("sent") and _is_open(p):
-        return  # never after the first send
-    head = _rev(root, "HEAD")
-    if not head:
-        return
-    new = credit(root, tip, head, ident, exclude=_sent_shas(root, record))
-    if new == head:
-        return
-    why, _backup = _land_locked(root, branch=branch, old_tip=head, new_tip=new,
-                                why="proposal-credit")
-    if why is not None:
-        raise PlainError("Your app changed while sending. Try again.")
-    # No Undo (§16.12): undoing would put the Fused-authored originals back
-    # under HEAD, and the next Update would send them. The backup ref stays.
-    _activity(root, "proposal-credit",
-              "Put your name on your changes, with Claude credited, before sending them")
-
-
-def _prepare(root, record, ident: dict, *, tip: str | None, include=(),
-             do_credit: bool = True, commit: bool = True) -> str:
-    """Under the slot: commit the edits that go (`commit`), credit once
-    (`do_credit`), and answer the HEAD to send."""
+def _prepare(root, record, ident: dict, *, tip: str | None = None, include=(),
+             commit: bool = True, **_legacy) -> str:
+    """Under the slot: commit the edits that go (`commit`) on HEAD, and
+    answer the HEAD to send. A `github` copy sends only from `fused/mine`
+    (§17.1 I4): on any other branch ("a different version") it refuses.
+    `tip` is unused (v2's credit rewrite took it; Remix still passes it)."""
     gu = _gu()
     ident = commit_identity(root, ident)
     with _replay().slot() as held:
@@ -443,11 +351,12 @@ def _prepare(root, record, ident: dict, *, tip: str | None, include=(),
         branch = gu._current_branch(root)
         if not branch:
             raise PlainError("This copy can't send proposals right now.")
+        if (record or {}).get("kind") == "github" and branch != home_branch():
+            raise PlainError("You're looking at a different version of this app. "
+                             "Go back to your usual version first, then send.")
         _gate(root)
         if commit:
             commit_edits_locked(root, ident, include)
-        if do_credit and tip:
-            _credit_once_locked(root, record, ident, tip, branch)
         head = _rev(root, "HEAD")
     if not head:
         raise PlainError("This copy can't send proposals right now.")
@@ -495,13 +404,14 @@ def _is_open(p: dict | None) -> bool:
 
 def _settled(record, p: dict) -> bool:
     """Nothing left to learn from GitHub in the background: published
-    directly; merged and returned (or merged on a remix, which never
-    returns); closed unmerged once its closing note was read."""
+    directly; merged and landed (the engine's once-stamp `landed_at`,
+    §17.2) — or merged on a remix, which never lands; closed unmerged once
+    its closing note was read."""
     state = (p.get("cache") or {}).get("state")
     if p.get("direct"):
         return True
     if state == "merged":
-        return bool(p.get("returned_at")) or (record or {}).get("kind") != "github"
+        return bool(p.get("landed_at")) or (record or {}).get("kind") != "github"
     if state == "closed":
         return bool((p.get("cache") or {}).get("note_checked"))
     return False
@@ -558,54 +468,96 @@ def _body(description: str, note: str | None, login: str) -> str:
     return body.strip() + FOOTER
 
 
-def count_unproposed(root, sent: str | None, tip: str | None) -> int:
-    """Bob's own commits (first parent, merges not counted) that neither the
-    last send nor the author's latest has (§16.3)."""
-    nots = [f"^{x}" for x in (sent, tip) if x and _rev(root, x)]
-    res = _git(root, "rev-list", "--count", "--first-parent", "--no-merges", "HEAD", *nots)
-    try:
-        return int(_out(res)) if _ok(res) else 0
-    except ValueError:
-        return 0
+def mirror_of(root, record) -> str | None:
+    """`refs/heads/<b>`: the author's latest as this copy holds it (§17.1
+    I3 — equal to `origin/<b>` after every sync)."""
+    branch = (record or {}).get("branch")
+    return _rev(root, f"refs/heads/{branch}") if branch else None
+
+
+def pr_head(root, record) -> str | None:
+    """The proposal's head as this copy knows it (§17.5): `PR_HEAD_REF`
+    when present, else the cache's `head_sha` when it is a local object,
+    else the author's latest (`refs/heads/<b>`). No network."""
+    p = (record or {}).get("proposal")
+    got = _rev(root, PR_HEAD_REF)
+    if got:
+        return got
+    cached = ((p or {}).get("cache") or {}).get("head_sha") if isinstance(p, dict) else None
+    got = _rev(root, cached) if cached else None
+    return got or mirror_of(root, record)
 
 
 def unproposed(root, record) -> int:
-    """`count_unproposed` for an open proposal (+1 for uncommitted tracked
-    edits — Update sends those too); 0 without one. No network."""
+    """Bob's commits an Update would add to his open proposal (§17.5):
+    `rev-list --count --first-parent --no-merges <pr-head>..HEAD` — first
+    parent and no merges, so a bring-in merge and the author's commits
+    reached through it never count as his — +1 for uncommitted tracked
+    edits (Update sends those too). 0 without an open proposal. No
+    network."""
     p = (record or {}).get("proposal")
     if not _is_open(p):
         return 0
-    n = count_unproposed(root, p.get("sent"), tip_of(root, record))
+    base = pr_head(root, record)
+    res = _git(root, "rev-list", "--count", "--first-parent", "--no-merges", "HEAD",
+               *([f"^{base}"] if base else []))
+    try:
+        n = int(_out(res)) if _ok(res) else 0
+    except ValueError:
+        n = 0
     return n + (1 if dirty(root) else 0)
 
 
 def head_differs(root, record, tip: str | None = None) -> bool:
-    """What Bob runs differs from what an Update would leave GitHub with
-    anyway (§16.12): HEAD's tree is neither the proposal's tree on GitHub
-    nor what merging the author's latest into it cleanly gives. True after
-    a Merge with Claude resolution (its merge commit counts nowhere in
-    `unproposed`, but the files GitHub has still collide); False after a
-    plain clean bring-in of her latest. No network."""
+    """Update has something to do beyond what GitHub already has (§17.5):
+    the proposal's head is NOT in HEAD (edits made to it on GitHub —
+    maintainer edits, GitHub's "Update branch" — that Bob's copy lacks), or
+    Bob has commits or edits after it (`unproposed > 0`). A bring-in merge
+    of the author's latest alone never counts: the author has her own
+    version already, and GitHub's `mergeable` (`fits`) says when the
+    proposal stopped fitting it. False without an open proposal or when
+    the head is unknown here. `tip` is unused (kept for callers). No
+    network.
+
+    "The proposal's head" is both what this copy last pushed or fetched
+    (`PR_HEAD_REF`) and what GitHub last said (`cache.head_sha`): a cached
+    head that is not even a local object is one HEAD lacks. Never the
+    `main` mirror — the author's latest is not the proposal's."""
     p = (record or {}).get("proposal")
     if not _is_open(p):
         return False
-    pr_head = (p.get("cache") or {}).get("head_sha")
-    pr_head = pr_head if pr_head and _rev(root, pr_head) else p.get("sent")
     head = _rev(root, "HEAD")
-    if not pr_head or not head or not _rev(root, pr_head):
+    if not head:
         return False
     replay = _replay()
-    now = replay.tree_of(root, head)
-    if now == replay.tree_of(root, pr_head):
+    cached = (p.get("cache") or {}).get("head_sha")
+    for known in (_rev(root, PR_HEAD_REF), cached):
+        if known and not (_rev(root, known) and replay.is_ancestor(root, known, head)):
+            return True
+    return unproposed(root, record) > 0
+
+
+def conflict(root, record) -> bool:
+    """The author's latest (`refs/heads/<b>`) is not in HEAD and does not
+    merge into it cleanly — the engine's `needs-merge` fact (§17.2),
+    derived the same way. No network."""
+    replay = _replay()
+    head, main = _rev(root, "HEAD"), mirror_of(root, record)
+    if not head or not main or replay.is_ancestor(root, main, head):
         return False
-    tip = tip or tip_of(root, record)
-    # The author's latest AS HEAD HAS IT: a newer tip fetched but not
-    # brought in (auto-sync off, Keep mine) is nothing of Bob's to send.
-    held = _out(_git(root, "merge-base", head, tip)) if tip else ""
-    if not held or replay.is_ancestor(root, held, pr_head):
-        return True
-    mt = replay.merge_tree(root, pr_head, held)
-    return not (mt.get("clean") and mt.get("tree") == now)
+    mt = replay.merge_tree(root, head, main)
+    return bool(mt.get("supported")) and not mt.get("clean")
+
+
+def _set_pr_head(root, sha: str | None) -> None:
+    """Point `PR_HEAD_REF` at what GitHub now has (None deletes it)."""
+    try:
+        if sha:
+            _git(root, "update-ref", PR_HEAD_REF, sha)
+        else:
+            _git(root, "update-ref", "-d", PR_HEAD_REF)
+    except Exception:  # noqa: BLE001 — a cache; the next Update refetches
+        logger.debug("proposals: %s not written in %s", PR_HEAD_REF, root, exc_info=True)
 
 
 def view(app_dir) -> dict | None:
@@ -630,7 +582,11 @@ def view(app_dir) -> dict | None:
         shown = "commented" if cache.get("comment") else "waiting"
     waiting = shown in ("waiting", "commented")
     out = {"number": p["number"], "url": p.get("url") or "", "title": p.get("title") or "",
-           "state": shown, "needs_merge": bool(record.get("needs_merge")),
+           "state": shown,
+           # v2's recorded overlap, kept as a key for one release; nothing
+           # reads it — v3 derives the overlap in `engine.status` (§17.2),
+           # and Send/Update ask `conflict` themselves.
+           "needs_merge": False,
            "unproposed": unproposed(root, record) if waiting else 0,
            "settled_seen": bool(p.get("settled_seen")),
            "direct": bool(p.get("direct")),
@@ -642,8 +598,8 @@ def view(app_dir) -> dict | None:
            "can_update": waiting and record.get("kind") == "github",
            "can_withdraw": waiting,
            # GitHub's own "does it still merge" (None = not known yet), and
-           # whether HEAD holds something the proposal lacks beyond the
-           # author's latest — either offers Update (§16.12).
+           # whether HEAD lacks edits made on GitHub or holds new ones of
+           # Bob's — either offers Update (§16.12, §17.5).
            "fits": cache.get("mergeable") if waiting else None,
            "head_differs": head_differs(root, record) if waiting else False}
     if shown in ("commented", "declined") and cache.get("comment"):
@@ -768,7 +724,7 @@ def send(app_dir, *, title: str, description: str, note: str | None = None,
         if _is_open(record.get("proposal")):
             raise PlainError("You already have a proposal waiting. "
                              "Use Update proposal to send your newer edits.")
-    if record.get("needs_merge"):
+    if conflict(root, record):
         raise PlainError(f"{_owner_name(record)} changed the same parts you did. "
                          "Merge with Claude first, then send.")
     include = _check_include(root, include)
@@ -823,13 +779,13 @@ def send(app_dir, *, title: str, description: str, note: str | None = None,
     proposal = {
         "repo": repo, "number": pr["number"], "url": pr.get("url") or "",
         "head_repo": fork, "head_branch": head_branch,
-        "sent": head, "checked_tip": tip,
         "title": pr.get("title") or title, "opened_at": now, "sent_at": now,
         "user": me["login"],
         "cache": {"state": "open", "merge_commit_sha": None, "comment": None, "asked": None,
                   "checked_at": now, "head_sha": head, "error": None},
-        "settled_seen": False, "returned_at": None,
+        "settled_seen": False, "landed_at": None,
     }
+    _set_pr_head(root, head)
 
     def put(rec):
         rec["proposal"] = proposal
@@ -894,9 +850,11 @@ def _take_in_pr_head(root, record, ident: dict, fork: str, head_branch: str,
         if not held:
             raise PlainError(_BUSY)
         _gate(root)   # a turn may have opened since `_prepare` let go of the slot
-        branch = gu._current_branch(root)
-        why = _land_locked(root, branch=branch, old_tip=head, new_tip=merged,
-                           why="proposal-their-edits")[0] if branch else "moved"
+        # `head` is the merge's first parent: the fast-forward is the CAS.
+        if gu._current_branch(root) != home_branch() or _rev(root, "HEAD") != head:
+            why = "moved"
+        else:
+            why = replay.land_ff_locked(root, merged)[0]
     if why is not None:
         raise PlainError("Your app changed while sending. Try again.")
     _activity(root, "proposal-their-edits",
@@ -905,8 +863,9 @@ def _take_in_pr_head(root, record, ident: dict, fork: str, head_branch: str,
 
 
 def update(app_dir, *, include=None, step=None) -> dict:
-    """Send Bob's newer edits to his open proposal (§16.5): a plain push of
-    HEAD — which already holds `sent` — to the proposal's own branch.
+    """Send Bob's newer edits to his open proposal (§16.5, §17.5): a plain
+    push of HEAD — which already holds what was sent — to the proposal's
+    own branch, after merging in edits made to it on GitHub.
     `include` = new files Bob ticked, as for Send (§16.12)."""
     root, record = _record(app_dir)
     p = record.get("proposal")
@@ -918,7 +877,7 @@ def update(app_dir, *, include=None, step=None) -> dict:
     _gate(root)
     me = _require_identity()
     who = _owner_name(record)
-    if record.get("needs_merge"):
+    if conflict(root, record):
         raise PlainError(f"{who} changed the same parts you did. "
                          "Merge with Claude first, then update.")
     pr = gh.get_pr(p["repo"], p["number"])
@@ -941,26 +900,29 @@ def update(app_dir, *, include=None, step=None) -> dict:
     if not edits and _same_tree(root, head, tip):
         raise PlainError(f"Your copy matches {who}'s latest — there's nothing to send.")
     remote = pr.get("head_sha")
-    sent = p.get("sent")
     asked = bool((p.get("cache") or {}).get("asked"))
-    if (not edits and remote and remote == sent and not asked
+    # Nothing new (§17.5): no edits, GitHub's head already in HEAD and no
+    # commit of Bob's after it (`head_differs` — a bring-in of the author's
+    # latest is never sent on its own), not asked, and it still fits.
+    record = _store().get(root) or record      # `_ingest` refreshed the cache
+    if (not edits and remote and not asked
             and pr.get("mergeable") is not False
-            and count_unproposed(root, sent, tip) == 0
-            and not head_differs(root, record, tip)):
+            and not head_differs(root, record)):
         raise PlainError("Your proposal already has all your changes.", reason="nothing-new")
     _say(step, "send")
-    head = _prepare(root, record, me, tip=tip, include=include, do_credit=False)
+    head = _prepare(root, record, me, include=include)
     head = _take_in_pr_head(root, record, me, fork, head_branch, remote)
     if head == remote:
         raise PlainError("Your proposal already has all your changes.", reason="nothing-new")
     _push(root, head, fork, head_branch)
+    _set_pr_head(root, head)
     caught_up = _github_shows(p["repo"], p["number"], head, step)
     now = time.time()
 
     def put(rec):
         q = rec.get("proposal")
         if isinstance(q, dict) and q.get("number") == p["number"]:
-            q.update(sent=head, checked_tip=tip, sent_at=now)
+            q.update(sent_at=now)
             # "alice commented" answers the version she commented on; a new
             # send starts the wait again (only comments after `sent_at`
             # count on the next refresh).
@@ -1077,26 +1039,10 @@ def withdraw(app_dir) -> dict:
             rec["proposal"] = None
 
     store.update(root, clear)
+    _set_pr_head(root, None)
     if was_open:
         _activity(root, "proposal-withdrawn",
                   f"Withdrew your proposal to {_owner_name(record)}")
-    return {"ok": True}
-
-
-def credit_once(app_dir) -> dict:
-    """The credit rewrite on its own (module docstring), for a collaborator's
-    direct publish: `engine.push_to_main` calls it before bringing the
-    author's latest in and pushing. `{ok}` or `{ok: False, reason, message}`."""
-    try:
-        root, record = _contributor_record(app_dir)
-        _gate(root)
-        me = _require_identity()
-        tip = tip_of(root, record, fetch=True)
-        if not tip:
-            raise _no_tip(record)
-        _prepare(root, record, me, tip=tip, commit=False)
-    except PlainError as exc:
-        return {"ok": False, "reason": exc.reason or "failed", "message": exc.message}
     return {"ok": True}
 
 
@@ -1104,9 +1050,10 @@ def settle_direct(app_dir, head: str | None = None) -> dict:
     """A collaborator published straight to the author's app (§16.5;
     `engine.push_to_main` pushed `head` and writes the Activity line): an
     open proposal is closed with "Published directly", its copy on GitHub
-    deleted, and the record settled as merged at `head` — returned, seen,
+    deleted, and the record settled as merged at `head` — landed, seen,
     never polled again (GitHub may report it closed rather than merged; that
-    must not read as declined)."""
+    must not read as declined). The one place outside the engine that
+    stamps `landed_at` (§17.5: as v2 stamped `returned_at` here)."""
     store = _store()
     root = store.key(app_dir)
     record = store.get(root) or {}
@@ -1125,11 +1072,12 @@ def settle_direct(app_dir, head: str | None = None) -> dict:
     def put(rec):
         q = rec.get("proposal")
         if isinstance(q, dict) and q.get("number") == p.get("number") and _is_open(q):
-            q.update(direct=True, returned_at=now, settled_seen=True)
+            q.update(direct=True, landed_at=now, settled_seen=True)
             q.setdefault("cache", {}).update(state="merged", merge_commit_sha=head,
                                              checked_at=now)
 
     store.update(root, put)
+    _set_pr_head(root, None)
     return {"ok": True}
 
 
@@ -1169,7 +1117,7 @@ def _newest_comment(comments: list, bob: str | None, since: float | None, *,
 def _apply_pr(root, pr: dict, comments: list | None,
               tip: str | None = None) -> tuple[dict | None, str | None]:
     """Write GitHub's answer into the record's cache. Answers `(proposal,
-    previous state)`."""
+    previous state)`. `tip` is unused (v2's `checked_tip` is gone)."""
     state = "merged" if pr.get("merged") else ("closed" if pr.get("state") == "closed" else "open")
     holder = {}
 
@@ -1184,8 +1132,6 @@ def _apply_pr(root, pr: dict, comments: list | None,
         if state == "open":
             cache["mergeable"] = pr.get("mergeable") if isinstance(pr.get("mergeable"), bool) \
                 else cache.get("mergeable")
-        if tip:
-            q["checked_tip"] = tip
         if comments is not None:
             bob = pr.get("user") or q.get("user")
             since = q.get("sent_at") or q.get("opened_at")
@@ -1224,19 +1170,19 @@ def refresh(app_dir, *, force: bool = False, tip: str | None = None) -> dict | N
     REFRESH_TTL_S per app unless `force`) and cache what it says: open
     (+ the author's newest comment, and whether she asked for an update),
     closed without merging (declined — Bob's changes untouched), merged.
-    `tip` (the engine's fetch, §16.3) is recorded as `checked_tip` on a
-    successful read. Answers the page's proposal object. Never raises for a
-    GitHub problem — the cached state stands until the next read.
+    `tip` is accepted and ignored (the engine passes None; v2 recorded it).
+    Answers the page's proposal object. Never raises for a GitHub problem —
+    the cached state stands until the next read.
 
-    Returning a merged proposal's copy to the author's latest is the
-    engine's (§16.3 row 7), which calls this first whenever the author's
-    latest moved.
+    Bringing a merged proposal's copy onto the author's latest is the
+    engine's (§17.2 `merged` row: bring-in, then settle, stamping
+    `landed_at` once).
 
     A SETTLED PROPOSAL IS NOT POLLED (`_settled`): published directly;
-    merged and returned — or merged on a remix, which never returns; closed
+    merged and landed — or merged on a remix, which never lands; closed
     unmerged once its closing note has been read. Only an explicit `force`
     asks GitHub about a closed one again (Bob's "check now"). Merged but NOT
-    yet returned keeps polling: the engine waits on the author's latest
+    yet landed keeps polling: the engine waits on the author's latest
     carrying the merge."""
     store = _store()
     root = store.key(app_dir)

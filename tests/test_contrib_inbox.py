@@ -1,6 +1,12 @@
 """The author's inbox (contract §9.2-9.3) against FakeGitHub: real bare
 repos, Bob's proposal from his fork, Alice's real clone. The model is the
-`ai._run_cli` seam. Also the jobs registry the inbox runs on."""
+`ai._run_cli` seam. Also the jobs registry the inbox runs on.
+
+v3 (§17) leaves the author's side as it was: her copy is `own` (no
+`fused/mine`, no mirror); the inbox's Merge with Claude is a `proposal`
+job with `land=False` (never touches her folder), and `accept` still
+needs the reviewed head (`sha=`). The loop is switched on through
+prefs.json (§17.9), never by faking `flags`."""
 from __future__ import annotations
 
 import json
@@ -12,6 +18,8 @@ import pytest
 
 from fused_render import app_git, app_listing, git_upstream
 from fused_render.contrib import ai, gh, inbox, jobs, store, trycopy
+
+from _contrib_gh_world import write_prefs
 
 PAGE = '<!doctype html><meta name="fused-app"><title>X</title>\n<p>hello</p>\n'
 
@@ -267,12 +275,11 @@ def test_accept_without_any_review_says_so(world):
     assert res["message"].startswith("bob changed this proposal since Claude read it.")
 
 
-def test_orphaned_try_copies_are_swept(world, monkeypatch):
+def test_orphaned_try_copies_are_swept(world):
     from fused_render import app_state_remove
-    from fused_render.contrib import flags
 
     alice, fake = world["alice"], world["fake"]
-    monkeypatch.setattr(flags, "inbox", lambda: True)
+    write_prefs(contrib_enabled=True)
     pr = propose(fake, {"index.html": PAGE.replace("hello", "yo")})
     jobs.wait(inbox.review(alice, pr["number"]))
     path = inbox.try_open(alice, pr["number"])["path"]
@@ -280,10 +287,10 @@ def test_orphaned_try_copies_are_swept(world, monkeypatch):
     os.makedirs(junk)
     assert trycopy.sweep_orphans() == 1  # the record-less one only
     assert os.path.isdir(path) and not os.path.exists(junk)
-    monkeypatch.setattr(flags, "inbox", lambda: False)
+    write_prefs(contrib_enabled=False)
     assert trycopy.sweep_orphans() == 1 and not os.path.exists(path)
     # Uninstalling the author's app takes its Try copies with it.
-    monkeypatch.setattr(flags, "inbox", lambda: True)
+    write_prefs(contrib_enabled=True)
     path = inbox.try_open(alice, pr["number"])["path"]
     app_state_remove.prune_stores(alice)
     assert not os.path.exists(path)
@@ -425,9 +432,7 @@ def test_unreadable_files_are_flagged_whatever_their_name(tmp_path, path, enc):
 def test_sweep_never_takes_a_copy_mid_create(world, monkeypatch):
     import threading
 
-    from fused_render.contrib import flags
-
-    monkeypatch.setattr(flags, "inbox", lambda: True)
+    write_prefs(contrib_enabled=True)
     path = os.path.join(trycopy.try_root(), "alice__x-99")
     made, go = threading.Event(), threading.Event()
 

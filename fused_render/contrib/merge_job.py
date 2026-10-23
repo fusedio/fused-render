@@ -1,6 +1,6 @@
-"""Merge with Claude (docs/CONTRIB_LOOP.md §16.4): when two versions of an
-app changed the same lines, Claude combines them in a scratch copy, the
-user reads what it did, and keeps or discards the result.
+"""Merge with Claude (docs/CONTRIB_LOOP.md §16.4, v3 §17.4): when two
+versions of an app changed the same lines, Claude combines them in a
+scratch copy, the user reads what it did, and keeps or discards the result.
 
 MERGE-ONLY, ONE RESOLUTION. `start(app_dir, purpose=, ours=, theirs=)`: in
 a KEPT scratch worktree at `ours`, `git merge --no-commit theirs`; Claude
@@ -9,16 +9,19 @@ commit with parents (ours, theirs) in the copy's identity
 (`replay.identity_args`). Nothing is ever rebased: the user's commits keep
 their ids (§16.0 P4). Purposes:
 
-| purpose    | ours                 | theirs                | accept                       |
-|------------|----------------------|-----------------------|------------------------------|
-| `update`   | Bob's HEAD           | the author's tip      | land in the folder           |
-| `return`   | Bob's HEAD           | the author's tip (the | land; the tree diff vs tip   |
-|            |                      |   merged proposal)    |   then holds only his edits  |
-| `proposal` | HEAD, or a PR head   | the PR head, or the   | `land=True` lands (Update    |
-|            |                      |   author's tip        |   then pushes); `land=False` |
-|            |                      |                       |   only answers `tip` (inbox) |
-| `own-sync` | the author's HEAD    | the tip on GitHub     | land; the own path pushes    |
-| `original` | the remix's HEAD     | the original's tip    | land; the own path pushes    |
+| purpose    | ours                 | theirs                 | accept                        |
+|------------|----------------------|------------------------|-------------------------------|
+| `update`   | Bob's HEAD           | `refs/heads/<b>`, the  | fast-forward `fused/mine`     |
+|            |   (`fused/mine`)     |   author's latest      |   to the merge                |
+| `proposal` | HEAD, or a PR head   | `refs/fused/pr-head`,  | `land=True`: fast-forward     |
+|            |                      |   or the author's tip  |   (Update then pushes);       |
+|            |                      |                        |   `land=False` only answers   |
+|            |                      |                        |   `tip` (inbox)               |
+| `own-sync` | the author's HEAD    | the tip on GitHub      | land; the own path pushes     |
+| `original` | the remix's HEAD     | the original's tip     | land; the own path pushes     |
+
+v2's `return` purpose is gone (§17.7): a merged proposal comes back through
+the engine's ordinary bring-in + settle.
 
 When nothing overlaps (`merge-tree` clean) the merge commit is built
 directly — no worktree, no Claude — and still shown for confirmation
@@ -27,8 +30,12 @@ directly — no worktree, no Claude — and still shown for confirmation
 THE REAL APP FOLDER NEVER HOLDS A HALF-DONE MERGE (§0.3). The worktree is
 `<home>/contrib/work/<job_id>/`, outside the workspace, so no Claude turn
 auto-commits there and auto-sync never sees it. Only `accept` touches the
-folder, through `replay.land` (`reset --keep` from `ours` — it is the merge's
-first parent, so nothing is dropped; refused when the branch moved since).
+folder. A `github` copy's purposes (`update`, `proposal`) land with
+`replay.land_ff_locked` — `merge --ff-only` to the result, whose first
+parent is `ours`: nothing is dropped, nothing is reset, and a HEAD that
+moved since the job started fails the job ("run it again", §17.4). Own
+copies (`own-sync`, `original`) land as before, through `replay.land`
+(`reset --keep` from `ours`).
 
 THE SERVER DECIDES, NEVER CLAUDE'S SAY-SO. Each round the resolver (Claude,
 headless, sandboxed — see "the resolver" below) is told to remove the markers in the
@@ -68,11 +75,15 @@ EXPIRE_S = 24 * 3600
 ORPHAN_AGE_S = 30 * 60
 _GIT_TIMEOUT_S = 60.0
 
-PURPOSES = ("update", "return", "proposal", "own-sync", "original")
+PURPOSES = ("update", "proposal", "own-sync", "original")
+#: The purposes of a `github` copy: landed by fast-forward (§17.4).
+FF_PURPOSES = ("update", "proposal")
 #: v1 purpose names still accepted by `start`.
 _ALIASES = {"needs-merge": "update"}
 
 STALE_MESSAGE = "Your app changed while Claude was working. Try again."
+#: accept on a `github` copy whose HEAD moved since the job started (§17.4).
+MOVED_MESSAGE = "Your copy changed meanwhile; run it again."
 FAILED_MESSAGE = "Claude couldn't combine the two versions. Your app is unchanged."
 BUSY_MESSAGE = ("Your app is busy, or has unsaved edits in the same files. "
                 "Try keeping the result again in a moment.")
@@ -80,7 +91,6 @@ CLEAN_MERGE_SUMMARY = "No overlap with your changes — both fit together as the
 _MESSAGES = {"original": "Bring in the original's latest",
              "own-sync": "Combine with the version saved on GitHub",
              "update": "Bring in {who}'s latest",
-             "return": "Bring in {who}'s latest",
              "proposal": "Combine with the latest version"}
 _MARKER_RE = re.compile(r"^(?:<{7}|>{7}|\|{7})(?: |$)", re.M)
 
@@ -305,15 +315,18 @@ def start(app_dir: str, *, purpose: str, ours: str | None = None, theirs: str | 
     prompt's words for ours and theirs (defaults per purpose). `identity`
     (`{"name", "email"}`) commits the merge as that person (an own copy's
     author), else the copy's identity. `onto` is the
-    v1 name of `theirs`; v1's `upstream`/`strategy`/`mark` are ignored."""
+    v1 name of `theirs`; v1's `upstream`/`strategy`/`mark` are ignored.
+    Without `theirs`, a `github` copy's purpose names its own (§17.4):
+    `update` → `refs/heads/<b>` (the fetch-only mirror of the author's
+    branch), `proposal` → `refs/fused/pr-head`."""
     purpose = _ALIASES.get(purpose, purpose)
     if purpose not in PURPOSES:
         raise ValueError(f"unknown purpose {purpose!r}")
-    theirs = theirs or onto
+    root = _canon(app_dir)
+    theirs = theirs or onto or _default_theirs(root, purpose)
     if not theirs:
         raise ValueError("merge job needs `theirs`")
     _housekeep()
-    root = _canon(app_dir)
     with _lock:
         for job in _jobs.values():
             if job["root"] == root and job["purpose"] == purpose and job["status"] in _OPEN:
@@ -332,6 +345,20 @@ def start(app_dir: str, *, purpose: str, ours: str | None = None, theirs: str | 
     threading.Thread(target=_run, args=(job, job["resolver"]),
                      daemon=True, name="contrib-merge-job").start()
     return job_id
+
+
+def _default_theirs(root: str, purpose: str) -> str | None:
+    """`theirs` when the caller names none (`start`'s docstring)."""
+    if purpose == "proposal":
+        from fused_render.contrib import proposals
+
+        return proposals.PR_HEAD_REF
+    if purpose == "update":
+        from fused_render.contrib import store
+
+        branch = (store.get(root) or {}).get("branch")
+        return f"refs/heads/{branch}" if branch else None
+    return None
 
 
 def choose(job_id: str, side: str) -> dict:
@@ -380,20 +407,28 @@ def current(app_dir: str, purpose=None) -> dict | None:
         return _public(live[-1])
     failed = sorted((j for j in mine if j["status"] == "failed"),
                     key=lambda j: j["started_at"])
-    if failed and _still_needed(root, failed[-1]["purpose"]):
+    if failed and _still_needed(root, failed[-1]):
         return _public(failed[-1])
     return None
 
 
-def _still_needed(root: str, purpose: str) -> bool:
-    from fused_render.contrib import store
+def _still_needed(root: str, job: dict) -> bool:
+    """A failed job is still worth showing while the overlap it failed on
+    stands. Own copies keep it on the record; a `github` copy keeps nothing
+    (§17.2: `conflict` is derived), so it stands while HEAD is still the
+    job's `ours` and the job's `theirs` is still not in it."""
+    from fused_render.contrib import replay, store
 
+    purpose = job["purpose"]
     rec = store.get(root) or {}
     if purpose == "original":
         return bool(rec.get("original_update"))
     if purpose == "own-sync":
         return bool(rec.get("own_state"))
-    return bool(rec.get("needs_merge"))
+    ours, theirs = job.get("ours"), job.get("theirs")
+    if not ours or not theirs or replay.rev(root, "HEAD") != ours:
+        return False
+    return not replay.is_ancestor(root, theirs, ours)
 
 
 def for_app(app_dir: str, purpose=None) -> dict | None:
@@ -737,9 +772,10 @@ def _sides(root: str, purpose: str) -> dict:
 
 
 def accept(job_id: str) -> dict:
-    """Keep the result. `land`: move the real folder to it (`replay.land`,
-    from `ours`); otherwise only hand back `tip`. `{ok, message, tip?,
-    reason?}`."""
+    """Keep the result. `land`: move the real folder to it — a `github`
+    copy's purposes by fast-forward (`_land_ff`), own copies by
+    `replay.land` from `ours`; otherwise only hand back `tip`. `{ok,
+    message, tip?, reason?}`."""
     with _lock:
         job = _jobs.get(job_id)
         if job is None or job["status"] != "ready":
@@ -761,6 +797,8 @@ def accept(job_id: str) -> dict:
         with _lock:
             job["status"] = "ready"
         return {"ok": False, "reason": "claude", "message": engine.CLAUDE_BUSY_MESSAGE}
+    if job["purpose"] in FF_PURPOSES:
+        return _accept_ff(job)
     why, backup = "moved", None
     try:
         why, backup = replay.land(root, branch=job["branch"], old_tip=job["ours"],
@@ -784,6 +822,48 @@ def accept(job_id: str) -> dict:
         return {"ok": False, "reason": "stale", "message": STALE_MESSAGE}
     engine.merge_landed(root, purpose=job["purpose"], old_tip=job["ours"],
                         new_tip=job["new_tip"], backup=backup)
+    return {"ok": True, "tip": job["new_tip"],
+            "message": "Done. Your app now has both versions."}
+
+
+def _accept_ff(job: dict) -> dict:
+    """`accept` for a `github` copy (§17.4): under the slot, HEAD must still
+    be `ours` on the branch the job started on, then `replay.land_ff_locked`
+    fast-forwards it to the result (`ours` is its first parent). A HEAD
+    that moved fails the job — never a reset; the next status shows the
+    overlap again and the person runs it again. A busy slot or a refusal
+    that is not a move (an unsaved edit in a file the result changes) keeps
+    the job ready."""
+    from fused_render import git_upstream as gu
+    from fused_render.contrib import engine, replay
+
+    root = job["root"]
+    why = "moved"
+    try:
+        with replay.slot() as held:
+            if not held:
+                why = "slot-busy"
+            elif (gu._current_branch(root) != job["branch"]
+                  or replay.rev(root, "HEAD") != job["ours"]):
+                why = "moved"
+            else:
+                why = replay.land_ff_locked(root, job["new_tip"])[0]
+    except Exception:  # noqa: BLE001
+        logger.exception("merge job %s: fast-forward failed", job["id"])
+        why = "failed"
+    if why and why != "moved":
+        with _lock:
+            job["status"] = "ready"
+        return {"ok": False, "reason": "busy", "message": BUSY_MESSAGE}
+    wt, job["worktree"] = job["worktree"], None
+    _cleanup(wt)
+    if why:
+        _finish(job, "failed", error=MOVED_MESSAGE)
+        return {"ok": False, "reason": "stale", "message": MOVED_MESSAGE}
+    with _lock:
+        job["status"], job["ended_at"] = "accepted", time.time()
+    engine.merge_landed(root, purpose=job["purpose"], old_tip=job["ours"],
+                        new_tip=job["new_tip"], backup=None)
     return {"ok": True, "tip": job["new_tip"],
             "message": "Done. Your app now has both versions."}
 

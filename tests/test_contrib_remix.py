@@ -1,12 +1,17 @@
 """Remix against a real temp clone and FakeGitHub (contract §11): publish
 makes a NEW repo (not a fork) with a Bob-authored credit commit and a new
 app id, re-points origin, keeps the original and an open proposal; the
-original moving is noticed and brought in by a merge job."""
+original moving is noticed and brought in by a merge job.
+
+v3 (§17): Bob's copy starts on `fused/mine` (`make_world`). Publish pushes
+HEAD to the record's branch (`main`) of the new repo and the checkout
+becomes `main` — an own copy has no home branch. No commit is rewritten
+(§17.7)."""
 from __future__ import annotations
 
 import pytest
 
-from _contrib_gh_world import PAGE, claude_commit, git, make_world, read
+from _contrib_gh_world import HOME, PAGE, claude_commit, edit, git, make_world, read
 
 
 @pytest.fixture
@@ -28,7 +33,11 @@ def _publish(w, name="sine-remix"):
 
 def test_publish_makes_bob_the_author_of_a_new_app(w):
     from fused_render import app_id
-    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    # A change made in the copy commits as Bob (the install identity, §16.1).
+    edit(w.app, "index.html", PAGE.replace("blue", "red"))
+    git(w.app, "commit", "-q", "-am", "Claude: red")
+    red = git(w.app, "rev-parse", "HEAD")
+    assert git(w.app, "log", "-1", "--format=%an") == "Bob"
     steps = []
     out = _r().publish(w.app, name="sine-remix", credit=CREDIT, step=steps.append)
     assert steps == ["create", "send"]
@@ -43,14 +52,23 @@ def test_publish_makes_bob_the_author_of_a_new_app(w):
     assert CREDIT in read(w.app, "README.md")
     new_id = app_id.app_id(f"{w.app}/index.html")
     assert new_id and new_id != "sine-starter-0a1b2c3d" and new_id.startswith("sine-remix-")
-    # Bob's Claude change is credited to him on the way out, too.
+    # Bob's own change went as it was: same commit, still his (no rewrite).
+    assert git(w.app, "rev-parse", "HEAD~1") == red
     assert git(w.app, "log", "-1", "--format=%an", "HEAD~1") == "Bob"
+    assert "proposal-credit" not in [a["kind"] for a in w.store.activity(w.app)]
+    # The checkout is `main` now, tracking Bob's repo; no home branch left.
+    assert git(w.app, "symbolic-ref", "HEAD") == "refs/heads/main"
+    assert git(w.app, "branch", "--list", HOME) == ""
+    assert git(w.app, "config", "--get", "branch.main.remote") == "origin"
+    assert git(w.app, "config", "--get", "branch.main.merge") == "refs/heads/main"
+    assert w.fake.tip("bob/sine-remix", "main") == head
+    assert w.fake.tip("bob/sine-remix", HOME) is None
     # Remotes and record.
     assert git(w.app, "config", "--get", "remote.origin.url") == "https://github.com/bob/sine-remix.git"
     assert "alice/sine" in git(w.app, "config", "--get", "remote.original.url")
     assert git(w.app, "rev-parse", "refs/remotes/origin/main") == head
     rec = w.store.get(w.app)
-    assert rec["kind"] == "own" and rec["repo"] == "bob/sine-remix"
+    assert rec["kind"] == "own" and rec["repo"] == "bob/sine-remix" and rec["branch"] == "main"
     assert rec["classified_by"] == "remix"
     assert rec["remix_of"] == {"repo": "alice/sine", "branch": "main"}
     assert [e["kind"] for e in rec["events"]][-1] == "remixed"
@@ -200,12 +218,14 @@ def test_publish_switches_record_first_and_lifts_the_guard_on_bobs_repo_only(w, 
 
     def spy(root, **kw):
         rec = w.store.get(root)
-        seen.append((rec["kind"], rec["repo"]))
+        seen.append((rec["kind"], rec["repo"], git(root, "symbolic-ref", "--short", "HEAD")))
         return real(root, **kw)
 
     monkeypatch.setattr(_r(), "_repoint_locked", spy)
     _publish(w)
-    assert seen == [("own", "bob/sine-remix")]
+    # Record first; origin next; the checkout leaves fused/mine only after.
+    assert seen == [("own", "bob/sine-remix", HOME)]
+    assert git(w.app, "symbolic-ref", "--short", "HEAD") == "main"
     assert git(w.app, "config", "--get", "remote.origin.pushurl", check=False) == ""
     assert git(w.app, "config", "--get", "remote.original.pushurl") == classify.NO_PUSH_URL
     assert "remixed" in [a["kind"] for a in w.store.activity(w.app)]
@@ -243,3 +263,18 @@ def test_publish_needs_a_github_link_copy(w):
     with pytest.raises(PlainError, match="already your remix"):
         _publish(w, name="again")
     assert _r().start_publish(w.app, name="x", credit=CREDIT)["reason"] == "not-allowed"
+
+
+def test_publish_leaves_a_new_file_in_place_on_main(w):
+    """The checkout switch is the same commit: a new file git does not track
+    (never published unless ticked) stays in the folder, untracked; tracked
+    edits went out as "Your edits" before the switch."""
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    edit(w.app, "scratch.txt", "mine\n")
+    edit(w.app, "app.py", "x = 3\n")
+    _publish(w)
+    assert git(w.app, "symbolic-ref", "--short", "HEAD") == "main"
+    assert read(w.app, "scratch.txt") == "mine\n"
+    assert git(w.app, "status", "--porcelain") == "?? scratch.txt"
+    assert w.fake.read("bob/sine-remix", "app.py", "refs/heads/main") == "x = 3\n"
+    assert w.fake.read("bob/sine-remix", "scratch.txt", "refs/heads/main") is None
