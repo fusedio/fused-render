@@ -237,7 +237,12 @@ def teardown_worktrees(paths, force: bool = False) -> dict:
         if reasons and not force:
             kept.append({**entry, "reasons": reasons})
             continue
-        res = wt.remove_worktree(path, path, force=force)
+        try:
+            res = wt.remove_worktree(path, path, force=force)
+        except Exception as exc:  # noqa: BLE001 — _Refusal, a git failure, anything
+            kept.append({**entry, "reasons": [*reasons, "remove-failed"],
+                         "error": str(exc)})
+            continue
         if isinstance(res, dict) and res.get("removed"):
             removed.append(path)
         else:

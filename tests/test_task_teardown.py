@@ -272,3 +272,20 @@ def test_holds_for_is_cached_for_the_ttl(repo, monkeypatch):
     clock[0] += td.HOLDS_TTL_S + 1
     td.holds_for([path])
     assert len(calls) == 2
+
+
+def test_a_raising_remove_is_kept_and_the_rest_still_processed(repo, monkeypatch):
+    paths = [_worktree(repo, n, push=True) for n in ("a", "b", "c")]
+    real = td.wt.remove_worktree
+
+    def flaky(path, name, force=False):
+        if path == paths[0]:
+            raise td.wt._Refusal("git said no")
+        return real(path, name, force=force)
+
+    monkeypatch.setattr(td.wt, "remove_worktree", flaky)
+    got = td.teardown_worktrees(paths)
+    assert sorted(got["removed"]) == sorted(paths[1:])
+    assert [k["path"] for k in got["kept"]] == [paths[0]]
+    assert "remove-failed" in got["kept"][0]["reasons"]
+    assert "git said no" in got["kept"][0]["error"]
