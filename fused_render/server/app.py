@@ -1145,6 +1145,26 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # Its own endpoint, not a /api/config field: the facts behind it are
     # process spawns, and /api/config is read on every page load.
     app.include_router(github_router)
+    # The GitHub contribution loop (routers/contrib.py, docs/CONTRIB_LOOP.md
+    # §12): install sources, your changes + Propose, the author's inbox,
+    # remixes. Reads are cached and never wait on GitHub; every POST carries
+    # the D3 X-Fused guard, names a workspace app, and answers
+    # `{ok:false, reason:"disabled"}` while its phase flag is off.
+    from fused_render.server.routers.contrib import router as contrib_router
+
+    app.include_router(contrib_router)
+
+    # The contrib inbox-count sweep (contrib/refresh.py): one daemon thread
+    # that, only while the inbox phase is on, re-lists every own app's
+    # proposals every 10 min so Apps cards carry counts. A startup hook so a
+    # TestClient that never enters the lifespan never gets the thread; full
+    # only — the bot flavor has no Apps grid.
+    @on_startup_full
+    async def _startup_contrib_sweep():
+        from fused_render.contrib import refresh as contrib_refresh
+
+        contrib_refresh.start()
+
     # Deep links (SPEC §26): GET /clone routes every OS-delivered open link
     # to an install page or the shell's fetch hand-off. deeplink.py never
     # imports server, so the include stays acyclic like shell/*.

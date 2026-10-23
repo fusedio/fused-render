@@ -137,27 +137,98 @@ _GITIGNORE = (
 _ROOT_GITIGNORE = ".DS_Store\n" + _GITIGNORE
 
 
-def _git(repo_dir: str, *args: str) -> subprocess.CompletedProcess:
+# A GitHub-link copy's `.git/config` and hooks are the side a stranger's app
+# (and Claude sessions in it) can write: fused's commits there run with no
+# fsmonitor command and no hooks (docs/CONTRIB_LOOP.md §16.12). An own copy
+# keeps the author's hooks (round-2 ruling), so only `safe=True` adds this.
+_SAFE = ("-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null")
+
+
+def _git(repo_dir: str, *args: str, identity=None, safe=False) -> subprocess.CompletedProcess:
     """One git invocation against a repo we own — see the module docstring for
     the close_fds=False discipline. May raise subprocess.TimeoutExpired past
     _GIT_TIMEOUT; every caller in this file is already wrapped in a broad
-    except Exception, so a hung git never escapes as an unhandled error."""
+    except Exception, so a hung git never escapes as an unhandled error.
+    `identity` replaces the Fused `-c user.*` pair (`_identity_for`)."""
     return subprocess.run(
-        [_git_bin(), "-C", repo_dir, *_IDENTITY, *args],
+        [_git_bin(), "-C", repo_dir, *(_SAFE if safe else ()),
+         *(_IDENTITY if identity is None else identity), *args],
         capture_output=True, text=True, timeout=_GIT_TIMEOUT,
         encoding="utf-8", errors="replace",
         close_fds=False,
     )
 
 
-def _git_retry_lock(repo_dir: str, *args: str) -> subprocess.CompletedProcess:
+def _git_retry_lock(repo_dir: str, *args: str, identity=None,
+                    safe=False) -> subprocess.CompletedProcess:
     """Like _git, with one retry when the failure is index.lock contention —
     the only failure that is expected to be gone milliseconds later."""
-    r = _git(repo_dir, *args)
+    r = _git(repo_dir, *args, identity=identity, safe=safe)
     if r.returncode != 0 and "index.lock" in (r.stderr or ""):
         time.sleep(_LOCK_RETRY_DELAY_S)
-        r = _git(repo_dir, *args)
+        r = _git(repo_dir, *args, identity=identity, safe=safe)
     return r
+
+
+def _fused_path(spec: str) -> str:
+    return ("" if spec == "." else spec + "/") + ".fused"
+
+
+def _fused_spec(spec: str) -> str:
+    """The app's own `.fused/` folder as a literal pathspec."""
+    return ":(literal)" + _fused_path(spec)
+
+
+def _scope_specs(spec: str) -> list[str]:
+    """`spec` as pathspecs for `diff`/`commit`, with the app's `.fused/`
+    excluded (docs/CONTRIB_LOOP.md §16.1). The `.fused/` ignore line keeps an
+    UNtracked state folder out, but a repo that commits `.fused/` (an author
+    did) tracks it, and an ignore rule never hides a tracked file's edits — a
+    scoped `add -A`/`commit --` would then carry this machine's state into
+    history, and on to the author. NOT for `add`: an exclude pathspec naming
+    an ignored path makes `add` exit 1 ("paths are ignored") after staging —
+    `_add_scoped` unstages `.fused` instead."""
+    return [_pathspec(spec), ":(exclude,literal)" + _fused_path(spec)]
+
+
+def _add_scoped(repo_dir: str, spec: str, safe=False) -> subprocess.CompletedProcess:
+    """`add -A -- <spec>`, then `.fused/` taken back out of the index
+    (`_scope_specs`)."""
+    r = _git_retry_lock(repo_dir, "add", "-A", "--", _pathspec(spec), safe=safe)
+    if r.returncode == 0:
+        _git_retry_lock(repo_dir, "reset", "-q", "--", _fused_spec(spec), safe=safe)
+    return r
+
+
+def _is_github_copy(repo_dir: str) -> bool:
+    """Whether `repo_dir` is a recorded GitHub-link copy (contrib kind)."""
+    if repo_dir == local_repo_root():
+        return False
+    try:
+        from fused_render.contrib import classify
+
+        return classify.kind_of(repo_dir) == "github"
+    except Exception:  # noqa: BLE001 — unknown reads as today's commit
+        return False
+
+
+def _identity_for(repo_dir: str) -> list[str]:
+    """The `-c user.*` pair a commit in `repo_dir` carries: Fused's, except
+    in a GitHub-link copy (§16.1) whose repo-local identity the contribution
+    loop set to the user's GitHub account — an empty list then, so git uses
+    that config. Unknown identity there → Fused's (credited at first send)."""
+    try:
+        if repo_dir == local_repo_root():
+            return _IDENTITY
+        from fused_render.contrib import classify
+
+        if classify.kind_of(repo_dir) != "github":
+            return _IDENTITY
+        have = [_git(repo_dir, "config", "--local", "--get", k, identity=[]).stdout.strip()
+                for k in ("user.name", "user.email")]
+        return [] if all(have) else _IDENTITY
+    except Exception:  # noqa: BLE001 — unknown reads as today's identity
+        return _IDENTITY
 
 
 def local_repo_root() -> str:
@@ -277,15 +348,15 @@ def init_repo(app_dir: str, message: str = "New app from starter") -> bool:
                 return False
             name = os.path.basename(app_dir)
             local = local_repo_root()
-            if _git_retry_lock(local, "add", "-A", "--",
-                               _pathspec(name)).returncode != 0:
+            specs = _scope_specs(name)
+            if _add_scoped(local, name).returncode != 0:
                 return False
             if _git(local, "diff", "--cached", "--quiet",
-                    "--", _pathspec(name)).returncode == 0:
+                    "--", *specs).returncode == 0:
                 return False
             ok = _git_retry_lock(
                 local, "commit", "-q", "-m", message,
-                "--", _pathspec(name)).returncode == 0
+                "--", *specs).returncode == 0
             if ok:
                 _auto_sync(app_dir, "Auto-push after app create")
             return ok
@@ -351,7 +422,9 @@ def commit(path: str, message: str, only_shared: bool = False,
         # Repos initialized before a _GITIGNORE pattern existed must not
         # sweep new bookkeeping files into history via the scoped add below.
         _ensure_excludes(repo_dir)
-        r = _git_retry_lock(repo_dir, "add", "-A", "--", _pathspec(spec))
+        specs = _scope_specs(spec)
+        safe = _is_github_copy(repo_dir)
+        r = _add_scoped(repo_dir, spec, safe=safe)
         if r.returncode != 0:
             logger.warning("app commit skipped (%s): add failed rc=%s "
                            "stdout=%r stderr=%r", app_dir, r.returncode,
@@ -361,10 +434,11 @@ def commit(path: str, message: str, only_shared: bool = False,
         # sidecar): no commit, and no error either. Scoped, so a sibling
         # app's staged work neither triggers nor rides this commit.
         if _git(repo_dir, "diff", "--cached", "--quiet",
-                "--", _pathspec(spec)).returncode == 0:
+                "--", *specs, safe=safe).returncode == 0:
             return False
         r = _git_retry_lock(repo_dir, "commit", "-q", "-m",
-                            message or "Update", "--", _pathspec(spec))
+                            message or "Update", "--", *specs,
+                            identity=_identity_for(repo_dir), safe=safe)
         if r.returncode != 0:
             logger.warning("app commit skipped (%s): commit failed rc=%s "
                            "stdout=%r stderr=%r", app_dir, r.returncode,

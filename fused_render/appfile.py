@@ -1082,6 +1082,14 @@ def install_target(fused_path: str, *, light: bool = False) -> dict:
         dest, found_by, husk, state, changed, other_name = _git_state(
             git, dest, found_by, husk, state, stamp, other_name, light)
         installed = found_by is not None
+        if found_by == "git" and not light:
+            # A GitHub-link copy's page words come from the contribution
+            # engine (docs/CONTRIB_LOOP.md §16.8): `who` (whose latest),
+            # `changes` (the user has their own), `collision` (their files
+            # the update would land on). Absent for any other clone.
+            from fused_render import appfile_git
+
+            git = {**git, **(appfile_git.copy_view(dest, git) or {})}
 
     files = []
     total = 0

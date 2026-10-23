@@ -354,6 +354,19 @@ def summary() -> dict:
     return _public(snapshot())
 
 
+def cached_summary() -> Optional[dict]:
+    """The last snapshot as it stands — any age, NEVER measured here — or
+    None when there is none. `stale` says it is past `_MAX_AGE_S` (or its
+    fingerprint no longer matches), so a caller that must not block (a page
+    read) can answer from it and re-measure off-thread with `summary()`."""
+    cached = _read_cache()
+    if not cached:
+        return None
+    stale = (_too_old(cached)
+             or cached.get("fingerprint") != _fingerprint(cached.get("path")))
+    return {**_public(cached), "stale": stale}
+
+
 def summary_refreshed() -> dict:
     """`summary()` after a forced re-measure. Returns the measurement it just
     took rather than re-reading through `summary()` — the same fix

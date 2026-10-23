@@ -49,11 +49,13 @@
 //     tabs now (SideChrome's SideTabs). The dialog's open state lives in
 //     Preview.tsx because Open With → MCP has to reach it too.
 import { useEffect, useState, type ReactNode } from "react";
-import { Plug, Stethoscope } from "lucide-react";
+import { GitPullRequestArrow, Plug, Stethoscope } from "lucide-react";
 import { addCurrentApp, getAppEntry } from "@platform/lib/api";
 import { exportAppFileOnly, openShareApp } from "@platform/lib/share-app";
-import { useAppSharingFeature } from "@platform/lib/share-app-flag";
+import { useAppShareOffered } from "@platform/lib/share-app-flag";
 import { AppDoctorModal } from "@platform/ui/AppDoctorModal";
+import { useContribFlags } from "@platform/lib/contrib-flags";
+import { ContribModal } from "@shell/contrib/ContribModal";
 import { AppDoctorStatusDot } from "@platform/ui/AppDoctorStatusDot";
 import { useAppDoctorChecks } from "@platform/ui/useAppDoctorChecks";
 import { announceCurrentAppsChanged } from "@platform/lib/tasksChanged";
@@ -154,10 +156,18 @@ export function useAppActionRows({
   const [isEntryProbed, setIsEntry] = useState(false);
   const isEntry = isEntryKnown ?? isEntryProbed;
   const [doctorOpen, setDoctorOpen] = useState(false);
+  // The contribution loop's dialog (shell/contrib/ContribModal): where this
+  // copy comes from, its changes and proposals, every button — so a person
+  // working in the explorer never has to leave for the app page. Offered
+  // only while the Community preview is on, like the panel itself.
+  const [contribOpen, setContribOpen] = useState(false);
+  const contribFlags = useContribFlags();
+  const contribOn = !!contribFlags && Object.values(contribFlags).some(Boolean);
   useEffect(() => {
     let alive = true;
     setIsEntry(false);
     setDoctorOpen(false);
+    setContribOpen(false);
     if (isEntryKnown !== undefined) return; // the caller answered; nothing to ask
     getAppEntry(dir)
       .then((r) => {
@@ -188,7 +198,7 @@ export function useAppActionRows({
   // opens the sheet; OFF, it is the "Download app" row this menu carried
   // before the sheet — the same `.fused` straight to Downloads, a toast saying
   // where — with its own spinner, since there is no sheet to narrate the save.
-  const sharing = useAppSharingFeature();
+  const sharing = useAppShareOffered();
   const [exporting, setExporting] = useState(false);
   const shareDisabled = snapshotPending || snapshotError || exporting;
   // One Share entry opens the unified sheet (ShareAppModal): the public link
@@ -300,6 +310,16 @@ export function useAppActionRows({
   // Handed back on its own so callers close the app group with it — after
   // Set Current View as Preview where the file menu has one.
   const doctor: MenuEntry[] = [];
+  if (isEntry && contribOn) {
+    doctor.push({
+      label: "GitHub",
+      icon: <GitPullRequestArrow {...LUCIDE} />,
+      title:
+        "Where " + name + " comes from, your changes and proposals: bring in the latest, " +
+        "propose to the author, review what others sent",
+      onClick: () => setContribOpen(true),
+    });
+  }
   if (isEntry) {
     doctor.push({
       label: "App Doctor",
@@ -353,7 +373,9 @@ export function useAppActionRows({
     terminal,
     isEntry,
     badge: isEntry ? <AppDoctorStatusDot checks={doctorChecks} /> : undefined,
-    modal: doctorOpen ? (
+    modal: contribOpen ? (
+      <ContribModal dir={dir} slug={name} onClose={() => setContribOpen(false)} />
+    ) : doctorOpen ? (
       <AppDoctorModal dir={dir} onClose={() => setDoctorOpen(false)} onOpenGit={onOpenGit} />
     ) : null,
   };

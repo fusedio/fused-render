@@ -377,6 +377,30 @@ const ENTRIES = [
     keywords: "thumbnail preview iframe cards live hover image",
     renderOnly: true,
   },
+  // Community (preview): the GitHub contribution loop, one switch, and Remix
+  // on its own (docs/CONTRIB_LOOP.md §1). Off by default.
+  {
+    id: "contrib",
+    group: "apps",
+    section: "Community (preview)",
+    label: "Community apps",
+    description:
+      "Cards say whether an app is yours or follows someone else's, and Share offers its install link. Your edits to someone else's app stay on top of theirs and you can propose them to the author; proposals to your apps show up on the app with a safety review to try, accept or decline. Once accepted, your copy goes back to following theirs and you're credited.",
+    keywords:
+      "community contribute follow author source origin propose proposals proposal edits pull request inbox review accept decline merged accepted credit contributors",
+    renderOnly: true,
+    badge: "Beta",
+  },
+  {
+    id: "contrib-remix",
+    group: "apps",
+    section: "Community (preview)",
+    label: "Remix",
+    description: "Publish your changed version as an app of your own, credited to the original.",
+    keywords: "community contribute remix fork publish credit original",
+    renderOnly: true,
+    badge: "Beta",
+  },
 
   // ── File index ───────────────────────────────────────────────────────────
   {

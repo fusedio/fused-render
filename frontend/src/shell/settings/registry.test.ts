@@ -94,6 +94,15 @@ describe("visibility", () => {
     expect(bot.map((s) => s.id)).toContain("monitor");
   });
 
+  test("Community (preview) is the loop row then Remix under Apps & sharing, absent on Fused Bot", () => {
+    const ids = sectionsOf(visibleSettings(ctx()), "apps")
+      .find((s) => s.section === "Community (preview)")
+      ?.entries.map((e) => e.id);
+    expect(ids).toEqual(["contrib", "contrib-remix"]);
+    expect(visibleSettings(ctx({ bot: true })).some((s) => s.id.startsWith("contrib"))).toBe(false);
+    expect(searchSettings(visibleSettings(ctx()), "proposals inbox").map((s) => s.id)).toEqual(["contrib"]);
+  });
+
   test("Fused Bot's launcher rows speak of bots, in the row and in search", () => {
     const bot = visibleSettings(ctx({ bot: true }));
     const row = bot.find((s) => s.id === "launcher-row")!;

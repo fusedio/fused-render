@@ -693,6 +693,38 @@ def test_push_publishes_local_commits(ops, wired):
     assert git(remote, "log", "-1", "--format=%s").strip() == "to push"
 
 
+def test_push_is_refused_in_plain_words_for_a_guarded_copy(ops, reader, wired, tmp_path,
+                                                           monkeypatch):
+    # A copy of someone else's GitHub app (docs/CONTRIB_LOOP.md §16.0 P2)
+    # carries `no-push://fused` on origin: the view says so instead of Push
+    # (`repo.push_blocked`), the op answers with the same plain sentence, not
+    # git's "remote helper" error, and nothing reaches the remote. The
+    # sentence points at the app page only while that page has the panel
+    # (A1 on, §16.12).
+    import json
+
+    root, remote, _ = wired
+    home = tmp_path / "apphome"
+    home.mkdir()
+    monkeypatch.setenv("FUSED_RENDER_HOME_DIR", str(home))
+    before = git(remote, "rev-parse", "HEAD").strip()
+    assert reader.main(root)["repo"]["push_blocked"] is None
+    git(root, "config", "remote.origin.url", "https://github.com/alice/x.git")
+    git(root, "config", "remote.origin.pushurl", "no-push://fused")
+    assert reader.main(root)["repo"]["push_blocked"] == (
+        "This copy of alice/x has changes of its own, and they stay on this computer.")
+    (home / "prefs.json").write_text(json.dumps({"contrib_enabled": True}))
+    blocked = reader.main(root)["repo"]["push_blocked"]
+    assert blocked == "This app follows alice/x. Send your changes from its app page."
+    write(root, "pkg/mod.py", "kept here\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "local only", when="2026-10-04T10:00:00+00:00")
+    got = ops.main(root, op="push")
+    assert got["ok"] is False and got["reason"] == "follows-author"
+    assert got["message"] == blocked
+    assert git(remote, "rev-parse", "HEAD").strip() == before
+
+
 def test_push_publishes_a_branch_that_has_no_upstream_yet(ops, wired):
     # The decision this pins: a push from a branch with no upstream SETS one
     # (`--set-upstream <remote> <branch>`) rather than failing with git's

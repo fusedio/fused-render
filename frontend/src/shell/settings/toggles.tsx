@@ -21,7 +21,11 @@ import {
   putTaskSummaryTitlesEnabled,
   putClaudeDefaultPermission,
   putClaudeStrictMcpEnabled,
+  putContribEnabled,
+  putContribRemixEnabled,
 } from "@platform/lib/api";
+import { effectiveContribFlags, publishContribFlags } from "@platform/lib/contrib-flags";
+import { settingById } from "./registry";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
 import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
@@ -200,6 +204,41 @@ export function LivePreviewsControl({ prefs, onChange }: PrefControlProps) {
       checked={prefs.live_previews?.enabled === true}
       put={putLivePreviewsEnabled}
       after={(next) => publishLivePreviewsEnabled(next.live_previews?.enabled === true)}
+      onChange={onChange}
+    />
+  );
+}
+
+// ── Community (preview) ────────────────────────────────────────────────────
+// The GitHub contribution loop's switch (it was four phase switches with a
+// prerequisite chain until 2026-10-22) and Remix on its own. Remix is shown
+// AS SET, never disabled: with the loop off its row says what it waits for
+// instead — a disabled switch would hide that the click would have counted.
+// Same publish-after-PUT as the rows above (contrib-flags.ts), so the cards
+// and the share sheet already mounted follow.
+
+export function ContribControl({ prefs, onChange }: PrefControlProps) {
+  return (
+    <PrefToggleRow
+      id="contrib"
+      checked={prefs.contrib?.enabled === true}
+      put={(next) => putContribEnabled(next)}
+      after={(next) => publishContribFlags(next.contrib)}
+      onChange={onChange}
+    />
+  );
+}
+
+export function ContribRemixControl({ prefs, onChange }: PrefControlProps) {
+  const on = prefs.contrib?.remix === true;
+  const held = on && !effectiveContribFlags(prefs.contrib).remix;
+  return (
+    <PrefToggleRow
+      id="contrib-remix"
+      checked={on}
+      put={(next) => putContribRemixEnabled(next)}
+      after={(next) => publishContribFlags(next.contrib)}
+      status={held ? `Needs ${settingById("contrib")?.label ?? "Community apps"} to be on.` : undefined}
       onChange={onChange}
     />
   );

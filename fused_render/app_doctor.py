@@ -117,6 +117,11 @@ _CHECK_META: dict[str, tuple[str, str, str]] = {
     # local refs only; "behind origin" needs a real fetch, which this never
     # performs inline — see `_repo_health_check`.
     "git": ("sharing", "warning", "fact"),
+    # The GitHub contribution loop (docs/CONTRIB_LOOP.md §4): a repo that
+    # commits its own `.fused/` ships the author's machine data to everyone
+    # who installs it. Only reported while `contrib.flags.sources()` is on
+    # (`_gated_checks`) — with the loop off the checklist is exactly today's.
+    "fused-dir-committed": ("sharing", "warning", "fact"),
     "generated": ("sharing", "warning", "fact"),
     "preview": ("sharing", "warning", "fact"),
 }
@@ -560,6 +565,45 @@ def _content_family_checks(app_dir: str) -> dict[str, dict]:
     return out
 
 
+def _fused_dir_committed_check(app_dir: str) -> dict:
+    """Whether the app's own repository tracks anything under `.fused/` —
+    the folder that holds THIS machine's data for the app (D548). Local git
+    only (`ls-files`), no network. The contribution loop already keeps such
+    files from blocking a copy's updates (contrib/replay.py); this row is
+    the author's to fix at the source."""
+    from fused_render import git_upstream
+
+    label = "The repo leaves out the .fused folder"
+    root = git_upstream.repo_root(app_dir)
+    if root is None or root != os.path.realpath(app_dir):
+        return _check("fused-dir-committed", label, SKIP,
+                      "this app is not its own git repository")
+    r = git_upstream._run(root, "ls-files", "-z", "--", ".fused")
+    if not git_upstream._ok(r):
+        return _check("fused-dir-committed", label, SKIP, "could not read the repository")
+    tracked = [p for p in r[1].decode("utf-8", "replace").split("\0") if p]
+    if not tracked:
+        return _check("fused-dir-committed", label, PASS, "the .fused folder is not in the repo")
+    findings = [{"rule": "fused-dir:tracked", "path": p, "line": 0, "excerpt": p}
+                for p in tracked[:20]]
+    return _check("fused-dir-committed", label, FAIL,
+                  "This app's repo includes its .fused folder, which holds this "
+                  "machine's data. Remove it from the repo.", findings)
+
+
+def _gated_checks(app_dir: str) -> dict:
+    """Rows that exist only while a feature flag is on — absent, not skipped,
+    when it is off, so the checklist is byte-for-byte today's."""
+    try:
+        from fused_render.contrib import flags
+
+        if flags.sources():
+            return {"fused-dir-committed": _fused_dir_committed_check(app_dir)}
+    except Exception:  # noqa: BLE001 — a flag read never fails the report
+        pass
+    return {}
+
+
 def _generated_check(app_dir: str) -> dict:
     stray = _generated_paths(app_dir)
     return _check(
@@ -706,6 +750,10 @@ def _repo_health_check(app_dir: str) -> dict:
     the two bases are one.
     """
     from fused_render import git_upstream
+
+    contrib_row = _contrib_git_row(app_dir)
+    if contrib_row is not None:
+        return contrib_row
 
     g_state, g_pending = _git_pending(app_dir)
     p_state, p_subjects, p_skip_reason = _pushed_pending(app_dir)
@@ -854,6 +902,83 @@ def _repo_health_check(app_dir: str) -> dict:
     return row
 
 
+#: An own copy's stuck states (docs/CONTRIB_LOOP.md §16.7, `own_state`) and
+#: what the row says; the fix buttons are the app page's.
+_OWN_STATE_DETAIL = {
+    "github-changed": ("The version on GitHub changed in a way Fused can't combine on its "
+                       "own — open the app page to choose what to keep."),
+    "edits": ("Edits you haven't saved overlap the latest version on GitHub — open the "
+              "app page to save them and continue."),
+    "needs-merge": ("Your changes and the latest version on GitHub overlap — open the "
+                    "app page to combine them."),
+    "unknown": ("Fused can't tell whether the version on GitHub dropped something you had "
+                "published, so your latest edits are waiting — open the app page to "
+                "publish them or to use the version on GitHub."),
+}
+
+#: The record's `hold` (§16.12): work made while this was someone else's copy,
+#: waiting for Publish now.
+_HELD_DETAIL = ("This is your app now. Edits made before Fused knew that are waiting on "
+                "this computer — open the app page and press Publish now to send them to "
+                "GitHub.")
+
+
+def _contrib_git_row(app_dir: str) -> dict | None:
+    """The `git` row for a recorded copy of the contribution loop
+    (docs/CONTRIB_LOOP.md §16.8), or None for every other folder (the row
+    above, unchanged). A GitHub-link copy has no "unpushed" or "behind" in
+    the git sense — its changes stay on this computer on purpose, and the
+    engine brings the author's latest in itself — so the row says that in
+    plain words, carries `behind`/`ahead` 0 so no Pull/Push action is drawn,
+    and fails only on the decision the app page is waiting for (an overlap
+    with the author's latest). An own copy gets today's row, except in a
+    stuck `own_state` (§16.7), which the app page's buttons fix. Whatever
+    the flags: the kind is a fact about the copy (§16.0 P1)."""
+    from fused_render import git_upstream
+
+    try:
+        from fused_render.contrib import classify, store
+
+        root = git_upstream.repo_root(app_dir)
+        if root is None or root != os.path.realpath(app_dir):
+            return None
+        kind = classify.kind_of(root)
+        if kind not in ("github", "own"):
+            return None
+        rec = store.get(root) or {}
+    except Exception:  # noqa: BLE001 — fall back to the ordinary row
+        return None
+    # A read: no `note_app_opened` here (opening the app already syncs it).
+    if kind == "github":
+        if rec.get("needs_merge"):
+            state, detail = FAIL, ("The author's latest overlaps your changes — "
+                                   "open the app page to combine them.")
+        elif not rec.get("owner_checked"):
+            # Whose app this is is not known yet (signed out): if it turns
+            # out to be yours, it publishes as usual — never promise "stays".
+            state, detail = PASS, ("Your changes stay on this computer until fused knows "
+                                   "whether this app is yours.")
+        else:
+            state, detail = PASS, "Your changes stay on this computer until you propose them."
+    else:
+        own = rec.get("own_state")
+        own = own.get("state") if isinstance(own, dict) else own
+        hold = rec.get("hold") if classify.is_held(root) else None
+        if hold:
+            unknown = isinstance(hold, dict) and hold.get("why") == "unknown"
+            state, detail = FAIL, _OWN_STATE_DETAIL["unknown"] if unknown else _HELD_DETAIL
+        elif own in _OWN_STATE_DETAIL:
+            state, detail = FAIL, _OWN_STATE_DETAIL[own]
+        else:
+            return None
+    row = _check("git", "Repo in sync", state, detail, [])
+    # `contrib`: the page offers "Open app page" here instead of Fix with
+    # Claude, and Fix all leaves the row out (`doctor_prompt_all`).
+    row.update({"behind": 0, "ahead": 0, "gitRoot": root, "onDefault": True, "clean": True,
+                "contrib": True})
+    return row
+
+
 def _same_path(a, b) -> bool:
     if not a or not b:
         return False
@@ -960,8 +1085,9 @@ def report(app_dir: str) -> dict:
         "icon": _icon_check(app_dir),
         "git": _repo_health_check(app_dir),
         "cross-browser": _cross_browser_check(app_dir),
+        **_gated_checks(app_dir),
     }
-    checks = [by_id[cid] for cid in CHECK_ORDER]
+    checks = [by_id[cid] for cid in CHECK_ORDER if cid in by_id]
 
     return {
         "path": app_dir,
@@ -1006,6 +1132,8 @@ def report_one(app_dir: str, check_id: str) -> dict | None:
         return _repo_health_check(app_dir)
     if check_id == "cross-browser":
         return _cross_browser_check(app_dir)
+    if check_id == "fused-dir-committed":
+        return _fused_dir_committed_check(app_dir)
     raise AssertionError(f"unreachable: {check_id!r} is in _CHECK_META but not dispatched")
 
 
@@ -1233,7 +1361,9 @@ def doctor_prompt_all(entry_html: str, checks: list[dict]) -> str:
     whole run, appended after every row's block — never one per row, and
     only when there was at least one failing row to maybe act on."""
     entry_name = os.path.basename(entry_html)
-    failing = [c for c in checks if c["state"] == FAIL]
+    # A `contrib` row (`_contrib_git_row`) is resolved on the app page, never
+    # by a fix session running git in the folder.
+    failing = [c for c in checks if c["state"] == FAIL and not c.get("contrib")]
     if not failing:
         return (
             f"{DOCTOR_PROMPT_PREFIX} — check `{ALL}` (`{entry_name}` is its entry page, "

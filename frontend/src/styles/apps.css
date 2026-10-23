@@ -445,6 +445,48 @@
   margin-left: auto;
 }
 
+/* The name and, for an app with proposals waiting, the inbox pill. A row of
+   its own so the pill sits at the name's end without the name losing its
+   ellipsis; the pill's line box is under the name's (~16px), so the head is
+   as tall as it was — Home's skeleton tracks that height. */
+.app-pcard-titlerow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.app-pcard-inbox {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  border-radius: 999px;
+  /* A tint, and the accent's text-safe shade (`--accent-soft`, tokens.css)
+     on it — the raw accent is a fill colour and too light to read as text
+     in the light theme. */
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--accent-soft);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 15px;
+  white-space: nowrap;
+}
+
+/* Where a copy came from ("follows alice/x", "Remix of alice/x"). It is the
+   one fact on the row the folder path does not already say, so the path
+   gives way first when the card is narrow (it repeats the repo's name anyway). */
+.app-pcard-name.is-yielding {
+  flex: 0 100 auto;
+  min-width: 2.5em;
+}
+
+.app-pcard-source {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* The fold's auto-extend sentinel (Apps.tsx): one pixel after the grid for
    an IntersectionObserver to watch, never visible, never a gap. */
 .apps-more-sentinel {

@@ -4814,12 +4814,43 @@ def _commit_turn(file: str, message: str, backend: str = "") -> None:
     if not git_bin or not os.path.isabs(git_bin):
         return
 
+    identity = ["-c", "user.name=Fused", "-c", "user.email=apps@fused.io"]
+    safe = []
+
     def git(*args):
         return subprocess.run(
-            [git_bin, "-C", repo_dir, "-c", "user.name=Fused",
-             "-c", "user.email=apps@fused.io", *args],
+            [git_bin, "-C", repo_dir, *safe, *identity, *args],
             capture_output=True, text=True, timeout=30, close_fds=False,
             encoding="utf-8", errors="replace")
+
+    # `.fused/` kept out by PATHSPEC as well as by info/exclude below: an
+    # ignore rule never hides a TRACKED file's edits, and a repo that commits
+    # `.fused/` would otherwise carry this machine's state into the turn's
+    # commit (docs/CONTRIB_LOOP.md §16.1). `add` is unscoped-by-exclude and
+    # `.fused` unstaged after it (an exclude naming an ignored path makes
+    # `add` exit 1); diff/commit exclude it. Mirrors app_git._scope_specs.
+    fused = ("" if spec == "." else spec.removeprefix(":(literal)") + "/") + ".fused"
+    specs = [spec, ":(exclude,literal)" + fused]
+    # A GitHub-link copy (the contribution loop marks it `fused.kind=github`
+    # in the repo's own config, and sets the user's GitHub identity there):
+    # the turn commits as the user, crediting Claude in a trailer, instead of
+    # as Fused. The marker only picks an identity — never where anything
+    # goes. Mirrors app_git._identity_for.
+    trailer = ""
+    try:
+        def local(key):
+            r = git("config", "--local", "--get", key)
+            return r.stdout.strip() if r.returncode == 0 else ""
+        if repo_dir == app_dir and local("fused.kind") == "github":
+            trailer = "\n\nCo-authored-by: Claude <noreply@anthropic.com>"
+            # Someone else's app: its `.git/config` and hooks are the side the
+            # app can write — no fsmonitor command, no hooks (§16.12). An own
+            # app keeps its author's hooks. Mirrors app_git._SAFE.
+            safe = ["-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null"]
+            if local("user.name") and local("user.email"):
+                identity = []
+    except Exception:
+        pass
 
     try:
         # The two sidecar patterns are a LEGACY defense: nothing writes those
@@ -4848,9 +4879,10 @@ def _commit_turn(file: str, message: str, backend: str = "") -> None:
                     fh.write("\n".join(missing) + "\n")
         if git("add", "-A", "--", spec).returncode != 0:
             return
-        if git("diff", "--cached", "--quiet", "--", spec).returncode == 0:
+        git("reset", "-q", "--", ":(literal)" + fused)
+        if git("diff", "--cached", "--quiet", "--", *specs).returncode == 0:
             return  # nothing to commit (turn changed no files under this app)
-        git("commit", "-q", "-m", subject, "--", spec)
+        git("commit", "-q", "-m", subject + trailer, "--", *specs)
     except Exception:
         pass
     finally:

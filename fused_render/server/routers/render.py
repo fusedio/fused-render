@@ -92,6 +92,12 @@ def render(
                 # git_upstream.py's module docstring for why this lives here
                 # rather than on /api/fs/list).
                 git_upstream.note_app_opened(app_dir)
+                # The contribution loop's refresh-on-open (proposal state,
+                # inbox, remix original) — same trigger, same posture:
+                # throttled per app, off the request thread, flag-gated.
+                from fused_render.contrib import refresh as contrib_refresh
+
+                contrib_refresh.note_app_opened(app_dir)
         except Exception:
             logger.warning("recording app open failed for %s", path, exc_info=True)
 

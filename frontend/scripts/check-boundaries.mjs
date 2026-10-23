@@ -126,6 +126,8 @@ const SHARED_APPS = new Set(["apps/claude"]);
  * as "anything" it's allowed to import — no hole needed for it here.
  */
 const SHELL_OPEN_TO_APPS = new Set([
+  // The contribution loop's one dialog, opened from the explorer's menu.
+  "shell/contrib/ContribModal",
   "shell/ScheduleTaskViews",
   "shell/tasks-lib",
   "shell/tasksPulse",

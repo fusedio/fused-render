@@ -1,0 +1,1037 @@
+/* The GitHub contribution loop on the app page (shell/contrib/*): the source
+   line under the app's name, the Source panel above the Overview's frame,
+   the Proposals tab, and the bits of the Propose / Remix / Decline sheets that
+   Tailwind utilities do not already say.
+
+   The visual idea is RESTRAINT. Everything here sits beside a running app and
+   must not out-shout it: one quiet surface (the same --bg-alt / --border /
+   10px radius as the frame under it), one sentence at body weight, and colour
+   spent in exactly one place — the small glyph plate on the left, whose tint
+   says what kind of moment this is (a fact, Claude working, a decision, done).
+   No banner fills, no gradients, no motion except Claude's slow breath while
+   it works.
+
+   Inside the app page's 1050px gutter frame (.app-page-body) and never wider:
+   the frame is a page-wide invariant (owner, 2026-08-26). After app-page.css
+   in the barrel. Every colour is a token, so light and dark both follow. */
+
+/* ---- the header's source line ---------------------------------------------
+   Shares the folder's row: folder then source, both able to shrink and
+   ellipsize (a long repo name must not push the header's buttons off), so the
+   header keeps its two-line height. */
+.app-page-sub {
+  min-width: 0;
+  max-width: 100%;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.contrib-source {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--fg-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.contrib-source::before {
+  content: "";
+  display: inline-block;
+  width: 3px;
+  height: 3px;
+  margin: 0 10px 2px 0;
+  border-radius: 50%;
+  background: var(--fg-faint);
+  vertical-align: middle;
+}
+
+.contrib-source-repo {
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.contrib-source-repo:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.contrib-source-repo:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* ---- the Overview's stack (SourcePanel) ------------------------------------ */
+.contrib-stack {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+  /* The app under it always keeps most of the panel: a long merge summary
+     or an opened comment scrolls inside the stack instead of pushing the
+     frame down to a sliver. */
+  max-height: 40vh;
+  overflow-y: auto;
+  animation: contrib-arrive 160ms ease-out;
+}
+
+@keyframes contrib-arrive {
+  from {
+    opacity: 0;
+  }
+}
+
+.contrib-strip {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-alt);
+}
+
+.contrib-strip-plate {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--fg) 7%, transparent);
+  color: var(--fg-muted);
+}
+
+.contrib-strip-plate svg {
+  width: 15px;
+  height: 15px;
+}
+
+.contrib-strip.is-working .contrib-strip-plate {
+  color: var(--fg);
+}
+
+.contrib-strip.is-attention {
+  border-color: color-mix(in srgb, var(--warning) 32%, var(--border));
+}
+
+.contrib-strip.is-attention .contrib-strip-plate {
+  background: color-mix(in srgb, var(--warning) 15%, transparent);
+  color: var(--warning);
+}
+
+.contrib-strip.is-success .contrib-strip-plate {
+  background: color-mix(in srgb, var(--success) 15%, transparent);
+  color: var(--success);
+}
+
+.contrib-strip-main {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Sentence and primary on one row; the primary centres on the text block,
+   which is one or two lines, so it never floats above a short sentence. */
+.contrib-strip-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 30px;
+}
+
+.contrib-strip-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.contrib-strip-sentence {
+  margin: 0;
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--fg);
+}
+
+.contrib-strip-detail {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--fg-muted);
+}
+
+.contrib-strip-primary {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+}
+
+.contrib-strip-dismiss {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin: -2px -6px -2px 0;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.contrib-strip-dismiss svg {
+  width: 14px;
+  height: 14px;
+}
+
+.contrib-strip-dismiss:hover {
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
+  color: var(--fg);
+}
+
+.contrib-strip-dismiss:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 0;
+}
+
+.contrib-strip-secondary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 16px;
+  margin-top: 8px;
+}
+
+/* The slim notice: one line, same surface, a step quieter. */
+.contrib-strip.is-slim {
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px 6px 10px;
+  background: transparent;
+}
+
+.contrib-strip.is-slim .contrib-strip-plate {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+}
+
+.contrib-strip.is-slim .contrib-strip-plate svg {
+  width: 12px;
+  height: 12px;
+}
+
+.contrib-strip.is-slim .contrib-strip-row {
+  min-height: 20px;
+}
+
+.contrib-strip.is-slim .contrib-strip-sentence {
+  font-size: 12.5px;
+  font-weight: 400;
+  color: var(--fg-muted);
+}
+
+/* ---- quiet text actions ---------------------------------------------------
+   A raw <button>/<a> with a FULL reset: the shell ships Tailwind without
+   preflight, so a button keeps the UA's chrome unless told otherwise. */
+.contrib-quiet {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
+  border: 0;
+  border-radius: 3px;
+  background: none;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.4;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.contrib-quiet svg {
+  width: 12px;
+  height: 12px;
+}
+
+.contrib-quiet:hover:not(:disabled) {
+  color: var(--fg);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.contrib-quiet.is-danger:hover:not(:disabled) {
+  color: var(--error);
+}
+
+.contrib-quiet:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.contrib-quiet:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ---- what goes inside a strip --------------------------------------------- */
+.contrib-quote {
+  margin: 8px 0 0;
+  padding: 2px 0 2px 10px;
+  border-left: 2px solid var(--border);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ---- the Source panel (SourcePanel.tsx) ----------------------------------
+   The strip above, plus what the panel carries under its sentence: Claude's
+   merge review, the "checked" line with the Activity disclosure on a hairline
+   of its own, and the activity list. */
+.contrib-panel-merge {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--fg);
+}
+
+.contrib-panel-merge > svg {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin-top: 1px;
+}
+
+.contrib-panel-merge.is-failed > svg {
+  color: var(--warning);
+}
+
+.contrib-panel-merge-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.contrib-panel-merge-title {
+  margin: 0;
+  font-weight: 500;
+}
+
+.contrib-panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+  margin-top: 10px;
+}
+
+.contrib-panel-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.contrib-panel-checked {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.contrib-panel-checked .contrib-quiet {
+  font-size: 12px;
+}
+
+/* Raw button, full reset (no preflight), like .contrib-quiet. */
+.contrib-panel-disclose {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 0;
+  border: 0;
+  border-radius: 3px;
+  background: none;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.contrib-panel-disclose svg {
+  width: 13px;
+  height: 13px;
+  transition: transform 120ms ease-out;
+}
+
+.contrib-panel-disclose.is-open svg {
+  transform: rotate(90deg);
+}
+
+.contrib-panel-disclose:hover {
+  color: var(--fg);
+}
+
+.contrib-panel-disclose:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.contrib-activity {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.contrib-activity-line {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--fg);
+}
+
+.contrib-activity-at {
+  flex: 0 0 56px;
+  color: var(--fg-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.contrib-activity-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.contrib-activity-line .contrib-quiet {
+  flex: 0 0 auto;
+}
+
+/* The files list's own "N more files": a text action, not a chip. */
+.contrib-files li.is-more {
+  padding: 0;
+  background: none;
+  font-family: inherit;
+}
+
+/* "More" opened it: the whole comment. */
+.contrib-quote.is-open {
+  display: block;
+  -webkit-line-clamp: none;
+}
+
+.contrib-quote-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+/* In the detail slot the quote sits right under the sentence. */
+.contrib-strip-detail .contrib-quote {
+  margin-top: 4px;
+}
+
+/* Extra detail lines a strip carries as children (the proposal's title
+   under a comment) — same voice as the detail slot, spaced off it. */
+.contrib-strip-main > .contrib-strip-detail {
+  margin: 4px 0 0;
+}
+
+.contrib-quote-author {
+  color: var(--fg-muted);
+}
+
+.contrib-summary {
+  margin: 8px 0 0;
+  max-width: 72ch;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg);
+}
+
+.contrib-files {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.contrib-files li {
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+  color: var(--fg-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.6;
+}
+
+.contrib-clock {
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Claude's slow breath while it works — the one piece of ambient motion. */
+.contrib-claude-working {
+  animation: contrib-breathe 2.4s ease-in-out infinite;
+}
+
+@keyframes contrib-breathe {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.contrib-error {
+  margin: 0;
+  padding: 0 2px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--error);
+}
+
+/* The contributors line: a caption, not a section. */
+.contrib-contributors {
+  flex: 0 0 auto;
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.contrib-contributors a {
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.contrib-contributors a:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* ---- the Proposals tab trigger's count ------------------------------------
+   Seated where the Doctor dot sits (.app-page-doctor-mark, app-page.css), so
+   it survives the strip folding to icons. */
+.contrib-tab-count {
+  position: absolute;
+  top: -6px;
+  right: -9px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 4px;
+  border-radius: 7px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 14px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- the sheets ----------------------------------------------------------- */
+.contrib-drafting {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: -6px 0 0;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+
+.contrib-drafting > svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 auto;
+}
+
+.contrib-drafting > span {
+  flex: 1 1 auto;
+}
+
+.contrib-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 4px 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+  color: var(--fg-muted);
+  /* A floor, so the sheet does not collapse to a sliver between the form it
+     replaces and the result that replaces it. */
+  min-height: 84px;
+}
+
+.contrib-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  opacity: 0.55;
+}
+
+.contrib-step.is-current,
+.contrib-step.is-done {
+  opacity: 1;
+}
+
+.contrib-step.is-current {
+  color: var(--fg);
+}
+
+.contrib-step-mark {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+}
+
+.contrib-step.is-done .contrib-step-mark {
+  border-color: transparent;
+  background: color-mix(in srgb, var(--success) 15%, transparent);
+  color: var(--success);
+}
+
+.contrib-step.is-current .contrib-step-mark {
+  border-color: transparent;
+}
+
+.contrib-step-mark svg {
+  width: 12px;
+  height: 12px;
+}
+
+.contrib-sent {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.contrib-sent-mark {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--success) 15%, transparent);
+  color: var(--success);
+}
+
+.contrib-sent-mark svg {
+  width: 15px;
+  height: 15px;
+}
+
+.contrib-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+/* Propose: the copy's new files, each unticked. A fieldset with the UA's
+   frame reset (no preflight). */
+.contrib-include {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.contrib-include-legend {
+  padding: 0;
+  margin-bottom: 6px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.contrib-include-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 140px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+}
+
+.contrib-include-file {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+/* ---- the Proposals tab ---------------------------------------------------- */
+.contrib-inbox {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.contrib-inbox-empty {
+  flex: 0 0 auto;
+  margin-top: 40px;
+}
+
+.contrib-inbox-count {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+
+.contrib-inbox-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 0 0 8px;
+  list-style: none;
+}
+
+.contrib-inbox-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-alt);
+}
+
+.contrib-inbox-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.contrib-inbox-who {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.contrib-inbox-author {
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.contrib-inbox-age {
+  color: var(--fg-muted);
+}
+
+.contrib-inbox-title {
+  margin: 0;
+  font-size: 14.5px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--fg);
+  overflow-wrap: anywhere;
+}
+
+.contrib-inbox-summary {
+  margin: 0;
+  max-width: 72ch;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg);
+}
+
+/* Whose words: Claude's summary, and the sender's own text under an
+   "In bob's words" label — told apart by the label, never by colour alone. */
+.contrib-provenance {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.contrib-provenance-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--fg-muted);
+}
+
+.contrib-provenance-theirs {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+}
+
+.contrib-clamp {
+  margin: 0;
+  max-width: 72ch;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.contrib-clamp.is-open {
+  display: block;
+  -webkit-line-clamp: none;
+}
+
+/* The safety review: its own inset, because it is the thing to read before
+   pressing anything below it. */
+.contrib-review {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 2px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--fg) 4%, transparent);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+}
+
+.contrib-review > svg {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+}
+
+.contrib-review.is-reading {
+  align-items: center;
+}
+
+.contrib-review.is-reading > svg {
+  margin-top: 0;
+  color: var(--fg);
+}
+
+.contrib-review.is-fine > svg {
+  color: var(--success);
+}
+
+.contrib-review.is-look {
+  background: color-mix(in srgb, var(--warning) 9%, transparent);
+}
+
+.contrib-review.is-look > svg {
+  color: var(--warning);
+}
+
+.contrib-review-body {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.contrib-review-verdict {
+  margin: 0;
+  font-weight: 600;
+  color: var(--fg);
+}
+
+.contrib-review-summary {
+  margin: 0;
+  max-width: 72ch;
+}
+
+.contrib-risks {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--fg);
+}
+
+.contrib-risk-file {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--fg) 7%, transparent);
+  color: var(--fg-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+}
+
+.contrib-try {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 8px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--fg);
+}
+
+.contrib-try-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* A proposal that no longer fits: the Try row's shape, the warning's tint
+   on its edge only. */
+.contrib-stale {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--warning) 40%, var(--border));
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--fg);
+}
+
+.contrib-inbox-stale {
+  border-color: color-mix(in srgb, var(--warning) 50%, var(--border));
+  color: var(--warning);
+}
+
+.contrib-inbox-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.contrib-inbox-spacer {
+  flex: 1 1 auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .contrib-stack,
+  .contrib-claude-working {
+    animation: none;
+  }
+}
+
+/* §16.13: every wait names itself — a clock beside the current step and a
+   hint saying whose time it is (GitHub's, Claude's). */
+.contrib-step-text {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.contrib-step-clock {
+  margin-left: 6px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+.contrib-step-hint {
+  display: block;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--fg-muted);
+}
+.contrib-inbox-age {
+  color: var(--fg-muted);
+  font-weight: 400;
+}
+.contrib-inbox-wait {
+  margin: 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--fg-muted);
+}
+.contrib-panel-when {
+  flex-basis: 100%;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--fg-muted);
+}
+
+/* The explorer's dialog: the Source panel, then the inbox, in one scroll. */
+.contrib-modal-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.contrib-modal-off {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--fg-muted);
+}
+.contrib-modal-inbox {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+.contrib-modal-h {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+

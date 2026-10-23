@@ -350,6 +350,16 @@
     flex: none;
     margin-left: auto;
   }
+  /* A copy that follows someone else's app: the sentence that replaces Send,
+     quiet and clipped so the block keeps its width. */
+  .bar .remote .push-blocked {
+    max-width: 30ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    color: var(--ink-3);
+  }
   /* The branch chip is the one element that absorbs a narrow pane. `0 1 auto`,
      not `1 1 auto`: it must SHRINK but never GROW, because growing would make
      it eat the bar's whole free width on a wide pane and leave a mostly-empty
@@ -2001,7 +2011,16 @@ function toolbar(data) {
      because they are the one thing left to do; "Check for updates" and
      "Publish to GitHub" stay outlined, as offers rather than the next step. An
      outlined Send after a commit read as one more grey button and was missed. */
-  const canPush = remote && !repo.detached;
+  /* `push_blocked` (a plain sentence): this copy follows someone else's app
+     on GitHub (contrib §16.8) and never sends from here — its edits go out
+     as a proposal from the app's page — so Send and Publish branch are not
+     offered at all; ops.py refuses a push with the same sentence. Where Send
+     would have been, the sentence says so (clipped to the bar, whole in its
+     tooltip). */
+  const canPush = remote && !repo.detached && !repo.push_blocked;
+  if (remote && ahead && !behind && repo.push_blocked) {
+    group.append(el("span", { className: "push-blocked", title: repo.push_blocked }, repo.push_blocked));
+  }
   if (!remote) {
     /* No remote used to be a dead end — a greyed-out button with nothing
        behind it. `gh repo create --source --push` does the whole job in one

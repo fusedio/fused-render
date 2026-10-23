@@ -1587,7 +1587,60 @@ def _pull(root):
                    with_output=True)
 
 
+# The contribution loop's push guard (docs/CONTRIB_LOOP.md §16.0 P2,
+# fused_render/contrib/classify.py — mirrored, not imported: PY-15): a copy of
+# someone else's GitHub app carries this pushurl on `origin` and the
+# `fused.kind=github` marker, and its changes leave the machine only as a
+# proposal from the app's page. Without this refusal the button would end in
+# git's "remote helper" error about a URL the user never wrote. log.py's
+# `_push_blocked` is the twin (the view's `repo.push_blocked`): same test, same
+# sentence.
+_NO_PUSH_URL = "no-push://fused"
+_GITHUB_REPO = re.compile(
+    r"^(?:git@github\.com:|(?:https?|ssh)://(?:[^@/]+@)?(?:www\.)?github\.com/)"
+    r"([A-Za-z0-9-]+/[A-Za-z0-9._-]+?)(?:\.git)?/?$", re.I)
+
+
+def _push_blocked(root):
+    """The plain sentence Push refuses with on a guarded copy, or None."""
+    code, out, _err = _run(root, "config", "--get-all", "remote.origin.pushurl")
+    guarded = code == 0 and _NO_PUSH_URL in out.decode("utf-8", "replace").split()
+    if not guarded:
+        code, out, _err = _run(root, "config", "--local", "--get", "fused.kind")
+        if not (code == 0 and out.decode("utf-8", "replace").strip() == "github"):
+            return None
+    code, out, _err = _run(root, "config", "--get", "remote.origin.url")
+    m = _GITHUB_REPO.match(out.decode("utf-8", "replace").strip()) if code == 0 else None
+    who = m.group(1) if m else "its author's version on GitHub"
+    # `fused.ownerunknown`: log.py's twin — whose app this is is not known yet.
+    code, out, _err = _run(root, "config", "--local", "--get", "fused.ownerunknown")
+    unknown = code == 0 and out.decode("utf-8", "replace").strip() == "true"
+    until = " until fused knows whether this app is yours" if unknown else ""
+    if _app_page_on():
+        return f"This app follows {who}{until}. Send your changes from its app page."
+    return f"This copy of {who} has changes of its own, and they stay on this computer{until}."
+
+
+def _app_page_on():
+    """Whether the app page has the panel the sentence can point at (the
+    contribution loop's A1 switch in the app's prefs.json, §16.12) — read
+    through appenv (PY-15); unreadable reads as off. log.py's twin."""
+    try:
+        import json
+
+        import appenv
+
+        with open(os.path.join(appenv.home_dir(), "prefs.json"), encoding="utf-8") as f:
+            prefs = json.load(f)
+        return isinstance(prefs, dict) and prefs.get("contrib_enabled") is True
+    except Exception:  # noqa: BLE001 — the plain sentence is always true
+        return False
+
+
 def _push(root):
+    blocked = _push_blocked(root)
+    if blocked:
+        raise _Refused("follows-author", blocked)
     branch = _current_branch(root)
     if not branch:
         raise _Refused("detached",

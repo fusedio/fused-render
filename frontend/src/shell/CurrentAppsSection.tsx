@@ -45,7 +45,7 @@ import { navigate, navigateUrl } from "@platform/lib/router";
 import { notify } from "@platform/lib/notifications";
 import { exportAppFileOnly, openShareApp } from "@platform/lib/share-app";
 import { openUninstallApp } from "@platform/lib/uninstall-app";
-import { useAppSharingFeature } from "@platform/lib/share-app-flag";
+import { useAppShareOffered } from "@platform/lib/share-app-flag";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { Modal } from "@platform/ui/modal/Modal";
@@ -802,7 +802,7 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
   // card menu carries (appCardMenu.ts) — the unified sheet with the flag on,
   // the plain `.fused` export with it off. A hook, not the sync getter: this
   // menu is built inside a component, so it follows the flag live.
-  const sharing = useAppSharingFeature();
+  const sharing = useAppShareOffered();
   // A canvas row's verbs: the clone's listing, the canvas editor (the two
   // panes with Claude), the task verbs, and the cross by name. No Share /
   // Export / Rename / Uninstall: a canvas is the workbench's to name, share

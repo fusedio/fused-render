@@ -202,25 +202,49 @@
     return { tone: "warn", title: "Unknown state", body: t.state, button: null };
   }
 
-  // A GitHub-link build (SPEC §26 DL-9): installs as a git clone of the repo.
+  // A GitHub-link build (SPEC §26 DL-9): installs as a copy that keeps
+  // getting its author's latest. Plain words only (docs/CONTRIB_LOOP.md
+  // §0.1, §16.8): no git vocabulary reaches this page. For an installed
+  // GitHub-link copy `t.git` also carries the contribution engine's view:
+  // `who` (whose latest), `changes` (the user has their own), `collision`
+  // (their own files the update would land on).
   function describeGit(t) {
     const repo = t.git.url.replace(/^https:\/\//, "");
-    const commit = t.git.commit.slice(0, 7);
+    const owner = repo.split("/")[1] || "the author";
+    const c = "changes" in t.git ? { blocked: t.git.collision || [] } : null;
+    const who = t.git.who || owner;
+    const words = (files) => files.length === 1 ? files[0] : files.length + " files";
     switch (t.state) {
       case "new": return { tone: "ok", title: "Not installed yet",
-        body: "Install clones " + repo + " into " + t.path + ". The app stays a git clone of the repo: it keeps pulling the author's changes, and you can push yours or open a pull request.", button: "Install" };
-      case "update": return { tone: "ok", title: "Update available",
-        body: "The installed clone can fast-forward to " + commit + ", the newest commit on " + repo + ".", button: "Update" };
+        body: "Install puts a copy of " + repo + " at " + t.path + ". It keeps getting " + owner + "'s latest version, and the changes you make stay on this computer until you choose to share them.", button: "Install" };
+      case "update": return c
+        ? { tone: "ok", title: "A newer version is available",
+            body: who + " has a newer version of this app.", button: "Get the latest" }
+        : { tone: "ok", title: "Update available",
+            body: "A newer version of " + repo + " is available.", button: "Update" };
       case "same": return { tone: "ok", title: "This version is installed",
-        body: t.path + " is a clone of " + repo + " at " + commit + " or newer.", button: null, open: true };
-      case "local": return t.found_by === "git"
-        ? { tone: "warn", title: "Your copy has changes of its own",
-            body: t.path + " has commits or edits that are not in " + repo + ", so it is not updated from here. Update it with git (git pull), or ask Claude.", button: null }
-        : { tone: "warn", title: "Your copy was edited since it was installed",
-            body: t.path + " holds this app installed from a .fused file, and these files changed since. Rename or uninstall it, then open the link again.",
-            list: (t.changed || []).slice(0, 12), button: null };
-      case "replace": return { tone: "warn", title: "Installed without git",
-        body: t.path + " holds this app, but not as a git clone. Replacing it clones " + repo + " in its place and keeps its data (.fused) and environment (.venv); the old folder goes to the Trash.", button: "Replace with git clone" };
+        body: c ? "You have " + who + "'s latest version." : t.path + " has the newest version of " + repo + ".",
+        button: null, open: true };
+      case "local":
+        // The app page is pointed at only when it has the panel to act on
+        // (`git.app_page`, the A1 switch — §16.12); otherwise plain words.
+        if (c && c.blocked && c.blocked.length) return { tone: "warn", title: "A file of yours is in the way",
+          body: who + "'s latest adds " + words(c.blocked) + ", which you already have here" +
+                (t.git.app_page ? ". Open the app to move yours aside and get the update." : ", so this app isn't updated from here."),
+          list: c.blocked.length > 1 ? c.blocked : [], button: null };
+        if (c) return { tone: "warn", title: "You have your own changes",
+          body: t.git.app_page
+            ? "You have your own changes in this app. Open it to bring in " + who + "'s latest."
+            : "This app has changes of its own, so it isn't updated from here.",
+          button: null };
+        return t.found_by === "git"
+          ? { tone: "warn", title: "Your copy has changes of its own",
+              body: t.path + " has changes that are not in " + repo + ", so it is not updated from here. Open it to see them, or ask Claude.", button: null }
+          : { tone: "warn", title: "Your copy was edited since it was installed",
+              body: t.path + " holds this app installed from a .fused file, and these files changed since. Rename or uninstall it, then open the link again.",
+              list: (t.changed || []).slice(0, 12), button: null };
+      case "replace": return { tone: "warn", title: "Installed from a file",
+        body: t.path + " holds this app, installed from a file. Replacing it puts a copy of " + repo + " that keeps getting " + owner + "'s latest in its place, and keeps its data (.fused) and environment (.venv); the old folder goes to the Trash.", button: "Replace" };
       case "clash": return { tone: "warn", title: "A different app is installed under this name",
         body: t.path + " holds another app. Rename or uninstall it, then open the link again.", button: null };
     }
@@ -249,7 +273,7 @@
   async function install(force, btn, status) {
     btn.disabled = true;
     const was = btn.textContent;
-    btn.textContent = force ? "Overwriting…" : (was === "Update" ? "Updating…" : "Installing…");
+    btn.textContent = force ? "Overwriting…" : (was === "Update" || was === "Get the latest" ? "Updating…" : "Installing…");
     let resp, data;
     try {
       resp = await fetch("/api/appfile/install", {
@@ -291,7 +315,7 @@
       const warn = document.createElement("div"); warn.className = "state"; warn.dataset.tone = "warn";
       const wb = document.createElement("b"); wb.textContent = "Unverified code from GitHub";
       const wp = document.createElement("p");
-      wp.textContent = "This app is cloned from " + t.git.url.replace(/^https?:\/\//, "") +
+      wp.textContent = "This app comes from " + t.git.url.replace(/^https?:\/\//, "") +
         ". Fused has not reviewed or verified it, and it can contain malicious code that runs with your access once installed. Install it only if you trust its author.";
       warn.append(wb, wp);
       hero.appendChild(warn);
