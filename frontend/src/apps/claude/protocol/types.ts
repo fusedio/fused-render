@@ -14,6 +14,7 @@ export type Action =
   | "poll"
   | "decide"
   | "app_state"
+  | "canvas_shot"
   | "sessions"
   | "live_run"
   | "defaults"
@@ -151,6 +152,15 @@ export interface AppStateRequest {
   state: string;
 }
 
+/** `canvas_shot {run_id, request_id, state}` — the page's answer to a
+ *  `canvas_screenshot` tool call. `state` is JSON: `{image, mime, udf}` (the
+ *  picture, uploaded into the shots dir) or `{error}`. */
+export interface CanvasShotRequest {
+  run_id: string;
+  request_id: string;
+  state: string;
+}
+
 export interface SendRequest {
   run_id: string;
   /** Must equal the session's agent; ignored otherwise (§8). */
@@ -234,6 +244,7 @@ export interface AgentRequests {
   poll: PollRequest;
   decide: DecideRequest;
   app_state: AppStateRequest;
+  canvas_shot: CanvasShotRequest;
   sessions: FileRequest;
   live_run: FileSessionRequest;
   /** `session_id` OPTIONAL, exactly as `live_run` takes it: with one the agent
@@ -468,6 +479,24 @@ export interface AppStateRow {
   runId?: string;
 }
 
+/** One parked `canvas_screenshot` call (agent `_canvas_shot_requests`): what
+ *  the model asked to see. Answered by the canvas page through its own
+ *  capture (`useCanvasShotResponder`). */
+export interface CanvasShotRow {
+  id: string;
+  what: "canvas" | "udf";
+  /** The UDF name the model named, "" for "this chat's node". */
+  udf: string;
+  reason: string;
+  created_at: number;
+
+  // -- CLIENT-ONLY annotations (run-controller.ts). --
+  /** The run that asked. */
+  runId?: string;
+  /** How many polls this request has been seen unanswered for. */
+  pollsSeen?: number;
+}
+
 export interface SkillRow {
   id: string;
   skill: string;
@@ -570,6 +599,9 @@ export interface PollResponse {
   permissions: PermissionRow[];
   /** [] once done. */
   app_state: AppStateRow[];
+  /** Unanswered `canvas_screenshot` requests (agent `_canvas_shot_requests`);
+   *  absent on an older agent.py. */
+  canvas_shot?: CanvasShotRow[];
   /** Live permission mode (`_live_mode`). */
   mode: PermissionMode;
   skills: SkillRow[];
@@ -1065,6 +1097,7 @@ export interface AgentResponses {
   poll: PollResponse | PollRefused;
   decide: DecideResponse;
   app_state: AppStateResponse;
+  canvas_shot: AppStateResponse;
   sessions: SessionsResponse | ErrorOnly;
   live_run: RunIdResponse | ErrorOnly;
   defaults: DefaultsResponse | ErrorOnly;

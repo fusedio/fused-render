@@ -13,7 +13,7 @@
 //   - the node pane's chat is an explorer embed FRAMED by the host
 //     (`_canvasshot=1`): `requestCanvasShotFromParent` below asks the parent
 //     window and waits for its answer, targets ["canvas", "udf"] —
-//       chat   → parent { type: "fused-canvas-shot", req, what }
+//       chat   → parent { type: "fused-canvas-shot", req, what, udf? }
 //       parent → chat   { type: "fused-canvas-shot-done", req, ok, blob?, error? }
 //     same origin both ways, `req` keeping a late answer off a later click.
 //
@@ -24,7 +24,9 @@
 export type CanvasShotWhat = "canvas" | "udf";
 export type CanvasShotAnswer = { ok: true; blob: Blob } | { ok: false; error: string };
 export interface CanvasShot {
-  capture(what: CanvasShotWhat): Promise<CanvasShotAnswer>;
+  /** `udf` names the node for `what: "udf"`; omitted, the host uses the node
+   *  this chat is on (the agent's `canvas_screenshot` tool may name any). */
+  capture(what: CanvasShotWhat, udf?: string): Promise<CanvasShotAnswer>;
   /** What this chat may ask for; one entry means a plain seat, two a menu. */
   targets: readonly CanvasShotWhat[];
 }
@@ -34,12 +36,16 @@ export const CANVAS_SHOT_LABEL: Record<CanvasShotWhat, string> = {
   udf: "Capture this UDF's output",
 };
 
-/** Generous: the frame's capture is seconds on a big graph; the parent's own
- *  timer answers before this does, so this is only the belt to its braces. */
-const ANSWER_TIMEOUT_MS = 60_000;
+/** Above the parent's whole budget — up to 40 s waiting for the workbench
+ *  frame, then 45 s for the capture — so the parent's own sentence always
+ *  arrives first; this is only the belt to its braces. */
+const ANSWER_TIMEOUT_MS = 95_000;
 
 /** The framed chat's ask. */
-export function requestCanvasShotFromParent(what: CanvasShotWhat): Promise<CanvasShotAnswer> {
+export function requestCanvasShotFromParent(
+  what: CanvasShotWhat,
+  udf?: string,
+): Promise<CanvasShotAnswer> {
   if (typeof window === "undefined" || window.parent === window) {
     return Promise.resolve({ ok: false, error: "this chat is not on a canvas page" });
   }
@@ -71,7 +77,10 @@ export function requestCanvasShotFromParent(what: CanvasShotWhat): Promise<Canva
       ANSWER_TIMEOUT_MS,
     );
     window.addEventListener("message", onMessage);
-    window.parent.postMessage({ type: "fused-canvas-shot", req, what }, window.location.origin);
+    window.parent.postMessage(
+      { type: "fused-canvas-shot", req, what, ...(udf ? { udf } : {}) },
+      window.location.origin,
+    );
   });
 }
 
