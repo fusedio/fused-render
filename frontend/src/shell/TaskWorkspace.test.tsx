@@ -179,3 +179,46 @@ test("the branch chip shows the worktree branch, with +N for more, and is omitte
   expect(chip.props.title).toBe("feat/one (+1 more)");
   expect(r.root.findByProps({ "data-key": "b" }).findAllByProps({ className: "ws-branch" })).toHaveLength(0);
 });
+
+// -- Revision 4: two lines per card ---------------------------------------------
+const within = (n: { findAllByProps: (p: object) => unknown[] }, cls: string) => n.findAllByProps({ className: cls });
+const head = (card: ReturnType<ReturnType<typeof create>["root"]["findByProps"]>) => card.findByProps({ className: "ws-card-head" });
+
+test("a card with only 'clear' is one line: clear rides line 1's right, after the time", async () => {
+  serve();
+  const r = await render([task({ key: "a" })]);
+  const card = r.root.findByProps({ "data-key": "a" });
+  expect(within(card, "ws-card-line2")).toHaveLength(0);
+  expect(within(head(card), "ws-clear")).toHaveLength(1);
+});
+
+test("a preview plus clear: clear sits at line 2's right end, not on its own line", async () => {
+  serve();
+  const r = await render([task({ key: "a", title: "Fix", last_message: { role: "assistant", text: "Merged.", at: 1 } })]);
+  const card = r.root.findByProps({ "data-key": "a" });
+  const line2 = card.findByProps({ className: "ws-card-line2" });
+  expect(within(line2, "ws-preview")).toHaveLength(1);
+  expect(within(line2.findByProps({ className: "ws-card-facts" }), "ws-clear")).toHaveLength(1);
+  expect(within(head(card), "ws-clear")).toHaveLength(0);
+  expect(within(card, "ws-card-facts")).toHaveLength(1);
+});
+
+test("facts sit in line 2's right group, clear last; a fact-only card has no left group", async () => {
+  serve();
+  const r = await render([task({ key: "a", prs: [{ repo: "o/r", number: 1 }] } as Partial<Task>)]);
+  const card = r.root.findByProps({ "data-key": "a" });
+  const facts = card.findByProps({ className: "ws-card-facts" });
+  expect(within(facts, "ws-prs")).toHaveLength(1);
+  expect(within(card, "ws-card-ctx")).toHaveLength(0);
+  expect(within(head(card), "ws-clear")).toHaveLength(0);
+});
+
+test("the close x overlays the corner: absolute, no layout space in the head", () => {
+  const css = require("node:fs").readFileSync(require("node:path").join(import.meta.dir, "../styles/task-workspace.css"), "utf8") as string;
+  const rule = /\.ws-card \.ws-doors \{([^}]*)\}/.exec(css)![1];
+  expect(rule).toMatch(/position:\s*absolute/);
+  expect(rule).toMatch(/top:\s*6px/);
+  expect(rule).toMatch(/right:\s*6px/);
+  expect(css).toMatch(/\.ws-card-facts \{[^}]*max-width:\s*65%/);
+  expect(css).toMatch(/\.prefs-page\.schedule-page\[data-view="workspace"\] > \*/);
+});

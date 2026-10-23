@@ -164,13 +164,16 @@ function WorkspaceCard({
   const preview = messagePreview(task);
   const showChip = showProject && task.project !== "";
   const hasContext = preview !== "" || showChip;
-  const hasFacts = hasPrs || hasBg || ports.length > 0 || text !== "" || clear;
   const when = taskWhenFor(task, now);
   const branch = pickBranch(
     holdRows,
     prRefsOf(task).filter((r) => r.repo).map((r) => peekPrHead(prKey(r))),
   );
-  const hasFacts2 = hasFacts || branch !== null;
+  // Line 2 exists for a preview/project chip or for real facts. "clear" alone
+  // never opens it: it rides line 1's right edge instead.
+  const realFacts = hasPrs || hasBg || ports.length > 0 || text !== "" || branch !== null;
+  const hasLine2 = hasContext || realFacts;
+  const clearTag = clear ? <span className="ws-clear">clear</span> : null;
   return (
     <li
       className={
@@ -207,6 +210,7 @@ function WorkspaceCard({
             {when.text}
           </span>
         )}
+        {!hasLine2 && clearTag}
         <span className="task-card-doors ws-doors">
           <button
             type="button"
@@ -222,13 +226,15 @@ function WorkspaceCard({
           </button>
         </span>
       </div>
+      {hasLine2 && (
+        <div className="ws-card-line2">
       {hasContext && (
         <div className="ws-card-ctx">
           {showChip && <IdentityChip name={basename(task.project)} title={tildePath(task.project, home)} />}
           {preview && <span className="ws-preview">{preview}</span>}
         </div>
       )}
-      {hasFacts2 && (
+      {(realFacts || clear) && (
         <div className="ws-card-facts">
           {branch && (
             <span className="ws-branch" title={branch.more > 0 ? `${branch.name} (+${branch.more} more)` : branch.name}>
@@ -268,7 +274,9 @@ function WorkspaceCard({
               {text}
             </span>
           )}
-          {clear && <span className="ws-clear">clear</span>}
+          {clearTag}
+        </div>
+      )}
         </div>
       )}
     </li>

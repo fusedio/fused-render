@@ -1614,7 +1614,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     // `schedule-page` is not decoration: it is what lets the card sections opt
     // out of the 760px content column `.prefs-page > *` imposes, while the prose
     // inside them stays at that measure. See styles/schedule.css.
-    <div className="prefs-page schedule-page">
+    <div className="prefs-page schedule-page" data-view={view}>
       {/* Title only — no description, no mechanics paragraph: the page says
           what it is by shape, and the line under it was buying nothing but
           vertical space the views wanted. The app-must-be-running caveat lives

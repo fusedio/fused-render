@@ -14,16 +14,16 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 6px;
 }
 .ws-card {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
   box-sizing: border-box;
-  padding: 12px 16px;
+  padding: 9px 14px;
   color: var(--fg);
   background: var(--tasks-card-bg);
   border: 1px solid var(--border);
@@ -81,13 +81,20 @@
 .ws-card[data-needs-you] .ws-status {
   color: var(--status-failed);
 }
+.ws-card-line2 {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+  font-size: 12px;
+}
 .ws-card-ctx {
+  flex: 1 1 auto;
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
   color: var(--fg-muted);
-  font-size: 12px;
 }
 .ws-preview {
   flex: 1 1 auto;
@@ -97,13 +104,16 @@
   white-space: nowrap;
 }
 .ws-card-facts {
+  flex: 0 1 auto;
+  max-width: 65%;
+  margin-left: auto;
   display: flex;
   flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: center;
-  gap: 6px 14px;
+  gap: 4px 12px;
   min-width: 0;
   color: var(--fg-muted);
-  font-size: 12px;
 }
 .ws-branch {
   display: inline-flex;
@@ -165,15 +175,17 @@
 }
 .ws-clear {
   flex: none;
-  margin-left: auto;
   color: var(--fg-faint);
 }
-/* The close door is the Archive hover door's own skin (task-cards.css
-   `.task-card-doors > .task-card-door`), set inline at the end of the head and
-   shown only on hover or keyboard focus. Not visibility-hidden, so Tab can reach it. */
+/* The close door overlays the card's top-right corner instead of owning a gutter
+   in the head row, so the time sits flush to the card's right padding. It paints
+   a solid backdrop over whatever is under it and shows only on hover or keyboard
+   focus (opacity, not visibility, so Tab can still reach it). */
 .ws-card .ws-doors {
-  position: static;
-  flex: none;
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 1;
   padding-left: 0;
   background: transparent;
   visibility: visible;
@@ -189,6 +201,14 @@
   font-size: 16px;
   line-height: 1;
   background: var(--tasks-card-bg);
+}
+/* The Workspace lifts the page's content column so the cards use the whole
+   middle pane. Scoped on the page's data-view, so List, Board and the rest keep
+   the cap. Same selector weight as the schedule opt-out it overrides. */
+.prefs-page.schedule-page[data-view="workspace"] > *,
+.prefs-page.schedule-page[data-view="workspace"] > .prefs-section {
+  max-width: none;
+  margin-inline: 0;
 }
 .ws-undo {
   position: fixed;
