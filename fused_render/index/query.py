@@ -1121,13 +1121,6 @@ def resolve_query(root: str, raw: str, guard: "MountGuard | None" = None,
             or _DRIVE_ABS.match(raw_lstripped)
             or any(seg == ".." for seg in raw_lstripped.split("/"))):
         raw = raw_lstripped
-    # The implicit `**/` decision below is defined to read the RAW typed
-    # string (before any of this function's own mutations) for a `/` —
-    # captured here, before the drive-path backslash normalization that
-    # follows, so an all-backslash Windows path (no `/` at all, as typed)
-    # still widens to any depth exactly as it always has, rather than
-    # picking up a "/" this function itself inserted.
-    raw_had_slash = "/" in raw
     if _DRIVE_ABS.match(raw.strip()):
         # A Windows drive path's own separator is "\", never "/" — normalize
         # it to "/" BEFORE `expand_whitespace_query` runs, so that function's
@@ -1143,6 +1136,10 @@ def resolve_query(root: str, raw: str, guard: "MountGuard | None" = None,
         # path where a literal backslash would be a legal filename character
         # this might mangle.
         raw = raw.replace("\\", "/")
+    # The implicit `**/` decision below reads the typed string for a `/`. Taken
+    # AFTER the drive-path normalization so a backslash-typed `C:\\x\\*.txt`
+    # limits depth exactly like `C:/x/*.txt`; a POSIX query is untouched.
+    raw_had_slash = "/" in raw
     raw = expand_whitespace_query(raw)
     is_glob = "*" in raw
     if raw == "~" or raw.startswith("~/"):

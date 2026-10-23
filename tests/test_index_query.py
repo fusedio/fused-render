@@ -771,11 +771,9 @@ def test_resolve_windows_drive_letter_path_walks_the_filesystem(monkeypatch):
     real_dirs = {"C:/Users", "C:/Users/example"}
     monkeypatch.setattr(os.path, "isdir", lambda p: p in real_dirs)
     out = resolve_query("/box", "C:\\Users\\example\\*.conf")
-    # The implicit `**/` decision reads the RAW typed string looking for `/`
-    # specifically (spec: "a slash is the only thing that limits depth") —
-    # an all-backslash Windows path has none, so it widens to any depth under
-    # the resolved base exactly like a slash-free POSIX query does.
-    assert out == {"base": "C:/Users/example", "pattern": "**/*.conf",
+    # A backslash is this path's separator, so it limits depth exactly like
+    # `C:/Users/example/*.conf` does: direct children only, no implicit `**/`.
+    assert out == {"base": "C:/Users/example", "pattern": "*.conf",
                    "mode": "glob"}
 
 
@@ -809,12 +807,8 @@ def test_resolve_windows_drive_letter_path_with_a_space_still_recognized(monkeyp
     real_dirs = {"C:/My Files", "C:/My Files/rep"}
     monkeypatch.setattr(os.path, "isdir", lambda p: p in real_dirs)
     out = resolve_query("/box", "C:\\My Files\\rep")
-    # The all-backslash typed string has no literal "/" in it (spec: "a
-    # slash is the only thing that limits depth"), so it also widens to any
-    # depth the same as `test_resolve_windows_drive_letter_path_walks_the_
-    # filesystem` above — this decision is read from the RAW typed string,
-    # not from the "/"-joined form the drive-normalization step produces.
-    assert out == {"base": "C:/", "pattern": "**/My**Files/**rep*", "mode": "glob"}
+    # Backslashes are separators, so this limits depth like `C:/My Files/rep`.
+    assert out == {"base": "C:/", "pattern": "My**Files/**rep*", "mode": "glob"}
 
 
 def test_resolve_windows_drive_letter_path_with_a_space_only_in_the_pattern(monkeypatch):
@@ -825,8 +819,7 @@ def test_resolve_windows_drive_letter_path_with_a_space_only_in_the_pattern(monk
     real_dirs = {"C:/Users", "C:/Users/example"}
     monkeypatch.setattr(os.path, "isdir", lambda p: p in real_dirs)
     out = resolve_query("/box", "C:\\Users\\example\\hello world")
-    # Same all-backslash-typed-string widening as the test above.
-    assert out == {"base": "C:/Users/example", "pattern": "**/**hello**world*",
+    assert out == {"base": "C:/Users/example", "pattern": "**hello**world*",
                    "mode": "glob"}
 
 
