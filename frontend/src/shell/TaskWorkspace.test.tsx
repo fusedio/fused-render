@@ -442,3 +442,18 @@ test("holds are read for every task, in chunks of at most 100; one chunk failing
   const ports = posts.filter((p) => p.url === "/api/tasks/ports").flatMap((p) => (p.body as { ids: string[] }).ids);
   expect(ports.length).toBeLessThanOrEqual(100);
 });
+
+test("the card's ring slot holds the List's Archive button, and pressing it archives with Undo", async () => {
+  const posts = serve();
+  const r = await render([task({ key: "a", title: "Fix it" })]);
+  const mark = r.root.findByProps({ className: "tasks-rowmark ws-mark" });
+  const btn = mark.findByProps({ className: "tasks-act tasks-act--archive" });
+  expect(btn.props["aria-label"]).toBe("Archive");
+  expect(r.root.findAllByProps({ className: "tasks-check tasks-row-check ws-check" }).length).toBeGreaterThan(0);
+  await act(async () => {
+    btn.props.onClick({ stopPropagation() {} });
+  });
+  expect(posts.some((p) => p.url === "/api/tasks/archive" && (p.body as { key: string }).key === "a")).toBe(true);
+  expect(r.root.findAllByProps({ "data-key": "a" })).toHaveLength(0);
+  expect(r.root.findAllByProps({ className: "ws-undo-btn" })).toHaveLength(1);
+});

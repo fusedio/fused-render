@@ -20,9 +20,11 @@ import { selectableTask } from "@shell/task-selection";
 import { BulkBar, GroupCheck, RowCheck, useBulkArchive, type BulkSelect } from "@shell/TaskBulk";
 import { closePeek, openPeek, peekItemProps, PEEK_OPEN_CLASS, usePeekedKey } from "@shell/task-peek-store";
 import { useNow } from "@platform/lib/clock";
-import { IdChip, IdentityChip, PrNumChip, StatusIcon } from "@shell/ScheduleTaskViews";
+import { ICON_ARCHIVE, ICON_UNARCHIVE, IdChip, IdentityChip, PrNumChip, StatusIcon } from "@shell/ScheduleTaskViews";
 import {
+  type FilingIntent,
   basename,
+  filingIntent,
   liveJobRow,
   openThreadIntent,
   peekOpenable,
@@ -211,6 +213,7 @@ function WorkspaceCard({
   now,
   onSelect,
   onOpen,
+  onFile,
   bulk,
 }: {
   task: Task;
@@ -229,7 +232,10 @@ function WorkspaceCard({
   now: number;
   onSelect: () => void;
   onOpen: () => void;
+  /** The ring-slot button: archive (with Undo) or unarchive, the `x` key's own path. */
+  onFile: (intent: FilingIntent) => void;
 }) {
+  const file = filingIntent(task);
   const bg = bgJobBadge(task);
   const reasonList = visibleReasons(reasons);
   const text = reasonList.join(" · ");
@@ -268,9 +274,14 @@ function WorkspaceCard({
       }}
     >
       <div className="ws-card-head">
-        {/* The checkbox takes the ring's place on hover, focus or while anything
-            is selected (task-workspace.css), like Gmail. */}
-        <span className="ws-mark">
+        {/* The selection checkbox lives in the left gutter (task-workspace.css),
+            out of flow, shown on hover, focus or while anything is selected. */}
+        <RowCheck select={bulk} task={task} className="ws-check" />
+        {/* THE MARK SLOT, same as the List row's: the ring at rest, the
+            Archive (or Unarchive) button in the same box on hover or keyboard
+            focus. Classes and filingIntent are the List's; the press goes
+            through the Workspace's own archive path (Undo toast, rollback). */}
+        <span className="tasks-rowmark ws-mark">
           <StatusIcon
             status={taskColumn(task)}
             failed={ringFailed(task)}
@@ -278,7 +289,20 @@ function WorkspaceCard({
             count={task.unread}
             background={liveJobRow(task)}
           />
-          <RowCheck select={bulk} task={task} className="ws-check" />
+          {file && (
+            <button
+              type="button"
+              className={"tasks-act tasks-act--" + file.kind}
+              data-hint={file.title}
+              aria-label={file.label}
+              onClick={(e) => {
+                e.stopPropagation();
+                onFile(file);
+              }}
+            >
+              {file.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE}
+            </button>
+          )}
         </span>
         <IdChip id={task.task_id} kind="task" />
         <span className={"ws-title" + (task.unread > 0 ? " is-unread" : "")}>{task.title || "(untitled)"}</span>
@@ -636,6 +660,7 @@ export function TaskWorkspace({
                     now={now}
                     onSelect={() => setSelected(t.key)}
                     onOpen={() => open(t)}
+                    onFile={(f) => (f.kind === "archive" ? close(t) : reopen(t.key, false))}
                     bulk={bulk}
                   />
                 );

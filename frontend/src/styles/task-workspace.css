@@ -404,36 +404,51 @@
   opacity: 1;
   pointer-events: auto;
 }
-/* The Workspace puts the checkbox where the ring stands and swaps the two. */
-.ws-mark {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
+/* The card's mark slot is the List's (`.tasks-rowmark` / `.tasks-act`, tasks.css):
+   the ring at rest, the Archive button in the same box on hover or keyboard
+   focus. tasks.css keys those reveals on `.tasks-row`, so the card repeats them.
+   The slot's size tokens are normally set by `.tasks-node`; the card states
+   them itself. */
+.ws-card {
+  --tasks-rail-w: 16px;
+  --tasks-row-pad-y: 9px;
+  --tasks-row-gap: 8px;
 }
-.ws-mark .ws-check {
+.ws-card:hover .tasks-act,
+.ws-card:has(.tasks-act:focus-visible) .tasks-act {
+  opacity: 1;
+  pointer-events: auto;
+}
+.ws-card:hover .tasks-rowmark .schedule-ring,
+.ws-card .tasks-rowmark:has(.tasks-act:focus-visible) .schedule-ring {
+  opacity: 0;
+  pointer-events: none;
+}
+/* No button to hand over to (a run in flight): keep the ring under the pointer. */
+.ws-card:hover .tasks-rowmark:not(:has(.tasks-act)) .schedule-ring {
+  opacity: 1;
+}
+/* The selection checkbox sits in the gutter left of the card column, out of
+   flow, on the card's first line: its right edge is 8px left of the card border,
+   the same column as the group header's select-all (left = -22px there; here
+   the head sits 15px inside the card: 1px border + 14px padding). */
+.ws-card-head {
+  position: relative;
+}
+.ws-card-head > .ws-check {
   position: absolute;
+  left: -37px;
   top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
+  transform: translateY(-50%);
   opacity: 0;
   pointer-events: none;
 }
 .ws-card:hover .ws-check,
 .ws-card:focus-within .ws-check,
 .ws-card[data-selecting] .ws-check,
-.ws-mark .ws-check:checked {
+.ws-card-head > .ws-check:checked {
   opacity: 1;
   pointer-events: auto;
-}
-.ws-mark > :not(.ws-check) {
-  transition: opacity 0.08s ease;
-}
-.ws-card:hover .ws-mark > :not(.ws-check),
-.ws-card:focus-within .ws-mark > :not(.ws-check),
-.ws-card[data-selecting] .ws-mark > :not(.ws-check) {
-  opacity: 0;
 }
 /* The List's row: the checkbox sits in the row's own left padding, so no
    column moves when it shows. */
