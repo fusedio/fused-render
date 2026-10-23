@@ -103,6 +103,7 @@ function state(over: Partial<ChatState> = {}): ChatState {
     turns: [],
     permissions: [],
     appState: [],
+    canvasShot: [],
     skills: [],
     working: null,
     trouble: null,
