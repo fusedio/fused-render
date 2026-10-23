@@ -59,6 +59,8 @@ from typing import Optional
 from fused_render import github_setup
 from fused_render import claude_health
 from fused_render.claude_health import (
+    NO_CONSOLE_KWARGS,
+    PROBE_KWARGS,
     SUBPROCESS_KWARGS,
     _too_old,
     executable,
@@ -155,7 +157,7 @@ def _run_probe(path: str, *args: str, timeout: float):
     """Run a bounded probe, returning the completed process (or raising)."""
     return subprocess.run(
         [path, *args], capture_output=True, timeout=timeout,
-        env=_child_env(), **SUBPROCESS_KWARGS,
+        env=_child_env(), **SUBPROCESS_KWARGS, **PROBE_KWARGS,
     )
 
 
@@ -179,7 +181,7 @@ def _shell_probe() -> Optional[str]:
             out = subprocess.run(
                 [shell, *flags, "command -v copilot"],
                 capture_output=True, timeout=_SHELL_TIMEOUT_S, env=env,
-                **SUBPROCESS_KWARGS,
+                **SUBPROCESS_KWARGS, **PROBE_KWARGS,
             ).stdout
         except (OSError, subprocess.SubprocessError):
             continue
@@ -303,6 +305,7 @@ def gh_token() -> Optional[str]:
         res = subprocess.run(
             [path, "auth", "token"], capture_output=True,
             timeout=_GH_TOKEN_TIMEOUT_S, env=_child_env(), **SUBPROCESS_KWARGS,
+            **PROBE_KWARGS,
         )
     except (OSError, ValueError, subprocess.SubprocessError):
         return None
@@ -397,7 +400,7 @@ def _acp_probe(path: str, token: Optional[str]) -> Optional[bool]:
             [path, "--acp", "--no-auto-update", "--disable-builtin-mcps"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, env=_child_env(extra),
-            **SUBPROCESS_KWARGS,
+            **SUBPROCESS_KWARGS, **NO_CONSOLE_KWARGS,
         )
         for msg in (
             {"jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -637,6 +640,7 @@ def _headless_session(path: str, token: Optional[str]) -> dict:
             [path, "--headless", "--stdio", "--no-auto-update"],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL, env=_child_env(extra), **kwargs,
+            **NO_CONSOLE_KWARGS,
         )
         proc.stdin.write(_frame({
             "jsonrpc": "2.0", "id": _RPC_CONNECT, "method": "connect",

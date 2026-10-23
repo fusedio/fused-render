@@ -55,6 +55,24 @@ SUBPROCESS_KWARGS = {
     "errors": "replace",
 }
 
+# On Windows, a child that inherits the server's console can talk to the user
+# behind the server's back: a `copilot` launcher stub on one reporter's PATH
+# printed `Install GitHub Copilot CLI? (y/N):` onto the `fused-render serve`
+# terminal and sat on its stdin until the probe timed out (capture_output only
+# redirects stdout/stderr; a PowerShell Read-Host writes to the console device
+# regardless). CREATE_NO_WINDOW gives the child no console at all, so neither
+# the prompt nor a console Ctrl+C can reach across. A TypeError elsewhere, so
+# the dict is empty off Windows.
+NO_CONSOLE_KWARGS = ({"creationflags": subprocess.CREATE_NO_WINDOW}
+                     if sys.platform == "win32" else {})
+
+# What every PROBE spreads on top of SUBPROCESS_KWARGS — a health read must
+# never block on a question only a human could answer, so stdin is /dev/null
+# on every platform. Separate from SUBPROCESS_KWARGS because the ACP/app-server
+# probes pass their own `stdin=PIPE` and a duplicate kwarg is a TypeError;
+# those spread NO_CONSOLE_KWARGS alone.
+PROBE_KWARGS = {"stdin": subprocess.DEVNULL, **NO_CONSOLE_KWARGS}
+
 # An explicit override beats every probe below. It is what both the `notfound` error text and the
 # troubleshooting guide tell users to set — so it has to be honoured by
 # everything that resolves the CLI, not merely by most things.
@@ -127,6 +145,7 @@ def _run_probe(path: str, *args: str, timeout: float):
     return subprocess.run(
         [path, *args], capture_output=True, timeout=timeout,
         env={**os.environ, "PATH": augmented_path()}, **SUBPROCESS_KWARGS,
+        **PROBE_KWARGS,
     )
 
 
@@ -231,7 +250,7 @@ def _shell_probe() -> Optional[str]:
             out = subprocess.run(
                 [shell, *flags, "command -v claude"],
                 capture_output=True, timeout=_SHELL_TIMEOUT_S, env=env,
-                **SUBPROCESS_KWARGS,
+                **SUBPROCESS_KWARGS, **PROBE_KWARGS,
             ).stdout
         except (OSError, subprocess.SubprocessError):
             continue
@@ -556,7 +575,7 @@ def _zsh_zdotdir() -> Optional[str]:
         out = subprocess.run(
             [zsh, "-c", f'print -r -- "{marker}$ZDOTDIR"'],
             capture_output=True, timeout=_SHELL_TIMEOUT_S, env=env,
-            **SUBPROCESS_KWARGS,
+            **SUBPROCESS_KWARGS, **PROBE_KWARGS,
         ).stdout
     except (OSError, subprocess.SubprocessError):
         return None
