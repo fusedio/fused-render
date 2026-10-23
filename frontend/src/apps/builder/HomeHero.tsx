@@ -393,6 +393,18 @@ export function HeroComposer({
     setModel(r.model);
     setEffort(r.effort);
   }, [agent]);
+  // THE CATALOG CAN CHANGE UNDER A SETTLED PAIR: the static Copilot row
+  // gives way to the account's discovered list (platform/lib/agent-backends,
+  // D11a), and a model's levels may differ from the static ones. An effort
+  // the chosen model no longer takes (or an empty one for a model that now
+  // takes one) is re-fitted to that model's default; a level it still takes
+  // stays, so a pick made here is kept.
+  useEffect(() => {
+    setEffort((e) =>
+      !e || isUnlistedEffort(e, agent, model)
+        ? resolveComposerDefaults(getClaudeDefaults(), agent, model).effort
+        : e);
+  }, [agentCatalog, agent, model]);
   useEffect(() => {
     const follow = (d: ClaudeDefaults) => {
       // The global pair is Claude's; another agent's composer keeps its own.

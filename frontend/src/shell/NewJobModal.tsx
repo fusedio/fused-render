@@ -3894,8 +3894,11 @@ export default function NewJobModal({
       const efforts = taskEffortsOf(agent, forModel).map((o) => o.key);
       return !e || !efforts.includes(e) ? defaultEffortFor(agent, forModel) : e;
     });
+    // `agents` itself, not only `loaded`: the catalog changes again when the
+    // account's discovered model list lands after the first read (D11a),
+    // and the effort must follow the levels that list gives the model.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agent, agents.loaded]);
+  }, [agent, agents]);
   const pickBackend = useCallback((value: string) => {
     if (value === agentRef.current) return;
     pickedHere.current = true;
