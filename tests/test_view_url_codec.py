@@ -3,6 +3,7 @@ import pytest
 
 from fused_render._view_url_codec import (
     canonical_fs_path,
+    rooted_fs_path,
     is_launch_url,
     normpath_for_shape,
     open_target_path,
@@ -178,3 +179,11 @@ def test_canonical_fs_path_normalizes_drive_paths_only():
 
 def test_drive_path_is_not_a_launch_url():
     assert not is_launch_url("C:\\Users\\x")
+
+
+def test_rooted_fs_path_roots_posix_and_keeps_drive_paths():
+    assert rooted_fs_path("Users/me/a.py") == "/Users/me/a.py"
+    assert rooted_fs_path("C:/Users/me") == "C:/Users/me"
+    # A bare drive (a URL segment split drops the slash) re-roots to "C:/".
+    assert rooted_fs_path("C:") == "C:/"
+    assert rooted_fs_path("a:notes/x") == "/a:notes/x"

@@ -55,6 +55,21 @@ def canonical_fs_path(fs_path: str) -> str:
     return fs_path.replace("\\", "/") if _is_drive_path(fs_path) else fs_path
 
 
+def rooted_fs_path(joined: str) -> str:
+    """Decoded /view url segments, joined with "/", -> the absolute path they name.
+
+    Mirrors the frontend's ``rootedFsPath`` (router.ts): a Windows drive path
+    (``C:/...``) is already absolute and keeps its form, a bare drive (``C:``)
+    gets its trailing slash (bare ``C:`` is cwd-relative on Windows), and every
+    POSIX path gets its leading ``/`` back.
+    """
+    if len(joined) == 2 and joined[0].isalpha() and joined[1] == ":":
+        return joined + "/"
+    if len(joined) >= 3 and joined[0].isalpha() and joined[1] == ":" and joined[2] == "/":
+        return joined
+    return "/" + joined
+
+
 def view_url_path(fs_path: str) -> str:
     """Explorer URL path (no host/port) for an absolute fs path."""
     norm = canonical_fs_path(fs_path)

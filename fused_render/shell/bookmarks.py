@@ -21,6 +21,7 @@ from urllib.parse import unquote, urlsplit
 from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
+from fused_render._view_url_codec import rooted_fs_path
 from fused_render.shell import storage
 
 router = APIRouter()
@@ -282,12 +283,4 @@ def _decode_fs_path(url: str) -> str | None:
     if not segments or (len(segments) == 1 and segments[0].startswith("_")):
         return None
     joined = "/".join(segments)
-    # Mirror the frontend's rootedFsPath (lib/router.ts): a Windows drive-letter
-    # path (`C:/...`) is already absolute and keeps its form, a bare drive (`C:`)
-    # gets a trailing slash, and every POSIX path gets the leading `/`. Prepending
-    # `/` unconditionally would corrupt `C:/...` into `/C:/...` and miss on disk.
-    if len(joined) == 2 and joined[0].isalpha() and joined[1] == ":":
-        return joined + "/"
-    if len(joined) >= 3 and joined[0].isalpha() and joined[1] == ":" and joined[2] == "/":
-        return joined
-    return "/" + joined
+    return rooted_fs_path(joined)

@@ -49,7 +49,7 @@ from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 from fused_render import _flavor
 from fused_render._branch import branch_dir
-from fused_render._view_url_codec import canonical_fs_path
+from fused_render._view_url_codec import canonical_fs_path, rooted_fs_path
 from fused_render.shell import storage
 from fused_render.shell.seed import fused_dir
 
@@ -196,12 +196,7 @@ def _rooted(segments: list[str]) -> str:
     """Decoded url segments -> the absolute path they name, mirroring
     bookmarks._decode_fs_path (a Windows drive path is already absolute; a
     POSIX one needs its leading slash back)."""
-    joined = "/".join(segments)
-    if len(joined) == 2 and joined[0].isalpha() and joined[1] == ":":
-        return joined + "/"
-    if len(joined) >= 3 and joined[0].isalpha() and joined[1] == ":" and joined[2] == "/":
-        return joined
-    return "/" + joined
+    return rooted_fs_path("/".join(segments))
 
 
 def _encode(path: str) -> str:
