@@ -2538,6 +2538,8 @@ describe("the unread mark", () => {
     expect(CARDS).toContain('className={"task-card-title" + (task.unread > 0 ? " is-unread" : "")}');
     expect(block(CARDS_CSS, ".task-card-title")).toContain("font-weight: 100");
     expect(block(CARDS_CSS, ".task-card-title.is-unread")).toContain("font-weight: 600");
+    // …and says it: weight is not in the accessibility tree (CodeRabbit, #1913).
+    expect(CARDS).toContain("${task.unread > 0 ? `, ${taskUnreadLabel(task.unread)}` : \"\"}");
     // ...and the title is still a title: the words, then nothing an eye can see.
     // The words are `cardTitleLine`'s (tasks-lib) — the reader's newest
     // message, else the task's name — the same function the List row and the

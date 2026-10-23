@@ -75,6 +75,7 @@ import {
   taskHref,
   usageLimitCaption,
   attentionCaption,
+  taskUnreadLabel,
   taskWhen,
   tildePath,
   cardTitleLine,
@@ -611,7 +612,10 @@ function TaskCard({
         className="task-card-head"
         role="button"
         tabIndex={0}
-        aria-label={`Preview ${shortTaskId(task.task_id)}`}
+        // The bold title is the unread mark here, and weight never reaches the
+        // accessibility tree — so the count rides the header's name (CodeRabbit,
+        // #1913; the Board card's `.tasks-said` for the same reason).
+        aria-label={`Preview ${shortTaskId(task.task_id)}${task.unread > 0 ? `, ${taskUnreadLabel(task.unread)}` : ""}`}
         onClick={(e) => {
           e.stopPropagation();
           onPeek(task);
