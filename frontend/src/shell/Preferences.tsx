@@ -26,11 +26,10 @@
 // setting's group and highlights it; `?q=` is the search, kept in the URL with
 // replaceState so a reload or a copied link keeps it without each keystroke
 // becoming a history entry.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type SVGProps } from "react";
 import {
   Search,
   SlidersHorizontal,
-  Terminal,
   Sparkles,
   ListChecks,
   LayoutGrid,
@@ -40,11 +39,11 @@ import {
   Plug,
   Wrench,
   X,
-  type LucideIcon,
 } from "lucide-react";
 import { useClaudeConfigStatus } from "@apps/claude_config/available";
 import { getPrefs, type Prefs } from "@platform/lib/api";
 import { IS_QUERY_EMBED, replaceSearch } from "@platform/lib/router";
+import { ClaudeMark } from "@platform/ui/ClaudeMark";
 import { isBot } from "@platform/lib/flavor";
 import { isMac } from "@platform/lib/platform";
 import { cn } from "@platform/lib/utils";
@@ -69,11 +68,16 @@ import { CONTROLS } from "./settings/controls";
 import { rowId, SettingsViewContext, type SettingsView } from "./settings/SettingRow";
 import { IndexStateProvider } from "./settings/indexing";
 
-const GROUP_ICONS: Record<GroupId, LucideIcon> = {
+/** The Claude Code group wears the Claude mark, not a terminal prompt: a `>_` reads as "developer only" to the people this page is for. The mark fills its 512 box edge to edge while lucide's 24-unit icons carry ~2px of padding, so it is drawn at 0.85 to look optically equal; the button's `[&_svg:not([class*='size-'])]:size-4` CSS sets the 16px box (it beats the width/height attributes). */
+function ClaudeNavIcon(props: SVGProps<SVGSVGElement>) {
+  return <ClaudeMark {...props} className="scale-[0.85]" />;
+}
+
+const GROUP_ICONS: Record<GroupId, ComponentType<SVGProps<SVGSVGElement>>> = {
   general: SlidersHorizontal,
   features: ToggleRight,
   ai: Sparkles,
-  "claude-cli": Terminal,
+  "claude-cli": ClaudeNavIcon,
   tasks: ListChecks,
   apps: LayoutGrid,
   indexing: FolderSearch,

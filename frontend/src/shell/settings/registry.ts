@@ -73,7 +73,7 @@ export const GROUPS: readonly SettingsGroup[] = [
   {
     id: "features",
     nav: "app",
-    label: "Labs",
+    label: "Experimental flags",
     badge: "Beta",
     blurb: "Off by default and still settling. Each one adds a sidebar row or a page when you turn it on.",
   },
@@ -425,7 +425,7 @@ const ENTRIES = [
     renderOnly: true,
   },
 
-  // ── Labs ─────────────────────────────────────────────────────────────
+  // ── Experimental flags ─────────────────────────────────────────────────────────────
   {
     id: "canvases",
     group: "features",
