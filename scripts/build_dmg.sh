@@ -264,7 +264,9 @@ echo "==> installing ${WHEEL_PATH##*/} [bundled,app,fused] + py2app + dmgbuild i
 # tests/test_bundle_contents.py fails if it would not). Naming [fused] here as
 # well is redundant, and kept deliberately: the extras list should still say out
 # loud that this build wants the engine.
-"$BUILD_VENV/bin/pip" install --quiet "${WHEEL_PATH}[bundled,app,fused]" py2app dmgbuild
+# dmgbuild pinned to the current line: the build venv is reused across
+# builds (warm), so an old dmgbuild would otherwise stay in it forever.
+"$BUILD_VENV/bin/pip" install --quiet "${WHEEL_PATH}[bundled,app,fused]" py2app "dmgbuild>=1.6.7"
 # Force a fresh reinstall of fused-render itself every run so the branch ref
 # baked into $WHEEL_PATH is picked up. The build venv is reused across builds,
 # so pip would otherwise treat an unchanged version as already-satisfied and
@@ -1460,6 +1462,24 @@ fi  # FUSED_RENDER_SKIP_CODESIGN
 # ---------------------------------------------------------------------------
 # 6. DMG via dmgbuild: app + Applications symlink, compressed ULFO
 # ---------------------------------------------------------------------------
+# The window the user sees on open is part of the deliverable: a fixed-size
+# icon view, the app on the left, the Applications link on the right, on a
+# drawn background (scripts/dmg_background.py: light canvas, the app's
+# sparkle glyph scattered around, a small "drag into Applications" line).
+# Before this the image carried no layout at all: whatever view the user's
+# Finder was last in, both icons wherever it put them, and no cue that
+# anything had to be dragged. The background is generated here, 1x and @2x,
+# and dmgbuild folds the pair into one HiDPI TIFF. People who double-click
+# the app in the image instead of dragging are a separate case (an
+# installer, or an in-app "move to Applications" prompt), not this layout's
+# job.
+
+echo "==> rendering dmg background"
+DMG_BACKGROUND="$BUILD_DIR/dmg-background.png"
+"$BUILD_VENV/bin/python" "$REPO_ROOT/scripts/dmg_background.py" "$DMG_BACKGROUND" \
+  --caption "Drag $(FUSED_RENDER_FLAVOR="$FLAVOR" PYTHONPATH="$REPO_ROOT" \
+    python3 -c "from fused_render import _flavor; print(_flavor.display_name())") into Applications"
+test -f "$DMG_BACKGROUND" && test -f "${DMG_BACKGROUND%.png}@2x.png"
 
 echo "==> building dmg"
 DMGBUILD_SETTINGS="$BUILD_DIR/dmgbuild_settings.py"
@@ -1476,10 +1496,44 @@ symlinks = {"Applications": "/Applications"}
 # (zlib) and mounts faster; needs macOS 10.11+ to open, well under the app's
 # own LSMinimumSystemVersion of 11.0 (setup_py2app.py).
 format = "ULFO"
+
+# Finder window layout (see the step comment in build_dmg.sh). Coordinates
+# are points. The background is 760x496 (scripts/dmg_background.py), the
+# window 40pt taller for its title bar; window_rect's origin is measured
+# from the bottom of the screen. The icon centers match the clear areas the
+# background leaves for them.
+background = defines.get("background")  # noqa: F821
+window_rect = ((200, 160), (760, 536))
+default_view = "icon-view"
+icon_size = 160
+text_size = 16
+icon_locations = {
+    appname: (225, 218),
+    "Applications": (535, 218),
+    # The image's own housekeeping files. Finder hides dot-files, but a Mac
+    # with "show hidden files" on (Cmd-Shift-.) shows them anyway, the
+    # hidden flag included (only .DS_Store stays invisible), and with no
+    # position of their own they land wherever the grid puts them, on top
+    # of the artwork. Parked below the window's 496pt content area instead:
+    # out of sight on every Mac, reachable only by scrolling down.
+    ".background.tiff": (380, 700),
+    ".fseventsd": (380, 700),
+    ".VolumeIcon.icns": (380, 700),
+    ".Trashes": (380, 700),
+}
+show_status_bar = False
+show_tab_view = False
+show_toolbar = False
+show_pathbar = False
+show_sidebar = False
+show_icon_preview = False
+arrange_by = None
+label_pos = "bottom"
 PYEOF
 
 rm -f "$DMG_PATH"
-"$BUILD_VENV/bin/dmgbuild" -s "$DMGBUILD_SETTINGS" -D app="$APP_DIR" "$APP_NAME" "$DMG_PATH"
+"$BUILD_VENV/bin/dmgbuild" -s "$DMGBUILD_SETTINGS" -D app="$APP_DIR" -D background="$DMG_BACKGROUND" \
+  "$APP_NAME" "$DMG_PATH"
 
 # ---------------------------------------------------------------------------
 # 6b. Notarize + staple (optional, D73). Runs only when a notarytool keychain
