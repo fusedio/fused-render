@@ -547,10 +547,14 @@ export function pushHistory(state: unknown, url: string): void {
   else history.pushState(state, "", url);
 }
 
-// The URL codec drops the leading slash; the shell's canonical fs path is
-// rooted at "/".
+// Windows fs paths are rooted at a drive letter ("C:/…"), not at "/" — the
+// shell's canonical form keeps forward slashes and adds a leading slash only
+// for POSIX paths. A bare drive ("C:", how a drive root decodes from a URL,
+// whose segment split drops the trailing slash) canonicalizes to "C:/" —
+// bare "C:" is cwd-relative for os.stat on Windows.
 export function rootedFsPath(joined: string): string {
-  return "/" + joined;
+  if (/^[A-Za-z]:$/.test(joined)) return joined + "/";
+  return /^[A-Za-z]:\//.test(joined) ? joined : "/" + joined;
 }
 
 export function fsPathFromLocation(): string | null {
@@ -565,15 +569,17 @@ export function fsPathFromLocation(): string | null {
   return rootedFsPath(decoded);
 }
 
-// Shared by urlForFsPath/embedUrlForFsPath below: split into encoded segments
-// — a backslash is a legal filename character and must round-trip untouched.
+// Shared by urlForFsPath/embedUrlForFsPath below: normalize ONLY drive-letter
+// paths — on POSIX a backslash is a legal filename character and must
+// round-trip untouched — then split into encoded segments.
 // Restated (not imported) by shell/current-apps-lib for the app page's
 // `/apps/<folder>` address: that lib must stay DOM-free for bun, and this
 // module touches `location` at import. Keep the two in step. Exported for the
 // explorer topbar's Migrate button, which builds the same `/apps/<folder>`
 // address and may not import the shell.
 export function encodeFsPathSegments(fsPath: string): string {
-  return fsPath
+  const norm = /^[A-Za-z]:[\\/]/.test(fsPath) ? fsPath.replace(/\\/g, "/") : fsPath;
+  return norm
     .replace(/^\/+/, "")
     .split("/")
     .filter((s) => s.length > 0)
@@ -582,6 +588,8 @@ export function encodeFsPathSegments(fsPath: string): string {
 }
 
 export function urlForFsPath(fsPath: string, search?: string): string {
+  // Windows callers (server stat/list results, bookmarks) may carry
+  // backslashes; the URL codec speaks forward slashes only.
   return PREFIX + encodeFsPathSegments(fsPath) + (search || "");
 }
 

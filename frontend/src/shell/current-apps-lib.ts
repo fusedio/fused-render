@@ -17,9 +17,11 @@ import type { CurrentAppEntry } from "@platform/lib/api";
 
 // The explorer's fs-path codec (router.ts encodeFsPathSegments / rootedFsPath),
 // restated here rather than imported: router.ts rewrites `location` at import
-// and this lib must stay DOM-free for its bun tests. Same rules.
+// and this lib must stay DOM-free for its bun tests. Same rules — only a
+// drive-letter path has its backslashes folded, a bare drive re-roots to `C:/`.
 function encodeFsPathSegments(fsPath: string): string {
-  return fsPath
+  const norm = /^[A-Za-z]:[\\/]/.test(fsPath) ? fsPath.replace(/\\/g, "/") : fsPath;
+  return norm
     .replace(/^\/+/, "")
     .split("/")
     .filter((s) => s.length > 0)
@@ -28,7 +30,8 @@ function encodeFsPathSegments(fsPath: string): string {
 }
 
 function rootedFsPath(joined: string): string {
-  return "/" + joined;
+  if (/^[A-Za-z]:$/.test(joined)) return joined + "/";
+  return /^[A-Za-z]:\//.test(joined) ? joined : "/" + joined;
 }
 
 export interface CurrentApp {
@@ -139,7 +142,8 @@ function iconUrlFor(icon: string, mtime?: number | null): string {
 // ---- the app page's address (D488) ------------------------------------------
 //
 // `/apps/<folder path>?_tab=<tab>` — the folder as path segments in the
-// explorer's own codec (router.ts `encodeFsPathSegments` / `rootedFsPath`),
+// explorer's own codec (router.ts `encodeFsPathSegments` / `rootedFsPath`, so
+// a Windows drive rides as `C:/…` exactly as it does under /explorer/view),
 // and the tab as the `_tab` QUERY param, absent for the default. It was
 // `/apps/<slug>/<tab>` — one folder name under <fused_dir>/local, tab as the
 // last segment — until 2026-08-26, when the desk widened to every app kind and
