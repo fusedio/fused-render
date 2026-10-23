@@ -121,6 +121,14 @@
   background: color-mix(in srgb, var(--fg) 6%, transparent);
   color: var(--fg-muted);
 }
+/* The pending-holds placeholder: a badge-sized .skel-bar (explorer.css owns the
+   shimmer keyframe). */
+.ws-skel {
+  flex: none;
+  width: 64px;
+  height: 20px;
+  border-radius: 10px;
+}
 .ws-card-line2 {
   display: flex;
   align-items: flex-start;

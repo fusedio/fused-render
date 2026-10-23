@@ -490,3 +490,28 @@ test("the card's ring slot holds the List's Archive button, and pressing it arch
   expect(r.root.findAllByProps({ "data-key": "a" })).toHaveLength(0);
   expect(r.root.findAllByProps({ className: "ws-undo-btn" })).toHaveLength(1);
 });
+
+test("holds not loaded yet: the card shows a shimmer pill in the badge slot, not the word 'checking'", async () => {
+  globalThis.fetch = mock(async (url: string) => {
+    if (url === "/api/tasks/holds") return new Promise<Response>(() => {});
+    return new Response(JSON.stringify(url === "/api/tasks/ports" ? { ports: {} } : {}), { status: 200 });
+  }) as unknown as typeof fetch;
+  const r = await render([task({ key: "a" })]);
+  const card = r.root.findByProps({ "data-key": "a" });
+  expect(card.findAllByProps({ className: "skel-bar ws-skel" })).toHaveLength(1);
+  expect(card.findByProps({ className: "skel-bar ws-skel" }).props["aria-hidden"]).toBe("true");
+  expect(card.findByProps({ className: "ws-card-facts" }).props["aria-busy"]).toBe("true");
+  expect(card.findAllByProps({ className: "ws-badge ws-marker" })).toHaveLength(0);
+  expect(text(card).toLowerCase().replace("checking worktree", "")).not.toContain("checking");
+});
+
+test("a failed holds load still shows 'unknown' as text, with no shimmer", async () => {
+  globalThis.fetch = mock(async (url: string) => {
+    if (url === "/api/tasks/holds") return new Response("{}", { status: 500 });
+    return new Response(JSON.stringify(url === "/api/tasks/ports" ? { ports: {} } : {}), { status: 200 });
+  }) as unknown as typeof fetch;
+  const r = await render([task({ key: "a" })]);
+  const card = r.root.findByProps({ "data-key": "a" });
+  expect(text(card.findByProps({ className: "ws-badge ws-marker" }))).toBe("unknown");
+  expect(card.findAllByProps({ className: "skel-bar ws-skel" })).toHaveLength(0);
+});

@@ -264,7 +264,9 @@ function WorkspaceCard({
   // ride in its tooltip. "unknown", "checking" and the rest stay as text.
   const reasonList = visibleReasons(reasons);
   const dirty = dirtyBadge(reasonList);
-  const text = reasonList.filter((r) => !DIRTY_REASON.test(r)).join(" · ");
+  // "checking" renders as a shimmer pill in the badge slot, never as text.
+  const checking = reasonList.includes("checking");
+  const text = reasonList.filter((r) => !DIRTY_REASON.test(r) && r !== "checking").join(" · ");
   const clear = reasons.length === 0;
   const hasPrs = prRefsOf(task).some((r) => r.repo);
   const hasBg = bg !== null;
@@ -278,7 +280,7 @@ function WorkspaceCard({
   );
   // Line 2 exists for a preview/project chip or for real facts. "clear" alone
   // never opens it: it rides line 1's right edge instead.
-  const realFacts = hasPrs || hasBg || ports.length > 0 || dirty !== null || text !== "" || branch !== null;
+  const realFacts = hasPrs || hasBg || ports.length > 0 || dirty !== null || text !== "" || checking || branch !== null;
   const hasLine2 = hasContext || realFacts;
   const clearTag = clear ? <span className="ws-badge ws-clear" title="Nothing holds this task open, so it is safe to archive">safe to archive</span> : null;
   return (
@@ -348,7 +350,7 @@ function WorkspaceCard({
         </div>
       )}
       {(realFacts || clear) && (
-        <div className="ws-card-facts">
+        <div className="ws-card-facts" aria-busy={checking ? "true" : undefined}>
           {branch && (
             <span className="ws-badge ws-branch" title={branch.also.length > 0 ? `${branch.name}\nalso: ${branch.also.join(", ")}` : branch.name}>
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -391,6 +393,12 @@ function WorkspaceCard({
             <span className="ws-badge ws-marker" data-unknown={reasons.includes("unknown") ? "1" : undefined}>
               {text}
             </span>
+          )}
+          {checking && (
+            <>
+              <span className="skel-bar ws-skel" aria-hidden="true" />
+              <span className="sr-only">Checking worktree</span>
+            </>
           )}
           {clearTag}
         </div>
