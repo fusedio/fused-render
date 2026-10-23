@@ -531,8 +531,8 @@ function TaskCard({
    *  on every other card. */
   const limit = usageLimitCaption(task);
   /** A live background job under this finished card (tasks-lib.jobBadge): the
-   *  List row's badge words under the title, and its Stop among the doors —
-   *  the same rule and the same words on all three views. */
+   *  List row's badge words under the title, and a Stop among the doors (the
+   *  Board's too; the List row has the badge only). */
   const jobs = limit ? null : jobBadge(task);
   /** "Waiting on your approval · Bash: rm -rf build" on a card parked on a
    *  card, "" on every other — never beside `limit`, a row has one reason. */
@@ -703,7 +703,7 @@ function TaskCard({
             tooltip that arrives a second later read as no tooltip at all
             (Akshil, 2026-09-04). Same mechanism, same words, same delay. */}
         <span
-          className={"task-card-title" + (line.kind === "recap" ? " is-recap" : "")}
+          className={"task-card-title" + (task.unread > 0 ? " is-unread" : "")}
           // The hint says the line's own words, whole: the title where the line
           // is the title, the message where it is the message — the server caps
           // that at 200 characters and the card clamps it to one, so the hint is

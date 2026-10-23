@@ -3745,10 +3745,9 @@ input.schedule-when-field {
    its body (`.tasks-msg.is-unread` in tasks.css) — so a card and a message row make
    the same claim the same way, one about a thread and one about a turn.
 
-   NOT ON THE LIST ROW. A row carries the ring-dot and that is its primary signal;
-   bolding its title as well would state one fact twice on one line. The Board has
-   no ring to spare on a quiet card, which is the whole reason it needs a different
-   mark, so the two views differ here in order to agree everywhere else. */
+   AND ON THE LIST ROW AND THE CARDS WALL TOO since 2026-10-23 (Akshil: "if it is
+   unread we do bold, once it is read we unbold") — `.tasks-title.is-unread`,
+   `.task-card-title.is-unread`. One weight for unread on every view. */
 .schedule-tv-card-title.is-unread {
   font-weight: 600;
 }

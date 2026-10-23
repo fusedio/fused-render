@@ -742,7 +742,8 @@ export function draftRing(task: Task): boolean {
 //     whose word is "background" (`BACKGROUND_LABEL`);
 //   * sits in the IN PROGRESS lane/group (`boardLane`), among the running rows,
 //     ordered by that lane's own rule (`LANE_SORTS.in_progress`);
-//   * keeps the "1 job running" badge (job names on hover) and Stop job.
+//   * keeps the "1 job running" badge (job names on hover), and Stop job on
+//     the Board card and Cards wall (not the List row, Akshil 2026-10-23).
 //
 // THE API STATUS STAYS `done`, and so does `taskColumn`. Only PLACEMENT and
 // TONE move: Bots' build watch waits on `done`, the project queue reads the
@@ -762,7 +763,7 @@ export function liveJobs(
 
 /** THE ONE RULE: a row the server calls Done whose chat still holds a live
  *  background job. The blue ring, the In Progress placement (`boardLane`), the
- *  badge and Stop job all ask this and nothing else. */
+ *  badge and (Board/Cards) Stop job all ask this and nothing else. */
 export function liveJobRow(
   task: Pick<Task, "background_jobs" | "status" | "kind">,
 ): boolean {

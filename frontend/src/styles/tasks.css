@@ -439,20 +439,20 @@ button.tasks-caret,
 
 .tasks-title {
   min-width: 0;
-  font-weight: 500;
+  font-weight: 400;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* A title that is a RECAP (task recaps on, tasks-lib `kind: "recap"`) reads at
-   weight 100, DELIBERATELY the lightest (Akshil, 2026-10-16): it is a sentence
-   about the task, not the reader's own words, and the row's weight is what
-   tells those two apart. A
-   title that is the reader's message, with or without the reply line after
-   it, keeps the 500 above. */
-.tasks-title.is-recap {
-  font-weight: 100;
+/* UNREAD IS THE TITLE'S WEIGHT (Akshil, 2026-10-23: "if it is unread we do
+   bold, once it is read we unbold"). Same claim, same weight, as the Board
+   card's `.schedule-tv-card-title.is-unread` and a thread's
+   `.tasks-msg.is-unread` — one mark for unread on every surface. It replaces
+   the recap/message split (recap 100, message 500): weight now answers "is
+   there anything new here", not "whose words are these". */
+.tasks-title.is-unread {
+  font-weight: 600;
 }
 
 /* First line of Claude's newest reply, filling the space after the title in the
@@ -529,8 +529,8 @@ button.tasks-caret,
    THE TITLE ONLY. The ring, the id, the folder and the time stay at full strength:
    fading a whole row is how this page says "archived", which is a different fact
    with a lane of its own, and the time is precisely what a reader wants to read on
-   an upcoming row. Nor is the weight touched — `font-weight: 500` above holds, so
-   the column of titles keeps one shape and only its colour recedes. */
+   an upcoming row. Nor is the weight touched — the weight belongs to unread
+   (`.tasks-title.is-unread` above), and only the colour recedes. */
 .tasks-title.is-upcoming {
   color: var(--fg-muted);
 }
@@ -2186,8 +2186,8 @@ button.tasks-caret,
    means nothing cut, and beside an ordinary prompt-length title the
    `0 100 auto` above measured a caption like it at 0px — one that almost never
    shows. So it keeps its width and the TITLE ellipsises instead. The job names
-   are the hint; the Stop is in the hover strip
-   (ScheduleTaskViews.StopJobButton). */
+   are the hint; the List row has no Stop (ScheduleTaskViews.StopJobButton is
+   the Board's and the Cards wall's only). */
 .tasks-row-queue--bg {
   flex: 0 0 auto;
 }

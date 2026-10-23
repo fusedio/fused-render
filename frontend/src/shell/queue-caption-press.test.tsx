@@ -24,7 +24,8 @@ import { act, create, type ReactTestRenderer, type ReactTestInstance } from "rea
 
 import type { Task } from "@platform/lib/api";
 
-const { TaskRowItem } = await import("./ScheduleTaskViews");
+const { TaskRowItem, StopJobButton } = await import("./ScheduleTaskViews");
+const { jobBadge } = await import("./tasks-lib");
 
 const mounted: ReactTestRenderer[] = [];
 afterEach(() => {
@@ -258,7 +259,16 @@ test("a press on the background-job badge opens THIS row", () => {
   expect(opened).toEqual(["sess-1"]);
 });
 
-test("Stop job posts task_stop with the row's run and job, and does NOT open the row", async () => {
+test("a List row with a live background job draws the badge but NO Stop", () => {
+  // Akshil, 2026-10-23: the blue-ring row's hover strip carries no Stop job;
+  // the badge stays, and the Board/Cards strips keep their Stop.
+  const r = row(queued({ status: "done", queue_position: 0,
+                         background_jobs: JOBS } as Partial<Task>), []);
+  expect(byClass(r, "tasks-job-badge")).toHaveLength(1);
+  expect(byClass(r, "tasks-job-stop")).toHaveLength(0);
+});
+
+test("Stop job (the Board/Cards strips' press) posts task_stop with the run and job", async () => {
   const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
   const realFetch = globalThis.fetch;
   (globalThis as { fetch: unknown }).fetch = async (url: string, init: RequestInit) => {
@@ -266,9 +276,14 @@ test("Stop job posts task_stop with the row's run and job, and does NOT open the
     return { ok: true, json: async () => ({ ok: true }) } as unknown as Response;
   };
   try {
-    const opened: string[] = [];
-    const r = row(queued({ status: "done", queue_position: 0,
-                           background_jobs: JOBS } as Partial<Task>), opened);
+    const badge = jobBadge(queued({ status: "done", queue_position: 0,
+                                    background_jobs: JOBS } as Partial<Task>));
+    expect(badge).not.toBeNull();
+    let r!: ReactTestRenderer;
+    act(() => {
+      r = create(createElement(StopJobButton, { badge: badge!, taskId: "TASK-099", className: "tasks-act" }));
+    });
+    mounted.push(r);
     const stops = byClass(r, "tasks-job-stop");
     expect(stops).toHaveLength(1);
     click(stops[0]!);
@@ -276,7 +291,6 @@ test("Stop job posts task_stop with the row's run and job, and does NOT open the
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url).toBe("/api/claude/agent");
     expect(calls[0]!.body).toEqual({ action: "task_stop", run_id: "run-7", task_id: "bash_1" });
-    expect(opened).toEqual([]);
   } finally {
     (globalThis as { fetch: unknown }).fetch = realFetch;
   }
