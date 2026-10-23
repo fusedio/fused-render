@@ -2,12 +2,17 @@
 platform (Windows) `C:/Users/X` and `c:/users/x/a` count as inside. Windows is
 simulated by making normcase lower-case and realpath the identity."""
 import os
+import sys
 
 import pytest
 
 
 @pytest.fixture
 def folding(monkeypatch):
+    # The POSIX-style fixture paths below only mean what they say where os.sep is
+    # "/"; a real Windows host exercises the real normcase for free anyway.
+    if sys.platform == "win32":
+        pytest.skip("simulates Windows case-folding on a POSIX host")
     monkeypatch.setattr(os.path, "normcase", lambda p: p.lower())
     monkeypatch.setattr(os.path, "realpath", lambda p, **kw: p)
     monkeypatch.setattr(os.path, "abspath", lambda p: p)

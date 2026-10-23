@@ -36,13 +36,13 @@ def test_user_name_falls_back_to_the_uid_without_pwd(monkeypatch):
 
 def test_euid_is_zero_without_geteuid(monkeypatch):
     from fused_render import _platform
-    monkeypatch.delattr(os, "geteuid")
+    monkeypatch.delattr(os, "geteuid", raising=False)
     assert _platform.euid() == 0
 
 
 def test_claude_cmd_log_root_needs_no_geteuid(monkeypatch):
     from fused_render import claude_cmd_log
-    monkeypatch.delattr(os, "geteuid")
+    monkeypatch.delattr(os, "geteuid", raising=False)
     assert claude_cmd_log.root().endswith(os.path.join("fused_render_claude-0", "claude-cmds"))
 
 
@@ -97,7 +97,7 @@ def test_env_install_worker_venv_python_uses_the_platform_layout(monkeypatch):
 
 def test_map_drops_root_needs_no_geteuid(monkeypatch):
     from fused_render.templates.map import discover
-    monkeypatch.delattr(os, "geteuid")
+    monkeypatch.delattr(os, "geteuid", raising=False)
     assert "fused_render_map-0" in discover._drops_root()
 
 
@@ -105,7 +105,7 @@ def test_require_private_skips_the_ownership_check_without_geteuid(monkeypatch, 
     from fused_render.templates.shared import private_dir
     d = tmp_path / "p"
     d.mkdir(mode=0o700)
-    monkeypatch.delattr(os, "geteuid")
+    monkeypatch.delattr(os, "geteuid", raising=False)
     private_dir.require_private(str(d))
 
 
@@ -117,7 +117,7 @@ def _fake_windows_lstat(monkeypatch):
             self.st_mode = 0o40777
             self.st_uid = 0
 
-    monkeypatch.delattr(os, "geteuid")
+    monkeypatch.delattr(os, "geteuid", raising=False)
     monkeypatch.setattr(os, "lstat", lambda p, *a, **k: _St(real(p, *a, **k)))
 
 
@@ -129,6 +129,7 @@ def test_require_private_ignores_mode_bits_on_windows(monkeypatch, tmp_path):
     private_dir.require_private(str(d))
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
 def test_require_private_still_refuses_a_world_writable_dir_on_posix(tmp_path):
     from fused_render.templates.shared import private_dir
     d = tmp_path / "p"
