@@ -52,8 +52,13 @@ def _fallback(src: str, name: str) -> dict:
     field = lambda key: re.search(  # noqa: E731
         r"^\s*" + key + r":\s*(.*?),?\s*$", body, re.MULTILINE).group(1)
     models_m = re.search(r"models:\s*\[(.*?)\]", body, re.DOTALL)
-    models = [{"id": i, "label": label} for i, label in re.findall(
-        r'\{\s*id:\s*"([^"]*)",\s*label:\s*"([^"]*)"\s*\}', models_m.group(1))]
+    # `reasoning` is the one per-model fact a fallback row may state (so the
+    # effort pill of a model that takes none is hidden from the first paint);
+    # absent, the TS type reads it as true, which is what is pinned here.
+    models = [{"id": i, "label": label, "reasoning": flag != "false"}
+              for i, label, flag in re.findall(
+        r'\{\s*id:\s*"([^"]*)",\s*label:\s*"([^"]*)"(?:,\s*reasoning:\s*(true|false))?\s*\}',
+        models_m.group(1))]
     caps_src = field("caps")
     if caps_src.startswith("{"):
         caps = _caps(re.search(r"caps:\s*\{(.*?)\}", body, re.DOTALL).group(1))
@@ -79,9 +84,11 @@ def test_the_frontends_fallback_rows_match_the_catalog():
                              ("CODEX_FALLBACK", "codex")):
         client = _fallback(src, name)
         server = {k: rows[backend_id][k] for k in keys}
-        # `reasoning` is a per-model hint the fallback rows leave at the
-        # TS type's default; not part of what the first frame offers.
-        server["models"] = [{"id": m["id"], "label": m["label"]}
+        # Of a model's catalog row the first frame knows id, label and
+        # whether it takes an effort; the per-model effort lists, defaults
+        # and the facts beside them arrive only with the server's answer.
+        server["models"] = [{"id": m["id"], "label": m["label"],
+                             "reasoning": m["reasoning"]}
                             for m in server["models"]]
         assert client == server, (
             f"agent-backends.ts {name} has drifted from agent_backends/"

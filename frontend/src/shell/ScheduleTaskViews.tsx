@@ -2456,6 +2456,22 @@ export function TaskList({
   const rowRefs = useMemo(() => (groups ? flattenGroupRefs(groups) : null), [groups]);
   // Which sections are folded (the grouped views only; see groupFrames).
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(readCollapsedGroups);
+  // Project sections opened past PROJECT_GROUP_ROW_CAP ("Show N more"); in
+  // memory only, so a reload starts every section capped again.
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
+  // A row the page points at (the selected "where you were" row, the peeked
+  // one) that sits under a section's cap would not exist in the DOM: open
+  // that section. Once per key, so a later "Show less" is not undone by the
+  // next listing publish.
+  const ensuredKeys = useRef(new Set<string>());
+  useLayoutEffect(() => {
+    const want = [selected, peeked].filter((k): k is string => !!k && !ensuredKeys.current.has(k));
+    if (!groups || groupBy !== "project" || want.length === 0) return;
+    const open = cappedSectionsHolding(groups, groupBy, new Set(want));
+    for (const k of want) if (groupedKeys(groups).has(k)) ensuredKeys.current.add(k);
+    if (open.length === 0) return;
+    setExpandedGroups((cur) => (open.every((k) => cur.has(k)) ? cur : new Set([...cur, ...open])));
+  }, [selected, peeked, groups, groupBy]);
   // THE FIRST VISIT TO A GROUPED VIEW STARTS FOLDED (Akshil, 2026-10-19), bar
   // the sections about now — tasks-lib.openOnFirstVisit. Seeded once per view,
   // the moment it first has sections to fold (an empty list seeds nothing, so
@@ -2515,6 +2531,9 @@ export function TaskList({
     if (fresh.size === 0) return;
     const open = sectionsHolding(groups, groupBy, fresh);
     if (open.length === 0) return;
+    // A fresh row past the cap must exist to be scrolled to.
+    const capped = cappedSectionsHolding(groups, groupBy, fresh);
+    if (capped.length > 0) setExpandedGroups((cur) => new Set([...cur, ...capped]));
     setCollapsedGroups((cur) => {
       if (!open.some((k) => cur.has(k))) return cur;
       const next = new Set(cur);
@@ -3168,7 +3187,7 @@ export function TaskList({
         groupFrames(groups, rowAt, groupBy, collapsedGroups, onNewTaskIn, (next) => {
           setCollapsedGroups(next);
           writeCollapsedGroups(next);
-        })
+        }, expandedGroups, setExpandedGroups)
       ) : (
         <div className="tasks-list-frame">{rows.map(rowAt)}</div>
       )}
@@ -6894,19 +6913,43 @@ const ICON_GROUP_LINK = icon(
   <><path d="M15 3h6v6" /><path d="M10 14 21 3" />
     <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></>, 12);
 
+/** Rows a project section draws before its "Show N more" row. */
+export const PROJECT_GROUP_ROW_CAP = 10;
+
+/** Every task key the sections hold. */
+function groupedKeys(groups: TaskGroup[]): Set<string> {
+  const out = new Set<string>();
+  const walk = (g: TaskGroup) => {
+    for (const t of g.rows) out.add(t.key);
+    for (const c of g.groups ?? []) walk(c);
+  };
+  groups.forEach(walk);
+  return out;
+}
+
+/** Section keys (as groupFrames keys them) whose rows past the cap include one of `keys`. */
+export function cappedSectionsHolding(groups: TaskGroup[], by: TaskGroupBy, keys: ReadonlySet<string>): string[] {
+  if (by !== "project") return [];
+  return groups
+    .filter((g) => g.rows.slice(PROJECT_GROUP_ROW_CAP).some((t) => keys.has(t.key)))
+    .map((g) => `${by}:${g.key}`);
+}
+
 /** The grouped views' frames (Akshil, 2026-10-16): one bordered
  *  `.tasks-list-frame` per section under a heading that FOLDS it, every row
  *  drawn by the List's own `rowAt` at its FLAT index so keys, fold state and
  *  heights are the same ones the plain List keeps. The first heading's line
  *  also carries Collapse all / Expand all, at its right end — on the row the
  *  reader is already looking at, costing no row of its own. */
-function groupFrames(
+export function groupFrames(
   groups: TaskGroup[],
   rowAt: (task: Task, ix: number) => React.ReactNode,
   by: TaskGroupBy,
   collapsed: ReadonlySet<string>,
   onNewTaskIn: ((folder: string) => void) | undefined,
   setCollapsed: (next: Set<string>) => void,
+  expanded: ReadonlySet<string> = new Set(),
+  setExpanded: (next: Set<string>) => void = () => {},
 ) {
   const keyOf = (g: TaskGroup) => `${by}:${g.key}`;
   // Every heading at every depth — the PR view nests pull requests under
@@ -6933,7 +6976,33 @@ function groupFrames(
     const k = keyOf(g);
     const open = !collapsed.has(k);
     const headId = `tasks-group-${by}-${k.replace(/[^\w-]+/g, "_")}`;
-    const own = open ? g.rows.map((t) => rowAt(t, counter.next++)) : (counter.next += g.rows.length, null);
+    // THE PROJECT VIEW SHOWS TEN ROWS PER FOLDER, then one "Show N more" row
+    // (Surya, 2026-10-23): a busy folder's 150 rows pushed every other folder
+    // off the page. Hidden rows still advance the flat index, like a fold.
+    const capped = by === "project" && open && g.rows.length > PROJECT_GROUP_ROW_CAP;
+    const full = !capped || expanded.has(k);
+    const shown = full ? g.rows : g.rows.slice(0, PROJECT_GROUP_ROW_CAP);
+    const own = open ? shown.map((t) => rowAt(t, counter.next++)) : (counter.next += g.rows.length, null);
+    if (open && !full) counter.next += g.rows.length - shown.length;
+    if (own && capped) {
+      const hidden = g.rows.length - PROJECT_GROUP_ROW_CAP;
+      own.push(
+        <button
+          key="__show-more"
+          type="button"
+          className="tasks-group-more"
+          aria-expanded={full}
+          onClick={() => {
+            const next = new Set(expanded);
+            if (full) next.delete(k);
+            else next.add(k);
+            setExpanded(next);
+          }}
+        >
+          {full ? "Show less" : `Show ${hidden} more`}
+        </button>,
+      );
+    }
     const kids = g.groups ?? [];
     const inner = open ? kids.map((c) => draw(c, depth + 1, false)) : (counter.next += kids.reduce((n, c) => n + groupSize(c), 0), null);
     return (

@@ -79,3 +79,35 @@ describe("/model argument", () => {
     expect("refuse" in tasks && tasks.refuse).toBe("Codex has no background tasks");
   });
 });
+
+describe("/effort per model", () => {
+  test("validates against the levels the chat's model takes, and says so for a model that takes none", async () => {
+    const { CLAUDE_FALLBACK, CODEX_FALLBACK, COPILOT_FALLBACK, resetAgentBackendsForTests } =
+      await import("@platform/lib/agent-backends");
+    const plan = {
+      ...COPILOT_FALLBACK,
+      enabled: true,
+      models: [
+        { id: "auto", label: "Auto (Copilot picks)", reasoning: false, efforts: [] },
+        { id: "gpt-5.4", label: "GPT-5.4", efforts: ["low", "medium", "high", "xhigh"] },
+      ],
+    };
+    resetAgentBackendsForTests({ backends: [CLAUDE_FALLBACK, plan], default: "claude", all: [CLAUDE_FALLBACK, plan, CODEX_FALLBACK] });
+    try {
+      expect(localEffortArg("xhigh", "copilot", "gpt-5.4")).toBe("xhigh");
+      expect(localEffortArg("max", "copilot", "gpt-5.4")).toBe("");
+      expect(localEffortArg("high", "copilot", "auto")).toBe("");
+      // No model named: the agent's whole list, as before.
+      expect(localEffortArg("max", "copilot")).toBe("max");
+      const at = (text: string, model: string) =>
+        planLocalCommand(classifyCommand(text)!, { worktreeReady: true, backend: "copilot", model });
+      const none = at("/effort high", "auto");
+      expect("refuse" in none && none.refuse).toBe("auto takes no effort level");
+      const bad = at("/effort max", "gpt-5.4");
+      expect("refuse" in bad && bad.refuse).toContain("one of low, medium, high, xhigh");
+      expect(at("/effort xhigh", "gpt-5.4")).toEqual({ do: "effort", value: "xhigh" });
+    } finally {
+      resetAgentBackendsForTests();
+    }
+  });
+});
