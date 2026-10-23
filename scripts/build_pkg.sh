@@ -105,6 +105,15 @@ PKG_ID="${BUNDLE_ID}${BRANCH_REF:+.$BRANCH_REF}.installer"
 
 DMG_SHA256="$(shasum -a 256 "$DMG_PATH" | cut -d' ' -f1)"
 DMG_SIZE_MB="$(( ($(stat -f %z "$DMG_PATH") + 524288) / 1048576 ))"
+# What Installer's "Installation Type" page reports as the space taken: the
+# installed app's size when the bundle build_dmg.sh just produced is still
+# around (it is, in the release job), else the compressed DMG's as a floor.
+APP_BUILD_DIR="$REPO_ROOT/build/py2app-dist/${APP_NAME}.app"
+if [[ -d "$APP_BUILD_DIR" ]]; then
+  INSTALL_KBYTES="$(du -sk "$APP_BUILD_DIR" | cut -f1)"
+else
+  INSTALL_KBYTES="$(( $(stat -f %z "$DMG_PATH") / 1024 ))"
+fi
 
 BUILD_DIR="$REPO_ROOT/build/pkg${ARCH_SUFFIX}"
 DIST_DIR="$REPO_ROOT/dist"
@@ -149,6 +158,7 @@ fill() {  # fill <template> <output>: substitute every @PLACEHOLDER@
     -e "s|@PKG_ID@|${PKG_ID}|g" \
     -e "s|@COMPONENT_PKG@|${COMPONENT_PKG}|g" \
     -e "s|@DMG_SIZE_MB@|${DMG_SIZE_MB}|g" \
+    -e "s|@INSTALL_KBYTES@|${INSTALL_KBYTES}|g" \
     "$1" > "$2"
   if grep -q '@[A-Z0-9_]*@' "$2"; then
     echo "FATAL: unfilled placeholder in $2: $(grep -o '@[A-Z0-9_]*@' "$2" | sort -u | tr '\n' ' ')" >&2

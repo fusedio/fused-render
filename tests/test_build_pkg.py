@@ -102,6 +102,7 @@ def test_distribution_is_well_formed_after_filling(tmp_path):
         "@APP_NAME@": "FusedRender", "@DISPLAY_NAME@": "Fused Render", "@VERSION@": "0.0.1",
         "@ARCH@": "arm64", "@PKG_ID@": "io.fused.render.installer",
         "@COMPONENT_PKG@": "FusedRender-component.pkg", "@DMG_SIZE_MB@": "123",
+        "@INSTALL_KBYTES@": "456000",
     }
     for k, v in values.items():
         src = src.replace(k, v)
@@ -115,6 +116,7 @@ def test_distribution_is_well_formed_after_filling(tmp_path):
     ref = root.find("pkg-ref")
     assert ref.get("id") == "io.fused.render.installer"
     assert ref.text == "FusedRender-component.pkg"
+    assert ref.get("installKBytes") == "456000", "a payload-free pkg otherwise reports a 0-byte install"
     assert root.find("choice[@id='io.fused.render.installer']/pkg-ref").get("id") == "io.fused.render.installer"
 
 
