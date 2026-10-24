@@ -1370,7 +1370,7 @@ def test_skills_list_reads_every_cli_dir_and_names_who_reads_each(client, claude
     rows = _rows(client)
     assert set(rows) == {"solo", "shared", "cop", "cod"}
     assert rows["solo"]["readers"] == ["claude"]
-    assert rows["shared"]["readers"] == ["copilot", "codex"]
+    assert rows["shared"]["readers"] == ["copilot", "codex", "gemini"]
     assert rows["cop"]["readers"] == ["copilot"]
     assert rows["cod"]["readers"] == ["codex"]
     assert rows["cod"]["location"] == str(tmp_path / ".codex" / "skills")
@@ -1388,7 +1388,7 @@ def test_skills_list_makes_a_symlink_across_dirs_one_row_with_the_union_of_reade
     got = _post(client, "skills", action="list").json()["skills"]
     assert len(got) == 1
     row = got[0]
-    assert row["readers"] == ["claude", "copilot", "codex"]
+    assert row["readers"] == ["claude", "copilot", "codex", "gemini"]
     # The row stands on the real copy, so editing it edits the one file.
     assert row["path"] == str(real) and row["location"] == str(real.parent)
     assert row["linked"] is True
@@ -1412,6 +1412,25 @@ def test_skills_list_marks_plugin_skills_as_read_by_claude(client, claude_dir, t
     _plugin_with_skills(claude_dir, tmp_path, "utilities@local", ["unslop"])
     _enable(claude_dir, **{"utilities@local": True})
     assert _rows(client)["unslop"]["readers"] == ["claude"]
+
+
+def test_a_new_skill_is_placed_where_every_agent_that_is_on_reads_it(monkeypatch, tmp_path):
+    """`_placement`: with Gemini on (alone, or with Copilot/Codex) a new skill's
+    home is the shared `~/.agents/skills`, which Gemini reads; Claude gets a
+    link there only when it is on too. Claude alone keeps `~/.claude/skills`."""
+    from fused_render.claude_config import skills as skills_mod
+    agents = tmp_path / ".agents" / "skills"
+    monkeypatch.setattr(skills_mod, "_agents_dir", lambda: str(agents))
+    monkeypatch.setattr(skills_mod, "SKILLS_DIR", str(tmp_path / ".claude" / "skills"))
+    for on, home_in_agents, linked in (
+            (["gemini"], True, False),
+            (["gemini", "claude"], True, True),
+            (["codex"], True, False),
+            (["claude"], False, False)):
+        monkeypatch.setattr(skills_mod, "_enabled_clis", lambda on=on: list(on))
+        home, link = skills_mod._placement("my-skill")
+        assert (home.startswith(str(agents))) is home_in_agents, on
+        assert (link is not None) is linked, on
 
 
 def test_skills_read_write_address_a_user_skill_in_any_cli_dir(client, claude_dir, tmp_path):
@@ -1557,7 +1576,7 @@ def test_skills_add_keeps_one_copy_in_agents_and_links_claude_to_it(client, clau
     link = claude_dir / "skills" / "brew"
     assert link.is_symlink() and os.path.realpath(link) == str(real)
     # And it lists as the one row it is.
-    assert _rows(client)["brew"]["readers"] == ["claude", "copilot", "codex"]
+    assert _rows(client)["brew"]["readers"] == ["claude", "copilot", "codex", "gemini"]
 
 
 def test_skills_add_without_claude_makes_no_claude_link(client, claude_dir, tmp_path, monkeypatch):

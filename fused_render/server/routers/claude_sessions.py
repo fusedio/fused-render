@@ -47,6 +47,7 @@ from pydantic import BaseModel
 from fused_render import _platform
 from fused_render import claude_health, session_liveness, tasks_store
 from fused_render.agent_backends import roots
+from fused_render.shell import storage
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.server.common import _require_fused
 
@@ -57,17 +58,17 @@ router = APIRouter()
 # Claude Code's projects dir (CLAUDE_CONFIG_DIR wins where set —
 # `agent_roots.claude_dir`), module-level because the tests of this router
 # and of `routers/tasks` patch it at a tmp dir. Every scan here walks
-# `projects_roots()`, which puts fused's own Copilot and Codex roots beside
-# it (docs/COPILOT_BACKEND.md D3, docs/CODEX_BACKEND.md D3): same bucket
-# layout, same row shape, so a Copilot or Codex session is a session on every
-# one of these surfaces.
+# `projects_roots()`, which puts fused's own Copilot, Codex and Gemini roots
+# beside it (docs/COPILOT_BACKEND.md D3, docs/CODEX_BACKEND.md D3,
+# docs/GEMINI_BACKEND.md D3): same bucket layout, same row shape, so a
+# non-Claude session is a session on every one of these surfaces.
 CLAUDE_DIR = roots.claude_dir()
 PROJECTS_DIR = os.path.join(CLAUDE_DIR, "projects")
 
 
 def projects_roots() -> list[tuple[str, str]]:
-    """`[(backend, projects dir), ...]` — Claude's (as patched), Copilot's and
-    Codex's."""
+    """`[(backend, projects dir), ...]` — Claude's (as patched), Copilot's,
+    Codex's and Gemini's."""
     return roots.projects_roots(PROJECTS_DIR)
 
 # Mutable session state (custom names, triage). The retired bundled sessions
@@ -1100,9 +1101,10 @@ def _recap_generate(agent, file: str, session_id: str, transcript: str = "",
     the title prompt pair replaces the recap one on every backend and the
     reply comes back RAW for `_title_parse`.
 
-    A COPILOT session is recapped by Copilot (`_recap_copilot`) and a CODEX
-    session by Codex (`_recap_codex`), each from the same tail; everything
-    below is the Claude run.
+    A COPILOT session is recapped by Copilot (`_recap_copilot`), a CODEX
+    session by Codex (`_recap_codex`) and a GEMINI session by Gemini
+    (`_recap_gemini`), each from the same tail; everything below is the
+    Claude run.
 
     `--no-session-persistence` is the load-bearing flag: this run mints a
     session id of its own and must leave no `.jsonl` behind, or every recap
@@ -1156,6 +1158,8 @@ def _recap_generate(agent, file: str, session_id: str, transcript: str = "",
         return _recap_copilot(agent, tail, titles, prompts, raw)
     if backend == "codex":
         return _recap_codex(agent, tail, titles, prompts, raw)
+    if backend == "gemini":
+        return _recap_gemini(agent, tail, titles, prompts, raw)
     message = json.dumps({"type": "user", "message": {
         "role": "user",
         "content": [{"type": "text", "text": prompts[1] % tail}]}})
@@ -1339,6 +1343,151 @@ def _recap_codex(agent, tail: str, titles: bool | None = None,
         return reply if raw else _recap_plain(reply, titles)
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
+
+
+#: What `-p` says when the whole prompt rides stdin: the CLI appends the flag's
+#: text AFTER the stdin input, so the pointer closes the message.
+_GEMINI_RECAP_POINTER = "Answer as the instructions above say."
+#: The recap's policy (Gemini's policy engine, `--policy <file>`): NO TOOL
+#: AT ALL. `--approval-mode default` only decides what asks; the read-only
+#: tools (read_file, glob, grep, web fetch) run without asking under it, so
+#: a transcript tail that carries an instruction to read something could
+#: pull the server's cwd into the model's context. One rule, every tool,
+#: the highest priority the engine takes (<= 999, verified 0.65.0 — 1000
+#: is refused as "tier overflow"); a denied call answers the model with
+#: "denied by policy" and the run goes on. Written once under fused's own
+#: home (the file must exist on disk for the flag).
+_GEMINI_RECAP_POLICY = (
+    "# fused-render: the recap one-shot takes no tools (claude_sessions._recap_gemini).\n"
+    "[[rule]]\n"
+    'toolName = "*"\n'
+    'decision = "deny"\n'
+    "priority = 999\n")
+_GEMINI_RECAP_POLICY_NAME = "gemini-recap-policy.toml"
+
+
+def _gemini_recap_policy_path() -> str:
+    """`<fused home>/gemini-recap-policy.toml`, written when missing or stale."""
+    path = os.path.join(storage.home_dir(), _GEMINI_RECAP_POLICY_NAME)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            if fh.read() == _GEMINI_RECAP_POLICY:
+                return path
+    except OSError:
+        pass
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    # A unique temp name per writer: two recaps refreshing the file at once
+    # must not race each other's rename (a shared `.tmp` would make the
+    # second `os.replace` raise FileNotFoundError).
+    fd, tmp = tempfile.mkstemp(prefix=_GEMINI_RECAP_POLICY_NAME + ".",
+                               dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(_GEMINI_RECAP_POLICY)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return path
+
+
+def _recap_gemini(agent, tail: str, titles: bool | None = None,
+                  prompts: tuple[str, str] | None = None,
+                  raw: bool = False) -> str:
+    """The Gemini twin of the Claude run (docs/GEMINI_BACKEND.md D12, D16):
+    `gemini -p`, Gemini's headless one-shot, never the ACP server the
+    sessions use. Gemini has no system-prompt flag either, so the system text
+    leads the one user message, as the Copilot and Codex runs send it.
+
+    The flags, each checked against `gemini --help` (0.65.0):
+
+    * `-p <pointer>` enters headless mode; the help says the flag's text is
+      "appended to input on stdin (if any)", so the tail travels over stdin,
+      never argv (the same rule as the other three runs), and the flag
+      carries one closing sentence.
+    * `-o json`: one JSON object on stdout — `{session_id, response, stats}`
+      (`JsonFormatter` in the CLI's source) — so the reply is read off a
+      field, never scraped from a stream that also carries the CLI's own
+      lines.
+    * `--policy <deny-all>`: no tool at all (`_GEMINI_RECAP_POLICY`) — the
+      Gemini twin of Claude's `--tools ""` and Codex's `-s read-only`: a
+      transcript tail is untrusted text, and the read-only tools would
+      otherwise run without asking and could carry the server's cwd into
+      the model's context;
+    * `--approval-mode default`: a headless run never stops to ask, and a
+      tool that would ask is refused instead of granted — the recap only has
+      to read the prompt.
+    * `-m <the Gemini row's default model>`: `auto`, the CLI's own default.
+
+    Gemini has no `--no-session-persistence`: every run records a chat file
+    under `<gemini home>/tmp/<project>/chats/`, which `gemini --resume`
+    lists. The reply names the run's `session_id`, so that one file is
+    removed afterwards through the same helper erase uses
+    (`routers.tasks._gemini_chat_files`) whenever the reply named the
+    session; a timeout or an unparsable reply leaves it, since nothing else
+    knows the id. `--skip-trust` as the session spawn has it (§3): `-p` is
+    headless, and a user with folder trust on would otherwise get a CLI that
+    dies at startup in the server's untrusted cwd — every failure here reads
+    as "", so that would be a silent loss of every recap.
+
+    `_spawn_env(backend="gemini")` leaves `GEMINI_CLI_HOME` and the Google
+    credential variables exactly as found and sets `NO_BROWSER`, so a
+    signed-out run fails instead of opening a browser. Same spawn rule as
+    the other three (no Popen `cwd`, `close_fds=False`), and every failure
+    is "", as there."""
+    from fused_render.agent_backends import registry
+
+    system, template = prompts or _recap_prompts(titles)
+    prompt = system + "\n\n" + template % tail
+    sid = ""
+    try:
+        proc = subprocess.Popen(
+            [agent._gemini_bin(), "-p", _GEMINI_RECAP_POINTER, "-o", "json",
+             "--approval-mode", "default", "--skip-trust",
+             "--policy", _gemini_recap_policy_path(),
+             "-m", registry.get("gemini").default_model],
+            env=agent._spawn_env(backend="gemini"),
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, **claude_health.SUBPROCESS_KWARGS)
+        try:
+            stdout, stderr = proc.communicate(input=prompt, timeout=_RECAP_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            _recap_reap(proc)
+            return ""
+        # A result rides stdout; a FAILED run's JSON (with its `session_id`,
+        # and `error`) goes to STDERR (verified 0.65.0, exit 41 signed out),
+        # so that one is read too — for the cleanup in `finally`, since the
+        # answer to a failure is "" either way.
+        body = None
+        for text in (stdout, stderr):
+            try:
+                body = json.loads(text or "")
+            except ValueError:
+                continue
+            if isinstance(body, dict):
+                break
+            body = None
+        if not isinstance(body, dict):
+            return ""
+        sid = str(body.get("session_id") or "")
+        if proc.returncode != 0 or body.get("error"):
+            return ""
+        reply = body.get("response")
+        if not isinstance(reply, str):
+            return ""
+        return reply if raw else _recap_plain(reply, titles)
+    finally:
+        if sid:
+            # Lazily: `routers.tasks` imports this module.
+            from fused_render.server.routers import tasks as tasks_mod
+            for path in tasks_mod._gemini_chat_files(sid):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
 
 
 def _stored_recap(session_id: str, for_uuid: str,

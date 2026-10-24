@@ -4359,7 +4359,7 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # (`_row_settings`).
         "model": model,
         "effort": effort,
-        # WHICH AGENT runs this task — "claude" | "copilot" | "codex", never ""
+        # WHICH AGENT runs this task — "claude" | "copilot" | "codex" | "gemini", never ""
         # (D2: the backend is fixed at the first turn and every surface names it). The
         # recorded choice, else the root the transcript sits under, else the
         # entries, else Claude — see `_row_backend`.
@@ -7100,7 +7100,8 @@ def _quoted(body: str, italic: bool = False) -> list[str]:
 def _export_markdown(task: dict, turns: list[dict], backend: str) -> str:
     """The turns as Markdown, in the Bots export's vocabulary. Lossy by
     design (tool results are not inlined); `format=json` is the full record."""
-    who = {"copilot": "Copilot", "codex": "Codex"}.get(str(backend or ""), "Claude")
+    who = {"copilot": "Copilot", "codex": "Codex",
+           "gemini": "Gemini"}.get(str(backend or ""), "Claude")
     title = " ".join(str(task.get("title") or "Task").split())
     out = [f"# {title} — transcript", ""]
     if task.get("target"):
@@ -7445,7 +7446,7 @@ class SettingsPatch(BaseModel):
     session_id: str
     model: str = ""
     effort: str = ""
-    # "claude" | "copilot" | "codex" | "" (not saying). Recorded once by the
+    # "claude" | "copilot" | "codex" | "gemini" | "" (not saying). Recorded once by the
     # spawn that starts a conversation; a later POST naming the same value is
     # a no-op and one naming another is refused — the backend never changes
     # (D2).
@@ -8479,6 +8480,13 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
     discipline: the id already passed the shape check above, and every hit
     must resolve inside one of the two Codex dirs with a `rollout-*-<sid>.jsonl`
     leaf, or it is not touched.
+
+    A transcript that went from under the GEMINI root takes Gemini CLI's own
+    chat file(s) with it (docs/GEMINI_BACKEND.md D15): `gemini --resume <sid>`
+    replays from `<gemini home>/tmp/<project>/chats/session-<ts>-<sid[:8]>.jsonl`
+    (`.json` for older releases). Found by `_gemini_chat_files` under the same
+    discipline — a leaf named by the id's first eight characters whose text
+    carries the whole id, resolving inside the dir it was globbed under.
     """
     if not _SESSION_ID_SHAPE.match(session_id) or session_id in (".", ".."):
         logger.warning("erase: refusing session id %r", session_id)
@@ -8517,6 +8525,7 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
     removed, erased, failed, refused = 0, False, 0, 0
     copilot = False  # did a transcript go from under the Copilot root
     codex = False  # ... or from under the Codex root
+    gemini = False  # ... or from under the Gemini root
     seen: set[str] = set()
     for target in targets:
         resolved = os.path.realpath(target)
@@ -8539,6 +8548,7 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
                     erased = True
                     copilot = copilot or projects[parent][1] == "copilot"
                     codex = codex or projects[parent][1] == "codex"
+                    gemini = gemini or projects[parent][1] == "gemini"
             else:
                 continue
         except OSError:
@@ -8565,6 +8575,14 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
                 removed += 1
             except OSError:
                 logger.warning("erase: could not remove %s", rollout, exc_info=True)
+                failed += 1
+    if gemini and not failed and not refused:
+        for chat in _gemini_chat_files(session_id):
+            try:
+                os.remove(chat)
+                removed += 1
+            except OSError:
+                logger.warning("erase: could not remove %s", chat, exc_info=True)
                 failed += 1
     return removed, erased, failed, refused
 
@@ -8629,6 +8647,93 @@ def _codex_rollout_files(session_id: str) -> list[str]:
                     and os.path.isfile(resolved) and resolved not in out):
                 out.append(resolved)
     return out
+
+
+def _gemini_home() -> str:
+    """Gemini CLI's own data dir (`<GEMINI_CLI_HOME or ~>/.gemini`), NOT
+    fused's Gemini root (`agent_roots.gemini_dir()`) — the CLI keeps this one,
+    and erase (and the recap's cleanup) are its only readers. Resolved by
+    `gemini_health.config_dir`, the one place that reads the CLI's own
+    override, as `_codex_home` resolves Codex's. A function so a test can
+    point it at a tmp dir."""
+    from fused_render import gemini_health
+
+    return gemini_health.config_dir()
+
+
+_GEMINI_SHORT_ID_LEN = 8
+
+
+def _gemini_chat_files(session_id: str) -> list[str]:
+    """Every chat file Gemini CLI keeps for `session_id` — the realpaths,
+    ready to remove. `<gemini home>/tmp/<project>/chats/session-<ts>-<short>.jsonl`
+    (and `.json`, the older shape), where `<short>` is the id's first eight
+    characters (`deriveSessionShortId` in the CLI; verified in 0.65.0's
+    source, D15). Eight characters are not an id, so a hit counts only when
+    the chat's OWN recorded `sessionId` is this id: the first record of a
+    `.jsonl` (the CLI's metadata line) or the top-level key of a `.json` —
+    never a substring of the text, which another chat could carry in a
+    message that merely mentions this id. A neighbour sharing the prefix
+    stays, and so does an unreadable file.
+
+    Same discipline as `_codex_rollout_files`: the id is refused unless it is
+    a name, `glob.escape`d so it is never a pattern, and a hit is kept only
+    when its REALPATH is a regular file inside the realpath of the `tmp` dir
+    it was globbed under and its leaf still reads `session-…-<short>.json(l)`."""
+    import glob
+
+    if not _SESSION_ID_SHAPE.match(session_id) or session_id in (".", ".."):
+        return []
+    short = session_id[:_GEMINI_SHORT_ID_LEN]
+    if len(short) < _GEMINI_SHORT_ID_LEN:
+        return []
+    base = os.path.join(_gemini_home(), "tmp")
+    if not os.path.isdir(base):
+        return []
+    base_real = os.path.realpath(base)
+    out: list[str] = []
+    for ext in (".jsonl", ".json"):
+        suffix = "-" + short + ext
+        pattern = os.path.join(glob.escape(base), "*", "chats",
+                               "session-*" + glob.escape(suffix))
+        for hit in glob.glob(pattern):
+            resolved = os.path.realpath(hit)
+            leaf = os.path.basename(resolved)
+            if not (is_within(resolved, base_real, strict=True, fs_root_ok=False)
+                    and leaf.startswith("session-") and leaf.endswith(suffix)
+                    and os.path.isfile(resolved) and resolved not in out):
+                continue
+            try:
+                with open(resolved, "rb") as fh:
+                    head = fh.read(1 << 20).decode("utf-8", "replace")
+            except OSError:
+                continue
+            if _gemini_chat_owner(head, ext) == session_id:
+                out.append(resolved)
+    return out
+
+
+def _gemini_chat_owner(head: str, ext: str) -> str:
+    """The `sessionId` a Gemini chat file records as its own, from its first
+    MiB: the first line's record for `.jsonl`, the top-level object's key
+    for `.json` (the whole object when it fits, else the key where the CLI
+    writes it — first in the object). "" when the file does not say."""
+    if ext == ".jsonl":
+        first = head.lstrip().split("\n", 1)[0]
+        try:
+            record = json.loads(first)
+        except ValueError:
+            return ""
+    else:
+        try:
+            record = json.loads(head)
+        except ValueError:
+            m = re.match(r'\s*\{\s*"sessionId"\s*:\s*"([^"\\]*)"', head)
+            return m.group(1) if m else ""
+    if not isinstance(record, dict):
+        return ""
+    sid = record.get("sessionId")
+    return sid if isinstance(sid, str) else ""
 
 
 def _every_rule_behind(key: str) -> list[str]:
@@ -10100,7 +10205,7 @@ def api_task_create(body: dict = Body(...),
     """Start a task from a page: `{prompt, target?, title?, model?, effort?,
     backend?, permission_mode?, due?, queue?}` -> `{entry_id, key}`.
 
-    `backend` — "claude", "copilot" or "codex" — is which agent runs the task (D2).
+    `backend` — "claude", "copilot", "codex" or "gemini" — is which agent runs the task (D2).
     Omitted, it is the Preferences default AT CREATE: `schedule.create` pins
     `registry.default_id()` on the entry, so the `pending:` row and the run
     both name the agent the user saw, not the default of the day it fires. A

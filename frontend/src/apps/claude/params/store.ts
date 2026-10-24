@@ -40,7 +40,7 @@ export const CHAT_PARAM_KEYS = [
   "model",
   "effort",
   /**
-   * WHICH AGENT A NEW CHAT RUNS ON — "claude" | "copilot" | "codex" — the Agent pill's
+   * WHICH AGENT A NEW CHAT RUNS ON — "claude" | "copilot" | "codex" | "gemini" — the Agent pill's
    * own pick for a chat that has no session yet (docs/COPILOT_BACKEND.md D18).
    * A conversation that exists answers for itself (`ChatState.backend`, off
    * the wire) and this stands down; `newChat` clears it with `session_id`.

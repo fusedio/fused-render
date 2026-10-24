@@ -1,28 +1,31 @@
 """Where each agent backend keeps its transcripts and its live-session registry,
 and how a session id is traced back to the backend that owns it.
 
-Three backends drive Tasks and Sessions: Claude Code (`claude`), GitHub
-Copilot CLI (`copilot`) and OpenAI Codex CLI (`codex`). Claude Code writes
-its own transcript to `~/.claude/projects/<munge(cwd)>/<sid>.jsonl` and its
-own live registry to `~/.claude/sessions/<pid>.json`. Copilot and Codex
-write nothing fused can read in place (Copilot's `events.jsonl` holds finals
-only; Codex's rollout files under `CODEX_HOME` are its own resume format), so
-fused's hosts (`claude_agent/copilot_host.py`, `claude_agent/codex_host.py`)
-write the SAME two shapes under a root fused owns, one per backend:
+Four backends drive Tasks and Sessions: Claude Code (`claude`), GitHub
+Copilot CLI (`copilot`), OpenAI Codex CLI (`codex`) and Google Gemini CLI
+(`gemini`). Claude Code writes its own transcript to
+`~/.claude/projects/<munge(cwd)>/<sid>.jsonl` and its own live registry to
+`~/.claude/sessions/<pid>.json`. The other three write nothing fused can
+read in place (Copilot's `events.jsonl` holds finals only; Codex's rollout
+files under `CODEX_HOME` and Gemini's chat files under `~/.gemini/tmp` are
+their own resume formats), so fused's hosts (`claude_agent/copilot_host.py`,
+`claude_agent/codex_host.py`, `claude_agent/gemini_host.py`) write the SAME
+two shapes under a root fused owns, one per backend:
 
     <home>/copilot/projects/<munge(cwd)>/<sid>.jsonl
     <home>/copilot/sessions/<pid>.json
     <home>/codex/projects/<munge(cwd)>/<sid>.jsonl
     <home>/codex/sessions/<pid>.json
+    <home>/gemini/projects/<munge(cwd)>/<sid>.jsonl
+    <home>/gemini/sessions/<pid>.json
 
 Same bucket layout, same munge rule, same row fields the tasks readers parse
 — so every reader that used to open ONE projects dir opens the list this
 module returns and otherwise does not change. The root a transcript sits
 under is the authority on which backend owns the session: every kind of id
-is uuid-shaped (fused mints Claude's with --session-id; Copilot mints its
-own in session/new, because --acp refuses --session-id; Codex mints its own
-uuid7 thread id in thread/start), so nothing about the id itself says which
-one it is.
+is uuid-shaped (fused mints Claude's with --session-id; Copilot and Gemini
+mint their own in ACP's session/new; Codex mints its own uuid7 thread id in
+thread/start), so nothing about the id itself says which one it is.
 
 Stdlib only, never imports `fused_render` (this file is loaded BY PATH from
 `claude_agent/agent.py`, the two session hosts and the test suite, in
@@ -39,7 +42,7 @@ import importlib.util
 import os
 import re
 
-BACKENDS = ("claude", "copilot", "codex")
+BACKENDS = ("claude", "copilot", "codex", "gemini")
 DEFAULT_BACKEND = "claude"
 
 
@@ -78,11 +81,23 @@ def codex_dir() -> str:
     return os.path.join(home, "codex")
 
 
+def gemini_dir() -> str:
+    """fused's own root for Gemini sessions — the third twin of
+    `copilot_dir()`, under the same UNNESTED home. NOT Gemini CLI's own
+    `~/.gemini` (`GEMINI_CLI_HOME` moves it): that holds its credential,
+    settings and chat files, which fused never writes and reads only to erase
+    a session (docs/GEMINI_BACKEND.md D15)."""
+    home = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
+    return os.path.join(home, "gemini")
+
+
 def base_dir(backend: str) -> str:
     if backend == "copilot":
         return copilot_dir()
     if backend == "codex":
         return codex_dir()
+    if backend == "gemini":
+        return gemini_dir()
     return claude_dir()
 
 
@@ -95,7 +110,7 @@ def sessions_dir(backend: str) -> str:
 
 
 def transcript_roots() -> list[tuple[str, str]]:
-    """`[(backend, projects_dir), ...]` in BACKENDS order. Always all three — a
+    """`[(backend, projects_dir), ...]` in BACKENDS order. Always all four — a
     disabled backend's old transcripts still belong in the task list (read-
     only); the prefs gate is at the spawn sites, not here."""
     return [(b, projects_dir(b)) for b in BACKENDS]
