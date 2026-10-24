@@ -303,7 +303,7 @@
     // `?_saveon=blur` on this frame's own URL (a host framing the editor as a
     // canvas node's code pane, apps/canvases/CanvasWorkspace): no 250 ms
     // autosave. The buffer is written when the editor loses focus — a click
-    // on the canvas, a tab, the host's chrome — or on Cmd/Ctrl+Enter, the
+    // on the canvas, a tab, the host's chrome — or on Shift+Enter, the
     // way the hosted workbench's own editor runs a UDF on blur / shortcut.
     // Every write of a node file reaches the canvas as a delta that RUNS the
     // node; saving per keystroke pause ran it per pause.
@@ -890,7 +890,7 @@
               setDirty(false);
             } else {
               // Newer edits arrived during the write: stay dirty, re-arm autosave
-              // (under `_saveon=blur` they wait for the next blur / Cmd+Enter).
+              // (under `_saveon=blur` they wait for the next blur / Shift+Enter).
               setDirty(true);
               armAutosave();
             }
@@ -1018,12 +1018,12 @@
           { key: "Alt-z", run: () => { setWrap(!wrap); return true; } },
           { key: "Shift-Alt-f", run: formatDocument },
         ]),
-        // `_saveon=blur`: Cmd/Ctrl+Enter saves. Highest precedence, because
-        // basicSetup's default keymap (listed first above) binds Mod-Enter to
-        // insertBlankLine and would take the key first.
+        // `_saveon=blur`: Shift+Enter saves. Highest precedence, because
+        // basicSetup's default keymap (listed first above) binds Shift-Enter to
+        // insertNewlineAndIndent and would take the key first.
         SAVE_ON_BLUR
           ? CM.Prec.highest(CM.keymap.of([
-              { key: "Mod-Enter", run: () => { save(); return true; } },
+              { key: "Shift-Enter", run: () => { save(); return true; } },
             ]))
           : [],
         // docChanged fires on any user edit → mark the buffer modified.

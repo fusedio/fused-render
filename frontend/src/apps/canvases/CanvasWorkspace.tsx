@@ -237,7 +237,7 @@ const FAILED_POLLS_BEFORE_RELEASE = 3;
 // clicked in and out of repeatedly must not become a probe per click.
 const FOCUS_CHECK_MIN_MS = 3000;
 
-// The node pane's Code tab saves on blur / Cmd+Enter (`_saveon=blur`, the code
+// The node pane's Code tab saves on blur / Shift+Enter (`_saveon=blur`, the code
 // template), and a blur save can still be in flight when the frame goes away:
 // anything that unmounts or remounts it asks the frame to flush first, waiting
 // at most this long (a hung write must not wedge the canvas).
@@ -380,7 +380,7 @@ function nodeEmbedSrc(file: string, tab: NodeTab, sessionId: string | null): str
       // handler below.
       (tab === "claude" ? "&_noann=1&_canvasshot=1" : "") +
       // `_saveon=blur`: the code template saves when the editor loses focus
-      // or on Cmd+Enter, not 250 ms after every edit — each save of a node
+      // or on Shift+Enter, not 250 ms after every edit — each save of a node
       // file reaches the canvas as a delta that RUNS the node (owner,
       // 2026-10-24: "when I keep typing it should not evaluate").
       (tab === "code" ? "&_saveon=blur" : "") +
