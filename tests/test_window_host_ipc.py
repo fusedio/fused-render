@@ -233,10 +233,12 @@ def test_on_listening_runs_before_any_dispatch(sock_path):
     order = []
     gate = threading.Event()
     stop = threading.Event()
+    listening = threading.Event()
     started = {}
 
     def on_listening():
         order.append("on_listening-start")
+        listening.set()
         gate.wait(3)
         order.append("on_listening-end")
 
@@ -250,9 +252,11 @@ def test_on_listening_runs_before_any_dispatch(sock_path):
     starter = threading.Thread(target=start_serving)
     starter.start()
     try:
-        deadline = time.monotonic() + 3
-        while not os.path.exists(sock_path) and time.monotonic() < deadline:
-            time.sleep(0.01)
+        # Not "the socket file exists": bind() creates it before listen(), and
+        # a client connecting in that gap is refused (a loaded runner hit
+        # it: the request raised, so no reply). `serve()` calls on_listening
+        # only after listen(), so this is the moment connections queue.
+        assert listening.wait(3), "on_listening never ran"
 
         client_result = {}
 
