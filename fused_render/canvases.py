@@ -2210,6 +2210,11 @@ class _SyncManager:
         # the old canvas straight back. The deadline keeps a frame that never
         # acks (closed, reloading) from fencing the clone for good.
         self._hard_fence: dict | None = None
+        # Body channel (canvas_snapshot.body_hash): node → the hash of the text
+        # this channel last wrote for it. A body whose `base_hash` is that hash
+        # overwrites the frame's own previous write, so nothing goes to trash;
+        # any other base (Claude's text, a pull) is trashed before the write.
+        self._body_written: dict[str, str] = {}
         self._load_base()
         # Bumped on every `_fingerprint` assignment (the property below), so the
         # scan can tell that a pull or push re-baselined while it was walking.
@@ -4286,6 +4291,8 @@ class _SyncManager:
         # invented for it; a node it names settles an earlier one.
         self._note_rowless(new["nodes"], result.get("rowless_files"),
                            deleted=result.get("deleted") or ())
+        for gone in result.get("deleted") or ():
+            self._body_written.pop(gone, None)
         self._refresh_view_after_write(held, edges=new["edges"], ids=new["ids"],
                                        bodies=bodies, embed_rows=new["nodes"])
         ack = {"ok": True, "gen": gen, "seq": seq, "changed": result["changed"],
@@ -4296,6 +4303,85 @@ class _SyncManager:
         if result.get("synthesized"):
             ack["synthesized"] = list(result["synthesized"])
         return self._embed_record(gen, seq, ack)
+
+    def apply_body(self, node: str, file: str, base_hash: str, text: str) -> dict:
+        """One source text from the workbench's body channel → the clone, by
+        compare-and-swap on content (canvas_snapshot.body_hash). Under
+        _op_lock (the route takes it), so it never interleaves with a
+        snapshot moving the file, a pull or a push.
+
+        The frame names the hash of the text it last agreed on with this
+        host (`base_hash`); the write lands only when disk still hashes to
+        that. Otherwise — Claude or a pull wrote the file meanwhile — nothing
+        is written and the answer carries what disk holds (`stale`,
+        `disk_text`, `disk_hash`): the frame rebases its edits onto it and
+        posts again. A missing file hashes as the empty text, so a file the
+        frame created is written on its first post. Content-gated: a body
+        equal to disk is acked without a write (no mtime move, no disk_rev,
+        no delta). Returns the ack the page relays to the frame.
+        """
+        stem, dot, ext = file.rpartition(".")
+        if not dot or stem != node or "/" in file or file.startswith(".") \
+                or ("." + ext) not in canvas_snapshot.BODY_SUFFIXES:
+            raise ValueError(f"{file!r} is not {node!r}'s source file")
+        # A node has ONE source. A post naming another suffix than the file
+        # already there (a type the frame changed) would plant a second
+        # source and, with it, a synthesized duplicate row.
+        existing = canvas_snapshot._find_source(self.dir, node)
+        if existing is not None and existing != file:
+            raise ValueError(f"{node!r} is {existing!r} on disk, not {file!r}")
+        path = os.path.join(self.dir, file)
+        current = canvas_snapshot.read_body(path)
+        current_hash = canvas_snapshot.body_hash(current if current is not None else "")
+        if current_hash != base_hash:
+            self.log_event("embed_to_disk", "body stale",
+                           detail=f"{file}: disk moved under the workbench's base; "
+                                  "sent back for a rebase")
+            return {"ok": False, "code": "stale", "node": node, "file": file,
+                    "disk_text": current if current is not None else "",
+                    "disk_hash": current_hash}
+        new_hash = canvas_snapshot.body_hash(text)
+        if current == text:
+            self._body_written[node] = new_hash
+            return {"ok": True, "node": node, "file": file, "hash": new_hash,
+                    "changed": False, "created": False}
+        if current is not None and self._body_written.get(node) != base_hash:
+            # Not the frame's own previous text: keep a copy, as a note body
+            # overwrite does.
+            trash = self._new_trash_dir()
+            self._backup_to(trash, file, current.encode("utf-8", "replace"))
+        # An OSError propagates: the route answers busy, the frame keeps the
+        # body pending and posts again.
+        canvas_snapshot._write_atomic(path, text)
+        self._body_written[node] = new_hash
+        created = current is None
+        if created:
+            # The frame's row for a new UDF comes with its snapshot, usually
+            # within the same second; until then the file is row-less, and a
+            # row must not be invented for it (the delta would move the
+            # user's node), see _note_rowless.
+            rows = set()
+            try:
+                doc = canvas_snapshot._load_toml(os.path.join(self.dir, "canvas.toml"))
+                rows = set(canvas_snapshot.rows_of_doc(doc)["nodes"])
+            except Exception:  # noqa: BLE001 — no toml yet: the row is owed either way
+                pass
+            if node not in rows:
+                self._note_rowless((), [node])
+        # The frame holds what it just wrote: the view's body moves with
+        # disk, so the next delta carries nothing for this node (its own
+        # write never echoes). A node the view does not know (a new file,
+        # or no view at all) is owed to the frame by the next cut, which
+        # then carries this very text and a hash equal to the frame's base.
+        view = self._embed_view
+        if view is not None and node in view.get("nodes", {}):
+            view.setdefault("bodies", {})[node] = text
+        self._note_disk()
+        self._view_rev = self.disk_rev
+        self._frame_seen = True
+        self._bump()
+        return {"ok": True, "node": node, "file": file, "hash": new_hash,
+                "changed": True, "created": created}
 
     def apply_rename(self, gen: int, seq: int, frm: str, to: str,
                      file_from: str | None, file_to: str | None) -> dict:
@@ -4313,6 +4399,8 @@ class _SyncManager:
         with self._rowless_lock:
             if frm in self._rowless and to not in self._rowless:
                 self._rowless[to] = self._rowless.pop(frm)
+        if frm in self._body_written:
+            self._body_written[to] = self._body_written.pop(frm)
         renamed = canvas_snapshot.rename_prev(self._embed_view, frm, to, file_to)
         if renamed is None:
             # Nothing known before the rename, nothing known after: the next
@@ -4904,6 +4992,72 @@ def api_canvases_snapshot(body: dict = Body(...), x_fused: str | None = Header(d
         manager.log_event("embed_to_disk", "snapshot applied",
                           ms=(time.time() - started) * 1000,
                           detail=_snapshot_ack_detail(what, gen, seq, ack))
+        return JSONResponse(ack)
+    finally:
+        manager._op_lock.release()
+
+
+@router.post("/api/canvases/body")
+def api_canvases_body(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """One source text from the embedded workbench → the clone, by
+    compare-and-swap on content (embed v3 body channel,
+    SyncManager.apply_body). The workspace page relays the frame's
+    `fused-embed-body {seq, name, file, base_hash, text}` here and posts the
+    answer back as `-body-applied` / `-body-rejected`.
+
+    200 `{ok: true, hash}` when written (or already on disk); 200 `{ok:
+    false, code: "stale", disk_text, disk_hash}` when disk no longer hashes
+    to `base_hash` — the frame rebases and posts again, so this is not an
+    error. 409 `busy` as the snapshot route; 400 `rejected` for a malformed
+    post (the frame drops it and logs the reason).
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    name = body.get("name")
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        return _error("'name' must be a canvas name (letters, digits, underscore)")
+    env, bad = _require_env(body.get("env"))
+    if bad is not None:
+        return bad
+    node, file = body.get("node"), body.get("file")
+    base_hash, text = body.get("base_hash"), body.get("text")
+    if not isinstance(node, str) or not node or not isinstance(file, str) or not file:
+        return _error("'node' and 'file' must be non-empty strings")
+    if not isinstance(base_hash, str) or not isinstance(text, str):
+        return _error("'base_hash' and 'text' must be strings")
+    manager = _sync_manager(env, name, create=False)
+    if manager is None:
+        return JSONResponse(
+            {"error": f"canvas {_sync_key(env, name)!r} is not being synced (no watcher is running)",
+             "code": "no_watcher"}, status_code=409)
+    started = time.time()
+    if not manager._op_lock.acquire(timeout=SNAPSHOT_LOCK_WAIT_S):
+        manager.log_event("embed_to_disk", "body busy", ok=False,
+                          ms=(time.time() - started) * 1000,
+                          detail=f"{file}: the clone stayed locked past {SNAPSHOT_LOCK_WAIT_S:g}s")
+        return _busy("a sync operation is in flight for this canvas; try again in a moment")
+    try:
+        with manager.pause_lock:
+            if manager.pause_count > 0:
+                return _busy(f"syncing for {_sync_key(env, name)!r} is paused; try again in a moment")
+        try:
+            ack = manager.apply_body(node, file, base_hash, text)
+        except OSError as exc:
+            manager.log_event("embed_to_disk", "body busy", ok=False,
+                              detail=f"{file}: write failed: {exc}")
+            return _busy(f"could not write {file}: {exc}")
+        except Exception as exc:  # noqa: BLE001 — the reason goes back to the frame
+            manager.log_event("embed_to_disk", "body rejected", ok=False,
+                              detail=f"{file}: {type(exc).__name__}: {exc}")
+            return JSONResponse(
+                {"ok": False, "code": "rejected", "error": f"{type(exc).__name__}: {exc}"},
+                status_code=400)
+        if ack.get("ok") and ack.get("changed"):
+            manager.log_event("embed_to_disk", "body written",
+                              ms=(time.time() - started) * 1000,
+                              detail=f"{file}: {len(text)} chars"
+                                     + (" (new file)" if ack.get("created") else ""))
         return JSONResponse(ack)
     finally:
         manager._op_lock.release()

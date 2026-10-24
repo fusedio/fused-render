@@ -81,6 +81,22 @@
 // The clone watcher is then the ONE writer to the server, publishing the
 // folder exactly as it publishes a Claude edit.
 //
+// Source texts (the body channel, SyncManager.apply_body): a workbench whose
+// editors are live in the frame posts each file's text on its own, by
+// compare-and-swap on content — never inside a snapshot:
+//   iframe → { type: "fused-embed-body", seq, name, file, base_hash, text }
+//   parent → { type: "fused-embed-body-applied", seq, name, hash }
+//   parent → { type: "fused-embed-body-rejected", seq, name, code, reason,
+//              disk_text?, disk_hash? }   code "stale": disk moved under the
+//              frame's base (Claude wrote the file) — the frame rebases its
+//              edits onto `disk_text` and posts again; "busy": the clone stayed
+//              locked, post again later; anything else: dropped, logged.
+// Relayed on the SAME ordered chain as snapshots and rename hints: a body for
+// a UDF's old file name must not overtake the rename that moves the file.
+// The token message tells the frame this host speaks the channel
+// (`caps: ["body"]`); without it the frame keeps its editors hidden and code
+// disk-owned, as before.
+//
 // The other direction (canvas_snapshot.py, "the disk → embed leg"): this page
 // never reloads the workbench iframe and never asks it to re-fetch. When the
 // clone moves on disk (`disk_rev` on the sync events socket's `state`
@@ -144,6 +160,7 @@ import {
   getCanvasesStatus,
   getSyncState,
   getWhoami,
+  applyBody,
   checkRemote,
   pullCanvas,
   startSync,
@@ -194,6 +211,9 @@ const HEAL_MIN_INTERVAL_MS = 5000;
 // is rejected to the embed (see `abandon` in relaySnapshot): not on disk.
 const SNAPSHOT_BUSY_WINDOW_MS = 120_000;
 const SNAPSHOT_BUSY_RETRY_MS = 750;
+// A body post that meets a locked clone retries this long before the frame
+// is told `busy` and keeps the text pending on its side (it retries too).
+const BODY_BUSY_WINDOW_MS = 10_000;
 
 // A delta the server HELD (the clone mid-write: a row whose file is not there
 // yet) or could not cut (409 busy) is asked for again this far apart, for up
@@ -1068,6 +1088,9 @@ export default function CanvasWorkspace({
         {
           type: "fused-embed-auth-token",
           accessToken: access_token,
+          // What this host speaks beyond v3: the body channel (see the
+          // module doc). The frame shows its editors only when it hears it.
+          caps: ["body"],
           ...(publicOrigin ? { publicOrigin } : {}),
         },
         origin, // exact origin — this message carries a credential
@@ -1281,6 +1304,58 @@ export default function CanvasWorkspace({
       }
     },
     [env, name, settleRelay],
+  );
+
+  // The body channel (module doc): one file's text, compare-and-swap on the
+  // hash the frame names. Runs on the snapshot chain for ORDER only — it
+  // never touches `relayTicketRef` (a body must not make a busy snapshot read
+  // itself as superseded). Busy answers retry inside a short window, then
+  // come back as a `busy` rejection the frame retries on its own.
+  const relayBody = useCallback(
+    async (seq: number, body: { node: string; file: string; base_hash: string; text: string }) => {
+      const post = (msg: Record<string, unknown>) => {
+        const frame = frameRef.current;
+        const origin = baseOriginRef.current;
+        if (!frame?.contentWindow || !origin) return;
+        frame.contentWindow.postMessage(msg, origin);
+      };
+      const started = Date.now();
+      for (;;) {
+        try {
+          const ack = await applyBody(env, name, body);
+          if (ack.ok) {
+            post({ type: "fused-embed-body-applied", seq, name: body.node, hash: ack.hash });
+          } else {
+            post({
+              type: "fused-embed-body-rejected",
+              seq,
+              name: body.node,
+              code: ack.code,
+              reason: "the file changed on disk",
+              disk_text: ack.disk_text,
+              disk_hash: ack.disk_hash,
+            });
+          }
+          return;
+        } catch (e) {
+          const status = (e as { status?: number }).status;
+          if (status === 409 && Date.now() - started < BODY_BUSY_WINDOW_MS) {
+            await new Promise((r) => window.setTimeout(r, SNAPSHOT_BUSY_RETRY_MS));
+            continue;
+          }
+          const reason = (e as Error).message || "body rejected";
+          post({
+            type: "fused-embed-body-rejected",
+            seq,
+            name: body.node,
+            code: status === 409 ? "busy" : "rejected",
+            reason,
+          });
+          return;
+        }
+      }
+    },
+    [env, name],
   );
 
   // The delta leg: disk moved → fetch diff(disk, what the frame holds) → post
@@ -1518,6 +1593,17 @@ export default function CanvasWorkspace({
           }),
         );
       }
+      if (type === "fused-embed-body") {
+        // From THE workbench frame only, like the snapshot: it writes a file.
+        if (event.source !== frameRef.current?.contentWindow) return;
+        const { seq, name: node, file, base_hash, text } = (event.data ?? {}) as {
+          seq?: unknown; name?: unknown; file?: unknown; base_hash?: unknown; text?: unknown;
+        };
+        if (typeof seq !== "number" || typeof node !== "string" || !node) return;
+        if (typeof file !== "string" || typeof base_hash !== "string" || typeof text !== "string") return;
+        const body = { node, file, base_hash, text };
+        relayChainRef.current = relayChainRef.current.then(() => relayBody(seq, body));
+      }
       if (type === "fused-embed-capture-done") {
         // From THE workbench frame only: a same-origin window that guessed
         // the pending `req` must not settle it with its own picture.
@@ -1682,7 +1768,7 @@ export default function CanvasWorkspace({
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [seedToken, sendSelect, sendHostFocus, sendCodePanelState, relaySnapshot, relayDelta, enqueueRelay, env, name, embedded, settleShot, afterNodeCodeFlush]);
+  }, [seedToken, sendSelect, sendHostFocus, sendCodePanelState, relaySnapshot, relayBody, relayDelta, enqueueRelay, env, name, embedded, settleShot, afterNodeCodeFlush]);
 
   // The hosted editor's URL, for the project page's header (`onWorkbenchUrl`).
   const workbenchUrl =

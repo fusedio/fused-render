@@ -357,6 +357,21 @@ export const applyRename = (
     { name, env, gen, seq, rename },
   );
 
+/** The body channel's answer (SyncManager.apply_body): written, already on
+ *  disk, or `stale` with what disk holds for the frame to rebase on. */
+export type BodyAck =
+  | { ok: true; node: string; file: string; hash: string; changed: boolean; created: boolean }
+  | { ok: false; code: "stale"; node: string; file: string; disk_text: string; disk_hash: string };
+
+/** Embed v3 body channel: one source text → the clone, compare-and-swap on
+ *  the hash of what disk holds (`base_hash`). Throws with `.status` 409
+ *  while a sync leg holds the clone, 400 when the post is malformed. */
+export const applyBody = (
+  env: WorkbenchEnv,
+  name: string,
+  body: { node: string; file: string; base_hash: string; text: string },
+) => postJson<BodyAck>("/api/canvases/body", { name, env, ...body });
+
 /** One op of a canvas delta (canvas_snapshot.diff_views): the frame applies
  *  them in order. Opaque to this page beyond `op`. */
 export interface DeltaOp {
