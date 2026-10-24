@@ -77,6 +77,15 @@ logger = logging.getLogger(__name__)
 #: `claude -p` argv, both of which stream.
 BACKENDS = ("copilot", "codex", "gemini")
 
+#: `claude_health.SUBPROCESS_KWARGS` minus the text-mode keys: asyncio's
+#: `create_subprocess_exec` refuses `text` / `encoding` / `errors` with a
+#: ValueError (its pipes are bytes; `_decode` does the UTF-8 "replace" the
+#: sync runner gets from the kwargs). `close_fds=False` — the posix_spawn
+#: rule — is the part that must ride on both.
+ASYNC_SUBPROCESS_KWARGS = {
+    k: v for k, v in claude_health.SUBPROCESS_KWARGS.items()
+    if k not in ("text", "encoding", "errors")}
+
 #: How long a run killed at its timeout gets to be collected before the
 #: caller gives up on it (a grandchild still holding stdout would otherwise
 #: hang the request past the timeout this exists to keep; a zombie at worst).
@@ -482,7 +491,7 @@ async def run_async(spec: OneShot, timeout: float,
             proc = await asyncio.create_subprocess_exec(
                 *spec.argv, env=spec.env, stdin=asyncio.subprocess.PIPE,
                 stdout=spec.stdout, stderr=spec.stderr,
-                **claude_health.SUBPROCESS_KWARGS)
+                **ASYNC_SUBPROCESS_KWARGS)
         except OSError as exc:
             raise OneShotError("ai_unavailable",
                                f"could not run the {spec.backend} CLI: {exc}") from exc

@@ -30,6 +30,12 @@ export interface HostAiModels {
 
 export const hostAiModelId = (backend: string, model: string) => `${backend}:${model}`;
 
+/** The effort levels `/api/ai` accepts (`server/ai.py _AI_EFFORTS`). The
+ *  agent catalog also lists `max` for Claude, Copilot and Codex, which the
+ *  relay refuses with a 400 — so a row's `efforts` is the intersection,
+ *  and the frame can only ever pick a level the relay takes. */
+export const AI_RELAY_EFFORTS = ["low", "medium", "high", "xhigh"] as const;
+
 function rowsOf(b: AgentBackendRow): HostAiModel[] {
   return b.models.map((m) => ({
     id: hostAiModelId(b.id, m.id),
@@ -38,8 +44,11 @@ function rowsOf(b: AgentBackendRow): HostAiModel[] {
     label: m.label,
     backendLabel: b.label,
     // The server's own rule (`Model.effort_list`): a per-model list when
-    // the CLI said one, else the agent's list, none when `reasoning` is off.
-    efforts: m.efforts ?? (m.reasoning === false ? [] : b.efforts),
+    // the CLI said one, else the agent's list, none when `reasoning` is off
+    // — narrowed to what `/api/ai` accepts (`AI_RELAY_EFFORTS`).
+    efforts: (m.efforts ?? (m.reasoning === false ? [] : b.efforts)).filter((e) =>
+      (AI_RELAY_EFFORTS as readonly string[]).includes(e),
+    ),
   }));
 }
 

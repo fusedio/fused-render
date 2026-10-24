@@ -1465,6 +1465,18 @@ export default function CanvasWorkspace({
           controller.signal,
           (text) => post({ type: "fused-embed-ai-chunk", req, text }),
         );
+        if (result.finishReason === "cancelled") {
+          // The Activity row's ✕ (not the frame's Stop): the relay closes
+          // the stream as ok with no text. Not a completion the frame should
+          // apply — an error it shows and the user retries.
+          post({
+            type: "fused-embed-ai-done",
+            req,
+            ok: false,
+            error: { type: "cancelled", message: "Cancelled in fused-render" },
+          });
+          return;
+        }
         post({
           type: "fused-embed-ai-done",
           req,
