@@ -62,9 +62,17 @@ the bottom of the module):
   a node deleted in the first moments of a generation is still a deletion,
   and a node Claude added on disk meanwhile (in neither set) survives.
 
-  Code files (`.py`), JSON-UI (`.json`) and HTML (`.html`) bodies are
-  DISK-OWNED: with the workbench's code editor hidden under v3 they cannot be
-  edited in the embed, so they are never written from this leg.
+  Code files (`.py`), JSON-UI (`.json`) and HTML (`.html`) bodies are never
+  written from this leg. A workbench that speaks the BODY CHANNEL
+  (`body_channel: true` on the snapshot) sends EVERY source text — code and
+  notes, new files included — through `POST /api/canvases/body` instead
+  (canvases.SyncManager.apply_body): one file per request, accepted only
+  when the hash of what disk holds equals the `base_hash` the frame names,
+  so a Claude edit that landed meanwhile is never overwritten; the frame
+  rebases on the disk text it gets back and resends. Such a snapshot carries
+  no `file_body` and no `udf_body`, and this module writes no source file
+  for it. An older workbench (no flag) still ships note bodies and new
+  files here, as below.
 
   Every write is content-gated. A write that changed nothing would still bump
   mtimes, so `disk_rev` would move, the page would cut a delta and post it,
@@ -77,6 +85,7 @@ clear error, not a silent skip.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import time
@@ -533,6 +542,10 @@ def compact_state(body: dict) -> dict:
     ids: dict[str, str] = {}
     bodies: dict[str, str] = {}
     new_files: list[dict] = []
+    # The workbench sends source texts over the body channel: nothing here
+    # is a body to write (a `file_body` such a frame still sent would be a
+    # stale re-send racing its own body posts).
+    body_channel = body.get("body_channel") is True
     for udf in body.get("udfs") or []:
         if not isinstance(udf, dict):
             continue
@@ -553,6 +566,8 @@ def compact_state(body: dict) -> dict:
         # `file_body` is the exact file text as `fused canvas pull` would
         # write it (a note's README-shaped markdown, not its raw text);
         # `udf_body.code` is the file for a never-saved code UDF.
+        if body_channel:
+            continue
         text = udf.get("file_body")
         if not isinstance(text, str):
             text = _udf_code_from_body(udf.get("udf_body"))
@@ -1290,6 +1305,24 @@ def rename_prev(prev: dict | None, frm: str, to: str, file_to: str | None) -> di
 # the note's text, so it is sent as `body` instead and the frame decides.
 CODE_SUFFIXES = (".py", ".json", ".html")
 
+# Every source file kind a body post may name: the four the clone holds.
+BODY_SUFFIXES = CODE_SUFFIXES + EMBED_BODY_SUFFIXES
+
+
+def body_hash(text: str) -> str:
+    """The hash both ends of the body channel compute over a source text:
+    sha256 of the TEXT re-encoded as UTF-8, never of the raw disk bytes. Disk
+    is read with `decode("utf-8", "replace")`, so an invalid byte becomes
+    U+FFFD on the way to the frame, and the frame hashes the string it got;
+    hashing the bytes would make such a file differ forever."""
+    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+
+
+def read_body(path: str) -> str | None:
+    """A source file as the body channel reads it (None when missing)."""
+    data = _read_bytes(path)
+    return None if data is None else data.decode("utf-8", "replace")
+
 
 def compact_state_from_disk(clone_dir: str, remote_ids: dict[str, str] | None = None,
                             exclude_orphans: Iterable[str] = ()) -> dict:
@@ -1412,10 +1445,13 @@ def _upsert_op(disk: dict, name: str, *, row: bool, body: bool, sid: bool,
             del node["position"]
         op["node"] = node
     if body and name in disk["bodies"]:
+        text = disk["bodies"][name]
         if file and file.endswith(CODE_SUFFIXES):
-            op["code"] = disk["bodies"][name]
+            op["code"] = text
         else:
-            op["body"] = disk["bodies"][name]
+            op["body"] = text
+        # The frame's base for its next body post (canvases.apply_body).
+        op["hash"] = body_hash(text)
     if sid and name in disk["ids"]:
         op["id"] = disk["ids"][name]
     return op
@@ -1425,9 +1461,10 @@ def diff_views(disk: dict, view: dict | None) -> list[dict]:
     """The ops that take `view` (what the embed holds; None = nothing known,
     a full state) to `disk`. Node-level, by UDF name:
 
-        upsert {name, file, row?, node?, code?|body?, id?}  — new or changed;
-                                           an absent field means "unchanged",
-                                           never "cleared"
+        upsert {name, file, row?, node?, code?|body?, hash?, id?}  — new or
+                                           changed; an absent field means
+                                           "unchanged", never "cleared";
+                                           `hash` = body_hash of the text sent
         rename {from, to, file}           — a name vanished whose server id
                                            reappears under a name the view
                                            lacks (then diffed as `to`)

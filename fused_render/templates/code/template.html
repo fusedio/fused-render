@@ -227,7 +227,13 @@
     <button id="format" type="button" title="Format document (Shift-Alt-F)" hidden>Format</button>
   </div>
   <script>
-    fused.autoReload(false); // editor must not reload out from under the cursor — own autosave changes mtime; external edits are the conflict lock's job (SPEC LR-5)
+    // The editor must not reload out from under the cursor (own autosave
+    // changes mtime; SPEC LR-5). Another writer's edit — the canvas's
+    // workbench editor through the body channel, Claude, a pull — arrives
+    // through fused.onFileChanged instead and is REBASED into the buffer
+    // around the unsaved edits (see "live sync" below); the conflict banner
+    // is the last resort when even that fails.
+    fused.autoReload(false);
 
     const MAX_BYTES = 2 * 1024 * 1024;
 
@@ -275,6 +281,25 @@
     let dirty = false;
     let saveTimer = null;  // pending autosave debounce (AS-1)
     let saving = false;    // a save() write is in flight
+    // Live sync with disk (the same rebase the canvas's workbench editor
+    // does against the host, application `code-editor/body-sync-adapter.ts`):
+    //   base    — doc-space text last agreed with disk (what `mtime` stands for)
+    //   sent    — ChangeSet a write is carrying, relative to base
+    //   local   — ChangeSet typed since the sent doc (since base when idle)
+    //   sentDoc — the text that write carries, doc-space; null when idle
+    // Disk text T arriving: inc = diff(base, T) is dispatched as
+    // inc.map(sent ∘ local) — after the user's edits, cursor mapped through,
+    // outside the undo history — then local/sent are rebased onto T. A write
+    // that meets a changed file (409 conflict) rebases the same way and
+    // writes again. Mapped text-space ops never lose a keystroke or a line
+    // the other writer added; two edits inside one token interleave.
+    let TX = null;        // CM's Transaction class (addToHistory), off the first state
+    let base = "";
+    let sent = null;
+    let local = null;
+    let sentDoc = null;
+    let syncTimer = null;
+    const SYNC_EVENT = "fused.sync"; // userEvent on the rebase's own dispatches
     // `?_saveon=blur` on this frame's own URL (a host framing the editor as a
     // canvas node's code pane, apps/canvases/CanvasWorkspace): no 250 ms
     // autosave. The buffer is written when the editor loses focus — a click
@@ -429,6 +454,124 @@
     }
     const serialize = (state, value) =>
       state.doc.sliceString(0, state.doc.length, value === "crlf" ? "\r\n" : "\n");
+
+    const normalizeEol = (t) => t.replace(/\r\n?/g, "\n");
+    const isHighSurrogate = (c) => c >= 0xd800 && c <= 0xdbff;
+    const isLowSurrogate = (c) => c >= 0xdc00 && c <= 0xdfff;
+    // The smallest single replacement taking `current` to `next` (common
+    // prefix and suffix kept, never ending inside a surrogate pair), or null.
+    function minimalChange(current, next) {
+      if (current === next) return null;
+      const shorter = Math.min(current.length, next.length);
+      let prefix = 0;
+      while (prefix < shorter && current.charCodeAt(prefix) === next.charCodeAt(prefix)) prefix++;
+      if (prefix > 0 && isHighSurrogate(current.charCodeAt(prefix - 1))) prefix--;
+      let suffix = 0;
+      while (suffix < shorter - prefix
+             && current.charCodeAt(current.length - 1 - suffix) === next.charCodeAt(next.length - 1 - suffix)) suffix++;
+      if (suffix > 0 && isLowSurrogate(current.charCodeAt(current.length - suffix))) suffix--;
+      return { from: prefix, to: current.length - suffix, insert: next.slice(prefix, next.length - suffix) };
+    }
+    // A ChangeSet over a document holding `from` that turns it into `to`
+    // (empty when equal). Built through a throwaway state: the bundle does
+    // not export ChangeSet itself.
+    function changeSetOf(from, to) {
+      const c = minimalChange(from, to);
+      return CM.EditorState.create({ doc: from }).changes(c ? c : []);
+    }
+    // Three-way merge by text when the sets stopped fitting: both sides as
+    // one span each; non-overlapping spans both apply, overlapping keep MINE
+    // (it is on screen) and the next save carries it.
+    function merge3(b, theirs, mine) {
+      if (mine === b) return theirs;
+      if (theirs === b || theirs === mine) return mine;
+      const a = minimalChange(b, theirs);
+      const m = minimalChange(b, mine);
+      if (!a) return mine;
+      if (!m) return theirs;
+      if (a.to <= m.from) return b.slice(0, a.from) + a.insert + b.slice(a.to, m.from) + m.insert + b.slice(m.to);
+      if (m.to <= a.from) return b.slice(0, m.from) + m.insert + b.slice(m.to, a.from) + a.insert + b.slice(a.to);
+      return mine;
+    }
+    // Rebuild sent/local from the texts (a new view, or sets that no longer fit).
+    function reseedSync() {
+      if (!view) return;
+      const doc = view.state.doc.toString();
+      if (sentDoc !== null) {
+        sent = changeSetOf(base, sentDoc);
+        local = changeSetOf(sentDoc, doc);
+      } else {
+        sent = changeSetOf(base, base);
+        local = changeSetOf(base, doc);
+      }
+    }
+    function dispatchSync(changes) {
+      view.dispatch({
+        changes,
+        userEvent: SYNC_EVENT,
+        annotations: TX ? TX.addToHistory.of(false) : [],
+      });
+    }
+
+    // Disk moved (another writer): fold its text into the buffer around the
+    // unsaved edits. False when disk still holds what `mtime` stands for (our
+    // own write coming back through the feed), true when something was
+    // taken in. Throws on a read failure (a deleted file): the caller lets
+    // the next change retry.
+    async function rebaseFromDisk() {
+      if (!view) return false;
+      const st = await fused.stat(file);
+      if (st.mtime === mtime) return false;
+      const raw = await fused.readFile(file);
+      const n = normalizeEol(raw);
+      const diskEol = detectEol(raw);
+      if (diskEol !== eol) { eol = diskEol; eolSel.value = eol; }
+      mtime = st.mtime;
+      const doc = view.state.doc.toString();
+      if (n === doc) {
+        // Already showing it: nothing here is unsaved.
+        base = n; sentDoc = null; reseedSync();
+        setDirty(false);
+        return true;
+      }
+      if (sentDoc !== null && n === sentDoc) {
+        // Our in-flight write, read back before its answer: the base moves,
+        // what was typed since stays unsaved.
+        base = n; sentDoc = null; reseedSync();
+        setDirty(view.state.doc.toString() !== base);
+        return true;
+      }
+      try {
+        const all = sent.compose(local);
+        const inc = changeSetOf(base, n);
+        const mapped = inc.map(all);
+        if (!mapped.empty) dispatchSync(mapped);
+        local = local.map(inc.map(sent), true);
+        sent = sent.map(inc, true);
+        base = n;
+        if (sentDoc !== null) sentDoc = sent.apply(CM.EditorState.create({ doc: n }).doc).toString();
+      } catch (err) {
+        const merged = merge3(base, n, doc);
+        const c = minimalChange(view.state.doc.toString(), merged);
+        if (c) dispatchSync(c);
+        base = n; sentDoc = null; reseedSync();
+      }
+      const stillDirty = view.state.doc.toString() !== base;
+      setDirty(stillDirty);
+      if (stillDirty) armAutosave();
+      return true;
+    }
+
+    // The change feed's debounced hand-off to rebaseFromDisk: waits out a
+    // write in flight (its own mtime bump settles the compare), stands back
+    // while the banner is up (the user is deciding), and lets the next
+    // change retry a transient read failure.
+    async function syncFromDisk() {
+      if (!view) return;
+      if (saving) { clearTimeout(syncTimer); syncTimer = setTimeout(syncFromDisk, 200); return; }
+      if (conflictEl.style.display === "flex") return;
+      try { await rebaseFromDisk(); } catch (err) { /* next change retries */ }
+    }
 
     function indentExtension(value) {
       const unit = value === "tab" ? "\t" : " ".repeat(Number(value));
@@ -695,39 +838,69 @@
       await savePromise;
     }
 
+    // A write that meets a file another writer changed (409 conflict) takes
+    // the disk text in (rebaseFromDisk) and writes again, this many times,
+    // before the banner — which is now only for a file that keeps changing
+    // faster than it can be read.
+    const CONFLICT_REBASES = 3;
+
     async function doSave() {
-      // Snapshot the doc we are writing. CM's Text is immutable, so a plain
-      // reference compare after the await detects edits that landed while the
-      // write was in flight — those must NOT be masked by setDirty(false), or
-      // "Saved" lies and the 250ms autosave (which checks dirty) skips them.
-      const docState = view.state.doc;
-      // Joined with the FILE's line ending, not the buffer's "\n" (CE-5).
-      const doc = serialize(view.state, eol);
-      // A line-ending switch is an edit the doc compare cannot see (CE-5).
-      const eolWritten = eol;
       saveBtn.disabled = true;
       statusTextEl.textContent = "Saving…";
       statusTextEl.classList.remove("error");
       saving = true;
       try {
-        const st = await fused.writeFile(file, doc, { expectedMtime: mtime });
-        mtime = st.mtime;
-        hideConflict();
-        if (view.state.doc === docState && eol === eolWritten) {
-          setDirty(false);
-        } else {
-          // Newer edits arrived during the write: stay dirty, re-arm autosave
-          // (under `_saveon=blur` they wait for the next blur / Cmd+Enter).
-          setDirty(true);
-          armAutosave();
-        }
-      } catch (err) {
-        if (err.type === "conflict") {
-          showConflict();
-        } else {
-          statusTextEl.textContent = "Save failed: " + (err.message || "");
-          statusTextEl.classList.add("error");
-          saveBtn.disabled = false;
+        for (let attempt = 0; ; attempt++) {
+          // Snapshot the doc we are writing. CM's Text is immutable, so a plain
+          // reference compare after the await detects edits that landed while
+          // the write was in flight — those must NOT be masked by
+          // setDirty(false), or "Saved" lies and the 250ms autosave (which
+          // checks dirty) skips them.
+          const docState = view.state.doc;
+          // Joined with the FILE's line ending, not the buffer's "\n" (CE-5).
+          const doc = serialize(view.state, eol);
+          // A line-ending switch is an edit the doc compare cannot see (CE-5).
+          const eolWritten = eol;
+          // Live sync: this write carries everything typed so far.
+          if (local) {
+            const text = docState.toString();
+            try { sent = sent.compose(local); } catch (err) { sent = changeSetOf(base, text); }
+            local = changeSetOf(text, text);
+            sentDoc = text;
+          }
+          try {
+            const st = await fused.writeFile(file, doc, { expectedMtime: mtime });
+            mtime = st.mtime;
+            if (sentDoc !== null) { base = sentDoc; sentDoc = null; sent = changeSetOf(base, base); }
+            hideConflict();
+            if (view.state.doc === docState && eol === eolWritten) {
+              setDirty(false);
+            } else {
+              // Newer edits arrived during the write: stay dirty, re-arm autosave
+              // (under `_saveon=blur` they wait for the next blur / Cmd+Enter).
+              setDirty(true);
+              armAutosave();
+            }
+            return;
+          } catch (err) {
+            if (err.type === "conflict") {
+              // Disk moved under the lock token: take it in and write again.
+              let rebased = false;
+              if (attempt < CONFLICT_REBASES) {
+                try { rebased = await rebaseFromDisk(); } catch (e) { rebased = false; }
+              }
+              if (rebased) {
+                if (view.state.doc.toString() === base) { setDirty(false); return; } // nothing left to write
+                continue;
+              }
+              showConflict();
+            } else {
+              statusTextEl.textContent = "Save failed: " + (err.message || "");
+              statusTextEl.classList.add("error");
+              saveBtn.disabled = false;
+            }
+            return;
+          }
         }
       } finally {
         saving = false;
@@ -756,6 +929,7 @@
         eolSel.value = eol;
         view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: raw } });
         mtime = st.mtime;
+        base = view.state.doc.toString(); sentDoc = null; reseedSync();
         hideConflict();
         setDirty(false); // after dispatch, whose docChanged had flipped us dirty
       } catch (err) {
@@ -770,6 +944,7 @@
       try {
         const st = await fused.writeFile(file, doc);
         mtime = st.mtime;
+        base = view.state.doc.toString(); sentDoc = null; reseedSync();
         hideConflict();
         setDirty(false);
       } catch (err) {
@@ -838,10 +1013,24 @@
           : [],
         // docChanged fires on any user edit → mark the buffer modified.
         CM.EditorView.updateListener.of((update) => {
+          // Live sync: every document change that is not the rebase's own
+          // dispatch composes into the unsaved set (whatever its intent —
+          // the set tracks the DOCUMENT against the base).
+          const syncOnly = update.transactions.length > 0
+            && update.transactions.every((tr) => tr.isUserEvent(SYNC_EVENT));
+          if (update.docChanged && local) {
+            for (const tr of update.transactions) {
+              if (tr.isUserEvent(SYNC_EVENT) || tr.changes.empty) continue;
+              try { local = local.compose(tr.changes); } catch (err) { reseedSync(); }
+            }
+          }
           if (update.docChanged) {
             paintLines();
-            setDirty(true);
-            armAutosave();
+            // The rebase's own dispatch sets dirty itself (from doc vs base).
+            if (!syncOnly) {
+              setDirty(true);
+              armAutosave();
+            }
           }
           if (update.docChanged || update.selectionSet) paintCursor();
           // Lint results land as their own transaction, after the delay.
@@ -861,6 +1050,13 @@
       root.innerHTML = "";
       view?.destroy(); // a rebuild (reloadFromDisk after a chmod) replaces the old view
       view = new CM.EditorView({ doc: text, extensions, parent: root });
+      // Live sync: the loaded text is the base; CM's Transaction class
+      // (for addToHistory) is reached through a no-op update, since the
+      // bundle does not export it.
+      base = view.state.doc.toString();
+      sentDoc = null;
+      reseedSync();
+      TX = view.state.update({}).constructor;
       langSel.value = lang.id;
       indentSel.value = indent;
       eolSel.value = eol;
@@ -971,6 +1167,15 @@
       await save();
       return { ok: !dirty && conflictEl.style.display !== "flex" };
     };
+
+    // Live sync: the change feed for this file (fused.onFileChanged keeps
+    // the socket up although reloading is off). Debounced, since a write is
+    // a burst of events; a change for another watched path is not ours.
+    fused.onFileChanged(({ path }) => {
+      if (!view || !file || path !== file) return;
+      clearTimeout(syncTimer);
+      syncTimer = setTimeout(syncFromDisk, 150);
+    });
 
     load();
   </script>
