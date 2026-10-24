@@ -6422,10 +6422,12 @@ export function groupRows(
 // section starts folded except the ones about NOW: on Time, Later / Last hour /
 // Today; on Project and PR, the sections with a task interacted with inside
 // the last day — which, ordered as above, are the ones at the top. Seeded ONCE
-// per view and then remembered like any fold the reader makes themselves —
-// FOR THIS TAB (Akshil, 2026-10-19: "it should be like in-page memory"): the
-// folds and the seed marks live in sessionStorage beside the per-tab facets,
-// so a closed tab forgets them and a fresh one is seeded again.
+// EVER per view (the mark is in localStorage — Akshil, 2026-10-22: "only auto
+// fold the very first time loading in"; a new window must never fold what the
+// reader had open) and then remembered like any fold the reader makes
+// themselves — FOR THIS TAB (Akshil, 2026-10-19: "it should be like in-page
+// memory"): the folds live in sessionStorage beside the per-tab facets, so a
+// closed tab forgets them and a fresh one starts with everything open.
 
 /** The views whose folds have been seeded, as a JSON array of view names. */
 export const GROUPS_SEEDED_KEY = "fused-render:tasks-groups-seeded";
