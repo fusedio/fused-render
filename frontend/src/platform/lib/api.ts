@@ -3365,6 +3365,9 @@ export interface CurrentAppEntry {
   /** Epoch (server clock) of the last `openCurrentApp`; 0 for a row a task
    *  put on the desk that has never been opened. */
   opened_at?: number | null;
+  /** Epoch of the newest task activity under the app (0 for none) — what the
+   *  server lists by; the client draws the array as it arrives. */
+  active_at?: number;
   /** A task under the app finished since `opened_at` — the sidebar's green
    *  dot. The server's flag (current_apps.observe), cleared by `openCurrentApp`
    *  and by nothing done to the tasks. */
@@ -3391,18 +3394,6 @@ export interface OpenCurrentAppResult {
 
 export function openCurrentApp(path: string): Promise<OpenCurrentAppResult> {
   return postJson<OpenCurrentAppResult>("/api/current-apps/open", { path });
-}
-
-/** The user dragged a Projects row: `paths` is the whole visible list, top
- *  first, and the SERVER's `apps` array becomes that order (D1386 — the order
- *  lives in current_apps.json, not in this browser). Unknown paths are ignored;
- *  live apps the list does not name keep their place ABOVE the named ones (the
- *  tab that dragged did not have them, so its arrangement says nothing about
- *  where they go). Answers with the table as it now stands. */
-export function setCurrentAppsOrder(
-  paths: string[],
-): Promise<{ ok: boolean; apps: CurrentAppEntry[] }> {
-  return postJson<{ ok: boolean; apps: CurrentAppEntry[] }>("/api/current-apps/order", { paths });
 }
 
 /** The optional `icon.svg` of the app that owns `fsPath` (the folder itself

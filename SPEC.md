@@ -12372,8 +12372,9 @@ and not a sync nicety.
   exists. `tests/test_browser_storage_allowlist.py` lists the files allowed to
   touch storage in code, each with its category; a new storage use anywhere
   else fails the suite.
-- **BS-2 Stores.** Projects order = the `apps` array of `current_apps.json`
-  (`POST /api/current-apps/order`). Notifications seen/dismissed =
+- **BS-2 Stores.** Projects order = the `apps` array of `current_apps.json`,
+  listed by recency (newest task activity, else added; no drag since
+  2026-10-23). Notifications seen/dismissed =
   `notifications.json` (`GET`/merge-`POST /api/notifications/state`). Tasks
   done-and-seen = `__seen_done__` in tasks `read.json`, carried by
   `/api/tasks/pulse`, replaced by `POST /api/tasks/seen`. Bot unread baseline =

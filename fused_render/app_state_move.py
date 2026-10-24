@@ -60,8 +60,8 @@ def rewrite_stores(old_root: str, new_root: str) -> None:
 def _rewrite_current_apps(old_root: str, new_root: str) -> None:
     """The desk stores canonical absolute paths. If the new path is already a
     row (a task ran there before this open), the stale row just drops."""
-    # Under current_apps' own lock (D1386): the desk is now read-modify-written
-    # by a drag (`set_order`) and by `observe` on every listing, so an unlocked
+    # Under current_apps' own lock (D1386): the desk is read-modify-written by
+    # `observe` on every listing and by the one-off gestures, so an unlocked
     # rewrite here could hand back a snapshot taken before either and erase it.
     from fused_render import current_apps
 
