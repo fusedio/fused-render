@@ -62,6 +62,14 @@ SUBPROCESS_KWARGS = {
     "encoding": "utf-8",
     "errors": "replace",
 }
+# ...and what a probe adds: no stdin to wait on, and on Windows no console to
+# prompt into (claude_health.PROBE_KWARGS has the incident). Mirrored, not
+# imported, like the dict above.
+PROBE_KWARGS = {
+    "stdin": subprocess.DEVNULL,
+    **({"creationflags": subprocess.CREATE_NO_WINDOW}
+       if sys.platform == "win32" else {}),
+}
 
 # An explicit override beats every probe below. Named on the same pattern as
 # claude_health.BIN_ENV, for the same reason: it is the escape hatch a stale
@@ -166,6 +174,7 @@ def _run_probe(path: str, *args: str, timeout: float):
     """
     return subprocess.run(
         [path, *args], capture_output=True, timeout=timeout, **SUBPROCESS_KWARGS,
+        **PROBE_KWARGS,
     )
 
 

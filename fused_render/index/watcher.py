@@ -483,7 +483,19 @@ def main(argv=None) -> int:
     except OSError as e:
         out.send(error=f"{type(e).__name__}: {e}")
         return 1
-    return serve(root, pruner, out)
+    try:
+        return serve(root, pruner, out)
+    except KeyboardInterrupt:
+        # A console Ctrl+C reaches this child alongside the server (Windows
+        # delivers it to the whole console); the server is going down and
+        # this is the quiet exit, not a crash — same release as stdin EOF.
+        try:
+            from fused_render.crashlog import release
+
+            release()
+        except Exception:  # noqa: BLE001
+            pass
+        return 0
 
 
 if __name__ == "__main__":

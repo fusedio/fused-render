@@ -17,6 +17,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import threading
 from typing import Any, Generator, Optional
 
@@ -63,6 +64,14 @@ SUBPROCESS_KWARGS = {
     "text": True,
     "encoding": "utf-8",
     "errors": "replace",
+}
+# ...and what a probe adds: no stdin to wait on, and on Windows no console to
+# prompt into (claude_health.PROBE_KWARGS has the incident). Mirrored, not
+# imported, like the dict above.
+PROBE_KWARGS = {
+    "stdin": subprocess.DEVNULL,
+    **({"creationflags": subprocess.CREATE_NO_WINDOW}
+       if sys.platform == "win32" else {}),
 }
 
 # One lock serializes all config mutation (the read-modify-write of
@@ -387,7 +396,8 @@ def claude_cli(*args: str, timeout: int = 25) -> dict:
     env = {**os.environ, "PATH": path_env}
     try:
         res = subprocess.run(
-            [binary, *args], capture_output=True, timeout=timeout, env=env, **SUBPROCESS_KWARGS
+            [binary, *args], capture_output=True, timeout=timeout, env=env,
+            **SUBPROCESS_KWARGS, **PROBE_KWARGS,
         )
         return {
             "ok": res.returncode == 0,
