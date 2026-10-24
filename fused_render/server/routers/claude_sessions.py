@@ -34,9 +34,8 @@ import json
 import logging
 import os
 import re
-import shutil
 import subprocess
-import tempfile
+import tempfile  # noqa: F401 — the recap suite reaches the module through here
 import threading
 import time
 from datetime import datetime, timezone
@@ -44,7 +43,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
-from fused_render import _platform
+from fused_render import _platform, agent_oneshot
 from fused_render import claude_health, session_liveness, tasks_store
 from fused_render.agent_backends import roots
 from fused_render.shell import storage
@@ -1206,288 +1205,56 @@ def _recap_reap(proc) -> None:
 #: file), while an allowlist naming only a tool that does not exist leaves the
 #: model with none (no tool definitions in the session's events, and a prompt
 #: asking it to read a file got "I don't have a tool available").
-_COPILOT_RECAP_NO_TOOLS = "fused_recap_no_tools"
+_COPILOT_RECAP_NO_TOOLS = agent_oneshot.COPILOT_NO_TOOLS
 
-_COPILOT_SESSION_ID_RE = re.compile(
-    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_COPILOT_SESSION_ID_RE = agent_oneshot.COPILOT_SESSION_ID_RE
+
+
+def _recap_oneshot(agent, backend: str, tail: str, titles: bool | None,
+                   prompts: tuple[str, str] | None, raw: bool) -> str:
+    """The Copilot / Codex / Gemini twin of the Claude run above, through the
+    ONE one-shot runner (`agent_oneshot`, D1433) that `/api/ai`'s agent tiers
+    also use — the argv, the no-tools flags, the session cleanup and the
+    spawn rule live there, once. None of the three has a system-prompt flag,
+    so the system text leads the one user message (the runner prepends it).
+    The model is the registry row's default (`auto` for Copilot and Gemini,
+    the plan's default for Codex): the job is small and that is the model
+    the user's plan certainly runs. Every failure is "", as the Claude run's."""
+    system, template = prompts or _recap_prompts(titles)
+    try:
+        spec = agent_oneshot.prepare(backend, "", system, template % tail, agent=agent)
+        reply = agent_oneshot.run_sync(spec, _RECAP_TIMEOUT)
+    except agent_oneshot.OneShotError:
+        return ""
+    except Exception:  # noqa: BLE001 — a title nicety, never a fault
+        logger.debug("%s recap run failed", backend, exc_info=True)
+        return ""
+    return reply if raw else _recap_plain(reply, titles)
 
 
 def _recap_copilot(agent, tail: str, titles: bool | None = None,
                    prompts: tuple[str, str] | None = None,
                    raw: bool = False) -> str:
-    """The Copilot twin of the Claude run: one shot (`-p` mode, entered by a
-    prompt on stdin), silent (`-s`: the reply only, no stats), no tools
-    (`_COPILOT_RECAP_NO_TOOLS`), no repo instructions and no built-in MCP
-    servers, nothing it could stop to ask. Copilot has no `--system-prompt`,
-    so the system text leads the same user message the Claude run sends.
-
-    Copilot has no `--no-session-persistence` either: every run is a session
-    under `~/.copilot/session-state/<id>/`, which `copilot --resume` lists. So
-    the id is MINTED here (`--session-id`) and that one directory is removed
-    afterwards, whatever the outcome — verified live to leave nothing else
-    under session-state. (Copilot's own `session-store.db` index still gets
-    a row for the run; that file is Copilot's, and is not edited from here.)
-
-    The tail travels over stdin, never argv — the same rule as the Claude
-    run, and so does the spawn rule (no Popen `cwd`, `close_fds=False`). The
-    CLI is pointed at the temp dir with its own `-C` instead: a folder it
-    already trusts, so no trust question can stall a one-shot run. Every
-    failure is "", as there."""
-    import uuid
-
-    from fused_render import copilot_health
-
-    sid = str(uuid.uuid4())
-    state_dir = os.path.join(copilot_health.config_dir(), "session-state")
-    system, template = prompts or _recap_prompts(titles)
-    prompt = system + "\n\n" + template % tail
-    try:
-        proc = subprocess.Popen(
-            [agent._copilot_bin(), "-s", "--no-auto-update", "--model", "auto",
-             f"--available-tools={_COPILOT_RECAP_NO_TOOLS}",
-             "--no-custom-instructions", "--disable-builtin-mcps",
-             "--no-ask-user", "--session-id", sid,
-             "-C", tempfile.gettempdir()],
-            env=agent._spawn_env(backend="copilot"),
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, **claude_health.SUBPROCESS_KWARGS)
-        try:
-            stdout, _ = proc.communicate(input=prompt, timeout=_RECAP_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            _recap_reap(proc)
-            return ""
-        return (stdout if raw else _recap_plain(stdout, titles)) if proc.returncode == 0 else ""
-    finally:
-        if _COPILOT_SESSION_ID_RE.fullmatch(sid):
-            shutil.rmtree(os.path.join(state_dir, sid), ignore_errors=True)
+    return _recap_oneshot(agent, "copilot", tail, titles, prompts, raw)
 
 
 def _recap_codex(agent, tail: str, titles: bool | None = None,
                  prompts: tuple[str, str] | None = None,
                  raw: bool = False) -> str:
-    """The Codex twin of the Claude run (docs/CODEX_BACKEND.md D12, D16):
-    `codex exec`, Codex's one-shot, never the app-server the sessions use.
-    Codex's `exec` has no system-prompt flag either, so the system text leads
-    the one user message, as the Copilot run sends it.
-
-    The flags, each checked against `codex exec --help` (0.163.0):
-
-    * `--ephemeral` is the load-bearing one, `--no-session-persistence`'s
-      twin: without it every recap would leave a rollout file under
-      `<CODEX_HOME>/sessions/`, which `codex resume` lists — a phantom
-      conversation in the user's own terminal. Nothing to clean up after, so
-      no minted id and no `finally` (unlike Copilot's run).
-    * `-s read-only`: Codex has no "no tools" switch, so the sandbox is the
-      bound — a run that went off and ran a command could read but not write.
-      `exec` never stops to ask (there is nobody to ask), so no approval
-      policy is needed for it not to stall.
-    * `-C <temp dir>` + `--skip-git-repo-check`: the working root is the
-      temp dir, which is not a git repo, and Codex refuses to run outside one
-      without the flag. Pointed there by Codex's own flag, NOT a Popen `cwd`
-      (the spawn rule below).
-    * `-m <the Codex row's default model>`: the recap is small, and the
-      catalog's default is the model the user's plan certainly runs.
-    * `-o <file>` (`--output-last-message`): the reply is read from the
-      file, not from stdout, which also carries Codex's own banner and
-      progress — the file holds the last agent message and nothing else.
-    * `-` reads the prompt from stdin: the tail travels over stdin, never
-      argv, the same rule as the Claude run.
-
-    `_spawn_env(backend="codex")` leaves `CODEX_HOME` exactly as found, so
-    the run signs in with the user's own credential. Same spawn rule as the
-    other two (no Popen `cwd`, `close_fds=False`), and every failure is "",
-    as there."""
-    from fused_render.agent_backends import registry
-
-    system, template = prompts or _recap_prompts(titles)
-    prompt = system + "\n\n" + template % tail
-    # ITS OWN EMPTY FOLDER as the working root, never the shared temp dir:
-    # Codex reads an `AGENTS.md` from its working directory into the
-    # instructions of every run (its project-doc discovery stops at the cwd
-    # when there is no `.git` above it — which is exactly the `-C` case), so
-    # a `/tmp/AGENTS.md` any local user can drop there would ride along into
-    # the recap. A fresh `mkdtemp` has nothing in it to read; the reply file
-    # lives inside it and the whole folder goes in `finally`. And NO WALK
-    # UPWARDS from it: Codex finds its project root by climbing from the cwd
-    # to the nearest `project_root_markers` entry (`.git` by default) and
-    # reads every `AGENTS.md` from that root down, so a `/tmp/.git` beside a
-    # `/tmp/AGENTS.md` — both any local user's to plant — would make the
-    # shared temp dir the project after all. An EMPTY marker list turns the
-    # climb off (Codex's own `agents_md.rs`: "An empty marker list disables
-    # parent traversal"); the override rides `-c`, TOML on the right-hand
-    # side, as `agent._codex_argv` spells its own.
-    work_dir = tempfile.mkdtemp(prefix="fused-codex-recap-")
-    out_path = os.path.join(work_dir, "reply.txt")
-    try:
-        proc = subprocess.Popen(
-            [agent._codex_bin(), "exec", "--skip-git-repo-check", "--ephemeral",
-             "-s", "read-only", "-C", work_dir,
-             "-c", "project_root_markers=[]",
-             "-m", registry.get("codex").default_model,
-             "-o", out_path, "-"],
-            env=agent._spawn_env(backend="codex"),
-            stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL, **claude_health.SUBPROCESS_KWARGS)
-        try:
-            proc.communicate(input=prompt, timeout=_RECAP_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            _recap_reap(proc)
-            return ""
-        if proc.returncode != 0:
-            return ""
-        try:
-            with open(out_path, encoding="utf-8", errors="replace") as fh:
-                reply = fh.read()
-        except OSError:
-            return ""
-        return reply if raw else _recap_plain(reply, titles)
-    finally:
-        shutil.rmtree(work_dir, ignore_errors=True)
-
-
-#: What `-p` says when the whole prompt rides stdin: the CLI appends the flag's
-#: text AFTER the stdin input, so the pointer closes the message.
-_GEMINI_RECAP_POINTER = "Answer as the instructions above say."
-#: The recap's policy (Gemini's policy engine, `--policy <file>`): NO TOOL
-#: AT ALL. `--approval-mode default` only decides what asks; the read-only
-#: tools (read_file, glob, grep, web fetch) run without asking under it, so
-#: a transcript tail that carries an instruction to read something could
-#: pull the server's cwd into the model's context. One rule, every tool,
-#: the highest priority the engine takes (<= 999, verified 0.65.0 — 1000
-#: is refused as "tier overflow"); a denied call answers the model with
-#: "denied by policy" and the run goes on. Written once under fused's own
-#: home (the file must exist on disk for the flag).
-_GEMINI_RECAP_POLICY = (
-    "# fused-render: the recap one-shot takes no tools (claude_sessions._recap_gemini).\n"
-    "[[rule]]\n"
-    'toolName = "*"\n'
-    'decision = "deny"\n'
-    "priority = 999\n")
-_GEMINI_RECAP_POLICY_NAME = "gemini-recap-policy.toml"
-
-
-def _gemini_recap_policy_path() -> str:
-    """`<fused home>/gemini-recap-policy.toml`, written when missing or stale."""
-    path = os.path.join(storage.home_dir(), _GEMINI_RECAP_POLICY_NAME)
-    try:
-        with open(path, encoding="utf-8") as fh:
-            if fh.read() == _GEMINI_RECAP_POLICY:
-                return path
-    except OSError:
-        pass
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    # A unique temp name per writer: two recaps refreshing the file at once
-    # must not race each other's rename (a shared `.tmp` would make the
-    # second `os.replace` raise FileNotFoundError).
-    fd, tmp = tempfile.mkstemp(prefix=_GEMINI_RECAP_POLICY_NAME + ".",
-                               dir=os.path.dirname(path))
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(_GEMINI_RECAP_POLICY)
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-    return path
+    return _recap_oneshot(agent, "codex", tail, titles, prompts, raw)
 
 
 def _recap_gemini(agent, tail: str, titles: bool | None = None,
                   prompts: tuple[str, str] | None = None,
                   raw: bool = False) -> str:
-    """The Gemini twin of the Claude run (docs/GEMINI_BACKEND.md D12, D16):
-    `gemini -p`, Gemini's headless one-shot, never the ACP server the
-    sessions use. Gemini has no system-prompt flag either, so the system text
-    leads the one user message, as the Copilot and Codex runs send it.
+    return _recap_oneshot(agent, "gemini", tail, titles, prompts, raw)
 
-    The flags, each checked against `gemini --help` (0.65.0):
 
-    * `-p <pointer>` enters headless mode; the help says the flag's text is
-      "appended to input on stdin (if any)", so the tail travels over stdin,
-      never argv (the same rule as the other three runs), and the flag
-      carries one closing sentence.
-    * `-o json`: one JSON object on stdout — `{session_id, response, stats}`
-      (`JsonFormatter` in the CLI's source) — so the reply is read off a
-      field, never scraped from a stream that also carries the CLI's own
-      lines.
-    * `--policy <deny-all>`: no tool at all (`_GEMINI_RECAP_POLICY`) — the
-      Gemini twin of Claude's `--tools ""` and Codex's `-s read-only`: a
-      transcript tail is untrusted text, and the read-only tools would
-      otherwise run without asking and could carry the server's cwd into
-      the model's context;
-    * `--approval-mode default`: a headless run never stops to ask, and a
-      tool that would ask is refused instead of granted — the recap only has
-      to read the prompt.
-    * `-m <the Gemini row's default model>`: `auto`, the CLI's own default.
-
-    Gemini has no `--no-session-persistence`: every run records a chat file
-    under `<gemini home>/tmp/<project>/chats/`, which `gemini --resume`
-    lists. The reply names the run's `session_id`, so that one file is
-    removed afterwards through the same helper erase uses
-    (`routers.tasks._gemini_chat_files`) whenever the reply named the
-    session; a timeout or an unparsable reply leaves it, since nothing else
-    knows the id. `--skip-trust` as the session spawn has it (§3): `-p` is
-    headless, and a user with folder trust on would otherwise get a CLI that
-    dies at startup in the server's untrusted cwd — every failure here reads
-    as "", so that would be a silent loss of every recap.
-
-    `_spawn_env(backend="gemini")` leaves `GEMINI_CLI_HOME` and the Google
-    credential variables exactly as found and sets `NO_BROWSER`, so a
-    signed-out run fails instead of opening a browser. Same spawn rule as
-    the other three (no Popen `cwd`, `close_fds=False`), and every failure
-    is "", as there."""
-    from fused_render.agent_backends import registry
-
-    system, template = prompts or _recap_prompts(titles)
-    prompt = system + "\n\n" + template % tail
-    sid = ""
-    try:
-        proc = subprocess.Popen(
-            [agent._gemini_bin(), "-p", _GEMINI_RECAP_POINTER, "-o", "json",
-             "--approval-mode", "default", "--skip-trust",
-             "--policy", _gemini_recap_policy_path(),
-             "-m", registry.get("gemini").default_model],
-            env=agent._spawn_env(backend="gemini"),
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, **claude_health.SUBPROCESS_KWARGS)
-        try:
-            stdout, stderr = proc.communicate(input=prompt, timeout=_RECAP_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            _recap_reap(proc)
-            return ""
-        # A result rides stdout; a FAILED run's JSON (with its `session_id`,
-        # and `error`) goes to STDERR (verified 0.65.0, exit 41 signed out),
-        # so that one is read too — for the cleanup in `finally`, since the
-        # answer to a failure is "" either way.
-        body = None
-        for text in (stdout, stderr):
-            try:
-                body = json.loads(text or "")
-            except ValueError:
-                continue
-            if isinstance(body, dict):
-                break
-            body = None
-        if not isinstance(body, dict):
-            return ""
-        sid = str(body.get("session_id") or "")
-        if proc.returncode != 0 or body.get("error"):
-            return ""
-        reply = body.get("response")
-        if not isinstance(reply, str):
-            return ""
-        return reply if raw else _recap_plain(reply, titles)
-    finally:
-        if sid:
-            # Lazily: `routers.tasks` imports this module.
-            from fused_render.server.routers import tasks as tasks_mod
-            for path in tasks_mod._gemini_chat_files(sid):
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
+# Kept as names for readers that import them; the facts live in agent_oneshot.
+_GEMINI_RECAP_POINTER = agent_oneshot.GEMINI_POINTER
+_GEMINI_RECAP_POLICY = agent_oneshot.GEMINI_POLICY
+_GEMINI_RECAP_POLICY_NAME = agent_oneshot.GEMINI_POLICY_NAME
+_gemini_recap_policy_path = agent_oneshot.gemini_policy_path
 
 
 def _stored_recap(session_id: str, for_uuid: str,

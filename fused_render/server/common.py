@@ -88,7 +88,11 @@ STATIC_DIR = os.path.join(HERE, "static")
 #: prompt on the machine; `claude` is the one that leaves it. The order is
 #: fixed in code, never a user preference. A hosted gateway is appended here
 #: when it arrives.
-AI_PROVIDERS = ("local", "apple", "claude")
+AI_PROVIDERS = ("local", "apple", "claude", "copilot", "codex", "gemini")
+#: The three that are AGENT CLIs run as tool-less one-shots by
+#: `agent_oneshot.py` (D1433): text only, gated on the agent's Preferences
+#: switch, listed to the embedded workbench by the canvas host.
+AI_AGENT_PROVIDERS = ("copilot", "codex", "gemini")
 
 #: The apple tier's PINNED model ids -> the capability each serves (D700). The
 #: OS owns the weights and picks the variant (AFM 3 Core vs Core Advanced by

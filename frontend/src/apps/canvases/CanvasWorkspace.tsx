@@ -99,6 +99,29 @@
 // (`caps: ["body"]`); without it the frame keeps its editors hidden and code
 // disk-owned, as before.
 //
+// AI gateway (D1433, host-ai.ts): the frame's inline AI edit runs on THIS
+// Mac's agents instead of the hosted workbench's cloud providers. The token
+// message also says `caps: [..., "ai"]`, and the host then posts
+//   parent → { type: "fused-embed-ai-models", models, default }
+// — every ENABLED agent in the catalog (`useAgentBackends`) times its
+// models, as rows `{id: "<backend>:<model>", backend, model, label,
+// backendLabel, efforts}` — after every token message, on every hello and
+// whenever the catalog changes (a Preferences switch). The frame shows only
+// that list; an empty list disables its picker. A request is
+//   iframe → { type: "fused-embed-ai", req, model, systemPrompt, prompt, effort? }
+// which the host runs as POST /api/ai {provider, model, systemPrompt, prompt,
+// effort, stream: true} (api.ts streamAiText) and answers with
+//   parent → { type: "fused-embed-ai-chunk", req, text }   (0..n times)
+//   parent → { type: "fused-embed-ai-done", req, ok, error?, usage?, warnings? }
+// correlated by the frame's opaque `req`, as capture's is — never on the
+// snapshot chain (no order to keep). Stop in the widget is
+//   iframe → { type: "fused-embed-ai-abort", req }
+// → the host aborts the fetch → the relay cancels the turn (Claude) or
+// kills the one-shot CLI (Copilot, Codex, Gemini). Every run is aborted
+// when the frame reloads or this page unmounts. The frame never reaches
+// /api/ai itself: the X-Fused header is a same-origin guard with no CORS.
+// Accepted only from the workbench frame's own window, like the body.
+//
 // The other direction (canvas_snapshot.py, "the disk → embed leg"): this page
 // never reloads the workbench iframe and never asks it to re-fetch. When the
 // clone moves on disk (`disk_rev` on the sync events socket's `state`
@@ -163,6 +186,8 @@ import {
   getSyncState,
   getWhoami,
   applyBody,
+  streamAiText,
+  type AiStreamError,
   checkRemote,
   pullCanvas,
   startSync,
@@ -170,6 +195,7 @@ import {
   type WorkbenchEnv,
   canvasNameFromPath,
 } from "./api";
+import { findHostAiModel, hostAiModels } from "./host-ai";
 import { SyncDrawer } from "./SyncDrawer";
 import { SyncFramePoster, SyncStrip } from "./SyncStrip";
 import {
@@ -841,6 +867,12 @@ export default function CanvasWorkspace({
     }
   }, [env, name]);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
+  // The agent catalog: the AI gateway's model list for the frame (module
+  // doc) and the Fix button's Claude gate both read it. Mirrored into a ref
+  // for the message handlers, which must not re-bind on every catalog read.
+  const agentCatalog = useAgentBackends();
+  const agentCatalogRef = useRef(agentCatalog);
+  agentCatalogRef.current = agentCatalog;
   // The node pane's frame (the explorer embed on the node's file).
   const nodeFrameRef = useRef<HTMLIFrameElement | null>(null);
   // Re-select the shown node in the workbench (set below, once `sendSelect`
@@ -1060,6 +1092,26 @@ export default function CanvasWorkspace({
     return () => window.clearInterval(id);
   }, [retryStart, ensureSync]);
 
+  // The AI gateway's model list (module doc): what this Mac's enabled
+  // agents can run. Posted after every token, on every hello, and whenever
+  // the catalog changes. Exact targetOrigin, like every message to the frame.
+  const sendAiModels = useCallback(() => {
+    const frame = frameRef.current;
+    const origin = baseOriginRef.current;
+    if (!frame?.contentWindow || !origin) return;
+    const list = hostAiModels(agentCatalogRef.current);
+    frame.contentWindow.postMessage(
+      { type: "fused-embed-ai-models", models: list.models, default: list.default },
+      origin,
+    );
+  }, []);
+  useEffect(() => {
+    // A Preferences switch flipped (or the first real catalog read landed):
+    // the frame's picker follows. A frame that is not up yet gets the list
+    // with its token.
+    if (frameUpRef.current) sendAiModels();
+  }, [agentCatalog, sendAiModels]);
+
   // Token handshake with the embedded workbench.
   const seedToken = useCallback(async () => {
     const frame = frameRef.current;
@@ -1090,17 +1142,19 @@ export default function CanvasWorkspace({
         {
           type: "fused-embed-auth-token",
           accessToken: access_token,
-          // What this host speaks beyond v3: the body channel (see the
-          // module doc). The frame shows its editors only when it hears it.
-          caps: ["body"],
+          // What this host speaks beyond v3: the body channel and the AI
+          // gateway (see the module doc). The frame shows its editors only
+          // when it hears "body", and routes its inline AI here on "ai".
+          caps: ["body", "ai"],
           ...(publicOrigin ? { publicOrigin } : {}),
         },
         origin, // exact origin — this message carries a credential
       );
+      sendAiModels();
     } catch (e) {
       setError((e as Error).message);
     }
-  }, [env, workbenchBase]);
+  }, [env, workbenchBase, sendAiModels]);
 
   // Ask the workbench to select a node (or, with null, to deselect). Exact
   // targetOrigin, like every message to the frame.
@@ -1368,6 +1422,97 @@ export default function CanvasWorkspace({
     [env, name],
   );
 
+  // The AI gateway leg (module doc): one `/api/ai` stream per frame request,
+  // keyed by the frame's `req`, chunks and the terminal frame posted back.
+  // Not on the snapshot chain: requests are independent and the Claude
+  // tier's own session lock serializes what must be serialized.
+  const aiRunsRef = useRef<Map<string, AbortController>>(new Map());
+  const relayAi = useCallback(
+    async (req: string, modelId: string, systemPrompt: string, prompt: string, effort: string | undefined) => {
+      const post = (msg: Record<string, unknown>) => {
+        const frame = frameRef.current;
+        const origin = baseOriginRef.current;
+        if (!frame?.contentWindow || !origin) return;
+        frame.contentWindow.postMessage(msg, origin);
+      };
+      const row = findHostAiModel(hostAiModels(agentCatalogRef.current), modelId);
+      if (!row) {
+        // A stale picker (an agent switched off since the list went out):
+        // refused here, nothing fetched; the fresh list follows.
+        post({
+          type: "fused-embed-ai-done",
+          req,
+          ok: false,
+          error: { type: "bad_request", message: `${modelId} is not a model this host offers` },
+        });
+        sendAiModels();
+        return;
+      }
+      aiRunsRef.current.get(req)?.abort();
+      const controller = new AbortController();
+      aiRunsRef.current.set(req, controller);
+      try {
+        const result = await streamAiText(
+          {
+            provider: row.backend,
+            model: row.model,
+            systemPrompt,
+            prompt,
+            // Only a level this model takes; the relay reports a dropped
+            // one in `warnings[]`, this just saves the round trip.
+            ...(effort && row.efforts.includes(effort) ? { effort } : {}),
+          },
+          controller.signal,
+          (text) => post({ type: "fused-embed-ai-chunk", req, text }),
+        );
+        if (result.finishReason === "cancelled") {
+          // The Activity row's ✕ (not the frame's Stop): the relay closes
+          // the stream as ok with no text. Not a completion the frame should
+          // apply — an error it shows and the user retries.
+          post({
+            type: "fused-embed-ai-done",
+            req,
+            ok: false,
+            error: { type: "cancelled", message: "Cancelled in fused-render" },
+          });
+          return;
+        }
+        post({
+          type: "fused-embed-ai-done",
+          req,
+          ok: true,
+          usage: result.usage ?? null,
+          warnings: result.warnings ?? [],
+        });
+      } catch (e) {
+        // The frame asked for the stop: it already knows; nothing to say.
+        if (controller.signal.aborted) return;
+        const err = e as AiStreamError;
+        post({
+          type: "fused-embed-ai-done",
+          req,
+          ok: false,
+          error: { type: err.type ?? "ai_error", message: err.message || "AI request failed" },
+        });
+      } finally {
+        if (aiRunsRef.current.get(req) === controller) aiRunsRef.current.delete(req);
+      }
+    },
+    [sendAiModels],
+  );
+  const abortAi = useCallback((req: string) => {
+    const controller = aiRunsRef.current.get(req);
+    if (!controller) return;
+    aiRunsRef.current.delete(req);
+    controller.abort();
+  }, []);
+  const abortAllAi = useCallback(() => {
+    for (const controller of aiRunsRef.current.values()) controller.abort();
+    aiRunsRef.current.clear();
+  }, []);
+  // This page going away takes every run with it: nobody is left to read.
+  useEffect(() => () => abortAllAi(), [abortAllAi]);
+
   // The delta leg: disk moved → fetch diff(disk, what the frame holds) → post
   // it to the frame. One relay at a time, in order, through a promise chain
   // (a full state must not overtake the delta cut before it). A held or busy
@@ -1614,6 +1759,27 @@ export default function CanvasWorkspace({
         const body = { node, file, base_hash, text };
         relayChainRef.current = relayChainRef.current.then(() => relayBody(seq, body));
       }
+      if (type === "fused-embed-ai") {
+        // From THE workbench frame only: it spends this Mac's agent logins.
+        if (event.source !== frameRef.current?.contentWindow) return;
+        const { req, model, systemPrompt, prompt, effort } = (event.data ?? {}) as {
+          req?: unknown; model?: unknown; systemPrompt?: unknown; prompt?: unknown; effort?: unknown;
+        };
+        if (typeof req !== "string" || !req || typeof model !== "string" || !model) return;
+        if (typeof prompt !== "string" || !prompt.trim()) return;
+        void relayAi(
+          req,
+          model,
+          typeof systemPrompt === "string" ? systemPrompt : "",
+          prompt,
+          typeof effort === "string" && effort ? effort : undefined,
+        );
+      }
+      if (type === "fused-embed-ai-abort") {
+        if (event.source !== frameRef.current?.contentWindow) return;
+        const req = event.data?.req;
+        if (typeof req === "string" && req) abortAi(req);
+      }
       if (type === "fused-embed-capture-done") {
         // From THE workbench frame only: a same-origin window that guessed
         // the pending `req` must not settle it with its own picture.
@@ -1642,6 +1808,7 @@ export default function CanvasWorkspace({
         relayDelta(true);
         sendHostFocus();
         sendCodePanelState();
+        sendAiModels();
         setRepostSeq((n) => n + 1);
       }
       if (type === "fused-embed-delta-applied" || type === "fused-embed-delta-rejected") {
@@ -1778,7 +1945,7 @@ export default function CanvasWorkspace({
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [seedToken, sendSelect, sendHostFocus, sendCodePanelState, relaySnapshot, relayBody, relayDelta, enqueueRelay, env, name, embedded, settleShot, afterNodeCodeFlush]);
+  }, [seedToken, sendSelect, sendHostFocus, sendCodePanelState, sendAiModels, relaySnapshot, relayBody, relayAi, abortAi, relayDelta, enqueueRelay, env, name, embedded, settleShot, afterNodeCodeFlush]);
 
   // The hosted editor's URL, for the project page's header (`onWorkbenchUrl`).
   const workbenchUrl =
@@ -2051,7 +2218,6 @@ export default function CanvasWorkspace({
     window.history.replaceState(window.history.state, "", url);
   }, [fixRunId]);
 
-  useAgentBackends();
   const claudeOff = isBackendOff("claude");
   const onFix = async () => {
     setFixBusy(true);
@@ -2098,10 +2264,12 @@ export default function CanvasWorkspace({
         // (application embed-auth.ts), so the editor never inherits it.
         (embedded ? "&fused_embed_readonly=1" : "")
       : null;
-  // A frame that reloads (new src) is down again until its next hello.
+  // A frame that reloads (new src) is down again until its next hello, and
+  // the AI runs it had in flight have no reader left.
   useEffect(() => {
     frameUpRef.current = false;
-  }, [frameSrc]);
+    abortAllAi();
+  }, [frameSrc, abortAllAi]);
 
   // No header bar (owner call): the workspace is the two panes, full height,
   // under ONE line — the sync strip (SyncStrip.tsx): the worst of the four

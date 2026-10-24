@@ -78,8 +78,14 @@
  *     itself is a namespace, not a function. The old callable
  *     `fused.ai(prompt)` is GONE, not aliased (D631) — a page still calling
  *     it gets "fused.ai is not a function".
- *     opts.provider: "local" | "apple" | "claude" — which tier serves the
- *     call. Omitted, the model decides: the apple tier's PINNED ids
+ *     opts.provider: "local" | "apple" | "claude" | "copilot" | "codex" |
+ *     "gemini" — which tier serves the call. The last three (D1433) are
+ *     the agent CLIs, run as tool-less one-shots (text only; `history`,
+ *     `raw`, `images` rejected like Claude's tier; no streaming — onChunk
+ *     gets the whole text once; 409 `ai_unavailable` with
+ *     `reason: "backend_disabled"` while that agent is off in
+ *     Preferences; omitted `model` = the agent's catalog default).
+ *     Omitted provider: the model decides: the apple tier's PINNED ids
  *     ("afm-text" here, "afm-speech" on .transcribe, "afm-embedding" on
  *     .embed — D700) name their tier outright, then the shape rule applies
  *     (a repo id or .gguf filename is weights on this machine, anything else
