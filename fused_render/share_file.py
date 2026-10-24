@@ -273,45 +273,11 @@ def _refusal_for(path: str, rule: dict | None) -> str | None:
 MODES = ("public", "temporary")
 
 
-def _parse_expiry(value) -> float | None:
-    """`session_expires` as the shim hands it back — an ISO 8601 string in
-    the common case, but treated generically since the SDK's own type is not
-    pinned in the spec (artifact-sharing.md §3: `.expires_at`)."""
-    if value is None:
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value)
-        except ValueError:
-            pass
-        try:
-            import datetime
-
-            parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
-            if parsed.tzinfo is None:
-                # A naive ISO string is what the SDK returns in practice — no
-                # `Z`, no offset. `.timestamp()` on a naive datetime reads it
-                # in the SERVER'S local zone; the SDK means UTC (finding 7).
-                # On UTC+2 a fresh 30-minute token read as ~90 minutes
-                # expired, so /status flagged a working link "Expired".
-                parsed = parsed.replace(tzinfo=datetime.timezone.utc)
-            return parsed.timestamp()
-        except ValueError:
-            return None
-    return None
-
-
-def is_expired(record: dict) -> bool:
-    """A `temporary` share's session token past its `session_expires` — the
-    sheet uses this to offer a fresh link without a round trip (task 5)."""
-    if record.get("mode") != "temporary":
-        return False
-    expiry = _parse_expiry(record.get("session_expires"))
-    if expiry is None:
-        return False
-    return expiry <= time.time()
+# `_parse_expiry` / `is_expired` moved to share_app.py (an app share can be
+# `temporary` too, on a deployment that refuses public scope); re-exported
+# here so callers and tests keep their names.
+_parse_expiry = share_app._parse_expiry
+is_expired = share_app.is_expired
 
 
 def _resolve_path(path: str) -> tuple[str | None, str | None]:

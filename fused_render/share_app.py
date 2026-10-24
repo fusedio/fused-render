@@ -5,7 +5,12 @@ the file to the browser, Share hands it to Fused: the same `export_app_file`
 builds the file into a temp dir, then the in-interpreter SDK shim
 (`_fused_share_app.py`, spawned like `_fused_canvases_list.py`) uploads it,
 pushes a one-node canvas named after the app id, makes it public and answers
-with the link. Public only — no team or private mode, by decision.
+with the link. No visibility control here: public is the one mode asked for.
+On a deployment that forbids public canvases the shim falls back on its own
+to a team-scoped canvas with a 30-minute session token on the link (the
+`temporary` mode share_file.py offers by choice); the record then carries
+`mode`, `session_expires` and `public_refused` so the dialog can say the link
+expires and why.
 
 Identity: the canvas is named after the app's stable id (`app_id.py`), so
 sharing the same app twice UPDATES the one canvas (same share token, every
@@ -189,7 +194,55 @@ def _record_for(aid: str | None) -> dict | None:
     # Keyed on the app id, not the folder: a moved or renamed folder still
     # owns its share. The stored `path` is refreshed by publish/lookup, which
     # write anyway — never here, so a status GET touches nothing.
-    return get_record(aid) if aid else None
+    record = get_record(aid) if aid else None
+    return with_expiry(record) if record else None
+
+
+def _parse_expiry(value) -> float | None:
+    """`session_expires` as the shim hands it back — an ISO 8601 string in
+    the common case, but treated generically since the SDK's own type is not
+    pinned in the spec (artifact-sharing.md §3: `.expires_at`)."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            pass
+        try:
+            import datetime
+
+            parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                # A naive ISO string is what the SDK returns in practice — no
+                # `Z`, no offset. `.timestamp()` on a naive datetime reads it
+                # in the SERVER'S local zone; the SDK means UTC (finding 7).
+                # On UTC+2 a fresh 30-minute token read as ~90 minutes
+                # expired, so /status flagged a working link "Expired".
+                parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+            return parsed.timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+def is_expired(record: dict) -> bool:
+    """A `temporary` share's session token past its `session_expires` — the
+    sheet uses this to offer a fresh link without a round trip. Lives here
+    (not share_file.py) because share_file imports this module, and an app
+    record can be `temporary` too once the deployment refuses public scope."""
+    if record.get("mode") != "temporary":
+        return False
+    expiry = _parse_expiry(record.get("session_expires"))
+    if expiry is None:
+        return False
+    return expiry <= time.time()
+
+
+def with_expiry(record: dict) -> dict:
+    return {**record, "expired": is_expired(record)}
 
 
 # -- the SDK shim --------------------------------------------------------------
@@ -342,8 +395,9 @@ def api_share_publish(
         out, err = _run_shim(
             {"action": "publish", "share_id": aid, "viewer_token": "UDF_Fused_App_File",
              "name": name, "file": out_path, "previous_remote": previous.get("remote"),
-             # Apps stay public-only, by decision — no mode control here
-             # (share_file.py's publish is where `mode` is a caller choice).
+             # Always asked for as public — no mode control here (share_file.py's
+             # publish is where `mode` is a caller choice). The shim downgrades to
+             # `temporary` by itself when the deployment refuses public scope.
              "mode": "public"},
             PUBLISH_TIMEOUT)
         if err is not None:
@@ -361,11 +415,15 @@ def api_share_publish(
             "remote": out.get("remote"),
             "workbench_url": out.get("workbench_url"),
             "exported_at": manifest.get("exported_at") if isinstance(manifest, dict) else None,
+            "mode": out.get("mode", "public"),
+            "session_token": out.get("session_token"),
+            "session_expires": out.get("session_expires"),
+            "public_refused": bool(out.get("public_refused")),
             "shared_at": previous.get("shared_at") or now,
             "updated_at": now,
         }
         put_record(aid, record)
-        return {"ok": True, "shared": record}
+        return {"ok": True, "shared": with_expiry(record)}
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
         lock.release()
@@ -395,12 +453,16 @@ def api_share_lookup(body: dict = Body(...), x_fused: str | None = Header(defaul
         return {"found": False, "app_id": aid}
     now = time.time()
     existing = get_record(aid) or {}
+    # The shim's lookup only ever returns the bare public URL — for a
+    # `temporary` record the stored one (with its session token) stays.
+    url = existing.get("url") if existing.get("mode") == "temporary" \
+        else out.get("url") or existing.get("url")
     record = {
         **existing,
         "app_id": aid,
         "path": os.path.abspath(path),
         "name": name,
-        "url": out.get("url") or existing.get("url"),
+        "url": url,
         "canvas_id": out.get("canvas_id"),
         "canvas_name": out.get("canvas_name"),
         "share_token": out.get("share_token"),
@@ -413,7 +475,7 @@ def api_share_lookup(body: dict = Body(...), x_fused: str | None = Header(defaul
         "adopted": True,
     }
     put_record(aid, record)
-    return {"found": True, "app_id": aid, "shared": record}
+    return {"found": True, "app_id": aid, "shared": with_expiry(record)}
 
 
 @router.post("/api/share/remove")
