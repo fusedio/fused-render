@@ -575,6 +575,9 @@ def api_share_file_publish(body: dict = Body(...), x_fused: str | None = Header(
             "mode": out.get("mode", mode),
             "session_token": out.get("session_token"),
             "session_expires": out.get("session_expires"),
+            # The shim finishes a `public` request as `temporary` when the
+            # deployment forbids public scope; the sheet says so.
+            "public_refused": bool(out.get("public_refused")),
             "shared_at": previous.get("shared_at") or now,
             "updated_at": now,
         }
