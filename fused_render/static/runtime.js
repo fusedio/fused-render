@@ -4526,6 +4526,11 @@
   // (view, embed, standalone /render) gets it for free.
   let autoReloadEnabled = true;
   const watched = new Set();
+  // fused.onFileChanged listeners: a page that opted OUT of reloading (the
+  // code editor) but still wants to hear that a watched file moved, to fold
+  // the new text into its live view instead of reloading over the cursor.
+  // While any is registered the change socket stays open with reload off.
+  const fileChangeListeners = new Set();
   let es = null;
   let started = false;       // watching begins on DOMContentLoaded (LR-5)
   let resubscribeTimer = null;
@@ -4581,7 +4586,7 @@
       es = null; // null first so old.onclose knows the close was deliberate
       old.close();
     }
-    if (!autoReloadEnabled || watched.size === 0) return;
+    if ((!autoReloadEnabled && fileChangeListeners.size === 0) || watched.size === 0) return;
     const query = [...watched].map((p) => "path=" + encodeURIComponent(p)).join("&");
     // WebSocket, not EventSource (D74): SSE holds an HTTP/1.1 socket per open
     // pane and Chrome caps those at 6 per origin — a 6-pane panel starved
@@ -4598,6 +4603,16 @@
         return;
       }
       if (data.keepalive) return;
+      // Listeners first: a page that turned reloading off still hears the
+      // change (the code editor rebases the disk text into its buffer).
+      for (const cb of [...fileChangeListeners]) {
+        try {
+          cb({ path: data.path, mtime: data.mtime });
+        } catch (e) {
+          /* one listener's throw must not take the feed down */
+        }
+      }
+      if (!autoReloadEnabled) return;
       // Any change (including deletion, mtime: null → LR-6) reloads after a
       // 300 ms debounce that coalesces bursts.
       clearTimeout(reloadTimer);
@@ -4618,7 +4633,7 @@
     // Never watch call logs (see isCallLog).
     if (isUnwatchable(p)) return;
     watched.add(p);
-    if (!autoReloadEnabled || !started) return; // before start, paths just accumulate
+    if ((!autoReloadEnabled && fileChangeListeners.size === 0) || !started) return; // before start, paths just accumulate
     // Debounce resubscribe so a page firing several runPython calls on load
     // reconnects once (LR-4).
     clearTimeout(resubscribeTimer);
@@ -4628,15 +4643,41 @@
   function autoReload(enabled) {
     autoReloadEnabled = !!enabled;
     if (!autoReloadEnabled) {
-      clearTimeout(resubscribeTimer);
       clearTimeout(reloadTimer);
-      if (es) {
-        es.close();
-        es = null;
+      // The socket stays up for fused.onFileChanged listeners; with none,
+      // nothing is listening and it closes.
+      if (fileChangeListeners.size === 0) {
+        clearTimeout(resubscribeTimer);
+        if (es) {
+          es.close();
+          es = null;
+        }
       }
     } else if (started) {
       resubscribe();
     }
+  }
+
+  // fused.onFileChanged(cb): `cb({path, mtime})` whenever a watched file
+  // changes on disk (the same feed auto-reload rides; `mtime` is the
+  // watcher's signature, null for a deletion). For a page that must not
+  // reload — an editor — but wants another writer's edits live. Watches the
+  // page's own `_file`/`path` like auto-reload does; call watchPath for
+  // more. Returns the unsubscribe.
+  function onFileChanged(cb) {
+    if (typeof cb !== "function") return () => {};
+    fileChangeListeners.add(cb);
+    if (started && watched.size) {
+      clearTimeout(resubscribeTimer);
+      resubscribeTimer = setTimeout(resubscribe, 100);
+    }
+    return () => {
+      fileChangeListeners.delete(cb);
+      if (!autoReloadEnabled && fileChangeListeners.size === 0 && es) {
+        es.close();
+        es = null;
+      }
+    };
   }
 
   function startAutoReload() {
@@ -4656,7 +4697,7 @@
       if (own && !isUnwatchable(own)) watched.add(own);
       const file = params.get("_file");
       if (file && !isUnwatchable(file)) watched.add(file);
-      if (autoReloadEnabled) resubscribe();
+      if (autoReloadEnabled || fileChangeListeners.size) resubscribe();
     };
     // loadConfig's own promise chain does the callsDir/callsSuffix
     // assignment now — this just waits on it. loadConfig
@@ -7974,6 +8015,7 @@
     trackJob,
     watchJob,
     autoReload,
+    onFileChanged,
     // Whether THIS frame is inside a git snapshot, and what it resolved to —
     // `null` when there is none (no `_snapshot` on this frame's url, or the
     // resolve failed: no app folder here, git trouble),
