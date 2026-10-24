@@ -490,3 +490,90 @@ export const fixWithClaude = (env: WorkbenchEnv, name: string) =>
  *  gets its own deployment's login, never the hosted one. */
 export const getAccessToken = (env: WorkbenchEnv) =>
   getJson<{ access_token: string }>(`/api/canvases/token?env=${env}`, GUARD);
+
+/** The D632 result frame `/api/ai` closes a text completion with. */
+export interface AiTextResult {
+  text: string;
+  provider: string;
+  finishReason: string;
+  warnings: unknown[];
+  usage: unknown;
+  response: { id: string; modelId: string; timestamp: string };
+  providerMetadata: Record<string, unknown>;
+}
+
+/** What `streamAiText` throws: `/api/ai`'s error type rides `type`. */
+export interface AiStreamError extends Error {
+  type?: string;
+  status?: number;
+}
+
+function aiStreamError(status: number | undefined, error: unknown, fallback: string): AiStreamError {
+  const said = error && typeof error === "object" ? (error as { type?: unknown; message?: unknown }) : {};
+  const err = new Error(typeof said.message === "string" && said.message ? said.message : fallback) as AiStreamError;
+  err.type = typeof said.type === "string" ? said.type : status === 409 ? "ai_unavailable" : "ai_error";
+  err.status = status;
+  return err;
+}
+
+/** One streamed text completion through the shell's own `/api/ai` relay
+ *  (D1433): the AI gateway leg the canvas host runs for the embedded
+ *  workbench. NDJSON `{type:"chunk",text}` lines, then `{type:"done"}`
+ *  carrying the result frame — same reader as the AI Models playground's
+ *  (apps/ai_models/playground/client.ts). `signal` aborting mid-stream
+ *  closes the response, which cancels the turn on the server. */
+export async function streamAiText(
+  body: { provider: string; model: string; systemPrompt: string; prompt: string; effort?: string },
+  signal: AbortSignal,
+  onChunk: (text: string) => void,
+): Promise<AiTextResult> {
+  const res = await fetch("/api/ai", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Fused": "1",
+      // The Activity row's link: the canvas page that relayed the call.
+      "X-Fused-Page": encodeURIComponent(window.location.pathname),
+    },
+    body: JSON.stringify({ ...body, stream: true }),
+    signal,
+  });
+  if (!res.ok) {
+    // Validation, a disabled agent and a missing binary all answer BEFORE
+    // any stream exists, so the body here is one JSON object, not NDJSON.
+    const data = (await res.json().catch(() => null)) as { error?: unknown } | null;
+    throw aiStreamError(res.status, data?.error, `AI request failed (HTTP ${res.status})`);
+  }
+  if (!res.body) throw aiStreamError(res.status, null, "no response body");
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result: AiTextResult | null = null;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let newline;
+    while ((newline = buffer.indexOf("\n")) >= 0) {
+      const line = buffer.slice(0, newline).trim();
+      buffer = buffer.slice(newline + 1);
+      if (!line) continue;
+      const frame = JSON.parse(line) as {
+        type: string;
+        text?: string;
+        ok?: boolean;
+        result?: AiTextResult;
+        error?: unknown;
+      };
+      if (frame.type === "chunk") onChunk(frame.text || "");
+      else if (frame.type === "done") {
+        // Errors after the first byte are demoted to an ok:false done frame
+        // on a 200 (AI-1b) — this is the one place they surface.
+        if (!frame.ok) throw aiStreamError(undefined, frame.error, "generation failed");
+        result = frame.result ?? null;
+      }
+    }
+  }
+  if (!result) throw aiStreamError(undefined, null, "the stream ended without a result frame");
+  return result;
+}
