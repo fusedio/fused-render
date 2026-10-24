@@ -328,9 +328,14 @@ def test_greet_on_a_downloaded_local_model_says_hi(steps_bot, monkeypatch):
     ai.models.downloaded = True
     monkeypatch.setattr(botmod, "_fused_ai", lambda: ai)
     b.greet()
-    b.thread.join(5)
-    assert [(e["role"], e["text"]) for e in _events(b)] == [("done", "Hi, I'm Shopper.")]
-    assert "local-4b" in b.model_ready
+    # Not `b.thread.join`: the greeting thread hands its slot back
+    # (`self.thread = None`) as it ends, so on a fast or loaded runner the
+    # join raced a finished greeting (AttributeError on None, seen on CI).
+    # Wait on what the greeting did instead.
+    assert _wait_for(lambda: [(e["role"], e["text"]) for e in _events(b)]
+                     == [("done", "Hi, I'm Shopper.")])
+    assert _wait_for(lambda: "local-4b" in b.model_ready)
+    assert _wait_for(lambda: b.thread is None or not b.thread.is_alive())
 
 
 def test_local_task_downloads_on_yes_then_waits_for_a_cold_model(steps_bot, monkeypatch):
