@@ -245,6 +245,23 @@ def with_expiry(record: dict) -> dict:
     return {**record, "expired": is_expired(record)}
 
 
+def _adopted_scope(out: dict, existing: dict) -> dict:
+    """`url`/`mode` for a record adopted by lookup, from the scope the canvas
+    HAS on the account (the shim reports it) — not from the stored record.
+    A team canvas is the only kind a refusing deployment ever holds: keep the
+    stored session URL when the record is already `temporary` and the token
+    is unchanged, else there is no link until Update mints one. A canvas
+    flipped public elsewhere drops a stale session URL for the bare one."""
+    scope = out.get("access_scope")
+    if scope == "team":
+        same_token = out.get("share_token") and out.get("share_token") == existing.get("share_token")
+        keep = existing.get("mode") == "temporary" and same_token
+        return {"mode": "temporary", "url": existing.get("url") if keep else None,
+                "public_refused": bool(existing.get("public_refused"))}
+    return {"mode": "public", "url": out.get("url") or existing.get("url"),
+            "session_token": None, "session_expires": None, "public_refused": False}
+
+
 # -- the SDK shim --------------------------------------------------------------
 
 
@@ -392,13 +409,17 @@ def api_share_publish(
             return _error("the export produced no app id, so there is nothing stable to "
                           "name the shared canvas after")
         previous = get_record(aid) or {}
+        # Always asked for as public — no mode control here (share_file.py's
+        # publish is where `mode` is a caller choice). The shim downgrades to
+        # `temporary` by itself when the deployment refuses public scope; once
+        # a record says it did, ask for `temporary` outright rather than pay
+        # a doomed flip (and a token rotation that kills the sent link) on
+        # every Update.
+        public_refused = bool(previous.get("public_refused"))
         out, err = _run_shim(
             {"action": "publish", "share_id": aid, "viewer_token": "UDF_Fused_App_File",
              "name": name, "file": out_path, "previous_remote": previous.get("remote"),
-             # Always asked for as public — no mode control here (share_file.py's
-             # publish is where `mode` is a caller choice). The shim downgrades to
-             # `temporary` by itself when the deployment refuses public scope.
-             "mode": "public"},
+             "mode": "temporary" if public_refused else "public"},
             PUBLISH_TIMEOUT)
         if err is not None:
             return err
@@ -418,7 +439,7 @@ def api_share_publish(
             "mode": out.get("mode", "public"),
             "session_token": out.get("session_token"),
             "session_expires": out.get("session_expires"),
-            "public_refused": bool(out.get("public_refused")),
+            "public_refused": public_refused or bool(out.get("public_refused")),
             "shared_at": previous.get("shared_at") or now,
             "updated_at": now,
         }
@@ -453,16 +474,11 @@ def api_share_lookup(body: dict = Body(...), x_fused: str | None = Header(defaul
         return {"found": False, "app_id": aid}
     now = time.time()
     existing = get_record(aid) or {}
-    # The shim's lookup only ever returns the bare public URL — for a
-    # `temporary` record the stored one (with its session token) stays.
-    url = existing.get("url") if existing.get("mode") == "temporary" \
-        else out.get("url") or existing.get("url")
     record = {
         **existing,
         "app_id": aid,
         "path": os.path.abspath(path),
         "name": name,
-        "url": url,
         "canvas_id": out.get("canvas_id"),
         "canvas_name": out.get("canvas_name"),
         "share_token": out.get("share_token"),
@@ -473,6 +489,7 @@ def api_share_lookup(body: dict = Body(...), x_fused: str | None = Header(defaul
         # Adopted, not published from here: the canvas may carry an older
         # file, so the dialog offers Update rather than claiming it is current.
         "adopted": True,
+        **_adopted_scope(out, existing),
     }
     put_record(aid, record)
     return {"found": True, "app_id": aid, "shared": with_expiry(record)}

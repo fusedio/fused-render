@@ -582,7 +582,7 @@ def api_share_file_publish(body: dict = Body(...), x_fused: str | None = Header(
             "updated_at": now,
         }
         put_record(key, record)
-        return {"ok": True, "shared": {**record, "expired": is_expired(record)}}
+        return {"ok": True, "shared": share_app.with_expiry(record)}
     finally:
         lock.release()
 
@@ -637,7 +637,7 @@ def api_share_file_lookup(body: dict = Body(...), x_fused: str | None = Header(d
         "adopted": True,
     }
     put_record(key, record)
-    return {"found": True, "file_id": file_id, "shared": record}
+    return {"found": True, "file_id": file_id, "shared": share_app.with_expiry(record)}
 
 
 @router.post("/api/share/file/remove")

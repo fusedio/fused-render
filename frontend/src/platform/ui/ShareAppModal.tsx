@@ -492,21 +492,21 @@ export function ShareAppModal({
             readOnly
             value={url ?? "No link yet — press Update to publish one."}
             onFocus={(e) => e.currentTarget.select()}
-            aria-label="Public link"
+            aria-label={shared.mode === "temporary" ? "Team link" : "Public link"}
             className="h-8 flex-1 truncate bg-muted/40 font-mono text-[12.5px] text-foreground"
           />
           <Button
             size="icon-sm"
             variant="outline"
             onClick={copy}
-            disabled={!url}
+            disabled={!url || shared.expired}
             title={copied ? "Copied" : "Copy link"}
             aria-label={copied ? "Copied" : "Copy link"}
             className={copied ? "text-foreground" : "text-muted-foreground hover:text-foreground"}
           >
             {copied ? <Check /> : <Copy />}
           </Button>
-          {url && (
+          {url && !shared.expired && (
             <Button
               size="icon-sm"
               variant="outline"
@@ -584,7 +584,7 @@ export function ShareAppModal({
   const linkTitle = (
     <>
       {shared?.mode === "temporary" ? "Team link" : "Public link"}
-      {linkEligible && shared?.url && !linkBusy && (
+      {linkEligible && shared?.url && !shared.expired && !linkBusy && (
         <Badge variant="outline" className="h-4.5 px-1.5 text-[10.5px] font-medium">
           Live
         </Badge>

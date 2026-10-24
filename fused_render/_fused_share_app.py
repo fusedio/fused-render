@@ -239,12 +239,23 @@ def _workbench_url(handle: str, name: str) -> str:
 SESSION_MAX_AGE_S = 30 * 60  # 30 minutes — the plan's only non-public option
 
 
+_PUBLIC_REFUSED = "public access is not allowed"
+
+
 def _public_refused(exc: Exception) -> bool:
-    """The deployment-level veto on public scope (see the module header). The
-    SDK raises it as an HTTPError wrapping `{'detail': 'Public access is not
-    allowed for this execution environment'}`; matched on the sentence, not
-    the status, because 403 also covers a dead token."""
-    return "public access is not allowed" in str(exc).lower()
+    """The deployment-level veto on public scope (see the module header).
+    Matched on the sentence, not the status, because 403 also covers a dead
+    token. The SDK's raise_for_status only folds the JSON body into the
+    message when Content-Type is exactly `application/json`; with a charset
+    suffix the exception is a bare `403 Client Error`, so the response body
+    is read too."""
+    if _PUBLIC_REFUSED in str(exc).lower():
+        return True
+    response = getattr(exc, "response", None)
+    try:
+        return _PUBLIC_REFUSED in (getattr(response, "text", "") or "").lower()
+    except Exception:  # noqa: BLE001 — a body that cannot be read is no match
+        return False
 
 
 def _scope_and_share(api, collection_id: str, cname: str, current_scope: str, target_scope: str):
@@ -315,12 +326,18 @@ def publish(req: dict) -> dict:
         except Exception as exc:
             if target_scope != "public" or not _public_refused(exc):
                 raise
-            # Nothing was created on the refusal; make it team-scoped instead.
             public_refused = True
             mode, target_scope = "temporary", "team"
-            created = api.create_collection(name=cname, access_scope=target_scope)
-        collection_id = created.id
-        current_scope = _scope(created.access_scope)
+            # Re-find before creating again: a veto after a partial insert
+            # would make a second create fail on the name, not on scope.
+            existing = _find_collection(api, cname)
+            created = None if existing else api.create_collection(name=cname, access_scope=target_scope)
+        if created is not None:
+            collection_id = created.id
+            current_scope = _scope(created.access_scope)
+        else:
+            collection_id = existing["id"]
+            current_scope = _scope(existing.get("access_scope"))
 
     api.import_collection_toml_zip(collection_id, _canvas_zip(cname, slug, name, s3_uri, viewer_token))
 
@@ -332,9 +349,14 @@ def publish(req: dict) -> dict:
         public_refused = True
         mode, target_scope = "temporary", "team"
         # Re-read rather than trust `current_scope`: the refusal may have
-        # come from share_collection AFTER the flip to public landed.
-        info = _find_collection(api, cname) or {}
-        current_scope = _scope(info.get("access_scope"))
+        # come from share_collection AFTER the flip to public landed. Best
+        # effort — an unreadable scope means an unconditional flip to team
+        # with a fresh token, which is correct either way.
+        try:
+            info = _find_collection(api, cname) or {}
+            current_scope = _scope(info.get("access_scope"))
+        except Exception:  # noqa: BLE001
+            current_scope = None
         shared = _scope_and_share(api, collection_id, cname, current_scope, target_scope)
     token = shared.share_token
     if not token:
