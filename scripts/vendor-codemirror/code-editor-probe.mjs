@@ -33,12 +33,15 @@ globalThis.document = {
   getElementById: element,
   documentElement: { getAttribute: () => "dark" },
 };
-globalThis.window = { addEventListener() {} };
+// `location`: the template reads `_saveon` off the page URL (#1942); the probe
+// runs the script outside a page, so the query is empty.
+globalThis.window = { addEventListener() {}, location: { search: "" } };
 globalThis.Option = class { constructor(text, value) { this.text = text; this.value = value; } };
 globalThis.MutationObserver = class { observe() {} disconnect() {} };
 globalThis.fusedRoBadge = { update() {} };
 globalThis.fused = {
   autoReload() {},
+  onFileChanged() {}, // the live-rebase feed (#1944); nothing changes under the probe
   params: { get: () => "" },
   rawUrl: (p) => p,
 };
