@@ -275,6 +275,20 @@
     let dirty = false;
     let saveTimer = null;  // pending autosave debounce (AS-1)
     let saving = false;    // a save() write is in flight
+    // `?_saveon=blur` on this frame's own URL (a host framing the editor as a
+    // canvas node's code pane, apps/canvases/CanvasWorkspace): no 250 ms
+    // autosave. The buffer is written when the editor loses focus — a click
+    // on the canvas, a tab, the host's chrome — or on Cmd/Ctrl+Enter, the
+    // way the hosted workbench's own editor runs a UDF on blur / shortcut.
+    // Every write of a node file reaches the canvas as a delta that RUNS the
+    // node; saving per keystroke pause ran it per pause.
+    const SAVE_ON_BLUR = new URLSearchParams(window.location.search).get("_saveon") === "blur";
+    // Arm the autosave (AS-1) — a no-op under `_saveon=blur`, where the pending
+    // timer, if any, is only ever cleared.
+    function armAutosave() {
+      clearTimeout(saveTimer);
+      if (!SAVE_ON_BLUR) saveTimer = setTimeout(autosave, 250);
+    }
     let themeObserver = null; // watches <html data-theme> (SPEC §30)
     let themedDark = true;    // theme the live view is currently configured for
 
@@ -591,8 +605,7 @@
       eol = value;
       eolSel.value = value;
       setDirty(true);
-      clearTimeout(saveTimer);
-      saveTimer = setTimeout(autosave, 250);
+      armAutosave();
     }
 
     // "Ln 12, Col 5", the way VS Code counts it: 1-based, a tab advancing to
@@ -703,9 +716,10 @@
         if (view.state.doc === docState && eol === eolWritten) {
           setDirty(false);
         } else {
-          // Newer edits arrived during the write: stay dirty, re-arm autosave.
+          // Newer edits arrived during the write: stay dirty, re-arm autosave
+          // (under `_saveon=blur` they wait for the next blur / Cmd+Enter).
           setDirty(true);
-          saveTimer = setTimeout(autosave, 250);
+          armAutosave();
         }
       } catch (err) {
         if (err.type === "conflict") {
@@ -814,14 +828,25 @@
           { key: "Alt-z", run: () => { setWrap(!wrap); return true; } },
           { key: "Shift-Alt-f", run: formatDocument },
         ]),
+        // `_saveon=blur`: Cmd/Ctrl+Enter saves. Highest precedence, because
+        // basicSetup's default keymap (listed first above) binds Mod-Enter to
+        // insertBlankLine and would take the key first.
+        SAVE_ON_BLUR
+          ? CM.Prec.highest(CM.keymap.of([
+              { key: "Mod-Enter", run: () => { save(); return true; } },
+            ]))
+          : [],
         // docChanged fires on any user edit → mark the buffer modified.
         CM.EditorView.updateListener.of((update) => {
           if (update.docChanged) {
             paintLines();
             setDirty(true);
-            clearTimeout(saveTimer);
-            saveTimer = setTimeout(autosave, 250);
+            armAutosave();
           }
+          // `_saveon=blur`: focus leaving the editor (the canvas, a tab, the
+          // host's chrome — any other frame) writes the buffer. Edits made
+          // while unfocused (the Format button) wait for the next blur.
+          if (SAVE_ON_BLUR && update.focusChanged && !update.view.hasFocus && dirty) save();
           if (update.docChanged || update.selectionSet) paintCursor();
           // Lint results land as their own transaction, after the delay.
           if (update.transactions.length) paintProblems();
