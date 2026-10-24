@@ -821,11 +821,17 @@ export default function CanvasWorkspace({
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   // The node pane's frame (the explorer embed on the node's file).
   const nodeFrameRef = useRef<HTMLIFrameElement | null>(null);
+  // Re-select the shown node in the workbench (set below, once `sendSelect`
+  // and `nodeRef` exist): what a refused flush falls back to.
+  const reselectShownNodeRef = useRef<() => void>(() => {});
   /** Run `fn` once the Code tab's buffer is on disk — at once when no Code
    *  tab is up (nothing to flush: the order of what follows must not change),
    *  else after the frame's flush relay (explorer Preview → code template)
-   *  answers or NODE_CODE_FLUSH_MS passes. A failed flush (the template's own
-   *  banner explains) does not hold the pane: the user asked to leave. */
+   *  answers or NODE_CODE_FLUSH_MS passes. A flush the template REFUSES
+   *  (`{ok:false}`: its conflict banner is up, or the write failed) keeps the
+   *  pane — the banner is the user's only way to resolve it, and the buffer
+   *  would die with the frame — and re-selects the node so the canvas
+   *  agrees with the pane again. A hung flush (the timer) lets `fn` run. */
   const afterNodeCodeFlush = useCallback((fn: () => void) => {
     const frame = nodeFrameRef.current;
     const flush =
@@ -840,7 +846,13 @@ export default function CanvasWorkspace({
     void Promise.race([
       flush().catch(() => undefined),
       new Promise((r) => window.setTimeout(r, NODE_CODE_FLUSH_MS)),
-    ]).then(fn);
+    ]).then((res) => {
+      if (res && (res as { ok?: boolean }).ok === false) {
+        reselectShownNodeRef.current();
+        return;
+      }
+      fn();
+    });
   }, []);
   const baseOriginRef = useRef<string | null>(null);
 
@@ -1365,6 +1377,9 @@ export default function CanvasWorkspace({
   // without re-subscribing it on every selection.
   const nodeRef = useRef<NodeSel | null>(node);
   nodeRef.current = node;
+  reselectShownNodeRef.current = () => {
+    if (nodeRef.current) sendSelect(nodeRef.current.udfName);
+  };
   // An open-code for a node not yet shown: the pane switches to Code only
   // once the workbench's selection echo has set that node, so the old node's
   // code never shows in between (and a refused select changes nothing).
@@ -1394,7 +1409,11 @@ export default function CanvasWorkspace({
       const next = nodeFromUrl();
       // A URL naming no node states the pane's own shut/open (`side=off`,
       // sideOpenFromUrl); one naming a node asks to see its pane (below).
-      if (!next) setSideOpen(sideOpenFromUrl());
+      if (!next) {
+        // Shutting hides the node pane: a Code buffer is flushed first.
+        if (sideOpenFromUrl()) setSideOpen(true);
+        else afterNodeCodeFlush(() => setSideOpen(false));
+      }
       const had = next ? nodeSessions.get(nodeSessionKey(env, name, next.file)) : undefined;
       const sid = next ? seedNodeSessionFromUrl(env, name, next) : null;
       const cur = nodeRef.current;

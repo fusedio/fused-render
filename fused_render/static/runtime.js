@@ -3934,11 +3934,17 @@
       payload.expected_mtime = opts.expectedMtime;
     }
     if (opts && opts.create) payload.create = true;
-    return fetch("/api/fs/write", {
+    const init = {
       method: "POST",
       headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
       body: JSON.stringify(payload),
-    })
+    };
+    // `keepalive`: the request outlives its document — a last write from a
+    // pagehide handler (an editor frame being torn down with a dirty buffer)
+    // would otherwise be aborted with the frame. Small bodies only (the
+    // browser caps keepalive requests at 64 KB in flight).
+    if (opts && opts.keepalive) init.keepalive = true;
+    return fetch("/api/fs/write", init)
       .then((res) => res.json().then((data) => ({ res, data })))
       .then(({ res, data }) => {
         if (res.status === 409 && payload.create) {

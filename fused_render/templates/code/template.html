@@ -843,10 +843,6 @@
             setDirty(true);
             armAutosave();
           }
-          // `_saveon=blur`: focus leaving the editor (the canvas, a tab, the
-          // host's chrome — any other frame) writes the buffer. Edits made
-          // while unfocused (the Format button) wait for the next blur.
-          if (SAVE_ON_BLUR && update.focusChanged && !update.view.hasFocus && dirty) save();
           if (update.docChanged || update.selectionSet) paintCursor();
           // Lint results land as their own transaction, after the delay.
           if (update.transactions.length) paintProblems();
@@ -933,6 +929,30 @@
         save();
       }
     });
+
+    // `_saveon=blur`: focus leaving THIS FRAME — a click on the canvas, a
+    // host tab, another window — writes the buffer. The window's blur, not
+    // CodeMirror's: a click on the editor's own bar (Reload, Problems,
+    // indent, wrap) moves focus within this document and must not save —
+    // Reload in particular is "discard my edits", and a save there would
+    // keep them. Edits made while unfocused (Format) wait for the next blur.
+    if (SAVE_ON_BLUR) {
+      window.addEventListener("blur", () => {
+        if (dirty) save();
+      });
+      // The frame torn down with a dirty buffer (the host left the canvas,
+      // a pane the host did not flush first): one last write that outlives
+      // the document. Fire-and-forget — nothing is left to show a result —
+      // and single-flight save() is not used: it awaits, and there is no
+      // later. The lock token still rides along, so a stale buffer cannot
+      // overwrite a newer file.
+      window.addEventListener("pagehide", () => {
+        if (!view || !dirty || !writable) return;
+        if (conflictEl.style.display === "flex") return;
+        fused.writeFile(file, serialize(view.state, eol), { expectedMtime: mtime, keepalive: true })
+          .catch(() => {});
+      });
+    }
 
     window.addEventListener("beforeunload", (e) => {
       if (dirty) {
