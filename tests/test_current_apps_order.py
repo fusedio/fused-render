@@ -94,6 +94,12 @@ def test_lists_by_newest_task_activity(env, monkeypatch):
     rows[0]["status"] = "archived"
     current_apps.observe(rows)
     assert _paths() == [b, c, a]
+    # OLD activity still outranks a fresh `addedAt`: a task that finished long
+    # ago under c (discovered just now, so its addedAt is newer) sorts c by
+    # that task, under b's live one — not by the discovery time.
+    rows.append({"key": "kc", "project": c, "status": "done", "happened_at": now - 1000})
+    current_apps.observe(rows)
+    assert _paths() == [b, a, c]
 
 
 def test_get_lists_by_recency_and_there_is_no_order_route(env):

@@ -449,11 +449,15 @@ def _canvas_of(path: str) -> dict | None:
 def _recency(a: dict) -> float:
     """The clock a row is listed by: its newest task activity, else when it
     was added (a row with no tasks yet — the explorer's button put it here).
-    `_added_epoch` is None for an unparseable stamp; that row sorts last."""
+    Activity WINS when there is any, not the newer of the two: `observe`
+    stamps ``addedAt`` with the discovery time, which is later than the task
+    that got the row discovered (CodeRabbit on #1932). `_added_epoch` is None
+    for an unparseable stamp; that row sorts last."""
     active = a.get("activeAt")
     active = float(active) if isinstance(active, (int, float)) else 0.0
-    added = _added_epoch(a.get("addedAt")) or 0.0
-    return max(active, added)
+    if active > 0.0:
+        return active
+    return _added_epoch(a.get("addedAt")) or 0.0
 
 
 def list_apps() -> list[dict]:
