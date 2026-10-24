@@ -111,7 +111,7 @@ const NO_ANN_TOOLS = new URLSearchParams(location.search).get("_noann") === "1";
 const CANVAS_SHOT = new URLSearchParams(location.search).get("_canvasshot") === "1";
 // `?_saveon=blur`: the host frames this document as a canvas node's code pane
 // (CanvasWorkspace). Forwarded onto the CONTENT frame's render URL, where the
-// code template reads it and saves on blur / Cmd+Enter instead of 250 ms
+// code template reads it and saves on blur / Shift+Enter instead of 250 ms
 // after each edit (every save of a node file runs the node on the canvas).
 const SAVE_ON_FLAG =
   new URLSearchParams(location.search).get("_saveon") === "blur" ? "&_saveon=blur" : "";
