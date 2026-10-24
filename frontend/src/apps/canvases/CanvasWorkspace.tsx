@@ -90,7 +90,9 @@
 //              disk_text?, disk_hash? }   code "stale": disk moved under the
 //              frame's base (Claude wrote the file) — the frame rebases its
 //              edits onto `disk_text` and posts again; "busy": the clone stayed
-//              locked, post again later; anything else: dropped, logged.
+//              locked, post again later; "fenced": a hard pull just replaced
+//              the clone, post again once its full state has landed; anything
+//              else: dropped, logged.
 // Relayed on the SAME ordered chain as snapshots and rename hints: a body for
 // a UDF's old file name must not overtake the rename that moves the file.
 // The token message tells the frame this host speaks the channel
@@ -1325,7 +1327,7 @@ export default function CanvasWorkspace({
           const ack = await applyBody(env, name, body);
           if (ack.ok) {
             post({ type: "fused-embed-body-applied", seq, name: body.node, hash: ack.hash });
-          } else {
+          } else if (ack.code === "stale") {
             post({
               type: "fused-embed-body-rejected",
               seq,
@@ -1334,6 +1336,14 @@ export default function CanvasWorkspace({
               reason: "the file changed on disk",
               disk_text: ack.disk_text,
               disk_hash: ack.disk_hash,
+            });
+          } else {
+            post({
+              type: "fused-embed-body-rejected",
+              seq,
+              name: body.node,
+              code: ack.code,
+              reason: "a pull just replaced the clone; retrying once it has settled",
             });
           }
           return;

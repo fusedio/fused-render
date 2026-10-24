@@ -4330,6 +4330,20 @@ class _SyncManager:
         existing = canvas_snapshot._find_source(self.dir, node)
         if existing is not None and existing != file:
             raise ValueError(f"{node!r} is {existing!r} on disk, not {file!r}")
+        # A hard pull just replaced the clone (see _embed_enter): until the
+        # frame has applied the pulled state, a body describes the canvas
+        # the pull discarded — written, it would put that text (or a file
+        # the pull removed, hashed here as the empty text) straight back.
+        # Not stale (the frame would rebase and repost at once) but
+        # `fenced`: the frame holds its text and tries again later, by which
+        # time the full delta has re-seeded its base.
+        fence = self._hard_fence
+        if fence is not None and time.time() >= fence["until"]:
+            self._hard_fence = fence = None
+        if fence is not None:
+            self.log_event("embed_to_disk", "body fenced",
+                           detail=f"{file}: predates the hard pull; not written")
+            return {"ok": False, "code": "fenced", "node": node, "file": file}
         path = os.path.join(self.dir, file)
         current = canvas_snapshot.read_body(path)
         current_hash = canvas_snapshot.body_hash(current if current is not None else "")
@@ -4350,6 +4364,18 @@ class _SyncManager:
             # overwrite does.
             trash = self._new_trash_dir()
             self._backup_to(trash, file, current.encode("utf-8", "replace"))
+        # Re-read right before the replace: the trash copy above took time,
+        # and Claude writes without _op_lock. A write that landed in between
+        # is answered stale like any other, instead of being overwritten
+        # (the remaining window is the replace itself, microseconds).
+        latest = canvas_snapshot.read_body(path)
+        if latest != current:
+            latest_text = latest if latest is not None else ""
+            self.log_event("embed_to_disk", "body stale",
+                           detail=f"{file}: disk moved while the body was being applied")
+            return {"ok": False, "code": "stale", "node": node, "file": file,
+                    "disk_text": latest_text,
+                    "disk_hash": canvas_snapshot.body_hash(latest_text)}
         # An OSError propagates: the route answers busy, the frame keeps the
         # body pending and posts again.
         canvas_snapshot._write_atomic(path, text)
@@ -5008,8 +5034,9 @@ def api_canvases_body(body: dict = Body(...), x_fused: str | None = Header(defau
     200 `{ok: true, hash}` when written (or already on disk); 200 `{ok:
     false, code: "stale", disk_text, disk_hash}` when disk no longer hashes
     to `base_hash` — the frame rebases and posts again, so this is not an
-    error. 409 `busy` as the snapshot route; 400 `rejected` for a malformed
-    post (the frame drops it and logs the reason).
+    error; 200 `{ok: false, code: "fenced"}` while a hard pull's fence
+    holds (the frame retries later). 409 `busy` as the snapshot route; 400
+    `rejected` for a malformed post (the frame drops it and logs the reason).
     """
     guard = _require_fused(x_fused)
     if guard is not None:

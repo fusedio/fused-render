@@ -361,7 +361,9 @@ export const applyRename = (
  *  disk, or `stale` with what disk holds for the frame to rebase on. */
 export type BodyAck =
   | { ok: true; node: string; file: string; hash: string; changed: boolean; created: boolean }
-  | { ok: false; code: "stale"; node: string; file: string; disk_text: string; disk_hash: string };
+  | { ok: false; code: "stale"; node: string; file: string; disk_text: string; disk_hash: string }
+  /** A hard pull just replaced the clone; the frame holds its text and retries later. */
+  | { ok: false; code: "fenced"; node: string; file: string };
 
 /** Embed v3 body channel: one source text → the clone, compare-and-swap on
  *  the hash of what disk holds (`base_hash`). Throws with `.status` 409
