@@ -1570,13 +1570,17 @@ export default function CanvasWorkspace({
             typeof stated === "string" && stated && !stated.includes("/")
               ? stated
               : `${name}.${kind === "widget" ? "json" : "py"}`;
-          // Another node: its pane replaces this one, so the Code tab's
-          // buffer (a blur save may be in flight) is flushed first.
-          afterNodeCodeFlush(() =>
-            setNode((cur) =>
-              cur && cur.udfName === name && cur.file === file ? cur : { udfName: name, kind, file },
-            ),
-          );
+          // The node already shown: nothing to do — and nothing to FLUSH.
+          // The embed re-posts its selection after every delta it applies
+          // (endEmbedRehydrate), the one from the Code tab's own save
+          // included; flushing on that echo would save (and run) a buffer
+          // the user is still typing into.
+          const cur = nodeRef.current;
+          if (!cur || cur.udfName !== name || cur.file !== file) {
+            // Another node: its pane replaces this one, so the Code tab's
+            // buffer (a blur save may be in flight) is flushed first.
+            afterNodeCodeFlush(() => setNode({ udfName: name, kind, file }));
+          }
           if (pendingCodeRef.current === name) {
             pendingCodeRef.current = null;
             setSideOpen(true);
