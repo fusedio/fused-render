@@ -109,6 +109,12 @@ const NO_ANN_TOOLS = new URLSearchParams(location.search).get("_noann") === "1";
 // workbench on request (CanvasWorkspace's `fused-canvas-shot`) — the chat's
 // Screenshot seat takes that picture (ChatMount `canvasShot`).
 const CANVAS_SHOT = new URLSearchParams(location.search).get("_canvasshot") === "1";
+// `?_saveon=blur`: the host frames this document as a canvas node's code pane
+// (CanvasWorkspace). Forwarded onto the CONTENT frame's render URL, where the
+// code template reads it and saves on blur / Cmd+Enter instead of 250 ms
+// after each edit (every save of a node file runs the node on the canvas).
+const SAVE_ON_FLAG =
+  new URLSearchParams(location.search).get("_saveon") === "blur" ? "&_saveon=blur" : "";
 import { subscribePreviewSideSlot, previewSideSlot } from "@apps/explorer/preview-side-slot";
 import { subscribeTopbarSlot, topbarSlot } from "@apps/explorer/topbar-slot";
 import ContextMenu, { type MenuEntry, type MenuItem } from "@platform/ui/ContextMenu";
@@ -1751,7 +1757,7 @@ function TemplatePreview({
           // but not enforced either) that it happens to sit under this
           // app's `app_dir`.
           rewritePath: false,
-          extra: `&_file=${encodeURIComponent(fsPath)}${thumbFlags}`,
+          extra: `&_file=${encodeURIComponent(fsPath)}${thumbFlags}${SAVE_ON_FLAG}`,
         })
       : null;
   };
@@ -2701,6 +2707,23 @@ interface PreviewProps {
 }
 
 export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar, onReload }: PreviewProps) {
+  // Flush relay for a host framing THIS document (the canvas node pane, two
+  // frames up from the editor): the host asks this window, and the ask goes
+  // down to the shown content frame's own `__fusedFlushEdits` (the code
+  // template's), the way the mode switch above flushes before a remount. No
+  // editor up, or no buffer to flush: `{ok: true}`.
+  useEffect(() => {
+    const w = window as Window & { __fusedFlushEdits?: () => Promise<{ ok: boolean }> };
+    w.__fusedFlushEdits = async () => {
+      const frame = document.querySelector<HTMLIFrameElement>(".preview-body iframe.is-shown");
+      const flush = frame?.contentWindow && (frame.contentWindow as any).__fusedFlushEdits;
+      if (typeof flush !== "function") return { ok: true };
+      return flush();
+    };
+    return () => {
+      delete w.__fusedFlushEdits;
+    };
+  }, []);
   // The merged field, for a plain FILE — same condition as `usePreviewFileMenu`'s
   // own `ownsBar`, and as `Header`'s own `actionsInTopbar` check just below:
   // this IS the explorer's own file view, so its bar is the one the field

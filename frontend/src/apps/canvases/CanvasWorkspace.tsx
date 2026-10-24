@@ -215,6 +215,12 @@ const FAILED_POLLS_BEFORE_RELEASE = 3;
 // clicked in and out of repeatedly must not become a probe per click.
 const FOCUS_CHECK_MIN_MS = 3000;
 
+// The node pane's Code tab saves on blur / Cmd+Enter (`_saveon=blur`, the code
+// template), and a blur save can still be in flight when the frame goes away:
+// anything that unmounts or remounts it asks the frame to flush first, waiting
+// at most this long (a hung write must not wedge the canvas).
+const NODE_CODE_FLUSH_MS = 10_000;
+
 /** This window's focus as the canvas should count it. */
 function hostFocused(): boolean {
   return document.visibilityState === "visible" && document.hasFocus();
@@ -351,6 +357,11 @@ function nodeEmbedSrc(file: string, tab: NodeTab, sessionId: string | null): str
       // parent) for a picture of the canvas — see the `fused-canvas-shot`
       // handler below.
       (tab === "claude" ? "&_noann=1&_canvasshot=1" : "") +
+      // `_saveon=blur`: the code template saves when the editor loses focus
+      // or on Cmd+Enter, not 250 ms after every edit — each save of a node
+      // file reaches the canvas as a delta that RUNS the node (owner,
+      // 2026-10-24: "when I keep typing it should not evaluate").
+      (tab === "code" ? "&_saveon=blur" : "") +
       (sessionId ? "&session_id=" + encodeURIComponent(sessionId) : ""),
   );
 }
@@ -808,6 +819,41 @@ export default function CanvasWorkspace({
     }
   }, [env, name]);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
+  // The node pane's frame (the explorer embed on the node's file).
+  const nodeFrameRef = useRef<HTMLIFrameElement | null>(null);
+  // Re-select the shown node in the workbench (set below, once `sendSelect`
+  // and `nodeRef` exist): what a refused flush falls back to.
+  const reselectShownNodeRef = useRef<() => void>(() => {});
+  /** Run `fn` once the Code tab's buffer is on disk — at once when no Code
+   *  tab is up (nothing to flush: the order of what follows must not change),
+   *  else after the frame's flush relay (explorer Preview → code template)
+   *  answers or NODE_CODE_FLUSH_MS passes. A flush the template REFUSES
+   *  (`{ok:false}`: its conflict banner is up, or the write failed) keeps the
+   *  pane — the banner is the user's only way to resolve it, and the buffer
+   *  would die with the frame — and re-selects the node so the canvas
+   *  agrees with the pane again. A hung flush (the timer) lets `fn` run. */
+  const afterNodeCodeFlush = useCallback((fn: () => void) => {
+    const frame = nodeFrameRef.current;
+    const flush =
+      frame && frame.dataset.tab === "code" && frame.contentWindow
+        ? (frame.contentWindow as unknown as { __fusedFlushEdits?: () => Promise<unknown> })
+            .__fusedFlushEdits
+        : undefined;
+    if (typeof flush !== "function") {
+      fn();
+      return;
+    }
+    void Promise.race([
+      flush().catch(() => undefined),
+      new Promise((r) => window.setTimeout(r, NODE_CODE_FLUSH_MS)),
+    ]).then((res) => {
+      if (res && (res as { ok?: boolean }).ok === false) {
+        reselectShownNodeRef.current();
+        return;
+      }
+      fn();
+    });
+  }, []);
   const baseOriginRef = useRef<string | null>(null);
 
   // The node frame's src, COMPUTED ONCE per node, tab and boot: it reads the
@@ -1331,6 +1377,9 @@ export default function CanvasWorkspace({
   // without re-subscribing it on every selection.
   const nodeRef = useRef<NodeSel | null>(node);
   nodeRef.current = node;
+  reselectShownNodeRef.current = () => {
+    if (nodeRef.current) sendSelect(nodeRef.current.udfName);
+  };
   // An open-code for a node not yet shown: the pane switches to Code only
   // once the workbench's selection echo has set that node, so the old node's
   // code never shows in between (and a refused select changes nothing).
@@ -1360,7 +1409,11 @@ export default function CanvasWorkspace({
       const next = nodeFromUrl();
       // A URL naming no node states the pane's own shut/open (`side=off`,
       // sideOpenFromUrl); one naming a node asks to see its pane (below).
-      if (!next) setSideOpen(sideOpenFromUrl());
+      if (!next) {
+        // Shutting hides the node pane: a Code buffer is flushed first.
+        if (sideOpenFromUrl()) setSideOpen(true);
+        else afterNodeCodeFlush(() => setSideOpen(false));
+      }
       const had = next ? nodeSessions.get(nodeSessionKey(env, name, next.file)) : undefined;
       const sid = next ? seedNodeSessionFromUrl(env, name, next) : null;
       const cur = nodeRef.current;
@@ -1379,7 +1432,7 @@ export default function CanvasWorkspace({
         canvasChatSidRef.current = new URLSearchParams(window.location.search).get("session_id");
         navHopRef.current = true;
         sendSelect(null);
-        setNode(null);
+        afterNodeCodeFlush(() => setNode(null));
         return;
       }
       // A link naming a node is a request to see its pane: a shut one opens.
@@ -1388,8 +1441,10 @@ export default function CanvasWorkspace({
         // The same node: the link's tab wins (a Code tab left open would
         // otherwise hide the chat the task named), and a session the pane
         // is not on reboots it.
-        setNodeTab(nodeTabFromUrl());
-        if (sid && sid !== had) setNodeBootSeq((n) => n + 1);
+        afterNodeCodeFlush(() => {
+          setNodeTab(nodeTabFromUrl());
+          if (sid && sid !== had) setNodeBootSeq((n) => n + 1);
+        });
         return;
       }
       // Marked as a hop so the node effect leaves the `session_id` the link
@@ -1397,9 +1452,11 @@ export default function CanvasWorkspace({
       // but the address should still restore the task's session on reload.
       navHopRef.current = true;
       sendSelect(next.udfName);
-      setNodeTab(nodeTabFromUrl());
-      setNodeBootSeq((n) => n + 1);
-      setNode(next);
+      afterNodeCodeFlush(() => {
+        setNodeTab(nodeTabFromUrl());
+        setNodeBootSeq((n) => n + 1);
+        setNode(next);
+      });
     };
     // Back / Forward move the URL without a push: `popstate`, which the
     // router does not re-announce, lands on this same reader.
@@ -1409,7 +1466,7 @@ export default function CanvasWorkspace({
       window.removeEventListener(NAV_EVENT, onNav);
       window.removeEventListener("popstate", onNav);
     };
-  }, [env, name, sendSelect]);
+  }, [env, name, sendSelect, afterNodeCodeFlush]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -1532,9 +1589,17 @@ export default function CanvasWorkspace({
             typeof stated === "string" && stated && !stated.includes("/")
               ? stated
               : `${name}.${kind === "widget" ? "json" : "py"}`;
-          setNode((cur) =>
-            cur && cur.udfName === name && cur.file === file ? cur : { udfName: name, kind, file },
-          );
+          // The node already shown: nothing to do — and nothing to FLUSH.
+          // The embed re-posts its selection after every delta it applies
+          // (endEmbedRehydrate), the one from the Code tab's own save
+          // included; flushing on that echo would save (and run) a buffer
+          // the user is still typing into.
+          const cur = nodeRef.current;
+          if (!cur || cur.udfName !== name || cur.file !== file) {
+            // Another node: its pane replaces this one, so the Code tab's
+            // buffer (a blur save may be in flight) is flushed first.
+            afterNodeCodeFlush(() => setNode({ udfName: name, kind, file }));
+          }
           if (pendingCodeRef.current === name) {
             pendingCodeRef.current = null;
             setSideOpen(true);
@@ -1545,8 +1610,12 @@ export default function CanvasWorkspace({
           // The canvas deselected (pane click, folder node, multi-select, or
           // the node is gone after a re-hydrate): follow it back to the
           // canvas chat. Owner call — the canvas is the one source of truth
-          // for what the right pane is about.
-          setNode(null);
+          // for what the right pane is about. The Code tab's buffer is
+          // flushed first: the click that deselected also blurred the
+          // editor, whose save is on its way — the save is what runs the
+          // node (owner: "the code is saved when you click outside the
+          // node"), and an unmounting frame would drop it.
+          afterNodeCodeFlush(() => setNode(null));
         }
       }
       if (type === "fused-embed-open-code") {
@@ -1558,7 +1627,7 @@ export default function CanvasWorkspace({
         if (typeof name !== "string" || !name) return;
         // That node's Code tab already up: the button is its "Hide".
         if (sidePanelStateRef.current.code && nodeRef.current?.udfName === name) {
-          setSideOpen(false);
+          afterNodeCodeFlush(() => setSideOpen(false));
           return;
         }
         // Not the node shown: select it in the workbench, whose selection
@@ -1607,12 +1676,13 @@ export default function CanvasWorkspace({
         if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
         const open = type === "fused-embed-open-side";
         if (!open) pendingCodeRef.current = null;
-        setSideOpen(open);
+        if (open) setSideOpen(true);
+        else afterNodeCodeFlush(() => setSideOpen(false));
       }
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [seedToken, sendSelect, sendHostFocus, sendCodePanelState, relaySnapshot, relayDelta, enqueueRelay, env, name, embedded, settleShot]);
+  }, [seedToken, sendSelect, sendHostFocus, sendCodePanelState, relaySnapshot, relayDelta, enqueueRelay, env, name, embedded, settleShot, afterNodeCodeFlush]);
 
   // The hosted editor's URL, for the project page's header (`onWorkbenchUrl`).
   const workbenchUrl =
@@ -1908,7 +1978,7 @@ export default function CanvasWorkspace({
       // the canvas chat's to show: leave the node, on both sides.
       if (nodeRef.current) {
         sendSelect(null);
-        setNode(null);
+        afterNodeCodeFlush(() => setNode(null));
       }
       // …and shown: the button now says "see chat →", so a shut pane opens.
       setSideOpen(true);
@@ -2203,7 +2273,9 @@ export default function CanvasWorkspace({
                   <Tabs
                     value={nodeTab}
                     onValueChange={(v) => {
-                      if (v === "claude" || v === "code") setNodeTab(v);
+                      // Keyed on the tab: the switch remounts the frame, so
+                      // a Code buffer is flushed first.
+                      if (v === "claude" || v === "code") afterNodeCodeFlush(() => setNodeTab(v));
                     }}
                     className="side-tabs self-stretch"
                   >
@@ -2238,6 +2310,7 @@ export default function CanvasWorkspace({
                   // chat's own `session_id` lives on the frame URL, and the
                   // explorer's content-mode swap is for its own switcher.
                   key={nodeTab}
+                  ref={nodeFrameRef}
                   className="preview-side-frame"
                   src={nodeBootSrc(nodeFile(dir, node), node.file, nodeTab)}
                   data-tab={nodeTab}
@@ -2284,14 +2357,16 @@ export default function CanvasWorkspace({
                   return;
                 }
                 sendSelect(hop.node.udfName);
-                setNodeTab("claude");
                 // The hop's session is what the node pane boots on — the same
                 // memory the frame's own moves feed, so one source of truth.
                 const key = nodeSessionKey(env, name, hop.node.file);
                 if (hop.sessionId) nodeSessions.set(key, hop.sessionId);
                 else nodeSessions.delete(key);
-                setNodeBootSeq((n) => n + 1);
-                setNode(hop.node);
+                afterNodeCodeFlush(() => {
+                  setNodeTab("claude");
+                  setNodeBootSeq((n) => n + 1);
+                  setNode(hop.node);
+                });
               }}
             />
           ) : (
