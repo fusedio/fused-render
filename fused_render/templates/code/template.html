@@ -518,7 +518,16 @@
     // own write coming back through the feed), true when something was
     // taken in. Throws on a read failure (a deleted file): the caller lets
     // the next change retry.
+    // Single-flight: the change feed and a 409'd save can both ask at once,
+    // and the second must see the first's result, not a second stat that
+    // reads "nothing newer" because the first already moved `mtime`.
+    let rebasePromise = null;
     async function rebaseFromDisk() {
+      if (rebasePromise) return rebasePromise;
+      rebasePromise = rebaseFromDiskOnce();
+      try { return await rebasePromise; } finally { rebasePromise = null; }
+    }
+    async function rebaseFromDiskOnce() {
       if (!view) return false;
       const st = await fused.stat(file);
       if (st.mtime === mtime) return false;
@@ -868,8 +877,12 @@
             local = changeSetOf(text, text);
             sentDoc = text;
           }
+          // The lock token this write names; a rebase that lands while the
+          // write is in flight moves `mtime`, and a 409 is then already
+          // answered (the buffer holds the other writer's text).
+          const mtimeAtWrite = mtime;
           try {
-            const st = await fused.writeFile(file, doc, { expectedMtime: mtime });
+            const st = await fused.writeFile(file, doc, { expectedMtime: mtimeAtWrite });
             mtime = st.mtime;
             if (sentDoc !== null) { base = sentDoc; sentDoc = null; sent = changeSetOf(base, base); }
             hideConflict();
@@ -884,9 +897,11 @@
             return;
           } catch (err) {
             if (err.type === "conflict") {
-              // Disk moved under the lock token: take it in and write again.
-              let rebased = false;
-              if (attempt < CONFLICT_REBASES) {
+              // Disk moved under the lock token: take it in and write again —
+              // unless a concurrent syncFromDisk already did (`mtime` moved
+              // while the write was out), in which case just write again.
+              let rebased = mtime !== mtimeAtWrite;
+              if (!rebased && attempt < CONFLICT_REBASES) {
                 try { rebased = await rebaseFromDisk(); } catch (e) { rebased = false; }
               }
               if (rebased) {

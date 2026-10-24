@@ -2210,6 +2210,14 @@ class _SyncManager:
         # the old canvas straight back. The deadline keeps a frame that never
         # acks (closed, reloading) from fencing the clone for good.
         self._hard_fence: dict | None = None
+        # The body channel's own fence after a hard pull: the disk_rev the
+        # pull left, held until the frame ACKS a delta at or past it (or
+        # re-hydrates from the server). No deadline: a snapshot fenced too
+        # long is a lost layout edit, but a body let through would put the
+        # discarded text — or a file the pull removed, which hashes as the
+        # empty text — straight back. A frame that never acks posts nothing
+        # worth taking.
+        self._body_fence_rev: int | None = None
         # Body channel (canvas_snapshot.body_hash): node → the hash of the text
         # this channel last wrote for it. A body whose `base_hash` is that hash
         # overwrites the frame's own previous write, so nothing goes to trash;
@@ -3781,6 +3789,7 @@ class _SyncManager:
                 self._embed_view = None
                 self._hard_fence = {"rev": self.disk_rev,
                                     "until": time.time() + HARD_FENCE_S}
+                self._body_fence_rev = self.disk_rev
             if hard and self.push_state == "error":
                 # The files that push failed on are gone: the clone is the
                 # server's copy now (or a fresh local edit over it, which the
@@ -3898,6 +3907,7 @@ class _SyncManager:
             self._embed_applied = {}
             self._embed_max_seq = -1
             self._hard_fence = None
+            self._body_fence_rev = None
         done = self._embed_applied.get((gen, seq))
         if done is not None:
             return done
@@ -4194,6 +4204,10 @@ class _SyncManager:
             self.log_event("disk_to_embed", "delta refused", ok=benign,
                            detail=f"rev {rev}" + (f": {reason}" if reason else ""))
             return {"ok": True, "rev": rev, "reset": True}
+        if self._body_fence_rev is not None and rev >= self._body_fence_rev:
+            # The frame applied the pulled state: its bodies describe it now.
+            self._body_fence_rev = None
+            self.log_event("embed_to_disk", "body fence lifted", detail=f"rev {rev}")
         if self._hard_fence is not None and rev >= self._hard_fence["rev"]:
             # The frame applied a reading cut after the hard pull: it shows
             # the server's copy now, and its snapshots describe that.
@@ -4330,19 +4344,18 @@ class _SyncManager:
         existing = canvas_snapshot._find_source(self.dir, node)
         if existing is not None and existing != file:
             raise ValueError(f"{node!r} is {existing!r} on disk, not {file!r}")
-        # A hard pull just replaced the clone (see _embed_enter): until the
-        # frame has applied the pulled state, a body describes the canvas
-        # the pull discarded — written, it would put that text (or a file
-        # the pull removed, hashed here as the empty text) straight back.
-        # Not stale (the frame would rebase and repost at once) but
-        # `fenced`: the frame holds its text and tries again later, by which
-        # time the full delta has re-seeded its base.
-        fence = self._hard_fence
-        if fence is not None and time.time() >= fence["until"]:
-            self._hard_fence = fence = None
-        if fence is not None:
+        # A hard pull replaced the clone (see `_body_fence_rev`): until the
+        # frame has acked the pulled state, a body describes the canvas the
+        # pull discarded — written, it would put that text (or a file the
+        # pull removed, hashed here as the empty text) straight back. Not
+        # stale (the frame would rebase and repost at once) but `fenced`:
+        # the frame holds its text and tries again later, by which time the
+        # full delta has re-seeded its base. Bound to the ack, never to a
+        # clock: the snapshot fence's deadline does not apply here.
+        if self._body_fence_rev is not None:
             self.log_event("embed_to_disk", "body fenced",
-                           detail=f"{file}: predates the hard pull; not written")
+                           detail=f"{file}: predates the hard pull (rev "
+                                  f"{self._body_fence_rev} not acked); not written")
             return {"ok": False, "code": "fenced", "node": node, "file": file}
         path = os.path.join(self.dir, file)
         current = canvas_snapshot.read_body(path)
