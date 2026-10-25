@@ -140,21 +140,28 @@ export interface WorkingLineProps {
 }
 
 /** Only a running foreground Bash call can be sent to the background (Agent
- *  backgrounding is unverified), and only on a run this page owns. */
-export function backgroundable(working: Working, status: RunStatus): boolean {
+ *  backgrounding is unverified), and only on a run this page owns. The shell
+ *  only exists once the CLI's `task_started` for that tool_use_id has landed
+ *  (in auto mode the safety classifier runs first), and a request before that
+ *  is refused with `backgrounded: false` — so a matching running, not yet
+ *  backgrounded task is required. */
+export function backgroundable(working: Working, status: RunStatus, tasks?: readonly TaskRecord[] | null): boolean {
   return (
     !working.external &&
     status !== "stopping" &&
     working.phase === "tooling" &&
     working.activity?.tool?.name === "Bash" &&
-    !!working.activity.tool.id
+    !!working.activity.tool.id &&
+    !!tasks?.some(
+      (t) => t.tool_use_id === working.activity?.tool?.id && t.status === "running" && !t.backgrounded,
+    )
   );
 }
 
 export function WorkingLine({ working, status, onStop, onBackground, tasks, now = Date.now }: WorkingLineProps) {
   const agent = useAgent();
   const rootRef = useRef<HTMLDivElement>(null);
-  const canBackground = !!onBackground && backgroundable(working, status);
+  const canBackground = !!onBackground && backgroundable(working, status, tasks);
   const bgRef = useRef(onBackground);
   bgRef.current = onBackground;
   // Ctrl+B, claimed only while the button would render, and only for events
