@@ -61,7 +61,7 @@ const T = [task()];
 const mounted: ReactTestRenderer[] = [];
 // The renderer has no DOM, so the line's ref is a stub whose `closest` names
 // the chat-root it sits in (a fresh one per mount unless given).
-function mount(el: React.ReactElement, chatRoot: object = { contains: () => true }): ReactTestRenderer {
+function mount(el: React.ReactElement, chatRoot: object = { contains: () => true, isConnected: true }): ReactTestRenderer {
   let r!: ReactTestRenderer;
   act(() => {
     r = create(el, { createNodeMock: () => ({ closest: () => chatRoot }) });
@@ -199,8 +199,8 @@ describe("backend and multi-chat", () => {
 
   const two = () => {
     const calls: string[] = [];
-    const rootA = { contains: () => true };
-    const rootB = { contains: () => true };
+    const rootA = { contains: () => true, isConnected: true };
+    const rootB = { contains: () => true, isConnected: true };
     mount(<WorkingLine working={working()} status="running" tasks={T} onStop={() => {}} onBackground={() => calls.push("a")} />, rootA);
     mount(<WorkingLine working={working()} status="running" tasks={T} onStop={() => {}} onBackground={() => calls.push("b")} />, rootB);
     return { calls, rootA, rootB };
