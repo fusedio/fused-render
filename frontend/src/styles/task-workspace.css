@@ -1,6 +1,7 @@
 /* The Workspace view: a grid of cards, one per open task. The chrome mirrors the
-   Board card (schedule.css `.schedule-tv-card`): same ground, hairline, radius,
-   padding, hover and peeked fill. Every rule here spells out its own margins,
+   Board card (schedule.css `.schedule-tv-card`): hairline, radius, padding, hover
+   and peeked fill. The card sits on the page ground (--bg), like the List view's
+   rows, so the hairline does the separating. Every rule here spells out its own margins,
    because Tailwind runs without preflight. */
 .ws-root {
   position: relative;
@@ -46,7 +47,7 @@
   box-sizing: border-box;
   padding: 9px 14px;
   color: var(--fg);
-  background: var(--tasks-card-bg);
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: 0 1px 2px var(--shadow-sm);
@@ -54,7 +55,7 @@
   transition: background-color 0.08s ease, border-color 0.08s ease;
 }
 .ws-card:hover {
-  background: color-mix(in srgb, var(--fg) 6%, var(--tasks-card-bg));
+  background: color-mix(in srgb, var(--fg) 4%, var(--bg));
   border-color: color-mix(in srgb, var(--fg-muted) 40%, var(--border));
 }
 .ws-card.is-peeked,
@@ -84,8 +85,12 @@
 .ws-title.is-unread {
   font-weight: 600;
 }
+/* A fixed-width column ("4h ago", "10h ago" and "just now" differ in width), so
+   the pin button before it lands at the same x on every card. */
 .ws-time {
   flex: none;
+  min-width: 8ch;
+  text-align: right;
   font-size: 12px;
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
