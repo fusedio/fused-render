@@ -839,6 +839,9 @@
   color: var(--c-fg);
   border-color: var(--c-faint);
 }
+.chat-root .turn.working .stop + .stop {
+  margin-left: 6px;
+}
 .chat-root .turn.working .stop:disabled {
   opacity: 0.55;
   cursor: default;

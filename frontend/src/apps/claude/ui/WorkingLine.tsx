@@ -131,14 +131,50 @@ export interface WorkingLineProps {
   working: Working;
   status: RunStatus;
   onStop: () => void;
+  /** Send the running foreground Bash call to the background (Ctrl+B). Absent = not offered. */
+  onBackground?: () => void;
   /** `ChatState.tasks` — the run's background tasks, for the verb. */
   tasks?: readonly TaskRecord[] | null;
   /** Test seam. */
   now?: () => number;
 }
 
-export function WorkingLine({ working, status, onStop, tasks, now = Date.now }: WorkingLineProps) {
+/** Only a running foreground Bash call can be sent to the background (Agent
+ *  backgrounding is unverified), and only on a run this page owns. */
+export function backgroundable(working: Working, status: RunStatus): boolean {
+  return (
+    !working.external &&
+    status !== "stopping" &&
+    working.phase === "tooling" &&
+    working.activity?.tool?.name === "Bash" &&
+    !!working.activity.tool.id
+  );
+}
+
+export function WorkingLine({ working, status, onStop, onBackground, tasks, now = Date.now }: WorkingLineProps) {
   const agent = useAgent();
+  const rootRef = useRef<HTMLDivElement>(null);
+  const canBackground = !!onBackground && backgroundable(working, status);
+  const bgRef = useRef(onBackground);
+  bgRef.current = onBackground;
+  // Ctrl+B, claimed only while the button would render, and only for events
+  // aimed at this chat (or at nothing in particular: body/html/null).
+  useEffect(() => {
+    if (!canBackground) return;
+    const onKey = (ev: KeyboardEvent) => {
+      if (ev.key.toLowerCase() !== "b" || !ev.ctrlKey || ev.metaKey || ev.altKey || ev.shiftKey || ev.defaultPrevented) return;
+      const t = ev.target as Node | null;
+      const loose = !t || t === document.body || t === document.documentElement;
+      if (!loose) {
+        const root = rootRef.current?.closest(".chat-root");
+        if (!root || !root.contains(t)) return;
+      }
+      ev.preventDefault();
+      bgRef.current?.();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [canBackground]);
   // One mood per line, drawn when it appears rather than per second.
   const thinkVerb = useRef(VERBS[Math.floor(Math.random() * VERBS.length)]);
   // When the poll last told us something NEW. The stream rows carry no clock,
@@ -211,6 +247,7 @@ export function WorkingLine({ working, status, onStop, tasks, now = Date.now }: 
     <div
       className={cn("turn", "working", !stopping && working.phase === "awaiting" && "awaiting")}
       role="status"
+      ref={rootRef}
     >
       {/* The pulsing spark is the Claude mark now, not a `✻` (#5/#15) — the
           same shape the assistant avatar and the header draw. */}
@@ -219,6 +256,11 @@ export function WorkingLine({ working, status, onStop, tasks, now = Date.now }: 
       </span>
       <span className="verb">{verb}</span>
       <span className="meta">{" (" + parts.join(" · ") + ")"}</span>
+      {canBackground ? (
+        <button type="button" className="stop background" title="Send this command to the background (Ctrl+B)" onClick={onBackground}>
+          background
+        </button>
+      ) : null}
       {stoppable ? (
         <button
           type="button"

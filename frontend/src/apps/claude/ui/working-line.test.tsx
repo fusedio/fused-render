@@ -1,0 +1,130 @@
+// The working line's "background" button and its Ctrl+B shortcut. Props only
+// (no mock.module); react-test-renderer has no DOM, so the document keydown
+// listener is driven through a real event bus swapped onto `document`.
+import { installDomShim } from "@platform/lib/testDomShim";
+installDomShim();
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
+import { act, create, type ReactTestRenderer } from "react-test-renderer";
+
+import type { Working } from "../protocol/controller-api";
+
+const { WorkingLine, backgroundable } = await import("./WorkingLine");
+
+const doc = globalThis.document as unknown as Record<string, unknown>;
+const saved = { add: doc.addEventListener, remove: doc.removeEventListener };
+const bus = new EventTarget();
+beforeAll(() => {
+  doc.addEventListener = bus.addEventListener.bind(bus);
+  doc.removeEventListener = bus.removeEventListener.bind(bus);
+});
+afterAll(() => {
+  doc.addEventListener = saved.add;
+  doc.removeEventListener = saved.remove;
+});
+
+function working(over: Partial<Working> = {}, toolOver: Record<string, unknown> = {}): Working {
+  return {
+    startedAt: Date.now(),
+    tokens: 0,
+    phase: "tooling",
+    retry: null,
+    external: false,
+    activity: { tool: { id: "toolu_1", name: "Bash", detail: "sleep 60", ...toolOver } },
+    ...over,
+  } as unknown as Working;
+}
+
+const mounted: ReactTestRenderer[] = [];
+function mount(el: React.ReactElement): ReactTestRenderer {
+  let r!: ReactTestRenderer;
+  act(() => {
+    r = create(el);
+  });
+  mounted.push(r);
+  return r;
+}
+afterEach(() => {
+  while (mounted.length) {
+    const r = mounted.pop()!;
+    act(() => r.unmount());
+  }
+});
+
+function key(init: Record<string, unknown>) {
+  let prevented = false;
+  const props = {
+    key: "b",
+    ctrlKey: false,
+    metaKey: false,
+    altKey: false,
+    shiftKey: false,
+    target: null,
+    ...init,
+  };
+  const ev = new Event("keydown");
+  for (const [k, v] of Object.entries(props)) Object.defineProperty(ev, k, { value: v });
+  Object.defineProperty(ev, "defaultPrevented", { get: () => prevented });
+  Object.defineProperty(ev, "preventDefault", { value: () => (prevented = true) });
+  act(() => void bus.dispatchEvent(ev));
+  return () => prevented;
+}
+
+const buttons = (r: ReactTestRenderer) => r.root.findAllByType("button");
+
+describe("backgroundable", () => {
+  test("truth table", () => {
+    expect(backgroundable(working(), "running")).toBe(true);
+    expect(backgroundable(working({}, { name: "Agent" }), "running")).toBe(false);
+    expect(backgroundable(working({ phase: "composing" }), "running")).toBe(false);
+    expect(backgroundable(working({ external: true }), "running")).toBe(false);
+    expect(backgroundable(working(), "stopping")).toBe(false);
+    expect(backgroundable(working({}, { id: "" }), "running")).toBe(false);
+  });
+});
+
+describe("background button", () => {
+  test("renders only with onBackground and a backgroundable state; click calls it", () => {
+    let n = 0;
+    const r = mount(<WorkingLine working={working()} status="running" onStop={() => {}} onBackground={() => n++} />);
+    const bg = buttons(r).filter((b) => b.props.className === "stop background");
+    expect(bg).toHaveLength(1);
+    act(() => bg[0].props.onClick());
+    expect(n).toBe(1);
+    expect(buttons(r)[0]).toBe(bg[0]); // before the stop button
+
+    const noProp = mount(<WorkingLine working={working()} status="running" onStop={() => {}} />);
+    expect(buttons(noProp)).toHaveLength(1);
+    const notBash = mount(
+      <WorkingLine working={working({}, { name: "Read" })} status="running" onStop={() => {}} onBackground={() => {}} />,
+    );
+    expect(buttons(notBash)).toHaveLength(1);
+  });
+});
+
+describe("Ctrl+B", () => {
+  test("calls onBackground on document.body", () => {
+    let n = 0;
+    mount(<WorkingLine working={working()} status="running" onStop={() => {}} onBackground={() => n++} />);
+    const prevented = key({ ctrlKey: true });
+    expect(n).toBe(1);
+    expect(prevented()).toBe(true);
+  });
+
+  test("Cmd+B and Ctrl+Shift+B do nothing", () => {
+    let n = 0;
+    mount(<WorkingLine working={working()} status="running" onStop={() => {}} onBackground={() => n++} />);
+    key({ metaKey: true });
+    key({ ctrlKey: true, shiftKey: true });
+    expect(n).toBe(0);
+  });
+
+  test("not backgroundable: ignored and not prevented", () => {
+    let n = 0;
+    mount(
+      <WorkingLine working={working({ phase: "composing" })} status="running" onStop={() => {}} onBackground={() => n++} />,
+    );
+    const prevented = key({ ctrlKey: true });
+    expect(n).toBe(0);
+    expect(prevented()).toBe(false);
+  });
+});
