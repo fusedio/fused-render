@@ -38,6 +38,7 @@ import { cn } from "@platform/lib/utils";
 
 import type { ChatController, ChatState, UserTurn } from "../protocol/controller-api";
 import type { PermissionMode, Segment } from "../protocol/types";
+import { runAgent } from "../protocol/agent";
 import { CardStack, type CardActions } from "./CardStack";
 import { useHoldTail } from "./cardPolicy";
 import { TroubleView } from "./TroubleView";
@@ -709,6 +710,22 @@ export const Transcript = memo(function Transcript({
 
 
   const onStop = useCallback(() => void actions.stopRun(), [actions]);
+  // Ctrl+B / "background": one request at a time, so a double press cannot send twice.
+  const bgInFlight = useRef(false);
+  const onBackground = useCallback(() => {
+    const runId = state.runId;
+    const toolUseId = state.working?.activity?.tool?.id;
+    if (!runId || !toolUseId || bgInFlight.current) return;
+    bgInFlight.current = true;
+    runAgent("task_background", { run_id: runId, tool_use_id: toolUseId })
+      .then((res) => {
+        if ("error" in res && res.error) console.warn("[claude] background failed:", res.error);
+      })
+      .catch((err) => console.warn("[claude] background failed:", err))
+      .finally(() => {
+        bgInFlight.current = false;
+      });
+  }, [state.runId, state.working?.activity?.tool?.id]);
 
   // WHERE each parked card sits INSIDE its turn (#18). Passing a `<CardStack/>`
   // to every turn regardless would defeat `Turn`'s own memo — a fresh child
@@ -997,7 +1014,7 @@ export const Transcript = memo(function Transcript({
                 actions={actions}
               />
               {state.working ? (
-                <WorkingLine working={state.working} status={state.status} onStop={onStop} tasks={state.tasks} />
+                <WorkingLine working={state.working} status={state.status} onStop={onStop} onBackground={onBackground} tasks={state.tasks} />
               ) : null}
             </div>
           </>
