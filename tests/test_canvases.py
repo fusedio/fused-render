@@ -698,6 +698,28 @@ def test_forget_file_sessions_erases_the_files_chats_and_skips_running_ones(
     assert backups == [(os.path.join("_sessions", "claude", "s1.jsonl"), b"{}\n")]
 
 
+def test_forget_file_sessions_fallback_refusal_is_a_skip(tmp_path, monkeypatch):
+    """A transcript the Tasks page does not list goes through
+    `_erase_session_files` directly; a file that would not go leaves the
+    session's state alone and reports it skipped, not erased."""
+    from fused_render.server.routers import tasks as tasks_router
+
+    class Agent:
+        def _cli_sessions(self, file, limit=30):
+            return [{"id": "s9", "running": False, "backend": "claude",
+                     "path": str(tmp_path / "s9.jsonl")}]
+
+    monkeypatch.setattr(canvases_mod, "_agent_module", lambda: Agent())
+    monkeypatch.setattr(tasks_router, "_collect", lambda: {})
+    monkeypatch.setattr(tasks_router, "_erase_session_files",
+                        lambda sid, path: (0, False, 0, 1))
+    forgotten = []
+    monkeypatch.setattr(tasks_router.sessions, "forget_triage", lambda sid: forgotten.append(sid))
+    out = canvases_mod.forget_file_sessions(["/clone/udf_9.py"])
+    assert out["erased"] == [] and out["skipped"] == ["s9"]
+    assert forgotten == []
+
+
 def test_forget_file_sessions_without_an_agent_module_is_a_no_op(monkeypatch):
     monkeypatch.setattr(canvases_mod, "_agent_module", lambda: None)
     assert canvases_mod.forget_file_sessions(["/clone/udf_2.py"]) == {
@@ -2110,7 +2132,7 @@ def test_push_aborts_when_remote_moved_and_zip_unavailable(harness, tmp_path, mo
 
 
 def test_merge_abort_clears_a_stale_error_from_an_earlier_failed_push(
-        tmp_path, monkeypatch):
+        harness, tmp_path, monkeypatch):
     """A merge-abort (remote moved, zip download failed) is a benign,
     retryable deferral — push_state goes "pending", not "error". But if an
     EARLIER push failed with a real validation error, last_error/error_detail
@@ -2290,7 +2312,7 @@ def _stub_skills_git(monkeypatch, calls):
 
 
 def test_opening_an_existing_canvas_fetches_the_workbench_skills(
-        tmp_path, monkeypatch):
+        harness, tmp_path, monkeypatch):
     """The page's own open path: POST /api/canvases/sync/start on a canvas dir
     that is already there. No /clone is involved and none can be — the canvas
     predates this feature — so this is the only hook that can put the skills on
@@ -2325,7 +2347,7 @@ def test_opening_an_existing_canvas_fetches_the_workbench_skills(
 
 
 def test_the_open_hook_never_blocks_the_request_and_never_fails_it(
-        tmp_path, monkeypatch):
+        harness, tmp_path, monkeypatch):
     """Bounded on the latency side too: a shallow clone over a dead network sits
     for up to _CLONE_TIMEOUT_S, and the canvas page AWAITS this request before it
     renders anything. So the fetch runs off-thread, and a fetch that explodes
@@ -2391,7 +2413,7 @@ def test_repeated_opens_do_not_refetch(harness, tmp_path, monkeypatch):
 
 
 def test_manual_push_endpoint_pushes_and_the_next_poll_stays_quiet(
-        tmp_path, monkeypatch):
+        harness, tmp_path, monkeypatch):
     """The whole point of routing through _push: the sync point moves WITH the
     push, so the remote never looks like it moved on its own. A raw CLI push
     leaves the watcher to discover a changed remote and flag the canvas
@@ -2431,7 +2453,7 @@ def test_manual_push_endpoint_pushes_and_the_next_poll_stays_quiet(
 
 
 def test_manual_push_endpoint_returns_the_validation_transcript_verbatim(
-        tmp_path, monkeypatch):
+        harness, tmp_path, monkeypatch):
     """The reason the agent calls this instead of being told "it failed": the
     CLI prints one line per broken node, and those lines have to land in the
     agent's own transcript so it can iterate without a human relaying them."""
@@ -2455,7 +2477,7 @@ def test_manual_push_endpoint_returns_the_validation_transcript_verbatim(
 
 
 def test_manual_push_endpoint_is_refused_while_a_sync_op_holds_the_lock(
-        tmp_path, monkeypatch):
+        harness, tmp_path, monkeypatch):
     """Push serialization is the module's stated invariant. The endpoint must
     not become a second pusher: with _op_lock held it says so and returns,
     rather than running a concurrent CLI push over the same folder."""
@@ -2475,7 +2497,7 @@ def test_manual_push_endpoint_is_refused_while_a_sync_op_holds_the_lock(
 
 
 def test_manual_push_endpoint_is_refused_while_the_watcher_is_paused(
-        tmp_path, monkeypatch):
+        harness, tmp_path, monkeypatch):
     """A pause means someone else owns this folder right now (a re-pull, a
     logout). Pushing into that is exactly the race pause() exists to stop."""
     monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
@@ -2514,7 +2536,7 @@ def test_manual_push_endpoint_validates_its_inputs(harness, tmp_path, monkeypatc
 
 
 def test_an_out_of_band_cli_push_is_flagged_as_a_server_change(
-        tmp_path, monkeypatch):
+        harness, tmp_path, monkeypatch):
     """The hazard the endpoint exists to remove.
 
     A raw `fused workbench canvas push` from inside the clone moves the remote
@@ -2576,7 +2598,7 @@ def _stub_fused_package(tmp_path, log):
 
 
 def test_the_managers_own_push_does_not_route_back_through_the_endpoint(
-        tmp_path, monkeypatch):
+        harness, tmp_path, monkeypatch):
     """Regression for a live outage on this branch.
 
     `_push` runs `[*cli.command, "workbench", "canvas", "push", …]`, and on the
@@ -2672,7 +2694,7 @@ def test_the_managers_own_push_does_not_route_back_through_the_endpoint(
 
 
 def test_a_busy_refusal_is_not_recorded_as_a_push_failure(
-        tmp_path, monkeypatch):
+        harness, tmp_path, monkeypatch):
     """A genuine double-push (two sessions, or a session racing the watcher) is
     a timing conflict, not a broken canvas. If it landed in push_state "error"
     it would wedge the canvas — `_run` only re-arms `pending` on a fresh change

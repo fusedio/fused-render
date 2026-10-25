@@ -2088,7 +2088,12 @@ def forget_file_sessions(files: list[str], *, backup=None, log=None) -> dict:
                 else:
                     # A transcript the Tasks page does not list (not a task):
                     # the files and the per-session state still go.
-                    tasks_router._erase_session_files(sid, row.get("path"))
+                    _removed, _erased, failed, refused = tasks_router._erase_session_files(
+                        sid, row.get("path"))
+                    if failed or refused:
+                        # As the route: a transcript still on disk is not an
+                        # erased session, and its state stays with it.
+                        raise OSError(f"{failed + refused} session file(s) not removed")
                     tasks_router.sessions.forget_triage(sid)
                     tasks_router.tasks_store.forget_session(sid)
             except Exception:  # noqa: BLE001 — HTTPException 409/500 included
