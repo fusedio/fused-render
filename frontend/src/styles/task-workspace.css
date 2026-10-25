@@ -1,6 +1,7 @@
 /* The Workspace view: a grid of cards, one per open task. The chrome mirrors the
-   Board card (schedule.css `.schedule-tv-card`): same ground, hairline, radius,
-   padding, hover and peeked fill. Every rule here spells out its own margins,
+   Board card (schedule.css `.schedule-tv-card`): hairline, radius, padding, hover
+   and peeked fill. The card sits on the page ground (--bg), like the List view's
+   rows, so the hairline does the separating. Every rule here spells out its own margins,
    because Tailwind runs without preflight. */
 .ws-root {
   position: relative;
@@ -22,9 +23,9 @@
   overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: var(--sb-thumb) transparent;
-  /* overflow-y: auto clips the x axis too, so the select-all gutter left of the
-     cards lives inside the scroll box: 24px of padding, pulled back by margin so
-     the cards do not move. */
+  /* overflow-y: auto clips the x axis too, so the per-card checkbox gutter left of
+     the cards (.ws-check) lives inside the scroll box: 24px of padding, pulled back
+     by margin so the cards do not move. */
   padding-left: 24px;
   margin-left: -24px;
 }
@@ -46,7 +47,7 @@
   box-sizing: border-box;
   padding: 9px 14px;
   color: var(--fg);
-  background: var(--tasks-card-bg);
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 8px;
   box-shadow: 0 1px 2px var(--shadow-sm);
@@ -54,7 +55,7 @@
   transition: background-color 0.08s ease, border-color 0.08s ease;
 }
 .ws-card:hover {
-  background: color-mix(in srgb, var(--fg) 6%, var(--tasks-card-bg));
+  background: color-mix(in srgb, var(--fg) 4%, var(--bg));
   border-color: color-mix(in srgb, var(--fg-muted) 40%, var(--border));
 }
 .ws-card.is-peeked,
@@ -84,8 +85,12 @@
 .ws-title.is-unread {
   font-weight: 600;
 }
+/* A fixed-width column ("4h ago", "10h ago" and "just now" differ in width), so
+   the pin button before it lands at the same x on every card. */
 .ws-time {
   flex: none;
+  min-width: 8ch;
+  text-align: right;
   font-size: 12px;
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
@@ -420,8 +425,9 @@
   gap: 6px;
   /* Left inset 13px + the toggle's own 2px = 15px: the card's 1px border plus its
      14px padding, so the chevron stands over the status ring and the label over
-     the T-id. */
-  padding: 4px 6px 4px 13px;
+     the T-id. The right inset is the same 15px, so the select-all control's right
+     edge lines up with the card content, above the time column. */
+  padding: 4px 15px 4px 13px;
   background: var(--bg);
 }
 .ws-list > .ws-group-head:not([data-first]) {
@@ -473,24 +479,37 @@
   opacity: 1;
   pointer-events: auto;
 }
-/* Workspace group headers read as plain labels at rest: the select-all shows on
-   hover or focus-within, or while a selection exists, like the card checkboxes. */
-.ws-group-head > .tasks-group-check {
-  /* Out of flow, in the gutter left of the card column: its right edge is 8px
-     left of the card border (14px box, so left = -22px). Showing it moves nothing. */
-  position: absolute;
-  left: -22px;
-  top: 50%;
-  transform: translateY(-50%);
-  margin: 0;
+/* Workspace group headers read as plain labels at rest: a labelled "Select all"
+   sits at the header's right edge and shows on hover or focus-within, or while a
+   selection exists, like the card checkboxes. It keeps its box (opacity, not
+   display), so showing it moves nothing. The label is the control's own wrapper,
+   so the generic hide above is overridden on the box itself: the wrapper owns the
+   fade. */
+.ws-group-select {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  cursor: pointer;
   opacity: 0;
   pointer-events: none;
+  transition: opacity 0.08s ease;
 }
-.ws-group-head:hover > .tasks-group-check,
-.ws-group-head:focus-within > .tasks-group-check,
-.ws-group-head[data-selecting] > .tasks-group-check,
-.ws-group-head > .tasks-group-check[data-checked],
-.ws-group-head > .tasks-group-check[data-indeterminate] {
+.ws-group-head:hover .ws-group-select,
+.ws-group-head:focus-within .ws-group-select,
+.ws-group-head[data-selecting] .ws-group-select,
+.ws-group-select:has(.tasks-group-check[data-checked]),
+.ws-group-select:has(.tasks-group-check[data-indeterminate]) {
+  opacity: 1;
+  pointer-events: auto;
+}
+.ws-group-select:hover {
+  color: var(--fg);
+}
+.ws-group-head .ws-group-select > .tasks-group-check {
+  margin: 0;
   opacity: 1;
   pointer-events: auto;
 }

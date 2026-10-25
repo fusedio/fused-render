@@ -826,7 +826,9 @@ export function TaskWorkspace({
         <p className="schedule-tv-empty">{emptyLabel}</p>
       ) : (
         <ul className="ws-list" role="listbox" aria-label="Open tasks">
-          {shownGroups.map((g, gi) => (
+          {shownGroups.map((g, gi) => {
+            const groupKeys = g.tasks.filter(selectableTask).map((t) => t.key);
+            return (
             <Fragment key={g.key}>
               <li
                 role="presentation"
@@ -836,7 +838,6 @@ export function TaskWorkspace({
                 data-collapsed={g.folded ? "1" : "0"}
                 data-selecting={bulk.selection.size > 0 ? "1" : undefined}
               >
-                <GroupCheck select={bulk} keys={g.tasks.filter(selectableTask).map((t) => t.key)} name={g.label} />
                 <button type="button" className="tasks-group-toggle ws-group-toggle" aria-expanded={!g.folded} onClick={() => toggleGroup(g.key)}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                     <path d="m9 18 6-6-6-6" />
@@ -844,6 +845,12 @@ export function TaskWorkspace({
                   <span className="tasks-group-name">{g.label}</span>
                   <span className="tasks-group-count">{g.tasks.length}</span>
                 </button>
+                {groupKeys.length > 0 && (
+                  <label className="ws-group-select">
+                    <GroupCheck select={bulk} keys={groupKeys} name={g.label} />
+                    <span>Select all</span>
+                  </label>
+                )}
               </li>
               {g.shown.map((t) => {
                 // A closed task wears no hold markers: its status word is enough.
@@ -884,7 +891,8 @@ export function TaskWorkspace({
                 </li>
               )}
             </Fragment>
-          ))}
+            );
+          })}
         </ul>
       )}
       {undo && (
