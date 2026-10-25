@@ -9,6 +9,7 @@ import {
   archiveTask,
   fetchTaskHolds,
   fetchTaskPorts,
+  dropSharedPrefsRead,
   getPrefsShared,
   putPinnedTasks,
   unarchiveTask,
@@ -469,20 +470,44 @@ export function TaskWorkspace({
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
   const [undo, setUndo] = useState<{ key: string; text: string } | null>(null);
   const undoTimer = useRef<number | null>(null);
-  // Pinned task keys (the `pinned_tasks` pref): read once on mount, written
-  // optimistically on each toggle and rolled back when the write fails.
+  // Pinned task keys (the `pinned_tasks` pref). `pinsRef` is the current list
+  // (what a write sends); state mirrors it for rendering. `loaded` says the
+  // stored list has been read: a toggle before that reads it first, so a failed
+  // load never makes a one-item PUT that wipes the stored pins.
   const [pinnedKeys, setPinnedKeys] = useState<readonly string[]>([]);
+  const pinsRef = useRef<string[]>([]);
+  const pinsLoaded = useRef(false);
+  const pinWrites = useRef<Promise<void>>(Promise.resolve());
+  const archivedKnown = useRef<ReadonlySet<string>>(new Set());
+  archivedKnown.current = useMemo(
+    () => new Set(allTasks.filter((t) => t.status === "archived").map((t) => t.key)),
+    [allTasks],
+  );
+  const dropPinsRef = useRef<(keys: readonly string[]) => void>(() => undefined);
+  const setPins = useCallback((next: string[]): void => {
+    pinsRef.current = next;
+    setPinnedKeys(next);
+  }, []);
+  const readPins = useCallback(async (fresh: boolean): Promise<void> => {
+    if (fresh) dropSharedPrefsRead();
+    const p = await getPrefsShared();
+    if (pinsLoaded.current) return;
+    pinsLoaded.current = true;
+    if (Array.isArray(p.pinned_tasks)) setPins([...p.pinned_tasks]);
+  }, [setPins]);
   useEffect(() => {
     let alive = true;
     void getPrefsShared()
       .then((p) => {
-        if (alive && Array.isArray(p.pinned_tasks)) setPinnedKeys(p.pinned_tasks);
+        if (!alive || pinsLoaded.current) return;
+        pinsLoaded.current = true;
+        if (Array.isArray(p.pinned_tasks)) setPins([...p.pinned_tasks]);
       })
       .catch(() => undefined);
     return () => {
       alive = false;
     };
-  }, []);
+  }, [setPins]);
   const pinnedSet = useMemo(() => new Set(pinnedKeys), [pinnedKeys]);
 
   const { tasks, selection, archiveSelected, node: bulkNode, bulk } = useBulkArchive({
@@ -490,6 +515,7 @@ export function TaskWorkspace({
     selectable: selectableTask,
     resetKey,
     onReload,
+    onArchived: (keys) => dropPinsRef.current(keys),
   });
   const base = useMemo(() => workspaceTasks(tasks).filter((t) => !hidden.has(t.key)), [tasks, hidden]);
   const keys = useMemo(() => base.filter((t) => t.status !== "archived").map((t) => t.key), [base]);
@@ -528,19 +554,61 @@ export function TaskWorkspace({
   const showProject = useMemo(() => spansProjects(rows), [rows]);
 
   // What the key handler reads, kept current without re-binding it.
-  const live = useRef({ rows, groups, collapsed, selected, peekedKey, searching, selection, archiveSelected, pinnedKeys });
-  live.current = { rows, groups, collapsed, selected, peekedKey, searching, selection, archiveSelected, pinnedKeys };
+  const live = useRef({ rows, groups, collapsed, selected, peekedKey, searching, selection, archiveSelected });
+  live.current = { rows, groups, collapsed, selected, peekedKey, searching, selection, archiveSelected };
 
-  const togglePin = useCallback((key: string): void => {
-    const prev = live.current.pinnedKeys;
-    const next = prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key];
-    live.current.pinnedKeys = next; // a second press before the re-render builds on this one
-    setPinnedKeys(next);
-    putPinnedTasks([...next]).catch((e: Error) => {
-      setPinnedKeys(prev);
-      notify({ title: e.message || "Could not update the pin", tone: "error" });
-    });
-  }, []);
+  // Writes run one at a time and each sends the list as it is when it starts,
+  // so the last PUT always carries every toggle. Keys of tasks known to be
+  // archived are pruned from every write (an archived card has no pin button).
+  const writePins = useCallback(
+    (onFail?: () => void): void => {
+      pinWrites.current = pinWrites.current.then(async () => {
+        const kept = pinsRef.current.filter((k) => !archivedKnown.current.has(k));
+        if (kept.length !== pinsRef.current.length) setPins(kept);
+        try {
+          await putPinnedTasks([...pinsRef.current]);
+        } catch (e) {
+          onFail?.();
+          notify({ title: (e as Error).message || "Could not update the pin", tone: "error" });
+        }
+      });
+    },
+    [setPins],
+  );
+  const applyToggle = useCallback(
+    (key: string): void => {
+      const was = pinsRef.current.includes(key);
+      setPins(was ? pinsRef.current.filter((k) => k !== key) : [...pinsRef.current, key]);
+      // A failure undoes only this key, against whatever the list is by then.
+      writePins(() => {
+        const has = pinsRef.current.includes(key);
+        if (was && !has) setPins([...pinsRef.current, key]);
+        else if (!was && has) setPins(pinsRef.current.filter((k) => k !== key));
+      });
+    },
+    [setPins, writePins],
+  );
+  const togglePin = useCallback(
+    (key: string): void => {
+      if (pinsLoaded.current) return applyToggle(key);
+      readPins(true).then(
+        () => applyToggle(key),
+        (e: Error) => notify({ title: e.message || "Could not read the pinned tasks", tone: "error" }),
+      );
+    },
+    [applyToggle, readPins],
+  );
+  /** A task archived from this view loses its pin (nothing else could remove it). */
+  const dropPins = useCallback(
+    (gone: readonly string[]): void => {
+      if (!pinsLoaded.current || !gone.some((k) => pinsRef.current.includes(k))) return;
+      setPins(pinsRef.current.filter((k) => !gone.includes(k)));
+      writePins();
+    },
+    [setPins, writePins],
+  );
+
+  dropPinsRef.current = dropPins;
 
   const toggleGroup = useCallback((key: WorkspaceGroupKey): void => {
     const next = { ...live.current.collapsed, [key]: !groupCollapsed(key, live.current.collapsed) };
@@ -584,6 +652,7 @@ export function TaskWorkspace({
       if (peeked === task.key) closePeek();
       archiveTask(task.key)
         .then((res) => {
+          dropPins([task.key]);
           setUndo({ key: task.key, text: closedToastText(`Closed \u201c${task.title}\u201d`, [res.teardown]) });
           if (undoTimer.current !== null) window.clearTimeout(undoTimer.current);
           undoTimer.current = window.setTimeout(() => setUndo(null), UNDO_MS);
@@ -598,7 +667,7 @@ export function TaskWorkspace({
           notify({ title: e.message || "Could not close the task", tone: "error" });
         });
     },
-    [onReload],
+    [onReload, dropPins],
   );
   // The `x` key and the ring-slot button both land here: a running task asks first.
   const close = useCallback(

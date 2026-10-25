@@ -646,3 +646,91 @@ test("a failed pin write reverts the card", async () => {
   expect(r.root.findAllByProps({ "aria-label": "Unpin" })).toHaveLength(0);
   expect(heads(r).map((h) => text(h))).not.toContain("Pinned1");
 });
+
+// ---- Pin hygiene --------------------------------------------------------------
+const putBodies = (posts: { url: string; body: unknown }[]) =>
+  posts.filter((p) => p.url === "/api/prefs" && p.body).map((p) => (p.body as { pinned_tasks: string[] }).pinned_tasks);
+const clickPin = (r: ReturnType<typeof create>, key: string, label: string) =>
+  act(async () => {
+    r.root.findByProps({ "data-key": key }).findByProps({ "aria-label": label }).props.onClick({ stopPropagation() {} });
+  });
+
+test("archiving a pinned task from the view drops its pin and persists the list", async () => {
+  pinnedPref = ["a", "other"];
+  const posts = serve();
+  const r = await render([task({ key: "a", title: "Fix it" })]);
+  const btn = r.root.findByProps({ className: "tasks-rowmark ws-mark" }).findByProps({ className: "tasks-act tasks-act--archive" });
+  await act(async () => {
+    btn.props.onClick({ stopPropagation() {} });
+  });
+  await act(async () => {});
+  expect(putBodies(posts)).toEqual([["other"]]);
+});
+
+test("a bulk archive drops the pins of the tasks it archived", async () => {
+  pinnedPref = ["k0"];
+  const posts = serve();
+  const r = await render(many(1));
+  await press(byClass(r, "tasks-group-check")[0] as never, "onCheckedChange");
+  await press(barButton(r, "Archive"));
+  expect(archived(posts)).toEqual(["k0"]);
+  expect(putBodies(posts)).toEqual([[]]);
+});
+
+test("every pin write prunes keys of tasks known to be archived", async () => {
+  pinnedPref = ["gone", "a"];
+  const posts = serve();
+  const r = await render([task({ key: "gone", status: "archived" }), task({ key: "a", status: "needs_attention" })]);
+  await clickPin(r, "a", "Unpin");
+  expect(putBodies(posts)).toEqual([[]]);
+});
+
+test("a failed write reverts only its own key; the last write carries the other toggle", async () => {
+  const posts = serve();
+  const base = globalThis.fetch;
+  let puts = 0;
+  globalThis.fetch = mock(async (url: string, init?: RequestInit) =>
+    url === "/api/prefs" && init?.method === "PUT" && puts++ === 0
+      ? (posts.push({ url, body: JSON.parse(String(init.body)) }),
+        new Response(JSON.stringify({ error: "nope" }), { status: 400 }))
+      : base(url, init),
+  ) as unknown as typeof fetch;
+  const r = await render([task({ key: "a", status: "needs_attention" }), task({ key: "b", status: "needs_attention", started: 0 })]);
+  await act(async () => {
+    r.root.findByProps({ "data-key": "a" }).findByProps({ "aria-label": "Pin to top" }).props.onClick({ stopPropagation() {} });
+    r.root.findByProps({ "data-key": "b" }).findByProps({ "aria-label": "Pin to top" }).props.onClick({ stopPropagation() {} });
+  });
+  await act(async () => {});
+  expect(putBodies(posts)).toEqual([["a", "b"], ["b"]]);
+  expect(r.root.findByProps({ "data-key": "b" }).findAllByProps({ "aria-label": "Unpin" }).length).toBeGreaterThan(0);
+  expect(r.root.findByProps({ "data-key": "a" }).findAllByProps({ "aria-label": "Unpin" })).toHaveLength(0);
+});
+
+test("a toggle after a failed pin load re-reads the stored pins first, so they are not wiped", async () => {
+  const posts = serve();
+  const base = globalThis.fetch;
+  let gets = 0;
+  globalThis.fetch = mock(async (url: string, init?: RequestInit) =>
+    url === "/api/prefs" && init?.method !== "PUT" && gets++ === 0
+      ? new Response(JSON.stringify({ error: "down" }), { status: 500 })
+      : base(url, init),
+  ) as unknown as typeof fetch;
+  pinnedPref = ["x"];
+  const r = await render([task({ key: "a", status: "needs_attention" })]);
+  await clickPin(r, "a", "Pin to top");
+  await act(async () => {});
+  expect(putBodies(posts)).toEqual([["x", "a"]]);
+});
+
+test("if the pins cannot be read, a toggle sends no write", async () => {
+  const posts = serve();
+  const base = globalThis.fetch;
+  globalThis.fetch = mock(async (url: string, init?: RequestInit) =>
+    url === "/api/prefs" ? new Response(JSON.stringify({ error: "down" }), { status: 500 }) : base(url, init),
+  ) as unknown as typeof fetch;
+  const r = await render([task({ key: "a", status: "needs_attention" })]);
+  await clickPin(r, "a", "Pin to top");
+  await act(async () => {});
+  expect(putBodies(posts)).toEqual([]);
+  expect(r.root.findAllByProps({ "aria-label": "Unpin" })).toHaveLength(0);
+});
