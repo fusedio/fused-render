@@ -1337,6 +1337,15 @@ export default function CanvasWorkspace({
             : await applySnapshot(env, name, gen, seq, body ?? {});
           settleRelay(qid);
           setRelayFailure(null);
+          // A node deleted in the canvas took its file — and the server
+          // erased the chats filed on it. Forget the session this pane
+          // remembered for that file too, or a new node of the same name
+          // boots its pane on the erased conversation.
+          if (!rename) {
+            for (const file of (ack as { deleted_files?: string[] }).deleted_files ?? []) {
+              nodeSessions.delete(nodeSessionKey(env, name, file));
+            }
+          }
           post({ type: "fused-embed-snapshot-applied", gen, seq, push_seq: ack.push_seq });
           return;
         } catch (e) {
