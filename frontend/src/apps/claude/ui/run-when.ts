@@ -68,8 +68,8 @@ export function runSpan(segs: readonly (Segment | null | undefined)[]): RunWhen 
  *  when there is none) to the latest clock in its segments. A live turn's rows
  *  carry no clock, so `endedAt` — the page's own stamp at the run's end — stands
  *  in when the segments give nothing. Time the turn's tool calls sat on the
- *  user (`ToolSegment.waited`, children included) is summed, clamped to the
- *  span, and split out: `Worked for 1m · waited 40m on you` (the wait part only
+ *  user (`ToolSegment.waited`, children included) is merged (overlapping
+ *  waits count once), clipped to the span, and split out: `Worked for 1m · waited 40m on you` (the wait part only
  *  from a second up). Null when no span can be drawn or it is under a second.
  *  Epoch seconds in. */
 export function turnWorkedWords(
@@ -83,18 +83,34 @@ export function turnWorkedWords(
   const end = span && span.finished > span.started ? span.finished : ok(endedAt) ? endedAt : span?.finished;
   if (start === undefined || end === undefined || end - start < 1) return null;
   const total = end - start;
-  const summed = Math.min(total, sumWaited(segs));
-  const wait = summed >= 1 ? summed : 0;
+  const merged = mergedWait(waitIntervals(segs), start, end);
+  const wait = merged >= 1 ? merged : 0;
   const words = "Worked for " + spanWords(total - wait);
   return wait ? words + " · waited " + spanWords(wait) + " on you" : words;
 }
 
-function sumWaited(segs: readonly (Segment | null | undefined)[]): number {
-  let n = 0;
+function waitIntervals(segs: readonly (Segment | null | undefined)[], out: [number, number][] = []): [number, number][] {
   for (const s of segs) {
     if (!s || s.kind !== "tool") continue;
-    if (typeof s.waited === "number" && Number.isFinite(s.waited) && s.waited > 0) n += s.waited;
-    if (s.children) n += sumWaited(s.children);
+    const w = s.waited;
+    if (Array.isArray(w) && w.length === 2 && Number.isFinite(w[0]) && Number.isFinite(w[1]) && w[0] < w[1]) out.push([w[0], w[1]]);
+    if (s.children) waitIntervals(s.children, out);
+  }
+  return out;
+}
+
+/** Length of the union of `ivs` clipped to [start, end]. */
+function mergedWait(ivs: [number, number][], start: number, end: number): number {
+  const clipped = ivs
+    .map(([a, b]) => [Math.max(a, start), Math.min(b, end)] as [number, number])
+    .filter(([a, b]) => a < b)
+    .sort((x, y) => x[0] - y[0]);
+  let n = 0;
+  let curEnd = -Infinity;
+  for (const [a, b] of clipped) {
+    if (b <= curEnd) continue;
+    n += b - Math.max(a, curEnd);
+    curEnd = b;
   }
   return n;
 }

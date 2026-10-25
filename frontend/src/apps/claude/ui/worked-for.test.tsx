@@ -113,7 +113,7 @@ describe("Worked for line", () => {
     expect(worked(r)).toEqual(["Worked for 2m 10s"]);
   });
   test("a wait on the user is shown apart from the work", () => {
-    const segs = [{ kind: "tool", id: "t", name: "Bash", input: {}, status: "ok", output: "", images: [], ts: T0 + 3, ended: T0 + 2530, waited: 2400 }] as unknown as Segment[];
+    const segs = [{ kind: "tool", id: "t", name: "Bash", input: {}, status: "ok", output: "", images: [], ts: T0 + 3, ended: T0 + 2530, waited: [T0 + 10, T0 + 2410] }] as unknown as Segment[];
     const r = log([user("u1", T0), reply("a1", { segments: segs })]);
     expect(worked(r)).toEqual(["Worked for 2m 10s · waited 40m on you"]);
   });

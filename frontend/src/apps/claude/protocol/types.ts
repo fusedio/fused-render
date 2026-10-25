@@ -318,9 +318,10 @@ export interface ToolSegment extends SegmentClock {
    *  whose `parent_tool_use_id` is this tool_use. One level: a subagent's own
    *  subagents are flattened into its group. Absent when it has none. */
   children?: Segment[];
-  /** Seconds this call sat on the user's approval/answer (agent.py perm-waits
-   *  store); the turn's "Worked for" subtracts it and shows it as "waited". */
-  waited?: number;
+  /** The `[from, to]` epoch-seconds interval this call sat on the user's
+   *  approval/answer (agent.py perm-waits store); the turn's "Worked for" merges
+   *  every such interval, subtracts the union and shows it as "waited". */
+  waited?: [number, number];
   /** SPEC T-2: the task registry's id for the background task this call
    *  started (`Task`/`Agent`/`Monitor`/backgrounded `Bash`) — the key into
    *  `TaskRecord.id`. */

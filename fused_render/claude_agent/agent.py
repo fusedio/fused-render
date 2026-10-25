@@ -2833,7 +2833,7 @@ WAITS_CAP = 500
 
 def _chat_waits_path(chat_id: str) -> str:
     """The per-chat "how long each card sat on the user" store (`{tool_use_id:
-    seconds}`), or "" for a chat with no usable id. Same key and home as
+    [from, to]}`, epoch seconds), or "" for a chat with no usable id. Same key and home as
     `_chat_allow_path`; separate file because resolved permission rows are gone
     from the history payload once a run ends, so a reload could not rebuild it."""
     chat_id = (chat_id or "").strip()
@@ -2853,12 +2853,18 @@ def _chat_waits_load(chat_id: str) -> dict:
         return {}
     if not isinstance(store, dict):
         return {}
-    return {k: float(v) for k, v in store.items()
-            if isinstance(k, str) and isinstance(v, (int, float))
-            and not isinstance(v, bool)}
+    out = {}
+    for k, v in store.items():
+        # A bare number is the pre-interval shape (this branch only): unusable.
+        if (isinstance(k, str) and isinstance(v, list) and len(v) == 2
+                and all(isinstance(x, (int, float)) and not isinstance(x, bool)
+                        for x in v) and float(v[0]) < float(v[1])):
+            out[k] = (float(v[0]), float(v[1]))
+    return out
 
 
-def _chat_waits_add(run_dir: str, tool_use_id: str, seconds: float) -> None:
+def _chat_waits_add(run_dir: str, tool_use_id: str, start: float,
+                    end: float) -> None:
     """Best effort (atomic, under a flock, newest `WAITS_CAP` kept): a store
     that will not write costs the chat a number, never the decision."""
     path = _chat_waits_path(_run_chat_id(run_dir))
@@ -2870,7 +2876,7 @@ def _chat_waits_add(run_dir: str, tool_use_id: str, seconds: float) -> None:
             _platform.flock(lock)
             store = _chat_waits_load(_run_chat_id(run_dir))
             store.pop(tool_use_id, None)
-            store[tool_use_id] = float(seconds)
+            store[tool_use_id] = [float(start), float(end)]
             while len(store) > WAITS_CAP:
                 del store[next(iter(store))]
             tmp = "%s.%d.tmp" % (path, os.getpid())
@@ -2894,14 +2900,14 @@ def _record_wait(perm_dir: str, request_id: str) -> None:
         if (not isinstance(tuid, str) or not tuid or isinstance(created, bool)
                 or not isinstance(created, (int, float))):
             return
-        _chat_waits_add(os.path.dirname(perm_dir), tuid,
-                        max(0.0, time.time() - created))
+        _chat_waits_add(os.path.dirname(perm_dir), tuid, float(created),
+                        time.time())
     except Exception:
         pass
 
 
 def _annotate_waits(segments: list, waits: dict) -> None:
-    """Stamp `waited` (seconds the call sat on the user) on every tool segment,
+    """Stamp `waited` (`[from, to]` epoch seconds the call sat on the user) on every tool segment,
     children included, whose id has a recorded wait."""
     if not waits:
         return
@@ -2910,7 +2916,7 @@ def _annotate_waits(segments: list, waits: dict) -> None:
             continue
         sid = seg.get("id")
         if seg.get("kind") == "tool" and isinstance(sid, str) and sid in waits:
-            seg["waited"] = round(waits[sid], 3)
+            seg["waited"] = [round(waits[sid][0], 3), round(waits[sid][1], 3)]
         kids = seg.get("children")
         if isinstance(kids, list):
             _annotate_waits(kids, waits)
