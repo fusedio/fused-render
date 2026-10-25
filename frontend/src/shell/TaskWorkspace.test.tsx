@@ -6,7 +6,7 @@ installDomShim();
 import { afterEach, beforeEach, expect, mock, test } from "bun:test";
 import { createElement } from "react";
 import { act, create } from "react-test-renderer";
-import type { Task } from "@platform/lib/api";
+import { dropSharedPrefsRead, type Task } from "@platform/lib/api";
 
 const { TaskWorkspace } = await import("./TaskWorkspace");
 
@@ -31,8 +31,10 @@ const stubStorage = (): void => {
   };
 };
 beforeEach(() => {
+  dropSharedPrefsRead();
+  pinnedPref = [];
   for (const k of Object.keys(store)) delete store[k];
-  store["fused.tasks.workspace.collapsed"] = JSON.stringify({ clear: false });
+  store["fused.tasks.workspace.collapsed"] = JSON.stringify({ clear: false, archived: false });
   stubStorage();
 });
 afterEach(() => {
@@ -47,12 +49,14 @@ const task = (over: Partial<Task>): Task =>
     status: "done", unread: 0, started: 1, ...over,
   }) as Task;
 
+let pinnedPref: string[] = [];
 function serve() {
   const posts: { url: string; body: unknown }[] = [];
   globalThis.fetch = mock(async (url: string, init?: RequestInit) => {
     const body = init?.body ? JSON.parse(String(init.body)) : null;
     posts.push({ url, body });
     const reply: Record<string, unknown> = {
+      "/api/prefs": { pinned_tasks: pinnedPref },
       "/api/tasks/ports": { ports: {} },
       "/api/tasks/holds": { holds: {} },
       "/api/tasks/archive": { ok: true, key: body?.key, cancelled: 0, filed: true },
@@ -421,9 +425,9 @@ test("a group over 8 cards shows 8 and a Show N more that reveals the rest", asy
 test("Safe to archive starts collapsed: header and count, no cards", async () => {
   serve();
   for (const k of Object.keys(store)) delete store[k];
-  const r = await render([task({ key: "a" }), task({ key: "b", started: 2 })]);
+  const r = await render([task({ key: "a" }), task({ key: "b", started: 2 }), task({ key: "z", status: "archived" })]);
   const heads = r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.includes("ws-group-head"));
-  expect(heads.map((h) => text(h))).toEqual(["Safe to archive2"]);
+  expect(heads.map((h) => text(h))).toEqual(["Safe to archive2", "Archived1"]);
   expect(cardsOf(r)).toHaveLength(0);
   await act(async () => {
     heads[0].findByType("button").props.onClick();
@@ -596,4 +600,158 @@ test("a failed holds load still shows 'unknown' as text, with no shimmer", async
   const card = r.root.findByProps({ "data-key": "a" });
   expect(text(card.findByProps({ className: "ws-badge ws-marker" }))).toBe("unknown");
   expect(card.findAllByProps({ className: "skel-bar ws-skel" })).toHaveLength(0);
+});
+
+// ---- Pins -------------------------------------------------------------------
+const heads = (r: ReturnType<typeof create>) =>
+  r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.includes("ws-group-head"));
+
+test("a pinned task renders under the Pinned head, first", async () => {
+  pinnedPref = ["b"];
+  serve();
+  const r = await render([task({ key: "a", started: 2 }), task({ key: "b", started: 1, status: "needs_attention" })]);
+  expect(text(heads(r)[0])).toBe("Pinned1");
+  const rows = r.root.findAll((n) => typeof n.props.className === "string" && /^ws-card( |$)/.test(n.props.className));
+  expect(rows[0].props["data-key"]).toBe("b");
+  expect(r.root.findByProps({ "data-key": "b" }).findByProps({ "aria-label": "Unpin" }).props["aria-pressed"]).toBe(true);
+});
+
+test("the pin button writes the new key list and does not select the card", async () => {
+  pinnedPref = ["b"];
+  const posts = serve();
+  const r = await render([task({ key: "a", started: 2, status: "needs_attention" }), task({ key: "b", started: 1, status: "needs_attention" })]);
+  const btn = r.root.findByProps({ "data-key": "a" }).findByProps({ "aria-label": "Pin to top" });
+  let stopped = false;
+  await act(async () => {
+    btn.props.onClick({ stopPropagation: () => (stopped = true) });
+  });
+  expect(stopped).toBe(true);
+  const put = posts.filter((p) => p.url === "/api/prefs" && p.body);
+  expect(put.map((p) => p.body)).toEqual([{ pinned_tasks: ["b", "a"] }]);
+  expect(text(heads(r)[0])).toBe("Pinned2");
+});
+
+test("a failed pin write reverts the card", async () => {
+  serve();
+  const base = globalThis.fetch;
+  globalThis.fetch = mock(async (url: string, init?: RequestInit) =>
+    url === "/api/prefs" && init?.method === "PUT"
+      ? new Response(JSON.stringify({ error: "nope" }), { status: 400 })
+      : base(url, init),
+  ) as unknown as typeof fetch;
+  const r = await render([task({ key: "a", status: "needs_attention" })]);
+  await act(async () => {
+    r.root.findByProps({ "aria-label": "Pin to top" }).props.onClick({ stopPropagation() {} });
+  });
+  expect(r.root.findAllByProps({ "aria-label": "Unpin" })).toHaveLength(0);
+  expect(heads(r).map((h) => text(h))).not.toContain("Pinned1");
+});
+
+// ---- Pin hygiene --------------------------------------------------------------
+const putBodies = (posts: { url: string; body: unknown }[]) =>
+  posts.filter((p) => p.url === "/api/prefs" && p.body).map((p) => (p.body as { pinned_tasks: string[] }).pinned_tasks);
+const clickPin = (r: ReturnType<typeof create>, key: string, label: string) =>
+  act(async () => {
+    r.root.findByProps({ "data-key": key }).findByProps({ "aria-label": label }).props.onClick({ stopPropagation() {} });
+  });
+
+test("archiving a pinned task from the view drops its pin and persists the list", async () => {
+  pinnedPref = ["a", "other"];
+  const posts = serve();
+  const r = await render([task({ key: "a", title: "Fix it" })]);
+  const btn = r.root.findByProps({ className: "tasks-rowmark ws-mark" }).findByProps({ className: "tasks-act tasks-act--archive" });
+  await act(async () => {
+    btn.props.onClick({ stopPropagation() {} });
+  });
+  await act(async () => {});
+  expect(putBodies(posts)).toEqual([["other"]]);
+});
+
+test("a bulk archive drops the pins of the tasks it archived", async () => {
+  pinnedPref = ["k0"];
+  const posts = serve();
+  const r = await render(many(1));
+  await press(byClass(r, "tasks-group-check")[0] as never, "onCheckedChange");
+  await press(barButton(r, "Archive"));
+  expect(archived(posts)).toEqual(["k0"]);
+  expect(putBodies(posts)).toEqual([[]]);
+});
+
+test("every pin write prunes keys of tasks known to be archived", async () => {
+  pinnedPref = ["gone", "a"];
+  const posts = serve();
+  const r = await render([task({ key: "gone", status: "archived" }), task({ key: "a", status: "needs_attention" })]);
+  await clickPin(r, "a", "Unpin");
+  expect(putBodies(posts)).toEqual([[]]);
+});
+
+test("a failed write reverts only its own key; the last write carries the other toggle", async () => {
+  const posts = serve();
+  const base = globalThis.fetch;
+  let puts = 0;
+  globalThis.fetch = mock(async (url: string, init?: RequestInit) =>
+    url === "/api/prefs" && init?.method === "PUT" && puts++ === 0
+      ? (posts.push({ url, body: JSON.parse(String(init.body)) }),
+        new Response(JSON.stringify({ error: "nope" }), { status: 400 }))
+      : base(url, init),
+  ) as unknown as typeof fetch;
+  const r = await render([task({ key: "a", status: "needs_attention" }), task({ key: "b", status: "needs_attention", started: 0 })]);
+  await act(async () => {
+    r.root.findByProps({ "data-key": "a" }).findByProps({ "aria-label": "Pin to top" }).props.onClick({ stopPropagation() {} });
+    r.root.findByProps({ "data-key": "b" }).findByProps({ "aria-label": "Pin to top" }).props.onClick({ stopPropagation() {} });
+  });
+  await act(async () => {});
+  expect(putBodies(posts)).toEqual([["a", "b"], ["b"]]);
+  expect(r.root.findByProps({ "data-key": "b" }).findAllByProps({ "aria-label": "Unpin" }).length).toBeGreaterThan(0);
+  expect(r.root.findByProps({ "data-key": "a" }).findAllByProps({ "aria-label": "Unpin" })).toHaveLength(0);
+});
+
+test("a toggle after a failed pin load re-reads the stored pins first, so they are not wiped", async () => {
+  const posts = serve();
+  const base = globalThis.fetch;
+  let gets = 0;
+  globalThis.fetch = mock(async (url: string, init?: RequestInit) =>
+    url === "/api/prefs" && init?.method !== "PUT" && gets++ === 0
+      ? new Response(JSON.stringify({ error: "down" }), { status: 500 })
+      : base(url, init),
+  ) as unknown as typeof fetch;
+  pinnedPref = ["x"];
+  const r = await render([task({ key: "a", status: "needs_attention" })]);
+  await clickPin(r, "a", "Pin to top");
+  await act(async () => {});
+  expect(putBodies(posts)).toEqual([["x", "a"]]);
+});
+
+test("if the pins cannot be read, a toggle sends no write", async () => {
+  const posts = serve();
+  const base = globalThis.fetch;
+  globalThis.fetch = mock(async (url: string, init?: RequestInit) =>
+    url === "/api/prefs" ? new Response(JSON.stringify({ error: "down" }), { status: 500 }) : base(url, init),
+  ) as unknown as typeof fetch;
+  const r = await render([task({ key: "a", status: "needs_attention" })]);
+  await clickPin(r, "a", "Pin to top");
+  await act(async () => {});
+  expect(putBodies(posts)).toEqual([]);
+  expect(r.root.findAllByProps({ "aria-label": "Unpin" })).toHaveLength(0);
+});
+
+test("n unfolds a folded Pinned group that holds the only task needing you", async () => {
+  pinnedPref = ["p"];
+  store["fused.tasks.workspace.collapsed"] = JSON.stringify({ pinned: true });
+  serve();
+  const handlers: ((e: unknown) => void)[] = [];
+  const realAdd = window.addEventListener;
+  window.addEventListener = ((type: string, fn: (e: unknown) => void) => {
+    if (type === "keydown") handlers.push(fn);
+  }) as typeof window.addEventListener;
+  const r = await render([task({ key: "p", status: "needs_attention" }), task({ key: "w", status: "in_progress" })]);
+  window.addEventListener = realAdd;
+  expect(r.root.findAllByProps({ "data-key": "p" })).toHaveLength(0);
+  await act(async () => {
+    handlers.forEach((h) =>
+      h({ key: "n", defaultPrevented: false, target: null, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, preventDefault() {} }),
+    );
+  });
+  const card = r.root.findByProps({ "data-key": "p" });
+  expect(card.props["aria-selected"]).toBe(true);
 });
