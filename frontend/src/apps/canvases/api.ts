@@ -468,6 +468,22 @@ export const startSync = async (env: WorkbenchEnv, name: string): Promise<SyncSt
   }
 };
 
+/** Take the clone over from the fused-render that owns it (the page's
+ *  "Take over here" under the owned notice): the server asks that process
+ *  to release its lock, then arms the watcher here. Success is sync/start's
+ *  answer; a refusal is a `CanvasOwnedError` whose `message` says why
+ *  (`code` `owner_too_old`: a build without the release route — close it
+ *  there; `busy`: it is mid-publish — try again). */
+export const takeoverSync = async (env: WorkbenchEnv, name: string): Promise<SyncStatus> => {
+  try {
+    return await postJson<SyncStatus>("/api/canvases/sync/takeover", { name, env });
+  } catch (e) {
+    const owner = ownerFromError(e);
+    if (owner) throw new CanvasOwnedError(owner, (e as { body?: unknown }).body, (e as Error).message);
+    throw e;
+  }
+};
+
 /** The four sync legs (embed_to_disk is the page's own: it fills that leg
  *  from its relay queue), disk_rev / watcher_epoch, and the lock owner. */
 export const getSyncState = (env: WorkbenchEnv, name: string) =>

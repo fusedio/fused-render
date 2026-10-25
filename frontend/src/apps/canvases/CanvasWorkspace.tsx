@@ -191,6 +191,7 @@ import {
   checkRemote,
   pullCanvas,
   startSync,
+  takeoverSync,
   syncEventsUrl,
   type WorkbenchEnv,
   canvasNameFromPath,
@@ -588,6 +589,10 @@ export default function CanvasWorkspace({
   // Another process is this clone's one writer (sync/start 409 `owned`):
   // the page shows who and loads nothing that would write.
   const [owned, setOwned] = useState<SyncOwner | null>(null);
+  // The "Take over here" button under the owned notice: in flight, and the
+  // owner's refusal (its message) until the next attempt or a release.
+  const [takingOver, setTakingOver] = useState(false);
+  const [takeoverError, setTakeoverError] = useState<string | null>(null);
   // sync/start failed for another reason (the server still coming up, a
   // transient 5xx): shown, and retried like an owned clone.
   const [startError, setStartError] = useState<string | null>(null);
@@ -971,6 +976,7 @@ export default function CanvasWorkspace({
     try {
       const started = await startSync(env, name);
       setOwned(null);
+      setTakeoverError(null);
       setStartError(null);
       setDir(started.dir);
     } catch (e) {
@@ -979,6 +985,26 @@ export default function CanvasWorkspace({
         return;
       }
       throw e;
+    }
+  }, [env, name]);
+
+  // "Take over here": the server asks the owning fused-render to release the
+  // clone, then starts this process's watcher — the same success path as
+  // sync/start. A refusal (an older owner without the route, one mid-publish)
+  // keeps `owned` and shows the owner's reason under the button.
+  const takeOver = useCallback(async (): Promise<void> => {
+    setTakingOver(true);
+    setTakeoverError(null);
+    try {
+      const started = await takeoverSync(env, name);
+      setOwned(null);
+      setStartError(null);
+      setDir(started.dir);
+    } catch (e) {
+      if (e instanceof CanvasOwnedError) setOwned(e.owner);
+      setTakeoverError((e as Error).message);
+    } finally {
+      setTakingOver(false);
     }
   }, [env, name]);
 
@@ -2496,10 +2522,21 @@ export default function CanvasWorkspace({
           ) : (
             !error &&
             (owned ? (
-              <p style={{ padding: 16, opacity: 0.8 }}>
-                Another Fused process (pid {owned.pid}, port {owned.port}) is syncing this
-                canvas. Close it there and this page picks the canvas up on its own.
-              </p>
+              <div style={{ padding: 16, opacity: 0.8, display: "grid", gap: 10, justifyItems: "start" }}>
+                <p style={{ margin: 0 }}>
+                  Another Fused process (pid {owned.pid}, port {owned.port}) is syncing this
+                  canvas. Close it there and this page picks the canvas up on its own, or take
+                  it over here.
+                </p>
+                <button type="button" className="btn btn-primary" onClick={() => void takeOver()} disabled={takingOver}>
+                  {takingOver ? "Taking over…" : "Take over here"}
+                </button>
+                {takeoverError && (
+                  <p role="alert" style={{ margin: 0, color: "var(--error, #d44)" }}>
+                    {takeoverError}
+                  </p>
+                )}
+              </div>
             ) : (
               <p style={{ padding: 16 }}>Loading workbench…</p>
             ))

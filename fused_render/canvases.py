@@ -4974,17 +4974,9 @@ def api_canvases_delete(body: dict = Body(...), x_fused: str | None = Header(def
     return {"ok": True, "name": name, "env": env, "removed_local": removed_local}
 
 
-@router.post("/api/canvases/sync/start")
-def api_canvases_sync_start(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    guard = _require_fused(x_fused)
-    if guard is not None:
-        return guard
-    name = body.get("name")
-    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
-        return _error("'name' must be a canvas name (letters, digits, underscore)")
-    env, bad = _require_env(body.get("env"))
-    if bad is not None:
-        return bad
+def _sync_start_response(env: str, name: str):
+    """The body of sync/start, shared with sync/takeover: claim the writer
+    lock and start this process's watcher on the clone, or say who owns it."""
     if not os.path.isfile(os.path.join(_canvas_dir(env, name), "canvas.toml")):
         return _error(f"canvas {name!r} is not cloned yet (no canvas.toml)", 409)
     # The writer lock FIRST: a refused start must not touch a folder another
@@ -4998,11 +4990,7 @@ def api_canvases_sync_start(body: dict = Body(...), x_fused: str | None = Header
         # One writer per clone: another fused-render (the desktop app and a
         # dev server, two branches) is already syncing this folder. The page
         # says who and does not start its delta leg (owner decision Q4).
-        owner = {k: owned.owner.get(k) for k in ("pid", "port", "since")}
-        return JSONResponse(
-            {"error": f"canvas {_sync_key(env, name)!r} is synced by another fused-render "
-                      f"(pid {owner['pid']}, port {owner['port']})",
-             "code": "owned", "owner": owner}, status_code=409)
+        return _owned_response(env, name, owned.owner)
     except OSError as exc:
         return _error(f"could not take the canvas sync lock: {exc}", 500)
     if manager is None:
@@ -5028,6 +5016,161 @@ def api_canvases_sync_start(body: dict = Body(...), x_fused: str | None = Header
     # external-CLI leg still cannot churn on it.
     _seed_clone_claude_files(manager.dir, name)
     return manager.status()
+
+
+def _owned_response(env: str, name: str, owner: dict, *, code: str = "owned",
+                    error: str | None = None) -> JSONResponse:
+    """The 409 the page reads as "another process owns this clone"
+    (`ownerFromError`): `{error, code, owner: {pid, port, since}}`."""
+    owner = {k: owner.get(k) for k in ("pid", "port", "since")}
+    return JSONResponse(
+        {"error": error or (f"canvas {_sync_key(env, name)!r} is synced by another fused-render "
+                            f"(pid {owner['pid']}, port {owner['port']})"),
+         "code": code, "owner": owner}, status_code=409)
+
+
+@router.post("/api/canvases/sync/start")
+def api_canvases_sync_start(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    name = body.get("name")
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        return _error("'name' must be a canvas name (letters, digits, underscore)")
+    env, bad = _require_env(body.get("env"))
+    if bad is not None:
+        return bad
+    return _sync_start_response(env, name)
+
+
+# A peer's `sync/release` waits up to RELEASE_PUSH_WAIT_S for a publish in
+# flight to end (a clone that was dirty when it opened pushes within seconds
+# of starting, exactly when a second page tends to ask for it), then joins
+# its watcher for up to STOP_JOIN_S; the hand-over's HTTP wait covers both,
+# never a push's full PUSH_TIMEOUT (past the wait the peer answers `busy`).
+RELEASE_PUSH_WAIT_S = 20.0
+RELEASE_HTTP_TIMEOUT_S = RELEASE_PUSH_WAIT_S + STOP_JOIN_S + 5.0
+
+
+def _ask_peer_release(port: int, env: str, name: str) -> tuple[int | None, dict]:
+    """POST /api/canvases/sync/release on the fused-render at `port` (always
+    loopback: the lock's business card names a port on this machine).
+    Returns `(status, body)`; `(None, {})` when nothing answered there."""
+    import urllib.error
+    import urllib.request
+
+    payload = json.dumps({"name": name, "env": env}).encode("utf-8")
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/api/canvases/sync/release",
+        data=payload, method="POST",
+        headers={"Content-Type": "application/json", "X-Fused": "1"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=RELEASE_HTTP_TIMEOUT_S) as response:
+            raw = response.read()
+            status = response.status
+    except urllib.error.HTTPError as exc:
+        try:
+            raw = exc.read()
+        except OSError:
+            raw = b""
+        status = exc.code
+    except (urllib.error.URLError, OSError, ValueError):
+        return None, {}
+    try:
+        data = json.loads(raw.decode("utf-8")) if raw else {}
+    except ValueError:
+        data = {}
+    return status, data if isinstance(data, dict) else {}
+
+
+@router.post("/api/canvases/sync/release")
+def api_canvases_sync_release(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Hand this clone over: stop THIS process's watcher and drop its writer
+    lock, so the fused-render that asked (sync/takeover on another port) can
+    claim it. `{released: true}` when a watcher ran here and is now stopped;
+    `{released: false}` when none did (the lock was never ours — nothing to
+    give). A watcher mid-publish is waited for (RELEASE_PUSH_WAIT_S), then
+    answers 409 `busy` and keeps the lock: a release under a running push CLI
+    would let the taker push over it, the two-writer race the lock exists to
+    prevent. The page here notices its
+    watcher is gone on its next state read, re-arms through sync/start, gets
+    the taker's `owned` and shows the same Take-over button back."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    name = body.get("name")
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        return _error("'name' must be a canvas name (letters, digits, underscore)")
+    env, bad = _require_env(body.get("env"))
+    if bad is not None:
+        return bad
+    key = (env, name)
+    # A publish in flight: wait for its CLI to end (bounded) rather than
+    # refuse — the taker's button would otherwise fail on exactly the push a
+    # dirty clone fires seconds after it opened.
+    deadline = time.monotonic() + RELEASE_PUSH_WAIT_S
+    while True:
+        with _SYNC_LOCK:
+            manager = _syncs.get(key)
+            pushing = manager is not None and manager._push_proc is not None
+            if not pushing:
+                if manager is not None:
+                    del _syncs[key]
+                break
+        if time.monotonic() >= deadline:
+            return _busy(f"canvas {_sync_key(env, name)!r} is publishing; try again when it is done")
+        time.sleep(0.25)
+    if manager is None:
+        return {"released": False, "name": name, "env": env}
+    manager.log_event("watcher", "lock handed over",
+                      detail=f"released on request of another fused-render (pid {os.getpid()} stops)")
+    manager.stop()
+    return {"released": True, "name": name, "env": env}
+
+
+@router.post("/api/canvases/sync/takeover")
+def api_canvases_sync_takeover(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Make THIS process the clone's writer when another fused-render on this
+    machine holds the lock: ask that process (the port in the lock's business
+    card) to `sync/release`, then start here exactly as sync/start does. The
+    answer is sync/start's: the manager's status on success, or the 409
+    `owned` the page already understands — with `code` `owner_too_old` when
+    the owner runs a build without the release route (close it there, as
+    before), `busy` when it is mid-publish, and the owner's own error when it
+    refused for another reason. A lock nobody holds any more just starts."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    name = body.get("name")
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        return _error("'name' must be a canvas name (letters, digits, underscore)")
+    env, bad = _require_env(body.get("env"))
+    if bad is not None:
+        return bad
+    held = canvas_sync_state.lock_holder(_lock_path(env, name))
+    if held is not None:
+        port = held.get("port")
+        if not isinstance(port, int) or port <= 0:
+            return _owned_response(env, name, held, error=(
+                f"pid {held.get('pid')} owns this canvas but published no port to ask; "
+                f"close it there"))
+        status, answer = _ask_peer_release(port, env, name)
+        if status == 404:
+            return _owned_response(env, name, held, code="owner_too_old", error=(
+                f"pid {held.get('pid')} (port {port}) runs an older Fused that cannot hand a "
+                f"canvas over; close it there"))
+        if status is None:
+            return _owned_response(env, name, held, error=(
+                f"pid {held.get('pid')} (port {port}) did not answer; close it there"))
+        if status != 200:
+            return _owned_response(env, name, held, code=str(answer.get("code") or "owned"),
+                                   error=str(answer.get("error") or
+                                             f"pid {held.get('pid')} (port {port}) refused to hand "
+                                             f"the canvas over (HTTP {status})"))
+        logger.info("canvas %s: lock handed over by pid %s (port %s), released=%s",
+                    _sync_key(env, name), held.get("pid"), port, answer.get("released"))
+    return _sync_start_response(env, name)
 
 
 @router.post("/api/canvases/snapshot")
