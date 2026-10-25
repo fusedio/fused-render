@@ -398,6 +398,46 @@ describe("start → poll → done", () => {
     controller.dispose();
   });
 
+  test("a reply the cursor stepped past with no seam keeps its own end stamp", async () => {
+    // The step is seen only as the payload moving (continuity), never as a
+    // seam, so the seam-side stamp never runs for reply A.
+    let ms = 1_000;
+    let controller!: ChatController;
+    const A = text("Markdown was made by John Gruber.");
+    const B = text("Done again.");
+    const agent = fakeAgent({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) return poll({ segments: [A], text: A.text });
+        if (n === 1) {
+          await controller.sendFollowUp("do it again");
+          return poll({ segments: [], text: "" });
+        }
+        if (n === 2) {
+          ms = 50_000; // the poll the cursor steps on
+          return poll({ segments: [B], text: B.text });
+        }
+        ms = 131_000; // the settle poll
+        return poll({ done: true, segments: [B], text: B.text });
+      },
+    });
+    controller = createChatController({
+      file: "/proj/app.py",
+      params: createMemoryParamsStore(),
+      run: agent.run,
+      sleep: () => Promise.resolve(),
+      now: () => ms,
+      wallClock: () => ms,
+      model: () => "sonnet",
+      effort: () => "high",
+      hasPane: () => true,
+    });
+    await controller.sendMessage("go");
+    expect(assistants(controller).map((t) => t.endedAt)).toEqual([50, 131]);
+    controller.dispose();
+  });
+
   test("the stamp is WALL CLOCK — a fake duration clock cannot date a message in 1970", async () => {
     // Review #9. `now` is shared by every elapsed-time reader in the controller
     // and is free to be monotonic (`performance.now`) or fake; reading a DATE

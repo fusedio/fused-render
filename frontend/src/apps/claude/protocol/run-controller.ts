@@ -2110,6 +2110,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
             // reason must not lend the next follow-up a step it did not make.
             const stepped = lost > 0 ? lost : 1;
             chunkOffset += stepped;
+            // A reply the cursor carried out of the payload is over, seam seen
+            // or not: stamp it now so settle does not date it at the run's end.
+            for (const [slot, c] of chunks) {
+              if (slot < chunkOffset && c.key && c.endedAt === null) {
+                c.endedAt = wallClock() / 1000;
+                replaceTurn(c.key, { endedAt: c.endedAt });
+              }
+            }
             pendingSeams = Math.max(0, pendingSeams - stepped);
           }
           // A seam APPEARING is not the answer: it is handled by the loop below
