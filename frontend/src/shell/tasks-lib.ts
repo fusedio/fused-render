@@ -3430,11 +3430,12 @@ export const LANES_BUT_UPCOMING: BoardColumn[] = BOARD_LANES.map((l) => l.key).f
 );
 
 /** The status + folder facets a tab starts with before the reader touches
- *  them: every lane but Archive on a grouped view or the Detailed view, every lane the wall draws on
- *  Cards (ticked, so the menu says what is on screen), nothing elsewhere. */
+ *  them: every lane but Archive on a grouped view, every lane the wall draws on
+ *  Cards (ticked, so the menu says what is on screen), nothing elsewhere
+ *  (Detailed starts unfiltered; its Archived group starts folded instead). */
 export function defaultViewFacets(view: TaskView): ViewFacets {
   if (view === "cards") return { statuses: [...LANES_BUT_UPCOMING], projects: [] };
-  return { statuses: groupOfView(view) || view === "detailed" ? [...LANES_BUT_ARCHIVE] : [], projects: [] };
+  return { statuses: groupOfView(view) ? [...LANES_BUT_ARCHIVE] : [], projects: [] };
 }
 
 export function filtersForView(f: TaskFilters, view: TaskView): TaskFilters {
@@ -3486,7 +3487,7 @@ export function emptyTasksLabel(
   // A grouped view on its starting facets (every lane but Archive ticked,
   // nothing else on): the reader set no filter, so name the lane that hides.
   const onDefault =
-    (groupOfView(view) !== null || view === "detailed")
+    groupOfView(view) !== null
     && filters.projects.length === 0
     && !filters.draft
     && filters.search.trim() === ""
