@@ -609,6 +609,37 @@ def test_a_typed_answer_rides_back_as_the_answer_and_as_a_new_option(tmp_path,
         == srv.TYPED_OPTION_NOTE
 
 
+def _n_option_input(n, multi=False):
+    return {"questions": [{
+        "question": "Pick one?", "header": "Pick",
+        "options": [{"label": f"Opt{i}", "description": ""} for i in range(n)],
+        "multiSelect": multi,
+    }]}
+
+
+@pytest.mark.parametrize("n,multi,answer,custom,expected_len", [
+    (3, False, "Mine", "Mine", 4),         # room left: still grows to the cap
+    (4, False, "Mine", "Mine", 4),         # full: left alone, the CLI caps at 4
+    (4, True, "Opt0, Mine", "Mine", 4),    # multi-select, full
+])
+def test_the_typed_option_never_pushes_options_past_the_cli_cap(
+        tmp_path, server, n, multi, answer, custom, expected_len):
+    """The CLI re-validates updatedInput against the AskUserQuestion schema
+    (options maxItems 4) and rejects the whole answer past it, so the model
+    never sees what the user typed. The answer still rides in `answers`."""
+    perm_dir = tmp_path / "perm"
+    pending, req = _park_question(server, perm_dir, _n_option_input(n, multi))
+    _answer(perm_dir, req, decision="allow", scope="once",
+            answers={"Pick one?": answer}, custom={"Pick one?": custom})
+
+    payload = _result_payload(pending.result(10))
+    assert payload["behavior"] == "allow", payload
+    assert payload["updatedInput"]["answers"] == {"Pick one?": answer}
+    options = payload["updatedInput"]["questions"][0]["options"]
+    assert len(options) == expected_len
+    assert (options[-1]["label"] == custom) == (n < 4)
+
+
 def test_the_typed_option_is_added_to_a_copy_not_to_the_parked_request(tmp_path):
     """The parked input is handed back whole on every other branch, so growing
     an option list must build a new one rather than reach into it."""
