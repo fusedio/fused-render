@@ -2823,7 +2823,97 @@ def _write_decision(perm_dir: str, request_id: str, payload: dict) -> bool:
         except OSError:
             pass
         return False
+    if payload.get("decision") != "expired":
+        _record_wait(perm_dir, request_id)
     return True
+
+
+WAITS_CAP = 500
+
+
+def _chat_waits_path(chat_id: str) -> str:
+    """The per-chat "how long each card sat on the user" store (`{tool_use_id:
+    seconds}`), or "" for a chat with no usable id. Same key and home as
+    `_chat_allow_path`; separate file because resolved permission rows are gone
+    from the history payload once a run ends, so a reload could not rebuild it."""
+    chat_id = (chat_id or "").strip()
+    if not chat_id or _bad_id(chat_id):
+        return ""
+    return _state_file("claude-sessions", "perm-waits", chat_id + ".json")
+
+
+def _chat_waits_load(chat_id: str) -> dict:
+    path = _chat_waits_path(chat_id)
+    if not path:
+        return {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            store = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(store, dict):
+        return {}
+    return {k: float(v) for k, v in store.items()
+            if isinstance(k, str) and isinstance(v, (int, float))
+            and not isinstance(v, bool)}
+
+
+def _chat_waits_add(run_dir: str, tool_use_id: str, seconds: float) -> None:
+    """Best effort (atomic, under a flock, newest `WAITS_CAP` kept): a store
+    that will not write costs the chat a number, never the decision."""
+    path = _chat_waits_path(_run_chat_id(run_dir))
+    if not path:
+        return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + ".lock", "w") as lock:
+            _platform.flock(lock)
+            store = _chat_waits_load(_run_chat_id(run_dir))
+            store.pop(tool_use_id, None)
+            store[tool_use_id] = float(seconds)
+            while len(store) > WAITS_CAP:
+                del store[next(iter(store))]
+            tmp = "%s.%d.tmp" % (path, os.getpid())
+            with _private_open(tmp) as fh:
+                json.dump(store, fh)
+            os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def _record_wait(perm_dir: str, request_id: str) -> None:
+    """Called by the writer that created the decision: how long the request
+    sat (now - the request's `created_at`), keyed by its tool_use_id. The run
+    dir is always `dirname(perm_dir)` (`_perm_dir`)."""
+    try:
+        with open(os.path.join(perm_dir, request_id + ".req.json"),
+                  encoding="utf-8") as fh:
+            req = json.load(fh)
+        tuid = req.get("tool_use_id")
+        created = req.get("created_at")
+        if (not isinstance(tuid, str) or not tuid or isinstance(created, bool)
+                or not isinstance(created, (int, float))):
+            return
+        _chat_waits_add(os.path.dirname(perm_dir), tuid,
+                        max(0.0, time.time() - created))
+    except Exception:
+        pass
+
+
+def _annotate_waits(segments: list, waits: dict) -> None:
+    """Stamp `waited` (seconds the call sat on the user) on every tool segment,
+    children included, whose id has a recorded wait."""
+    if not waits:
+        return
+    for seg in segments:
+        if not isinstance(seg, dict):
+            continue
+        sid = seg.get("id")
+        if seg.get("kind") == "tool" and isinstance(sid, str) and sid in waits:
+            seg["waited"] = round(waits[sid], 3)
+        kids = seg.get("children")
+        if isinstance(kids, list):
+            _annotate_waits(kids, waits)
 
 
 def _chat_allow_path(chat_id: str) -> str:
@@ -9922,8 +10012,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             # (see `_inbox_waiting`). Empty on every poll of an idle chat.
             "inbox": _inbox_waiting(run_dir) if inbox else [],
             "segments": [] if echo_pending
-            else _segments_from_rows(parsed, app_reads=app_reads,
-                                     task_links=_task_links(bg_tasks)),
+            else _poll_segments(parsed, run_dir, app_reads, bg_tasks),
             # THE TASK REGISTRY (SPEC T-1): every record this run has seen,
             # running first then by `started_at`. `activity.tasks` above is
             # the running subset in its old `{id, description}` shape.
@@ -11041,6 +11130,13 @@ def _steered_prompt(row: dict) -> tuple | None:
     return text, str(att.get("source_uuid") or row.get("uuid") or "")
 
 
+def _poll_segments(parsed: list, run_dir: str, app_reads: bool, bg_tasks) -> list:
+    segments = _segments_from_rows(parsed, app_reads=app_reads,
+                                   task_links=_task_links(bg_tasks))
+    _annotate_waits(segments, _chat_waits_load(_run_chat_id(run_dir)))
+    return segments
+
+
 def _history(file: str, session_id: str, app_reads: bool = False,
              inbox: bool = True, transcript: str = "") -> dict:
     """Rebuild the conversation from the Claude Code session transcript.
@@ -11143,6 +11239,10 @@ def _history(file: str, session_id: str, app_reads: bool = False,
     # `isCompactSummary` user row that follows it turns into the divider turn.
     pending_compact = None
 
+    # One chat = one session id here and in `_run_chat_id` (resumed_from or the
+    # run's own id), so the waits store is read by `session_id`, once.
+    waits = _chat_waits_load(session_id)
+
     def close_stretch():
         """Attach the stretch's segments to the assistant turn they belong to.
 
@@ -11161,6 +11261,7 @@ def _history(file: str, session_id: str, app_reads: bool = False,
                                        task_links=_task_links(task_registry))
         _attach_subagent_children(segments, subagents, app_reads,
                                   _task_links(task_registry))
+        _annotate_waits(segments, waits)
         # The stretch's own first record id, for a reply that opens NO text turn
         # — see the `uuid` note below. Read before the list is emptied.
         opener = ""

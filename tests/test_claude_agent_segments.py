@@ -1535,3 +1535,32 @@ def test_an_orphan_parent_takes_its_result_from_the_window(agent):
     assert orphan["orphan"] is True
     assert orphan["status"] == "ok" and orphan["output"] == "subagent summary"
     assert orphan["children"][0]["text"] == "child working"
+
+
+# ------------------------------- perm-waits annotation (D1438 follow-up)
+
+def test_annotate_waits_sets_waited_incl_children(agent):
+    segs = [{"kind": "tool", "id": "a"},
+            {"kind": "tool", "id": "p", "children": [{"kind": "tool", "id": "c"}]},
+            {"kind": "text", "text": "x"}]
+    agent._annotate_waits(segs, {"a": 1.23456, "c": 40.0})
+    assert segs[0]["waited"] == 1.235
+    assert segs[1]["children"][0]["waited"] == 40.0
+    assert "waited" not in segs[1] and "waited" not in segs[2]
+
+
+def test_history_annotates_waited(agent, tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    p = agent._chat_waits_path("sess1")
+    os.makedirs(os.path.dirname(p))
+    with open(p, "w") as fh:
+        json.dump({"tu1": 2400.0}, fh)
+    turns = _history(agent, tmp_path, monkeypatch, [
+        _t_user("go"),
+        _t_assistant([{"type": "tool_use", "id": "tu1", "name": "Bash",
+                       "input": {"command": "ls"}}]),
+        _t_result("tu1", "ok"),
+        _t_assistant([{"type": "text", "text": "done"}]),
+    ])
+    tools = [s for t in turns for s in t.get("segments", []) if s["kind"] == "tool"]
+    assert tools and tools[0]["waited"] == 2400.0
