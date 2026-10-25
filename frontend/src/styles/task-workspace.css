@@ -90,6 +90,42 @@
   color: var(--fg-muted);
   font-variant-numeric: tabular-nums;
 }
+/* The pin button: fixed box in the head's flow (no shift when it appears),
+   ink-less until the card is hovered or the button is keyboard-focused. A
+   pinned card keeps it drawn, in the accent. */
+.ws-pin {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  color: var(--fg-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.08s ease, background-color 0.08s ease, color 0.08s ease;
+}
+.ws-card:hover .ws-pin,
+.ws-card:has(.ws-pin:focus-visible) .ws-pin,
+.ws-pin.is-pinned {
+  opacity: 1;
+  pointer-events: auto;
+}
+.ws-pin.is-pinned {
+  color: var(--accent);
+}
+.ws-pin:hover {
+  background: color-mix(in srgb, var(--fg) 10%, transparent);
+  color: var(--fg);
+}
+.ws-pin.is-pinned:hover {
+  color: var(--accent);
+}
 /* One badge shape for every fact: same height, radius, font and gap. The tone
    is --ws-tone; the wash is a color-mix of that same palette token. */
 .ws-badge {

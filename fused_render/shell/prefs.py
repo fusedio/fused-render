@@ -449,6 +449,7 @@ def task_summary_titles_enabled() -> bool:
 #: what it does not know, so a newer client's tab survives an older server.
 _TASKS_VIEW_TAB_RE = re.compile(r"^[a-z_]{1,24}$")
 MAX_TASKS_VIEW_TABS = 8
+MAX_PINNED_TASKS = 500
 
 
 def bots_autostage() -> bool:
@@ -480,6 +481,15 @@ def tasks_view_tabs() -> list[str]:
         return []
     tabs = [t for t in value if isinstance(t, str) and _TASKS_VIEW_TAB_RE.fullmatch(t)]
     return list(dict.fromkeys(tabs))[:MAX_TASKS_VIEW_TABS]
+
+
+def pinned_tasks() -> list[str]:
+    """Task keys pinned to the top of the Tasks page's Detailed view, in order.
+    ``[]`` when unset or unreadable; never raises."""
+    value = read_prefs().get("pinned_tasks")
+    if not isinstance(value, list):
+        return []
+    return list(dict.fromkeys(t for t in value if isinstance(t, str) and t))[:MAX_PINNED_TASKS]
 
 
 def claude_strict_mcp_enabled() -> bool:
@@ -1016,6 +1026,7 @@ def _prefs_response() -> dict:
         "bots": {"autostage": bots_autostage(), "sounds": bots_sounds(),
                  "clear_enabled": bots_clear_enabled()},
         "tasks_view_tabs": tasks_view_tabs(),
+        "pinned_tasks": pinned_tasks(),
         # Local-network sharing of ~/Fused/local (lan.py): the STORED switch plus
         # the live listener state (url once it is up, error when it is not), so
         # the Preferences section can show the address a phone types.
@@ -1365,6 +1376,16 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             # Order kept, repeats dropped; [] stores "use the defaults".
             prefs["tasks_view_tabs"] = list(dict.fromkeys(value))
             changed = True
+        if "pinned_tasks" in body:
+            value = body.get("pinned_tasks")
+            if (not isinstance(value, list) or len(value) > MAX_PINNED_TASKS
+                    or not all(isinstance(t, str) and t for t in value)):
+                return JSONResponse(
+                    {"error": "'pinned_tasks' must be a list of at most "
+                              f"{MAX_PINNED_TASKS} non-empty task keys"},
+                    status_code=400)
+            prefs["pinned_tasks"] = list(dict.fromkeys(value))
+            changed = True
         if "claude_strict_mcp_enabled" in body:
             value = body.get("claude_strict_mcp_enabled")
             if not isinstance(value, bool):
@@ -1622,7 +1643,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'task_summary_titles_enabled', "
                           "'claude_strict_mcp_enabled', 'claude_default_permission', "
                           "'bots_autostage', 'bots_sounds', 'bots_clear_enabled', "
-                          "'tasks_view_tabs', "
+                          "'tasks_view_tabs', 'pinned_tasks', "
                           "'lan_enabled', 'canvases_embed_proxy', "
                           "'claude_enabled', 'copilot_enabled', 'codex_enabled', "
                           "'gemini_enabled', "

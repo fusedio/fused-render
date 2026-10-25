@@ -9,6 +9,8 @@ import {
   archiveTask,
   fetchTaskHolds,
   fetchTaskPorts,
+  getPrefsShared,
+  putPinnedTasks,
   unarchiveTask,
 } from "@platform/lib/api";
 import type { Task, TaskHold } from "@platform/lib/api";
@@ -241,6 +243,8 @@ function WorkspaceCard({
   onSelect,
   onOpen,
   onFile,
+  pinned,
+  onPin,
   bulk,
 }: {
   task: Task;
@@ -263,6 +267,9 @@ function WorkspaceCard({
   onOpen: () => void;
   /** The ring-slot button: archive (with Undo) or unarchive, the `x` key's own path. */
   onFile: (intent: FilingIntent) => void;
+  /** Whether the card is pinned, and the pin button's press (the `p` key's own path). */
+  pinned: boolean;
+  onPin: () => void;
 }) {
   const file = filingIntent(task);
   const bg = bgJobBadge(task);
@@ -340,6 +347,23 @@ function WorkspaceCard({
         </span>
         <IdChip id={task.task_id} kind="task" />
         <span className={"ws-title" + (task.unread > 0 ? " is-unread" : "")}>{task.title || "(untitled)"}</span>
+        {task.status !== "archived" && (
+          <button
+            type="button"
+            className={"ws-pin" + (pinned ? " is-pinned" : "")}
+            data-hint={pinned ? "Unpin" : "Pin to top"}
+            aria-label={pinned ? "Unpin" : "Pin to top"}
+            aria-pressed={pinned}
+            onClick={(e) => {
+              e.stopPropagation();
+              onPin();
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill={pinned ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M12 17v5" /><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z" />
+            </svg>
+          </button>
+        )}
         {when.kind !== "none" && (
           <span className="ws-time" title={when.title}>
             {when.text}
@@ -445,6 +469,21 @@ export function TaskWorkspace({
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
   const [undo, setUndo] = useState<{ key: string; text: string } | null>(null);
   const undoTimer = useRef<number | null>(null);
+  // Pinned task keys (the `pinned_tasks` pref): read once on mount, written
+  // optimistically on each toggle and rolled back when the write fails.
+  const [pinnedKeys, setPinnedKeys] = useState<readonly string[]>([]);
+  useEffect(() => {
+    let alive = true;
+    void getPrefsShared()
+      .then((p) => {
+        if (alive && Array.isArray(p.pinned_tasks)) setPinnedKeys(p.pinned_tasks);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const pinnedSet = useMemo(() => new Set(pinnedKeys), [pinnedKeys]);
 
   const { tasks, selection, archiveSelected, node: bulkNode, bulk } = useBulkArchive({
     tasks: tasksIn,
@@ -471,7 +510,7 @@ export function TaskWorkspace({
   );
   // Grouped by state; the flat list below is what j/k/n walk, so the keyboard
   // order is the order on screen. Hidden (just-closed) rows never count.
-  const groups = useMemo(() => groupTasks(base, factsFor, Date.now() / 1000), [base, factsFor]);
+  const groups = useMemo(() => groupTasks(base, factsFor, Date.now() / 1000, pinnedSet), [base, factsFor, pinnedSet]);
   // Only the cards on screen: a folded group has none, a capped one its first 8.
   // j/k/n walk this list, so they never land on a card that is not drawn.
   const shownGroups = useMemo(
@@ -489,8 +528,19 @@ export function TaskWorkspace({
   const showProject = useMemo(() => spansProjects(rows), [rows]);
 
   // What the key handler reads, kept current without re-binding it.
-  const live = useRef({ rows, groups, collapsed, selected, peekedKey, searching, selection, archiveSelected });
-  live.current = { rows, groups, collapsed, selected, peekedKey, searching, selection, archiveSelected };
+  const live = useRef({ rows, groups, collapsed, selected, peekedKey, searching, selection, archiveSelected, pinnedKeys });
+  live.current = { rows, groups, collapsed, selected, peekedKey, searching, selection, archiveSelected, pinnedKeys };
+
+  const togglePin = useCallback((key: string): void => {
+    const prev = live.current.pinnedKeys;
+    const next = prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key];
+    live.current.pinnedKeys = next; // a second press before the re-render builds on this one
+    setPinnedKeys(next);
+    putPinnedTasks([...next]).catch((e: Error) => {
+      setPinnedKeys(prev);
+      notify({ title: e.message || "Could not update the pin", tone: "error" });
+    });
+  }, []);
 
   const toggleGroup = useCallback((key: WorkspaceGroupKey): void => {
     const next = { ...live.current.collapsed, [key]: !groupCollapsed(key, live.current.collapsed) };
@@ -625,6 +675,12 @@ export function TaskWorkspace({
             close(sel);
           }
           return;
+        case "pin":
+          if (sel && sel.status !== "archived") {
+            e.preventDefault();
+            togglePin(sel.key);
+          }
+          return;
         case "new":
           e.preventDefault();
           onNewTask();
@@ -667,7 +723,7 @@ export function TaskWorkspace({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, close, onNewTask, peekOn]);
+  }, [open, close, onNewTask, peekOn, togglePin]);
 
   // Mod+K is App's cheat-sheet chord too, and App's document listener preventDefaults
   // it before the window handler above could act. This capture listener runs first
@@ -738,6 +794,8 @@ export function TaskWorkspace({
                     onSelect={() => setSelected(t.key)}
                     onOpen={() => open(t)}
                     onFile={(f) => (f.kind === "archive" ? close(t) : reopen(t.key, false))}
+                    pinned={pinnedSet.has(t.key)}
+                    onPin={() => togglePin(t.key)}
                     bulk={bulk}
                   />
                 );
