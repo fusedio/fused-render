@@ -9,7 +9,8 @@ import { act, create, type ReactTestRenderer } from "react-test-renderer";
 import type { TaskRecord } from "../protocol/types";
 import type { Working } from "../protocol/controller-api";
 
-const { WorkingLine, backgroundable } = await import("./WorkingLine");
+const { WorkingLine, backgroundable, __resetBackgroundKeyState } = await import("./WorkingLine");
+const { AgentProvider } = await import("./agent-context");
 
 const doc = globalThis.document as unknown as Record<string, unknown>;
 const saved = { add: doc.addEventListener, remove: doc.removeEventListener };
@@ -58,20 +59,29 @@ function task(over: Record<string, unknown> = {}) {
 const T = [task()];
 
 const mounted: ReactTestRenderer[] = [];
-function mount(el: React.ReactElement): ReactTestRenderer {
+// The renderer has no DOM, so the line's ref is a stub whose `closest` names
+// the chat-root it sits in (a fresh one per mount unless given).
+function mount(el: React.ReactElement, chatRoot: object = { contains: () => true }): ReactTestRenderer {
   let r!: ReactTestRenderer;
   act(() => {
-    r = create(el);
+    r = create(el, { createNodeMock: () => ({ closest: () => chatRoot }) });
   });
   mounted.push(r);
   return r;
 }
 afterEach(() => {
+  __resetBackgroundKeyState();
   while (mounted.length) {
     const r = mounted.pop()!;
     act(() => r.unmount());
   }
 });
+
+function press(type: string, target: unknown) {
+  const ev = new Event(type);
+  Object.defineProperty(ev, "target", { value: { closest: () => target } });
+  act(() => void bus.dispatchEvent(ev));
+}
 
 function key(init: Record<string, unknown>) {
   let prevented = false;
@@ -169,6 +179,45 @@ describe("Ctrl+B", () => {
     );
     const prevented = key({ ctrlKey: true });
     expect(n).toBe(0);
+    expect(prevented()).toBe(false);
+  });
+});
+
+describe("backend and multi-chat", () => {
+  test("a non-Claude backend gets no button and Ctrl+B is left alone", () => {
+    let n = 0;
+    const r = mount(
+      <AgentProvider backend="codex">
+        <WorkingLine working={working()} status="running" tasks={T} onStop={() => {}} onBackground={() => n++} />
+      </AgentProvider>,
+    );
+    expect(buttons(r)).toHaveLength(1);
+    const prevented = key({ ctrlKey: true });
+    expect(n).toBe(0);
+    expect(prevented()).toBe(false);
+  });
+
+  const two = () => {
+    const calls: string[] = [];
+    const rootA = { contains: () => true };
+    const rootB = { contains: () => true };
+    mount(<WorkingLine working={working()} status="running" tasks={T} onStop={() => {}} onBackground={() => calls.push("a")} />, rootA);
+    mount(<WorkingLine working={working()} status="running" tasks={T} onStop={() => {}} onBackground={() => calls.push("b")} />, rootB);
+    return { calls, rootA, rootB };
+  };
+
+  test("a loose Ctrl+B goes to the chat last clicked", () => {
+    const { calls, rootB } = two();
+    press("pointerdown", rootB);
+    const prevented = key({ ctrlKey: true });
+    expect(calls).toEqual(["b"]);
+    expect(prevented()).toBe(true);
+  });
+
+  test("two claimants and no recorded interaction: neither fires", () => {
+    const { calls } = two();
+    const prevented = key({ ctrlKey: true });
+    expect(calls).toEqual([]);
     expect(prevented()).toBe(false);
   });
 });

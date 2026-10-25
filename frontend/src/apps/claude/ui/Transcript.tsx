@@ -97,7 +97,7 @@ export interface TranscriptTail {
 
 export interface TranscriptProps {
   state: ChatState;
-  actions: CardActions & Pick<ChatController, "stopRun">;
+  actions: CardActions & Pick<ChatController, "stopRun" | "addNote">;
   /** The live permission mode from poll — gates a perm card's escalation. */
   liveMode?: PermissionMode;
   /** The typewriter's current frame, or absent when nothing is streaming. */
@@ -717,15 +717,20 @@ export const Transcript = memo(function Transcript({
     const toolUseId = state.working?.activity?.tool?.id;
     if (!runId || !toolUseId || bgInFlight.current) return;
     bgInFlight.current = true;
+    const fail = (reason: string) => {
+      console.warn("[claude] background failed:", reason);
+      actions.addNote("Could not send that command to the background" + (reason ? ": " + reason : "."), "⏹");
+    };
     runAgent("task_background", { run_id: runId, tool_use_id: toolUseId })
       .then((res) => {
-        if ("error" in res && res.error) console.warn("[claude] background failed:", res.error);
+        if ("error" in res && res.error) fail(String(res.error));
+        else if ((res as { backgrounded?: boolean }).backgrounded === false) fail("the command was not running yet");
       })
-      .catch((err) => console.warn("[claude] background failed:", err))
+      .catch((err) => fail(err instanceof Error ? err.message : String(err)))
       .finally(() => {
         bgInFlight.current = false;
       });
-  }, [state.runId, state.working?.activity?.tool?.id]);
+  }, [actions, state.runId, state.working?.activity?.tool?.id]);
 
   // WHERE each parked card sits INSIDE its turn (#18). Passing a `<CardStack/>`
   // to every turn regardless would defeat `Turn`'s own memo — a fresh child

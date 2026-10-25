@@ -6,7 +6,7 @@
 // stacked tokens, input bytes, a thinking estimate, a task count and a silence
 // timer in there — a dashboard, not a status (Akshil, 2026-08-28). Everything
 // that was a NUMBER is gone except the clock; what was a number is now a word.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { cn } from "@platform/lib/utils";
 
@@ -158,29 +158,62 @@ export function backgroundable(working: Working, status: RunStatus, tasks?: read
   );
 }
 
+/** The chat the user last clicked or focused, and the chats whose working line
+ *  currently claims Ctrl+B — together they pick the target of a loose keypress. */
+let lastChatRoot: Element | null = null;
+const claimants = new Set<Element>();
+let trackerInstalled = false;
+function installChatRootTracker() {
+  if (trackerInstalled) return;
+  trackerInstalled = true;
+  const note = (ev: Event) => {
+    lastChatRoot = (ev.target as Element | null)?.closest?.(".chat-root") ?? lastChatRoot;
+  };
+  document.addEventListener("pointerdown", note, true);
+  document.addEventListener("focusin", note, true);
+}
+/** Test-only: forget the recorded interaction and every claimant. */
+export function __resetBackgroundKeyState() {
+  lastChatRoot = null;
+  claimants.clear();
+}
+
 export function WorkingLine({ working, status, onStop, onBackground, tasks, now = Date.now }: WorkingLineProps) {
   const agent = useAgent();
   const rootRef = useRef<HTMLDivElement>(null);
-  const canBackground = !!onBackground && backgroundable(working, status, tasks);
+  const canBackground = !!onBackground && agent.backend === "claude" && backgroundable(working, status, tasks);
   const bgRef = useRef(onBackground);
-  bgRef.current = onBackground;
-  // Ctrl+B, claimed only while the button would render, and only for events
-  // aimed at this chat (or at nothing in particular: body/html/null).
+  useLayoutEffect(() => {
+    bgRef.current = onBackground;
+  }, [onBackground]);
+  // Ctrl+B, claimed only while the button would render. A key aimed inside this
+  // chat is ours; a loose one (body/html/null) goes to the chat last clicked or
+  // focused, or to the only chat that could take it.
   useEffect(() => {
     if (!canBackground) return;
+    installChatRootTracker();
+    const root = rootRef.current?.closest(".chat-root") ?? null;
+    if (root) claimants.add(root);
     const onKey = (ev: KeyboardEvent) => {
       if (ev.key.toLowerCase() !== "b" || !ev.ctrlKey || ev.metaKey || ev.altKey || ev.shiftKey || ev.defaultPrevented) return;
       const t = ev.target as Node | null;
       const loose = !t || t === document.body || t === document.documentElement;
       if (!loose) {
-        const root = rootRef.current?.closest(".chat-root");
         if (!root || !root.contains(t)) return;
+      } else {
+        const last = lastChatRoot && lastChatRoot.isConnected ? lastChatRoot : null;
+        const mine = !!root && root === last;
+        const sole = !(last && claimants.has(last)) && claimants.size === 1;
+        if (!mine && !sole) return;
       }
       ev.preventDefault();
       bgRef.current?.();
     };
     document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      if (root) claimants.delete(root);
+    };
   }, [canBackground]);
   // One mood per line, drawn when it appears rather than per second.
   const thinkVerb = useRef(VERBS[Math.floor(Math.random() * VERBS.length)]);
