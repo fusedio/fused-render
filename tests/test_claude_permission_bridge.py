@@ -2860,7 +2860,7 @@ def test_the_store_survives_across_two_runs_of_the_same_chat(agent, tmp_path, mo
     assert _store(agent, "chat-2") is None
 
 
-# ---- perm-waits: how long a card sat on the user (D1438 follow-up)
+# ---- perm-waits: how long a card sat on the user (D1439 follow-up)
 def _waits(agent, chat="chat-1"):
     return agent._chat_waits_load(chat)
 

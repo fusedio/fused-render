@@ -1537,7 +1537,7 @@ def test_an_orphan_parent_takes_its_result_from_the_window(agent):
     assert orphan["children"][0]["text"] == "child working"
 
 
-# ------------------------------- perm-waits annotation (D1438 follow-up)
+# ------------------------------- perm-waits annotation (D1439 follow-up)
 
 def test_annotate_waits_sets_waited_incl_children(agent):
     segs = [{"kind": "tool", "id": "a"},
