@@ -3128,6 +3128,15 @@ def start_hub_catalog_refresh() -> None:
         _hub_catalog_refresh_thread.start()
 
 
+def start_hub_refreshers() -> None:
+    """Lazy start of the two Hub refresh threads (metadata sweep, daily catalog
+    delta). Neither runs at boot: the first AI catalog read starts them,
+    idempotently and cheaply on every later call. The one place both are
+    listed; add any further Hub refresher here."""
+    start_hub_metadata_refresh()
+    start_hub_catalog_refresh()
+
+
 #: How long `unload_all` waits for an in-progress eviction's `_terminate` to
 #: clear `_draining` before giving up on it. Generous over the ~9s worst case
 #: (a 2s `/quit`, SIGTERM + 3s wait, SIGKILL + 3s wait, `proc.wait` + 1s) —

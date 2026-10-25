@@ -215,18 +215,9 @@ _VISION_LENGTHS = ("short", "normal", "long")
 _VISION_MAX_OBJECTS = 200
 
 
-def _start_hub_refreshers() -> None:
-    """Lazy start of the two Hub refresh threads (metadata sweep, daily catalog
-    delta). Neither runs at boot: the first AI catalog read starts them,
-    idempotently and cheaply on every later call, the way
-    `hw_detect.cached_hardware()` starts the hardware refresh."""
-    supervisor.start_hub_metadata_refresh()
-    supervisor.start_hub_catalog_refresh()
-
-
 def _hub_meta_cached(model_id):
     """`hub_metadata.cached(model_id)`, starting the refreshers first."""
-    _start_hub_refreshers()
+    supervisor.start_hub_refreshers()
     return hub_metadata.cached(model_id)
 
 
@@ -1497,7 +1488,7 @@ def api_ai_catalog():
     Sync `def`: `cached_models()` walks the hub cache (memoised, see there), so it
     belongs in the threadpool rather than on the event loop.
     """
-    _start_hub_refreshers()
+    supervisor.start_hub_refreshers()
     return {"capabilities": _catalog_with_downloads(),
             # Everything else on this disk, with the reason it is not above.
             "unsupported": _unsupported_downloads(),
