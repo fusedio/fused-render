@@ -47,6 +47,7 @@ import threading
 import time
 import urllib.request
 
+from fused_render import _platform
 from fused_render.bots import paths as bpaths
 
 log = logging.getLogger(__name__)
@@ -1412,7 +1413,7 @@ class BrowserProcess:
                     if proc is not None:
                         return proc.poll() is not None
                     try:  # not our child (the server restarted since): launchd reaps it, so the pid probe is exact
-                        os.kill(sess["pid"], 0)
+                        _platform.probe_pid(sess["pid"])
                         return False
                     except ProcessLookupError:
                         return True

@@ -10274,7 +10274,7 @@ def _cli_preview(path: str, workdir: str) -> tuple[str, str]:
     return "", ""
 
 
-def _cli_sessions(file: str) -> list:
+def _cli_sessions(file: str, limit: int | None = _CLI_SESSION_LIMIT) -> list:
     """Claude sessions about this target — every transcript in this cwd's
     project dir when the target is a FOLDER, and only the ones opened on this
     very file when it is a FILE.
@@ -10298,6 +10298,11 @@ def _cli_sessions(file: str) -> list:
     the folder itself — belongs to the FOLDER, and is offered there. It is not
     offered on a file, because it is not about one; showing it under every file
     in the folder is the pile we are dismantling.
+
+    `limit` caps the list at the newest rows (the chat's Recent menu); None
+    lists every transcript on the target — what the canvas sync needs to
+    erase a deleted node's chats whole (canvases.forget_file_sessions). Each
+    row carries its transcript `path` for that caller.
     """
     workdir = os.path.abspath(_workdir(file))
     # "" for a folder target: the filter below is what a file target adds, and
@@ -10336,7 +10341,7 @@ def _cli_sessions(file: str) -> list:
     found.sort(reverse=True)
     out = []
     for mtime, sid, backend, path in found:
-        if len(out) >= _CLI_SESSION_LIMIT:
+        if limit is not None and len(out) >= limit:
             break
         preview, pane = _cli_preview(path, workdir)
         if not preview:
@@ -10351,7 +10356,7 @@ def _cli_sessions(file: str) -> list:
         out.append({"id": sid, "preview": preview,
                     "created_at": mtime, "last_used": mtime,
                     "cwd": workdir, "pane": pane, "running": sid in live,
-                    "backend": backend})
+                    "backend": backend, "path": path})
     return out
 
 

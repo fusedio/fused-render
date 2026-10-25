@@ -337,7 +337,7 @@ def test_poll_note_expires_two_turns_later(runs, gen):
     calls, answer = gen
     agent = FakeAgent(runs)
     answer["note"] = dict(NOTE_FIXTURE)
-    _rows(runs, _asst(7))
+    _rows(runs, _asst(7), RESULT)                    # a turn-end note
     assert _wait(agent, 0)["state"] == "note"
     _rows(runs, _asst(7), RESULT, _asst(1))          # turn 1: still offered
     assert headsup.poll(agent, "r1")["state"] == "note"
@@ -1059,3 +1059,70 @@ def test_poll_waits_for_the_step_to_finish_and_keeps_the_bucket(runs, gen):
     assert headsup.poll(agent, "r1")["state"] == "checking"
     _wait(agent, None)
     assert len(calls) == 1
+
+
+# ------------------------------------------- mid-turn note withdrawn at turn end
+
+def _open_turn_note(runs, gen):
+    """A note offered while the turn is still running (turn_open=True)."""
+    calls, answer = gen
+    answer["note"] = dict(NOTE_FIXTURE)
+    _rows(runs, _asst(7))
+    return _wait(FakeAgent(runs), 0)
+
+
+def test_mid_turn_note_withdrawn_when_turn_ends_and_final_review_runs(runs, monkeypatch):
+    opens = []
+    answer = {"note": dict(NOTE_FIXTURE)}
+
+    def fake(agent, run_dir, turn_open=False):
+        opens.append(turn_open)
+        return answer["note"]
+
+    monkeypatch.setattr(headsup, "generate", fake)
+    agent = FakeAgent(runs)
+    _rows(runs, _asst(7))
+    first = _wait(agent, 0)
+    assert first["state"] == "note"
+    assert opens == [True]
+    before = headsup._mem_read(str(runs))["ignored_in_a_row"]
+    # Still open: the note stays.
+    _rows(runs, _asst(8))
+    assert headsup.poll(agent, "r1")["id"] == first["id"]
+    # The turn closes: the note is withdrawn and the turn-end check fires.
+    answer["note"] = None
+    _rows(runs, _asst(8), RESULT)
+    assert headsup.poll(agent, "r1") == {"state": "checking"}
+    assert _wait(agent, None) == {"state": "idle"}
+    assert opens == [True, False]
+    assert headsup._mem_read(str(runs))["ignored_in_a_row"] == before
+    with headsup._lock:
+        st = headsup._run_state("r1")
+        assert st["note"] is None and first["id"] not in st["dismissed"]
+    # At most one turn-end check per turn.
+    assert headsup.poll(agent, "r1") == {"state": "idle"}
+    assert opens == [True, False]
+
+
+def test_turn_end_note_is_not_withdrawn(runs, monkeypatch):
+    opens = []
+    monkeypatch.setattr(headsup, "generate",
+                        lambda agent, run_dir, turn_open=False:
+                        opens.append(turn_open) or dict(NOTE_FIXTURE))
+    agent = FakeAgent(runs)
+    _rows(runs, _asst(7), RESULT)
+    got = _wait(agent, 0)
+    assert got["state"] == "note" and opens == [False]
+    assert headsup.poll(agent, "r1")["id"] == got["id"]
+    _rows(runs, _asst(7), RESULT, _asst(1))
+    assert headsup.poll(agent, "r1")["id"] == got["id"]
+
+
+def test_state_without_note_open_loads_as_closed(runs):
+    (runs / "r1" / "headsup.json").write_text(json.dumps(
+        {"note": dict(NOTE_FIXTURE), "note_id": "old", "offered_turn": 0,
+         "dismissed": [], "checked": []}))
+    _rows(runs, _asst(2), RESULT)
+    got = headsup.poll(FakeAgent(runs), "r1")
+    assert got["state"] == "note" and got["id"] == "old"
+    assert headsup._run_state("r1")["note_open"] is False

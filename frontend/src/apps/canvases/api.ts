@@ -339,10 +339,15 @@ export const applySnapshot = (
   seq: number,
   body: Record<string, unknown>,
 ) =>
-  postJson<{ ok: boolean; gen: number; seq: number; changed: boolean; push_seq: number }>(
-    "/api/canvases/snapshot",
-    { name, env, gen, seq, body },
-  );
+  postJson<{
+    ok: boolean;
+    gen: number;
+    seq: number;
+    changed: boolean;
+    push_seq: number;
+    /** Source files this snapshot removed from the clone (a node deleted in the canvas). */
+    deleted_files?: string[];
+  }>("/api/canvases/snapshot", { name, env, gen, seq, body });
 
 /** Embed v3: the workbench's rename hint, same endpoint, same ack shape. */
 export const applyRename = (

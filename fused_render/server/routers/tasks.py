@@ -8329,7 +8329,15 @@ def api_task_erase(patch: ErasePatch,
     task = _collect().get(key)
     if task is None:
         raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
+    return erase_task(key, task)
 
+
+def erase_task(key: str, task: dict) -> dict:
+    """The erase itself, past the route's own checks: `api_task_erase`'s
+    body, shared with the canvas sync, which erases the sessions filed on a
+    node's file when the node is deleted (canvases.forget_file_sessions).
+    `task` is `_collect()`'s row for `key`. Raises HTTPException 409 for a
+    running task and 500 when a file would not go, as the route does."""
     _place(task)
     # No `settings=` here: this single-row answer carries no pills, so the
     # per-session record is not read for it. A caller that starts drawing

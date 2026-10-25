@@ -933,9 +933,11 @@ def apply_snapshot(
     overwritten. `rowless_prev` are slugs earlier snapshots reported as
     `rowless_files` and the host still holds in grace: one this snapshot
     no longer lists (no UDF, no node, no row) has its file trashed and is
-    reported in `deleted`. Returns `{changed, upserted, deleted, renamed, created,
-    written, synthesized, rowless_files, deferred_deletes, folder_fixes}`
-    (`rowless_files`:
+    reported in `deleted`. Returns `{changed, upserted, deleted, deleted_files,
+    renamed, created, written, synthesized, rowless_files, deferred_deletes,
+    folder_fixes}` (`deleted_files`: the source files this snapshot removed
+    from the clone, by basename — a folder in `deleted` has none;
+    `rowless_files`:
     slugs of new UDFs whose file came without a node — file created, no row;
     `synthesized`: always empty here, kept for the ack's shape;
     `deferred_deletes`: known nodes the snapshot omitted while still listing
@@ -970,6 +972,7 @@ def apply_snapshot(
     changed = False
     upserted: list[str] = []
     deleted: list[str] = []
+    deleted_files: list[str] = []
     renamed: list[list[str]] = []
     created: list[str] = []
     written: list[str] = []
@@ -1071,6 +1074,8 @@ def apply_snapshot(
                     os.remove(fpath)
                 except OSError:
                     pass
+                else:
+                    deleted_files.append(file)
 
     # Row-less files still in the host's grace window (`rowless_prev`, the
     # earlier snapshots' `rowless_files`) are in no view, so the loop above
@@ -1091,6 +1096,7 @@ def apply_snapshot(
             continue
         files_changed = True
         deleted.append(slug)
+        deleted_files.append(file)
 
     # Upserts: rows that differ on the keys the embed owns. A key the embed's
     # row LACKS is deleted from disk only when the embed's own PREVIOUS row
@@ -1211,7 +1217,8 @@ def apply_snapshot(
     if changed:
         _write_atomic(path, _dump_toml(doc))
     return {"changed": changed or files_changed or bool(created) or bool(written),
-            "upserted": upserted, "deleted": deleted, "renamed": renamed,
+            "upserted": upserted, "deleted": deleted, "deleted_files": deleted_files,
+            "renamed": renamed,
             "created": created, "written": written, "synthesized": synthesized,
             "rowless_files": rowless_files, "deferred_deletes": deferred_deletes,
             "folder_fixes": folder_fixes, "at": time.time()}
@@ -1469,6 +1476,10 @@ def diff_views(disk: dict, view: dict | None) -> list[dict]:
                                            reappears under a name the view
                                            lacks (then diffed as `to`)
         delete {name}
+        delete {name} + upsert {name, …}  — the node's source file changed
+                                           KIND (`w.json` → `w.html`): the
+                                           frame rebuilds the Udf from the
+                                           file; `edges` is then always sent
         edges  {set: [[a, b]]}            — the whole set, when it differs
         canvas {comments?, viewportBounds?} — the scalars that differ; the
                                            frame never moves its own camera
@@ -1487,22 +1498,47 @@ def diff_views(disk: dict, view: dict | None) -> list[dict]:
     vnodes, dnodes = view["nodes"], disk["nodes"]
     vids, dids = view.get("ids", {}), disk["ids"]
     vbodies = view.get("bodies", {})
+    vfiles = view.get("files", {})
     renamed_to: dict[str, str] = {}
     id_to_disk = {sid: n for n, sid in dids.items()}
+    # A node whose source file changed KIND (Claude turned `w.json` into
+    # `w.html`) is not an upsert: the frame's Udf carries its kind in
+    # `metadata.nodeTemplateType` (a JSON-UI widget, a note, an HTML node, a
+    # Python UDF), the applier never re-reads it from `file`, and so a plain
+    # upsert would leave a JSON-UI widget holding HTML text — rendered wrong,
+    # and written back to disk under the OLD name on the frame's next body
+    # post. So the frame is told `delete` then a full `upsert` under the same
+    # name: it drops the Udf and builds a fresh one of the new kind from the
+    # file (the row carries the position and size the node keeps). Its
+    # edges go with the deleted node, so the edge set is always re-sent.
+    retyped = False
+
+    def kind_changed(view_file: str | None, disk_file: str | None) -> bool:
+        if not view_file or not disk_file:
+            return False
+        return os.path.splitext(view_file)[1] != os.path.splitext(disk_file)[1]
+
     for name in vnodes:
         if name in dnodes:
             continue
         sid = vids.get(name)
         to = id_to_disk.get(sid) if sid else None
-        if to and to not in vnodes:
+        if to and to not in vnodes and not kind_changed(vfiles.get(name), disk["files"].get(to)):
             renamed_to[to] = name
             ops.append({"op": "rename", "from": name, "to": to,
                         "file": disk["files"].get(to)})
         else:
+            # A rename that also changed kind is a delete plus a new node.
             ops.append({"op": "delete", "name": name})
+            retyped = retyped or bool(to)
     for name in disk["order"]:
         was = renamed_to.get(name, name)
         if was not in vnodes:
+            ops.append(_upsert_op(disk, name, row=True, body=True, sid=True))
+            continue
+        if kind_changed(vfiles.get(was), disk["files"].get(name)):
+            retyped = True
+            ops.append({"op": "delete", "name": name})
             ops.append(_upsert_op(disk, name, row=True, body=True, sid=True))
             continue
         row = dnodes[name] != vnodes[was]
@@ -1511,7 +1547,7 @@ def diff_views(disk: dict, view: dict | None) -> list[dict]:
         if row or body or sid:
             ops.append(_upsert_op(disk, name, row=row, body=body, sid=sid,
                                   view_row=vnodes[was]))
-    if sorted(map(tuple, disk["edges"])) != sorted(map(tuple, view.get("edges", []))):
+    if retyped or sorted(map(tuple, disk["edges"])) != sorted(map(tuple, view.get("edges", []))):
         ops.append({"op": "edges", "set": [list(e) for e in disk["edges"]]})
     vcanvas = view.get("canvas", {})
     scalars = {k: v for k, v in disk["canvas"].items()
