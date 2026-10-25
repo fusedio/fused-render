@@ -2037,6 +2037,76 @@ def _agent_module():
     return project_queue.agent_module()
 
 
+def forget_file_sessions(files: list[str], *, backup=None, log=None) -> dict:
+    """Erase every Claude session that was opened on one of `files` — node
+    source files a canvas snapshot just deleted.
+
+    A node's chat is filed under its FILE (the explorer embed's per-file
+    sessions, `agent._cli_sessions`): delete `udf_2`, make a new `udf_2`, and
+    without this the new node's pane offers — and the Tasks page lists — every
+    conversation about the old one (owner, 2026-10-25: "the new udf_2 comes
+    back with all the claude context for the deleted udf_2"). The file is
+    gone, so the chats about it go the way `POST /api/tasks/erase` takes a
+    task: transcript, sidecars, triage, read marks, drafts (`tasks.erase_task`).
+
+    A session still RUNNING is left alone and reported (the erase route 409s
+    it too; its transcript is under a writing process). `backup(rel, bytes)`
+    receives each transcript before it goes. Returns `{erased: [sid],
+    skipped: [sid], files: n}`; never raises for one bad session."""
+    out: dict = {"erased": [], "skipped": [], "files": len(files)}
+    agent = _agent_module()
+    listing = getattr(agent, "_cli_sessions", None) if agent is not None else None
+    if listing is None:
+        return out
+    from fused_render.server.routers import tasks as tasks_router
+
+    collected: dict | None = None
+    for file in files:
+        try:
+            rows = listing(file, limit=None)
+        except Exception:  # noqa: BLE001 — one unreadable store, not a failure
+            logger.warning("canvas: listing sessions on %s failed", file, exc_info=True)
+            continue
+        for row in rows:
+            sid = str(row.get("id") or "")
+            if not sid:
+                continue
+            if row.get("running"):
+                out["skipped"].append(sid)
+                continue
+            if backup is not None and row.get("path"):
+                data = canvas_snapshot._read_bytes(row["path"])
+                if data is not None:
+                    backup(os.path.join("_sessions", str(row.get("backend") or "claude"),
+                                        sid + ".jsonl"), data)
+            if collected is None:
+                collected = tasks_router._collect()
+            task = collected.get(sid)
+            try:
+                if task is not None:
+                    tasks_router.erase_task(sid, task)
+                else:
+                    # A transcript the Tasks page does not list (not a task):
+                    # the files and the per-session state still go.
+                    _removed, _erased, failed, refused = tasks_router._erase_session_files(
+                        sid, row.get("path"))
+                    if failed or refused:
+                        # As the route: a transcript still on disk is not an
+                        # erased session, and its state stays with it.
+                        raise OSError(f"{failed + refused} session file(s) not removed")
+                    tasks_router.sessions.forget_triage(sid)
+                    tasks_router.tasks_store.forget_session(sid)
+            except Exception:  # noqa: BLE001 — HTTPException 409/500 included
+                logger.warning("canvas: erasing session %s on %s failed", sid, file,
+                               exc_info=True)
+                out["skipped"].append(sid)
+                continue
+            out["erased"].append(sid)
+    if log is not None and (out["erased"] or out["skipped"]):
+        log(f"node sessions erased={len(out['erased'])} skipped={len(out['skipped'])}")
+    return out
+
+
 class _SyncManager:
     """One watcher thread: fingerprint the clone folder, debounce, push.
 
@@ -4309,14 +4379,38 @@ class _SyncManager:
             self._body_written.pop(gone, None)
         self._refresh_view_after_write(held, edges=new["edges"], ids=new["ids"],
                                        bodies=bodies, embed_rows=new["nodes"])
+        deleted_files = list(result.get("deleted_files") or ())
+        if deleted_files:
+            # A node deleted in the canvas takes its file's chats with it
+            # (`forget_file_sessions`): off this lock and off the ack —
+            # listing a file's transcripts reads their heads.
+            threading.Thread(
+                target=self._forget_file_sessions, args=(deleted_files, trash[0]),
+                name=f"canvas-forget-sessions-{self.name}", daemon=True).start()
         ack = {"ok": True, "gen": gen, "seq": seq, "changed": result["changed"],
                "upserted": result["upserted"], "deleted": result["deleted"],
+               "deleted_files": deleted_files,
                "created": result["created"], "push_seq": self.push_seq}
         # Rows apply_snapshot wrote for files the snapshot sent with no node
         # (canvas_snapshot, invariant 2) — the frame learns of them by delta.
         if result.get("synthesized"):
             ack["synthesized"] = list(result["synthesized"])
         return self._embed_record(gen, seq, ack)
+
+    def _forget_file_sessions(self, rels: list[str], trash: str | None) -> None:
+        """`forget_file_sessions` for this clone's `rels`, backing each
+        transcript up into the snapshot's trash batch first (so the recovery
+        recipe for a wrongly applied snapshot — `.sync/trash/<canvas>/
+        <stamp>/` — still has the chats beside the files)."""
+        try:
+            if trash is None:
+                trash = self._new_trash_dir()
+            forget_file_sessions([os.path.join(self.dir, rel) for rel in rels],
+                                 backup=lambda rel, data: self._backup_to(trash, rel, data),
+                                 log=lambda what: self.log_event("embed_to_disk", what))
+        except Exception:  # noqa: BLE001 — a cleanup must never take the sync down
+            logger.warning("canvas %s: forgetting node sessions failed", self.name,
+                           exc_info=True)
 
     def apply_body(self, node: str, file: str, base_hash: str, text: str) -> dict:
         """One source text from the workbench's body channel → the clone, by
