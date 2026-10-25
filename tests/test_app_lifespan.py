@@ -136,8 +136,6 @@ EXPECTED_STARTUP = [
     "_startup_queue_manager",
     "_startup_tasks_watch",
     "_startup_tasks_warm",
-    "_startup_ai_hub_metadata_refresh",
-    "_startup_ai_hub_catalog_refresh",
     # Event-loop lag gauge + pool/lane snapshots for the Monitor dashboard.
     "_startup_loop_lag",
     "_startup_resource_trail",
@@ -797,3 +795,21 @@ def test_startup_tasks_warm_runs_when_a_root_exists(tmp_path, monkeypatch):
             break
         time.sleep(0.05)
     assert started == [1]
+
+
+def test_no_hub_refresh_hooks_at_boot_and_catalog_read_starts_them(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from fused_render.ai import supervisor
+
+    app = create_app(start_dir=str(tmp_path))
+    names = [f.__name__ for f in app.state.startup_handlers]
+    assert "_startup_ai_hub_metadata_refresh" not in names
+    assert "_startup_ai_hub_catalog_refresh" not in names
+    meta, cat = [], []
+    monkeypatch.setattr(supervisor, "start_hub_metadata_refresh", lambda: meta.append(1))
+    monkeypatch.setattr(supervisor, "start_hub_catalog_refresh", lambda: cat.append(1))
+    with TestClient(app) as client:
+        assert meta == [] and cat == []
+        assert client.get("/api/ai/catalog").status_code == 200
+        assert meta and cat

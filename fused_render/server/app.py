@@ -751,28 +751,16 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # too (where a startup hook would have been skipped) and never starts
     # it at all on a process that never touches an AI route.
 
-    # Hub-metadata pre-warming (code review finding 1, on top of SPEC AI-17):
-    # `ai_runtime._accepts_image`/`_capability_tags` used to call
-    # `hub_metadata.get(model_id)` — a synchronous `urllib` GET with an
-    # 8-second timeout — straight from `describe_catalog`, a route the AI
-    # Models picker polls. They now read `hub_metadata.cached()` only (a
-    # plain disk read), and this background thread is the sole writer.
-    @on_startup_full
-    async def _startup_ai_hub_metadata_refresh():
-        from fused_render.ai import supervisor
-
-        supervisor.start_hub_metadata_refresh()
-
-    # Hub-catalog daily delta refresh (SPEC docs/HUB_CATALOG_SPEC.md item 4):
-    # a BUILT capability pool (`api_hub_search`'s `ensure_build_started` path)
-    # goes stale as new repos land on the Hub between builds; this widens
-    # each built pool by one `lastModified` delta per day, same background-
-    # thread shape as the two hooks immediately above.
-    @on_startup_full
-    async def _startup_ai_hub_catalog_refresh():
-        from fused_render.ai import supervisor
-
-        supervisor.start_hub_catalog_refresh()
+    # Hub-metadata pre-warming (code review finding 1, on top of SPEC AI-17)
+    # and the daily Hub-catalog delta refresh (docs/HUB_CATALOG_SPEC.md item 4):
+    # no startup hooks. `ai_runtime._hub_meta_cached` (every `hub_metadata.cached()`
+    # read on the AI catalog path) and `api_hub_search` call
+    # `supervisor.start_hub_metadata_refresh()` / `start_hub_catalog_refresh()`
+    # on first use — idempotent, started in `lean` mode too, never started on a
+    # process that never opens an AI catalog page. Same shape as
+    # `hw_detect.cached_hardware()` -> `start_hardware_refresh()` above. The
+    # metadata thread is the sole writer behind those reads (they are plain disk
+    # reads, never a network GET on the polled route).
 
     # Local model workers die with the app. They hold GIGABYTES — a stranded one
     # is not a leaked file handle, it is a machine that has quietly lost 8GB of
