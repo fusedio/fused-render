@@ -1853,26 +1853,39 @@ export default function CanvasWorkspace({
         // The viewer has no pane to follow a selection into (see `embedded`);
         // ignoring it here also keeps `?node=` off the project page's URL.
         if (embedded) return;
-        const name = event.data?.udfName;
-        if (typeof name === "string" && name) {
+        const udfName = event.data?.udfName;
+        if (typeof udfName === "string" && udfName) {
           const kind = event.data?.kind === "widget" ? "widget" : "udf";
           const stated = event.data?.file;
           const file =
             typeof stated === "string" && stated && !stated.includes("/")
               ? stated
-              : `${name}.${kind === "widget" ? "json" : "py"}`;
+              : `${udfName}.${kind === "widget" ? "json" : "py"}`;
           // The node already shown: nothing to do — and nothing to FLUSH.
           // The embed re-posts its selection after every delta it applies
           // (endEmbedRehydrate), the one from the Code tab's own save
           // included; flushing on that echo would save (and run) a buffer
           // the user is still typing into.
           const cur = nodeRef.current;
-          if (!cur || cur.udfName !== name || cur.file !== file) {
+          if (cur && cur.udfName === udfName && cur.file !== file) {
+            // The SAME node, whose file changed kind (Claude rewrote
+            // `w.json` as `w.html`; the host rebuilt the node in the frame).
+            // The pane is keyed by file, so it remounts on the new one: the
+            // chat it was on — likely the very run that made the change —
+            // comes along under the new key, or the pane would boot a fresh
+            // chat while Claude's turn ran on invisibly. No flush: the old
+            // file is gone, and a Code buffer saved to it would resurrect
+            // `w.json` beside `w.html` (`_find_source` prefers `.json`) and
+            // retype the node straight back.
+            const sid = nodeSessions.get(nodeSessionKey(env, name, cur.file));
+            if (sid) nodeSessions.set(nodeSessionKey(env, name, file), sid);
+            setNode({ udfName, kind, file });
+          } else if (!cur || cur.udfName !== udfName) {
             // Another node: its pane replaces this one, so the Code tab's
             // buffer (a blur save may be in flight) is flushed first.
-            afterNodeCodeFlush(() => setNode({ udfName: name, kind, file }));
+            afterNodeCodeFlush(() => setNode({ udfName, kind, file }));
           }
-          if (pendingCodeRef.current === name) {
+          if (pendingCodeRef.current === udfName) {
             pendingCodeRef.current = null;
             setSideOpen(true);
             setNodeTab("code");
