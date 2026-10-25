@@ -25,7 +25,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from fused_render import _flavor
+from fused_render import _flavor, _platform
 from fused_render import calls as shell_calls
 from fused_render import health
 from fused_render.canvases import router as canvases_router
@@ -40,7 +40,7 @@ from fused_render.server.ai import prewarm_ai, router as ai_router, shutdown_ai_
 from fused_render.server.common import (
     STATIC_DIR,
     logger,
-    no_cache_and_log,
+    NoCacheAndLog,
     unhandled_exception,
     _forced_engine,
 )
@@ -48,11 +48,14 @@ from fused_render.server.routers.apps import router as apps_router
 from fused_render.server.routers.app_api import router as app_api_router
 from fused_render.server.routers.background_apps import router as background_apps_router
 from fused_render.server.routers.claude_agent import router as claude_agent_router
+from fused_render.server.routers.claude_remote import router as claude_remote_router
 from fused_render.server.routers.claude_artifacts import router as claude_artifacts_router
 from fused_render.server.routers.claude_config import router as claude_config_router
 from fused_render.server.routers.agent_backends import router as agent_backends_router
 from fused_render.server.routers.claude_health import router as claude_health_router
 from fused_render.server.routers.copilot_health import router as copilot_health_router
+from fused_render.server.routers.codex_health import router as codex_health_router
+from fused_render.server.routers.gemini_health import router as gemini_health_router
 from fused_render.server.routers.claude_sessions import router as claude_sessions_router
 from fused_render.server.routers.community import router as community_router
 from fused_render.server.routers.marketplace import router as marketplace_router
@@ -398,6 +401,16 @@ def _lifespan(startup_handlers: list, shutdown_handlers: list):
 STARTUP_SLOW_HANDLER_S = 1.0
 
 
+def _safe_artifacts_scan() -> None:
+    """Warm thread target for `_startup_artifacts_warm`; never raises."""
+    try:
+        from fused_render import claude_artifacts
+
+        claude_artifacts.list_artifacts()
+    except Exception:  # noqa: BLE001 - a warm-up must never matter
+        logger.exception("could not warm the Claude artifacts listing")
+
+
 def _handler_name(handler) -> str:
     return getattr(handler, "__name__", None) or repr(handler)
 
@@ -515,7 +528,9 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
 
     @on_startup_full
     async def _startup_prewarm_ai():
-        prewarm_ai(app)
+        # Delayed: the spawn would otherwise compete with the first requests
+        # and the other startup warms.
+        prewarm_ai(app, delay=5.0)
 
     # Warm the fused engine off the request path (else the first /api/config pays the cold import).
     @on_startup
@@ -696,6 +711,15 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         # before they count listings of their own.
         app.state.tasks_warm = thread
 
+    # Warm the Claude artifacts listing (claude_artifacts.py): the first scan of
+    # a big ~/.claude is seconds, so it is paid here on a daemon thread rather
+    # than by the first /api/claude-artifacts request.
+    @on_startup_full
+    async def _startup_artifacts_warm():
+        # Looked up at call time so tests can swap the target (conftest).
+        threading.Thread(target=_safe_artifacts_scan, name="artifacts-warm",
+                         daemon=True).start()
+
     # `_AI_SESSION` is constructed at import time and can be started by the
     # first `/api/ai` request even under `lean` (its prewarm startup hook is
     # lean-skipped, but the session object itself is not gated on it) — so
@@ -839,13 +863,17 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     async def _startup_gc_project_venvs():
         from fused_render import projectenv
 
-        try:
-            removed = await asyncio.to_thread(projectenv.gc)
-        except Exception:  # noqa: BLE001 - never block startup on housekeeping
-            logger.exception("could not garbage-collect orphaned project venvs")
-            return
-        if removed:
-            logger.info("reclaimed %d orphaned project venv(s)", removed)
+        def _run_gc():
+            try:
+                removed = projectenv.gc()
+            except Exception:  # noqa: BLE001 - never block startup on housekeeping
+                logger.exception("could not garbage-collect orphaned project venvs")
+                return
+            if removed:
+                logger.info("reclaimed %d orphaned project venv(s)", removed)
+
+        # Fire and forget: nobody waits on this, so it must not hold the bind.
+        threading.Thread(target=_run_gc, name="project-venv-gc", daemon=True).start()
 
     app.exception_handler(Exception)(unhandled_exception)
     # A route whose feature group is not installed: 503 + `missing_extra`
@@ -884,7 +912,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         name="template-shared",
     )
 
-    app.middleware("http")(no_cache_and_log)
+    app.add_middleware(NoCacheAndLog)
 
     # React shell (D52/D54): built by Vite from frontend/ into static/
     # shell-dist/. The output is NOT committed — dev machines build it
@@ -996,6 +1024,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # actions, the app-entry lookup and the artifacts reads that used to run
     # as one /api/run interpreter per call. X-Fused-guarded like /api/run.
     app.include_router(claude_agent_router)
+    app.include_router(claude_remote_router)
     # Artifacts published from those sessions, recovered from the same
     # transcripts (routers/claude_artifacts.py) — read-only, no auth guard.
     app.include_router(claude_artifacts_router)
@@ -1104,6 +1133,12 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # health/refresh, install, login, login/cancel}, same snapshot keys, same
     # entry-point warm-up rule.
     app.include_router(copilot_health_router)
+    # The Codex twin (routers/codex_health.py): /api/codex/{health,
+    # health/refresh, install, login, login/cancel, link-path}, same rules.
+    app.include_router(codex_health_router)
+    # ...and Gemini's (routers/gemini_health.py): /api/gemini/{health,
+    # health/refresh, install, login, login/cancel, link-path}, same rules.
+    app.include_router(gemini_health_router)
     # The agent catalog (routers/agent_backends.py): which agents exist, which
     # are on, and each one's models/efforts/modes/caps — the one list every
     # picker reads (docs/COPILOT_BACKEND.md D11). Read-only, no auth guard.
@@ -1149,7 +1184,9 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # One owner per machine (bots/registry.py module docstring): the process holding the bots flock serves
     # `/api/bots/*` itself, every other one forwards there. A lean `open` never elects: it forwards when an
     # owner exists and answers 503 otherwise, instead of building Bots and running engines beside the app's.
-    _bots_registry.set_lean(lean)
+    # Windows never elects: the engines and per-bot Chrome lean on POSIX process groups and
+    # signals, so there it forwards (to no one) and answers 503 like a lean server.
+    _bots_registry.set_lean(lean or _platform.IS_WINDOWS)
     app.middleware("http")(_bots_forward)
 
     # The bots' scheduler thread. `@on_startup`, so a lean `fused-render open`
@@ -1159,6 +1196,9 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # (registry._become_owner) — all of which used to run here in every process.
     @on_startup
     async def _startup_bots():
+        if _platform.IS_WINDOWS:
+            logger.info("bots are not supported on Windows; the scheduler is not started")
+            return
         from fused_render.bots import registry as bots_registry
 
         try:
@@ -1275,12 +1315,10 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
                 start_dir, app.state.startup_done)
             index_routes.start_index_job_bridge()
             return
-        await index_routes.startup_scan(start_dir)
-        # ...and warm the corpus path the explorer's home search reads, on a
-        # detached thread, so the gitignore sweep and the duckdb import are
-        # paid at idle rather than by the user's first keystroke
-        # (index/specs/server-api.md §4).
-        index_routes.startup_warm()
+        # The scan (prune + one detached worker per root) and then the warm of
+        # the corpus path the explorer's home search reads (index/specs/
+        # server-api.md §4) run on one daemon thread, so neither delays the bind.
+        index_routes.start_startup_scan_and_warm(start_dir)
         # ...and mirror every scan run into a sys:index:<run_id> Job so it
         # shows up in the Activity card the same way a download does. Same
         # idempotent start-once pattern as the resource-trail start

@@ -25,6 +25,7 @@ import time
 from fastapi import APIRouter, Body, Header, Query, Request, Response
 from starlette.responses import StreamingResponse
 
+from fused_render._platform import is_within
 from fused_render.bots import paths as bpaths
 from fused_render.bots import registry
 from fused_render.server.common import _error, _require_fused
@@ -295,6 +296,33 @@ def bots_status(cursors: str = Query(default=""), shot_for: str = Query(default=
             "usage": None if quick else _store().usage_summary(),
             "imessage": None if quick else registry.imessage_state(),   # the old key; `channels` carries every channel (§10)
             "channels": None if quick else registry.channel_states()}
+
+
+@router.get("/api/bots/pulse")
+@_handled
+def bots_pulse():
+    """The sidebar's Bots entry: one small row per bot — status, event seq and the read mark — so the rail can say
+    "1 waiting · 2 running" and count unread bots without the events, usage and channel state `GET /api/bots`
+    carries. No side effects: `_status_bot`'s idle-sleep and popup checks belong to the page's poll, not to a
+    sidebar that asks every 30 s from every window. Hidden bots are listed with their flag; the client drops them."""
+    out = []
+    for b in registry.all():
+        try:
+            m = b.meta
+            # `seq` as the page's own row would carry it: `events_since` lifts the counter over lines another process
+            # appended (an iMessage reply via botsend.py), and with no page open nothing else does — which is exactly
+            # when the sidebar is the one asking, and a reply nobody has seen is the unread it exists to count.
+            n = b._count_events()
+            # `news_seq`: the newest message row, system notes and delivery rows skipped — what `seen_seq` is read
+            # against (bot.news_seq). The line count is passed so a stale cache rescans for lines nobody lifted.
+            row = {"id": b.id, "status": m.get("status") or "idle", "seq": max(b.seq, n), "news_seq": b.news_seq(n),
+                   "hidden": bool(m.get("hidden"))}
+            if isinstance(m.get("seen_seq"), int):
+                row["seen_seq"] = m["seen_seq"]
+            out.append(row)
+        except Exception:  # noqa: BLE001 — one broken bot must not blank the list
+            continue
+    return {"bots": out, "ts": time.time()}
 
 
 @router.post("/api/bots")
@@ -725,8 +753,15 @@ def _settings(bid, body):
         b.meta["terminal"] = terminal
         if not terminal:
             b.close_terminal()
-    if isinstance(body.get("trusted_apps"), list):
-        b.meta["trusted_apps"] = _apptools().clean_trusted_apps(body["trusted_apps"])
+    if isinstance(body.get("trusted_apps_add"), list) or isinstance(body.get("trusted_apps_remove"), list):
+        # Additions and removals only (like allow_rules_remove): trusted_apps has two more writers, a build
+        # finishing and a card answered "Always approve", so a full list from the dialog would clobber a tick
+        # written while it was open.
+        with b.lock:
+            _apptools().set_trusted_apps(b.meta, add=body.get("trusted_apps_add") or [], remove=body.get("trusted_apps_remove") or [])
+    elif isinstance(body.get("trusted_apps"), list):
+        with b.lock:
+            b.meta["trusted_apps"] = _apptools().clean_trusted_apps(body["trusted_apps"])
     if folders is not None:
         # The folders this bot may READ (docs §2). The dialog is the only writer, so the full list is taken as sent;
         # a bot's own `bot_settings` never carries this key (a bot granting folders to a bot is escalation).
@@ -1102,7 +1137,7 @@ def _under_apps_root(d: str) -> str:
     if not d or not os.path.isabs(d):
         raise ValueError("dir must be an absolute path")
     real = os.path.realpath(d)
-    if real != root and not real.startswith(root + os.sep):
+    if not is_within(real, root, fs_root_ok=False):
         raise ValueError(f"dir must be under {root}")
     return real
 
@@ -1210,7 +1245,7 @@ def apps_starter_icon(key: str):
         return _error("no icon", 404)
     base = os.path.realpath(st.STARTERS_DIR)
     p = os.path.realpath(os.path.join(s["src"], s["icon"]))
-    if not p.startswith(base + os.sep) or not os.path.isfile(p):
+    if not is_within(p, base, strict=True, fs_root_ok=False) or not os.path.isfile(p):
         return _error("no icon", 404)
     mime = "image/svg+xml" if p.endswith(".svg") else "image/png"
     with open(p, "rb") as f:

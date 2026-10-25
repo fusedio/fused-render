@@ -76,18 +76,34 @@ describe("the sidebar's tasks pulse", () => {
       task({ key: "e", status: "archived", unread: 3 }),
     ];
     expect(tasksPulse(tasks, {}))
-      .toEqual({ running: 1, attention: 0, queued: 0, doneUnread: 1, unseen: 1 });
+      .toEqual({ running: 1, attention: 0, blocked: 0, queued: 0, doneUnread: 1, unseen: 1 });
     expect(tasksPulse([], {})).toEqual(EMPTY_TASKS_PULSE);
   });
 
-  it("does not paint a BLOCKED run green", () => {
-    // Blocked is a status of its own on this page (taskColumn), and the green
-    // mark means "work you were waiting on is ready". A broken run wearing the
-    // done hue would be the one place in the app where a colour disagreed with
-    // the ring the row itself draws (design-principles §1).
+  it("counts a done row holding a live background job as running, not unread", () => {
+    const held = { count: 1, run_id: "r-1", jobs: [{ id: "bash_1", title: "" }] };
+    const running = { running: 1, attention: 0, blocked: 0, queued: 0, doneUnread: 0, unseen: 0 };
+    const unread = { running: 0, attention: 0, blocked: 0, queued: 0, doneUnread: 1, unseen: 1 };
+    expect(tasksPulse([task({ status: "done", unread: 1, background_jobs: held })], {}))
+      .toEqual(running);
+    // No jobs held (null, or an empty list) is an ordinary finished row.
+    expect(tasksPulse([task({ status: "done", unread: 1, background_jobs: null })], {}))
+      .toEqual(unread);
+    expect(tasksPulse([task({
+      status: "done", unread: 1,
+      background_jobs: { count: 0, run_id: "r-1", jobs: [] },
+    })], {})).toEqual(unread);
+  });
+
+  it("counts a BLOCKED run as blocked, never green or running", () => {
+    // Blocked is a status of its own (taskColumn): not "done" (so no green) and
+    // not in flight (so not running), but it is in the sidebar's "N blocked".
     const broke = [task({ key: "f", status: "blocked", unread: 1 })];
     expect(tasksPulse(broke, {}))
-      .toEqual({ running: 0, attention: 0, queued: 0, doneUnread: 0, unseen: 0 });
+      .toEqual({ running: 0, attention: 0, blocked: 1, queued: 0, doneUnread: 0, unseen: 0 });
+    expect(pulseTitle(tasksPulse(broke, {}))).toBe("1 blocked");
+    const both = [...broke, task({ key: "p", status: "needs_attention" })];
+    expect(pulseTitle(tasksPulse(both, {}))).toBe("2 blocked · 1 running");
   });
 
   it("counts a WAITING task as running, and again as waiting", () => {
@@ -100,7 +116,7 @@ describe("the sidebar's tasks pulse", () => {
       task({ key: "a", status: "in_progress" }),
     ];
     expect(tasksPulse(parked, {}))
-      .toEqual({ running: 2, attention: 1, queued: 0, doneUnread: 0, unseen: 0 });
+      .toEqual({ running: 2, attention: 1, blocked: 0, queued: 0, doneUnread: 0, unseen: 0 });
     // And it is what the tooltip leads with: the one line in it that asks the
     // reader for something goes first. Singular at one, because one is the
     // common case and "1 tasks" reads as a broken string.
@@ -117,11 +133,11 @@ describe("the sidebar's tasks pulse", () => {
     // HUE says it at both widths; the pulsing dot tried first stays out, because
     // the rail is the one place on screen a reader cannot look away from and
     // nothing there may blink.
-    expect(SIDEBAR).toContain("pulse.attention > 0 ? (");
+    expect(SIDEBAR).toContain("pulse.attention + pulse.blocked > 0 ? (");
     expect(SIDEBAR).toContain('className="sidebar-rail-dot is-attention"');
     // Red OUTRANKS yellow, which outranks green: still ONE dot, and the state
     // that will not resolve on its own is the one it shows.
-    expect(SIDEBAR.indexOf("pulse.attention > 0 ? (")).toBeLessThan(
+    expect(SIDEBAR.indexOf("pulse.attention + pulse.blocked > 0 ? (")).toBeLessThan(
       SIDEBAR.indexOf("pulse.running > 0 ? ("),
     );
     // The Blocked ring's own token — `needs_attention` is DRAWN in Blocked
@@ -144,7 +160,7 @@ describe("the sidebar's tasks pulse", () => {
     const finished = task({ key: "b", status: "done", unread: 1, last_active: 500 });
     const before = [task({ key: "a", status: "in_progress" }), finished];
     expect(tasksPulse(before, {}))
-      .toEqual({ running: 1, attention: 0, queued: 0, doneUnread: 1, unseen: 1 });
+      .toEqual({ running: 1, attention: 0, blocked: 0, queued: 0, doneUnread: 1, unseen: 1 });
 
     const seen = seenAfterVisit(before);
     const after = tasksPulse(before, seen);
@@ -226,15 +242,15 @@ describe("the sidebar's tasks pulse", () => {
     // mark-seen effect runs on every published pulse — value equality is what
     // keeps that from looping. `unseen` is in the comparison: it is the field the
     // dismissal moves, and a publish that skipped it would leave the dot up.
-    const p = { running: 1, attention: 0, queued: 0, doneUnread: 1, unseen: 1 };
-    expect(samePulse(p, { running: 1, attention: 0, queued: 0, doneUnread: 1, unseen: 1 })).toBe(true);
-    expect(samePulse(p, { running: 1, attention: 0, queued: 0, doneUnread: 1, unseen: 0 })).toBe(false);
-    expect(samePulse(p, { running: 1, attention: 0, queued: 0, doneUnread: 2, unseen: 1 })).toBe(false);
-    expect(samePulse(p, { running: 0, attention: 0, queued: 0, doneUnread: 1, unseen: 1 })).toBe(false);
+    const p = { running: 1, attention: 0, blocked: 0, queued: 0, doneUnread: 1, unseen: 1 };
+    expect(samePulse(p, { running: 1, attention: 0, blocked: 0, queued: 0, doneUnread: 1, unseen: 1 })).toBe(true);
+    expect(samePulse(p, { running: 1, attention: 0, blocked: 0, queued: 0, doneUnread: 1, unseen: 0 })).toBe(false);
+    expect(samePulse(p, { running: 1, attention: 0, blocked: 0, queued: 0, doneUnread: 2, unseen: 1 })).toBe(false);
+    expect(samePulse(p, { running: 0, attention: 0, blocked: 0, queued: 0, doneUnread: 1, unseen: 1 })).toBe(false);
     // ...and `attention` is in the comparison too: it is the field that decides
     // which dot the rail draws, so a publish that skipped it would leave a
     // waiting task wearing the plain running mark until something else moved.
-    expect(samePulse(p, { running: 1, attention: 1, queued: 0, doneUnread: 1, unseen: 1 })).toBe(false);
+    expect(samePulse(p, { running: 1, attention: 1, blocked: 0, queued: 0, doneUnread: 1, unseen: 1 })).toBe(false);
     const a: TasksSeen = { x: 1, y: 2 };
     expect(sameSeen(a, { y: 2, x: 1 })).toBe(true);
     expect(sameSeen(a, { x: 1 })).toBe(false);
@@ -245,9 +261,9 @@ describe("the sidebar's tasks pulse", () => {
     // The tooltip names the STATE, not the dismissal, so a dot and a chip on the
     // same entry cannot quote different numbers.
     expect(runningLabel(1)).toBe("1 running");
-    expect(pulseTitle({ running: 2, attention: 0, queued: 0, doneUnread: 1, unseen: 0 }))
+    expect(pulseTitle({ running: 2, attention: 0, blocked: 0, queued: 0, doneUnread: 1, unseen: 0 }))
       .toBe("2 running \u00b7 1 finished, not read");
-    expect(pulseTitle({ running: 0, attention: 0, queued: 0, doneUnread: 3, unseen: 1 }))
+    expect(pulseTitle({ running: 0, attention: 0, blocked: 0, queued: 0, doneUnread: 3, unseen: 1 }))
       .toBe("3 finished, not read");
     expect(pulseTitle(EMPTY_TASKS_PULSE)).toBe("");
   });
@@ -749,14 +765,14 @@ describe("the sidebar's queued count", () => {
     // One builder for the word (platform/lib/queue.waitingLabel) so the rail,
     // the lane header and the chat's own card cannot spell it three ways.
     expect(queuedLabel(2)).toBe("2 queued");
-    expect(pulseTitle({ running: 2, attention: 0, queued: 1, doneUnread: 0, unseen: 0 }))
+    expect(pulseTitle({ running: 2, attention: 0, blocked: 0, queued: 1, doneUnread: 0, unseen: 0 }))
       .toBe("2 running · 1 queued");
-    expect(pulseTitle({ running: 0, attention: 0, queued: 0, doneUnread: 1, unseen: 0 }))
+    expect(pulseTitle({ running: 0, attention: 0, blocked: 0, queued: 0, doneUnread: 1, unseen: 0 }))
       .not.toContain("queued");
   });
 
   it("is part of what makes two pulses the same", () => {
-    const p = { running: 1, attention: 0, queued: 1, doneUnread: 0, unseen: 0 };
+    const p = { running: 1, attention: 0, blocked: 0, queued: 1, doneUnread: 0, unseen: 0 };
     expect(samePulse(p, { ...p })).toBe(true);
     expect(samePulse(p, { ...p, queued: 2 })).toBe(false);
   });

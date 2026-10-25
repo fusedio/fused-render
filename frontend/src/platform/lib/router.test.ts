@@ -22,6 +22,9 @@ const {
   spaLinkProps,
   confirmLeave,
   registerLeaveGuard,
+  rootedFsPath,
+  encodeFsPathSegments,
+  urlForFsPath,
 } = await import("./router");
 const { setResolvedSnapshot } = await import("./snapshot-param");
 const setSnapshotAppDir = (appDir: string | null) =>
@@ -255,24 +258,31 @@ test("legacy view/embed prefixes gain the /explorer namespace", () => {
   );
 });
 
-test("the Claude Config panel is the Claude Code group of Preferences", () => {
-  expect(rewriteLegacyUrl("/claude-config")).toBe("/preferences?tab=claude");
-  expect(rewriteLegacyUrl("/claude-md")).toBe("/preferences?tab=claude");
-  // A section becomes the row to open and highlight; the rest of the query rides along.
+test("the Claude Config panel path and the old /claude-code path land on the Claude Config page", () => {
+  expect(rewriteLegacyUrl("/claude-config")).toBe("/claude-config");
+  expect(rewriteLegacyUrl("/claude-code?tab=memory&embed=1")).toBe("/claude-config?tab=memory&embed=1");
+  expect(rewriteLegacyUrl("/claude-code")).toBe("/claude-config");
+  expect(rewriteLegacyUrl("/claude-md")).toBe("/claude-config");
+
   const row = (tab: string) => rewriteLegacyUrl(`/claude-config?cctab=${tab}`);
-  expect(row("plugins")).toBe("/preferences?tab=claude&s=claude-plugins");
-  expect(row("marketplaces")).toBe("/preferences?tab=claude&s=claude-plugins");
-  expect(row("memory")).toBe("/preferences?tab=claude&s=claude-memory");
-  expect(row("skills")).toBe("/preferences?tab=claude&s=claude-skills");
-  expect(row("statusline")).toBe("/preferences?tab=claude&s=claude-statusline");
-  expect(row("mcp")).toBe("/preferences?tab=claude&s=claude-mcp");
-  expect(row("preferences")).toBe("/preferences?tab=claude&s=claude-catalog");
-  expect(row("history")).toBe("/preferences?tab=claude&s=claude-history");
-  expect(row("profiles")).toBe("/preferences?tab=claude&s=claude-history");
-  expect(row("claudemd")).toBe("/preferences?tab=claude");
-  expect(rewriteLegacyUrl("/claude-config?cctab=profiles&embed=1")).toBe("/preferences?embed=1&tab=claude&s=claude-history");
-  expect(rewriteLegacyUrl("/claude-md?cctab=mcp")).toBe("/preferences?tab=claude&s=claude-mcp");
-  expect(rewriteLegacyUrl("/preferences?tab=claude")).toBe("/preferences?tab=claude");
+  expect(row("plugins")).toBe("/claude-config?tab=plugins");
+  expect(row("marketplaces")).toBe("/claude-config?tab=plugins");
+  expect(row("memory")).toBe("/claude-config?tab=memory");
+  expect(row("skills")).toBe("/claude-config?tab=skills");
+  expect(row("statusline")).toBe("/preferences?tab=claude-cli");
+  expect(row("mcp")).toBe("/claude-config?tab=mcp");
+  expect(row("preferences")).toBe("/preferences?tab=claude-cli");
+  expect(row("history")).toBe("/claude-config");
+  expect(row("profiles")).toBe("/claude-config");
+  expect(row("claudemd")).toBe("/claude-config");
+  expect(rewriteLegacyUrl("/claude-config?cctab=profiles&embed=1")).toBe("/claude-config?embed=1");
+  expect(rewriteLegacyUrl("/preferences?tab=claude")).toBe("/claude-config");
+  expect(rewriteLegacyUrl("/preferences?tab=claude-mcp")).toBe("/claude-config?tab=mcp");
+  expect(rewriteLegacyUrl("/preferences?tab=claude-settings")).toBe("/preferences?tab=claude-cli");
+  expect(rewriteLegacyUrl("/preferences?s=claude-pref:model")).toBe("/preferences?s=claude-pref%3Amodel&tab=claude-cli");
+  expect(rewriteLegacyUrl("/preferences?tab=claude-settings&s=claude-catalog")).toBe("/preferences?tab=claude-cli");
+  expect(rewriteLegacyUrl("/preferences?tab=claude-cli")).toBe("/preferences?tab=claude-cli");
+  expect(rewriteLegacyUrl("/preferences?tab=ai")).toBe("/preferences?tab=ai");
 });
 
 test("legacy settings sentinels map to their plain routes", () => {
@@ -352,8 +362,8 @@ describe("navigateToJobPage dispatches a Job.page value", () => {
   test("a known shell route goes through navigateUrl untouched", () => {
     expect(pushedJobPage("/ai-models/local").url).toBe("/ai-models/local");
     expect(pushedJobPage("/ai-models/benchmark").url).toBe("/ai-models/benchmark");
-    // The panel's route is a legacy one now: it lands on its Preferences group.
-    expect(pushedJobPage("/claude-config").url).toBe("/preferences?tab=claude");
+    // The page's own route is a known shell route and stays as is.
+    expect(pushedJobPage("/claude-config").url).toBe("/claude-config");
     expect(pushedJobPage("/preferences").url).toBe("/preferences");
     expect(pushedJobPage("/preferences?tab=indexing").url).toBe("/preferences?tab=indexing");
   });
@@ -675,5 +685,33 @@ describe("navigateUrl replace option", () => {
       hist.pushState = prevPush;
       hist.replaceState = prevReplace;
     }
+  });
+});
+
+describe("fs path <-> url codec", () => {
+  test("a drive path folds backslashes and decodes back without a leading slash", () => {
+    const url = urlForFsPath("C:\\Users\\x\\Fused\\app\\foo");
+    expect(url.endsWith("/C%3A/Users/x/Fused/app/foo")).toBe(true);
+    const joined = url
+      .split("/")
+      .filter((s) => s)
+      .slice(-6)
+      .map(decodeURIComponent)
+      .join("/");
+    expect(rootedFsPath(joined)).toBe("C:/Users/x/Fused/app/foo");
+  });
+
+  test("a bare drive re-roots to C:/", () => {
+    expect(rootedFsPath("C:")).toBe("C:/");
+    expect(encodeFsPathSegments("C:\\")).toBe("C%3A");
+  });
+
+  test("a POSIX path keeps its leading slash and a literal backslash", () => {
+    expect(rootedFsPath("Users/me/a")).toBe("/Users/me/a");
+    expect(encodeFsPathSegments("/home/u/we\\ird")).toBe("home/u/we%5Cird");
+  });
+
+  test("a UNC path stays one segment", () => {
+    expect(encodeFsPathSegments("\\\\server\\share\\f")).toBe("%5C%5Cserver%5Cshare%5Cf");
   });
 });

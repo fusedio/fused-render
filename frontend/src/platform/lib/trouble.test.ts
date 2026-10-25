@@ -4,6 +4,8 @@ import { expect, test } from "bun:test";
 
 import {
   CLAUDE_INSTALL_COMMAND,
+  CODEX_INSTALL_COMMAND,
+  GEMINI_INSTALL_COMMAND,
   troubleInstructions,
   resetAnnouncedTemplateErrors,
   shouldAnnounceTemplateError,
@@ -378,4 +380,135 @@ test("an empty or blank error is never announced", () => {
   syncRegistryToast("   ", true, r.io);
   expect(r.pushed).toEqual([]);
   expect(r.dismissed).toEqual([]);
+});
+
+// -- Codex (docs/CODEX_BACKEND.md D13, §8) ------------------------------------
+
+test("codex's own markers classify a Codex session's failure", () => {
+  // The account markers, verbatim from agent_backends/codex.py.
+  for (const msg of [
+    "Not logged in",
+    '{"account":null,"requiresOpenaiAuth":true}',
+    "Run `codex login` first",
+    "401 Unauthorized",
+    "Authentication failed",
+    "login required",
+    "Please sign in again",
+  ]) expect(troubleKind(msg, "codex")).toBe("login");
+  // The limit markers, likewise.
+  for (const msg of [
+    "Rate limit reached for gpt-6-luna",
+    "You've hit your usage limit. Try again at 3pm.",
+    "quota exceeded",
+    "insufficient_quota",
+    "spend control limit reached",
+    "Too Many Requests",
+    "HTTP 429",
+  ]) expect(troubleKind(msg, "codex")).toBe("limit");
+});
+
+test("codex's markers are Codex's alone", () => {
+  // The same sentence on a Claude session is not about an OpenAI account.
+  expect(troubleKind("401 Unauthorized", "claude")).toBe("raw");
+  expect(troubleKind("spend control limit reached", "copilot")).toBe("raw");
+  // A 429 that is only part of a bigger number is not a limit.
+  expect(troubleKind("listening on port 14290", "codex")).toBe("raw");
+});
+
+test("a failure shape counts for Codex when it names Codex or OpenAI", () => {
+  expect(troubleKind("codex: command not found", "codex")).toBe("notfound");
+  expect(troubleKind("spawn codex ENOENT", "codex")).toBe("notfound");
+  // ...but a disk path is still not about Codex.
+  expect(troubleKind("could not write the file: no such file or directory", "codex")).toBe("raw");
+  // And a Claude-shaped message on a Codex session is not Codex's.
+  expect(troubleKind("claude: command not found", "codex")).toBe("raw");
+});
+
+test("the Codex brief installs with npm and signs in with a device code", () => {
+  const missing = troubleInstructions({ what: "x", error: "codex: command not found", backend: "codex" });
+  expect(missing).toContain("which codex");
+  expect(missing).toContain(CODEX_INSTALL_COMMAND);
+  expect(missing).not.toContain("install.sh");
+  expect(missing).toContain("codex --version");
+
+  const signedOut = troubleInstructions({ what: "x", error: "Not logged in", backend: "codex" });
+  expect(signedOut).toContain("codex login --device-auth");
+  expect(signedOut).not.toContain("/login");
+  expect(signedOut).not.toContain(CODEX_INSTALL_COMMAND);
+});
+
+
+// -- Gemini (docs/GEMINI_BACKEND.md D13, §8) -----------------------------------
+
+test("gemini's own markers classify a Gemini session's failure", () => {
+  // The account markers, verbatim from agent_backends/gemini.py.
+  for (const msg of [
+    "Gemini API key is missing or not configured.",
+    "Authentication required.",
+    "Not logged in",
+    "gemini is not signed in: the CLI asked for a browser sign-in",
+    "UNAUTHENTICATED: Request had invalid authentication credentials",
+    "invalid_grant: Token has been expired or revoked.",
+    "login required",
+    "Please sign in again",
+    "HTTP 401 Unauthorized",
+  ]) expect(troubleKind(msg, "gemini")).toBe("login");
+  // Not login failures (review on #1939): Google's PERMISSION_DENIED is an
+  // API-not-enabled / IAM refusal a signed-in user gets, a bare 401 is a
+  // number, "design in" is not "sign in".
+  for (const msg of [
+    "PERMISSION_DENIED: Generative Language API has not been used in project 1234 before or it is disabled",
+    "Read 401 bytes from stdout",
+    "Could not apply the design in index.html",
+    "Could not assign input",
+  ]) expect(troubleKind(msg, "gemini")).toBe("raw");
+  // The limit markers, likewise.
+  for (const msg of [
+    "RESOURCE_EXHAUSTED: quota exceeded",
+    "Rate limit exceeded",
+    "You exceeded your current quota",
+    "Too Many Requests",
+    "HTTP 429",
+  ]) expect(troubleKind(msg, "gemini")).toBe("limit");
+});
+
+test("gemini's markers are Gemini's alone, and a shape counts when it names Gemini or Google", () => {
+  expect(troubleKind("RESOURCE_EXHAUSTED", "claude")).toBe("raw");
+  expect(troubleKind("invalid_grant", "codex")).toBe("raw");
+  expect(troubleKind("listening on port 14290", "gemini")).toBe("raw");
+  expect(troubleKind("build 4011 done", "gemini")).toBe("raw");
+  expect(troubleKind("gemini: command not found", "gemini")).toBe("notfound");
+  expect(troubleKind("spawn gemini ENOENT", "gemini")).toBe("notfound");
+  expect(troubleKind("could not write the file: no such file or directory", "gemini")).toBe("raw");
+  expect(troubleKind("claude: command not found", "gemini")).toBe("raw");
+  // A missing file INSIDE the CLI's own config dir is an installed CLI's
+  // problem, not a missing CLI — for every agent.
+  expect(troubleKind("ENOENT: no such file or directory, open '/Users/me/.gemini/settings.json'", "gemini")).toBe("raw");
+  expect(troubleKind("ENOENT: no such file or directory, open 'C:\\Users\\me\\.gemini\\trusted_folders.json'", "gemini")).toBe("raw");
+  expect(troubleKind("ENOENT: open '/Users/me/.codex/config.toml'", "codex")).toBe("raw");
+  expect(troubleKind("claude: ENOENT /Users/me/.claude/settings.json", "claude")).toBe("raw");
+  // ...while the binary itself missing still reads as notfound — also when
+  // the binary sits under the config dir (Claude's legacy `~/.claude/local`).
+  expect(troubleKind("/usr/local/bin/gemini: No such file or directory", "gemini")).toBe("notfound");
+  expect(troubleKind("spawn /Users/me/.claude/local/claude ENOENT", "claude")).toBe("notfound");
+  expect(troubleKind("[Errno 2] No such file or directory: '/Users/me/.claude/local/claude'", "claude")).toBe("notfound");
+  expect(troubleKind("ENOENT: no such file or directory, scandir '/Users/me/.gemini'", "gemini")).toBe("raw");
+  // The server's own "not found" sentence for each agent (agent.py) is a
+  // missing install, not an engine fault.
+  expect(troubleKind("session start failed: gemini CLI not found — install with `npm install -g @google/gemini-cli`, put `gemini` on the PATH", "gemini")).toBe("notfound");
+  expect(troubleKind("codex CLI not found — install with `npm install -g @openai/codex`", "codex")).toBe("notfound");
+  expect(troubleKind("copilot CLI not found — install GitHub Copilot CLI", "copilot")).toBe("notfound");
+});
+
+test("the Gemini brief installs with npm and signs in with Google", () => {
+  const missing = troubleInstructions({ what: "x", error: "gemini: command not found", backend: "gemini" });
+  expect(missing).toContain("which gemini");
+  expect(missing).toContain(GEMINI_INSTALL_COMMAND);
+  expect(missing).not.toContain("install.sh");
+  expect(missing).toContain("gemini --version");
+  const signedOut = troubleInstructions({ what: "x", error: "Not logged in", backend: "gemini" });
+  expect(signedOut).toContain("/auth");
+  expect(signedOut).toContain("GEMINI_API_KEY");
+  expect(signedOut).not.toContain("codex login");
+  expect(signedOut).not.toContain(GEMINI_INSTALL_COMMAND);
 });

@@ -57,7 +57,7 @@ import shutil
 import time
 import urllib.parse
 
-from fused_render import session_liveness
+from fused_render import _platform, session_liveness
 from fused_render.agent_backends import roots
 
 logger = logging.getLogger(__name__)
@@ -94,12 +94,12 @@ def _under(path: str, root: str) -> str | None:
     """`path` relative to `root` ("" for root itself), or None when `path` is
     not `root` and not inside it. A directory boundary, not a string prefix:
     `/A/app-old` is not under `/A/app`."""
-    p, r = _norm(path), _norm(root)
-    if p == r:
+    ap, ar = os.path.abspath(path), os.path.abspath(root)
+    if not _platform.is_within(ap, ar):
+        return None
+    if not _platform.is_within(ap, ar, strict=True):
         return ""
-    if p.startswith(r.rstrip(os.sep) + os.sep):
-        return os.path.abspath(path)[len(os.path.abspath(root).rstrip(os.sep)) + 1:]
-    return None
+    return ap[len(ar.rstrip(os.sep)) + 1:]
 
 
 def transcript_cwd(path: str) -> str | None:
@@ -155,7 +155,7 @@ def _pid_alive(pid: int) -> bool:
     alive: the cost of a wrong "alive" is a deferred move, the cost of a wrong
     "gone" is a split conversation."""
     try:
-        os.kill(pid, 0)
+        _platform.probe_pid(pid)
     except ProcessLookupError:
         return False
     except OSError:

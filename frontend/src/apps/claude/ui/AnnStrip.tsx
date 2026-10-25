@@ -133,6 +133,58 @@ function ctaClass(mode: AnnMode): string {
   return "c-anncta" + (busy ? " busy" : "");
 }
 
+/** THE CAMERA, on its own: the strip's first seat, and — on a canvas page's
+ *  node chat, which has no strip (`_noann=1`) but does have a picture to take
+ *  (`canvasShot`) — the one seat drawn beside the ⋮ instead. One markup so the
+ *  two read as the same button. Wrap it in `.c-anncta` to get the seat's face. */
+export function ScreenshotSeat({
+  label,
+  inert = false,
+  disabled = false,
+  capturing = false,
+  onClick,
+}: {
+  label: string;
+  /** `aria-disabled` without `disabled`: the seat stays readable to a reader. */
+  inert?: boolean;
+  disabled?: boolean;
+  /** The shutter is open: the word turns to "Capturing…" so a shot that takes
+   *  seconds (a host's picture of its workbench) is seen to be under way. */
+  capturing?: boolean;
+  onClick?: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={"c-viewshot" + (capturing ? " is-capturing" : "")}
+      aria-label={label}
+      title={label}
+      aria-disabled={inert ? "true" : "false"}
+      aria-busy={capturing ? "true" : "false"}
+      disabled={disabled}
+      onClick={onClick}
+    >
+      <ScreenshotGlyph capturing={capturing} />
+    </button>
+  );
+}
+
+/** The seat's face — glyph and word — for a trigger that is not this button. */
+export function ScreenshotGlyph({ capturing = false }: { capturing?: boolean }) {
+  return (
+    <>
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path
+          d="M2.6 5.4h2.1l1-1.6h4.6l1 1.6h2.1a1 1 0 0 1 1 1v5.6a1 1 0 0 1-1 1H2.6a1 1 0 0 1-1-1V6.4a1 1 0 0 1 1-1Z"
+          strokeLinejoin="round"
+        />
+        <circle cx="8" cy="9" r="2.4" />
+      </svg>
+      <span className="c-lbl">{capturing ? "Capturing…" : "Screenshot"}</span>
+    </>
+  );
+}
+
 export function AnnStrip({
   paneNoun,
   shown,
@@ -190,24 +242,12 @@ export function AnnStrip({
   return (
     <div className={ctaClass(mode)}>
       {cameraShown ? (
-      <button
-        type="button"
-        className="c-viewshot"
-        aria-label={shotLabelFor(paneNoun)}
-        title={shotLabelFor(paneNoun)}
-        aria-disabled={aria.screenshot || blocked ? "true" : "false"}
-        disabled={capturing || aria.screenshot || blocked}
-        onClick={onScreenshot}
-      >
-        <svg viewBox="0 0 16 16" aria-hidden="true">
-          <path
-            d="M2.6 5.4h2.1l1-1.6h4.6l1 1.6h2.1a1 1 0 0 1 1 1v5.6a1 1 0 0 1-1 1H2.6a1 1 0 0 1-1-1V6.4a1 1 0 0 1 1-1Z"
-            strokeLinejoin="round"
-          />
-          <circle cx="8" cy="9" r="2.4" />
-        </svg>
-        <span className="c-lbl">Screenshot</span>
-      </button>
+        <ScreenshotSeat
+          label={shotLabelFor(paneNoun)}
+          inert={aria.screenshot || blocked}
+          disabled={capturing || aria.screenshot || blocked}
+          onClick={onScreenshot}
+        />
       ) : null}
       {commentShown ? (
       <button

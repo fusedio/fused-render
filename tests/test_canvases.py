@@ -18,6 +18,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
+import fused_render.canvas_sync_state as canvas_sync_state_mod
 import fused_render.canvases as canvases_mod
 import fused_render.fusedcli as fusedcli_mod
 from fused_render.server import create_app
@@ -141,10 +142,11 @@ def main():
             sys.stderr.write("error: node 'x' has no source file\n")
             sys.exit(1)
         return
-    if plain[:2] == ["canvas", "create"]:
+    if plain[:2] in (["canvas", "create"], ["canvas", "delete"]):
         return
     if plain[:1] == ["logout"]:
-        os.remove(os.environ["FUSED_RENDER_FUSED_CREDENTIALS"])
+        os.remove(os.environ.get("FUSED_STUB_LOGOUT_FILE")
+                  or os.environ["FUSED_RENDER_FUSED_CREDENTIALS"])
         return
     sys.stderr.write("Error: unknown stub command\n")
     sys.exit(2)
@@ -155,7 +157,9 @@ main()
 
 @pytest.fixture(autouse=True)
 def _reset_module_state():
+    canvases_mod._cli_cache_clear()
     yield
+    canvases_mod._cli_cache_clear()
     login = canvases_mod._active_login
     if login is not None and login.proc.poll() is None:
         login.proc.kill()
@@ -203,10 +207,13 @@ class Harness:
 
         self.client = TestClient(create_app(start_dir=str(tmp_path)))
 
-    def set_scenario(self, scenario: dict) -> None:
+    def set_scenario(self, scenario: dict, keep_cache: bool = False) -> None:
         self.scenario_file.write_text(json.dumps(scenario), encoding="utf-8")
+        if not keep_cache:
+            canvases_mod._cli_cache_clear()
 
     def log_in(self) -> None:
+        canvases_mod._cli_cache_clear()
         self.creds.write_text(json.dumps({"access_token": "tok123"}), encoding="utf-8")
 
     def calls(self) -> list[list[str]]:
@@ -234,7 +241,7 @@ def test_status_reports_signed_out(harness):
     assert body["cli_found"] is True
     assert body["logged_in"] is False
     assert body["login_in_flight"] is False
-    assert set(body["envs"]) == {"unstable", "prod"}
+    assert set(body["envs"]) == {"unstable", "prod", "custom"}
     assert all(e["base_url"] for e in body["envs"].values())
 
 
@@ -579,6 +586,92 @@ def test_logout_clears_credentials_and_stops_watchers(harness):
     assert canvases_mod._syncs == {}
 
 
+def test_delete_canvas_stops_sync_runs_cli_and_removes_clone(harness):
+    harness.log_in()
+    harness.client.post("/api/canvases/clone", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    manager = canvases_mod._syncs.get((ENV, "alpha"))
+    assert manager is not None
+    sync = harness.root / ".sync"
+    (sync / "push" / "alpha").mkdir(parents=True)
+    (sync / "trash" / "alpha").mkdir(parents=True)
+    (sync / "alpha.json").write_text("{}", encoding="utf-8")
+    res = harness.client.post("/api/canvases/delete", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    assert res.status_code == 200, res.text
+    assert res.json() == {"ok": True, "name": "alpha", "env": ENV, "removed_local": True}
+    assert ["workbench", "canvas", "delete", "alpha"] in harness.calls()
+    assert manager.stop_event.is_set()
+    assert (ENV, "alpha") not in canvases_mod._syncs
+    assert not (harness.root / "alpha").exists()
+    for leftover in ("push/alpha", "trash/alpha", "alpha.json", "alpha.lock"):
+        assert not (sync / leftover).exists(), leftover
+    # The root itself, and the other clones' state, are untouched.
+    assert harness.root.is_dir()
+
+
+def test_delete_canvas_holds_sync_start_off_mid_delete(harness, monkeypatch):
+    # Stopping the manager wakes the page, which reads "no watcher" and asks
+    # sync/start to heal — while canvas.toml still exists. Mid-delete that
+    # must be refused, or a fresh watcher (and lock) runs under the rmtree.
+    harness.log_in()
+    harness.client.post("/api/canvases/clone", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    assert (ENV, "alpha") in canvases_mod._syncs
+    seen: list[int] = []
+    real_cli = canvases_mod._run_cli
+
+    def cli_with_heal(args, timeout, env):
+        if args[:3] == ["workbench", "canvas", "delete"]:
+            res = harness.client.post("/api/canvases/sync/start",
+                                      json={"env": ENV, "name": "alpha"}, headers=GUARD)
+            seen.append(res.status_code)
+            assert res.json().get("code") == "deleting"
+            # And the clone's writer lock is this request's for the whole
+            # delete: the stopped manager released nothing, another process
+            # would be refused.
+            held = canvas_sync_state_mod.read_lock(str(harness.root / ".sync" / "alpha.lock"))
+            assert held is not None and held["pid"] == os.getpid()
+        return real_cli(args, timeout, env)
+
+    monkeypatch.setattr(canvases_mod, "_run_cli", cli_with_heal)
+    res = harness.client.post("/api/canvases/delete", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    assert res.status_code == 200, res.text
+    assert seen == [409]
+    assert (ENV, "alpha") not in canvases_mod._syncs
+    assert not (harness.root / "alpha").exists()
+    assert not (harness.root / ".sync" / "alpha.lock").exists()
+    # The hold lifts with the delete: a clone of the same name syncs again.
+    harness.client.post("/api/canvases/clone", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    res = harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    assert res.status_code == 200, res.text
+
+
+def test_delete_canvas_cli_failure_keeps_clone(harness, monkeypatch):
+    harness.log_in()
+    harness.client.post("/api/canvases/clone", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+
+    def failing_cli(args, timeout, env):
+        if args[:3] == ["workbench", "canvas", "delete"]:
+            return None, canvases_mod._error("server said no", 502)
+        return real_cli(args, timeout, env)
+
+    real_cli = canvases_mod._run_cli
+    monkeypatch.setattr(canvases_mod, "_run_cli", failing_cli)
+    res = harness.client.post("/api/canvases/delete", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    assert res.status_code == 502
+    assert (harness.root / "alpha" / "canvas.toml").is_file()
+
+
+def test_delete_canvas_rejects_bad_names(harness):
+    harness.log_in()
+    harness.client.post("/api/canvases/clone", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    for bad in ("a-b", "../x", "", ".", "alpha/.."):
+        res = harness.client.post("/api/canvases/delete", json={"env": ENV, "name": bad}, headers=GUARD)
+        assert res.status_code == 400, bad
+    assert not any(c[:3] == ["workbench", "canvas", "delete"] for c in harness.calls())
+    assert (harness.root / "alpha" / "canvas.toml").is_file()
+
+
 def test_logout_failure_keeps_sync_alive_and_preserves_pending_edit(harness, monkeypatch):
     # A failed `workbench logout` must not have already torn down sync (the
     # user is still signed in) — and a local edit that was pending when the
@@ -637,6 +730,105 @@ def test_whoami_extracts_handle(harness):
     res = harness.client.get("/api/canvases/whoami?env=unstable", headers=GUARD)
     assert res.status_code == 200
     assert res.json()["handle"] == "vasu"
+
+
+def _spawns(harness, word):
+    return [c for c in harness.calls() if word in c]
+
+
+def test_whoami_second_call_within_ttl_spawns_once(harness):
+    harness.log_in()
+    a = harness.client.get("/api/canvases/whoami?env=unstable", headers=GUARD)
+    b = harness.client.get("/api/canvases/whoami?env=unstable", headers=GUARD)
+    assert a.status_code == b.status_code == 200
+    assert a.json() == b.json()
+    assert len(_spawns(harness, "whoami")) == 1
+
+
+def test_whoami_cache_is_keyed_by_env(harness):
+    harness.log_in()
+    harness.client.get(f"/api/canvases/whoami?env={ENV}", headers=GUARD)
+    harness.client.get(f"/api/canvases/whoami?env={OTHER_ENV}", headers=GUARD)
+    assert len(_spawns(harness, "whoami")) == 2
+
+
+def test_cli_error_is_not_cached(harness):
+    harness.log_in()
+    harness.set_scenario({"fail": "boom"})
+    res = harness.client.get("/api/canvases/whoami?env=unstable", headers=GUARD)
+    assert res.status_code == 502
+    harness.set_scenario({}, keep_cache=True)
+    res = harness.client.get("/api/canvases/whoami?env=unstable", headers=GUARD)
+    assert res.status_code == 200
+
+
+def test_list_cache_returns_independent_copies(harness):
+    harness.log_in()
+    first = harness.client.get("/api/canvases/list?env=unstable", headers=GUARD)
+    second = harness.client.get("/api/canvases/list?env=unstable", headers=GUARD)
+    assert first.status_code == second.status_code == 200
+    assert len(_spawns(harness, "list")) == 1
+    # The endpoint mutates its entries (`cloned`); a hit must carry it afresh.
+    assert all("cloned" in c for c in first.json()["canvases"])
+    assert all("cloned" in c for c in second.json()["canvases"])
+
+
+def test_create_invalidates_list_cache(harness):
+    harness.log_in()
+    harness.client.get("/api/canvases/list?env=unstable", headers=GUARD)
+    res = harness.client.post("/api/canvases/create", json={"name": "gamma", "env": ENV},
+                              headers=GUARD)
+    assert res.status_code == 200
+    harness.client.get("/api/canvases/list?env=unstable", headers=GUARD)
+    assert len(_spawns(harness, "list")) == 2
+
+
+def test_logout_invalidates_whoami_cache(harness):
+    harness.log_in()
+    harness.client.get("/api/canvases/whoami?env=unstable", headers=GUARD)
+    assert harness.client.post("/api/canvases/logout", headers=GUARD).status_code == 200
+    harness.log_in()
+    harness.client.get("/api/canvases/whoami?env=unstable", headers=GUARD)
+    assert len(_spawns(harness, "whoami")) == 2
+
+
+def test_concurrent_whoami_is_single_flight(harness, monkeypatch):
+    import types
+
+    harness.log_in()
+    count = []
+
+    def slow_cli(args, timeout, env):
+        count.append(1)
+        time.sleep(0.3)
+        return types.SimpleNamespace(stdout='{"handle":"h"}', returncode=0), None
+
+    monkeypatch.setattr(canvases_mod, "_run_cli", slow_cli)
+    codes = []
+    threads = [threading.Thread(target=lambda: codes.append(harness.client.get(
+        "/api/canvases/whoami?env=unstable", headers=GUARD).status_code))
+        for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(20)
+    assert len(count) == 1
+    assert codes == [200] * 4
+
+
+@pytest.mark.parametrize("ttl,computes", [(0, 2), (60, 1)])
+def test_token_cache_only_until_expiry(harness, ttl, computes):
+    harness.log_in()
+    runs = []
+
+    def compute():
+        runs.append(1)
+        return ("ok", {"access_token": "t"})
+
+    for _ in range(2):
+        out = canvases_mod._cached_cli("token", ENV, compute, lambda payload: ttl)
+        assert out == ("ok", {"access_token": "t"})
+    assert len(runs) == computes
 
 
 def test_clone_rejects_bad_names(harness):
@@ -1119,6 +1311,137 @@ def test_token_requires_login(harness):
     assert res.status_code == 409
 
 
+# -- per-env credentials: custom's own `[auth]` store (D1412) -------------------
+
+
+def _custom_auth_home(monkeypatch, tmp_path, auth: bool = True):
+    """HOME with a `~/.fused/settings.toml` naming its own `[auth]` store, and
+    the harness's store override dropped so the per-env rule decides.
+    Returns (prod/unstable store, custom store)."""
+    home = tmp_path / "home"
+    (home / ".fused").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("FUSED_RENDER_FUSED_CREDENTIALS", raising=False)
+    toml = 'base_url = "https://abc.fused.io/server/v1"\n'
+    if auth:
+        toml += '[auth]\ncredentials_path = "~/.fused/credentials-abc"\n'
+    (home / ".fused" / "settings.toml").write_text(toml, encoding="utf-8")
+    # Back to fused's own `~` paths, now under this HOME (conftest hides the
+    # machine's settings file from every test).
+    monkeypatch.setattr(canvases_mod, "_FUSED_SETTINGS_FILES",
+                        ("~/.fused/settings.toml", "~/.fused/settings.json"))
+    return home / ".fused" / "credentials", home / ".fused" / "credentials-abc"
+
+
+def _write_token(path, token: str) -> None:
+    path.write_text(json.dumps({"access_token": token}), encoding="utf-8")
+
+
+def test_custom_reads_the_settings_files_auth_store(tmp_path, monkeypatch):
+    """custom runs leave FUSED_ENV unset, so fused keeps the settings file's
+    `[auth] credentials_path`; prod/unstable reset to the hosted default. No
+    `[auth]` path means fused's default store; the test override wins all."""
+    hosted, custom = _custom_auth_home(monkeypatch, tmp_path)
+    assert canvases_mod.credentials_file("custom") == str(custom)
+    assert canvases_mod.credentials_file("prod") == str(hosted)
+    assert canvases_mod.credentials_file("unstable") == str(hosted)
+    _custom_auth_home(monkeypatch, tmp_path / "plain", auth=False)
+    assert canvases_mod.credentials_file("custom").endswith("/.fused/credentials")
+    monkeypatch.setenv("FUSED_RENDER_FUSED_CREDENTIALS", "/x/creds")
+    assert canvases_mod.credentials_file("custom") == "/x/creds"
+
+
+def test_status_and_token_follow_the_named_envs_login(harness, tmp_path, monkeypatch):
+    """A custom canvas's iframe must get the custom deployment's own token,
+    never the hosted one — its tenant rejects it, and it must not be handed
+    to another origin. Signed in to fused.io only, custom reads signed out."""
+    hosted, custom = _custom_auth_home(monkeypatch, tmp_path)
+    _write_token(hosted, "hosted-tok")
+    body = harness.client.get("/api/canvases/status?env=custom").json()
+    assert (body["auth_env"], body["logged_in"], body["creds_stamp"]) == ("custom", False, None)
+    body = harness.client.get("/api/canvases/status").json()
+    assert (body["auth_env"], body["logged_in"]) == (fusedcli_mod.DEFAULT_WORKBENCH_ENV, True)
+    assert harness.client.get("/api/canvases/token?env=custom", headers=GUARD).status_code == 409
+    assert harness.client.get("/api/canvases/token?env=prod",
+                              headers=GUARD).json()["access_token"] == "hosted-tok"
+    _write_token(custom, "abc-tok")
+    body = harness.client.get("/api/canvases/status?env=custom").json()
+    assert body["logged_in"] is True and body["creds_stamp"] is not None
+    assert harness.client.get("/api/canvases/token?env=custom",
+                              headers=GUARD).json()["access_token"] == "abc-tok"
+    # Listing a custom catalog checks custom's own login too.
+    os.remove(custom)
+    assert harness.client.get("/api/canvases/list?env=custom", headers=GUARD).status_code == 409
+
+
+def test_status_with_an_unusable_env_describes_the_default_login(harness, monkeypatch):
+    """Cheap and unguarded: a stale or pinned-away pick is not a 400, it falls
+    back to the auth env and says so in `auth_env`."""
+    # Unpinned, a stale pick falls back to the built-in default; pinned to
+    # ENV, a pick of the other env falls back to the pin.
+    for env, expected in (("staging", fusedcli_mod.DEFAULT_WORKBENCH_ENV), (OTHER_ENV, ENV)):
+        if env == OTHER_ENV:
+            monkeypatch.setenv("FUSED_RENDER_WORKBENCH_ENV", ENV)
+        res = harness.client.get(f"/api/canvases/status?env={env}")
+        assert res.status_code == 200
+        assert res.json()["auth_env"] == expected
+
+
+def test_login_for_custom_runs_with_fused_env_unset(harness, tmp_path, monkeypatch):
+    """The custom sign-in must reach the settings file's `[auth]` tenant, which
+    only a run with FUSED_ENV unset reads; a bad env is refused."""
+    _custom_auth_home(monkeypatch, tmp_path)
+    assert harness.client.post("/api/canvases/login?env=staging", headers=GUARD).status_code == 400
+    res = harness.client.post("/api/canvases/login?env=custom", headers=GUARD)
+    assert res.status_code == 200
+    canvases_mod._active_login.proc.wait(10)
+    assert [e for e, argv in harness.env_calls() if "login" in argv] == [None]
+
+
+def test_a_login_for_another_store_is_neither_reused_nor_cancelled(harness, tmp_path, monkeypatch):
+    """One browser sign-in at a time, matched on the store it writes: with a
+    hosted sign-in waiting, a custom one is refused (not silently reused),
+    custom's status does not report it in flight, and a custom sign-out
+    leaves it running."""
+    hosted, custom = _custom_auth_home(monkeypatch, tmp_path)
+    _write_token(custom, "abc-tok")
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    canvases_mod._active_login = canvases_mod._ActiveLogin(
+        proc=proc, started_at=time.time(), store=str(hosted))
+    res = harness.client.post("/api/canvases/login?env=custom", headers=GUARD)
+    assert res.status_code == 409 and res.json()["code"] == "busy"
+    assert harness.client.get("/api/canvases/status?env=custom").json()["login_in_flight"] is False
+    assert harness.client.get("/api/canvases/status?env=prod").json()["login_in_flight"] is True
+    monkeypatch.setenv("FUSED_STUB_LOGOUT_FILE", str(custom))
+    assert harness.client.post("/api/canvases/logout?env=custom", headers=GUARD).status_code == 200
+    assert proc.poll() is None, "a custom sign-out cancelled the hosted sign-in"
+    # Same store: reused, not refused.
+    res = harness.client.post("/api/canvases/login?env=prod", headers=GUARD)
+    assert res.status_code == 200 and canvases_mod._active_login.proc is proc
+
+
+def test_logout_for_custom_stops_only_its_stores_watchers(harness, tmp_path, monkeypatch):
+    """custom's login is its own store: signing out of it leaves the hosted
+    envs' watchers (and their store) alone."""
+    hosted, custom = _custom_auth_home(monkeypatch, tmp_path)
+    _write_token(hosted, "hosted-tok")
+    _write_token(custom, "abc-tok")
+    for env in (ENV, "custom"):
+        assert harness.client.post("/api/canvases/clone", json={"env": env, "name": "alpha"},
+                                   headers=GUARD).status_code == 200
+        harness.client.post("/api/canvases/sync/start", json={"env": env, "name": "alpha"},
+                            headers=GUARD)
+    hosted_mgr = canvases_mod._syncs.get((ENV, "alpha"))
+    custom_mgr = canvases_mod._syncs.get(("custom", "alpha"))
+    assert hosted_mgr is not None and custom_mgr is not None
+    monkeypatch.setenv("FUSED_STUB_LOGOUT_FILE", str(custom))
+    assert harness.client.post("/api/canvases/logout?env=custom", headers=GUARD).status_code == 200
+    assert not custom.exists() and hosted.exists()
+    assert custom_mgr.stop_event.is_set()
+    assert not hosted_mgr.stop_event.is_set()
+    assert list(canvases_mod._syncs) == [(ENV, "alpha")]
+
+
 # -- shim-backed sync: manifest probe + per-file three-way merge ---------------
 #
 # The manifest/zip shims are stub scripts wired in through monkeypatch (same
@@ -1412,6 +1735,91 @@ def test_sync_merges_remote_changes_while_dirty(harness, tmp_path, monkeypatch, 
     _stop_sync("alpha")
 
 
+def test_stamp_only_move_with_unchanged_files_is_adopted_not_stale(
+    harness, tmp_path, monkeypatch, fake_agent
+):
+    # The workbench's share settings (access scope / passcode) bump the
+    # collection stamp and change no file. The server re-serializes
+    # canvas.toml, so its bytes differ while it parses the same: that is
+    # still "nothing to pull" — the probe becomes the baseline, no chip.
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)
+    shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    assert _wait_for(lambda: _manager()._remote is not None)
+
+    with _staged():
+        shims.set_remote_files({**_BASE_FILES, "canvas.toml": "type = 'canvas'\n"})
+        shims.set_manifest("t2")
+
+    assert _wait_for(lambda: _manager()._remote["last_updated"] == "t2"), _watcher_diag()
+    assert _sync_view("alpha")["server_stale"] is None
+    # _save_base runs just after _rotate_remote: wait for the file, too.
+    assert _wait_for(lambda: json.loads(
+        (harness.root / ".sync" / "alpha.json").read_text())["remote"]["last_updated"] == "t2")
+    _stop_sync("alpha")
+
+
+def test_stamp_only_move_is_adopted_over_an_unpushed_layout_edit(
+    harness, tmp_path, monkeypatch, fake_agent
+):
+    # The local canvas.toml was edited (not pushed yet) when the share
+    # settings bumped the stamp: the server's toml is checked against the
+    # sync point's rows instead of the edited local file — still adopted.
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)
+    shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    assert _wait_for(lambda: _manager()._remote is not None)
+    m = _manager()
+    with m._op_lock:
+        m._base_toml = canvases_mod.canvas_snapshot.rows_of_doc({"type": "canvas"})
+        m._save_base()
+
+    with _staged():
+        (harness.root / "alpha" / "canvas.toml").write_text(
+            'type = "canvas"\n\n[canvas]\nx = 1\n', encoding="utf-8")
+        shims.set_remote_files({**_BASE_FILES, "canvas.toml": "type = 'canvas'\n"})
+        shims.set_manifest("t2")
+
+    assert _wait_for(lambda: _manager()._remote["last_updated"] == "t2"), _watcher_diag()
+    assert _sync_view("alpha")["server_stale"] is None
+    _stop_sync("alpha")
+
+
+def test_stamp_only_move_with_a_layout_change_still_reads_stale(
+    harness, tmp_path, monkeypatch, fake_agent
+):
+    # Same stamp-only manifest move, but canvas.toml really changed (a layout
+    # save): the chip goes up as before, and the bundle is downloaded once
+    # for that stamp, not on every poll.
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)
+    shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    assert _wait_for(lambda: _manager()._remote is not None)
+    fetches = []
+    real_fetch = canvases_mod._SyncManager._fetch_bundle
+    monkeypatch.setattr(
+        canvases_mod._SyncManager, "_fetch_bundle",
+        lambda self, probe: fetches.append(probe.get("last_updated")) or real_fetch(self, probe),
+    )
+
+    with _staged():
+        shims.set_remote_files({**_BASE_FILES, "canvas.toml": 'type = "canvas"\nx = 1\n'})
+        shims.set_manifest("t2")
+
+    status = _wait_sync(lambda s: s["server_stale"] is not None)
+    assert status["server_stale"] is not None, f"{status} | {_watcher_diag()}"
+    time.sleep(0.5)  # several more polls
+    assert fetches == ["t2"], fetches
+    assert _manager()._remote["last_updated"] == "t1"
+    _stop_sync("alpha")
+
+
 def test_sync_merge_keeps_local_delete(harness, tmp_path, monkeypatch, fake_agent):
     # Local deleted b.py; the bundle still carries it. The merge must NOT
     # recreate it — the push propagates the delete.
@@ -1516,9 +1924,9 @@ def test_sync_shim_poll_pulls_clean_via_cli_force(harness, tmp_path, monkeypatch
     harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
 
     assert _wait_for(lambda: getattr(_manager(), "_remote", None) is not None)
-    harness.set_scenario(
-        {"pull_files": {**_BASE_FILES, "remote_udf.py": "print('from workbench')\n"}}
-    )
+    remote = {**_BASE_FILES, "remote_udf.py": "print('from workbench')\n"}
+    harness.set_scenario({"pull_files": remote})
+    shims.set_remote_files(remote)  # a stamp move over unchanged files is adopted
     shims.set_manifest("t2")
 
     body = _pull_when_stale(harness)
@@ -1567,6 +1975,7 @@ def test_sync_shim_force_pull_rechecks_before_adopting_clean(harness, tmp_path, 
         "pull_files": {**_BASE_FILES, "remote_udf.py": "print('from workbench')\n"},
         "pull_dry": "Would write 1 file (local differs from the canvas).",
     })
+    shims.set_remote_files({**_BASE_FILES, "remote_udf.py": "print('from workbench')\n"})
     shims.set_manifest("t2")
 
     body = _pull_when_stale(harness)
@@ -2194,7 +2603,12 @@ def test_the_managers_own_push_does_not_route_back_through_the_endpoint(
                             headers=GUARD)
         (harness.root / "alpha" / "a.py").write_text("a2-edited\n")
 
-        status = _wait_sync(lambda s: s["push_seq"] >= 1)
+        # Settled, not just counted: `push_seq` is bumped a beat before
+        # `push_state` leaves "pushing", and an edit that landed mid-push
+        # re-arms a second one ("pending" -> "pushing") — a loaded runner
+        # sampled either window and read "pushing" (CI, fused-engine job).
+        status = _wait_sync(lambda s: s["push_seq"] >= 1
+                            and s["push_state"] not in ("pending", "pushing"))
         assert status and status["push_seq"] >= 1, (
             "the manager's own push never succeeded", status)
         assert status["push_state"] == "idle", status
@@ -2543,6 +2957,7 @@ def test_sync_state_reports_pulling_during_a_clean_pull(harness, tmp_path, monke
         "pull_files": {**_BASE_FILES, "remote_udf.py": "print('x')\n"},
         "pull_delay": 0.6,
     })
+    shims.set_remote_files({**_BASE_FILES, "remote_udf.py": "print('x')\n"})
     shims.set_manifest("t2")
     assert _wait_sync(lambda s: s["server_stale"] is not None)["server_stale"] is not None
     monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 30.0)
@@ -2629,15 +3044,30 @@ def test_status_lists_every_environment_and_the_default(harness):
     (harness.base / OTHER_ENV / "beta").mkdir(parents=True)
     (harness.base / OTHER_ENV / "beta" / "canvas.toml").write_text("", encoding="utf-8")
     body = harness.client.get("/api/canvases/status").json()
-    assert body["workbench_env"] == ENV  # the preference's default
+    assert body["workbench_env"] == fusedcli_mod.DEFAULT_WORKBENCH_ENV == OTHER_ENV
     assert body["locked"] is False
-    assert set(body["envs"]) == {"unstable", "prod"}
+    assert set(body["envs"]) == {"unstable", "prod", "custom"}
     assert body["envs"][OTHER_ENV]["canvases_dir"] == str(harness.base / OTHER_ENV)
     assert body["envs"][OTHER_ENV]["cloned_count"] == 1
     assert body["envs"][ENV]["cloned_count"] == 0
     assert body["envs"]["prod"]["base_url"] == "https://www.fused.io"
     for gone in ("workbench_base_url", "canvases_dir", "cloned_count"):
         assert gone not in body
+
+
+def test_status_marks_custom_unavailable_without_a_fused_settings_file(
+        harness, monkeypatch, tmp_path):
+    """No ~/.fused/settings.toml means custom would just be prod: the pickers
+    disable it. The named envs are always available."""
+    harness.log_in()
+    toml = tmp_path / "settings.toml"
+    monkeypatch.setattr(canvases_mod, "_FUSED_SETTINGS_FILES", (str(toml),))
+    envs = harness.client.get("/api/canvases/status").json()["envs"]
+    assert {e: v["available"] for e, v in envs.items()} == {
+        "unstable": True, "prod": True, "custom": False}
+    toml.write_text('base_url = "https://abc.fused.io/server/v1"\n')
+    envs = harness.client.get("/api/canvases/status").json()["envs"]
+    assert envs["custom"]["available"] is True
 
 
 def test_every_canvas_call_requires_a_known_env(harness):
@@ -2739,7 +3169,7 @@ def test_whoami_without_an_env_is_the_login_liveness_probe(harness):
     harness.log_in()
     res = harness.client.get("/api/canvases/whoami", headers=GUARD)
     assert res.status_code == 200 and res.json()["handle"] == "tester"
-    assert harness.env_calls()[-1][0] == ENV
+    assert harness.env_calls()[-1][0] == fusedcli_mod.DEFAULT_WORKBENCH_ENV
     assert harness.client.get("/api/canvases/whoami?env=staging",
                               headers=GUARD).status_code == 400
 
@@ -2869,10 +3299,11 @@ def test_the_default_environment_is_an_ordinary_preference(harness, tmp_path, mo
     exported = []
     monkeypatch.setattr(fusedcli_mod, "export_fused_cli_env", lambda: exported.append(1))
 
-    res = harness.client.put("/api/prefs", json={"workbench_env": OTHER_ENV}, headers=GUARD)
+    # ENV differs from the built-in default (OTHER_ENV): the PUT must move it.
+    res = harness.client.put("/api/prefs", json={"workbench_env": ENV}, headers=GUARD)
     assert res.status_code == 200, res.text
-    assert res.json()["workbench"]["env"] == OTHER_ENV
-    assert harness.client.get("/api/canvases/status").json()["workbench_env"] == OTHER_ENV
+    assert res.json()["workbench"]["env"] == ENV
+    assert harness.client.get("/api/canvases/status").json()["workbench_env"] == ENV
     assert exported == [1]
     assert _manager() is manager and not manager.stop_event.is_set()
 

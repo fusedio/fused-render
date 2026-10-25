@@ -40,23 +40,26 @@ ALLOWED = {
     "platform/ui/ServerStatusBanner.tsx": "dev",
     "platform/ui/UpdateNotifier.tsx": "tab",
     # ---- shell ------------------------------------------------------------
-    "shell/CurrentAppsSection.tsx": "signal",       # desk-changed nudge (+ order import)
+    "shell/CurrentAppsSection.tsx": "signal",       # desk-changed nudge
     "shell/ScheduleTaskViews.tsx": "tab",           # list memory, board lanes, group folds
     "shell/Scheduled.tsx": "import",
     "shell/TaskCards.tsx": "tab",
+    "shell/TaskWorkspace.tsx": "display",           # group collapse state (per viewer)
     "shell/TerminalDrawer.tsx": "cache",            # pty ids re-checked against GET /api/terminal
     "shell/UpdateCard.tsx": "tab",
     "shell/notifications-seen-store.ts": "import",
-    "shell/settings/claude.tsx": "display",         # accordion open/order habits (Akshil 2026-10-20)
     "shell/task-peek-store.ts": "display",          # peek width + per-tab autocollapse marker
+    "shell/tasks-lib.ts": "display",                # Tasks "Sort by" choice (per viewer)
     "shell/tasksPulse.ts": "signal",                # chat-activity listener (+ seen import)
     # ---- apps -------------------------------------------------------------
     "apps/ai_models/local/HubSearchScreen.tsx": "cache",
     "apps/bots/lib/layout.ts": "display",           # bots column layout (per viewer)
     "apps/bots/state/store.ts": "import",
+    "apps/canvases/CanvasWorkspace.tsx": "cache",   # last fused whoami handle per env
     "apps/claude/ClaudeChat.tsx": "signal",
     "apps/claude/feature-flag.ts": "signal",
     "apps/claude/protocol/run-controller.ts": "tab",
+    "apps/claude/ui/TasksPanel.tsx": "display",     # Agents & shells strip open/closed (per viewer)
     "apps/claude/ui/debug-sent.ts": "dev",
     "apps/claude/ui/useRecentTasks.ts": "tab",
     "apps/explorer/lib/fs-clipboard.ts": "tab",

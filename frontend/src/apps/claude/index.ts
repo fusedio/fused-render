@@ -16,3 +16,17 @@ export { ChatFramePlaceholder } from "./ChatPlaceholder";
  *  learn. Leaf helpers, so this costs the shell chunk nothing but the
  *  functions. */
 export { draftChatUrl, draftHref } from "./ui/list-rows";
+
+/** The canvas page's shot contract and the framed chat's ask (`shots/canvas-shot`). */
+export {
+  CANVAS_SHOT_FROM_PARENT,
+  requestCanvasShotFromParent,
+  type CanvasShot,
+  type CanvasShotAnswer,
+  type CanvasShotWhat,
+} from "./shots/canvas-shot";
+
+/** The shot viewer, for a host that draws a framed chat's pictures itself
+ *  (CanvasWorkspace `fused-shot-view`). */
+export { ShotViewer } from "./ui/ShotViewer";
+export type { Viewable } from "./ui/attachApi";

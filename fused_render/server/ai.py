@@ -23,8 +23,8 @@ from fused_render import claude_health, jobs
 from fused_render.ai.runners import formats
 from fused_render.server import ai_metrics
 from fused_render.server.common import (
-    AI_PROVIDERS, APPLE_MODELS, _require_fused, ai_result, ai_usage_tokens,
-    apple_model_for, provider_of_model)
+    AI_AGENT_PROVIDERS, AI_PROVIDERS, APPLE_MODELS, _require_fused, ai_result,
+    ai_usage_tokens, apple_model_for, provider_of_model)
 from fused_render.supervisor.paths import STRIPPED_ENV_VARS
 
 router = APIRouter()
@@ -425,12 +425,15 @@ class _AiSession:
         if proc is not None:
             await _ai_reap(proc)
 
-    def prewarm_default(self) -> None:
+    def prewarm_default(self, delay: float = 0.0) -> None:
         """Spawn the instance ahead of the first request (startup hook).
         Fire-and-forget; a missing binary or failed spawn just means the
-        first call pays the cold start."""
+        first call pays the cold start. `delay` holds the spawn back so it
+        does not compete with the first requests and the other startup warms."""
 
         async def go():
+            if delay:
+                await asyncio.sleep(delay)
             async with self.lock:
                 if self._proc is None:
                     try:
@@ -1405,9 +1408,14 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
                 status=409)
     # An explicit short alias ("haiku") resolves through the table below, so
     # the mapping stays the one place that says which haiku "haiku" is —
-    # handed raw to the CLI it would mean the CLI's pick instead.
-    model = (_AI_SHORT_MODEL_IDS.get(model, model) if model else None) \
-        or _AI_DEFAULT_MODEL
+    # handed raw to the CLI it would mean the CLI's pick instead. NOT for an
+    # agent tier (D1433): Copilot's `claude-sonnet-4.5` or Codex's
+    # `gpt-6-luna` is that CLI's own id, passed through as Tasks pass it
+    # (`_agent_relay` fills an omitted one from the registry's default), and
+    # haiku is a Claude id that means nothing to the other three.
+    if provider not in AI_AGENT_PROVIDERS:
+        model = (_AI_SHORT_MODEL_IDS.get(model, model) if model else None) \
+            or _AI_DEFAULT_MODEL
     # The other direction: a repo id or GGUF filename is not something the
     # Claude CLI can run, and passing it through would surface as the CLI's
     # own "unknown model" a subprocess hop later. Refused here, naming the
@@ -1511,6 +1519,16 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
     # `history` and `raw` stay refusals on the Claude tier below; `images`
     # is carried as API image blocks there.
     warnings: list[dict] = []
+    if provider in AI_AGENT_PROVIDERS:
+        # An agent CLI as a tier (D1433): Copilot, Codex or Gemini run as the
+        # same tool-less one-shot the session recaps use (`agent_oneshot`).
+        # Semantics follow the Claude tier — `history`, `raw` and `images`
+        # are REFUSED (one prompt at a time, a template the CLI owns, no
+        # image input in `-p` mode), the sampling knobs and `thinking` are
+        # dropped into `warnings[]`, `effort` rides where the CLI takes it.
+        return await _agent_relay(provider, model, prompt, system_prompt, bool(stream),
+                                  body, effort, thinking, history, raw, images,
+                                  warnings, page)
     if provider == "apple":
         # Apple's on-device model (D700). Tunables it lacks are warnings, like
         # every tier: no top-p (the framework samples by temperature or by
@@ -2043,6 +2061,170 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
 _APPLE_ROW_DETAIL = "Apple on-device model…"
 
 
+async def _agent_relay(backend: str, model: str | None, prompt: str, system_prompt: str,
+                       stream: bool, body: dict, effort, thinking, history, raw, images,
+                       warnings: list, page: str = ""):
+    """One completion from an agent CLI — Copilot, Codex or Gemini — as a
+    `/api/ai` tier (D1433), via `agent_oneshot`.
+
+    Same wire as the other tiers (`{ok, result}` or NDJSON closed by a `done`
+    carrying the D632 frame), same Activity row lifecycle. What differs is
+    the CLI's: none of the three streams in one-shot mode, so with
+    `stream: true` the whole text arrives as ONE chunk followed by `done` —
+    a caller written for the Claude tier's deltas sees a late, complete
+    chunk and the same terminal frame. The gate is the agent's Preferences
+    switch (D17's rule for every spawn entry; `registry.is_enabled`): a
+    disabled agent answers 409 `ai_unavailable` with `reason:
+    "backend_disabled"`, which is also why the canvas host lists only
+    enabled agents to the embedded workbench. `provider: "claude"` stays
+    ungated, as D17 left `fused.ai`'s Claude tier.
+
+    Cancellation: a streaming client's disconnect cancels this coroutine
+    (`asyncio.CancelledError` at the await below) and `run_async` kills the
+    CLI; the Activity row's ✕ is polled every second and does the same,
+    answering a frame with `finishReason: "cancelled"` and no text.
+    `usage` is null: the CLIs report no token counts in this mode (Gemini's
+    `stats` ride `providerMetadata.gemini.stats` when present).
+    """
+    from fused_render import agent_oneshot
+    from fused_render.agent_backends import registry
+    from fused_render.ai import supervisor
+
+    label = registry.get(backend).label
+    if history:
+        return _ai_error(
+            "bad_request",
+            f"'history' is not supported by the {label} tier: the CLI answers one "
+            "prompt at a time; a local model (a Hugging Face repo id) holds a conversation",
+            status=400)
+    if raw:
+        return _ai_error(
+            "bad_request",
+            f"'raw' sends the prompt with no chat template, which the {label} CLI "
+            "cannot do — it owns its template; drop 'raw'",
+            status=400)
+    if images:
+        return _ai_error(
+            "bad_request",
+            f"'images' is not supported by the {label} tier (no image input in its "
+            "one-shot mode); use the Claude tier or a local vision model",
+            status=400)
+    if not registry.is_enabled(backend):
+        return JSONResponse(
+            {"ok": False, "error": {
+                "type": "ai_unavailable",
+                "message": f"{label} is turned off in Preferences",
+                "reason": "backend_disabled", "backend": backend}},
+            status_code=409)
+    for key in ("temperature", "maxTokens", "topP"):
+        if body.get(key) is not None:
+            warnings.append(_unsupported(
+                key, backend, f"the {label} CLI takes no sampling parameters in "
+                "one-shot mode; 'effort' is the one knob"))
+    if thinking is not None:
+        warnings.append(_unsupported(
+            "thinking", backend, f"the {label} CLI has no thinking flag to set; "
+            "'effort' is the one knob"))
+    # The relay's placeholder system prompt is not worth a line of the CLI's
+    # context: the three prepend a system text to the user message.
+    system = system_prompt if system_prompt != _AI_DEFAULT_SYSTEM_PROMPT else ""
+    try:
+        spec = await asyncio.to_thread(
+            agent_oneshot.prepare, backend, model or "", system, prompt, effort)
+    except agent_oneshot.OneShotError as exc:
+        return _ai_failed(model or backend, exc.type_, str(exc),
+                          status=409 if exc.type_ == "ai_unavailable" else 502)
+    model = spec.model
+    if spec.effort_dropped:
+        warnings.append(_unsupported("effort", backend, spec.effort_dropped))
+
+    job = supervisor.text_job_id(uuid.uuid4().hex)
+    row = supervisor.text_row_fields(_text_title(prompt, model), model, page)
+
+    def tick(**over) -> None:
+        supervisor._report(job, **row, **over)
+
+    started = time.monotonic()
+    tick(state="running", done=None, total=None, detail=f"{label} CLI…")
+
+    def frame(text: str, finish: str = "stop") -> dict:
+        metadata: dict = {"seconds": round(time.monotonic() - started, 3),
+                          "streamed": False}
+        if isinstance(spec.extra.get("stats"), dict):
+            metadata["stats"] = spec.extra["stats"]
+        return ai_result({"text": text}, provider=backend, model=model, usage=None,
+                         finish_reason=finish, warnings=warnings, request_id=job,
+                         metadata=metadata)
+
+    async def run() -> tuple[str, str]:
+        """`(text, finish)`: the reply, or ("", "cancelled") when the row's
+        ✕ was pressed. Raises OneShotError on every other failure."""
+        task = asyncio.ensure_future(agent_oneshot.run_async(spec, _AI_TIMEOUT_S))
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=1.0)
+                if done:
+                    return task.result(), "stop"
+                if supervisor._cancel_requested(job):
+                    task.cancel()
+                    try:
+                        await task
+                    except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                        pass
+                    return "", "cancelled"
+        finally:
+            if not task.done():
+                # This coroutine was cancelled (client gone): take the CLI
+                # down with it rather than let it finish for nobody.
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+
+    def settle(text: str, finish: str) -> None:
+        if finish == "cancelled":
+            tick(state="cancelled", done=None, total=None, detail="Cancelled")
+            return
+        ai_metrics.record(model, None, time.monotonic() - started)
+        tick(state="done", done=1, total=1, detail=f"Generated {len(text)} characters")
+
+    if not stream:
+        try:
+            text, finish = await run()
+        except agent_oneshot.OneShotError as exc:
+            tick(state="error", done=None, total=None, message=str(exc))
+            return _ai_failed(model, exc.type_, str(exc),
+                              status=504 if exc.type_ == "timeout" else 502)
+        settle(text, finish)
+        return JSONResponse({"ok": True, "result": frame(text, finish)})
+
+    async def ndjson():
+        reported = False
+        try:
+            try:
+                text, finish = await run()
+            except agent_oneshot.OneShotError as exc:
+                reported = True
+                ai_metrics.record_failure(model, exc.type_)
+                tick(state="error", done=None, total=None, message=str(exc))
+                yield json.dumps({"type": "done", "ok": False, "error": {
+                    "type": exc.type_, "message": str(exc)}}) + "\n"
+                return
+            reported = True
+            settle(text, finish)
+            if text:
+                yield json.dumps({"type": "chunk", "text": text}) + "\n"
+            yield json.dumps({"type": "done", "ok": True, "result": frame(text, finish)}) + "\n"
+        finally:
+            if not reported:
+                # The client went away (or a server bug) before an answer:
+                # the row must not stay "running" forever.
+                tick(state="cancelled", done=None, total=None, detail="Cancelled")
+
+    return StreamingResponse(ndjson(), media_type="text/x-ndjson")
+
+
 def _apple_relay(model: str, prompt: str, system_prompt: str, stream: bool,
                  body: dict, warnings: list | None = None, page: str = ""):
     """One completion from Apple's on-device model (D700), via the helper.
@@ -2340,10 +2522,13 @@ def _ai_usage(raw) -> dict | None:
 # `_AI_SESSION` itself is still updated, as the default for callers with no
 # app handle (a bare module-level call, or a test driving `_ai_relay`
 # directly).
-def prewarm_ai(app=None):
+def prewarm_ai(app=None, delay: float = 0.0):
     global _AI_SESSION
     _AI_SESSION = _AiSession()
-    _AI_SESSION.prewarm_default()
+    if delay:
+        _AI_SESSION.prewarm_default(delay=delay)
+    else:
+        _AI_SESSION.prewarm_default()
     if app is not None:
         app.state.ai_session = _AI_SESSION
 

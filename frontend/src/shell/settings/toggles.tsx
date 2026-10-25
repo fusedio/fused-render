@@ -1,4 +1,4 @@
-// The one-switch settings: Tasks, Apps & sharing, Optional features.
+// The one-switch settings: Chats & tasks, Sharing & sync, Experimental flags.
 //
 // Most of them publish after the PUT as well as saving: the surface the switch
 // governs is usually already on screen (the sidebar beside this page, a grid
@@ -7,6 +7,7 @@
 // navigation. Each flag module's header says why its reader caches.
 import {
   putAppSharingEnabled,
+  putCanvasesEmbedProxy,
   putCanvasesEnabled,
   putGitAutoSyncEnabled,
   putGithubLinkEnabled,
@@ -18,6 +19,7 @@ import {
   putTaskNotifyTerminalSessionsEnabled,
   putTaskRecapTitlesEnabled,
   putTaskSummaryTitlesEnabled,
+  putClaudeDefaultPermission,
   putClaudeStrictMcpEnabled,
 } from "@platform/lib/api";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
@@ -27,11 +29,14 @@ import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
 import { publishMarketplaceEnabled } from "@platform/lib/marketplace-flag";
 import { publishGithubLinkEnabled } from "@platform/lib/github-link-flag";
 import {
+  publishDefaultPermission,
   publishProjectQueueEnabled,
   publishTaskRecapTitlesEnabled,
 } from "@apps/claude/feature-flag";
 import { publishTaskNotifyTerminalSessions } from "../task-notify-terminal-flag";
-import { PrefToggleRow, type PrefControlProps } from "./SettingRow";
+import { ErrorBanner } from "@platform/ui/ErrorBanner";
+import { PERMISSION_LABELS } from "@apps/claude/protocol/summaries";
+import { PrefToggleRow, SettingRow, SettingSelect, usePrefWrite, type PrefControlProps } from "./SettingRow";
 
 // ── Tasks ──────────────────────────────────────────────────────────────────
 
@@ -95,6 +100,36 @@ export function ClaudeStrictMcpControl({ prefs, onChange }: PrefControlProps) {
   );
 }
 
+// The Approvals mode a new chat opens on. A select, not a switch; published so
+// a composer already on screen (and the next send) reads the new default.
+// "auto" when unset (an older server has no field).
+const PERMISSION_CHOICES = ["plan", "prompt", "acceptEdits", "auto"] as const;
+export function ClaudeDefaultPermissionControl({ prefs, onChange }: PrefControlProps) {
+  const { busy, error, run } = usePrefWrite(onChange);
+  const current = prefs.claude_default_permission ?? "auto";
+  return (
+    <SettingRow
+      id="claude-default-permission"
+      control={
+        <SettingSelect
+          id="claude-default-permission"
+          value={PERMISSION_CHOICES.includes(current as (typeof PERMISSION_CHOICES)[number]) ? current : "auto"}
+          options={PERMISSION_CHOICES.map((key) => ({ key, label: PERMISSION_LABELS[key] }))}
+          disabled={busy}
+          onChange={(v) =>
+            void run(
+              () => putClaudeDefaultPermission(v),
+              (next) => publishDefaultPermission(next.claude_default_permission),
+            )
+          }
+        />
+      }
+    >
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </SettingRow>
+  );
+}
+
 // A Finished notification is scoped to sessions started from fused-render's
 // own Claude template; this opts a hand-started terminal session back in.
 // `?? false`: a server that predates the switch sends nothing, which is off.
@@ -111,7 +146,7 @@ export function NotifyTerminalControl({ prefs, onChange }: PrefControlProps) {
   );
 }
 
-// ── Apps & sharing ─────────────────────────────────────────────────────────
+// ── Sharing & sync ─────────────────────────────────────────────────────────
 
 // Git auto-sync: default ON (`!== false` — an older server's silence is the
 // default), an opt-OUT. Off is the Update card and the manual git flows only.
@@ -170,7 +205,7 @@ export function LivePreviewsControl({ prefs, onChange }: PrefControlProps) {
   );
 }
 
-// ── Optional features ──────────────────────────────────────────────────────
+// ── Experimental flags ───────────────────────────────────────────────────────────────
 // Each is off by default and this is the only place it turns on (Canvases:
 // D427). Each one gates its ENTRY POINTS — a sidebar row, a status-bar chip, a
 // file view — never the routes behind them.
@@ -184,6 +219,32 @@ export function CanvasesControl({ prefs, onChange }: PrefControlProps) {
       // The sidebar beside this page reads the flag from its own store; the
       // row and the Settings-menu entry appear (or go) with the switch.
       after={(next) => publishCanvasesEnabled(next.canvases.enabled)}
+      onChange={onChange}
+    />
+  );
+}
+
+// No publish: the proxy follows the pref on the next canvas status read, which
+// every page that frames a canvas makes before it frames it. Off stops it at
+// once (shell/prefs.py). The settings file can pin it, like the env var that
+// pins the default environment.
+export function CanvasesEmbedProxyControl({ prefs, onChange }: PrefControlProps) {
+  const locked = prefs.canvases.embed_proxy_locked === true;
+  const on = prefs.canvases.embed_proxy === true;
+  return (
+    <PrefToggleRow
+      id="canvases-embed-proxy"
+      checked={on}
+      put={putCanvasesEmbedProxy}
+      disabled={locked}
+      status={
+        locked ? (
+          <>
+            Pinned {on ? "on" : "off"} by <code>[render] canvases_embed_proxy_enabled</code> in{" "}
+            <code>~/.fused/settings.toml</code>.
+          </>
+        ) : undefined
+      }
       onChange={onChange}
     />
   );

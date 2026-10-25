@@ -116,6 +116,7 @@ import {
   DEFAULT_VIEW_TABS,
   TASK_VIEWS,
   VIEW_LABELS,
+  normalizeView,
   applyQueueOverrides,
   emptyTasksLabel,
   groupOfView,
@@ -130,9 +131,12 @@ import {
   defaultViewFacets,
   parseViewFilters,
   VIEW_FILTERS_KEY,
+  readTaskSort,
+  writeTaskSort,
 } from "./tasks-lib";
-import type { QueueOverride, QueueOverrides, TaskView, ViewFacets } from "./tasks-lib";
+import type { QueueOverride, QueueOverrides, TaskSortBy, TaskView, ViewFacets } from "./tasks-lib";
 import { TaskCards } from "./TaskCards";
+import { TaskWorkspace } from "./TaskWorkspace";
 import { TasksSkeleton } from "./TasksSkeleton";
 import { missingFolders } from "./useMissingFolders";
 import { TOOLBAR_MERGE_LEVEL, useToolbarFit } from "./row-fit";
@@ -286,12 +290,16 @@ const ICON_TUNE = svg(
   <><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
     <circle cx="12" cy="12" r="3" /></>,
 );
+const ICON_VIEW_WORKSPACE = svg(
+  <><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18" /><path d="M8 14h8" /><path d="M8 17.5h5" /></>,
+);
 const ICON_X = svg(<><path d="M18 6 6 18" /><path d="m6 6 12 12" /></>);
 const VIEW_ICONS: Record<TaskView, React.ReactNode> = {
   list: ICON_VIEW_LIST,
   board: ICON_VIEW_BOARD,
   cards: ICON_VIEW_CARDS,
   calendar: ICON_VIEW_CALENDAR,
+  detailed: ICON_VIEW_WORKSPACE,
   time: ICON_CLOCK,
   project: ICON_FOLDER,
   pr: ICON_PR,
@@ -303,6 +311,64 @@ const VIEW_HINTS: Partial<Record<TaskView, string>> = {
   pr: "List grouped by pull request",
 };
 
+/** The toolbar's `…` (Unit 7). Hidden by the stylesheet until the fit ladder
+ *  folds the cog; its one item is "Edit views". */
+function ToolbarOverflow({ onEditViews }: { onEditViews: () => void }) {
+  const [open, setOpen] = useState(false);
+  const wrap = useRef<HTMLDivElement | null>(null);
+  const [pos, setPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: MouseEvent) => {
+      if (wrap.current && !wrap.current.contains(e.target as Node)) setOpen(false);
+    };
+    const esc = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", away);
+    document.addEventListener("keydown", esc);
+    return () => {
+      document.removeEventListener("mousedown", away);
+      document.removeEventListener("keydown", esc);
+    };
+  }, [open]);
+  return (
+    <div className="schedule-view-more" ref={wrap}>
+      <button
+        type="button"
+        className="btn btn-secondary schedule-view-more-btn"
+        title="More"
+        aria-label="More"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={(e) => {
+          const r = e.currentTarget.getBoundingClientRect();
+          setPos({ top: r.bottom + 4, left: r.left });
+          setOpen((v) => !v);
+        }}
+      >
+        …
+      </button>
+      {open && (
+        <div className="schedule-tv-pop tasks-pop" role="menu" aria-label="More"
+             style={{ position: "fixed", top: pos.top, left: pos.left, right: "auto", bottom: "auto" }}>
+          <button
+            type="button"
+            role="menuitem"
+            className="schedule-tv-pop-item"
+            onClick={() => {
+              setOpen(false);
+              onEditViews();
+            }}
+          >
+            <span>Edit views</span>
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /**
  * THE TAB EDITOR (Akshil, 2026-10-16): the switcher's row, taken over. Every
  * current tab as a chip with its own remove, a `+` that offers every view not
@@ -310,7 +376,7 @@ const VIEW_HINTS: Partial<Record<TaskView, string>> = {
  * off), and Cancel / Done right after the +. Edits land in `tabs` (the page's
  * draft) and only Done writes them anywhere.
  */
-function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone }: {
+function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone, sortBy, onSortBy }: {
   tabs: TaskView[];
   /** The view the page is showing — a chip's press previews its view below
    *  (Akshil, 2026-10-16), so the row keeps saying which one is up. */
@@ -319,6 +385,10 @@ function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone }: {
   onChange: (tabs: TaskView[]) => void;
   onCancel: () => void;
   onDone: () => void;
+  /** The page's "Sort by". Unlike the tabs it applies at once and is not
+   *  staged behind Done: Cancel does not revert it. */
+  sortBy: TaskSortBy;
+  onSortBy: (v: TaskSortBy) => void;
 }) {
   const [adding, setAdding] = useState(false);
   const available = TASK_VIEWS.filter((v) => !tabs.includes(v));
@@ -497,6 +567,24 @@ function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone }: {
               ))}
             </div>
           )}
+        </div>
+        <div className="schedule-view-sort">
+          <span className="schedule-view-sort-lbl" id="schedule-sort-lbl">Sort by</span>
+          <div className="schedule-form-seg" role="radiogroup" aria-labelledby="schedule-sort-lbl">
+            {([["changed", "Last change"], ["created", "Created"]] as const).map(([v, label]) => (
+              <button
+                key={v}
+                type="button"
+                role="radio"
+                aria-checked={sortBy === v}
+                data-sort={v}
+                className={"btn btn-secondary schedule-view-btn" + (sortBy === v ? " is-active" : "")}
+                onClick={() => onSortBy(v)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
         {/* Right after the +, not at the far end (Akshil, 2026-10-19): the
             three controls that finish the edit sit together. */}
@@ -701,7 +789,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [view, setView] = useState<TaskView>(() => {
     let saved: TaskView = "list";
-    const stored = getUiLayout().tasks?.view;
+    const stored = normalizeView(getUiLayout().tasks?.view);
     // Against TASK_VIEWS rather than a hand-written list of the non-default
     // ones: this store is untrusted input (an older build wrote it, the one-shot
     // import of an old localStorage value, a hand-edited file), and the one
@@ -737,6 +825,13 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
   // The editor's draft: null while the row is a switcher, the tabs-in-progress
   // while it is being edited. Cancel drops it; Done makes it `tabs`.
   const [tabsDraft, setTabsDraft] = useState<TaskView[] | null>(null);
+  // "Sort by" (List / Time / Project / PR; Board, Cards and Calendar ignore
+  // it). Lives under the cog, applies at once, remembered across sittings.
+  const [sortBy, setSortBy] = useState<TaskSortBy>(readTaskSort);
+  const changeSort = (v: TaskSortBy) => {
+    setSortBy(v);
+    writeTaskSort(v);
+  };
   // The view that was up when the editor opened: chips PREVIEW their view
   // while editing (Akshil, 2026-10-16), Done keeps what is showing, Cancel
   // puts this one back.
@@ -978,6 +1073,8 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     () => ({ ...shared, ...(facets[view] ?? defaultViewFacets(view)) }),
     [shared, facets, view],
   );
+  // What the bulk selection is about: when any filter or the search changes, it empties.
+  const selectionKey = useMemo(() => JSON.stringify(filters), [filters]);
   const setFilters = useCallback(
     (update: TaskFilters | ((f: TaskFilters) => TaskFilters)) => {
       const next = typeof update === "function" ? update(filtersRef.current) : update;
@@ -1037,10 +1134,9 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
       return;
     }
     const key = q.get("draft") ?? "";
-    const at = new Date(Date.now() + NEW_LINK_LEAD_MS);
     // A `?new=1` WITH NO KEY is the app page's own "+ New task" link: there is
-    // no chat behind it and nothing to read, so the card opens on the lead date
-    // in this tick, exactly as it always has.
+    // no chat behind it and nothing to read, so the card opens on Now ("blank",
+    // the same as the page's own "+ New task" button), not on a lead time.
     if (!key) {
       // …THOUGH IT MAY STILL SAY WHERE IT CAME FROM. A Schedule pressed in an
       // EMPTY never-sent composer has no record to hand over — a draft with no
@@ -1055,7 +1151,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
       // empty id as a form nobody has minted — so a settings-only change on this
       // blank card still writes no Untitled row. See `NewJobModal`'s `draftId`.
       openForm(
-        at,
+        "blank",
         null,
         from ? { key: "", from } : NO_HOP,
         at0 ? { id: "", form: { target: at0 } } : null,
@@ -1236,7 +1332,11 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
     // The ROWS are deliberately not on this timer: the feed carries the same 20s
     // floor (LISTING_FLOOR_MS), and asking here as well would be two full listing
     // reads every twenty seconds for one answer.
-    const id = window.setInterval(reloadFeeds, POLL_MS);
+    // A hidden window skips the tick; useRefreshOnReturn(reload) catches it up.
+    const id = window.setInterval(() => {
+      if (document.visibilityState === "hidden") return;
+      reloadFeeds();
+    }, POLL_MS);
     return () => window.clearInterval(id);
   }, []);
   // The corner card knows a run ended about a second after it does; this page's
@@ -1570,6 +1670,8 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
                 onChange={setTabsDraft}
                 onCancel={cancelTabs}
                 onDone={finishTabs}
+                sortBy={sortBy}
+                onSortBy={changeSort}
               />
             ) : (<>
             <div className="schedule-form-seg schedule-view-seg" role="radiogroup" aria-label="View">
@@ -1585,7 +1687,12 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
                         aria-pressed={view === v}
                         onClick={() => pickView(v)}>
                   {VIEW_ICONS[v]}
-                  <span className="schedule-fit-lbl">{VIEW_LABELS[v]}</span>
+                  <span className="schedule-fit-lbl">
+                    {VIEW_LABELS[v]}
+                    {v === "calendar" && (
+                      <span className="sidebar-count-chip sidebar-beta-chip schedule-beta-tag">Beta</span>
+                    )}
+                  </span>
                 </button>
               ))}
             </div>
@@ -1597,6 +1704,10 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
                     onClick={openTabs}>
               {ICON_TUNE}
             </button>
+            {/* THE OVERFLOW (Unit 7): drawn only once the ladder has taken the
+                cog off the row (schedule.css rung 3), and it holds what the cog
+                did. */}
+            <ToolbarOverflow onEditViews={openTabs} />
             {/* Search, Status and Project, on ALL THREE views (2026-08-18). They
                 used to be hidden on the calendar, on the argument that it
                 answers "when" and a week with tasks filtered out of it is a week
@@ -1617,6 +1728,7 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               home={home}
               onChange={setFilters}
               hideArchiveStatus={view === "calendar"}
+              hideUpcomingStatus={view === "cards"}
               // The ladder's Project rung: one trigger instead of two, same rows
               // inside it, each under its own heading (shell/row-fit.ts
               // TOOLBAR_DROPS). Project loses its own control here and stays
@@ -1667,6 +1779,8 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
           ) : view === "board" ? (
             <TaskBoard
               tasks={shown}
+              bulkSelect
+              selectionResetKey={selectionKey}
               home={home}
               onReload={reload}
               onQueued={noteQueued}
@@ -1681,6 +1795,17 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               missing={missing}
               emptyLabel={emptyLabel}
             />
+          ) : view === "detailed" ? (
+            <TaskWorkspace
+              tasks={shown}
+              resetKey={selectionKey}
+              allTasks={inScope}
+              emptyLabel={emptyLabel}
+              peekOn={peekOn}
+              home={home}
+              onReload={reload}
+              onNewTask={() => openForm("blank", null)}
+            />
           ) : view === "cards" ? (
             <TaskCards
               emptyLabel={emptyLabel}
@@ -1690,6 +1815,8 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               // lens they meant to keep — the same argument that put the
               // toolbar on the calendar.
               tasks={shown}
+              bulkSelect
+              selectionResetKey={selectionKey}
               home={home}
               onReload={reload}
               // The folder chip in a card's head is the List row's filter tag
@@ -1713,8 +1840,11 @@ export default function Scheduled({ scope }: { scope?: TasksScope } = {}) {
               // its own memory (tasks-lib.listMemoryKey).
               key={view}
               tasks={shown}
+              bulkSelect
+              selectionResetKey={selectionKey}
               // Time / Project / PR are this List cut into sections.
               groupBy={groupOfView(view)}
+              sortBy={sortBy}
               onNewTaskIn={(folder) => openForm("blank", null, NO_HOP, null, folder)}
               home={home}
               missing={missing}

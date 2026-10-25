@@ -9,7 +9,16 @@ PHOTO_EXT = NATIVE | TRANSCODE | RAW
 
 
 def _skip_entry(entry) -> bool:
-    return entry.name.startswith(".")
+    if entry.name.startswith("."):
+        return True
+    if os.name == "nt":
+        try:
+            attrs = entry.stat(follow_symlinks=False).st_file_attributes
+            if attrs & 0x2 or attrs & 0x4:  # HIDDEN or SYSTEM (legacy junctions)
+                return True
+        except OSError:
+            return True
+    return False
 
 
 def _kind(ext: str) -> str:
@@ -35,7 +44,7 @@ def _cache_dir() -> str:
 
 
 def _fwd(p: str) -> str:
-    return os.path.abspath(p)
+    return os.path.abspath(p).replace(os.sep, "/")
 
 
 def _key(path: str, variant: str) -> str:
@@ -203,7 +212,16 @@ def check_setup() -> dict:
 
 def folders(path: str) -> dict:
     if not path:
-        roots = [{"name": "/", "path": "/"}]
+        roots = []
+        if os.name == "nt":
+            import string
+
+            for letter in string.ascii_uppercase:
+                drive = f"{letter}:/"
+                if os.path.exists(drive):
+                    roots.append({"name": f"{letter}:", "path": drive})
+        else:
+            roots.append({"name": "/", "path": "/"})
         return {"ok": True, "path": "", "home": _fwd(_home()), "dirs": roots}
 
     d = os.path.abspath(os.path.expanduser(path))

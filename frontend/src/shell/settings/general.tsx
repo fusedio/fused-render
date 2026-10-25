@@ -1,11 +1,24 @@
 // General: appearance, windows, the launcher's shortcuts, updates.
-import { useCallback, useEffect, useState } from "react";
-import { getConfig, getPrefs, postLauncherSuspend, putAutoDownloadUpdates, putLauncherHotkey, putLauncherRowModifier, putNativeWindowsEnabled } from "@platform/lib/api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  getConfig,
+  getPrefs,
+  postLauncherSuspend,
+  putAutoDownloadUpdates,
+  putChromiumWindowsEnabled,
+  putLauncherHotkey,
+  putLauncherRowModifier,
+  putNativeWindowsEnabled,
+  reopenChromiumWindows,
+  type ChromiumEngineStatus,
+  type ChromiumWindowsState,
+} from "@platform/lib/api";
 import { THEME_PRESETS, useThemePref, useThemePreset } from "@platform/lib/theme";
 import { updateLabel, updateRelevant, useUpdateStatus } from "@platform/lib/update-status";
 import { isBot } from "@platform/lib/flavor";
 import { ToggleGroup, ToggleGroupItem } from "@platform/shadcn/ui/toggle-group";
 import { Button } from "@platform/shadcn/ui/button";
+import { Modal } from "@platform/ui/modal/Modal";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { labelId, PrefToggleRow, SettingRow, usePrefWrite, type PrefControlProps, SettingSelect } from "./SettingRow";
 
@@ -74,6 +87,128 @@ export function NativeWindowsControl({ prefs, onChange }: PrefControlProps) {
       put={putNativeWindowsEnabled}
       onChange={onChange}
     />
+  );
+}
+
+// Chromium (CEF) engine for app windows: on by default, the app ships the
+// engine (D1415), lives under Experimental flags. Only drawn where the running
+// app can honour it (`chromium_windows.available`); where the build carries
+// no engine (Intel) the switch is off and disabled.
+function chromiumStatusLine(engine: ChromiumEngineStatus | undefined, enabled: boolean): string | null {
+  if (!engine) return null;
+  switch (engine.state) {
+    case "missing":
+      return "This build ships no Chromium engine; windows use WebKit.";
+    case "ready": {
+      // Off with the engine present: the next window is WebKit (the window
+      // layer's rule), so the line must not promise Chromium.
+      const next = enabled ? `Chromium${engine.cef_version ? ` ${engine.cef_version.split("+")[0]}` : ""}` : "WebKit";
+      return `${next}. New windows use it; open windows keep their engine.`;
+    }
+    default:
+      return null;
+  }
+}
+
+export function ChromiumWindowsControl({ prefs, onChange }: PrefControlProps) {
+  const cw = prefs.chromium_windows;
+  const engine = cw?.engine;
+  const state = engine?.state;
+  const enabled = !!cw?.enabled;
+
+  const latest = useRef({ prefs, onChange });
+  useEffect(() => {
+    latest.current = { prefs, onChange };
+  });
+  const merge = useCallback((next: ChromiumWindowsState) => {
+    const { prefs: p, onChange: publish } = latest.current;
+    publish({ ...p, chromium_windows: next });
+  }, []);
+
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // The windows that are open keep their engine; the page itself is one of
+  // them, so its own request may die with it — a rejection is not an error.
+  const stale = cw?.stale_windows ?? 0;
+  // The moment windows become stale (the toggle flipped) a dialog says so,
+  // once per transition; closed, the line under the row keeps the offer.
+  const [ask, setAsk] = useState(false);
+  const hadStale = useRef(stale > 0);
+  useEffect(() => {
+    if (stale > 0 && !hadStale.current) setAsk(true);
+    hadStale.current = stale > 0;
+  }, [stale]);
+  const reopen = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      merge(await reopenChromiumWindows());
+    } catch (e) {
+      // A response with a status is the server refusing (409: no window host);
+      // no status is the window closing under the request, the reopen itself.
+      if (typeof (e as { status?: unknown }).status === "number") setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const staleLine =
+    (stale === 1 ? "1 open window still uses" : `${stale} open windows still use`) +
+    " the previous engine. Reopen them for the change to take effect.";
+  const line = chromiumStatusLine(engine, enabled);
+  const usable = state === "ready";
+
+  return (
+    <PrefToggleRow
+      id="chromium-windows"
+      // The preference defaults on; where no engine can load, a checked-but-
+      // disabled switch would promise what the status line denies.
+      checked={enabled && usable}
+      put={putChromiumWindowsEnabled}
+      disabled={!usable}
+      status={line ?? undefined}
+      onChange={onChange}
+    >
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+      {stale > 0 && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+          <span>{staleLine}</span>
+          <Button variant="outline" size="xs" disabled={busy} onClick={() => void reopen()}>
+            Reopen windows
+          </Button>
+        </div>
+      )}
+      {ask && (
+        <Modal
+          title="Reopen windows to apply the engine change"
+          busy={busy}
+          onClose={() => setAsk(false)}
+          width={420}
+          footer={
+            <>
+              <button type="button" className="btn btn-secondary" disabled={busy} onClick={() => setAsk(false)}>
+                Later
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={busy}
+                onClick={() => {
+                  setAsk(false);
+                  void reopen();
+                }}
+              >
+                Reopen windows
+              </button>
+            </>
+          }
+        >
+          <p>{staleLine}</p>
+          <p>Reopening closes every window and opens one Home window on the new engine.</p>
+        </Modal>
+      )}
+    </PrefToggleRow>
   );
 }
 

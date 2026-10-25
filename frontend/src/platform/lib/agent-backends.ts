@@ -66,17 +66,25 @@ export const CLAUDE_FALLBACK: AgentBackendRow = {
  *  until the server says otherwise, which is Copilot's own default (D17).
  *  KEEP IN SYNC BY HAND with fused_render/agent_backends/copilot.py
  *  (models, default_model, efforts, modes, caps): the server row replaces it
- *  the moment the catalog answers, so a drift here costs only the first frame. */
+ *  the moment the catalog answers, so a drift here costs only the first frame.
+ *
+ *  THE MODELS HERE ARE THE STATIC SHORTLIST. Once the server has asked the
+ *  CLI which models the signed-in ACCOUNT may run (its plan's list, carried
+ *  in the Copilot health snapshot), the catalog row serves that list instead,
+ *  with the effort levels each model takes. `reasoning: false` on `auto`
+ *  and the Claude ids is the one per-model fact the first frame already
+ *  knows (the CLI takes no effort for them), so their effort pill is hidden
+ *  from the first paint rather than flashing. */
 export const COPILOT_FALLBACK: AgentBackendRow = {
   id: "copilot",
   label: "Copilot",
   enabled: false,
   models: [
-    { id: "auto", label: "Auto (Copilot picks)" },
+    { id: "auto", label: "Auto (Copilot picks)", reasoning: false },
     { id: "gpt-5.4", label: "GPT-5.4" },
     { id: "gpt-5.4-mini", label: "GPT-5.4 mini" },
-    { id: "claude-sonnet-4.5", label: "Claude Sonnet 4.5 (via Copilot)" },
-    { id: "claude-opus-4.5", label: "Claude Opus 4.5 (via Copilot)" },
+    { id: "claude-sonnet-4.5", label: "Claude Sonnet 4.5 (via Copilot)", reasoning: false },
+    { id: "claude-opus-4.5", label: "Claude Opus 4.5 (via Copilot)", reasoning: false },
     { id: "gemini-3-pro", label: "Gemini 3 Pro (via Copilot)" },
   ],
   default_model: "auto",
@@ -97,11 +105,83 @@ export const COPILOT_FALLBACK: AgentBackendRow = {
   health: null,
 };
 
+/** The Codex row (docs/CODEX_BACKEND.md §8), Copilot's twin for the same
+ *  reason: a Codex chat answers with Codex's caps from the first frame. Off
+ *  until the server says otherwise (D17). Unlike Copilot, model and mode are
+ *  per turn on Codex's wire, so both live switches are on (§7).
+ *  KEEP IN SYNC BY HAND with fused_render/agent_backends/codex.py — pinned
+ *  field for field by tests/test_agent_backend_pins.py. */
+export const CODEX_FALLBACK: AgentBackendRow = {
+  id: "codex",
+  label: "Codex",
+  enabled: false,
+  models: [
+    { id: "gpt-6-luna", label: "GPT-6 Luna" },
+    { id: "gpt-6.1-sol", label: "GPT-6.1 Sol" },
+    { id: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
+    { id: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
+  ],
+  default_model: "gpt-6-luna",
+  efforts: ["low", "medium", "high", "xhigh", "max"],
+  modes: ["prompt", "acceptEdits", "auto"],
+  caps: {
+    plan_mode: false,
+    live_model_switch: true,
+    live_mode_switch: true,
+    snapshots: false,
+    artifacts: false,
+    worktrees: false,
+    bg_tasks: false,
+    ask_user: false,
+    terminal_mirror: false,
+    mid_turn_messages: false,
+  },
+  health: null,
+};
+
+/** The Gemini row (docs/GEMINI_BACKEND.md §8), the third twin: a Gemini chat
+ *  answers with Gemini's caps from the first frame. Off until the server
+ *  says otherwise (D17). Model and mode are live ACP requests on Gemini's
+ *  wire (`session/set_model`, `session/set_mode`), so both live switches are
+ *  on (§7). NO EFFORT CONTROL AT ALL (D7): an empty `efforts` and every model
+ *  `reasoning: false`, so the effort pill never shows for Gemini.
+ *  KEEP IN SYNC BY HAND with fused_render/agent_backends/gemini.py — pinned
+ *  field for field by tests/test_agent_backend_pins.py. */
+export const GEMINI_FALLBACK: AgentBackendRow = {
+  id: "gemini",
+  label: "Gemini",
+  enabled: false,
+  models: [
+    { id: "auto", label: "Auto (Gemini picks)", reasoning: false },
+    { id: "gemini-3-pro-preview", label: "Gemini 3 Pro (preview)", reasoning: false },
+    { id: "gemini-3-flash-preview", label: "Gemini 3 Flash (preview)", reasoning: false },
+    { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro", reasoning: false },
+    { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash", reasoning: false },
+    { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash-Lite", reasoning: false },
+  ],
+  default_model: "auto",
+  efforts: [],
+  modes: ["prompt", "acceptEdits", "auto"],
+  caps: {
+    plan_mode: false,
+    live_model_switch: true,
+    live_mode_switch: true,
+    snapshots: false,
+    artifacts: false,
+    worktrees: false,
+    bg_tasks: false,
+    ask_user: false,
+    terminal_mirror: false,
+    mid_turn_messages: false,
+  },
+  health: null,
+};
+
 const FALLBACK: AgentCatalog = {
-  // ENABLED: Claude alone, the defaults of both switches (D17).
+  // ENABLED: Claude alone, the defaults of every switch (D17).
   backends: [CLAUDE_FALLBACK],
   default: "claude",
-  all: [CLAUDE_FALLBACK, COPILOT_FALLBACK],
+  all: [CLAUDE_FALLBACK, COPILOT_FALLBACK, CODEX_FALLBACK, GEMINI_FALLBACK],
 };
 
 export interface AgentCatalogState extends AgentCatalog {
@@ -155,6 +235,7 @@ function read(): Promise<void> {
       if (generation !== departed) return;
       failures = 0;
       publish(fromServer(c));
+      scheduleWarmupReread();
     })
     .catch((err) => {
       if (generation !== departed) return;
@@ -181,6 +262,32 @@ function read(): Promise<void> {
       if (generation === departed) reading = null;
     });
   return reading;
+}
+
+// THE FIRST CATALOG READ CAN LAND BEFORE THE SERVER HAS MEASURED an agent:
+// the health probes warm in the background at startup, and a non-Claude
+// agent's row carries its discovered model list (Copilot's plan list) only
+// once its snapshot exists. Such a row answers `health: null`. Rather than
+// show the static shortlist until the next focus, the catalog is re-read a
+// few times, spaced out, while an ENABLED agent other than Claude still has
+// no snapshot. Bounded: a machine whose probe never answers stops asking.
+const WARMUP_REREAD_MS = [3_000, 6_000, 12_000, 24_000];
+let warmupRereads = 0;
+let warmupTimer: ReturnType<typeof setTimeout> | null = null;
+
+function awaitingMeasure(): boolean {
+  return current.backends.some((b) => b.id !== "claude" && b.health === null);
+}
+
+function scheduleWarmupReread() {
+  if (warmupTimer) return;
+  if (!awaitingMeasure() || warmupRereads >= WARMUP_REREAD_MS.length) return;
+  const wait = WARMUP_REREAD_MS[warmupRereads];
+  warmupRereads += 1;
+  warmupTimer = setTimeout(() => {
+    warmupTimer = null;
+    if (awaitingMeasure()) void refreshAgentBackends();
+  }, wait);
 }
 
 /** Ask the server again — after a Preferences switch, or when the window comes
@@ -247,7 +354,7 @@ export function backendOf(id: string | null | undefined): AgentBackendRow {
   return current.all.find((b) => b.id === want) ?? current.backends.find((b) => b.id === want) ?? CLAUDE_FALLBACK;
 }
 
-/** "Claude" / "Copilot" — the word every surface names the agent by. */
+/** "Claude" / "Copilot" / "Codex" / "Gemini" — the word every surface names the agent by. */
 export function agentLabel(id: string | null | undefined): string {
   return backendOf(id).label;
 }
@@ -270,6 +377,38 @@ export function modelLabelsOf(id: string | null | undefined): Record<string, str
 
 export function effortsOf(id: string | null | undefined): string[] {
   return backendOf(id).efforts;
+}
+
+/** One model's catalog row, or undefined for an id the agent does not list. */
+export function modelOf(id: string | null | undefined, model: string | null | undefined) {
+  if (!model) return undefined;
+  return backendOf(id).models.find((m) => m.id === model);
+}
+
+/** THE EFFORTS THIS MODEL TAKES — the list every effort picker offers and
+ *  every send validates against. Per model where the server knows it per
+ *  model (Copilot's `models.list` names the levels each id accepts, and names
+ *  none for `auto` and its Claude ids); an empty list means the model takes
+ *  no effort at all, and the pill is hidden rather than offering a value the
+ *  spawn would drop. A model the agent does not list (a pinned or newer id)
+ *  gets the agent's own list: the spawn passes an uncataloged id through
+ *  with its effort, so the picker offers one. */
+export function effortsForModel(id: string | null | undefined, model: string | null | undefined): string[] {
+  const row = modelOf(id, model);
+  if (!row) return effortsOf(id);
+  if (Array.isArray(row.efforts)) return row.efforts;
+  return row.reasoning === false ? [] : effortsOf(id);
+}
+
+/** The effort a new pick on this model opens on: the CLI's own default for
+ *  the model when the catalog carries it, else "medium" when the model takes
+ *  it, else the first level it takes, else "" (no effort). */
+export function defaultEffortFor(id: string | null | undefined, model: string | null | undefined): string {
+  const list = effortsForModel(id, model);
+  if (!list.length) return "";
+  const own = modelOf(id, model)?.default_effort;
+  if (own && list.includes(own)) return own;
+  return list.includes("medium") ? "medium" : list[0];
 }
 
 export function modesOf(id: string | null | undefined): string[] {
@@ -317,10 +456,16 @@ export function isForeignModel(model: string | null | undefined, id: string | nu
   return current.all.some((b) => b.id !== own && b.models.some((m) => m.id === model));
 }
 
-/** An effort this agent does not offer. Efforts are a closed set per agent,
- *  so anything off the list is dropped ("no effort", the spawn's default). */
-export function isUnlistedEffort(effort: string | null | undefined, id: string | null | undefined): boolean {
-  return !!effort && !backendOf(id).efforts.includes(effort);
+/** An effort this agent — or, with `model`, this model on this agent — does
+ *  not offer. Efforts are a closed set per agent and per model, so anything
+ *  off the list is dropped ("no effort", the spawn's default). */
+export function isUnlistedEffort(
+  effort: string | null | undefined,
+  id: string | null | undefined,
+  model?: string | null,
+): boolean {
+  if (!effort) return false;
+  return !(model ? effortsForModel(id, model) : backendOf(id).efforts).includes(effort);
 }
 
 /** Is this agent SWITCHED OFF, on the server's word? False until the catalog
@@ -342,6 +487,9 @@ export function resetAgentBackendsForTests(next?: AgentCatalog) {
   failures = 0;
   if (retryTimer) clearTimeout(retryTimer);
   retryTimer = null;
+  if (warmupTimer) clearTimeout(warmupTimer);
+  warmupTimer = null;
+  warmupRereads = 0;
   current = next ? fromServer(next) : { ...FALLBACK, loaded: false };
   for (const l of listeners) l();
 }

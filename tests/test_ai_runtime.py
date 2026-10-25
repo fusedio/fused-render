@@ -14,6 +14,7 @@ that does not run.
 import json
 import os
 import re
+import subprocess
 import sys
 import textwrap
 import threading
@@ -347,6 +348,29 @@ FAKE_TRANSCRIBE_WORKER = textwrap.dedent('''
 ''')
 
 
+# Workers start in their own session (SPAWN_KWARGS), so a SIGKILLed pytest run
+# skips every teardown and its fakes would orphan to ppid 1 forever. Test-only:
+# real workers must outlive a server restart (adoption), so nothing under
+# fused_render/ changes.
+_FAKE_IMPORTS = "    import argparse, http.server, json, os, socketserver, sys, threading, time"
+_PARENT_GUARD = textwrap.indent(textwrap.dedent("""
+    # parent-death guard
+    _ppid = os.getppid()
+    def _watch_parent():
+        while True:
+            time.sleep(0.5)
+            if os.getppid() != _ppid:
+                os._exit(0)
+    threading.Thread(target=_watch_parent, daemon=True).start()
+"""), "    ")
+_FAKE_SCRIPTS = ("FAKE_WORKER", "FAKE_IMAGE_WORKER", "FAKE_VIDEO_WORKER", "FAKE_TRANSCRIBE_WORKER")
+for _name in _FAKE_SCRIPTS:
+    _src = globals()[_name]
+    _line = textwrap.dedent(_FAKE_IMPORTS)
+    assert _src.count(_line) == 1, _name
+    globals()[_name] = _src.replace(_line, _line + textwrap.dedent(_PARENT_GUARD), 1)
+
+
 @pytest.fixture()
 def fake_runner(tmp_path, monkeypatch):
     """A registry with one runner whose worker is the fake, and whose venv is
@@ -368,6 +392,41 @@ def fake_runner(tmp_path, monkeypatch):
     yield runner
     supervisor.unload()
     supervisor.reset()
+
+
+@pytest.fixture(autouse=True)
+def _spawned_workers(monkeypatch):
+    """Record every worker `_spawn` starts and kill any survivor at teardown.
+
+    `fake_runner`'s teardown (`unload()` + `reset()`) only reaches workers still
+    in `supervisor._workers`. A test that overwrites the slot or `_drop_gone`s a
+    live worker orphans its real process, which runs in its own session and so
+    outlives pytest (reparented to PID 1). Autouse fixtures set up first, so
+    this one tears down AFTER `fake_runner`."""
+    spawned = []
+    real_spawn = supervisor._spawn
+
+    def recording_spawn(runner, worker, python):
+        try:
+            return real_spawn(runner, worker, python)
+        finally:
+            # In a `finally`: `_spawn` can raise after Popen set worker.proc.
+            spawned.append(worker)
+
+    monkeypatch.setattr(supervisor, "_spawn", recording_spawn)
+    yield spawned
+    _reap_spawned(spawned)
+
+
+def _reap_spawned(workers):
+    for w in workers:
+        supervisor._kill_tree(w)  # no-op for a dead worker
+        proc = getattr(w, "proc", None)
+        if proc is not None:
+            try:
+                proc.wait(timeout=5)
+            except (subprocess.TimeoutExpired, OSError):
+                pass
 
 
 @pytest.fixture()
@@ -1142,6 +1201,7 @@ _QUALIFIED_SHORT_NAMES = {
     "onnx-embed": "(CPU)",
     "onnx-embed-cuda": "(CUDA)",
     "onnx-embed-rocm": "(ROCm)",
+    "vision-torch-cuda": "(CUDA)",
 }
 
 #: Every qualifier this app uses to name a BUILD rather than a platform.
@@ -1227,17 +1287,35 @@ def test_no_engine_name_advertises_the_format_its_sibling_also_reads():
     qualifier must come from `_HARDWARE_QUALIFIERS`, they must differ, and no
     name may repeat a format tag both rows declare in `hub_filter_tags`.
     """
-    families: dict[str, list] = {}
-    for runner in registry.all_runners():
-        families.setdefault(runner.label.split(" (")[0], []).append(runner)
-    siblings = {stem: rows for stem, rows in families.items() if len(rows) > 1}
+    siblings = _sibling_families(registry.all_runners())
     # If this is ever empty the test has stopped testing anything — every
     # hardware-variant family could have been renamed out from under it.
-    assert "llama.cpp" in siblings, sorted(families)
+    assert "llama.cpp" in siblings, sorted(siblings)
+    _assert_sibling_names_ok(siblings)
+
+
+#: The ONE named exemption to the hardware-qualifier rule: the measured Apple
+#: row keeps its pre-CUDA label ("(Apple Silicon)", short name without it)
+#: beside its CUDA sibling. Keyed on the runner code on purpose, so a new
+#: family cannot borrow it by copying the label.
+_PLATFORM_LABELLED_ROWS = {"vision-torch"}
+
+
+def _sibling_families(runners):
+    families: dict[str, list] = {}
+    for runner in runners:
+        families.setdefault(runner.label.split(" (")[0], []).append(runner)
+    return {stem: rows for stem, rows in families.items() if len(rows) > 1}
+
+
+def _assert_sibling_names_ok(siblings):
     for stem, rows in siblings.items():
         qualifiers = [runner.label[len(stem):].strip() for runner in rows]
         assert len(set(qualifiers)) == len(qualifiers), (stem, qualifiers)
         for runner, qualifier in zip(rows, qualifiers):
+            if runner.code in _PLATFORM_LABELLED_ROWS:
+                assert qualifier == "(Apple Silicon)", (runner.code, qualifier)
+                continue
             assert qualifier in _HARDWARE_QUALIFIERS, (runner.code, qualifier)
             # And the hardware is in BOTH names, the shape the torch rows set:
             # the short name is what the Local card and the job row print, so a
@@ -1249,6 +1327,24 @@ def test_no_engine_name_advertises_the_format_its_sibling_also_reads():
                 assert tag.lower() not in runner.label.lower(), (
                     f"{runner.code}: {runner.label!r} names {tag!r}, which "
                     f"every {stem} row reads — it distinguishes nothing")
+
+
+def test_a_row_outside_the_exemption_whose_short_name_is_not_its_label_fails():
+    """Only `vision-torch` may print a short name unlike its label; a sibling
+    that does so (and so collides with the CUDA row's short name) is rejected
+    by the short==label rule, not by the qualifier check."""
+    def row(code, label, short):
+        return types.SimpleNamespace(code=code, label=label, short_label=short,
+                                     hub_filter_tags=())
+
+    ok = {"Fam": [row("fam-cuda", "Fam (CUDA)", "Fam (CUDA)"),
+                  row("vision-torch", "Fam (Apple Silicon)", "Fam")]}
+    _assert_sibling_names_ok(ok)
+    bad = {"Fam": [row("fam-cuda", "Fam (CUDA)", "Fam (CUDA)"),
+                   row("fam-rocm", "Fam (ROCm)", "Fam (CUDA)")]}
+    # "(ROCm)" is a valid qualifier, so it is the short==label rule that fires.
+    with pytest.raises(AssertionError, match="fam-rocm"):
+        _assert_sibling_names_ok(bad)
 
 
 def test_every_suggested_model_names_a_runner_that_exists():
@@ -1766,9 +1862,14 @@ def test_rocm_is_not_offered_off_linux(monkeypatch, tmp_path):
 
 def test_an_nvidia_machine_is_offered_the_cuda_engines(monkeypatch, tmp_path):
     _fake_nvidia(monkeypatch, tmp_path)
-    for code in ("diffusers-image-cuda",):
+    for code in ("diffusers-image-cuda", "vision-torch-cuda"):
         status = registry.by_code(code).available()
         assert status.ok is True, (code, status.reason)
+
+
+def test_the_cuda_vision_row_is_gated_on_an_nvidia_gpu(monkeypatch, tmp_path):
+    _fake_nvidia(monkeypatch, tmp_path, control=False, gpus=(), uvm=False)
+    assert registry.by_code("vision-torch-cuda").available().ok is False
 
 
 def test_cuda_is_a_HARD_GATE_on_a_machine_with_no_nvidia_gpu(monkeypatch, tmp_path):
@@ -1822,7 +1923,7 @@ def test_a_MISSING_uvm_node_is_not_a_refusal_because_it_is_created_LAZILY(
     argument the probe already makes about a driver-version floor.
     """
     _fake_nvidia(monkeypatch, tmp_path, uvm=False)
-    for code in ("diffusers-image-cuda",):
+    for code in ("diffusers-image-cuda", "vision-torch-cuda"):
         status = registry.by_code(code).available()
         assert status.ok is True, (code, status.reason)
 
@@ -2068,6 +2169,8 @@ def test_the_accelerated_engines_share_their_siblings_suggestions(monkeypatch, t
         catalog.SUGGESTIONS["onnx-embed"])
     assert catalog.for_runner("onnx-embed-rocm") == (
         catalog.SUGGESTIONS["onnx-embed"])
+    assert catalog.for_runner("vision-torch-cuda") == (
+        catalog.SUGGESTIONS["vision-torch"])
     # And through the resolution, which is how the page actually reaches it.
     _fake_nvidia(monkeypatch, tmp_path)
     _prefer(monkeypatch, registry.IMAGE_GENERATION, "diffusers-image-cuda")
@@ -2118,6 +2221,7 @@ def test_llamacpp_and_whisper_suggestions_show_snapshot_size_estimates():
         "deepdml/faster-whisper-large-v3-turbo-ct2": 1.6,
         "Systran/faster-whisper-tiny.en": 0.08,
         "Systran/faster-whisper-small": 0.5,
+        "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8": 0.67,
     }
     actual = {
         model["id"]: model["size_gb"]
@@ -4014,6 +4118,22 @@ def test_drop_gone_clears_an_unheld_conflict_on_its_resident(fake_runner):
 
     assert supervisor._workers.get(registry.TEXT_GENERATION) is None
     assert supervisor.describe()["conflicts"] == []
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.kill(pid, 0) is CTRL_C_EVENT on Windows")
+def test_a_worker_dropped_from_the_table_is_still_reaped(fake_runner, _spawned_workers):
+    """`_drop_gone` removes a LIVE worker from `_workers` without killing it, so
+    `fake_runner`'s teardown cannot reach it; the spawn recorder must."""
+    _force_conflict("org/b", "org/a")
+    worker = _wait_ready("org/b")
+    pid = worker.pid
+    supervisor._drop_gone(worker)
+    os.kill(pid, 0)  # still alive: nothing but the recorder knows about it
+
+    _reap_spawned(_spawned_workers)
+
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
 
 
 def test_an_internal_unload_does_not_clear_a_held_conflict(fake_runner):
@@ -5990,7 +6110,8 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
         "faster-whisper", "mlx-whisper",
         "mlx-embed",
         "onnx-embed", "onnx-embed-cuda",
-        "onnx-embed-rocm", "ltx-video", "laya-mlx", "mlx-audio-tts", "vision-torch"}
+        "onnx-embed-rocm", "ltx-video", "laya-mlx", "mlx-audio-tts", "vision-torch",
+        "vision-torch-cuda"}
     assert body["loaded"] == []
     # Exactly one runner per capability is ACTIVE — the distinction D302 needed,
     # since with a preference in the middle "available" stopped meaning "this is
@@ -8771,6 +8892,90 @@ def test_an_engine_with_NOTHING_to_refuse_is_asked_the_same_question(
 
     assert started.status_code == 200, started.json()
     _wait_job(started.json()["jobId"])
+
+
+_SHERPA_FILES = ("encoder.int8.onnx", "decoder.int8.onnx", "joiner.int8.onnx",
+                 "tokens.txt")
+_TRANSCRIBE_ONLY_OPTIONS = [
+    ({"task": "translate"}, "translate"),
+    ({"language": "de"}, "'language'"),
+    ({"initialPrompt": "Acme Corp"}, "'initialPrompt'"),
+]
+
+
+def _no_transcribe_jobs():
+    return not [j for j in jobs.list_jobs()
+                if j["id"].startswith(supervisor.TRANSCRIBE_JOB_PREFIX)]
+
+
+@pytest.mark.parametrize("sent,needle", _TRANSCRIBE_ONLY_OPTIONS)
+def test_a_CACHED_transducer_model_refuses_what_it_cannot_do_before_a_job_opens(
+        client, fake_transcribe_runner, recording, hub, sent, needle):
+    """The runner code (faster-whisper) also serves Whisper, so the refusal is
+    keyed on the MODEL's layout: a snapshot with the four sherpa files."""
+    _cached_repo(hub, "org/some-parakeet", files=_SHERPA_FILES)
+
+    response = _post_transcribe(client, path=recording, model="org/some-parakeet",
+                                **sent)
+
+    assert response.status_code == 400, (sent, response.json())
+    assert "Parakeet" in response.json()["error"]
+    assert needle in response.json()["error"]
+    assert _no_transcribe_jobs()
+
+
+@pytest.mark.parametrize("sent,needle", _TRANSCRIBE_ONLY_OPTIONS)
+def test_an_UNDOWNLOADED_curated_transcribe_only_row_refuses_the_same_way(
+        client, fake_transcribe_runner, recording, hub, monkeypatch, sent, needle):
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-whisper", [
+        {"id": "org/fake-parakeet", "label": "Fake Parakeet", "size_gb": None,
+         "note": "", "transcribeOnly": True},
+    ])
+
+    response = _post_transcribe(client, path=recording, model="org/fake-parakeet",
+                                **sent)
+
+    assert response.status_code == 400, (sent, response.json())
+    assert needle in response.json()["error"]
+    assert _no_transcribe_jobs()
+
+
+@pytest.mark.parametrize("sent", [s for s, _n in _TRANSCRIBE_ONLY_OPTIONS])
+def test_a_CT2_model_is_still_asked_for_translate_language_and_prompt(
+        client, fake_transcribe_runner, recording, hub, sent):
+    _cached_repo(hub, "org/some-whisper", files=("model.bin", "config.json"))
+
+    started = _post_transcribe(client, path=recording, model="org/some-whisper",
+                               **sent)
+
+    assert started.status_code == 200, started.json()
+    _wait_job(started.json()["jobId"])
+
+
+def test_language_auto_and_a_plain_transcribe_reach_a_transducer_model(
+        client, fake_transcribe_runner, recording, hub):
+    """"auto" is the one spelling of "detect it" and `task: "transcribe"` rides
+    on every request: neither may be refused."""
+    _cached_repo(hub, "org/some-parakeet", files=_SHERPA_FILES)
+
+    started = _post_transcribe(client, path=recording, model="org/some-parakeet",
+                               task="transcribe", language="auto")
+
+    assert started.status_code == 200, started.json()
+    _wait_job(started.json()["jobId"])
+
+
+def test_the_curated_parakeet_row_is_marked_transcribe_only():
+    entry = catalog.entry_for(
+        registry.SPEECH_TO_TEXT,
+        "csukuangfj/sherpa-onnx-nemo-parakeet-tdt-0.6b-v3-int8")
+    # Resolved under whichever runner this machine has; on a machine whose
+    # speech runner is not faster-whisper the row is simply not offered.
+    if entry is not None:
+        assert entry.get("transcribeOnly") is True
+    row = next(r for rows in catalog.SUGGESTIONS.values() for r in rows
+               if r["id"].endswith("parakeet-tdt-0.6b-v3-int8"))
+    assert row["transcribeOnly"] is True
 
 
 def test_the_endpoint_and_the_worker_refuse_an_option_by_the_SAME_rule(
@@ -13441,3 +13646,117 @@ def test_the_SKILL_names_every_field_speech_resolves_with(client, fake_speech_ru
     section = _skill_section("Speech: `fused.ai.speech({text, ...})`")
     assert sorted(field for field in fields if field not in section) == []
     _wait_job(started["jobId"])
+
+
+# --- runner venv site-packages precede the bundled interpreter's stdlib dir ---
+
+def _make_venv(root, with_cfg=True):
+    site = root / "lib" / "python3.12" / "site-packages"
+    site.mkdir(parents=True)
+    (root / "bin").mkdir()
+    (root / "bin" / "python").write_text("")
+    if with_cfg:
+        (root / "pyvenv.cfg").write_text("home = /x\n")
+    return site
+
+
+def test_venv_site_packages_finds_the_venv_dir(tmp_path):
+    from fused_render import envinstall
+    site = _make_venv(tmp_path / "v")
+    assert envinstall.venv_site_packages(str(tmp_path / "v" / "bin" / "python")) == str(site)
+
+
+def test_venv_site_packages_is_none_without_pyvenv_cfg(tmp_path):
+    from fused_render import envinstall
+    _make_venv(tmp_path / "v", with_cfg=False)
+    assert envinstall.venv_site_packages(str(tmp_path / "v" / "bin" / "python")) is None
+
+
+def test_venv_site_packages_does_not_resolve_the_python_symlink(tmp_path):
+    """A venv python is a symlink to the base interpreter; resolving it would
+    walk out of the venv."""
+    from fused_render import envinstall
+    site = _make_venv(tmp_path / "v")
+    base = tmp_path / "base" / "bin"
+    base.mkdir(parents=True)
+    (base / "python3.12").write_text("")
+    py = tmp_path / "v" / "bin" / "python"
+    py.unlink()
+    py.symlink_to(base / "python3.12")
+    assert envinstall.venv_site_packages(str(py)) == str(site)
+
+
+def _captured_spawn_env(monkeypatch, python):
+    from types import SimpleNamespace
+    seen = {}
+
+    class _Stop(Exception):
+        pass
+
+    def fake_popen(argv, **kwargs):
+        seen["env"] = kwargs["env"]
+        raise _Stop
+
+    monkeypatch.setattr(supervisor.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(supervisor, "_log_path", lambda w: os.devnull)
+    monkeypatch.setenv("PYTHONPATH", "/inherited")
+    runner = SimpleNamespace(worker="worker.py", folder="/tmp")
+    worker = supervisor.Worker(model="m", capability="text", runner_code="r", token="t")
+    with pytest.raises(_Stop):
+        supervisor._spawn(runner, worker, python)
+    return seen["env"]
+
+
+def test_spawn_puts_the_venv_site_packages_on_pythonpath(monkeypatch, tmp_path):
+    site = _make_venv(tmp_path / "v")
+    env = _captured_spawn_env(monkeypatch, str(tmp_path / "v" / "bin" / "python"))
+    assert env["PYTHONPATH"] == str(site)
+
+
+def test_spawn_of_a_non_venv_python_gets_no_pythonpath(monkeypatch, tmp_path):
+    _make_venv(tmp_path / "v", with_cfg=False)
+    env = _captured_spawn_env(monkeypatch, str(tmp_path / "v" / "bin" / "python"))
+    assert "PYTHONPATH" not in env
+
+
+def test_every_fake_worker_script_has_the_parent_guard():
+    for name in _FAKE_SCRIPTS:
+        assert "# parent-death guard" in globals()[name], name
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="os.kill(pid, 0) is CTRL_C_EVENT on Windows")
+def test_a_fake_worker_exits_when_its_parent_dies(tmp_path):
+    script = tmp_path / "worker.py"
+    script.write_text(FAKE_WORKER, encoding="utf-8")
+    status = tmp_path / "status.json"
+    launcher = (
+        "import subprocess, sys\n"
+        "p = subprocess.Popen([sys.executable, sys.argv[1], '--status', sys.argv[2]],"
+        " start_new_session=True, close_fds=False,"
+        " stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+        "print(p.pid, flush=True)\n"
+        # Outlive the child's startup so it records THIS process as its parent
+        # (a ppid read after reparenting would be 1 and the guard never fire).
+        "import time; time.sleep(1.5)\n"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", launcher, str(script), str(status)],
+        capture_output=True, text=True, timeout=30, close_fds=False,
+    )
+    pid = int(out.stdout.strip())
+    try:
+        deadline = time.time() + 8
+        while time.time() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            except PermissionError:
+                pass
+            time.sleep(0.1)
+        raise AssertionError(f"orphaned fake worker {pid} survived its parent")
+    finally:
+        try:
+            os.kill(pid, 9)
+        except (ProcessLookupError, PermissionError):
+            pass

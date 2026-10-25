@@ -34,8 +34,10 @@ never use. The dirs we create are removed at process exit.
 import atexit
 import os
 import shutil
+import sys
 import tempfile
 import types
+from pathlib import Path
 
 import pytest
 
@@ -51,9 +53,87 @@ for _var, _prefix in (("FUSED_RENDER_HOME", "fused-render-tests-"),
         os.environ[_var] = _tmp
         atexit.register(shutil.rmtree, _tmp, ignore_errors=True)
 
+
+# --- machine-wide xdist worker budget -------------------------------------
+# pyproject's `-n auto` gives every run one worker per CPU, so N agent
+# sessions testing at once on one Mac meant N x cores workers. Each run now
+# claims up to FUSED_RENDER_PYTEST_MAX_WORKERS (default 4) of the machine's
+# `cpu_count` flock slots in the temp dir. The flocks live on fds this
+# (controller) process never closes, so the kernel frees them when it exits,
+# even on kill -9. Workers don't inherit the fds (Python fds are
+# non-inheritable). No free slot -> 1 worker rather than blocking.
+# Bypasses (xdist's own default applies): PYTEST_XDIST_AUTO_NUM_WORKERS set,
+# CI set, Windows (no fcntl), FUSED_RENDER_PYTEST_BUDGET=0.
+_HELD_XDIST_SLOTS: list = []
+_XDIST_BUDGET_RESULT = None
+_XDIST_BUDGET_INFO = None  # (workers, free_slots, total, cap) once the budget ran
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_xdist_auto_num_workers(config):
+    global _XDIST_BUDGET_RESULT, _XDIST_BUDGET_INFO
+    if _XDIST_BUDGET_RESULT is not None:
+        return _XDIST_BUDGET_RESULT
+    if (os.environ.get("PYTEST_XDIST_AUTO_NUM_WORKERS") or os.environ.get("CI")
+            or sys.platform == "win32"
+            or os.environ.get("FUSED_RENDER_PYTEST_BUDGET") == "0"):
+        return None
+    args = list(getattr(config, "args", None) or [])
+    if args and all("::" in a for a in args):
+        # Only specific node ids: xdist startup costs more than the tests.
+        _XDIST_BUDGET_RESULT = 0
+        return 0
+    import fcntl  # POSIX-only; an eager import would kill the suite on Windows
+
+    total = os.cpu_count() or 1
+    try:
+        cap = int(os.environ.get("FUSED_RENDER_PYTEST_MAX_WORKERS", "4"))
+    except ValueError:
+        cap = 4
+    cap = max(1, min(cap, total))
+    slot_dir = Path(tempfile.gettempdir()) / "fused-render-pytest-slots"
+    slot_dir.mkdir(parents=True, exist_ok=True)
+    held = 0
+    for i in range(total):
+        fd = os.open(slot_dir / f"slot-{i}", os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(fd)
+            continue
+        _HELD_XDIST_SLOTS.append(fd)  # never closed: released on exit
+        held += 1
+        if held >= cap:
+            break
+    workers = max(1, held)
+    _XDIST_BUDGET_INFO = (workers, held, total, cap)
+    _XDIST_BUDGET_RESULT = workers
+    return workers
+
+
+def pytest_report_header(config):
+    if _XDIST_BUDGET_INFO is None:
+        return None
+    workers, held, total, cap = _XDIST_BUDGET_INFO
+    return [f"xdist budget: {workers} workers ({held} of {total} machine slots free; cap {cap})"]
+
+
+def pytest_configure(config):
+    # Controller only: nice is additive and workers inherit it.
+    if (not hasattr(config, "workerinput") and not os.environ.get("CI")
+            and os.environ.get("FUSED_RENDER_PYTEST_NICE") != "0"
+            and hasattr(os, "nice")):
+        try:
+            os.nice(10)
+        except OSError:
+            pass
+
 # A stable default executor for every test that reaches /api/run without caring
 # which engine answers — see the module docstring. Not a tmpdir, so it gets its
 # own line rather than a fourth entry above.
+# No permission-card risk read (a model call) in any test that does not ask for one: agent._permissions would
+# otherwise start a background model call for every parked Bash request it lists. Tests of the read clear this.
+os.environ.setdefault("FUSED_RENDER_PERMISSION_RISK", "0")
 os.environ.setdefault("FUSED_RENDER_ENGINE", "builtin")
 # Tests describe Fused Render; a stale fused_render/_baked_flavor.py from a
 # local bot DMG build must not flip them (port 1777 assertions, startup set).
@@ -279,6 +359,17 @@ _APPENV_VARS = ("FUSED_RENDER_HOME_DIR", "FUSED_RENDER_ORIGIN",
 
 
 @pytest.fixture(autouse=True)
+def _no_archiving_of_missing_folders(monkeypatch):
+    """The Tasks listing files away a task whose folder is gone from disk
+    (`routers/tasks.py ARCHIVE_MISSING_FOLDERS`), and nearly every transcript
+    the suite writes names a cwd that does not exist (`/p`). Off for the suite;
+    the test of the pass itself (test_tasks_api.py, "gone folder") turns it
+    back on."""
+    from fused_render.server.routers import tasks as tasks_router
+    monkeypatch.setattr(tasks_router, "ARCHIVE_MISSING_FOLDERS", False)
+
+
+@pytest.fixture(autouse=True)
 def _no_real_session_count(monkeypatch):
     """The Claude session cap counts live hosts under the REAL runs tree, which
     on a developer machine with ten chats open would hold every scheduler test.
@@ -287,6 +378,20 @@ def _no_real_session_count(monkeypatch):
     from fused_render import session_cap
 
     monkeypatch.setattr(session_cap, "_agent", lambda: None)
+
+
+@pytest.fixture(autouse=True)
+def _warm_run_off_by_default(monkeypatch):
+    """`/api/run` claims pre-spawned idle interpreters by default (SPEC PY-20).
+    Tests that spy `executor.subprocess.Popen` or assert the cold spawn flags
+    must keep exercising the cold path, so every test starts with the switch off;
+    `tests/test_warm_run.py` turns it on itself. Teardown kills any spare a test
+    started so none outlives it."""
+    monkeypatch.setenv("FUSED_RENDER_WARM_RUN", "0")
+    yield
+    from fused_render import warm_run
+
+    warm_run.reset()
 
 
 @pytest.fixture(autouse=True)
@@ -369,6 +474,22 @@ def _no_real_fused_credentials(tmp_path_factory, monkeypatch):
     monkeypatch.setenv(
         "FUSED_RENDER_FUSED_CREDENTIALS",
         str(tmp_path_factory.getbasetemp() / "no-fused-credentials"))
+
+
+@pytest.fixture(autouse=True)
+def _no_real_fused_settings(tmp_path_factory, monkeypatch):
+    """The suite sees no `~/.fused/settings.toml`, whatever the machine holds.
+
+    `canvases._fused_settings()` reads it per call, and its `[render]
+    canvases_embed_proxy_enabled` turns the embed proxy on: a developer's own
+    file would otherwise start a real proxy at their deployment from any test
+    that reads canvases status, and make local runs differ from CI's (which
+    has no file). Tests that need one point `_FUSED_SETTINGS_FILES` at it
+    themselves (a later monkeypatch wins over this one)."""
+    from fused_render import canvases
+
+    monkeypatch.setattr(canvases, "_FUSED_SETTINGS_FILES",
+                        (str(tmp_path_factory.getbasetemp() / "no-fused-settings.toml"),))
 
 
 @pytest.fixture(autouse=True)
@@ -623,6 +744,16 @@ def _no_legacy_mounts_cleanup(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_startup_artifacts_warm(monkeypatch):
+    """`_startup_artifacts_warm` scans every transcript under the developer's
+    real ~/.claude on a daemon thread; no test that merely boots the app wants
+    that. The test ABOUT the handler restores the real target."""
+    from fused_render.server import app as app_mod
+
+    monkeypatch.setattr(app_mod, "_safe_artifacts_scan", lambda: None)
+
+
+@pytest.fixture(autouse=True)
 def _no_startup_index_scan(monkeypatch):
     """`create_app` schedules a background scan of the user's HOME dir.
 
@@ -645,6 +776,9 @@ def _no_startup_index_scan(monkeypatch):
     # developer's real home and outlives the test that spawned it — so it goes
     # too. Its own tests call `run_startup_warm()` directly.
     monkeypatch.setattr(index_routes, "startup_warm", lambda: None)
+    # ...and the combined scan+warm thread the non-low-impact hook now starts.
+    monkeypatch.setattr(index_routes, "start_startup_scan_and_warm",
+                        lambda start_dir=None: None)
     # Same hazard by a second door: GET /api/fs/list notes the folder for the
     # index freshness check (scan-incremental.md §5), which runs on a background
     # thread and can call runner.start. A test listing any path under the

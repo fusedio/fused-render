@@ -14,6 +14,7 @@ export type Action =
   | "poll"
   | "decide"
   | "app_state"
+  | "canvas_shot"
   | "sessions"
   | "live_run"
   | "defaults"
@@ -27,6 +28,7 @@ export type Action =
   | "cancel"
   | "live_host"
   | "send"
+  | "set_mode"
   | "commands"
   | "task_output"
   | "task_stop"
@@ -38,7 +40,12 @@ export type PermissionMode = "plan" | "prompt" | "acceptEdits" | "auto";
 /** The two modes a card may switch INTO (SWITCHABLE_MODES, T:13756). */
 export type SwitchableMode = "acceptEdits" | "auto";
 export type Decision = "allow" | "deny";
-export type DecisionScope = "once" | "session";
+/** "session": every call of this tool for the rest of the chat (file tools only).
+ *  "exact": this exact call (Bash: the command string) for the rest of the chat. */
+export type DecisionScope = "once" | "session" | "exact";
+/** The model-written read of a pending call (agent.py `_risk_fields`). */
+export type RiskSeverity = "low" | "medium" | "high";
+export type RiskState = "" | "pending" | "ready" | "failed";
 /** What lands on disk for a permission row: "" = still open. */
 export type LandedDecision = "" | "allow" | "deny" | "expired";
 
@@ -49,7 +56,7 @@ export interface StartRequest {
   message: string;
   /** "" = a new session (T:16605-16623). */
   session_id: string;
-  /** WHICH AGENT RUNS THIS CHAT — "claude" (default) | "copilot"
+  /** WHICH AGENT RUNS THIS CHAT — "claude" (default) | "copilot" | "codex" | "gemini"
    *  (docs/COPILOT_BACKEND.md D2). Chosen at the first turn and immutable: a
    *  send into an existing session must name the session's own. */
   backend?: string;
@@ -145,6 +152,15 @@ export interface AppStateRequest {
   state: string;
 }
 
+/** `canvas_shot {run_id, request_id, state}` — the page's answer to a
+ *  `canvas_screenshot` tool call. `state` is JSON: `{image, mime, udf}` (the
+ *  picture, uploaded into the shots dir) or `{error}`. */
+export interface CanvasShotRequest {
+  run_id: string;
+  request_id: string;
+  state: string;
+}
+
 export interface SendRequest {
   run_id: string;
   /** Must equal the session's agent; ignored otherwise (§8). */
@@ -228,6 +244,7 @@ export interface AgentRequests {
   poll: PollRequest;
   decide: DecideRequest;
   app_state: AppStateRequest;
+  canvas_shot: CanvasShotRequest;
   sessions: FileRequest;
   live_run: FileSessionRequest;
   /** `session_id` OPTIONAL, exactly as `live_run` takes it: with one the agent
@@ -245,6 +262,8 @@ export interface AgentRequests {
   cancel: CancelRequest;
   live_host: FileSessionRequest;
   send: SendRequest;
+  /** The pill changed on a live run: apply the mode now, no message, no turn. */
+  set_mode: { run_id: string; permission_mode: string };
   commands: CommandsRequest;
   task_output: TaskOutputRequest;
   task_stop: TaskOutputRequest;
@@ -361,6 +380,12 @@ export interface PermissionRow {
   decision: LandedDecision;
   scope: "" | DecisionScope;
   mode: "" | SwitchableMode;
+  /** The model's severity for this call, "" until `risk_state` is "ready". Optional: an older server sends none. */
+  severity?: "" | RiskSeverity;
+  /** One plain-English sentence on what the call does; "" until ready. */
+  risk_summary?: string;
+  /** "pending" while the assessment runs (the card shows a placeholder), "failed" or "" shows nothing extra. */
+  risk_state?: RiskState;
   /** WHY a deny nobody clicked: "abandoned" (the CLI walked away from the
    *  asking call — a subagent told to carry on; agent.py `_close_abandoned`),
    *  "cancelled" (Stop), "timeout" (the permission server gave up). "" on a
@@ -452,6 +477,24 @@ export interface AppStateRow {
    *  — a respawn in between would otherwise answer a request the new run never
    *  made. */
   runId?: string;
+}
+
+/** One parked `canvas_screenshot` call (agent `_canvas_shot_requests`): what
+ *  the model asked to see. Answered by the canvas page through its own
+ *  capture (`useCanvasShotResponder`). */
+export interface CanvasShotRow {
+  id: string;
+  what: "canvas" | "udf";
+  /** The UDF name the model named, "" for "this chat's node". */
+  udf: string;
+  reason: string;
+  created_at: number;
+
+  // -- CLIENT-ONLY annotations (run-controller.ts). --
+  /** The run that asked. */
+  runId?: string;
+  /** How many polls this request has been seen unanswered for. */
+  pollsSeen?: number;
 }
 
 export interface SkillRow {
@@ -548,11 +591,17 @@ export interface PollResponse {
   error: string;
   tokens: number;
   phase: Phase;
+  /** Epoch seconds the current turn began (server stamp); 0 or absent on an
+   *  older agent.py. */
+  turn_started_at?: number;
   /** The run's original first user message. */
   message: string;
   permissions: PermissionRow[];
   /** [] once done. */
   app_state: AppStateRow[];
+  /** Unanswered `canvas_screenshot` requests (agent `_canvas_shot_requests`);
+   *  absent on an older agent.py. */
+  canvas_shot?: CanvasShotRow[];
   /** Live permission mode (`_live_mode`). */
   mode: PermissionMode;
   skills: SkillRow[];
@@ -692,6 +741,8 @@ export type StartResponse = { run_id: string; session_id?: string; error?: undef
 
 /** agent.py:2971-3038 — exactly one of the three. */
 export type SendResponse = { sent: true } | { respawn: true } | ErrorOnly;
+/** `set_mode`'s answer: `mode` is the page spelling now in force. */
+export type SetModeResponse = { ok: true; mode: PermissionMode } | { respawn: true } | ErrorOnly;
 
 /** agent.py:1601-1607; error branches carry only `error`. */
 export type DecideResponse =
@@ -814,7 +865,24 @@ export interface HistoryErrorTurn {
   /** The transcript's `quotaLimits` on a failed row — only a limit hit has it. */
   quota?: Quota;
 }
-export type HistoryTurn = HistoryUserTurn | HistoryAssistantTurn | HistoryErrorTurn;
+/** Claude Code's compaction summary (`isCompactSummary` user record), lifted
+ *  out of the user stream by agent.py `_history` so it draws as a divider and
+ *  not a screenful-tall bubble. Token counts are absent when the boundary did
+ *  not carry them. */
+export interface HistoryCompactTurn {
+  role: "compact";
+  /** The summary body, preamble stripped. */
+  text: string;
+  uuid?: string;
+  trigger?: string;
+  pre_tokens?: number;
+  post_tokens?: number;
+}
+export type HistoryTurn =
+  | HistoryUserTurn
+  | HistoryAssistantTurn
+  | HistoryErrorTurn
+  | HistoryCompactTurn;
 export interface TranscriptStat {
   path: string;
   mtime: number;
@@ -1029,6 +1097,7 @@ export interface AgentResponses {
   poll: PollResponse | PollRefused;
   decide: DecideResponse;
   app_state: AppStateResponse;
+  canvas_shot: AppStateResponse;
   sessions: SessionsResponse | ErrorOnly;
   live_run: RunIdResponse | ErrorOnly;
   defaults: DefaultsResponse | ErrorOnly;
@@ -1042,6 +1111,7 @@ export interface AgentResponses {
   cancel: CancelResponse;
   live_host: RunIdResponse | ErrorOnly;
   send: SendResponse;
+  set_mode: SetModeResponse;
   commands: CommandsResponse | ErrorOnly;
   task_output: TaskOutputResponse | ErrorOnly;
   task_stop: TaskStopResponse | ErrorOnly;

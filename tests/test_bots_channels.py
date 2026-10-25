@@ -134,6 +134,40 @@ def test_deliver_prefixes_in_own_identity_and_numbers_options():
 
 
 
+def test_render_approval_adds_the_risk_line_before_the_options():
+    ev = {"role": "approval", "text": "About to run `rm x`. Approve?", "severity": "high",
+          "risk_summary": "Deletes the file x."}
+    text, numbered = rmod.render(ev, CAPS)
+    assert text == "About to run `rm x`. Approve?\n\nHigh risk: Deletes the file x.\n\nReply 1 Approve · 2 Deny"
+    assert numbered == list(base.APPROVAL_OPTIONS)
+    plain = rmod.render({k: v for k, v in ev.items() if k not in ("severity", "risk_summary")}, CAPS)[0]
+    assert "risk" not in plain
+    assert "risk" not in rmod.render({"role": "approval", "text": "x", "severity": "bogus", "risk_summary": "y"}, CAPS)[0]
+    assert "risk" not in rmod.render(ev, base.WEB_CAPS)[0]  # a surface with buttons draws its own card
+
+
+def test_render_risk_line_dropped_before_the_options_are():
+    import dataclasses
+    ev = {"role": "approval", "text": "About to run `rm x`. Approve?", "severity": "high",
+          "risk_summary": "Deletes the file x."}
+    plain = {k: v for k, v in ev.items() if k not in ("severity", "risk_summary")}
+    full = rmod.render(ev, CAPS)[0]
+    short, _ = rmod.render(plain, CAPS)
+    assert len(short) < len(full)
+    # fits with the risk line: kept, options kept
+    caps = dataclasses.replace(CAPS, max_len=len(full))
+    assert rmod.render(ev, caps) == (full, list(base.APPROVAL_OPTIONS))
+    # fits only without it: the risk line goes, the options stay
+    caps = dataclasses.replace(CAPS, max_len=len(full) - 1)
+    text, numbered = rmod.render(ev, caps)
+    assert (text, numbered) == (short, list(base.APPROVAL_OPTIONS))
+    assert "risk" not in text and "Reply 1 Approve" in text
+    # fits in neither: the card is cut and sent to the Mac, as before
+    caps = dataclasses.replace(CAPS, max_len=len(short) - 1)
+    text, numbered = rmod.render(ev, caps)
+    assert numbered == [] and "Full answer in the app." in text and "Reply 1" not in text
+
+
 def test_split_summary_and_summary_render():
     assert base.split_summary("Full answer.\n\nSUMMARY: Short one.") == ("Full answer.", "Short one.")
     assert base.split_summary("Full answer.\n**Summary:** Short one.", "") == ("Full answer.", "Short one.")

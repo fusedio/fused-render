@@ -29,6 +29,7 @@ import {
   useSyncExternalStore,
   type MutableRefObject,
   type ReactElement,
+  type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 
@@ -41,12 +42,14 @@ import {
   taskDraftKey,
   type TaskDraftForm,
 } from "@platform/lib/drafts";
+import { TaskPrChip } from "@platform/ui/TaskPrChip";
 import { draftUpdatedAt, isDraftTask } from "@shell/tasks-lib";
 
 import { createUrlParamsStore, type ParamsStore } from "./params/store";
 import { useChatParam } from "./params/useChatParams";
 import { fetchHistory, sharedHistoryCache } from "./protocol/history";
 import type { SendOptions, StrandedLine, UserTurn } from "./protocol/controller-api";
+import type { PermissionMode } from "./protocol/types";
 import { watchStreamTeardown, watchTopOrigin } from "./shots";
 import type { Attachment, Receipt } from "./shots/types";
 import { enhanceCodeBlocks } from "./protocol/markdown";
@@ -143,6 +146,7 @@ import {
   type Viewable,
   AgentProvider,
 } from "./ui";
+import { ComposerGate, waitingKind } from "./ui/WaitingBar";
 import { AGENT_PREFS_URL, agentLabel, capsOf, isBackendEnabled, useAgentBackends } from "@platform/lib/agent-backends";
 import { debugSentEnabled } from "./ui/debug-sent";
 import { sessionSeed } from "./ui/useRecentTasks";
@@ -150,7 +154,12 @@ import { takenAskBackend } from "@platform/lib/pending-claude-ask";
 import type { ClassifiedCommand } from "./protocol/commands";
 import { useSlashCommands } from "./ui/useSlashCommands";
 import { planLocalCommand } from "./ui/local-commands";
+import { REMOTE_CONTROL_CONNECTING, RemoteControlConfirm, RemoteControlNote, useRemoteControl } from "./ui/RemoteControl";
 import { notify } from "@platform/lib/notifications";
+import { ScreenshotSeat } from "./ui/AnnStrip";
+import { useCanvasShotResponder } from "./pane/useCanvasShotResponder";
+import type { CanvasShot, CanvasShotWhat } from "./shots/canvas-shot";
+import { CanvasShotSeat } from "./ui/CanvasShotSeat";
 import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
 import { WorktreeHintChip, visibleWorktreeHint } from "./ui/WorktreeHintChip";
 import { TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
@@ -242,6 +251,18 @@ export interface ClaudeChatProps {
   compact: boolean;
   /** `peek=1` (TaskPeek modal). */
   peek: boolean;
+  /** Draw the slim chat header (worktree menu, hint chip, session id) inside a
+   *  `peek` mount. Ignored without `peek`; compact never draws one. */
+  headerInPeek?: boolean;
+  /** Host-supplied node for the slim header's right-hand seat (a PR chip). */
+  headerExtra?: ReactNode;
+  /** Draw `TaskPrChip` for the open task in the header, ahead of any
+   *  `headerExtra` (the explorer's pane; TaskPeek passes its own chip). */
+  prChip?: boolean;
+  /** Fold `← Chats` and the menu into the identity row (no strip row, no
+   *  folder name) when the strip has no annotate seats. The explorer's folder
+   *  sidebar opts in. */
+  mergedHead?: boolean;
   params: ChatParamsSource;
   /** A HOST stated this conversation's model/effort through `ChatMount`'s
    *  `model`/`effort` props, so the `model`/`effort` params on this mount's
@@ -266,9 +287,17 @@ export interface ClaudeChatProps {
   preview?: boolean;
   /** `_noann=1` — no Screenshot / Comment / Annotate seats and no narrow-view
    *  toggle: the host shows this chat where its pane must stay out of reach
-   *  (the canvas node pane, whose Code tab is the file's view). The pane
-   *  itself stays mounted — it is what files the chat under its file. */
+   *  (the canvas node pane, whose Code tab is the file's view), and the chat
+   *  is pinned to its narrow CHAT view at every width (useNarrowView
+   *  `chatViewOnly`). The pane itself stays mounted — it is what files the
+   *  chat under its file — but is never on screen. */
   noAnnTools?: boolean;
+  /** The host is a canvas page that can photograph its workbench on request
+   *  (`shots/canvas-shot`): the Screenshot seat takes THAT picture instead of
+   *  a capture of the pane frame, which is cross-origin and blank to us. On a
+   *  mount without the ann strip (`noAnnTools`, the node pane) the seat is
+   *  drawn beside the ⋮ instead, so the camera is where it always is. */
+  canvasShot?: CanvasShot;
   /** `_noopen=1` — this mount must not record the app it frames as OPENED
    *  (D622, the listing pane). Unlike `preview` it is not display-only: the
    *  pane is fully interactive, so it carries the no-open stamp WITHOUT the
@@ -276,6 +305,10 @@ export interface ClaudeChatProps {
   noOpen?: boolean;
   /** Replaces `window.top.location` hops (T:12029, 17054, 18222). */
   onNavigate?: (url: string) => void;
+  /** The chat's worktree was removed from its menu. Absent, the chat hops to
+   *  the main checkout's folder chat through `onNavigate`; a host that is not
+   *  the explorer (the tasks page) passes this to stay where it is. */
+  onWorktreeRemoved?: () => void;
   /** Replaces `dataset.chatReady`: fired ONCE, when the view the boot branch
    *  chose has something on screen (T:4520 `markChatReady`). */
   onReady?: () => void;
@@ -332,8 +365,11 @@ export { localEffortArg, localModelArg } from "./ui/local-commands";
 export function chatWorkdir(file: string | null, noun: TargetNoun): string | null {
   if (!file || !noun) return null;
   if (noun !== "file") return file;
-  const cut = file.replace(/\/+$/, "").search(/\/[^/]*$/);
-  return cut > 0 ? file.slice(0, cut) : cut === 0 ? file.slice(0, 1) : file;
+  const cut = file.replace(/[\\/]+$/, "").search(/[\\/][^\\/]*$/);
+  if (cut <= 0) return cut === 0 ? file.slice(0, 1) : file;
+  const parent = file.slice(0, cut);
+  // A drive root keeps its separator: bare "C:" is cwd-relative.
+  return /^[A-Za-z]:$/.test(parent) ? parent + file[cut] : parent;
 }
 
 /** T:16435 `noteChatActivity` — best-effort: a blocked store (private mode, a
@@ -356,14 +392,14 @@ function deadline(ms: number): Promise<void> {
   return new Promise<void>((resolve) => setTimeout(resolve, ms));
 }
 
-function variantOf(p: Pick<ClaudeChatProps, "compact" | "peek" | "chatOnly">): string {
+function variantOf(p: Pick<ClaudeChatProps, "compact" | "peek" | "chatOnly" | "headerInPeek">): string {
   return p.compact ? "compact" : p.peek ? "peek" : p.chatOnly ? "chat-only" : "split";
 }
 
 /** The host cuts are CLASSES and not a teardown, exactly as in T (T:1405-1438):
  *  compact / chat-only / peek are host FACTS, decided when the mount was built. */
 function rootClass(
-  p: Pick<ClaudeChatProps, "compact" | "peek" | "chatOnly">,
+  p: Pick<ClaudeChatProps, "compact" | "peek" | "chatOnly" | "headerInPeek">,
   extra?: string,
 ): string {
   return [
@@ -371,6 +407,7 @@ function rootClass(
     p.compact ? "chat-compact" : "",
     p.chatOnly ? "chat-only" : "",
     p.peek ? "chat-peek" : "",
+    p.peek && p.headerInPeek ? "chat-peek-head" : "",
     extra ?? "",
   ]
     .filter(Boolean)
@@ -520,6 +557,7 @@ interface ChatBodyProps extends ClaudeChatProps {
 
 function ChatBody(props: ChatBodyProps) {
   const { params, file, chatOnly, compact, peek } = props;
+  const showHead = !compact && (!peek || !!props.headerInPeek);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const columnRef = useRef<HTMLDivElement | null>(null);
   const ownBox = useRef<HTMLTextAreaElement | null>(null);
@@ -695,6 +733,9 @@ function ChatBody(props: ChatBodyProps) {
     // window not one narrow rule fired. `.chat-root` is the box the iframe's
     // viewport used to be.
     boxRef: rootRef,
+    // `_noann=1`: the chat alone on screen at every width; the pane stays
+    // mounted for the app-state block (see `noAnnTools` on the props).
+    chatViewOnly: !!props.noAnnTools,
     // T:8940 — arriving in the narrow CHAT view disarms: the toggle that would
     // undo the mode is hidden there, and an armed mode behind a hidden toggle
     // keeps the frame's click swallower live over a document nobody can see.
@@ -1382,9 +1423,53 @@ function ChatBody(props: ChatBodyProps) {
     // parent is a real box to flash over.
     flashHost: () => appFrame()?.parentElement ?? null,
     paneNoun: pane.paneNoun,
+      // The canvas page's picture of its workbench, when there is one: the seat
+    // asks the host rather than photographing a cross-origin frame.
+    ...(props.canvasShot
+      ? {
+          paneShot: async (what?: string) => {
+            const shot = props.canvasShot!;
+            const target: CanvasShotWhat =
+              what === "udf" || what === "canvas" ? what : shot.targets[0] ?? "canvas";
+            const a = await shot.capture(target);
+            return a.ok
+              ? {
+                  blob: a.blob,
+                  note:
+                    target === "udf"
+                      ? "a picture of one UDF node's output as the workbench drew it, not of this chat's pane"
+                      : "a picture of the canvas graph as the workbench drew it, not of this chat's pane",
+                }
+              : { blob: null, why: a.error };
+          },
+        }
+      : {}),
   });
   /** The picture the viewer is showing, pending or sent (T:10681 `shotViewing`). */
   const [viewing, setViewing] = useState<Viewable | null>(null);
+  // A FRAMED canvas chat (the node pane, `canvasShot` + a parent window) opens
+  // its pictures in the HOST's viewer: a modal portaled to this document's
+  // body is boxed into the pane's iframe — a third of the window, under the
+  // host's own chrome — while the canvas chat next door (an in-page mount)
+  // gets the whole window. One door, one size: the host draws it
+  // (CanvasWorkspace `fused-shot-view`). A blob URL is origin-scoped, so the
+  // host can show this document's picture by the same URL while this
+  // document lives — nothing is copied. Discard stays on the chip's ✕.
+  const hoistViewer = !!props.canvasShot && typeof window !== "undefined" && window.parent !== window;
+  const openShot = useCallback(
+    (shot: Viewable | null) => {
+      if (!shot || !hoistViewer) {
+        setViewing(shot);
+        return;
+      }
+      const { id: _id, pending: _pending, ...rest } = shot;
+      window.parent.postMessage(
+        { type: "fused-shot-view", shot: { ...rest, src: shot.src || shot.thumb || undefined } },
+        window.location.origin,
+      );
+    },
+    [hoistViewer],
+  );
   // The tray's hand-back, reachable from the controller's callback above. In an
   // EFFECT and not the render body: a render React throws away (a StrictMode
   // double-invoke, a concurrent attempt that loses) must not leave its handle
@@ -1634,6 +1719,14 @@ function ChatBody(props: ChatBodyProps) {
     recMarkPoint: (cx, cy, win, nearPath) => recorder.markPoint(cx, cy, win, nearPath ?? null),
   });
   annRef.current = ann;
+  // `noAnnTools` PINS THE CHAT VIEW (useNarrowView `chatViewOnly`), so the
+  // preview is never on screen and nothing can undo an armed mode: no seat,
+  // no toggle. The hook's arrival disarm runs at MOUNT, but the mode arms
+  // later, when the target arrives and `bootFromParam` reads `annmode=1` —
+  // so this watches the armed state itself and disarms whenever it comes on.
+  useEffect(() => {
+    if (props.noAnnTools && ann.armed) ann.arriveNarrowChat();
+  }, [props.noAnnTools, ann.armed, ann]);
   // The seam above, parked from an EFFECT — the most recently mounted chat owns
   // it, and a render React discarded must not.
   useEffect(() => {
@@ -1804,6 +1897,16 @@ function ChatBody(props: ChatBodyProps) {
     //
     // Both paths are pinned: `run-controller.test.ts` for the live one,
     // `useAppStateResponder.test.tsx` for the seam.
+  });
+
+  // ── the canvas-screenshot pull channel (`canvas_screenshot` tool) ──────────
+  // Every chat polls its run, so every chat sees the rows; only a canvas page
+  // (`canvasShot`) can take the picture, the rest answer "open the canvas"
+  // after giving it its chance (`useCanvasShotResponder`).
+  useCanvasShotResponder({
+    rows: state.canvasShot,
+    shot: props.canvasShot ?? null,
+    answer: controller.answerCanvasShot,
   });
 
   // ── the ask, LATCHED PER MOUNT ─────────────────────────────────────────────
@@ -2255,6 +2358,11 @@ function ChatBody(props: ChatBodyProps) {
   // NO-PANE target: there is no second view to be in, so T makes no write at
   // all (T:14661) and a bookmarked `paneview=preview` must not be rewritten.
   const openCards = openCardIds(state.permissions);
+  // The waiting bar replaces the composer while a card is open; it offers a jump
+  // only when the card is outside the transcript's scrollport.
+  const waitKind = waitingKind(state.permissions);
+  const [openCardVisible, setOpenCardVisible] = useState(true);
+  const jumpToCard = useRef<(() => void) | null>(null);
   useEffect(() => {
     if (openCards && !pane.noPane && narrowView.narrow && narrowView.view === "preview") {
       params.set({ paneview: "chat" });
@@ -3444,8 +3552,33 @@ function ChatBody(props: ChatBodyProps) {
     ],
   );
 
+  const rc = useRemoteControl(state.sessionId ?? "", file ?? "", () => {
+    if (state.sessionId) void controller.refreshHistory(state.sessionId);
+  });
+  const rcAsk = rc.ask;
+  const rcOn = rc.view.state !== "off";
+  const rcLive = rc.view.state === "active";
+  const rcSayRaw = rc.say;
+  const rcSay = useMemo(
+    () =>
+      rcLive
+        ? (text: string) => {
+            if (attach.items.length > 0 || ann.hasSendable()) {
+              notify({ title: "Pictures and notes can't go through Remote Control yet", tone: "error" });
+              strand(text);
+              return;
+            }
+            void rcSayRaw(text).then((sent) => {
+              if (!sent) strand(text);
+            });
+          }
+        : null,
+    [rcLive, rcSayRaw, attach.items.length, ann, strand],
+  );
+  const rcConnecting = rc.view.state === "starting";
   const onSend = useCallback(
     (text: string, opts: SendOptions) => {
+      if (rcSay) return rcSay(text);
       // OPTIMISTIC, and synchronously BEFORE the dispatch — exactly where T puts
       // it (`enterChat()` in the landing form's own `onsubmit`, T:17935, one line
       // ahead of its `sendMessage(message)`). `inChat` is `entered ||
@@ -3461,10 +3594,11 @@ function ChatBody(props: ChatBodyProps) {
       setEntered(true);
       dispatchSend(text, opts, false);
     },
-    [dispatchSend],
+    [dispatchSend, rcSay],
   );
   const onFollowUp = useCallback(
     (text: string) => {
+      if (rcSay) return rcSay(text);
       dispatchSend(
         text,
         {
@@ -3475,7 +3609,7 @@ function ChatBody(props: ChatBodyProps) {
         true,
       );
     },
-    [dispatchSend, defaults.model, defaults.effort, defaults.permission],
+    [dispatchSend, defaults.model, defaults.effort, defaults.permission, rcSay],
   );
   /**
    * STOP MEANS STOP, THE OUTBOX INCLUDED (Akshil's R2-12 rule, kept over Claude
@@ -3653,15 +3787,15 @@ function ChatBody(props: ChatBodyProps) {
   // menu's own list answers "is this a repo"; `worktreeReady` carries it.
   const worktreeTarget = worktreeMenuTarget(file, pane.noun);
   /** A worktree menu is MOUNTED and has said this folder is in a repo
-   *  (`WorktreeMenu.onReady`). Peek/compact mount none; a non-repo says false. */
+   *  (`WorktreeMenu.onReady`). Compact mounts none, and a peek only with `headerInPeek`; a non-repo says false. */
   const worktreeReady = useRef(false);
   const onWorktreeReady = useCallback((isRepo: boolean) => {
     worktreeReady.current = isRepo;
   }, []);
   // THE TASKS PANEL'S OPEN BIT (SPEC T-5): collapsed by default, toggled by its
-  // own head and by `/tasks`, and scoped to the run and conversation on screen
-  // (`tasksPanelScope`) so it does not stay open into the next one. The host's
-  // `onToggleTasks` still hears `/tasks`.
+  // own head and by `/tasks`, and remembered globally (`useTasksOpen`). An empty
+  // strip only shows in the run/conversation it was opened in (`tasksPanelScope`).
+  // The host's `onToggleTasks` still hears `/tasks`.
   const [tasksOpen, toggleTasksPanel] = useTasksOpen(
     tasksPanelScope({
       lastRunId: state.lastRunId,
@@ -3669,6 +3803,7 @@ function ChatBody(props: ChatBodyProps) {
       sessionId: state.sessionId,
       transcriptGen: state.transcriptGen,
     }),
+    !!summarizeTasks(state.tasks),
   );
   const hostToggleTasks = props.onToggleTasks;
   const onToggleTasks = useCallback(() => {
@@ -3684,7 +3819,10 @@ function ChatBody(props: ChatBodyProps) {
     (cmd: ClassifiedCommand): boolean => {
       const plan = planLocalCommand(cmd, {
         backend: liveBackend.current,
+        // `/effort` validates against the levels THIS model takes.
+        model: defaults.model,
         worktreeReady: worktreeTarget && worktreeReady.current,
+        hasSession: !!state.sessionId,
       });
       if ("refuse" in plan) {
         // The words stay in the box (`false`), and the reader is told why.
@@ -3709,9 +3847,13 @@ function ChatBody(props: ChatBodyProps) {
         case "tasks":
           onToggleTasks();
           return true;
+        case "remote-control":
+          rcAsk(plan.name);
+          return true;
       }
     },
-    [onBack, setModelPick, setEffortPick, worktreeTarget, onToggleTasks],
+    [onBack, setModelPick, setEffortPick, worktreeTarget, onToggleTasks, state.sessionId, rcAsk,
+     defaults.model],
   );
   /** SWITCHING WORKTREE IS OPENING THAT FOLDER'S CHAT, FRESH — the URL the Home
    *  lists open a folder chat on (`paneChatUrl`), with no session, through the
@@ -3821,13 +3963,17 @@ function ChatBody(props: ChatBodyProps) {
       permission: defaults.permission,
       setModel: defaults.setModel,
       setEffort: defaults.setEffort,
-      setPermission: defaults.setPermission,
+      // The pill moves the param/record, AND a live run takes it now (no send).
+      setPermission: (value: PermissionMode) => {
+        defaults.setPermission(value);
+        void controller.applyPermission(value);
+      },
       backend: defaults.backend,
       backendFixed: defaults.backendFixed,
       setBackend: defaults.setBackend,
       ready: defaults.pillsReady,
     }),
-    [defaults],
+    [defaults, controller],
   );
 
   const actions = useMemo(
@@ -3841,7 +3987,7 @@ function ChatBody(props: ChatBodyProps) {
     [controller],
   );
 
-  const name = file ? file.split("/").filter(Boolean).pop() || file : agentLabel(chatBackend);
+  const name = file ? file.split(/[\\/]/).filter(Boolean).pop() || file : agentLabel(chatBackend);
   const running =
     state.status === "running" || state.status === "starting" || state.status === "stopping";
   // Worktrees are Claude's (§7 `worktrees`): no menu for an agent without them.
@@ -3853,6 +3999,7 @@ function ChatBody(props: ChatBodyProps) {
       request={wtRequest}
       running={running}
       onReady={onWorktreeReady}
+      {...(props.onWorktreeRemoved ? { onRemoved: props.onWorktreeRemoved } : {})}
     />
   ) : null;
   // The picker moves into the shared strip below the breakpoint: there is no
@@ -4612,7 +4759,7 @@ function ChatBody(props: ChatBodyProps) {
         <AttachTray
           items={attach.items}
           paneNoun={pane.paneNoun}
-          onOpen={setViewing}
+          onOpen={openShot}
           onRemove={attach.remove}
         >
           {/* The SAME pill a screenshot's chip is, in the same row: both are
@@ -4647,13 +4794,13 @@ function ChatBody(props: ChatBodyProps) {
       // worse state than the one this feature prevents.
       // …AND FOR AN AGENT SWITCHED OFF IN PREFERENCES (D17): same closed box,
       // its own sentence, and the link to the switch under it.
-      blocked: sched.blocked || agentOff,
+      blocked: sched.blocked || agentOff || rcConnecting,
       blockedPlaceholder: agentOff
         ? `${agentLabel(state.backend)} is turned off in Preferences.`
-        : sched.placeholder,
+        : rcConnecting ? REMOTE_CONTROL_CONNECTING : sched.placeholder,
       blockedReason: agentOff
         ? `${agentLabel(state.backend)} is turned off in Preferences.`
-        : sched.reason,
+        : rcConnecting ? REMOTE_CONTROL_CONNECTING : sched.reason,
       blockedNote: agentOff ? (
         <>
           {agentLabel(state.backend)} is turned off in Preferences.{" "}
@@ -4661,6 +4808,8 @@ function ChatBody(props: ChatBodyProps) {
             Turn it on
           </a>
         </>
+      ) : rcOn ? (
+        <RemoteControlNote view={rc.view} onStop={rc.stop} />
       ) : undefined,
       // THE FLAG TAKES THE FOLLOW-UP FOOTNOTE AWAY (see `ComposerCardProps`):
       // under the queue this pane says "waiting" about messages that really are,
@@ -4679,6 +4828,8 @@ function ChatBody(props: ChatBodyProps) {
       state.sessionId,
       state.backend,
       agentOff,
+      rc.view,
+      rc.stop,
       state.status,
       state.queued,
       inboxRows,
@@ -4869,7 +5020,7 @@ function ChatBody(props: ChatBodyProps) {
    *  comeback's own POST rings), floored at five seconds. */
   // Only where the header is drawn, and only under the flag: the read is one
   // listing per hook instance, and a cards wall mounts a dozen.
-  const limitWord = useLimitWord(queueOn && !compact && !peek ? taskKey : "");
+  const limitWord = useLimitWord(queueOn && showHead ? taskKey : "");
   /**
    * THE LISTING'S ROW FOR THE CONVERSATION ON SCREEN, for the header
    * (`ui/Topbar.tsx` draws the task side peek's identity block from it).
@@ -4885,20 +5036,149 @@ function ChatBody(props: ChatBodyProps) {
    */
   //
   // AND ONLY WHERE THE HEADER IS DRAWN (2026-09-15). The Topbar this feeds is
-  // taken away by the compact and peek cuts (`{!compact && !peek ? …}` below),
+  // taken away by the compact and peek cuts (`{showHead ? …}` below; a peek that
+  // opts in with `headerInPeek` keeps a slim one),
   // so a cards wall of twelve tiles held twelve subscriptions for a header none
   // of them renders. The rows are one shared feed now, so the cost is no longer
   // twelve sockets — but it is still twelve listings narrowed and twelve
   // re-renders per change for nothing.
   const head = useSessionTask(
-    inChat && !compact && !peek ? (state.sessionId ?? null) : null,
+    inChat && showHead ? (state.sessionId ?? null) : null,
     file,
   );
+  // The header's last seat: the task's PR chip when the host asked for it (the
+  // chip draws nothing for a task that names no pull request), then the
+  // host's own node.
+  const headerExtra =
+    props.prChip && head.task ? (
+      <>
+        <TaskPrChip task={head.task} />
+        {props.headerExtra}
+      </>
+    ) : (
+      props.headerExtra
+    );
 
+  // THE MERGED HEAD (`mergedHead`, the explorer's folder sidebar): when the
+  // strip would hold nothing but `← Chats` and the menu, those two ride the
+  // identity row as its lead and tail instead of a row of their own. Any seat
+  // that has something to say (a target, the picker, the view toggle) keeps
+  // the two-row layout. The view toggle only shows when there is a pane
+  // (viewClassNames drops `narrow` for a no-pane chat).
+  const mergedHeadRow =
+    !!props.mergedHead &&
+    inChat &&
+    showHead &&
+    !compact &&
+    !peek &&
+    !(annTarget && !props.noAnnTools) &&
+    host !== "anntools" &&
+    !(narrowView.narrow && !pane.noPane && !props.noAnnTools);
+  // One definition each, placed by the strip or by the merged `Topbar`.
+  const backBtn = (
+        <button
+          type="button"
+          className="c-back"
+          // AND WHY, while it is locked (T:6896 writes exactly this
+          // sentence onto `#back.title` and clears it on unlock). It goes
+          // into the accessible NAME as well as the `title`, because
+          // `disabled` takes the button out of tab order: a hover-only
+          // answer is no answer for a control the keyboard cannot land
+          // on, and a dead way-out that will not say why is the one
+          // refusal face worth spelling twice.
+          aria-label={
+            ann.locked ? "Back to chats — " + NAV_LOCKED_REASON : "Back to chats"
+          }
+          title={ann.locked ? NAV_LOCKED_REASON : undefined}
+          // PR3: locked while a comment round or a walkthrough owns the
+          // page (`useAnnotations().locked`) — leaving mid-round would
+          // orphan the notes. Main moved Back from the top bar into this
+          // strip (P2-1), so the lock moved with it.
+          disabled={ann.locked}
+          aria-disabled={ann.locked ? "true" : "false"}
+          onClick={onBack}
+        >
+          ← Chats
+        </button>
+  );
+  // A canvas chat whose strip draws no seats — the node pane (`noAnnTools`),
+  // or the canvas chat itself, whose target is the cross-origin workbench
+  // frame and so not annotatable (`ann.capable`) — still has a picture to
+  // take, so the camera sits beside the ⋮: the strip's own seat markup, in
+  // the strip's own `.c-anncta` face, exactly where the strip would put it.
+  const stripSeatsShown = !!annTarget && !props.noAnnTools && ann.capable;
+  const canvasShotSeat = props.canvasShot && !stripSeatsShown ? (
+    <div className="c-anncta">
+      {props.canvasShot.targets.length > 1 ? (
+        <CanvasShotSeat
+          targets={props.canvasShot.targets}
+          inert={sched.blocked}
+          disabled={attach.capturing || sched.blocked}
+          capturing={attach.capturing}
+          onPick={(what) => void attach.capture(what)}
+        />
+      ) : (
+        <ScreenshotSeat
+          label="Screenshot the canvas and attach it to this message"
+          inert={sched.blocked}
+          disabled={attach.capturing || sched.blocked}
+          capturing={attach.capturing}
+          onClick={() => void attach.capture(props.canvasShot!.targets[0])}
+        />
+      )}
+    </div>
+  ) : null;
+  const kebabEl = (
+    <>
+      {canvasShotSeat}
+      <Kebab
+        file={file}
+        sessionId={inChat ? (state.sessionId ?? "") : ""}
+        btnRef={kebabBtn}
+        running={running}
+        // Only a RUNNING turn's hold is lifted by its open card: a
+        // `stopping` turn with a card still painted is a process on its
+        // way out, and the menu waits for it like before.
+        asking={!!openCards && state.status === "running"}
+        landing={!inChat}
+        onErased={onErased}
+        // ARCHIVE LEAVES THROUGH THE SAME DOOR DELETE DOES (Akshil,
+        // 2026-10-14): the task is filed, so the page goes back to the
+        // landing rather than staying on a transcript the reader has just
+        // put away. `onBack`, not `onErased`: the transcript still EXISTS,
+        // so there is no comment mode to tear down ahead of the hop (the
+        // item is greyed while one holds the page anyway), and the
+        // composer's leave guard keeps its say — a Cancel on unsent text
+        // leaves the reader on the filed chat, menu reading "Unarchive",
+        // which is the honest state. The Tasks page's peek is the other
+        // surface and has its own rule (`advancePast` slides to the next
+        // row); this is the chat page's.
+        onArchived={onBack}
+        // PR3: Archive and Delete both carry the reader off this chat,
+        // and a comment round or a walkthrough is about the app beside it
+        // — the same nav lock that greys ← Chats and every recent row
+        // (`annNavLocked`, T:6888/18181/18779).
+        locked={ann.locked}
+        lockedReason={NAV_LOCKED_REASON}
+        // WAITING WORK OFFERS NEITHER A TERMINAL NOR A FILE (Akshil,
+        // 2026-09-12). The row says `queued`, or this conversation is a
+        // message that has never run — either way there is no session to
+        // resume and nothing finished to put away. Delete stays: calling
+        // the message off is exactly what a reader wants here.
+        queued={queuedChat}
+        fullScreen={
+          inSidePane
+            ? { on: sideMaximized, onToggle: () => setSideMaximized(!sideMaximized) }
+            : undefined
+        }
+      />
+    </>
+  );
   return (
    <AgentProvider backend={chatBackend}>
    <CardPolicyProvider value={cardPolicy}>
    <FilePreviewProvider cwd={chatWorkdir(file, pane.noun)} enabled={inChat} sessionKey={state.sessionId}>
+    <RemoteControlConfirm open={rc.asking} onGo={rc.start} onCancel={rc.cancel} />
     <div
       ref={rootRef}
       className={rootClass(
@@ -4961,7 +5241,7 @@ function ChatBody(props: ChatBodyProps) {
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
-        {!compact && !peek ? inLead(
+        {!compact && !peek && !mergedHeadRow ? inLead(
           // ONE HEADER ROW, WHICH IS WHAT T HAS (T:3934-4010, P2-1). `#anntools`
           // is a real layout row above both views and it carries FIVE things:
           // `← Chats` at its left end, then the picker, the three preview seats,
@@ -4982,32 +5262,7 @@ function ChatBody(props: ChatBodyProps) {
           <div className="c-anntools" ref={stripRef}>
             {/* The way back, at the strip's left end (T:3941). Absent on the
                 landing: there is no chat to leave. */}
-            {inChat ? (
-              <button
-                type="button"
-                className="c-back"
-                // AND WHY, while it is locked (T:6896 writes exactly this
-                // sentence onto `#back.title` and clears it on unlock). It goes
-                // into the accessible NAME as well as the `title`, because
-                // `disabled` takes the button out of tab order: a hover-only
-                // answer is no answer for a control the keyboard cannot land
-                // on, and a dead way-out that will not say why is the one
-                // refusal face worth spelling twice.
-                aria-label={
-                  ann.locked ? "Back to chats — " + NAV_LOCKED_REASON : "Back to chats"
-                }
-                title={ann.locked ? NAV_LOCKED_REASON : undefined}
-                // PR3: locked while a comment round or a walkthrough owns the
-                // page (`useAnnotations().locked`) — leaving mid-round would
-                // orphan the notes. Main moved Back from the top bar into this
-                // strip (P2-1), so the lock moved with it.
-                disabled={ann.locked}
-                aria-disabled={ann.locked ? "true" : "false"}
-                onClick={onBack}
-              >
-                ← Chats
-              </button>
-            ) : null}
+            {inChat && !mergedHeadRow ? backBtn : null}
             {/* NO SPACER ELEMENT HERE. The slack is `#anncta`'s own
                 `margin-left: auto` (T:255-262, chat.css), which is not the same
                 thing: a spacer is a flex ITEM, so it kept its 12px gap even
@@ -5096,47 +5351,7 @@ function ChatBody(props: ChatBodyProps) {
                 the one strip they share), so it never appears out of nowhere on
                 entering a chat. On the landing it is the one item that can mean
                 anything without a session (T:13415). */}
-            <Kebab
-              file={file}
-              sessionId={inChat ? (state.sessionId ?? "") : ""}
-              btnRef={kebabBtn}
-              running={running}
-              // Only a RUNNING turn's hold is lifted by its open card: a
-              // `stopping` turn with a card still painted is a process on its
-              // way out, and the menu waits for it like before.
-              asking={!!openCards && state.status === "running"}
-              landing={!inChat}
-              onErased={onErased}
-              // ARCHIVE LEAVES THROUGH THE SAME DOOR DELETE DOES (Akshil,
-              // 2026-10-14): the task is filed, so the page goes back to the
-              // landing rather than staying on a transcript the reader has just
-              // put away. `onBack`, not `onErased`: the transcript still EXISTS,
-              // so there is no comment mode to tear down ahead of the hop (the
-              // item is greyed while one holds the page anyway), and the
-              // composer's leave guard keeps its say — a Cancel on unsent text
-              // leaves the reader on the filed chat, menu reading "Unarchive",
-              // which is the honest state. The Tasks page's peek is the other
-              // surface and has its own rule (`advancePast` slides to the next
-              // row); this is the chat page's.
-              onArchived={onBack}
-              // PR3: Archive and Delete both carry the reader off this chat,
-              // and a comment round or a walkthrough is about the app beside it
-              // — the same nav lock that greys ← Chats and every recent row
-              // (`annNavLocked`, T:6888/18181/18779).
-              locked={ann.locked}
-              lockedReason={NAV_LOCKED_REASON}
-              // WAITING WORK OFFERS NEITHER A TERMINAL NOR A FILE (Akshil,
-              // 2026-09-12). The row says `queued`, or this conversation is a
-              // message that has never run — either way there is no session to
-              // resume and nothing finished to put away. Delete stays: calling
-              // the message off is exactly what a reader wants here.
-              queued={queuedChat}
-              fullScreen={
-                inSidePane
-                  ? { on: sideMaximized, onToggle: () => setSideMaximized(!sideMaximized) }
-                  : undefined
-              }
-            />
+            {kebabEl}
           </div>
         ) : null}
         {inChat ? (
@@ -5144,8 +5359,11 @@ function ChatBody(props: ChatBodyProps) {
             {/* Taken away by the compact and peek cuts: the card's own head and
                 the popup's own head already say which task this is
                 (T:1412-1438). */}
-            {!compact && !peek ? (
+            {showHead ? (
               <Topbar
+                slim={peek}
+                {...(mergedHeadRow ? { lead: backBtn, tail: kebabEl, noProject: true } : {})}
+                {...(headerExtra ? { extra: headerExtra } : {})}
                 worktree={worktreeMenu}
                 worktreeHint={
                   <WorktreeHintChip hint={visibleWorktreeHint(state.worktreeHint, state.tasks)} currentPath={chatWorkdir(file, pane.noun) ?? undefined} />
@@ -5191,6 +5409,8 @@ function ChatBody(props: ChatBodyProps) {
             <TasksContext.Provider value={tasksById}>
             <Transcript
               followRef={transcriptFollow}
+              onOpenCardVisible={setOpenCardVisible}
+              jumpRef={jumpToCard}
               cwd={chatWorkdir(file, pane.noun)}
               state={state}
               comebackPending={sched.blocked}
@@ -5203,7 +5423,7 @@ function ChatBody(props: ChatBodyProps) {
               {...(debugSent ? { onShowSent: setSent } : {})}
               onPullPending={onPullPending}
               {...(chatBackend === "claude" && !running ? { onFork } : {})}
-              onOpenShot={setViewing}
+              onOpenShot={openShot}
               paneNoun={pane.paneNoun}
               what={file ? "using the chat on " + file : "using the chat"}
               recap={
@@ -5347,10 +5567,17 @@ function ChatBody(props: ChatBodyProps) {
                 and stands alone in the compact tile that has none. */}
             {/* The artifacts strip is Claude's (§7 `artifacts`). */}
             {!compact ? (
-              <Composer
-                {...card}
-                artStrip={agentCaps.artifacts ? <ArtStrip items={art.items} /> : null}
-              />
+              <ComposerGate
+                kind={waitKind}
+                agentName={agentLabel(chatBackend)}
+                showJump={!openCardVisible}
+                onJump={() => jumpToCard.current?.()}
+              >
+                <Composer
+                  {...card}
+                  artStrip={agentCaps.artifacts ? <ArtStrip items={art.items} /> : null}
+                />
+              </ComposerGate>
             ) : agentCaps.artifacts ? (
               <ArtStrip items={art.items} />
             ) : null}
@@ -5383,7 +5610,7 @@ function ChatBody(props: ChatBodyProps) {
         onClose={() => setSent(null)}
         outgoing={sent?.raw ?? ""}
         paneNoun={pane.paneNoun}
-        onOpenShot={setViewing}
+        onOpenShot={openShot}
       />
       {/* ABOVE the popup (z 90 against 80): a picture opened from inside it must
           land ON TOP or the click looks dead (T:1147-1148). */}

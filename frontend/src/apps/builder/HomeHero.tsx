@@ -26,8 +26,9 @@ import {
 import {
   agentLabel,
   defaultBackend,
-  effortsOf,
+  effortsForModel,
   isBackendEnabled,
+  isUnlistedEffort,
   modelLabelsOf,
   modelsOf,
   useAgentBackends,
@@ -205,8 +206,10 @@ const modelChoices = (agent: string): { value: ComposerPicks["model"]; label: st
     label: modelLabelsOf(agent)[m] ?? m,
   }));
 
-const effortChoices = (agent: string): { value: ComposerPicks["effort"]; label: string }[] =>
-  effortsOf(agent).map((e) => ({ value: e as ComposerPicks["effort"], label: e }));
+// THE CHOSEN MODEL'S levels (per model where the catalog knows them per
+// model — a Copilot model may take none, and then no effort pick is drawn).
+const effortChoices = (agent: string, model: string): { value: ComposerPicks["effort"]; label: string }[] =>
+  effortsForModel(agent, model).map((e) => ({ value: e as ComposerPicks["effort"], label: e }));
 
 // A composer attachment — NewJobModal's TaskImage shape. `path` is "" until the
 // upload answers; `thumb` is a blob: URL for a picture the browser can draw.
@@ -227,7 +230,7 @@ const DRAWABLE_MIMES = new Set(["image/png", "image/jpeg", "image/gif",
                                 "image/svg+xml"]);
 function drawablePath(path: string): boolean {
   const dot = path.lastIndexOf(".");
-  const slash = path.lastIndexOf("/");
+  const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
   return dot > slash && DRAWABLE_EXTS.has(path.slice(dot).toLowerCase());
 }
 
@@ -390,6 +393,18 @@ export function HeroComposer({
     setModel(r.model);
     setEffort(r.effort);
   }, [agent]);
+  // THE CATALOG CAN CHANGE UNDER A SETTLED PAIR: the static Copilot row
+  // gives way to the account's discovered list (platform/lib/agent-backends,
+  // D11a), and a model's levels may differ from the static ones. An effort
+  // the chosen model no longer takes (or an empty one for a model that now
+  // takes one) is re-fitted to that model's default; a level it still takes
+  // stays, so a pick made here is kept.
+  useEffect(() => {
+    setEffort((e) =>
+      !e || isUnlistedEffort(e, agent, model)
+        ? resolveComposerDefaults(getClaudeDefaults(), agent, model).effort
+        : e);
+  }, [agentCatalog, agent, model]);
   useEffect(() => {
     const follow = (d: ClaudeDefaults) => {
       // The global pair is Claude's; another agent's composer keeps its own.
@@ -411,6 +426,15 @@ export function HeroComposer({
     picked.current.model = true;
     setModel(next);
     if (agentRef.current === "claude") void setClaudeDefaults({ model: next });
+    // THE EFFORT FOLLOWS THE MODEL: a level the new model does not take
+    // (or a model that takes none) becomes that model's own default — and
+    // so does an EMPTY effort, left by a model that took none (`auto`),
+    // when the new model takes one: the pick must show the level that is
+    // sent, not a blank the CLI fills in.
+    setEffort((e) =>
+      !e || isUnlistedEffort(e, agentRef.current, next)
+        ? resolveComposerDefaults(getClaudeDefaults(), agentRef.current, next).effort
+        : e);
   };
   const pickEffort = (next: ComposerPicks["effort"]) => {
     picked.current.effort = true;
@@ -876,14 +900,16 @@ export function HeroComposer({
                 disabled={busy}
                 onPick={pickModel}
               />
-              <ComposerPick
-                glyph="effort"
-                label="Effort"
-                value={effort}
-                choices={effortChoices(agent)}
-                disabled={busy}
-                onPick={pickEffort}
-              />
+              {effortChoices(agent, model).length ? (
+                <ComposerPick
+                  glyph="effort"
+                  label="Effort"
+                  value={effort}
+                  choices={effortChoices(agent, model)}
+                  disabled={busy}
+                  onPick={pickEffort}
+                />
+              ) : null}
               <span className="home-composer-hint">
                 {phase === "naming" && "Naming your app…"}
                 {phase === "creating" && "Creating the app…"}

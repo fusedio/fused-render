@@ -33,10 +33,10 @@ import { CollapsiblePre } from "./CollapsiblePre";
 import "../styles/tasks.css";
 
 /**
- * WHAT AN OPEN PANEL BELONGS TO (review #5): the run and the conversation on
- * screen. Opened, the panel stays open for THIS scope only — a later run, a
- * restored session or a new chat starts collapsed again, rather than carrying
- * an empty "No agents or shells" strip into every conversation after it.
+ * THE SCOPE an explicit open belongs to: the run and the conversation on
+ * screen. The open/closed preference itself is global and remembered
+ * (`useTasksOpen`), but an EMPTY strip only shows in the scope the user opened
+ * it in — see below.
  */
 export function tasksPanelScope(s: {
   lastRunId: string | null;
@@ -47,14 +47,54 @@ export function tasksPanelScope(s: {
   return [s.lastRunId ?? "", s.tasksRunId ?? "", s.sessionId ?? "", s.transcriptGen].join("\u0001");
 }
 
-/** The panel's open bit, scoped (`tasksPanelScope`): open only while the scope
- *  it was opened in is still the current one. Derived, so no effect races. */
-export function useTasksOpen(scope: string): [boolean, () => void] {
-  const [st, setSt] = useState<{ open: boolean; scope: string }>({ open: false, scope });
-  const open = st.open && st.scope === scope;
+const TASKS_OPEN_KEY = "fused-render.claude.tasks-open";
+const TASKS_OPEN_EVENT = "fused-render:tasks-open";
+
+function readTasksOpen(): boolean {
+  try {
+    return typeof localStorage !== "undefined" && localStorage.getItem(TASKS_OPEN_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writeTasksOpen(open: boolean): void {
+  try {
+    localStorage.setItem(TASKS_OPEN_KEY, open ? "1" : "0");
+  } catch {
+    /* private mode / quota: the preference just does not persist */
+  }
+}
+
+/** The panel's open bit: a GLOBAL preference, remembered across runs, sessions,
+ *  new chats, panes and reloads (localStorage, synced live to other panes and
+ *  tabs). Remembered "open" never carries an EMPTY "No agents or shells in this
+ *  run." strip into a later run or chat: with no tasks it shows only when the
+ *  user opened it (head click or `/tasks`) in this very `scope`
+ *  (`tasksPanelScope`). Derived, so no effect races. */
+export function useTasksOpen(scope: string, hasTasks: boolean): [boolean, () => void] {
+  const [pref, setPref] = useState<boolean>(readTasksOpen);
+  const [toggledIn, setToggledIn] = useState<string | null>(null);
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === TASKS_OPEN_KEY) setPref(e.newValue === "1");
+    };
+    const onLocal = (e: Event) => setPref(Boolean((e as CustomEvent<boolean>).detail));
+    window.addEventListener("storage", onStorage);
+    window.addEventListener(TASKS_OPEN_EVENT, onLocal);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener(TASKS_OPEN_EVENT, onLocal);
+    };
+  }, []);
+  const open = pref && (hasTasks || toggledIn === scope);
   const toggle = useCallback(() => {
-    setSt((prev) => ({ open: !(prev.open && prev.scope === scope), scope }));
-  }, [scope]);
+    const next = !open;
+    setPref(next);
+    setToggledIn(scope);
+    writeTasksOpen(next);
+    window.dispatchEvent(new CustomEvent(TASKS_OPEN_EVENT, { detail: next }));
+  }, [open, scope]);
   return [open, toggle];
 }
 

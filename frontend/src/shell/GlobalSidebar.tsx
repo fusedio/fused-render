@@ -11,10 +11,10 @@
 // (SidebarFrame) and explorer-owned sections (Bookmarks), which only
 // the shell is allowed to import together (scripts/check-boundaries.mjs).
 import { useEffect, useRef, useState } from "react";
-import { ListTodo, Store } from "lucide-react";
+import { ListTodo, Store, Terminal } from "lucide-react";
 import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
-import type { Config } from "@platform/lib/api";
+import { botsAvailable, type Config } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { isBrowserHandledClick } from "@platform/lib/appEntry";
 import { availableTours, startTour } from "@platform/lib/tours";
@@ -36,17 +36,23 @@ import { appPageUrl, appPathFromPath, type CurrentApp } from "@shell/current-app
 import { railExtras } from "@shell/sidebar-rail-lib";
 import { displayName, isBot } from "@platform/lib/flavor";
 import { useTaskPeekEnabled } from "@shell/task-peek-flag";
-import { useCanvasesLoggedIn } from "@apps/canvases/logged-in";
 import { useCanvasesFeature } from "@apps/canvases/feature-flag";
 import { useMarketplaceFeature } from "@platform/lib/marketplace-flag";
 import { useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { isAiModelsPath, tabHref } from "@apps/ai_models/routes";
 import { isBotsPath } from "@apps/bots/routes";
 import { markTasksSeen, useTasksPulse } from "@shell/tasksPulse";
+import { botsPulseTitle, botsRunningLabel, botsWaitingLabel, useBotsPulse } from "@platform/lib/botsPulse";
 import { attentionLabel, pulseTitle, runningLabel } from "@shell/tasks-lib";
 import { formatSize } from "@platform/lib/format";
 import BookmarksSection from "@apps/explorer/sidebar/BookmarksSection";
-import CurrentAppsSection, { NewAppModal, useDeskAppsOrdered } from "@shell/CurrentAppsSection";
+import CurrentAppsSection, {
+  NewAppModal,
+  canvasRowHref,
+  useDeskAppsOrdered,
+} from "@shell/CurrentAppsSection";
+import { canvasNameFromPath, canvasProjectFromPath } from "@apps/canvases/api";
+import { CanvasGlyph } from "@apps/canvases/glyph";
 import UpdateCard, { updateCardActive } from "@shell/UpdateCard";
 import { useRestartFlow } from "@platform/lib/restart-store";
 import { useUpdateStatus } from "@platform/lib/update-status";
@@ -106,6 +112,10 @@ const TEMPLATES_ICON = (
 // glyph (shell/AppPage.tsx) so the two read as one thing. Was a clock while the
 // page was "Scheduled".
 const SCHEDULED_ICON = <ListTodo size={16} strokeWidth={2} aria-hidden="true" />;
+
+// A terminal prompt (lucide Terminal): the Claude Config page, where the CLI's
+// skills, memory, plugins, MCP servers and settings are edited.
+const CLAUDE_CODE_ICON = <Terminal size={16} strokeWidth={2} aria-hidden="true" />;
 
 // A shop front (lucide Store) for the Marketplace: where community apps are
 // browsed and installed, sized like the lucide Tasks glyph above.
@@ -499,20 +509,15 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // lights the row. (The bare prefix is redirected to the default tab before
   // this runs, so it is matched for completeness rather than in practice.)
   const aiModelsActive = isAiModelsPath(pathname);
-  // PRIMARY NAV ONLY ONCE THERE IS AN ACCOUNT BEHIND IT. Signed out, the row
-  // would lead to a sign-in wall — the menu entry is the right weight for
-  // "there is a thing here you could set up"; a top-of-sidebar row is for a
-  // place you already work. Signed in it is one of the two or three things this
-  // machine is FOR, so it sits with Home and Tasks (see @apps/canvases/logged-in
-  // for why this is a shared store and not a one-shot probe).
-  const canvasesLoggedIn = useCanvasesLoggedIn();
-  // AND THE FEATURE HAS TO BE ON AT ALL (D427, default off). Two conditions,
-  // deliberately not one store: this one is "does this machine offer Canvases",
-  // the one above is "is there an account behind it". The MENU entry needs only
-  // this — it has always been ungated on login, since the page explains a
-  // signed-out state itself, and gating it on the account would delete the only
-  // affordance for reaching a feature you have not set up yet. The primary row
-  // needs both.
+  // THE FEATURE HAS TO BE ON (D427, default off): "does this machine offer
+  // Canvases". That is the WHOLE gate now (owner, 2026-10-22). It used to be a
+  // conjunction with "is there an account behind it" (D358), which on a fresh
+  // machine meant flipping the preference showed nothing at all until a sign-in
+  // had happened somewhere — the section the reader had just enabled was
+  // invisible, and the only door to setting it up was the settings menu. Now
+  // the Canvases section appears with the switch; its "+ Canvas" row opens the
+  // catalog, which explains a CLI-missing / signed-out state itself and is
+  // where sign-in happens. The menu entry below takes the same single gate.
   // FUSED BOT (platform/lib/flavor): the same shell wearing the bot app's
   // name shows Bots, Tasks and Preferences, and nothing else — no Canvases,
   // AI Models, Projects or Bookmarks rows, and a shorter settings menu. The
@@ -520,7 +525,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // the explorer and the app page); only the doors in this column go.
   const bot = isBot();
   const canvasesEnabled = useCanvasesFeature() && !bot;
-  const canvasesInNav = canvasesEnabled && canvasesLoggedIn;
+  const canvasesInNav = canvasesEnabled;
   // The Marketplace (apps/marketplace, default off — marketplace-flag.ts):
   // a row after AI Models when the pref is on, never under Fused Bot. `null`
   // (the read not landed yet) is off, so nothing flashes in. PREFIX match:
@@ -598,7 +603,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // the rail's corner is the one place on screen a reader cannot look away from,
   // and nothing there may blink. The words below and the tooltip are unchanged.
   const tasksDot =
-    pulse.attention > 0 ? (
+    pulse.attention + pulse.blocked > 0 ? (
       <span className="sidebar-rail-dot is-attention" title={tasksTip} />
     ) : pulse.running > 0 ? (
       <span className="sidebar-rail-dot is-running" title={tasksTip} />
@@ -613,18 +618,18 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // kind of fact, not a lookalike. The dot says THAT there is something; the
   // words say how much, and the chip's number is the ungated one (see above).
   const tasksTrailing =
-    pulse.running > 0 || pulse.doneUnread > 0 ? (
+    pulse.running > 0 || pulse.blocked > 0 || pulse.doneUnread > 0 ? (
       <>
         {/* The waiting count SPEAKS INSTEAD of the running one when there is
             one, rather than beside it: they are the same rows counted twice
             (tasks-lib.tasksPulse), and printing "1 waiting for you · 1 running"
             about one task would read as two. The one that asks for something
             wins the words; the total is still in the tooltip. */}
-        {pulse.attention > 0 ? (
+        {pulse.attention + pulse.blocked > 0 ? (
           // Red, like the dot beside it: one state, one colour, on the mark and
           // on the words (Akshil, 2026-09-03: "this should be red as well").
           <span className="sidebar-running is-attention" title={tasksTip}>
-            {attentionLabel(pulse.attention)}
+            {attentionLabel(pulse.attention + pulse.blocked)}
           </span>
         ) : pulse.running > 0 && (
           <span className="sidebar-running" title={tasksTip}>
@@ -639,10 +644,66 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       </>
     ) : undefined;
 
+  // THE BOTS ROW SAYS THE SAME THINGS THE TASKS ROW DOES (Akshil, 2026-10-20:
+  // "like tasks in left sidebar has status… can we have the same for bots").
+  // Same marks, same words, same order of precedence, read from
+  // platform/lib/botsPulse (one poll shared with the Bots page):
+  //   red    — a bot is WAITING on an approval / question card. The one state
+  //            that goes nowhere until the reader acts, so it outranks the rest;
+  //            red is the hue a blocked task wears, and "waiting" is the bot
+  //            status's own word (statusLabel: "waiting for you").
+  //   yellow — a bot is running.
+  //   green  — a bot has events past the reader's mark (a bot they have opened
+  //            before; a never-opened bot has nothing to catch up on).
+  //   chip   — how many bots have such unread news. A count of BOTS, like the
+  //            Tasks chip counts rows, and ungated by the visit for the Tasks
+  //            chip's reason: it clears when the bot is opened, not glanced at.
+  // Errors are in the tooltip only ("1 error"): an errored bot is not asking
+  // for anything, and a fourth colour on one dot is one too many.
+  //
+  // NOTHING IS SUPPRESSED ON /bots — unlike the Tasks dot on /tasks (Akshil,
+  // 2026-10-21: "when I click on Bots it becomes clear even though I didn't
+  // read the bot"). The Tasks page shows every done task at once, so landing
+  // there IS seeing them; the Bots page shows ONE bot's chat, and a bot with
+  // news in the list beside it is still unread. The dot therefore says exactly
+  // what the chip says, and both clear when the bot is opened (markSeen), not
+  // when the page is.
+  // No Bots row, and no poll behind it, where the server runs no bots (Windows).
+  const botsOn = botsAvailable(config);
+  const botsPulse = useBotsPulse(botsOn);
+  const botsTip = botsPulseTitle(botsPulse);
+  const botsDot = botsPulse.waiting > 0 ? (
+    <span className="sidebar-rail-dot is-attention" title={botsTip} />
+  ) : botsPulse.running > 0 ? (
+    <span className="sidebar-rail-dot is-running" title={botsTip} />
+  ) : botsPulse.unread > 0 ? (
+    <span className="sidebar-rail-dot is-unread" title={botsTip} />
+  ) : undefined;
+  const botsTrailing =
+    botsPulse.waiting > 0 || botsPulse.running > 0 || botsPulse.unread > 0 ? (
+      <>
+        {/* Waiting speaks INSTEAD of running, as on the Tasks row: the one that
+            asks for something wins the words; the total is in the tooltip. */}
+        {botsPulse.waiting > 0 ? (
+          <span className="sidebar-running is-attention" title={botsTip}>
+            {botsWaitingLabel(botsPulse.waiting)}
+          </span>
+        ) : botsPulse.running > 0 && (
+          <span className="sidebar-running" title={botsTip}>
+            {botsRunningLabel(botsPulse.running)}
+          </span>
+        )}
+        {botsPulse.unread > 0 && (
+          <span className="sidebar-count-chip" title={botsTip}>
+            {botsPulse.unread}
+          </span>
+        )}
+      </>
+    ) : undefined;
+
   // Everything that is not primary nav lives in the bottom menu for now: the
   // settings pages. Same gates as before — an entry a machine can't use stays
-  // hidden. Claude Config is no longer an entry: it is the Claude Code group
-  // of Preferences (2026-10-20), reached through that row.
+  // hidden.
   const menuEntries: (PrefsMenuEntry | "separator")[] = [];
   // Templates are the Render app's own concern; Fused Bot's menu skips
   // straight to Preferences (Canvases is already off above).
@@ -659,15 +720,19 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     // CLI-missing / signed-out state itself, so the entry is what "there is a
     // thing here you could set up" looks like — and the whole point of the
     // preference is that a machine which has not turned Canvases on is not
-    // shown it anywhere. It stays here even while the primary row above is
-    // showing — the menu is where someone looks for a named destination — and
-    // `prefsActive` below drops it instead, so the two never light at once.
+    // shown it anywhere. The Canvases SECTION below takes the same gate since
+    // 2026-10-22; this entry stays because the menu is where someone looks
+    // for a named destination.
     ...(canvasesEnabled
       ? [{ href: "/canvases", label: "Canvases", icon: CANVASES_ICON }]
       : []),
     // No /ai-models entry either, and unlike Canvases it is dropped outright:
     // its primary row is ungated, so a menu copy would only ever be the
     // double-selection the Tasks note rejects.
+    // Claude Config is a settings-weight page, so it lives here and not in the
+    // primary nav; listing it in both would light the row and the trigger at
+    // once, as the Tasks note above says.
+    { href: "/claude-config", label: "Claude Config", icon: CLAUDE_CODE_ICON },
     { href: "/preferences", label: "Preferences", icon: PREFERENCES_ICON }
   );
   // The tour replays, at the menu's tail, behind ONE row: four sibling entries
@@ -737,13 +802,20 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // the wizard. Null = nothing to show (never started, or finished).
   const setupMeter = useSetupMeter(config);
 
-  // THE RAIL'S DOORS INTO THE SECTIONS: the desk's apps and the pinned
-  // bookmarks, in their sections' order, capped (sidebar-rail-lib). The apps
-  // fetch runs only while the rail is on screen — expanded, the section owns it.
+  // THE RAIL'S DOORS INTO THE SECTIONS: the desk's apps, its canvases and
+  // the pinned bookmarks, in their sections' order, capped (sidebar-rail-lib).
+  // The desk fetch runs only while the rail is on screen — expanded, the
+  // sections own it. The canvases group wears the Canvases section's gate
+  // (the feature on, nothing more).
   const { collapsed: sidebarCollapsed } = useSidebarState();
   useBookmarksVersion();
-  const deskApps = useDeskAppsOrdered(sidebarCollapsed && !bot);
-  const extras = railExtras({ apps: deskApps, pins: pinnedBookmarks(loadBookmarks()), bot });
+  const desk = useDeskAppsOrdered(sidebarCollapsed && !bot);
+  const extras = railExtras({
+    desk,
+    pins: pinnedBookmarks(loadBookmarks()),
+    bot,
+    canvases: canvasesInNav,
+  });
   const onAppPath = appPathFromPath(pathname);
   const here = pathname + location.search;
   // The Projects section's "+ New app" row, on the rail: same composer, same
@@ -776,6 +848,47 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     active: onAppPath === app.path,
     scrolls: true,
   }));
+  // A canvas door lights on its project page OR its editor, the section's own
+  // rule (both are "the canvas open"); the href is the row's (canvasRowHref),
+  // with the row's fallback for a clone of an unknown environment.
+  const onCanvas = canvasProjectFromPath(pathname) ?? canvasNameFromPath(pathname);
+  // The Canvases section's "+ Canvas" row, on the rail: the catalog
+  // (/canvases), at the head of the canvases group, behind the section's gate
+  // — the one door in, since the primary nav has no Canvases row. Plain
+  // navigation, not a composer: create and clone live on the catalog page.
+  const railNewCanvas: SidebarRailItem[] = canvasesInNav
+    ? [
+        {
+          key: "new-canvas",
+          label: "Canvas — open or create",
+          icon: (
+            <span className="sidebar-rail-new-glyph" aria-hidden="true">
+              +
+            </span>
+          ),
+          href: "/canvases",
+          active: pathname === "/canvases",
+          dividerBefore: true,
+          scrolls: true,
+        },
+      ]
+    : [];
+  const railCanvases: SidebarRailItem[] = extras.canvases.map((app) => ({
+    key: "canvas:" + app.path,
+    label: app.name,
+    icon: (
+      <span className="sidebar-rail-canvas-glyph" aria-hidden="true">
+        <CanvasGlyph size={16} />
+      </span>
+    ),
+    href: canvasRowHref(app) ?? appPageUrl(app.path),
+    active:
+      !!app.canvas &&
+      !!onCanvas &&
+      onCanvas.env === app.canvas.env &&
+      onCanvas.name === app.canvas.name,
+    scrolls: true,
+  }));
   const railPins: SidebarRailItem[] = extras.pins.map((b, i) => ({
     key: "pin:" + b.id,
     label: b.name,
@@ -800,7 +913,18 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     ...(bot
       ? []
       : [{ key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive }]),
-    { key: "bots", label: "Bots", icon: BOTS_ICON, href: "/bots", active: botsActive },
+    ...(botsOn
+      ? [
+          {
+            key: "bots",
+            label: botsTip ? `Bots — ${botsTip}` : "Bots",
+            icon: BOTS_ICON,
+            href: "/bots",
+            active: botsActive,
+            badge: botsDot,
+          },
+        ]
+      : []),
     {
       key: "tasks",
       label: tasksTip ? `Tasks — ${tasksTip}` : "Tasks",
@@ -837,6 +961,8 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       : []),
     ...railNewApp,
     ...railApps,
+    ...railNewCanvas,
+    ...railCanvases,
     ...railPins,
     // Same gate and same place as the expanded row: the rail is the whole
     // sidebar when collapsed, and a meter that vanished on collapse would read
@@ -893,13 +1019,20 @@ export default function GlobalSidebar({ config }: { config: Config }) {
               active={homeActive}
             />
           )}
-          <NavItem
-            href="/bots"
-            id="bots-link"
-            label="Bots"
-            icon={BOTS_ICON}
-            active={botsActive}
-          />
+          {botsOn && (
+            <NavItem
+              href="/bots"
+              id="bots-link"
+              label="Bots"
+              icon={BOTS_ICON}
+              active={botsActive}
+              extra={botsDot}
+              trailing={botsTrailing}
+              // Errors have no dot and no words, so the row itself carries the
+              // sentence; the rail says it through its label either way.
+              title={botsTip}
+            />
+          )}
           {/* Tasks took Inbox's place as well as its job: the two pages showed
               the same pile of work from two ends, and the one that survives is
               the one that can say when the work runs. Inbox is deleted. */}
@@ -945,8 +1078,8 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             listed by the bot, and there is no file tree to bookmark into. */}
         {!bot && <CurrentAppsSection />}
         {/* Canvases (2026-10-20): the clones on this machine, under Projects,
-            behind the primary row's own gate — the feature on AND an account
-            behind it (a clone with no login has no page that works). */}
+            behind the feature flag alone (owner, 2026-10-22) — signed out it
+            is the "+ Canvas" door into the catalog, which does the sign-in. */}
         {canvasesInNav && <CurrentAppsSection section="canvases" />}
         {!bot && <BookmarksSection />}
         <div className="sidebar-section sidebar-settings">

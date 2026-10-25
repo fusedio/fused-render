@@ -177,6 +177,7 @@ _GPU_CPU_PAIRS = (
     ("diffusers-image-rocm", "diffusers-image"),
     ("onnx-embed-cuda", "onnx-embed"),
     ("onnx-embed-rocm", "onnx-embed"),
+    ("vision-torch-cuda", "vision-torch"),  # the "CPU sibling" here is the Apple MPS row
 )
 
 
@@ -391,3 +392,12 @@ def test_the_playgrounds_fallback_traits_match_the_servers_own_fallback():
         "VideoStage.tsx's FALLBACK_TRAITS has drifted from "
         "`registry.video_traits_for`'s own fallback row — see this test's "
         "docstring for why that is invisible at runtime")
+
+
+def test_apple_silicon_still_resolves_vision_to_the_mps_row(monkeypatch):
+    """The CUDA vision row sits above `vision-torch` but is gated on `_cuda`,
+    so it never takes a Mac."""
+    _mac_arm(monkeypatch)
+    assert not _runner("vision-torch-cuda").available().ok
+    resolved = registry.for_capability(registry.VISION)
+    assert resolved is not None and resolved.code == "vision-torch"

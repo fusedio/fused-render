@@ -122,7 +122,9 @@ import json
 import logging
 import math
 import os
+import posixpath
 import re
+import shlex
 import shutil
 import threading
 import time
@@ -136,11 +138,14 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
+from fused_render._platform import is_within
 from fused_render import netlog
 from fused_render import (
     app_listing,
+    claude_remote,
     current_apps,
     drafts,
+    pr_status,
     project_queue,
     queue_manager,
     schedule,
@@ -300,7 +305,8 @@ _WINDOW_MAX = 16
 def reset_cache() -> None:
     """Forget every cached transcript read. For tests, and for any caller that
     wants the next listing to re-read from disk unconditionally."""
-    global _snapshot, _builder_on, _builder_thread
+    global _snapshot, _builder_on, _builder_thread, _HOLDS_COLLECT
+    _HOLDS_COLLECT = None
     _SCAN.clear()
     _FULL.clear()
     _WINDOW.clear()
@@ -503,10 +509,215 @@ def _mark_fate(prompts: list[dict], fate: bool, line: str = "") -> None:
         prompts[-1]["limit"] = bool(fate) and _limit_hit(line)
 
 
+# A GitHub PR URL as it sits in a transcript line. The trailing lookahead keeps
+# `/pull/12/files` from reading as 123 and `/pull/1234567890` from matching.
+_PR_URL_RE = re.compile(
+    r"https://github\.com/([\w.-]+/[\w.-]+?)/pull/(\d{1,7})(?!\d)")
+_PRS_PER_SCAN = 50
+
+
+_GH_PR_IDS_CAP = 200
+
+
+def _add_prs(rec: dict, text: str) -> None:
+    """Append every PR URL in `text` to the scan's `prs`, first-seen order,
+    deduped case-insensitively (the first spelling is displayed)."""
+    prs = rec.setdefault("prs", [])
+    # A raw JSON line escapes its slashes in some writers (`https:\/\/...`).
+    for repo, number in _PR_URL_RE.findall(text.replace("\\/", "/")):
+        if len(prs) >= _PRS_PER_SCAN:
+            return
+        key = f"{repo.lower()}#{int(number)}"
+        if any(f"{p['repo'].lower()}#{p['number']}" == key for p in prs):
+            continue
+        prs.append({"repo": repo, "number": int(number),
+                    "url": f"https://github.com/{repo}/pull/{int(number)}"})
+
+
+def _result_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(b.get("text", "") for b in content
+                         if isinstance(b, dict) and isinstance(b.get("text"), str))
+    return ""
+
+
+def _note_prs(rec: dict, line: str) -> None:
+    """Attach PRs from the few places that mean "this session's PR": plain chat
+    text (assistant text blocks, the user's own message) and the result of a
+    Bash `gh pr ...` command (plus a URL in that command). Never file reads,
+    other tools' inputs, thinking, meta/attachment lines or subagent chatter."""
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        return
+    if not isinstance(obj, dict) or obj.get("isSidechain") or obj.get("isMeta"):
+        return
+    kind = obj.get("type")
+    if kind not in ("assistant", "user"):
+        return
+    message = obj.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if isinstance(content, str):
+        if kind == "user":
+            _add_prs(rec, content)
+        return
+    if not isinstance(content, list):
+        return
+    ids = rec.setdefault("gh_pr_tool_ids", [])
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "text" and isinstance(block.get("text"), str):
+            _add_prs(rec, block["text"])
+        elif kind == "assistant" and btype == "tool_use":
+            inp = block.get("input")
+            cmd = inp.get("command") if isinstance(inp, dict) else None
+            if block.get("name") == "Bash" and isinstance(cmd, str) \
+                    and "gh pr " in cmd:
+                if isinstance(block.get("id"), str):
+                    ids.append(block["id"])
+                    del ids[:-_GH_PR_IDS_CAP]
+                _add_prs(rec, cmd)
+        elif kind == "user" and btype == "tool_result" \
+                and block.get("tool_use_id") in ids:
+            _add_prs(rec, _result_text(block.get("content")))
+
+
+_WORKTREES_PER_SCAN = 20
+# Forward slashes on every platform: `_add_worktree` normalizes the path to them
+# before comparing, so an `os.sep` here recorded nothing on Windows.
+_MANAGED_WT = "/.claude/worktrees/"
+_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+
+
+def _add_worktree(rec: dict, path: str, cwd: str = "") -> None:
+    """Record `path` as a worktree this session made — only when it sits directly
+    under a `.claude/worktrees/` folder, the one place the app (and the CLI's
+    EnterWorktree) ever makes them, so a stray path can never become a removal
+    target. Relative paths resolve against the line's cwd. Deduped, capped."""
+    if not path:
+        return
+    if not (os.path.isabs(path) or _DRIVE_RE.match(path)):
+        if not cwd:
+            return
+        path = os.path.join(cwd, path)
+    path = posixpath.normpath(path.replace("\\", "/"))
+    head, _, name = path.rpartition("/")
+    if not name or not (head + "/").endswith(_MANAGED_WT):
+        return
+    paths = rec.setdefault("worktrees", [])
+    if path not in paths and len(paths) < _WORKTREES_PER_SCAN:
+        paths.append(path)
+
+
+_WT_ADD_RE = re.compile(r"\bgit\b([^|;&\n]*?)\bworktree\s+add\s+([^|;&\n]+)")
+#: `git worktree add` flags that take a value of their own.
+_WT_VALUE_FLAGS = frozenset({"-b", "-B", "--reason"})
+_LEADING_CD_RE = re.compile(r"^\s*cd\s+(\S+)\s*(?:&&|;)\s*")
+_CD_ANYWHERE_RE = re.compile(r"(?:^|[\s;&|(])cd\s")
+_UNRESOLVABLE = ("$", "`", "~", "(")
+
+
+def _resolve_dir(base: str, d: str) -> str | None:
+    """`d` resolved against `base`; None when it names something a transcript line
+    cannot settle (a variable, a substitution, a home shortcut) or has no base."""
+    if not d or any(ch in d for ch in _UNRESOLVABLE):
+        return None
+    if os.path.isabs(d) or _DRIVE_RE.match(d):
+        return d
+    return os.path.join(base, d) if base else None
+
+
+def _worktree_adds(cmd: str, cwd: str):
+    """`(path word, directory it is relative to)` for each `git worktree add` in
+    one Bash command, honouring a leading `cd <dir> &&` and `git -C <dir>`. Where
+    the shape is ambiguous (a later `cd`, a variable in a directory,
+    `--git-dir`) a RELATIVE path comes back with no base and so is not recorded:
+    a wrong guess is a wrong removal target. Absolute paths always come through."""
+    base: str | None = cwd or None
+    rest = cmd
+    while True:
+        m = _LEADING_CD_RE.match(rest)
+        if not m:
+            break
+        try:
+            word = shlex.split(m.group(1))[0]
+        except (ValueError, IndexError):
+            word = ""
+        base = _resolve_dir(base or "", word)
+        rest = rest[m.end():]
+    ambiguous = base is None or bool(_CD_ANYWHERE_RE.search(rest))
+    for before, found in _WT_ADD_RE.findall(rest):
+        try:
+            pre = shlex.split(before)
+            words = shlex.split(found)
+        except ValueError:
+            continue
+        where = None if ambiguous else base
+        i = 0
+        while i < len(pre):
+            if pre[i] == "-C" and i + 1 < len(pre):
+                where = _resolve_dir(where or "", pre[i + 1])
+                i += 2
+                continue
+            if pre[i].startswith(("--git-dir", "--work-tree")):
+                where = None
+            i += 1
+        skip = False
+        for word in words:
+            if skip:
+                skip = False
+            elif word in _WT_VALUE_FLAGS:
+                skip = True
+            elif not word.startswith("-"):
+                if not any(ch in word for ch in _UNRESOLVABLE):
+                    yield word, where or ""
+                break
+
+
+def _note_worktrees(rec: dict, line: str) -> None:
+    """Attach the worktrees this session made, from the two places that say so:
+    the result of the CLI's EnterWorktree tool (`toolUseResult.worktreePath`) and
+    a Bash `git worktree add <path>` command. The path is what teardown removes
+    when the task is archived, so it is read only from those, never guessed."""
+    try:
+        obj = json.loads(line)
+    except ValueError:
+        return
+    if not isinstance(obj, dict):
+        return
+    cwd = obj.get("cwd") if isinstance(obj.get("cwd"), str) else ""
+    result = obj.get("toolUseResult")
+    if isinstance(result, dict) and isinstance(result.get("worktreePath"), str):
+        _add_worktree(rec, result["worktreePath"], cwd)
+    message = obj.get("message")
+    content = message.get("content") if isinstance(message, dict) else None
+    if obj.get("type") != "assistant" or not isinstance(content, list):
+        return
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        inp = block.get("input")
+        cmd = inp.get("command") if isinstance(inp, dict) else None
+        if block.get("name") != "Bash" or not isinstance(cmd, str):
+            continue
+        for word, base in _worktree_adds(cmd, cwd):
+            _add_worktree(rec, word, base)
+
+
 def _absorb(rec: dict, line: str) -> None:
     """Fold one raw transcript line into a scan record. Screened before parsing:
     a transcript is mostly assistant turns and tool results, and `json.loads` on
     every one of them is the cost this endpoint cannot pay."""
+    # PR capture is scoped (see `_note_prs`); substring screen first, same
+    # reason as below. A `gh pr` tool_use line has no URL yet, so screen for it.
+    if ("github.com" in line and "pull" in line) or "gh pr " in line:
+        _note_prs(rec, line)
+    if '"worktreePath"' in line or "worktree add" in line:
+        _note_worktrees(rec, line)
     # An assistant reply is the one non-user line with a fact to contribute:
     # whether the newest prompt's last answer was an API error. Substring tests
     # only, and it stays on this side of `json.loads`. See `_reply_fate`.
@@ -594,7 +805,8 @@ def _new_scan() -> dict:
     # before the assistant reply was dropped from this scan may still carry its
     # condensed `reply`; nothing reads it any more, so it is inert.
     return {"offset": 0, "size": -1, "count": 0, "tail": [], "title": "",
-            "command": "", "reply_line": "", "reply": "", "reply_at": 0.0}
+            "command": "", "reply_line": "", "reply": "", "reply_at": 0.0,
+            "prs": [], "gh_pr_tool_ids": [], "worktrees": []}
 
 
 def _condense_reply(rec: dict) -> None:
@@ -2189,7 +2401,10 @@ def _ahead_facts(tasks: dict[str, dict], key: str) -> dict:
     try:
         _place(task)
         record = _scan(task["path"]) if task["path"] else None
-        title, _source = _title(task, record, task["first_prompt"])
+        title, _source = _title(task, record, task["first_prompt"],
+                                tasks_store.session_title(
+                                    tasks_store.settings_state(),
+                                    task["session_id"]))
         return {"title": title,
                 # A `pending:<entry>` row has no session and therefore no chat
                 # to open: "" here is the same absence `taskHref` refuses on.
@@ -2393,9 +2608,12 @@ def _failed(speaker: dict | None) -> bool:
 # ----------------------------------------------------------------- the titles
 
 
-def _title(task: dict, rec: dict | None, first_prompt: str) -> tuple[str, str]:
-    """(title, where it came from). The precedence is §4's: what the user called
-    it (`user`), then Claude Code's own one-liner for the session (`ai`), then
+def _title(task: dict, rec: dict | None, first_prompt: str,
+           custom: str = "") -> tuple[str, str]:
+    """(title, where it came from). The precedence is §4's: a title the user
+    typed over the task in the Tasks UI (`renamed`, the stored `custom_title`,
+    passed in as `custom` so the caller's one settings read serves it), then
+    what the user called it (`user`), then Claude Code's own one-liner for the session (`ai`), then
     the first line of the first message. No summarisation call anywhere — the
     title we want is already written into the transcript once per turn.
 
@@ -2431,6 +2649,9 @@ def _title(task: dict, rec: dict | None, first_prompt: str) -> tuple[str, str]:
     the client's to choose. A placeholder invented here would not stay a
     placeholder — it is what the New task form prefills a Title field with, and a
     prefill the user saves becomes the task's permanent name."""
+    custom = str(custom or "").strip()
+    if custom:
+        return custom[:200], "renamed"
     for entry in reversed(task["entries"]):
         title = str(entry.get("title") or "").strip()
         if title:
@@ -2460,8 +2681,11 @@ def _new_task(key: str, session_id: str, path: str | None,
               backend: str = "") -> dict:
     # `backend` is which agent's root the transcript was found under ("" for a
     # row with no transcript yet); `_row_backend` finishes the answer.
+    # `key_filed_at` is the key-keyed archive stamp (`tasks_store.archived_at`)
+    # for a task with no session to file on; `_collect` fills it, `_row` reads
+    # it. 0.0 everywhere else, which reads as "not filed".
     return {"key": key, "session_id": session_id, "path": path, "entries": [],
-            "backend": backend}
+            "backend": backend, "key_filed_at": 0.0}
 
 
 def _entry_session(entry: dict, by_id: dict | None = None) -> str:
@@ -2716,6 +2940,16 @@ def _collect() -> dict[str, dict]:
     # user deleted — is absent from every one of them and no view has to know
     # why.
     deleted = tasks_store.deleted_state()
+    # THE KEY-KEYED FILING, for the rows that have no session to file on
+    # (`tasks_store.ARCHIVED_FILE`): read once per pass like the tombstones,
+    # stashed on the task so `_row` needs no new parameter. A task WITH a
+    # session is filed on its triage record and never reads this — the key
+    # record, if one exists under a pending key the row has since left, is
+    # an orphan nothing consults.
+    archived = tasks_store.archived_state()
+    for key, task in tasks.items():
+        if not task["session_id"]:
+            task["key_filed_at"] = tasks_store.archived_at(archived, key)
     return {key: task for key, task in tasks.items()
             if _is_task(task) and not _deleted(task, deleted)
             and not _bot_session(task)}
@@ -2939,7 +3173,7 @@ def _task_canvas(target: str) -> dict | None:
     for env, bases in _canvas_roots(canvases).items():
         for base in bases:
             for cand in cands:
-                if cand == base or not cand.startswith(base + os.sep):
+                if not is_within(cand, base, strict=True):
                     continue
                 rest = cand[len(base) + 1:].split(os.sep)
                 name = rest[0]
@@ -3432,6 +3666,11 @@ _RECAP_SEEN_MAX = 4000      # a dedupe guard only; see `_recap_feed`
 # transient — haiku refused during a rate-limit window — and without a retry
 # one bad minute would title that turn by its reply for good.
 _RECAP_RETRY_S = 600.0
+#: STABLE AI TITLES (`task_summary_titles_enabled`): a session's title is
+#: refreshed once the reader has sent this many more prompts than when the
+#: stored one was written — often enough that the title follows the work,
+#: rarely enough that it never follows a single message or reply.
+TITLE_REFRESH_PROMPTS = 3
 _recap_seq = 0
 _recap_thread: threading.Thread | None = None
 
@@ -3489,7 +3728,8 @@ def _recap_candidate(task: dict, rec: dict | None, status: str, reply: str,
                "transcript": path, "session_id": sid,
                "for_uuid": anchor, "reply_at": reply_at,
                "stale_before": max(reply_at, stored["at"]) if failed
-               else reply_at if same else 0.0}
+               else reply_at if same else 0.0,
+               "want_recap": True, "want_title": False}
         if now - reply_at < _RECAP_SETTLE_S:
             # Too fresh to ask (`_RECAP_SETTLE_S`): reported with its `due`
             # time, neither queued nor marked seen. `_recap_feed` keeps the
@@ -3502,7 +3742,75 @@ def _recap_candidate(task: dict, rec: dict | None, status: str, reply: str,
     return None
 
 
+def _title_candidate(task: dict, rec: dict | None, status: str, reply: str,
+                     settings: dict | None, title: str, source: str,
+                     out: list) -> None:
+    """Whether this session wants a (re)titled stable AI title, and if so the
+    job goes into `out` — MERGED into the recap job for the same turn when
+    `_recap_candidate` already queued one (matched on session and anchor), so
+    a turn wanting both costs ONE haiku call (`want_recap` / `want_title` say
+    what the call is for).
+
+    Wanted when: there is a session and an anchor; the name is not one the
+    person chose (`renamed` / `user` — never spend a call on it); the turn has
+    ended and is not a queued reply; and EITHER nothing is stored, or the
+    reader has sent `TITLE_REFRESH_PROMPTS` more prompts since the stored one
+    (`turns`), or the last attempt failed and `_RECAP_RETRY_S` has passed. A
+    failure inside that cooldown holds every trigger off, so a broken CLI is
+    not asked on each listing. The settle minute is the recap's own: the job
+    carries the same `due`. The current title handed to the model is the
+    stored AI title, else the row's own (`title`: the first message line, a
+    slash command, or Claude Code's `ai-title`)."""
+    sid = task["session_id"]
+    tail = rec["tail"] if rec else []
+    anchor = str(tail[-1].get("anchor") or "") if tail else ""
+    if not sid or not anchor or source in ("renamed", "user"):
+        return
+    folder = task["project"]
+    path = task.get("path") or ""
+    if not (status in ("done", "blocked", "archived") and reply != _QUEUED_REPLY
+            and (folder or path)):
+        return
+    stored = tasks_store.session_ai_title(settings or {}, sid)
+    prompts = int(rec.get("count") or 0) if rec else 0
+    now = time.time()
+    if stored is not None:
+        if stored["failed_at"] and now - stored["failed_at"] < _RECAP_RETRY_S:
+            return
+        if not (not stored["text"] or stored["failed_at"]
+                or prompts < stored["turns"]  # scan record reset
+                or prompts - stored["turns"] >= TITLE_REFRESH_PROMPTS):
+            return
+    reply_at = float(rec.get("reply_at") or 0.0) if rec else 0.0
+    said_at = float(tail[-1].get("at") or 0.0)
+    reply_at = reply_at if reply and reply_at >= said_at else said_at
+    fields = {"want_title": True, "prompts": prompts,
+              "current_title": (stored or {}).get("text") or title,
+              "first_message": str(task.get("first_prompt") or "")}
+    for job in out:
+        if job["session_id"] == sid and job["for_uuid"] == anchor:
+            job.update(fields)
+            return
+    job = {"key": task["key"], "file": folder or os.path.dirname(path),
+           "transcript": path, "session_id": sid, "for_uuid": anchor,
+           "reply_at": reply_at, "stale_before": 0.0, "want_recap": False,
+           **fields}
+    if now - reply_at < _RECAP_SETTLE_S:
+        job["due"] = reply_at + _RECAP_SETTLE_S
+    out.append(job)
+
+
 _recap_due = 0.0  # epoch: the earliest settle window still open, 0 = none
+
+
+def _job_seen(job: dict) -> tuple:
+    """The dedupe mark for a job: the turn, plus a `"title"` tag for a job that
+    is ONLY a title, so a title wanted after the same turn's recap job already
+    ran (the flag came on later) is not mistaken for it."""
+    base = (job["session_id"], job["for_uuid"], job["reply_at"])
+    if job.get("want_title") and not job.get("want_recap", True):
+        return base + ("title",)
+    return base
 
 
 def _recap_feed(wants: list, machine_busy: bool | None = None,
@@ -3525,15 +3833,14 @@ def _recap_feed(wants: list, machine_busy: bool | None = None,
             for lane in (_recap_heap, _recap_backfill):
                 for _k, _s, queued in lane:
                     if not queued.get("due"):
-                        _recap_seen.add((queued["session_id"], queued["for_uuid"],
-                                         queued["reply_at"]))
+                        _recap_seen.add(_job_seen(queued))
         pushed = False
         for job in wants:
             if job.get("due"):
                 _recap_due = job["due"] if not _recap_due else min(_recap_due, job["due"])
                 pushed = True  # the worker has something to wait for
                 continue
-            seen = (job["session_id"], job["for_uuid"], job["reply_at"])
+            seen = _job_seen(job)
             if seen in _recap_seen:
                 continue
             _recap_seen.add(seen)
@@ -3566,7 +3873,7 @@ def _recap_drop_queue() -> None:
         # Queued but never asked: not "seen", so they can be asked later.
         for lane in (_recap_heap, _recap_backfill):
             for _, _, job in lane:
-                _recap_seen.discard((job["session_id"], job["for_uuid"], job["reply_at"]))
+                _recap_seen.discard(_job_seen(job))
             lane.clear()
 
 
@@ -3626,26 +3933,47 @@ def _recap_worker() -> None:
 
 
 def _recap_run(job: dict) -> None:
-    """One queued turn: ask `_recap` (which stores the answer while the flag
-    is on, and never raises), then wake the Tasks page so the row re-titles."""
+    """One queued turn: ask haiku, then wake the Tasks page so the row
+    re-titles. What the call is FOR is decided per flag, now, not when the job
+    was queued: the recap half only with `task_recap_titles_enabled` (the job
+    carries `want_recap`), the title half only with
+    `task_summary_titles_enabled` (`want_title`). A job whose flags are both
+    off by now was never asked. With a title wanted the ONE call returns the
+    title and — when the recap is also wanted — the recap (`_title_and_recap`,
+    which stores both); otherwise it is the recap alone (`_recap`). Neither
+    raises."""
     agent = _agent_module()
-    if agent is None or not shell_prefs.task_recap_titles_enabled():
+    want_recap = (bool(job.get("want_recap", True))
+                  and shell_prefs.task_recap_titles_enabled())
+    want_title = (bool(job.get("want_title", False))
+                  and shell_prefs.task_summary_titles_enabled())
+    if agent is None or not (want_recap or want_title):
         # Never asked: forget it was queued so a later listing can queue it.
         with _recap_cond:
-            _recap_seen.discard((job["session_id"], job["for_uuid"], job["reply_at"]))
+            _recap_seen.discard(_job_seen(job))
         return
     try:
-        text = sessions._recap(agent, job["file"], job["session_id"],
-                               job["for_uuid"], stale_before=job["stale_before"],
-                               transcript=job.get("transcript", ""), ended=True)
+        if want_title:
+            title, text = sessions._title_and_recap(
+                agent, job["file"], job["session_id"], job["for_uuid"],
+                job.get("transcript", ""), want_recap=want_recap,
+                current=job.get("current_title", ""),
+                first=job.get("first_message", ""),
+                prompts_seen=int(job.get("prompts") or 0))
+            failed = not title or (want_recap and not text)
+        else:
+            text = sessions._recap(agent, job["file"], job["session_id"],
+                                   job["for_uuid"], stale_before=job["stale_before"],
+                                   transcript=job.get("transcript", ""), ended=True)
+            failed = not text
     except Exception:  # noqa: BLE001 — a title nicety, never a fault
         logger.debug("tasks recap failed for %s", job["session_id"], exc_info=True)
         return
-    if not text:
+    if failed:
         # Failed: forget it was asked, so a listing after `_RECAP_RETRY_S` can
         # queue it again (the stored `""` holds it off until then).
         with _recap_cond:
-            _recap_seen.discard((job["session_id"], job["for_uuid"], job["reply_at"]))
+            _recap_seen.discard(_job_seen(job))
         # Said out loud: a failure here is otherwise invisible — the row just
         # keeps its reply line — and "some chats never get a recap" was the
         # report that had no log to read (2026-10-19). An `empty` mark (no
@@ -3656,8 +3984,9 @@ def _recap_run(job: dict) -> None:
         except Exception:  # noqa: BLE001
             stored = None
         if not (stored and stored["for_uuid"] == job["for_uuid"] and stored["empty"]):
-            logger.warning("tasks recap failed for session %s (turn %s); retry in %ds",
-                           job["session_id"], job["for_uuid"], int(_RECAP_RETRY_S))
+            logger.warning("tasks recap/title failed for session %s (turn %s); "
+                           "retry in %ds", job["session_id"], job["for_uuid"],
+                           int(_RECAP_RETRY_S))
     tasks_watch.notify({job["key"], job["session_id"]})
 
 
@@ -3683,7 +4012,8 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
          last_message: bool = False,
          recaps: list | None = None,
          pending: dict | None = None,
-         summary_titles: bool = False) -> dict:
+         summary_titles: bool = False,
+         recap_titles: bool = True) -> dict:
     """One listing row. The tail parse only: three messages, and a count.
 
     `parked` is `_parked_runs()` — every session whose live run is waiting on a
@@ -3839,9 +4169,22 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # it from disk. See `_revived`.
     record = _archive_record(task["session_id"], triage)
     filed = record is not None
-    if record is not None and _revived(merged, _filed_at(record)):
+    filed_at = _filed_at(record) if record is not None else 0.0
+    # A SESSION-LESS TASK IS FILED BY KEY (`tasks_store.archived_at`, stashed
+    # by `_collect`): a failed spawn that never minted a session has no triage
+    # record to carry the filing, and without this the Archive gesture on its
+    # red row did nothing visible. Same revival rule either way — `revived`
+    # carries the session id for a triage filing and the TASK KEY for a key
+    # filing (a session-less key is always `pending:`-prefixed, so the caller
+    # tells them apart by prefix and drops the right record).
+    key_filed = (not filed and not task["session_id"]
+                 and float(task.get("key_filed_at") or 0.0) > 0)
+    if key_filed:
+        filed = True
+        filed_at = float(task["key_filed_at"])
+    if filed and _revived(merged, filed_at):
         filed = False
-        revived.append(task["session_id"])
+        revived.append(task["key"] if key_filed else task["session_id"])
     # Which message the status is reading off — asked once here so the row's
     # `failed` flag and its `status` cannot be reading two different runs.
     speaker = _speaker(merged, filed)
@@ -3880,7 +4223,17 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     surfaced = max(active, (newest["at"] or 0.0) if newest is not None else 0.0)
     if not surfaced and task["entries"]:
         surfaced = _entry_at(task["entries"][-1])
-    title, source = _title(task, rec, task["first_prompt"])
+    prs = _row_prs(task["session_id"], rec, settings)
+    title, source = _title(task, rec, task["first_prompt"],
+                           tasks_store.session_title(settings or {},
+                                                     task["session_id"]))
+    if summary_titles and source not in ("renamed", "user"):
+        # STABLE AI TITLES: the app's own haiku title (`_title_candidate`)
+        # names the row once it exists — a name the person chose still wins.
+        # Flag off, the title above is untouched.
+        ai_title = tasks_store.session_ai_title(settings or {}, task["session_id"])
+        if ai_title and ai_title["text"]:
+            title, source = ai_title["text"][:200], "ai"
     # WHAT THIS RUN IS WAITING ON, asked once here so the row's `status`, its
     # `blocked_reason` and its `attention` line cannot describe three different
     # states of the same run. Keyed by the session id: a task with none (a
@@ -3992,6 +4345,8 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # The List row prints it, grey and italic, after the title; the Board
         # card's hover says the same.
         "last_reply": _last_reply(rec, status, said),
+        # Every PR this session touched, oldest first (`_row_prs`).
+        "prs": prs,
         # Deferred by §12 — Claude Code stores no summary, so filling this needs
         # an LLM call. Read from the entry so a store that grows the field later
         # starts working without a change here.
@@ -4004,8 +4359,8 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # (`_row_settings`).
         "model": model,
         "effort": effort,
-        # WHICH AGENT runs this task — "claude" | "copilot", never "" (D2: the
-        # backend is fixed at the first turn and every surface names it). The
+        # WHICH AGENT runs this task — "claude" | "copilot" | "codex" | "gemini", never ""
+        # (D2: the backend is fixed at the first turn and every surface names it). The
         # recorded choice, else the root the transcript sits under, else the
         # entries, else Claude — see `_row_backend`.
         "backend": backend,
@@ -4186,7 +4541,7 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # The peek header's hint and every view's title line read it — see
         # `said` above for where it is decided.
         row["last_message"] = said
-    if recaps is not None:
+    if recaps is not None and recap_titles:
         # `task_recap_titles_enabled` only: the key is ABSENT with the flag
         # off, and the client reads its presence as "the flag is on".
         row["recap"] = _recap_candidate(task, rec, status, row["last_reply"],
@@ -4195,6 +4550,9 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
         # `task_summary_titles_enabled` only: the key is ABSENT with the flag
         # off. The client then titles the row by `title` alone.
         row["title_mode"] = "summary"
+        if recaps is not None:
+            _title_candidate(task, rec, status, row["last_reply"], settings,
+                             title, source, recaps)
     return row
 
 
@@ -5430,6 +5788,15 @@ def _task_rows(only: frozenset | set | None = None,
     return _narrowed(only, at_least)[0]
 
 
+#: Whether the full listing build files away a task whose folder is gone
+#: (see the pass in `_build_task_rows`). Not a preference — the owner's call
+#: (2026-10-22) is that this is simply what the listing does — but a module
+#: seam, because nearly every transcript the test suite writes names a cwd
+#: that does not exist (`/p`), and `tests/conftest.py` turns it off for the
+#: suite; the one test of the pass turns it back on.
+ARCHIVE_MISSING_FOLDERS = True
+
+
 def _folder_missing(project: object, target: object) -> bool:
     """Is the folder this task's conversation lives in gone from the disk?
 
@@ -5550,6 +5917,22 @@ def _repo_slug(folder: object) -> str:
     return slug
 
 
+def _row_prs(sid: str, rec: dict | None, settings: dict | None) -> list[dict]:
+    """The stored PRs plus any the scan has seen that the store has not, the
+    new ones persisted (a shrunk transcript restarts the scan, so the scan alone
+    forgets). Oldest first; `[]` for none."""
+    stored = tasks_store.session_prs(settings or {}, sid)
+    seen = {f"{p['repo'].lower()}#{p['number']}" for p in stored}
+    merged = stored + [p for p in (rec.get("prs") or [] if rec else [])
+                       if f"{p['repo'].lower()}#{p['number']}" not in seen]
+    if merged != stored and sid:
+        try:
+            tasks_store.record_prs(sid, merged)
+        except (OSError, ValueError):
+            pass  # costs the filing, not the row
+    return merged
+
+
 def _row_hash(row: dict) -> str:
     """A short digest of a row's content, for the page's "is this the row I
     already hold" test. Field order is the build's own and stable, so the plain
@@ -5668,18 +6051,21 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     revived: list[str] = []
     # Turns wanting a haiku recap (`_recap_candidate`), or None with
     # `task_recap_titles_enabled` off — and then no row carries `recap`.
-    recap_wants: list | None = [] if shell_prefs.task_recap_titles_enabled() else None
+    # Read once per listing, not per row.
+    recap_titles = shell_prefs.task_recap_titles_enabled()
+    summary_titles = shell_prefs.task_summary_titles_enabled()
+    # The same queue also carries the stable AI titles, so it is fed with
+    # EITHER flag on; only the recap flag puts `recap` on the rows.
+    recap_wants = [] if (recap_titles or summary_titles) else None
     if recap_wants is None:
         _recap_drop_queue()
-    # Read once per listing, not per row.
-    summary_titles = shell_prefs.task_summary_titles_enabled()
     t2 = time.monotonic()
     for task in listed.values():
         try:
             row = _row(task, numbers.get(task["key"], ""), triage, read, now,
                        busy, revived, parked, queue, queue_on,
                        chat_drafts, bound_chips, settings, last_message,
-                       recap_wants, pending, summary_titles)
+                       recap_wants, pending, summary_titles, recap_titles)
         except (OSError, ValueError, KeyError, TypeError):
             continue  # one unreadable task, not an unreadable page
         rows.append(row)
@@ -5702,9 +6088,13 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
         # the row already reads as its derived lane above, and leaving the
         # record on disk would put the task back in Archive the moment it went
         # quiet again. Best-effort — a filing we could not drop costs one poll's
-        # worth of the row coming back, never the listing.
+        # worth of the row coming back, never the listing. A `pending:` key is
+        # a session-less task's KEY filing (`_row`), dropped from its own store.
         try:
-            sessions.clear_triage(session_id)
+            if session_id.startswith(tasks_store.PENDING_PREFIX):
+                tasks_store.clear_archived(session_id)
+            else:
+                sessions.clear_triage(session_id)
         except OSError:
             pass
     # Day one: everything that already exists is read. Done HERE, from the
@@ -5730,12 +6120,66 @@ def _build_task_rows(only: frozenset | set | None = None) -> list[dict]:
     # hashes replaces stringifying both sides of every row in every window.
     # Stamped here, after the sort and the drafts, so a draft row and a
     # narrowed build carry them too. The hash is of the row WITHOUT itself.
+    # A TASK WHOSE FOLDER IS GONE IS FILED AWAY (owner, 2026-10-22: the
+    # default, not a switch). Decided off the same `folder_missing` stamp the
+    # row is about to carry, by the same gesture the Archive button makes
+    # (`archive_task`: pending runs into the gone folder called off, the
+    # session filed), on the FULL listing only — a narrowed changes answer
+    # stats a few rows and should not be the one filing things. A row that is
+    # in flight (running, parked on a card, standing in the queue) is left to
+    # settle and is caught on a later poll: `archive_task` would stop its run
+    # from inside the builder, and a parked stop can wait. A draft has no
+    # session to file. The filing sticks while the folder is gone — Unarchive
+    # or a reviving message lasts one poll — and "gone" is `exists`, so a
+    # folder on an unmounted volume is filed until the volume is back.
+    # ONLY A TASK WITH A SESSION (CodeRabbit, PR #1863): a pending-only task
+    # — a scheduled message whose run has not happened yet — has nothing to
+    # file, so `archive_task` would cancel its entry and file nothing, and the
+    # next build would drop the task altogether (`_is_task`): work called off
+    # with no archived row to take it back from. It keeps its row, wearing the
+    # "Folder no longer exists" door, for the person to decide.
+    # NOR A ROW THAT IS LIVE OR HOLDING BACKGROUND WORK (CodeRabbit, PR
+    # #1863): a marked-live session with no parsed messages yet reads `done`
+    # (`_status` only asks liveness once there are messages), and
+    # `background_jobs` is a badge beside the status by design — both would
+    # pass the status guard above with a host still running.
+    # THE FILING LANDS FIRST, the cancellations after (CodeRabbit, PR #1863):
+    # `archive_task` cancels the pending entries and then writes the triage,
+    # and a triage write that failed would leave the entries cancelled with
+    # nothing filed to take them back from. Writing the record first and only
+    # then calling `archive_task` (whose own write is the same record again)
+    # means a failure costs nothing but this poll's attempt.
+    # Best-effort like `revived` above: one filing that fails costs the row
+    # coming back next poll, never the page.
+    auto_file = only is None and ARCHIVE_MISSING_FOLDERS
+    auto_filed: set[str] = set()
     for row in rows:
         row["folder_missing"] = _folder_missing(row.get("project"), row.get("target"))
+        if (auto_file and row["folder_missing"] and row.get("kind") != "draft"
+                and row.get("status") not in ("in_progress", "needs_attention",
+                                              "queued", _FILED)
+                and not row.get("live") and not row.get("background_jobs")
+                and row.get("key") in listed
+                and listed[row["key"]].get("session_id")):
+            try:
+                sessions.write_triage(listed[row["key"]]["session_id"], _FILED)
+                _, filed, _ = archive_task(listed[row["key"]], parked,
+                                           teardown=False)
+            except (OSError, ValueError, KeyError, TypeError):
+                filed = False
+            if filed:
+                # Patched in place so THIS build already reads archived — the
+                # hash below is of the row as filed, and `observe` does not
+                # put the gone folder's app back on the desk off a row that
+                # is about to vanish.
+                row["status"] = _FILED
+                auto_filed.add(row["key"])
         # `repo`: the PR view's "which repository" (and its link), read once
         # here rather than by every window.
         row["repo"] = _repo_slug(row.get("project") or row.get("target"))
         row["row_hash"] = _row_hash(row)
+    if auto_filed:
+        tasks_watch.notify(auto_filed)
     # The Current apps desk (current_apps.py) learns about NEW tasks here —
     # the one place every task on the machine passes, whatever started it.
     # Best-effort: the desk is a side table, and a store that cannot be
@@ -6220,7 +6664,32 @@ _PULSE_FIELDS = (
     # door as the Tasks page (`taskHref`), and that door is the canvas page
     # for a canvas task. A small dict per row, not a path walk per click.
     "canvas",
+    # The held background jobs (`_row`), `None` when there are none: a task
+    # whose turn ended but whose chat still holds a background Agent, Monitor or
+    # run_in_background Bash is `done` by status, and the Tasks page paints it
+    # In Progress (tasks-lib `liveJobRow`). The sidebar must apply the same rule
+    # or it paints running work as "finished, not read".
+    "background_jobs",
 )
+
+
+# What the finished / failed / needs-input notice names a task by
+# (task-status-notify `noticeTitle`): the reader's newest message, unless the
+# task was renamed or summary-only titles are on. `title_mode` is ABSENT with
+# its flag off, so these ride only when the row has them.
+_PULSE_TITLE_FIELDS = ("title_source", "title_mode", "last_message")
+
+
+def _pulse_row(row: dict) -> dict:
+    out = {field: row.get(field) for field in _PULSE_FIELDS}
+    for field in _PULSE_TITLE_FIELDS:
+        if field not in row:
+            continue
+        value = row[field]
+        if field == "last_message" and isinstance(value, dict):
+            value = {**value, "text": str(value.get("text") or "")}
+        out[field] = value
+    return out
 
 
 @router.get("/api/tasks/pulse")
@@ -6240,7 +6709,7 @@ def api_tasks_pulse():
     listing already pays. Server-side since D1386 — see `api_tasks_seen`."""
     return {
         "tasks": [
-            {field: row[field] for field in _PULSE_FIELDS}
+            _pulse_row(row)
             for row in _task_rows()
             if row.get("kind") != "draft"
         ],
@@ -6301,6 +6770,143 @@ def api_tasks_seen(body: Any = Body(default=None),
             detail="expected {seen: {key: number}} with non-empty string keys "
                    "and finite numbers")
     return {"ok": True, "seen": tasks_store.set_seen_done(seen)}
+
+
+class PrStatusBody(BaseModel):
+    refs: list[str] = []
+
+
+@router.post("/api/tasks/pr-status")
+async def api_tasks_pr_status(body: PrStatusBody,
+                              x_fused: str | None = Header(default=None)):
+    """`{"owner/repo#n": "open"|"draft"|"merged"|"closed"|null}` for the PRs the
+    Tasks page and the chat chip are showing — GitHub's answer through the
+    user's `gh` token, cached (`pr_status`). POST because the list is a body,
+    guarded like the other POSTs; the call blocks on the network, so it runs in
+    the threadpool."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    refs = body.refs[:100]
+    out = await run_in_threadpool(pr_status.fetch_statuses, refs)
+    # Additive: a `_heads` key (`{ref: head branch}`) only when GitHub named
+    # any; a ref can never be spelled `_heads` (it needs `/` and `#`), so the
+    # flat `{ref: state}` readers are unaffected.
+    heads = pr_status.head_refs(list(out))
+    return {**out, "_heads": heads} if heads else out
+
+
+class PortsBody(BaseModel):
+    ids: list[str] = []
+
+
+@router.post("/api/tasks/ports")
+async def api_tasks_ports(body: PortsBody,
+                          x_fused: str | None = Header(default=None)):
+    """`{"ports": {task key: [port, ...]}}` — the TCP ports each task's live
+    session (and what it started) is listening on, for the rows the Workspace is
+    showing. Absent keys have no live run or no listener. Not on the list payload
+    (see `task_ports`); blocking lsof, so it runs in the threadpool."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render.server import task_ports  # noqa: PLC0415
+
+    def work() -> dict:
+        agent = _agent_module()
+        runs = project_queue.scan_runs(agent) if agent is not None else []
+        return task_ports.ports_for(body.ids[:100], agent, runs)
+
+    return {"ports": await run_in_threadpool(work)}
+
+
+_HOLDS_COLLECT_TTL_S = 10.0
+_HOLDS_COLLECT: tuple[float, int, dict] | None = None
+_HOLDS_COLLECT_LOCK = threading.Lock()
+
+
+def _collect_for_holds() -> dict[str, dict]:
+    """`_collect()` shared across the consecutive chunk calls of one holds poll."""
+    global _HOLDS_COLLECT
+    now = time.monotonic()
+    gen = tasks_watch.generation()
+    with _HOLDS_COLLECT_LOCK:
+        hit = _HOLDS_COLLECT
+        if hit is not None and now - hit[0] < _HOLDS_COLLECT_TTL_S and hit[1] == gen:
+            return hit[2]
+    tasks = _collect()
+    with _HOLDS_COLLECT_LOCK:
+        _HOLDS_COLLECT = (now, gen, tasks)
+    return tasks
+
+
+@router.post("/api/tasks/holds")
+async def api_tasks_holds(body: PortsBody,
+                          x_fused: str | None = Header(default=None)):
+    """`{"holds": {task key: [{path, dirty_files, tracked_dirty, unpushed,
+    reasons}]}}` — what
+    each task's RECORDED worktrees would lose if removed (`task_teardown`), for
+    the Workspace row's "3 uncommitted · 2 unpushed" marker. `tracked_dirty`
+    is `dirty_files` minus untracked paths; the card counts only it. Tasks with
+    no recorded worktree (or whose folders are gone) are absent. `dirty_files` /
+    `tracked_dirty` / `unpushed` are null when git could not answer, and `reasons` then says
+    `unknown`. Off the list payload, in the threadpool.
+
+    The client polls EVERY open key (the grouping needs them all), in chunks of
+    100 ids. Each chunk used to pay its own full `_collect()`, so the collected
+    result is shared for `_HOLDS_COLLECT_TTL_S` (and dropped the moment the tasks
+    watcher's generation moves), and each worktree's git answer has its own
+    ~10 s cache in `task_teardown.holds_for`."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render.server import task_teardown  # noqa: PLC0415
+
+    def work() -> dict:
+        tasks = _collect_for_holds()
+        out: dict = {}
+        for key in dict.fromkeys(body.ids[:100]):
+            task = tasks.get(key)
+            if task is None:
+                continue
+            rows = task_teardown.holds_for(_recorded_worktrees(task))
+            if rows:
+                out[key] = rows
+        return out
+
+    return {"holds": await run_in_threadpool(work)}
+
+
+def _unarchive_for_reply(key: str, session_id: str = "") -> bool:
+    """A reply to an archived task files it back (Workspace scope, exception 2).
+
+    The revival rule (`_revived`) only notices a message that RAN after the
+    filing, which is a poll or two behind the reader typing, and a turn that was
+    already in flight when the task was filed never revives it at all. So the
+    two doors a reply comes through (the sender's own `POST /api/tasks/running`
+    and the page's follow-up route) say it outright: drop the filing now.
+
+    Only the filing goes, exactly as `api_task_unarchive` does it — a note, a
+    tag or a read mark on the session stays. True when there was one to drop;
+    best-effort, since a filing we could not drop costs one poll of the row
+    still reading Archive and is never worth failing the send over."""
+    dropped = False
+    try:
+        if session_id:
+            # ONLY AN ARCHIVE FILING GOES. `done` and `in_progress` are pins the
+            # reader set by hand; a reply is no reason to lift them.
+            rec = sessions._load_state("triage.json").get(session_id)
+            if isinstance(rec, dict) and rec.get("status") == _FILED:
+                dropped = bool(sessions.clear_triage(session_id))
+        if not session_id or tasks_store.pending_entry(key):
+            dropped = bool(tasks_store.clear_archived(key)) or dropped
+    except Exception:  # noqa: BLE001 — see above
+        logger.debug("reply: could not drop the filing of %s", key,
+                     exc_info=True)
+        return False
+    if dropped:
+        tasks_watch.notify({key, session_id} - {""})
+    return dropped
 
 
 class RunningPatch(BaseModel):
@@ -6365,6 +6971,8 @@ def api_task_running(patch: RunningPatch,
         raise HTTPException(status_code=400, detail="missing session_id")
     tasks_watch.mark_running(session_id, turn=patch.turn,
                              text=patch.text.strip(), file=patch.file.strip())
+    # A turn starting on an archived task is a reply: the filing goes now.
+    _unarchive_for_reply(session_id, session_id)
     return {"ok": True, "session_id": session_id}
 
 
@@ -6443,6 +7051,157 @@ def api_task_messages(key: str):
     _place(task)
     messages = _thread(task, tasks_store.read_state(), time.time())
     return {"messages": list(reversed(messages))}
+
+
+# ----------------------------------------------------------- export (D1390)
+#
+# `GET /api/tasks/{key}/export?format=md|json` — one task's WHOLE transcript
+# as a file. The kebab's "Download transcript" row and a bot's
+# `fused.tasks.export(key)` both land here. Two shapes, one source:
+#
+#   md    the conversation as Markdown, the layout the Bots page already
+#         exports its own transcripts in (`bots/store.export_markdown`), so a
+#         reader who has seen one of ours can read the other.
+#   json  the parsed turns the chat itself restores from (`agent._history`:
+#         `turns` of {role, text, segments, uuid, ts}) under a small header —
+#         NOT the raw JSONL under ~/.claude, whose row shapes are Claude
+#         Code's to change.
+#
+# Read from the transcript PATH the row already resolved (`task["path"]`), so
+# a task whose folder is gone still exports.
+_EXPORT_FORMATS = ("md", "json")
+
+
+def _export_name(task: dict, fmt: str) -> str:
+    """`<title-slug>-<session8>.<fmt>`, every part ASCII-safe for a header."""
+    def safe(text: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+    slug = safe(str(task.get("title") or ""))[:40]
+    sid = safe(str(task.get("session_id") or ""))[:8]
+    return "-".join(p for p in (slug or "transcript", sid) if p) + "." + fmt
+
+
+def _export_stamp(ts) -> str:
+    """` · YYYY-MM-DD HH:MM`, or "" for a missing or unusable stamp."""
+    if not isinstance(ts, (int, float)) or ts <= 0:
+        return ""
+    try:
+        return " · " + time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
+    except (OverflowError, OSError, ValueError):
+        return ""
+
+
+def _quoted(body: str, italic: bool = False) -> list[str]:
+    """A block quote that covers EVERY line, not just the first."""
+    return [("> _" + line + "_" if italic and line.strip() else "> " + line).rstrip()
+            for line in body.split("\n")]
+
+
+def _export_markdown(task: dict, turns: list[dict], backend: str) -> str:
+    """The turns as Markdown, in the Bots export's vocabulary. Lossy by
+    design (tool results are not inlined); `format=json` is the full record."""
+    who = {"copilot": "Copilot", "codex": "Codex",
+           "gemini": "Gemini"}.get(str(backend or ""), "Claude")
+    title = " ".join(str(task.get("title") or "Task").split())
+    out = [f"# {title} — transcript", ""]
+    if task.get("target"):
+        out.append(f"Folder: {task['target']}  ")
+    out += [f"Session: {task.get('session_id', '')}", ""]
+    for turn in turns:
+        role = turn.get("role")
+        text = str(turn.get("text") or "").rstrip()
+        stamp = _export_stamp(turn.get("ts"))
+        if role == "user":
+            out += [f"**You**{stamp}", "", text, ""]
+            continue
+        if role != "assistant":
+            if text:
+                out += _quoted(text) + [""]
+            continue
+        out += [f"**{who}**{stamp}", ""]
+        segments = turn.get("segments") or []
+        if not segments and text:
+            out += [text, ""]
+        in_tools = False
+        for seg in segments:
+            kind = seg.get("kind")
+            body = str(seg.get("text") or "").rstrip()
+            if kind == "tool":
+                # The one line a reader needs: the call's own summary, else
+                # what the tool was pointed at (Bash's description/command,
+                # a file tool's path), never the whole input.
+                inp = seg.get("input") if isinstance(seg.get("input"), dict) else {}
+                detail = str(seg.get("detail") or inp.get("description")
+                             or inp.get("file_path") or inp.get("command")
+                             or inp.get("pattern") or "").strip().split("\n")[0][:160]
+                out.append(f"- `{seg.get('name') or 'tool'}` {detail}".rstrip())
+                in_tools = True
+                continue
+            if not body:
+                continue
+            if in_tools:
+                # Close the tool list, or the next paragraph reads as a lazy
+                # continuation of its last bullet.
+                out.append("")
+                in_tools = False
+            if kind == "thinking":
+                out += _quoted(body, italic=True) + [""]
+            elif kind == "notice":
+                out += _quoted(body) + [""]
+            else:
+                out += [body, ""]
+        if in_tools:
+            out.append("")
+    return "\n".join(out) + "\n"
+
+
+@router.get("/api/tasks/{key}/export")
+def api_task_export(key: str, format: str = "md"):
+    """One task's whole transcript as a downloadable file — see above."""
+    fmt = (format or "md").lower()
+    if fmt not in _EXPORT_FORMATS:
+        raise HTTPException(status_code=400, detail="format must be md or json")
+    tasks = _collect()
+    task = tasks.get(key)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
+    if not task.get("session_id"):
+        raise HTTPException(status_code=409,
+                            detail="that task has not started a session yet")
+    # A session named only by a send mark or a scheduled entry: it started,
+    # but there is no transcript on disk to export.
+    if not task.get("path"):
+        raise HTTPException(status_code=404, detail="that task's transcript is gone")
+    agent = _agent_module()
+    if agent is None:
+        raise HTTPException(status_code=503, detail="the claude agent module did not load")
+    _place(task)
+    # Named the way the listing names it (`_row`), so the file a reader saves
+    # is called what the row they pressed was called.
+    record = _scan(task["path"])
+    task["title"], _source = _title(task, record, task.get("first_prompt") or "")
+    if not os.path.isfile(task["path"]):
+        raise HTTPException(status_code=404, detail="that task's transcript is gone")
+    try:
+        history = agent._history(task.get("target") or "", task["session_id"],
+                                 transcript=task["path"])
+    except OSError as e:
+        raise HTTPException(status_code=500,
+                            detail=f"could not read the transcript: {e}") from e
+    turns = list(history.get("turns") or []) if isinstance(history, dict) else []
+    backend = str(history.get("backend") or "") if isinstance(history, dict) else ""
+    name = _export_name(task, fmt)
+    headers = {"Content-Disposition": f'attachment; filename="{name}"',
+               "Cache-Control": "no-store"}
+    if fmt == "json":
+        payload = {"key": task["key"], "title": task.get("title") or "",
+                   "target": task.get("target") or "",
+                   "session_id": task["session_id"], "backend": backend,
+                   "turns": turns}
+        return Response(json.dumps(payload, ensure_ascii=False, indent=1),
+                        media_type="application/json", headers=headers)
+    return Response(_export_markdown(task, turns, backend),
+                    media_type="text/markdown; charset=utf-8", headers=headers)
 
 
 # How far outside the asked-for window a scheduled entry is still considered a
@@ -6680,14 +7439,20 @@ _VALID_EFFORTS = ("", "low", "medium", "high", "xhigh", "max")
 _MODEL_SHAPE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
+_VALID_PERMISSIONS = ("plan", "prompt", "acceptEdits", "auto")
+
+
 class SettingsPatch(BaseModel):
     session_id: str
     model: str = ""
     effort: str = ""
-    # "claude" | "copilot" | "" (not saying). Recorded once by the spawn that
-    # starts a conversation; a later POST naming the same value is a no-op and
-    # one naming another is refused — the backend never changes (D2).
+    # "claude" | "copilot" | "codex" | "gemini" | "" (not saying). Recorded once by the
+    # spawn that starts a conversation; a later POST naming the same value is
+    # a no-op and one naming another is refused — the backend never changes
+    # (D2).
     backend: str = ""
+    # The Approvals pill: plan | prompt | acceptEdits | auto, "" (not saying).
+    permission: str = ""
 
 
 def _settings_session_id(raw: str) -> str:
@@ -6741,7 +7506,8 @@ def api_task_settings_read(session_id: str = ""):
     # what the RECORD says, and the row (`_row_backend`) is where the root
     # fills the gap for a session that predates the field.
     return {"model": _display_model(model), "effort": effort,
-            "backend": tasks_store.session_backend(state, session_id)}
+            "backend": tasks_store.session_backend(state, session_id),
+            "permission": tasks_store.session_permission(state, session_id)}
 
 
 @router.post("/api/tasks/settings")
@@ -6797,11 +7563,18 @@ def api_task_settings(patch: SettingsPatch,
             model)
         if foreign is not None:
             raise HTTPException(status_code=400, detail=foreign["error"])
-    if not (model or effort or backend):
-        raise HTTPException(status_code=400,
-                            detail="nothing to record (send model, effort or backend)")
+    permission = patch.permission.strip()
+    if permission and permission not in _VALID_PERMISSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid permission {permission!r}: expected one of "
+                   + ", ".join(repr(v) for v in _VALID_PERMISSIONS))
+    if not (model or effort or backend or permission):
+        raise HTTPException(
+            status_code=400,
+            detail="nothing to record (send model, effort, backend or permission)")
     record = tasks_store.record_settings(session_id, model, effort,
-                                         backend=backend)
+                                         backend=backend, permission=permission)
     # THE ROW CARRIES THIS PAIR (`_row_settings`), so the other windows have to
     # be told — the same ring `POST /api/tasks/read` makes for the same reason.
     # A session that is not a task is a key nobody is watching, and the notify
@@ -6810,7 +7583,8 @@ def api_task_settings(patch: SettingsPatch,
     return {"ok": True,
             "model": str(record.get("model") or ""),
             "effort": str(record.get("effort") or ""),
-            "backend": str(record.get("backend") or "")}
+            "backend": str(record.get("backend") or ""),
+            "permission": str(record.get("permission") or "")}
 
 
 # ------------------------------------------------------------------ archiving
@@ -6827,12 +7601,16 @@ def api_task_settings(patch: SettingsPatch,
 #     recurring RULE behind one, because a rule that keeps materialising
 #     occurrences is a rule that keeps un-archiving the task.
 #
-# WHAT IS NOT TOUCHED is a run that is happening. `sending` is not cancellable
-# (schedule.cancel refuses it, and rightly: the helper is away and the turn may
-# have started) and neither is a live turn. Those keep going, the task keeps
-# reading In Progress while they do, and it settles into Archive by itself when
-# they end — see `_message_archived`. Nothing has to come back and finish the
-# job; the derivation simply answers differently once nothing is running.
+# A RUN THAT IS HAPPENING IS ENDED, since the Workspace work (`task_teardown`):
+# archiving the task stops its live session and every process that session
+# started, and removes its clean, pushed worktrees (the report rides on the
+# answer so the client can say what went). The client asks before it files a
+# task that is still running, and Undo only un-files — it does not restart what
+# was stopped. `sending` is still not cancellable by `schedule.cancel` (the
+# helper is away and the turn may have started), but the stop below reaches the
+# run itself, and anything that still settles late lands in Archive by itself
+# (`_message_archived`). The one caller that must NOT tear down is the desk's
+# remove-app door (`current_apps._archive_folder`): it files, nothing more.
 #
 # Deleting exists now (Akshil, 2026-08-19) and D306 still holds, because the
 # two were never actually in tension: what the user asks to delete is the ROW —
@@ -6857,10 +7635,11 @@ def api_task_archive(patch: ArchivePatch,
     """File one task away: cancel its pending work, archive its session.
 
     Answers what it actually did — how many messages were called off, and
-    whether the session was filed — rather than a bare ok, because the two
-    halves can legitimately come apart (a task with no session id has only the
-    first, a pure-chat task has only the second) and the client's note line is
-    the place a person finds out which.
+    whether the task was filed — rather than a bare ok, because the two
+    halves can legitimately come apart (a never-ran task with no session has
+    only the first and vanishes with it; a pure-chat task has only the second;
+    a session-less task whose send BROKE is filed by key, `archive_task`) and
+    the client's note line is the place a person finds out which.
     """
     guard = _require_fused(x_fused)
     if guard is not None:
@@ -6889,13 +7668,79 @@ def api_task_archive(patch: ArchivePatch,
     # run that would not go leaves the row reading `needs_attention` with the
     # filing kept underneath, and the card is how the reader finds out.
     return {"ok": True, "key": key, "cancelled": cancelled, "filed": filed,
-            "stopped": stopped}
+            "stopped": stopped, "teardown": task.get("teardown") or {}}
 
 
-def archive_task(task: dict, parked: dict) -> tuple[int, bool, bool]:
+class WorktreeRemovePatch(BaseModel):
+    key: str
+    paths: list[str] | None = None
+
+
+@router.post("/api/tasks/worktrees/remove")
+def api_task_worktrees_remove(patch: WorktreeRemovePatch,
+        x_fused: str | None = Header(default=None)):
+    """"Remove anyway": delete the worktrees archive KEPT, discarding their
+    changes. Only worktrees this task's transcript recorded are reachable, so the
+    body cannot name an arbitrary folder; `paths` narrows it to some of them."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    key = patch.key.strip()
+    task = _collect().get(key) if key else None
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
+    report = _teardown_task(task, force=True, paths=patch.paths)
+    return {"ok": True, "key": key, "removed": report["removed"],
+            "kept": report["kept"], "gone": report["gone"]}
+
+
+class RenamePatch(BaseModel):
+    key: str
+    # Typed `Any` so a non-string reaches the handler as a 400 of ours, not a
+    # pydantic 422 the client has no wording for.
+    title: Any = ""
+
+
+@router.post("/api/tasks/rename")
+def api_task_rename(patch: RenamePatch,
+        x_fused: str | None = Header(default=None)):
+    """Give one started task a title of the user's own, or take it back.
+
+    The title is stored on the session's settings record (`custom_title`) and
+    wins every title mode (`_title`); an empty one deletes it and the automatic
+    title returns. Only the first line is kept, capped at 200 characters, the
+    same cap the listing applies. A task with no session yet (a `pending:`
+    message, a draft, a new chat) has nothing to key the title on and is
+    refused. Answers with the title as stored ("" when cleared)."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    if not isinstance(patch.title, str):
+        raise HTTPException(status_code=400, detail="title must be a string")
+    key = patch.key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="missing task key")
+    task = _collect().get(key)
+    if task is None:
+        raise HTTPException(status_code=404, detail=f"no task with key {key!r}")
+    session_id = task["session_id"]
+    if (key.startswith((tasks_store.PENDING_PREFIX, "draft:",
+                        drafts.NEW_CHAT_PREFIX)) or not session_id):
+        return _error("only a started task can be renamed")
+    text = patch.title.strip()
+    first = text.splitlines()[0].strip() if text else ""
+    stored = tasks_store.record_title(session_id, first[:200])
+    tasks_watch.notify({key})
+    return {"ok": True, "title": stored}
+
+
+def archive_task(task: dict, parked: dict, *,
+                 teardown: bool = True) -> tuple[int, bool, bool]:
     """The archive gesture on one collected task: how many messages were
-    called off, whether a session was filed, and whether a run parked on a
-    card was stopped on the way. Shared with the Current apps router
+    called off, whether the task was filed (its session's triage record, or
+    for a session-less task that outlives the cancel, its KEY — see below),
+    and whether a run parked on a card was stopped on the way. Shared with
+    the Current apps router
     (server/routers/current_apps.py), where removing an app archives every
     task under it — `parked` is the caller's one `_parked_runs()` scan, so an
     archive-all pays for the walk once.
@@ -6915,8 +7760,25 @@ def archive_task(task: dict, parked: dict) -> tuple[int, bool, bool]:
     the stop can wait up to `_STOP_PARKED_WAIT_S`, and a due entry the
     scheduler claims inside that window has left PENDING by the time the
     cancel loops reach it — it would run after the filing and `_revived`
-    would drop the record. Cancel first, stop second, file last."""
+    would drop the record. Cancel first, stop second, file last.
+
+    TEARDOWN COMES AFTER THE FILING (Workspace scope, unit 3): the live session
+    and what it started are ended and its clean, pushed worktrees removed
+    (`_teardown_task`), the report left on `task["teardown"]` for the caller that
+    has somewhere to show it. A failure there costs the report, never the
+    filing. `teardown=False` is the listing's auto-file of missing-folder rows,
+    which by its own guard has no live run and no folder to hold a worktree."""
     cancelled = 0
+    # Decided BEFORE the cancel, off the states as collected: will this task
+    # still be a row once its pending work is called off? `_is_task` drops a
+    # session-less task whose every entry never ran, and a PENDING entry is
+    # about to be cancelled into exactly that — so a row made only of those
+    # vanishes on its own and needs no filing (and a key record for it would
+    # be an orphan from birth). What survives is an entry that SENT or BROKE,
+    # which is the shape the key filing exists for.
+    survives = bool(task["session_id"]) or any(
+        _entry_state(e) not in _NEVER_RAN and e.get("state") != schedule.PENDING
+        for e in task["entries"])
     # The rules FIRST: cancelling a template also cancels the occurrence it has
     # already materialised, so doing it the other way round would cancel one
     # occurrence and let the rule mint the next.
@@ -6930,11 +7792,113 @@ def archive_task(task: dict, parked: dict) -> tuple[int, bool, bool]:
         if entry_id and schedule.cancel(entry_id) is not None:
             cancelled += 1
 
+    # The run's process tree, read BEFORE the parked stop ends the agent: its
+    # children are unreachable from it afterwards (`task_teardown.snapshot_session`).
+    pre_tree = _snapshot_tree(task) if teardown else []
     stopped = _stop_parked_run(task, parked)
     session_id = task["session_id"]
     if session_id:
         sessions.write_triage(session_id, _FILED)
-    return cancelled, bool(session_id), stopped
+    elif survives:
+        # NO SESSION, SO THE FILING GOES ON THE KEY (`tasks_store.ARCHIVED_FILE`;
+        # Akshil, 2026-10-22: failed Copilot tasks "appear as red tasks in the
+        # list, they cannot open it, they cannot archive it"). A send whose
+        # spawn failed is an `error` entry under `pending:<id>` — not PENDING,
+        # so nothing above cancelled it, and with no session nothing filed it:
+        # the route answered `filed: False` and the row stayed red for ever.
+        # Delete already worked on these rows because its tombstone is keyed
+        # by task key; archive now is too. `_row` reads it back, `_revived`
+        # drops it if the task ever runs, and Unarchive clears it.
+        tasks_store.mark_archived(task["key"])
+        task["key_filed_at"] = time.time()
+    if teardown:
+        task["teardown"] = _teardown_task(task, pre_tree=pre_tree)
+    return cancelled, survives, stopped
+
+
+def _recorded_worktrees(task: dict) -> list[str]:
+    """The worktrees this task's own transcript says it made (`_note_worktrees`)."""
+    record = _scan(task["path"]) if task.get("path") else None
+    return list((record or {}).get("worktrees") or [])
+
+
+def _snapshot_tree(task: dict) -> list[int]:
+    """`task_teardown.snapshot_session` for this task's session; [] on any miss."""
+    from fused_render.server import task_teardown  # noqa: PLC0415
+    try:
+        agent = _agent_module()
+        session_id = str(task.get("session_id") or "")
+        if agent is None or not session_id:
+            return []
+        return task_teardown.snapshot_session(
+            session_id, agent, project_queue.scan_runs(agent))
+    except Exception:  # noqa: BLE001 — a missing snapshot is a missed sweep
+        logger.debug("teardown: snapshot failed for %s", task.get("key"),
+                     exc_info=True)
+        return []
+
+
+def _worktrees_in_use(task: dict) -> set[str]:
+    """Recorded worktrees of `task` that something else still needs: another task
+    that is not archived also records it, or a live run works inside it."""
+    mine = {os.path.realpath(p) for p in _recorded_worktrees(task)}
+    if not mine:
+        return set()
+    busy: set[str] = set()
+    try:
+        triage = sessions._load_state("triage.json")
+        key_filed = tasks_store.archived_state()
+        for other in _collect().values():
+            if other.get("key") == task.get("key") or not other.get("path"):
+                continue
+            sid = str(other.get("session_id") or "")
+            if (triage.get(sid) or {}).get("status") == _FILED \
+                    or str(other.get("key")) in key_filed:
+                continue
+            busy |= mine & {os.path.realpath(p) for p in _recorded_worktrees(other)}
+        agent = _agent_module()
+        if agent is not None:
+            for run in project_queue.scan_runs(agent):
+                if not project_queue.run_alive(agent, str(run.get("run_dir") or "")):
+                    continue
+                meta = run.get("meta") or {}
+                for where in (meta.get("cwd"), meta.get("file")):
+                    if not where:
+                        continue
+                    real = os.path.realpath(str(where))
+                    busy |= {w for w in mine
+                             if real == w or real.startswith(w + os.sep)}
+    except Exception:  # noqa: BLE001 — see `_teardown_task`
+        logger.debug("teardown: in-use check failed", exc_info=True)
+    return busy
+
+
+def _teardown_task(task: dict, *, force: bool = False,
+                   paths: list[str] | None = None,
+                   pre_tree: list[int] | None = None) -> dict:
+    """Archive's second half (`task_teardown`): end the session's live run and
+    its stray children, then remove each recorded worktree that is clean and
+    pushed. `{"stopped", "killed", "removed", "kept", "gone"}`; `force` removes
+    the kept ones too, limited to `paths` when given — and ALWAYS limited to the
+    worktrees the transcript recorded. Never raises."""
+    from fused_render.server import task_teardown  # noqa: PLC0415
+    out: dict = {"stopped": 0, "killed": [], "removed": [], "kept": [], "gone": []}
+    try:
+        if not force:
+            agent = _agent_module()
+            session_id = str(task.get("session_id") or "")
+            if agent is not None and session_id:
+                out.update(task_teardown.stop_session(
+                    session_id, agent, project_queue.scan_runs(agent),
+                    pre_tree=pre_tree or ()))
+        recorded = _recorded_worktrees(task)
+        if paths is not None:
+            recorded = [p for p in recorded if p in set(paths)]
+        out.update(task_teardown.teardown_worktrees(
+            recorded, force=force, in_use=_worktrees_in_use(task)))
+    except Exception:  # noqa: BLE001 — the filing already happened
+        logger.warning("teardown: failed for %s", task.get("key"), exc_info=True)
+    return out
 
 
 class UnarchivePatch(BaseModel):
@@ -6986,6 +7950,12 @@ def api_task_unarchive(patch: UnarchivePatch,
 
     session_id = task["session_id"]
     unfiled = bool(session_id) and sessions.clear_triage(session_id)
+    if not session_id:
+        # The key-keyed filing a session-less task carries (`archive_task`),
+        # and the stash `_collect` read off it, so the row built below reads
+        # the lane it will derive into rather than Archive once more.
+        unfiled = tasks_store.clear_archived(key)
+        task["key_filed_at"] = 0.0
     # Where it landed, read the same way the listing reads it — one row built
     # from the same helpers, AFTER the filing is gone, so the answer is the lane
     # the very next poll will draw rather than a guess about it.
@@ -7500,6 +8470,23 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
     from a terminal after the app said it was erased. That dir is outside every
     projects root, so it is checked on its own: a leaf named exactly the id
     whose parent resolves to the session-state dir, nothing else.
+
+    A transcript that went from under the CODEX root takes Codex CLI's own
+    rollout file(s) with it, for the same reason (docs/CODEX_BACKEND.md D15):
+    `codex resume <sid>` replays from `<CODEX_HOME>/sessions/YYYY/MM/DD/
+    rollout-<ts>-<sid>.jsonl`, and an archived thread from the same name
+    under `archived_sessions/`. Those are FILES named by the id rather than a
+    dir named the id, found by `_codex_rollout_files` under the same
+    discipline: the id already passed the shape check above, and every hit
+    must resolve inside one of the two Codex dirs with a `rollout-*-<sid>.jsonl`
+    leaf, or it is not touched.
+
+    A transcript that went from under the GEMINI root takes Gemini CLI's own
+    chat file(s) with it (docs/GEMINI_BACKEND.md D15): `gemini --resume <sid>`
+    replays from `<gemini home>/tmp/<project>/chats/session-<ts>-<sid[:8]>.jsonl`
+    (`.json` for older releases). Found by `_gemini_chat_files` under the same
+    discipline — a leaf named by the id's first eight characters whose text
+    carries the whole id, resolving inside the dir it was globbed under.
     """
     if not _SESSION_ID_SHAPE.match(session_id) or session_id in (".", ".."):
         logger.warning("erase: refusing session id %r", session_id)
@@ -7537,6 +8524,8 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
     targets.sort(key=lambda t: t.endswith(".jsonl"))
     removed, erased, failed, refused = 0, False, 0, 0
     copilot = False  # did a transcript go from under the Copilot root
+    codex = False  # ... or from under the Codex root
+    gemini = False  # ... or from under the Gemini root
     seen: set[str] = set()
     for target in targets:
         resolved = os.path.realpath(target)
@@ -7558,6 +8547,8 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
                 if resolved.endswith(".jsonl"):
                     erased = True
                     copilot = copilot or projects[parent][1] == "copilot"
+                    codex = codex or projects[parent][1] == "codex"
+                    gemini = gemini or projects[parent][1] == "gemini"
             else:
                 continue
         except OSError:
@@ -7577,6 +8568,22 @@ def _erase_session_files(session_id: str, path: str | None) -> tuple[int, bool, 
             except OSError:
                 logger.warning("erase: could not remove %s", candidate, exc_info=True)
                 failed += 1
+    if codex and not failed and not refused:
+        for rollout in _codex_rollout_files(session_id):
+            try:
+                os.remove(rollout)
+                removed += 1
+            except OSError:
+                logger.warning("erase: could not remove %s", rollout, exc_info=True)
+                failed += 1
+    if gemini and not failed and not refused:
+        for chat in _gemini_chat_files(session_id):
+            try:
+                os.remove(chat)
+                removed += 1
+            except OSError:
+                logger.warning("erase: could not remove %s", chat, exc_info=True)
+                failed += 1
     return removed, erased, failed, refused
 
 
@@ -7590,6 +8597,143 @@ def _copilot_session_state_dir() -> str:
     from fused_render import copilot_health
 
     return os.path.join(copilot_health.config_dir(), "session-state")
+
+
+def _codex_home() -> str:
+    """Codex CLI's own home (`CODEX_HOME`, else `~/.codex`), NOT fused's Codex
+    root (`agent_roots.codex_dir()`) — the CLI keeps this one, and erase is
+    the only reader. Resolved by `codex_health.config_dir`, the one place that
+    reads the CLI's own override, as `_copilot_session_state_dir` resolves
+    Copilot's: the host's spawn leaves `CODEX_HOME` exactly as found
+    (docs/CODEX_BACKEND.md §3), so erase looks where `codex app-server`
+    actually wrote. A function so a test can point it at a tmp dir."""
+    from fused_render import codex_health
+
+    return codex_health.config_dir()
+
+
+def _codex_rollout_files(session_id: str) -> list[str]:
+    """Every rollout file Codex keeps for `session_id` — the realpaths, ready
+    to remove. `<codex home>/sessions/**/rollout-*-<sid>.jsonl` (the live
+    store, dated buckets) and the same under `archived_sessions/` (layout
+    assumed, D15 — `**` matches a flat dir too).
+
+    The id is refused unless it is a name (`_SESSION_ID_SHAPE`, not `.`/`..`)
+    — `_erase_session_files` checked it already; checked again so this helper
+    is safe on its own — and `glob.escape`d so it is never a pattern. A hit is
+    kept only when its REALPATH is a regular file inside the realpath of the
+    dir it was globbed under and its leaf still reads `rollout-…-<sid>.jsonl`:
+    a symlink out of the tree, or one that renames the leaf, is skipped, not
+    followed to wherever it points."""
+    import glob
+
+    if not _SESSION_ID_SHAPE.match(session_id) or session_id in (".", ".."):
+        return []
+    home = _codex_home()
+    suffix = "-" + session_id + ".jsonl"
+    out: list[str] = []
+    for sub in ("sessions", "archived_sessions"):
+        base = os.path.join(home, sub)
+        if not os.path.isdir(base):
+            continue
+        base_real = os.path.realpath(base)
+        pattern = os.path.join(glob.escape(base), "**", "rollout-*" + glob.escape(suffix))
+        for hit in glob.glob(pattern, recursive=True):
+            resolved = os.path.realpath(hit)
+            leaf = os.path.basename(resolved)
+            if (is_within(resolved, base_real, strict=True,
+                           fs_root_ok=False)
+                    and leaf.startswith("rollout-") and leaf.endswith(suffix)
+                    and os.path.isfile(resolved) and resolved not in out):
+                out.append(resolved)
+    return out
+
+
+def _gemini_home() -> str:
+    """Gemini CLI's own data dir (`<GEMINI_CLI_HOME or ~>/.gemini`), NOT
+    fused's Gemini root (`agent_roots.gemini_dir()`) — the CLI keeps this one,
+    and erase (and the recap's cleanup) are its only readers. Resolved by
+    `gemini_health.config_dir`, the one place that reads the CLI's own
+    override, as `_codex_home` resolves Codex's. A function so a test can
+    point it at a tmp dir."""
+    from fused_render import gemini_health
+
+    return gemini_health.config_dir()
+
+
+_GEMINI_SHORT_ID_LEN = 8
+
+
+def _gemini_chat_files(session_id: str) -> list[str]:
+    """Every chat file Gemini CLI keeps for `session_id` — the realpaths,
+    ready to remove. `<gemini home>/tmp/<project>/chats/session-<ts>-<short>.jsonl`
+    (and `.json`, the older shape), where `<short>` is the id's first eight
+    characters (`deriveSessionShortId` in the CLI; verified in 0.65.0's
+    source, D15). Eight characters are not an id, so a hit counts only when
+    the chat's OWN recorded `sessionId` is this id: the first record of a
+    `.jsonl` (the CLI's metadata line) or the top-level key of a `.json` —
+    never a substring of the text, which another chat could carry in a
+    message that merely mentions this id. A neighbour sharing the prefix
+    stays, and so does an unreadable file.
+
+    Same discipline as `_codex_rollout_files`: the id is refused unless it is
+    a name, `glob.escape`d so it is never a pattern, and a hit is kept only
+    when its REALPATH is a regular file inside the realpath of the `tmp` dir
+    it was globbed under and its leaf still reads `session-…-<short>.json(l)`."""
+    import glob
+
+    if not _SESSION_ID_SHAPE.match(session_id) or session_id in (".", ".."):
+        return []
+    short = session_id[:_GEMINI_SHORT_ID_LEN]
+    if len(short) < _GEMINI_SHORT_ID_LEN:
+        return []
+    base = os.path.join(_gemini_home(), "tmp")
+    if not os.path.isdir(base):
+        return []
+    base_real = os.path.realpath(base)
+    out: list[str] = []
+    for ext in (".jsonl", ".json"):
+        suffix = "-" + short + ext
+        pattern = os.path.join(glob.escape(base), "*", "chats",
+                               "session-*" + glob.escape(suffix))
+        for hit in glob.glob(pattern):
+            resolved = os.path.realpath(hit)
+            leaf = os.path.basename(resolved)
+            if not (is_within(resolved, base_real, strict=True, fs_root_ok=False)
+                    and leaf.startswith("session-") and leaf.endswith(suffix)
+                    and os.path.isfile(resolved) and resolved not in out):
+                continue
+            try:
+                with open(resolved, "rb") as fh:
+                    head = fh.read(1 << 20).decode("utf-8", "replace")
+            except OSError:
+                continue
+            if _gemini_chat_owner(head, ext) == session_id:
+                out.append(resolved)
+    return out
+
+
+def _gemini_chat_owner(head: str, ext: str) -> str:
+    """The `sessionId` a Gemini chat file records as its own, from its first
+    MiB: the first line's record for `.jsonl`, the top-level object's key
+    for `.json` (the whole object when it fits, else the key where the CLI
+    writes it — first in the object). "" when the file does not say."""
+    if ext == ".jsonl":
+        first = head.lstrip().split("\n", 1)[0]
+        try:
+            record = json.loads(first)
+        except ValueError:
+            return ""
+    else:
+        try:
+            record = json.loads(head)
+        except ValueError:
+            m = re.match(r'\s*\{\s*"sessionId"\s*:\s*"([^"\\]*)"', head)
+            return m.group(1) if m else ""
+    if not isinstance(record, dict):
+        return ""
+    sid = record.get("sessionId")
+    return sid if isinstance(sid, str) else ""
 
 
 def _every_rule_behind(key: str) -> list[str]:
@@ -9061,7 +10205,7 @@ def api_task_create(body: dict = Body(...),
     """Start a task from a page: `{prompt, target?, title?, model?, effort?,
     backend?, permission_mode?, due?, queue?}` -> `{entry_id, key}`.
 
-    `backend` — "claude" or "copilot" — is which agent runs the task (D2).
+    `backend` — "claude", "copilot", "codex" or "gemini" — is which agent runs the task (D2).
     Omitted, it is the Preferences default AT CREATE: `schedule.create` pins
     `registry.default_id()` on the entry, so the `pending:` row and the run
     both name the agent the user saw, not the default of the day it fires. A
@@ -9282,6 +10426,9 @@ def api_task_send(key: str, body: dict = Body(...),
     if task is None:
         return _error(f"no task with key {key!r}", status=404)
     session = str(task.get("session_id") or key)
+    # `_collect` hands back the bare task: its project and target are `_place`'s
+    # answers, and without them every follow-up read "no target to resume in".
+    _place(task)
     target = str(task.get("target") or task.get("project") or "")
     if not target:
         return _error("this task has no target to resume in", status=409)
@@ -9293,6 +10440,18 @@ def api_task_send(key: str, body: dict = Body(...),
     if refusal is not None:
         return refusal
 
+    delivered = claude_remote.admit([session], _deliver_page_send, key, task, target,
+                                    session, text, model, effort, owner)
+    if delivered == {"error": claude_remote.HELD}:
+        return _error(claude_remote.HELD, status=409)
+    # THE FILING GOES ONLY ONCE THE MESSAGE WAS TAKEN: a held or failed send
+    # leaves an archived task archived.
+    if isinstance(delivered, dict) and not delivered.get("error"):
+        _unarchive_for_reply(key, str(task.get("session_id") or ""))
+    return delivered
+
+
+def _deliver_page_send(key, task, target, session, text, model, effort, owner):
     agent = project_queue.agent_module()
     if agent is not None:
         try:

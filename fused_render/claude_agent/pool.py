@@ -57,7 +57,9 @@ CONTROL_POOL = ThreadPoolExecutor(max_workers=2,
                                   thread_name_prefix="claude-agent-ctl")
 
 #: The actions that ride `CONTROL_POOL`; every other action rides `POOL`.
-CONTROL_ACTIONS = frozenset({"cancel", "decide", "app_state"})
+# `canvas_shot` is `app_state`'s twin: a page answering a tool call that is
+# blocked until the answer lands, so it must not queue behind polls either.
+CONTROL_ACTIONS = frozenset({"cancel", "decide", "app_state", "canvas_shot"})
 
 
 #: THE TASK-OUTPUT LANE (SPEC T-3). `task_output` parks a worker for up to

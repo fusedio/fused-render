@@ -83,6 +83,7 @@ shell/* routers.
 from __future__ import annotations
 
 import asyncio
+import copy
 import dataclasses
 import hashlib
 import io
@@ -93,20 +94,27 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
+import tomllib
+import urllib.parse
 import zipfile
+import zlib
 
 from fastapi import APIRouter, Body, Header, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
 from fused_render import canvas_snapshot, canvas_sync_state
+from fused_render._platform import is_within
 from fused_render.fusedcli import (
+    CUSTOM_WORKBENCH_ENV,
     WORKBENCH_ENV_CHOICES,
     WORKBENCH_ENV_VAR,
     child_env,
     cli_error,
     fused_cli,
+    set_fused_env,
     workbench_env,
     workbench_env_locked,
 )
@@ -117,7 +125,38 @@ router = APIRouter()
 
 # `fused canvas list/whoami` are one control-plane call each.
 LIST_TIMEOUT = 30.0
-WHOAMI_TIMEOUT = 20.0
+# 40 s, not 20: the CLI child is an interpreter importing `fused` before one
+# round trip, and on a loaded Mac (load avg 20+, 2026-10-23) that alone took
+# 17 s — the old 20 s tripped, the workspace bannered, and the workbench frame
+# never loaded. The answer is the user's handle, which does not change.
+WHOAMI_TIMEOUT = 40.0
+# …and that answer is kept for an hour rather than 45 s: every reopen of a
+# canvas within the hour frames the workbench without spawning anything.
+_WHOAMI_CACHE_TTL_S = 3600.0
+# whoami / list / token each spawn an interpreter (importing `fused`) for a
+# control-plane answer that rarely changes: the parsed RESULT is reused this
+# long (see `_cached_cli`). Errors are never reused.
+_CLI_CACHE_TTL_S = 45.0
+# A token expiring within this window is not reused: re-running the shim
+# refreshes it.
+_TOKEN_EXPIRY_MARGIN_S = 120.0
+_CLI_CACHE_LOCK = threading.Lock()
+_cli_cache: dict[tuple, tuple[float, object]] = {}  # key -> (monotonic expiry, value)
+_cli_cache_gen = 0
+
+
+class _Flight:
+    """One in-flight computation other callers of the same key wait on."""
+
+    __slots__ = ("event", "result")
+
+    def __init__(self):
+        self.event = threading.Event()
+        self.result = None
+
+
+_cli_flights: dict[tuple, _Flight] = {}
+
 # A pull downloads and extracts the canvas zip; canvases are small (source
 # files, not data), so a minute is generous headroom for a slow link.
 PULL_TIMEOUT = 180.0
@@ -126,7 +165,11 @@ PUSH_TIMEOUT = 180.0
 TOKEN_TIMEOUT = 30.0
 # `fused login` blocks on its browser callback; its own HTTP server times out
 # after ~30s per request, but give the child room for slow human sign-ins.
-LOGIN_CHILD_TIMEOUT = 600.0
+# Five minutes: long enough to find the window and a password manager, short
+# enough that an abandoned or wedged attempt frees the page (and the one-at-a-
+# time login slot) before the person gives up on it. The page watches
+# `login_in_flight` and reports the timeout when the child dies at this mark.
+LOGIN_CHILD_TIMEOUT = 300.0
 # Quiet period after the last observed file change before a push fires.
 DEBOUNCE_S = 1.5
 # Folder fingerprint poll cadence.
@@ -187,7 +230,10 @@ ROWLESS_GRACE_S = 5.0
 # share uploads — so it is read here in four places only: the status payload,
 # the FUSED_RENDER_WORKBENCH_URL override, the FUSED_RENDER_WORKBENCH_ENV pin
 # (`_require_env`), and the env-less credential calls (`_auth_env`). Never
-# frozen into a module constant: the preference moves at runtime.
+# frozen into a module constant: the preference moves at runtime. The third
+# env, `custom` (fusedcli.CUSTOM_WORKBENCH_ENV), is no Fused of its own: its
+# runs get FUSED_ENV unset so the CLI keeps `~/.fused/settings.toml`'s
+# endpoint, and its iframe loads that endpoint's web origin.
 
 # Cap on the per-line push-error transcript kept for the UI and the fix
 # session — enough for any real validation report (one line per problem plus
@@ -204,6 +250,159 @@ _ENV_WEB_URLS = {
 }
 
 
+# fused's own settings files, in its load order (fused `_options.py`
+# OPTIONS_PATH, then OPTIONS_JSON_PATH): where the custom environment's
+# endpoint comes from. Read here, not by importing fused, because the server
+# never imports fused (every fused call is a subprocess) and these are read
+# per status call — cheap, and an edit to the file shows on the next one.
+_FUSED_SETTINGS_FILES = ("~/.fused/settings.toml", "~/.fused/settings.json")
+# fused's `Options.base_url` default — what an absent file or key means.
+_FUSED_DEFAULT_API_URL = "https://www.fused.io/server/v1"
+# fused's `Options.base_web_url`: the hosted API URLs whose web origin is not
+# simply the API URL's own origin. Anything else is `scheme://netloc`.
+_FUSED_API_WEB_URLS = {
+    "https://staging.fused.io/server/v1": "https://staging.fused.io",
+    "https://unstable.fused.io/server/v1": "https://unstable.fused.io",
+    "http://localhost:8783/v1": "http://localhost:3000",
+}
+
+
+def _fused_settings() -> dict:
+    """The settings fused loads from `~/.fused/settings.toml` (else
+    `settings.json`), or {} — what a custom-environment run, with FUSED_ENV
+    unset, actually uses. Like fused, a file that does not parse is skipped
+    for the next one."""
+    for raw in _FUSED_SETTINGS_FILES:
+        path = os.path.expanduser(raw)
+        try:
+            with open(path, "rb") as fh:
+                data = tomllib.load(fh) if path.endswith(".toml") else json.load(fh)
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError) as exc:  # TOMLDecodeError is a ValueError
+            logger.warning("could not read %s for the custom canvas environment: %s",
+                           path, exc)
+            continue
+        return data if isinstance(data, dict) else {}
+    return {}
+
+
+def fused_settings_base_url() -> str:
+    """The API `base_url` fused loads from its settings file, else fused's
+    default (a parsed file without `base_url` means the default)."""
+    value = _fused_settings().get("base_url")
+    return value if isinstance(value, str) and value else _FUSED_DEFAULT_API_URL
+
+
+def _fused_settings_credentials_path() -> str:
+    """Where a custom-environment run keeps its `fused login` credentials:
+    the settings file's `[auth] credentials_path` (a custom deployment has its
+    own Auth0 tenant, D1412), else fused's `AuthOptions` default."""
+    auth = _fused_settings().get("auth")
+    value = auth.get("credentials_path") if isinstance(auth, dict) else None
+    return value if isinstance(value, str) and value else "~/.fused/credentials"
+
+
+def fused_settings_embed_proxy() -> bool | None:
+    """`[render] canvases_embed_proxy_enabled` in the settings file: True or
+    False when the file sets it (it then wins over the Preferences switch,
+    shell/prefs.py), None when it does not. fused ignores a table it does not
+    know, so the deployment's own file can carry it."""
+    render = _fused_settings().get("render")
+    value = render.get("canvases_embed_proxy_enabled") if isinstance(render, dict) else None
+    return value if isinstance(value, bool) else None
+
+
+def fused_settings_present() -> bool:
+    """Whether there is a `~/.fused/settings.toml` (or `settings.json`) for
+    the custom environment to follow."""
+    return any(os.path.isfile(os.path.expanduser(raw)) for raw in _FUSED_SETTINGS_FILES)
+
+
+def fused_settings_configured() -> bool:
+    """Whether the settings file actually points the custom environment
+    somewhere: present AND naming a `base_url`. Without one a custom run is
+    just prod under another clone folder. The Canvases page offers custom
+    regardless and opens the settings editor when this is false (the empty
+    file the editor starts from must NOT count as configured, or dismissing
+    it would leave custom silently equal to prod); the Settings picker
+    offers it too."""
+    value = _fused_settings().get("base_url")
+    return isinstance(value, str) and bool(value.strip())
+
+
+def fused_settings_path() -> str:
+    """The file the settings editor reads and writes: fused's TOML settings
+    file (the first in its load order), expanded."""
+    return os.path.expanduser(_FUSED_SETTINGS_FILES[0])
+
+
+def _read_fused_settings_text() -> tuple[str, bool]:
+    """(text, exists) of the TOML settings file. A missing file is ("", False);
+    one that cannot be read raises OSError for the caller to report."""
+    try:
+        with open(fused_settings_path(), encoding="utf-8") as fh:
+            return fh.read(), True
+    except FileNotFoundError:
+        return "", False
+
+
+def _write_fused_settings_text(text: str) -> None:
+    """Write the TOML settings file atomically (temp + os.replace): a status
+    poll reading it mid-write must never see half a file. The temp name is
+    unique per call (handlers run in FastAPI's threadpool, so two Saves can
+    overlap), and a failed write leaves no temp behind."""
+    path = fused_settings_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=os.path.dirname(path),
+            prefix=f"{os.path.basename(path)}.", suffix=".tmp", delete=False,
+        ) as fh:
+            tmp = fh.name
+            fh.write(text)
+        os.replace(tmp, path)
+    finally:
+        if tmp is not None:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+
+
+def _create_fused_settings_empty() -> bool:
+    """Create the TOML settings file empty, exclusively. True when this call
+    created it; False when another writer (an overlapping open, a Save) got
+    there first — in which case the caller re-reads rather than clobbering
+    what was just written."""
+    path = fused_settings_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        with open(path, "x", encoding="utf-8"):
+            pass
+    except FileExistsError:
+        return False
+    return True
+
+
+def _fused_settings_web_url() -> str:
+    """The workbench origin for `fused_settings_base_url()`, by fused's own
+    `Options.base_web_url` rule."""
+    api = fused_settings_base_url()
+    known = _FUSED_API_WEB_URLS.get(api)
+    if known:
+        return known
+    try:
+        parts = urllib.parse.urlparse(api)
+        parts.port  # noqa: B018 — raises on a non-numeric port, which `new URL()` rejects
+    except ValueError:  # e.g. an unclosed IPv6 bracket, `https://[::1`, or `host:bogus`
+        return _ENV_WEB_URLS["prod"]
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return _ENV_WEB_URLS["prod"]
+    return f"{parts.scheme}://{parts.netloc}"
+
+
 # The pinned env's workbench origin override (dev recipe: a local workbench).
 _WORKBENCH_URL_VAR = "FUSED_RENDER_WORKBENCH_URL"
 
@@ -217,10 +416,13 @@ def workbench_base_url(env: str) -> str:
     (localhost:3000) standing in for unstable. Keyed off the mutable DEFAULT
     instead, flipping the preference to prod would dress prod canvases in
     that local frame; without a pin the var is ignored
-    (`log_url_override_without_pin` says so once at startup)."""
+    (`log_url_override_without_pin` says so once at startup). The custom
+    env's origin comes from `~/.fused/settings.toml` (`_fused_settings_web_url`)."""
     override = os.environ.get(_WORKBENCH_URL_VAR)
     if override and workbench_env_locked() and env == workbench_env():
         return override
+    if env == CUSTOM_WORKBENCH_ENV:
+        return _fused_settings_web_url()
     return _ENV_WEB_URLS.get(env, "https://www.fused.io")
 
 
@@ -232,6 +434,53 @@ def log_url_override_without_pin() -> None:
     if os.environ.get(_WORKBENCH_URL_VAR) and not workbench_env_locked():
         logger.warning("%s is ignored without %s: the URL override applies only to "
                        "the pinned environment", _WORKBENCH_URL_VAR, WORKBENCH_ENV_VAR)
+
+
+def _embed_proxy_wanted() -> bool:
+    """The custom env's embed goes through the loopback proxy
+    (canvas_embed_proxy.py) when the preference is on and custom is usable."""
+    from fused_render.shell.prefs import canvases_embed_proxy_enabled
+
+    return canvases_embed_proxy_enabled() and fused_settings_present()
+
+
+def _custom_token() -> str:
+    """The proxy's token source: the custom env's own login, or an exception
+    whose text the proxy relays as a 502 (it runs off the event loop)."""
+    token, problem, _status = access_token(CUSTOM_WORKBENCH_ENV)
+    if token is None:
+        raise RuntimeError(problem or "could not read the fused access token")
+    return token
+
+
+def _custom_creds_sig() -> tuple | None:
+    """The proxy's credentials stamp: a sign-out, sign-in or account switch
+    on the custom env changes it, and the proxy drops its cached token."""
+    return _creds_sig(CUSTOM_WORKBENCH_ENV)
+
+
+def _apply_embed_proxy() -> None:
+    """Start, retarget or stop the proxy to match the preference and the
+    settings file's current origin. Idempotent; called from status."""
+    from fused_render.canvas_embed_proxy import controller
+
+    if _embed_proxy_wanted():
+        controller.apply(workbench_base_url(CUSTOM_WORKBENCH_ENV), _custom_token,
+                         _custom_creds_sig)
+    else:
+        controller.apply(None, None)
+
+
+def embed_base_url(env: str) -> str:
+    """The origin the workspace frames for `env` and posts its messages to:
+    `workbench_base_url(env)`, except the custom env while its proxy runs."""
+    if env == CUSTOM_WORKBENCH_ENV:
+        from fused_render.canvas_embed_proxy import controller
+
+        url = controller.url()
+        if url:
+            return url
+    return workbench_base_url(env)
 
 
 def _cli_env(cli, env: str) -> dict[str, str]:
@@ -257,9 +506,12 @@ def _cli_env(cli, env: str) -> dict[str, str]:
     the interception. So the push POSTed back to /api/canvases/sync/push, was
     refused because a push was already running (itself), and recorded that
     refusal as a CLI failure: push_state "error" with push_seq stuck at 0.
+
+    The custom env gets FUSED_ENV REMOVED (`set_fused_env`), so the CLI keeps
+    the endpoint `~/.fused/settings.toml` names.
     """
     child = child_env(cli)
-    child["FUSED_ENV"] = env
+    set_fused_env(child, env)
     child[_canvas_push_internal_env()] = "1"
     return child
 
@@ -271,7 +523,8 @@ def _auth_env() -> str:
     whoami` under both), so between them the choice is moot; the DEFAULT env
     is used so that a FUSED_RENDER_WORKBENCH_ENV pin to a dev/PR environment
     (fused's `_dev_auth`: its own tenant and `credentials-dev` store) signs in
-    where that environment reads."""
+    where that environment reads. A custom default runs with FUSED_ENV unset
+    (`_cli_env`), so it signs in wherever `~/.fused/settings.toml` points."""
     return workbench_env()
 
 
@@ -392,19 +645,110 @@ def _kick_workbench_skills() -> None:
                      daemon=True).start()
 
 
-def _credentials_file() -> str:
-    # The `fused login` store (fused-py _options.py: ~/.fused/credentials).
-    # The env override is ours (tests, relocated stores) — the fused package
-    # itself points elsewhere only via its settings file.
-    return os.environ.get("FUSED_RENDER_FUSED_CREDENTIALS") or os.path.expanduser(
-        "~/.fused/credentials"
-    )
+def credentials_file(env: str | None = None) -> str:
+    # The `fused login` store `env`'s runs read (None = the auth env, the
+    # default). prod/unstable: fused's default ~/.fused/credentials —
+    # `fused._env()` resets `[auth]` to the hosted tenant. custom: FUSED_ENV is
+    # unset, so fused keeps the settings file's `[auth] credentials_path`.
+    # The env override is ours (tests, relocated stores) and wins for all.
+    override = os.environ.get("FUSED_RENDER_FUSED_CREDENTIALS")
+    if override:
+        return override
+    if (env or _auth_env()) == CUSTOM_WORKBENCH_ENV:
+        return os.path.expanduser(_fused_settings_credentials_path())
+    return os.path.expanduser("~/.fused/credentials")
 
 
-def _logged_in() -> bool:
+def _logged_in(env: str | None = None) -> bool:
     # Presence-only: the CLI refreshes an expired-but-refreshable token
     # silently; the CLI stays the authority at action time.
-    return os.path.isfile(_credentials_file())
+    return os.path.isfile(credentials_file(env))
+
+
+def _creds_sig(env: str | None = None) -> tuple | None:
+    """`(mtime_ns, size)` of the credentials store, None when absent. A login,
+    logout or on-disk token refresh changes it, which invalidates cached CLI
+    results by construction."""
+    try:
+        st = os.stat(credentials_file(env))
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def _cli_cache_clear() -> None:
+    global _cli_cache_gen
+    with _CLI_CACHE_LOCK:
+        _cli_cache.clear()
+        _cli_cache_gen += 1
+
+
+def _fresh(result):
+    """A result with its payload deep-copied (`api_canvases_list` mutates its
+    entries, so a hit must never hand out the stored object)."""
+    if result is not None and result[0] == "ok":
+        return ("ok", copy.deepcopy(result[1]))
+    return result
+
+
+def _cached_cli(kind: str, env: str, compute, ttl_for=None):
+    """Run `compute()` once per (kind, env, credentials signature) per TTL, and
+    share one run between concurrent callers (single flight).
+
+    `compute()` returns `("ok", payload)` or `("err", message, status)`; the
+    same shape comes back, payload deep-copied on every return. Errors reach
+    the running caller and its current waiters but are never stored. `ttl_for(
+    payload)` overrides the TTL (<= 0 means do not store)."""
+    key = (kind, env, _creds_sig(env))
+    with _CLI_CACHE_LOCK:
+        hit = _cli_cache.get(key)
+        if hit is not None and hit[0] > time.monotonic():
+            return _fresh(("ok", hit[1]))
+        flight = _cli_flights.get(key)
+        leader = flight is None
+        if leader:
+            flight = _cli_flights[key] = _Flight()
+            gen = _cli_cache_gen
+    if not leader:
+        flight.event.wait(TOKEN_TIMEOUT + LIST_SHIM_TIMEOUT)
+        if flight.result is not None:
+            return _fresh(flight.result)
+        return _fresh(compute())
+    result = None
+    try:
+        result = compute()
+        return _fresh(result)
+    finally:
+        flight.result = result
+        flight.event.set()
+        with _CLI_CACHE_LOCK:
+            if _cli_flights.get(key) is flight:
+                del _cli_flights[key]
+        if result is not None and result[0] == "ok" and gen == _cli_cache_gen:
+            ttl = ttl_for(result[1]) if ttl_for is not None else _CLI_CACHE_TTL_S
+            if ttl > 0:
+                # The child may have refreshed the credentials file, which
+                # changes its signature: store under the POST signature so the
+                # next call (which reads the new one) hits.
+                post_key = (kind, env, _creds_sig(env))
+                # Credentials gone WHILE the child ran (a logout): the answer
+                # is already stale, so a long TTL (whoami's hour) is capped
+                # to the default — the next minute re-asks (CodeRabbit #1918).
+                if post_key[2] is None:
+                    ttl = min(ttl, _CLI_CACHE_TTL_S)
+                with _CLI_CACHE_LOCK:
+                    if gen == _cli_cache_gen:
+                        _cli_cache[post_key] = (
+                            time.monotonic() + ttl, copy.deepcopy(result[1]))
+
+
+def _err_of(response: JSONResponse) -> tuple:
+    """`("err", message, status)` from an `_error(...)` response."""
+    try:
+        message = json.loads(response.body)["error"]
+    except (ValueError, KeyError, TypeError):
+        message = "request failed"
+    return ("err", message, response.status_code)
 
 
 def _require_fused(x_fused: str | None) -> JSONResponse | None:
@@ -484,10 +828,20 @@ def _run_cli(args: list[str], timeout: float,
 class _ActiveLogin:
     proc: subprocess.Popen
     started_at: float
+    # The credentials store this login writes (`credentials_file(env)`): prod
+    # and unstable share one, custom's may be its own (D1412). Reuse, status
+    # and logout match on it, never on "a login is running".
+    store: str
 
 
 _LOGIN_LOCK = threading.Lock()
 _active_login: _ActiveLogin | None = None
+
+
+def _login_for(store: str) -> _ActiveLogin | None:
+    """The live login child if it writes `store`, else None."""
+    login = _reap_login()
+    return login if login is not None and login.store == store else None
 
 
 def _reap_login() -> _ActiveLogin | None:
@@ -506,49 +860,162 @@ def _watch_login(login: _ActiveLogin) -> None:
     except subprocess.TimeoutExpired:
         login.proc.kill()
         login.proc.wait()
+    # Whoever the login now belongs to, earlier whoami/list/token answers are stale.
+    _cli_cache_clear()
+
+
+def _status_auth_env(env: str) -> str:
+    """The env whose login `/api/canvases/status?env=` reports: `env` when it
+    is one this process serves, else the auth env. Lenient on purpose — the
+    catalog asks with its URL's pick before it knows about a pin, and a cheap
+    unguarded read should not 400 over that; `auth_env` in the answer says
+    which login was described."""
+    if env:
+        value, bad = _require_env(env)
+        if bad is None:
+            return value
+    return _auth_env()
 
 
 @router.get("/api/canvases/status")
-def api_canvases_status():
+def api_canvases_status(env: str = ""):
     """Cheap local read: CLI presence, login-file presence, in-flight login,
     and per environment its workbench origin, clone folder and clone count.
 
-    Env-less on purpose: one credentials file serves both environments, and
-    the page needs every env's `base_url` (the workspace's iframe and
-    postMessage origin) and counts (the Preferences row) in one read. The
+    `logged_in` / `creds_stamp` describe ONE environment's `fused login`
+    store: `env`'s when given (the catalog names its pick), else the default
+    env's. prod and unstable share one store; custom has its own
+    (`credentials_file`). The rest is every env at once: the page needs each
+    env's `base_url` (the workspace's iframe and postMessage origin) and
+    counts (the Preferences row) in one read. The
     username needed for the workbench slug URL is NOT here — it costs a
     control-plane call per env, so it lives behind guarded
     /api/canvases/whoami?env= instead.
     """
     cli = fused_cli()
+    auth_env = _status_auth_env(env)
     try:
-        stamp = os.path.getmtime(_credentials_file())
+        stamp = os.path.getmtime(credentials_file(auth_env))
     except OSError:
         stamp = None
+    # The one place the embed proxy's lifecycle is driven: every page that
+    # frames a canvas reads status first, so the proxy is up (or retargeted
+    # after a settings.toml edit) by the time `embed_url` below is used.
+    _apply_embed_proxy()
     return {
         "cli_found": cli is not None,
-        "logged_in": _logged_in(),
+        "logged_in": _logged_in(auth_env),
+        # Which env's login the two fields around this describe.
+        "auth_env": auth_env,
         # Credentials-file mtime: a re-login over a STALE-but-present store
         # never flips logged_in, so the client watches this stamp change to
         # know the browser flow completed.
         "creds_stamp": stamp,
-        "login_in_flight": _reap_login() is not None,
+        # Only a login writing THIS store: another env's sign-in in the
+        # browser is not one this answer's `logged_in` will flip on.
+        "login_in_flight": _login_for(credentials_file(auth_env)) is not None,
         # The DEFAULT environment (the catalog's initial pick), and whether
         # FUSED_RENDER_WORKBENCH_ENV pins it — the catalog then disables its
         # environment picker, since `_require_env` refuses the other env.
         "workbench_env": workbench_env(),
         "locked": workbench_env_locked(),
         # Clone counts are a local listdir, no CLI — informational on the
-        # Preferences row.
+        # Preferences row. `available` is false only for custom whose
+        # settings file names no `base_url` (`fused_settings_configured`):
+        # both pickers still offer it; the Canvases page opens the settings
+        # editor instead of the sign-in.
         "envs": {
             env: {
                 "base_url": workbench_base_url(env),
+                # Where the workspace's iframe loads from and posts to: the
+                # workbench origin itself, or — custom env, embed proxy on —
+                # the loopback proxy standing in front of it.
+                "embed_url": embed_base_url(env),
                 "canvases_dir": canvases_root(env),
                 "cloned_count": len(_cloned_names(env)),
+                "available": env != CUSTOM_WORKBENCH_ENV or fused_settings_configured(),
             }
             for env in WORKBENCH_ENV_CHOICES
         },
+        # Where the custom environment's settings live — what the Canvases
+        # page's editor shows the reader.
+        "settings_path": fused_settings_path(),
     }
+
+
+@router.post("/api/canvases/settings/open")
+def api_canvases_settings_open(x_fused: str | None = Header(default=None)):
+    """The settings editor's read: the TOML settings file's text, creating
+    it EMPTY when there is none so the reader is editing a real file at a
+    real path from the first keystroke. An empty file configures nothing
+    (`fused_settings_configured`), so creating it changes no answer."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    try:
+        text, exists = _read_fused_settings_text()
+        created = False
+        if not exists:
+            created = _create_fused_settings_empty()
+            if not created:
+                text, _ = _read_fused_settings_text()
+    except OSError as exc:
+        return _error(f"could not open {fused_settings_path()}: {exc}", 500)
+    return {"path": fused_settings_path(), "text": text, "created": created,
+            "configured": fused_settings_configured()}
+
+
+@router.post("/api/canvases/settings/save")
+def api_canvases_settings_save(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Write the TOML settings file. Parsed first, so a paste that is not
+    TOML is refused with the parser's own sentence (400) and the file on disk
+    stays what it was; fused itself would silently skip an unparsable file
+    and fall through to prod."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    text = body.get("text")
+    if not isinstance(text, str):
+        return _error("'text' must be a string")
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        return JSONResponse({"error": f"not valid TOML: {exc}", "code": "invalid_toml"},
+                            status_code=400)
+    try:
+        _write_fused_settings_text(text)
+    except OSError as exc:
+        return _error(f"could not write {fused_settings_path()}: {exc}", 500)
+    # Cached CLI answers (whoami, listings) were computed against the old
+    # endpoint; the next call must run afresh.
+    _cli_cache_clear()
+    base_url = data.get("base_url")
+    return {"ok": True, "path": fused_settings_path(),
+            "configured": fused_settings_configured(),
+            "base_url": base_url if isinstance(base_url, str) else None,
+            "web_url": workbench_base_url(CUSTOM_WORKBENCH_ENV)}
+
+
+@router.post("/api/canvases/settings/delete")
+def api_canvases_settings_delete(x_fused: str | None = Header(default=None)):
+    """Remove the TOML settings file: the custom environment goes back to
+    unconfigured and the Canvases page offers the editor again. Only the
+    TOML file — a `settings.json` beside it is fused's own fallback and not
+    something this editor wrote. An already-missing file is a no-op."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    path = fused_settings_path()
+    try:
+        os.remove(path)
+        removed = True
+    except FileNotFoundError:
+        removed = False
+    except OSError as exc:
+        return _error(f"could not delete {path}: {exc}", 500)
+    _cli_cache_clear()
+    return {"ok": True, "path": path, "removed": removed,
+            "configured": fused_settings_configured()}
 
 
 def _cloned_names(env: str) -> set[str]:
@@ -564,6 +1031,23 @@ def _cloned_names(env: str) -> set[str]:
     except OSError:
         return set()
     return {d for d in entries if os.path.isfile(os.path.join(root, d, "canvas.toml"))}
+
+
+def cloned_canvases() -> list[tuple[str, str, str]]:
+    """Every clone on this machine, both environments: ``(env, name,
+    clone_dir)`` in env order (`WORKBENCH_ENV_CHOICES`), names sorted
+    casefold within an env. The launcher's canvas rows (launcher.py): a
+    clone is findable by typing whether or not it is on the desk, the way
+    a workspace app is. The clone rule is `_cloned_names`'s (a dir holding
+    a canvas.toml); a root that is missing or unreadable is simply empty."""
+    from fused_render.fusedcli import WORKBENCH_ENV_CHOICES
+
+    out: list[tuple[str, str, str]] = []
+    for env in WORKBENCH_ENV_CHOICES:
+        for name in sorted(_cloned_names(env), key=str.casefold):
+            if _NAME_RE.match(name):
+                out.append((env, name, _canvas_dir(env, name)))
+    return out
 
 
 def clone_dir_for(path: str) -> tuple[str, str, str] | None:
@@ -595,7 +1079,7 @@ def clone_dir_for(path: str) -> tuple[str, str, str] | None:
     for env in WORKBENCH_ENV_CHOICES:
         root = canvases_root(env)
         for base in {os.path.normpath(root), os.path.realpath(root)}:
-            if cand == base or not cand.startswith(base + os.sep):
+            if not is_within(cand, base, strict=True):
                 continue
             name = cand[len(base) + 1:].split(os.sep)[0]
             if not _NAME_RE.match(name):
@@ -623,45 +1107,83 @@ def api_canvases_whoami(env: str = "", x_fused: str | None = Header(default=None
         env, bad = _require_env(env)
         if bad is not None:
             return bad
-    proc, err = _run_cli(["workbench", "--format", "json", "whoami"], WHOAMI_TIMEOUT, env)
-    if err is not None:
-        return err
-    try:
-        data = json.loads(proc.stdout)
-    except ValueError:
-        return _error(
-            f"the fused CLI printed something that wasn't JSON: {proc.stdout.strip()[-200:]!r}",
-            502,
+
+    def compute():
+        proc, err = _run_cli(["workbench", "--format", "json", "whoami"], WHOAMI_TIMEOUT, env)
+        if err is not None:
+            return _err_of(err)
+        try:
+            data = json.loads(proc.stdout)
+        except ValueError:
+            return (
+                "err",
+                f"the fused CLI printed something that wasn't JSON: {proc.stdout.strip()[-200:]!r}",
+                502,
+            )
+        if not isinstance(data, dict):
+            return ("err", "unexpected `fused whoami` payload", 502)
+        # The slug URL needs the user's handle; the payload's field name has
+        # drifted historically, so take the first plausible one.
+        handle = next(
+            (
+                data[key]
+                for key in ("handle", "username", "user_name", "nickname")
+                if isinstance(data.get(key), str) and data[key]
+            ),
+            None,
         )
-    if not isinstance(data, dict):
-        return _error("unexpected `fused whoami` payload", 502)
-    # The slug URL needs the user's handle; the payload's field name has
-    # drifted historically, so take the first plausible one.
-    handle = next(
-        (
-            data[key]
-            for key in ("handle", "username", "user_name", "nickname")
-            if isinstance(data.get(key), str) and data[key]
-        ),
-        None,
+        return ("ok", {"handle": handle, "raw": data})
+
+    # An hour only for an answer WITH a handle; a logged-out "no handle" keeps
+    # the short default so a login lands within a minute.
+    result = _cached_cli(
+        "whoami", env, compute,
+        lambda payload: _WHOAMI_CACHE_TTL_S if payload.get("handle") else _CLI_CACHE_TTL_S,
     )
-    return {"handle": handle, "raw": data}
+    if result[0] == "err":
+        return _error(result[1], result[2])
+    return result[1]
+
+
+def _optional_env(env: str) -> tuple[str | None, JSONResponse | None]:
+    """A credential call's env: validated when given (400/423), else the auth
+    env. Credentials are per env only through custom's own `[auth]`, so the
+    callers that just mean "this machine's Fused login" (Settings, Share)
+    omit it."""
+    if not env:
+        return _auth_env(), None
+    return _require_env(env)
 
 
 @router.post("/api/canvases/login")
-def api_canvases_login(x_fused: str | None = Header(default=None)):
+def api_canvases_login(env: str = "", x_fused: str | None = Header(default=None)):
+    """Start the browser `fused login` for `env` (default: the auth env).
+    A custom deployment signs in against the settings file's `[auth]`
+    tenant, and only a run with FUSED_ENV unset (`_cli_env`) reads it. One
+    login at a time, whatever its env."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    env, bad = _optional_env(env)
+    if bad is not None:
+        return bad
     cli = fused_cli()
     if cli is None:
         return _no_cli_error()
     global _active_login
+    store = credentials_file(env)
     with _LOGIN_LOCK:
         login = _active_login
+        if login is not None and login.proc.poll() is None and login.store != store:
+            # One browser sign-in at a time, and this one writes another
+            # store: reusing it would leave the caller waiting on a stamp that
+            # never changes; killing it would drop a sign-in someone is
+            # mid-way through.
+            return _busy("a Fused sign-in for another environment is already waiting "
+                         "in the browser — finish or cancel it first")
         if login is None or login.proc.poll() is not None:
-            env = _cli_env(cli, _auth_env())
-            env["PYTHONUNBUFFERED"] = "1"
+            child = _cli_env(cli, env)
+            child["PYTHONUNBUFFERED"] = "1"
             # The CLI's own login gives the browser only 30s before its
             # callback server dies (fused.workbench._auth), which loses real
             # human sign-ins. When the CLI is our own interpreter, run the
@@ -683,11 +1205,12 @@ def api_canvases_login(x_fused: str | None = Header(default=None)):
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    env=env,
+                    env=child,
                 )
             except OSError as e:
                 return _error(f"could not run the fused CLI ({cli.command[0]}): {e}")
-            login = _ActiveLogin(proc=proc, started_at=time.time())
+            _cli_cache_clear()
+            login = _ActiveLogin(proc=proc, started_at=time.time(), store=store)
             _active_login = login
             threading.Thread(target=_watch_login, args=(login,), daemon=True).start()
     return {"ok": True, "login_in_flight": True}
@@ -708,8 +1231,14 @@ def api_canvases_login_cancel(x_fused: str | None = Header(default=None)):
 
 
 @router.get("/api/canvases/token")
-def api_canvases_token(x_fused: str | None = Header(default=None)):
+def api_canvases_token(env: str = "", x_fused: str | None = Header(default=None)):
     """The `fused login` access token, for seeding the workbench iframe.
+
+    `env` is the CANVAS's environment, and the token comes from that env's
+    login: the iframe is that env's workbench origin, so a custom canvas must
+    get the custom deployment's own `[auth]` token — never the hosted one,
+    which its tenant would reject and which must not be handed to another
+    origin (D1412). Omitted, it is the auth env (older callers).
 
     Guarded (D36): this hands a real credential to the caller — the loopback
     trust model means any local page could otherwise read it with a blind GET.
@@ -727,41 +1256,77 @@ def api_canvases_token(x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    if not _logged_in():
-        return _error("not signed in to Fused — sign in from the Canvases page", 409)
+    env, bad = _optional_env(env)
+    if bad is not None:
+        return bad
+    token, problem, status = access_token(env)
+    if token is None:
+        return _error(problem or "could not read the fused access token", status)
+    return {"access_token": token}
+
+
+def access_token(env: str) -> tuple[str | None, str | None, int]:
+    """`env`'s `fused login` access token, refreshed through the package's
+    own child when the CLI is our interpreter: `(token, None, 200)`, or
+    `(None, reason, http_status)`. Shared by /api/canvases/token and the
+    custom env's embed proxy (canvas_embed_proxy.py), so the two never
+    disagree on which store an env reads or how a refresh runs."""
+    if not _logged_in(env):
+        return None, "not signed in to Fused — sign in from the Canvases page", 409
     cli = fused_cli()
     if cli is not None and not cli.external:
         shim = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_fused_token.py")
-        try:
-            proc = subprocess.run(
-                [sys.executable, shim],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=TOKEN_TIMEOUT,
-                env=_cli_env(cli, _auth_env()),
-            )
-        except subprocess.TimeoutExpired:
-            return _error(f"token refresh timed out after {int(TOKEN_TIMEOUT)}s", 502)
-        except OSError as e:
-            return _error(f"could not run the token helper: {e}", 502)
-        if proc.returncode != 0:
-            return _error(cli_error(proc.stderr, "could not read the fused access token"), 502)
-        token = proc.stdout.strip()
-        if not token:
-            return _error("the token helper printed nothing", 502)
-        return {"access_token": token}
+
+        def compute():
+            try:
+                proc = subprocess.run(
+                    [sys.executable, shim],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=TOKEN_TIMEOUT,
+                    env=_cli_env(cli, env),
+                    close_fds=False,
+                )
+            except subprocess.TimeoutExpired:
+                return ("err", f"token refresh timed out after {int(TOKEN_TIMEOUT)}s", 502)
+            except OSError as e:
+                return ("err", f"could not run the token helper: {e}", 502)
+            if proc.returncode != 0:
+                return ("err", cli_error(proc.stderr, "could not read the fused access token"), 502)
+            token = proc.stdout.strip()
+            if not token:
+                return ("err", "the token helper printed nothing", 502)
+            return ("ok", token)
+
+        def ttl_for(_payload):
+            # Reuse only while the stored token stays comfortably valid: one
+            # expiring within the margin is re-run (which refreshes it).
+            try:
+                with open(credentials_file(env), encoding="utf-8") as f:
+                    data = json.load(f)
+            except (OSError, ValueError):
+                return 0
+            exp = _iso_epoch(data.get("expires_at")) if isinstance(data, dict) else None
+            if exp is None:
+                return 0
+            return min(_CLI_CACHE_TTL_S, exp - time.time() - _TOKEN_EXPIRY_MARGIN_S)
+
+        result = _cached_cli("token", env, compute, ttl_for)
+        if result[0] == "err":
+            return None, result[1], result[2]
+        return result[1], None, 200
     # External-CLI fallback: the raw store, no refresh.
     try:
-        with open(_credentials_file(), encoding="utf-8") as f:
+        with open(credentials_file(env), encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, ValueError) as e:
-        return _error(f"could not read the fused credentials file: {e}", 502)
+        return None, f"could not read the fused credentials file: {e}", 502
     token = data.get("access_token") if isinstance(data, dict) else None
     if not isinstance(token, str) or not token:
-        return _error("the fused credentials file has no access token", 502)
-    return {"access_token": token}
+        return None, "the fused credentials file has no access token", 502
+    return token, None, 200
 
 
 # -- listing and cloning -----------------------------------------------------------
@@ -1050,6 +1615,22 @@ def _iso_epoch(value) -> float | None:
 
 
 def _list_entries(env: str):
+    """`_list_entries_uncached` behind the CLI result cache (see `_cached_cli`):
+    `(entries, error)`, errors never cached."""
+
+    def compute():
+        entries, err = _list_entries_uncached(env)
+        if err is not None:
+            return _err_of(err)
+        return ("ok", entries)
+
+    result = _cached_cli("list", env, compute)
+    if result[0] == "err":
+        return None, _error(result[1], result[2])
+    return result[1], None
+
+
+def _list_entries_uncached(env: str):
     """(entries, error) for `env`'s account: each entry is {name, id,
     preview_url, n_code_udfs, updated_at}.
 
@@ -1166,7 +1747,7 @@ def api_canvases_list(env: str = "", x_fused: str | None = Header(default=None))
     env, bad = _require_env(env)
     if bad is not None:
         return bad
-    if not _logged_in():
+    if not _logged_in(env):
         return _error("not signed in to Fused — sign in first", 409)
     canvases, err = _list_entries(env)
     if err is not None:
@@ -1229,7 +1810,7 @@ def api_canvases_previews(
     env, bad = _require_env(body.get("env"))
     if bad is not None:
         return bad
-    if not _logged_in():
+    if not _logged_in(env):
         return _error("not signed in to Fused — sign in first", 409)
     ids = body.get("ids")
     if not isinstance(ids, list):
@@ -1301,34 +1882,45 @@ def api_canvases_create(body: dict = Body(...), x_fused: str | None = Header(def
     env, bad = _require_env(body.get("env"))
     if bad is not None:
         return bad
-    if not _logged_in():
+    if not _logged_in(env):
         return _error("not signed in to Fused — sign in first", 409)
     proc, err = _run_cli(["workbench", "canvas", "create", name], LIST_TIMEOUT, env)
     if err is not None:
         return err
+    _cli_cache_clear()
     return {"ok": True, "name": name}
 
 
 @router.post("/api/canvases/logout")
-def api_canvases_logout(x_fused: str | None = Header(default=None)):
+def api_canvases_logout(env: str = "", x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    env, bad = _optional_env(env)
+    if bad is not None:
+        return bad
+    store = credentials_file(env)
     # A completing browser login could rewrite the credentials file right
-    # after we clear it — cancel it first.
-    login = _reap_login()
+    # after we clear it — cancel it first. Only one writing THIS store: a
+    # custom sign-out must not drop a hosted sign-in in progress.
+    login = _login_for(store)
     if login is not None:
         login.proc.terminate()
-    # Pause every watcher — both environments': they share the one
-    # credentials file — for the CLI call (no push/pull spam using
-    # about-to-be-cleared credentials) but don't stop them until logout
-    # actually succeeds — a failed logout leaves the user signed in, and
-    # stopping first would leave sync dead until a canvas is reopened.
+    # Pause every watcher on the store being cleared — prod's and unstable's
+    # share one; custom's may be its own (`credentials_file`) — for the CLI
+    # call (no push/pull spam using about-to-be-cleared credentials) but
+    # don't stop them until logout actually succeeds — a failed logout leaves
+    # the user signed in, and stopping first would leave sync dead until a
+    # canvas is reopened.
+
+    def on_store() -> list:
+        return [(key, m) for key, m in _syncs.items() if credentials_file(m.env) == store]
+
     with _SYNC_LOCK:
-        managers = list(_syncs.values())
+        managers = [m for _, m in on_store()]
     for manager in managers:
         manager.pause()
-    proc, err = _run_cli(["workbench", "logout"], WHOAMI_TIMEOUT, _auth_env())
+    proc, err = _run_cli(["workbench", "logout"], WHOAMI_TIMEOUT, env)
     if err is not None:
         # Still signed in — resume so sync keeps working until the user
         # retries. Resuming a manager we're about to stop (success path)
@@ -1337,10 +1929,12 @@ def api_canvases_logout(x_fused: str | None = Header(default=None)):
         for manager in managers:
             manager.resume(rebaseline=False)
         return err
+    _cli_cache_clear()
     with _SYNC_LOCK:
-        managers = list(_syncs.values())
-        _syncs.clear()
-    for manager in managers:
+        signed_out = on_store()
+        for key, _ in signed_out:
+            del _syncs[key]
+    for _, manager in signed_out:
         manager.stop()
     return {"ok": True}
 
@@ -1356,7 +1950,7 @@ def api_canvases_clone(body: dict = Body(...), x_fused: str | None = Header(defa
     env, bad = _require_env(body.get("env"))
     if bad is not None:
         return bad
-    if not _logged_in():
+    if not _logged_in(env):
         return _error("not signed in to Fused — sign in first", 409)
     # Fetch/refresh the `workbench` skills, whose names the CLAUDE.md seeded
     # below uses (`workbench:canvas-toml` and friends), and publish the root for
@@ -1546,6 +2140,10 @@ class _SyncManager:
         self._base_path = os.path.join(self.root, ".sync", f"{name}.json")
         self._base_files: dict[str, str] | None = None
         self._remote: dict | None = None
+        # The collection stamp the poll leg last downloaded a bundle for to
+        # check a stamp-only move (_stamp_only_move): one download per stamp,
+        # not one per poll while a real layout change stays unpulled.
+        self._stamp_checked: str | None = None
         # The compact rows of canvas.toml at the sync point (merge_toml's base).
         self._base_toml: dict | None = None
         self.merge_rollback_seq = 0
@@ -1612,6 +2210,19 @@ class _SyncManager:
         # the old canvas straight back. The deadline keeps a frame that never
         # acks (closed, reloading) from fencing the clone for good.
         self._hard_fence: dict | None = None
+        # The body channel's own fence after a hard pull: the disk_rev the
+        # pull left, held until the frame ACKS a delta at or past it (or
+        # re-hydrates from the server). No deadline: a snapshot fenced too
+        # long is a lost layout edit, but a body let through would put the
+        # discarded text — or a file the pull removed, which hashes as the
+        # empty text — straight back. A frame that never acks posts nothing
+        # worth taking.
+        self._body_fence_rev: int | None = None
+        # Body channel (canvas_snapshot.body_hash): node → the hash of the text
+        # this channel last wrote for it. A body whose `base_hash` is that hash
+        # overwrites the frame's own previous write, so nothing goes to trash;
+        # any other base (Claude's text, a pull) is trashed before the write.
+        self._body_written: dict[str, str] = {}
         self._load_base()
         # Bumped on every `_fingerprint` assignment (the property below), so the
         # scan can tell that a pull or push re-baselined while it was walking.
@@ -2072,17 +2683,74 @@ class _SyncManager:
         nothing (_note_server_stale compares hashes and finds no change)."""
         if prev.get("last_updated") != cur.get("last_updated"):
             return True
+        return _SyncManager._udf_edits(prev) != _SyncManager._udf_edits(cur)
 
-        def edits(udfs) -> dict:
-            if not isinstance(udfs, dict):
-                return {}
-            return {
-                slug: ((info.get("hash"), info.get("last_updated"))
-                       if isinstance(info, dict) else info)
-                for slug, info in udfs.items()
-            }
+    @staticmethod
+    def _udf_edits(manifest: dict) -> dict:
+        """Each UDF's (hash, stamp) — the edit half of _remote_moved."""
+        udfs = manifest.get("udfs")
+        if not isinstance(udfs, dict):
+            return {}
+        return {
+            slug: ((info.get("hash"), info.get("last_updated"))
+                   if isinstance(info, dict) else info)
+            for slug, info in udfs.items()
+        }
 
-        return edits(prev.get("udfs")) != edits(cur.get("udfs"))
+    def _stamp_only_move(self, probe: dict) -> bool:
+        """Did only the collection stamp move — no UDF edit — on a stamp this
+        leg has not checked yet? The server bumps `last_updated` on writes
+        that change no file: the workbench's share settings (access scope,
+        passcode) are the common one. Worth a bundle download to tell such a
+        bump from a real layout save (_bundle_matches_sync_point)."""
+        remote = self._remote
+        stamp = probe.get("last_updated")
+        return (
+            remote is not None
+            and self._base_files is not None
+            and stamp != remote.get("last_updated")
+            and stamp != self._stamp_checked
+            and self._udf_edits(remote) == self._udf_edits(probe)
+        )
+
+    def _bundle_matches_sync_point(self, bundle: dict[str, bytes]) -> bool:
+        """Is the server's bundle the sync point's files? Same paths, and each
+        file's md5 equals the base hash — except a .toml the server
+        re-serialized (canvas.toml comes back from its database, not as the
+        bytes pushed). That one counts when it parses equal to the local file
+        that is still the base; or, the local file edited since (an unpushed
+        layout change), when its [canvas] rows equal the sync point's
+        (`_base_toml`) and every other table equals the local file's.
+        Under _op_lock."""
+        base = self._base_files
+        if base is None or set(bundle) != set(base):
+            return False
+        for rel, data in bundle.items():
+            if hashlib.md5(data).hexdigest() == base[rel]:
+                continue
+            if not rel.endswith(".toml"):
+                return False
+            try:
+                with open(os.path.join(self.dir, rel), "rb") as f:
+                    local = f.read()
+            except OSError:
+                return False
+            try:
+                remote_doc = tomllib.loads(data.decode("utf-8"))
+                local_doc = tomllib.loads(local.decode("utf-8"))
+            except (UnicodeDecodeError, tomllib.TOMLDecodeError):
+                return False
+            if hashlib.md5(local).hexdigest() == base[rel]:
+                if remote_doc != local_doc:
+                    return False
+                continue
+            if rel != "canvas.toml" or self._base_toml is None:
+                return False
+            rest = lambda doc: {k: v for k, v in doc.items() if k != "canvas"}  # noqa: E731
+            if (canvas_snapshot.rows_of_doc(remote_doc) != self._base_toml
+                    or rest(remote_doc) != rest(local_doc)):
+                return False
+        return True
 
     def _download_zip(self, collection_id: str) -> zipfile.ZipFile | None:
         cli = fused_cli()
@@ -2124,7 +2792,13 @@ class _SyncManager:
                 # the local seed.
                 if rel.rsplit("/", 1)[-1] in _SYNC_IGNORED_BASENAMES:
                     continue
-                bundle[os.path.join(*rel.split("/"))] = zf.read(info.filename)
+                try:
+                    data = zf.read(info.filename)
+                except (zipfile.BadZipFile, zlib.error, OSError, EOFError):
+                    # A corrupt member is a transient failure like a failed
+                    # download — never an exception that kills the watcher.
+                    return None
+                bundle[os.path.join(*rel.split("/"))] = data
         return bundle
 
     def _merge_remote(self, probe: dict, bundle: dict[str, bytes] | None) -> bool:
@@ -2307,9 +2981,12 @@ class _SyncManager:
             self.last_pull_at = time.time()
         return True
 
-    def _poll_remote(self, probe: dict) -> None:
+    def _poll_remote(self, probe: dict, bundle: dict[str, bytes] | None = None) -> None:
         """Shim-backed poll leg: adopt a baseline on the first look; after
-        that only DETECT a remote move (`server_stale`). Read-only."""
+        that only DETECT a remote move (`server_stale`). Read-only — except
+        a stamp-only move whose `bundle` (fetched by the caller when
+        _stamp_only_move) is the sync point's files: nothing to pull, so the
+        probe becomes the baseline instead of a "server changed" chip."""
         if self._remote is None:
             # First look (fresh manager, or right after clone/push dropped
             # it): adopt as baseline. A remote edit made before this first
@@ -2333,6 +3010,16 @@ class _SyncManager:
             return
         if not self._remote_moved(self._remote, probe):
             self.server_stale = None
+            return
+        if (
+            bundle is not None
+            and self._udf_edits(self._remote) == self._udf_edits(probe)
+            and self._bundle_matches_sync_point(bundle)
+        ):
+            self._rotate_remote(probe)
+            self._save_base()
+            self.log_event("server_to_disk", "probe adopt",
+                           detail="the server's stamp moved; its files did not")
             return
         # The remote moved: do what a hosted tab does — stop writing the
         # server and say so. Nothing is pulled or merged here; pull() is the
@@ -2751,8 +3438,10 @@ class _SyncManager:
         # the next poll adopts a fresh baseline. Probed BEFORE the fold, so the
         # lock is not held across it.
         after = self._probe_remote()
+        # A push changes the account's canvas list (updated_at): drop cached
+        # list answers. Module-level, called with no lock held.
+        _cli_cache_clear()
         with self._op_lock:
-            self.push_seq += 1
             self.last_push_at = time.time()
             self.last_error = None
             self.error_detail = []
@@ -2764,8 +3453,12 @@ class _SyncManager:
             if moved:
                 # Written while the CLI ran: not in the copy, so not pushed.
                 self._dirty_since = self._dirty_since or time.time()
-        self._push_started_at = None
-        self.push_state = "pending" if moved else "idle"
+            self._push_started_at = None
+            self.push_state = "pending" if moved else "idle"
+            # Last: `status()` reads without the lock, so a reader that sees
+            # the new push_seq must already see the push settled, not
+            # push_seq 1 with push_state still "pushing".
+            self.push_seq += 1
         self.log_event("disk_to_server", "push end", ms=(time.time() - started) * 1000,
                        detail=f"push_seq {self.push_seq}"
                               + ("; the clone changed during the push, pushing again"
@@ -2952,8 +3645,13 @@ class _SyncManager:
                         # the answer takes it.
                         probe = self._probe_remote()
                         if probe is not None:
+                            bundle = None
+                            if self._stamp_only_move(probe):
+                                bundle = self._fetch_bundle(probe)
+                                if bundle is not None:  # a failed download retries
+                                    self._stamp_checked = probe.get("last_updated")
                             with self._op_lock:
-                                self._poll_remote(probe)
+                                self._poll_remote(probe, bundle)
                     elif self._dirty_since is None and self.push_state == "idle":
                         # External CLI (no shims): legacy dry-run probe, detect
                         # only, and CLEAN clones only — a `pull --dry-run` cannot
@@ -3091,6 +3789,7 @@ class _SyncManager:
                 self._embed_view = None
                 self._hard_fence = {"rev": self.disk_rev,
                                     "until": time.time() + HARD_FENCE_S}
+                self._body_fence_rev = self.disk_rev
             if hard and self.push_state == "error":
                 # The files that push failed on are gone: the clone is the
                 # server's copy now (or a fresh local edit over it, which the
@@ -3208,6 +3907,7 @@ class _SyncManager:
             self._embed_applied = {}
             self._embed_max_seq = -1
             self._hard_fence = None
+            self._body_fence_rev = None
         done = self._embed_applied.get((gen, seq))
         if done is not None:
             return done
@@ -3504,6 +4204,10 @@ class _SyncManager:
             self.log_event("disk_to_embed", "delta refused", ok=benign,
                            detail=f"rev {rev}" + (f": {reason}" if reason else ""))
             return {"ok": True, "rev": rev, "reset": True}
+        if self._body_fence_rev is not None and rev >= self._body_fence_rev:
+            # The frame applied the pulled state: its bodies describe it now.
+            self._body_fence_rev = None
+            self.log_event("embed_to_disk", "body fence lifted", detail=f"rev {rev}")
         if self._hard_fence is not None and rev >= self._hard_fence["rev"]:
             # The frame applied a reading cut after the hard pull: it shows
             # the server's copy now, and its snapshots describe that.
@@ -3601,6 +4305,8 @@ class _SyncManager:
         # invented for it; a node it names settles an earlier one.
         self._note_rowless(new["nodes"], result.get("rowless_files"),
                            deleted=result.get("deleted") or ())
+        for gone in result.get("deleted") or ():
+            self._body_written.pop(gone, None)
         self._refresh_view_after_write(held, edges=new["edges"], ids=new["ids"],
                                        bodies=bodies, embed_rows=new["nodes"])
         ack = {"ok": True, "gen": gen, "seq": seq, "changed": result["changed"],
@@ -3611,6 +4317,110 @@ class _SyncManager:
         if result.get("synthesized"):
             ack["synthesized"] = list(result["synthesized"])
         return self._embed_record(gen, seq, ack)
+
+    def apply_body(self, node: str, file: str, base_hash: str, text: str) -> dict:
+        """One source text from the workbench's body channel → the clone, by
+        compare-and-swap on content (canvas_snapshot.body_hash). Under
+        _op_lock (the route takes it), so it never interleaves with a
+        snapshot moving the file, a pull or a push.
+
+        The frame names the hash of the text it last agreed on with this
+        host (`base_hash`); the write lands only when disk still hashes to
+        that. Otherwise — Claude or a pull wrote the file meanwhile — nothing
+        is written and the answer carries what disk holds (`stale`,
+        `disk_text`, `disk_hash`): the frame rebases its edits onto it and
+        posts again. A missing file hashes as the empty text, so a file the
+        frame created is written on its first post. Content-gated: a body
+        equal to disk is acked without a write (no mtime move, no disk_rev,
+        no delta). Returns the ack the page relays to the frame.
+        """
+        stem, dot, ext = file.rpartition(".")
+        if not dot or stem != node or "/" in file or file.startswith(".") \
+                or ("." + ext) not in canvas_snapshot.BODY_SUFFIXES:
+            raise ValueError(f"{file!r} is not {node!r}'s source file")
+        # A node has ONE source. A post naming another suffix than the file
+        # already there (a type the frame changed) would plant a second
+        # source and, with it, a synthesized duplicate row.
+        existing = canvas_snapshot._find_source(self.dir, node)
+        if existing is not None and existing != file:
+            raise ValueError(f"{node!r} is {existing!r} on disk, not {file!r}")
+        # A hard pull replaced the clone (see `_body_fence_rev`): until the
+        # frame has acked the pulled state, a body describes the canvas the
+        # pull discarded — written, it would put that text (or a file the
+        # pull removed, hashed here as the empty text) straight back. Not
+        # stale (the frame would rebase and repost at once) but `fenced`:
+        # the frame holds its text and tries again later, by which time the
+        # full delta has re-seeded its base. Bound to the ack, never to a
+        # clock: the snapshot fence's deadline does not apply here.
+        if self._body_fence_rev is not None:
+            self.log_event("embed_to_disk", "body fenced",
+                           detail=f"{file}: predates the hard pull (rev "
+                                  f"{self._body_fence_rev} not acked); not written")
+            return {"ok": False, "code": "fenced", "node": node, "file": file}
+        path = os.path.join(self.dir, file)
+        current = canvas_snapshot.read_body(path)
+        current_hash = canvas_snapshot.body_hash(current if current is not None else "")
+        if current_hash != base_hash:
+            self.log_event("embed_to_disk", "body stale",
+                           detail=f"{file}: disk moved under the workbench's base; "
+                                  "sent back for a rebase")
+            return {"ok": False, "code": "stale", "node": node, "file": file,
+                    "disk_text": current if current is not None else "",
+                    "disk_hash": current_hash}
+        new_hash = canvas_snapshot.body_hash(text)
+        if current == text:
+            self._body_written[node] = new_hash
+            return {"ok": True, "node": node, "file": file, "hash": new_hash,
+                    "changed": False, "created": False}
+        if current is not None and self._body_written.get(node) != base_hash:
+            # Not the frame's own previous text: keep a copy, as a note body
+            # overwrite does.
+            trash = self._new_trash_dir()
+            self._backup_to(trash, file, current.encode("utf-8", "replace"))
+        # Re-read right before the replace: the trash copy above took time,
+        # and Claude writes without _op_lock. A write that landed in between
+        # is answered stale like any other, instead of being overwritten
+        # (the remaining window is the replace itself, microseconds).
+        latest = canvas_snapshot.read_body(path)
+        if latest != current:
+            latest_text = latest if latest is not None else ""
+            self.log_event("embed_to_disk", "body stale",
+                           detail=f"{file}: disk moved while the body was being applied")
+            return {"ok": False, "code": "stale", "node": node, "file": file,
+                    "disk_text": latest_text,
+                    "disk_hash": canvas_snapshot.body_hash(latest_text)}
+        # An OSError propagates: the route answers busy, the frame keeps the
+        # body pending and posts again.
+        canvas_snapshot._write_atomic(path, text)
+        self._body_written[node] = new_hash
+        created = current is None
+        if created:
+            # The frame's row for a new UDF comes with its snapshot, usually
+            # within the same second; until then the file is row-less, and a
+            # row must not be invented for it (the delta would move the
+            # user's node), see _note_rowless.
+            rows = set()
+            try:
+                doc = canvas_snapshot._load_toml(os.path.join(self.dir, "canvas.toml"))
+                rows = set(canvas_snapshot.rows_of_doc(doc)["nodes"])
+            except Exception:  # noqa: BLE001 — no toml yet: the row is owed either way
+                pass
+            if node not in rows:
+                self._note_rowless((), [node])
+        # The frame holds what it just wrote: the view's body moves with
+        # disk, so the next delta carries nothing for this node (its own
+        # write never echoes). A node the view does not know (a new file,
+        # or no view at all) is owed to the frame by the next cut, which
+        # then carries this very text and a hash equal to the frame's base.
+        view = self._embed_view
+        if view is not None and node in view.get("nodes", {}):
+            view.setdefault("bodies", {})[node] = text
+        self._note_disk()
+        self._view_rev = self.disk_rev
+        self._frame_seen = True
+        self._bump()
+        return {"ok": True, "node": node, "file": file, "hash": new_hash,
+                "changed": True, "created": created}
 
     def apply_rename(self, gen: int, seq: int, frm: str, to: str,
                      file_from: str | None, file_to: str | None) -> dict:
@@ -3628,6 +4438,8 @@ class _SyncManager:
         with self._rowless_lock:
             if frm in self._rowless and to not in self._rowless:
                 self._rowless[to] = self._rowless.pop(frm)
+        if frm in self._body_written:
+            self._body_written[to] = self._body_written.pop(frm)
         renamed = canvas_snapshot.rename_prev(self._embed_view, frm, to, file_to)
         if renamed is None:
             # Nothing known before the rename, nothing known after: the next
@@ -3818,6 +4630,10 @@ class _CanvasOwned(Exception):
         super().__init__(f"pid {owner.get('pid')} owns this canvas")
         self.owner = owner
 
+class _CanvasDeleting(Exception):
+    """api_canvases_delete is running on this clone: no manager starts."""
+
+
 _SYNC_LOCK = threading.Lock()
 # Keyed (env, name): prod's `alpha` and unstable's `alpha` are two clones with
 # two managers, live at once. (Keyed by name alone, a manager had to read the
@@ -3832,6 +4648,12 @@ _QUITTING = False
 # canvas would run two `pull --force` into one folder. Per canvas, not
 # global, so a slow clone of one canvas never holds up another's.
 _CLONE_GATES: dict[tuple[str, str], threading.Lock] = {}
+# Canvases mid-delete (api_canvases_delete), under _SYNC_LOCK: stopping the
+# manager wakes the page's events socket, which reads "no watcher" and asks
+# sync/start to heal — while canvas.toml still exists. Without this, a new
+# manager (and lock) would start under the delete, and the folder would be
+# removed from under a live watcher.
+_DELETING: set[tuple[str, str]] = set()
 
 
 def _clone_gate(env: str, name: str) -> threading.Lock:
@@ -3897,6 +4719,8 @@ def _sync_manager(env: str, name: str, create: bool) -> _SyncManager | None:
             manager = None
         if manager is None and create and _QUITTING:
             return None  # the quit latch: no new watcher (and no lock)
+        if manager is None and create and key in _DELETING:
+            raise _CanvasDeleting()  # same critical section as the creation
         if manager is None and create:
             path = _lock_path(env, name)
             outcome, record = canvas_sync_state.claim_lock(path)
@@ -3918,6 +4742,144 @@ def _sync_manager(env: str, name: str, create: bool) -> _SyncManager | None:
         return manager
 
 
+def _stop_manager(env: str, name: str) -> _SyncManager | None:
+    """Stop and forget this process's manager for (env, name), if any: a
+    push in flight is terminated (never folded on a half state), the
+    watcher and fs threads joined, the writer lock released. The logout
+    success path, for one canvas."""
+    with _SYNC_LOCK:
+        manager = _syncs.pop((env, name), None)
+    if manager is None:
+        return None
+    manager.stop_event.set()
+    try:
+        manager.terminate_push()
+    except Exception:  # noqa: BLE001 — the stop below still runs
+        logger.warning("canvas %s: stopping the push before delete failed",
+                       _sync_key(env, name), exc_info=True)
+    manager.stop()
+    return manager
+
+
+def _clone_leftovers(env: str, name: str) -> list[str]:
+    """What a clone leaves under `<root>/.sync` besides the folder itself:
+    the merge base, the writer lock, the push freeze and the trash. All go
+    with the canvas — a later clone of the same name must not inherit a
+    stale merge base, and the trash held versions of files that no longer
+    have a canvas to go back to."""
+    sync = os.path.join(canvases_root(env), ".sync")
+    return [
+        os.path.join(sync, f"{name}.json"),
+        os.path.join(sync, f"{name}.lock"),
+        os.path.join(sync, "push", name),
+        os.path.join(sync, "trash", name),
+    ]
+
+
+@router.post("/api/canvases/delete")
+def api_canvases_delete(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Delete canvas (env, name) on the server AND on this machine: the
+    embedded workbench's "Delete canvas" hands the confirmed delete here
+    (`fused-embed-delete`) because the host is the canvas's one writer — a
+    frame-side DELETE would race the host's push.
+
+    Order: claim the clone's writer lock for the whole delete (refused while
+    another fused-render process owns the clone); stop
+    this process's sync (so no push lands on a canvas being deleted) and hold
+    sync/start off with `_DELETING` (the stop wakes the page, which would
+    otherwise heal a new watcher under the delete); delete
+    on the server through the CLI; only then remove the clone, its `.sync`
+    leftovers and its desk row (tasks under it archived, as the desk's own
+    remove does). A CLI failure leaves the clone untouched — the page's
+    self-heal re-arms sync/start — and is the response. A clone that is
+    gone already (never cloned, or removed by hand) is fine: the server
+    delete alone runs."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    name = body.get("name")
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        return _error("'name' must be a canvas name (letters, digits, underscore)")
+    env, bad = _require_env(body.get("env"))
+    if bad is not None:
+        return bad
+    if not _logged_in(env):
+        return _error("not signed in to Fused — sign in first", 409)
+    root = os.path.realpath(canvases_root(env))
+    clone = os.path.realpath(_canvas_dir(env, name))
+    # The one folder this may remove is `<root>/<name>` — never the root, never
+    # anything a stray separator or link could point the name at.
+    if os.path.dirname(clone) != root or os.path.basename(clone) != name:
+        return _error("refusing to delete: the clone folder is not under the canvases root", 500)
+    # The clone's writer lock is THIS request's for the whole delete: claimed
+    # before anything else (a live foreign holder refuses the delete — it is
+    # theirs to run), re-stamped over this process's own manager's claim so
+    # the manager's stop() below releases nothing, and dropped only after the
+    # cleanup. Another fused-render cannot take the lock and sync or push a
+    # canvas mid-delete; `_DELETING` holds this process's own sync/start off.
+    lock_path = _lock_path(env, name)
+    try:
+        outcome, record = canvas_sync_state.claim_lock(lock_path)
+    except OSError as exc:
+        return _error(f"could not take the canvas sync lock: {exc}", 500)
+    if outcome == "refused":
+        owner = {k: record.get(k) for k in ("pid", "port", "since")}
+        return JSONResponse(
+            {"error": f"canvas {_sync_key(env, name)!r} is synced by another fused-render "
+                      f"(pid {owner['pid']}, port {owner['port']}); delete it from there",
+             "code": "owned", "owner": owner}, status_code=409)
+    lock_since = (canvas_sync_state.read_lock(lock_path) or {}).get("since")
+    key = (env, name)
+    with _SYNC_LOCK:
+        _DELETING.add(key)
+    try:
+        manager = _stop_manager(env, name)
+        if manager is not None and manager.thread.is_alive():
+            # A watcher mid-subprocess past STOP_JOIN_S could still write the
+            # clone after the wait; not a folder to delete under. Bounded: no
+            # second wait, the user retries.
+            return _error(f"canvas {name!r} is still syncing; retry the delete shortly", 409)
+        _proc, err = _run_cli(["workbench", "canvas", "delete", name], LIST_TIMEOUT, env)
+        _cli_cache_clear()
+        if err is not None:
+            return err  # the page's self-heal re-arms sync/start once this lifts
+        removed_local = False
+        if os.path.isdir(clone):
+            try:
+                shutil.rmtree(clone)
+            except OSError as exc:
+                return _error(f"canvas {name!r} was deleted on the server, but its folder "
+                              f"could not be removed ({clone}): {exc}", 500)
+            removed_local = True
+        for path in _clone_leftovers(env, name):
+            if os.path.isdir(path):
+                _rmtree_quiet(path)
+            else:
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+    finally:
+        canvas_sync_state.release_lock(lock_path, lock_since)
+        with _SYNC_LOCK:
+            _DELETING.discard(key)
+    try:
+        from fused_render import current_apps
+        from fused_render.server.routers.current_apps import _archive_folder
+
+        # The CONFIGURED spelling, not the resolved one: the desk row and the
+        # tasks' project were recorded as `canvases_dir + "/" + name`
+        # (CanvasPage), and canonical_fs_path resolves no symlinks.
+        desk_dir = _canvas_dir(env, name)
+        current_apps.remove(desk_dir)
+        _archive_folder(desk_dir)
+    except Exception:  # noqa: BLE001 — the desk row is cosmetic next to the delete
+        logger.warning("canvas %s: dropping the desk row after delete failed",
+                       _sync_key(env, name), exc_info=True)
+    logger.info("canvas %s: deleted (clone removed: %s)", _sync_key(env, name), removed_local)
+    return {"ok": True, "name": name, "env": env, "removed_local": removed_local}
+
+
 @router.post("/api/canvases/sync/start")
 def api_canvases_sync_start(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     guard = _require_fused(x_fused)
@@ -3935,6 +4897,9 @@ def api_canvases_sync_start(body: dict = Body(...), x_fused: str | None = Header
     # process owns (the seeding below writes into it).
     try:
         manager = _sync_manager(env, name, create=True)
+    except _CanvasDeleting:
+        return JSONResponse({"error": f"canvas {_sync_key(env, name)!r} is being deleted",
+                             "code": "deleting"}, status_code=409)
     except _CanvasOwned as owned:
         # One writer per clone: another fused-render (the desktop app and a
         # dev server, two branches) is already syncing this folder. The page
@@ -4066,6 +5031,73 @@ def api_canvases_snapshot(body: dict = Body(...), x_fused: str | None = Header(d
         manager.log_event("embed_to_disk", "snapshot applied",
                           ms=(time.time() - started) * 1000,
                           detail=_snapshot_ack_detail(what, gen, seq, ack))
+        return JSONResponse(ack)
+    finally:
+        manager._op_lock.release()
+
+
+@router.post("/api/canvases/body")
+def api_canvases_body(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """One source text from the embedded workbench → the clone, by
+    compare-and-swap on content (embed v3 body channel,
+    SyncManager.apply_body). The workspace page relays the frame's
+    `fused-embed-body {seq, name, file, base_hash, text}` here and posts the
+    answer back as `-body-applied` / `-body-rejected`.
+
+    200 `{ok: true, hash}` when written (or already on disk); 200 `{ok:
+    false, code: "stale", disk_text, disk_hash}` when disk no longer hashes
+    to `base_hash` — the frame rebases and posts again, so this is not an
+    error; 200 `{ok: false, code: "fenced"}` while a hard pull's fence
+    holds (the frame retries later). 409 `busy` as the snapshot route; 400
+    `rejected` for a malformed post (the frame drops it and logs the reason).
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    name = body.get("name")
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        return _error("'name' must be a canvas name (letters, digits, underscore)")
+    env, bad = _require_env(body.get("env"))
+    if bad is not None:
+        return bad
+    node, file = body.get("node"), body.get("file")
+    base_hash, text = body.get("base_hash"), body.get("text")
+    if not isinstance(node, str) or not node or not isinstance(file, str) or not file:
+        return _error("'node' and 'file' must be non-empty strings")
+    if not isinstance(base_hash, str) or not isinstance(text, str):
+        return _error("'base_hash' and 'text' must be strings")
+    manager = _sync_manager(env, name, create=False)
+    if manager is None:
+        return JSONResponse(
+            {"error": f"canvas {_sync_key(env, name)!r} is not being synced (no watcher is running)",
+             "code": "no_watcher"}, status_code=409)
+    started = time.time()
+    if not manager._op_lock.acquire(timeout=SNAPSHOT_LOCK_WAIT_S):
+        manager.log_event("embed_to_disk", "body busy", ok=False,
+                          ms=(time.time() - started) * 1000,
+                          detail=f"{file}: the clone stayed locked past {SNAPSHOT_LOCK_WAIT_S:g}s")
+        return _busy("a sync operation is in flight for this canvas; try again in a moment")
+    try:
+        with manager.pause_lock:
+            if manager.pause_count > 0:
+                return _busy(f"syncing for {_sync_key(env, name)!r} is paused; try again in a moment")
+        try:
+            ack = manager.apply_body(node, file, base_hash, text)
+        except OSError as exc:
+            manager.log_event("embed_to_disk", "body busy", ok=False,
+                              detail=f"{file}: write failed: {exc}")
+            return _busy(f"could not write {file}: {exc}")
+        except Exception as exc:  # noqa: BLE001 — the reason goes back to the frame
+            manager.log_event("embed_to_disk", "body rejected", ok=False,
+                              detail=f"{file}: {type(exc).__name__}: {exc}")
+            return JSONResponse(
+                {"ok": False, "code": "rejected", "error": f"{type(exc).__name__}: {exc}"},
+                status_code=400)
+        if ack.get("ok") and ack.get("changed"):
+            manager.log_event("embed_to_disk", "body written",
+                              ms=(time.time() - started) * 1000,
+                              detail=f"{file}: {len(text)} chars"
+                                     + (" (new file)" if ack.get("created") else ""))
         return JSONResponse(ack)
     finally:
         manager._op_lock.release()

@@ -120,44 +120,6 @@
   color: var(--fg-muted);
 }
 
-/* Model and Thinking, side by side at the bottom of More options: one decision
-   ("Fable, thinking high") read as one line rather than two rows saying
-   half of it each.
-
-   WRAPPING, not a breakpoint. Both columns ask for the same basis and split
-   whatever is left over evenly, so they sit together while the card is wide
-   enough for two readable chips and drop to stacked when it is not. A media
-   query would have to guess the card's width from the viewport's, and a
-   container query is the wrong tool here for a specific reason: `container-type`
-   makes the element a containing block for fixed-position descendants, and these
-   chips' dropdown panels are `position: fixed` precisely so they can escape the
-   dialog's scroll box.
-
-   THE BASIS IS 150px, NOT A ROUNDER NUMBER, because the card it has to fit is
-   not one either: NewJobModal's `<Modal width={460}>` leaves this pair about
-   400px of the dialog's own padding and the form's 26px sub-gutter — measured,
-   not assumed, after 220px (a guess at what "two readable chips" needs) turned
-   out to always exceed it and wrap on every load. 150px x 2 + the 12px gap is
-   312px, comfortably inside the 400px this card actually has, so the pair
-   renders as one row at the width the New Task card is actually built at and
-   only drops to stacked if that ever shrinks below roughly 480px (bugbot would
-   have caught 220px the same way this did: by measuring the real container
-   instead of picking a number that reads well on paper).
-
-   `min-width: 0` is what lets a long choice ellipsis INSIDE its chip rather than
-   forcing the row wider than the card — a flex item refuses to shrink below its
-   content without it. */
-.new-task-run-pair {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-
-.new-task-run-pair > .field {
-  flex: 1 1 150px;
-  min-width: 0;
-}
-
 /* -- The writing surface -----------------------------------------------------
    Title and description are ONE borderless area, not two controls (Akshil,
    2026-08-17, reference image): a single continuous surface between the card's
@@ -295,22 +257,11 @@
    as one size, the description a step under both. Scoped to this dialog —
    every other modal keeps deploy.css's 15px heading. */
 .new-task-dialog .deploy-head h2 {
-  font-size: 16px;
-}
-
-.new-task-write .new-task-title {
-  font-size: 16px;
-  font-weight: 500;
-  line-height: 1.35;
-  /* One line. `pre` rather than `nowrap` so a pasted value's own spacing is not
-     collapsed on the way in — an <input> strips the newlines either way. */
-  white-space: pre;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  /* No autogrow and no drag-grow: the height is one line of the 20px face plus
-     the shared padding, and it never changes. */
-  resize: none;
-  flex: none;
+  /* P2: the breadcrumb (agent chip, ›) then the words, 15px/600. */
+  font-size: 15px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
 }
 
 /* -- The ask -----------------------------------------------------------------
@@ -331,16 +282,16 @@
    ever picks a size between them. */
 .new-task-write .new-task-ask {
   /* 13px (Akshil, 2026-09-24): the body size, one step under the 16px title. */
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 400;
-  line-height: 1.55;
+  line-height: 1.5;
   resize: none;
   overflow-wrap: anywhere;
-  /* Three lines of the face plus the shared padding — half the six the
-     reference image gave it (Akshil, 2026-09-23). Still the slack-taker. */
-  min-height: calc(13px * 1.55 * 3 + 12px);
+  /* Six lines of the face plus the shared padding: the one box is the whole
+     task, so it opens roomy. Still the slack-taker. */
+  min-height: calc(15px * 1.5 * 6 + 12px);
   /* Ten, then it scrolls. */
-  max-height: calc(13px * 1.55 * 10 + 12px);
+  max-height: calc(15px * 1.5 * 10 + 12px);
   overflow-y: auto;
   flex: 1 1 auto;
 }
@@ -355,6 +306,60 @@
   min-height: 0;
 }
 
+/* The slash-command menu (CommandMenu, `className="nt-cmd-menu"`): hung off the
+   first line of the box and dropping DOWN over the card. composer.css is the
+   chat bundle's and not loaded here, so the rows are dressed again from the
+   shell's own tokens. The box keeps the keyboard; this is only a list.
+   Five rows: the dialog body clips at the footer border, so five rows is what
+   fits above the pills row; the list scrolls past that (CommandMenu scrolls the
+   active row into view). */
+.nt-cmd-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(1.5em + 14px);
+  z-index: 30;
+  max-height: calc(5 * 30px + 8px);
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--bg-popover, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px var(--shadow-sm);
+}
+
+.nt-cmd-menu .chat-cmd-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  height: 30px;
+  box-sizing: border-box;
+  padding: 7px 9px;
+  font-size: 12px;
+  line-height: 16px;
+  border-radius: 7px;
+  color: var(--fg);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.nt-cmd-menu .chat-cmd-row.is-on {
+  background: var(--ctl-quiet-bg);
+}
+
+.nt-cmd-menu .chat-cmd-name {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+
+.nt-cmd-menu .chat-cmd-desc {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--fg-muted);
+}
+
 /* The two-line placeholder: sits exactly where the textarea's own text starts
    (its 6px top padding, flush left), in the same face, the same muted ink the
    native one wore. Two lines — the words, then the key in italics. Lets clicks
@@ -367,8 +372,8 @@
   display: flex;
   flex-direction: column;
   color: var(--fg-muted);
-  font-size: 13px;
-  line-height: 1.55;
+  font-size: 15px;
+  line-height: 1.5;
   pointer-events: none;
 }
 
@@ -378,11 +383,9 @@
   text-overflow: ellipsis;
 }
 
-.new-task-ask-hint > em {
-  font-style: italic;
-  /* Lighter than the line above it: grey + italic at the same weight read as
-     a smudge (Akshil, 2026-09-24). */
-  font-weight: 100;
+.new-task-ask-hint > small {
+  font-size: 13px;
+  color: var(--fg-faint);
 }
 
 /* -- The past-time note ------------------------------------------------------
@@ -828,4 +831,327 @@ button.new-task-source:focus-visible {
   color: var(--fg-muted);
   -webkit-text-fill-color: var(--fg-muted);
   cursor: default;
+}
+
+
+/* == P2 · Property pills ====================================================
+   One writing surface, then ONE row of four labelled pills (WHERE · WHEN ·
+   ACCESS · MODEL) whose popovers hold every secondary control; a breadcrumb
+   header; a footer with the keyboard hint on the left and Create on the right.
+   Values are the reference's (.p2 in new-task-polished.html). Tokens only, so
+   the light theme flips with them. */
+.new-task-dialog {
+  position: relative;
+  overflow: hidden;
+}
+
+.new-task-dialog::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(var(--accent-rgb), 0.6), transparent);
+  pointer-events: none;
+}
+
+/* The header crumb is the agent dropdown (Modal `titleLead`): a PropPill that
+   keeps the look the static crumb had. Scoped under the head so it beats the
+   dialog's generic button skin; no key/icon cell, just the label. */
+.new-task-dialog .modal-head-title {
+  gap: 0;
+}
+
+.new-task-dialog .modal-head-title .pp--agent {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--ctl-quiet-bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.new-task-dialog .modal-head-title .pp--agent .pp-v {
+  padding: 0;
+  max-width: none;
+}
+
+.new-task-dialog .modal-head-title .pp--agent .pp-v::after {
+  content: "";
+  width: 5px;
+  height: 5px;
+  margin: -2px 0 0 6px;
+  border-right: 1.5px solid var(--fg-muted);
+  border-bottom: 1.5px solid var(--fg-muted);
+  transform: rotate(45deg);
+}
+
+.nt-crumb-sep {
+  margin: 0 8px;
+  font-weight: 400;
+  color: var(--fg-faint);
+}
+
+.new-task-dialog .deploy-body {
+  padding: 8px 16px 18px;
+}
+
+.new-task-dialog .schedule-form {
+  gap: 14px;
+}
+
+/* The wrapper is only there to scope focus containment; the pill and its
+   popover lay out as if it were not. */
+.nt-pill-wrap {
+  display: contents;
+}
+
+.nt-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+/* Scoped under the dialog: `.deploy-body button` (fields.css, 0,1,1) paints
+   padding/font/border on every button and beats a bare `.pp` (0,1,0). */
+.new-task-dialog .nt-pills .pp {
+  display: inline-flex;
+  align-items: stretch;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  box-shadow: 0 1px 1px var(--shadow-ink-soft);
+  overflow: hidden;
+}
+
+.pp:hover,
+.pp--open {
+  border-color: var(--fg-faint);
+}
+
+.pp--bad {
+  border-color: var(--error);
+}
+
+.pp-k {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 0 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.pp-k svg {
+  width: 12px;
+  height: 12px;
+}
+
+.pp-v {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  max-width: 180px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pp-v.pp-v--empty {
+  color: var(--fg-muted);
+}
+
+.pp-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--success-bright);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--success-bright) 25%, transparent);
+}
+
+.nt-pop {
+  width: 250px;
+  padding: 6px;
+  border-radius: 10px;
+  outline: none;
+}
+
+.nt-pop-h {
+  padding: 4px 8px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.nt-menu {
+  display: flex;
+  flex-direction: column;
+}
+
+.nt-menu > button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: 28px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.nt-menu > button:hover:not(:disabled) {
+  background: var(--ctl-quiet-bg);
+}
+
+.nt-menu > button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.nt-menu > button[aria-checked="true"] svg {
+  margin-left: auto;
+}
+
+.nt-menu-sep {
+  height: 1px;
+  margin: 4px 0;
+  background: var(--border);
+}
+
+.nt-menu-off {
+  margin-left: auto;
+  color: var(--fg-faint);
+  font-size: 11px;
+}
+
+.nt-menu-note {
+  padding: 6px 8px 2px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--fg-muted);
+}
+
+/* WHEN's custom pane: the old when-row, stacked. */
+.nt-when-custom {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 2px;
+}
+
+/* WHERE: the path box on top, its recents list flowing under it INSIDE the
+   popover rather than floating over the card. */
+.nt-pop--where {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.nt-pop--where .field-control {
+  width: 100%;
+}
+
+.nt-pop .schedule-recents,
+.nt-recents {
+  position: static;
+  max-height: 240px;
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+  background: none;
+  animation: none;
+}
+
+.nt-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.nt-notes:empty {
+  display: none;
+}
+
+/* No icon gutter any more: the hints hang flush left. */
+.new-task-dialog .schedule-form-sub {
+  margin-left: 0;
+}
+
+/* Footer */
+.new-task-dialog .modal-footer {
+  background: var(--bg-alt);
+  border-top: 1px solid var(--border);
+}
+
+.nt-foot-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-right: auto;
+}
+
+.nt-foot-left .btn-danger-text {
+  margin-right: 0;
+}
+
+.nt-foot-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.nt-kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--ctl-quiet-bg);
+  font-size: 11px;
+  font-family: inherit;
+  color: var(--fg-muted);
+}
+
+.new-task-dialog .schedule-save {
+  border-radius: 8px;
+  gap: 8px;
+}
+
+.nt-kbd--on-dark {
+  margin-left: 2px;
+  border-color: color-mix(in srgb, currentColor 45%, transparent);
+  background: transparent;
+  color: inherit;
+  opacity: 0.8;
 }

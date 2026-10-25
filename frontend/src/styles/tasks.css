@@ -439,20 +439,29 @@ button.tasks-caret,
 
 .tasks-title {
   min-width: 0;
-  font-weight: 500;
+  /* Read: regular weight (Akshil, 2026-10-23 — 100 read too light); unread
+     lifts it to 600 below. */
+  font-weight: 400;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* A title that is a RECAP (task recaps on, tasks-lib `kind: "recap"`) reads at
-   weight 100, DELIBERATELY the lightest (Akshil, 2026-10-16): it is a sentence
-   about the task, not the reader's own words, and the row's weight is what
-   tells those two apart. A
-   title that is the reader's message, with or without the reply line after
-   it, keeps the 500 above. */
-.tasks-title.is-recap {
-  font-weight: 100;
+/* UNREAD IS THE TITLE'S WEIGHT (Akshil, 2026-10-23: "if it is unread we do
+   bold, once it is read we unbold"). Same claim, same weight, as the Board
+   card's `.schedule-tv-card-title.is-unread` and a thread's
+   `.tasks-msg.is-unread` — one mark for unread on every surface. It replaces
+   the recap/message split (recap 100, message 500): weight now answers "is
+   there anything new here", not "whose words are these". */
+.tasks-title.is-unread {
+  font-weight: 600;
+}
+
+/* An UNREAD task's title reads bold in every view (Revision 2, 2026-10-23), on
+   the same count that fills the ring: the Board's card and the Cards wall say
+   it the same way. After the recap rule on purpose, so unread wins over it. */
+.tasks-title.is-unread {
+  font-weight: 600;
 }
 
 /* First line of Claude's newest reply, filling the space after the title in the
@@ -529,8 +538,8 @@ button.tasks-caret,
    THE TITLE ONLY. The ring, the id, the folder and the time stay at full strength:
    fading a whole row is how this page says "archived", which is a different fact
    with a lane of its own, and the time is precisely what a reader wants to read on
-   an upcoming row. Nor is the weight touched — `font-weight: 500` above holds, so
-   the column of titles keeps one shape and only its colour recedes. */
+   an upcoming row. Nor is the weight touched — the weight belongs to unread
+   (`.tasks-title.is-unread` above), and only the colour recedes. */
 .tasks-title.is-upcoming {
   color: var(--fg-muted);
 }
@@ -927,6 +936,7 @@ button.tasks-caret,
    name ui as is from list view"), and a skin scoped to `.tasks-row` alone left
    it a bare button there. One skin, two hosts; only the row's `::after` band
    stays the row's, because its reach is the row's own padding. */
+.ws-card .schedule-tv-id--tag,
 .task-card-head-row .schedule-tv-id--tag,
 .tasks-row .schedule-tv-id--tag {
   appearance: none;
@@ -1006,6 +1016,7 @@ button.tasks-caret,
    (so the pill keeps its own hover, cursor and press) while the shield's own
    `z-index: 2` keeps the whole subtree above `.tasks-rowlink` at `z-index: 1`.
    That is the entire mechanism by which a near-miss stops opening the task. */
+.ws-card .schedule-tv-id-shield,
 .task-card-head-row .schedule-tv-id-shield,
 .tasks-row .schedule-tv-id-shield {
   flex: 0 0 auto;
@@ -1031,6 +1042,20 @@ button.tasks-caret,
   cursor: default;
 }
 
+/* THE PR VIEW'S `#N` CHIP wears the folder tag's pill (`.schedule-tv-id--tag`,
+   above) inside the same shield, so it only overrides what makes it a link: a
+   pointer in place of the filter funnel, no underline, tabular digits. */
+.ws-card .task-pr-num,
+.tasks-row .task-pr-num {
+  text-decoration: none;
+  cursor: pointer;
+  color: inherit;
+}
+.ws-card .task-pr-num .schedule-tv-id-name,
+.tasks-row .task-pr-num .schedule-tv-id-name {
+  font-variant-numeric: tabular-nums;
+}
+
 .tasks-row .schedule-tv-id-shield::after {
   content: "";
   position: absolute;
@@ -1046,13 +1071,16 @@ button.tasks-caret,
    a row rather than on a bar. On the BUTTON, which is the pill: the wash and the
    target are the same box again, and the shield above it is what keeps a
    near-miss from doing anything at all. */
+.ws-card .schedule-tv-id--tag:hover,
 .task-card-head-row .schedule-tv-id--tag:hover,
+.ws-card .schedule-tv-id--tag:focus-visible,
 .task-card-head-row .schedule-tv-id--tag:focus-visible,
 .tasks-row .schedule-tv-id--tag:hover,
 .tasks-row .schedule-tv-id--tag:focus-visible {
   background: var(--ctl-quiet-bg-hover);
 }
 
+.ws-card .schedule-tv-id--tag:focus-visible,
 .task-card-head-row .schedule-tv-id--tag:focus-visible,
 .tasks-row .schedule-tv-id--tag:focus-visible {
   outline: 1px solid var(--accent);
@@ -1081,6 +1109,7 @@ button.tasks-caret,
 
    ON THE BUTTON, which is the pill again since the shield took over the target
    (2026-08-24): the state and the thing it is a state OF are one box. */
+.ws-card .schedule-tv-id--tag.is-on,
 .task-card-head-row .schedule-tv-id--tag.is-on,
 .tasks-row .schedule-tv-id--tag.is-on {
   /* AND THE HAND COMES BACK WHEN THE FILTER IS ALREADY ON (review): the press
@@ -1093,7 +1122,9 @@ button.tasks-caret,
 
 /* Hover must not wash the accent away — the quiet rule above is a plain
    `background`, and on the ON chip it would win by source order. */
+.ws-card .schedule-tv-id--tag.is-on:hover,
 .task-card-head-row .schedule-tv-id--tag.is-on:hover,
+.ws-card .schedule-tv-id--tag.is-on:focus-visible,
 .task-card-head-row .schedule-tv-id--tag.is-on:focus-visible,
 .tasks-row .schedule-tv-id--tag.is-on:hover,
 .tasks-row .schedule-tv-id--tag.is-on:focus-visible {
@@ -1105,6 +1136,7 @@ button.tasks-caret,
    so the chip's only child is its name. The class itself is still live for the
    OTHER folder rows in this file's neighbour (the recents list), which draw their
    own glyph. */
+.ws-card .schedule-tv-id--tag.is-on .schedule-tv-id-name,
 .task-card-head-row .schedule-tv-id--tag.is-on .schedule-tv-id-name,
 .tasks-row .schedule-tv-id--tag.is-on .schedule-tv-id-name {
   color: var(--fg);
@@ -1115,6 +1147,7 @@ button.tasks-caret,
    board card it is the thing that must shrink. On a task ROW it is not: the title
    is, and a chip that shrank alongside it would ellipsise a folder name while the
    title still had room. Scoped here so the card keeps its own answer. */
+.ws-card .schedule-tv-id,
 .task-card-head-row .schedule-tv-id,
 .tasks-row .schedule-tv-id {
   flex: 0 0 auto;
@@ -1132,6 +1165,7 @@ button.tasks-caret,
    is deliberately untouched here (it keeps `.tasks-msg-time`'s register, which the
    thread below shares — two weights for one fact is how a row and its thread part
    company). */
+.ws-card .schedule-tv-id-name,
 .task-card-head-row .schedule-tv-id-name,
 .tasks-row .schedule-tv-id-name {
   color: var(--fg);
@@ -2174,8 +2208,8 @@ button.tasks-caret,
    means nothing cut, and beside an ordinary prompt-length title the
    `0 100 auto` above measured a caption like it at 0px — one that almost never
    shows. So it keeps its width and the TITLE ellipsises instead. The job names
-   are the hint; the Stop is in the hover strip
-   (ScheduleTaskViews.StopJobButton). */
+   are the hint; the List row has no Stop (ScheduleTaskViews.StopJobButton is
+   the Board's and the Cards wall's only). */
 .tasks-row-queue--bg {
   flex: 0 0 auto;
 }
@@ -2390,7 +2424,7 @@ button.tasks-draft-pill {
    colour, so there was nothing there to win with.
 
    The cure is this page's own, twice over — `.prefs-section button.tasks-caret`
-   and `.schedule-tv-filter-x` both name the opponent by hand rather than lean on
+   names the opponent by hand rather than lean on
    load order. (0,2,1) beats it outright and leaves no tie for source order to
    decide.
 
@@ -2485,40 +2519,6 @@ button.tasks-draft-pill.is-on:focus-visible {
   border-bottom-right-radius: 0;
 }
 
-/* The doubled selector is the same trick `.schedule-tv-filter-btn` uses beside it,
-   and against the same opponent: `.prefs-section button` (preferences.css) skins
-   EVERY button on this page — `padding: 5px 12px; align-self: flex-start` — and at
-   (0,1,1) it outranks a lone class. Unqualified, this chip came out 28px tall and
-   top-aligned against its 32px trigger, which is the exact misalignment this
-   control exists to remove. `.deploy-body` is listed too because the same toolbar
-   is drawn inside the deploy shell, whose fields.css carries an identical skin. */
-.schedule-tv-filter-x,
-.prefs-section .schedule-tv-filter-x,
-.deploy-body .schedule-tv-filter-x {
-  appearance: none;
-  align-self: stretch;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  padding: 0;
-  font: inherit;
-  font-size: 11px;
-  line-height: 1;
-  color: var(--fg-muted);
-  background: var(--bg);
-  border: 1px solid var(--border);
-  /* Written as a width shorthand rather than `border-left: 0`, and that is not a
-     style preference: `tasks-lib.test.ts` greps this whole stylesheet for the
-     string "border-left" to hold the thread rows' no-vertical-rule geometry, and
-     the check has no way to tell a filter chip from a message row. Same result,
-     and the guard it protects stays exact. */
-  border-width: 1px 1px 1px 0;
-  border-radius: 0 6px 6px 0;
-  cursor: pointer;
-  transition: color 0.08s ease, background-color 0.08s ease;
-}
-
 /* ONE CONTROL, ONE HOVER. The trigger and its ✕ are two boxes for geometry only
    — a divider needs two borders — and the reader is looking at a single pill, so
    the pointer landing anywhere on it lights the whole thing. Per-half hovers were
@@ -2538,25 +2538,11 @@ button.tasks-draft-pill.is-on:focus-visible {
    FOCUS stays per-half, deliberately: hover is about the control, but a keyboard
    ring has to say which half will answer the Return key. */
 .schedule-tv-filter-group:hover .schedule-tv-filter-btn,
-.schedule-tv-filter-group:hover .schedule-tv-filter-x,
 .prefs-section .schedule-tv-filter-group:hover .schedule-tv-filter-btn,
-.prefs-section .schedule-tv-filter-group:hover .schedule-tv-filter-x,
-.deploy-body .schedule-tv-filter-group:hover .schedule-tv-filter-btn,
-.deploy-body .schedule-tv-filter-group:hover .schedule-tv-filter-x {
+.deploy-body .schedule-tv-filter-group:hover .schedule-tv-filter-btn {
   color: var(--fg);
   background: var(--bg-alt);
   border-color: color-mix(in srgb, var(--fg-muted) 45%, var(--border));
-}
-
-.schedule-tv-filter-group:hover .schedule-tv-filter-x,
-.prefs-section .schedule-tv-filter-group:hover .schedule-tv-filter-x,
-.deploy-body .schedule-tv-filter-group:hover .schedule-tv-filter-x {
-  border-width: 1px 1px 1px 0;
-}
-
-.schedule-tv-filter-x:focus-visible {
-  outline: 1px solid var(--accent);
-  outline-offset: -1px;
 }
 
 /* ------------------------------------------------------------- the ghosts
@@ -2905,6 +2891,31 @@ button.tasks-draft-pill.is-on:focus-visible {
   gap: 6px;
   flex: 0 0 auto;
 }
+/* THE PROJECT VIEW'S "Show N more" ROW: the last row of a capped section's
+   frame, a task row's height and hairline, muted, aligned under the titles. */
+.tasks-group-more {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: var(--tasks-row-pad-y, 10px) 14px var(--tasks-row-pad-y, 10px) calc(14px + 16px + 4px);
+  border: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 7px 7px;
+  background: transparent;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 13px;
+  line-height: 16px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 0.08s ease;
+}
+.tasks-group-more:hover,
+.tasks-group-more:focus-visible {
+  background: var(--row-bg-hover);
+}
+
 .tasks-group-head {
   margin: 0;
   padding: 0;
@@ -2914,6 +2925,9 @@ button.tasks-draft-pill.is-on:focus-visible {
   /* The all-toggle sits at the far end: space-between, not an auto margin —
      the row tests hold this sheet to ONE auto margin, the task row's. */
   justify-content: space-between;
+  /* The task rows' right inset (their own padding is 14px, set on .tasks-node
+     where the heading cannot read it), so Collapse all never touches the edge. */
+  padding-right: 14px;
   font-size: 12px;
   font-weight: 600;
   letter-spacing: 0.02em;

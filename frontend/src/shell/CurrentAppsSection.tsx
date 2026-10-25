@@ -11,10 +11,11 @@
 // event that can add a row. The pulse is still read for one thing: the running
 // dot. That is a subscription this sidebar already holds, not a second poll.
 //
-// The ORDER is the server's: `apps` arrives in display order and is drawn as it
-// arrives (current-apps-lib.ts, D1386). A drag POSTs the whole list and adopts
-// the answer; a new app is inserted on top by the server. Nothing here numbers,
-// sorts or remembers an order of its own.
+// The ORDER is the server's: `apps` arrives BY RECENCY — newest task activity
+// under each folder first, a row with no tasks by when it was added — and is
+// drawn as it arrives (current-apps-lib.ts, current_apps.py `list_apps`).
+// Nothing here numbers, sorts, drags or remembers an order of its own (owner,
+// 2026-10-23: "only by recency, no user order, no dragging").
 import React, {
   useCallback,
   useEffect,
@@ -29,7 +30,6 @@ import {
   readCurrentAppTasks,
   removeCurrentApp,
   renameCurrentApp,
-  setCurrentAppsOrder,
   type CurrentAppEntry,
 } from "@platform/lib/api";
 import { setSidebarSectionOpen, useSidebarSectionOpen } from "@platform/ui/sidebar/sidebar-accordion";
@@ -50,7 +50,7 @@ import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { Modal } from "@platform/ui/modal/Modal";
 import { HeroComposer } from "@apps/builder/HomeHero";
-import { inFlight, isQueued, opensElsewhere, queuedLabel, statusColumn } from "@shell/tasks-lib";
+import { inFlight, isQueued, liveJobRow, opensElsewhere, queuedLabel, statusColumn } from "@shell/tasks-lib";
 import { pokeTasks, useTasksPulseRows } from "@shell/tasksPulse";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
@@ -59,12 +59,10 @@ import {
   appPageUrl,
   appPathFromPath,
   currentApps,
-  moveSlug,
-  parseSavedOrder,
   type CurrentApp,
 } from "@shell/current-apps-lib";
 import {
-  ENV_LABELS,
+  ENV_NAMES,
   canvasNameFromPath,
   canvasPagePath,
   canvasPageTabFromSearch,
@@ -77,10 +75,9 @@ import { CanvasGlyph } from "@apps/canvases/glyph";
 /** Which half of the desk a section draws (owner, 2026-10-20: "add all
  *  options on canvas sidebar as we have on folder sidebar"). ONE store, one
  *  table (`GET /api/current-apps`), one row component and one set of verbs
- *  — the cross, the drag, the dots, the menu — split on the row's `canvas`
- *  stamp: `projects` draws the app folders, `canvases` the canvas clones.
- *  A drag posts only its own rows; `set_order` keeps the unnamed ones ahead
- *  in their relative order, so each section arranges its half alone. */
+ *  — the cross, the dots, the menu — split on the row's `canvas` stamp:
+ *  `projects` draws the app folders, `canvases` the canvas clones, each
+ *  half in the server's recency order. */
 export type DeskSection = "projects" | "canvases";
 
 function inSection(app: { canvas: unknown }, section: DeskSection): boolean {
@@ -88,9 +85,8 @@ function inSection(app: { canvas: unknown }, section: DeskSection): boolean {
 }
 
 // A cross-window nudge, not a store: set to the stamp after POST
-// /api/current-apps/open (or a drag's POST /api/current-apps/order) lands, so
-// the other windows' sections refetch the desk (the server row is the truth;
-// this only says "look again").
+// /api/current-apps/open lands, so the other windows' sections refetch the
+// desk (the server row is the truth; this only says "look again").
 export const DESK_CHANGED_KEY = "fused-render:current-apps-changed";
 
 // The last table this document fetched, kept at module level so the rows do not
@@ -107,84 +103,6 @@ function announceDeskChanged(stamp: number): void {
   } catch {
     /* no store: this window is up to date, the others catch up on their own */
   }
-}
-
-// ---- the one-shot order import (D1386) -------------------------------------
-// The order used to live in localStorage, which is per ORIGIN — and the
-// desktop app walks ports 1777..1787 then an ephemeral one, so a relaunch on a
-// new port started from an empty store and lost it. The old key is read ONCE
-// on the first load of this build and, if it still has something to say,
-// pushed through the normal write path. (The section fold's old key is
-// imported with the rest of the layout, by platform/lib/ui-layout.)
-//
-// "If it still has something to say" is the whole gate. The port walk leaves
-// a key behind on EVERY origin the user ever ran on, each frozen at whatever
-// they dragged there — so the first of those origins to load this build would
-// otherwise POST a stale arrangement over the one the user made since, and a
-// later visit to another old port would do it again. D1386 keeps no
-// server-side "already imported" marker, so the signal has to be derivable
-// from the table itself: a desk nobody has arranged is in ADDED order, newest
-// first (the server inserts new apps at index 0, and an old oldest-first file
-// is read back reversed server-side, so it is newest-first too). The legacy
-// list goes up only while the server's rows still equal that order; any other
-// order means someone already arranged it here, and the old key just goes.
-//
-// The key is removed only after that decision lands — the POST's success, or
-// the skip. A failed GET or POST leaves it, so the next load decides again.
-const LEGACY_ORDER_KEY = "fused-render:current-apps-order:v2";
-
-/** True while `apps` is in the order nobody chose: `added_at` descending, rows
- *  without one last, ties keeping their place. */
-function neverArranged(apps: CurrentAppEntry[]): boolean {
-  const added = apps
-    .map((a, i) => ({ path: a.path, at: a.added_at, i }))
-    .sort((x, y) => {
-      if (x.at === null || y.at === null) {
-        if (x.at === y.at) return x.i - y.i;
-        return x.at === null ? 1 : -1;
-      }
-      return y.at - x.at || x.i - y.i;
-    });
-  return added.every((a, i) => a.path === apps[i].path);
-}
-
-function dropLegacyOrder(): void {
-  try {
-    localStorage.removeItem(LEGACY_ORDER_KEY);
-  } catch {
-    /* removal failed: the next load decides again, harmless */
-  }
-}
-
-try {
-  const legacy = parseSavedOrder(localStorage.getItem(LEGACY_ORDER_KEY));
-  if (!legacy.length) {
-    localStorage.removeItem(LEGACY_ORDER_KEY);
-  } else {
-    getCurrentApps()
-      .then((current) => {
-        if (!neverArranged(current.apps ?? [])) {
-          dropLegacyOrder();
-          return;
-        }
-        return setCurrentAppsOrder(legacy).then((r) => {
-          dropLegacyOrder();
-          knownApps = r.apps ?? knownApps;
-          // The section's first GET was in flight beside this POST and may
-          // have answered with the pre-import order. Same-document `storage`
-          // events do not fire, so THIS window's sections are poked over the
-          // window event they already refetch on, the other windows over the
-          // nudge.
-          window.dispatchEvent(new Event(CURRENT_APPS_CHANGED_EVENT));
-          announceDeskChanged(Date.now());
-        });
-      })
-      .catch(() => {
-        /* server unreachable or refused: keep the key, the next load retries */
-      });
-  }
-} catch {
-  // No store and no window: nothing was ever saved here to import.
 }
 
 /** The desk's table, fetched on mount and again whenever `signal` changes —
@@ -226,11 +144,13 @@ function useCurrentApps(
   return { entries: apps, adopt };
 }
 
-/** The desk in the order the section shows it — for the collapsed rail's app
- *  icons. Fetches only while `enabled` (the rail is on screen), on mount and on
- *  the same add/open/drag nudges the section hears; no pulse-driven refetch, and
- *  no running/queued/unread state (the rail draws icons only). The order is the
- *  server's array as fetched (D1386) — the same one the section draws. */
+/** The desk in the order the sections show it — for the collapsed rail's app
+ *  and canvas icons. Fetches only while `enabled` (the rail is on screen), on
+ *  mount and on the same add/open nudges the sections hear; no pulse-driven
+ *  refetch, and no running/queued/unread state (the rail draws icons only).
+ *  The order is the server's array as fetched (by recency) — the same one the
+ *  sections draw; the rail splits it on `canvas` as they do (sidebar-rail-lib
+ *  railExtras). */
 export function useDeskAppsOrdered(enabled: boolean): CurrentApp[] {
   const [refreshEpoch, setRefreshEpoch] = useState(0);
   const { entries } = useCurrentApps("", refreshEpoch, enabled);
@@ -248,23 +168,18 @@ export function useDeskAppsOrdered(enabled: boolean): CurrentApp[] {
     };
   }, [enabled]);
   // Expanded: the rail is not drawn and `entries` is the snapshot of the last
-  // collapse. App folders only: the rail's icons are the Projects section's.
+  // collapse.
   if (!enabled) return [];
-  return currentApps(entries, [], new Set(), []).filter((a) => inSection(a, "projects"));
-}
-
-interface RowDragProps {
-  onDragStart: (e: React.DragEvent<HTMLDivElement>) => void;
-  onDragOver: (e: React.DragEvent<HTMLDivElement>) => void;
-  onDragLeave: (e: React.DragEvent<HTMLDivElement>) => void;
-  onDrop: (e: React.DragEvent<HTMLDivElement>) => void;
-  onDragEnd: () => void;
+  return currentApps(entries, [], new Set(), []);
 }
 
 /** A canvas row's door: the canvas's PROJECT page (/canvases-project/…), on
  *  the tab the reader is on when they are already on a canvas project page
- *  ("same view, other canvas", the Projects rule below). */
-function canvasRowHref(app: CurrentApp): string | null {
+ *  ("same view, other canvas", the Projects rule below). Null for a clone of
+ *  an unknown environment, which has no project page — the caller falls back
+ *  to the folder's app page. Exported for the collapsed rail's canvas doors
+ *  (GlobalSidebar), the same door as the row. */
+export function canvasRowHref(app: CurrentApp): string | null {
   const c = app.canvas;
   if (!c || !isWorkbenchEnv(c.env)) return null;
   const onProject = canvasProjectFromPath(location.pathname) !== null;
@@ -275,7 +190,6 @@ function canvasRowHref(app: CurrentApp): string | null {
 function CurrentAppRow({
   app,
   active,
-  drag,
   showEnv,
   onRemoved,
   onGlyphClick,
@@ -284,7 +198,6 @@ function CurrentAppRow({
 }: {
   app: CurrentApp;
   active: boolean;
-  drag: RowDragProps;
   /** A canvas row in a section listing both environments: say which. */
   showEnv: boolean;
   onRemoved: () => void;
@@ -320,7 +233,13 @@ function CurrentAppRow({
     onSeen(app.path);
     // The row for the page already on screen, on the tab it already shows, is
     // a no-op; the tab's own params would be the only thing the click cleared.
-    if (!active) navigateUrl(href);
+    // A canvas row lights on its EDITOR too (isActive), but its door is the
+    // PROJECT page: lit by the editor it still navigates — otherwise the
+    // sidebar offers no way from the editor to the project view (owner,
+    // 2026-10-22). Lit by the project page, `onCanvas` resolved from that
+    // path, so active ⇒ this canvas's project page ⇒ at the door.
+    const atDoor = active && (!app.canvas || canvasProjectFromPath(location.pathname) !== null);
+    if (!atDoor) navigateUrl(href);
   };
   const onRemove = async (e: React.MouseEvent) => {
     e.preventDefault();
@@ -342,7 +261,7 @@ function CurrentAppRow({
   };
   const tip =
     app.path +
-    (app.canvas && isWorkbenchEnv(app.canvas.env) ? " — " + ENV_LABELS[app.canvas.env] : "") +
+    (app.canvas && isWorkbenchEnv(app.canvas.env) ? " — " + ENV_NAMES[app.canvas.env].label : "") +
     (app.kind === "linked" ? " — linked app" : "") +
     (app.exists ? "" : " — folder missing") +
     (app.running ? " — running" : "") +
@@ -357,9 +276,7 @@ function CurrentAppRow({
         (app.unread && !app.running ? " is-unread" : "")
       }
       title={tip}
-      draggable
       onContextMenu={(e) => onMenu(e, app)}
-      {...drag}
     >
       {/* The glyph is the icon picker's toggle — the Bookmarks pattern
           (BookmarksSection.onBookmarkGlyphClick), except the pick lands on
@@ -387,16 +304,12 @@ function CurrentAppRow({
           // resolves it for the live theme. An icon.png (the raster fallback)
           // is the one exception: `is-raster` clips it to the rounded square
           // (sidebar.css), since a photo-like file has no plate of its own.
-          // Not draggable: an <img> drags natively, and the glyph is the
-          // natural handle for the row reorder (same as the name's
-          // draggable={false}).
           <img
             className={
               "current-app-icon" + (isRasterIconUrl(app.iconUrl) ? " is-raster" : "")
             }
             src={iconSrc}
             alt=""
-            draggable={false}
           />
         ) : (
           // The brand's four-point star (AppStar — the app icon's sparkle, the
@@ -411,13 +324,12 @@ function CurrentAppRow({
       <a
         className="bookmark-name"
         href={href}
-        draggable={false}
         aria-current={active ? "page" : undefined}
         // Two environments can hold a clone of one name: the visible tag is
         // aria-hidden, so the link's own name says which (CodeRabbit).
         aria-label={
           showEnv && app.canvas && isWorkbenchEnv(app.canvas.env)
-            ? `${app.name} (${ENV_LABELS[app.canvas.env]})`
+            ? `${app.name} (${ENV_NAMES[app.canvas.env].label})`
             : undefined
         }
         onClick={onOpen}
@@ -426,7 +338,7 @@ function CurrentAppRow({
       </a>
       {showEnv && app.canvas && isWorkbenchEnv(app.canvas.env) && (
         <span className="canvas-row-env" aria-hidden="true">
-          {ENV_LABELS[app.canvas.env]}
+          {ENV_NAMES[app.canvas.env].tag}
         </span>
       )}
       {/* The running dot sits AFTER the name (owner, 2026-08-27), so it never
@@ -496,7 +408,7 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
     [rows],
   );
   const runningProjects = useMemo(
-    () => rows.filter((r) => inFlight(statusColumn(r.status))).map((r) => r.project || ""),
+    () => rows.filter((r) => inFlight(statusColumn(r.status)) || liveJobRow(r)).map((r) => r.project || ""),
     [rows],
   );
   // The same pulse rows read for the other half of the sentence: tasks WAITING
@@ -535,7 +447,7 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
     [],
   );
   // Drawn in the order `entries` arrive: the server's array IS the display
-  // order (D1386), so there is nothing to sort here.
+  // order (by recency, current_apps.py), so there is nothing to sort here.
   // This section's HALF of the desk (`inSection`): the other half is the
   // other section's, drawn from the same table.
   const apps = useMemo(
@@ -582,12 +494,11 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
     [adopt, uncover],
   );
   // NOTHING is saved from here. A new app, a removed one, a fetch landing — all
-  // of those are the server's own writes; the order POST below is sent by a
-  // drag and only by a drag. A persist effect keyed on the app list looks
-  // equivalent and is not: two windows then take turns saving their own view
-  // of a world they briefly disagree about (Bugbot twice, 2026-08-26 — first a
-  // second tab clobbering a drag, then an outright write loop). A drag is one
-  // user gesture; there is no second writer to race.
+  // of those are the server's own writes, and the order is the server's
+  // recency sort. A persist effect keyed on the app list looks harmless and is
+  // not: two windows then take turns saving their own view of a world they
+  // briefly disagree about (Bugbot twice, 2026-08-26 — a second tab clobbering
+  // a change, then an outright write loop).
 
   // Which row is the page on screen. Read at render: the sidebar remounts on
   // every navigation (App.tsx), so a stale read cannot outlive a route change.
@@ -599,79 +510,6 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
     app.canvas
       ? !!onCanvas && onCanvas.env === app.canvas.env && onCanvas.name === app.canvas.name
       : app.path === onPath;
-
-  // ---- reordering by drag ----------------------------------------------------
-  // A flat list, so the only question a drop asks is "above or below this row",
-  // answered by the row's own midpoint. Deliberately NOT the bookmarks tree's
-  // machinery (BookmarksSection): no folders, no subtree guard, no drop-into.
-  // The zone and fade CLASSES are that section's, though — the rows already
-  // carry `bookmark-row`, so `.dragging` / `.drag-above` / `.drag-below` are
-  // painted by sidebar.css with nothing new added.
-  const draggedRef = useRef<string | null>(null);
-  const clearDrag = () => {
-    const marks = ["drag-above", "drag-below", "dragging"];
-    const sel = marks.map((m) => `.current-app-row.${m}`).join(", ");
-    document
-      .querySelectorAll(sel)
-      .forEach((el) => el.classList.remove(...marks));
-  };
-  const isBelow = (e: React.DragEvent<HTMLDivElement>) => {
-    const r = e.currentTarget.getBoundingClientRect();
-    return e.clientY > r.top + r.height / 2;
-  };
-  const dragProps = (path: string): RowDragProps => ({
-    onDragStart: (e) => {
-      draggedRef.current = path;
-      e.currentTarget.classList.add("dragging");
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", path); // Firefox needs a payload to start
-    },
-    onDragOver: (e) => {
-      const from = draggedRef.current;
-      if (from === null || from === path) return;
-      e.preventDefault(); // required to allow a drop
-      e.dataTransfer.dropEffect = "move";
-      const after = isBelow(e);
-      e.currentTarget.classList.toggle("drag-above", !after);
-      e.currentTarget.classList.toggle("drag-below", after);
-    },
-    onDragLeave: (e) =>
-      e.currentTarget.classList.remove("drag-above", "drag-below"),
-    onDrop: (e) => {
-      const from = draggedRef.current;
-      // Reset BEFORE the re-render: it detaches the source row, and Chrome
-      // skips dragend on a removed element (the lesson BookmarksSection
-      // records at its own drop handler).
-      draggedRef.current = null;
-      clearDrag();
-      if (from === null || from === path) return;
-      e.preventDefault();
-      // The whole list, rearranged, goes back in one POST. The rows move at
-      // once (the table re-sliced into the new order and adopted — newest
-      // sequence, so a read in flight from before the drop cannot put the old
-      // order back), then the POST's answer, the server's table in its new
-      // order, is adopted over it. A failed POST refetches, which puts the
-      // rows back where the server still has them. Re-dropping a row where it
-      // already sits sends nothing.
-      const paths = apps.map((a) => a.path);
-      const next = moveSlug(paths, from, path, isBelow(e));
-      if (next.every((p, i) => p === paths[i])) return;
-      const byPath = new Map(entries.map((en) => [en.path, en]));
-      adopt(next.flatMap((p) => byPath.get(p) ?? []));
-      setCurrentAppsOrder(next).then(
-        (r) => {
-          adopt(r.apps ?? []);
-          announceDeskChanged(Date.now());
-        },
-        () => refetch(),
-      );
-    },
-    onDragEnd: () => {
-      // Fires on an Escape-cancelled drag too — the universal cleanup.
-      draggedRef.current = null;
-      clearDrag();
-    },
-  });
 
   // The explorer's "Open in project" button adds a row (POST
   // /api/current-apps/add) and announces it over the window — apps cannot
@@ -927,7 +765,6 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
         key={app.path}
         app={app}
         active={isActive(app)}
-        drag={dragProps(app.path)}
         showEnv={showEnv}
         onRemoved={refetch}
         onGlyphClick={onGlyphClick}
@@ -935,8 +772,8 @@ export default function CurrentAppsSection({ section = "projects" }: { section?:
         onSeen={onSeen}
       />
     ),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- dragProps and isActive close over `apps` / the location
-    [onPath, onCanvas, apps, showEnv, refetch, onGlyphClick, onRowMenu, onSeen],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- isActive closes over the location
+    [onPath, onCanvas, showEnv, refetch, onGlyphClick, onRowMenu, onSeen],
   );
   // The "+ New app" row at the foot of the list opens the /apps composer in a
   // modal (D489). The section ALWAYS renders: a door to "make one" is exactly

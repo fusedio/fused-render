@@ -54,6 +54,7 @@ startup and again here at create time. The user's own later ``claude`` in the
 folder is covered by the published plugin instead (user_plugin.py, D492), which
 is machine-wide and synced only at startup.
 """
+import asyncio
 import logging
 import os
 import shutil
@@ -65,7 +66,7 @@ from typing import Literal
 from fastapi import APIRouter, Body, File, Form, Header, UploadFile
 from fastapi.responses import JSONResponse
 
-from fused_render import app_hidden, app_listing, fused_api_version, schedule
+from fused_render import _platform, app_hidden, app_listing, fused_api_version, schedule
 from fused_render.server.common import _error, _require_fused
 from fused_render.shell.prefs import VALID_DEFAULT_MODELS
 from fused_render.shell.seed import fused_dir
@@ -245,11 +246,11 @@ def _workspace_path_for_recent(root: str, rel: str) -> str | None:
     The store is user-writable. Keep this pure string work: the caller performs
     the targeted filesystem probes only after the path has passed this gate.
     """
-    parts = rel.split("/")
+    parts = rel.replace(os.sep, "/").split("/")
     if (os.path.isabs(rel) or rel.startswith(".") or ".." in parts
             or not 1 <= len(parts) <= app_listing.MAX_APP_DEPTH):
         return None
-    if any(not p for p in parts):
+    if any(not p or os.path.isabs(p) or os.path.splitdrive(p)[0] for p in parts):
         return None
     path = os.path.abspath(os.path.join(root, *parts))
     try:
@@ -376,12 +377,13 @@ def _workspace_rel(root: str, path: str) -> str | None:
     """`path` as a workspace-relative, forward-slash key, or None when it isn't
     inside the workspace. The store's identity: unique at every depth the walk
     lists (1-3), where (tag, name) is not — two depth-3 apps under different
-    shelves of one tag share both. A backslash is a legal filename character
-    and is kept as-is."""
-    rel = os.path.relpath(os.path.abspath(path), os.path.abspath(root))
+    shelves of one tag share both. Normalized to "/" so a key written on
+    Windows matches the split in _app_folder_exists; the replace is os.sep-
+    conditional because on POSIX a backslash is a legal filename character."""
+    rel = _platform.relpath_within(os.path.abspath(path), os.path.abspath(root))
     if rel == "." or rel.startswith(".."):
         return None
-    return rel
+    return rel.replace(os.sep, "/") if os.sep != "/" else rel
 
 
 def _opened_at_by_app() -> dict[str, float]:
@@ -453,12 +455,17 @@ def _app_folder_exists(rel: str) -> bool:
     """Does the workspace-relative app path currently resolve to a folder on
     disk? Rejects a key that would escape the workspace — the store is
     user-writable, so `rel` cannot be trusted to stay under it."""
-    # Segments are vetted individually, and the join happens as ONE
-    # "/"-joined string so no segment can ever reset the base.
-    parts = rel.split("/")
+    # Split on the OS separator too: a user-edited backslash key on Windows
+    # must not smuggle `..` past a "/"-only split. Segments are then vetted
+    # individually — a drive-relative segment like "C:foo" would make a
+    # starred os.path.join discard the workspace base entirely, so anything
+    # carrying a drive or absolute form is rejected, and the join happens as
+    # ONE "/"-joined string (a legal separator on Windows as well) so no
+    # segment can ever reset the base.
+    parts = rel.replace(os.sep, "/").split("/")
     if os.path.isabs(rel) or rel.startswith(".") or ".." in parts:
         return False
-    if any(not p for p in parts):
+    if any(not p or os.path.isabs(p) or os.path.splitdrive(p)[0] for p in parts):
         return False
     return os.path.isdir(os.path.join(fused_dir(), "/".join(parts)))
 
@@ -1198,10 +1205,38 @@ async def api_app_set_preview(
         return guard
     if not path or not os.path.isabs(path):
         return _error("path must be an absolute app folder path")
-    if MountGuard().blocks(path) or not os.path.isdir(path):
-        return _error("not a folder", status=404)
-    if app_listing.app_entry(path) is None:
-        return _error("not an app folder: no page carries the fused-app marker")
+
+    def _check_folder() -> JSONResponse | None:
+        # Stat + reading the app's pages: blocking, so off the event loop.
+        if MountGuard().blocks(path) or not os.path.isdir(path):
+            return _error("not a folder", status=404)
+        if app_listing.app_entry(path) is None:
+            return _error("not an app folder: no page carries the fused-app marker")
+        return None
+
+    def _write(raw: bytes) -> dict | JSONResponse:
+        target = os.path.join(path, app_listing.PREVIEW_IMAGE_NAME)
+        replaced = os.path.isfile(target)
+        tmp = os.path.join(
+            path, f".{app_listing.PREVIEW_IMAGE_NAME}.{os.getpid()}.tmp"
+        )
+        try:
+            with open(tmp, "wb") as fh:
+                fh.write(raw)
+            os.replace(tmp, target)
+        except OSError as exc:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            return _error(
+                f"could not write preview.png: {exc.strerror or exc}", status=500
+            )
+        return {"path": target, "replaced": replaced}
+
+    refused = await asyncio.to_thread(_check_folder)
+    if refused is not None:
+        return refused
     if preview is None:
         return _error("preview.png is required")
     raw = await preview.read(_PREVIEW_MAX_BYTES + 1)
@@ -1209,20 +1244,7 @@ async def api_app_set_preview(
         return _error("preview must be a PNG")
     if len(raw) > _PREVIEW_MAX_BYTES:
         return _error("preview is larger than 8 MiB")
-    target = os.path.join(path, app_listing.PREVIEW_IMAGE_NAME)
-    replaced = os.path.isfile(target)
-    tmp = os.path.join(path, f".{app_listing.PREVIEW_IMAGE_NAME}.{os.getpid()}.tmp")
-    try:
-        with open(tmp, "wb") as fh:
-            fh.write(raw)
-        os.replace(tmp, target)
-    except OSError as exc:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        return _error(f"could not write preview.png: {exc.strerror or exc}", status=500)
-    return {"path": target, "replaced": replaced}
+    return await asyncio.to_thread(_write, raw)
 
 
 @router.get("/api/apps/recents")

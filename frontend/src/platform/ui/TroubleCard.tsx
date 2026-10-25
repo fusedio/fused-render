@@ -16,6 +16,8 @@ import { useState } from "react";
 
 import {
   CLAUDE_INSTALL_COMMAND,
+  CODEX_INSTALL_COMMAND,
+  GEMINI_INSTALL_COMMAND,
   isClaudeTrouble,
   troubleHelpUrl,
   troubleInstructions,
@@ -54,6 +56,79 @@ const SAID: Record<string, { title: string; explain: string }> = {
   // paragraph saying so in three clauses was reassurance rather than
   // information. The error itself and the two copy buttons are the answer.
   raw: { title: "Something went wrong", explain: "" },
+};
+
+// The same three stories told about the OTHER agents, for a card with no text
+// overrides: a Codex card that fell back to "The app can't find Claude Code"
+// beside "Install Codex" named the wrong agent in the one line the user reads
+// first (CodeRabbit on the Codex PR). `raw` is shared — it names nobody.
+const SAID_BY_AGENT: Record<string, Record<string, { title: string; explain: string }>> = {
+  gemini: {
+    notfound: {
+      title: "The app can't find Gemini CLI",
+      explain:
+        "Fused Render uses Google Gemini CLI on this computer for this task, " +
+        "and it could not find it. Either it was never installed, or it is " +
+        "somewhere the app cannot see.",
+    },
+    login: {
+      title: "Gemini isn't signed in",
+      explain:
+        "Gemini CLI is installed but not signed in to your Google account " +
+        "(or given an API key) yet, so nothing can run. Sign in from " +
+        "Preferences → Coding agents, or in a terminal, once.",
+    },
+    limit: {
+      title: "Your Gemini quota was reached",
+      explain:
+        "Nothing is broken — your Google account or API key has a set amount " +
+        "of Gemini use and it is spent for now. The message below says when it resets.",
+    },
+  },
+  codex: {
+    notfound: {
+      title: "The app can't find Codex",
+      explain:
+        "Fused Render uses OpenAI Codex CLI on this computer for this task, " +
+        "and it could not find it. Either it was never installed, or it is " +
+        "somewhere the app cannot see.",
+    },
+    login: {
+      title: "Codex isn't signed in",
+      explain:
+        "Codex is installed but not signed in to your ChatGPT or OpenAI " +
+        "account yet, so nothing can run. Sign in from Preferences → AI & " +
+        "agents, or in a terminal, once.",
+    },
+    limit: {
+      title: "Your Codex usage limit was reached",
+      explain:
+        "Nothing is broken — your ChatGPT plan includes a set amount of Codex " +
+        "use and it is spent for now. The message below says when it resets.",
+    },
+  },
+  copilot: {
+    notfound: {
+      title: "The app can't find GitHub Copilot CLI",
+      explain:
+        "Fused Render uses GitHub Copilot CLI on this computer for this task, " +
+        "and it could not find it. Either it was never installed, or it is " +
+        "somewhere the app cannot see.",
+    },
+    login: {
+      title: "GitHub Copilot isn't signed in",
+      explain:
+        "Copilot is installed but not signed in to your GitHub account yet, so " +
+        "nothing can run. Sign in from Preferences → Coding agents, or run " +
+        "`copilot login` in a terminal, once.",
+    },
+    limit: {
+      title: "Your Copilot request budget was reached",
+      explain:
+        "Nothing is broken — your GitHub Copilot plan includes a set amount of " +
+        "requests and it is spent for now. The message below says when it resets.",
+    },
+  },
 };
 
 function CopyLine({ text, label }: { text: string; label: string }) {
@@ -133,18 +208,34 @@ export function TroubleCard({
    */
   kind?: TroubleKind;
   /** Which agent failed — "claude" when absent (docs/COPILOT_BACKEND.md D13).
-   *  Picks the classifier's subject and the brief's steps, and keeps Claude's
-   *  install line off a Copilot card. */
+   *  Picks the classifier's subject and the brief's steps, and the install
+   *  line: Claude's, Codex's own (docs/CODEX_BACKEND.md D10), Gemini's own
+   *  (docs/GEMINI_BACKEND.md D10), none on a Copilot card. */
   backend?: string;
   /** Extra actions belonging to the calling surface (e.g. "Fix this"). */
   children?: React.ReactNode;
 }) {
   const kind = kindProp ?? troubleKind(error, backend);
-  const fallback = SAID[kind] ?? SAID.raw;
+  const fallback = (backend ? SAID_BY_AGENT[backend]?.[kind] : undefined) ?? SAID[kind] ?? SAID.raw;
   const said = { title: title ?? fallback.title, explain: explain ?? fallback.explain };
   const ctx = { what, error, ...(facts ?? {}), ...(backend ? { backend } : {}) };
   const report = troubleReport(ctx);
   const instructions = troubleInstructions(ctx);
+  const install = backend === "codex"
+    ? { name: "Codex", command: CODEX_INSTALL_COMMAND }
+    : backend === "gemini"
+      ? { name: "Gemini CLI", command: GEMINI_INSTALL_COMMAND }
+      : backend === "copilot"
+        ? null
+        : { name: "Claude Code", command: CLAUDE_INSTALL_COMMAND };
+  // The brief behind the second copy button is written for THIS agent
+  // (`troubleInstructions`), so the button names that agent — a Codex card
+  // labelling its brief "Claude Code instructions" hands the wrong agent's
+  // name to whoever gets the paste.
+  const agentName = backend === "codex" ? "Codex"
+    : backend === "gemini" ? "Gemini"
+      : backend === "copilot" ? "Copilot" : "Claude Code";
+  const copyBriefLabel = `Copy ${agentName} instructions`;
 
   if (compact) {
     return (
@@ -153,7 +244,7 @@ export function TroubleCard({
         <div className="trouble-compact-error">{String(error || "").trim()}</div>
         <div className="trouble-actions">
           <CopyLine text={report} label="Copy the details" />
-          <CopyLine text={instructions} label="Copy Claude Code instructions" />
+          <CopyLine text={instructions} label={copyBriefLabel} />
           <a
             className="version-panel-link"
             href={troubleHelpUrl(kind)}
@@ -188,10 +279,10 @@ export function TroubleCard({
         <pre className="trouble-error">{String(error).trim()}</pre>
       ) : null}
 
-      {kind === "notfound" && backend !== "copilot" && (
+      {kind === "notfound" && install && (
         <div className="trouble-install">
-          <div className="trouble-label">Install Claude Code</div>
-          <CommandLine command={CLAUDE_INSTALL_COMMAND} />
+          <div className="trouble-label">Install {install.name}</div>
+          <CommandLine command={install.command} />
           {/* "try again below" points at the retry button, which only some
               callers offer (the chat's boot failure has none — reloading the
               page is its own retry) — said only where that button exists, so
@@ -213,7 +304,7 @@ export function TroubleCard({
             is a brief for an agent that can act on it — the goal, the checks
             worth running first, and what "fixed" looks like. Pasting an error
             alone gets a guess back. */}
-        <CopyLine text={instructions} label="Copy Claude Code instructions" />
+        <CopyLine text={instructions} label={copyBriefLabel} />
         <a
           className="version-panel-link"
           href={troubleHelpUrl(kind)}

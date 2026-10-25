@@ -468,8 +468,8 @@ test("a cancelled job's row navigates AND dismisses itself too", async () => {
   await act(async () => {
     await Promise.resolve();
   });
-  // `/claude-config` is a legacy route: it lands on the Claude Code group of Preferences.
-  expect(url).toBe("/preferences?tab=claude");
+  // The row opens the Claude Config page.
+  expect(url).toBe("/claude-config");
   expect(dismissCalls).toBe(1);
 });
 

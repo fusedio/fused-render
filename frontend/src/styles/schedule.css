@@ -132,6 +132,24 @@ body.embed .schedule-page {
   margin: 0;
 }
 
+/* SHORT WINDOWS DROP THE PAGE TITLE (Workspace scope, Unit 7). Under about
+   480px of height the "Tasks" h1 is a row of the viewport spent on a word the
+   tab already says, and the rows are what the height is for. Visually hidden
+   rather than removed, so the page keeps its heading for a screen reader. The
+   group headers are a different element and stay. */
+@media (max-height: 480px) {
+  .schedule-page > .schedule-header {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
+
 .schedule-page > .prefs-section.schedule-main {
   flex: 1 1 auto;
   min-height: 0;
@@ -335,6 +353,21 @@ body.embed .schedule-page {
 .schedule-view-btn:not(.is-active),
 .prefs-section .schedule-view-btn:not(.is-active) {
   color: var(--fg-muted);
+}
+
+/* "Beta" after the Calendar word: the sidebar's own Beta chip (sidebar.css), so
+   the tag reads the same in both places. It lives inside the label span, so it
+   folds away with the word when the toolbar is short on room. The rule is
+   addressed by the button's `data-view` rather than by `.schedule-fit-lbl`: it
+   is layout for the tag, not a fold rule, and every `.schedule-fit-lbl` rule in
+   this file is scoped to a `[data-fit]` toolbar. */
+.schedule-view-btn[data-view="calendar"] > span {
+  display: inline-flex;
+  align-items: center;
+}
+
+.schedule-beta-tag {
+  margin-left: 6px;
 }
 
 .schedule-view-btn > svg {
@@ -1297,79 +1330,6 @@ body.embed .schedule-page {
   margin-left: 26px;
 }
 
-/* The native disclosure marker is the platform's, not ours: a black WebKit
-   triangle sat outdented beside an accent text-button and read as debris
-   (audit 2026-08-16). Hidden, and replaced by the app's own chevron mark
-   (ICON_CHEVRON, the one the task list opens its threads with), so the row is
-   one object that rotates.
-
-   QUIET, not accent (Akshil, 2026-08-18). This is the least-used control on the
-   card and it was the loudest thing on it — the accent is Save's, and a yellow
-   text-button beside a muted form read as an alert. Muted text that comes
-   forward on hover says "there is more here" without competing with the fields
-   above it. */
-.schedule-form-more summary {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  cursor: pointer;
-  font-size: 13px;
-  color: var(--fg-muted);
-  user-select: none;
-  list-style: none;
-}
-
-.schedule-form-more summary::-webkit-details-marker {
-  display: none;
-}
-
-/* A BOX, not a glyph on the baseline. The old ▸ was text: it sat on the
-   baseline while the label sat on its x-height, and its optical centre moved as
-   it rotated. A fixed square with the mark centred in it keeps the chevron on
-   the label's centre line in both states, and gives the rotation something
-   square to turn inside. */
-.schedule-form-more-caret {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 13px;
-  height: 13px;
-  flex: none;
-  /* transform alone: the summary's colour transitions on hover, and one rule
-     owning both smears the mark. */
-  transition: transform 0.12s ease-out;
-}
-
-.schedule-form-more[open] .schedule-form-more-caret {
-  transform: rotate(90deg);
-}
-
-.schedule-form-more summary:hover {
-  color: var(--fg);
-}
-
-/* Keyboard focus has to be visible on a row with no chrome of its own — the
-   summary is the control, and Tab must land somewhere the eye can find. */
-.schedule-form-more summary:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-  border-radius: 4px;
-}
-
-/* THE GAP UNDER THE WHEN-ROW (Akshil, 2026-08-23). More options holds two
-   unrelated questions now — when this runs, and what it is allowed to do — and
-   with the when-row moved in they sat flush, so "Permissions" read as a label
-   belonging to the time above it rather than as the next thing. One space, at
-   the size the card already spaces its blocks by; the first child never takes
-   it, so a card whose fold contains only Permissions is unchanged. */
-.schedule-form-more > * + * {
-  margin-top: 12px;
-}
-
-.schedule-form-more[open] summary {
-  margin-bottom: 10px;
-}
-
 /* Reference-card refinements (Akshil, 2026-08-14, Google new-event screenshot):
    quiet text-like controls that surface on hover, a pill Save. (The thick accent
    bar this section used to put under the title is gone with the box — see the
@@ -1403,18 +1363,6 @@ body.embed .schedule-page {
 /* -- Recent paths: the path field's dropdown ------------------------------
    Folders the user recently scheduled against, with Browse as the last row.
    Floats over the form (absolute + z) so opening it never reflows the card. */
-
-.schedule-recents-wrap {
-  position: relative;
-  flex: 1;
-  min-width: 0;
-  display: flex;
-}
-
-.schedule-recents-wrap .field-control {
-  flex: 1;
-  min-width: 0;
-}
 
 .schedule-recents {
   position: absolute;
@@ -1667,6 +1615,13 @@ body.embed .schedule-page {
   flex: none;
   width: 14px;
   height: 14px;
+}
+
+/* The check in the "Remember last folder" row centres in the gutter. */
+.schedule-recents-remember .schedule-picker-gutter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 /* -- Google-style when-row: date + time fields with dropdowns -------------- */
@@ -3815,10 +3770,9 @@ input.schedule-when-field {
    its body (`.tasks-msg.is-unread` in tasks.css) — so a card and a message row make
    the same claim the same way, one about a thread and one about a turn.
 
-   NOT ON THE LIST ROW. A row carries the ring-dot and that is its primary signal;
-   bolding its title as well would state one fact twice on one line. The Board has
-   no ring to spare on a quiet card, which is the whole reason it needs a different
-   mark, so the two views differ here in order to agree everywhere else. */
+   AND ON THE LIST ROW AND THE CARDS WALL TOO since 2026-10-23 (Akshil: "if it is
+   unread we do bold, once it is read we unbold") — `.tasks-title.is-unread`,
+   `.task-card-title.is-unread`. One weight for unread on every view. */
 .schedule-tv-card-title.is-unread {
   font-weight: 600;
 }
@@ -4237,6 +4191,9 @@ input.schedule-when-field {
 .schedule-toolbar[data-fit] {
   flex-wrap: nowrap;
   flex: 0 0 auto;
+  /* The task rows' right inset (14px, the row's own padding), so + New task never
+     touches the edge at a narrow width. */
+  padding-right: 14px;
 }
 
 /* NO `min-width: 0` on the filter group while the ladder is live: the zero
@@ -4247,6 +4204,12 @@ input.schedule-when-field {
    the group may honestly go. */
 .schedule-toolbar[data-fit] .schedule-tv-filters {
   min-width: auto;
+  /* WIDTH THE LADDER FREES GOES TO THE SEARCH, not to the empty gap the toggle's
+     auto margin would otherwise hold: the group grows into the free space (an
+     auto margin only takes what growth leaves), its controls stay at its right
+     end, and the field below grows back towards its 260 basis. */
+  flex: 1 1 auto;
+  justify-content: flex-end;
 }
 
 /* The search is the toolbar's designed slack, and it publishes two numbers:
@@ -4289,9 +4252,10 @@ input.schedule-when-field {
   --fit-natural: 140px;
   /* Opens at 260 and gives that slack up first — everything between the basis
      and the floor is spent before any word in the row folds. */
-  flex: 0 1 260px;
+  flex: 1 1 260px;
   width: auto;
   min-width: var(--fit-natural);
+  max-width: 260px;
   /* A SIZE CONTAINER, so the rule below can ask how wide this field actually
      ended up — see it for what the question is for. */
   container: tasks-search / inline-size;
@@ -4330,11 +4294,21 @@ input.schedule-when-field {
    matches a toolbar with no attribute at all — which is precisely the flag-off
    page — so the view labels folded for readers who had opted out of the whole
    feature (measured live, 2026-09-13). A negation is not a scope. */
-.schedule-toolbar[data-fit]:not([data-fit="0"]) .schedule-view-seg .schedule-fit-lbl {
+.schedule-toolbar:is(
+    [data-fit="5"],
+    [data-fit="6"],
+    [data-fit="7"],
+    [data-fit="8"],
+    [data-fit="9"],
+    [data-fit="10"]
+  )
+  .schedule-view-seg
+  .schedule-fit-lbl {
   display: none;
 }
 
 .schedule-toolbar:is(
+    [data-fit="1"],
     [data-fit="2"],
     [data-fit="3"],
     [data-fit="4"],
@@ -4342,7 +4316,8 @@ input.schedule-when-field {
     [data-fit="6"],
     [data-fit="7"],
     [data-fit="8"],
-    [data-fit="9"]
+    [data-fit="9"],
+    [data-fit="10"]
   )
   .schedule-tv-filter-btn
   .schedule-fit-lbl {
@@ -4355,7 +4330,8 @@ input.schedule-when-field {
     [data-fit="6"],
     [data-fit="7"],
     [data-fit="8"],
-    [data-fit="9"]
+    [data-fit="9"],
+    [data-fit="10"]
   )
   .schedule-new
   .schedule-fit-lbl {
@@ -4381,13 +4357,15 @@ input.schedule-when-field {
    moment the width does. The `--fit-natural` override, the `:focus-within`
    expansion, the transparent text and the "a filter is on" dot went with it. */
 .schedule-toolbar:is(
+    [data-fit="2"],
     [data-fit="3"],
     [data-fit="4"],
     [data-fit="5"],
     [data-fit="6"],
     [data-fit="7"],
     [data-fit="8"],
-    [data-fit="9"]
+    [data-fit="9"],
+    [data-fit="10"]
   )
   .schedule-tv-search:not(.schedule-tv-pop-search) {
   display: none;
@@ -4414,7 +4392,12 @@ input.schedule-when-field {
    either — it left two rungs earlier, and ⌘K answers the same question from
    anywhere, which no filter trigger does. Everything else is a lens, and a lens
    you cannot reach at 300px is a lens you set at 1400 and left on. */
-.schedule-toolbar:is([data-fit="6"], [data-fit="7"], [data-fit="8"], [data-fit="9"])
+.schedule-toolbar:is(
+    [data-fit="7"],
+    [data-fit="8"],
+    [data-fit="9"],
+    [data-fit="10"]
+  )
   .schedule-tv-filters
   .schedule-tv-pop-wrap {
   display: none;
@@ -4425,21 +4408,47 @@ input.schedule-when-field {
    an empty flex box — nothing to see, and still charging the row one gap. It is
    the same rung, not a new one: the group is gone exactly when the last thing
    inside it is (design.md, Polish batch 5). */
-.schedule-toolbar:is([data-fit="6"], [data-fit="7"], [data-fit="8"], [data-fit="9"])
+.schedule-toolbar:is(
+    [data-fit="7"],
+    [data-fit="8"],
+    [data-fit="9"],
+    [data-fit="10"]
+  )
   .schedule-tv-filters {
   display: none;
 }
 
-.schedule-toolbar:is([data-fit="7"], [data-fit="8"], [data-fit="9"])
+.schedule-toolbar:is(
+    [data-fit="8"],
+    [data-fit="9"],
+    [data-fit="10"]
+  )
   .schedule-view-btn[data-view="calendar"] {
   display: none;
 }
 
-.schedule-toolbar:is([data-fit="8"], [data-fit="9"]) .schedule-view-btn[data-view="cards"] {
+.schedule-toolbar:is([data-fit="9"], [data-fit="10"]) .schedule-view-btn[data-view="cards"] {
   display: none;
 }
 
-.schedule-toolbar[data-fit="9"] .schedule-view-btn[data-view="board"] {
+.schedule-toolbar[data-fit="10"] .schedule-view-btn[data-view="board"] {
+  display: none;
+}
+
+/* THE COG GOES INTO THE OVERFLOW (rung 3). The `…` is always in the markup and
+   is drawn only once the cog has left: it takes the cog's seat and its auto
+   margin, so the filters and + New task stay at the right edge. */
+.schedule-toolbar[data-fit]:is(
+    [data-fit="3"],
+    [data-fit="4"],
+    [data-fit="5"],
+    [data-fit="6"],
+    [data-fit="7"],
+    [data-fit="8"],
+    [data-fit="9"],
+    [data-fit="10"]
+  )
+  .schedule-view-edit {
   display: none;
 }
 
@@ -4447,7 +4456,16 @@ input.schedule-when-field {
    with a word's worth of side padding and becomes a square target of the same
    height as its neighbours. The caption moves to the tooltip the button already
    carries (`title`), which is where a label goes when it cannot be ink. */
-.schedule-toolbar[data-fit]:not([data-fit="0"]) .schedule-view-seg .schedule-view-btn {
+.schedule-toolbar:is(
+    [data-fit="5"],
+    [data-fit="6"],
+    [data-fit="7"],
+    [data-fit="8"],
+    [data-fit="9"],
+    [data-fit="10"]
+  )
+  .schedule-view-seg
+  .schedule-view-btn {
   padding-left: 8px;
   padding-right: 8px;
 }
@@ -4463,6 +4481,7 @@ input.schedule-when-field {
    off without opening the menu first; hiding either would make a narrow page a
    page you cannot get your own filter off. */
 .schedule-toolbar:is(
+    [data-fit="1"],
     [data-fit="2"],
     [data-fit="3"],
     [data-fit="4"],
@@ -4470,7 +4489,8 @@ input.schedule-when-field {
     [data-fit="6"],
     [data-fit="7"],
     [data-fit="8"],
-    [data-fit="9"]
+    [data-fit="9"],
+    [data-fit="10"]
   )
   .schedule-tv-filter-btn {
   padding-left: 8px;
@@ -4483,7 +4503,8 @@ input.schedule-when-field {
     [data-fit="6"],
     [data-fit="7"],
     [data-fit="8"],
-    [data-fit="9"]
+    [data-fit="9"],
+    [data-fit="10"]
   )
   .schedule-new {
   /* A SQUARE, not a pill with its word taken out. `width` and not `min-width`:
@@ -4664,6 +4685,39 @@ input.schedule-when-field {
    hover"). It was hover-only for three days (#1704) and read as a control
    that was not there. */
 
+.schedule-toolbar .schedule-view-more {
+  display: none;
+  margin-right: auto;
+  margin-left: -6px;
+  flex: 0 0 auto;
+  position: relative;
+}
+.schedule-toolbar:is(
+    [data-fit="3"],
+    [data-fit="4"],
+    [data-fit="5"],
+    [data-fit="6"],
+    [data-fit="7"],
+    [data-fit="8"],
+    [data-fit="9"],
+    [data-fit="10"]
+  )
+  .schedule-view-more {
+  display: inline-flex;
+}
+.schedule-view-more-btn {
+  padding: 0 6px;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--fg-muted);
+}
+.schedule-view-more-btn:hover:not(:disabled) {
+  color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 6%, transparent);
+}
+
 .schedule-view-editor {
   display: flex;
   flex: 1 1 auto;
@@ -4827,6 +4881,17 @@ input.schedule-when-field {
   padding-left: 16px;
   font-size: 12px;
   color: var(--fg-muted);
+}
+.schedule-view-sort {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.schedule-view-sort-lbl {
+  color: var(--fg-muted);
+  font-size: 12px;
+  white-space: nowrap;
 }
 .schedule-view-editor-end {
   display: flex;

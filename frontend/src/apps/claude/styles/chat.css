@@ -441,15 +441,20 @@
 .chat-root.chat-compact .thinking,
 .chat-root.chat-compact .perm .perm-head,
 .chat-root.chat-compact .perm .perm-status,
+.chat-root.chat-compact .perm .gate-head,
+.chat-root.chat-compact .perm .gate-status,
 .chat-root.chat-compact .perm .qopt,
 .chat-root.chat-compact .perm .plan-body {
   font-size: var(--c-fs-body);
 }
 .chat-root.chat-compact .turn.note,
+.chat-root.chat-compact .turn.compact,
 .chat-root.chat-compact .turn.working .meta,
 .chat-root.chat-compact .turn.assistant .dot,
 .chat-root.chat-compact .perm .perm-sub,
 .chat-root.chat-compact .perm .perm-btn,
+.chat-root.chat-compact .perm .gate-sub,
+.chat-root.chat-compact .perm .gate-btn,
 .chat-root.chat-compact .toolchip .chip-sub,
 .chat-root.chat-compact .toolchip .chip-label {
   font-size: var(--c-fs-meta);
@@ -512,11 +517,8 @@
 .chat-root.chat-compact .turn {
   margin-bottom: 12px;
 }
-/* The tail pin's opaque ground has to reach the tile's own padding, which is
-   12px here rather than the full column's 20px (styles/transcript.css). */
-.chat-root.chat-compact .chat-tailpin.is-pinned {
-  margin: 0 -12px;
-  padding: 8px 12px 0;
+.chat-root.chat-compact .chat-tailpin.has-open {
+  padding-top: 8px;
 }
 
 /* CHAT ONLY (`chat_only=1`): no pane column and no divider, from the first
@@ -532,9 +534,49 @@
    HOST draws. The strip and the top bar go; THE COMPOSER STAYS, which is the
    whole difference from compact — answering a question without leaving the wall
    is what the popup exists for (T:1434-1438). */
-.chat-root.chat-peek .c-topbar,
 .chat-root.chat-peek .c-anntools {
   display: none;
+}
+/* A peek that opts in (`headerInPeek`) keeps a slim one-line top bar: worktree
+   menu, hint chip, session id and the host's extra seat. */
+.chat-root.chat-peek:not(.chat-peek-head) .c-topbar {
+  display: none;
+}
+.chat-root.chat-peek-head .c-topbar {
+  min-height: 0;
+  padding: 6px 12px;
+  gap: 8px;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+.chat-root.chat-peek-head .c-topbar .chat-worktree-btn {
+  min-width: 0;
+  max-width: 100%;
+}
+.chat-root.chat-peek-head .c-topbar .chat-worktree-menu {
+  display: flex;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.chat-root.chat-peek-head .c-topbar .chat-worktree-hint {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.chat-root.chat-peek-head .c-topbar .c-tb-slim-extra {
+  display: flex;
+  flex: 0 0 auto;
+}
+/* The gap does the pushing to the right edge; it is chip-tall (18px line, 2px
+   padding and 1px border each side) so the row has chip height before any chip
+   has loaded. */
+.chat-root.chat-peek-head .c-topbar .c-tb-slim-gap {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 24px;
+}
+.chat-root.chat-peek-head .c-topbar .chat-worktree-menu,
+.chat-root.chat-peek-head .c-topbar .chat-worktree-hint {
+  margin-left: 0;
 }
 /* Same halving as compact, for the same reason: the head above is the host's. */
 .chat-root.chat-peek .chat-log {
@@ -655,4 +697,102 @@
 .chat-root .c-chat.dropping {
   box-shadow: inset 0 0 0 2px var(--c-accent);
   background: color-mix(in srgb, var(--c-accent) 6%, var(--c-panel));
+}
+
+/* The PR chip (platform/ui/TaskPrChip) in the chat header: the slim peek
+   header, the Task page and the explorer's Claude pane all draw it. */
+.chat-root .task-pr-chips {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.chat-root .task-pr-chip,
+.chat-root .task-pr-more {
+  display: inline-flex;
+  align-items: center;
+  margin: 0;
+  padding: 2px 8px;
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 18px;
+  white-space: nowrap;
+  background: none;
+  border: 1px solid var(--c-border);
+  border-radius: 999px;
+  color: var(--c-dim);
+  text-decoration: none;
+  cursor: pointer;
+}
+.chat-root .task-pr-chip:hover,
+.chat-root .task-pr-more:hover {
+  color: var(--c-fg);
+  border-color: var(--c-border-strong);
+}
+
+/* THE MERGED HEAD (`mergedHead`, the explorer's folder sidebar): `Back` leads
+   the identity row and the menu closes it, so the chat draws one header line.
+   The title gives way first; the two controls never shrink. */
+.chat-root .c-topbar.c-topbar-merged {
+  min-height: 0;
+  padding: 6px 12px;
+  gap: 8px;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+.chat-root .c-topbar-merged .c-back {
+  padding: 2px 8px;
+  line-height: 1.5;
+}
+.chat-root .c-topbar-merged .task-side-peek-who {
+  flex: 1 1 0;
+  min-width: 6em;
+  overflow: hidden;
+}
+.chat-root .c-topbar-merged .task-side-peek-agent {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+/* The pill must shrink with its wrapper, or it overflows onto the hint chip. */
+.chat-root .c-topbar-merged .chat-worktree-menu {
+  display: flex;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.chat-root .c-topbar-merged .chat-worktree-menu .chat-worktree-btn {
+  max-width: 100%;
+  min-width: 0;
+}
+.chat-root .c-topbar-merged .chat-worktree-hint {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 180px;
+  overflow: hidden;
+}
+.chat-root .c-topbar .c-tb-extra {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+}
+.chat-root .c-topbar-merged .c-tb-tail {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+/* The seat with its shutter open (`ScreenshotSeat capturing`): the word has
+   already turned to "Capturing…"; the glyph pulses so a wait of seconds reads
+   as work, not as a dead button. */
+.chat-root .c-anncta .c-viewshot.is-capturing svg {
+  animation: c-shutter 1s ease-in-out infinite;
+}
+@keyframes c-shutter {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chat-root .c-anncta .c-viewshot.is-capturing svg {
+    animation: none;
+  }
 }

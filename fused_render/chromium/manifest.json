@@ -1,0 +1,8 @@
+{
+  "_comment": "What the Chromium engine is built against. `cef_version` is the CEF binary distribution (cef-builds.spotifycdn.com) native/build.sh fetches and the app's engine.json must name; `cef_sha1` is the SHA-1 the CDN publishes beside each tarball, copied here so build.sh verifies what it fetched (and its cache) against a value the repository controls. x86_64 is null: Intel Macs ship no engine (owner, 2026-10-21). The engine ships inside the DMG (D1415, docs/CHROMIUM_ENGINE.md); there is no separate artifact or version.",
+  "cef_version": "139.0.37+gb457b0b+chromium-139.0.7258.139",
+  "cef_sha1": {
+    "arm64": "40f3c125e98223efa3616f9049f7e3a11e173e4f",
+    "x86_64": null
+  }
+}

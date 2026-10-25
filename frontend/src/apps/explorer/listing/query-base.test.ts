@@ -20,6 +20,8 @@ describe("escapesBase", () => {
     ["~/a/*/b.csv"],
     ["/tmp"],
     ["/tmp/abc.txt"],
+    ["C:/x"],
+    ["C:\\x"],
     ["../sibling/*.json"],
   ])("%s escapes the box root", (query) => {
     expect(escapesBase(query)).toBe(true);
@@ -32,6 +34,11 @@ describe("escapesBase", () => {
 describe("escapesFsPath", () => {
   const FS_PATH = "/Users/iamsdas";
   const HOME = "/Users/iamsdas";
+
+  test("a backslash in a '/'-rooted query is a literal filename character", () => {
+    expect(escapesFsPath("/tmp/a\\b/*.csv", "/tmp/a\\b", HOME)).toBe(false);
+    expect(escapesFsPath("/tmp/a\\b/*.csv", "/tmp/a/b", HOME)).toBe(true);
+  });
 
   test.each([
     ["*/*.json"], // relative — escapesBase itself already says no

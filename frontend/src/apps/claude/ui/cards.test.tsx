@@ -138,15 +138,65 @@ test("PermCard offers permChoices in order and sends the click's verdict", async
     />,
   );
   expect(labels(r)).toEqual([
-    "Allow",
-    "Allow all Edit in this reply",
-    "Allow, and let Claude decide from here",
+    "Approve",
+    "Always approve",
     "Deny",
+    "Allow, and let Claude decide from here",
   ]);
-  expect(textOf(withClass(r, "perm-head")[0])).toBe("Claude wants to use Edit");
-  press(r, "Allow all Edit in this reply");
+  expect(textOf(withClass(r, "gate-head")[0])).toBe("Claude wants to use Edit");
+  press(r, "Always approve");
   await act(async () => {});
   expect(sent).toEqual([["req-1", "allow", "session", undefined]]);
+});
+
+test("PermCard shows the model's risk read above the payload, a placeholder while pending", () => {
+  const ready = mount(
+    <PermCard
+      row={row({ severity: "high", risk_summary: "Deletes the build folder.", risk_state: "ready" })}
+      onDecide={noop}
+    />,
+  );
+  expect(textOf(withClass(ready, "gate-pill")[0])).toBe("High risk");
+  expect(String(withClass(ready, "gate-pill")[0].props.className)).toContain("high");
+  expect(textOf(withClass(ready, "gate-sum")[0])).toBe("Deletes the build folder.");
+  const pending = mount(<PermCard row={row({ risk_state: "pending" })} onDecide={noop} />);
+  expect(textOf(withClass(pending, "gate-risk")[0])).toBe("Assessing risk…");
+  for (const state of ["failed", "", undefined] as const) {
+    const r = mount(<PermCard row={row({ risk_state: state })} onDecide={noop} />);
+    expect(withClass(r, "gate-risk")).toHaveLength(0);
+  }
+});
+
+test("PermCard puts the leftover input in a collapsed Details disclosure, under the payload", () => {
+  const r = mount(
+    <PermCard row={row({ tool: "Bash", input: { command: "ls", timeout: 600000 } })} onDecide={noop} />,
+  );
+  const det = all(r, "details");
+  expect(det).toHaveLength(1);
+  expect((det[0].props as Props).open).toBeFalsy();
+  expect(textOf(det[0])).toContain("timeout");
+  const pre = all(r, "pre").map((n) => textOf(n));
+  expect(pre[0]).toBe("ls");
+});
+
+test("PermCard renders through the shared card and keeps the root hooks", () => {
+  const r = mount(<PermCard row={row()} onDecide={noop} />);
+  const root = r.toJSON() as Json;
+  const cls = String((root.props as Props).className).split(" ");
+  expect(cls).toEqual(expect.arrayContaining(["gate-card", "turn", "perm"]));
+  expect((root.props as Props)["data-perm-id"]).toBe("req-1");
+  const link = all(r, "button").find((b) => textOf(b) === "Allow, and let Claude decide from here");
+  expect(String((link?.props as Props).className)).toContain("is-link");
+});
+
+test("PermCard draws no pill for a severity it does not know", () => {
+  const r = mount(
+    <PermCard
+      row={row({ severity: "critical" as never, risk_summary: "Odd.", risk_state: "ready" })}
+      onDecide={noop}
+    />,
+  );
+  expect(withClass(r, "gate-pill")).toHaveLength(0);
 });
 
 test("PermCard escalation carries the mode; Deny carries neither", async () => {
@@ -177,9 +227,9 @@ test("PermCard puts the buttons back when the send fails — the run is still bl
   const r = mount(
     <PermCard row={row({ tool: "Read", input: { file_path: "/a" } })} onDecide={noop} />,
   );
-  press(r, "Allow");
+  press(r, "Approve");
   await act(async () => {});
-  expect(textOf(withClass(r, "perm-status")[0])).toBe("sending…");
+  expect(textOf(withClass(r, "gate-status")[0])).toBe("sending…");
   act(() => {
     r.update(
       <PermCard
@@ -192,7 +242,7 @@ test("PermCard puts the buttons back when the send fails — the run is still bl
       />,
     );
   });
-  expect(textOf(withClass(r, "perm-status")[0])).toBe("Could not send that: bridge is gone");
+  expect(textOf(withClass(r, "gate-status")[0])).toBe("Could not send that: bridge is gone");
   expect(all(r, "button").every((b) => !(b.props as Props).disabled)).toBe(true);
 });
 
@@ -205,9 +255,9 @@ test("a rejecting onDecide is still handled — a direct caller is not the contr
       }}
     />,
   );
-  press(r, "Allow");
+  press(r, "Approve");
   await act(async () => {});
-  expect(textOf(withClass(r, "perm-status")[0])).toBe("Could not send that: bridge is gone");
+  expect(textOf(withClass(r, "gate-status")[0])).toBe("Could not send that: bridge is gone");
   expect(all(r, "button").every((b) => !(b.props as Props).disabled)).toBe(true);
 });
 
@@ -244,16 +294,17 @@ test("PermCard disables every button while the answer is in flight", () => {
       }
     />,
   );
-  press(r, "Allow");
+  press(r, "Approve");
   expect(all(r, "button").every((b) => (b.props as Props).disabled === true)).toBe(true);
-  expect(textOf(withClass(r, "perm-status")[0])).toBe("sending…");
+  expect(textOf(withClass(r, "gate-status")[0])).toBe("sending…");
   release();
 });
 
 test("a resolved PermCard is a receipt: past tense, no controls, the landed verdict", () => {
   const cases: Array<[Partial<PermissionRow>, string]> = [
     [{ decision: "allow" }, "✓ Allowed"],
-    [{ decision: "allow", scope: "session" }, "✓ Allowed — not asking again for Edit in this reply"],
+    [{ decision: "allow", scope: "session" }, "✓ Allowed — not asking again for Edit in this chat"],
+    [{ decision: "allow", scope: "exact" }, "✓ Allowed — this exact command, for the rest of this chat"],
     [{ decision: "allow", mode: "auto" }, "✓ Allowed — approvals set to “Claude decides”"],
     [{ decision: "expired" }, "◦ Unanswered — the reply ended before you decided"],
     [{ decision: "deny" }, "✗ Denied"],
@@ -261,8 +312,8 @@ test("a resolved PermCard is a receipt: past tense, no controls, the landed verd
   for (const [over, said] of cases) {
     const r = mount(<PermCard row={row(over)} onDecide={noop} />);
     expect(labels(r)).toEqual([]);
-    expect(textOf(withClass(r, "perm-head")[0])).toBe("Claude wanted to use Edit");
-    expect(textOf(withClass(r, "perm-status")[0])).toBe(said);
+    expect(textOf(withClass(r, "gate-head")[0])).toBe("Claude wanted to use Edit");
+    expect(textOf(withClass(r, "gate-status")[0])).toBe(said);
   }
 });
 
@@ -276,7 +327,7 @@ test("a held answer latches the card, from the click AND from the server", () =>
     <PermCard row={row({ decision: "allow", queuedAhead: "TASK-041" })} onDecide={noop} />,
   );
   expect(labels(clicked)).toEqual([]);
-  expect(textOf(withClass(clicked, "perm-status")[0])).toBe(
+  expect(textOf(withClass(clicked, "gate-status")[0])).toBe(
     "◷ Answer queued — runs next after TASK-041",
   );
 
@@ -286,8 +337,8 @@ test("a held answer latches the card, from the click AND from the server", () =>
   // `held` rides on the poll's row, so the server is what says so here.
   const restored = mount(<PermCard row={row({ held: true })} onDecide={noop} />);
   expect(labels(restored)).toEqual([]);
-  expect(textOf(withClass(restored, "perm-head")[0])).toBe("Claude wanted to use Edit");
-  expect(textOf(withClass(restored, "perm-status")[0])).toBe(
+  expect(textOf(withClass(restored, "gate-head")[0])).toBe("Claude wanted to use Edit");
+  expect(textOf(withClass(restored, "gate-status")[0])).toBe(
     "◷ Answer queued — runs next in this folder",
   );
 });
@@ -634,10 +685,10 @@ test("a DELIVERED verdict outranks a stale `held` marker, on all three cards", (
     <PermCard row={row({ decision: "allow", held: true })} onDecide={noop} />,
   );
   expect(labels(allowed)).toEqual([]);
-  expect(textOf(withClass(allowed, "perm-status")[0])).toBe("✓ Allowed");
+  expect(textOf(withClass(allowed, "gate-status")[0])).toBe("✓ Allowed");
 
   const denied = mount(<PermCard row={row({ decision: "deny", held: true })} onDecide={noop} />);
-  expect(textOf(withClass(denied, "perm-status")[0])).toBe("✗ Denied");
+  expect(textOf(withClass(denied, "gate-status")[0])).toBe("✗ Denied");
 
   const answered = mount(
     <QuestionCard
@@ -670,7 +721,7 @@ test("a DELIVERED verdict outranks a stale `held` marker, on all three cards", (
   const clicked = mount(
     <PermCard row={row({ decision: "allow", queuedAhead: "TASK-041" })} onDecide={noop} />,
   );
-  expect(textOf(withClass(clicked, "perm-status")[0])).toBe(
+  expect(textOf(withClass(clicked, "gate-status")[0])).toBe(
     "◷ Answer queued — runs next after TASK-041",
   );
 });

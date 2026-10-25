@@ -78,8 +78,14 @@
  *     itself is a namespace, not a function. The old callable
  *     `fused.ai(prompt)` is GONE, not aliased (D631) — a page still calling
  *     it gets "fused.ai is not a function".
- *     opts.provider: "local" | "apple" | "claude" — which tier serves the
- *     call. Omitted, the model decides: the apple tier's PINNED ids
+ *     opts.provider: "local" | "apple" | "claude" | "copilot" | "codex" |
+ *     "gemini" — which tier serves the call. The last three (D1433) are
+ *     the agent CLIs, run as tool-less one-shots (text only; `history`,
+ *     `raw`, `images` rejected like Claude's tier; no streaming — onChunk
+ *     gets the whole text once; 409 `ai_unavailable` with
+ *     `reason: "backend_disabled"` while that agent is off in
+ *     Preferences; omitted `model` = the agent's catalog default).
+ *     Omitted provider: the model decides: the apple tier's PINNED ids
  *     ("afm-text" here, "afm-speech" on .transcribe, "afm-embedding" on
  *     .embed — D700) name their tier outright, then the shape rule applies
  *     (a repo id or .gguf filename is weights on this machine, anything else
@@ -3934,11 +3940,17 @@
       payload.expected_mtime = opts.expectedMtime;
     }
     if (opts && opts.create) payload.create = true;
-    return fetch("/api/fs/write", {
+    const init = {
       method: "POST",
       headers: callHeaders({ "Content-Type": "application/json", "X-Fused": "1" }),
       body: JSON.stringify(payload),
-    })
+    };
+    // `keepalive`: the request outlives its document — a last write from a
+    // pagehide handler (an editor frame being torn down with a dirty buffer)
+    // would otherwise be aborted with the frame. Small bodies only (the
+    // browser caps keepalive requests at 64 KB in flight).
+    if (opts && opts.keepalive) init.keepalive = true;
+    return fetch("/api/fs/write", init)
       .then((res) => res.json().then((data) => ({ res, data })))
       .then(({ res, data }) => {
         if (res.status === 409 && payload.create) {
@@ -4520,6 +4532,11 @@
   // (view, embed, standalone /render) gets it for free.
   let autoReloadEnabled = true;
   const watched = new Set();
+  // fused.onFileChanged listeners: a page that opted OUT of reloading (the
+  // code editor) but still wants to hear that a watched file moved, to fold
+  // the new text into its live view instead of reloading over the cursor.
+  // While any is registered the change socket stays open with reload off.
+  const fileChangeListeners = new Set();
   let es = null;
   let started = false;       // watching begins on DOMContentLoaded (LR-5)
   let resubscribeTimer = null;
@@ -4575,7 +4592,7 @@
       es = null; // null first so old.onclose knows the close was deliberate
       old.close();
     }
-    if (!autoReloadEnabled || watched.size === 0) return;
+    if ((!autoReloadEnabled && fileChangeListeners.size === 0) || watched.size === 0) return;
     const query = [...watched].map((p) => "path=" + encodeURIComponent(p)).join("&");
     // WebSocket, not EventSource (D74): SSE holds an HTTP/1.1 socket per open
     // pane and Chrome caps those at 6 per origin — a 6-pane panel starved
@@ -4592,6 +4609,16 @@
         return;
       }
       if (data.keepalive) return;
+      // Listeners first: a page that turned reloading off still hears the
+      // change (the code editor rebases the disk text into its buffer).
+      for (const cb of [...fileChangeListeners]) {
+        try {
+          cb({ path: data.path, mtime: data.mtime });
+        } catch (e) {
+          /* one listener's throw must not take the feed down */
+        }
+      }
+      if (!autoReloadEnabled) return;
       // Any change (including deletion, mtime: null → LR-6) reloads after a
       // 300 ms debounce that coalesces bursts.
       clearTimeout(reloadTimer);
@@ -4612,7 +4639,7 @@
     // Never watch call logs (see isCallLog).
     if (isUnwatchable(p)) return;
     watched.add(p);
-    if (!autoReloadEnabled || !started) return; // before start, paths just accumulate
+    if ((!autoReloadEnabled && fileChangeListeners.size === 0) || !started) return; // before start, paths just accumulate
     // Debounce resubscribe so a page firing several runPython calls on load
     // reconnects once (LR-4).
     clearTimeout(resubscribeTimer);
@@ -4622,15 +4649,41 @@
   function autoReload(enabled) {
     autoReloadEnabled = !!enabled;
     if (!autoReloadEnabled) {
-      clearTimeout(resubscribeTimer);
       clearTimeout(reloadTimer);
-      if (es) {
-        es.close();
-        es = null;
+      // The socket stays up for fused.onFileChanged listeners; with none,
+      // nothing is listening and it closes.
+      if (fileChangeListeners.size === 0) {
+        clearTimeout(resubscribeTimer);
+        if (es) {
+          es.close();
+          es = null;
+        }
       }
     } else if (started) {
       resubscribe();
     }
+  }
+
+  // fused.onFileChanged(cb): `cb({path, mtime})` whenever a watched file
+  // changes on disk (the same feed auto-reload rides; `mtime` is the
+  // watcher's signature, null for a deletion). For a page that must not
+  // reload — an editor — but wants another writer's edits live. Watches the
+  // page's own `_file`/`path` like auto-reload does; call watchPath for
+  // more. Returns the unsubscribe.
+  function onFileChanged(cb) {
+    if (typeof cb !== "function") return () => {};
+    fileChangeListeners.add(cb);
+    if (started && watched.size) {
+      clearTimeout(resubscribeTimer);
+      resubscribeTimer = setTimeout(resubscribe, 100);
+    }
+    return () => {
+      fileChangeListeners.delete(cb);
+      if (!autoReloadEnabled && fileChangeListeners.size === 0 && es) {
+        es.close();
+        es = null;
+      }
+    };
   }
 
   function startAutoReload() {
@@ -4650,7 +4703,7 @@
       if (own && !isUnwatchable(own)) watched.add(own);
       const file = params.get("_file");
       if (file && !isUnwatchable(file)) watched.add(file);
-      if (autoReloadEnabled) resubscribe();
+      if (autoReloadEnabled || fileChangeListeners.size) resubscribe();
     };
     // loadConfig's own promise chain does the callsDir/callsSuffix
     // assignment now — this just waits on it. loadConfig
@@ -6634,6 +6687,27 @@
     });
   }
 
+  // The whole transcript as ONE FILE's text: Markdown by default (the Bots
+  // export's layout), or the parsed turns as JSON — `GET /api/tasks/<key>/export`.
+  // opts: {format: "md"|"json"}, {scope: "all"} to find a task outside this app
+  // (as get()). Resolves to the text; the page decides whether to show it,
+  // feed it to a model, or hand it to the reader as a download.
+  function tasksExport(key, opts) {
+    const fmt = (opts && opts.format) === "json" ? "json" : "md";
+    return taskSessionRow(key, opts).then(async (row) => {
+      const res = await fetch(taskPath(row.key, "/export?format=" + fmt), {
+        method: "GET",
+        headers: callHeaders(),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw taskError(res.status,
+          (data && typeof data.detail === "string" && data.detail) || "HTTP " + res.status);
+      }
+      return res.text();
+    });
+  }
+
   // Only the fields given: an empty field is "not saying", never "clear it".
   // opts: {scope: "all"} to find a task outside this app (as get()).
   function tasksSettings(key, patch, opts) {
@@ -6900,6 +6974,7 @@
     markRead: tasksMarkRead,
     messages: tasksMessages,
     transcript: tasksTranscript,
+    export: tasksExport,
     settings: tasksSettings,
     watch: tasksWatch,
   };
@@ -7946,6 +8021,7 @@
     trackJob,
     watchJob,
     autoReload,
+    onFileChanged,
     // Whether THIS frame is inside a git snapshot, and what it resolved to —
     // `null` when there is none (no `_snapshot` on this frame's url, or the
     // resolve failed: no app folder here, git trouble),

@@ -41,7 +41,7 @@ import {
 } from "@platform/lib/api";
 import { capsOf } from "@platform/lib/agent-backends";
 import { chatDraftKey } from "@platform/lib/drafts";
-import { queueEnabled, queueFlagReady } from "../feature-flag";
+import { defaultPermissionNow, narrowPermission, queueEnabled, queueFlagReady } from "../feature-flag";
 import { announceTasksChanged } from "@platform/lib/tasksChanged";
 
 import { AgentError, runAgent } from "./agent";
@@ -71,6 +71,7 @@ import type {
   Activity,
   AppStateResponse,
   AppStateRow,
+  CanvasShotRow,
   CancelResponse,
   Decision,
   DecideResponse,
@@ -180,7 +181,9 @@ function transientPollBudget(err: unknown): number {
   if (err instanceof AgentError) return err.type === "Timeout" || err.type === "NotRun" ? POLL_TIMEOUT_RETRIES : 0;
   return isNetworkFailure(err) ? POLL_NETWORK_RETRIES : 0;
 }
-/** T:11911 — `params.permission || DEFAULT_PERMISSION`. */
+/** The SAFETY fallback for a mangled mode (T:11911): strictest wins. An ABSENT
+ *  `params.permission` is not this — it is the user's default pref
+ *  (`defaultPermissionNow`, "auto" unless changed in Preferences). */
 export const DEFAULT_PERMISSION: PermissionMode = "prompt";
 /** T:16130 — a follow-up waits this long for `sendMessage`'s own `start` to
  *  publish a run id, rather than dropping the message. */
@@ -293,10 +296,11 @@ function emptyState(file: string | null): ChatState {
     fork: null,
     permissions: [],
     appState: [],
+    canvasShot: [],
     skills: [],
     working: null,
     trouble: null,
-    permissionMode: DEFAULT_PERMISSION,
+    permissionMode: defaultPermissionNow(),
     queued: [],
     inbox: [],
     historyLoading: false,
@@ -482,6 +486,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
 
   // ---- per-transcript memos (T:15721-15756) -------------------------------
   const answeredStates = new Set<string>();
+  /** `canvas_screenshot` requests this page has claimed (`answerCanvasShot`). */
+  const answeredShots = new Set<string>();
+  const shotPolls = new Map<string, number>();
   const notedStates = new Set<string>();
   const nullStatePolls = new Map<string, number>();
   const notedSkills = new Set<string>();
@@ -1354,6 +1361,22 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (rows.length || state.appState.length) emit({ appState: rows });
   };
 
+  /** The `canvas_screenshot` rows a canvas page still has to answer. Replayed
+   *  every poll like `surfaceAppState`, with `pollsSeen` advancing so a page
+   *  WITHOUT a canvas (the Tasks peek) can answer "open the canvas" only after
+   *  the canvas page has had its chance (`useCanvasShotResponder`). */
+  const surfaceCanvasShot = (list: CanvasShotRow[] | null | undefined, runId: string) => {
+    const rows: CanvasShotRow[] = [];
+    for (const req of list || []) {
+      if (!req || !req.id || answeredShots.has(req.id)) continue;
+      const seen = (shotPolls.get(req.id) || 0) + 1;
+      shotPolls.set(req.id, seen);
+      trim(shotPolls);
+      rows.push({ ...req, runId, pollsSeen: seen });
+    }
+    if (rows.length || state.canvasShot.length) emit({ canvasShot: rows });
+  };
+
   // ---- permissions (T:14750-14775) ---------------------------------------
 
   /**
@@ -1443,6 +1466,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
     // UNANSWERED until this arrives, so the poll that brings it has to republish
     // even though every other field reads exactly the same.
     a.held === b.held &&
+    // The model's read lands a poll or two AFTER the card opens (agent.py writes
+    // the sidecar from a thread), so a late assessment has to republish the row.
+    a.severity === b.severity &&
+    a.risk_summary === b.risk_summary &&
+    a.risk_state === b.risk_state &&
     JSON.stringify(a.answers ?? {}) === JSON.stringify(b.answers ?? {});
 
   const permissionRows = (): PermissionRow[] => {
@@ -1536,12 +1564,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
   let workingStartedAt = 0;
   /** WHEN THIS TURN STARTED, kept across a reload (owner E2E R1, F10): the
    *  working line's "(10s)" restarted from 0 on F5 because the start was a
-   *  controller-local `now()`. The frame that starts a turn stamps the run
-   *  in sessionStorage; a frame that re-attaches to the same run reads the
-   *  stamp back. Same tab only, which is the reload case; a new tab starts
-   *  its clock at attach, as before. Cleared when the loop ends so an
-   *  idle-time send into the same host does not inherit the last turn's
-   *  clock. */
+   *  controller-local `now()`. THE SOURCE OF TRUTH IS THE SERVER: the poll's
+   *  `turn_started_at` (stamped when the turn's first message was written)
+   *  replaces this clock whenever it is earlier, so a reload, another tab or
+   *  a reopened task pane all keep counting from the real start.
+   *  sessionStorage is the fallback for an older server that sends none: the
+   *  frame that starts a turn stamps the run, a re-attaching frame reads it
+   *  back (same tab only). Cleared when the loop ends so an idle-time send
+   *  into the same host does not inherit the last turn's clock. */
   const turnStartKey = (runId: string) => `fused-render:claude-turn-start:${runId}`;
   const turnStartedAt = (runId: string): number => {
     try {
@@ -1956,6 +1986,15 @@ export function createChatController(deps: ControllerDeps): ChatController {
         if (loopSeq === seat) noteBackend(poll.backend);
         if (tick++ % ARTIFACTS_EVERY_TICKS === 0) deps.onArtifactsTick?.();
 
+        // The server's stamp of when this turn began wins on re-attach.
+        // 0 means the server does not know (keep our own clock); a stamp
+        // older than a day is a stale one, not this turn's start.
+        const serverStart = Number(poll.turn_started_at || 0) * 1000;
+        if (serverStart > 0 && now() - serverStart <= 24 * 3600 * 1000) {
+          const at = Math.min(serverStart, now());
+          if (!(workingStartedAt > 0) || at < workingStartedAt) workingStartedAt = at;
+        }
+
         // usage arrives only at message end; estimate from streamed text meanwhile
         const tokens = Math.max(poll.tokens || 0, Math.round((poll.text || "").length / 4));
         setStats(tokens, poll.phase || "thinking", poll.retry ?? null, poll.activity ?? null);
@@ -1972,6 +2011,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         if (poll.worktree_hint) landWorktreeHint(poll.worktree_hint);
         noteSkills(poll.skills);
         surfaceAppState(poll.app_state, runId);
+        surfaceCanvasShot(poll.canvas_shot, runId);
         // THE LIVE HOST'S UNDRAINED FOLLOW-UPS, republished verbatim — see
         // `publishInbox`. An older agent.py sends none, which reads as an empty
         // inbox, which is what it was before this field existed.
@@ -2412,22 +2452,34 @@ export function createChatController(deps: ControllerDeps): ChatController {
    *  (composer-defaults `permission`), so the wire says the same — sent raw,
    *  agent.py refuses the start while the pill shows ask-every-time. */
   const planless = (v: string) => v === "plan" && !capsOf(curBackend()).plan_mode;
-  const curPermission = () => {
-    const v = deps.params.get("permission") || DEFAULT_PERMISSION;
+  /** The mode a send carries: the `permission` param, else the user's default
+   *  pref; a value that is present but not a mode is the strictest one, never
+   *  passed through raw (a mangled param must not buy auto-approval). */
+  const curPermissionMode = (): PermissionMode => {
+    const raw = deps.params.get("permission") || "";
+    const v = raw ? narrowPermission(raw) || DEFAULT_PERMISSION : defaultPermissionNow();
     return planless(v) ? DEFAULT_PERMISSION : v;
   };
-  /** The same read, NARROWED — `ChatState.permissionMode` is a union and the
-   *  param is arbitrary text off a URL. Deliberately separate from
-   *  `curPermission`, which stays a pass-through for every other value: T
-   *  sends `permission_mode` verbatim (T:16128) and agent.py is the thing
-   *  entitled to reject it. */
-  const curPermissionMode = (): PermissionMode => {
-    const v = deps.params.get("permission") || "";
-    if (planless(v)) return DEFAULT_PERMISSION;
-    return v === "plan" || v === "prompt" || v === "acceptEdits" || v === "auto"
-      ? v
-      : DEFAULT_PERMISSION;
-  };
+  const curPermission = (): string => curPermissionMode();
+  /** The Approvals pill changed: apply it to a LIVE run now — no message, no
+   *  turn — through the `set_mode` action. Nothing live means nothing to do
+   *  (the new value rides the next send). `{respawn: true}` (Copilot
+   *  `acceptEdits`) is likewise left for the next send; an error keeps the pill
+   *  as it is. `ChatState.permissionMode` follows the reply. */
+  async function applyPermission(mode: PermissionMode): Promise<void> {
+    if (disposed) return;
+    const runId = activeRun;
+    if (!runId || !narrowPermission(mode)) return;
+    if (planless(mode)) return;
+    try {
+      const res = await run("set_mode", { run_id: runId, permission_mode: mode });
+      if (disposed || activeRun !== runId) return;
+      const applied = "ok" in res && res.ok ? narrowPermission(res.mode) : "";
+      if (applied) setPermissionMode(applied);
+    } catch {
+      // The pill stays; the mode still rides the next send.
+    }
+  }
   /** `"1"` / `"0"` / `""` — see `ChatControllerDeps.hasPane`. The empty string
    *  is not a missing field: agent.py's `main` reads `has_pane == ""` as "the
    *  page has no opinion" and answers with `_has_pane(file)` itself, which is
@@ -3380,6 +3432,38 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (res && "error" in res && res.error && res.retry) answeredStates.delete(id);
   }
 
+  async function answerCanvasShot(
+    id: string,
+    answer: { image: string; mime: string; udf?: string } | { error: string },
+    askedBy?: string,
+  ): Promise<boolean> {
+    if (disposed) return false;
+    // The run that asked, as the responder remembers it; the row's own, else
+    // the current run — never a later run for a request a former one made.
+    const runId = askedBy || state.canvasShot.find((r) => r.id === id)?.runId || activeRun;
+    if (!runId) return false;
+    if (answeredShots.has(id)) return true;
+    answeredShots.add(id); // claimed before the await: polls overlap
+    trim(answeredShots);
+    emit({ canvasShot: state.canvasShot.filter((r) => r.id !== id) });
+    let res: AppStateResponse | null = null;
+    try {
+      res = (await run("canvas_shot", {
+        run_id: runId,
+        request_id: id,
+        state: JSON.stringify(answer),
+      })) as AppStateResponse;
+    } catch {
+      answeredShots.delete(id); // the tool call is still blocked: retry next poll
+      return false;
+    }
+    if (res && "error" in res && res.error && res.retry) {
+      answeredShots.delete(id);
+      return false;
+    }
+    return true;
+  }
+
   // ---- history / sessions -------------------------------------------------
 
   /**
@@ -3538,6 +3622,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       context: null,
       permissions: [],
       appState: [],
+      canvasShot: [],
       skills: [],
       trouble: null,
       // A restored conversation has no live run, so the picker's param is the
@@ -4351,8 +4436,22 @@ export function createChatController(deps: ControllerDeps): ChatController {
         // that prompt and everything before it — then drop the partial rows
         // beneath it, which is exactly what the loop re-renders.
         if (await refreshFromTranscript()) stripUnderRefreshedUser();
-      } else if (probeMsg && !shownAlready) {
+      } else if (probeMsg && !onScreen(probeMsg)) {
         addUser(probeMsg);
+      } else if (probeMsg && !shownAlready) {
+        // THE OPENING LINE IS ON SCREEN BUT IS NOT THE LAST ONE, on a plain
+        // re-attach (neither `neverShown` nor `quiet`, so `shownAlready` is
+        // false). `poll.message` is the run's FIRST message, and a run that
+        // folded a note mid-turn, or queued a second turn behind the first,
+        // has a later last bubble — so `matches` refuses it. Typing the line
+        // again was a duplicate bubble, and `pollLoop` then replayed the
+        // window from offset 0 under the newest reply. The line is up: let the
+        // transcript supply whatever followed it, and mark the window as
+        // landed so the loop renders only what streams from here on. Not
+        // `stripUnderRefreshedUser`: that exists so the loop can re-render the
+        // stripped rows, and this loop is told not to.
+        await refreshFromTranscript();
+        landedWindow = { runId, segments: probeSegs.length, text: probeText };
       }
       sending = false; // pollLoop is not gated on it, and follow-ups need it free
       await pollLoop(runId, gen);
@@ -4563,11 +4662,13 @@ export function createChatController(deps: ControllerDeps): ChatController {
     beginFork,
     cancelFork,
     stopRun,
+    applyPermission,
     decidePermission,
     answerQuestion,
     decidePlan,
     dismissCard,
     answerAppState,
+    answerCanvasShot,
     openSession,
     resumeRun,
     adoptLiveRun,

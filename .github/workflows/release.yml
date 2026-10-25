@@ -64,6 +64,65 @@ jobs:
             --title "FusedRender $TAG" \
             --generate-notes ${PREV_TAG:+--notes-start-tag "$PREV_TAG"}
 
+  # The PyPI wheel, built on its own runner rather than lifted out of the DMG
+  # job, so a signing or notarization failure never holds back (or partially
+  # ships) the pip release. Wheel only: there is no sdist include list, and a
+  # default hatch sdist would carry the whole repo (ios/, prototypes/, specs).
+  build-pypi:
+    needs: prepare-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # The hatch build hook (scripts/hatch_build.py) runs `npm run build` to
+      # bake the React shell into fused_render/static/shell-dist.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - uses: astral-sh/setup-uv@v9.0.0
+
+      - name: Build wheel
+        env:
+          TAG: ${{ needs.prepare-release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          uv build --wheel
+          uvx twine check --strict dist/*.whl
+          WHL="$(ls dist/fused_render-*.whl)"
+          # PyPI versions are permanent: refuse a wheel whose version is not
+          # the tag being released.
+          case "$(basename "$WHL")" in
+            "fused_render-${TAG#v}-"*) ;;
+            *) echo "::error::$WHL does not match tag $TAG"; exit 1 ;;
+          esac
+          unzip -l "$WHL" | grep -q "fused_render/static/shell-dist/index.html" \
+            || { echo "::error::wheel is missing the built React shell"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pypi-dist
+          path: dist/*.whl
+          if-no-files-found: error
+
+  publish-pypi:
+    needs: build-pypi
+    runs-on: ubuntu-latest
+    # Trusted publishing: PyPI's publisher for fused-render names this
+    # workflow file and this environment, so no API token is stored.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/fused-render
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pypi-dist
+          path: dist
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
   build-sign-notarize-release:
     needs: prepare-release
     if: github.event_name == 'push' || github.event.inputs.platforms == 'all' || github.event.inputs.platforms == 'macos'
@@ -123,6 +182,15 @@ jobs:
       # script already requires uv on the host the same way; macOS runners
       # do not have it preinstalled, so the build fails loudly without this.
       - uses: astral-sh/setup-uv@v9.0.0
+
+      # The Chromium engine is built into the bundle (build_dmg.sh 4e-bis,
+      # D1415) from the ~200 MB CEF distribution the manifest pins; keep the
+      # tarball between runs (build.sh re-verifies its sha1 every time).
+      - name: Cache the CEF binary distribution
+        uses: actions/cache@v4
+        with:
+          path: fused_render/chromium/native/.cef-cache
+          key: cef-arm64-${{ hashFiles('fused_render/chromium/manifest.json') }}
 
       - name: Import signing cert + notary credentials into ephemeral keychain
         env:
@@ -452,6 +520,15 @@ jobs:
       # script already requires uv on the host the same way; macOS runners
       # do not have it preinstalled, so the build fails loudly without this.
       - uses: astral-sh/setup-uv@v9.0.0
+
+      # The Chromium engine is built into the bundle (build_dmg.sh 4e-bis,
+      # D1415) from the ~200 MB CEF distribution the manifest pins; keep the
+      # tarball between runs (build.sh re-verifies its sha1 every time).
+      - name: Cache the CEF binary distribution
+        uses: actions/cache@v4
+        with:
+          path: fused_render/chromium/native/.cef-cache
+          key: cef-arm64-${{ hashFiles('fused_render/chromium/manifest.json') }}
 
       - name: Import signing cert + notary credentials into ephemeral keychain
         env:

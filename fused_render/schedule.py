@@ -103,12 +103,15 @@ import contextlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 from datetime import datetime, timedelta, timezone
 
-from fused_render import (_startonce, claude_spawn, cron, recur, session_cap,
-                          tasks_store)
+from fused_render import _platform
+from fused_render._view_url_codec import canonical_fs_path
+from fused_render import (_startonce, claude_remote, claude_spawn, cron, recur,
+                          session_cap, tasks_store)
 from fused_render.shell import storage
 
 logger = logging.getLogger(__name__)
@@ -969,7 +972,7 @@ def _shot_path(value, field: str) -> str:
         raise ValueError(f"{field}: expected a list of attachment paths")
     root = os.path.realpath(shots_dir())
     real = os.path.realpath(os.path.expanduser(value.strip()))
-    if not real.startswith(root + os.sep):
+    if not _platform.is_within(real, root, strict=True, fs_root_ok=False):
         raise ValueError(f"{field}: not a task attachment path")
     if not os.path.isfile(real):
         raise ValueError(f"{field}: attachment no longer exists")
@@ -1356,7 +1359,7 @@ def _watcher_stamp() -> dict:
 def _pid_running(pid: int) -> bool:
     """`os.kill(pid, 0)` sends no signal, it only probes."""
     try:
-        os.kill(pid, 0)
+        _platform.probe_pid(pid)
     except ProcessLookupError:
         return False
     except OSError:
@@ -1533,7 +1536,14 @@ def _names_a_place(target: str) -> bool:
         return False
     if raw.startswith(("/", "~")):
         return True
-    return raw.startswith(("./", "../")) or raw in (".", "..")
+    if raw.startswith(("./", "../")) or raw in (".", ".."):
+        return True
+    if _platform.IS_WINDOWS:
+        # Backslash-relative forms and drive paths: on POSIX a backslash is a
+        # filename character, so those stay bare names there.
+        return (raw.startswith((".\\", "..\\"))
+                or bool(re.match(r"^[A-Za-z]:[\\/]", raw)))
+    return False
 
 
 def create(target: str, message: str, due=None, session_id: str = "",
@@ -2769,7 +2779,7 @@ def _attachments_block(entry: dict) -> str:
         noun = "a picture" if len(shots) == 1 else "pictures"
     what = noun if len(shots) == 1 and noun.startswith("a ") \
         else f"{len(shots)} {noun}"
-    payload = json.dumps([{"kind": a["kind"], "view": a["path"],
+    payload = json.dumps([{"kind": a["kind"], "view": canonical_fs_path(a["path"]),
                            "name": a["name"], "viewNote": ""} for a in shots])
     # The chat's own two kind sentences, minus the two kinds a scheduled run
     # cannot have: "pane" and "overview" are pictures of a screen taken at send
@@ -2901,14 +2911,16 @@ def _host_send(entry: dict) -> dict | None:
         # arm (which tree-kills the chat's session); model and permission_mode
         # keep it from queueing a `set_model`/`set_permission_mode` the CLI
         # would apply for the rest of somebody's live session.
-        res = agent._send(run_id, _composed(entry), "", "", "", "")
+        res = claude_remote.admit([session], agent._send, run_id,
+                                  _composed(entry), "", "", "", "")
     except Exception:  # noqa: BLE001 — a host we cannot reach is a spawn
         logger.debug("could not send %s into a live host; spawning instead",
                      entry.get("id"), exc_info=True)
         return None
     if isinstance(res, dict) and res.get("sent"):
         return {"run_id": run_id}
-    if isinstance(res, dict) and res.get("reason") == "backend_disabled":
+    if isinstance(res, dict) and (res.get("reason") == "backend_disabled"
+                                  or res.get("error") == claude_remote.HELD):
         # THE HOST IS ALIVE AND ITS AGENT IS SWITCHED OFF (D17): the refusal
         # is the answer, handed back for `_send` to fail the entry with. None
         # here would mean "no host" and the caller would spawn — a second CLI

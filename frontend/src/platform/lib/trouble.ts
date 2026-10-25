@@ -26,6 +26,12 @@ export const HELP_BASE = "https://render.fused.io";
 /** The install line the download page tells people to run (guide step 1). */
 export const CLAUDE_INSTALL_COMMAND = "curl -fsSL https://claude.ai/install.sh | bash";
 
+/** Codex's documented install route (docs/CODEX_BACKEND.md D10). */
+export const CODEX_INSTALL_COMMAND = "npm install -g @openai/codex";
+
+/** Gemini CLI's documented install route (docs/GEMINI_BACKEND.md D10). */
+export const GEMINI_INSTALL_COMMAND = "npm install -g @google/gemini-cli";
+
 // TWO TIERS, and the split is the whole correctness argument.
 //
 // Some phrases NAME the thing — "claude cli not found", "please run /login" —
@@ -45,9 +51,14 @@ export const CLAUDE_INSTALL_COMMAND = "curl -fsSL https://claude.ai/install.sh |
 // session's failure is about Copilot, so its shapes count when the message
 // names THAT. The named phrases stay Claude's — Copilot's own error texts are
 // an assumption the contract lists (§10), and inventing patterns for them
-// would be guessing. The Claude output is unchanged.
+// would be guessing. The Claude output is unchanged. Codex likewise
+// (docs/CODEX_BACKEND.md D13): its shapes count when the message names Codex
+// or the account it signs in with; Gemini's (docs/GEMINI_BACKEND.md D13) when
+// it names Gemini or Google.
 const ABOUT_CLAUDE = /claude/i;
 const ABOUT_COPILOT = /copilot|github/i;
+const ABOUT_CODEX = /codex|openai|chatgpt/i;
+const ABOUT_GEMINI = /gemini|google/i;
 
 // Unconditional: these name Claude Code or quote the CLI's own vocabulary.
 const NAMED: [TroubleKind, RegExp][] = [
@@ -65,7 +76,51 @@ const NAMED: [TroubleKind, RegExp][] = [
 const COPILOT_NAMED: [TroubleKind, RegExp][] = [
   ["login", /authentication required|auth_required|not logged in|copilot login|no copilot access|not authorized/i],
   ["limit", /ai credits|premium request|rate.?limit|quota/i],
+  // The server's own sentence for a binary it could not find (agent.py's
+  // `_copilot_bin`), which names no shell and no ENOENT.
+  ["notfound", /copilot cli not found/i],
 ];
+
+// CODEX'S OWN MARKERS (docs/CODEX_BACKEND.md D13, §8), unconditional for a
+// Codex session as Copilot's are for Copilot. KEEP IN SYNC BY HAND with
+// `account_error_markers` / `limit_error_markers` in
+// fused_render/agent_backends/codex.py. `429` is matched as a whole number
+// here, so a port or a byte count that merely contains it is not a limit.
+const CODEX_NAMED: [TroubleKind, RegExp][] = [
+  ["login", /not logged in|requiresopenaiauth|codex login|unauthorized|authentication|login required|sign in/i],
+  ["limit", /rate limit|usage limit|quota|insufficient_quota|spend control|too many requests|\b429\b/i],
+  ["notfound", /codex cli not found/i],
+];
+
+// GEMINI'S OWN MARKERS (docs/GEMINI_BACKEND.md D13, §8), unconditional for a
+// Gemini session. KEEP IN SYNC BY HAND with `account_error_markers` /
+// `limit_error_markers` in fused_render/agent_backends/gemini.py. `429` is
+// matched as a whole number here, as Codex's is; "sign in" needs word
+// boundaries ("design in" is not a login failure). Not markers, on purpose:
+// PERMISSION_DENIED (Google's "API not enabled on this project" / IAM
+// refusal, which Sign in does not fix) and the bare number 401 (a byte count
+// or a port) — "unauthorized" is the word an HTTP 401 carries.
+const GEMINI_NAMED: [TroubleKind, RegExp][] = [
+  ["login", /api key is missing|authentication required|not logged in|not signed in|unauthenticated|unauthorized|invalid_grant|login required|\bsign in\b/i],
+  ["limit", /resource_exhausted|rate limit|quota|too many requests|\b429\b/i],
+  ["notfound", /gemini cli not found/i],
+];
+
+/** Each non-Claude agent's unconditional markers and subject test. Claude's
+ *  are `NAMED` / `ABOUT_CLAUDE`, and any id not here reads as Claude. */
+const AGENT_TROUBLE: Record<string, { named: [TroubleKind, RegExp][]; about: RegExp }> = {
+  copilot: { named: COPILOT_NAMED, about: ABOUT_COPILOT },
+  codex: { named: CODEX_NAMED, about: ABOUT_CODEX },
+  gemini: { named: GEMINI_NAMED, about: ABOUT_GEMINI },
+};
+
+// An ENOENT whose path sits INSIDE an agent's own config dir (or is the dir
+// itself) is a missing settings or credentials file of an installed CLI, not
+// a missing CLI: the notfound shape must not read it as "install the CLI".
+// Unless the path's last segment IS the binary: `~/.claude/local/claude` is
+// a real (legacy) install location, and a half-removed one is a missing CLI.
+const AGENT_CONFIG_PATH = /[\\/]\.(?:claude|copilot|codex|gemini)(?:[\\/]|['"\s]|$)/i;
+const CLI_BINARY_PATH = /[\\/](?:claude|copilot|codex|gemini)(?:\.cmd|\.exe)?(?=$|['"\s:,)])/i;
 
 // Only when the message is about Claude — see above.
 const SHAPES: [TroubleKind, RegExp][] = [
@@ -83,12 +138,17 @@ const SHAPES: [TroubleKind, RegExp][] = [
     before the could-not-find patterns, which are the broadest. */
 export function troubleKind(message: string, backend = "claude"): TroubleKind {
   const text = String(message || "");
-  if (backend === "copilot") {
-    for (const [kind, re] of COPILOT_NAMED) if (re.test(text)) return kind;
+  const agent = AGENT_TROUBLE[backend];
+  if (agent) {
+    for (const [kind, re] of agent.named) if (re.test(text)) return kind;
   }
   for (const [kind, re] of NAMED) if (re.test(text)) return kind;
-  if ((backend === "copilot" ? ABOUT_COPILOT : ABOUT_CLAUDE).test(text)) {
-    for (const [kind, re] of SHAPES) if (re.test(text)) return kind;
+  if ((agent ? agent.about : ABOUT_CLAUDE).test(text)) {
+    for (const [kind, re] of SHAPES) {
+      if (!re.test(text)) continue;
+      if (kind === "notfound" && AGENT_CONFIG_PATH.test(text) && !CLI_BINARY_PATH.test(text)) return "raw";
+      return kind;
+    }
   }
   return "raw";
 }
@@ -275,8 +335,24 @@ function whereToLook(ctx: TroubleContext): string[] {
 export function troubleInstructions(ctx: TroubleContext): string {
   const kind = troubleKind(ctx.error, ctx.backend);
   const copilot = ctx.backend === "copilot";
+  const codex = ctx.backend === "codex";
+  const gemini = ctx.backend === "gemini";
   const steps: Record<TroubleKind, string[]> = {
-    notfound: copilot
+    notfound: gemini
+      ? [
+        "Check whether the CLI exists and where: `which gemini`, and look in ~/.npm-global/bin, /opt/homebrew/bin, /usr/local/bin and ~/.local/bin.",
+        `If it is missing, install it: \`${GEMINI_INSTALL_COMMAND}\`.`,
+        "If it exists but the app cannot see it, the app's PATH is the problem — a GUI app on macOS does not inherit a shell's PATH. Say which shell profile sets it and what the app would need instead.",
+        `Confirm with \`gemini --version\`, then tell me to quit ${displayName()} and reopen it.`,
+      ]
+      : codex
+      ? [
+        "Check whether the CLI exists and where: `which codex`, and look in ~/.npm-global/bin, /opt/homebrew/bin, /usr/local/bin and ~/.local/bin.",
+        `If it is missing, install it: \`${CODEX_INSTALL_COMMAND}\`.`,
+        "If it exists but the app cannot see it, the app's PATH is the problem — a GUI app on macOS does not inherit a shell's PATH. Say which shell profile sets it and what the app would need instead.",
+        `Confirm with \`codex --version\`, then tell me to quit ${displayName()} and reopen it.`,
+      ]
+      : copilot
       ? [
         "Check whether the CLI exists and where: `which copilot`, and look in ~/.local/bin and /opt/homebrew/bin.",
         "If it is missing, install GitHub Copilot CLI the way its docs say for this platform.",
@@ -289,7 +365,19 @@ export function troubleInstructions(ctx: TroubleContext): string {
         "If it exists but the app cannot see it, the app's PATH is the problem — a GUI app on macOS does not inherit a shell's PATH. Say which shell profile sets it and what the app would need instead.",
         `Confirm with \`claude --version\`, then tell me to quit ${displayName()} and reopen it.`,
       ],
-    login: copilot
+    login: gemini
+      ? [
+        "Confirm the CLI runs: `gemini --version`.",
+        "Sign in: run `gemini`, pick a sign-in method (`/auth`) and finish it in the browser. An exported `GEMINI_API_KEY` works for new chats, but resuming a chat needs the method picked once in `gemini` (the CLI refuses `session/load` without it).",
+        `Confirm the session works, then tell me to retry in ${displayName()}.`,
+      ]
+      : codex
+      ? [
+        "Confirm the CLI runs: `codex --version`.",
+        "Sign in: run `codex login --device-auth`, open the page it prints and enter the one-time code — or `codex login` to sign in with ChatGPT in the browser.",
+        `Confirm the session works, then tell me to retry in ${displayName()}.`,
+      ]
+      : copilot
       ? [
         "Confirm the CLI runs: `copilot --version`.",
         "Sign in: run `copilot`, then `/login`, and complete it in the browser — or sign in with `gh auth login` using a GitHub account that has Copilot access.",

@@ -84,8 +84,10 @@ from fused_render.server import gitignore as _gi
 @pytest.fixture(autouse=True)
 def _clear_toplevel_cache():
     _gi._reset_toplevel_cache()
+    _gi._git_ignored_cache_clear()
     yield
     _gi._reset_toplevel_cache()
+    _gi._git_ignored_cache_clear()
 
 
 def _spy_on_subprocess_run(monkeypatch):
@@ -325,3 +327,124 @@ def test_repo_toplevel_cache_is_bounded(tmp_path, monkeypatch):
     before = len(calls)
     _gi._repo_toplevel(str(a))
     assert len(calls) == before + 1
+
+
+# --- _git_ignored_cached ----------------------------------------------------
+
+def _names(d):
+    return sorted(os.listdir(d))
+
+
+def test_cached_hit_avoids_subprocess(tmp_path, monkeypatch):
+    _make_repo(tmp_path)
+    names = _names(tmp_path)
+    first = _gi._git_ignored_cached(str(tmp_path), names)
+    calls = _spy_on_subprocess_run(monkeypatch)
+    assert _gi._git_ignored_cached(str(tmp_path), names) == first
+    assert calls == []
+    # the caller owns the returned set
+    first.add("zzz")
+    assert "zzz" not in _gi._git_ignored_cached(str(tmp_path), names)
+
+
+def test_cached_matches_raw_function(tmp_path):
+    _make_repo(tmp_path)
+    (tmp_path / "src" / ".gitignore").write_text("*.py\n!main.py\ntmp\n", encoding="utf-8")
+    (tmp_path / "src" / "tmp").mkdir()
+    (tmp_path / "src" / "other.py").write_text("x", encoding="utf-8")
+    for d in (tmp_path, tmp_path / "src"):
+        names = _names(d)
+        assert _gi._git_ignored_cached(str(d), names) == _gi._git_ignored(str(d), names)
+    assert "tmp" in _gi._git_ignored_cached(str(tmp_path / "src"), _names(tmp_path / "src"))
+
+
+def test_editing_gitignore_invalidates(tmp_path):
+    _make_repo(tmp_path)
+    names = _names(tmp_path)
+    assert "keep.txt" not in _gi._git_ignored_cached(str(tmp_path), names)
+    gi = tmp_path / ".gitignore"
+    gi.write_text("build/\n*.log\nkeep.txt\n", encoding="utf-8")
+    assert "keep.txt" in _gi._git_ignored_cached(str(tmp_path), names)
+
+
+def test_editing_info_exclude_invalidates(tmp_path):
+    _make_repo(tmp_path)
+    names = _names(tmp_path)
+    assert "keep.txt" not in _gi._git_ignored_cached(str(tmp_path), names)
+    ex = tmp_path / ".git" / "info" / "exclude"
+    ex.parent.mkdir(exist_ok=True)
+    ex.write_text("keep.txt\n", encoding="utf-8")
+    assert "keep.txt" in _gi._git_ignored_cached(str(tmp_path), names)
+
+
+def test_index_change_invalidates(tmp_path):
+    _make_repo(tmp_path)
+    names = _names(tmp_path)
+    assert "debug.log" in _gi._git_ignored_cached(str(tmp_path), names)
+    subprocess.run(["git", "-C", str(tmp_path), "add", "-f", "debug.log"], check=True)
+    assert "debug.log" not in _gi._git_ignored_cached(str(tmp_path), names)
+
+
+def test_worktree_gitfile_resolves_commondir(tmp_path):
+    main = tmp_path / "main"
+    main.mkdir()
+    _git_init(main)
+    env = dict(os.environ, GIT_AUTHOR_NAME="t", GIT_AUTHOR_EMAIL="t@t",
+               GIT_COMMITTER_NAME="t", GIT_COMMITTER_EMAIL="t@t")
+    subprocess.run(["git", "-C", str(main), "commit", "-q", "--allow-empty", "-m", "i"],
+                   check=True, env=env)
+    wt = tmp_path / "wt"
+    subprocess.run(["git", "-C", str(main), "worktree", "add", "-q", str(wt)], check=True)
+    (wt / "a.txt").write_text("a", encoding="utf-8")
+    top, gitdir, common = _gi._find_git(str(wt))
+    assert top == str(wt)
+    assert os.path.realpath(common) == os.path.realpath(main / ".git")
+    assert os.path.realpath(gitdir) != os.path.realpath(common)
+    names = _names(wt)
+    assert "a.txt" not in _gi._git_ignored_cached(str(wt), names)
+    # info/exclude lives in the COMMON dir and applies to the worktree
+    (main / ".git" / "info").mkdir(exist_ok=True)
+    (main / ".git" / "info" / "exclude").write_text("a.txt\n", encoding="utf-8")
+    assert "a.txt" in _gi._git_ignored_cached(str(wt), names)
+
+
+def test_git_env_bypasses_cache(tmp_path, monkeypatch):
+    _make_repo(tmp_path)
+    names = _names(tmp_path)
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / ".git"))
+    calls = _spy_on_subprocess_run(monkeypatch)
+    _gi._git_ignored_cached(str(tmp_path), names)
+    _gi._git_ignored_cached(str(tmp_path), names)
+    assert len(calls) == 2
+
+
+def test_no_repo_returns_empty_without_spawn(tmp_path, monkeypatch):
+    calls = _spy_on_subprocess_run(monkeypatch)
+    (tmp_path / "f").write_text("x", encoding="utf-8")
+    assert _gi._git_ignored_cached(str(tmp_path), ["f"]) == set()
+    assert calls == []
+
+
+def test_new_name_in_dir_misses_cache(tmp_path, monkeypatch):
+    _make_repo(tmp_path)
+    assert "new.log" not in _gi._git_ignored_cached(str(tmp_path), _names(tmp_path))
+    (tmp_path / "new.log").write_text("x", encoding="utf-8")
+    assert "new.log" in _gi._git_ignored_cached(str(tmp_path), _names(tmp_path))
+
+
+def test_global_excludesfile_edit_invalidates(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    ex = home / "gex"
+    ex.write_text("", encoding="utf-8")
+    (home / ".gitconfig").write_text("[core]\n\texcludesFile = ~/gex\n", encoding="utf-8")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git_init(repo)
+    (repo / "keep.txt").write_text("k", encoding="utf-8")
+    names = _names(repo)
+    assert "keep.txt" not in _gi._git_ignored_cached(str(repo), names)
+    ex.write_text("keep.txt\n", encoding="utf-8")
+    assert "keep.txt" in _gi._git_ignored_cached(str(repo), names)

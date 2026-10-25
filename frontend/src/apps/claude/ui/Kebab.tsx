@@ -2,7 +2,7 @@
 // T:13120-13470 behaviour, inventory 04 §F).
 //
 // THREE items, exactly the template's: the terminal hand-off, Archive/Unarchive
-// and Delete this task. "What was sent" was a fourth here for one revision and
+// and Delete task (words: platform/lib/task-actions). "What was sent" was a fourth here for one revision and
 // is gone (Akshil, 2026-09-08): T opens that panel from a RECEIPT ROW under the
 // bubble it belongs to, where "what was sent" names one turn — in a menu that
 // hangs off the whole conversation the same three words name nothing in
@@ -25,10 +25,28 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@platform/shadcn/ui/dropdown-menu";
 import {
+  RUN_BLOCKED_HINT,
+  TASK_ACTION_LABELS,
+  blockedActionLabel,
+  terminalActionLabel,
+} from "@platform/lib/task-actions";
+import {
+  TASK_ICON_ARCHIVE,
+  TASK_ICON_COPY,
+  TASK_ICON_DOWNLOAD,
+  TASK_ICON_EXIT_FULL_SCREEN,
+  TASK_ICON_FULL_SCREEN,
+  TASK_ICON_TERMINAL,
+  TASK_ICON_TRASH,
+  TASK_ICON_UNARCHIVE,
+} from "@platform/ui/TaskActionIcons";
+import {
   archiveTask,
+  downloadTaskTranscript,
   getTasks,
   unarchiveTask,
   type Task,
@@ -41,6 +59,7 @@ import { copyPendingText } from "@platform/lib/clipboard";
 import { fetchTerminalCommand as fetchAgentTerminalCommand } from "../protocol/agent";
 import { forgetSessionSeed } from "./useRecentTasks";
 import { useAgent } from "./agent-context";
+import { useArchiveConfirm } from "@shell/archive-confirm";
 import { agentNamed, isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
 
 /** Live by the listing's own clock (T:13166-13169). `needs_attention` is NOT
@@ -321,6 +340,7 @@ export function Kebab({
   const [terminalLabel, setTerminalLabel] = useState("");
   const [copyLabel, setCopyLabel] = useState("");
   const [archiveLabel, setArchiveLabel] = useState("");
+  const [downloadLabel, setDownloadLabel] = useState("");
   /** A press in flight, or its confirmation still on screen, OWNS its item:
    *  a listing read landing in that window must not overwrite the words
    *  (T:13143-13150). */
@@ -335,13 +355,9 @@ export function Kebab({
   const agent = useAgent();
   useAgentBackends();
   const agentOff = isBackendOff(agent.backend);
+  // The words come from platform/lib/task-actions, the Tasks peek's source too.
   const restingTerminal = useCallback(
-    (claudeWords: string) =>
-      agentNamed(agent.backend)
-        ? sessionId
-          ? `Continue with ${agent.label} in terminal`
-          : `New ${agent.label} session in terminal`
-        : claudeWords,
+    () => terminalActionLabel(agentNamed(agent.backend) ? agent.label : null, !!sessionId),
     [agent.backend, agent.label, sessionId],
   );
 
@@ -461,16 +477,20 @@ export function Kebab({
       // Named at open time: the session param changes without a reload
       // (T:13415).
       setTerminalLabel(
-        restingTerminal(sessionId ? "Continue in terminal" : "New session in terminal"),
+        restingTerminal(),
       );
-      setCopyLabel("Copy command");
+      setCopyLabel(TASK_ACTION_LABELS.copyCommand);
       setArchiveLabel("");
+      setDownloadLabel("");
       void refresh();
     },
     [sessionId, refresh, restingTerminal],
   );
 
-  const restingArchive = filed ? "Unarchive this task" : "Archive this task";
+  const restingArchive = filed ? TASK_ACTION_LABELS.unarchive : TASK_ACTION_LABELS.archive;
+  // The refusal Archive and Delete share, said IN the label (task-actions):
+  // the run first, because it is the one the reader cannot end from here.
+  const refusal = live ? RUN_BLOCKED_HINT : locked ? lockedReason || null : null;
 
   const fetchTerminalCommand = useCallback(
     (): Promise<string> => fetchAgentTerminalCommand(file ?? "", sessionId, agent.backend),
@@ -513,7 +533,7 @@ export function Kebab({
       later(() => {
         busy.current = false;
         setTerminalLabel(
-          restingTerminal(sessionId ? "Continue in terminal" : "New session in terminal"),
+          restingTerminal(),
         );
       }, 2500);
     }
@@ -538,10 +558,36 @@ export function Kebab({
       );
       later(() => {
         busy.current = false;
-        setCopyLabel("Copy command");
+        setCopyLabel(TASK_ACTION_LABELS.copyCommand);
       }, 2500);
     }
   }, [fetchTerminalCommand, later]);
+
+  /** THE CONVERSATION AS A FILE (D1390): the same route and the same Markdown
+   *  the Tasks page's kebab downloads. The menu closes on the press like
+   *  Archive (R2-8); a failure reopens it with the reason on the item. */
+  const onDownload = useCallback(async () => {
+    if (!sessionId || busy.current) return;
+    busy.current = true;
+    setOpen(false);
+    try {
+      await downloadTaskTranscript(sessionId, "md");
+      busy.current = false;
+    } catch (err) {
+      if (liveSession.current !== sessionId) {
+        busy.current = false;
+        return;
+      }
+      setDownloadLabel(
+        `Couldn't download — ${err instanceof Error ? err.message : String(err)}`,
+      );
+      setOpen(true);
+      later(() => {
+        busy.current = false;
+        setDownloadLabel("");
+      }, 2500);
+    }
+  }, [sessionId, later]);
 
   /**
    * THE MENU GOES FIRST (R2-8). This used to hold the dropdown open through the
@@ -608,9 +654,23 @@ export function Kebab({
     )
       onArchived?.(sessionId);
   }, [sessionId, hasTask, filed, later, refresh, onArchived]);
+  // A chat parked on a permission or question card is not `live` (its Archive
+  // stays on), but archiving ends that run, so filing it asks first, like the
+  // Tasks page's own doors. Unarchive never asks.
+  const archiveAsk = useArchiveConfirm();
+  const askArchive = useCallback(async (): Promise<void> => {
+    if (!filed && asking) archiveAsk.guard({ status: "needs_attention" }, () => void onArchive());
+    else await onArchive();
+  }, [filed, asking, archiveAsk, onArchive]);
 
   // `rev` is read so a cache write repaints the items it decides.
   void rev;
+  // Which groups this open draws, so a separator never sits at an edge.
+  // Needs a task behind the chat, like Archive: the export reads the task
+  // listing, so a session it does not know would 404 (CodeRabbit, #1815).
+  const canDownload = !landing && !!sessionId && hasTask && !queued;
+  const showHandoffs = (!agentOff && !queued) || canDownload;
+  const showFiling = !landing && hasTask;
 
   return (
     <div className="c-kebab">
@@ -637,10 +697,19 @@ export function Kebab({
           aria-label="More options"
           className="c-overlay c-kebabpop w-auto min-w-[196px] rounded-[10px] bg-[var(--c-panel)] p-1 text-[var(--c-fg)] shadow-none ring-0"
         >
+          {/* ONE ORDER, both task menus (platform/lib/task-actions): this
+              surface's own door, then the hand-offs, then filing — a separator
+              between groups, an icon on every row. */}
           {fullScreen ? (
-            <DropdownMenuItem className="c-kebab-opt" onClick={fullScreen.onToggle}>
-              {fullScreen.on ? "Exit full screen" : "Full screen"}
-            </DropdownMenuItem>
+            <>
+              <DropdownMenuItem className="c-kebab-opt" onClick={fullScreen.onToggle}>
+                <span className="c-kebab-icon">
+                  {fullScreen.on ? TASK_ICON_EXIT_FULL_SCREEN : TASK_ICON_FULL_SCREEN}
+                </span>
+                {fullScreen.on ? TASK_ACTION_LABELS.exitFullScreen : TASK_ACTION_LABELS.fullScreen}
+              </DropdownMenuItem>
+              {showHandoffs || showFiling ? <DropdownMenuSeparator className="c-kebab-sep" /> : null}
+            </>
           ) : null}
           {/* NOT FOR AN AGENT SWITCHED OFF IN PREFERENCES (D17): the command
               hands the chat to that agent's CLI, which is exactly what the
@@ -655,8 +724,8 @@ export function Kebab({
               closeOnClick={false}
               onClick={() => void onTerminal()}
             >
-              {terminalLabel ||
-                restingTerminal(sessionId ? "Continue in terminal" : "New session in terminal")}
+              <span className="c-kebab-icon">{TASK_ICON_TERMINAL}</span>
+              {terminalLabel || restingTerminal()}
             </DropdownMenuItem>
           ) : null}
           {/* The primary item above now RUNS the command where it can — this is
@@ -668,10 +737,24 @@ export function Kebab({
               closeOnClick={false}
               onClick={() => void onCopyTerminalCommand()}
             >
-              {copyLabel || "Copy command"}
+              <span className="c-kebab-icon">{TASK_ICON_COPY}</span>
+              {copyLabel || TASK_ACTION_LABELS.copyCommand}
             </DropdownMenuItem>
           ) : null}
           </>) : null}
+          {/* A chat with a task behind it has a transcript to save; the landing
+              page and a queued chat have none yet. */}
+          {canDownload ? (
+            <DropdownMenuItem
+              className="c-kebab-opt"
+              closeOnClick={false}
+              onClick={() => void onDownload()}
+            >
+              <span className="c-kebab-icon">{TASK_ICON_DOWNLOAD}</span>
+              {downloadLabel || TASK_ACTION_LABELS.download}
+            </DropdownMenuItem>
+          ) : null}
+          {showHandoffs && showFiling ? <DropdownMenuSeparator className="c-kebab-sep" /> : null}
           {/* HIDDEN, not disabled, when there is no task behind the chat: a
               disabled row invites the reader to work out what would enable it,
               and the answer is not something they can act on from this menu
@@ -679,28 +762,30 @@ export function Kebab({
           {!landing && hasTask && !queued ? (
             <DropdownMenuItem
               className="c-kebab-opt"
-              /* R2-8 — the press closes the menu. `onArchive` closes it too
-                 (the state is ours, and a controlled `open` has to be told),
-                 but leaving this at `false` meant a click landed on a menu that
-                 stayed put for as long as the flip took. */
               /* THE RUN FIRST, THEN THE MODE: two refusals on one item, and
                  the run is named first because it is the one the reader cannot
-                 end from here. */
+                 end from here. Said in the label, as the Tasks peek says it. */
               disabled={live || locked}
-              title={live ? "Stop the run first" : locked ? lockedReason : undefined}
-              onClick={() => void onArchive()}
+              title={refusal ?? undefined}
+              onClick={() => void askArchive()}
             >
-              {archiveLabel || restingArchive}
+              <span className="c-kebab-icon">{filed ? TASK_ICON_UNARCHIVE : TASK_ICON_ARCHIVE}</span>
+              {archiveLabel || blockedActionLabel(restingArchive, refusal)}
             </DropdownMenuItem>
           ) : null}
           {!landing && hasTask ? (
             <DropdownMenuItem
               className="c-kebab-opt is-danger"
+              /* `destructive` opts the row out of the shadcn item's
+                 "every child takes the accent ink on focus" rule, which painted
+                 the bin grey on hover while its label stayed red. */
+              variant="destructive"
               disabled={live || locked}
-              title={live ? "Stop the run first" : locked ? lockedReason : undefined}
+              title={refusal ?? undefined}
               onClick={() => setErasing(true)}
             >
-              Delete this task
+              <span className="c-kebab-icon">{TASK_ICON_TRASH}</span>
+              {blockedActionLabel(TASK_ACTION_LABELS.delete, refusal)}
             </DropdownMenuItem>
           ) : null}
         </DropdownMenuContent>
@@ -741,6 +826,7 @@ export function Kebab({
           }}
         />
       ) : null}
+      {archiveAsk.node}
     </div>
   );
 }

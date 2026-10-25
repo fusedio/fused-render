@@ -1,0 +1,28 @@
+# The vision runner's environment (SPEC AI-33) — the CUDA variant.
+#
+# Identical to `vision_torch/pyproject.toml` except for the one thing a hardware
+# variant is allowed to change: where torch comes from. Read that file first.
+# PyPI's `torch` wheel for Linux IS the CUDA build, so this folder names no index
+# and no source of its own (see `diffusers_image_cuda/pyproject.toml` for the
+# longer account). The dependency list is a verbatim copy of the CPU folder's and
+# must stay one. UNMEASURED: nobody has run this on NVIDIA hardware.
+[project]
+name = "fused-render-runner-vision-torch-cuda"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.13,<3",
+    "transformers>=5.19,<6",
+    "tokenizers>=0.23,<1",
+    "safetensors>=0.4,<1",
+    "numpy>=1.26,<3",
+    # <13: Pillow 13.0.0 does not import on Python 3.12 (see mflux_image).
+    "pillow>=12.3,<13",
+    "pillow-heif>=1.5,<2",
+    "huggingface_hub",
+    "psutil",
+]
+
+# Not a distribution — a folder of scripts, not something to build and install.
+[tool.uv]
+package = false

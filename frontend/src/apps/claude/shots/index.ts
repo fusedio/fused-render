@@ -126,6 +126,7 @@ export {
   attachFiles,
   attachOverview,
   attachPane,
+  attachPaneFromBlob,
   attachPaths,
   captureAndAttachOverview,
   dragHasAttachment,

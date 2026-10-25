@@ -69,7 +69,7 @@ import tempfile
 import threading
 import time
 
-from fused_render import __version__, _flavor, jobs
+from fused_render import __version__, _flavor, bundle_exec, jobs
 from fused_render._branch import branch_suffix
 from fused_render.update import common
 # The shared state machine lives in its own module, `_manager.py`, named
@@ -495,6 +495,26 @@ class UpdateManager(_base.UpdateManager):
             # volume makes the swap below two same-volume renames.
             subprocess.run(["/usr/bin/ditto", source, swap_in],
                            check=True, capture_output=True, timeout=600)
+            # Prove the staged copy's python SPAWNS before it becomes the
+            # app. A 0.6.84 reached this way on macOS 26.6 (2026-10-23) booted
+            # — the launcher never execs `Contents/MacOS/python` — and then
+            # failed every `posix_spawn` of it with EACCES for six boots:
+            # Claude, the index, the engine, all dead behind a live window.
+            # The same image on another Mac spawned fine, so whatever that
+            # machine does to the copy is only visible by trying it, here,
+            # while the old bundle is still intact. `ensure_spawnable` logs the
+            # file's mode/owner/xattrs, sets 0755 where it can, and tries
+            # again; when it still refuses, the update is NOT installed — the
+            # `finally` below removes the staged copy and `_install` shows the
+            # error — rather than swapped in to produce a working-looking app
+            # that cannot run anything.
+            reason = bundle_exec.ensure_spawnable(
+                os.path.join(swap_in, "Contents"), what="update")
+            if reason is not None:
+                raise RuntimeError(
+                    "the downloaded app's Python cannot be run on this Mac "
+                    f"({reason}); the installed app was left as it was — "
+                    "download the DMG from fused.io and drag it to Applications")
             # The swap: both renames happen inside `parent` so each is atomic
             # on the volume; the running process keeps its open files on the
             # old inode (same situation as a manual DMG drag / brew upgrade).

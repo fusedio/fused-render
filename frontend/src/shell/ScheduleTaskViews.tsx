@@ -23,6 +23,9 @@
 // one page. Those live in styles/schedule.css; everything this file adds (the
 // accordion, the thread rows, the id chips, the unread dot) is in
 // styles/tasks.css.
+import { BulkBar, GroupCheck, RowCheck, useBulkArchive, type BulkSelect } from "@shell/TaskBulk";
+import { useArchiveConfirm } from "@shell/archive-confirm";
+import { selectableTask } from "@shell/task-selection";
 import {
   Fragment,
   memo,
@@ -88,6 +91,8 @@ import {
   GROUPS_SEEDED_KEY,
   parseSeededViews,
   seedCollapsedGroups,
+  sectionsHolding,
+  activityAt,
   groupSize,
   flattenGroups,
   heldMessages,
@@ -149,7 +154,8 @@ import {
   taskUnreadLabel,
   cardTitleLine,
   recapTitlesOn,
-  taskWhen,
+  taskWhenFor,
+  type TaskSortBy,
   threadView,
   tildePath,
   toggleExpanded,
@@ -161,8 +167,12 @@ import {
   ERASE_BLOCKED_HINT,
   opensCanvas,
   pageDoorLabel,
+  flattenGroupRefs,
+  prKey,
+  prUrl,
 } from "./tasks-lib";
 import type {
+  PrRef,
   FilingIntent,
   LaneChoices,
   ListMemory,
@@ -177,6 +187,8 @@ import type {
 } from "./tasks-lib";
 import { missingFolderHint, taskFolder, toastMissingFolder } from "./useMissingFolders";
 import { useProjectQueueEnabled } from "@apps/claude/feature-flag";
+import { usePrStatuses } from "@platform/lib/prStatus";
+import { prRefsOf } from "@platform/lib/task-prs";
 import { runAgent } from "@apps/claude/protocol/agent";
 
 // The page composes these from one import; re-exported here so Scheduled.tsx
@@ -320,6 +332,15 @@ const ICON_CHEVRON = icon(<polyline points="9 18 15 12 9 6" />, 13);
 // is a different glyph and is untouched.
 const ICON_CIRCLE_DOT = icon(
   <><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="1.5" /></>, 13);
+// The Project filter's own mark (Workspace scope, Unit 7): a stack of layers.
+// It stood on ICON_FOLDER, which is also the "open the folder" door and the view
+// tab's glyph; a folded filter trigger is nothing BUT its glyph, so it has to
+// be one no other control on the row wears.
+const ICON_PROJECT = icon(
+  <><polygon points="12 2 2 7 12 12 22 7 12 2" /><polyline points="2 17 12 22 22 17" />
+  <polyline points="2 12 12 17 22 12" /></>,
+  13,
+);
 const ICON_FOLDER = icon(
   <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z" />,
   12,
@@ -683,10 +704,10 @@ export async function stopJobs(
 }
 
 /**
- * STOP A ROW'S LIVE BACKGROUND JOB — the hover strip's "Stop job", on the List
- * row and the Board card alike (the card is a button, so its Stop could never
- * sit inside it; the row's strip floats over the right end of the row and
- * would cover an inline one — found in the live app). Same `.tasks-act` skin,
+ * STOP A ROW'S LIVE BACKGROUND JOB — the hover strip's "Stop job", on the Board
+ * card and the Cards wall (the card is a button, so its Stop could never sit
+ * inside it). Not on the List row since 2026-10-23 (Akshil: no Stop on the
+ * blue-ring row's hover). Same `.tasks-act` skin,
  * same hover reveal, same keyboard reach as Force start beside it.
  *
  * No local "stopped" state beyond the press: the CLI re-sends its background
@@ -927,6 +948,48 @@ export function IdentityChip({ name, title, onPick, active = false }: {
   );
 }
 
+/** The PR view's stand-in for the folder chip: `#1818`, a link to the pull
+ *  request on GitHub (a plain label when the repository is not known). Wears
+ *  the folder chip's own classes so it sits in the row exactly where that
+ *  chip does; the link is lifted over the row's stretched link (`.task-pr-num`)
+ *  and its press never counts as a press on the row. */
+export function PrNumChip({ prRef, status }: { prRef: PrRef; status?: string | null }) {
+  // `status` (even "") puts the state dot INSIDE the pill, first; omitted, no dot.
+  const body = (
+    <>
+      {status !== undefined && (
+        <span className="task-pr-dot" data-status={status || undefined} />
+      )}
+      <span className="schedule-tv-id-name">#{prRef.number}</span>
+    </>
+  );
+  const href = prUrl(prRef);
+  if (!href) return <span className="schedule-tv-id">{body}</span>;
+  // The same shield + pill the project chip wears (`IdentityChip` with `onPick`),
+  // so border, radius, padding, size and hover come from `.schedule-tv-id--tag`
+  // itself; the pill is an <a> rather than a <button>.
+  return (
+    <span
+      className="schedule-tv-id-shield"
+      data-hint=""
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => e.stopPropagation()}
+    >
+      <a
+        className="schedule-tv-id schedule-tv-id--tag task-pr-num"
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        data-hint={`${prRef.repo} #${prRef.number}`}
+        onClick={(e) => e.stopPropagation()}
+        onKeyDown={(e) => e.stopPropagation()}
+      >
+        {body}
+      </a>
+    </span>
+  );
+}
+
 /**
  * WHICH AGENT RUNS THIS TASK, as a mark (docs/COPILOT_BACKEND.md D18) — on the
  * List row (and so the chat's Recent list, which borrows it), the Board card,
@@ -948,7 +1011,7 @@ export function TaskAgentMark({ backend }: { backend?: string | null }) {
 /** TASK-002 / MSG-003. These are DESIGNED identifiers (§3) — allocated once,
  * never renumbered — so unlike a session uuid they are meant to be read, said
  * out loud and searched for. Monospaced, because a column of them is scanned. */
-function IdChip({ id, kind }: {
+export function IdChip({ id, kind }: {
   id: string;
   kind: "task" | "message";
 }) {
@@ -1127,12 +1190,18 @@ function FilterMenu({
   icon: glyph,
   onClear,
   hint,
+  value,
   children,
 }: {
   label: string;
   /** The trigger's instant tooltip (`data-hint`, the page's own layer), or
    *  nothing. The Project menu spells its chosen folders out here. */
   hint?: string;
+  /** THE CHOSEN VALUE, named on the trigger ("Running +3") in place of the
+   *  facet's name once something is chosen, with the count badge standing down
+   *  because the "+3" already says it. Undefined (or no selection) keeps the
+   *  label and badge as before. */
+  value?: string;
   /** WHICH FILTER THIS IS, as a `data-filter` on the trigger's wrapper —
    *  "status", "project", or "all" for the merged one.
    *
@@ -1244,7 +1313,7 @@ function FilterMenu({
         <button
           type="button"
           ref={btn}
-          className={"schedule-tv-filter-btn" + (splittable ? " is-split" : "")}
+          className="schedule-tv-filter-btn"
           aria-expanded={open}
           data-hint={hint}
           onClick={() => setOpen((v) => !v)}
@@ -1259,23 +1328,9 @@ function FilterMenu({
               `close` the children are handed), so the next open measures the
               trigger where it now stands. The observers above still cover a
               reflow under an open menu. */}
-          {glyph ?? ICON_CIRCLE_DOT} <span className="schedule-fit-lbl">{label}</span>
-          {badge && count > 0 && <span className="schedule-tv-filter-count">{count}</span>}
+          {glyph ?? ICON_CIRCLE_DOT} <span className="schedule-fit-lbl">{value && count > 0 ? value : label}</span>
+          {badge && !(value && count > 0) && count > 0 && <span className="schedule-tv-filter-count">{count}</span>}
         </button>
-        {splittable && (
-          <button
-            type="button"
-            className="schedule-tv-filter-x"
-            /* Says WHICH filter it drops. "Clear" on its own was the ambiguity
-               this replaces, and a bare ✕ beside a label is read as belonging
-               to it only if the accessible name agrees. */
-            title={`Clear the ${(name ?? label).toLowerCase()} filter`}
-            aria-label={`Clear the ${(name ?? label).toLowerCase()} filter`}
-            onClick={onClear}
-          >
-            ✕
-          </button>
-        )}
       </span>
       {open && (
         <div
@@ -1284,6 +1339,24 @@ function FilterMenu({
           aria-label={`Filter by ${name ?? label}`}
           style={style}
         >
+          {/* CLEAR LIVES IN THE MENU (Unit 7): the separate ✕ segment is gone
+              — the trigger names its value now, and a second hit target
+              beside it was the widest thing on a folded row. Says WHICH
+              filter it drops. */}
+          {splittable && (
+            <button
+              type="button"
+              className="schedule-tv-pop-item schedule-tv-pop-clear"
+              title={`Clear the ${(name ?? label).toLowerCase()} filter`}
+              aria-label={`Clear the ${(name ?? label).toLowerCase()} filter`}
+              onClick={() => {
+                onClear?.();
+                setOpen(false);
+              }}
+            >
+              <span>Clear</span>
+            </button>
+          )}
           {children(() => setOpen(false))}
         </div>
       )}
@@ -1520,6 +1593,7 @@ export function TaskFilterControls({
   home = "",
   onChange,
   hideArchiveStatus = false,
+  hideUpcomingStatus = false,
   merged = false,
 }: {
   filters: TaskFilters;
@@ -1541,6 +1615,14 @@ export function TaskFilterControls({
    * act on it.
    */
   hideArchiveStatus?: boolean;
+  /**
+   * True on the Cards wall (Akshil, 2026-10-20: "for cards check and seed the
+   * status filter"). The wall never draws an Upcoming row — it has no
+   * conversation on file (tasks-lib.cardsForTasks) — so an Upcoming tick would
+   * change nothing on screen. The row is hidden, as Archive is on the Calendar,
+   * and the stored value is left alone.
+   */
+  hideUpcomingStatus?: boolean;
   /**
    * THE LAST RUNG OF THE TOOLBAR'S LADDER (shell/row-fit.ts): the two triggers
    * become ONE, and its popover holds both lists under their own headings.
@@ -1569,15 +1651,15 @@ export function TaskFilterControls({
   // the filter offers the lanes the Board draws, so one Blocked tick brings
   // both the broken run and the one waiting on you. taskMatches matches by
   // lane for the same reason.
-  const statusColumns = hideArchiveStatus
-    ? BOARD_LANES.filter((c) => c.key !== "archived")
-    : BOARD_LANES;
+  const statusColumns = BOARD_LANES.filter(
+    (c) => !(hideArchiveStatus && c.key === "archived") && !(hideUpcomingStatus && c.key === "upcoming"),
+  );
   // Excludes Archive from the badge for the same reason the row is hidden: a
   // count that includes a facet the popover will not even show would read as
   // a filter this menu cannot explain.
-  const statusCount = hideArchiveStatus
-    ? filters.statuses.filter((s) => s !== "archived").length
-    : filters.statuses.length;
+  const statusCount = filters.statuses.filter(
+    (s) => !(hideArchiveStatus && s === "archived") && !(hideUpcomingStatus && s === "upcoming"),
+  ).length;
 
   // ONE PROJECT AT A TIME (design.md, 2026-09-14). The STORED shape is still a
   // list — `taskMatches` asks it with `includes` and every caller that composes
@@ -1588,6 +1670,12 @@ export function TaskFilterControls({
   // aiming at it.
   // A FOLDER TOGGLES IN AND OUT OF THE SET (Akshil, 2026-10-19: multi-select),
   // the way a lane does in Status.
+  // "Running +3": the first chosen lane's name and how many more.
+  const shownStatuses = statusColumns.filter((c) => laneOn(c.key));
+  const statusValue = shownStatuses.length
+    ? shownStatuses[0].label + (shownStatuses.length > 1 ? ` +${shownStatuses.length - 1}` : "")
+    : undefined;
+
   const pickProject = (path: string) =>
     onChange({
       ...filters,
@@ -1685,6 +1773,8 @@ export function TaskFilterControls({
       <FilterMenu
         label="Status"
         slot="status"
+        name="Status"
+        value={statusValue}
         count={statusCount}
         onClear={() => onChange({ ...filters, statuses: [] })}
       >
@@ -1716,7 +1806,7 @@ export function TaskFilterControls({
              auto-detected from where each task's work happens, and the same
              glyph now marks a folder-scoped task at the end of its title and
              every folder row in the New-task picker. One mark, one meaning. */
-          icon={ICON_FOLDER}
+          icon={ICON_PROJECT}
           onClear={() => onChange({ ...filters, projects: [] })}
         >
           {/* THE CARET GOES TO THE BOX here and not in the merged menu above:
@@ -2142,7 +2232,9 @@ function useStableOpt<A extends unknown[], R>(
 }
 
 export function TaskList({
-  tasks,
+  tasks: tasksIn,
+  bulkSelect = false,
+  selectionResetKey = "",
   home = "",
   stale = false,
   missing,
@@ -2158,6 +2250,7 @@ export function TaskList({
   floored = false,
   emptyLabel = "Nothing to show here.",
   groupBy = null,
+  sortBy = "changed",
   onNewTaskIn,
 }: {
   /** The Project view's + on a folder's heading (Akshil, 2026-10-19): open
@@ -2165,10 +2258,18 @@ export function TaskList({
   onNewTaskIn?: (folder: string) => void;
   /** Already filtered, in the SERVER's order. Never re-sorted here. */
   tasks: Task[];
+  /** Draw the checkboxes and the bulk bar (bulk archive). Off for the lent
+   *  lists that are not the Tasks page. */
+  bulkSelect?: boolean;
+  /** Changes when the page's filters or search do: the selection empties. */
+  selectionResetKey?: string;
   /** Cut the list into sections — by day, folder or pull request (the Time /
    *  Project / PR views, tasks-lib.groupRows). null ⇒ the plain List. Rows keep
    *  the List's order inside every section. */
   groupBy?: TaskGroupBy | null;
+  /** The page's "Sort by" (tasks-lib.TaskSortBy): last change (lanes, today's
+   *  order) or creation time, newest first. */
+  sortBy?: TaskSortBy;
   /** A queue verb landed here: paint the claim over the row until the server's
    * own answer arrives (tasks-lib.QueueOverride). The page holds the claims —
    * see TaskBoard's own note for why they must outlive this component. */
@@ -2249,6 +2350,11 @@ export function TaskList({
   floored?: boolean;
   emptyLabel?: string;
 }) {
+  // Bulk archive: the rows it has hidden are filtered out of `tasks` here, so
+  // every derivation below (order, groups, fold) sees the list as it reads.
+  const bulkH = useBulkArchive({ tasks: tasksIn, selectable: selectableTask, resetKey: selectionResetKey, onReload });
+  const tasks = bulkSelect ? bulkH.tasks : tasksIn;
+  const bulk = bulkSelect ? bulkH.bulk : undefined;
   // Collapsed by default (§8), so the set holds what is OPEN — an empty set is
   // the resting state and needs no seeding from a list that changes on every
   // poll. Seeded from THIS TAB's memory, though: opening a task's chat leaves the
@@ -2340,16 +2446,55 @@ export function TaskList({
   // resolution the rows print anyway — so this re-sorts sixty times an hour, not
   // once a second.
   const now = useNow();
-  const sorted = useMemo(() => sortForList(tasks, now), [tasks, now]);
+  const sorted = useMemo(() => sortForList(tasks, now, sortBy), [tasks, now, sortBy]);
   // The grouped views cut the sorted list into sections and draw them one frame
   // each; `rows` stays the flat, in-order list every index below is about.
+  // THE PR VIEW SECTIONS BY GITHUB STATUS, asked of the server for the PRs
+  // on screen only (and not at all on any other view). The answer lands after
+  // the first paint, so rows first file under "Unknown" and move.
+  const visiblePrKeys = useMemo(
+    () =>
+      groupBy === "pr"
+        ? [...new Set(sorted.flatMap((t) => prRefsOf(t)).filter((r) => r.repo).map(prKey))]
+        : [],
+    [sorted, groupBy],
+  );
+  const prStatuses = usePrStatuses(visiblePrKeys);
+  // A LIVE CLOCK FOR THE SECTIONS' ORDER, not the minute tick alone
+  // (CodeRabbit, #1855): `activityAt` reads a server stamp up to
+  // ACTIVITY_SLACK_SEC ahead of its clock as now, and a tick a minute stale
+  // would spend most of that slack before the stamp was even compared. The
+  // memo still runs on the tick (the Time view's buckets) and on every
+  // listing change, which is exactly when a stamp can be new.
   const groups = useMemo(
-    () => (groupBy ? groupRows(sorted, groupBy, home, now) : null),
-    [sorted, groupBy, home, now],
+    () => (groupBy ? groupRows(sorted, groupBy, home, Math.max(now, Date.now()), sortBy, (k) => prStatuses[k]) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `prStatuses` is a fresh object each render; its values are the dep
+    [sorted, groupBy, home, now, sortBy, visiblePrKeys.map((k) => prStatuses[k] ?? "").join(",")],
   );
   const rows = useMemo(() => (groups ? flattenGroups(groups) : sorted), [groups, sorted]);
+  // The pull request each row stands for (PR view only): a task naming two PRs
+  // is drawn twice, so the row's React key and its `#N` chip need the pair.
+  // expanded / peeked / selected stay keyed by `task.key`, so both copies of a
+  // task light up together — deliberate, they are the same task.
+  const rowRefs = useMemo(() => (groups ? flattenGroupRefs(groups) : null), [groups]);
   // Which sections are folded (the grouped views only; see groupFrames).
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(readCollapsedGroups);
+  // Project sections opened past PROJECT_GROUP_ROW_CAP ("Show N more"); in
+  // memory only, so a reload starts every section capped again.
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
+  // A row the page points at (the selected "where you were" row, the peeked
+  // one) that sits under a section's cap would not exist in the DOM: open
+  // that section. Once per key, so a later "Show less" is not undone by the
+  // next listing publish.
+  const ensuredKeys = useRef(new Set<string>());
+  useLayoutEffect(() => {
+    const want = [selected, peeked].filter((k): k is string => !!k && !ensuredKeys.current.has(k));
+    if (!groups || groupBy !== "project" || want.length === 0) return;
+    const open = cappedSectionsHolding(groups, groupBy, new Set(want));
+    for (const k of want) if (groupedKeys(groups).has(k)) ensuredKeys.current.add(k);
+    if (open.length === 0) return;
+    setExpandedGroups((cur) => (open.every((k) => cur.has(k)) ? cur : new Set([...cur, ...open])));
+  }, [selected, peeked, groups, groupBy]);
   // THE FIRST VISIT TO A GROUPED VIEW STARTS FOLDED (Akshil, 2026-10-19), bar
   // the sections about now — tasks-lib.openOnFirstVisit. Seeded once per view,
   // the moment it first has sections to fold (an empty list seeds nothing, so
@@ -2369,6 +2514,135 @@ export function TaskList({
     // `now` deliberately left out: the seed is a one-off, not a re-fold on
     // every tick of the clock.
   }, [groupBy, groups]);
+  // A NEW TASK OPENS ITS SECTION (Sina, 2026-10-21: "when I create a new task
+  // it should open it, otherwise very confusing"). The folder's + and the New
+  // task card both end in a listing refresh and nothing else, so a task made
+  // into a folded folder — folded because nothing in it had moved for a day —
+  // landed out of sight. A row this list has not held before, with activity
+  // inside the last couple of minutes, unfolds the section (and the repository
+  // over it on the PR view) and brings it into view. The recency guard is
+  // what keeps a cleared filter — hundreds of "new" rows at once — from
+  // unfolding the whole page. Layout effect, like the seed, which is declared
+  // above and so runs first: the unfold must be in the first paint of the row.
+  //
+  // HELD BY NUMBER, not by key: a queued message's `pending:<entry>` row
+  // becomes its session id the moment it runs (tasks-lib.taskListKeys) and
+  // the number moves with it, so the rekey is the same task and not a second
+  // arrival to unfold and scroll for. And an EMPTY list is not a list this
+  // has held: the first non-empty listing is the baseline, not a page of new
+  // tasks (the seed's own folds must stand on first load).
+  const heldKeys = useRef<Set<string> | null>(null);
+  useLayoutEffect(() => {
+    if (!groupBy || !groups) {
+      heldKeys.current = null;
+      return;
+    }
+    // The number is per FOLDER (`Task.task_id`: "numbered per project"), so
+    // it names a task only beside its folder (CodeRabbit, #1855).
+    const nameOf = (t: Task) => (t.task_id ? `${t.project}\u0000${t.task_id}` : t.key);
+    const keys = new Set(rows.map(nameOf));
+    const before = heldKeys.current;
+    if (!before) {
+      if (keys.size > 0) heldKeys.current = keys;
+      return;
+    }
+    heldKeys.current = keys;
+    const since = Date.now() / 1000 - NEW_TASK_WINDOW_SEC;
+    const fresh = new Set(
+      rows.filter((t) => !before.has(nameOf(t)) && activityAt(t) >= since).map((t) => t.key),
+    );
+    if (fresh.size === 0) return;
+    const open = sectionsHolding(groups, groupBy, fresh);
+    if (open.length === 0) return;
+    // A fresh row past the cap must exist to be scrolled to.
+    const capped = cappedSectionsHolding(groups, groupBy, fresh);
+    if (capped.length > 0) setExpandedGroups((cur) => new Set([...cur, ...capped]));
+    setCollapsedGroups((cur) => {
+      if (!open.some((k) => cur.has(k))) return cur;
+      const next = new Set(cur);
+      for (const k of open) next.delete(k);
+      writeCollapsedGroups(next);
+      return next;
+    });
+    // …and into view: the section has just sorted to the top (newest activity
+    // first), which can be a screen away from where the + was pressed. ONE
+    // arrival is the target — the first fresh row — and its section and its
+    // row are both read off that one task (CodeRabbit, #1855: two sections
+    // arriving at once must not scroll one for the other's row). The DEEPEST
+    // of its sections: the pull request, not the repository over it, whose
+    // heading can be in view with the PR still below the fold. The row's own
+    // node where it is on screen (a section taller than the list can hold the
+    // viewport with the new row outside it, and "nearest" on the section
+    // would move nothing), else the section.
+    //
+    // AFTER THE SLIDE, not during it (QA, 2026-10-23): the section is already
+    // in its new place in layout, but the FLIP transform below draws the
+    // TOP-LEVEL section at its old place for a quarter second, and
+    // `scrollIntoView` reads the drawn box — asked then, it smooth-scrolled
+    // the reader straight back to the bottom the section had just left. The
+    // animation is the top-level section's (`getAnimations` does not include
+    // an ancestor's), whichever depth the target is at.
+    const arrived = rows.findIndex((t) => fresh.has(t.key));
+    const mine = sectionsHolding(groups, groupBy, new Set([rows[arrived]!.key]));
+    const deepest = (mine[mine.length - 1] ?? open[0]!).replace(/[^\w-]+/g, "_");
+    requestAnimationFrame(() => {
+      // The row's OWN section where the row is on screen — one task is drawn
+      // once, but reading the section off the node is the answer that cannot
+      // disagree with it (CodeRabbit, #1855); the deepest key is the fallback
+      // for a row not drawn yet.
+      const row = elsByKey.current.get(rowKeys[arrived] ?? "");
+      const section = (row instanceof HTMLElement ? row.closest<HTMLElement>(".tasks-group") : null)
+        ?? listRef.current
+          ?.querySelector(`#tasks-group-${groupBy}-${deepest}`)
+          ?.closest<HTMLElement>(".tasks-group");
+      const node = (row instanceof HTMLElement && section?.contains(row) ? row : section) ?? null;
+      if (!node || !section) return;
+      const outer = section.closest<HTMLElement>(".tasks-group[data-depth='0']") ?? section;
+      const sliding = typeof outer.getAnimations === "function" ? outer.getAnimations() : [];
+      void Promise.allSettled(sliding.map((a) => a.finished)).then(() => {
+        if (node.isConnected) node.scrollIntoView({ block: "nearest", behavior: reducedMotion() ? "auto" : "smooth" });
+      });
+    });
+  }, [rows, groups, groupBy]);
+  // SECTIONS SLIDE TO THEIR NEW PLACE rather than teleport (Akshil, 2026-10-22:
+  // a folder at the bottom jumping to the top on a new task is expected, but
+  // "if the experience was smoother it would be better"). FLIP over the
+  // top-level sections only: their last-painted place and top are kept
+  // across commits, and a section whose PLACE in the order changed — while
+  // the scroller did not move — plays one short transform from where it was.
+  // Place, not top: a fold above shifts every section below it, and a row
+  // landing in an open section shifts everything under that, and neither is
+  // a reorder — animating a hundred sections for it was a wave down the
+  // whole page. Measured on EVERY commit (no dependency list), since a fold
+  // or a landed row moves the tops without touching `groups`, and a slide
+  // measured from a stale top would be the wrong distance; `offsetTop` is a
+  // layout position, so scrolling changes nothing here. Nothing is written
+  // to React state; `el.animate` is a fire-and-forget on a node React keeps
+  // by key.
+  const sectionPlaces = useRef(new Map<string, { ix: number; top: number }>());
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    if (!groups || !list) {
+      sectionPlaces.current = new Map();
+      return;
+    }
+    const prev = sectionPlaces.current;
+    const at = new Map<string, { ix: number; top: number }>();
+    const motion = !reducedMotion() && typeof Element.prototype.animate === "function";
+    let ix = 0;
+    for (const el of list.querySelectorAll<HTMLElement>(".tasks-group[data-depth='0']")) {
+      const key = el.dataset.key ?? "";
+      const top = el.offsetTop;
+      const was = prev.get(key);
+      at.set(key, { ix: ix++, top });
+      if (!motion || !was || was.ix === ix - 1 || Math.abs(was.top - top) < 2) continue;
+      el.animate(
+        [{ transform: `translateY(${was.top - top}px)` }, { transform: "none" }],
+        { duration: SECTION_SLIDE_MS, easing: "cubic-bezier(0.2, 0.7, 0.2, 1)" },
+      );
+    }
+    sectionPlaces.current = at;
+  });
   /**
    * THE ROWS' REACT KEYS, and the reason they are not `task.key` any more.
    *
@@ -2381,7 +2655,10 @@ export function TaskList({
    * queue off it is `task.key` for every row and nothing has changed.
    */
   const queueOn = useProjectQueueEnabled();
-  const rowKeys = useMemo(() => taskListKeys(rows, queueOn), [rows, queueOn]);
+  const rowKeys = useMemo(() => {
+    const keys = taskListKeys(rows, queueOn);
+    return rowRefs ? keys.map((k, i) => (rowRefs[i] ? `${k}@${prKey(rowRefs[i]!)}` : k)) : keys;
+  }, [rows, queueOn, rowRefs]);
 
   /**
    * Open or close a task — and, on the way OPEN, fetch the rest of its thread.
@@ -2807,7 +3084,12 @@ export function TaskList({
     : Math.max(0, Math.floor(seedScroll / REVEAL_ROW_GUESS_PX) - REVEAL_SEED_ABOVE);
 
   if (!hasRows) {
-    return <p className="schedule-tv-empty">{emptyLabel}</p>;
+    return (
+      <>
+        <p className="schedule-tv-empty">{emptyLabel}</p>
+        {bulk && bulkH.node}
+      </>
+    );
   }
 
   // ONE ROW, by its flat index — shared by the plain frame and the grouped
@@ -2835,7 +3117,10 @@ export function TaskList({
         onNode={onNode}
         task={task}
         home={home}
-        showProject={showProject}
+        // The PR view's `#N` chip takes the folder chip's slot (see PrNumChip).
+        showProject={showProject && !rowRefs?.[ix]}
+        prRef={rowRefs?.[ix] ?? null}
+        sortBy={sortBy}
         folderMissing={missing?.has(taskFolder(task)) ?? false}
         open={expanded.has(task.key)}
         peekOn={peekOn}
@@ -2861,11 +3146,15 @@ export function TaskList({
         onReadAll={clearAll}
         onUnreadAll={restoreAll}
         onSettleAll={settleAll}
+        bulk={bulk}
       />
   );
 
   return (
     <>
+      {bulk && (
+        <BulkBar count={bulkH.selection.size} onArchive={bulkH.archiveSelected} onClear={bulkH.selection.clear} />
+      )}
       {/* `data-fit` is how many of the row's meta marks have had to go for the
           rows to fit the width the list actually has — measured, never a
           breakpoint (shell/row-fit.ts states the rule and the reason). The
@@ -2874,6 +3163,7 @@ export function TaskList({
       <div
         className={"tasks-list" + (groups ? " is-grouped" : "")}
         ref={listRef}
+        data-selecting={bulk && bulkH.selection.size > 0 ? "1" : undefined}
         {...(peekOn ? { "data-fit": fit.level } : {})}
         // …AND WHAT THE ROWS WOULD NEED IF NOTHING FOLDED, which is what the
         // content is held at once the pane is floored (styles/task-peek.css
@@ -2930,11 +3220,12 @@ export function TaskList({
         groupFrames(groups, rowAt, groupBy, collapsedGroups, onNewTaskIn, (next) => {
           setCollapsedGroups(next);
           writeCollapsedGroups(next);
-        })
+        }, expandedGroups, setExpandedGroups, bulk)
       ) : (
         <div className="tasks-list-frame">{rows.map(rowAt)}</div>
       )}
       </div>
+      {bulk && bulkH.node}
     </>
   );
 }
@@ -3099,6 +3390,8 @@ function TaskNode({
   task,
   home,
   showProject,
+  prRef = null,
+  sortBy = "changed",
   folderMissing,
   open: requested,
   variant = "task",
@@ -3128,8 +3421,11 @@ function TaskNode({
   onUnreadAll,
   onSettleAll,
   nodeRef,
+  bulk,
 }: {
   task: Task;
+  /** The bulk-select handle (the Tasks page's List only): draws the checkbox. */
+  bulk?: BulkSelect | undefined;
   home: string;
   /** The List's handle on this row's `.tasks-node`, for the fold's observer.
    *  Absent on a borrowed row. */
@@ -3137,6 +3433,11 @@ function TaskNode({
   /** Whether the folder chip is worth drawing. The LIST's answer, not this row's:
    * a chip that every visible row repeats distinguishes nothing (spansProjects). */
   showProject: boolean;
+  /** The PR view's row: the pull request this copy of the task stands for.
+   *  Replaces the folder chip with a `#N` link to GitHub. */
+  prRef?: PrRef | null;
+  /** Which time the row's last cell prints: its last change, or its creation. */
+  sortBy?: TaskSortBy;
   /** The task's folder is gone from the disk (useMissingFolders). The row then
    * has nowhere to go: its press raises a toast instead of leaving for an
    * Explorer that can only answer with a stat error. */
@@ -3376,7 +3677,7 @@ function TaskNode({
   // every row in a list re-letters in ONE paint — two rows flipping "59m ago" to
   // "1h ago" a second apart is two cells of one column disagreeing.
   const now = useNow();
-  const when = taskWhen(task, now);
+  const when = taskWhenFor(task, now, sortBy);
   // A run still ahead — the mark after the title, clock or circle arrows
   // (tasks-lib.scheduledMark). No chip beside the time any more (Akshil,
   // 2026-09-11: "we don't need to show time 2 times on the right side").
@@ -3450,6 +3751,7 @@ function TaskNode({
   // row would leave the reader working out which press each answered.
   const [acting, setActing] = useState(false);
   const [note, setNote] = useState("");
+  const archiveAsk = useArchiveConfirm();
   // THE FILING PRESS'S RECEIPT (Akshil, 2026-08-19). Clicking Archive keeps the
   // pointer on the row, and the hover swap above kept right on swapping: the slot
   // instantly redrew the OPPOSITE verb (Unarchive), so the press's only visible
@@ -3566,7 +3868,14 @@ function TaskNode({
   // Filing, either direction. One call each, and the same ones the board's drops
   // make: the server cancels the work and files the session going in, and drops
   // the filing coming out, so this side composes nothing but the sentence.
-  const refile = async (intent: FilingIntent) => {
+  const refile = async (intent: FilingIntent): Promise<void> => {
+    if (intent.kind === "archive") {
+      archiveAsk.guard(task, () => void doRefile(intent));
+      return;
+    }
+    await doRefile(intent);
+  };
+  const doRefile = async (intent: FilingIntent) => {
     setActing(true);
     setNote("");
     // On the PRESS, not on the answer: the ring under the suppressed button is
@@ -3937,6 +4246,7 @@ function TaskNode({
 
   return (
     <div className="tasks-node" ref={nodeRef}>
+      {archiveAsk.node}
       <div
         className={"tasks-row" + (open ? " is-open" : "")
           + (selected ? " is-selected" : "") + (pressable ? "" : " is-inert")
@@ -4102,6 +4412,7 @@ function TaskNode({
             that a reader has to pair up. `unread` is the merged count this row is
             DRAWING, so the ring hollows on the row's own press rather than on the
             next poll, and it is the count the tooltip names. */}
+        {bulk && <RowCheck select={bulk} task={task} />}
         {/* THE MARK SLOT: the ring at rest, the Archive button under the pointer,
             in the same box (`.tasks-rowmark`, tasks.css).
 
@@ -4182,6 +4493,7 @@ function TaskNode({
             then the folder it belongs to, then the words. It lived at the right
             end among the tags until then; DraftChip stays there alone. Same
             component, same press, same shield — only the slot moved. */}
+        {prRef && <PrNumChip prRef={prRef} />}
         {showProject && (
           <IdentityChip
             name={basename(task.project)}
@@ -4220,7 +4532,7 @@ function TaskNode({
             is `position: fixed` on <body>, so this element's own clipping has no
             say in whether the caption is readable. */}
         <span
-          className={"tasks-title" + (ahead ? " is-upcoming" : "") + (line.kind === "recap" ? " is-recap" : "")}
+          className={"tasks-title" + (ahead ? " is-upcoming" : "") + (unread > 0 ? " is-unread" : "")}
           /* The caption is the WHOLE of whatever this line is one line of — the
              untruncated message when the row is showing one, the title when it
              is not — because what a caption is for is the text the clamp hides. */
@@ -4409,7 +4721,7 @@ function TaskNode({
             with the blue ring, and this says what Claude is still holding for
             it, naming the jobs on hover.
             The words spend the row's press (`pressRow`), like the marks above;
-            the Stop is in the hover strip (`StopJobButton`). */}
+            there is no Stop on the List row (see the hover strip below). */}
         {jobs && (
           <span
             className="tasks-row-queue tasks-row-queue--bg tasks-job-badge"
@@ -4499,16 +4811,10 @@ function TaskNode({
             CAPABILITY rather than a missing shortcut. Hover-revealed all the
             same (`.tasks-act`), so a list at rest grows no chrome — and by
             opacity rather than display, so a keyboard still reaches it. */}
-        {/* STOP THE LIVE BACKGROUND JOB (tasks-lib.jobBadge), the badge's
-            press — here and not inline, see `StopJobButton`. */}
-        {jobs && (
-          <StopJobButton
-            badge={jobs}
-            taskId={task.task_id}
-            className="tasks-act tasks-act--skip"
-            disabled={acting}
-          />
-        )}
+        {/* NO STOP FOR THE BACKGROUND JOB ON THE LIST ROW (Akshil,
+            2026-10-23). The blue-ring row's hover strip used to carry
+            `StopJobButton`; a job is stopped from its chat (or the Board
+            card's strip), and the List hover stays Archive-only for it. */}
         {canForceStart(task) && (
           <button
             type="button"
@@ -5332,7 +5638,9 @@ function writeLaneChoices(next: LaneChoices): void {
 }
 
 export function TaskBoard({
-  tasks,
+  tasks: tasksIn,
+  bulkSelect = false,
+  selectionResetKey = "",
   home = "",
   onReload,
   onQueued,
@@ -5350,6 +5658,10 @@ export function TaskBoard({
    * (tasks-lib.groupByColumn), which is the one thing this view does to the
    * order it is handed and the one place it is decided. */
   tasks: Task[];
+  /** Draw the lane checkboxes, the card checkboxes and the bulk bar. */
+  bulkSelect?: boolean;
+  /** Changes when the page's filters or search do: the selection empties. */
+  selectionResetKey?: string;
   home?: string;
   /** Re-read the list after a drop lands (or fails). */
   onReload: () => void;
@@ -5374,6 +5686,10 @@ export function TaskBoard({
    * Explorer error. */
   missing?: ReadonlySet<string>;
 }) {
+  // Bulk archive: the cards it has hidden are filtered out of `tasks` here.
+  const bulkH = useBulkArchive({ tasks: tasksIn, selectable: selectableTask, resetKey: selectionResetKey, onReload });
+  const tasks = bulkSelect ? bulkH.tasks : tasksIn;
+  const bulk = bulkSelect ? bulkH.bulk : undefined;
   const [choices, setChoices] = useState<LaneChoices>(readLaneChoices);
   // Lanes the reader has opened WHILE EMPTY. Deliberately component state and
   // deliberately not persisted: opening a column with nothing in it is a peek,
@@ -5389,6 +5705,7 @@ export function TaskBoard({
   // card's own Archive button. One line above the lanes, because both are the
   // same kind of news about the same board.
   const [note, setNote] = useState<string | null>(null);
+  const archiveAsk = useArchiveConfirm();
   // The same read bookkeeping the List uses, for the same reason: a card's
   // pill has to go on the click that opens the thread, not 20 seconds later on
   // the next poll. Only the whole-task half is wanted here — a card links the
@@ -5483,15 +5800,23 @@ export function TaskBoard({
     setInFlight(new Set(inFlightRef.current));
   }, [tasks]);
 
-  const drop = async (lane: BoardLane) => {
-    const task = dragging;
-    setDragging(null);
-    setOverLane(null);
+  const drop = async (lane: BoardLane, confirmed?: Task) => {
+    const task = confirmed ?? dragging;
+    if (!confirmed) {
+      setDragging(null);
+      setOverLane(null);
+    }
     if (!task || !allowed.has(lane)) return;
     // Which of the three things this drop means — file the task, un-file it, or
     // run its next message early — is tasks-lib's decision, not this handler's.
     const action = dropAction(task, lane);
     if (!action) return;
+    // A running task is stopped by archiving: ask first (the card is not locked
+    // until the reader agrees, and a "no" leaves it where it was).
+    if (action.kind === "archive" && !confirmed) {
+      archiveAsk.guard(task, () => void drop(lane, task));
+      return;
+    }
     // The SECOND drop on a card whose first is still running is ignored
     // outright — see `inFlightRef`. Silently: the reader made one gesture twice
     // and the first one is already doing what they asked for, so there is no
@@ -5627,6 +5952,13 @@ export function TaskBoard({
   };
 
   const refile = async (task: Task, intent: FilingIntent) => {
+    if (intent.kind === "archive") {
+      archiveAsk.guard(task, () => void doRefile(task, intent));
+      return;
+    }
+    await doRefile(task, intent);
+  };
+  const doRefile = async (task: Task, intent: FilingIntent) => {
     setNote(null);
     try {
       if (intent.kind === "archive") {
@@ -5764,19 +6096,24 @@ export function TaskBoard({
             (Bugbot, #1079). */}
         {note && <p className="schedule-tv-note">{note}</p>}
         <p className="schedule-tv-empty">{emptyLabel}</p>
+        {bulk && bulkH.node}
       </>
     );
   }
 
   return (
     <>
+      {archiveAsk.node}
       {note && <p className="schedule-tv-note">{note}</p>}
+      {bulk && (
+        <BulkBar count={bulkH.selection.size} onArchive={bulkH.archiveSelected} onClear={bulkH.selection.clear} />
+      )}
       {/* The LANES, not every status: `needs_attention` draws inside Blocked
           (schedule-lib.BOARD_LANES / laneOf, and groupByColumn puts those cards
           at the top of it). A board is read by sweeping across it, and a sixth
           column that is empty except during the minutes somebody is being
           waited on is a column that teaches the reader to skip it. */}
-      <div className="schedule-tv-board">
+      <div className="schedule-tv-board" data-selecting={bulk && bulkH.selection.size > 0 ? "1" : undefined}>
         {BOARD_LANES.map((col) => {
           const lane = byLane.get(col.key) ?? [];
           // How many CARDS in this column still hold something nobody has read —
@@ -5848,25 +6185,35 @@ export function TaskBoard({
           const cardKeys = taskListKeys(cards, queueOn);
           return (
             <div className="schedule-tv-lane" key={col.key}>
-              <button
-                type="button"
-                className="schedule-tv-lane-head"
-                title={`Collapse ${col.label}`}
-                onClick={() => toggleLane(col.key, false)}
-              >
-                {/* The group header's own unread mark, the same ring the cards
-                    under it wear — filled while any of them holds something
-                    unread, and naming the number on hover. */}
-                <StatusIcon status={col.key} unread={news > 0} count={news} />
-                <span className="schedule-tv-lane-label">{col.label}</span>
-                {/* "7", or "1 running · 2 queued" on the one lane that now holds
-                    two statuses (tasks-lib.laneCountLabel). A bare total over a
-                    column of three running tasks and four waiting ones answers a
-                    question nobody asked. */}
-                <span className="schedule-tv-lane-count">
-                  {laneCountLabel(col.key, lane)}
-                </span>
-              </button>
+              {(() => {
+                const head = (
+                <button
+                    type="button"
+                    className="schedule-tv-lane-head"
+                    title={`Collapse ${col.label}`}
+                    onClick={() => toggleLane(col.key, false)}
+                  >
+                    {/* The group header's own unread mark, the same ring the cards
+                        under it wear — filled while any of them holds something
+                        unread, and naming the number on hover. */}
+                    <StatusIcon status={col.key} unread={news > 0} count={news} />
+                    <span className="schedule-tv-lane-label">{col.label}</span>
+                    {/* "7", or "1 running · 2 queued" on the one lane that now holds
+                        two statuses (tasks-lib.laneCountLabel). A bare total over a
+                        column of three running tasks and four waiting ones answers a
+                        question nobody asked. */}
+                    <span className="schedule-tv-lane-count">
+                      {laneCountLabel(col.key, lane)}
+                    </span>
+                  </button>
+                );
+                return bulk ? (
+                  <div className="schedule-tv-lane-headwrap">
+                    <GroupCheck select={bulk} keys={lane.filter(selectableTask).map((t) => t.key)} name={col.label} />
+                    {head}
+                  </div>
+                ) : head;
+              })()}
               <div
                 className={
                   "schedule-tv-lane-body" +
@@ -5910,6 +6257,7 @@ export function TaskBoard({
                     peekOn={peekOn}
                     peeked={peekedKey === task.key}
                     isDragging={dragging?.key === task.key}
+                    bulk={bulk}
                     dropping={inFlight.has(task.key)}
                     onDragStart={() => setDragging(task)}
                     onDragEnd={() => {
@@ -5949,12 +6297,14 @@ export function TaskBoard({
           );
         })}
       </div>
+      {bulk && bulkH.node}
     </>
   );
 }
 
 function TaskCard({
   task,
+  bulk,
   home,
   showProject,
   onPickDraft,
@@ -5976,6 +6326,8 @@ function TaskCard({
   onErased,
 }: {
   task: Task;
+  /** The bulk-select handle (the Tasks page's Board only): draws the checkbox. */
+  bulk?: BulkSelect | undefined;
   home: string;
   /** The card's task was erased (the foot's trash → EraseTaskModal): the
    *  Board re-reads, since the card that was pressed is the one that left. */
@@ -6126,8 +6478,9 @@ function TaskCard({
   const limit = usageLimitCaption(task);
   /** …and a live background job under this finished turn (tasks-lib.jobBadge;
    *  the card is drawn In Progress):
-   *  the List row's words on a line of their own, and its Stop in the hover
-   *  strip — the card IS a button, so the Stop cannot sit inside it. */
+   *  the List row's words on a line of their own, and a Stop in the hover
+   *  strip (the List row has none) — the card IS a button, so the Stop cannot
+   *  sit inside it. */
   const jobs = limit ? null : jobBadge(task);
   /** …and what a waiting card is waiting on — the List row's sentence. */
   const asking = attentionCaption(task);
@@ -6157,7 +6510,9 @@ function TaskCard({
     // one. The action is a SIBLING pinned over the card's head — where the head
     // has spare room to its right on every card — rather than a nested control
     // the browser would refuse to parse.
-    <div className={"tasks-card-wrap" + (isDragging ? " is-dragging" : "")}>
+    <div className={"tasks-card-wrap" + (isDragging ? " is-dragging" : "")}
+      data-checked={bulk?.selection.has(task.key) ? "1" : undefined}>
+      {bulk && <RowCheck select={bulk} task={task} />}
       <button
         type="button"
         className={
@@ -6587,6 +6942,19 @@ function TaskCard({
  *  the per-tab facets — a closed tab forgets its folds. */
 const GROUPS_COLLAPSED_KEY = "fused-render:tasks-groups-collapsed";
 
+/** How recent a row the list has not held before must be to count as a NEW
+ *  task — one that unfolds its section — rather than a row a cleared filter
+ *  let back in. Well over a create's round trip, well under a day. */
+const NEW_TASK_WINDOW_SEC = 120;
+/** One section's slide to its new place in a grouped list. */
+const SECTION_SLIDE_MS = 240;
+
+function reducedMotion(): boolean {
+  return typeof window !== "undefined"
+    && typeof window.matchMedia === "function"
+    && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
 function readCollapsedGroups(): Set<string> {
   try {
     const raw = JSON.parse(sessionStorage.getItem(GROUPS_COLLAPSED_KEY) || "[]");
@@ -6635,19 +7003,55 @@ const ICON_GROUP_LINK = icon(
   <><path d="M15 3h6v6" /><path d="M10 14 21 3" />
     <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" /></>, 12);
 
+/** Rows a project section draws before its "Show N more" row. */
+export const PROJECT_GROUP_ROW_CAP = 10;
+
+/** Every selectable task key under one section, nested sections included. */
+function groupTaskKeys(g: TaskGroup): string[] {
+  const out = new Set<string>();
+  const walk = (x: TaskGroup) => {
+    for (const t of x.rows) if (selectableTask(t)) out.add(t.key);
+    for (const c of x.groups ?? []) walk(c);
+  };
+  walk(g);
+  return [...out];
+}
+
+/** Every task key the sections hold. */
+function groupedKeys(groups: TaskGroup[]): Set<string> {
+  const out = new Set<string>();
+  const walk = (g: TaskGroup) => {
+    for (const t of g.rows) out.add(t.key);
+    for (const c of g.groups ?? []) walk(c);
+  };
+  groups.forEach(walk);
+  return out;
+}
+
+/** Section keys (as groupFrames keys them) whose rows past the cap include one of `keys`. */
+export function cappedSectionsHolding(groups: TaskGroup[], by: TaskGroupBy, keys: ReadonlySet<string>): string[] {
+  if (by !== "project") return [];
+  return groups
+    .filter((g) => g.rows.slice(PROJECT_GROUP_ROW_CAP).some((t) => keys.has(t.key)))
+    .map((g) => `${by}:${g.key}`);
+}
+
 /** The grouped views' frames (Akshil, 2026-10-16): one bordered
  *  `.tasks-list-frame` per section under a heading that FOLDS it, every row
  *  drawn by the List's own `rowAt` at its FLAT index so keys, fold state and
  *  heights are the same ones the plain List keeps. The first heading's line
  *  also carries Collapse all / Expand all, at its right end — on the row the
  *  reader is already looking at, costing no row of its own. */
-function groupFrames(
+export function groupFrames(
   groups: TaskGroup[],
   rowAt: (task: Task, ix: number) => React.ReactNode,
   by: TaskGroupBy,
   collapsed: ReadonlySet<string>,
   onNewTaskIn: ((folder: string) => void) | undefined,
   setCollapsed: (next: Set<string>) => void,
+  expanded: ReadonlySet<string> = new Set(),
+  setExpanded: (next: Set<string>) => void = () => {},
+  bulk?: BulkSelect,
 ) {
   const keyOf = (g: TaskGroup) => `${by}:${g.key}`;
   // Every heading at every depth — the PR view nests pull requests under
@@ -6674,7 +7078,33 @@ function groupFrames(
     const k = keyOf(g);
     const open = !collapsed.has(k);
     const headId = `tasks-group-${by}-${k.replace(/[^\w-]+/g, "_")}`;
-    const own = open ? g.rows.map((t) => rowAt(t, counter.next++)) : (counter.next += g.rows.length, null);
+    // THE PROJECT VIEW SHOWS TEN ROWS PER FOLDER, then one "Show N more" row
+    // (Surya, 2026-10-23): a busy folder's 150 rows pushed every other folder
+    // off the page. Hidden rows still advance the flat index, like a fold.
+    const capped = by === "project" && open && g.rows.length > PROJECT_GROUP_ROW_CAP;
+    const full = !capped || expanded.has(k);
+    const shown = full ? g.rows : g.rows.slice(0, PROJECT_GROUP_ROW_CAP);
+    const own = open ? shown.map((t) => rowAt(t, counter.next++)) : (counter.next += g.rows.length, null);
+    if (open && !full) counter.next += g.rows.length - shown.length;
+    if (own && capped) {
+      const hidden = g.rows.length - PROJECT_GROUP_ROW_CAP;
+      own.push(
+        <button
+          key="__show-more"
+          type="button"
+          className="tasks-group-more"
+          aria-expanded={full}
+          onClick={() => {
+            const next = new Set(expanded);
+            if (full) next.delete(k);
+            else next.add(k);
+            setExpanded(next);
+          }}
+        >
+          {full ? "Show less" : `Show ${hidden} more`}
+        </button>,
+      );
+    }
     const kids = g.groups ?? [];
     const inner = open ? kids.map((c) => draw(c, depth + 1, false)) : (counter.next += kids.reduce((n, c) => n + groupSize(c), 0), null);
     return (
@@ -6685,11 +7115,16 @@ function groupFrames(
         data-collapsed={open ? "0" : "1"}
         data-depth={depth}
         data-by={by}
+        data-key={g.key}
       >
         <h3 className="tasks-group-head">
           {/* Toggle and link travel together at the start; the all-toggle
               sits alone at the end (the head is space-between). */}
           <span className="tasks-group-lead">
+            {/* Select all: every selectable task under this heading, nested
+                sections and rows past the cap included. Beside the fold's
+                button, never inside it. */}
+            {bulk && <GroupCheck select={bulk} keys={groupTaskKeys(g)} name={g.label} />}
             <button
               type="button"
               id={headId}
@@ -6719,7 +7154,17 @@ function groupFrames(
                 className="tasks-group-add"
                 data-hint={`New task in ${g.label}`}
                 aria-label={`New task in ${g.label}`}
-                onClick={() => onNewTaskIn(g.folder!)}
+                // …AND UNFOLDS THE SECTION on the way (Sina, 2026-10-21): the
+                // task about to be made lands here, and a press that filed it
+                // under a closed heading read as the task not being made.
+                onClick={() => {
+                  if (!open) {
+                    const next = new Set(collapsed);
+                    next.delete(k);
+                    setCollapsed(next);
+                  }
+                  onNewTaskIn(g.folder!);
+                }}
               >
                 {ICON_PLUS}
               </button>

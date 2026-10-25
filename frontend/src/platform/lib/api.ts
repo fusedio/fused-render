@@ -1,4 +1,5 @@
 // Server API wrappers. Non-ok responses throw with the server's error message.
+import { canonFsPath } from "./path-url";
 import { noteFsMutation, noteIndexLifecycle } from "@platform/lib/index-freshness";
 import { outcomeFrom } from "@platform/lib/index-query";
 import type { IndexQueryOutcome } from "@platform/lib/index-query";
@@ -33,6 +34,10 @@ export interface Config {
   // session, where `pickFile`/pick-folder answer 501 and a caller needs its own
   // fallback. One backend set raises both dialogs, hence the one flag.
   native_dir_picker: boolean;
+  // Whether this server runs bots at all (server/routers/config.py) — false on
+  // Windows, where the bot process manager is POSIX-only and every /api/bots
+  // call answers 503. Absent from an older server: treated as available.
+  bots_available?: boolean;
   // Self-update state (fused_render/update/mac.py) — present only when the
   // packaged mac app started the update manager; absent on dev servers and
   // the Linux package (it updates through its supervisor).
@@ -165,7 +170,7 @@ export interface HttpError extends Error {
   status?: number;
   body?: unknown;
 }
-function httpError(data: { error?: unknown } | null, status: number): HttpError {
+export function httpError(data: { error?: unknown } | null, status: number): HttpError {
   const said = data && typeof data.error === "string" ? data.error : "";
   const err = new Error(said || `HTTP ${status}`) as HttpError;
   err.status = status;
@@ -287,8 +292,15 @@ export const postJson = <T>(
   opts?: { signal?: AbortSignal; headers?: Record<string, string> },
 ) => mutateJson<T>("POST", url, body, opts);
 
+// `home` / `fused_dir` are raw expanduser values and arrive with backslashes on
+// Windows. Folded to the shell's canonical forward-slash form HERE, once, so no
+// consumer has to remember to (drive-letter paths only: see canonFsPath).
 export function getConfig(opts?: { signal?: AbortSignal }): Promise<Config> {
-  return getJson<Config>("/api/config", opts);
+  return getJson<Config>("/api/config", opts).then((c) => ({
+    ...c,
+    home: typeof c.home === "string" ? canonFsPath(c.home) : c.home,
+    fused_dir: typeof c.fused_dir === "string" ? canonFsPath(c.fused_dir) : c.fused_dir,
+  }));
 }
 
 // -- Diagnostics bundle (SPEC §50; Preferences → Diagnostics) ----------------
@@ -476,12 +488,23 @@ export interface ClaudeHealth {
       The COPILOT snapshot (`/api/copilot/health`, D10) says one of three:
       "copilot" (its own `copilot login`), "gh" (a `gh auth login` token the
       app hands it) or "token" (a token already in the environment) — worded
-      by `agentAccountLine` in platform/lib/claude-health. */
+      by `agentAccountLine` in platform/lib/claude-health. The CODEX snapshot
+      (`/api/codex/health`, docs/CODEX_BACKEND.md D10) says "chatgpt" or
+      "api_key", with the ChatGPT plan in `plan` (or `planType`, Codex's own
+      key, from a server that passes it through). The GEMINI snapshot
+      (`/api/gemini/health`, docs/GEMINI_BACKEND.md D10) says "google",
+      "api_key", "vertex" or "gateway", with the Google account's email when
+      the CLI cached one. */
   account: {
     method: string | null;
     email: string | null;
     org: string | null;
     plan: string | null;
+    planType?: string | null;
+    /** The COPILOT snapshot's user, from the CLI's own `account.getCurrentAuth`
+     *  (login and GitHub host); absent or null when it could not say. */
+    login?: string | null;
+    host?: string | null;
   } | null;
   config_dir: string;
   /** `sys.platform`. Here so the UI never guesses which install line to show. */
@@ -581,7 +604,7 @@ export function linkClaudePath(): Promise<{
   already?: boolean;
   error?: string;
 }> {
-  return postJson("/api/claude/link-path", {});
+  return linkAgentPath("claude");
 }
 
 /** A browser sign-in, as the server holds it.
@@ -594,7 +617,7 @@ export interface ClaudeLoginStatus {
   started_at: number | null;
   /** The child's own diagnosis when a sign-in ended without signing in. */
   error: string | null;
-  /** A DEVICE-CODE sign-in's two facts (Copilot, docs/COPILOT_BACKEND.md D10):
+  /** A DEVICE-CODE sign-in's two facts (Copilot and Codex, D10 of both contracts):
    *  the code to type and the page to type it on. Meaningful ONLY while
    *  `in_flight` — the record keeps the last flow's after it ends, so a reader
    *  must never show it otherwise. Absent for Claude, whose browser sign-in
@@ -618,17 +641,33 @@ export function cancelClaudeLogin(): Promise<ClaudeLoginStatus & { canceled: boo
     "/api/claude/login/cancel", {});
 }
 
-// -- The same five doors, PER AGENT (docs/COPILOT_BACKEND.md D10) -----------
+// -- The same doors, PER AGENT (docs/COPILOT_BACKEND.md D10) ----------------
 //
-// `/api/copilot/{health, health/refresh, install, login, login/cancel}` answer
-// the same bodies as the Claude ones above, so one set of functions keyed on
-// the backend id serves both — `useAgentSetup(backend)` in claude-setup.ts is
-// the caller. The Claude-named functions stay for every reader that predates
-// the second agent. `link-path` and `doctor` are Claude-only (no Copilot twin
-// in the contract) and are not generalised.
+// `/api/copilot/*`, `/api/codex/*` (docs/CODEX_BACKEND.md D10) and
+// `/api/gemini/*` (docs/GEMINI_BACKEND.md D10) — `health,
+// health/refresh, install, login, login/cancel, link-path` — answer the same
+// bodies as the Claude ones above, so one set of functions keyed on the
+// backend id serves every agent — `useAgentSetup(backend)` in claude-setup.ts
+// is the caller. The Claude-named functions stay for every reader that
+// predates the second agent. `doctor` is Claude-only (no twin in either
+// contract) and is not generalised.
+
+/** Each agent's route segment; an id not here (or none) is Claude's. */
+const AGENT_ROUTES: Record<string, string> = { claude: "claude", copilot: "copilot", codex: "codex", gemini: "gemini" };
 
 function agentRoute(backend: string, tail: string): string {
-  return `/api/${backend === "copilot" ? "copilot" : "claude"}/${tail}`;
+  return `/api/${AGENT_ROUTES[backend] ?? "claude"}/${tail}`;
+}
+
+/** `linkClaudePath`, for any agent's CLI. */
+export function linkAgentPath(backend: string): Promise<{
+  ok: boolean;
+  rc_file?: string;
+  line?: string;
+  already?: boolean;
+  error?: string;
+}> {
+  return postJson(agentRoute(backend, "link-path"), {});
 }
 
 export function getAgentHealth(backend: string): Promise<ClaudeHealth> {
@@ -686,10 +725,28 @@ export interface AgentCaps {
 
 export interface AgentBackendRow {
   id: string;
-  /** "Claude" / "Copilot" — the word every surface names the agent by. */
+  /** "Claude" / "Copilot" / "Codex" / "Gemini" — the word every surface names the agent by. */
   label: string;
   enabled: boolean;
-  models: { id: string; label: string }[];
+  /** `reasoning: false` marks a model its CLI takes no effort for (the spawn
+   *  drops a chosen effort rather than fail); absent reads as true. `efforts`
+   *  is the list THIS model takes when the server knows it per model
+   *  (Copilot's `models.list`, carried in its health snapshot): `[]` means
+   *  none — the effort pill is hidden — and absent means the row's
+   *  `efforts`. `default_effort` is the CLI's own default for the model when
+   *  it said. `category` / `vendor` / `multiplier` are facts the CLI
+   *  published beside the id (Copilot's picker category and billing
+   *  multiplier), carried, not acted on. */
+  models: {
+    id: string;
+    label: string;
+    reasoning?: boolean;
+    efforts?: string[];
+    default_effort?: string;
+    category?: string | null;
+    vendor?: string | null;
+    multiplier?: number | null;
+  }[];
   default_model: string;
   efforts: string[];
   modes: string[];
@@ -1441,7 +1498,10 @@ export interface Prefs {
   // Whether the Canvases feature is OFFERED (opt-in, default off — D427). Gates
   // the shell's entry points to it (the sidebar row and the Settings menu
   // entry), not the /canvases routes, which keep answering a deep link.
-  canvases: { enabled: boolean };
+  // `embed_proxy`: the custom env's workbench frames through the loopback
+  // proxy (opt-in, default off — canvas_embed_proxy.py). `embed_proxy_locked`:
+  // `[render] canvases_embed_proxy_enabled` in ~/.fused/settings.toml sets it.
+  canvases: { enabled: boolean; embed_proxy?: boolean; embed_proxy_locked?: boolean };
   // Whether the unified Share sheet (public link + .fused file) is OFFERED in
   // place of the plain Export / Download action (opt-in, default off). Gates
   // the five share surfaces, not the /api/share routes.
@@ -1485,12 +1545,15 @@ export interface Prefs {
   // (`task_recap_titles_enabled`, shell/prefs.py; opt-in, off by default).
   // Optional like `queue`: absent reads as off.
   task_recap?: { enabled: boolean };
-  // Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
+  // Stable AI titles: Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
   // shell/prefs.py; off by default). Optional: absent reads as off.
   task_summary_titles?: { enabled: boolean };
   // Lean Claude sessions (`claude_strict_mcp_enabled`, shell/prefs.py; ON by
   // default). Optional: absent (older server) reads as on.
   claude_strict_mcp?: { enabled: boolean };
+  // The Approvals mode a new Claude chat starts in (`claude_default_permission`,
+  // shell/prefs.py): plan | prompt | acceptEdits | auto, "auto" when unset.
+  claude_default_permission?: string;
   // Concurrent Claude session cap (`claude_max_concurrent_sessions`; default
   // 10, 0 = unlimited). Optional: absent (older server) reads as 10.
   claude_sessions?: { max_concurrent: number };
@@ -1586,6 +1649,12 @@ export interface Prefs {
   // `available` is false off macOS and under `fused-render serve`, where the
   // section is not rendered. OPTIONAL like `launcher`.
   native_windows?: { enabled: boolean; available: boolean };
+  // Chromium (CEF) engine for app windows (fused_render/shell/prefs.py's
+  // `chromium_windows_enabled`): on by default, the app ships the engine
+  // (D1415). `available` is false unless this is the macOS app with native
+  // windows, where the row is not rendered. OPTIONAL: an older server answers
+  // without it.
+  chromium_windows?: ChromiumWindowsState;
   // The DEFAULT Fused environment (fusedcli.workbench_env): the canvas
   // catalog's initial pick, the `fused` wrapper's env outside a canvas clone,
   // share uploads' target. Canvases carry their own env, so this is a plain
@@ -1594,11 +1663,32 @@ export interface Prefs {
   // OPTIONAL: an older server answers without it.
   workbench?: { env: string; locked: boolean; choices: string[] };
   // WHICH AGENTS MAY RUN CHATS AND TASKS (docs/COPILOT_BACKEND.md D17):
-  // `claude_enabled` (default on) / `copilot_enabled` (default off), and the
-  // one new chats and tasks open on. The server refuses a PUT that would turn
-  // the last one off (400 "turn on the other agent first"). OPTIONAL: an older
-  // server answers without it, and the reader treats absence as Claude only.
-  agents?: { claude: boolean; copilot: boolean; default: string };
+  // `claude_enabled` (default on) / `copilot_enabled` / `codex_enabled` /
+  // `gemini_enabled` (default off, docs/CODEX_BACKEND.md D17,
+  // docs/GEMINI_BACKEND.md D17), and the one new chats and tasks
+  // open on. The server refuses a PUT that would turn the last one off (400
+  // "turn on another agent first"). OPTIONAL: an older server answers without
+  // it, and the reader treats absence as Claude only.
+  agents?: { claude: boolean; copilot: boolean; codex: boolean; gemini?: boolean; default: string };
+}
+
+export type ChromiumEngineState = "unsupported" | "missing" | "ready";
+
+export interface ChromiumEngineStatus {
+  /** "ready": this build ships the engine; "missing": it does not (an Intel
+   *  build, a dev checkout); "unsupported": not macOS. */
+  state: ChromiumEngineState;
+  cef_version: string | null;
+  path: string | null;
+}
+
+export interface ChromiumWindowsState {
+  enabled: boolean;
+  available: boolean;
+  engine: ChromiumEngineStatus;
+  // Open windows born on the other engine (they keep theirs): the row
+  // offers "Reopen windows" while this is > 0. OPTIONAL: older server.
+  stale_windows?: number;
 }
 
 export interface LauncherPrefs {
@@ -1813,10 +1903,14 @@ export function putCanvasesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvases_enabled: enabled });
 }
 
+export function putCanvasesEmbedProxy(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { canvases_embed_proxy: enabled });
+}
+
 /** The default Fused environment (`prefs.workbench.env`). 400 outside
- *  `unstable` / `prod`, 423 while FUSED_RENDER_WORKBENCH_ENV pins it. The
- *  server re-exports the `fused` wrapper so its default follows. */
-export function putWorkbenchEnv(env: "unstable" | "prod"): Promise<Prefs> {
+ *  `unstable` / `prod` / `custom`, 423 while FUSED_RENDER_WORKBENCH_ENV pins
+ *  it. The server re-exports the `fused` wrapper so its default follows. */
+export function putWorkbenchEnv(env: "unstable" | "prod" | "custom"): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { workbench_env: env });
 }
 
@@ -1841,6 +1935,15 @@ export function putLauncherRowModifier(modifier: string): Promise<Prefs> {
 
 export function putNativeWindowsEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { native_windows_enabled: enabled });
+}
+
+export function putChromiumWindowsEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { chromium_windows_enabled: enabled });
+}
+
+/** Close every app window and open one Home window on the current engine. */
+export function reopenChromiumWindows(): Promise<ChromiumWindowsState> {
+  return postJson<ChromiumWindowsState>("/api/prefs/chromium/reopen-windows", {});
 }
 
 export function putAppSharingEnabled(enabled: boolean): Promise<Prefs> {
@@ -1876,6 +1979,10 @@ export function putProjectQueueEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putTaskSummaryTitlesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { task_summary_titles_enabled: enabled });
+}
+
+export function putClaudeDefaultPermission(mode: string): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { claude_default_permission: mode });
 }
 
 export function putClaudeStrictMcpEnabled(enabled: boolean): Promise<Prefs> {
@@ -1926,6 +2033,8 @@ export interface UiLayoutDoc {
     calRange?: string;
   };
   recentPaths?: string[];
+  /** New task opens on the last folder used instead of the workspace. */
+  rememberLastFolder?: boolean;
 }
 
 export function getUiLayout(): Promise<{ exists: boolean; layout: UiLayoutDoc | null }> {
@@ -3256,6 +3365,9 @@ export interface CurrentAppEntry {
   /** Epoch (server clock) of the last `openCurrentApp`; 0 for a row a task
    *  put on the desk that has never been opened. */
   opened_at?: number | null;
+  /** Epoch of the newest task activity under the app (0 for none) — what the
+   *  server lists by; the client draws the array as it arrives. */
+  active_at?: number;
   /** A task under the app finished since `opened_at` — the sidebar's green
    *  dot. The server's flag (current_apps.observe), cleared by `openCurrentApp`
    *  and by nothing done to the tasks. */
@@ -3282,18 +3394,6 @@ export interface OpenCurrentAppResult {
 
 export function openCurrentApp(path: string): Promise<OpenCurrentAppResult> {
   return postJson<OpenCurrentAppResult>("/api/current-apps/open", { path });
-}
-
-/** The user dragged a Projects row: `paths` is the whole visible list, top
- *  first, and the SERVER's `apps` array becomes that order (D1386 — the order
- *  lives in current_apps.json, not in this browser). Unknown paths are ignored;
- *  live apps the list does not name keep their place ABOVE the named ones (the
- *  tab that dragged did not have them, so its arrangement says nothing about
- *  where they go). Answers with the table as it now stands. */
-export function setCurrentAppsOrder(
-  paths: string[],
-): Promise<{ ok: boolean; apps: CurrentAppEntry[] }> {
-  return postJson<{ ok: boolean; apps: CurrentAppEntry[] }>("/api/current-apps/order", { paths });
 }
 
 /** The optional `icon.svg` of the app that owns `fsPath` (the folder itself
@@ -3342,6 +3442,23 @@ export async function removeAppIcon(
   });
   if (!r.ok) throw httpError(await r.json().catch(() => null), r.status);
   return r.json();
+}
+
+/** The user opened a task on `path` (the side peek): if the folder (or an
+ *  ancestor) is an app not on the desk yet, the server puts it there
+ *  (current_apps.py `ensure` — the door-time check that replaced "the tasks
+ *  listing looked once"). `app` is the desk folder, null for a plain project;
+ *  `added` when this call put it there; `apps` is the table after, then. */
+export interface EnsureCurrentAppResult {
+  ok: boolean;
+  app: string | null;
+  /** This call put the row there — the one case there is a change to announce. */
+  added: boolean;
+  apps: CurrentAppEntry[] | null;
+}
+
+export function ensureCurrentApp(path: string): Promise<EnsureCurrentAppResult> {
+  return postJson<EnsureCurrentAppResult>("/api/current-apps/ensure", { path });
 }
 
 /** Put an app folder on the desk by hand — the explorer's "Open in project"
@@ -3442,7 +3559,7 @@ export function createApp(
   effort: SessionEffort = "",
   // Paths from uploadTaskShot — the composer's pasted/dropped attachments.
   images: string[] = [],
-  // Which agent runs the scaffolding task: "claude" | "copilot" | "" for the
+  // Which agent runs the scaffolding task: "claude" | "copilot" | "codex" | "gemini" | "" for the
   // catalog's default (docs/COPILOT_BACKEND.md D17).
   backend: string = "",
 ): Promise<NewAppResult> {
@@ -3632,7 +3749,7 @@ export interface Task {
    *  for every other row. The door lands on the canvas page, node selected,
    *  chat on the task's session, instead of the clone in the explorer.
    *  Optional: pulse rows and older fixtures do not carry it. */
-  canvas?: { env: "unstable" | "prod"; name: string; file: string } | null;
+  canvas?: { env: "unstable" | "prod" | "custom"; name: string; file: string } | null;
   session_id: string; // "" until the first run
   // How the transcript's own session ENTERED — "cli" for an interactive
   // terminal (`claude` typed by hand), "sdk-cli" for a headless/programmatic
@@ -3670,8 +3787,9 @@ export interface Task {
   // sessionTitleOf and tasks.py `_title`.
   // …plus `"draft"` on a draft row, whose name is the form's own Title field
   // (or the first line of its description, or "Untitled draft") — there is no
-  // session or entry behind it to take one from.
-  title_source: "user" | "ai" | "message" | "entry" | "draft";
+  // session or entry behind it to take one from — and `"renamed"` when the reader
+  // renamed the task from the peek header.
+  title_source: "user" | "ai" | "message" | "entry" | "draft" | "renamed" | "command";
   description: string;
   /**
    * WHICH CLAUDE THIS TASK'S RUNS USE and how hard it thinks — `""` on both for
@@ -3694,8 +3812,8 @@ export interface Task {
    */
   model: string;
   effort: string;
-  /** WHICH AGENT RUNS THIS TASK — "claude" | "copilot" (docs/COPILOT_BACKEND.md
-   *  D2), chosen at the first turn and immutable. Optional: an older server
+  /** WHICH AGENT RUNS THIS TASK — "claude" | "copilot" | "codex" | "gemini"
+   *  (docs/COPILOT_BACKEND.md D2), chosen at the first turn and immutable. Optional: an older server
    *  sends nothing, and nothing reads as Claude everywhere a mark is drawn. */
   backend?: string;
   // Decided by the SERVER, once, for every view — List, Board and Calendar all
@@ -3814,6 +3932,9 @@ export interface Task {
    *  The List row prints it after the title; with `recap` present it also
    *  titles a finished turn until the recap lands (tasks-lib `cardTitleLine`). */
   last_reply?: string;
+  /** Every GitHub PR this session touched, oldest first (the server collects
+   *  them from the transcript). `prRefsOf` merges it with what the words name. */
+  prs?: { repo: string; number: number; url: string }[];
   /** The haiku recap of this row's last finished turn (`for_uuid` names the
    *  turn), or null while it has none. ABSENT unless prefs
    *  `task_recap.enabled` is on — the client reads the key's presence as
@@ -4022,7 +4143,16 @@ export type TaskPulseTask = Pick<
   | "entrypoint"
   | "backend"
   | "canvas"
->;
+  | "background_jobs"
+  // What the notice titles a task by (tasks-lib `taskNoticeTitle`: the newest
+  // user message, unless renamed / stable AI titles) — optional, each absent with
+  // its flag off or on an older server. Recap titles are deliberately NOT
+  // here: the notice ignores them, the Tasks cards do not.
+  | "title_mode"
+  | "last_message"
+> &
+  // Optional: a pulse row from a server that predates it carries none.
+  Partial<Pick<Task, "title_source">>;
 
 /** The model / thinking a NEW task opens on: the global Claude preference
  *  (`~/.claude/settings.json` `model` / `effortLevel`, the pair the Claude
@@ -4394,6 +4524,50 @@ export function markTaskIdle(sessionId: string, turn: number): Promise<{ ok: boo
   });
 }
 
+/** One task's whole transcript as a file — `GET /api/tasks/{key}/export`.
+ *  `md` is the Bots export's layout; `json` is the parsed turns the chat
+ *  restores from. The kebab's "Download transcript" row hands it to the
+ *  reader through a blob link, the same door `downloadTemplatesExport` uses. */
+export type TaskExportFormat = "md" | "json";
+
+export function taskExportUrl(key: string, format: TaskExportFormat = "md"): string {
+  return `/api/tasks/${encodeURIComponent(key)}/export?format=${format}`;
+}
+
+export async function downloadTaskTranscript(
+  key: string,
+  format: TaskExportFormat = "md",
+): Promise<void> {
+  const res = await fetch(taskExportUrl(key, format));
+  if (!res.ok) {
+    let message = `export failed (${res.status})`;
+    try {
+      const body = await res.json();
+      if (body && typeof body.detail === "string") message = body.detail;
+    } catch {
+      /* non-JSON error body — keep the status-based message */
+    }
+    throw new Error(message);
+  }
+  // The server names the file (`<title-slug>-<session8>.<fmt>`); read it
+  // back off the header so the saved name matches the row that was pressed.
+  const disposition = res.headers.get("content-disposition") || "";
+  const named = /filename="([^"]+)"/.exec(disposition);
+  const filename = named ? named[1] : `transcript.${format}`;
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  try {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } finally {
+    setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  }
+}
+
 // "Show more": the whole thread, newest first. Deliberately a separate call —
 // this one is allowed to parse the full transcript because it is one task, on
 // demand, and never on the listing path.
@@ -4468,19 +4642,20 @@ export function markWholeTaskRead(
 // composer's constants speaking, and the two cases are the same fact here.
 export function readChatSettings(
   sessionId: string,
-): Promise<{ model: string; effort: string; backend?: string }> {
+): Promise<{ model: string; effort: string; backend?: string; permission?: string }> {
   // `backend` (docs/COPILOT_BACKEND.md §8): the agent the record names; absent
-  // on an older server.
-  return getJson<{ model: string; effort: string; backend?: string }>(
+  // on an older server. `permission`: the Approvals pill's recorded pick, ""
+  // when none.
+  return getJson<{ model: string; effort: string; backend?: string; permission?: string }>(
     `/api/tasks/settings?session_id=${encodeURIComponent(sessionId)}`,
   );
 }
 
 export function recordChatSettings(
   sessionId: string,
-  settings: { model?: string; effort?: string },
-): Promise<{ ok: boolean; model: string; effort: string }> {
-  return postJson<{ ok: boolean; model: string; effort: string }>(
+  settings: { model?: string; effort?: string; permission?: string },
+): Promise<{ ok: boolean; model: string; effort: string; permission?: string }> {
+  return postJson<{ ok: boolean; model: string; effort: string; permission?: string }>(
     "/api/tasks/settings",
     { session_id: sessionId, ...settings },
   );
@@ -4500,13 +4675,96 @@ export function recordChatSettings(
 //
 // The way back is `unarchiveTask` below — a drag, not a button. Nothing is
 // destroyed either way: the conversation and its transcript are kept (D306).
-export function archiveTask(
+export interface TeardownKept {
+  path: string;
+  /** "dirty" | "unpushed" | "unknown" | "not-managed" | "remove-failed". */
+  reasons: string[];
+  /** null: git did not answer. */
+  dirty_files: number | null;
+  unpushed: number | null;
+  error?: string;
+}
+
+/** What archiving tore down: the runs it ended, the worktrees it removed, and
+ *  the ones it KEPT (with why). Absent on an older server. */
+export interface TeardownReport {
+  stopped: number;
+  killed: number[];
+  removed: string[];
+  kept: TeardownKept[];
+  gone: string[];
+}
+
+export interface ArchiveResult {
+  ok: boolean;
+  key: string;
+  cancelled: number;
+  filed: boolean;
+  teardown?: TeardownReport;
+}
+
+type ArchiveListener = (key: string, result: ArchiveResult) => void;
+const archiveListeners = new Set<ArchiveListener>();
+
+/** Hear every archive, whichever of the eight call sites made it. A registry
+ *  here (not an import of notifications) because notifications -> jobs -> api:
+ *  this file cannot import it back. Returns the way to stop listening. */
+export function onTaskArchived(fn: ArchiveListener): () => void {
+  archiveListeners.add(fn);
+  return () => {
+    archiveListeners.delete(fn);
+  };
+}
+
+export async function archiveTask(key: string): Promise<ArchiveResult> {
+  const res = await postJson<ArchiveResult>("/api/tasks/archive", { key });
+  for (const fn of [...archiveListeners]) {
+    try {
+      fn(key, res);
+    } catch {
+      // A listener's bug is never the archive's failure: it has happened.
+    }
+  }
+  return res;
+}
+
+/** Live listening ports of each task's process tree, by task key. */
+export async function fetchTaskPorts(ids: string[]): Promise<Record<string, number[]>> {
+  const res = await postJson<{ ports: Record<string, number[]> }>("/api/tasks/ports", { ids });
+  return res.ports ?? {};
+}
+
+export interface TaskHold {
+  path: string;
+  dirty_files: number | null;
+  /** `dirty_files` minus untracked paths: what the card counts. Absent from an older backend. */
+  tracked_dirty?: number | null;
+  unpushed: number | null;
+  /** The checked-out branch; null on a git error or a detached HEAD. */
+  branch?: string | null;
+  reasons: string[];
+}
+
+/** What each task's recorded worktrees hold open, by task key. Tasks with no
+ *  recorded worktree are absent. */
+export async function fetchTaskHolds(ids: string[]): Promise<Record<string, TaskHold[]>> {
+  const res = await postJson<{ holds: Record<string, TaskHold[]> }>("/api/tasks/holds", { ids });
+  return res.holds ?? {};
+}
+
+/** "Remove anyway": force-remove a task's recorded worktrees (all, or `paths`). */
+export function removeTaskWorktrees(
   key: string,
-): Promise<{ ok: boolean; key: string; cancelled: number; filed: boolean }> {
-  return postJson<{ ok: boolean; key: string; cancelled: number; filed: boolean }>(
-    "/api/tasks/archive",
-    { key },
-  );
+  paths?: string[],
+): Promise<{ ok: boolean; key: string; removed: string[]; kept: TeardownKept[]; gone: string[] }> {
+  return postJson("/api/tasks/worktrees/remove", paths ? { key, paths } : { key });
+}
+
+/** Give a started task a title of the reader's own; "" takes it back and the
+ *  automatic title returns. `title` is what the server stored (first line,
+ *  trimmed, capped). */
+export function renameTask(key: string, title: string): Promise<{ ok: boolean; title: string }> {
+  return postJson<{ ok: boolean; title: string }>("/api/tasks/rename", { key, title });
 }
 
 // Taking the filing back — the drag out of the Archive lane, and the exact
@@ -6605,4 +6863,10 @@ export function getScheduleEvents(): Promise<{ events: ScheduleEvent[] }> {
 // silently consume the user's notifications with a no-cors fetch.
 export function ackScheduleEvents(id: number): Promise<{ delivered: number }> {
   return postJson<{ delivered: number }>("/api/schedule/events/ack", { id });
+}
+
+/** Does this server offer Bots? Only an explicit `false` hides them, so a server
+ *  that predates the flag keeps its Bots page. */
+export function botsAvailable(config: Pick<Config, "bots_available"> | null | undefined): boolean {
+  return config?.bots_available !== false;
 }

@@ -2,6 +2,7 @@
 // shell registered a route() handler here; the React shell instead listens for
 // the "fused:navigate" event (useNavEpoch in lib/hooks.ts) — navigate/
 // navigateUrl dispatch it after pushState, popstate is subscribed alongside it.
+import { encodeFsPathSegments, rootedFsPath } from "./path-url";
 import { carries as snapshotCarries, getSnapshotAppDir } from
   "@platform/lib/snapshot-param";
 import { ORIGIN_BY_ROUTE } from "@platform/lib/originRoutes";
@@ -47,20 +48,37 @@ export function rewriteLegacyUrl(url: string): string {
   // here because the alternative is carrying a dead URL shape forever.
   if (mapped) return mapped + q;
   if (p.startsWith("/view/") || p.startsWith("/embed/")) return "/explorer" + p + q;
-  // The Claude Config panel is the Claude Code group of Preferences
-  // (2026-10-20); the retired /claude-md page folded into the panel before
-  // that. `?cctab=<section>` becomes the group's `?s=` highlight, so a link
-  // into the panel's MCP tab still lands on the MCP block. Kept for good:
-  // the server's jobs and notifications (claude_install.py, server/ai.py)
-  // name this page, and a running older build keeps writing it.
+  // `/claude-code` was this page's earlier path; the query rides along.
+  if (p === "/claude-code") return "/claude-config" + q;
+  // The retired /claude-md page folded into /claude-config, and the panel's
+  // `?cctab=<section>` becomes
+  // `?tab=<tab>`. Kept for good: the server's jobs and notifications
+  // (claude_install.py, server/ai.py) name this page, and a running older
+  // build keeps writing it.
   if (p === "/claude-config" || p === "/claude-md") {
     const params = new URLSearchParams(q.startsWith("?") ? q.slice(1) : q);
-    const tab = params.get("cctab");
+    const tab = claudeConfigTab(params.get("cctab"));
     params.delete("cctab");
-    params.set("tab", "claude");
-    const s = claudeConfigSetting(tab);
-    if (s) params.set("s", s);
-    return "/preferences?" + params.toString();
+    if (tab === "settings") return claudeCliUrl(params);
+    if (tab) params.set("tab", tab);
+    return claudeConfigUrl(params);
+  }
+  // `/preferences?tab=claude…` and `?s=claude-…` named the Claude groups
+  // Preferences used to hold.
+  if (p === "/preferences" && q) {
+    const params = new URLSearchParams(q.slice(1));
+    const tabParam = params.get("tab") ?? "";
+    const s = params.get("s") ?? "";
+    // `?tab=claude-cli` is the Claude Code group, which lives here.
+    if ((tabParam.startsWith("claude") && tabParam !== "claude-cli") || s.startsWith("claude-")) {
+      const key = s.startsWith("claude-") ? s : tabParam;
+      const tab = PREFS_CLAUDE_TABS[key] ?? (key.startsWith("claude-pref:") ? "settings" : null);
+      if (tab === "settings") return claudeCliUrl(params);
+      params.delete("tab");
+      params.delete("s");
+      if (tab) params.set("tab", tab);
+      return claudeConfigUrl(params);
+    }
   }
   // `/bots?bot=<id>` → `/bots/<id>` (2026-10-14; the path shape is owned by
   // apps/bots/routes.ts, which the platform may not import, so the rule is
@@ -83,25 +101,44 @@ export function rewriteLegacyUrl(url: string): string {
   return url;
 }
 
-// The panel's section ids → the Preferences row they are now (settings/registry).
-function claudeConfigSetting(tab: string | null): string | null {
+function claudeConfigUrl(params: URLSearchParams): string {
+  const q = params.toString();
+  return "/claude-config" + (q ? "?" + q : "");
+}
+
+// The settings.json rows live in Preferences' Claude Code group; a row id
+// (`s=claude-pref:<key>`) is kept, the dead ids of the old Settings group are not.
+function claudeCliUrl(params: URLSearchParams): string {
+  params.set("tab", "claude-cli");
+  if (!(params.get("s") ?? "").startsWith("claude-pref:")) params.delete("s");
+  return "/preferences?" + params.toString();
+}
+
+const PREFS_CLAUDE_TABS: Record<string, string> = {
+  "claude-settings": "settings",
+  "claude-statusline": "settings",
+  "claude-catalog": "settings",
+  "claude-plugins": "plugins",
+  "claude-memory": "memory",
+  "claude-skills": "skills",
+  "claude-mcp": "mcp",
+};
+
+// The panel's section ids → the Claude Config page's tabs.
+function claudeConfigTab(tab: string | null): string | null {
   switch (tab) {
     case "plugins":
     case "marketplaces":
-      return "claude-plugins";
+      return "plugins";
     case "memory":
-      return "claude-memory";
+      return "memory";
     case "skills":
-      return "claude-skills";
+      return "skills";
     case "statusline":
-      return "claude-statusline";
-    case "mcp":
-      return "claude-mcp";
     case "preferences":
-      return "claude-catalog";
-    case "history":
-    case "profiles":
-      return "claude-history";
+      return "settings";
+    case "mcp":
+      return "mcp";
     default:
       return null;
   }
@@ -511,11 +548,9 @@ export function pushHistory(state: unknown, url: string): void {
   else history.pushState(state, "", url);
 }
 
-// The URL codec drops the leading slash; the shell's canonical fs path is
-// rooted at "/".
-export function rootedFsPath(joined: string): string {
-  return "/" + joined;
-}
+// rootedFsPath / encodeFsPathSegments live in ./path-url (DOM-free, so the
+// shell libs share them); re-exported for existing importers.
+export { rootedFsPath, encodeFsPathSegments };
 
 export function fsPathFromLocation(): string | null {
   const p = location.pathname;
@@ -529,23 +564,9 @@ export function fsPathFromLocation(): string | null {
   return rootedFsPath(decoded);
 }
 
-// Shared by urlForFsPath/embedUrlForFsPath below: split into encoded segments
-// — a backslash is a legal filename character and must round-trip untouched.
-// Restated (not imported) by shell/current-apps-lib for the app page's
-// `/apps/<folder>` address: that lib must stay DOM-free for bun, and this
-// module touches `location` at import. Keep the two in step. Exported for the
-// explorer topbar's Migrate button, which builds the same `/apps/<folder>`
-// address and may not import the shell.
-export function encodeFsPathSegments(fsPath: string): string {
-  return fsPath
-    .replace(/^\/+/, "")
-    .split("/")
-    .filter((s) => s.length > 0)
-    .map(encodeURIComponent)
-    .join("/");
-}
-
 export function urlForFsPath(fsPath: string, search?: string): string {
+  // Windows callers (server stat/list results, bookmarks) may carry
+  // backslashes; the URL codec speaks forward slashes only.
   return PREFIX + encodeFsPathSegments(fsPath) + (search || "");
 }
 

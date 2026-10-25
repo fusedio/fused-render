@@ -125,7 +125,6 @@ two lines.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import glob
 import json
 import math
@@ -136,6 +135,7 @@ import time
 import urllib.parse
 from datetime import datetime, timezone
 
+from fused_render import _platform
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.agent_backends import roots
 
@@ -266,7 +266,7 @@ def locked_path(lock_path: str):
     must keep its own depth guard — see `schedule._store_lock`."""
     handle = _open_lockfile(lock_path)
     try:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+        _platform.flock(handle)
         yield
     finally:
         # Closing the handle drops the flock.
@@ -382,7 +382,7 @@ def acquire_lease_blocking(name: str) -> None:
         if name in _lease_handles:
             return
     handle = _open_lease_file(name)
-    fcntl.flock(handle, fcntl.LOCK_EX)
+    _platform.flock(handle)
     with _lease_lock:
         if name in _lease_handles:
             handle.close()
@@ -401,9 +401,7 @@ def try_acquire_lease(name: str, *, machine_wide: bool = False) -> bool:
         if name in _lease_handles:
             return True
         handle = _open_lease_file(name, machine_wide=machine_wide)
-        try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
+        if not _platform.flock(handle, blocking=False):
             handle.close()
             return False
         _lease_handles[name] = handle
@@ -965,6 +963,74 @@ def mark_deleted(key: str, now: float | None = None) -> None:
     _update(DELETED_FILE, mutate)
 
 
+# ------------------------------------------------------------ archived.json
+#
+#     {"<task-key>": {"at": 1755300000.0}}
+#
+# THE ARCHIVE FILING FOR A TASK THAT HAS NO SESSION. Archiving normally writes
+# `status: archived` onto the session's triage record (claude_sessions
+# `write_triage`), and a task keyed by a session id always has somewhere for
+# that to land. A task keyed `pending:<entry-id>` does not: it exists because
+# a scheduled message made it and the run never reported a session — the one
+# shape that stays on the board for ever is a send whose spawn FAILED (a
+# Copilot or Codex integration error, a refused model, a disabled agent), an
+# `error` entry with no conversation behind it. Delete already works on those
+# rows because the tombstone is keyed by TASK KEY (`deleted.json` above);
+# archive did not, because it was keyed by session only, so the row answered
+# `filed: False` and came straight back red on the next poll.
+#
+# Same shape as the tombstone and read the same way: `archived_at` carries
+# the WHEN so the router's `_revived` can drop a filing the task has outgrown
+# (a re-send that actually runs postdates the stamp and the row comes back).
+# A filing for a key the task has since left — the watcher stamped a session
+# onto the entry and the row re-keyed — is a few bytes nobody reads, the same
+# price the tombstone pays. `clear_archived` is the Unarchive gesture's half.
+
+ARCHIVED_FILE = "archived.json"
+
+
+def archived_state() -> dict:
+    """The key-keyed archive filings, as saved. Missing/corrupt reads as {} —
+    nothing filed — so a bad file costs a filing, never a row."""
+    return load_state(ARCHIVED_FILE)
+
+
+def archived_at(state: dict, key: str) -> float:
+    """When this key was filed, or 0.0 — which every real timestamp beats, so
+    an unreadable record can never hide a task."""
+    rec = state.get(str(key))
+    if not isinstance(rec, dict):
+        return 0.0
+    try:
+        at = float(rec.get("at"))
+    except (TypeError, ValueError):
+        return 0.0
+    return at if at > 0 else 0.0
+
+
+def mark_archived(key: str, now: float | None = None) -> None:
+    """File one task key away. Idempotent by intent: archiving twice re-stamps
+    the WHEN, which is what the second gesture means."""
+    stamp = time.time() if now is None else float(now)
+
+    def mutate(state: dict):
+        state[str(key)] = {"at": stamp}
+        return None, True
+
+    _update(ARCHIVED_FILE, mutate)
+
+
+def clear_archived(key: str) -> bool:
+    """Take the key-keyed filing back. True when there was one to drop."""
+    def mutate(state: dict):
+        had = str(key) in state
+        if had:
+            del state[str(key)]
+        return had, had
+
+    return bool(_update(ARCHIVED_FILE, mutate))
+
+
 # -------------------------------------------------- session_settings.json
 #
 #     {"<session-id>": {"model": "haiku", "effort": "low", "at": 1755300000.0}}
@@ -1026,6 +1092,15 @@ def session_settings(state: dict, session_id: str) -> tuple[str, str]:
     return (str(rec.get("model") or ""), str(rec.get("effort") or ""))
 
 
+def session_permission(state: dict, session_id: str) -> str:
+    """The Approvals mode recorded for one session (plan | prompt | acceptEdits
+    | auto), "" when none — the pill's own pick, which outranks the page's seed
+    and the global default."""
+    rec = state.get(str(session_id or ""))
+    value = rec.get("permission") if isinstance(rec, dict) else ""
+    return value if value in ("plan", "prompt", "acceptEdits", "auto") else ""
+
+
 def session_backend(state: dict, session_id: str) -> str:
     """The agent backend recorded for one session ("claude" | "copilot"), ""
     when this store has no answer — which is every session that predates the
@@ -1040,7 +1115,8 @@ def session_backend(state: dict, session_id: str) -> str:
 
 
 def record_settings(session_id: str, model: str = "", effort: str = "",
-                    now: float | None = None, backend: str = "") -> dict:
+                    now: float | None = None, backend: str = "",
+                    permission: str = "") -> dict:
     """Record what this conversation runs with; return the stored record.
 
     ONLY THE FIELDS GIVEN. An empty `model` means "I am not saying anything
@@ -1061,7 +1137,12 @@ def record_settings(session_id: str, model: str = "", effort: str = "",
     backend = str(backend or "").strip()
     if backend not in roots.BACKENDS:
         backend = ""
-    if not session_id or not (model or effort or backend):
+    # The Approvals pill's value, one of the four page spellings; junk is
+    # dropped rather than stored.
+    permission = str(permission or "").strip()
+    if permission not in ("plan", "prompt", "acceptEdits", "auto"):
+        permission = ""
+    if not session_id or not (model or effort or backend or permission):
         return {}
     stamp = time.time() if now is None else float(now)
 
@@ -1074,6 +1155,8 @@ def record_settings(session_id: str, model: str = "", effort: str = "",
             rec["effort"] = effort
         if backend:
             rec["backend"] = backend
+        if permission:
+            rec["permission"] = permission
         rec["at"] = stamp
         state[session_id] = rec
         return rec, True
@@ -1133,6 +1216,173 @@ def record_recap(session_id: str, for_uuid: str, text: str,
     return _update(SETTINGS_FILE, mutate)
 
 
+# THE STABLE AI TITLE (prefs `task_summary_titles_enabled`) is one more field
+# on the same record, under `ai_title`:
+#
+#     {"<session-id>": {..., "ai_title": {"text": "…", "at": 1.0, "turns": 4,
+#                                         "failed_at": 0.0}}}
+#
+# `turns` is how many of the reader's prompts the session had when the title
+# was written (even when haiku repeated the old one), so the next refresh waits
+# for more prompts. `failed_at` is the last failed attempt; it never blanks
+# `text`, because the row is already showing that title.
+
+
+def session_ai_title(state: dict, session_id: str) -> dict | None:
+    """The stored AI title — `{"text", "at", "turns", "failed_at"}` — or None
+    when there is none (or the record is not that shape). `text` is "" when
+    only failures have been recorded."""
+    rec = state.get(str(session_id or ""))
+    title = rec.get("ai_title") if isinstance(rec, dict) else None
+    if not isinstance(title, dict):
+        return None
+    return {"text": str(title.get("text") or ""),
+            "at": float(title.get("at") or 0.0),
+            "turns": int(title.get("turns") or 0),
+            "failed_at": float(title.get("failed_at") or 0.0)}
+
+
+def record_ai_title(session_id: str, text: str, turns: int,
+                    now: float | None = None) -> dict:
+    """Store a title (or, for an empty `text`, a failed attempt) on the
+    session's record. A failure keeps the previous text/at/turns and only sets
+    `failed_at`; a success clears it. Nothing for an empty session id."""
+    session_id = str(session_id or "").strip()
+    if not session_id:
+        return {}
+    stamp = time.time() if now is None else float(now)
+    text = str(text or "").strip()
+
+    def mutate(state: dict):
+        rec = state.get(session_id)
+        rec = dict(rec) if isinstance(rec, dict) else {}
+        old = rec.get("ai_title") if isinstance(rec.get("ai_title"), dict) else {}
+        if text:
+            title = {"text": text, "at": stamp, "turns": int(turns), "failed_at": 0.0}
+        else:
+            title = {"text": str(old.get("text") or ""),
+                     "at": float(old.get("at") or 0.0),
+                     "turns": int(old.get("turns") or 0),
+                     "failed_at": stamp}
+        rec["ai_title"] = title
+        state[session_id] = rec
+        return title, True
+
+    return _update(SETTINGS_FILE, mutate)
+
+
+# EVERY GITHUB PR A SESSION HAS TOUCHED rides on the same record too, under
+# `prs`, oldest first:
+#
+#     {"<session-id>": {..., "prs": [{"repo": "o/r", "number": 12, "url": "…"}]}}
+#
+# The Tasks listing collects them from the transcript, but its scan starts over
+# when the file shrinks (a compaction), so the transcript alone is not durable:
+# the row builder merges what it sees into this list and reads the list back.
+# Deduped by lowercased `repo#number`, the first spelling kept.
+
+
+def _pr_key(pr: dict) -> str:
+    return f"{pr['repo'].lower()}#{pr['number']}"
+
+
+def _clean_prs(value) -> list[dict]:
+    """The well-formed entries of a stored PR list, with `url` rebuilt from
+    repo and number (a stored url is never trusted to be the canonical one)."""
+    out, seen = [], set()
+    for pr in value if isinstance(value, list) else []:
+        if not isinstance(pr, dict):
+            continue
+        repo, number = pr.get("repo"), pr.get("number")
+        if not isinstance(repo, str) or not repo \
+                or isinstance(number, bool) or not isinstance(number, int):
+            continue
+        clean = {"repo": repo, "number": number,
+                 "url": f"https://github.com/{repo}/pull/{number}"}
+        if _pr_key(clean) not in seen:
+            seen.add(_pr_key(clean))
+            out.append(clean)
+    return out
+
+
+# Lists written before capture was scoped (version 1, no marker) were greedy
+# and are dropped; the transcript scan recomputes them.
+_PRS_VERSION = 2
+
+
+def session_prs(state: dict, session_id: str) -> list[dict]:
+    """The stored PRs for one session, oldest first — `[]` when there are none
+    (or the record is not that shape)."""
+    rec = state.get(str(session_id or ""))
+    if not isinstance(rec, dict) or rec.get("prs_v") != _PRS_VERSION:
+        return []
+    return _clean_prs(rec.get("prs"))
+
+
+def record_prs(session_id: str, prs: list) -> list[dict]:
+    """Merge `prs` into the session's stored list (existing first) and return
+    the result. Writes only when that changed anything; nothing for an empty
+    session id."""
+    session_id = str(session_id or "").strip()
+    if not session_id:
+        return []
+    incoming = _clean_prs(prs)
+
+    def mutate(state: dict):
+        rec = state.get(session_id)
+        rec = dict(rec) if isinstance(rec, dict) else {}
+        have = _clean_prs(rec.get("prs")) \
+            if rec.get("prs_v") == _PRS_VERSION else []
+        merged = _clean_prs(have + incoming)
+        if merged == have and rec.get("prs") == have \
+                and rec.get("prs_v") == _PRS_VERSION:
+            return merged, False
+        rec["prs"] = merged
+        rec["prs_v"] = _PRS_VERSION
+        state[session_id] = rec
+        return merged, True
+
+    return _update(SETTINGS_FILE, mutate)
+
+
+# THE USER'S OWN TITLE for a task rides on the same record, under `custom_title`
+# (set from the Tasks UI's rename gesture). It is stored here and nowhere else:
+# Claude Code's transcript is Claude Code's file, and nothing reads a title
+# written into it. Empty text deletes the key, which restores the automatic
+# title. `forget_session` drops it with the rest of the record.
+
+
+def session_title(state: dict, session_id: str) -> str:
+    """The user's own title for one session, or "" when there is none."""
+    rec = state.get(str(session_id or ""))
+    title = rec.get("custom_title") if isinstance(rec, dict) else None
+    return title.strip() if isinstance(title, str) else ""
+
+
+def record_title(session_id: str, text: str) -> str:
+    """Store the user's title for one session beside whatever its record
+    already holds; empty or whitespace-only text clears it. Returns what is
+    stored now ("" when cleared, or for an empty session id)."""
+    session_id = str(session_id or "").strip()
+    text = str(text or "").strip()
+    if not session_id:
+        return ""
+
+    def mutate(state: dict):
+        rec = state.get(session_id)
+        rec = dict(rec) if isinstance(rec, dict) else {}
+        if text:
+            rec["custom_title"] = text
+        elif "custom_title" in rec:
+            del rec["custom_title"]
+        else:
+            return text, False  # nothing to clear: no write
+        state[session_id] = rec
+        return text, True
+
+    return _update(SETTINGS_FILE, mutate)
+
+
 def forget_session(session_id: str) -> dict:
     """Erase what these stores keep about one session — the erase gesture's
     share of `POST /api/tasks/erase`, where the transcript itself goes too.
@@ -1141,7 +1391,8 @@ def forget_session(session_id: str) -> dict:
     no longer exist, and there is no thread left for them to be about.
 
     `session_settings.json`'s record GOES for the same reason: it says which
-    model a conversation runs with (and holds its last turn recap), and the
+    model a conversation runs with (and holds its last turn recap and its PR
+    list), and the
     conversation is gone. Left behind,
     it would be the one thing that outlived the erase and re-seeded a new chat
     that happened to be handed the same id.

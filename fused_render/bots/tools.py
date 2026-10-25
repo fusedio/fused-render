@@ -433,7 +433,10 @@ def terminal_enabled(bot) -> bool:
 # would never fire. ALWAYS_ASK calls and a phone-started Super Bot task never get a
 # rule (forever_rule returns None for both: no button on the card, no match).
 # Revoked in Settings › Permissions › Approved forever.
-FOREVER_KINDS = frozenset({"browser", "tool", "py", "builtin", "text", "upload", "build", "terminal"})
+# `trusted` is the app-level rule: it lives in bot.json `trusted_apps` (the Settings checkbox "Apps it may use
+# without asking"), never in `allow_rules`. The old per-tool kinds `tool` / `py` migrate into it (migrate_app_rules).
+FOREVER_KINDS = frozenset({"browser", "builtin", "text", "upload", "build", "terminal"})
+TRUSTED_KIND = "trusted"
 _TRAIL_COUNT = re.compile(r"[\s(\[]*\d+[)\]]*$")  # "Submit review (3)" / "Approve 2" -> "Submit review"
 
 
@@ -467,17 +470,18 @@ def forever_rule(bot, act: str, d: dict, obs: dict):
         verb = {"click": "clicks", "type": "types into", "press": "presses a key in", "select": "picks in"}[act]
         return {"kind": "browser", "key": f"{host}|{lbl}", "label": f'{verb} "{lbl}" on {host}'}
     if act == "tool":
+        # One rule per APP, not per tool: a forever answer ticks "Apps it may use without asking" (trusted_apps),
+        # the one switch Settings › Permissions shows for an app.
         app, name, _ = apptools.tool_ref(d)
         rec = apptools.find(apptools.registry(), app, name)
         if rec is None:
             return None
-        return {"kind": "tool", "key": f"{apptools.norm_app(rec.app)}/{rec.name}", "label": f"calls {rec.app} › {rec.name}"}
+        return trusted_rule(rec.app)
     if act == "py":
         app_dir, file, _ = bot.py_ref(d)
         if not app_dir or not file:
             return None
-        stem = os.path.basename(app_dir)
-        return {"kind": "py", "key": f"{apptools.norm_app(stem)}/{file}", "label": f"runs {stem} › {file}"}
+        return trusted_rule(os.path.basename(app_dir))
     if act == "text":
         c = bot.contact(d)
         if not c:
@@ -569,6 +573,37 @@ def builtin_forever_rule(bot, name: str, inp: dict):
     return {"kind": "builtin", "key": name, "label": verb or f"uses {name}"}
 
 
+def trusted_rule(app: str):
+    """The app-level rule for `app` (a folder name, any spelling): {kind: trusted, key: <normalised folder>}."""
+    key = apptools.norm_app(app)
+    return {"kind": TRUSTED_KIND, "key": key, "label": f"uses the {app} app"} if key else None
+
+
+def migrate_app_rules(meta) -> bool:
+    """Old per-tool `allow_rules` (kind `tool` key `app/tool`, kind `py` key `app/file`) become ticks in
+    `trusted_apps`, and every finished build (`builds[].done_at`) is ticked too: both ran without a card before,
+    and the checkbox is now the one place that says so. ONCE per bot (`trusted_migrated`): a later restart must not
+    re-tick a build the user unticked in Settings (new builds tick themselves when they finish, bot.py). True when
+    meta changed."""
+    if meta.get("trusted_migrated"):
+        return False
+    meta["trusted_migrated"] = True
+    changed = True
+    keep, apps = [], []
+    for r in meta.get("allow_rules") or []:
+        if isinstance(r, dict) and r.get("kind") in ("tool", "py") and "/" in str(r.get("key") or ""):
+            apps.append(str(r["key"]).split("/", 1)[0])
+        else:
+            keep.append(r)
+    for bd in meta.get("builds") or []:
+        if isinstance(bd, dict) and bd.get("done_at") and bd.get("dir"):
+            apps.append(os.path.basename(str(bd["dir"]).rstrip("/")))
+    for app in apps:
+        apptools.trust_app(meta, app)
+    meta["allow_rules"] = keep
+    return changed
+
+
 def clean_allow_rules(v) -> list:
     """The stored form of allow_rules: known kinds, non-empty keys, deduped, order kept."""
     if not isinstance(v, list):
@@ -593,6 +628,8 @@ def forever_match(bot, rule) -> bool:
     if not rule:
         return False
     meta = getattr(bot, "meta", None) or {}
+    if rule["kind"] == TRUSTED_KIND:
+        return apptools.is_trusted(meta, rule["key"])
     rules = clean_allow_rules(meta.get("allow_rules"))
     if rule["kind"] == "terminal":
         return any(r["kind"] == "terminal" and terminal_rule_covers(r["key"], rule["key"]) for r in rules)
@@ -604,7 +641,10 @@ def add_allow_rule(bot, rule) -> None:
     if not rule or forever_match(bot, rule):
         return
     with bot.lock:
-        bot.meta["allow_rules"] = clean_allow_rules([*(bot.meta.get("allow_rules") or []), rule])
+        if rule["kind"] == TRUSTED_KIND:
+            apptools.trust_app(bot.meta, rule["key"])  # the Settings checkbox, not a rule row
+        else:
+            bot.meta["allow_rules"] = clean_allow_rules([*(bot.meta.get("allow_rules") or []), rule])
     bot.save()
     bot.emit("note", f"Won't ask again when this bot {rule['label']}. Undo it in Settings › Permissions.")
 
@@ -1212,10 +1252,10 @@ def risk(bot, act: str, d: dict, obs: dict) -> str:
         rec = apptools.find(apptools.registry(), app, name)
         if rec is None:
             return ""
+        if apptools.is_trusted(bot.meta, rec.app):
+            return ""  # ticked under "Apps it may use without asking" (bot.json trusted_apps): runs at once, risky or not
         if d.get("risky") is True:
             return f"It calls {rec.app} › {rec.name}, which changes something outside this chat."
-        if apptools.is_trusted(bot.meta, rec.app):
-            return ""  # the user whitelisted this app for this bot (bot.json trusted_apps)
         if apptools.is_write(rec):
             return f"It calls {rec.app} › {rec.name}, which changes something outside this chat."
         return ""
@@ -1229,15 +1269,14 @@ def risk(bot, act: str, d: dict, obs: dict) -> str:
             return ""
         says = f" Its SKILL.md: \"{skill['files'][name][:200]}\"" if skill["files"].get(name) else ""
         stem = os.path.basename(app_dir)
-        if d.get("risky") is not True and apptools.is_trusted(bot.meta, stem):
-            return ""  # whitelisted app: its documented scripts run without a card
-        if apptools.is_owned(app_dir, bot.meta.get("builds")):
-            if name in skill["approve"]:
-                return f"It runs {stem} › {name}, which the app's SKILL.md marks as needing approval.{says}"
-            if d.get("risky") is True:
-                return f"It runs {stem} › {name}; the bot flagged it as irreversible.{says}"
-            return ""
-        return f"It runs {stem} › {name} on this Mac, an app this bot did not build.{says}"
+        if apptools.is_trusted(bot.meta, stem):
+            return ""  # ticked under "Apps it may use without asking": its documented scripts run without a card
+        # A build this bot made is ticked when it finishes (bot.py); an unticked app always asks, built or not.
+        if name in skill["approve"]:
+            return f"It runs {stem} › {name}, which the app's SKILL.md marks as needing approval.{says}"
+        if d.get("risky") is True:
+            return f"It runs {stem} › {name}; the bot flagged it as irreversible.{says}"
+        return f"It runs {stem} › {name} on this Mac; this bot may not use {stem} without asking.{says}"
     if act not in ("click", "type", "press", "select"):
         return ""
     if d.get("risky") is True:
@@ -1645,7 +1684,7 @@ def execute(bot, act: str, d: dict, obs: dict) -> tuple[str, str]:
             label = describe(bot, act, d, obs)  # BEFORE the install: afterwards the same call describes as "already installed"
             if not marketplace_on():
                 # The roster and the steps prompt drop these while the pref is off; a model that names one anyway is refused.
-                return label, "error: the Marketplace is off (the user turns it on in Preferences › Optional features)"
+                return label, "error: the Marketplace is off (the user turns it on in Preferences › Experimental flags)"
             return label, (_market_search(d) if act == "marketplace_search" else _market_install(bot, d))
         if act in TERMINAL_TOOLS:
             label = describe(bot, act, d, obs)

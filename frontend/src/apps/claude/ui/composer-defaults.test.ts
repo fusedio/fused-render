@@ -106,10 +106,32 @@ test("effort ranks param > detected only — prefs never reach it (T:11905)", ()
   expect(resolveEffort("turbo")).toBe(DEFAULT_EFFORT);
 });
 
-test("permission is the param or the STRICTEST default — never detected", () => {
+test("permission ranks recorded > param > global pref > auto; unknown is the strictest", () => {
   expect(resolvePermission("auto")).toBe("auto");
   expect(resolvePermission("acceptEdits")).toBe("acceptEdits");
   expect(resolvePermission("plan")).toBe("plan");
-  expect(resolvePermission()).toBe("prompt");
+  // Absent everywhere: the user's default, "auto" unless they changed it.
+  expect(resolvePermission()).toBe("auto");
+  expect(resolvePermission(undefined, undefined, "prompt")).toBe("prompt");
+  expect(resolvePermission("plan", undefined, "prompt")).toBe("plan");
+  expect(resolvePermission("plan", "acceptEdits", "prompt")).toBe("acceptEdits");
+  // Present but not a mode: the safety fallback, never a looser rank below it.
   expect(resolvePermission("yolo")).toBe("prompt");
+  expect(resolvePermission("yolo", undefined, "auto")).toBe("prompt");
+  expect(resolvePermission(undefined, undefined, "yolo")).toBe("prompt");
+});
+
+test("resolveEffort: a model that takes no effort resolves to none; a model's own default leads the fallback", () => {
+  // No levels at all: "" whatever a record, a param or detection carries.
+  expect(resolveEffort("high", "low", "medium", [])).toBe("");
+  // The model's own default is the fallback when it is one of its levels…
+  expect(resolveEffort(undefined, undefined, undefined, ["low", "high"], "high")).toBe("high");
+  // …else medium when listed, else the first level.
+  expect(resolveEffort(undefined, undefined, undefined, ["low", "high"], "max")).toBe("low");
+  expect(resolveEffort(undefined, undefined, undefined, ["low", "medium", "high"], "max")).toBe("medium");
+  // An unlisted value at any rank falls to that fallback, never through.
+  expect(resolveEffort("max", undefined, undefined, ["low", "medium"], "low")).toBe("low");
+  expect(resolveEffort(undefined, undefined, "xhigh", ["low", "medium"], "low")).toBe("low");
+  // A listed value still wins over the default.
+  expect(resolveEffort(undefined, undefined, "medium", ["low", "medium"], "low")).toBe("medium");
 });

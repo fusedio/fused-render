@@ -1,17 +1,19 @@
 """Memory feature (memory.md).
 
-Read-only viewer of Claude Code's persistent memory under
-projects/*/memory/*.md, grouped by project, with per-folder git lifecycle
-controls (change status, commit, clear). Memory *contents* are authored by
-Claude Code, never edited here.
+Viewer and editor of Claude Code's persistent memory under
+projects/*/memory/*.md, grouped by project, with per-folder clear and per-file
+read/write/delete.
 
 main(action=...):
-  list   -> {projects: [{project, path, pathConfirmed, files, changes}]}
+  list   -> {projects: [{project, path, pathConfirmed, files}]}
             files: [{name, description}], description from the file's own
             YAML frontmatter (None when missing or malformed — never guessed).
-  commit -> {ok, committed}   params: project  (path-limited commit)
-  clear  -> {ok, committed}   params: project  (delete *.md + commit deletion)
+  clear  -> {ok}              params: project  (delete the folder's *.md)
   open   -> {ok}              params: project  (reveal folder in OS explorer)
+  files  -> {ok, files: [{name, size, mtime}]}  params: project
+  read   -> {ok, text}        params: project, file
+  write  -> {ok}              params: project, file, text
+  delete_file -> {ok}         params: project, file
 
 `project` is always the SLUG (the projects/ directory name). It stays the
 identifier on the wire because it is what lib.safe_subdir guards and what the
@@ -88,7 +90,7 @@ def _munge(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9]", "-", name)
 
 
-def _rejoin(parts: list, base: str) -> Optional[str]:
+def _rejoin(parts: list, base: str, fold: bool = False) -> Optional[str]:
     """Rebuild a path from munged segments, guided by what exists on disk.
 
     Matches MUNGED-TO-MUNGED against the real directory entries rather than
@@ -102,6 +104,10 @@ def _rejoin(parts: list, base: str) -> Optional[str]:
     Fewest segments first, extending only when that doesn't resolve (which is
     how "fused", "render" becomes "fused-render"), and backtracking, because a
     shorter prefix that happens to match can still be a dead end further down.
+
+    `fold` compares case-insensitively: a drive-rooted slug lives on a
+    case-insensitive filesystem, where the slug's spelling of a folder need not
+    be the one on disk. POSIX never folds.
     """
     if not parts:
         return base
@@ -112,12 +118,13 @@ def _rejoin(parts: list, base: str) -> Optional[str]:
     for take in range(1, len(parts) + 1):
         want = "-".join(parts[:take])
         for entry in entries:
-            if _munge(entry) != want:
+            got = _munge(entry)
+            if (got.lower() != want.lower()) if fold else (got != want):
                 continue
             candidate = os.path.join(base, entry)
             if not os.path.isdir(candidate):
                 continue
-            found = _rejoin(parts[take:], candidate)
+            found = _rejoin(parts[take:], candidate, fold)
             if found:
                 return found
     return None
@@ -131,17 +138,25 @@ def _project_path(slug: str) -> Optional[str]:
     # it is where those sessions ran, not a guess we are making now.
     if cwd:
         return cwd
-    # A munged absolute path carries its root as a recognizable prefix: the
-    # leading "/" munges to a leading "-". Without it there is no anchor to
-    # walk from.
-    if not slug.startswith("-"):
+    # A munged absolute path carries its root as a recognizable prefix: POSIX's
+    # leading "/" munges to a leading "-", while Windows' "C:\" munges to a
+    # leading "C--" (the drive letter survives — it's alnum — then ":" and the
+    # first "\" each become their own "-"). Without one of these there is no
+    # anchor to walk from. The drive form is Windows-only: on POSIX a slug like
+    # "C--x" has no anchor.
+    drive_match = re.match(r"^([A-Za-z])--", slug) if os.sep == "\\" else None
+    if drive_match:
+        base = drive_match.group(1) + ":" + os.sep
+        rest = slug[drive_match.end():]
+    elif slug.startswith("-"):
+        base = os.sep
+        rest = slug[1:]
+    else:
         return None
-    base = os.sep
-    rest = slug[1:]
     parts = rest.split("-") if rest else []
     if not parts or len(parts) > _MAX_SEGMENTS:
         return None
-    return _rejoin(parts, base)
+    return _rejoin(parts, base, fold=bool(drive_match))
 
 
 def _memory_dir(project: str) -> str:
@@ -207,7 +222,6 @@ def _file_description(path: str) -> Optional[str]:
 def _list() -> dict:
     projects = []
     if os.path.isdir(PROJECTS_DIR):
-        changes = _memory_changes()
         for slug in sorted(os.listdir(PROJECTS_DIR)):
             mem_dir = os.path.join(PROJECTS_DIR, slug, "memory")
             if not os.path.isdir(mem_dir):
@@ -231,31 +245,19 @@ def _list() -> dict:
                 # inferring policy from a null.
                 "pathConfirmed": path is not None,
                 "files": files,
-                "changes": changes.get(slug, []),
             })
     return {"projects": projects}
 
 
-def _memory_changes() -> dict:
-    """Per-folder uncommitted change status, grouped by project slug
-    (memory.md §7). Same porcelain source as the status badge."""
-    try:
-        out = lib.git("status", "--porcelain", "-uall")
-    except RuntimeError:
-        return {}
-    by_project = {}
-    for line in out.splitlines():
-        if not line.strip():
-            continue
-        code, path = line[:2], line[3:]
-        st = "A" if code.strip() == "??" else code.strip()[0]
-        parts = path.split("/")
-        if len(parts) >= 3 and parts[0] == "projects" and parts[2] == "memory":
-            by_project.setdefault(parts[1], []).append({"path": path, "status": st})
-    return by_project
+def _memory_file(project: str, file: str) -> str:
+    """One .md file inside the project's memory dir (no subpaths, no traversal)."""
+    mem_dir = _memory_dir(project)
+    if not file.endswith(".md") or "/" in file or "\\" in file or file.startswith("."):
+        raise ValueError(f"invalid memory file: {file!r}")
+    return os.path.join(mem_dir, file)
 
 
-def main(action: str = "list", project: str = "") -> dict:
+def main(action: str = "list", project: str = "", file: str = "", text: str = "") -> dict:
     if action == "list":
         return _list()
 
@@ -266,21 +268,40 @@ def main(action: str = "list", project: str = "") -> dict:
         except ValueError as e:
             return {"ok": False, "error": str(e)}
 
-    if action == "commit":
-        _memory_dir(project)  # validate slug + ensure dir exists
-        rel = os.path.join("projects", project, "memory")
-        with lib.config_lock():
-            committed = lib.commit(f"Update memory for {project}", pathspec=rel)
-        return {"ok": True, "committed": committed}
-
     if action == "clear":
         mem_dir = _memory_dir(project)
-        rel = os.path.join("projects", project, "memory")
         with lib.config_lock():
             for n in os.listdir(mem_dir):
                 if n.endswith(".md"):
                     os.remove(os.path.join(mem_dir, n))
-            committed = lib.commit(f"Clear memory for {project}", pathspec=rel)
-        return {"ok": True, "committed": committed}
+        return {"ok": True}
+
+    try:
+        if action == "files":
+            mem_dir = _memory_dir(project)
+            files = []
+            for n in sorted(os.listdir(mem_dir), key=lambda n: (n != "MEMORY.md", n.lower())):
+                if n.endswith(".md"):
+                    st = os.stat(os.path.join(mem_dir, n))
+                    files.append({"name": n, "size": st.st_size, "mtime": st.st_mtime})
+            return {"ok": True, "files": files}
+
+        if action == "read":
+            with open(_memory_file(project, file), encoding="utf-8") as f:
+                return {"ok": True, "text": f.read()}
+
+        if action == "write":
+            target = _memory_file(project, file)
+            with lib.config_lock():
+                lib.write_text(target, text)
+            return {"ok": True}
+
+        if action == "delete_file":
+            target = _memory_file(project, file)
+            with lib.config_lock():
+                os.remove(target)
+            return {"ok": True}
+    except (ValueError, OSError) as e:
+        return {"ok": False, "error": str(e)}
 
     return {"ok": False, "error": f"unknown action: {action}"}

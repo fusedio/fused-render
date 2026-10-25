@@ -61,8 +61,9 @@
 import type { TaskPulseTask } from "@platform/lib/api";
 import type { NotificationInput } from "@platform/lib/notifications";
 import { labelForSource } from "@platform/lib/format";
+import { rootedFsPath } from "@platform/lib/path-url";
 import { agentLabel, agentNamed } from "@platform/lib/agent-backends";
-import { taskColumn } from "@shell/tasks-lib";
+import { taskColumn, taskNoticeTitle as noticeTitle } from "@shell/tasks-lib";
 import { taskHref } from "@shell/tasks-lib";
 import { folderHref } from "@shell/schedule-lib";
 
@@ -90,14 +91,6 @@ import { folderHref } from "@shell/schedule-lib";
 // same output for every case that matters here, verified against
 // `recentFsPath` directly before this change shipped.
 const VIEW_PREFIX = "/explorer/view/";
-
-// Rooting, copied from `platform/lib/router.ts`'s
-// `rootedFsPath` rather than imported — importing ANY export from
-// `router.ts`, even a pure one, still runs that module's location-reading
-// top-level code (see the comment above).
-function rootedFsPath(joined: string): string {
-  return "/" + joined;
-}
 
 // Same decode `recentFsPath` (apps/explorer/lib/recents.ts) performs, as a
 // pure function of a string.
@@ -239,13 +232,14 @@ export function notificationForTransition(
   if (column === previous) return null;
 
   if (column === "needs_attention") {
-    return { title: `${task.title || "A task"} needs your input` };
+    return { title: `${noticeTitle(task)} needs your input` };
   }
   if (previous === "in_progress" && column === "blocked") {
     return {
-      title: `${task.title || "A task"} failed`,
+      title: `${noticeTitle(task)} failed`,
       tone: "error",
       page: taskDestination(task),
+      familyKey: `task-failed:${task.key}`,
     };
   }
   if (previous === "in_progress" && column === "done") {
@@ -312,7 +306,7 @@ export function notificationForTransition(
       normalizedDestination !== "/" &&
       isDestinationOpen(normalizedDestination);
     return {
-      title: titleWithoutCaption(task.title || "A task", caption),
+      title: titleWithoutCaption(noticeTitle(task), caption),
       // "Finished" moves OUT of the title and into `detail` (`.dl-model`,
       // MessageRowView's `secondary`) rather than staying baked into the
       // title string or landing in `status`: `status` is already spoken for

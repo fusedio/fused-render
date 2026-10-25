@@ -14,7 +14,7 @@
 // is the design artifact claude.ai/artifact/NdzDR2rpNpFU3yBgQd5sJk.
 //
 // "SET ELSEWHERE" rows are pointers to a setting whose real control lives on
-// another page (Claude Config's model, AI Models' engines).
+// another page (the Claude Code page's Claude model, AI Models' engines).
 // They are in the list so a search for "model" lands on a door instead of on
 // nothing — the page used to lose those settings silently when they moved.
 import type { Prefs } from "@platform/lib/api";
@@ -29,7 +29,7 @@ export type GroupId =
   | "general"
   | "features"
   | "ai"
-  | "claude"
+  | "claude-cli"
   | "tasks"
   | "apps"
   | "indexing"
@@ -37,12 +37,13 @@ export type GroupId =
   | "integrations"
   | "advanced";
 
-// THE NAV IS SECTIONED THE WAY THE APP'S SIDEBAR IS (Akshil, 2026-10-20):
-// a heading per destination a reader already knows from the left rail —
-// the app itself, Bots, Tasks, Apps & files — and Other for what is none of
-// those. A group belongs to exactly one section; a section with no visible
-// group (Fused Bot has no apps or files) is not drawn.
-export type NavSectionId = "general" | "bots" | "tasks" | "apps" | "other";
+// THE NAV IS SECTIONED BY WHAT THE SETTING CHANGES: the app itself, the
+// coding agents and the sessions they run, the apps and files you work on,
+// and the developer tools for when something breaks. A heading never repeats
+// the one page under it, and a page is named for what is on it. A group
+// belongs to exactly one section; a section with no visible group (Fused Bot
+// has no apps or files) is not drawn.
+export type NavSectionId = "app" | "agents" | "apps" | "developer";
 
 export interface NavSection {
   id: NavSectionId;
@@ -50,11 +51,10 @@ export interface NavSection {
 }
 
 export const NAV_SECTIONS: readonly NavSection[] = [
-  { id: "general", label: "General" },
-  { id: "bots", label: "Bots" },
-  { id: "tasks", label: "Tasks" },
+  { id: "app", label: "App" },
+  { id: "agents", label: "Agents" },
   { id: "apps", label: "Apps & files" },
-  { id: "other", label: "Other" },
+  { id: "developer", label: "Developer" },
 ];
 
 export interface SettingsGroup {
@@ -68,31 +68,35 @@ export interface SettingsGroup {
 
 // In nav order: the sections above, and the groups inside each.
 export const GROUPS: readonly SettingsGroup[] = [
-  { id: "general", nav: "general", label: "General", blurb: "How the app looks, opens and stays up to date." },
+  { id: "general", nav: "app", label: "General", blurb: "How the app looks, opens and stays up to date." },
+  { id: "integrations", nav: "app", label: "Accounts", blurb: "Services this app signs in to." },
   {
     id: "features",
-    nav: "general",
-    label: "Experimental features",
+    nav: "app",
+    label: "Experimental flags",
     badge: "Beta",
     blurb: "Off by default and still settling. Each one adds a sidebar row or a page when you turn it on.",
   },
-  { id: "ai", nav: "bots", label: "AI & agents", blurb: "Which coding agents run your chats and tasks." },
+  { id: "ai", nav: "agents", label: "Coding agents", blurb: "Which coding agents run your chats and tasks." },
   {
-    id: "claude",
-    nav: "bots",
-    label: "Claude Code",
-    blurb:
-      "Claude Code's own configuration under ~/.claude: plugins, memory, skills, MCP servers, settings.json and its git history. Edits commit to git and apply on the next session.",
+    id: "tasks",
+    nav: "agents",
+    label: "Chats & tasks",
+    blurb: "How sessions queue, get titled and tell you they are done.",
   },
-  { id: "tasks", nav: "tasks", label: "Tasks", blurb: "How tasks queue, get titled and tell you they are done." },
-  { id: "apps", nav: "apps", label: "Apps & sharing", blurb: "Git sync, sharing, and how app cards preview." },
-  { id: "indexing", nav: "apps", label: "Files & search", blurb: "The file index behind Files search." },
-  { id: "lan", nav: "apps", label: "Phone & network", blurb: "Open your apps from a phone on the same Wi-Fi." },
-  { id: "integrations", nav: "other", label: "Integrations", blurb: "Services this app signs in to." },
+  {
+    id: "claude-cli",
+    nav: "agents",
+    label: "Claude Code",
+    blurb: "The settings.json keys that shape the Claude sessions fused-render runs.",
+  },
+  { id: "apps", nav: "apps", label: "Sharing & sync", blurb: "Git sync, sharing, and how app cards preview." },
+  { id: "indexing", nav: "apps", label: "File index", blurb: "The file index behind Files search." },
+  { id: "lan", nav: "apps", label: "Phone access", blurb: "Open your apps from a phone on the same Wi-Fi." },
   {
     id: "advanced",
-    nav: "other",
-    label: "Advanced",
+    nav: "developer",
+    label: "Debugging",
     blurb: "Call logging, the index query console, and diagnostics for bug reports.",
   },
 ];
@@ -120,13 +124,6 @@ export interface SettingEntry {
   child?: true;
   /** A pointer to another page, not a control. */
   elsewhere?: true;
-  /** The control is a whole block (a list with its own toolbar, an editor),
-   *  not one row: drawn as its own card under the section title, with the
-   *  description as the card's caption. In search results it is a pointer
-   *  row into its group. */
-  block?: true;
-  /** A block that only shows state (badge on its caption). */
-  readOnly?: true;
   /** Fused Bot's own wording where it differs (its launcher searches bots,
    *  not apps). Applied by `forFlavor`, so the row and the search agree. */
   bot?: { label?: string; description?: string };
@@ -139,11 +136,13 @@ export interface SettingsContext {
   prefs: Prefs;
   bot: boolean;
   mac: boolean;
-  /** GET /api/claude-config/status: ~/.claude exists on this machine. */
+  /** GET /api/claude-config/status: ~/.claude exists on this machine; the
+   *  model pointer leads to the Claude Code page's settings. */
   claudeConfig: boolean;
 }
 
 const claudeOnly = ({ claudeConfig }: SettingsContext) => claudeConfig;
+const claudeMissing = ({ claudeConfig }: SettingsContext) => !claudeConfig;
 
 const ENTRIES = [
   // ── General ──────────────────────────────────────────────────────────────
@@ -208,7 +207,7 @@ const ENTRIES = [
     keywords: "update upgrade version download install auto release check now",
   },
 
-  // ── AI & agents ──────────────────────────────────────────────────────────
+  // ── Coding agents ────────────────────────────────────────────────────────
   {
     id: "agent-claude",
     group: "ai",
@@ -226,6 +225,22 @@ const ENTRIES = [
     keywords: "github copilot agent backend cli sign in login",
   },
   {
+    id: "agent-codex",
+    group: "ai",
+    section: "Agents",
+    label: "OpenAI Codex CLI",
+    description: "Runs chats and tasks with your ChatGPT or OpenAI account. Bots keep using Claude.",
+    keywords: "openai codex chatgpt gpt agent backend cli sign in login",
+  },
+  {
+    id: "agent-gemini",
+    group: "ai",
+    section: "Agents",
+    label: "Google Gemini CLI",
+    description: "Runs chats and tasks with your Google account or a Gemini API key. Bots keep using Claude.",
+    keywords: "google gemini agent backend cli sign in login api key",
+  },
+  {
     id: "agent-default",
     group: "ai",
     section: "Agents",
@@ -233,7 +248,11 @@ const ENTRIES = [
     description: "With more than one agent on, new chats and tasks start here. A conversation keeps the agent it started with.",
     keywords: "default agent backend",
     child: true,
-    available: ({ prefs }) => !!prefs.agents?.claude && !!prefs.agents?.copilot,
+    // Two or more of the four on: a default only means something when there
+    // is a choice to make.
+    available: ({ prefs }) =>
+      [prefs.agents?.claude, prefs.agents?.copilot, prefs.agents?.codex, prefs.agents?.gemini]
+        .filter(Boolean).length >= 2,
   },
   {
     id: "claude-model",
@@ -256,86 +275,17 @@ const ENTRIES = [
   },
 
   // ── Claude Code ──────────────────────────────────────────────────────────
-  // The Claude Config panel's sections, in its order (Plugins first — the
-  // page worth landing on — History last), each a block in its own card. The
-  // `description` is the file (or git object) the block edits — the one
-  // thing a settings UI over someone's dotfiles owes them. The settings.json
-  // rows sit between MCP and History: a static catalog row leads, and the
-  // catalog's own entries follow it at runtime (settings/claude.tsx builds
-  // them from GET preferences, so a search finds "model" or "effort" the way
-  // it finds any other row).
+  // The settings.json rows are data the server ships and are spliced in at
+  // runtime (settings/claude.tsx); this row is the group's only static one,
+  // shown on a machine without ~/.claude.
   {
-    id: "claude-plugins",
-    group: "claude",
-    section: "Plugins",
-    label: "Plugins",
-    description: "settings.json → enabledPlugins + extraKnownMarketplaces",
-    keywords: "plugin marketplace install enable disable discover claude",
-    block: true,
-    available: claudeOnly,
-  },
-  {
-    id: "claude-memory",
-    group: "claude",
-    section: "Memory",
-    label: "Memory",
-    description: "projects/*/memory/",
-    keywords: "memory remember notes project claude",
-    block: true,
-    readOnly: true,
-    available: claudeOnly,
-  },
-  {
-    id: "claude-skills",
-    group: "claude",
-    section: "Skills",
-    label: "Skills",
-    description: "skills/*/SKILL.md",
-    keywords: "skill slash command claude",
-    block: true,
-    readOnly: true,
-    available: claudeOnly,
-  },
-  {
-    id: "claude-statusline",
-    group: "claude",
-    section: "Statusline",
-    label: "Statusline",
-    description: "settings.json → statusLine",
-    keywords: "statusline status line prompt bar claude",
-    block: true,
-    readOnly: true,
-    available: claudeOnly,
-  },
-  {
-    id: "claude-mcp",
-    group: "claude",
-    section: "MCP",
-    label: "MCP servers",
-    description: "Global MCP servers via the `claude mcp` CLI (not version-controlled)",
-    keywords: "mcp server connector tool claude",
-    block: true,
-    available: claudeOnly,
-  },
-  {
-    id: "claude-catalog",
-    group: "claude",
+    id: "claude-cli-missing",
+    group: "claude-cli",
     section: "settings.json",
-    label: "Settings catalog",
-    description:
-      "The settings below come from the checked-in catalog. Refresh re-fetches defaults and docs from code.claude.com and rewrites it.",
-    keywords: "settings.json catalog refresh docs defaults claude",
-    available: claudeOnly,
-  },
-  {
-    id: "claude-history",
-    group: "claude",
-    section: "History",
-    label: "History",
-    description: "Uncommitted drift, profiles (git branches) and the commit log over your Claude config",
-    keywords: "history git commit profile branch export import drift claude",
-    block: true,
-    available: claudeOnly,
+    label: "Claude Code isn't installed",
+    description: "~/.claude was not found on this machine. Install Claude Code and its settings.json keys appear here.",
+    keywords: "claude code cli install settings.json",
+    available: claudeMissing,
   },
 
   // ── Tasks ────────────────────────────────────────────────────────────────
@@ -361,9 +311,9 @@ const ENTRIES = [
     id: "task-summary-titles",
     group: "tasks",
     section: "Titles",
-    label: "Summary-only titles",
-    description: "Keep each task's title fixed to Claude's one-line summary of the session (or its first message). Titles no longer change with your latest message or Claude's latest reply. Overrides AI recap titles.",
-    keywords: "summary title name fixed stable rename",
+    label: "Stable AI titles",
+    description: "Name each task with a short AI title for what the conversation is about. The title is refreshed every few turns as the work moves on, never with each new message or reply. Uses Haiku. Overrides AI recap titles.",
+    keywords: "summary title name fixed stable rename ai stable haiku",
   },
   {
     id: "claude-strict-mcp",
@@ -372,6 +322,14 @@ const ENTRIES = [
     label: "Lean Claude sessions",
     description: "Chat and tasks start without the MCP servers from your global Claude config and your claude.ai connectors, so many sessions can run at once (about 200 MB less each). MCP servers from your enabled plugins still load. Scheduled runs, canvas agents and App Doctor are always lean.",
     keywords: "mcp memory connectors strict lean",
+  },
+  {
+    id: "claude-default-permission",
+    group: "tasks",
+    section: "Running",
+    label: "Default approvals for new chats",
+    description: "What a new Claude chat starts on: plan first, ask every time, auto-accept edits, or Claude decides. Each chat's own pick still wins and is remembered.",
+    keywords: "approvals permission mode default auto plan ask accept edits",
   },
   {
     id: "claude-max-sessions",
@@ -390,7 +348,7 @@ const ENTRIES = [
     keywords: "notification notify finished terminal claude alert done",
   },
 
-  // ── Apps & sharing ───────────────────────────────────────────────────────
+  // ── Sharing & sync ───────────────────────────────────────────────────────
   {
     id: "git-sync",
     group: "apps",
@@ -429,7 +387,7 @@ const ENTRIES = [
     renderOnly: true,
   },
 
-  // ── Files & search ───────────────────────────────────────────────────────
+  // ── File index ───────────────────────────────────────────────────────────
   {
     id: "indexing",
     group: "indexing",
@@ -476,7 +434,7 @@ const ENTRIES = [
     renderOnly: true,
   },
 
-  // ── Optional features ────────────────────────────────────────────────────
+  // ── Experimental flags ─────────────────────────────────────────────────────────────
   {
     id: "canvases",
     group: "features",
@@ -485,6 +443,18 @@ const ENTRIES = [
     description: "Your Fused Workbench canvases, opened locally with the live workbench embedded. Appears in the sidebar once you are signed in to Fused.",
     keywords: "canvas workbench udf fused",
     renderOnly: true,
+  },
+  {
+    id: "canvases-embed-proxy",
+    group: "features",
+    section: "Sidebar",
+    label: "Load a custom deployment's workbench through a local proxy",
+    description: "For a deployment in ~/.fused/settings.toml whose workbench needs a browser login. The embedded workbench loads through a loopback proxy that adds your Fused token. Prod and Unstable canvases are unaffected. canvases_embed_proxy_enabled under [render] in that file overrides this switch.",
+    keywords: "proxy embed custom deployment settings.toml render workbench login gateway bearer token",
+    renderOnly: true,
+    child: true,
+    // Only means something while Canvases is offered at all.
+    available: ({ prefs }) => prefs.canvases?.enabled === true,
   },
   {
     id: "marketplace",
@@ -511,8 +481,19 @@ const ENTRIES = [
     description: "Adds a Reader mode to text files and PDFs that reads them aloud.",
     keywords: "read aloud speech tts listen accessibility pdf voice",
   },
+  {
+    id: "chromium-windows",
+    group: "features",
+    section: "Windows",
+    label: "Chromium engine for windows",
+    description:
+      "New app windows are drawn by Chromium instead of the system WebKit view — faster for heavy apps. Off, new windows use WebKit; the menu-bar dock, launcher and pinned popover always do.",
+    keywords: "chromium cef webkit engine rendering performance blink",
+    macOnly: true,
+    available: ({ prefs }) => !!prefs.chromium_windows?.available,
+  },
 
-  // ── Phone & network ──────────────────────────────────────────────────────
+  // ── Phone access ─────────────────────────────────────────────────────────
   {
     id: "lan",
     group: "lan",
@@ -556,9 +537,9 @@ const ENTRIES = [
     id: "agent-signin",
     group: "integrations",
     section: ELSEWHERE,
-    label: "Claude Code and Copilot sign-in",
-    description: "Shown with each agent's health under AI & agents.",
-    keywords: "claude login anthropic copilot github sign in",
+    label: "Claude Code, Copilot, Codex and Gemini sign-in",
+    description: "Shown with each agent's health under Coding agents.",
+    keywords: "claude login anthropic copilot github codex openai chatgpt gemini google sign in",
     elsewhere: true,
   },
 
@@ -618,6 +599,10 @@ export function groupOf(id: GroupId): SettingsGroup {
   return GROUP_BY_ID.get(id)!;
 }
 
+export function navSectionOf(id: NavSectionId): NavSection {
+  return NAV_SECTIONS.find((s) => s.id === id)!;
+}
+
 /** Whether a row is drawn on this machine and flavor. */
 export function isVisible(entry: SettingEntry, ctx: SettingsContext): boolean {
   if (ctx.bot && entry.renderOnly) return false;
@@ -671,12 +656,14 @@ export function sectionsOf<T extends SettingEntry>(
   return out;
 }
 
-/** `?tab=` → the group to show. "render" was the old default tab's name and
+/** `?tab=` → the group to show. "render" was the old default tab's name,
  *  "account" the Accounts tab's (Integrations since 2026-10-20); anything
  *  unknown (a dead `?tab=engines` bookmark) or hidden on this flavor falls
- *  back to the first group rather than an empty panel. */
+ *  back to the first group rather than an empty
+ *  panel. */
 export function resolveGroup(tab: string | null, groups: readonly SettingsGroup[]): GroupId {
-  const wanted = tab === "render" ? "general" : tab === "account" ? "integrations" : tab;
+  const wanted =
+    tab === "render" ? "general" : tab === "account" ? "integrations" : tab;
   const hit = groups.find((g) => g.id === wanted);
   return (hit ?? groups[0] ?? GROUPS[0]).id;
 }

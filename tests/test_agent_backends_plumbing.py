@@ -1,11 +1,14 @@
-"""Server plumbing for the second agent backend (docs/COPILOT_BACKEND.md,
+"""Server plumbing for the second, third and fourth agent backends
+(docs/COPILOT_BACKEND.md, docs/CODEX_BACKEND.md and docs/GEMINI_BACKEND.md,
 WS-A): the root LIST every transcript reader walks, the `backend` field on
 the task row and the settings record, the Preferences switches' rule, the
-scheduler's disabled gate, erase under the Copilot root, the catalog
-endpoint, and the grep-test behind invariant 7.
+scheduler's disabled gate, erase under the Copilot, Codex and Gemini roots,
+the catalog endpoint, and the grep-tests behind invariants 7 and 16 (and
+16's Gemini twin).
 
-Every path is under tmp: FUSED_RENDER_HOME (which `copilot_dir()` hangs off)
-and the Claude roots the modules expose for patching.
+Every path is under tmp: FUSED_RENDER_HOME (which `copilot_dir()`,
+`codex_dir()` and `gemini_dir()` hang off), CODEX_HOME, GEMINI_CLI_HOME, and
+the Claude roots the modules expose for patching.
 """
 import json
 import os
@@ -77,6 +80,41 @@ def copilot_projects(home):
 
 
 @pytest.fixture()
+def codex_projects(home):
+    d = home / "codex" / "projects"
+    d.mkdir(parents=True)
+    assert roots.projects_dir("codex") == str(d)
+    return d
+
+
+@pytest.fixture(autouse=True)
+def codex_home(tmp_path, monkeypatch):
+    """Codex CLI's own home, where its rollout files live — redirected for
+    every test, so no erase here can ever reach the real `~/.codex`."""
+    d = tmp_path / "codex-home"
+    monkeypatch.setenv("CODEX_HOME", str(d))
+    return d
+
+
+@pytest.fixture()
+def gemini_projects(home):
+    d = home / "gemini" / "projects"
+    d.mkdir(parents=True)
+    assert roots.projects_dir("gemini") == str(d)
+    return d
+
+
+@pytest.fixture(autouse=True)
+def gemini_home(tmp_path, monkeypatch):
+    """Gemini CLI's own data dir (`<GEMINI_CLI_HOME>/.gemini`), where its
+    chat files live — redirected for every test, so no erase here can ever
+    reach the real `~/.gemini`."""
+    monkeypatch.setenv("GEMINI_CLI_HOME", str(tmp_path / "gemini-user"))
+    d = tmp_path / "gemini-user" / ".gemini"
+    return d
+
+
+@pytest.fixture()
 def client(tmp_path):
     return TestClient(create_app(start_dir=str(tmp_path)))
 
@@ -106,32 +144,97 @@ def _enable_copilot():
     prefs_mod.write_pref("copilot_enabled", True)
 
 
+def _enable_codex():
+    prefs_mod.write_pref("codex_enabled", True)
+
+
+def _enable_gemini():
+    prefs_mod.write_pref("gemini_enabled", True)
+
+
 # ------------------------------------------------------------------ roots
 
 
-def test_both_roots_are_walked_and_the_root_names_the_backend(
-        tmp_path, claude_projects, copilot_projects, client):
+def test_every_root_list_names_four_roots_in_backends_order(
+        tmp_path, home, claude_projects):
+    """docs/CODEX_BACKEND.md §1 and docs/GEMINI_BACKEND.md §1: a third and a
+    fourth root everywhere a list is built — the shared file's own lists,
+    the app-side helpers a module with a patchable Claude constant builds
+    through, and the modules' own doors. `codex_dir()` and `gemini_dir()`
+    hang off the UNNESTED home, as `copilot_dir()` does."""
+    assert roots.BACKENDS == ("claude", "copilot", "codex", "gemini")
+    assert roots.codex_dir() == str(home / "codex")
+    assert roots.base_dir("codex") == str(home / "codex")
+    assert roots.projects_dir("codex") == str(home / "codex" / "projects")
+    assert roots.sessions_dir("codex") == str(home / "codex" / "sessions")
+    assert roots.gemini_dir() == str(home / "gemini")
+    assert roots.base_dir("gemini") == str(home / "gemini")
+    assert roots.projects_dir("gemini") == str(home / "gemini" / "projects")
+    assert roots.sessions_dir("gemini") == str(home / "gemini" / "sessions")
+    claude = roots.claude_dir()
+    assert roots.transcript_roots() == [
+        ("claude", os.path.join(claude, "projects")),
+        ("copilot", str(home / "copilot" / "projects")),
+        ("codex", str(home / "codex" / "projects")),
+        ("gemini", str(home / "gemini" / "projects"))]
+    assert roots.registry_roots() == [
+        ("claude", os.path.join(claude, "sessions")),
+        ("copilot", str(home / "copilot" / "sessions")),
+        ("codex", str(home / "codex" / "sessions")),
+        ("gemini", str(home / "gemini" / "sessions"))]
+    assert roots.projects_roots("/c/projects") == [
+        ("claude", "/c/projects"),
+        ("copilot", str(home / "copilot" / "projects")),
+        ("codex", str(home / "codex" / "projects")),
+        ("gemini", str(home / "gemini" / "projects"))]
+    assert roots.sessions_roots("/c/sessions") == [
+        ("claude", "/c/sessions"),
+        ("copilot", str(home / "copilot" / "sessions")),
+        ("codex", str(home / "codex" / "sessions")),
+        ("gemini", str(home / "gemini" / "sessions"))]
+    # The routers' and the store's doors carry the patched Claude root first.
+    assert [b for b, _ in sessions_mod.projects_roots()] == list(roots.BACKENDS)
+    assert sessions_mod.projects_roots()[0][1] == str(claude_projects)
+    assert [b for b, _ in tasks_store.projects_roots()] == list(roots.BACKENDS)
+
+
+def test_every_root_is_walked_and_the_root_names_the_backend(
+        tmp_path, claude_projects, copilot_projects, codex_projects,
+        gemini_projects, client):
     target = tmp_path / "p"
     target.mkdir()
     a = _write_transcript(claude_projects, "sess-claude", str(target), [_user("one")])
     b = _write_transcript(copilot_projects, "sess-copilot", str(target), [_user("two")])
+    c = _write_transcript(codex_projects, "sess-codex", str(target), [_user("three")])
+    d = _write_transcript(gemini_projects, "sess-gemini", str(target), [_user("four")])
 
-    assert tasks_store.transcripts() == [str(a), str(b)]
+    assert tasks_store.transcripts() == [str(a), str(b), str(c), str(d)]
     assert tasks_store.transcripts_by_backend() == [
-        ("claude", str(a)), ("copilot", str(b))]
+        ("claude", str(a)), ("copilot", str(b)), ("codex", str(c)), ("gemini", str(d))]
     assert roots.backend_for_transcript(str(b)) == "copilot"
+    assert roots.backend_for_transcript(str(c)) == "codex"
+    assert roots.backend_for_transcript(str(d)) == "gemini"
+    assert roots.find_transcript("sess-gemini", str(target)) == ("gemini", str(d))
+    assert roots.backend_for_session("sess-gemini") == "gemini"
     # A patched Claude root is under neither real root, and reads as Claude.
     assert roots.backend_for_transcript(str(a)) == "claude"
+    assert roots.find_transcript("sess-codex", str(target)) == ("codex", str(c))
+    assert roots.backend_for_session("sess-codex") == "codex"
 
     rows = {r["key"]: r for r in client.get("/api/tasks").json()["tasks"]}
     assert rows["sess-copilot"]["backend"] == "copilot"
+    assert rows["sess-codex"]["backend"] == "codex"
+    assert rows["sess-gemini"]["backend"] == "gemini"
     assert rows["sess-claude"]["backend"] == "claude"
     pulse = {r["key"]: r for r in client.get("/api/tasks/pulse").json()["tasks"]}
     assert pulse["sess-copilot"]["backend"] == "copilot"
+    assert pulse["sess-codex"]["backend"] == "codex"
+    assert pulse["sess-gemini"]["backend"] == "gemini"
 
-    # The sessions router's scans see the Copilot transcript too.
+    # The sessions router's scans see every non-Claude transcript too.
     summaries = client.get("/api/claude-sessions/summaries").json()["sessions"]
-    assert {s["session_id"] for s in summaries} >= {"sess-claude", "sess-copilot"}
+    assert {s["session_id"] for s in summaries} >= {
+        "sess-claude", "sess-copilot", "sess-codex", "sess-gemini"}
     folders = client.get("/api/claude-sessions").json()["folders"]
     assert [f["path"] for f in folders] == [str(target)]
 
@@ -159,22 +262,32 @@ def test_the_liveness_route_accepts_a_path_under_the_copilot_root(
     assert r.status_code == 400
 
 
-def test_the_registry_watcher_reads_both_sessions_dirs(tmp_path, home, monkeypatch):
+def test_the_registry_watcher_reads_every_sessions_dir(tmp_path, home, monkeypatch):
     claude_sessions = tmp_path / "claude-sessions"
     claude_sessions.mkdir()
     monkeypatch.setattr(tasks_watch, "SESSIONS_DIR", str(claude_sessions))
     copilot_sessions = home / "copilot" / "sessions"
     copilot_sessions.mkdir(parents=True)
+    codex_sessions = home / "codex" / "sessions"
+    codex_sessions.mkdir(parents=True)
+    gemini_sessions = home / "gemini" / "sessions"
+    gemini_sessions.mkdir(parents=True)
     monkeypatch.setattr(tasks_watch, "_pid_alive", lambda pid: True)
     (claude_sessions / "11.json").write_text(json.dumps(
         {"sessionId": "s-claude", "pid": 11, "cwd": "/a", "status": "busy"}))
     (copilot_sessions / "22.json").write_text(json.dumps(
         {"sessionId": "s-copilot", "pid": 22, "cwd": "/a", "status": "idle"}))
+    (codex_sessions / "55.json").write_text(json.dumps(
+        {"sessionId": "s-codex", "pid": 55, "cwd": "/a", "status": "busy"}))
+    (gemini_sessions / "77.json").write_text(json.dumps(
+        {"sessionId": "s-gemini", "pid": 77, "cwd": "/a", "status": "idle"}))
     tasks_watch._read_registry()
     assert tasks_watch.session_for_pid(11) == "s-claude"
     assert tasks_watch.session_for_pid(22) == "s-copilot"
+    assert tasks_watch.session_for_pid(55) == "s-codex"
+    assert tasks_watch.session_for_pid(77) == "s-gemini"
     with tasks_watch._cond:
-        assert set(tasks_watch._registry) >= {"s-claude", "s-copilot"}
+        assert set(tasks_watch._registry) >= {"s-claude", "s-copilot", "s-codex", "s-gemini"}
 
 
 # ------------------------------------------------------------------ backend field
@@ -184,9 +297,19 @@ def test_the_settings_record_carries_the_backend_once(client):
     r = client.post("/api/tasks/settings", headers=FUSED,
                     json={"session_id": "sess-x", "backend": "copilot"})
     assert r.status_code == 200, r.text
-    assert r.json() == {"ok": True, "model": "", "effort": "", "backend": "copilot"}
+    assert r.json() == {"ok": True, "model": "", "effort": "", "backend": "copilot",
+                        "permission": ""}
     assert client.get("/api/tasks/settings",
                       params={"session_id": "sess-x"}).json()["backend"] == "copilot"
+    # The third agent is a backend the record takes like the others.
+    r = client.post("/api/tasks/settings", headers=FUSED,
+                    json={"session_id": "sess-y", "backend": "codex"})
+    assert r.status_code == 200, r.text
+    assert r.json()["backend"] == "codex"
+    r = client.post("/api/tasks/settings", headers=FUSED,
+                    json={"session_id": "sess-z", "backend": "gemini"})
+    assert r.status_code == 200, r.text
+    assert r.json()["backend"] == "gemini"
     # A pill pick says nothing about the backend and leaves it alone.
     client.post("/api/tasks/settings", headers=FUSED,
                 json={"session_id": "sess-x", "effort": "low"})
@@ -407,13 +530,13 @@ def test_spawn_helper_hands_backend_to_start(monkeypatch):
 def test_the_last_enabled_agent_cannot_be_switched_off(client):
     r = client.put("/api/prefs", headers=FUSED, json={"claude_enabled": False})
     assert r.status_code == 400
-    assert r.json()["error"] == "turn on the other agent first"
+    assert r.json()["error"] == "turn on another agent first"
     # Both in one body is fine: the merged result has one on.
     r = client.put("/api/prefs", headers=FUSED,
                    json={"claude_enabled": False, "copilot_enabled": True})
     assert r.status_code == 200, r.text
     assert r.json()["agents"] == {"claude": False, "copilot": True,
-                                  "default": "copilot"}
+                                  "codex": False, "gemini": False, "default": "copilot"}
     assert prefs_mod.read_prefs()["default_backend"] == "copilot"
     assert registry.enabled_ids() == ["copilot"]
     # And now Copilot is the last one.
@@ -428,14 +551,112 @@ def test_default_backend_is_repointed_in_the_same_write(client):
     r = client.put("/api/prefs", headers=FUSED, json={"copilot_enabled": False})
     assert r.status_code == 200
     assert r.json()["agents"] == {"claude": True, "copilot": False,
-                                  "default": "claude"}
+                                  "codex": False, "gemini": False, "default": "claude"}
     assert prefs_mod.read_prefs()["default_backend"] == "claude"
-    r = client.put("/api/prefs", headers=FUSED, json={"default_backend": "gemini"})
+    r = client.put("/api/prefs", headers=FUSED, json={"default_backend": "nope"})
     assert r.status_code == 400
     r = client.put("/api/prefs", headers=FUSED, json={"claude_enabled": "yes"})
     assert r.status_code == 400
     body = client.get("/api/prefs").json()
-    assert body["agents"] == {"claude": True, "copilot": False, "default": "claude"}
+    assert body["agents"] == {"claude": True, "copilot": False, "codex": False,
+                              "gemini": False, "default": "claude"}
+
+
+def test_codex_is_off_until_stored_on_and_takes_part_in_the_rule(client):
+    """docs/CODEX_BACKEND.md D17: a third switch, off by default; the PUT
+    rule is "at least one of the THREE on", judged on the merged record."""
+    assert prefs_mod.codex_enabled() is False
+    assert prefs_mod.AGENT_BACKEND_KEYS["codex"] == "codex_enabled"
+    assert prefs_mod.VALID_DEFAULT_BACKENDS == registry.ORDER
+    body = client.get("/api/prefs").json()
+    assert body["agents"]["codex"] is False
+    r = client.put("/api/prefs", headers=FUSED, json={"codex_enabled": "yes"})
+    assert r.status_code == 400
+    # Codex on, then Claude and Copilot off in one body: two off with the
+    # third on is fine, and the default walks ORDER to the one left.
+    r = client.put("/api/prefs", headers=FUSED,
+                   json={"codex_enabled": True, "copilot_enabled": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["agents"] == {"claude": True, "copilot": True,
+                                  "codex": True, "gemini": False, "default": "claude"}
+    r = client.put("/api/prefs", headers=FUSED,
+                   json={"claude_enabled": False, "copilot_enabled": False})
+    assert r.status_code == 200, r.text
+    assert r.json()["agents"] == {"claude": False, "copilot": False,
+                                  "codex": True, "gemini": False, "default": "codex"}
+    assert prefs_mod.read_prefs()["default_backend"] == "codex"
+    assert registry.enabled_ids() == ["codex"]
+    assert registry.default_id() == "codex"
+    # All three off is refused whole — nothing in that body is written.
+    r = client.put("/api/prefs", headers=FUSED,
+                   json={"codex_enabled": False, "default_backend": "claude"})
+    assert r.status_code == 400
+    assert r.json()["error"] == "turn on another agent first"
+    assert prefs_mod.read_prefs()["codex_enabled"] is True
+    assert prefs_mod.read_prefs()["default_backend"] == "codex"
+
+
+def test_the_default_repoints_to_the_first_enabled_in_order(client):
+    r = client.put("/api/prefs", headers=FUSED,
+                   json={"copilot_enabled": True, "codex_enabled": True,
+                         "default_backend": "codex"})
+    assert r.status_code == 200, r.text
+    assert r.json()["agents"]["default"] == "codex"
+    # Codex goes off: Claude and Copilot are both on, Claude is first.
+    r = client.put("/api/prefs", headers=FUSED, json={"codex_enabled": False})
+    assert r.json()["agents"]["default"] == "claude"
+    # A default naming an agent that is off in the same body is re-pointed.
+    r = client.put("/api/prefs", headers=FUSED,
+                   json={"claude_enabled": False, "default_backend": "claude"})
+    assert r.status_code == 200, r.text
+    assert r.json()["agents"]["default"] == "copilot"
+    r = client.put("/api/prefs", headers=FUSED, json={"default_backend": "codex"})
+    assert r.status_code == 200
+    assert prefs_mod.read_prefs()["default_backend"] == "copilot"
+
+
+def test_the_unknown_key_message_names_the_codex_and_gemini_switches(client):
+    r = client.put("/api/prefs", headers=FUSED, json={"nothing_known": 1})
+    assert r.status_code == 400
+    assert "'codex_enabled'" in r.json()["error"]
+    assert "'gemini_enabled'" in r.json()["error"]
+
+
+def test_gemini_is_off_until_stored_on_and_takes_part_in_the_rule(client):
+    """docs/GEMINI_BACKEND.md D17: a fourth switch, off by default; the PUT
+    rule is "at least one of the FOUR on", judged on the merged record."""
+    assert prefs_mod.gemini_enabled() is False
+    assert prefs_mod.AGENT_BACKEND_KEYS["gemini"] == "gemini_enabled"
+    assert prefs_mod.VALID_DEFAULT_BACKENDS == registry.ORDER
+    assert registry.ORDER[-1] == "gemini"
+    body = client.get("/api/prefs").json()
+    assert body["agents"]["gemini"] is False
+    r = client.put("/api/prefs", headers=FUSED, json={"gemini_enabled": "yes"})
+    assert r.status_code == 400
+    # Gemini on, then the other three off in one body: the default walks
+    # ORDER to the one left.
+    r = client.put("/api/prefs", headers=FUSED, json={"gemini_enabled": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["agents"] == {"claude": True, "copilot": False, "codex": False,
+                                  "gemini": True, "default": "claude"}
+    r = client.put("/api/prefs", headers=FUSED, json={"claude_enabled": False})
+    assert r.status_code == 200, r.text
+    assert r.json()["agents"] == {"claude": False, "copilot": False, "codex": False,
+                                  "gemini": True, "default": "gemini"}
+    assert registry.enabled_ids() == ["gemini"]
+    assert registry.default_id() == "gemini"
+    # All four off is refused whole.
+    r = client.put("/api/prefs", headers=FUSED, json={"gemini_enabled": False})
+    assert r.status_code == 400
+    assert r.json()["error"] == "turn on another agent first"
+    assert prefs_mod.read_prefs()["gemini_enabled"] is True
+    # Codex on beside it: Codex comes first in ORDER, so the default re-points
+    # there once Gemini goes off.
+    r = client.put("/api/prefs", headers=FUSED,
+                   json={"codex_enabled": True, "default_backend": "gemini"})
+    assert r.json()["agents"]["default"] == "gemini"
+    r = client.put("/api/prefs", headers=FUSED, json={"gemini_enabled": False})
+    assert r.json()["agents"]["default"] == "codex"
 
 
 def test_fused_ai_never_reads_the_default_agent(monkeypatch):
@@ -458,17 +679,96 @@ def test_the_catalog_endpoint_serves_the_registry(client, monkeypatch):
                         lambda: {"ok": True, "fingerprint": "x"})
     monkeypatch.setattr(claude_health, "summary",
                         lambda: pytest.fail("the catalog must not probe"))
+    from fused_render import codex_health, copilot_health, gemini_health
+    # A disabled agent's health is read from its cache too, never probed.
+    monkeypatch.setattr(copilot_health, "cached", lambda: None)
+    monkeypatch.setattr(codex_health, "cached", lambda: None)
+    monkeypatch.setattr(gemini_health, "cached", lambda: None)
     body = client.get("/api/agent-backends").json()
     assert [b["id"] for b in body["backends"]] == ["claude"]
-    assert [b["id"] for b in body["all"]] == ["claude", "copilot"]
+    assert [b["id"] for b in body["all"]] == ["claude", "copilot", "codex", "gemini"]
+    assert [b["id"] for b in body["all"]] == list(registry.ORDER)
     assert body["default"] == "claude"
     claude = body["all"][0]
     assert claude["health"] == {"ok": True}
     assert claude["caps"]["plan_mode"] is True
     assert body["all"][1]["enabled"] is False
+    codex = body["all"][2]
+    assert codex["enabled"] is False
+    assert codex["label"] == "Codex"
+    assert codex["default_model"] == "gpt-6-luna"
+    assert codex["modes"] == ["prompt", "acceptEdits", "auto"]
+    assert codex["caps"]["plan_mode"] is False
+    assert codex["caps"]["live_model_switch"] is True
+    assert codex["caps"]["live_mode_switch"] is True
+    assert codex["health"] is None
+    gemini = body["all"][3]
+    assert gemini["enabled"] is False
+    assert gemini["label"] == "Gemini"
+    assert gemini["default_model"] == "auto"
+    assert gemini["modes"] == ["prompt", "acceptEdits", "auto"]
+    # No effort control at all: an empty vocabulary, every model `reasoning`
+    # off, so the pill never shows (docs/GEMINI_BACKEND.md D7).
+    assert gemini["efforts"] == []
+    assert all(m["reasoning"] is False and m["efforts"] == [] for m in gemini["models"])
+    assert [m["id"] for m in gemini["models"]][:2] == ["auto", "gemini-3-pro-preview"]
+    assert gemini["caps"]["plan_mode"] is False
+    assert gemini["caps"]["live_model_switch"] is True
+    assert gemini["caps"]["live_mode_switch"] is True
+    assert gemini["health"] is None
     _enable_copilot()
     body = client.get("/api/agent-backends").json()
     assert [b["id"] for b in body["backends"]] == ["claude", "copilot"]
+    _enable_codex()
+    body = client.get("/api/agent-backends").json()
+    assert [b["id"] for b in body["backends"]] == ["claude", "copilot", "codex"]
+    _enable_gemini()
+    body = client.get("/api/agent-backends").json()
+    assert [b["id"] for b in body["backends"]] == ["claude", "copilot", "codex", "gemini"]
+
+
+def test_geminis_terminal_resume_line():
+    gemini = registry.get("gemini")
+    assert gemini.terminal_resume("/a b", "3f2c6c1e-1111-4222-8333-444444444444") == (
+        "cd '/a b' && gemini --resume 3f2c6c1e-1111-4222-8333-444444444444")
+    assert gemini.terminal_resume("/a", "") == "cd /a && gemini"
+    assert gemini.routes_prefix == "/api/gemini"
+    assert gemini.pref_key == "gemini_enabled"
+    assert getattr(prefs_mod, gemini.pref_key)() is False
+
+
+def test_the_catalog_serves_geminis_discovered_models(monkeypatch):
+    """docs/GEMINI_BACKEND.md D11a: the health snapshot's `models` (off
+    `session/new`'s `availableModels`) replace the shortlist, `auto` first,
+    every row effortless; nothing cached → the shortlist stands."""
+    from fused_render import gemini_health
+    from fused_render.agent_backends import gemini as backend_gemini
+    monkeypatch.setattr(gemini_health, "cached_models", lambda: None)
+    assert backend_gemini.discovered_models(None) is None
+    assert backend_gemini.GEMINI.model_ids() == tuple(m.id for m in backend_gemini.MODELS)
+    rows = [{"id": "auto", "label": "Auto"}, {"id": "gemini-3.1-pro-preview", "label": "Gemini 3.1 Pro"},
+            {"id": "gemini-2.5-flash", "label": "Gemini 2.5 Flash"}, {"id": "", "label": "x"}, "junk"]
+    found = backend_gemini.discovered_models({"models": rows})
+    assert [m.id for m in found] == ["auto", "gemini-3.1-pro-preview", "gemini-2.5-flash"]
+    assert all(m.reasoning is False and m.effort_list(()) == [] for m in found)
+    monkeypatch.setattr(gemini_health, "cached_models", lambda: rows)
+    assert backend_gemini.GEMINI.model_ids(discovered=True) == (
+        "auto", "gemini-3.1-pro-preview", "gemini-2.5-flash")
+    # A discovered id is never foreign on a Gemini task; a Codex id still is.
+    assert registry.foreign_model_error("gemini", "gemini-3.1-pro-preview") is None
+    assert registry.foreign_model_error("gemini", "gpt-6-luna")["reason"] == "unsupported"
+    assert registry.foreign_model_error("claude", "gemini-2.5-pro")["reason"] == "unsupported"
+
+
+def test_codexs_terminal_resume_line():
+    codex = registry.get("codex")
+    assert codex.terminal_resume("/a b", "01a15f4b-da04") == (
+        "cd '/a b' && codex resume 01a15f4b-da04")
+    assert codex.terminal_resume("/a", "") == "cd /a && codex"
+    assert codex.routes_prefix == "/api/codex"
+    assert codex.pref_key == "codex_enabled"
+    # `pref_key` names a function prefs really has (base.Backend's contract).
+    assert getattr(prefs_mod, codex.pref_key)() is False
 
 
 # ------------------------------------------------------------------ erase (D15)
@@ -510,6 +810,165 @@ def test_erase_of_a_claude_session_leaves_the_copilot_cli_store_alone(
     assert r.status_code == 200, r.text
     assert not path.exists()
     assert (state / "sess-a").exists()
+
+
+def _rollout(codex_home, sub, rel_dir, session_id, ts="2026-10-21T10-00-00"):
+    d = codex_home / sub / rel_dir
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / f"rollout-{ts}-{session_id}.jsonl"
+    p.write_text("{}\n")
+    return p
+
+
+CODEX_SID = "01a15f4b-da04-7b11-8b21-41c96595aa15"
+OTHER_SID = "01a15f4b-da04-7b11-8b21-000000000000"
+
+
+def test_erase_under_the_codex_root_takes_the_cli_rollouts_too(
+        tmp_path, claude_projects, codex_projects, codex_home, client):
+    """docs/CODEX_BACKEND.md D15: `codex resume <sid>` replays from Codex's
+    own rollout file, so an erase that left it would leave the conversation
+    resumable from a terminal. Both stores go — the dated live one and the
+    archive — and only this id's files."""
+    target = tmp_path / "p"
+    target.mkdir()
+    path = _write_transcript(codex_projects, CODEX_SID, str(target), [_user("two")])
+    live = _rollout(codex_home, "sessions", "2026/10/21", CODEX_SID)
+    later = _rollout(codex_home, "sessions", "2026/10/22", CODEX_SID,
+                     ts="2026-10-22T08-00-00")
+    archived = _rollout(codex_home, "archived_sessions", "", CODEX_SID)
+    other = _rollout(codex_home, "sessions", "2026/10/21", OTHER_SID)
+    # A file that merely CONTAINS the id is not a rollout of it.
+    lookalike = codex_home / "sessions" / "2026" / "10" / "21" / f"notes-{CODEX_SID}.jsonl"
+    lookalike.write_text("{}\n")
+    assert tasks_mod._codex_home() == str(codex_home)
+    assert sorted(tasks_mod._codex_rollout_files(CODEX_SID)) == sorted(
+        os.path.realpath(p) for p in (live, later, archived))
+
+    assert client.get("/api/tasks").json()["tasks"][0]["key"] == CODEX_SID
+    r = client.post("/api/tasks/erase", headers=FUSED, json={"key": CODEX_SID})
+    assert r.status_code == 200, r.text
+    assert not path.exists()
+    assert not live.exists() and not later.exists() and not archived.exists()
+    assert other.exists() and lookalike.exists()
+
+
+def test_erase_of_a_claude_session_leaves_the_codex_rollouts_alone(
+        tmp_path, claude_projects, codex_home, client):
+    target = tmp_path / "p"
+    target.mkdir()
+    path = _write_transcript(claude_projects, CODEX_SID, str(target), [_user("one")])
+    live = _rollout(codex_home, "sessions", "2026/10/21", CODEX_SID)
+    r = client.post("/api/tasks/erase", headers=FUSED, json={"key": CODEX_SID})
+    assert r.status_code == 200, r.text
+    assert not path.exists()
+    assert live.exists()
+
+
+def test_erase_through_a_symlinked_codex_bucket_takes_the_rollouts_too(
+        tmp_path, claude_projects, codex_projects, codex_home, client):
+    target = tmp_path / "p"
+    target.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    path = _write_transcript(elsewhere, CODEX_SID, str(target), [_user("two")])
+    (codex_projects / path.parent.name).symlink_to(path.parent)
+    live = _rollout(codex_home, "sessions", "2026/10/21", CODEX_SID)
+    r = client.post("/api/tasks/erase", headers=FUSED, json={"key": CODEX_SID})
+    assert r.status_code == 200, r.text
+    assert not path.exists()
+    assert not live.exists()
+
+
+GEMINI_SID = "3f2c6c1e-5b1a-4c2d-9e3f-0a1b2c3d4e5f"
+
+
+def _chat(gemini_home, project, session_id, ts="2026-10-23T10-00", ext=".jsonl",
+          body_sid=None):
+    """A Gemini chat file as the CLI names it: `tmp/<project>/chats/
+    session-<ts>-<sid[:8]><ext>`, carrying the whole id inside."""
+    d = gemini_home / "tmp" / project / "chats"
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / f"session-{ts}-{session_id[:8]}{ext}"
+    p.write_text(json.dumps({"sessionId": body_sid or session_id, "type": "user"}) + "\n")
+    return p
+
+
+def test_erase_under_the_gemini_root_takes_the_cli_chat_files_too(
+        tmp_path, claude_projects, gemini_projects, gemini_home, client):
+    """docs/GEMINI_BACKEND.md D15: `gemini --resume <sid>` replays from the
+    CLI's chat file(s), named by the id's first eight characters; erasing
+    the fused transcript removes those too — only the ones whose text
+    carries the whole id, so a neighbour sharing the prefix stays."""
+    target = tmp_path / "p"
+    target.mkdir()
+    path = _write_transcript(gemini_projects, GEMINI_SID, str(target), [_user("two")])
+    live = _chat(gemini_home, "proj-a", GEMINI_SID)
+    older = _chat(gemini_home, "proj-a", GEMINI_SID, ts="2026-10-22T09-00", ext=".json")
+    elsewhere = _chat(gemini_home, "proj-b", GEMINI_SID)
+    other = _chat(gemini_home, "proj-a", "00000000-0000-4000-8000-000000000000")
+    lookalike = _chat(gemini_home, "proj-a", GEMINI_SID, ts="2026-10-21T08-00",
+                      body_sid="3f2c6c1e-ffff-4fff-8fff-ffffffffffff")
+    # Another chat that shares the prefix AND quotes this id in a message:
+    # its own recorded sessionId is what counts, so it stays.
+    mentions = _chat(gemini_home, "proj-a", GEMINI_SID, ts="2026-10-20T07-00",
+                     body_sid="3f2c6c1e-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+    with open(mentions, "a") as fh:
+        fh.write(json.dumps({"type": "user", "content": "resume %s please" % GEMINI_SID}) + "\n")
+    big_json = _chat(gemini_home, "proj-a", GEMINI_SID, ts="2026-10-19T06-00", ext=".json")
+    big_json.write_text(json.dumps({"sessionId": GEMINI_SID, "messages": ["x" * 3000000]}))
+    assert tasks_mod._gemini_home() == str(gemini_home)
+    assert sorted(tasks_mod._gemini_chat_files(GEMINI_SID)) == sorted(
+        os.path.realpath(str(p)) for p in (live, older, elsewhere, big_json))
+    assert client.get("/api/tasks").json()["tasks"][0]["key"] == GEMINI_SID
+    r = client.post("/api/tasks/erase", headers=FUSED, json={"key": GEMINI_SID})
+    assert r.status_code == 200, r.text
+    assert not path.exists()
+    assert not live.exists() and not older.exists() and not elsewhere.exists()
+    assert not big_json.exists()
+    assert other.exists() and lookalike.exists() and mentions.exists()
+
+
+def test_erase_of_a_claude_session_leaves_the_gemini_chat_files_alone(
+        tmp_path, claude_projects, gemini_home, client):
+    target = tmp_path / "p"
+    target.mkdir()
+    path = _write_transcript(claude_projects, GEMINI_SID, str(target), [_user("one")])
+    live = _chat(gemini_home, "proj-a", GEMINI_SID)
+    r = client.post("/api/tasks/erase", headers=FUSED, json={"key": GEMINI_SID})
+    assert r.status_code == 200, r.text
+    assert not path.exists() and live.exists()
+
+
+def test_the_gemini_chat_glob_refuses_a_bad_id_and_a_symlink_out(tmp_path, gemini_home):
+    _chat(gemini_home, "proj-a", "x" * 36)
+    for bad in ("..", ".", "a/b", "short"):
+        assert tasks_mod._gemini_chat_files(bad) == []
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text(json.dumps({"sessionId": GEMINI_SID}) + "\n")
+    link_dir = gemini_home / "tmp" / "proj-l" / "chats"
+    link_dir.mkdir(parents=True)
+    (link_dir / f"session-2026-10-23T00-00-{GEMINI_SID[:8]}.jsonl").symlink_to(outside)
+    assert tasks_mod._gemini_chat_files(GEMINI_SID) == []
+    # No Gemini home at all is simply nothing to remove.
+    assert tasks_mod._gemini_chat_files("00000000-0000-4000-8000-000000000000") == []
+
+
+def test_the_codex_rollout_glob_refuses_a_bad_id_and_a_symlink_out(
+        tmp_path, codex_home):
+    """The same safety the Copilot path has: an id that is not a name never
+    builds a path, and a hit must RESOLVE inside the Codex dir it was globbed
+    under — a rollout-named symlink to a file elsewhere is not followed."""
+    _rollout(codex_home, "sessions", "2026/10/21", "x")
+    for bad in ("..", ".", "a/b", "*", "", "-x"):
+        assert tasks_mod._codex_rollout_files(bad) == []
+    outside = tmp_path / "precious.jsonl"
+    outside.write_text("keep me\n")
+    link_dir = codex_home / "sessions" / "2026" / "10" / "23"
+    link_dir.mkdir(parents=True)
+    (link_dir / f"rollout-2026-10-23T00-00-00-{CODEX_SID}.jsonl").symlink_to(outside)
+    assert tasks_mod._codex_rollout_files(CODEX_SID) == []
+    # No Codex home at all is simply nothing to remove.
+    assert tasks_mod._codex_rollout_files(OTHER_SID) == []
 
 
 # ------------------------------------------------------------------ round 2
@@ -916,6 +1375,106 @@ def test_no_module_touched_here_spells_the_claude_root_itself():
     assert offenders == []
 
 
+# ------------------------------------------------------------------ invariant 16
+
+
+#: Code (not prose) that resolves Codex CLI's own home: a `"~/.codex"` or a
+#: `"CODEX_HOME"` string literal. Docstrings and comments may SAY either —
+#: in backticks — and are not matched.
+_CODEX_LITERAL = re.compile(r"""["'](?:~/\.codex|CODEX_HOME)\b""")
+
+#: docs/CODEX_BACKEND.md invariant 16: the only modules that may name Codex's
+#: home — the roots file, the health/login/install trio that probe and sign
+#: in, erase (D15) and the recap's one-shot (D12).
+_CODEX_HOME_ALLOWED = {
+    "templates/shared/agent_roots.py", "codex_health.py", "codex_login.py",
+    "codex_install.py", "server/routers/tasks.py",
+    "server/routers/claude_sessions.py",
+}
+
+
+def test_only_the_allowed_modules_name_codexs_own_home():
+    """Invariant 16 (invariant 7's twin for Codex): Codex's `CODEX_HOME` /
+    `~/.codex` is named in code only where the contract allows it — every
+    other module reaches it through one of those. Walks the WHOLE package,
+    the hosts and agent.py included, because a new reader is exactly what
+    this exists to catch."""
+    import fused_render
+    base = os.path.dirname(fused_render.__file__)
+    offenders = []
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = [d for d in dirnames if d not in ("__pycache__", "node_modules")]
+        for name in filenames:
+            if not name.endswith(".py"):
+                continue
+            full = os.path.join(dirpath, name)
+            rel = os.path.relpath(full, base).replace(os.sep, "/")
+            if rel in _CODEX_HOME_ALLOWED:
+                continue
+            with open(full, encoding="utf-8", errors="replace") as fh:
+                for n, line in enumerate(fh, 1):
+                    code = line.split("#", 1)[0]
+                    if _CODEX_LITERAL.search(code):
+                        offenders.append(f"{rel}:{n}: {line.strip()}")
+    assert offenders == []
+
+
+def test_the_codex_literal_pattern_catches_code_and_spares_prose():
+    assert _CODEX_LITERAL.search('os.environ.get("CODEX_HOME")')
+    assert _CODEX_LITERAL.search("expanduser('~/.codex')")
+    assert _CODEX_LITERAL.search('os.path.expanduser("~/.codex/sessions")')
+    assert not _CODEX_LITERAL.search("leaves `CODEX_HOME` exactly as found")
+    assert not _CODEX_LITERAL.search("under `~/.codex`")
+    assert not _CODEX_LITERAL.search('"CODEX_HOME_X"')
+
+
+#: Code (not prose) that resolves Gemini CLI's own home: a `"~/.gemini"` /
+#: `".gemini"` or a `"GEMINI_CLI_HOME"` string literal.
+_GEMINI_LITERAL = re.compile(r"""["'](?:~/\.gemini|\.gemini|GEMINI_CLI_HOME)\b""")
+
+#: docs/GEMINI_BACKEND.md invariant 16: the only modules that may name
+#: Gemini's home — the health module (which the others reach it through) and
+#: the roots file's docstring-free code (which names none; listed for the
+#: day it does).
+_GEMINI_HOME_ALLOWED = {
+    "templates/shared/agent_roots.py", "gemini_health.py", "gemini_login.py",
+    "gemini_install.py",
+}
+
+
+def test_only_the_allowed_modules_name_geminis_own_home():
+    """Invariant 16's Gemini twin: `GEMINI_CLI_HOME` / `.gemini` is named in
+    code only in `gemini_health` (erase and the recap reach it through
+    `config_dir`); every other module is caught here."""
+    import fused_render
+    base = os.path.dirname(fused_render.__file__)
+    offenders = []
+    for dirpath, dirnames, filenames in os.walk(base):
+        dirnames[:] = [d for d in dirnames if d not in ("__pycache__", "node_modules")]
+        for name in filenames:
+            if not name.endswith(".py"):
+                continue
+            full = os.path.join(dirpath, name)
+            rel = os.path.relpath(full, base).replace(os.sep, "/")
+            if rel in _GEMINI_HOME_ALLOWED:
+                continue
+            with open(full, encoding="utf-8", errors="replace") as fh:
+                for n, line in enumerate(fh, 1):
+                    code = line.split("#", 1)[0]
+                    if _GEMINI_LITERAL.search(code):
+                        offenders.append(f"{rel}:{n}: {line.strip()}")
+    assert offenders == []
+
+
+def test_the_gemini_literal_pattern_catches_code_and_spares_prose():
+    assert _GEMINI_LITERAL.search('os.environ.get("GEMINI_CLI_HOME")')
+    assert _GEMINI_LITERAL.search('os.path.join(home, ".gemini")')
+    assert _GEMINI_LITERAL.search("expanduser('~/.gemini/tmp')")
+    assert not _GEMINI_LITERAL.search("leaves `GEMINI_CLI_HOME` exactly as found")
+    assert not _GEMINI_LITERAL.search("under `~/.gemini`")
+    assert not _GEMINI_LITERAL.search('"GEMINI_CLI_HOMES"')
+
+
 def test_spawn_helper_forwards_isolate_mcp_only_when_true(monkeypatch):
     """A fake `_start` without the kwarg must keep working, so the default
     call shape is unchanged and only an asked-for lean run says so."""
@@ -932,3 +1491,107 @@ def test_spawn_helper_forwards_isolate_mcp_only_when_true(monkeypatch):
     claude_spawn.spawn_helper("/t", "p", "auto", isolate_mcp=True)
     assert "isolate_mcp" not in seen[0]
     assert seen[1]["isolate_mcp"] is True
+
+
+def _account_models():
+    """What `copilot_health.normalize_models` stores for an account whose
+    plan carries a GPT id Codex also lists, a Claude id that takes no
+    effort, and a GPT id with its own effort list and default."""
+    return [
+        {"id": "gpt-6-luna", "label": "GPT-6 Luna", "reasoning": True,
+         "efforts": ["low", "medium", "high", "xhigh"], "default_effort": "high",
+         "category": "powerful", "vendor": "Azure OpenAI", "multiplier": 1},
+        {"id": "claude-sonnet-4.5", "label": "Claude Sonnet 4.5", "reasoning": False,
+         "efforts": [], "default_effort": "", "category": "versatile",
+         "vendor": "Anthropic", "multiplier": 1},
+        {"id": "gpt-5.4-mini", "label": "GPT-5.4 mini", "reasoning": True,
+         "efforts": ["low", "medium", "high"], "default_effort": "",
+         "category": "lightweight", "vendor": None, "multiplier": 0},
+    ]
+
+
+def test_the_catalog_serves_the_accounts_models_when_the_snapshot_has_them(
+        client, monkeypatch):
+    """Copilot's model list is per account: once the health snapshot carries
+    the CLI's `models.list`, the catalog row serves THAT, `auto` first, each
+    model with the efforts it takes — and the static shortlist otherwise."""
+    from fused_render import claude_health, codex_health, copilot_health
+    monkeypatch.setattr(claude_health, "cached", lambda: None)
+    monkeypatch.setattr(codex_health, "cached", lambda: None)
+    snap = {"found": True, "signed_in": True, "fingerprint": "x",
+            "models": _account_models()}
+    monkeypatch.setattr(copilot_health, "cached", lambda: snap)
+    _enable_copilot()
+    row = next(b for b in client.get("/api/agent-backends").json()["all"]
+               if b["id"] == "copilot")
+    assert [m["id"] for m in row["models"]] == [
+        "auto", "gpt-6-luna", "claude-sonnet-4.5", "gpt-5.4-mini"]
+    auto, luna, sonnet, mini = row["models"]
+    assert auto["reasoning"] is False and auto["efforts"] == []
+    assert luna == {"id": "gpt-6-luna", "label": "GPT-6 Luna", "reasoning": True,
+                    "efforts": ["low", "medium", "high", "xhigh"],
+                    "default_effort": "high", "category": "powerful",
+                    "vendor": "Azure OpenAI", "multiplier": 1.0}
+    assert sonnet["reasoning"] is False and sonnet["efforts"] == []
+    assert mini["efforts"] == ["low", "medium", "high"] and mini["multiplier"] == 0.0
+    # The row's efforts list is still the agent's whole vocabulary; the
+    # per-model lists are the narrowing. The health row does not repeat the
+    # models it was read from.
+    assert row["efforts"] == ["low", "medium", "high", "xhigh", "max"]
+    assert "models" not in row["health"] and row["health"]["signed_in"] is True
+    # Static when nothing is cached, and in the static catalog.
+    monkeypatch.setattr(copilot_health, "cached", lambda: None)
+    monkeypatch.setattr(copilot_health, "cached_models", lambda: None)
+    row = next(b for b in client.get("/api/agent-backends").json()["all"]
+               if b["id"] == "copilot")
+    assert [m["id"] for m in row["models"]] == [m.id for m in registry.get("copilot").models]
+    static = registry.catalog(with_health=False)["all"][1]
+    assert [m["id"] for m in static["models"]] == [m.id for m in registry.get("copilot").models]
+
+
+def test_the_catalog_falls_back_to_the_raw_cache_for_the_model_list(monkeypatch):
+    """`cached()` says None after a PATH change (its fingerprint); the model
+    list is still the account's, so the row reads it off the raw cache."""
+    from fused_render import claude_health, codex_health, copilot_health
+    monkeypatch.setattr(claude_health, "cached", lambda: None)
+    monkeypatch.setattr(codex_health, "cached", lambda: None)
+    monkeypatch.setattr(copilot_health, "cached", lambda: None)
+    monkeypatch.setattr(copilot_health, "cached_models", _account_models)
+    row = registry.catalog()["all"][1]
+    assert row["health"] is None
+    assert [m["id"] for m in row["models"]] == [
+        "auto", "gpt-6-luna", "claude-sonnet-4.5", "gpt-5.4-mini"]
+
+
+def test_a_discovered_model_passes_the_foreign_model_gate(monkeypatch):
+    """A GPT id Codex's static list also names is NOT foreign to Copilot once
+    the account's own list carries it — the gate would otherwise 400 a model
+    the CLI itself offered. An id on nobody's list still passes; an id only
+    Codex lists is still refused."""
+    from fused_render import copilot_health
+    monkeypatch.setattr(copilot_health, "cached_models", lambda: None)
+    assert registry.foreign_model_error("copilot", "gpt-6-luna")["reason"] == "unsupported"
+    monkeypatch.setattr(copilot_health, "cached_models", _account_models)
+    assert registry.foreign_model_error("copilot", "gpt-6-luna") is None
+    assert registry.foreign_model_error("copilot", "gpt-5.4-mini") is None
+    assert registry.foreign_model_error("copilot", "gpt-9") is None
+    assert registry.foreign_model_error("copilot", "gpt-6.1-sol")["reason"] == "unsupported"
+    # The static shortlist still passes its own ids (an old record).
+    assert registry.foreign_model_error("copilot", "gemini-3-pro") is None
+    # Nothing leaks the other way: a Codex task cannot run Copilot's models.
+    assert registry.foreign_model_error("codex", "claude-sonnet-4.5")["reason"] == "unsupported"
+
+
+def test_discovered_models_skips_malformed_rows_and_keeps_auto_first():
+    from fused_render.agent_backends import copilot
+    rows = [{"id": "gpt-5.4", "label": "GPT-5.4", "efforts": ["high", "bogus"]},
+            {"id": "auto", "label": "the server never lists it, but if it did"},
+            {"id": "", "label": "no id"}, "garbage",
+            {"id": "x-1", "label": "no efforts key", "reasoning": False}]
+    models = copilot.discovered_models({"models": rows})
+    assert [m.id for m in models] == ["auto", "gpt-5.4", "x-1"]
+    assert models[0] is copilot.AUTO
+    assert models[1].efforts == ("high",) and models[1].reasoning is True
+    assert models[2].reasoning is False and models[2].efforts == ()
+    assert copilot.discovered_models({"models": []}) is None
+    assert copilot.discovered_models({"models": ["garbage"]}) is None

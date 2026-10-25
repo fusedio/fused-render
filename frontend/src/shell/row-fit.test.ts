@@ -324,6 +324,25 @@ describe("rowNeed", () => {
     // One seat, so no gap is charged either.
     expect(rowNeed(fakeRow(seats))).toBe(55 + 24);
   });
+
+  it("charges a seat that anchors a popover its rect, not the open menu (2026-10-20)", () => {
+    // The toolbar's Status trigger is a `position: relative` wrap whose menu
+    // hangs under it, absolutely positioned and 190px wide. The wrap's
+    // scrollWidth counts that menu once it is open, so the ladder read a 31px
+    // trigger as 190px and folded "+ New task" the moment Status was pressed.
+    // The trigger cannot shrink: its rect IS its need.
+    const trigger: FakeSeat = { width: 31, content: 31 };
+    const menu: FakeSeat = { width: 190, content: 190, position: "absolute" };
+    const closed: FakeSeat[] = [{ width: 31, content: 31, position: "relative", kids: [trigger] }];
+    const open: FakeSeat[] = [{ width: 31, content: 190, position: "relative", kids: [trigger, menu] }];
+    expect(rowNeed(fakeRow(open))).toBe(rowNeed(fakeRow(closed)));
+    expect(rowNeed(fakeRow(open))).toBe(31 + 24);
+    // A relative seat with nothing hanging off it still answers with its
+    // content, as does a static one: ellipsised text in an `overflow: hidden`
+    // box is the one case that number is for.
+    expect(rowNeed(fakeRow([{ width: 31, content: 190, position: "relative" }]))).toBe(190 + 24);
+    expect(rowNeed(fakeRow([{ width: 31, content: 190 }]))).toBe(190 + 24);
+  });
 });
 
 describe("rowNeed's restore", () => {
@@ -561,14 +580,14 @@ describe("pickLevelFromNeeds — the toolbar's fixed point", () => {
     }
   });
 
-  it("keeps the count and the ✕ on a folded filter chip", () => {
+  it("keeps the count on a folded filter chip", () => {
     // The badge is the only thing on a folded trigger that says a filter is ON,
-    // and the ✕ is the one way to turn it off without opening the menu — so the
+    // (clearing is a row in the menu now, so there is no ✕ to keep) — so the
     // ladder folds the WORD and the pill's padding, and nothing else.
     expect(FLAT).toContain(
-      `.schedule-toolbar:is(${levelsFrom(2).join(",")}) .schedule-tv-filter-btn {`,
+      `.schedule-toolbar:is(${levelsFrom(1).join(",")}) .schedule-tv-filter-btn {`,
     );
-    for (const kept of [".schedule-tv-filter-count", ".schedule-tv-filter-x"]) {
+    for (const kept of [".schedule-tv-filter-count"]) {
       expect(SCHEDULE_CSS).not.toContain(`${kept} {\n  display: none;`);
       expect(TOOLBAR_DROPS.some((sel) => sel.includes(kept))).toBe(false);
     }
@@ -622,13 +641,15 @@ describe("the toolbar's ladder, in order", () => {
   // were reaching for and kept the one you were not.
   it("spends words first, then controls, lowest priority first", () => {
     expect(TOOLBAR_DROPS.map((sel) => sel.split(" ").pop())).toEqual([
-      // words → marks: the view labels, then the filter labels…
+      // words → marks: the FILTER labels first (Workspace scope, Unit 7)…
       ".schedule-fit-lbl",
-      ".schedule-fit-lbl",
-      // …then the SEARCH goes, BEFORE "+ New task" loses its words (design.md,
-      // Polish batches 4 and 5): the widest seat on the row, whose question ⌘K
-      // also answers, against the one control here that starts something.
+      // …then the SEARCH goes (⌘K also answers it)…
       ".schedule-tv-search",
+      // …then the cog moves into the overflow `…`…
+      ".schedule-view-edit",
+      // …then "+ New task" loses its words…
+      ".schedule-fit-lbl",
+      // …and the VIEW labels fold last of the words…
       ".schedule-fit-lbl",
       // …and then controls leave: Project (by merging), Status, Calendar,
       // Cards, Board.
@@ -638,6 +659,10 @@ describe("the toolbar's ladder, in order", () => {
       '.schedule-view-btn[data-view="cards"]',
       '.schedule-view-btn[data-view="board"]',
     ]);
+    // The first rung is the filter labels and the fifth the view labels — not
+    // the other way round, which the ladder used to be.
+    expect(TOOLBAR_DROPS[0]).toContain("schedule-tv-filter-btn");
+    expect(TOOLBAR_DROPS[4]).toContain("schedule-view-seg");
   });
 
   it("merges the two filters at the rung the page reads", () => {
@@ -655,6 +680,7 @@ describe("the toolbar's fold rules, in the stylesheet", () => {
   // New task label did exactly that — folded at level 3 and BACK at level 4,
   // which is the one level it most needed to be gone (measured live).
   it("folds the New task label at level 4 AND at every level past it", () => {
+    // (Level 4 still: the cog rung went in at 3 where the search used to sit.)
     // Level 4, not 3: the search takes rung 2 now and pushed this one down
     // (design.md, Polish batch 4).
     expect(FLAT).toContain(
@@ -662,7 +688,7 @@ describe("the toolbar's fold rules, in the stylesheet", () => {
     );
   });
 
-  it("HIDES the search at level 3 — one rung, one rule", () => {
+  it("HIDES the search at level 2 — one rung, one rule", () => {
     // A row with no room for a search field says so (design.md, Polish batch
     // 5). `display: none` and nothing else: the toolbar re-measures, ⌘K answers
     // the same question from anywhere, and the field comes back with the width.
@@ -670,17 +696,17 @@ describe("the toolbar's fold rules, in the stylesheet", () => {
     // shares the class for the magnifier's positioning and sits inside the
     // toolbar's DOM, so an unqualified rung folded it away too (2026-09-19).
     const at = FLAT.indexOf(
-      `.schedule-toolbar:is(${levelsFrom(3).join(",")}) .schedule-tv-search:not(.schedule-tv-pop-search) {`,
+      `.schedule-toolbar:is(${levelsFrom(2).join(",")}) .schedule-tv-search:not(.schedule-tv-pop-search) {`,
     );
     expect(at).toBeGreaterThan(-1);
-    expect(FLAT.slice(at).slice(0, 200)).toContain("display: none");
-    // ONE RUNG, and it is rung 2 of the ladder.
+    expect(FLAT.slice(at).slice(0, 400)).toContain("display: none");
+    // ONE RUNG, and it is rung 2 of the ladder (index 1).
     expect(TOOLBAR_DROPS.filter((sel) => sel === ".schedule-tv-search")).toHaveLength(1);
-    expect(TOOLBAR_DROPS[2]).toBe(".schedule-tv-search");
+    expect(TOOLBAR_DROPS[1]).toBe(".schedule-tv-search");
     // …and nothing takes it at any LATER rung, which is the shape the old
     // ladder had (the field went at rung 5, after New task's words).
     expect(FLAT).not.toContain(
-      `.schedule-toolbar:is(${levelsFrom(6).join(",")}) .schedule-tv-search {`,
+      `.schedule-toolbar:is(${levelsFrom(3).join(",")}) .schedule-tv-search {`,
     );
   });
 
@@ -706,7 +732,7 @@ describe("the toolbar's fold rules, in the stylesheet", () => {
     // group is an empty flex box still charging the row a gap. Same rung as the
     // last thing inside it — not a rung of its own (design.md, Polish batch 5).
     expect(FLAT).toContain(
-      `.schedule-toolbar:is(${levelsFrom(6).join(",")}) .schedule-tv-filters {`,
+      `.schedule-toolbar:is(${levelsFrom(7).join(",")}) .schedule-tv-filters {`,
     );
   });
 
@@ -714,12 +740,35 @@ describe("the toolbar's fold rules, in the stylesheet", () => {
     expect(FLAT).toContain(`.schedule-toolbar:is(${levelsFrom(2).join(",")})`);
   });
 
-  it("folds the view labels at every level but the first", () => {
-    // `[data-fit]` FIRST, then the negation: a bare `:not([data-fit="0"])`
-    // matches a toolbar with no attribute at all, which is the flag-off page.
-    expect(SCHEDULE_CSS).toContain(
+  it("folds the view labels from level 5 — the last of the words", () => {
+    // `:is([data-fit=…])` names the attribute, so the flag-off page (no
+    // attribute) never matches — the guard a bare `:not([data-fit="0"])` lacked.
+    expect(FLAT).toContain(
+      `.schedule-toolbar:is(${levelsFrom(5).join(",")}) .schedule-view-seg .schedule-fit-lbl {`,
+    );
+    expect(FLAT).not.toContain(
       '.schedule-toolbar[data-fit]:not([data-fit="0"]) .schedule-view-seg .schedule-fit-lbl',
     );
+  });
+
+  it("moves the cog into the overflow at level 3: cog hidden, `…` drawn", () => {
+    expect(FLAT).toContain(
+      `.schedule-toolbar[data-fit]:is(${levelsFrom(3).join(",")}) .schedule-view-edit { display: none; }`,
+    );
+    expect(FLAT).toContain(
+      `.schedule-toolbar:is(${levelsFrom(3).join(",")}) .schedule-view-more { display: inline-flex; }`,
+    );
+    // The `…` takes the cog's auto margin, so the filters stay right-aligned.
+    expect(FLAT).toContain(
+      ".schedule-toolbar .schedule-view-more { display: none; margin-right: auto;",
+    );
+  });
+
+  it("drops the Tasks h1 in short windows and keeps it for assistive tech", () => {
+    const at = FLAT.indexOf("@media (max-height: 480px) { .schedule-page > .schedule-header {");
+    expect(at).toBeGreaterThan(-1);
+    expect(FLAT.slice(at).slice(0, 300)).toContain("clip-path: inset(50%)");
+    expect(FLAT.slice(at).slice(0, 300)).not.toContain("display: none");
   });
 
   it("draws the folded New task button as a square, not a padded pill", () => {
@@ -736,15 +785,15 @@ describe("the toolbar's fold rules, in the stylesheet", () => {
     // batch 4 — the search is not one of these; it goes two rungs earlier).
     // Each rung's rule must hold at its own level and at every level past it.
     expect(FLAT).toContain(
-      `.schedule-toolbar:is(${levelsFrom(6).join(",")}) .schedule-tv-filters .schedule-tv-pop-wrap`,
+      `.schedule-toolbar:is(${levelsFrom(7).join(",")}) .schedule-tv-filters .schedule-tv-pop-wrap`,
     );
     expect(FLAT).toContain(
-      `.schedule-toolbar:is(${levelsFrom(7).join(",")}) .schedule-view-btn[data-view="calendar"]`,
+      `.schedule-toolbar:is(${levelsFrom(8).join(",")}) .schedule-view-btn[data-view="calendar"]`,
     );
     expect(FLAT).toContain(
-      `.schedule-toolbar:is(${levelsFrom(8).join(",")}) .schedule-view-btn[data-view="cards"]`,
+      `.schedule-toolbar:is(${levelsFrom(9).join(",")}) .schedule-view-btn[data-view="cards"]`,
     );
-    expect(FLAT).toContain('.schedule-toolbar[data-fit="9"] .schedule-view-btn[data-view="board"]');
+    expect(FLAT).toContain('.schedule-toolbar[data-fit="10"] .schedule-view-btn[data-view="board"]');
   });
 
   it("never hides List, and never hides New task", () => {

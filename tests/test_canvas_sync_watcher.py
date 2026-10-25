@@ -867,7 +867,11 @@ def test_the_grace_ends_on_the_watcher_tick_without_any_cut(
     rev = m.disk_rev
     assert "fresh" in m._rowless
     assert _wait_for(lambda: "fresh" not in m._rowless, timeout=3)
-    assert m.disk_rev > rev, "the grace ended without waking the delta leg"
+    # Wait for the bump itself, not just the expiry: `_rowless_in_grace`
+    # drops the entry under its lock, then logs and `_force_rev`s (which
+    # fingerprints the clone) — a loaded runner read disk_rev in that gap.
+    assert _wait_for(lambda: m.disk_rev > rev, timeout=3), (
+        "the grace ended without waking the delta leg")
     assert "row grace elapsed" in _actions(harness)
 
 
@@ -989,7 +993,9 @@ def test_a_wholesale_pull_waits_for_a_live_claude_session(
     shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
     _start(harness)
     assert _wait_for(lambda: (_manager()._remote or {}).get("last_updated") == "t1")
-    harness.set_scenario({"pull_files": {**_BASE_FILES, "remote_udf.py": "print('x')\n"}})
+    remote = {**_BASE_FILES, "remote_udf.py": "print('x')\n"}
+    harness.set_scenario({"pull_files": remote})
+    shims.set_remote_files(remote)  # a stamp move over unchanged files is adopted
     shims.set_manifest("t2")
     fake_agent.live = "run-abc"
 

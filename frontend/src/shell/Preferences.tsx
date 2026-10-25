@@ -9,19 +9,14 @@
 // file named for its group, mapped by `settings/controls.tsx`. This file only
 // lays them out.
 //
-// The Claude Code group (settings/claude.tsx) is the former Claude Config
-// panel: its sections are BLOCKS — a card each, not a row — and the rows of
-// settings.json come from a catalog fetched at mount, spliced in after the
-// registry's catalog row so the nav count, the search and the page agree.
-//
 // It replaced five tabs, the first of which ("Render preferences") had grown
 // to twenty sections in the order their flags shipped, with no way to search.
 // The audit and the design are claude.ai/artifact/NdzDR2rpNpFU3yBgQd5sJk.
 // Four controls left the page then: the menu bar's pinned-file view (retired
 // for the Dock), Updates' "Check now" (the status bar's Updates chip asks
 // it), the Super Bot phone mirror (its setup is in the bot's own settings),
-// and the default Claude model (Claude Config's Model is the one value every
-// surface reads; a pointer row leads there).
+// and the default Claude model (the Claude Config page's settings hold the one
+// value every surface reads; a pointer row leads there).
 //
 // THE URL: `?tab=<group>` picks the group (absent = General). The four ids an
 // old tab used — ai, indexing, lan, account — kept their names so existing
@@ -31,13 +26,11 @@
 // setting's group and highlights it; `?q=` is the search, kept in the URL with
 // replaceState so a reload or a copied link keeps it without each keystroke
 // becoming a history entry.
-import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type SVGProps } from "react";
 import {
-  ChevronRight,
   Search,
   SlidersHorizontal,
   Sparkles,
-  SquareTerminal,
   ListChecks,
   LayoutGrid,
   FolderSearch,
@@ -46,11 +39,11 @@ import {
   Plug,
   Wrench,
   X,
-  type LucideIcon,
 } from "lucide-react";
 import { useClaudeConfigStatus } from "@apps/claude_config/available";
 import { getPrefs, type Prefs } from "@platform/lib/api";
-import { IS_QUERY_EMBED, navigateUrl } from "@platform/lib/router";
+import { IS_QUERY_EMBED, replaceSearch } from "@platform/lib/router";
+import { ClaudeMark } from "@platform/ui/ClaudeMark";
 import { isBot } from "@platform/lib/flavor";
 import { isMac } from "@platform/lib/platform";
 import { cn } from "@platform/lib/utils";
@@ -69,25 +62,22 @@ import {
   type GroupId,
   type SettingEntry,
 } from "./settings/registry";
-import {
-  ClaudeConfigProvider,
-  ClaudeGitChip,
-  ClaudePrefRow,
-  isClaudePref,
-  useClaudePrefEntries,
-  useClaudeSectionLayout,
-} from "./settings/claude";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@platform/shadcn/ui/collapsible";
+import { ClaudeConfigProvider, ClaudePrefRow, isClaudePref, useClaudePrefEntries } from "./settings/claude";
 import { searchSettings, tokenize } from "./settings/search";
 import { CONTROLS } from "./settings/controls";
 import { rowId, SettingsViewContext, type SettingsView } from "./settings/SettingRow";
 import { IndexStateProvider } from "./settings/indexing";
 
-const GROUP_ICONS: Record<GroupId, LucideIcon> = {
+/** The Claude Code group wears the Claude mark, not a terminal prompt: a `>_` reads as "developer only" to the people this page is for. The mark fills its 512 box edge to edge while lucide's 24-unit icons carry ~2px of padding, so it is drawn at 0.85 to look optically equal; the button's `[&_svg:not([class*='size-'])]:size-4` CSS sets the 16px box (it beats the width/height attributes). */
+function ClaudeNavIcon(props: SVGProps<SVGSVGElement>) {
+  return <ClaudeMark {...props} className="scale-[0.85]" />;
+}
+
+const GROUP_ICONS: Record<GroupId, ComponentType<SVGProps<SVGSVGElement>>> = {
   general: SlidersHorizontal,
   features: ToggleRight,
   ai: Sparkles,
-  claude: SquareTerminal,
+  "claude-cli": ClaudeNavIcon,
   tasks: ListChecks,
   apps: LayoutGrid,
   indexing: FolderSearch,
@@ -97,15 +87,6 @@ const GROUP_ICONS: Record<GroupId, LucideIcon> = {
 };
 
 const FLASH_MS = 1800;
-
-/** The Claude Code group's sections in the order this visit opens them in. */
-function claudeSections<T extends { section: string }>(
-  sections: T[],
-  layout: { order: (names: readonly string[]) => string[] },
-): T[] {
-  const order = layout.order(sections.map((s) => s.section));
-  return [...sections].sort((a, b) => order.indexOf(a.section) - order.indexOf(b.section));
-}
 
 function urlWith(edit: (p: URLSearchParams) => void): string {
   const params = new URLSearchParams(location.search);
@@ -119,28 +100,14 @@ function Section({
   entries,
   prefs,
   onChange,
-  collapsible,
 }: {
   title: string;
   entries: readonly SettingEntry[];
   prefs: Prefs;
   onChange: (p: Prefs) => void;
-  /** An accordion (the Claude Code group): the title is the toggle. */
-  collapsible?: { open: boolean; onToggle: () => void };
 }) {
-  // A block is its section's only entry: the card is the block, captioned
-  // with the file it edits. In search results (SettingsViewContext.tokens)
-  // the block's control is a pointer row and the card is an ordinary one.
-  const block = entries.find((e) => e.block) ?? null;
-  const searching = useContext(SettingsViewContext).tokens !== null;
   const card = (
-    <div className={cn("settings-card", block && !searching && "settings-card-block")}>
-      {block && !searching && (
-        <div className="settings-block-caption">
-          <code>{block.description}</code>
-          {block.readOnly && <Badge variant="secondary">read-only</Badge>}
-        </div>
-      )}
+    <div className="settings-card">
       {entries.map((e) => {
         if (isClaudePref(e)) return <ClaudePrefRow key={e.id} entry={e} />;
         const Control = CONTROLS[e.id as keyof typeof CONTROLS];
@@ -148,29 +115,11 @@ function Section({
       })}
     </div>
   );
-  if (!collapsible) {
-    return (
-      <section className="settings-section" aria-label={title}>
-        <h3 className="settings-section-title">{title}</h3>
-        {card}
-      </section>
-    );
-  }
   return (
-    <Collapsible
-      open={collapsible.open}
-      onOpenChange={collapsible.onToggle}
-      render={<section className="settings-section settings-section-collapsible" aria-label={title} />}
-    >
-      <h3 className="settings-section-title">
-        <CollapsibleTrigger className="settings-section-toggle">
-          <ChevronRight aria-hidden="true" className="settings-section-chevron" />
-          {title}
-          {!block && <span className="settings-section-count">{entries.length}</span>}
-        </CollapsibleTrigger>
-      </h3>
-      <CollapsibleContent>{card}</CollapsibleContent>
-    </Collapsible>
+    <section className="settings-section" aria-label={title}>
+      <h3 className="settings-section-title">{title}</h3>
+      {card}
+    </section>
   );
 }
 
@@ -185,13 +134,8 @@ let lastPrefs: Prefs | null = null;
 let writeGen = 0;
 
 export default function Preferences() {
-  // The Claude Code group's store wraps the page: the catalog rows it holds
-  // are part of the entry list (search included), and the git chip in the
-  // group's head reads the same epoch its blocks bump.
   // null until the probe answers: the page waits for it (with the prefs GET
-  // it waits for anyway) rather than resolve `?tab=claude` to General for a
-  // moment and then flip — every job and notification link into the group
-  // lands on a cold cache.
+  // it waits for anyway) rather than show General for a moment and then flip.
   const claudeConfig = useClaudeConfigStatus();
   return (
     <ClaudeConfigProvider available={claudeConfig === true}>
@@ -214,6 +158,12 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
   const params = new URLSearchParams(location.search);
   const [query, setQueryState] = useState(() => params.get("q") ?? "");
   const [flash, setFlash] = useState<string | null>(() => params.get("s"));
+  // The selection lives in state, seeded from the URL once: a group switch is
+  // an in-place URL sync (`replaceSearch`), which does not bump the nav epoch,
+  // so the page keeps its mount, its nav and its fetched data.
+  const [tab, setTab] = useState<string | null>(() => params.get("tab"));
+  const [target, setTarget] = useState<string | null>(() => params.get("s"));
+  const pageRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const bot = isBot();
 
@@ -234,89 +184,72 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
 
   const tokens = useMemo(() => tokenize(query), [query]);
   const searching = tokens.length > 0;
-  // The catalog is read with the page, not when its group opens: the nav's
-  // count for Claude Code is every row (Akshil, 2026-10-20: "keep it as 83"),
-  // so the page waits for the rows the way it waits for the prefs GET.
-  const { rows: claudeRows, ready: claudeReady } = useClaudePrefEntries(claudeConfig === true);
+  // The catalog is read with the page: the nav's count for Claude Code is
+  // every row, so the page waits for the rows the way it waits for the prefs.
+  const { rows: claudeRows, ready: claudeReady } = useClaudePrefEntries();
   const loaded = prefs !== null && claudeConfig !== null && claudeReady;
   const entries = useMemo(() => {
     if (!prefs || claudeConfig === null) return [];
     const base: SettingEntry[] = visibleSettings({ prefs, bot, mac: isMac, claudeConfig });
-    // The settings.json rows follow the catalog row that introduces them.
-    const at = base.findIndex((e) => e.id === "claude-catalog");
-    return at === -1 ? base : [...base.slice(0, at + 1), ...claudeRows, ...base.slice(at + 1)];
+    return [...base, ...claudeRows];
   }, [prefs, bot, claudeConfig, claudeRows]);
   const groups = useMemo(() => visibleGroups(entries), [entries]);
   const sections = useMemo(() => navSections(groups), [groups]);
   const byId = (id: string) => entries.find((e) => e.id === id);
-  const claudeLayout = useClaudeSectionLayout();
 
-  // Scroll a jumped-to row into view, light it briefly, then let it go — once
-  // the row IS on the page: a settings.json row is not until its catalog has
-  // loaded, and a timer started at mount would have cleared the highlight
-  // before then. Re-run as the entry list grows for the same reason. (The
-  // blocks above a row fetch their own lists and grow after this scroll; a
-  // deep link into a late row can land a little short. Accepted.)
+  // Scroll a jumped-to row into view, light it briefly, then let it go.
   useEffect(() => {
     if (!flash || !prefs) return;
-    // A row inside a closed Claude section: open it, then land on the row.
-    const target = byId(flash);
-    if (target?.group === "claude" && !claudeLayout.isOpen(target.section)) {
-      claudeLayout.ensureOpen(target.section);
-      return;
-    }
     const el = document.getElementById(rowId(flash));
     if (!el) return;
     el.scrollIntoView({ block: "center" });
     const t = window.setTimeout(() => setFlash(null), FLASH_MS);
     return () => window.clearTimeout(t);
-  }, [flash, prefs !== null, entries.length, claudeLayout]);
+  }, [flash, prefs !== null, entries.length]);
 
   const setQuery = (q: string) => {
     setQueryState(q);
     history.replaceState(history.state, "", urlWith((p) => (q ? p.set("q", q) : p.delete("q"))));
   };
 
-  // A navigation, so App.tsx remounts this page (it is keyed on the nav
-  // epoch): what the next mount should highlight travels in `?s=`, not in
-  // state that is about to be thrown away.
+  // Written in place — `?tab=` and `?s=` follow the selection so a reload or a
+  // shared link lands on it, and the row a jump names is lit through state.
   const showGroup = (group: GroupId, highlight: string | null = null) => {
-    navigateUrl(
+    const next = group === "general" ? null : group;
+    setTab(next);
+    setTarget(highlight);
+    setFlash(highlight);
+    setQueryState("");
+    replaceSearch(
       urlWith((p) => {
         p.delete("q");
         if (highlight) p.set("s", highlight);
         else p.delete("s");
-        if (group === "general") p.delete("tab");
-        else p.set("tab", group);
+        if (next) p.set("tab", next);
+        else p.delete("tab");
       }),
-      { replace: true },
     );
+    // A new group starts at its top; a jump scrolls to its row instead.
+    if (!highlight) pageRef.current?.scrollTo?.({ top: 0 });
   };
 
-  // `?s=` names a setting: its group wins over `?tab=`. A settings.json row
-  // (`claude-pref:…`) is in `entries` only once its catalog has loaded; until
-  // then `?tab=claude` — which every link to one of them also carries — is
-  // what decides.
-  const deep = byId(params.get("s") ?? "");
-  const current: GroupId = deep ? deep.group : resolveGroup(params.get("tab"), groups);
+  // `?s=` names a setting: its group wins over `?tab=`.
+  const deep = byId(target ?? "");
+  const current: GroupId = deep ? deep.group : resolveGroup(tab, groups);
 
   const hits = useMemo(() => searchSettings(entries, tokens), [entries, tokens]);
   const view: SettingsView = {
     tokens: searching ? tokens : null,
     flashId: flash,
     jump: (id) => {
-      // A settings.json row is not in `entries` until its catalog has loaded —
-      // from AI & agents the store is still asleep — but its group is known,
-      // and the mount that follows highlights the row once it exists (the
-      // flash effect waits for it).
-      const group = byId(id)?.group ?? (isClaudePref({ id } as SettingEntry) ? "claude" : undefined);
+      const group = byId(id)?.group;
       if (group) showGroup(group, id);
     },
   };
 
   // Pointer rows count: they are rows a reader can find and follow, and the
   // counts must mean the same thing with and without a search — every row,
-  // the Claude Code group's catalog rows included (the page waits for them).
+  // the Settings group's catalog rows included (the page waits for them).
   const navCount = (g: GroupId) => (searching ? hits : entries).filter((e) => e.group === g).length;
 
   const head = searching
@@ -331,7 +264,7 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
     : groupOf(current).blurb;
 
   return (
-    <div className="settings-page">
+    <div className="settings-page" ref={pageRef}>
       <div className="settings-header">
         {/* Framed inside the Bots page's panel the panel's own bar carries
             the title; a second heading here read as a repeat. */}
@@ -419,9 +352,6 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
                     </Badge>
                   )}
                 </h2>
-                {!searching && current === "claude" && (
-                  <ClaudeGitChip onOpen={() => claudeLayout.ensureOpen("History")} />
-                )}
               </div>
               <p>{blurb}</p>
             </div>
@@ -439,20 +369,9 @@ function PreferencesPage({ claudeConfig }: { claudeConfig: boolean | null }) {
                           onChange={setPrefs}
                         />
                       ))
-                  : current === "claude"
-                    ? claudeSections(sectionsOf(entries, current), claudeLayout).map((s) => (
-                        <Section
-                          key={s.section}
-                          title={s.section}
-                          entries={s.entries}
-                          prefs={prefs}
-                          onChange={setPrefs}
-                          collapsible={{ open: claudeLayout.isOpen(s.section), onToggle: () => claudeLayout.toggle(s.section) }}
-                        />
-                      ))
-                    : sectionsOf(entries, current).map((s) => (
-                        <Section key={s.section} title={s.section} entries={s.entries} prefs={prefs} onChange={setPrefs} />
-                      ))}
+                  : sectionsOf(entries, current).map((s) => (
+                      <Section key={s.section} title={s.section} entries={s.entries} prefs={prefs} onChange={setPrefs} />
+                    ))}
               </IndexStateProvider>
             </SettingsViewContext.Provider>
           </main>

@@ -11,7 +11,10 @@
 // never reaches a cross-site iframe, so the workbench's embed-auth mode asks
 // its parent (this page) for a Bearer token over postMessage:
 //   iframe → { type: "fused-embed-auth-ready" }   (also -refresh on a 401)
-//   parent → { type: "fused-embed-auth-token", accessToken }
+//   parent → { type: "fused-embed-auth-token", accessToken, publicOrigin }
+//            publicOrigin is the workbench's real origin, for the links it
+//            builds (share URLs): under the custom env's loopback proxy its
+//            own origin is 127.0.0.1:<port>.
 // The token is the CLI's own `fused login` JWT (GET /api/canvases/token) and
 // is posted with an EXACT targetOrigin — never "*" — so it cannot leak to a
 // frame that navigated elsewhere.
@@ -29,6 +32,34 @@
 //            load; null from the sidebar's close button, so both sides agree)
 //   parent → { type: "fused-embed-pushed", push_seq }  after a push, for the
 //            workbench's save chip ("Published"); it triggers no reload.
+//   iframe → { type: "fused-embed-open-code", udfName, backendId? }  the node
+//            toolbar's code button in embed mode. A TOGGLE: with that node's
+//            Code tab already up, the right pane shuts; otherwise this page
+//            selects the node (fused-embed-select first when it is not the
+//            one shown), opens the right pane if it was hidden, and switches
+//            it to Code. Accepted only from the workbench frame's own window.
+//   iframe → { type: "fused-embed-delete", id, name }  the canvas menu's
+//            "Delete canvas", after the frame's own two confirmations: the
+//            host deletes (POST /api/canvases/delete — sync stopped, server
+//            delete, clone removed) and leaves for the canvas list. The frame
+//            writes nothing itself (embed-canvas-gates).
+//   parent → { type: "fused-embed-delete-rejected", reason }  the host did
+//            not delete (a name that is not this canvas's, or the delete
+//            failed): the frame is still on the canvas and toasts it.
+//   iframe → { type: "fused-embed-open-side" } | { type: "fused-embed-close-side" }
+//            the workbench's right-edge chips (its own right pane never shows
+//            embedded): open or shut the right pane here. Accepted only from
+//            the workbench frame's own window.
+//   parent → { type: "fused-embed-side-panel", open, code, width }  whether the
+//            right pane is up, whether it is up on the shown node's Code tab,
+//            and its width in px over the frame — always 0: the pane shares
+//            the row with the frame, it never covers it — on every change and
+//            on every frame load: the frame's expand chip shows while the pane
+//            is shut, its collapse chip while it is up, and the toolbar's code
+//            button reads "Hide" / "Show code panel".
+//   parent → { type: "fused-embed-pan", dx, dy }  on every tick of a seam drag,
+//            half the pane's width change: the canvas pans to keep its visible
+//            centre put, as the workbench's own sidebar drags do.
 // Keyed by UDF NAME, never a React Flow node id (those are regenerated every
 // load): the node's source is `<clone>/<udfName>.py` (widgets: `.json`).
 //
@@ -49,6 +80,47 @@
 //   parent → { type: "fused-embed-sync-state", state }
 // The clone watcher is then the ONE writer to the server, publishing the
 // folder exactly as it publishes a Claude edit.
+//
+// Source texts (the body channel, SyncManager.apply_body): a workbench whose
+// editors are live in the frame posts each file's text on its own, by
+// compare-and-swap on content — never inside a snapshot:
+//   iframe → { type: "fused-embed-body", seq, name, file, base_hash, text }
+//   parent → { type: "fused-embed-body-applied", seq, name, hash }
+//   parent → { type: "fused-embed-body-rejected", seq, name, code, reason,
+//              disk_text?, disk_hash? }   code "stale": disk moved under the
+//              frame's base (Claude wrote the file) — the frame rebases its
+//              edits onto `disk_text` and posts again; "busy": the clone stayed
+//              locked, post again later; "fenced": a hard pull just replaced
+//              the clone, post again once its full state has landed; anything
+//              else: dropped, logged.
+// Relayed on the SAME ordered chain as snapshots and rename hints: a body for
+// a UDF's old file name must not overtake the rename that moves the file.
+// The token message tells the frame this host speaks the channel
+// (`caps: ["body"]`); without it the frame keeps its editors hidden and code
+// disk-owned, as before.
+//
+// AI gateway (D1433, host-ai.ts): the frame's inline AI edit runs on THIS
+// Mac's agents instead of the hosted workbench's cloud providers. The token
+// message also says `caps: [..., "ai"]`, and the host then posts
+//   parent → { type: "fused-embed-ai-models", models, default }
+// — every ENABLED agent in the catalog (`useAgentBackends`) times its
+// models, as rows `{id: "<backend>:<model>", backend, model, label,
+// backendLabel, efforts}` — after every token message, on every hello and
+// whenever the catalog changes (a Preferences switch). The frame shows only
+// that list; an empty list disables its picker. A request is
+//   iframe → { type: "fused-embed-ai", req, model, systemPrompt, prompt, effort? }
+// which the host runs as POST /api/ai {provider, model, systemPrompt, prompt,
+// effort, stream: true} (api.ts streamAiText) and answers with
+//   parent → { type: "fused-embed-ai-chunk", req, text }   (0..n times)
+//   parent → { type: "fused-embed-ai-done", req, ok, error?, usage?, warnings? }
+// correlated by the frame's opaque `req`, as capture's is — never on the
+// snapshot chain (no order to keep). Stop in the widget is
+//   iframe → { type: "fused-embed-ai-abort", req }
+// → the host aborts the fetch → the relay cancels the turn (Claude) or
+// kills the one-shot CLI (Copilot, Codex, Gemini). Every run is aborted
+// when the frame reloads or this page unmounts. The frame never reaches
+// /api/ai itself: the X-Fused header is a same-origin guard with no CORS.
+// Accepted only from the workbench frame's own window, like the body.
 //
 // The other direction (canvas_snapshot.py, "the disk → embed leg"): this page
 // never reloads the workbench iframe and never asks it to re-fetch. When the
@@ -89,13 +161,13 @@
 // mirrored off the frame's own URL (same origin) as it changes — and the next
 // frame on that node boots on it. In memory only: a reload starts over.
 import { isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { SyntheticEvent } from "react";
 import { createPortal } from "react-dom";
 import { addCurrentApp } from "@platform/lib/api";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
-import { ChatMount } from "@apps/claude";
-import { statPath } from "@platform/lib/api";
+import { ChatMount, ShotViewer, type CanvasShot, type CanvasShotAnswer, type CanvasShotWhat, type Viewable } from "@apps/claude";
+import { rawUrl, statPath, type TemplateEntry } from "@platform/lib/api";
 import { EMBED_PREFIX, NAV_EVENT, VIEW_PREFIX, embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
 import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -107,11 +179,15 @@ import {
   catalogPath,
   canvasProjectPath,
   fixWithClaude,
+  deleteCanvas,
   getDelta,
   getAccessToken,
   getCanvasesStatus,
   getSyncState,
   getWhoami,
+  applyBody,
+  streamAiText,
+  type AiStreamError,
   checkRemote,
   pullCanvas,
   startSync,
@@ -119,6 +195,7 @@ import {
   type WorkbenchEnv,
   canvasNameFromPath,
 } from "./api";
+import { findHostAiModel, hostAiModels } from "./host-ai";
 import { SyncDrawer } from "./SyncDrawer";
 import { SyncFramePoster, SyncStrip } from "./SyncStrip";
 import {
@@ -131,6 +208,15 @@ import {
   type SyncOwner,
   type SyncState,
 } from "./sync-state";
+
+// How long a canvas screenshot waits for the frame's answer. html-to-image
+// over a big graph takes seconds; a frame without the handler never answers,
+// and the chat's camera must come back.
+const THUMBNAIL_TIMEOUT_MS = 45_000;
+// How long a screenshot request waits for the workbench frame's first hello
+// before giving up: a page still framing the workbench (a fresh open, a
+// slow `fused whoami`) answers within this on an ordinary day.
+const FRAME_UP_WAIT_MS = 40_000;
 
 // Fallback cadence for GET sync/state while the events socket is down.
 const SYNC_POLL_MS = 2000;
@@ -153,6 +239,9 @@ const HEAL_MIN_INTERVAL_MS = 5000;
 // is rejected to the embed (see `abandon` in relaySnapshot): not on disk.
 const SNAPSHOT_BUSY_WINDOW_MS = 120_000;
 const SNAPSHOT_BUSY_RETRY_MS = 750;
+// A body post that meets a locked clone retries this long before the frame
+// is told `busy` and keeps the text pending on its side (it retries too).
+const BODY_BUSY_WINDOW_MS = 10_000;
 
 // A delta the server HELD (the clone mid-write: a row whose file is not there
 // yet) or could not cut (409 busy) is asked for again this far apart, for up
@@ -173,6 +262,12 @@ const FAILED_POLLS_BEFORE_RELEASE = 3;
 // A focus-triggered server check at most this often: a window that is
 // clicked in and out of repeatedly must not become a probe per click.
 const FOCUS_CHECK_MIN_MS = 3000;
+
+// The node pane's Code tab saves on blur / Shift+Enter (`_saveon=blur`, the code
+// template), and a blur save can still be in flight when the frame goes away:
+// anything that unmounts or remounts it asks the frame to flush first, waiting
+// at most this long (a hung write must not wedge the canvas).
+const NODE_CODE_FLUSH_MS = 10_000;
 
 /** This window's focus as the canvas should count it. */
 function hostFocused(): boolean {
@@ -236,6 +331,30 @@ function nodeTabFromUrl(): NodeTab {
   return new URLSearchParams(window.location.search).get("node_tab") === "code" ? "code" : "claude";
 }
 
+/** Whether the right pane (canvas chat or node pane) is up. Shut rides this
+ *  page's URL as `side=off` — the explorer's own word for a shut companion
+ *  column (`_side=off`, apps/explorer/lib/preview-side.ts) — so a reload keeps
+ *  it; absent means open, the default. */
+const SIDE_OFF = "off";
+
+function sideOpenFromUrl(): boolean {
+  return new URLSearchParams(window.location.search).get("side") !== SIDE_OFF;
+}
+
+/** A node tab's icon: the mode's own template icon.svg off the node file's
+ *  stat, drawn exactly as the explorer's sidebar tabs draw theirs
+ *  (apps/explorer/ModeSwitcher's templateModeIcon, which an app may not
+ *  import): a currentColor mask, else the mode's first letter in a box. */
+function nodeTabIcon(mode: NodeTab, templates: readonly TemplateEntry[]): React.ReactNode {
+  const entry = templates.find((t) => t.mode === mode);
+  if (!entry) return null;
+  if (entry.icon === null) {
+    return <span className="mode-icon-placeholder">{mode.charAt(0).toUpperCase()}</span>;
+  }
+  const mask = `url("${rawUrl(entry.icon)}")`;
+  return <span className="mode-icon-mask" style={{ WebkitMaskImage: mask, maskImage: mask }} />;
+}
+
 /**
  * THE EXPLORER, HEADLESS, on the node's file (owner, 2026-10-17: "use embed —
  * that's the true headless thing"): the explorer's own embed route framed in
@@ -245,15 +364,52 @@ function nodeTabFromUrl(): NodeTab {
  * explorer does (the app-state block names the file); its `session_id` lives
  * on the frame's URL, not this page's.
  */
+// The last `fused whoami` handle per env (localStorage): see the whoami
+// step in the boot effect. A bare string, no JSON — nothing to parse wrong.
+const HANDLE_KEY = "canvases:handle:";
+function rememberedHandle(env: string): string | null {
+  try {
+    const v = localStorage.getItem(HANDLE_KEY + env);
+    return v && v.trim() ? v : null;
+  } catch {
+    return null;
+  }
+}
+function forgetHandle(env: string): void {
+  try {
+    localStorage.removeItem(HANDLE_KEY + env);
+  } catch {
+    // nothing to forget
+  }
+}
+function rememberHandle(env: string, handle: string): void {
+  try {
+    localStorage.setItem(HANDLE_KEY + env, handle);
+  } catch {
+    // private mode / quota: the next open just asks whoami again.
+  }
+}
+
 function nodeEmbedSrc(file: string, tab: NodeTab, sessionId: string | null): string {
   // `_noann=1` on the chat: its Screenshot / Annotate seats and view toggle
   // would open the chat's own preview of the file, which is the Code tab's
-  // job here (owner, 2026-10-17). `session_id` when a Recent row on the
+  // job here (owner, 2026-10-17). It also pins the chat to its narrow CHAT
+  // view at every width (useNarrowView `chatViewOnly`): the chat's own file
+  // pane stays mounted — it is what files the session under the file — but
+  // never on screen, so a wide node pane is the chat alone, not code + chat. `session_id` when a Recent row on the
   // canvas chat hopped here: the frame's chat resumes that conversation.
   return embedUrlForFsPath(
     file,
     "?_mode=" + tab + "&_side=off" +
-      (tab === "claude" ? "&_noann=1" : "") +
+      // `_canvasshot=1`: the chat's Screenshot seat asks THIS page (its
+      // parent) for a picture of the canvas — see the `fused-canvas-shot`
+      // handler below.
+      (tab === "claude" ? "&_noann=1&_canvasshot=1" : "") +
+      // `_saveon=blur`: the code template saves when the editor loses focus
+      // or on Shift+Enter, not 250 ms after every edit — each save of a node
+      // file reaches the canvas as a delta that RUNS the node (owner,
+      // 2026-10-24: "when I keep typing it should not evaluate").
+      (tab === "code" ? "&_saveon=blur" : "") +
       (sessionId ? "&session_id=" + encodeURIComponent(sessionId) : ""),
   );
 }
@@ -395,6 +551,10 @@ export default function CanvasWorkspace({
   syncSlot?: HTMLElement | null;
 }) {
   const [baseUrl, setBaseUrl] = useState<string | null>(null);
+  // The workbench's own origin, for links a person opens: `baseUrl` is the
+  // embed proxy's loopback origin while that runs, which changes port on
+  // every restart and is gone once it stops.
+  const [workbenchBase, setWorkbenchBase] = useState<string | null>(null);
   const [handle, setHandle] = useState<string | null>(null);
   const [dir, setDir] = useState<string | null>(null);
   // The claude template's path, from the clone dir's own stat — the same
@@ -402,6 +562,10 @@ export default function CanvasWorkspace({
   // too. Needed because the chat is framed DIRECTLY via /render (below), not
   // through /explorer/embed.
   const [chatTpl, setChatTpl] = useState<string | null>(null);
+  // The clone dir's templates, off the same stat: the node tabs' icons until
+  // the shown node's own stat answers (a template's icon is the template's,
+  // not the file's, so the dir's entries draw the same glyphs).
+  const [dirTemplates, setDirTemplates] = useState<TemplateEntry[] | null>(null);
   // The selected node (null = the canvas chat). Seeded from `?node=` so a
   // reload keeps the node; written back below.
   const [node, setNode] = useState<NodeSel | null>(() => {
@@ -410,6 +574,10 @@ export default function CanvasWorkspace({
     return seeded;
   });
   const [nodeTab, setNodeTab] = useState<NodeTab>(() => nodeTabFromUrl());
+  // The right pane shown or hidden (the sync strip's panel toggle). Hiding it
+  // leaves the selection alone: the canvas goes on selecting, and the pane
+  // opens on whatever node is selected by then.
+  const [sideOpen, setSideOpen] = useState<boolean>(() => sideOpenFromUrl());
   // Bumped when the node pane must REBOOT on a session for the node already
   // shown (a Recent row's hop onto the selected node, below): the frame's src
   // is otherwise frozen per node and tab (`nodeBootSrc`).
@@ -449,6 +617,10 @@ export default function CanvasWorkspace({
   const [repostSeq, setRepostSeq] = useState(0);
   // Splitter position: workbench pane width as a fraction of the row.
   const [leftFrac, setLeftFrac] = useState(0.55);
+  const leftFracRef = useRef(leftFrac);
+  useLayoutEffect(() => {
+    leftFracRef.current = leftFrac;
+  }, [leftFrac]);
   const [dragging, setDragging] = useState(false);
   const rowRef = useRef<HTMLDivElement | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -475,6 +647,161 @@ export default function CanvasWorkspace({
   // is the user's pull. The result reaches the embed as a delta like any other
   // disk change.
   const [pullBusy, setPullBusy] = useState(false);
+  // A PICTURE FROM THE WORKBENCH, on request from a chat's Screenshot seat
+  // (the in-page canvas chat, or the node pane's framed one, `_canvasshot=1`).
+  // The frame is cross-origin, so nothing here can photograph it; the frame
+  // captures with its own tools — the graph as the viewport shows it, or one
+  // node's output — uploads nothing, and answers `fused-embed-capture-done`
+  // with the Blob, which goes on to the chat as a pane attachment. One request
+  // at a time, matched to its answer by `req`; a frame that never answers (an
+  // older workbench build without the handler) is released by the timer.
+  type ShotAnswer = CanvasShotAnswer;
+  const shotPendingRef = useRef<{ req: number; resolve: (a: ShotAnswer) => void } | null>(null);
+  const shotTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const settleShot = useCallback((answer: ShotAnswer) => {
+    if (shotTimerRef.current) clearTimeout(shotTimerRef.current);
+    shotTimerRef.current = null;
+    const pending = shotPendingRef.current;
+    shotPendingRef.current = null;
+    pending?.resolve(answer);
+  }, []);
+  // Whether the workbench frame has hydrated (its first hello). A request that
+  // arrives before that — the agent's tool fires the moment its turn starts,
+  // often before the page has framed the workbench — waits for it rather than
+  // failing with "not loaded yet" at a moment that fixes itself in seconds.
+  const frameUpRef = useRef(false);
+  const frameUpWaitersRef = useRef<Array<() => void>>([]);
+  const awaitFrameUp = useCallback((timeoutMs: number): Promise<boolean> => {
+    if (frameUpRef.current && frameRef.current?.contentWindow && baseOriginRef.current) {
+      return Promise.resolve(true);
+    }
+    return new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => {
+        frameUpWaitersRef.current = frameUpWaitersRef.current.filter((w) => w !== wake);
+        resolve(false);
+      }, timeoutMs);
+      const wake = () => {
+        clearTimeout(timer);
+        resolve(true);
+      };
+      frameUpWaitersRef.current.push(wake);
+    });
+  }, []);
+  // One request at a time, claimed BEFORE the frame wait: two asks landing
+  // during that wait would otherwise both pass the check, and the second's
+  // `shotPendingRef` would bury the first, whose promise then never settled.
+  const shotBusyRef = useRef(false);
+  const requestCanvasShot = useCallback(async (what: CanvasShotWhat, udf?: string): Promise<ShotAnswer> => {
+    if (shotBusyRef.current || shotPendingRef.current) {
+      return { ok: false, error: "a canvas screenshot is already being taken" };
+    }
+    shotBusyRef.current = true;
+    try {
+      if (!(await awaitFrameUp(FRAME_UP_WAIT_MS))) {
+        return { ok: false, error: "the workbench has not loaded in this canvas page yet — reload the canvas page and try again" };
+      }
+    } finally {
+      shotBusyRef.current = false;
+    }
+    const frame = frameRef.current;
+    const origin = baseOriginRef.current;
+    if (!frame?.contentWindow || !origin) {
+      return { ok: false, error: "the workbench is not loaded yet" };
+    }
+    const win = frame.contentWindow;
+    return new Promise<ShotAnswer>((resolve) => {
+      const req = Date.now();
+      shotPendingRef.current = { req, resolve };
+      win.postMessage(
+        // The named node when the asker names one (the agent's tool may ask
+        // for any UDF on the canvas); else the node this page shows.
+        { type: "fused-embed-capture", req, what, udfName: udf || nodeRef.current?.udfName || null },
+        origin,
+      );
+      shotTimerRef.current = setTimeout(() => {
+        if (shotPendingRef.current?.req === req) {
+          settleShot({ ok: false, error: "the workbench did not answer — it may still be drawing a slow capture (map nodes); wait a minute before asking again" });
+        }
+      }, THUMBNAIL_TIMEOUT_MS);
+    });
+  }, [settleShot, awaitFrameUp]);
+  // The in-page canvas chat's contract: the canvas view only (no node is
+  // selected while that chat shows).
+  const canvasShot = useMemo<CanvasShot>(
+    () => ({ capture: requestCanvasShot, targets: ["canvas"] }),
+    [requestCanvasShot],
+  );
+  useEffect(
+    () => () => {
+      // A request still out when the page goes: answer it, so the asking
+      // tray's `capture()` resolves and its seat comes back.
+      settleShot({ ok: false, error: "the canvas page closed" });
+    },
+    [settleShot],
+  );
+  // THE FRAMED CHAT'S PICTURE, shown here: the node pane's chat posts
+  // `fused-shot-view` instead of opening its own viewer, which an iframe
+  // would box into the pane (ClaudeChat `hoistViewer`). Same origin only.
+  const [hostViewing, setHostViewing] = useState<Viewable | null>(null);
+  useEffect(() => {
+    const onShotView = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      if (event.data?.type !== "fused-shot-view") return;
+      // From one of THIS page's frames only (the node pane), and the picture
+      // is a blob: URL of that frame's or a same-origin path — never a URL
+      // pointing elsewhere.
+      const fromChild = [...document.querySelectorAll("iframe")].some(
+        (f) => f.contentWindow === event.source,
+      );
+      if (!fromChild) return;
+      const shot = event.data.shot;
+      if (!shot || typeof shot !== "object" || typeof shot.kind !== "string") return;
+      const src = typeof shot.src === "string" ? shot.src : undefined;
+      if (src !== undefined) {
+        let ok = src.startsWith("blob:");
+        if (!ok) {
+          try {
+            ok = new URL(src, window.location.href).origin === window.location.origin;
+          } catch {
+            ok = false;
+          }
+        }
+        if (!ok) return;
+      }
+      setHostViewing(shot as Viewable);
+    };
+    window.addEventListener("message", onShotView);
+    return () => window.removeEventListener("message", onShotView);
+  }, []);
+  // The picture is the node frame's blob: URL, which dies with that
+  // document: a node switch or tab switch remounts the frame, so the viewer
+  // shuts rather than show a broken image.
+  useEffect(() => {
+    setHostViewing(null);
+  }, [node, nodeTab]);
+  // The framed chat's ask, from a same-origin child frame (the node pane). The
+  // answer goes back to the asking window — `event.source` — so a pane that
+  // swapped frames meanwhile never receives a picture it did not ask for.
+  useEffect(() => {
+    const onShotAsk = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      if (event.data?.type !== "fused-canvas-shot") return;
+      const source = event.source as Window | null;
+      const req = event.data.req;
+      const what = event.data.what;
+      const udf = typeof event.data.udf === "string" ? event.data.udf : undefined;
+      if (!source) return;
+      if (what !== "canvas" && what !== "udf") return;
+      void requestCanvasShot(what, udf).then((answer) => {
+        source.postMessage(
+          { type: "fused-canvas-shot-done", req, ...answer },
+          window.location.origin,
+        );
+      });
+    };
+    window.addEventListener("message", onShotAsk);
+    return () => window.removeEventListener("message", onShotAsk);
+  }, [requestCanvasShot]);
   const [pullError, setPullError] = useState<string | null>(null);
 
   // The node pane frames the node's FILE, and a node the user just added in
@@ -495,6 +822,8 @@ export default function CanvasWorkspace({
   }, []);
 
   const [nodeFileReady, setNodeFileReady] = useState<string | null>(null);
+  // The node file's templates, off the same stat, for the tab icons.
+  const [nodeTemplates, setNodeTemplates] = useState<{ path: string; templates: TemplateEntry[] } | null>(null);
   const nodePath = node && dir ? nodeFile(dir, node) : null;
   useEffect(() => {
     if (!nodePath || nodeFileReady === nodePath) return;
@@ -503,8 +832,10 @@ export default function CanvasWorkspace({
     const started = Date.now();
     const probe = async () => {
       try {
-        await statPath(nodePath);
-        if (!cancelled) setNodeFileReady(nodePath);
+        const st = await statPath(nodePath);
+        if (cancelled) return;
+        setNodeTemplates({ path: nodePath, templates: st.templates ?? [] });
+        setNodeFileReady(nodePath);
       } catch {
         if (cancelled) return;
         if (Date.now() - started > NODE_FILE_WAIT_MS) {
@@ -536,6 +867,47 @@ export default function CanvasWorkspace({
     }
   }, [env, name]);
   const frameRef = useRef<HTMLIFrameElement | null>(null);
+  // The agent catalog: the AI gateway's model list for the frame (module
+  // doc) and the Fix button's Claude gate both read it. Mirrored into a ref
+  // for the message handlers, which must not re-bind on every catalog read.
+  const agentCatalog = useAgentBackends();
+  const agentCatalogRef = useRef(agentCatalog);
+  agentCatalogRef.current = agentCatalog;
+  // The node pane's frame (the explorer embed on the node's file).
+  const nodeFrameRef = useRef<HTMLIFrameElement | null>(null);
+  // Re-select the shown node in the workbench (set below, once `sendSelect`
+  // and `nodeRef` exist): what a refused flush falls back to.
+  const reselectShownNodeRef = useRef<() => void>(() => {});
+  /** Run `fn` once the Code tab's buffer is on disk — at once when no Code
+   *  tab is up (nothing to flush: the order of what follows must not change),
+   *  else after the frame's flush relay (explorer Preview → code template)
+   *  answers or NODE_CODE_FLUSH_MS passes. A flush the template REFUSES
+   *  (`{ok:false}`: its conflict banner is up, or the write failed) keeps the
+   *  pane — the banner is the user's only way to resolve it, and the buffer
+   *  would die with the frame — and re-selects the node so the canvas
+   *  agrees with the pane again. A hung flush (the timer) lets `fn` run. */
+  const afterNodeCodeFlush = useCallback((fn: () => void) => {
+    const frame = nodeFrameRef.current;
+    const flush =
+      frame && frame.dataset.tab === "code" && frame.contentWindow
+        ? (frame.contentWindow as unknown as { __fusedFlushEdits?: () => Promise<unknown> })
+            .__fusedFlushEdits
+        : undefined;
+    if (typeof flush !== "function") {
+      fn();
+      return;
+    }
+    void Promise.race([
+      flush().catch(() => undefined),
+      new Promise((r) => window.setTimeout(r, NODE_CODE_FLUSH_MS)),
+    ]).then((res) => {
+      if (res && (res as { ok?: boolean }).ok === false) {
+        reselectShownNodeRef.current();
+        return;
+      }
+      fn();
+    });
+  }, []);
   const baseOriginRef = useRef<string | null>(null);
 
   // The node frame's src, COMPUTED ONCE per node, tab and boot: it reads the
@@ -558,12 +930,12 @@ export default function CanvasWorkspace({
     }
     return nodeBootRef.current.src;
   };
-  // …and forgotten with the frame: deselecting unmounts the node pane, and
-  // the same node selected again must boot on where its chat got to since,
-  // not on the src the pane was last given.
+  // …and forgotten with the frame: deselecting (or hiding the right pane)
+  // unmounts the node pane, and the same node shown again must boot on where
+  // its chat got to since, not on the src the pane was last given.
   useEffect(() => {
-    if (!node) nodeBootRef.current = null;
-  }, [node]);
+    if (!node || !sideOpen) nodeBootRef.current = null;
+  }, [node, sideOpen]);
   // Mirror the frame's chat session as it changes (see `nodeSessions`). Bound
   // on every load — a new src and the tab remount both replace the window —
   // and only for the Claude tab: the Code tab's URL carries no session.
@@ -625,9 +997,12 @@ export default function CanvasWorkspace({
         const status = await getCanvasesStatus();
         if (cancelled) return;
         // THIS canvas's environment's origin and handle, not the default's:
-        // the token is posted only to this exact origin.
-        const base = status.envs[env].base_url;
+        // the token is posted only to this exact origin. `embed_url` is the
+        // origin to frame — the custom env's loopback proxy when that is on
+        // (canvas_embed_proxy.py); otherwise the workbench itself.
+        const base = status.envs[env].embed_url ?? status.envs[env].base_url;
         setBaseUrl(base);
+        setWorkbenchBase(status.envs[env].base_url);
         baseOriginRef.current = new URL(base).origin;
         // The clone onto the sidebar's desk (its Canvases section, the
         // Projects store): opening a canvas is what puts it there, as a task
@@ -639,13 +1014,44 @@ export default function CanvasWorkspace({
         void addCurrentApp(cloneDir)
           .then(() => window.dispatchEvent(new Event(CURRENT_APPS_CHANGED_EVENT)))
           .catch(() => undefined);
-        const who = await getWhoami(env);
+        // THE HANDLE IS REMEMBERED (per env): it is the one fact the frame
+        // URL needs, it does not change, and `fused whoami` is a CLI child
+        // that can take 20 s+ on a loaded Mac. A remembered handle frames the
+        // workbench NOW; whoami still runs and corrects it if it ever differs.
+        // Only a first-ever open with no memory waits on it — and a timeout
+        // there is retried once before it becomes the page's error.
+        const remembered = rememberedHandle(env);
+        if (remembered) setHandle(remembered);
+        let who: Awaited<ReturnType<typeof getWhoami>> | null = null;
+        let lastErr: Error | null = null;
+        for (let attempt = 0; attempt < 2 && !who; attempt++) {
+          try {
+            who = await getWhoami(env);
+          } catch (e) {
+            lastErr = e as Error;
+            if (cancelled) return;
+          }
+        }
         if (cancelled) return;
-        if (!who.handle) {
-          setError("could not determine your Fused username (fused whoami)");
+        if (!who?.handle) {
+          // whoami ANSWERED with no handle: nobody is logged in any more, so
+          // the memory is stale — forget it and say so, framed or not. Only
+          // a whoami that could not answer at all (the timeout) lets a
+          // remembered frame stand.
+          if (who) {
+            forgetHandle(env);
+            setHandle(null);
+            setError("could not determine your Fused username (fused whoami)");
+            return;
+          }
+          if (remembered) return; // framed on memory; the correction can wait
+          setError(
+            lastErr?.message ?? "could not determine your Fused username (fused whoami)",
+          );
           return;
         }
-        setHandle(who.handle);
+        rememberHandle(env, who.handle);
+        if (who.handle !== remembered) setHandle(who.handle);
       } catch (e) {
         if (!cancelled) setError((e as Error).message);
       }
@@ -662,7 +1068,9 @@ export default function CanvasWorkspace({
     let cancelled = false;
     void statPath(dir)
       .then((st) => {
-        if (!cancelled) setChatTpl(st.templates?.find((t) => t.mode === "claude")?.path ?? null);
+        if (cancelled) return;
+        setChatTpl(st.templates?.find((t) => t.mode === "claude")?.path ?? null);
+        setDirTemplates(st.templates ?? []);
       })
       .catch((e) => {
         if (!cancelled) setError((e as Error).message);
@@ -684,21 +1092,69 @@ export default function CanvasWorkspace({
     return () => window.clearInterval(id);
   }, [retryStart, ensureSync]);
 
+  // The AI gateway's model list (module doc): what this Mac's enabled
+  // agents can run. Posted after every token, on every hello, and whenever
+  // the catalog changes. Exact targetOrigin, like every message to the frame.
+  const sendAiModels = useCallback(() => {
+    const frame = frameRef.current;
+    const origin = baseOriginRef.current;
+    if (!frame?.contentWindow || !origin) return;
+    const list = hostAiModels(agentCatalogRef.current);
+    frame.contentWindow.postMessage(
+      { type: "fused-embed-ai-models", models: list.models, default: list.default },
+      origin,
+    );
+  }, []);
+  useEffect(() => {
+    // A Preferences switch flipped (or the first real catalog read landed):
+    // the frame's picker follows. A frame that is not up yet gets the list
+    // with its token.
+    if (frameUpRef.current) sendAiModels();
+  }, [agentCatalog, sendAiModels]);
+
   // Token handshake with the embedded workbench.
   const seedToken = useCallback(async () => {
     const frame = frameRef.current;
     const origin = baseOriginRef.current;
     if (!frame?.contentWindow || !origin) return;
     try {
-      const { access_token } = await getAccessToken();
+      // THIS canvas's env's login, as the origin is its env's: a custom
+      // deployment has its own `[auth]` tenant (D1412).
+      const { access_token } = await getAccessToken(env);
+      // `publicOrigin`: the workbench's REAL origin. Framed through the custom
+      // env's loopback proxy (canvas_embed_proxy.py) the workbench's own
+      // `window.location.origin` is `http://127.0.0.1:<port>`, and every link
+      // it builds from that — the Share dialog's canvas URL above all — would
+      // name a port on this machine that nobody else can open. The workbench
+      // builds those links from this origin instead (application embed-auth.ts).
+      // Parsed apart from the post: a malformed FUSED_RENDER_WORKBENCH_URL
+      // override reaches here unvalidated, and it must cost the field, not
+      // the token.
+      let publicOrigin: string | undefined;
+      if (workbenchBase) {
+        try {
+          publicOrigin = new URL(workbenchBase).origin;
+        } catch {
+          publicOrigin = undefined;
+        }
+      }
       frame.contentWindow.postMessage(
-        { type: "fused-embed-auth-token", accessToken: access_token },
+        {
+          type: "fused-embed-auth-token",
+          accessToken: access_token,
+          // What this host speaks beyond v3: the body channel and the AI
+          // gateway (see the module doc). The frame shows its editors only
+          // when it hears "body", and routes its inline AI here on "ai".
+          caps: ["body", "ai"],
+          ...(publicOrigin ? { publicOrigin } : {}),
+        },
         origin, // exact origin — this message carries a credential
       );
+      sendAiModels();
     } catch (e) {
       setError((e as Error).message);
     }
-  }, []);
+  }, [env, workbenchBase, sendAiModels]);
 
   // Ask the workbench to select a node (or, with null, to deselect). Exact
   // targetOrigin, like every message to the frame.
@@ -708,6 +1164,36 @@ export default function CanvasWorkspace({
     if (!frame?.contentWindow || !origin) return;
     frame.contentWindow.postMessage({ type: "fused-embed-select", udfName }, origin);
   }, []);
+
+  // Whether the right pane is up, and up on the shown node's Code tab (see
+  // the header): the frame's expand chip and its toolbar code button act on
+  // this pane, so they need the state to show and label themselves. Sent on
+  // every change, and on every frame load below.
+  // The viewer (`embedded`) renders no pane at all: it reports shut, so the
+  // frame draws neither chip and labels its code button "Show".
+  const codePanelOpen = !embedded && sideOpen && nodeTab === "code" && node !== null;
+  // The pane shares the row with the frame (it never covers it), so the
+  // width it reports over the frame is always 0: the frame's collapse chip
+  // sits at its own right edge.
+  // Written after commit, not during render: a discarded render must not
+  // leave a pane state the message handler reads that was never shown.
+  const paneOpen = !embedded && sideOpen;
+  const sidePanelStateRef = useRef({ open: paneOpen, code: codePanelOpen, width: 0 });
+  useLayoutEffect(() => {
+    sidePanelStateRef.current = { open: paneOpen, code: codePanelOpen, width: 0 };
+  }, [paneOpen, codePanelOpen]);
+  const sendCodePanelState = useCallback(() => {
+    const frame = frameRef.current;
+    const origin = baseOriginRef.current;
+    if (!frame?.contentWindow || !origin) return;
+    frame.contentWindow.postMessage(
+      { type: "fused-embed-side-panel", ...sidePanelStateRef.current },
+      origin,
+    );
+  }, []);
+  useEffect(() => {
+    sendCodePanelState();
+  }, [sideOpen, codePanelOpen, embedded, sendCodePanelState]);
 
   // Tell the canvas whether THIS window is focused (see the header): on every
   // change, and whenever the frame (re)loads or re-hydrates, since it starts
@@ -876,6 +1362,157 @@ export default function CanvasWorkspace({
     [env, name, settleRelay],
   );
 
+  // The body channel (module doc): one file's text, compare-and-swap on the
+  // hash the frame names. Runs on the snapshot chain for ORDER only — it
+  // never touches `relayTicketRef` (a body must not make a busy snapshot read
+  // itself as superseded). Busy answers retry inside a short window, then
+  // come back as a `busy` rejection the frame retries on its own.
+  const relayBody = useCallback(
+    async (seq: number, body: { node: string; file: string; base_hash: string; text: string }) => {
+      const post = (msg: Record<string, unknown>) => {
+        const frame = frameRef.current;
+        const origin = baseOriginRef.current;
+        if (!frame?.contentWindow || !origin) return;
+        frame.contentWindow.postMessage(msg, origin);
+      };
+      const started = Date.now();
+      for (;;) {
+        try {
+          const ack = await applyBody(env, name, body);
+          if (ack.ok) {
+            post({ type: "fused-embed-body-applied", seq, name: body.node, hash: ack.hash });
+          } else if (ack.code === "stale") {
+            post({
+              type: "fused-embed-body-rejected",
+              seq,
+              name: body.node,
+              code: ack.code,
+              reason: "the file changed on disk",
+              disk_text: ack.disk_text,
+              disk_hash: ack.disk_hash,
+            });
+          } else {
+            post({
+              type: "fused-embed-body-rejected",
+              seq,
+              name: body.node,
+              code: ack.code,
+              reason: "a pull just replaced the clone; retrying once it has settled",
+            });
+          }
+          return;
+        } catch (e) {
+          const status = (e as { status?: number }).status;
+          if (status === 409 && Date.now() - started < BODY_BUSY_WINDOW_MS) {
+            await new Promise((r) => window.setTimeout(r, SNAPSHOT_BUSY_RETRY_MS));
+            continue;
+          }
+          const reason = (e as Error).message || "body rejected";
+          post({
+            type: "fused-embed-body-rejected",
+            seq,
+            name: body.node,
+            code: status === 409 ? "busy" : "rejected",
+            reason,
+          });
+          return;
+        }
+      }
+    },
+    [env, name],
+  );
+
+  // The AI gateway leg (module doc): one `/api/ai` stream per frame request,
+  // keyed by the frame's `req`, chunks and the terminal frame posted back.
+  // Not on the snapshot chain: requests are independent and the Claude
+  // tier's own session lock serializes what must be serialized.
+  const aiRunsRef = useRef<Map<string, AbortController>>(new Map());
+  const relayAi = useCallback(
+    async (req: string, modelId: string, systemPrompt: string, prompt: string, effort: string | undefined) => {
+      const post = (msg: Record<string, unknown>) => {
+        const frame = frameRef.current;
+        const origin = baseOriginRef.current;
+        if (!frame?.contentWindow || !origin) return;
+        frame.contentWindow.postMessage(msg, origin);
+      };
+      const row = findHostAiModel(hostAiModels(agentCatalogRef.current), modelId);
+      if (!row) {
+        // A stale picker (an agent switched off since the list went out):
+        // refused here, nothing fetched; the fresh list follows.
+        post({
+          type: "fused-embed-ai-done",
+          req,
+          ok: false,
+          error: { type: "bad_request", message: `${modelId} is not a model this host offers` },
+        });
+        sendAiModels();
+        return;
+      }
+      aiRunsRef.current.get(req)?.abort();
+      const controller = new AbortController();
+      aiRunsRef.current.set(req, controller);
+      try {
+        const result = await streamAiText(
+          {
+            provider: row.backend,
+            model: row.model,
+            systemPrompt,
+            prompt,
+            // Only a level this model takes; the relay reports a dropped
+            // one in `warnings[]`, this just saves the round trip.
+            ...(effort && row.efforts.includes(effort) ? { effort } : {}),
+          },
+          controller.signal,
+          (text) => post({ type: "fused-embed-ai-chunk", req, text }),
+        );
+        if (result.finishReason === "cancelled") {
+          // The Activity row's ✕ (not the frame's Stop): the relay closes
+          // the stream as ok with no text. Not a completion the frame should
+          // apply — an error it shows and the user retries.
+          post({
+            type: "fused-embed-ai-done",
+            req,
+            ok: false,
+            error: { type: "cancelled", message: "Cancelled in fused-render" },
+          });
+          return;
+        }
+        post({
+          type: "fused-embed-ai-done",
+          req,
+          ok: true,
+          usage: result.usage ?? null,
+          warnings: result.warnings ?? [],
+        });
+      } catch (e) {
+        // The frame asked for the stop: it already knows; nothing to say.
+        if (controller.signal.aborted) return;
+        const err = e as AiStreamError;
+        post({
+          type: "fused-embed-ai-done",
+          req,
+          ok: false,
+          error: { type: err.type ?? "ai_error", message: err.message || "AI request failed" },
+        });
+      } finally {
+        if (aiRunsRef.current.get(req) === controller) aiRunsRef.current.delete(req);
+      }
+    },
+    [sendAiModels],
+  );
+  const abortAi = useCallback((req: string) => {
+    const controller = aiRunsRef.current.get(req);
+    if (!controller) return;
+    aiRunsRef.current.delete(req);
+    controller.abort();
+  }, []);
+  const abortAllAi = useCallback(() => {
+    for (const controller of aiRunsRef.current.values()) controller.abort();
+    aiRunsRef.current.clear();
+  }, []);
+  // This page going away takes every run with it: nobody is left to read.
+  useEffect(() => () => abortAllAi(), [abortAllAi]);
+
   // The delta leg: disk moved → fetch diff(disk, what the frame holds) → post
   // it to the frame. One relay at a time, in order, through a promise chain
   // (a full state must not overtake the delta cut before it). A held or busy
@@ -970,6 +1607,13 @@ export default function CanvasWorkspace({
   // without re-subscribing it on every selection.
   const nodeRef = useRef<NodeSel | null>(node);
   nodeRef.current = node;
+  reselectShownNodeRef.current = () => {
+    if (nodeRef.current) sendSelect(nodeRef.current.udfName);
+  };
+  // An open-code for a node not yet shown: the pane switches to Code only
+  // once the workbench's selection echo has set that node, so the old node's
+  // code never shows in between (and a refused select changes nothing).
+  const pendingCodeRef = useRef<string | null>(null);
 
   // A HOP ONTO THIS CANVAS WHILE IT IS MOUNTED — the Tasks page's door on
   // another node of the canvas the reader is already on, a notification —
@@ -993,6 +1637,13 @@ export default function CanvasWorkspace({
       const here = canvasNameFromPath(window.location.pathname);
       if (!here || here.env !== env || here.name !== name) return;
       const next = nodeFromUrl();
+      // A URL naming no node states the pane's own shut/open (`side=off`,
+      // sideOpenFromUrl); one naming a node asks to see its pane (below).
+      if (!next) {
+        // Shutting hides the node pane: a Code buffer is flushed first.
+        if (sideOpenFromUrl()) setSideOpen(true);
+        else afterNodeCodeFlush(() => setSideOpen(false));
+      }
       const had = next ? nodeSessions.get(nodeSessionKey(env, name, next.file)) : undefined;
       const sid = next ? seedNodeSessionFromUrl(env, name, next) : null;
       const cur = nodeRef.current;
@@ -1011,15 +1662,19 @@ export default function CanvasWorkspace({
         canvasChatSidRef.current = new URLSearchParams(window.location.search).get("session_id");
         navHopRef.current = true;
         sendSelect(null);
-        setNode(null);
+        afterNodeCodeFlush(() => setNode(null));
         return;
       }
+      // A link naming a node is a request to see its pane: a shut one opens.
+      setSideOpen(true);
       if (cur && cur.file === next.file) {
         // The same node: the link's tab wins (a Code tab left open would
         // otherwise hide the chat the task named), and a session the pane
         // is not on reboots it.
-        setNodeTab(nodeTabFromUrl());
-        if (sid && sid !== had) setNodeBootSeq((n) => n + 1);
+        afterNodeCodeFlush(() => {
+          setNodeTab(nodeTabFromUrl());
+          if (sid && sid !== had) setNodeBootSeq((n) => n + 1);
+        });
         return;
       }
       // Marked as a hop so the node effect leaves the `session_id` the link
@@ -1027,9 +1682,11 @@ export default function CanvasWorkspace({
       // but the address should still restore the task's session on reload.
       navHopRef.current = true;
       sendSelect(next.udfName);
-      setNodeTab(nodeTabFromUrl());
-      setNodeBootSeq((n) => n + 1);
-      setNode(next);
+      afterNodeCodeFlush(() => {
+        setNodeTab(nodeTabFromUrl());
+        setNodeBootSeq((n) => n + 1);
+        setNode(next);
+      });
     };
     // Back / Forward move the URL without a push: `popstate`, which the
     // router does not re-announce, lands on this same reader.
@@ -1039,7 +1696,7 @@ export default function CanvasWorkspace({
       window.removeEventListener(NAV_EVENT, onNav);
       window.removeEventListener("popstate", onNav);
     };
-  }, [env, name, sendSelect]);
+  }, [env, name, sendSelect, afterNodeCodeFlush]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -1049,6 +1706,7 @@ export default function CanvasWorkspace({
         void seedToken();
         if (type === "fused-embed-auth-ready") {
           sendHostFocus();
+          sendCodePanelState();
           setRepostSeq((n) => n + 1); // a fresh frame has no sync state yet
         }
         // Restore the node this page is on (a reload, or a frame that
@@ -1090,11 +1748,67 @@ export default function CanvasWorkspace({
           }),
         );
       }
+      if (type === "fused-embed-body") {
+        // From THE workbench frame only, like the snapshot: it writes a file.
+        if (event.source !== frameRef.current?.contentWindow) return;
+        const { seq, name: node, file, base_hash, text } = (event.data ?? {}) as {
+          seq?: unknown; name?: unknown; file?: unknown; base_hash?: unknown; text?: unknown;
+        };
+        if (typeof seq !== "number" || typeof node !== "string" || !node) return;
+        if (typeof file !== "string" || typeof base_hash !== "string" || typeof text !== "string") return;
+        const body = { node, file, base_hash, text };
+        relayChainRef.current = relayChainRef.current.then(() => relayBody(seq, body));
+      }
+      if (type === "fused-embed-ai") {
+        // From THE workbench frame only: it spends this Mac's agent logins.
+        if (event.source !== frameRef.current?.contentWindow) return;
+        const { req, model, systemPrompt, prompt, effort } = (event.data ?? {}) as {
+          req?: unknown; model?: unknown; systemPrompt?: unknown; prompt?: unknown; effort?: unknown;
+        };
+        if (typeof req !== "string" || !req || typeof model !== "string" || !model) return;
+        if (typeof prompt !== "string" || !prompt.trim()) return;
+        void relayAi(
+          req,
+          model,
+          typeof systemPrompt === "string" ? systemPrompt : "",
+          prompt,
+          typeof effort === "string" && effort ? effort : undefined,
+        );
+      }
+      if (type === "fused-embed-ai-abort") {
+        if (event.source !== frameRef.current?.contentWindow) return;
+        const req = event.data?.req;
+        if (typeof req === "string" && req) abortAi(req);
+      }
+      if (type === "fused-embed-capture-done") {
+        // From THE workbench frame only: a same-origin window that guessed
+        // the pending `req` must not settle it with its own picture.
+        if (event.source !== frameRef.current?.contentWindow) return;
+        const { req, ok, error, blob } = (event.data ?? {}) as {
+          req?: unknown; ok?: unknown; error?: unknown; blob?: unknown;
+        };
+        // Only the answer to OUR request: a stale one (after the timer gave
+        // up) must not settle a later request.
+        if (!shotPendingRef.current || req !== shotPendingRef.current.req) return;
+        if (ok === true && blob instanceof Blob) settleShot({ ok: true, blob });
+        else {
+          settleShot({
+            ok: false,
+            error: typeof error === "string" ? error : "the workbench sent no picture",
+          });
+        }
+      }
       if (type === "fused-embed-hello") {
+        frameUpRef.current = true;
+        const waiters = frameUpWaitersRef.current;
+        frameUpWaitersRef.current = [];
+        for (const wake of waiters) wake();
         // The frame (re)hydrated from the server: bring it to disk with a
         // full state, whatever the server thought it held before.
         relayDelta(true);
         sendHostFocus();
+        sendCodePanelState();
+        sendAiModels();
         setRepostSeq((n) => n + 1);
       }
       if (type === "fused-embed-delta-applied" || type === "fused-embed-delta-rejected") {
@@ -1138,26 +1852,105 @@ export default function CanvasWorkspace({
             typeof stated === "string" && stated && !stated.includes("/")
               ? stated
               : `${name}.${kind === "widget" ? "json" : "py"}`;
-          setNode((cur) =>
-            cur && cur.udfName === name && cur.file === file ? cur : { udfName: name, kind, file },
-          );
+          // The node already shown: nothing to do — and nothing to FLUSH.
+          // The embed re-posts its selection after every delta it applies
+          // (endEmbedRehydrate), the one from the Code tab's own save
+          // included; flushing on that echo would save (and run) a buffer
+          // the user is still typing into.
+          const cur = nodeRef.current;
+          if (!cur || cur.udfName !== name || cur.file !== file) {
+            // Another node: its pane replaces this one, so the Code tab's
+            // buffer (a blur save may be in flight) is flushed first.
+            afterNodeCodeFlush(() => setNode({ udfName: name, kind, file }));
+          }
+          if (pendingCodeRef.current === name) {
+            pendingCodeRef.current = null;
+            setSideOpen(true);
+            setNodeTab("code");
+          }
         } else {
+          pendingCodeRef.current = null;
           // The canvas deselected (pane click, folder node, multi-select, or
           // the node is gone after a re-hydrate): follow it back to the
           // canvas chat. Owner call — the canvas is the one source of truth
-          // for what the right pane is about.
-          setNode(null);
+          // for what the right pane is about. The Code tab's buffer is
+          // flushed first: the click that deselected also blurred the
+          // editor, whose save is on its way — the save is what runs the
+          // node (owner: "the code is saved when you click outside the
+          // node"), and an unmounting frame would drop it.
+          afterNodeCodeFlush(() => setNode(null));
         }
+      }
+      if (type === "fused-embed-open-code") {
+        // The node toolbar's "Show code panel" (header). The workbench frame's
+        // own window only, on top of the origin check above.
+        if (embedded) return;
+        if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
+        const name = event.data?.udfName;
+        if (typeof name !== "string" || !name) return;
+        // That node's Code tab already up: the button is its "Hide".
+        if (sidePanelStateRef.current.code && nodeRef.current?.udfName === name) {
+          afterNodeCodeFlush(() => setSideOpen(false));
+          return;
+        }
+        // Not the node shown: select it in the workbench, whose selection
+        // echo (above) is what sets `node` — it alone states the node's kind
+        // and file — and opens the Code tab then (`pendingCodeRef`).
+        if (nodeRef.current?.udfName !== name) {
+          pendingCodeRef.current = name;
+          sendSelect(name);
+          return;
+        }
+        setSideOpen(true);
+        setNodeTab("code");
+      }
+      if (type === "fused-embed-delete") {
+        // The canvas menu's confirmed "Delete canvas" (header). The editor
+        // frame's own window only; the project page's viewer never sends it.
+        if (embedded) return;
+        if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
+        const reject = (reason: string) => {
+          const origin = baseOriginRef.current;
+          if (!origin) return;
+          frameRef.current?.contentWindow?.postMessage(
+            { type: "fused-embed-delete-rejected", reason },
+            origin,
+          );
+        };
+        if (event.data?.name !== name) {
+          reject(`this window holds "${name}", not "${String(event.data?.name ?? "")}"`);
+          return;
+        }
+        void deleteCanvas(env, name)
+          .then(() => {
+            // `replace`: Back must not land on the deleted canvas's editor.
+            navigateUrl(catalogPath(env), { replace: true });
+          })
+          .catch((e) => {
+            setError(`Delete canvas failed: ${(e as Error).message}`);
+            reject((e as Error).message);
+          });
+        return;
+      }
+      if (type === "fused-embed-open-side" || type === "fused-embed-close-side") {
+        // The workbench's right-edge chips (header). A close also drops a
+        // Code request still waiting on its selection echo: the close wins.
+        if (embedded) return;
+        if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
+        const open = type === "fused-embed-open-side";
+        if (!open) pendingCodeRef.current = null;
+        if (open) setSideOpen(true);
+        else afterNodeCodeFlush(() => setSideOpen(false));
       }
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [seedToken, sendSelect, sendHostFocus, relaySnapshot, relayDelta, enqueueRelay, env, name, embedded]);
+  }, [seedToken, sendSelect, sendHostFocus, sendCodePanelState, sendAiModels, relaySnapshot, relayBody, relayAi, abortAi, relayDelta, enqueueRelay, env, name, embedded, settleShot, afterNodeCodeFlush]);
 
   // The hosted editor's URL, for the project page's header (`onWorkbenchUrl`).
   const workbenchUrl =
-    baseUrl && handle
-      ? `${baseUrl}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}`
+    workbenchBase && handle
+      ? `${workbenchBase}/workbench/${encodeURIComponent(handle)}/${encodeURIComponent(name)}`
       : null;
   useEffect(() => {
     onWorkbenchUrl?.(workbenchUrl);
@@ -1202,6 +1995,17 @@ export default function CanvasWorkspace({
       window.history.replaceState(window.history.state, "", url);
     }
   }, [node, nodeTab]);
+
+  // …and the right pane's shut state (`side=off`, see `sideOpenFromUrl`).
+  useEffect(() => {
+    if (embedded) return;
+    const url = new URL(window.location.href);
+    if (sideOpen) url.searchParams.delete("side");
+    else url.searchParams.set("side", SIDE_OFF);
+    if (url.href !== window.location.href) {
+      window.history.replaceState(window.history.state, "", url);
+    }
+  }, [sideOpen, embedded]);
 
   // After every push, tell the workbench's save chip it is published. This
   // is informational only — the frame never reloads or re-fetches on it (the
@@ -1366,12 +2170,28 @@ export default function CanvasWorkspace({
   // pointer-events are disabled on both panes while dragging).
   useEffect(() => {
     if (!dragging) return;
+    // Seeded from the seam's position as the drag starts, so the first tick
+    // pans like every later one.
+    let prevFrac: number | null = leftFracRef.current;
     const onMove = (e: MouseEvent) => {
       const row = rowRef.current;
       if (!row) return;
       const rect = row.getBoundingClientRect();
-      const frac = (e.clientX - rect.left) / rect.width;
-      setLeftFrac(Math.min(0.85, Math.max(0.15, frac)));
+      const frac = Math.min(0.85, Math.max(0.15, (e.clientX - rect.left) / rect.width));
+      setLeftFrac(frac);
+      // Half the pane's width change, to the canvas (header: fused-embed-pan)
+      // — from the drag itself, so a window resize mid-drag never pans twice.
+      if (prevFrac !== null && frac !== prevFrac) {
+        const frame = frameRef.current;
+        const origin = baseOriginRef.current;
+        if (frame?.contentWindow && origin) {
+          frame.contentWindow.postMessage(
+            { type: "fused-embed-pan", dx: (rect.width * (frac - prevFrac)) / 2, dy: 0 },
+            origin,
+          );
+        }
+      }
+      prevFrac = frac;
     };
     const onUp = () => setDragging(false);
     window.addEventListener("mousemove", onMove);
@@ -1398,7 +2218,6 @@ export default function CanvasWorkspace({
     window.history.replaceState(window.history.state, "", url);
   }, [fixRunId]);
 
-  useAgentBackends();
   const claudeOff = isBackendOff("claude");
   const onFix = async () => {
     setFixBusy(true);
@@ -1421,8 +2240,10 @@ export default function CanvasWorkspace({
       // the canvas chat's to show: leave the node, on both sides.
       if (nodeRef.current) {
         sendSelect(null);
-        setNode(null);
+        afterNodeCodeFlush(() => setNode(null));
       }
+      // …and shown: the button now says "see chat →", so a shut pane opens.
+      setSideOpen(true);
       setFixRunId(run_id);
     } catch (e) {
       setFixError((e as Error).message);
@@ -1443,12 +2264,25 @@ export default function CanvasWorkspace({
         // (application embed-auth.ts), so the editor never inherits it.
         (embedded ? "&fused_embed_readonly=1" : "")
       : null;
+  // A frame that reloads (new src) is down again until its next hello, and
+  // the AI runs it had in flight have no reader left.
+  useEffect(() => {
+    frameUpRef.current = false;
+    abortAllAi();
+  }, [frameSrc, abortAllAi]);
 
   // No header bar (owner call): the workspace is the two panes, full height,
   // under ONE line — the sync strip (SyncStrip.tsx): the worst of the four
   // sync legs, "Published 12 s ago" when all is well, the Pull button when
   // the server moved, and the sync log drawer on click.
   const s2dState = sync?.legs.server_to_disk.state;
+
+  // The node tabs' icons (SideChrome's SideTabs: icon + label): the shown
+  // node's own templates once its stat has answered, the clone dir's before
+  // that (same glyphs, no empty slot while the probe runs); nothing until
+  // either answers.
+  const nodeIcons =
+    nodeTemplates && nodePath !== null && nodeTemplates.path === nodePath ? nodeTemplates.templates : dirTemplates;
   const pushLeg = sync?.legs.disk_to_server;
 
   // The sync chrome. In the editor it sits above the panes (the strip, the
@@ -1599,6 +2433,9 @@ export default function CanvasWorkspace({
       )}
       <div
         ref={rowRef}
+        // The canvas frame and the right pane share the row: the pane never
+        // covers the workbench, so its header, chips and toolbars stay in
+        // view whatever the pane's width.
         style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "row" }}
       >
         <div
@@ -1606,8 +2443,9 @@ export default function CanvasWorkspace({
           // the wrapper's mouseenter still fires as the pointer crosses in.
           onMouseEnter={focusCanvasOnEnter}
           style={{
-            // The viewer has no right pane: the canvas takes the row.
-            flex: embedded ? "1 1 auto" : `0 0 ${leftFrac * 100}%`,
+            // The viewer has no right pane, and a shut pane leaves the row to
+            // the canvas; up, the seam's drag sets the split (`leftFrac`).
+            flex: embedded || !sideOpen ? "1 1 auto" : `0 0 ${leftFrac * 100}%`,
             minWidth: 0,
             position: "relative",
             pointerEvents: dragging ? "none" : "auto",
@@ -1618,6 +2456,13 @@ export default function CanvasWorkspace({
               ref={frameRef}
               src={frameSrc}
               title={`Workbench: ${name}`}
+              // Cross-origin frame: without this the workbench's
+              // navigator.clipboard calls (Copy link, copy/paste UDFs) reject.
+              allow="clipboard-read; clipboard-write"
+              // The custom env's embed proxy admits this frame's load only
+              // with the app's origin as its Referer (canvas_embed_proxy.py),
+              // so the policy is spelled out here rather than inherited.
+              referrerPolicy="origin"
               /* NO `data-fused-annotate-target` here, deliberately: the canvas
                  chat gets this frame as a getter (`annotateTarget` below), and
                  the explorer engine in the right pane finds its own content
@@ -1638,19 +2483,27 @@ export default function CanvasWorkspace({
             ))
           )}
         </div>
-        {!embedded && (
-          <>
+        {!embedded && sideOpen && (
+          <div
+            // The right pane's column: the seam and the pane, the rest of
+            // the row past the canvas's share.
+            style={{
+              flex: "1 1 auto",
+              minWidth: 0,
+              display: "flex",
+              flexDirection: "row",
+              background: "var(--bg)",
+            }}
+          >
         <div
+          // The explorer's preview/side seam, reused as-is: one hairline that
+          // lights `--seam-hot` on hover and drag like every other draggable
+          // seam in the app. It used to be a 6px grey band that turned blue
+          // under the cursor — the only seam styled on its own.
+          className={dragging ? "preview-side-divider dragging" : "preview-side-divider"}
           onMouseDown={(e) => {
             e.preventDefault();
             setDragging(true);
-          }}
-          style={{
-            flex: "0 0 6px",
-            cursor: "col-resize",
-            background: dragging
-              ? "rgba(100,140,255,0.5)"
-              : "rgba(128,128,128,0.25)",
           }}
           title="Drag to resize"
         />
@@ -1684,7 +2537,9 @@ export default function CanvasWorkspace({
                   <Tabs
                     value={nodeTab}
                     onValueChange={(v) => {
-                      if (v === "claude" || v === "code") setNodeTab(v);
+                      // Keyed on the tab: the switch remounts the frame, so
+                      // a Code buffer is flushed first.
+                      if (v === "claude" || v === "code") afterNodeCodeFlush(() => setNodeTab(v));
                     }}
                     className="side-tabs self-stretch"
                   >
@@ -1694,9 +2549,19 @@ export default function CanvasWorkspace({
                       className="h-full justify-start gap-3 rounded-none border-b-0 p-0"
                     >
                       <TabsTrigger value="claude" className="flex-none px-2 text-[12px]">
+                        {nodeIcons && nodeTabIcon("claude", nodeIcons) && (
+                          <span className="mode-menu-icon" data-icon="inline-start">
+                            {nodeTabIcon("claude", nodeIcons)}
+                          </span>
+                        )}
                         Claude
                       </TabsTrigger>
                       <TabsTrigger value="code" className="flex-none px-2 text-[12px]">
+                        {nodeIcons && nodeTabIcon("code", nodeIcons) && (
+                          <span className="mode-menu-icon" data-icon="inline-start">
+                            {nodeTabIcon("code", nodeIcons)}
+                          </span>
+                        )}
                         Code
                       </TabsTrigger>
                     </TabsList>
@@ -1709,6 +2574,7 @@ export default function CanvasWorkspace({
                   // chat's own `session_id` lives on the frame URL, and the
                   // explorer's content-mode swap is for its own switcher.
                   key={nodeTab}
+                  ref={nodeFrameRef}
                   className="preview-side-frame"
                   src={nodeBootSrc(nodeFile(dir, node), node.file, nodeTab)}
                   data-tab={nodeTab}
@@ -1741,6 +2607,9 @@ export default function CanvasWorkspace({
               paramsSource="url"
               {...(fixRunId ? { runId: fixRunId } : {})}
               annotateTarget={() => frameRef.current}
+              // The Screenshot seat photographs the canvas through the frame's
+              // own capture (`requestCanvasShot`), not a cross-origin DOM walk.
+              canvasShot={canvasShot}
               // A Recent row that is a FILE chat on one of this canvas's nodes
               // does not leave for the explorer: it selects the node in the
               // workbench and opens that chat in the node pane. Everything
@@ -1752,23 +2621,26 @@ export default function CanvasWorkspace({
                   return;
                 }
                 sendSelect(hop.node.udfName);
-                setNodeTab("claude");
                 // The hop's session is what the node pane boots on — the same
                 // memory the frame's own moves feed, so one source of truth.
                 const key = nodeSessionKey(env, name, hop.node.file);
                 if (hop.sessionId) nodeSessions.set(key, hop.sessionId);
                 else nodeSessions.delete(key);
-                setNodeBootSeq((n) => n + 1);
-                setNode(hop.node);
+                afterNodeCodeFlush(() => {
+                  setNodeTab("claude");
+                  setNodeBootSeq((n) => n + 1);
+                  setNode(hop.node);
+                });
               }}
             />
           ) : (
             !error && <p style={{ padding: 16 }}>Loading editor…</p>
           )}
         </div>
-          </>
+          </div>
         )}
       </div>
+      <ShotViewer shot={hostViewing} paneNoun="canvas" onClose={() => setHostViewing(null)} />
     </div>
   );
 }

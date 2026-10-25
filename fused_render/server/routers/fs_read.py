@@ -21,7 +21,7 @@ from starlette.concurrency import iterate_in_threadpool, run_in_threadpool
 from fused_render import netlog
 from fused_render.server import dirpicker
 from fused_render.server.common import _error, _require_fused, logger
-from fused_render.server.gitignore import _git_ignored, _is_repo_root
+from fused_render.server.gitignore import _git_ignored_cached, _is_repo_root
 from fused_render.server import git_status
 # The tuning knobs (`_CONDITIONS_TTL_S`, the `WALK_*`/`LIST_*`
 # caps) are read through their DEFINING module below — `_server_templates._CONDITIONS_TTL_S`
@@ -154,7 +154,7 @@ def api_fs_list(path: str, cursor: str | None = None):
             }
         )
     names = [e["name"] for e in entries]
-    ignored = _git_ignored(path, names)
+    ignored = _git_ignored_cached(path, names)
     # Git tinting for the row NAMES, alongside the gitignore dimming for whole
     # rows. Both are one batched `git` call for the listing and both degrade to
     # nothing, so a folder outside a repo — or a machine without git — pays two
@@ -225,7 +225,7 @@ async def api_fs_walk(request: Request, path: str, hidden: str = "0", stream: st
     # is still running. Without `stream=1` the response is the original
     # single-JSON shape, unchanged for old clients.
     include_hidden = hidden == "1"
-    if not os.path.isdir(path):
+    if not await asyncio.to_thread(os.path.isdir, path):
         return _error(f"not a directory: {path}", status=400)
     max_entries = _server_walk.WALK_MAX_ENTRIES
     max_depth = _server_walk.WALK_MAX_DEPTH_LOCAL
@@ -489,12 +489,20 @@ def api_fs_reveal(body: dict = Body(...), x_fused: str | None = Header(default=N
         return _error(f"no such path: {path}", status=404)
 
     is_dir = os.path.isdir(path)
-    if sys.platform == "darwin":
+    if sys.platform == "win32":
+        # A directory opens in Explorer via the shell verb; a file is revealed
+        # selected inside its folder (`explorer /select,` wants backslashes).
+        # Explorer exits 1 even on success, so the exit code is never read.
+        if is_dir:
+            os.startfile(path)  # type: ignore[attr-defined]
+            return JSONResponse({"ok": True})
+        cmd = ["explorer", f"/select,{os.path.normpath(path)}"]
+    elif sys.platform == "darwin":
         cmd = ["open", path] if is_dir else ["open", "-R", path]
     else:
         cmd = ["xdg-open", path if is_dir else os.path.dirname(path)]
-    # posix-spawn-exempt: `cmd` is assembled above as "open"/"xdg-open" — the
-    # OS's file-manager launcher, never git. The static sweep in
+    # posix-spawn-exempt: `cmd` is assembled above as "open"/"xdg-open"/
+    # "explorer" — the OS's file-manager launcher, never git. The static sweep in
     # tests/test_git_posix_spawn.py cannot see through the variable to know
     # that, and this file's own `e["git"] = status` a few lines up (a JSON
     # field name, not an argv) is enough to put it in the sweep's scope.
@@ -722,9 +730,14 @@ async def api_fs_thumb(path: str, request: Request, size: int = 160):
 
     key = hashlib.sha1(
         f"{path}\0{st.st_mtime_ns}\0{st.st_size}\0{size}".encode()).hexdigest()
-    folder = _thumb_dir()
-    dst = os.path.join(folder, key + ".jpg")
-    if not os.path.exists(dst):
+    def _locate() -> tuple[str, str, bool]:
+        # `home_dir()` and the existence probe are filesystem calls.
+        folder = _thumb_dir()
+        dst = os.path.join(folder, key + ".jpg")
+        return folder, dst, os.path.exists(dst)
+
+    folder, dst, cached = await asyncio.to_thread(_locate)
+    if not cached:
         try:
             await asyncio.to_thread(os.makedirs, folder, exist_ok=True)
             await asyncio.to_thread(_make_thumb, path, dst, size)

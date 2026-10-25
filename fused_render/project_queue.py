@@ -151,9 +151,10 @@ def _home() -> str:
 
 
 def _is_root(path: str) -> bool:
-    """Is this the filesystem root `/`? `dirname` of a root is the root
-    itself."""
-    return os.path.dirname(path) == path
+    """Is this a filesystem root — `/`, or `C:/` on Windows. `dirname` of a root
+    is the root itself, which is the one test that spells the same on both."""
+    native = path if os.sep == "/" else path.replace("/", os.sep)
+    return os.path.dirname(native) == native
 
 
 def queue_key(project: str) -> str:

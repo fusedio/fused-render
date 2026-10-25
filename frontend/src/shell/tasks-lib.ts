@@ -35,8 +35,11 @@
 // This is a presentation of the same data, not a second opinion about it: no
 // status is re-derived, no lane membership is re-decided (taskColumn still asks
 // the server), and every key is a time the server itself sent.
+import { RUN_BLOCKED_HINT } from "@platform/lib/task-actions";
 import { EMBED_PREFIX, IS_QUERY_EMBED, VIEW_PREFIX } from "@platform/lib/router";
 import type { Task, TaskBackgroundJobs, TaskMessage, TaskPulseTask } from "@platform/lib/api";
+import type { PrState } from "@platform/lib/prStatus";
+import { prKey, prRefsOf, type PrRef } from "@platform/lib/task-prs";
 import { labelForSource } from "@platform/lib/format";
 // Imported as well as re-exported below: `sortLane` reads it, and a bare
 // `export ... from` binds nothing in this module's own scope.
@@ -138,19 +141,30 @@ export function recapTitlesOn(task: { recap?: unknown }): boolean {
  *  where some cards carried a message and others were simply blank would read
  *  as a wall of broken cards.
  *
- *  SUMMARY-ONLY TITLES (prefs `task_summary_titles.enabled`; the server puts
+ *  STABLE AI TITLES (prefs `task_summary_titles.enabled`; the server puts
  *  `title_mode: "summary"` on every row with it on) beat everything below:
  *  the row is titled by the server's stable `title` alone (user-set title,
- *  else Claude Code's ai-title summary, else the first message), never by the
- *  newest message, the recap or the reply. An empty title falls through. */
+ *  else the app's own AI title, else Claude Code's ai-title, else the first
+ *  message), never by the
+ *  newest message, the recap or the reply. An empty title falls through.
+ *
+ *  A RENAMED TASK beats all of it (`title_source: "renamed"`: the server's
+ *  `title` is then what the reader typed in the peek header, stored on the
+ *  session). It is the reader's own name for the task, so no mode — summary,
+ *  recap or newest message — gets to retitle it. An empty one falls through. */
 export function cardTitleLine(task: {
   title?: string | null;
   title_mode?: string;
+  title_source?: string;
   last_message?: { text: string } | null;
   status?: string;
   last_reply?: string;
   recap?: { text: string; for_uuid: string } | null;
 }): CardTitle {
+  if (task.title_source === "renamed") {
+    const renamed = firstLine(task.title ?? "");
+    if (renamed) return { text: renamed, said: false, kind: "title", hint: task.title ?? undefined };
+  }
   if (task.title_mode === "summary") {
     const title = firstLine(task.title ?? "");
     if (title) return { text: title, said: false, kind: "title", hint: task.title ?? undefined };
@@ -176,7 +190,7 @@ export function cardTitleLine(task: {
 /** A path as a person reads it: $HOME collapsed to "~". */
 export function tildePath(path: string, home: string): string {
   if (!home) return path;
-  const h = home.replace(/\/+$/, "");
+  const h = home.replace(/[\\/]+$/, "");
   if (path === h) return "~";
   if (path.startsWith(h + "/")) return "~/" + path.slice(h.length + 1);
   return path;
@@ -186,7 +200,7 @@ export function tildePath(path: string, home: string): string {
 export { shortTaskId } from "@platform/lib/task-id";
 
 export function basename(path: string): string {
-  const parts = path.replace(/\/+$/, "").split("/").filter(Boolean);
+  const parts = path.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] ?? path;
 }
 
@@ -729,7 +743,8 @@ export function draftRing(task: Task): boolean {
 //     whose word is "background" (`BACKGROUND_LABEL`);
 //   * sits in the IN PROGRESS lane/group (`boardLane`), among the running rows,
 //     ordered by that lane's own rule (`LANE_SORTS.in_progress`);
-//   * keeps the "1 job running" badge (job names on hover) and Stop job.
+//   * keeps the "1 job running" badge (job names on hover), and Stop job on
+//     the Board card and Cards wall (not the List row, Akshil 2026-10-23).
 //
 // THE API STATUS STAYS `done`, and so does `taskColumn`. Only PLACEMENT and
 // TONE move: Bots' build watch waits on `done`, the project queue reads the
@@ -749,8 +764,10 @@ export function liveJobs(
 
 /** THE ONE RULE: a row the server calls Done whose chat still holds a live
  *  background job. The blue ring, the In Progress placement (`boardLane`), the
- *  badge and Stop job all ask this and nothing else. */
-export function liveJobRow(task: Task): boolean {
+ *  badge and (Board/Cards) Stop job all ask this and nothing else. */
+export function liveJobRow(
+  task: Pick<Task, "background_jobs" | "status" | "kind">,
+): boolean {
   return liveJobs(task) !== null && laneOf(taskColumn(task)) === "done";
 }
 
@@ -1565,8 +1582,10 @@ export function isExpanded(expanded: Set<string>, key: string): boolean {
 // second spelling of `/tasks` that would show up in every share and every
 // bookmark while saying nothing at all.
 
-/** Which of the page's four views is up. */
-export type TaskView = "list" | "board" | "calendar" | "cards" | TaskGroupBy;
+/** Which of the page's views is up. `detailed` is the open-work view
+ *  (workspace-lib.ts, TaskWorkspace.tsx): not a default tab, reached from the
+ *  switcher's `+`. It was first called `workspace`; see `normalizeView`. */
+export type TaskView = "list" | "board" | "calendar" | "cards" | "detailed" | TaskGroupBy;
 
 /** The three GROUPED LISTS (Akshil, 2026-10-16): the List's own rows, in the
  *  List's own order, cut into sections by when they last moved, by the folder
@@ -1581,7 +1600,7 @@ export const GROUP_VIEWS: TaskGroupBy[] = ["time", "project", "pr"];
 export const DEFAULT_VIEW_TABS: TaskView[] = ["list", "board"];
 
 /** Every view the switcher's `+` can add, in the order the menu lists them. */
-export const BASE_VIEWS: TaskView[] = ["list", "board", "cards", "calendar"];
+export const BASE_VIEWS: TaskView[] = ["list", "board", "cards", "calendar", "detailed"];
 
 /** The word each view wears on its tab (and in the editor's chips). */
 export const VIEW_LABELS: Record<TaskView, string> = {
@@ -1589,6 +1608,7 @@ export const VIEW_LABELS: Record<TaskView, string> = {
   board: "Board",
   cards: "Cards",
   calendar: "Calendar",
+  detailed: "Detailed",
   time: "Recent",
   project: "Project",
   pr: "PR",
@@ -1597,6 +1617,15 @@ export const VIEW_LABELS: Record<TaskView, string> = {
 /** `time` / `project` / `pr` for a grouped list, null for every other view. */
 export function groupOfView(view: TaskView): TaskGroupBy | null {
   return (GROUP_VIEWS as string[]).includes(view) ? (view as TaskGroupBy) : null;
+}
+
+/** Old spellings of a view name, still read from a link or a stored value. */
+const VIEW_ALIASES: Record<string, TaskView> = { workspace: "detailed" };
+
+/** A stored or linked view name with its old spelling mapped to the current one
+ *  (`workspace` is now `detailed`); anything else passes through unchanged. */
+export function normalizeView<T>(v: T): T | TaskView {
+  return typeof v === "string" && Object.prototype.hasOwnProperty.call(VIEW_ALIASES, v) ? VIEW_ALIASES[v] : v;
 }
 
 /**
@@ -1618,7 +1647,8 @@ export function parseViewTabs(raw: unknown): TaskView[] {
   }
   if (!Array.isArray(parsed)) return DEFAULT_VIEW_TABS;
   const out: TaskView[] = [];
-  for (const v of parsed) {
+  for (const name of parsed) {
+    const v = normalizeView(name);
     if (typeof v === "string" && (TASK_VIEWS as string[]).includes(v) && !out.includes(v as TaskView)) {
       out.push(v as TaskView);
     }
@@ -1633,7 +1663,7 @@ export const VIEW_PARAM = "view";
  * read by the parser below and by the test that holds the switcher's buttons to
  * it — a view that exists in the union and not here is a view a link cannot
  * reach, which is exactly the bug a second hand-written list invites. */
-export const TASK_VIEWS: TaskView[] = ["list", "board", "cards", "calendar", "time", "project", "pr"];
+export const TASK_VIEWS: TaskView[] = ["list", "board", "cards", "calendar", "detailed", "time", "project", "pr"];
 
 /**
  * The view a URL asks for, or `fallback` when it asks for nothing this page
@@ -1644,7 +1674,7 @@ export const TASK_VIEWS: TaskView[] = ["list", "board", "cards", "calendar", "ti
  */
 export function viewFromSearch(search: string, fallback: TaskView = "list"): TaskView {
   const raw = search.startsWith("?") ? search.slice(1) : search;
-  const v = new URLSearchParams(raw).get(VIEW_PARAM);
+  const v = normalizeView(new URLSearchParams(raw).get(VIEW_PARAM));
   return (TASK_VIEWS as string[]).includes(v ?? "") ? (v as TaskView) : fallback;
 }
 
@@ -3086,7 +3116,7 @@ export function filingIntent(task: Task): FilingIntent | null {
  *  delete"). Said in the SHORT form on a 24px door, but it is the same sentence
  *  — a control whose caption promises one reason and whose refusal gives another
  *  is the divergence this page's vocabulary is written against. */
-export const ERASE_BLOCKED_HINT = "Stop the run first";
+export const ERASE_BLOCKED_HINT = RUN_BLOCKED_HINT;
 
 /**
  * Whether deleting this task for good must be REFUSED — the client half of the
@@ -3316,7 +3346,8 @@ export function parseViewFilters(raw: string | null | undefined): Partial<Record
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
   const lanes = new Set<string>([...BOARD_COLUMNS.map((c) => c.key), "draft"]);
   const out: Partial<Record<TaskView, ViewFacets>> = {};
-  for (const [view, v] of Object.entries(parsed as Record<string, unknown>)) {
+  for (const [name, v] of Object.entries(parsed as Record<string, unknown>)) {
+    const view = normalizeView(name);
     if (!(TASK_VIEWS as string[]).includes(view)) continue;
     if (!v || typeof v !== "object" || Array.isArray(v)) continue;
     const row = v as { statuses?: unknown; projects?: unknown };
@@ -3392,20 +3423,37 @@ export const LANES_BUT_ARCHIVE: BoardColumn[] = BOARD_LANES.map((l) => l.key).fi
   (k) => k !== "archived",
 );
 
+/** Every Board lane except Upcoming — what the Cards wall draws (CARD_LANES by
+ *  lane). Upcoming has no conversation on file, so the wall never draws it. */
+export const LANES_BUT_UPCOMING: BoardColumn[] = BOARD_LANES.map((l) => l.key).filter(
+  (k) => k !== "upcoming",
+);
+
 /** The status + folder facets a tab starts with before the reader touches
- *  them: every lane but Archive on a grouped view, nothing elsewhere. */
+ *  them: every lane but Archive on a grouped view or the Detailed view, every lane the wall draws on
+ *  Cards (ticked, so the menu says what is on screen), nothing elsewhere. */
 export function defaultViewFacets(view: TaskView): ViewFacets {
-  return { statuses: groupOfView(view) ? [...LANES_BUT_ARCHIVE] : [], projects: [] };
+  if (view === "cards") return { statuses: [...LANES_BUT_UPCOMING], projects: [] };
+  return { statuses: groupOfView(view) || view === "detailed" ? [...LANES_BUT_ARCHIVE] : [], projects: [] };
 }
 
 export function filtersForView(f: TaskFilters, view: TaskView): TaskFilters {
   const draft = view === "calendar" && f.draft;
-  const archived = view === "calendar" && f.statuses.includes("archived");
-  if (!draft && !archived) return f;
+  // THE CARDS WALL DROPS UPCOMING the same way, and for the same reason the
+  // Calendar drops Archive: the wall never draws an Upcoming row (CARD_LANES —
+  // no conversation on file), so a stored `upcoming` tick — carried over from
+  // an older session or another tab's shape — is a facet with no control
+  // here (its row is hidden, TaskFilterControls `hideUpcomingStatus`) that
+  // would otherwise empty the wall with no badge to say why. Ignored for this
+  // view's query, never cleared from the stored value.
+  const drop: BoardColumn | null =
+    view === "calendar" ? "archived" : view === "cards" ? "upcoming" : null;
+  const dropped = drop !== null && f.statuses.includes(drop);
+  if (!draft && !dropped) return f;
   return {
     ...f,
     ...(draft ? { draft: false } : {}),
-    ...(archived ? { statuses: f.statuses.filter((s) => s !== "archived") } : {}),
+    ...(dropped ? { statuses: f.statuses.filter((s) => s !== drop) } : {}),
   };
 }
 
@@ -3420,10 +3468,16 @@ export function filtersForView(f: TaskFilters, view: TaskView): TaskFilters {
  */
 export function emptyTasksLabel(
   view: TaskView,
-  filters: TaskFilters,
+  stored: TaskFilters,
   inScope: number,
   scoped: boolean,
 ): string {
+  // THE EFFECTIVE QUERY, not the stored one (CodeRabbit, #1797): a Cards tab
+  // carrying a stale `upcoming` tick beside its four starting lanes ran the
+  // default query (filtersForView drops the tick) and drew nothing — and read
+  // "Nothing matches these filters" for a filter it had just ignored. Judged
+  // on what the view actually asked, the sentence matches the screen.
+  const filters = filtersForView(stored, view);
   if (inScope === 0) {
     return scoped
       ? "No tasks for this app yet."
@@ -3432,7 +3486,7 @@ export function emptyTasksLabel(
   // A grouped view on its starting facets (every lane but Archive ticked,
   // nothing else on): the reader set no filter, so name the lane that hides.
   const onDefault =
-    groupOfView(view) !== null
+    (groupOfView(view) !== null || view === "detailed")
     && filters.projects.length === 0
     && !filters.draft
     && filters.search.trim() === ""
@@ -3440,6 +3494,20 @@ export function emptyTasksLabel(
     && LANES_BUT_ARCHIVE.every((k) => filters.statuses.includes(k));
   if (onDefault) {
     return "Only archived tasks here. Tick Archive under Status to see them.";
+  }
+  // The Cards wall on ITS starting facets (every lane but Upcoming, nothing
+  // else on) with nothing to draw: the scope holds only tasks that have never
+  // run, and a card is a conversation (cardsForTasks). No filter to lift — the
+  // reader needs the List, not the Status menu.
+  const cardsDefault =
+    view === "cards"
+    && filters.projects.length === 0
+    && !filters.draft
+    && filters.search.trim() === ""
+    && filters.statuses.length === LANES_BUT_UPCOMING.length
+    && LANES_BUT_UPCOMING.every((k) => filters.statuses.includes(k));
+  if (cardsDefault) {
+    return "Nothing has run yet. Cards show conversations; upcoming tasks are on the List.";
   }
   return "Nothing matches these filters.";
 }
@@ -3762,7 +3830,39 @@ export function laneTime(task: Task, lane: BoardColumn): number | null {
 
 // ---- the time a task ROW prints ----------------------------------------------
 
-export type TaskWhenKind = "next" | "last" | "active" | "none" | "draft";
+export type TaskWhenKind = "next" | "last" | "active" | "none" | "draft" | "created";
+
+/** The Tasks page's "Sort by" setting: the same status lanes either way, ordered
+ *  inside each by last change or by creation time (newest first). */
+export type TaskSortBy = "changed" | "created";
+
+/** Where the setting is remembered (localStorage: it is a preference). */
+export const TASKS_SORT_KEY = "fused-render:tasks-sort";
+
+export function readTaskSort(): TaskSortBy {
+  try {
+    return localStorage.getItem(TASKS_SORT_KEY) === "created" ? "created" : "changed";
+  } catch {
+    return "changed";
+  }
+}
+
+export function writeTaskSort(v: TaskSortBy): void {
+  try {
+    localStorage.setItem(TASKS_SORT_KEY, v);
+  } catch {
+    // A blocked store forgets the choice; the choice still applies this sitting.
+  }
+}
+
+/** When a task was created, epoch seconds: `started`, falling back to
+ *  `last_active` for rows that carry none (drafts), 0 when neither. */
+export function createdAt(task: Task): number {
+  const s = task.started;
+  if (typeof s === "number" && s > 0) return s;
+  const a = task.last_active;
+  return typeof a === "number" && a > 0 ? a : 0;
+}
 
 /** What a row prints when the task has no timestamp of any kind. An em dash and
  * not a blank: the time is the last cell of every row, so an empty one reads as a
@@ -3918,6 +4018,7 @@ export function taskWhen(task: Task, now: number = Date.now()): TaskWhen {
     // map is exhaustive by type and an omission here would be a compile error
     // rather than a missing word.
     draft: "",
+    created: "",
   };
   for (const [kind, at] of order) {
     if (at === null) continue;
@@ -3933,6 +4034,20 @@ export function taskWhen(task: Task, now: number = Date.now()): TaskWhen {
     kind: "none",
     text: NO_TIME,
     title: "No recorded activity yet",
+  };
+}
+
+/** The time cell under "Sort by: Created": the creation stamp. "changed"
+ *  is `taskWhen` itself. */
+export function taskWhenFor(task: Task, now: number = Date.now(), sortBy: TaskSortBy = "changed"): TaskWhen {
+  if (sortBy !== "created") return taskWhen(task, now);
+  const at = createdAt(task);
+  if (!at) return taskWhen(task, now);
+  return {
+    at,
+    kind: "created",
+    text: relativeWhen(Math.min(at, now / 1000), now),
+    title: `Created ${messageStamp(at)}`,
   };
 }
 
@@ -4037,6 +4152,7 @@ export function sortLane(
 export function groupByColumn(
   tasks: Task[],
   now: number = Date.now(),
+  sortBy: TaskSortBy = "changed",
 ): Map<BoardLane, Task[]> {
   const map = new Map<BoardLane, Task[]>(
     BOARD_LANES.map((c) => [c.key, [] as Task[]]),
@@ -4066,7 +4182,13 @@ export function groupByColumn(
     // moves for any other reason; and BEFORE the two partitions below, which is
     // what lets them stay the outer order (waiting still outranks a draft in
     // Blocked) while the hoist survives inside each of their halves.
-    map.set(col.key, hoistDrafts(sortLane(map.get(col.key)!, col.key, now)));
+    // Created keeps the lanes and only re-orders within them (user decision
+    // 2026-10-21); the partitions below stay as they are.
+    const lane = map.get(col.key)!;
+    map.set(
+      col.key,
+      hoistDrafts(sortBy === "created" ? byCreated(lane) : sortLane(lane, col.key, now)),
+    );
   }
   // WAITING FIRST, inside the one lane that holds two statuses. The lane's own
   // order (last run, descending) says nothing about which of its cards somebody
@@ -4121,7 +4243,7 @@ export function groupByColumn(
   const upcoming = map.get("upcoming");
   if (upcoming && upcoming.length > 1) {
     map.set("upcoming", [
-      ...byDraftClock(upcoming.filter((t) => isDraftTask(t))),
+      ...(sortBy === "created" ? byCreated : byDraftClock)(upcoming.filter((t) => isDraftTask(t))),
       ...upcoming.filter((t) => !isDraftTask(t)),
     ]);
   }
@@ -4371,8 +4493,8 @@ export const LIST_ORDER: BoardColumn[] = BOARD_COLUMNS.map((c) => c.key);
  * A new array; the input is never mutated (it is the polled list, which React is
  * still holding).
  */
-export function sortForList(tasks: Task[], now: number = Date.now()): Task[] {
-  const byLane = groupByColumn(tasks, now);
+export function sortForList(tasks: Task[], now: number = Date.now(), sortBy: TaskSortBy = "changed"): Task[] {
+  const byLane = groupByColumn(tasks, now, sortBy);
   return BOARD_LANES.flatMap((col) => byLane.get(col.key) ?? []);
 }
 
@@ -4386,6 +4508,14 @@ function hoistDrafts(lane: Task[]): Task[] {
   const rest: Task[] = [];
   for (const task of lane) (hasDraft(task) ? drafts : rest).push(task);
   return drafts.length ? [...drafts, ...rest] : lane;
+}
+
+/** One lane by creation time, newest first, the incoming order breaking ties. */
+function byCreated(lane: Task[]): Task[] {
+  return lane
+    .map((task, index) => ({ task, index, at: createdAt(task) }))
+    .sort((a, b) => b.at - a.at || a.index - b.index)
+    .map((r) => r.task);
 }
 
 /** The drafts at the head of Upcoming: newest words first, the server's order
@@ -5216,6 +5346,11 @@ export interface TasksPulse {
    *  is its own hue and its own sentence ("1 waiting for you"): "running" is a
    *  thing to leave alone, and this is a thing to go and do. */
   attention: number;
+  /** Tasks in the Blocked lane proper — a run that broke or hit a limit. Not in
+   *  `running` (no turn in flight) and not in `attention` (nothing to answer);
+   *  the sidebar's "N blocked" is `attention + blocked`, so the word names the
+   *  whole Blocked lane (Akshil, 2026-10-21). */
+  blocked: number;
   /** Tasks WAITING on their folder (the project queue). Counted APART from
    *  `running` and never inside it: a queued task has no turn in flight, no
    *  process and nothing to watch — the rail's yellow would be a lie about it —
@@ -5233,6 +5368,7 @@ export interface TasksPulse {
 export const EMPTY_TASKS_PULSE: TasksPulse = {
   running: 0,
   attention: 0,
+  blocked: 0,
   queued: 0,
   doneUnread: 0,
   unseen: 0,
@@ -5242,11 +5378,21 @@ export const EMPTY_TASKS_PULSE: TasksPulse = {
 export function tasksPulse(tasks: TaskPulseTask[], seen: TasksSeen): TasksPulse {
   let running = 0;
   let attention = 0;
+  let blocked = 0;
   let queued = 0;
   let doneUnread = 0;
   let unseen = 0;
   for (const t of tasks) {
     const column = taskColumn(t);
+    // A DONE ROW HOLDING A LIVE BACKGROUND JOB IS RUNNING, as the Tasks page
+    // draws it (`liveJobRow`). Its status stays `done` (that comment explains
+    // why), so without this it fell through to `isDoneUnread` below and the
+    // sidebar painted the green "finished, not read" dot over work that was
+    // still going.
+    if (liveJobRow(t)) {
+      running++;
+      continue;
+    }
     // BOTH RUNNING WORDS COUNT AS RUNNING, and one of them counts twice. A task
     // parked on a card has a live turn — it is running, and the rail's yellow is
     // still true of it — but it is the only kind of running that will not finish
@@ -5265,15 +5411,20 @@ export function tasksPulse(tasks: TaskPulseTask[], seen: TasksSeen): TasksPulse 
       queued++;
       continue;
     }
+    if (column === "blocked") {
+      blocked++;
+      continue;
+    }
     if (!isDoneUnread(t)) continue;
     doneUnread++;
     if (isUnseenCompletion(t, seen)) unseen++;
   }
-  return { running, attention, queued, doneUnread, unseen };
+  return { running, attention, blocked, queued, doneUnread, unseen };
 }
 
 export function samePulse(a: TasksPulse, b: TasksPulse): boolean {
   return a.running === b.running && a.attention === b.attention
+    && a.blocked === b.blocked
     && a.queued === b.queued
     && a.doneUnread === b.doneUnread && a.unseen === b.unseen;
 }
@@ -5294,14 +5445,34 @@ export function samePulse(a: TasksPulse, b: TasksPulse): boolean {
 // test that does not need a DOM — the same split repo-updates-lib.ts makes for
 // its own rows.
 
+/** What a notice calls the task: the reader's OWN newest message, so the card
+ *  names the thing they remember asking for, and stays put until they say
+ *  something new (a recap or reply line lands later and reads as a title that
+ *  changed under them). A renamed task, stable AI titles and a task nothing
+ *  has been said in yet keep the server `title` — `cardTitleLine` already
+ *  answers those. One short line. */
+export function taskNoticeTitle(task: TaskPulseTask): string {
+  const line = cardTitleLine({ ...task, last_message: null, recap: undefined }).text;
+  const said = task.last_message?.role === "user" ? firstLine(task.last_message.text ?? "") : "";
+  const keepsTitle = task.title_source === "renamed" || task.title_mode === "summary";
+  // A kept title that is EMPTY falls through to the message, never to "A task".
+  const text = (keepsTitle && line) || said || line || "A task";
+  const chars = Array.from(text);
+  return chars.length > 120 ? chars.slice(0, 119).join("").trimEnd() + "\u2026" : text;
+}
+
 /** One waiting task, as the Notifications section draws it. */
 export interface AttentionRow {
   /** React key, and the task's identity in the poll: its session/pending key. */
   key: string;
   /** The printed id — "TASK-097". */
   taskId: string;
-  /** The task's own title, for the row's second line. */
+  /** The task's own title. Also what a dismissal expires against, so it stays
+   *  the raw server title. */
   title: string;
+  /** What the row's second line prints: the same name the popup notice uses
+   *  (`taskNoticeTitle`), so the two never disagree about the task. */
+  label?: string;
   /** Where clicking the row lands — always a real destination (see below). */
   href: string;
   /** Who raised this row — the row-level counterpart to `Job.origin`/a
@@ -5340,6 +5511,7 @@ export function attentionRows(tasks: TaskPulseTask[]): AttentionRow[] {
       key: task.key,
       taskId: task.task_id,
       title: task.title,
+      label: taskNoticeTitle(task),
       href: taskHref(task) ?? folderHref(task) ?? "/tasks",
       // ADDITION 1 (live testing, 2026-09-17): `project` FIRST, matching
       // `folderHref`'s (schedule-lib.ts) own established order — do NOT swap
@@ -5448,7 +5620,9 @@ export function pulseTitle(pulse: TasksPulse): string {
   // FIRST, and ahead of the count it is part of: the tooltip is read left to
   // right, and the one thing in it that asks the reader to act belongs at the
   // start rather than after two facts they can do nothing about.
-  if (pulse.attention > 0) parts.push(attentionLabel(pulse.attention));
+  if (pulse.attention + pulse.blocked > 0) {
+    parts.push(attentionLabel(pulse.attention + pulse.blocked));
+  }
   if (pulse.running > 0) parts.push(runningLabel(pulse.running));
   // AFTER the running count, because that is the order the two happen in: the
   // queued work is what runs when the running work stops.
@@ -6001,8 +6175,11 @@ export interface TaskGroup {
   recentAt: number;
   /** Where the heading links (the PR view: the pull request on GitHub). */
   href?: string;
-  /** Nested sections (the PR view: a repository's pull requests). */
+  /** Nested sections (the PR view: a repository's status sections). */
   groups?: TaskGroup[];
+  /** The PR view's status sections: the pull request each row stands for,
+   *  parallel to `rows` (one task appears once per PR it names). */
+  refs?: PrRef[];
   /** The Project view: the folder this section IS, full path — what a task
    *  made from the section's + runs in. Absent on "No folder" and elsewhere. */
   folder?: string;
@@ -6023,54 +6200,36 @@ export function flattenGroups(groups: TaskGroup[]): Task[] {
   return out;
 }
 
+/** The pull request behind each row of `flattenGroups(groups)`, in the same
+ *  order — null for rows not drawn as a PR (every view but PR, and "No PR"). */
+export function flattenGroupRefs(groups: TaskGroup[]): (PrRef | null)[] {
+  const out: (PrRef | null)[] = [];
+  const walk = (g: TaskGroup) => {
+    g.rows.forEach((_, i) => out.push(g.refs?.[i] ?? null));
+    for (const c of g.groups ?? []) walk(c);
+  };
+  for (const g of groups) walk(g);
+  return out;
+}
+
 /** How many rows a section holds, its nested sections included. */
 export function groupSize(g: TaskGroup): number {
   return g.rows.length + (g.groups ?? []).reduce((n, c) => n + groupSize(c), 0);
 }
 
-/** The pull request a task's words name, WITH the repository it is in: the
- *  `owner/repo` out of a GitHub link when the words carry one, else the one the
- *  server read off the task's folder (`Task.repo`), else null. */
-export function prRefOf(task: Task): { number: number; repo: string | null } | null {
-  const text = prText(task);
-  const linked = /github\.com\/([\w.-]+\/[\w.-]+?)(?:\.git)?\/pull\/(\d{1,6})\b/i.exec(text);
-  if (linked) return { number: Number(linked[2]), repo: linked[1] };
-  const n = prOfTask(task);
-  if (n === null) return null;
-  return { number: n, repo: (task.repo || "").trim() || null };
-}
+export { prKey, prOfTask, prRefsOf, prUrl } from "@platform/lib/task-prs";
+export type { PrRef } from "@platform/lib/task-prs";
 
-/** The pull request a task's words name — "#1234", "PR 1234" or a GitHub
- *  `/pull/1234` link in its title, description or latest message — or null. */
-function prText(task: Task): string {
-  return [
-    task.title,
-    task.description,
-    task.last_message?.text ?? "",
-    task.last_reply ?? "",
-  ].join("\n");
-}
-
-export function prOfTask(task: Task): number | null {
-  const text = prText(task);
-  // Named first ("PR 1203", "PR #1203", a /pull/1203 link), then a bare
-  // "#1203" — two digits, no leading zero, so "#2" in a numbered step and "#000" in a
-  // colour do not become pull requests. `[ \t]*`, never `\s*`: the fields are
-  // joined with newlines, and a title ending in "PR" must not borrow the next
-  // line's leading number (review, 2026-10-16).
-  const named = /(?:\/pull\/|\bPRs?[ \t]*#?[ \t]*)(\d{1,6})\b/i.exec(text);
-  if (named) return Number(named[1]);
-  const bare = /(?<![\w#])#([1-9]\d{1,5})\b/.exec(text);
-  return bare ? Number(bare[1]) : null;
-}
+/** The newest pull request a task is about (`prRefsOf`'s first), or null. */
+export const prRefOf = (task: Task): PrRef | null => prRefsOf(task)[0] ?? null;
 
 /** Which day-bucket a moment falls in, newest first in the order below. */
 const TIME_BUCKETS = ["Later", "Last hour", "Today", "Yesterday", "This week", "Earlier", "No date"] as const;
 
-function timeBucketOf(task: Task, now: number): (typeof TIME_BUCKETS)[number] {
+function timeBucketOf(task: Task, now: number, sortBy: TaskSortBy = "changed"): (typeof TIME_BUCKETS)[number] {
   // THE ROW'S OWN STAMP (taskWhen) — the moment its time cell prints — so a row
   // reading "2d ago" can never sit under Today.
-  const w = taskWhen(task, now);
+  const w = taskWhenFor(task, now, sortBy);
   if (w.kind === "next") return "Later";
   if (w.kind === "none" || !w.at) return "No date";
   const when = new Date(w.at * 1000);
@@ -6091,6 +6250,11 @@ function timeBucketOf(task: Task, now: number): (typeof TIME_BUCKETS)[number] {
  *  is its next run answers its last activity instead. A cron due next week
  *  must not pin its folder to the top of the Project view for a week. 0 when
  *  the task has no clock of any kind. */
+/** How far AHEAD of the page's clock a stamp may be and still count as
+ *  activity happening now — see `activityAt`. Longer than `useNow`'s minute
+ *  tick, shorter than any "run in a few minutes" due time. */
+export const ACTIVITY_SLACK_SEC = 90;
+
 export function activityAt(task: Task, now: number = Date.now()): number {
   const w = taskWhen(task, now);
   const nowSec = Math.floor(now / 1000);
@@ -6099,13 +6263,26 @@ export function activityAt(task: Task, now: number = Date.now()): number {
   // row's last_active keeps the due time"), and the row's own stamp can be
   // that same value — neither is an interaction, and clamping one to now
   // would make a folder with nothing but a run next week read as live.
-  const past = (t: number | null | undefined) => (t && t <= nowSec ? t : 0);
-  const active = past(task.last_active);
-  if (w.kind === "next") return active;
+  // …BUT A STAMP A FEW SECONDS AHEAD IS NOW, NOT NEVER (Sina, 2026-10-21: the
+  // folder of a task just continued vanished from the top of the Project view
+  // for fifteen seconds). While a sent mark stands the server stamps the row
+  // with ITS clock (`_live`: `last_active = now`, and the message in flight
+  // carries the same instant), and `now` here is `useNow`'s minute tick — up
+  // to sixty seconds stale. Zeroing everything past the tick made a folder
+  // that had just been touched the oldest on the page, and it sank to the
+  // bottom until the mark expired. A due time is minutes or days ahead; a
+  // stamp inside `ACTIVITY_SLACK_SEC` is clock lag, and reads as now.
+  const past = (t: number | null | undefined, slack: number) =>
+    t && t <= nowSec + slack ? Math.min(t, nowSec) : 0;
+  // NO SLACK FOR A ROW WHOSE STAMP IS ITS NEXT RUN: `last_active` keeps the
+  // due time there, and a run due in a minute is still a run that has not
+  // happened (reviewer, 2026-10-22).
+  if (w.kind === "next") return past(task.last_active, 0);
+  const active = past(task.last_active, ACTIVITY_SLACK_SEC);
   // THE NEWER OF THE TWO (CodeRabbit, #1756): the row's stamp can be its last
   // RUN while `last_active` records a message since, and the section must
   // sort and open by the later one.
-  return Math.max(past(w.at), active);
+  return Math.max(past(w.at, ACTIVITY_SLACK_SEC), active);
 }
 
 /** Sections with activity inside the last day (Akshil, 2026-10-19): what the
@@ -6120,7 +6297,16 @@ export const RECENT_GROUP_WINDOW_MS = 24 * 60 * 60 * 1000;
  * last; repositories and their pull requests likewise newest first, with the
  * PR-less rows last.
  */
-export function groupRows(rows: Task[], by: TaskGroupBy, home = "", now: number = Date.now()): TaskGroup[] {
+export function groupRows(
+  rows: Task[],
+  by: TaskGroupBy,
+  home = "",
+  now: number = Date.now(),
+  sortBy: TaskSortBy = "changed",
+  prStatus?: (key: string) => PrState | null | undefined,
+): TaskGroup[] {
+  // Under "created" a section's recency is its newest creation time.
+  const activity = (t: Task) => (sortBy === "created" ? createdAt(t) : activityAt(t, now));
   const groups = new Map<string, TaskGroup>();
   const put = (key: string, label: string, task: Task) => {
     let g = groups.get(key);
@@ -6129,11 +6315,11 @@ export function groupRows(rows: Task[], by: TaskGroupBy, home = "", now: number 
       groups.set(key, g);
     }
     g.rows.push(task);
-    g.recentAt = Math.max(g.recentAt, activityAt(task, now));
+    g.recentAt = Math.max(g.recentAt, activity(task));
   };
   if (by === "time") {
     for (const task of rows) {
-      const b = timeBucketOf(task, now);
+      const b = timeBucketOf(task, now, sortBy);
       put(b, b, task);
     }
     return TIME_BUCKETS.map((b) => groups.get(b)).filter((g): g is TaskGroup => !!g);
@@ -6164,51 +6350,60 @@ export function groupRows(rows: Task[], by: TaskGroupBy, home = "", now: number 
       return byRecency(a, b) || (a.hint ?? "").localeCompare(b.hint ?? "");
     });
   }
-  // PR: REPOSITORY, then pull request (Akshil, 2026-10-16) — a section per
-  // repo, each holding one section per PR, with the heading linking to the PR
-  // on GitHub. Both levels newest activity first (Akshil, 2026-10-19), the PR
-  // number breaking a tie. Rows naming a PR in a folder with no known GitHub
-  // remote sit under "Unknown repository" (no links); rows naming no PR at all
-  // come last, under "No PR".
+  // PR: REPOSITORY, then the pull request's STATUS — Open, Draft, Merged,
+  // Closed, Unknown (status unasked or GitHub did not say), empty ones left
+  // out. A task naming several PRs is one row in each PR's section (`refs`
+  // says which PR a row is). Repositories newest activity first (Akshil,
+  // 2026-10-19); rows keep list order inside a section. Rows naming a PR in a
+  // folder with no known GitHub remote sit under "Unknown repository"; rows
+  // naming no PR at all come last, under "No PR".
   const NONE = "\u0000none";
   const UNKNOWN = "\u0000unknown";
-  const repos = new Map<string, Map<number, Task[]>>();
+  const BUCKETS: { id: string; label: string }[] = [
+    { id: "open", label: "Open" },
+    { id: "draft", label: "Draft" },
+    { id: "merged", label: "Merged" },
+    { id: "closed", label: "Closed" },
+    { id: "unknown", label: "Unknown" },
+  ];
+  const repos = new Map<string, Map<string, { rows: Task[]; refs: PrRef[] }>>();
   for (const task of rows) {
-    const ref = prRefOf(task);
-    if (!ref) {
+    const refs = prRefsOf(task);
+    if (!refs.length) {
       put(NONE, "No PR", task);
       continue;
     }
-    const r = ref.repo ?? UNKNOWN;
-    let prs = repos.get(r);
-    if (!prs) {
-      prs = new Map();
-      repos.set(r, prs);
+    for (const ref of refs) {
+      const r = ref.repo ?? UNKNOWN;
+      let buckets = repos.get(r);
+      if (!buckets) {
+        buckets = new Map();
+        repos.set(r, buckets);
+      }
+      const id = (ref.repo && prStatus?.(prKey(ref))) || "unknown";
+      let bucket = buckets.get(id);
+      if (!bucket) {
+        bucket = { rows: [], refs: [] };
+        buckets.set(id, bucket);
+      }
+      bucket.rows.push(task);
+      bucket.refs.push(ref);
     }
-    const list = prs.get(ref.number);
-    if (list) list.push(task);
-    else prs.set(ref.number, [task]);
   }
-  const recentOf = (list: Task[]) => list.reduce((m, t) => Math.max(m, activityAt(t, now)), 0);
+  const recentOf = (list: Task[]) => list.reduce((m, t) => Math.max(m, activity(t)), 0);
   const out: TaskGroup[] = [...repos.keys()]
     .map((repo) => {
-      const prs = [...repos.get(repo)!.entries()]
-        .map(([n, list]) => ({
-          key: `pr:${repo === UNKNOWN ? "?" : repo}#${n}`,
-          label: `#${n}`,
-          rows: list,
-          recentAt: recentOf(list),
-          number: n,
-          ...(repo === UNKNOWN ? {} : { href: `https://github.com/${repo}/pull/${n}` }),
-        }))
-        .sort((a, b) => b.recentAt - a.recentAt || b.number - a.number)
-        .map(({ number: _n, ...g }) => g);
+      const slug = repo === UNKNOWN ? "?" : repo;
+      const buckets = BUCKETS.filter((b) => repos.get(repo)!.has(b.id)).map((b) => {
+        const { rows: list, refs } = repos.get(repo)!.get(b.id)!;
+        return { key: `pr:${slug}:${b.id}`, label: b.label, rows: list, refs, recentAt: recentOf(list) };
+      });
       return {
-        key: `repo:${repo === UNKNOWN ? "?" : repo}`,
+        key: `repo:${slug}`,
         label: repo === UNKNOWN ? "Unknown repository" : repo,
         rows: [],
-        recentAt: prs.reduce((m, g) => Math.max(m, g.recentAt), 0),
-        groups: prs,
+        recentAt: buckets.reduce((m, g) => Math.max(m, g.recentAt), 0),
+        groups: buckets,
         unknown: repo === UNKNOWN,
       };
     })
@@ -6262,6 +6457,23 @@ export function openOnFirstVisit(groups: TaskGroup[], by: TaskGroupBy, now: numb
   };
   for (const g of groups) walk(g);
   return open;
+}
+
+/** The fold keys of every section holding one of `keys` — and of the sections
+ *  above it, since a pull request open under a folded repository is still
+ *  out of sight. What a NEW task unfolds (Sina, 2026-10-21: "when I create a
+ *  new task it should open it, otherwise very confusing"). */
+export function sectionsHolding(groups: TaskGroup[], by: TaskGroupBy, keys: ReadonlySet<string>): string[] {
+  const out: string[] = [];
+  const walk = (g: TaskGroup, above: string[]): boolean => {
+    const here = [...above, `${by}:${g.key}`];
+    let hit = g.rows.some((t) => keys.has(t.key));
+    for (const c of g.groups ?? []) if (walk(c, here)) hit = true;
+    if (hit) for (const k of here) if (!out.includes(k)) out.push(k);
+    return hit;
+  };
+  for (const g of groups) walk(g, []);
+  return out;
 }
 
 /** `collapsed` with every section of `by` folded but the ones a first visit

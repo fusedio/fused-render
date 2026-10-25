@@ -31,17 +31,32 @@ import {
 } from "react";
 import type { Task } from "@platform/lib/api";
 import { shortTaskId } from "@platform/lib/task-id";
-import { archiveTask, unarchiveTask } from "@platform/lib/api";
+import { archiveTask, downloadTaskTranscript, unarchiveTask } from "@platform/lib/api";
 import { copyPendingText } from "@platform/lib/clipboard";
 import { notify } from "@platform/lib/notifications";
 import { useCanRunInTerminal } from "@platform/lib/terminalDockStore";
 import { runOrCopyInTerminal } from "@platform/lib/runOrCopyInTerminal";
 import { withNoFocus } from "@platform/lib/frame-focus";
 import { navigateUrl } from "@platform/lib/router";
+import { useArchiveConfirm } from "@shell/archive-confirm";
 import { anyModalOpen } from "@platform/ui/modal/esc-stack";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { SkeletonLines } from "@platform/ui/Skeleton";
 import { ChatMount } from "@apps/claude";
+import {
+  RUN_BLOCKED_HINT,
+  TASK_ACTION_LABELS,
+  blockedActionLabel,
+  terminalActionLabel,
+} from "@platform/lib/task-actions";
+import {
+  TASK_ICON_ARCHIVE,
+  TASK_ICON_COPY,
+  TASK_ICON_DOWNLOAD,
+  TASK_ICON_TERMINAL,
+  TASK_ICON_TRASH,
+  TASK_ICON_UNARCHIVE,
+} from "@platform/ui/TaskActionIcons";
 import { fetchTerminalCommand as fetchAgentTerminalCommand } from "@apps/claude/protocol/agent";
 
 // THE HEADER IS THE PEEK'S OWN NOW, not the chat's (design.md, Header + list
@@ -52,12 +67,7 @@ import { fetchTerminalCommand as fetchAgentTerminalCommand } from "@apps/claude/
 // title — with the panel's own controls either side.
 import { folderHref } from "./schedule-lib";
 import { EraseTaskModal } from "./EraseTaskModal";
-import {
-  ICON_ARCHIVE,
-  ICON_OPEN_FOLDER_PATH,
-  ICON_TRASH,
-  ICON_UNARCHIVE,
-} from "./ScheduleTaskViews";
+import { ICON_OPEN_FOLDER_PATH } from "./ScheduleTaskViews";
 import { useChatTemplates } from "./TaskCards";
 // The header's identity block — status ring, number, title, project — lives in
 // its own module because the native chat's top line draws the SAME block for the
@@ -80,7 +90,6 @@ import {
   type PreviewLoad,
 } from "./peek-preview";
 import {
-  ERASE_BLOCKED_HINT,
   emptyPaneFailed,
   emptyPaneText,
   eraseBlocked,
@@ -92,6 +101,7 @@ import {
 import { useTaskRecapTitlesEnabled } from "@apps/claude/feature-flag";
 import { getSidebarState, subscribeSidebarState } from "@platform/lib/sidebarstate";
 import { MISSING_FOLDER_TOAST, taskFolder } from "./useMissingFolders";
+import { TaskPrChip } from "./TaskPrChip";
 import {
   PEEK_ITEM_ATTR,
   PEEK_KEY_STEP,
@@ -392,11 +402,6 @@ const ICON_OPEN_DOOR = (
   <svg {...ICON}><path d={ICON_OPEN_FOLDER_PATH} /></svg>
 );
 
-/** The terminal hand-off's mark — the prompt caret, the one picture of a shell
- *  this app already uses for it. */
-const ICON_TERMINAL = (
-  <svg {...ICON}><polyline points="5 7 9 11 5 15" /><path d="M12 16h7" /></svg>
-);
 // ---- the panel ---------------------------------------------------------------
 
 export function TaskPeek({
@@ -526,7 +531,13 @@ export function TaskPeek({
   // THE APP THIS TASK IS ABOUT, if its folder is one (shell/peek-preview.ts:
   // the desk's own table, never a second predicate). Null on an ordinary
   // project, and the body is then exactly what it was — chat, full height.
-  const app = useAppForProject(task && !gone ? task.project : "");
+  // …and the DOOR-TIME CHECK (peek-preview.ts `ensureAppFor`): a folder the
+  // listing's one look found empty is asked about again here, where the
+  // preview is wanted. Not for an archived task — see the hook.
+  const app = useAppForProject(
+    task && !gone ? task.project : "",
+    !!task && !gone && task.status !== "archived",
+  );
   const previewSrc = app?.entry
     ? // The SAME document the app page's Overview frames and the Home card
       // opens, plus the shell's embedded-frame focus contract: an app that
@@ -884,7 +895,12 @@ export function TaskPeek({
   };
 
   const filing = task ? filingIntent(task) : null;
-  const refile = async () => {
+  const archiveAsk = useArchiveConfirm();
+  const refile = (): void => {
+    if (filing?.kind === "archive" && task) archiveAsk.guard(task, () => void doRefile());
+    else void doRefile();
+  };
+  const doRefile = async () => {
     if (!filing || !task || acting) return;
     const from = task.key;
     setActing(true);
@@ -945,6 +961,23 @@ export function TaskPeek({
     }
   };
 
+  /** The whole conversation as a Markdown file (D1390) — the same layout the
+   *  Bots page exports in. A bot wanting the same bytes calls
+   *  `fused.tasks.export(key)`; this row is the human's door to the same route. */
+  const downloading = useRef(false);
+  const downloadTranscript = async () => {
+    // One download per press: a double-click would otherwise save two files.
+    if (!task?.session_id || downloading.current) return;
+    downloading.current = true;
+    try {
+      await downloadTaskTranscript(task.key, "md");
+    } catch (e) {
+      notify({ title: (e as Error).message, tone: "error" });
+    } finally {
+      downloading.current = false;
+    }
+  };
+
   /**
    * THREE ITEMS, and the list is the whole menu (design.md, Header + list state
    * v2): continue in a terminal, file it, delete it. "Open as page" and "Copy
@@ -977,48 +1010,69 @@ export function TaskPeek({
       });
       items.push("separator");
     }
-    // NOT FOR AN AGENT SWITCHED OFF IN PREFERENCES (D17): both terminal rows
-    // hand the task to that agent's CLI. Same rule as the Explorer's item.
-    if (!isBackendOff(task.backend)) {
-    items.push({
-      // The agent's word once there is more than one to name (D18): the
-      // command handed over is that agent's own `--resume`.
-      label: agentNamed(task.backend)
-        ? `Continue with ${agentLabel(task.backend)} in terminal`
-        : "Continue this task in terminal",
-      icon: ICON_TERMINAL,
-      // No session and no template means there is no command to hand over —
-      // said by the row rather than by a toast after the press.
-      disabled: !terminalHere || !task.session_id,
-      onClick: () => void toTerminal(),
-    });
-    // The row above now RUNS the command where it can — this is the clipboard
-    // fallback for a reader who would rather paste it into a terminal of
-    // their own.
-    if (canRun) {
+    // THE HAND-OFFS (platform/lib/task-actions — the chat's ⋮ reads the same
+    // words in the same order). Hidden on a task with no session yet: there is
+    // no command to hand over and no transcript to save.
+    if (task.session_id) {
+      // NOT FOR AN AGENT SWITCHED OFF IN PREFERENCES (D17): both terminal rows
+      // hand the task to that agent's CLI. Same rule as the Explorer's item.
+      if (!isBackendOff(task.backend)) {
+        items.push({
+          // The agent's word once there is more than one to name (D18): the
+          // command handed over is that agent's own `--resume`.
+          label: terminalActionLabel(
+            agentNamed(task.backend) ? agentLabel(task.backend) : null,
+            true,
+          ),
+          icon: TASK_ICON_TERMINAL,
+          // No template means there is no command to hand over — said by the
+          // row rather than by a toast after the press.
+          disabled: !terminalHere,
+          onClick: () => void toTerminal(),
+        });
+        // The row above RUNS the command where it can — this is the clipboard
+        // fallback for a reader who would rather paste it into a terminal of
+        // their own.
+        if (canRun) {
+          items.push({
+            label: TASK_ACTION_LABELS.copyCommand,
+            icon: TASK_ICON_COPY,
+            disabled: !terminalHere,
+            onClick: () => void copyTerminalCommand(),
+          });
+        }
+      }
       items.push({
-        label: "Copy terminal command",
-        icon: ICON_TERMINAL,
-        disabled: !terminalHere || !task.session_id,
-        onClick: () => void copyTerminalCommand(),
+        label: TASK_ACTION_LABELS.download,
+        icon: TASK_ICON_DOWNLOAD,
+        onClick: () => void downloadTranscript(),
       });
+      items.push("separator");
     }
-    }
+    // FILING. A running task's Archive is REFUSED, not missing — the chat's ⋮
+    // shows it greyed with the reason, and so does this one now.
+    const blocked = eraseBlocked(task);
     if (filing) {
       items.push({
-        label: filing.kind === "archive" ? "Archive task" : "Unarchive task",
-        icon: filing.kind === "archive" ? ICON_ARCHIVE : ICON_UNARCHIVE,
+        label: filing.kind === "archive" ? TASK_ACTION_LABELS.archive : TASK_ACTION_LABELS.unarchive,
+        icon: filing.kind === "archive" ? TASK_ICON_ARCHIVE : TASK_ICON_UNARCHIVE,
         disabled: acting,
         onClick: () => void refile(),
+      });
+    } else if (blocked) {
+      items.push({
+        label: blockedActionLabel(TASK_ACTION_LABELS.archive, RUN_BLOCKED_HINT),
+        icon: TASK_ICON_ARCHIVE,
+        disabled: true,
+        onClick: () => {},
       });
     }
     // A menu row cannot carry a hint, so the DISABLED one says why in its own
     // words — nobody should meet the server's refusal for the first time inside
     // a confirmation (the card door's rule, tasks-lib.eraseBlocked).
-    const blocked = eraseBlocked(task);
     items.push({
-      label: blocked ? `Delete task — ${ERASE_BLOCKED_HINT.toLowerCase()}` : "Delete task",
-      icon: ICON_TRASH,
+      label: blockedActionLabel(TASK_ACTION_LABELS.delete, blocked ? RUN_BLOCKED_HINT : null),
+      icon: TASK_ICON_TRASH,
       danger: true,
       disabled: blocked,
       onClick: () => {
@@ -1336,6 +1390,8 @@ export function TaskPeek({
                 {...(anchor ? { msgAnchor: anchor } : {})}
                 chatOnly
                 peek
+                headerInPeek
+                headerExtra={<TaskPrChip task={task} />}
                 paramsSource="memory"
                 // THE RECAP OPT-IN (ChatMount `recap`): the peek is the one chat
                 // the reader opened on this page, so it gets the "While you were
@@ -1347,6 +1403,11 @@ export function TaskPeek({
                 // this panel's own listener sees it, so the blur-first rule has
                 // to be applied here too (see `escapeOrBlur`).
                 onEscape={() => escapeOrBlur(document)}
+                // REMOVING THE WORKTREE STAYS ON THIS PAGE (bug report,
+                // 2026-10-22: it used to leave for the explorer, the landing
+                // the explorer's own chat wants). The rows are re-read so the
+                // task's folder registers as missing and this body says so.
+                {...(onReload ? { onWorktreeRemoved: onReload } : {})}
                 // FOCUS STAYS ON THE TRIGGER (design.md, Keyboard — Notion's
                 // behaviour): the peek is a place to look first and type
                 // second, and a panel that steals the caret makes the next
@@ -1391,6 +1452,7 @@ export function TaskPeek({
           }}
         />
       )}
+      {archiveAsk.node}
     </>
   );
 }

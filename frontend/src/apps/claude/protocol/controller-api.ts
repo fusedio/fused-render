@@ -9,6 +9,7 @@
 import type {
   Activity,
   AppStateRow,
+  CanvasShotRow,
   ContextUsage,
   Decision,
   DecisionScope,
@@ -144,7 +145,19 @@ export interface ErrorTurn {
   quota?: import("./types").Quota;
 }
 
-export type Turn = UserTurn | AssistantTurn | NoteTurn | ErrorTurn;
+/** A context compaction: drawn as a divider with the summary folded away. Not
+ *  a user message, so recaps and anchors ignore it. */
+export interface CompactTurn {
+  role: "compact";
+  key: string;
+  /** The summary, markdown. */
+  text: string;
+  trigger?: string;
+  preTokens?: number;
+  postTokens?: number;
+}
+
+export type Turn = UserTurn | AssistantTurn | NoteTurn | ErrorTurn | CompactTurn;
 
 /** Kinds the trouble card knows (T:13531-13602 TROUBLE_*). Reuse platform/lib/trouble.ts ids where identical. */
 export type TroubleKind =
@@ -218,7 +231,7 @@ export interface ChatState {
   file: string | null;
   sessionId: string | null;
   /**
-   * WHICH AGENT THIS CONVERSATION RUNS ON — "claude" | "copilot" — as the
+   * WHICH AGENT THIS CONVERSATION RUNS ON — "claude" | "copilot" | "codex" | "gemini" — as the
    * server reported it (poll, history, defaults), or "" while nothing has
    * (docs/COPILOT_BACKEND.md D2). Immutable once a session has a turn: the
    * Agent pill fixes on it, and a send names it. "" for a brand-new chat,
@@ -254,6 +267,8 @@ export interface ChatState {
   permissions: PermissionRow[];
   /** Unanswered app-state requests the pane must answer (T:15758-15869). */
   appState: AppStateRow[];
+  /** Unanswered `canvas_screenshot` requests a canvas page must answer. */
+  canvasShot: CanvasShotRow[];
   skills: SkillRow[];
   working: Working | null;
   trouble: Trouble | null;
@@ -531,6 +546,10 @@ export interface ChatController {
   cancelFork(): void;
   /** Stop the live run (T:15870-16023 stopRun). No-op when idle. */
   stopRun(): Promise<void>;
+  /** The Approvals pill changed: when a run is live, switch ITS mode now through
+   *  the `set_mode` action (no message, no turn) and follow the reply into
+   *  `ChatState.permissionMode`. No live run → nothing; the value rides the next send. */
+  applyPermission(mode: PermissionMode): Promise<void>;
 
   /** Permission card (T:13899 buildPermCard → decide). */
   decidePermission(id: string, decision: Decision, scope?: DecisionScope, mode?: SwitchableMode): Promise<void>;
@@ -544,6 +563,9 @@ export interface ChatController {
 
   /** Answer an app-state request with a snapshot block (T:15804 answerAppState). */
   answerAppState(id: string, block: string): Promise<void>;
+  /** Answer a `canvas_screenshot` request: the uploaded picture's path (in the
+   *  shots dir) and mime, or a sentence saying why there is none. */
+  answerCanvasShot(id: string, answer: { image: string; mime: string; udf?: string } | { error: string }, askedBy?: string): Promise<boolean>;
 
   /** Load a session's history and make it current (T:17984 loadHistory). */
   /** `backend`: the arriving conversation's agent, when the opener knows it

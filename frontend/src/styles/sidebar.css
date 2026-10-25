@@ -261,7 +261,7 @@ a.sidebar-rail-btn {
   display: none;
 }
 
-/* Rail doors into the Projects and Favourites sections (GlobalSidebar). THE
+/* Rail doors into the Projects, Canvases and Favourites sections (GlobalSidebar). THE
    EXPANDED ROW'S SIZES, exactly (.current-app-icon, .bookmark-glyph below):
    24px svg, 22px raster, 15px glyph / 19px custom emoji. They were 16/14 —
    the nav icons' size — so every app icon shrank by a third on collapse and
@@ -277,6 +277,11 @@ a.sidebar-rail-btn {
 .sidebar-rail-app-icon.is-raster {
   width: 22px;
   height: 22px;
+}
+/* The Canvases section's row glyph (CanvasGlyph, 16px), on the rail. */
+.sidebar-rail-canvas-glyph {
+  display: flex;
+  line-height: 1;
 }
 .sidebar-rail-bm-glyph {
   font-size: 15px;

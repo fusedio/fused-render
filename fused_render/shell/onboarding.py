@@ -66,7 +66,7 @@ import urllib.request
 from fastapi import APIRouter, Header
 from fastapi.responses import JSONResponse
 
-from fused_render import _flavor
+from fused_render import _flavor, _platform
 from fused_render.shell import prefs, storage
 
 log = logging.getLogger(__name__)
@@ -222,16 +222,21 @@ def _observe(stages: dict) -> None:
     # with the path for the step's "Found at …" row. Not found = pending in
     # both flavors: Render's Bots page runs the same bots, so a machine
     # without a Chrome cannot run one anywhere.
-    try:
-        from fused_render.bots.browser import CHROME_CANDIDATES
+    # Windows never runs bots (server/app.py), so there the Chrome step has
+    # nothing to be for: `n/a`, which the meter does not count.
+    if _platform.IS_WINDOWS:
+        put("chrome", "n/a")
+    else:
+        try:
+            from fused_render.bots.browser import CHROME_CANDIDATES
 
-        found = next((p for p in CHROME_CANDIDATES if p and os.path.exists(p)), None)
-        if found:
-            put("chrome", "complete", found=True, path=found)
-        else:
-            put("chrome", "pending", found=False, path=None)
-    except Exception:  # noqa: BLE001
-        log.debug("onboarding: chrome observe failed", exc_info=True)
+            found = next((p for p in CHROME_CANDIDATES if p and os.path.exists(p)), None)
+            if found:
+                put("chrome", "complete", found=True, path=found)
+            else:
+                put("chrome", "pending", found=False, path=None)
+        except Exception:  # noqa: BLE001
+            log.debug("onboarding: chrome observe failed", exc_info=True)
 
     # Git: git_tools.probe() — a walk of the places a REAL git lives (the
     # active developer dir, the Command Line Tools, Xcode, Homebrew), memoized,

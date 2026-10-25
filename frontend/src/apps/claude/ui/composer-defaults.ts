@@ -44,10 +44,12 @@ import {
   type ClaudeDefaults,
 } from "@platform/lib/claude-defaults";
 import { listedModelIn, normalizeModel } from "@platform/lib/model-vocab";
+import { narrowPermission, useDefaultPermission } from "../feature-flag";
 import {
   capsOf,
+  defaultEffortFor,
   defaultModelOf,
-  effortsOf,
+  effortsForModel,
   isBackendEnabled,
   modelsOf,
   useAgentBackends,
@@ -60,7 +62,7 @@ import { useChatParams } from "../params/useChatParams";
 /** `claude --model`'s vocabulary, one entry per model (T:11823).
  *
  *  THE STATIC CLAUDE ROW since the agent catalog (docs/COPILOT_BACKEND.md
- *  D11): the live lists are `modelsOf(backend)` / `effortsOf(backend)` off
+ *  D11): the live lists are `modelsOf(backend)` / `effortsForModel(backend, model)` off
  *  `platform/lib/agent-backends`, and these constants are what every reader
  *  sees before the catalog lands and what the Claude row says once it has.
  *
@@ -111,8 +113,11 @@ export const PERMISSION_SHORT: Record<PermissionMode, string> = {
 
 export const DEFAULT_MODEL = "sonnet";
 export const DEFAULT_EFFORT = "medium";
-/** The strictest mode is the default: more auto-approval is opted into, never
- *  handed out by a missing param (T:11911). */
+/** The SAFETY fallback only: a mangled or unknown value reads as the strictest
+ *  mode, so a bad param never buys more auto-approval than was picked
+ *  (T:11911). An ABSENT value is not this — it is the user's default
+ *  (`claude_default_permission` pref, "auto" unless changed), see
+ *  `resolvePermission`. */
 export const DEFAULT_PERMISSION: PermissionMode = "prompt";
 
 /** Non-selectable headings naming what each list IS (T:11935-11938). */
@@ -165,15 +170,29 @@ export function resolveEffort(
   detected?: string,
   recorded?: string,
   list: readonly string[] = EFFORTS,
+  preferred?: string,
 ): string {
-  const fallback = list.includes(DEFAULT_EFFORT) ? DEFAULT_EFFORT : list[0] || DEFAULT_EFFORT;
+  // A model that takes no effort has NO value here — "" is "no flag", and the
+  // pill is not drawn — whatever a record or a param still carries from a
+  // model that did.
+  if (!list.length) return "";
+  const fallback = preferred && list.includes(preferred)
+    ? preferred
+    : list.includes(DEFAULT_EFFORT) ? DEFAULT_EFFORT : list[0];
   return pick(list, recorded || param || detected || fallback, fallback);
 }
-/** `syncSelects`'s permission branch (T:12171). */
-export function resolvePermission(param?: string): PermissionMode {
-  return PERMISSION_MODES.includes(param as PermissionMode)
-    ? (param as PermissionMode)
-    : DEFAULT_PERMISSION;
+/** `syncSelects`'s permission branch (T:12171). The first ABSENT value ends
+ *  the ranking — `recorded` (this chat's own pick) over `param` over the
+ *  user's `globalDefault` pref over "auto" — and the winner is narrowed: one
+ *  that is present but not a mode is the safety "prompt", never a quiet fall
+ *  through to a looser rank. */
+export function resolvePermission(
+  param?: string,
+  recorded?: string,
+  globalDefault?: string,
+): PermissionMode {
+  const wanted = recorded || param || globalDefault || "auto";
+  return narrowPermission(wanted) || DEFAULT_PERMISSION;
 }
 
 export interface ComposerDefaults {
@@ -185,7 +204,7 @@ export interface ComposerDefaults {
    * session's own, once the wire has named it (`ChatState.backend`, handed in
    * as `sessionBackend`), else the `backend` param — the Agent pill's pick for
    * a chat that has no session yet — else the catalog's default. The model
-   * and effort lists are THIS agent's (`modelsOf`/`effortsOf`), so a value the
+   * and effort lists are THIS agent's (`modelsOf`/`effortsForModel`), so a value the
    * other agent recorded folds to this one's default rather than a blank pill.
    */
   backend: string;
@@ -268,7 +287,6 @@ export function useComposerDefaults(
   const paramBackend = snapshot.backend && isBackendEnabled(snapshot.backend) ? snapshot.backend : "";
   const backend = ownBackend || paramBackend || catalog.default;
   const models = modelsOf(backend);
-  const efforts = effortsOf(backend);
   const fallbackModel = defaultModelOf(backend);
   const [detected, setDetected] = useState<{ model: string; effort: string }>({
     model: "",
@@ -285,6 +303,11 @@ export function useComposerDefaults(
     model: "",
     effort: "",
   });
+  // The Approvals pick this chat recorded ("" none). Its own state beside
+  // `recorded`, because only this field also has to reach the params the
+  // controller sends from (see the fast read below).
+  const [recordedPermission, setRecordedPermission] = useState("");
+  const globalPermission = useDefaultPermission();
   const [detectionReady, setDetectionReady] = useState(false);
   // THE FAST HALF, and the one the pills actually wait on. See `pillsReady`.
   const [recordReady, setRecordReady] = useState(false);
@@ -319,7 +342,7 @@ export function useComposerDefaults(
   // re-record) that stale value. So each field picked since the read began is
   // remembered here and wins over the read's copy of it; cleared when a new
   // read starts, because a new read is about a new conversation.
-  const pickedSinceRead = useRef<{ model?: string; effort?: string }>({});
+  const pickedSinceRead = useRef<{ model?: string; effort?: string; permission?: string }>({});
 
   // ── THE GLOBAL PAIR — the answer for a chat that has no conversation yet ──
   //
@@ -403,6 +426,7 @@ export function useComposerDefaults(
     // one can leave it standing under the new session (Bugbot, PR #1226): the
     // pills go back to the wash and paint this chat's own record, or "".
     setRecorded({ model: "", effort: "" });
+    setRecordedPermission("");
     setKnownBackend("");
     setRecordReady(false);
     // THE LOCAL PICK FOLLOWS EXACTLY ONE TRANSITION: "no session" → "the id
@@ -428,6 +452,14 @@ export function useComposerDefaults(
           effort: picked.effort ?? (rec?.effort || ""),
         });
         if (rec?.backend) setKnownBackend((b) => b || rec.backend!);
+        // THE PICK SURVIVES A REMOUNT: the controller sends from the param, so
+        // the recorded mode is written back into it (only when it differs, and
+        // replace-style, so this is neither a history entry nor a loop).
+        const recPermission = picked.permission ?? narrowPermission(rec?.permission);
+        setRecordedPermission(recPermission || "");
+        if (recPermission && params.get("permission") !== recPermission) {
+          params.set({ permission: recPermission }, { history: "replace" });
+        }
       })
       .catch(() => {
         // Best-effort, like every other read here: a record we could not fetch
@@ -540,7 +572,6 @@ export function useComposerDefaults(
   // per read before the list depended on the agent). Only the PARAM folds to
   // the default instead — see `resolveModel`'s header.
   const lm = (v: string) => listedModelIn(v, models);
-  const le = (v: string) => (efforts.includes(v) ? v : "");
   const model = resolveModel(
     paramModel,
     lm(globModel) || lm(detected.model),
@@ -548,15 +579,22 @@ export function useComposerDefaults(
     models,
     fallbackModel,
   );
+  // THE EFFORTS ARE THE MODEL'S, so they are read once the model is known:
+  // per model where the catalog knows them per model (Copilot's `auto` and
+  // Claude ids take none; its GPT ids each name their levels), the agent's
+  // list otherwise. An empty list resolves to "" and hides the pill.
+  const efforts = effortsForModel(backend, model);
+  const le = (v: string) => (efforts.includes(v) ? v : "");
   const effort = resolveEffort(
     paramEffort,
     le(globEffort) || le(detected.effort),
     le(recorded.effort) || le(local.effort),
     efforts,
+    defaultEffortFor(backend, model),
   );
   // An agent with no plan mode (§7 `plan_mode`) never shows "plan": the pill
   // has no such row for it, and the send would be refused.
-  const resolvedPermission = resolvePermission(snapshot.permission);
+  const resolvedPermission = resolvePermission(snapshot.permission, recordedPermission, globalPermission);
   const permission =
     resolvedPermission === "plan" && !capsOf(backend).plan_mode ? DEFAULT_PERMISSION : resolvedPermission;
 
@@ -591,9 +629,12 @@ export function useComposerDefaults(
     recordAnswered &&
     (!!lm(recorded.model) || !!lm(local.model) || !!paramModel || !!lm(globModel) ||
       (globalReady && detectionReady));
+  // A model that takes no effort has nothing in flight that could change the
+  // (absent) pill, so its field is settled with the model's.
   const effortSettled =
     recordAnswered &&
-    (!!le(recorded.effort) || !!le(local.effort) || !!paramEffort || !!le(globEffort) ||
+    (efforts.length === 0 ||
+      !!le(recorded.effort) || !!le(local.effort) || !!paramEffort || !!le(globEffort) ||
       (globalReady && detectionReady));
   const pillsReady = modelSettled && effortSettled;
 
@@ -609,10 +650,14 @@ export function useComposerDefaults(
   // is right either way until the next `defaults` read settles it — and it must
   // not be an error the user sees: nothing about this send has failed.
   const record = useCallback(
-    (settings: { model?: string; effort?: string }) => {
+    (settings: { model?: string; effort?: string; permission?: string }) => {
       if (!sessionId) return;
       pickedSinceRead.current = { ...pickedSinceRead.current, ...settings };
-      setRecorded((prev) => ({ ...prev, ...settings }));
+      const { permission: pickedPermission, ...pair } = settings;
+      if (pickedPermission) setRecordedPermission(pickedPermission);
+      if (pair.model !== undefined || pair.effort !== undefined) {
+        setRecorded((prev) => ({ ...prev, ...pair }));
+      }
       void recordChatSettings(sessionId, settings).catch(() => {});
     },
     [sessionId],
@@ -685,8 +730,10 @@ export function useComposerDefaults(
         params.set({ effort: value });
         record({ effort: value });
       },
-      setPermission: (value: PermissionMode) =>
-        params.set({ permission: value }),
+      setPermission: (value: PermissionMode) => {
+        params.set({ permission: value });
+        record({ permission: value });
+      },
       ready: detectionReady && recordReady && globalReady,
       pillsReady,
       modelSettled,

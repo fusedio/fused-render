@@ -13,7 +13,7 @@
 // `helpKind` below is one of the download page's four tabs, so a heads-up and a
 // failure card send the user to the same place.
 import type { ClaudeHealth } from "./api";
-import { CLAUDE_INSTALL_COMMAND, troubleHelpUrl, type TroubleKind } from "./trouble";
+import { CLAUDE_INSTALL_COMMAND, CODEX_INSTALL_COMMAND, GEMINI_INSTALL_COMMAND, troubleHelpUrl, type TroubleKind } from "./trouble";
 
 /** One thing worth telling the user, already in their terms. */
 export interface ClaudeIssue {
@@ -61,6 +61,87 @@ export const CLAUDE_UPDATE_COMMAND = "claude update";
 export const CLAUDE_BIN_ENV = "FUSED_RENDER_CLAUDE_BIN";
 /** Copilot's twin (fused_render/copilot_health.py `BIN_ENV`). */
 export const COPILOT_BIN_ENV = "FUSED_RENDER_COPILOT_BIN";
+/** Codex's twin (fused_render/codex_health.py, docs/CODEX_BACKEND.md D10). */
+export const CODEX_BIN_ENV = "FUSED_RENDER_CODEX_BIN";
+/** Gemini's twin (fused_render/gemini_health.py, docs/GEMINI_BACKEND.md D10). */
+export const GEMINI_BIN_ENV = "FUSED_RENDER_GEMINI_BIN";
+
+/** What differs between the agents' setup copy. Everything else — the rules,
+ *  the order, the ids — is the same for every agent. */
+interface AgentSetupWords {
+  /** The product's name in a sentence. */
+  name: string;
+  /** The command a user types in a terminal. */
+  cli: string;
+  binEnv: string;
+  /** The fallback install line for a server too old to state its own. */
+  install?: string;
+  /** The fallback update line for a self-updating install. */
+  update?: string;
+  /** `claude doctor` — the only agent with a diagnostics subcommand. */
+  doctor: boolean;
+  /** Offer the `link-path` repair. Never for Copilot (the UI has offered it
+   *  for Claude alone since the second agent); Codex's and Gemini's contracts
+   *  list the route (docs/CODEX_BACKEND.md D10, docs/GEMINI_BACKEND.md D10). */
+  linkPath: boolean;
+  /** The signed-out row's sentence: what pressing "Sign in" does. */
+  signIn: string;
+}
+
+const SETUP_WORDS: Record<string, AgentSetupWords> = {
+  claude: {
+    name: "Claude Code",
+    cli: "claude",
+    binEnv: CLAUDE_BIN_ENV,
+    install: CLAUDE_INSTALL_COMMAND,
+    update: CLAUDE_UPDATE_COMMAND,
+    doctor: true,
+    linkPath: true,
+    signIn: "Sign in with your browser — Claude Code opens the page and "
+      + "finishes on its own.",
+  },
+  copilot: {
+    name: "Copilot",
+    cli: "copilot",
+    binEnv: COPILOT_BIN_ENV,
+    doctor: false,
+    linkPath: false,
+    signIn: "Sign in with GitHub — Copilot opens the page and finishes on its own. "
+      + "A `gh auth login` on this machine counts too.",
+  },
+  codex: {
+    name: "Codex",
+    cli: "codex",
+    binEnv: CODEX_BIN_ENV,
+    install: CODEX_INSTALL_COMMAND,
+    // npm reinstalls the newest over the old: the install line IS the update.
+    update: CODEX_INSTALL_COMMAND,
+    doctor: false,
+    linkPath: true,
+    // A DEVICE CODE, not a loopback: the strip shows the code and the page
+    // to type it on while the sign-in is open (`ClaudeLoginStatus.detail`).
+    signIn: "Sign in with ChatGPT (device code) — Codex shows a one-time code "
+      + "to enter on OpenAI's page, and finishes on its own. A `codex login` "
+      + "in a terminal counts too.",
+  },
+  gemini: {
+    name: "Gemini CLI",
+    cli: "gemini",
+    binEnv: GEMINI_BIN_ENV,
+    install: GEMINI_INSTALL_COMMAND,
+    // npm reinstalls the newest over the old: the install line IS the update.
+    update: GEMINI_INSTALL_COMMAND,
+    doctor: false,
+    linkPath: true,
+    signIn: "Sign in with Google — Gemini CLI opens the page and finishes on "
+      + "its own. A `GEMINI_API_KEY` in the environment, or a sign-in from "
+      + "`gemini` in a terminal, counts too.",
+  },
+};
+
+function setupWords(backend: string): AgentSetupWords {
+  return SETUP_WORDS[backend] ?? SETUP_WORDS.claude;
+}
 
 /**
  * Everything unresolved about this snapshot, most-blocking first.
@@ -74,22 +155,45 @@ export const COPILOT_BIN_ENV = "FUSED_RENDER_COPILOT_BIN";
  * An EMPTY array means "nothing to say" — which is the common case and the
  * reason the strip renders nothing at all most of the time.
  */
-/** The "Signed in" line for EITHER agent, or null when it is not signed in.
- *  Copilot's three methods are its own words (D10); Claude's are the setup
- *  wizard's (shell/onboarding/ToolsStep `signedInHint`), which the caller
- *  passes in so there stays one copy of them. */
+/** The "Signed in" line for ANY agent, or null when it is not signed in.
+ *  Copilot's three methods, Codex's two and Gemini's four are their own words (D10); Claude's
+ *  are the setup wizard's (shell/onboarding/ToolsStep `signedInHint`), which
+ *  the caller passes in so there stays one copy of them. */
 export function agentAccountLine(
   health: ClaudeHealth,
   backend: string,
   claudeLine: (h: ClaudeHealth) => string,
 ): string | null {
   if (health.signed_in !== true) return null;
-  if (backend !== "copilot") return claudeLine(health);
   const method = health.account?.method;
-  if (method === "copilot") return "Signed in with copilot login";
-  if (method === "gh") return "Signed in through gh";
-  if (method === "token") return "Signed in with a token from the environment";
-  return "Signed in";
+  if (backend === "codex") {
+    if (method === "chatgpt") {
+      const plan = health.account?.plan || health.account?.planType;
+      // `planType` is Codex's word ("go", "plus"); capitalised as ChatGPT
+      // names its plans.
+      return plan
+        ? `Signed in with ChatGPT (${plan.charAt(0).toUpperCase()}${plan.slice(1)} plan)`
+        : "Signed in with ChatGPT";
+    }
+    if (method === "api_key") return "Signed in with an OpenAI API key";
+    return "Signed in";
+  }
+  if (backend === "gemini") {
+    const who = health.account?.email ? ` as ${health.account.email}` : "";
+    if (method === "google") return `Signed in with Google${who}`;
+    if (method === "api_key") return "Signed in with a Gemini API key";
+    if (method === "vertex") return "Signed in through Vertex AI";
+    if (method === "gateway") return "Signed in through an AI API gateway";
+    return `Signed in${who}`;
+  }
+  if (backend !== "copilot") return claudeLine(health);
+  // The user, when the CLI named one (`account.login`), and the plan.
+  const who = health.account?.login ? ` as ${health.account.login}` : "";
+  const plan = health.account?.plan ? ` (${health.account.plan} plan)` : "";
+  if (method === "copilot") return `Signed in with copilot login${who}${plan}`;
+  if (method === "gh") return `Signed in through gh${who}${plan}`;
+  if (method === "token") return `Signed in with a token from the environment${who}${plan}`;
+  return `Signed in${who}${plan}`;
 }
 
 export function claudeIssues(health: ClaudeHealth | null): ClaudeIssue[] {
@@ -97,17 +201,18 @@ export function claudeIssues(health: ClaudeHealth | null): ClaudeIssue[] {
 }
 
 /**
- * The same classifier for EITHER agent (docs/COPILOT_BACKEND.md D10): the
- * Copilot health snapshot carries the same keys, so the rules are the rules —
- * only the name changes, and the two repairs that have no Copilot twin
- * (`doctor`, `link-path`) are offered for Claude alone. The Claude output is
- * byte-identical to what `claudeIssues` always said.
+ * The same classifier for EVERY agent (docs/COPILOT_BACKEND.md D10,
+ * docs/CODEX_BACKEND.md D10, docs/GEMINI_BACKEND.md D10): each health snapshot carries the same keys, so
+ * the rules are the rules — only the words change (`SETUP_WORDS`), and the
+ * repairs an agent has no endpoint for (`doctor` but for Claude, `link-path`
+ * for Copilot) are not offered. The Claude output is byte-identical to what
+ * `claudeIssues` always said.
  */
 export function agentIssues(health: ClaudeHealth | null, backend: string): ClaudeIssue[] {
   if (!health) return []; // a failed probe is not a finding — see the strip
   const issues: ClaudeIssue[] = [];
-  const copilot = backend === "copilot";
-  const name = copilot ? "Copilot" : "Claude Code";
+  const words = setupWords(backend);
+  const name = words.name;
 
   if (!health.found) {
     // A pointing-at-nothing override is its own diagnosis, and telling this
@@ -116,7 +221,7 @@ export function agentIssues(health: ClaudeHealth | null, backend: string): Claud
     if (health.source === "override") {
       issues.push({
         id: "unusable-override",
-        title: `${copilot ? COPILOT_BIN_ENV : CLAUDE_BIN_ENV} points at something that cannot run`,
+        title: `${words.binEnv} points at something that cannot run`,
         detail:
           `The app was told to use ${health.path ?? "a specific path"}, and there ` +
           "is no runnable file there. Correct it or unset it — with it unset, " +
@@ -135,7 +240,7 @@ export function agentIssues(health: ClaudeHealth | null, backend: string): Claud
       // THE SERVER'S LINE, not the module constant: the server knows its own
       // platform; the fallback is only for a payload from a server too old to
       // say.
-      command: health.install_command || (copilot ? undefined : CLAUDE_INSTALL_COMMAND),
+      command: health.install_command || words.install,
       action: { kind: "install", label: `Install ${name}` },
     });
     return issues; // everything below is about an install that exists
@@ -161,10 +266,10 @@ export function agentIssues(health: ClaudeHealth | null, backend: string): Claud
       detail:
         `There is a ${name} at ${health.path ?? "the resolved path"}, and it ` +
         `did not report its version when asked.${named}` +
-        (copilot ? "" : " Run the built-in diagnostics to see what it says about itself."),
+        (words.doctor ? " Run the built-in diagnostics to see what it says about itself." : ""),
       helpKind: "notfound",
-      // `doctor` is Claude's own subcommand; Copilot has no twin (D10).
-      action: copilot ? undefined : { kind: "doctor", label: "Run diagnostics" },
+      // `doctor` is Claude's own subcommand; no other agent has a twin (D10).
+      action: words.doctor ? { kind: "doctor", label: "Run diagnostics" } : undefined,
     });
     return issues;
   }
@@ -202,7 +307,7 @@ export function agentIssues(health: ClaudeHealth | null, backend: string): Claud
         ? `Fused Render starts sessions with options added in ${health.min_version}. ` +
           "Update it and the app will use the version you already have."
         : `Fused Render starts sessions with options added in ${health.min_version}. ` +
-          `Running \`${copilot ? "copilot update" : "claude update"}\` here would not change anything — ` +
+          `Running \`${words.update ?? `${words.cli} update`}\` here would not change anything — ` +
           `${health.update_blocked_reason ?? "something else owns this install"}` +
           (health.update_command
             ? `, so run the command below instead.`
@@ -210,7 +315,7 @@ export function agentIssues(health: ClaudeHealth | null, backend: string): Claud
       helpKind: "raw",
       // Whichever command actually works: `claude update`, or the owning
       // manager's own upgrade line. Never a command we know to be a no-op.
-      command: health.update_command ?? (selfUpdates && !copilot ? CLAUDE_UPDATE_COMMAND : undefined),
+      command: health.update_command ?? (selfUpdates ? words.update : undefined),
       // A button ONLY where running it does something. A managed install gets
       // the right command to copy and no button — we will not run a `sudo` line
       // on someone's behalf, and `brew` is theirs to drive.
@@ -234,11 +339,7 @@ export function agentIssues(health: ClaudeHealth | null, backend: string): Claud
       // the code never comes anywhere near the app. The sentence describes what
       // pressing it does, because a browser window about to appear over the app
       // is a thing to announce first.
-      detail: copilot
-        ? "Sign in with GitHub — Copilot opens the page and finishes on its own. "
-          + "A `gh auth login` on this machine counts too."
-        : "Sign in with your browser — Claude Code opens the page and "
-          + "finishes on its own.",
+      detail: words.signIn,
       helpKind: "login",
       action: { kind: "login", label: "Sign in" },
     });
@@ -252,15 +353,15 @@ export function agentIssues(health: ClaudeHealth | null, backend: string): Claud
   // and the one warning it prints about that is suppressed by the augmented
   // PATH the app runs it under. Without this row, the terminal is the only
   // place the user finds out, as `command not found`.
-  // `link-path` is Claude's installer's gap and Claude's endpoint; nothing to
-  // say for Copilot here.
-  if (health.on_shell_path === false && !copilot) {
+  // `link-path` is the installer's gap and the agent's own endpoint; nothing
+  // to say for Copilot here (`SETUP_WORDS.copilot.linkPath`).
+  if (health.on_shell_path === false && words.linkPath) {
     issues.push({
       id: "not-on-path",
-      title: "Claude Code works in this app, but not in your terminal yet",
+      title: `${name} works in this app, but not in your terminal yet`,
       detail:
         "The install finished and Fused Render is already using it. Your " +
-        "terminal looks in a different set of places, so `claude` there says " +
+        `terminal looks in a different set of places, so \`${words.cli}\` there says ` +
         "command not found until its folder is added to your shell's PATH.",
       helpKind: "notfound",
       // The server's exact line — shown beside the button, so what the user is
@@ -271,7 +372,7 @@ export function agentIssues(health: ClaudeHealth | null, backend: string): Claud
       action: health.path_fix_command
         ? { kind: "link-path", label: "Add to PATH for me" }
         : undefined,
-      // The app already works. Typing `claude` in a terminal yourself is the
+      // The app already works. Typing the CLI in a terminal yourself is the
       // only thing this buys, so it never takes the accent and never gates.
       optional: true,
     });

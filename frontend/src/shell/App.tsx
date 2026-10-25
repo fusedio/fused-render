@@ -16,6 +16,7 @@
 // The active view is keyed by the nav epoch: every navigation remounts it,
 // which is the React equivalent of the vanilla shell rebuilding the view DOM
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
+import { canonFsPath } from "@platform/lib/path-url";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { subscribeJobDismissed, type Job } from "@platform/lib/jobs";
 import { useThemedIconSrc } from "@platform/lib/app-icon-src";
@@ -33,10 +34,11 @@ import { useRecentsTracking } from "@apps/explorer/lib/recents";
 import { setSideTab } from "@apps/explorer/lib/side-tab-store";
 // The route parser, not the barrel: api.ts is already in the main bundle (the
 // sidebar's sign-in probe imports it); the barrel would pull the sub-app in.
-import { ENV_LABELS, canvasNameFromPath, canvasProjectFromPath } from "@apps/canvases/api";
+import { ENV_NAMES, canvasNameFromPath, canvasProjectFromPath } from "@apps/canvases/api";
 import {
   appIconUrl,
   getAppIcon,
+  botsAvailable,
   statPath,
   type Config,
   type HttpError,
@@ -84,6 +86,7 @@ import type { TasksScope } from "@shell/Scheduled";
 import { useTaskPeekEnabled } from "@shell/task-peek-flag";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { TaskStatusNotifier } from "@shell/useTaskStatusNotify";
+import { TeardownNotifier } from "@shell/teardown-notice";
 import { ModelConflictNotifier } from "@shell/useModelConflictNotify";
 import ShortcutsOverlay from "@platform/ui/ShortcutsOverlay";
 import { isMod } from "@platform/lib/platform";
@@ -123,6 +126,7 @@ const AiModels = lazy(() =>
   import("@apps/ai_models").then((m) => ({ default: m.AiModels })),
 );
 const Scheduled = lazy(() => import("@shell/Scheduled"));
+const ClaudeConfig = lazy(() => import("@shell/ClaudeConfig"));
 const MonitorPage = lazy(() => import("@shell/monitor/MonitorPage"));
 const MarketplacePage = lazy(() =>
   import("@apps/marketplace").then((m) => ({ default: m.MarketplacePage })),
@@ -146,7 +150,7 @@ const NO_PAGE_PARAMS: readonly string[] = [];
 let urlScope: TasksScope | undefined;
 function tasksScopeFromUrl(): TasksScope | undefined {
   const raw = new URLSearchParams(location.search).get("project");
-  const project = raw ? raw.replace(/(.)\/+$/, "$1") : "";
+  const project = raw ? canonFsPath(raw).replace(/(.)\/+$/, "$1") : "";
   if (!project) return undefined;
   if (urlScope?.project !== project) urlScope = { project, ownFrame: true };
   return urlScope;
@@ -679,6 +683,12 @@ export default function App({ config }: { config: Config }) {
   if (location.pathname === "/") {
     history.replaceState(null, "", frontDoor);
   }
+  // The server runs no bots on Windows: a bookmarked /bots URL goes Home rather
+  // than to a page whose every call answers 503.
+  const botsOn = botsAvailable(config);
+  if (!botsOn && isBotsPath(location.pathname)) {
+    history.replaceState(null, "", "/home");
+  }
   // A fresh install's first load lands on the setup wizard instead (its own
   // route, shell/onboarding). Once per page load and only from the front
   // door: a deep link (a bookmark, an app URL from the CLI) is honoured, and
@@ -722,6 +732,9 @@ export default function App({ config }: { config: Config }) {
   // Scheduled Claude messages (shell/Scheduled.tsx) — chrome-free settings
   // pattern.
   const isTasks = pathname === "/tasks";
+  // Claude Code's own configuration (shell/ClaudeConfig.tsx) — chrome-free
+  // settings pattern; the tab is a query param of its own.
+  const isClaudeConfig = pathname === "/claude-config";
   // Every process on the machine, live (shell/monitor/MonitorPage.tsx) —
   // the System chip's "Open Monitor". BEHIND THE FLAG (monitor-flag.ts,
   // `monitor_enabled`, default off): off, the chip is not rendered and the
@@ -764,7 +777,7 @@ export default function App({ config }: { config: Config }) {
   // Preferences pages are sub-paths (apps/bots/routes.ts), asked through the
   // app's own predicate so the route is spelled once. test_shell_routes.py
   // derives this page's paths from that module, as it does for AI Models.
-  const isBots = isBotsPath(pathname);
+  const isBots = isBotsPath(pathname) && botsOn;
   // `/canvases/<env>/<name>` (see canvasNameFromPath): the old one-segment
   // `/canvases/<name>` matches nothing and falls to the "Unrecognized URL"
   // branch below, deliberately unredirected.
@@ -794,6 +807,7 @@ export default function App({ config }: { config: Config }) {
     isPrefs ||
     isTemplates ||
     isTasks ||
+    isClaudeConfig ||
     isMonitor ||
     isMarketplace ||
     isAiModels ||
@@ -822,6 +836,8 @@ export default function App({ config }: { config: Config }) {
             ? "Templates"
             : isTasks
                 ? "Tasks"
+                : isClaudeConfig
+                ? "Claude Code"
                 : isMonitor
                 ? "Monitor"
                 : isMarketplace
@@ -844,9 +860,9 @@ export default function App({ config }: { config: Config }) {
                               : isBots
                                 ? "Bots"
                               : canvasWorkspace
-                                ? `Canvas: ${canvasWorkspace.name} · ${ENV_LABELS[canvasWorkspace.env]}`
+                                ? `Canvas: ${canvasWorkspace.name} · ${ENV_NAMES[canvasWorkspace.env].label}`
                               : canvasProject
-                                ? `Canvas: ${canvasProject.name} · ${ENV_LABELS[canvasProject.env]}`
+                                ? `Canvas: ${canvasProject.name} · ${ENV_NAMES[canvasProject.env].label}`
                                 : fsPath
                                   ? undefined
                                   : null,
@@ -950,6 +966,17 @@ export default function App({ config }: { config: Config }) {
         </Suspense>
       </div>
     );
+  } else if (isClaudeConfig) {
+    // Claude Config: config tabs, no topbar. The tab lives in the page's own
+    // query param and is written with replaceState, so only a navigation to
+    // /claude-config remounts it.
+    main = (
+      <div id="content" key={epoch}>
+        <Suspense fallback={<RouteFallback />}>
+          <ClaudeConfig key={epoch} />
+        </Suspense>
+      </div>
+    );
   } else if (isMonitor) {
     // Whole-machine process monitor — chrome-free like Mounts; keyed on epoch
     // so a re-navigation is a fresh read (its poll stops on unmount). Off
@@ -972,7 +999,7 @@ export default function App({ config }: { config: Config }) {
                 navigateUrl("/preferences?s=monitor");
               }}
             >
-              Preferences › Optional features
+              Preferences › Experimental flags
             </a>
             .
           </div>
@@ -981,16 +1008,17 @@ export default function App({ config }: { config: Config }) {
     );
   } else if (isMarketplace) {
     // The Marketplace — chrome-free, the page owns its sticky header and
-    // scroll. Keyed on epoch like its neighbours (its catalog is a module
-    // cache, so a remount repaints instantly). Off, nothing is fetched: the
-    // notice is the whole page.
+    // scroll. Not keyed on `epoch`, like AI Models: Discover, Installed and an
+    // app's page are paths, and a hop between them must keep the header and
+    // scroll container mounted. The page reads the path itself. Off, nothing is
+    // fetched: the notice is the whole page.
     main = (
-      <div id="content" key={epoch}>
+      <div id="content">
         {marketplaceOn === null ? (
           <RouteFallback />
         ) : marketplaceOn ? (
           <Suspense fallback={<RouteFallback />}>
-            <MarketplacePage key={epoch} />
+            <MarketplacePage />
           </Suspense>
         ) : (
           <div className="monitor-off deploy-muted">
@@ -1002,7 +1030,7 @@ export default function App({ config }: { config: Config }) {
                 navigateUrl("/preferences?s=marketplace");
               }}
             >
-              Preferences › Optional features
+              Preferences › Experimental flags
             </a>
             .
           </div>
@@ -1219,6 +1247,7 @@ export default function App({ config }: { config: Config }) {
   return (
     <div id="app">
       <TaskStatusNotifier />
+      <TeardownNotifier />
       <ModelConflictNotifier />
       {!IS_EMBED && sidebar}
       <div id="main">

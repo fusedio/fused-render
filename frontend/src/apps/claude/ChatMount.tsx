@@ -4,6 +4,7 @@
 // with a per-mount memory params store for the hosts that are not the page's
 // own URL.
 import { Component, lazy, Suspense, useEffect, useState, type MutableRefObject, type ReactNode } from "react";
+import type { CanvasShot } from "./shots/canvas-shot";
 import { TroubleCard } from "@platform/ui/TroubleCard";
 import { ChatFramePlaceholder } from "./ChatPlaceholder";
 import type { ClaudeAsk } from "./ClaudeChat";
@@ -154,6 +155,15 @@ export interface ChatMountProps {
   compact?: boolean;
   /** `peek=1` (TaskPeek). */
   peek?: boolean;
+  /** With `peek`: draw the slim chat header (worktree menu, hint, session id). */
+  headerInPeek?: boolean;
+  /** With `headerInPeek`: host node for the slim header's right-hand seat. */
+  headerExtra?: ReactNode;
+  /** Draw the task's PR chip in the chat header (the explorer's Claude pane).
+   *  The peek and cards hosts pass `headerExtra` themselves instead. */
+  prChip?: boolean;
+  /** Fold `← Chats` and the menu into the identity row (folder sidebar). */
+  mergedHead?: boolean;
   /** `session_id` on the frame URL (cards, peek). */
   sessionId?: string;
   /** `run` handed over by a host (the canvas fix run). */
@@ -205,6 +215,9 @@ export interface ChatMountProps {
   preview?: boolean;
   /** `_noann=1` — no annotate seats, no narrow-view toggle (ClaudeChat). */
   noAnnTools?: boolean;
+  /** The host can photograph its canvas on request (`shots/canvas-shot`):
+   *  the Screenshot seat takes that picture (ClaudeChat). */
+  canvasShot?: CanvasShot;
   /** `_noopen=1` — do not record an app open (the listing pane). */
   noOpen?: boolean;
   /** "url" for sidebar / content / canvas; "memory" for cards / peek / panel /
@@ -227,6 +240,8 @@ export interface ChatMountProps {
   annotateTarget?: () => HTMLIFrameElement | null;
   /** Replaces `window.top.location` hops; defaults to `navigateUrl`. */
   onNavigate?: (url: string) => void;
+  /** The chat's worktree was removed (ClaudeChat `onWorktreeRemoved`). */
+  onWorktreeRemoved?: () => void;
   /**
    * "While you were away" — OPT-IN, and off unless this is the chat the reader
    * opened (ClaudeChat's `recap`, .claude-design/session-recap.md).
@@ -272,6 +287,10 @@ export function ChatMount(props: ChatMountProps) {
         chatOnly={!!props.chatOnly}
         compact={!!props.compact}
         peek={!!props.peek}
+        {...(props.headerInPeek ? { headerInPeek: true } : {})}
+        {...(props.mergedHead ? { mergedHead: true } : {})}
+        {...(props.headerExtra ? { headerExtra: props.headerExtra } : {})}
+        {...(props.prChip ? { prChip: true } : {})}
         params={props.paramsSource === "url" ? "url" : memory}
         // WHOSE `?model=`/`?effort=` the composer is looking at. These two props
         // are the only way a seed is ever STATED — everything else in that pair
@@ -288,12 +307,14 @@ export function ChatMount(props: ChatMountProps) {
         autoFocus={!props.preview && !props.noFocus}
         {...(props.preview ? { preview: true } : {})}
         {...(props.noAnnTools ? { noAnnTools: true } : {})}
+        {...(props.canvasShot ? { canvasShot: props.canvasShot } : {})}
         {...(props.noOpen ? { noOpen: true } : {})}
         {...(props.onReady ? { onReady: props.onReady } : {})}
         {...(props.onEscape ? { onEscape: props.onEscape } : {})}
         {...(props.focusRef ? { focusRef: props.focusRef } : {})}
         {...(props.annotateTarget ? { annotateTarget: props.annotateTarget } : {})}
         {...(props.onNavigate ? { onNavigate: props.onNavigate } : {})}
+        {...(props.onWorktreeRemoved ? { onWorktreeRemoved: props.onWorktreeRemoved } : {})}
         {...(props.recap ? { recap: true } : {})}
       />
      </Suspense>

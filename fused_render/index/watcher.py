@@ -472,7 +472,7 @@ def main(argv=None) -> int:
         # Low-impact indexing: CPU priority too, not only I/O.
         try:
             os.nice(10)
-        except OSError:
+        except (AttributeError, OSError):
             pass
     out = _Out(sys.stdout)
     root = spec["root"]

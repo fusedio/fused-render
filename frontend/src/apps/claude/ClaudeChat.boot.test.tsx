@@ -11,7 +11,7 @@ installDomShim();
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { act, create } from "react-test-renderer";
 
-const { ClaudeChat } = await import("./ClaudeChat");
+const { ClaudeChat, annotationsForTests } = await import("./ClaudeChat");
 const { createMemoryParamsStore } = await import("./params/store");
 const { resetListingFeedForTests } = await import("@shell/tasksPulse");
 const { troubleReport } = await import("@platform/lib/trouble");
@@ -188,6 +188,12 @@ function hostFrameStub(): () => HTMLIFrameElement | null {
   const frame = {
     isConnected: true,
     contentWindow: win,
+    // `hostFrame` only counts a frame whose document is READABLE (a null
+    // `contentDocument` is the cross-origin canvases workbench, #1720); this
+    // stub is the same-origin kind, so it has one. `body: null` keeps the
+    // annotation layer (which needs a real DOM to inject into) out of a test
+    // about the boot; the app-state walk reads `contentWindow.document` above.
+    contentDocument: { body: null },
     addEventListener() {},
     removeEventListener() {},
   } as unknown as HTMLIFrameElement;
@@ -403,6 +409,39 @@ test("the seats are absent on a chat-only mount with no host getter at all", asy
   expect(byClass(r, "c-anncta").length).toBe(0);
 });
 
+test("`noAnnTools` with a URL-carried annmode=1 boots DISARMED, and stays so", async () => {
+  // The canvas node pane (`_noann=1`): the chat is pinned to its chat view, so
+  // an armed mode would have no toggle to undo it. `bootFromParam` arms AFTER
+  // the hook's mount-time disarm (it waits for the target), which is why the
+  // armed state itself is watched (CodeRabbit, #1880).
+  const params = createMemoryParamsStore();
+  params.set({ annmode: "1" });
+  let r!: ReturnType<typeof create>;
+  await act(async () => {
+    r = create(
+      <ClaudeChat {...baseProps} params={params} annotateTarget={hostFrameStub()} noAnnTools />,
+    );
+  });
+  mounted.push(r);
+  await settle(20);
+  const ann = annotationsForTests();
+  expect(ann).not.toBeNull();
+  expect(ann!.armed).toBe(false);
+  expect(ann!.locked).toBe(false);
+});
+
+test("the same annmode=1 boot ARMS without `noAnnTools` (the control)", async () => {
+  const params = createMemoryParamsStore();
+  params.set({ annmode: "1" });
+  let r!: ReturnType<typeof create>;
+  await act(async () => {
+    r = create(<ClaudeChat {...baseProps} params={params} annotateTarget={hostFrameStub()} />);
+  });
+  mounted.push(r);
+  await settle(20);
+  expect(annotationsForTests()!.armed).toBe(true);
+});
+
 test("a CONTROLLER REBUILD does not re-send a spent ask (QA #1061)", async () => {
   // THE PATH THE TWO TESTS ABOVE CANNOT REACH. Both re-render the HOST, which
   // by construction cannot change the controller's identity — and the controller
@@ -598,4 +637,26 @@ test("THE LANDING IS READY WHEN ITS LIST HAS ANSWERED (T:19282-19291)", async ()
   releaseSessions();
   await settle();
   expect(ready).toBe(1);
+});
+
+// THE SLIM HEADER IN A PEEK (headerInPeek): the Task page side peek and peek modal
+// draw the chat worktree seat and session label under the host head. A
+// conversation is up once a session id is on the mount.
+test("a peek with headerInPeek draws the slim top bar; a bare peek and a compact one do not", async () => {
+  const withHead = await mountChat({ peek: true, headerInPeek: true, initialSessionId: "sess-abc12345" });
+  await settle(20);
+  expect(byClass(withHead.r, "chat-peek-head").length).toBe(1);
+  expect(byClass(withHead.r, "c-topbar").length).toBe(1);
+  expect(byClass(withHead.r, "c-session").length).toBe(1);
+  // Back / picker / kebab stay the host job in a peek.
+  expect(byClass(withHead.r, "c-anntools").length).toBe(0);
+
+  const bare = await mountChat({ peek: true, initialSessionId: "sess-abc12345" });
+  await settle(20);
+  expect(byClass(bare.r, "chat-peek-head").length).toBe(0);
+  expect(byClass(bare.r, "c-topbar").length).toBe(0);
+
+  const compact = await mountChat({ compact: true, peek: true, headerInPeek: true, initialSessionId: "sess-abc12345" });
+  await settle(20);
+  expect(byClass(compact.r, "c-topbar").length).toBe(0);
 });

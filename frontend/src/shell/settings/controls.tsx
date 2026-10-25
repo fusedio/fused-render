@@ -6,6 +6,7 @@ import type { PrefControlProps } from "./SettingRow";
 import {
   AppearanceControl,
   AutoUpdateControl,
+  ChromiumWindowsControl,
   LauncherHotkeyControl,
   LauncherRowControl,
   NativeWindowsControl,
@@ -15,12 +16,15 @@ import {
   AgentSigninPointer,
   ClaudeAgentControl,
   ClaudeModelPointer,
+  CodexAgentControl,
   CopilotAgentControl,
   DefaultAgentControl,
   EnginesPointer,
+  GeminiAgentControl,
 } from "./ai";
 import {
   CanvasesControl,
+  CanvasesEmbedProxyControl,
   GithubLinkControl,
   GitSyncControl,
   LivePreviewsControl,
@@ -33,6 +37,7 @@ import {
   TaskRecapsControl,
   TaskSummaryTitlesControl,
   ClaudeStrictMcpControl,
+  ClaudeDefaultPermissionControl,
 } from "./toggles";
 import {
   IndexingControl,
@@ -42,16 +47,8 @@ import {
   SkippedFoldersControl,
 } from "./indexing";
 import { LanControl } from "./lan";
+import { ClaudeCliMissing } from "./claude";
 import { FusedAccountControl, HuggingFaceControl, WorkbenchEnvControl } from "./accounts";
-import {
-  ClaudeCatalogControl,
-  ClaudeHistoryBlock,
-  ClaudeMcpBlock,
-  ClaudeMemoryBlock,
-  ClaudePluginsBlock,
-  ClaudeSkillsBlock,
-  ClaudeStatuslineBlock,
-} from "./claude";
 import {
   CallLogControl,
   CallParamsControl,
@@ -70,20 +67,17 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "auto-update": AutoUpdateControl,
   "agent-claude": ClaudeAgentControl,
   "agent-copilot": CopilotAgentControl,
+  "agent-codex": CodexAgentControl,
+  "agent-gemini": GeminiAgentControl,
   "agent-default": DefaultAgentControl,
   "claude-model": ClaudeModelPointer,
+  "claude-cli-missing": ClaudeCliMissing,
   engines: EnginesPointer,
-  "claude-plugins": ClaudePluginsBlock,
-  "claude-memory": ClaudeMemoryBlock,
-  "claude-skills": ClaudeSkillsBlock,
-  "claude-statusline": ClaudeStatuslineBlock,
-  "claude-mcp": ClaudeMcpBlock,
-  "claude-catalog": ClaudeCatalogControl,
-  "claude-history": ClaudeHistoryBlock,
   "project-queue": ProjectQueueControl,
   "task-recaps": TaskRecapsControl,
   "task-summary-titles": TaskSummaryTitlesControl,
   "claude-strict-mcp": ClaudeStrictMcpControl,
+  "claude-default-permission": ClaudeDefaultPermissionControl,
   "claude-max-sessions": ClaudeMaxSessionsControl,
   "notify-terminal": NotifyTerminalControl,
   "git-sync": GitSyncControl,
@@ -96,9 +90,11 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "skipped-folders": SkippedFoldersControl,
   "rebuild-index": RebuildIndexControl,
   canvases: CanvasesControl,
+  "canvases-embed-proxy": CanvasesEmbedProxyControl,
   marketplace: MarketplaceControl,
   monitor: MonitorControl,
   reader: ReaderControl,
+  "chromium-windows": ChromiumWindowsControl,
   lan: LanControl,
   "fused-account": FusedAccountControl,
   "workbench-env": WorkbenchEnvControl,

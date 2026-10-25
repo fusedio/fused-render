@@ -38,3 +38,7 @@ test("a sibling directory that merely shares the home string as a prefix is not 
   // beneath it — the "+ '/'" check is what keeps this from misfiring.
   expect(contractHome("/Users/devtools/bin", "/Users/dev")).toBe("/Users/devtools/bin");
 });
+
+test("a Windows-style drive path outside home is returned unchanged", () => {
+  expect(contractHome("C:\\Users\\dev\\Downloads", "/Users/dev")).toBe("C:\\Users\\dev\\Downloads");
+});

@@ -472,6 +472,104 @@ def test_a_copilot_session_is_recapped_by_copilot_with_no_tools(
     assert os.listdir(copilot_cli / "session-state") == []
 
 
+# A `codex` stand-in for `codex exec`: records argv and stdin, and writes the
+# reply to the `-o` file the way `--output-last-message` does, while its
+# stdout carries only noise (Codex's own banner and progress) — so a run that
+# read stdout instead of the file would get the wrong text.
+_CODEX_STUB = """#!{python}
+import json
+import os
+import sys
+
+stdin_data = sys.stdin.read()
+argv = sys.argv[1:]
+with open(os.environ["RECAP_STUB_CALLS"], "a", encoding="utf-8") as fh:
+    fh.write(json.dumps(dict(argv=argv, stdin=stdin_data)) + "\\n")
+sys.stdout.write("codex-cli banner and progress, not the reply\\n")
+with open(argv[argv.index("-o") + 1], "w", encoding="utf-8") as fh:
+    fh.write(os.environ.get("CODEX_STUB_REPLY",
+                            "Codex's recap, long enough to count as one.\\n"))
+sys.exit(int(os.environ.get("CODEX_STUB_EXIT") or 0))
+"""
+
+
+@pytest.fixture
+def codex_cli(tmp_path, monkeypatch, calls, agent):
+    """`agent._codex_bin` pointed at the stub (`raising=False`: the resolver
+    is agent.py's, and this suite pins the router, not the resolver)."""
+    bin_dir = tmp_path / "codex-bin"
+    bin_dir.mkdir()
+    path = bin_dir / "codex"
+    path.write_text(_CODEX_STUB.format(python=sys.executable))
+    path.chmod(0o755)
+    monkeypatch.setattr(agent, "_codex_bin", lambda: str(path), raising=False)
+    return path
+
+
+def test_a_codex_session_recaps_nothing_with_codex_switched_off(
+        client, project, calls, codex_cli, monkeypatch):
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    monkeypatch.setattr(recap_mod, "_recap_backend", lambda *a: "codex")
+    _switches(monkeypatch, claude=True, copilot=True)
+    assert _get(client, target).json()["text"] == ""
+    assert _spawns(calls) == []
+
+
+def test_a_codex_session_is_recapped_by_codex_exec_ephemeral_and_read_only(
+        client, project, calls, codex_cli, monkeypatch, tmp_path):
+    from fused_render.agent_backends import registry
+
+    target, write = project
+    write(("user", "make the tests pass"), ("assistant", "they pass now"))
+    monkeypatch.setattr(recap_mod, "_recap_backend", lambda *a: "codex")
+    _switches(monkeypatch, codex=True)
+    # The reply is the `-o` file's, not stdout's.
+    assert _get(client, target).json()["text"] == (
+        "Codex's recap, long enough to count as one.")
+    call, = _spawns(calls)
+    argv = call["argv"]
+    assert argv[0] == "exec"
+    # No rollout file left behind (`codex resume` would list it), no git
+    # check against the temp dir, read-only sandbox, the catalog's model.
+    assert "--ephemeral" in argv
+    assert "--skip-git-repo-check" in argv
+    assert argv[argv.index("-s") + 1] == "read-only"
+    # The working root is the run's OWN fresh folder, not the shared temp
+    # dir: Codex reads an `AGENTS.md` from its cwd, and `/tmp/AGENTS.md` is
+    # anyone's to write. Gone afterwards, with the reply file inside it.
+    work_dir = argv[argv.index("-C") + 1]
+    assert work_dir != recap_mod.tempfile.gettempdir()
+    assert os.path.dirname(work_dir) == recap_mod.tempfile.gettempdir()
+    assert os.path.dirname(argv[argv.index("-o") + 1]) == work_dir
+    assert not os.path.exists(work_dir)
+    # ...and Codex never climbs out of it looking for a project root: a
+    # planted `/tmp/.git` + `/tmp/AGENTS.md` must not become the recap's
+    # instructions. The empty marker list is the documented off switch.
+    assert argv[argv.index("-c") + 1] == "project_root_markers=[]"
+    assert argv[argv.index("-m") + 1] == registry.get("codex").default_model
+    # The prompt comes from stdin (`-`, last), the system text leading it.
+    assert argv[-1] == "-"
+    tail = "User: make the tests pass\n\nAssistant: they pass now"
+    assert call["stdin"] == (recap_mod._RECAP_SYSTEM + "\n\n"
+                             + recap_mod._RECAP_PROMPT % tail)
+    assert not any("make the tests pass" in a for a in argv)
+    # The `-o` file is the run's own temp file, and it is gone afterwards.
+    assert not os.path.exists(argv[argv.index("-o") + 1])
+
+
+def test_a_failed_codex_run_is_an_empty_recap(
+        client, project, calls, codex_cli, monkeypatch):
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    monkeypatch.setattr(recap_mod, "_recap_backend", lambda *a: "codex")
+    _switches(monkeypatch, codex=True)
+    monkeypatch.setenv("CODEX_STUB_EXIT", "1")
+    assert _get(client, target).json()["text"] == ""
+    call, = _spawns(calls)
+    assert not os.path.exists(call["argv"][call["argv"].index("-o") + 1])
+
+
 def test_the_recap_asks_the_agent_module_whose_session_it_is(agent, tmp_path):
     target = tmp_path / "t"
     target.mkdir()
@@ -488,8 +586,8 @@ class _FakeProc:
         return self._out, None
 
 
-@pytest.mark.parametrize("backend", ["claude", "copilot"])
-def test_both_recap_spawns_keep_the_posix_spawn_rule(
+@pytest.mark.parametrize("backend", ["claude", "copilot", "codex", "gemini"])
+def test_every_recap_spawn_keeps_the_posix_spawn_rule(
         project, agent, monkeypatch, backend):
     """No `cwd`, `close_fds=False`, no session/preexec hooks: any of those makes
     CPython fork()+exec, and a fork with libproj resident in the server dies
@@ -501,11 +599,21 @@ def test_both_recap_spawns_keep_the_posix_spawn_rule(
 
     def fake_popen(argv, **kw):
         seen.append(kw)
+        if backend == "codex":
+            # `codex exec -o <file>`: the reply lands in the file.
+            with open(argv[argv.index("-o") + 1], "w", encoding="utf-8") as fh:
+                fh.write(text)
+            return _FakeProc(None)
+        if backend == "gemini":
+            # `gemini -p … -o json`: `{session_id, response, stats}` on stdout.
+            return _FakeProc(json.dumps({"session_id": "", "response": text, "stats": {}}))
         return _FakeProc(_ok(text) if backend == "claude" else text)
 
     monkeypatch.setattr(recap_mod.subprocess, "Popen", fake_popen)
     monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
     monkeypatch.setattr(agent, "_copilot_bin", lambda: "/bin/copilot")
+    monkeypatch.setattr(agent, "_codex_bin", lambda: "/bin/codex", raising=False)
+    monkeypatch.setattr(agent, "_gemini_bin", lambda: "/bin/gemini", raising=False)
     assert recap_mod._recap_generate(agent, target, SESSION, backend=backend) == text
     kw, = seen
     assert "cwd" not in kw
@@ -532,7 +640,7 @@ class _HungProc:
         self.killed = True
 
 
-@pytest.mark.parametrize("backend", ["claude", "copilot"])
+@pytest.mark.parametrize("backend", ["claude", "copilot", "codex", "gemini"])
 def test_a_killed_recap_run_that_will_not_exit_cannot_hang_the_request(
         project, agent, monkeypatch, backend):
     target, write = project
@@ -541,6 +649,8 @@ def test_a_killed_recap_run_that_will_not_exit_cannot_hang_the_request(
     monkeypatch.setattr(recap_mod.subprocess, "Popen", lambda argv, **kw: proc)
     monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
     monkeypatch.setattr(agent, "_copilot_bin", lambda: "/bin/copilot")
+    monkeypatch.setattr(agent, "_codex_bin", lambda: "/bin/codex", raising=False)
+    monkeypatch.setattr(agent, "_gemini_bin", lambda: "/bin/gemini", raising=False)
     assert recap_mod._recap_generate(agent, target, SESSION, backend=backend) == ""
     assert proc.killed
     assert proc.timeouts == [recap_mod._RECAP_TIMEOUT, recap_mod._RECAP_REAP_TIMEOUT]
@@ -767,3 +877,194 @@ def test_flag_off_endpoint_still_generates_with_no_pending_key(
     body = _get(client, target).json()
     assert body["text"] and "pending" not in body
     assert len(_spawns(calls)) == 1
+
+
+# --- stable AI titles: one haiku call for the title (and the recap) ---
+
+_TITLE_REPLY = "TITLE: Fixing the login redirect\nRECAP: Login redirect fixed, tests pass"
+
+
+def test_title_parse_reads_both_lines_and_tolerates_formatting():
+    parse = recap_mod._title_parse
+    assert parse(_TITLE_REPLY, True) == (
+        "Fixing the login redirect", "Login redirect fixed, tests pass")
+    # Title only: a RECAP line nobody asked for is dropped.
+    assert parse(_TITLE_REPLY, False) == ("Fixing the login redirect", "")
+    assert parse("TITLE: Only a title here", True) == ("Only a title here", "")
+    # Lowercase labels, extra whitespace, markdown and bullets around them.
+    assert parse("  title :   Fix the  login   redirect.  \n- recap: Login redirect fixed now",
+                 True) == ("Fix the login redirect", "Login redirect fixed now")
+    assert parse("**TITLE:** `Fixing login`\n**RECAP:** **Login** fixed, tests pass",
+                 True) == ("Fixing login", "Login fixed, tests pass")
+    assert parse('Title: "Quoted title words"', False)[0] == "Quoted title words"
+    # Capped at 80 chars, refused under 3, none when there is no label at all.
+    assert len(parse("TITLE: " + "word " * 40, False)[0]) <= 80
+    assert parse("TITLE: ab", False) == ("", "")
+    assert parse("just some prose", True) == ("", "")
+    assert parse("", True) == ("", "")
+    # A too-short recap is refused by the recap rules, the title survives.
+    assert parse("TITLE: Fixing login\nRECAP: ok", True) == ("Fixing login", "")
+
+
+def test_title_prompt_carries_the_current_title_first_message_and_tail():
+    system, template = recap_mod._title_prompts(True, "Fix login", "please fix 100% of login")
+    assert "Current title: Fix login" in template
+    assert "First message: please fix 100%% of login" in template  # `%`-escaped
+    assert "<transcript>" in template and "TITLE and RECAP" in template
+    assert "DATA" in system and "RECAP:" in system and "TITLE:" in system
+    assert "verbatim" in system
+    assert "RECAP:" not in recap_mod._title_prompts(False, "x", "y")[0]
+    out = template % "User: hi\n\nAssistant: hello"
+    assert "User: hi" in out and "100% of login" in out
+    assert "(none)" in recap_mod._title_prompts(False, "", "")[1]
+    # The first message is capped.
+    assert len(recap_mod._title_prompts(False, "t", "x" * 5000)[1]) < 2200
+
+
+def test_one_call_titles_and_recaps_and_stores_both(
+        agent, project, calls, store, monkeypatch):
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    monkeypatch.setenv("RECAP_STUB_OUT", _ok(_TITLE_REPLY))
+    title, recap = recap_mod._title_and_recap(
+        agent, target, SESSION, "u-1", want_recap=True, current="go",
+        first="go and fix it", prompts_seen=5)
+    assert (title, recap) == ("Fixing the login redirect",
+                              "Login redirect fixed, tests pass")
+    spawn, = _spawns(calls)
+    prompt = _prompt(spawn)
+    assert "Current title: go" in prompt and "First message: go and fix it" in prompt
+    assert "User: go" in prompt
+    argv = spawn["argv"]
+    assert "--no-session-persistence" in argv and argv[argv.index("--tools") + 1] == ""
+    state = store.settings_state()
+    assert store.session_ai_title(state, SESSION)["text"] == "Fixing the login redirect"
+    assert store.session_ai_title(state, SESSION)["turns"] == 5
+    assert store.session_recap(state, SESSION)["text"] == "Login redirect fixed, tests pass"
+
+
+def test_title_only_call_stores_no_recap_and_a_failure_keeps_the_title(
+        agent, project, calls, store, monkeypatch):
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    monkeypatch.setenv("RECAP_STUB_OUT", _ok(_TITLE_REPLY))
+    title, recap = recap_mod._title_and_recap(
+        agent, target, SESSION, "u-1", want_recap=False, prompts_seen=2)
+    assert (title, recap) == ("Fixing the login redirect", "")
+    assert "RECAP:" not in json.loads(_spawns(calls)[0]["stdin"])["message"]["content"][0]["text"]
+    assert store.session_recap(store.settings_state(), SESSION) is None
+
+    monkeypatch.setenv("RECAP_STUB_OUT", _ok("no labels, just prose"))
+    assert recap_mod._title_and_recap(agent, target, SESSION, "u-1",
+                                      prompts_seen=6) == ("", "")
+    got = store.session_ai_title(store.settings_state(), SESSION)
+    assert got["text"] == "Fixing the login redirect"
+    assert got["turns"] == 2 and got["failed_at"] > 0
+
+
+@pytest.mark.parametrize("backend", ["claude", "copilot", "codex"])
+def test_every_backend_gets_the_title_prompt_and_its_raw_reply(
+        project, agent, monkeypatch, backend):
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    sent = []
+
+    class Proc(_FakeProc):
+        def communicate(self, input=None, timeout=None):
+            sent.append(input)
+            return super().communicate(input, timeout)
+
+    def fake_popen(argv, **kw):
+        if backend == "codex":
+            with open(argv[argv.index("-o") + 1], "w", encoding="utf-8") as fh:
+                fh.write(_TITLE_REPLY)
+            return Proc(None)
+        return Proc(_ok(_TITLE_REPLY) if backend == "claude" else _TITLE_REPLY)
+
+    monkeypatch.setattr(recap_mod.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
+    monkeypatch.setattr(agent, "_copilot_bin", lambda: "/bin/copilot")
+    monkeypatch.setattr(agent, "_codex_bin", lambda: "/bin/codex", raising=False)
+    raw = recap_mod._recap_generate(
+        agent, target, SESSION, ended=True, backend=backend,
+        ask={"want_recap": True, "current": "Cur title", "first": "First msg"})
+    assert raw == _TITLE_REPLY  # line structure intact, not folded
+    assert "Current title: Cur title" in sent[0]
+
+
+def test_a_switched_off_agent_is_not_asked_but_stamps_the_cooldown(
+        agent, project, calls, store, monkeypatch):
+    """Else the worker's wake-up would re-queue the same title on every listing."""
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    from fused_render.agent_backends import registry
+
+    monkeypatch.setattr(registry, "is_enabled", lambda backend: False)
+    assert recap_mod._title_and_recap(agent, target, SESSION, "u-1",
+                                      prompts_seen=3) == ("", "")
+    assert _spawns(calls) == []
+    assert store.session_ai_title(store.settings_state(), SESSION)["failed_at"] > 0
+
+
+class _GeminiProc:
+    """`gemini -p -o json`: a result on stdout, a FAILURE's JSON on stderr
+    (exit 41 signed out, verified 0.65.0)."""
+
+    def __init__(self, stdout, stderr="", returncode=0):
+        self._out, self._err, self.returncode = stdout, stderr, returncode
+
+    def communicate(self, input=None, timeout=None):
+        return self._out, self._err
+
+
+def test_a_gemini_recap_is_headless_trusted_in_process_and_cleans_its_chat_file(
+        project, agent, monkeypatch, tmp_path):
+    """GEMINI D12/D16/D19 and the review on #1939: `-p` with the pointer, `-o
+    json`, `--approval-mode default`, `--skip-trust` (a headless run in an
+    untrusted cwd dies, and every failure here reads as ""), the in-process
+    env; the CLI-reported `session_id` names the chat file to remove — also
+    when the run FAILED and its JSON came on stderr."""
+    from fused_render.server.routers import tasks as tasks_mod
+    target, write = project
+    write(("user", "go"), ("assistant", "done"))
+    seen, removed = [], []
+    chat = tmp_path / "session-2026-10-23T10-00-abcdef12.jsonl"
+
+    def chat_files(sid):
+        removed.append(sid)
+        chat.write_text("{}")
+        return [str(chat)]
+
+    monkeypatch.setattr(tasks_mod, "_gemini_chat_files", chat_files)
+    monkeypatch.setattr(agent, "_gemini_bin", lambda: "/bin/gemini", raising=False)
+    text = "the recap, long enough to count as one"
+    sid_ok = "11111111-2222-4333-8444-555555555555"
+    sid_bad = "99999999-2222-4333-8444-555555555555"
+
+    def fake_popen(argv, **kw):
+        seen.append((argv, kw))
+        if len(seen) == 1:
+            return _GeminiProc(json.dumps({"session_id": sid_ok, "response": text, "stats": {}}))
+        return _GeminiProc("", json.dumps({"session_id": sid_bad, "response": "",
+                                           "error": {"type": "AuthError", "message": "x"}}), 41)
+
+    monkeypatch.setattr(recap_mod.subprocess, "Popen", fake_popen)
+    assert recap_mod._recap_generate(agent, target, SESSION, backend="gemini") == text
+    argv, kw = seen[0]
+    assert argv[0] == "/bin/gemini" and argv[1] == "-p"
+    assert argv[argv.index("-o") + 1] == "json"
+    assert argv[argv.index("--approval-mode") + 1] == "default"
+    assert "--skip-trust" in argv and argv[argv.index("-m") + 1] == "auto"
+    assert kw["env"]["GEMINI_CLI_NO_RELAUNCH"] == "1" and kw["env"]["NO_BROWSER"] == "1"
+    # No tool at all: a deny-all policy file, under fused's own home, at the
+    # highest priority the engine accepts (<= 999).
+    policy = argv[argv.index("--policy") + 1]
+    assert policy.startswith(os.environ["FUSED_RENDER_HOME"])
+    with open(policy) as fh:
+        text = fh.read()
+    assert 'toolName = "*"' in text and 'decision = "deny"' in text and "priority = 999" in text
+    assert "priority = 1000" not in text
+    assert removed == [sid_ok] and not chat.exists()
+    # The failed run: "" — and its stderr JSON still names the file to remove.
+    assert recap_mod._recap_generate(agent, target, SESSION, backend="gemini") == ""
+    assert removed == [sid_ok, sid_bad] and not chat.exists()

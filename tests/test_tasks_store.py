@@ -1084,6 +1084,37 @@ def test_a_recap_rides_on_the_settings_record_and_goes_with_an_erase(state_dir):
     assert tasks_store.session_recap(tasks_store.settings_state(), "sess-a") is None
 
 
+def test_an_ai_title_round_trips_and_a_failure_keeps_the_old_text(state_dir):
+    """Stable AI titles: the title rides on the session record beside the
+    recap. A failed attempt (empty text) must not blank a title the row is
+    already showing — it only stamps `failed_at`."""
+    tasks_store.record_settings("sess-a", "haiku", "low")
+    assert tasks_store.session_ai_title(tasks_store.settings_state(), "sess-a") is None
+    tasks_store.record_ai_title("sess-a", "Fixing the login bug", 4, now=10.0)
+    state = tasks_store.settings_state()
+    assert tasks_store.session_settings(state, "sess-a") == ("haiku", "low")
+    assert tasks_store.session_ai_title(state, "sess-a") == {
+        "text": "Fixing the login bug", "at": 10.0, "turns": 4, "failed_at": 0.0}
+
+    tasks_store.record_ai_title("sess-a", "", 7, now=20.0)  # a failed attempt
+    got = tasks_store.session_ai_title(tasks_store.settings_state(), "sess-a")
+    assert got["text"] == "Fixing the login bug"
+    assert got["turns"] == 4 and got["at"] == 10.0 and got["failed_at"] == 20.0
+
+    tasks_store.record_ai_title("sess-a", "Login bug and tests", 7, now=30.0)
+    got = tasks_store.session_ai_title(tasks_store.settings_state(), "sess-a")
+    assert got == {"text": "Login bug and tests", "at": 30.0, "turns": 7, "failed_at": 0.0}
+
+    # A failure with nothing stored yet still leaves a record to cool down on.
+    tasks_store.record_ai_title("sess-b", "", 1, now=5.0)
+    got = tasks_store.session_ai_title(tasks_store.settings_state(), "sess-b")
+    assert got["text"] == "" and got["failed_at"] == 5.0
+    assert tasks_store.record_ai_title("", "x", 1) == {}
+
+    tasks_store.forget_session("sess-a")
+    assert tasks_store.session_ai_title(tasks_store.settings_state(), "sess-a") is None
+
+
 # ------------------------------------------------- did the user say anything?
 # `user_row_after` — the evidence a tombstone asks for before it lets a row
 # come back (routers/tasks.py:_deleted). Read from the END of the transcript,
@@ -1370,3 +1401,37 @@ def test_update_writes_through_a_tmp_file_and_replace(state_dir, monkeypatch):
     src, dst, body = seen[-1]
     assert src != dst and src.startswith(dst) and "Fixed the login bug" in body
     assert tasks_store.session_recap(tasks_store.settings_state(), "sess-a")["text"]
+
+
+def test_record_settings_round_trips_permission():
+    rec = tasks_store.record_settings("sid-1", permission="acceptEdits")
+    assert rec["permission"] == "acceptEdits"
+    # A later model-only write leaves it; junk is not stored.
+    tasks_store.record_settings("sid-1", model="haiku", permission="bogus")
+    state = tasks_store.settings_state()
+    assert tasks_store.session_permission(state, "sid-1") == "acceptEdits"
+    assert tasks_store.session_settings(state, "sid-1")[0] == "haiku"
+    assert tasks_store.session_permission(state, "nope") == ""
+
+
+def test_a_custom_title_rides_on_the_settings_record_and_goes_with_an_erase(state_dir):
+    """The user's own name for a task is one more field on the session's
+    record: it leaves model/effort alone, empty text clears it, and an erase
+    takes the whole record."""
+    tasks_store.record_settings("sess-a", "haiku", "low")
+    assert tasks_store.session_title(tasks_store.settings_state(), "sess-a") == ""
+    tasks_store.record_title("sess-a", "  Release prep  ")
+    state = tasks_store.settings_state()
+    assert tasks_store.session_title(state, "sess-a") == "Release prep"
+    assert tasks_store.session_settings(state, "sess-a") == ("haiku", "low")
+    assert tasks_store.session_title(state, "nobody") == ""
+
+    tasks_store.record_title("sess-a", "   ")
+    state = tasks_store.settings_state()
+    assert tasks_store.session_title(state, "sess-a") == ""
+    assert "custom_title" not in state["sess-a"]
+    assert tasks_store.session_settings(state, "sess-a") == ("haiku", "low")
+
+    tasks_store.record_title("sess-a", "Again")
+    tasks_store.forget_session("sess-a")
+    assert tasks_store.session_title(tasks_store.settings_state(), "sess-a") == ""

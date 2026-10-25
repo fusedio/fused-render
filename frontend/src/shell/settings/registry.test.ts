@@ -23,7 +23,7 @@ function ctx(over: Partial<SettingsContext> = {}, prefs: Partial<Prefs> = {}): S
     prefs: {
       native_windows: { available: true, enabled: true },
       launcher: { available: true },
-      agents: { claude: true, copilot: false, default: "claude" },
+      agents: { claude: true, copilot: false, codex: false, gemini: false, default: "claude" },
       ...prefs,
     } as unknown as Prefs,
     ...over,
@@ -46,17 +46,16 @@ describe("the registry", () => {
 
   test("every group sits under a nav section, in the sidebar's order", () => {
     const order = NAV_SECTIONS.map((s) => s.id);
-    expect(order).toEqual(["general", "bots", "tasks", "apps", "other"]);
+    expect(order).toEqual(["app", "agents", "apps", "developer"]);
     for (const g of GROUPS) expect(order).toContain(g.nav);
     // Groups are listed section by section — the nav never splits a section.
     const seen = GROUPS.map((g) => order.indexOf(g.nav));
     expect([...seen].sort((a, b) => a - b)).toEqual(seen);
     expect(navSections(GROUPS).map((s) => [s.section.id, s.groups.map((g) => g.id)])).toEqual([
-      ["general", ["general", "features"]],
-      ["bots", ["ai", "claude"]],
-      ["tasks", ["tasks"]],
+      ["app", ["general", "integrations", "features"]],
+      ["agents", ["ai", "tasks", "claude-cli"]],
       ["apps", ["apps", "indexing", "lan"]],
-      ["other", ["integrations", "advanced"]],
+      ["developer", ["advanced"]],
     ]);
   });
 
@@ -77,26 +76,9 @@ describe("the registry", () => {
 });
 
 describe("visibility", () => {
-  test("Claude Code is a group only where ~/.claude is", () => {
-    const without = visibleGroups(visibleSettings(ctx())).map((g) => g.id);
-    expect(without).not.toContain("claude");
-    expect(navSections(visibleGroups(visibleSettings(ctx()))).map((s) => s.section.id)).toContain("bots");
-    const rows = visibleSettings(ctx({ claudeConfig: true }));
-    expect(visibleGroups(rows).map((g) => g.id)).toContain("claude");
-    const claude = rows.filter((r) => r.group === "claude").map((r) => r.id);
-    expect(claude).toEqual([
-      "claude-plugins",
-      "claude-memory",
-      "claude-skills",
-      "claude-statusline",
-      "claude-mcp",
-      "claude-catalog",
-      "claude-history",
-    ]);
-    // Blocks are one per section: the card is the block.
-    for (const r of rows.filter((r) => r.group === "claude" && r.block)) {
-      expect(rows.filter((x) => x.group === "claude" && x.section === r.section)).toHaveLength(1);
-    }
+  test("the nav has no Claude Code section; it is the Claude Code page", () => {
+    const nav = navSections(visibleGroups(visibleSettings(ctx({ claudeConfig: true })))).map((s) => s.section.id);
+    expect(nav).toEqual(["app", "agents", "apps", "developer"]);
   });
 
   test("Fused Bot drops the Render-only groups and rows, and its nav drops Apps & files", () => {
@@ -104,7 +86,7 @@ describe("visibility", () => {
     const groups = visibleGroups(bot).map((g) => g.id);
     expect(groups).not.toContain("apps");
     expect(groups).not.toContain("indexing");
-    expect(navSections(visibleGroups(bot)).map((s) => s.section.id)).toEqual(["general", "bots", "tasks", "other"]);
+    expect(navSections(visibleGroups(bot)).map((s) => s.section.id)).toEqual(["app", "agents", "developer"]);
     expect(bot.map((s) => s.id)).not.toContain("canvases");
     expect(bot.map((s) => s.id)).not.toContain("fused-account");
     // Tasks and the monitor exist under Bot too.
@@ -131,15 +113,57 @@ describe("visibility", () => {
   });
 
 
-  test("the default-agent picker appears only with both agents on", () => {
+  test("the embed proxy switch appears only while Canvases is on, and never in Fused Bot", () => {
+    const ids = (enabled: boolean, over: Partial<SettingsContext> = {}) =>
+      visibleSettings(ctx(over, { canvases: { enabled } } as Partial<Prefs>)).map((s) => s.id);
+    expect(visibleSettings(ctx()).map((s) => s.id)).not.toContain("canvases-embed-proxy");
+    expect(ids(false)).not.toContain("canvases-embed-proxy");
+    expect(ids(true)).toContain("canvases-embed-proxy");
+    expect(ids(true, { bot: true })).not.toContain("canvases-embed-proxy");
+  });
+
+  test("the default-agent picker appears only with two or more agents on", () => {
     expect(visibleSettings(ctx()).map((s) => s.id)).not.toContain("agent-default");
-    const both = ctx({}, { agents: { claude: true, copilot: true, default: "claude" } } as Partial<Prefs>);
-    expect(visibleSettings(both).map((s) => s.id)).toContain("agent-default");
+    const agents = (claude: boolean, copilot: boolean, codex: boolean, gemini = false) =>
+      visibleSettings(ctx({}, { agents: { claude, copilot, codex, gemini, default: "claude" } } as Partial<Prefs>))
+        .map((s) => s.id);
+    expect(agents(true, true, false)).toContain("agent-default");
+    expect(agents(true, false, true)).toContain("agent-default");
+    expect(agents(false, true, true)).toContain("agent-default");
+    expect(agents(true, true, true)).toContain("agent-default");
+    expect(agents(false, false, true)).not.toContain("agent-default");
+    // Gemini counts as one of the two (docs/GEMINI_BACKEND.md D17).
+    expect(agents(true, false, false, true)).toContain("agent-default");
+    expect(agents(false, false, false, true)).not.toContain("agent-default");
+    // An older server says nothing of Codex: two of the other two still count.
+    const old = ctx({}, { agents: { claude: true, copilot: true, default: "claude" } } as unknown as Partial<Prefs>);
+    expect(visibleSettings(old).map((s) => s.id)).toContain("agent-default");
+  });
+
+  test("the four agent switches stand in the registry's order", () => {
+    const ids = visibleSettings(ctx()).map((s) => s.id as string).filter((id) => /^agent-(claude|copilot|codex|gemini)$/.test(id));
+    expect(ids).toEqual(["agent-claude", "agent-copilot", "agent-codex", "agent-gemini"]);
   });
 
   test("sections come out in first-appearance order", () => {
     const secs = sectionsOf(visibleSettings(ctx()), "general").map((s) => s.section);
     expect(secs).toEqual(["Appearance", "Windows", "Keyboard", "Updates", "Status bar", "Accessibility"]);
+  });
+
+  test("the Chromium engine row is drawn only where the server says it is available", () => {
+    const off = ctx({}, { chromium_windows: { available: false, enabled: false } } as unknown as Partial<Prefs>);
+    expect(visibleSettings(off).map((s) => s.id)).not.toContain("chromium-windows");
+    expect(visibleSettings(ctx()).map((s) => s.id)).not.toContain("chromium-windows");
+    const on = ctx({}, { chromium_windows: { available: true, enabled: false } } as unknown as Partial<Prefs>);
+    expect(visibleSettings(on).map((s) => s.id)).toContain("chromium-windows");
+  });
+
+  test("Experimental flags keeps its sections in order, Windows last", () => {
+    const on = ctx({}, { chromium_windows: { available: true, enabled: false } } as unknown as Partial<Prefs>);
+    const secs = sectionsOf(visibleSettings(on), "features").map((s) => s.section);
+    expect(secs).toEqual(["Sidebar", "Windows"]);
+    // Without the capability the group is what it was.
+    expect(sectionsOf(visibleSettings(ctx()), "features").map((s) => s.section)).toEqual(["Sidebar"]);
   });
 });
 
@@ -188,7 +212,8 @@ describe("search", () => {
   });
 
   test("every word must match", () => {
-    expect(searchSettings(all, "git sync").map((h) => h.id)).toEqual(["git-sync"]);
+    // "sync" also matches the page name (Sharing & sync), so the page's child row follows.
+    expect(searchSettings(all, "git sync").map((h) => h.id)).toEqual(["git-sync", "github-link"]);
     expect(searchSettings(all, "git nonsenseword")).toEqual([]);
   });
 
@@ -199,10 +224,27 @@ describe("search", () => {
     expect(searchSettings(all, "opus")).toEqual([]);
   });
 
-  test("the Claude blocks are findable by what they hold", () => {
-    const rows = visibleSettings(ctx({ claudeConfig: true }));
-    expect(searchSettings(rows, "mcp").map((h) => h.id)).toEqual(["claude-mcp", "claude-strict-mcp"]);
-    expect(searchSettings(rows, "marketplace").map((h) => h.id).sort()).toEqual(["claude-plugins", "marketplace"]);
+  test("the Claude Code group shows only its not-installed row without ~/.claude", () => {
+    const ids = (claudeConfig: boolean) =>
+      visibleSettings(ctx({ claudeConfig }))
+        .filter((e) => e.group === "claude-cli")
+        .map((e) => e.id as string);
+    expect(ids(false)).toEqual(["claude-cli-missing"]);
+    expect(ids(true)).toEqual([]);
+  });
+
+  test("Gemini is findable by its own words and Google's", () => {
+    for (const q of ["gemini", "google"]) {
+      expect(searchSettings(all, q).map((h) => h.id)).toContain("agent-gemini");
+    }
+    expect(searchSettings(all, "gemini sign").map((h) => h.id)).toEqual(["agent-gemini", "agent-signin"]);
+  });
+
+  test("Codex is findable by its own words and its account's", () => {
+    for (const q of ["codex", "openai", "chatgpt"]) {
+      expect(searchSettings(all, q).map((h) => h.id)).toContain("agent-codex");
+    }
+    expect(searchSettings(all, "codex sign").map((h) => h.id)).toEqual(["agent-codex", "agent-signin"]);
   });
 
   test("results keep page order", () => {
