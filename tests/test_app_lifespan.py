@@ -121,7 +121,6 @@ def test_handlers_registered_after_the_app_is_built_are_still_picked_up():
 #: the mechanism driving them.
 EXPECTED_STARTUP = [
     "_startup_prewarm_ai",
-    "_startup_warm_engine",
     "_startup_resurrect_background_apps",
     "_startup_sync_user_plugin",
     # Added 2026-10-16: kicks the workbench skills fetch for Fused Web's

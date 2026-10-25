@@ -21,7 +21,12 @@ def api_config(
     start_dir: str = Depends(get_start_dir),
     token: str | None = Header(default=None, alias="X-Fused-Desktop-Token"),
 ):
+    from fused_render import engine as _engine
     from fused_render.paths import desktop_instance
+
+    # First shell load: start the engine warm-up (fire-and-forget, once per
+    # process). `effective_engine()` below uses the non-blocking probe.
+    _engine.ensure_warm()
 
     config = {
         "start_dir": start_dir,

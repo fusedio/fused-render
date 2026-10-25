@@ -1020,3 +1020,13 @@ def _real_core_templates_stay_untouched():
             f"FUSED_RENDER_HOME redirect — a process resolved home_dir() to the "
             f"real ~/.fused-render and restaged it with this checkout's "
             f"templates.", pytrace=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_engine_warm(monkeypatch):
+    """`/api/config` and `run_python` call `engine.ensure_warm()`, which would
+    cold-import fused and prime interpreters in every test that loads the shell.
+    Mark it already started; the tests ABOUT it reset the flag."""
+    from fused_render import engine
+
+    monkeypatch.setattr(engine, "_warm_started", True)

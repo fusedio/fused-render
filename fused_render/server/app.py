@@ -529,12 +529,8 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
             return
         prewarm_ai(app, delay=5.0)
 
-    # Warm the fused engine off the request path (else the first /api/config pays the cold import).
-    @on_startup
-    async def _startup_warm_engine():
-        from fused_render import engine
-
-        engine.warm_unless_forced_builtin()
+    # No boot hook for the fused engine warm-up: `engine.ensure_warm()` starts
+    # it once, on the first shell load (/api/config) or the first Python run.
 
     # Background apps (background_apps.py): resurrect every autostart-opted-in
     # app's daemon at server startup. A daemon thread, not the create_app body
