@@ -1108,6 +1108,7 @@ def test_release_stops_this_processes_watcher_and_drops_the_lock(harness, tmp_pa
     assert m.stop_event.is_set() and not m.thread.is_alive()
     assert not lock.exists()
     assert (ENV, "alpha") not in canvases_mod._syncs
+    assert (ENV, "alpha") not in canvases_mod._HANDING_OVER
     state = harness.client.get("/api/canvases/sync/state?env=unstable&name=alpha").json()
     assert state["watching"] is False and state["owner"] is None
     # Nothing to give: no watcher ran here.
@@ -1146,6 +1147,49 @@ def test_release_waits_for_a_publish_then_refuses_if_it_outlasts_the_wait(
     finally:
         m._push_proc = None
         _stop_sync("alpha")
+
+
+def test_release_waits_for_a_pull_too(harness, tmp_path, monkeypatch):
+    """A pull writes the clone as much as a push: not a lock to drop under."""
+    _quiet_watcher(monkeypatch)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    monkeypatch.setattr(canvases_mod, "RELEASE_PUSH_WAIT_S", 0.5)
+    m = _start(harness)
+    lock = harness.root / ".sync" / "alpha.lock"
+    m._pull_in_flight = True
+    try:
+        res = harness.client.post("/api/canvases/sync/release", json={"env": ENV, "name": "alpha"},
+                                  headers=GUARD)
+        assert res.status_code == 409 and res.json()["code"] == "busy", res.text
+        assert lock.exists() and (ENV, "alpha") in canvases_mod._syncs
+        assert (ENV, "alpha") not in canvases_mod._HANDING_OVER
+    finally:
+        m._pull_in_flight = False
+        _stop_sync("alpha")
+
+
+def test_own_sync_start_is_held_off_while_handing_over(harness, tmp_path, monkeypatch):
+    """The owner's page self-heals through sync/start the moment its watcher
+    goes; under the gate it gets `busy` (it retries), never a new watcher on
+    the still-held flock."""
+    _quiet_watcher(monkeypatch)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    key = (ENV, "alpha")
+    with canvases_mod._SYNC_LOCK:
+        canvases_mod._HANDING_OVER.add(key)
+    try:
+        res = harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"},
+                                  headers=GUARD)
+        assert res.status_code == 409 and res.json()["code"] == "busy", res.text
+        assert "handed over" in res.json()["error"]
+        assert key not in canvases_mod._syncs
+    finally:
+        with canvases_mod._SYNC_LOCK:
+            canvases_mod._HANDING_OVER.discard(key)
+    res = harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"},
+                              headers=GUARD)
+    assert res.status_code == 200, res.text
+    _stop_sync("alpha")
 
 
 def test_release_goes_through_once_the_publish_ends(harness, tmp_path, monkeypatch):
