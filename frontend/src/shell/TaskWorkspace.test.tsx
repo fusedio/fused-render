@@ -393,7 +393,7 @@ test("headers show label and count in order, and keys walk the grouped order", a
     task({ key: "d", started: 1, status: "blocked", blocked_reason: "failed" }),
   ]);
   const heads = r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.includes("ws-group-head"));
-  expect(heads.map((h) => text(h))).toEqual(["Needs you2", "Working1", "Safe to archive1"]);
+  expect(heads.map((h) => text(h))).toEqual(["Needs you2Select all", "Working1Select all", "Safe to archive1Select all"]);
   expect(heads.every((h) => h.props.role === "presentation")).toBe(true);
   expect(heads.every((h) => h.findAllByType("button").length === 1)).toBe(true);
   const cards = r.root.findAll((n) => typeof n.props.className === "string" && /^ws-card( |$)/.test(n.props.className));
@@ -411,7 +411,7 @@ test("a group over 8 cards shows 8 and a Show N more that reveals the rest", asy
   const r = await render(many);
   expect(cardsOf(r)).toHaveLength(8);
   const heads = r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.includes("ws-group-head"));
-  expect(text(heads[0])).toBe("Working11");
+  expect(text(heads[0])).toBe("Working11Select all");
   const btn = moreBtn(r);
   expect(btn).toHaveLength(1);
   expect(text(btn[0])).toBe("Show 3 more");
@@ -427,7 +427,7 @@ test("Safe to archive starts collapsed: header and count, no cards", async () =>
   for (const k of Object.keys(store)) delete store[k];
   const r = await render([task({ key: "a" }), task({ key: "b", started: 2 }), task({ key: "z", status: "archived" })]);
   const heads = r.root.findAll((n) => typeof n.props.className === "string" && n.props.className.includes("ws-group-head"));
-  expect(heads.map((h) => text(h))).toEqual(["Safe to archive2", "Archived1"]);
+  expect(heads.map((h) => text(h))).toEqual(["Safe to archive2Select all", "Archived1"]);
   expect(cardsOf(r)).toHaveLength(0);
   await act(async () => {
     heads[0].findByType("button").props.onClick();
@@ -610,7 +610,7 @@ test("a pinned task renders under the Pinned head, first", async () => {
   pinnedPref = ["b"];
   serve();
   const r = await render([task({ key: "a", started: 2 }), task({ key: "b", started: 1, status: "needs_attention" })]);
-  expect(text(heads(r)[0])).toBe("Pinned1");
+  expect(text(heads(r)[0])).toBe("Pinned1Select all");
   const rows = r.root.findAll((n) => typeof n.props.className === "string" && /^ws-card( |$)/.test(n.props.className));
   expect(rows[0].props["data-key"]).toBe("b");
   expect(r.root.findByProps({ "data-key": "b" }).findByProps({ "aria-label": "Unpin" }).props["aria-pressed"]).toBe(true);
@@ -628,7 +628,7 @@ test("the pin button writes the new key list and does not select the card", asyn
   expect(stopped).toBe(true);
   const put = posts.filter((p) => p.url === "/api/prefs" && p.body);
   expect(put.map((p) => p.body)).toEqual([{ pinned_tasks: ["b", "a"] }]);
-  expect(text(heads(r)[0])).toBe("Pinned2");
+  expect(text(heads(r)[0])).toBe("Pinned2Select all");
 });
 
 test("a failed pin write reverts the card", async () => {
