@@ -94,6 +94,7 @@ const actions = {
   decidePlan: async () => {},
   dismissCard: () => {},
   stopRun: async () => {},
+  addNote: () => {},
 };
 
 
