@@ -359,6 +359,18 @@ _APPENV_VARS = ("FUSED_RENDER_HOME_DIR", "FUSED_RENDER_ORIGIN",
 
 
 @pytest.fixture(autouse=True)
+def _pretend_desktop_app(monkeypatch):
+    """Indexing defaults ON only inside the native desktop app
+    (`prefs.is_desktop_app`); pytest sets no desktop env, so without this the
+    suite would read as a browser install and every "default ON" premise
+    would flip. Same reason dev runs are kept from affecting pytest. Tests of
+    the default itself re-patch it; the test of `is_desktop_app` itself keeps a reference taken at
+    import time, before this fixture runs."""
+    import fused_render.shell.prefs as prefs_mod
+    monkeypatch.setattr(prefs_mod, "is_desktop_app", lambda: True)
+
+
+@pytest.fixture(autouse=True)
 def _no_archiving_of_missing_folders(monkeypatch):
     """The Tasks listing files away a task whose folder is gone from disk
     (`routers/tasks.py ARCHIVE_MISSING_FOLDERS`), and nearly every transcript

@@ -1620,8 +1620,9 @@ export interface Prefs {
   // How long an idle resident local model stays loaded before the reaper
   // unloads it (SPEC AI-13). Same stored/effective/forced_by shape as `calls`.
   ai_idle: AiIdlePrefs;
-  // Whether background file-index scanning may run at all (default ON — an
-  // opt-OUT, the opposite polarity from `reader`). Turning it off does not
+  // Whether background file-index scanning may run at all (default ON only in
+  // the native desktop app, OFF for browser/CLI installs and dev runs; a
+  // stored choice wins either way). Turning it off does not
   // delete the on-disk index or stop search from answering it; only new
   // scans are refused (fused_render/shell/prefs.py's `indexing_enabled`).
   // `ranked` (D720, also default ON) is a separate, sibling preference:

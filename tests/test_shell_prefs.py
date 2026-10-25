@@ -18,6 +18,9 @@ from fused_render.ai import registry as ai_registry
 from fused_render.server import create_app
 from _hardware_probe_helpers import force_no_accelerators
 
+# Taken at import, before conftest's autouse fixture patches it to True.
+_REAL_IS_DESKTOP_APP = prefs_mod.is_desktop_app
+
 
 FUSED = {"X-Fused": "1"}  # D3 guard header required on writes
 
@@ -411,6 +414,65 @@ def test_indexing_enabled_defaults_on_and_toggles(tmp_path, monkeypatch):
     assert client.put("/api/prefs", json={"indexing_enabled": True}, headers=FUSED).json()[
         "indexing"
     ]["enabled"] is True
+
+
+def _indexing_env(tmp_path, monkeypatch, *, desktop, stored=None, dev=False, env=None):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path))
+    monkeypatch.delenv(prefs_mod.INDEXING_ENV, raising=False)
+    monkeypatch.delenv("FUSED_RENDER_DEV", raising=False)
+    if dev:
+        monkeypatch.setenv("FUSED_RENDER_DEV", "1")
+    if env is not None:
+        monkeypatch.setenv(prefs_mod.INDEXING_ENV, env)
+    monkeypatch.setattr(prefs_mod, "is_desktop_app", lambda: desktop)
+    if stored is not None:
+        (tmp_path / "prefs.json").write_text(
+            json.dumps({"indexing_enabled": stored}), encoding="utf-8")
+
+
+def test_indexing_default_off_outside_desktop(tmp_path, monkeypatch):
+    _indexing_env(tmp_path, monkeypatch, desktop=False)
+    assert prefs_mod.indexing_enabled() is False
+
+
+def test_indexing_default_on_in_desktop(tmp_path, monkeypatch):
+    _indexing_env(tmp_path, monkeypatch, desktop=True)
+    assert prefs_mod.indexing_enabled() is True
+
+
+def test_indexing_stored_true_wins_outside_desktop(tmp_path, monkeypatch):
+    _indexing_env(tmp_path, monkeypatch, desktop=False, stored=True)
+    assert prefs_mod.indexing_enabled() is True
+
+
+def test_indexing_stored_false_wins_in_desktop(tmp_path, monkeypatch):
+    _indexing_env(tmp_path, monkeypatch, desktop=True, stored=False)
+    assert prefs_mod.indexing_enabled() is False
+
+
+def test_indexing_env_override_wins_outside_desktop(tmp_path, monkeypatch):
+    _indexing_env(tmp_path, monkeypatch, desktop=False, env="1")
+    assert prefs_mod.indexing_enabled() is True
+
+
+def test_indexing_dev_run_stays_off_even_in_desktop(tmp_path, monkeypatch):
+    _indexing_env(tmp_path, monkeypatch, desktop=True, dev=True)
+    assert prefs_mod.indexing_enabled() is False
+
+
+def test_is_desktop_app_reads_the_instance_env(monkeypatch):
+    ident = "FUSED_RENDER_DESKTOP_INSTANCE_ID"
+    token = "FUSED_RENDER_DESKTOP_INSTANCE_TOKEN"
+    monkeypatch.delenv(ident, raising=False)
+    monkeypatch.delenv(token, raising=False)
+    assert _REAL_IS_DESKTOP_APP() is False
+    monkeypatch.setenv(ident, "abc")
+    assert _REAL_IS_DESKTOP_APP() is False  # half-set pair is not the app
+    monkeypatch.delenv(ident)
+    monkeypatch.setenv(token, "tok")
+    assert _REAL_IS_DESKTOP_APP() is False
+    monkeypatch.setenv(ident, "abc")
+    assert _REAL_IS_DESKTOP_APP() is True
 
 
 def test_put_rejects_bad_indexing_enabled(tmp_path, monkeypatch):

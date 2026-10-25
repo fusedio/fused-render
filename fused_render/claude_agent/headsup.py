@@ -546,6 +546,10 @@ def _load(path: str | None) -> dict:
         out["note_id"] = nid if isinstance(nid, str) else ""
         turn = data.get("offered_turn")
         out["offered_turn"] = turn if isinstance(turn, int) and not isinstance(turn, bool) else None
+        out["note_open"] = data.get("note_open") is True
+    wt = data.get("withdrawn_turn")
+    if isinstance(wt, int) and not isinstance(wt, bool):
+        out["withdrawn_turn"] = wt
     dismissed = data.get("dismissed")
     if isinstance(dismissed, list):
         out["dismissed"] = {d for d in dismissed if isinstance(d, str)}
@@ -569,6 +573,8 @@ def _save(st: dict) -> None:
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump({"note": st["note"], "note_id": st["note_id"],
                        "offered_turn": st["offered_turn"],
+                       "note_open": st["note_open"],
+                       "withdrawn_turn": st["withdrawn_turn"],
                        "dismissed": sorted(st["dismissed"]),
                        # a restart must not re-run a fork (~134k tokens) for a
                        # turn that was already checked
@@ -590,7 +596,8 @@ def _run_state(run_id: str, run_dir: str | None = None) -> dict:
     if st is None:
         path = _state_path(run_id, run_dir)
         st = {"checked": set(), "offered_turn": None, "inflight": False,
-              "note": None, "note_id": "", "dismissed": set(), "path": path}
+              "note": None, "note_id": "", "note_open": False,
+              "withdrawn_turn": None, "dismissed": set(), "path": path}
         st.update(_load(path))
         _state[run_id] = st
     _state.move_to_end(run_id)
@@ -617,6 +624,9 @@ def _worker(agent, run_id: str, run_dir: str, turn_index: int,
             st["note"] = note
             st["note_id"] = uuid.uuid4().hex[:12]
             st["offered_turn"] = turn_index
+            # A note written while its turn was still running is withdrawn
+            # when that turn ends (see `_poll`).
+            st["note_open"] = turn_open
             _save(st)
             mem = _mem_read(_runs_root)
             _remember(mem, "seen", note["learn"])
@@ -657,9 +667,19 @@ def _poll(agent, run_id: str) -> dict:
                     mem["skip_checks"] = 0 if n <= 2 else min(_MAX_SKIP, 2 ** (n - 3))
                     _mem_save(_runs_root, mem)
                 st["note"] = None
+                st["note_open"] = False
                 _save(st)
     with _lock:
         st = _run_state(run_id)
+        if st["note"] is not None and st["note_open"] and st["offered_turn"] is not None:
+            # A mid-turn note is about work in progress: once its turn is over
+            # the turn-end review replaces it. Not ignored, not dismissed.
+            cur, _, cur_open = main_steps(run_dir, agent)
+            if cur > st["offered_turn"] or not cur_open:
+                st["withdrawn_turn"] = st["offered_turn"]
+                st["note"] = None
+                st["note_open"] = False
+                _save(st)
         if st["note"] is not None and st["note_id"] not in st["dismissed"]:
             return {"state": "note", "id": st["note_id"], "note": st["note"]}
         if st["inflight"]:
@@ -675,18 +695,21 @@ def _poll(agent, run_id: str) -> dict:
         st = _run_state(run_id)
         if st["inflight"]:
             return {"state": "checking"}
-        if st["offered_turn"] == turn_index:
+        withdrawn = st["withdrawn_turn"] == turn_index and not turn_open
+        if st["offered_turn"] == turn_index and not withdrawn:
             return {"state": "idle"}
         bucket = steps // STEPS_PER_CHECK
         key = (turn_index, bucket)
-        if key in st["checked"]:
+        if not withdrawn and key in st["checked"]:
             return {"state": "idle"}
         if not turn_open:
             # The turn just closed: one final look, but only when no check ran
-            # in this turn at all.
-            if any(t == turn_index for t, _ in st["checked"]):
+            # in this turn at all, or the only note it produced was withdrawn.
+            if not withdrawn and any(t == turn_index for t, _ in st["checked"]):
                 return {"state": "idle"}
             key = (turn_index, -1)
+            if key in st["checked"]:
+                return {"state": "idle"}
         mem = _mem_read(_runs_root)
         if mem["skip_checks"] > 0:
             mem["skip_checks"] -= 1
@@ -724,4 +747,5 @@ def dismiss(run_id: str, note_id: str, answer: str = "dismiss") -> None:
         st["dismissed"].add(note_id)
         if st["note_id"] == note_id:
             st["note"] = None
+            st["note_open"] = False
         _save(st)

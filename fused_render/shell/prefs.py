@@ -35,7 +35,9 @@ and /monitor page — is offered; opt-in, default off; see ``monitor_enabled``),
 for an app whose folder is its own pushed GitHub repo — opt-in, default off;
 see ``github_link_enabled``),
 **indexing_enabled** (whether
-background file-index scanning may run — default ON, see ``indexing_enabled``),
+background file-index scanning may run — default ON only inside the native
+desktop app, OFF for browser/CLI installs and dev runs; see
+``indexing_enabled``),
 **chromium_windows_enabled** (whether the macOS app's NEW windows are hosted
 by the Chromium engine the app ships instead of WKWebView — default ON,
 ``false`` opts out; see ``chromium_windows_enabled`` and
@@ -661,35 +663,51 @@ def is_dev_run() -> bool:
     return os.environ.get("FUSED_RENDER_DEV") == "1"
 
 
+def is_desktop_app() -> bool:
+    """The server runs inside the native desktop app: the macOS app
+    (`app.py configure_desktop_instance`) or the Linux/Windows supervisor
+    (`supervisor/paths.py child_environment`) sets the desktop instance
+    id + token env pair; a pip/CLI/browser server and dev.sh never do. A
+    half-set pair is not the app."""
+    from fused_render import paths
+    try:
+        return paths.desktop_instance() is not None
+    except RuntimeError:
+        return False
+
+
 def indexing_enabled() -> bool:
     """Whether background file-index scanning may run at all (default ON
-    for the installed app, default OFF for a dev run).
+    only inside the native desktop app; OFF for browser/CLI installs and
+    dev runs).
 
-    Mirrors `calls_enabled()`'s idiom: absence and any non-`false` stored
-    value both read as enabled, so a preference file that predates this
-    setting — every existing install — keeps scanning exactly as before.
+    With NO stored preference the default is ON only when `is_desktop_app()`
+    and not `is_dev_run()`. A whole-home scan is a heavy background cost the
+    user did not ask for outside the app, and the desktop app has the Full
+    Disk Access onboarding flow that makes it worthwhile. Opt in with
+    Preferences -> Indexing (stores `indexing_enabled: true`) or
+    `FUSED_RENDER_INDEXING=1` for the process. The stored preference wins
+    over the default either way, so a user who turned it on (or off) stays
+    that way across restarts; the env override wins over both.
 
-    Dev runs (`is_dev_run`) default OFF with NO stored preference: every
-    worktree server used to watch the whole home dir and compact the index
-    alongside the installed app, which is what put a 10-core Mac at load
-    ~500 and the desktop app past its boot cutoff (2026-10-16 diagnostics).
-    A dev server that needs the index opts in — Preferences → Indexing
-    (stores `indexing_enabled: true`) or `FUSED_RENDER_INDEXING=1` for the
-    process — and the stored preference still wins over the dev default, so
-    a developer who turned it on stays on across restarts.
+    Dev runs stay OFF even if desktop were faked: every worktree server used
+    to watch the whole home dir and compact the index alongside the installed
+    app, which put a 10-core Mac at load ~500 and the desktop app past its
+    boot cutoff (2026-10-16 diagnostics).
 
-    Turning this off does not delete the on-disk index or stop
-    `/api/index/rank` from answering it — only new scans are refused. Every
-    trigger that can start one (the startup scheduler, the on-demand scan
-    routes, the freshness cadence, mutation-triggered rescans) reads this
-    per call, same as `reader_enabled`, so a toggle applies to the very next
-    one with no server restart.
+    An existing non-desktop install with no stored preference now stops
+    starting new scans; its on-disk index is kept and still answers
+    `/api/index/rank`. Turning this off never deletes the index or stops
+    ranking — only new scans are refused. Every trigger that can start one
+    (the startup scheduler, the on-demand scan routes, the freshness cadence,
+    mutation-triggered rescans) reads this per call, same as `reader_enabled`,
+    so a toggle applies to the very next one with no server restart.
     """
     override = indexing_override()
     if override is not None:
         return override
     stored = read_prefs().get("indexing_enabled")
-    if stored is None and is_dev_run():
+    if stored is None and (is_dev_run() or not is_desktop_app()):
         return False
     return stored is not False
 
