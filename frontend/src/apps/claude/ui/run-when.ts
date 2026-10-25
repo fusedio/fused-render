@@ -62,6 +62,26 @@ export function runSpan(segs: readonly (Segment | null | undefined)[]): RunWhen 
   return Number.isFinite(started) ? { started, finished: Math.max(started, finished) } : null;
 }
 
+/** THE TURN'S OWN LINE, `Worked for 2m 10s` (Claude Code's `✻ Worked for …`
+ *  under a finished reply). Unlike the run hover above this is the WHOLE turn:
+ *  from the user message that prompted it (`startTs`; the first segment's stamp
+ *  when there is none) to the latest clock in its segments. A live turn's rows
+ *  carry no clock, so `endedAt` — the page's own stamp at the run's end — stands
+ *  in when the segments give nothing. Null when no span can be drawn or it is
+ *  under a second. Epoch seconds in. */
+export function turnWorkedWords(
+  startTs: number | null | undefined,
+  segs: readonly (Segment | null | undefined)[],
+  endedAt?: number | null,
+): string | null {
+  const span = runSpan(segs);
+  const ok = (n: unknown): n is number => typeof n === "number" && Number.isFinite(n) && n > 0;
+  const start = ok(startTs) ? startTs : span?.started;
+  const end = span && span.finished > span.started ? span.finished : ok(endedAt) ? endedAt : span?.finished;
+  if (start === undefined || end === undefined || end - start < 1) return null;
+  return "Worked for " + spanWords(end - start);
+}
+
 /** `3m ago · ran 12s` — the hover for ONE run: how long ago it finished,
  *  then how long it took, first call to last result. TIME FIRST, SPAN SECOND —
  *  the chip stamp hover's order (`chipHint`; Akshil, 2026-10-06: "the order is

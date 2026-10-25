@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test";
 
 import type { Segment, ToolSegment } from "../protocol/types";
-import { chipHint, chipWhen, runSpan, runWhenWords, spanWords } from "./run-when";
+import { chipHint, chipWhen, runSpan, runWhenWords, spanWords, turnWorkedWords } from "./run-when";
 
 const tool = (id: string, ts?: number, ended?: number): ToolSegment => ({
   kind: "tool",
@@ -78,5 +78,27 @@ describe("the chip's lane stamp and its hover (Akshil, 2026-10-06)", () => {
     expect(chipHint({ ts: T0, status: "running" })).toMatch(/ · still running$/);
     expect(chipHint({ ts: T0, status: "ok" })).toMatch(/\d\d:\d\d:\d\d$/);
     expect(chipHint({ status: "ok" })).toBeNull();
+  });
+});
+
+describe("turnWorkedWords", () => {
+  test("measures from the user turn to the latest segment clock", () => {
+    const segs = [think(T0 + 5), tool("a", T0 + 6, T0 + 130)];
+    expect(turnWorkedWords(T0, segs)).toBe("Worked for 2m 10s");
+  });
+  test("falls back to the first segment stamp when there is no user ts", () => {
+    expect(turnWorkedWords(undefined, [think(T0), tool("a", T0 + 1, T0 + 12)])).toBe("Worked for 12s");
+  });
+  test("a live turn with no segment clocks uses the client end stamp", () => {
+    expect(turnWorkedWords(T0, [{ kind: "text", text: "hi" }], T0 + 65)).toBe("Worked for 1m 5s");
+  });
+  test("segment clocks win over the client end stamp", () => {
+    expect(turnWorkedWords(T0, [tool("a", T0 + 1, T0 + 30)], T0 + 999)).toBe("Worked for 30s");
+  });
+  test("null when nothing can be computed or under a second", () => {
+    expect(turnWorkedWords(undefined, [{ kind: "text", text: "hi" }])).toBeNull();
+    expect(turnWorkedWords(T0, [])).toBeNull();
+    expect(turnWorkedWords(T0, [think(T0)])).toBeNull();
+    expect(turnWorkedWords(T0, [], T0 + 0.5)).toBeNull();
   });
 });
