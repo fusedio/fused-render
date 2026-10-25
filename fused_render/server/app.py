@@ -1180,7 +1180,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     app.middleware("http")(_bots_forward)
 
     # The bots' scheduler thread. `@on_startup`, so a lean `fused-render open`
-    # starts none. Its first pass elects the owner; the winner then runs the
+    # starts none; and only on a machine that has used bots (else lazily, see below). Its first pass elects the owner; the winner then runs the
     # layout migration, the FusedBot import, the Super Bot seed, the orphan
     # browser sweep and the channels router before its first tick
     # (registry._become_owner) — all of which used to run here in every process.
@@ -1191,6 +1191,13 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
             return
         from fused_render.bots import registry as bots_registry
 
+        # Only a machine that has used bots (a bot, the Super seed stamp, or a
+        # pending FusedBot import) pays the election/migration/seed at boot; any
+        # other starts the scheduler on its first bots request
+        # (`bots/routes.forward_middleware` -> `registry.ensure_started`).
+        if not bots_registry.has_been_used():
+            logger.info("bots: no prior use on this machine; the scheduler starts on the first bots request")
+            return
         try:
             # Off the loop: a win runs the layout migration, the import and the takeover walk before returning.
             await asyncio.to_thread(bots_registry.start)

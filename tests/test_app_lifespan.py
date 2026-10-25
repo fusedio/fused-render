@@ -813,3 +813,63 @@ def test_no_hub_refresh_hooks_at_boot_and_catalog_read_starts_them(tmp_path, mon
         assert meta == [] and cat == []
         assert client.get("/api/ai/catalog").status_code == 200
         assert meta and cat
+
+
+def _bots_home_fixture(tmp_path, monkeypatch):
+    from fused_render.bots import paths as bpaths
+
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    return bpaths
+
+
+def test_bots_not_started_at_boot_without_prior_use_then_started_by_first_request(
+        tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from fused_render import _platform
+    from fused_render.bots import registry as bots_registry
+
+    monkeypatch.setattr(_platform, "IS_WINDOWS", False)
+    _bots_home_fixture(tmp_path, monkeypatch)
+    calls = []
+    monkeypatch.setattr(bots_registry, "start", lambda: calls.append(1))
+    app = create_app(start_dir=str(tmp_path))
+    with TestClient(app) as client:
+        assert calls == []  # boot: nothing
+        client.get("/api/bots/setup")
+        assert calls == [1]  # first bots request starts it
+
+
+def test_bots_started_at_boot_with_prior_use(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from fused_render import _platform
+    from fused_render.bots import registry as bots_registry
+
+    monkeypatch.setattr(_platform, "IS_WINDOWS", False)
+    _bots_home_fixture(tmp_path, monkeypatch)
+    stamp = bots_registry.seed_stamp_path()
+    os.makedirs(os.path.dirname(stamp), exist_ok=True)
+    open(stamp, "w").write("{}")
+    calls = []
+    monkeypatch.setattr(bots_registry, "start", lambda: calls.append(1))
+    with TestClient(create_app(start_dir=str(tmp_path))):
+        assert calls == [1]
+
+
+def test_bots_has_been_used_counts_a_bot_and_a_pending_fusedbot_tree(tmp_path, monkeypatch):
+    from fused_render.bots import paths as bpaths
+    from fused_render.bots import registry as bots_registry
+
+    _bots_home_fixture(tmp_path, monkeypatch)
+    legacy = tmp_path / "legacy"
+    monkeypatch.setenv("FUSED_RENDER_APP_HOME", str(legacy))
+    assert bots_registry.has_been_used() is False
+    (legacy / "bots").mkdir(parents=True)
+    assert bots_registry.has_been_used() is True  # legacy import pending
+    import shutil
+    shutil.rmtree(legacy)
+    bot_dir = os.path.join(bpaths.data_dir(), "b1")
+    os.makedirs(bot_dir)
+    open(os.path.join(bot_dir, "bot.json"), "w").write("{}")
+    assert bots_registry.has_been_used() is True
