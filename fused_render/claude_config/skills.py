@@ -39,6 +39,16 @@ main(action=...):
           is already in a user skills dir
   add -> {ok, slug, path}  params: marketplace, plugin, slug  (copies a
           marketplace skill to where the enabled CLIs read it)
+  preview -> {ok, text, files}  params: marketplace, plugin, slug  (a marketplace
+            skill's SKILL.md and file list, resolved like add; read-only)
+  search -> {ok, skills: [{id, source, skillId, name, installs, added}]}
+            params: query  (skills.sh directory search, 30 hits; < 2 chars is an
+            empty result with no request; network trouble is {ok: False, error})
+  remote_preview -> {ok, text, files}  params: source (GitHub owner/repo), skill_id
+            (the skill's SKILL.md and file list, located in the repo's tree)
+  remote_add -> {ok, slug, path}  params: source, skill_id  (downloads that skill
+            dir from GitHub and places it like add; the file paths come from the
+            repo's tree, never from the caller)
   open -> {ok}   params: slug [, source, plugin, marketplace, location]  (reveal folder)
   create -> {ok, slug}  params: slug  (scaffolds SKILL.md where add would put it)
   read   -> {ok, text, files}  params: slug, path (default SKILL.md) [, source, plugin, marketplace, location]
@@ -47,9 +57,13 @@ main(action=...):
   delete -> {ok, removed}  params: slug [, location]  (user skills only; removes
             every copy and link of it across the user dirs)
 """
+import json
 import os
 import re
 import shutil
+import time
+import urllib.parse
+import urllib.request
 
 from fused_render import codex_health, copilot_health, gemini_health
 from fused_render.shell import prefs
@@ -359,6 +373,158 @@ def _add(marketplace: str, plugin: str, slug: str) -> dict:
     return {"ok": False, "error": f"no skill {slug!r} in {plugin}@{marketplace}"}
 
 
+# -- skills.sh + GitHub: skills that are not on this machine -----------------------
+
+_HTTP_TIMEOUT = 10
+_SEARCH_LIMIT = 30
+_TREE_TTL = 600
+_FRONTMATTER_PROBES = 40
+_SOURCE_RE = re.compile(r"^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$")
+_trees: dict = {}  # source -> (fetched at, [(path, size)])
+
+
+def _http_get(url: str) -> bytes:
+    """GET `url`; network and HTTP errors surface as OSError."""
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "fused-render", "Accept": "application/json, text/plain, */*"})
+    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as r:
+        return r.read()
+
+
+def _search(query: str) -> dict:
+    query = (query or "").strip()
+    if len(query) < 2:
+        return {"ok": True, "skills": []}
+    url = "https://skills.sh/api/search?" + urllib.parse.urlencode({"q": query, "limit": _SEARCH_LIMIT})
+    try:
+        rows = json.loads(_http_get(url)).get("skills") or []
+    except (OSError, ValueError, AttributeError) as e:
+        return {"ok": False, "error": f"skills.sh search failed: {e}"}
+    taken = {slug for d, _ in _user_dirs() for slug, _p in _entries(d)}
+    out = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        source, sid = r.get("source"), r.get("skillId")
+        if not isinstance(source, str) or not isinstance(sid, str):
+            continue
+        sid = sid.lower()
+        if not _SOURCE_RE.match(source) or not _SLUG_RE.match(sid):
+            continue
+        installs = r.get("installs")
+        out.append({
+            "id": f"{source}/{sid}",
+            "source": source,
+            "skillId": sid,
+            "name": r.get("name") if isinstance(r.get("name"), str) and r.get("name") else sid,
+            "installs": installs if isinstance(installs, int) else 0,
+            "added": sid in taken,
+        })
+    return {"ok": True, "skills": out}
+
+
+def _repo_tree(source: str) -> list:
+    """[(path, size)] of every blob in the repo's default branch. One request
+    per source per _TREE_TTL: the unauthenticated GitHub limit is 60/hour."""
+    hit = _trees.get(source)
+    if hit and time.time() - hit[0] < _TREE_TTL:
+        return hit[1]
+    try:
+        raw = _http_get(f"https://api.github.com/repos/{source}/git/trees/HEAD?recursive=1")
+    except OSError as e:
+        raise ValueError(f"could not read {source} on GitHub: {e}")
+    blobs = [(n["path"], n.get("size") or 0) for n in (json.loads(raw).get("tree") or [])
+             if isinstance(n, dict) and n.get("type") == "blob" and isinstance(n.get("path"), str)]
+    _trees[source] = (time.time(), blobs)
+    return blobs
+
+
+def _raw(source: str, path: str) -> bytes:
+    return _http_get(f"https://raw.githubusercontent.com/{source}/HEAD/{urllib.parse.quote(path)}")
+
+
+def _locate(source: str, skill_id: str) -> tuple:
+    """(skill dir inside the repo, [(path, relpath, size)]) for the skill named
+    `skill_id`: the SKILL.md whose dir is called that, else whose frontmatter
+    `name` is. The paths come from the repo's tree."""
+    if not _SOURCE_RE.match(source or "") or not _SLUG_RE.match(skill_id or ""):
+        raise ValueError(f"invalid skill: {source!r} {skill_id!r}")
+    tree = _repo_tree(source)
+    cands = sorted((p for p, _n in tree if p == "SKILL.md" or p.endswith("/SKILL.md")),
+                   key=lambda p: (p.count("/"), p))
+    found = next((p for p in cands if p.rpartition("/")[0].rpartition("/")[2].lower() == skill_id), None)
+    if found is None:
+        for p in cands[:_FRONTMATTER_PROBES]:
+            try:
+                text = _raw(source, p).decode("utf-8", errors="replace")
+            except OSError:
+                continue
+            if (lib.parse_frontmatter(text[:4096]).get("name") or "").lower() == skill_id:
+                found = p
+                break
+    if found is None:
+        raise ValueError(f"no skill {skill_id} in {source}")
+    root = found.rpartition("/")[0]
+    prefix = root + "/" if root else ""
+    files, size = [], 0
+    for p, n in tree:
+        if not p.startswith(prefix):
+            continue
+        rel = p[len(prefix):]
+        parts = rel.split("/")
+        if any(x in ("", ".", "..") for x in parts) or any(x in _COPY_SKIP_DIRS for x in parts[:-1]):
+            continue
+        files.append((p, rel, n))
+        size += n
+        if len(files) > _COPY_MAX_FILES or size > _COPY_MAX_BYTES:
+            raise ValueError("skill is too large to add")
+    files.sort(key=lambda f: f[1])
+    return root, files
+
+
+def _remote_preview(source: str, skill_id: str) -> dict:
+    root, files = _locate(source, skill_id)
+    skill_md = next(p for p, rel, _n in files if rel == "SKILL.md")
+    text = _raw(source, skill_md).decode("utf-8", errors="replace")
+    return {"ok": True, "text": text, "files": [rel for _p, rel, _n in files]}
+
+
+def _remote_add(source: str, skill_id: str) -> dict:
+    _root, files = _locate(source, skill_id)
+
+    def fill(dst: str) -> None:
+        for p, rel, _n in files:
+            target = os.path.normpath(os.path.join(dst, rel))
+            if not target.startswith(dst + os.sep):
+                raise ValueError(f"invalid path: {rel!r}")
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, "wb") as f:
+                f.write(_raw(source, p))
+
+    return _place(skill_id, fill)
+
+
+def _preview(marketplace: str, plugin: str, slug: str) -> dict:
+    found, _ = _marketplace_plugins()
+    for mkt, name, root, _d in found:
+        if mkt != marketplace or name != plugin:
+            continue
+        for s, skill_dir, _n, _d in _marketplace_skills(root):
+            if s != slug:
+                continue
+            md = os.path.join(skill_dir, "SKILL.md")
+            if not plugins._within(skill_dir, os.path.realpath(md)):
+                raise ValueError("SKILL.md points outside the skill")
+            with open(md, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+            files = []
+            for dirpath, dirnames, names in os.walk(skill_dir):
+                dirnames[:] = [d for d in dirnames if d not in _COPY_SKIP_DIRS]
+                files.extend(os.path.relpath(os.path.join(dirpath, n), skill_dir) for n in names)
+            return {"ok": True, "text": text, "files": sorted(files)}
+    return {"ok": False, "error": f"no skill {slug!r} in {plugin}@{marketplace}"}
+
+
 def _remove(root: str) -> list:
     """Remove a user skill: its dir and every link to it in the user dirs.
     A link whose target lives outside them removes only the link."""
@@ -399,9 +565,12 @@ def _skill_file(root: str, path: str) -> str:
 
 def main(action: str = "list", slug: str = "", path: str = "", text: str = "",
          source: str = "user", plugin: str = "", marketplace: str = "",
-         location: str = "") -> dict:
+         location: str = "", query: str = "", skill_id: str = "") -> dict:
     if action == "list":
         return _list()
+
+    if action == "search":
+        return _search(query)
 
     if action == "available":
         return _available()
@@ -421,6 +590,16 @@ def main(action: str = "list", slug: str = "", path: str = "", text: str = "",
         if action == "add":
             with lib.config_lock():
                 return _add(marketplace, plugin, slug)
+
+        if action == "preview":
+            return _preview(marketplace, plugin, slug)
+
+        if action == "remote_preview":
+            return _remote_preview(source, skill_id)
+
+        if action == "remote_add":
+            with lib.config_lock():
+                return _remote_add(source, skill_id)
 
         if action == "read":
             root = _skill_dir(slug, source, plugin, marketplace, location)
