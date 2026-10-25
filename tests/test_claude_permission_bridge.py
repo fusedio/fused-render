@@ -2858,3 +2858,59 @@ def test_the_store_survives_across_two_runs_of_the_same_chat(agent, tmp_path, mo
         s.close()
     # another chat does not inherit it
     assert _store(agent, "chat-2") is None
+
+
+# ---- perm-waits: how long a card sat on the user (D1439 follow-up)
+def _waits(agent, chat="chat-1"):
+    return agent._chat_waits_load(chat)
+
+
+def _req_with_age(agent, run_dir, rid, tuid, age):
+    import time as _time
+    with open(os.path.join(agent._perm_dir(run_dir), rid + ".req.json"), "w") as fh:
+        json.dump({"id": rid, "tool": "Bash", "input": {}, "tool_use_id": tuid,
+                   "created_at": _time.time() - age}, fh)
+
+
+def test_decision_records_the_wait_keyed_by_tool_use_id(agent, tmp_path, monkeypatch):
+    run_dir = _chat_run(agent, tmp_path, monkeypatch, "run")
+    _req_with_age(agent, run_dir, "r1", "toolu_1", 120)
+    assert agent._write_decision(agent._perm_dir(run_dir), "r1", {"decision": "allow"})
+    start, end = _waits(agent)["toolu_1"]
+    assert 119 < end - start < 125
+
+
+def test_second_writer_does_not_record_a_wait(agent, tmp_path, monkeypatch):
+    run_dir = _chat_run(agent, tmp_path, monkeypatch, "run")
+    _req_with_age(agent, run_dir, "r1", "toolu_1", 120)
+    pd = agent._perm_dir(run_dir)
+    with open(os.path.join(pd, "r1.res.json"), "w") as fh:
+        json.dump({"decision": "deny"}, fh)
+    assert agent._write_decision(pd, "r1", {"decision": "allow"})
+    assert "toolu_1" not in _waits(agent)
+
+
+def test_expired_decision_records_no_wait(agent, tmp_path, monkeypatch):
+    run_dir = _chat_run(agent, tmp_path, monkeypatch, "run")
+    _req_with_age(agent, run_dir, "r1", "toolu_1", 120)
+    assert agent._write_decision(agent._perm_dir(run_dir), "r1", {"decision": "expired"})
+    assert "toolu_1" not in _waits(agent)
+
+
+def test_wait_store_is_capped_and_a_bad_req_is_harmless(agent, tmp_path, monkeypatch):
+    run_dir = _chat_run(agent, tmp_path, monkeypatch, "run")
+    for i in range(505):
+        agent._chat_waits_add(run_dir, "t%d" % i, 10.0, 11.0)
+    w = _waits(agent)
+    assert len(w) == 500 and "t504" in w and "t0" not in w
+    _add_req(agent, run_dir, "r2", "Bash", {})  # no tool_use_id / created_at
+    assert agent._write_decision(agent._perm_dir(run_dir), "r2", {"decision": "allow"})
+
+
+def test_legacy_bare_number_wait_is_skipped(agent, tmp_path, monkeypatch):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path / "home"))
+    path = agent._chat_waits_path("chat-1")
+    os.makedirs(os.path.dirname(path))
+    with open(path, "w") as fh:
+        json.dump({"old": 12.5, "ok": [10.0, 20.0], "bad": [5, 1], "short": [1]}, fh)
+    assert _waits(agent) == {"ok": (10.0, 20.0)}
