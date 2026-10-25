@@ -32,6 +32,7 @@ export type Action =
   | "commands"
   | "task_output"
   | "task_stop"
+  | "task_background"
   | "tasks"
   | "cards";
 
@@ -267,6 +268,7 @@ export interface AgentRequests {
   commands: CommandsRequest;
   task_output: TaskOutputRequest;
   task_stop: TaskOutputRequest;
+  task_background: TaskBackgroundRequest;
   tasks: RunTasksRequest;
   cards: CardsRequest;
 }
@@ -1115,6 +1117,7 @@ export interface AgentResponses {
   commands: CommandsResponse | ErrorOnly;
   task_output: TaskOutputResponse | ErrorOnly;
   task_stop: TaskStopResponse | ErrorOnly;
+  task_background: TaskBackgroundResponse | ErrorOnly;
   tasks: RunTasksResponse | ErrorOnly;
   cards: CardsResponse | ErrorOnly;
 }
@@ -1222,6 +1225,19 @@ export interface RunTasksResponse {
 /** `task_stop {run_id, task_id}`: `{ok: true}` once the CLI accepted it. */
 export interface TaskStopResponse {
   ok: true;
+  error?: undefined;
+}
+/** `task_background {run_id, tool_use_id}` (agent.py `_task_background`): send
+ *  the running foreground Bash call to the background. */
+export interface TaskBackgroundRequest {
+  run_id: string;
+  tool_use_id: string;
+}
+/** `task_background`: `{ok: true, backgrounded}` once the CLI answered; the
+ *  Bash tool then returns "manually backgrounded" and the turn carries on. */
+export interface TaskBackgroundResponse {
+  ok: true;
+  backgrounded: boolean;
   error?: undefined;
 }
 export interface TaskOutputResponse {

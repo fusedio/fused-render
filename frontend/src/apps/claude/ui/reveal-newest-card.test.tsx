@@ -42,6 +42,7 @@ const actions = {
   decidePlan: async () => {},
   dismissCard: () => {},
   stopRun: async () => {},
+  addNote: () => {},
 };
 
 test("a tall newest card is revealed top-first by ITS box, not the wrapper's", () => {

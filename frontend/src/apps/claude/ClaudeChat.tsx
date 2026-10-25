@@ -3983,6 +3983,7 @@ function ChatBody(props: ChatBodyProps) {
       decidePlan: controller.decidePlan,
       dismissCard: controller.dismissCard,
       stopRun: controller.stopRun,
+      addNote: controller.addNote,
     }),
     [controller],
   );

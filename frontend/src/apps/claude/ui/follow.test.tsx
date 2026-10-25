@@ -86,6 +86,7 @@ const actions = {
   decidePlan: async () => {},
   dismissCard: () => {},
   stopRun: async () => {},
+  addNote: () => {},
 };
 
 /** Mounts a transcript over a fake scrollport and hands back both it and the

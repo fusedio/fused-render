@@ -1217,6 +1217,7 @@ def test_background_tasks_answer_unsupported_for_copilot(agent, tmp_path):
     _live_run(agent, tmp_path)
     assert agent._task_output("run-1", "b1") == {"error": "unsupported"}
     assert agent._task_stop("run-1", "b1") == {"error": "unsupported"}
+    assert agent._task_background("run-1", "toolu_1") == {"error": "unsupported"}
 
 
 def test_the_terminal_command_uses_the_sessions_backend(agent, target, monkeypatch):
@@ -2085,6 +2086,7 @@ def test_codex_caps_snapshots_and_background_tasks(agent, target, tmp_path):
     _live_run(agent, tmp_path, backend="codex")
     assert agent._task_output("run-1", "b1") == {"error": "unsupported"}
     assert agent._task_stop("run-1", "b1") == {"error": "unsupported"}
+    assert agent._task_background("run-1", "toolu_1") == {"error": "unsupported"}
 
 
 def test_the_codex_terminal_command(agent, target):
