@@ -97,6 +97,12 @@ export interface AssistantTurn {
   streaming?: boolean;
   /** Which followup slice this bubble belongs to (D687, T: followupSeq). */
   followup?: number;
+  /** CLIENT-ONLY (never on the wire, never from history): epoch SECONDS this
+   *  page saw the reply end, stamped when a live run settles. Live delta rows
+   *  carry no clock (types.ts `SegmentClock`), so this is what the "Worked for"
+   *  line (ui/run-when `turnWorkedWords`) is measured to when the segments
+   *  have none; a restored turn reads its segments' clocks instead. */
+  endedAt?: number;
 }
 
 /**

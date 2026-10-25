@@ -2292,19 +2292,23 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // `streaming: true` parks the caret on a reply that finished minutes
           // ago.
           const live = [...chunks.values()].filter((c) => !!c.key);
+          // WHEN IT ENDED, off the wall clock, for the "Worked for" line: live
+          // delta rows carry no clock, so a reply that settled here has nothing
+          // else to be measured to (types.ts `AssistantTurn.endedAt`).
+          const endedAt = wallClock() / 1000;
           if (!end.keepText) {
             for (const c of live) dropTurn(c.key as string);
           } else if (live.length) {
             for (const c of live) {
               if (c.segMode) {
-                replaceTurn(c.key as string, { streaming: false, text: c.tailText || "" });
+                replaceTurn(c.key as string, { streaming: false, text: c.tailText || "", endedAt });
               } else {
                 // The DONE poll's own text (T:16288/16360), so a poll that
                 // legitimately shortened the body can shrink the bubble and the
                 // typer's clamp fires (T:15075). An empty done poll is the one
                 // case that must not wipe a bubble it already filled, so it
                 // keeps what the last non-empty poll left.
-                replaceTurn(c.key as string, { streaming: false, text: c.flatText });
+                replaceTurn(c.key as string, { streaming: false, text: c.flatText, endedAt });
               }
             }
           } else if (poll.text || (poll.segments || []).length) {
@@ -2332,6 +2336,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
                 text: view.mode === "segments" ? view.view.tailText || "" : view.text,
                 ...(view.mode === "segments" ? { segments: view.view.rows.map((r) => r.seg) } : {}),
                 followup: chunkOffset + j,
+                endedAt,
               });
             }
           }

@@ -322,6 +322,34 @@ describe("start → poll → done", () => {
     expect(users(controller).map((t) => t.ts)).toEqual([1]);
   });
 
+  test("a reply that ends live is stamped with WHEN it ended (the Worked for line's fallback)", async () => {
+    // Live delta rows carry no clock, so the page stamps the end itself, in
+    // epoch seconds off the wall clock, on every bubble the run settled.
+    let ms = 1_000;
+    const agent = fakeAgent({
+      start: () => ({ run_id: "r1" }),
+      poll: () => {
+        ms = 131_000;
+        return poll({ done: true, text: "ok", segments: [text("ok")] });
+      },
+    });
+    const controller = createChatController({
+      file: "/proj/app.py",
+      params: createMemoryParamsStore(),
+      run: agent.run,
+      sleep: () => Promise.resolve(),
+      now: () => ms,
+      wallClock: () => ms,
+      model: () => "sonnet",
+      effort: () => "high",
+      hasPane: () => true,
+    });
+    await controller.sendMessage("hi");
+    expect(users(controller)[0]!.ts).toBe(1);
+    expect(assistants(controller).map((t) => t.endedAt)).toEqual([131]);
+    controller.dispose();
+  });
+
   test("the stamp is WALL CLOCK — a fake duration clock cannot date a message in 1970", async () => {
     // Review #9. `now` is shared by every elapsed-time reader in the controller
     // and is free to be monotonic (`performance.now`) or fake; reading a DATE
