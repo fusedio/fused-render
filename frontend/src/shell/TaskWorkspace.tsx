@@ -761,17 +761,20 @@ export function TaskWorkspace({
         case "needs": {
           let to = nextNeedingYou(st.rows, st.selected);
           if (!to) {
-            // Every drawn card is checked first; a "Needs you" group that is
-            // folded or capped may hold one that is not drawn.
-            const g = st.groups.find((x) => x.key === "needs");
-            if (g && g.tasks.length > 0) {
-              to = g.tasks[0].key;
-              if (groupCollapsed("needs", st.collapsed)) {
-                const next = { ...st.collapsed, needs: false };
+            // Every drawn card is checked first; a folded or capped group may
+            // hold one that is not drawn. A pinned task that needs you lives in
+            // "Pinned", which is drawn before "Needs you", so it is checked first.
+            for (const key of ["pinned", "needs"] as const) {
+              const hit = st.groups.find((x) => x.key === key)?.tasks.find(needsYou);
+              if (!hit) continue;
+              to = hit.key;
+              if (groupCollapsed(key, st.collapsed)) {
+                const next = { ...st.collapsed, [key]: false };
                 writeCollapsed(next);
                 setCollapsed(next);
               }
-              setExpanded((x) => new Set([...x, "needs"]));
+              setExpanded((x) => new Set([...x, key]));
+              break;
             }
           }
           if (to) {

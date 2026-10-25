@@ -734,3 +734,24 @@ test("if the pins cannot be read, a toggle sends no write", async () => {
   expect(putBodies(posts)).toEqual([]);
   expect(r.root.findAllByProps({ "aria-label": "Unpin" })).toHaveLength(0);
 });
+
+test("n unfolds a folded Pinned group that holds the only task needing you", async () => {
+  pinnedPref = ["p"];
+  store["fused.tasks.workspace.collapsed"] = JSON.stringify({ pinned: true });
+  serve();
+  const handlers: ((e: unknown) => void)[] = [];
+  const realAdd = window.addEventListener;
+  window.addEventListener = ((type: string, fn: (e: unknown) => void) => {
+    if (type === "keydown") handlers.push(fn);
+  }) as typeof window.addEventListener;
+  const r = await render([task({ key: "p", status: "needs_attention" }), task({ key: "w", status: "in_progress" })]);
+  window.addEventListener = realAdd;
+  expect(r.root.findAllByProps({ "data-key": "p" })).toHaveLength(0);
+  await act(async () => {
+    handlers.forEach((h) =>
+      h({ key: "n", defaultPrevented: false, target: null, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, preventDefault() {} }),
+    );
+  });
+  const card = r.root.findByProps({ "data-key": "p" });
+  expect(card.props["aria-selected"]).toBe(true);
+});

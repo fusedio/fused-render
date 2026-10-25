@@ -17,6 +17,7 @@ import {
   workspaceTasks,
   workspaceGroup,
   groupTasks,
+  ARCHIVE_IDLE_SECONDS,
   type WorkspaceFacts,
 } from "@shell/workspace-lib";
 
@@ -446,4 +447,11 @@ describe("dirtyBadge", () => {
   test("dirtyTitle keeps the exact counts", () => {
     expect(dirtyTitle(["running", "3 uncommitted", "2 unpushed"])).toBe("3 uncommitted, 2 unpushed");
   });
+});
+
+test("a pinned idle task with no holds goes to Pinned; unpinned it is Safe to archive", () => {
+  const t = task({ key: "i", last_active: NOW - ARCHIVE_IDLE_SECONDS - 1 });
+  const keys = (pins: string[]) => groupTasks([t], () => facts(), NOW, new Set(pins)).map((x) => x.key);
+  expect(keys(["i"])).toEqual(["pinned"]);
+  expect(keys([])).toEqual(["clear"]);
 });

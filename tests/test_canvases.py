@@ -662,6 +662,70 @@ def test_delete_canvas_cli_failure_keeps_clone(harness, monkeypatch):
     assert (harness.root / "alpha" / "canvas.toml").is_file()
 
 
+def test_forget_file_sessions_erases_the_files_chats_and_skips_running_ones(
+        tmp_path, monkeypatch):
+    """A node deleted in the canvas takes the chats filed on its file: every
+    non-running session `_cli_sessions` lists for the file is erased the way
+    the erase route does it (`erase_task`), its transcript backed up first;
+    a running one is left alone and reported."""
+    from fused_render.server.routers import tasks as tasks_router
+
+    transcript = tmp_path / "s1.jsonl"
+    transcript.write_text("{}\n")
+    rows = [
+        {"id": "s1", "running": False, "backend": "claude", "path": str(transcript)},
+        {"id": "s2", "running": True, "backend": "claude", "path": str(tmp_path / "s2.jsonl")},
+    ]
+
+    class Agent:
+        calls = []
+
+        def _cli_sessions(self, file, limit=30):
+            self.calls.append((file, limit))
+            return rows
+
+    agent = Agent()
+    monkeypatch.setattr(canvases_mod, "_agent_module", lambda: agent)
+    monkeypatch.setattr(tasks_router, "_collect", lambda: {"s1": {"key": "s1", "session_id": "s1"}})
+    erased = []
+    monkeypatch.setattr(tasks_router, "erase_task", lambda key, task: erased.append((key, task["key"])))
+    backups = []
+    out = canvases_mod.forget_file_sessions(
+        ["/clone/udf_2.py"], backup=lambda rel, data: backups.append((rel, data)))
+    assert agent.calls == [("/clone/udf_2.py", None)]
+    assert erased == [("s1", "s1")]
+    assert out["erased"] == ["s1"] and out["skipped"] == ["s2"]
+    assert backups == [(os.path.join("_sessions", "claude", "s1.jsonl"), b"{}\n")]
+
+
+def test_forget_file_sessions_fallback_refusal_is_a_skip(tmp_path, monkeypatch):
+    """A transcript the Tasks page does not list goes through
+    `_erase_session_files` directly; a file that would not go leaves the
+    session's state alone and reports it skipped, not erased."""
+    from fused_render.server.routers import tasks as tasks_router
+
+    class Agent:
+        def _cli_sessions(self, file, limit=30):
+            return [{"id": "s9", "running": False, "backend": "claude",
+                     "path": str(tmp_path / "s9.jsonl")}]
+
+    monkeypatch.setattr(canvases_mod, "_agent_module", lambda: Agent())
+    monkeypatch.setattr(tasks_router, "_collect", lambda: {})
+    monkeypatch.setattr(tasks_router, "_erase_session_files",
+                        lambda sid, path: (0, False, 0, 1))
+    forgotten = []
+    monkeypatch.setattr(tasks_router.sessions, "forget_triage", lambda sid: forgotten.append(sid))
+    out = canvases_mod.forget_file_sessions(["/clone/udf_9.py"])
+    assert out["erased"] == [] and out["skipped"] == ["s9"]
+    assert forgotten == []
+
+
+def test_forget_file_sessions_without_an_agent_module_is_a_no_op(monkeypatch):
+    monkeypatch.setattr(canvases_mod, "_agent_module", lambda: None)
+    assert canvases_mod.forget_file_sessions(["/clone/udf_2.py"]) == {
+        "erased": [], "skipped": [], "files": 1}
+
+
 def test_delete_canvas_rejects_bad_names(harness):
     harness.log_in()
     harness.client.post("/api/canvases/clone", json={"env": ENV, "name": "alpha"}, headers=GUARD)

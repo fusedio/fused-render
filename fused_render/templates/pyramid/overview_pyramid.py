@@ -387,12 +387,13 @@ def main(file: str = "", action: str = "analyze", resampling: str = "",
                               ("out", out), ("overwrite", overwrite)] if v}
 
     def alive(pid):
-        # os.kill(pid, 0) is the no-op liveness check.
-        try:
-            os.kill(pid, 0)
-            return True
-        except Exception:
-            return False
+        # procutil.pid_alive, never os.kill(pid, 0): CTRL_C_EVENT on Windows.
+        import importlib.util
+        path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "shared", "procutil.py")
+        spec = importlib.util.spec_from_file_location("_fr_procutil", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.pid_alive(pid)
 
     jobs = os.path.expanduser(f"~/.cache/{VENV_DIR_NAME}/jobs")
     import hashlib
