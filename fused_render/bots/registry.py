@@ -236,7 +236,7 @@ def _wait_for_pid(pid, budget_s: float = OLD_OWNER_WAIT_S) -> None:
     end = time.monotonic() + budget_s
     while time.monotonic() < end:
         try:
-            os.kill(pid, 0)
+            _platform.probe_pid(pid)
         except OSError:
             return
         time.sleep(0.2)
@@ -290,7 +290,10 @@ def _read_lock_record() -> dict | None:
 
 def _pid_alive(pid) -> bool:
     try:
-        os.kill(int(pid), 0)
+        pid = int(pid)
+        if pid <= 0:
+            return False
+        _platform.probe_pid(pid)
         return True
     except (OSError, TypeError, ValueError):
         return False
