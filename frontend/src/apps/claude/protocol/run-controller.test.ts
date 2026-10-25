@@ -350,6 +350,54 @@ describe("start → poll → done", () => {
     controller.dispose();
   });
 
+  test("a reply a follow-up seam closed keeps its own end stamp, not the run's", async () => {
+    // One shared settle stamp would date reply A at the run's end and fold B's
+    // work into A's "Worked for" line.
+    let ms = 1_000;
+    let controller!: ChatController;
+    const A = text("Reply A.");
+    const B = text("Reply B.");
+    const agent = fakeAgent({
+      start: () => ({ run_id: "r1" }),
+      send: () => ({ sent: true as const }),
+      poll: async (_f, n) => {
+        if (n === 0) {
+          await controller.sendFollowUp("and this");
+          return poll({ segments: [A], text: A.text });
+        }
+        if (n === 1) {
+          ms = 50_000; // the poll that sees the seam
+          return poll({
+            segments: [A, B],
+            text: A.text + B.text,
+            turn_breaks: [{ segments: 1, text: A.text.length }],
+          });
+        }
+        ms = 131_000; // the settle poll
+        return poll({
+          done: true,
+          segments: [A, B],
+          text: A.text + B.text,
+          turn_breaks: [{ segments: 1, text: A.text.length }],
+        });
+      },
+    });
+    controller = createChatController({
+      file: "/proj/app.py",
+      params: createMemoryParamsStore(),
+      run: agent.run,
+      sleep: () => Promise.resolve(),
+      now: () => ms,
+      wallClock: () => ms,
+      model: () => "sonnet",
+      effort: () => "high",
+      hasPane: () => true,
+    });
+    await controller.sendMessage("go");
+    expect(assistants(controller).map((t) => t.endedAt)).toEqual([50, 131]);
+    controller.dispose();
+  });
+
   test("the stamp is WALL CLOCK — a fake duration clock cannot date a message in 1970", async () => {
     // Review #9. `now` is shared by every elapsed-time reader in the controller
     // and is free to be monotonic (`performance.now`) or fake; reading a DATE

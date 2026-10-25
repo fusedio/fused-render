@@ -1850,12 +1850,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
        *  and `ToolChip`'s `memo` hits (T:15549-15554). Per slot, because the
        *  carry-over is keyed by `cardKey`, which is per container. */
       view: SegmentView | null;
+      /** When a seam closed this reply off, epoch seconds; null while it is the growing span. */
+      endedAt: number | null;
     }
     const chunks = new Map<number, Chunk>();
     const chunkAt = (slot: number): Chunk => {
       let c = chunks.get(slot);
       if (!c) {
-        c = { key: null, seq: 0, segMode: false, tailText: null, flatText: "", view: null };
+        c = { key: null, seq: 0, segMode: false, tailText: null, flatText: "", view: null, endedAt: null };
         chunks.set(slot, c);
       }
       return c;
@@ -2215,6 +2217,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // still growing (the seam is the `result` that ended the one before
           // it), so every earlier one settles as soon as it is placed.
           const spanLive = j === breaks.length;
+          // Stamped ONCE, by the first poll that sees the seam, so a later
+          // settle never dates this reply at the follow-up's end.
+          if (!spanLive && chunk.endedAt === null) chunk.endedAt = wallClock() / 1000;
+          const sealed = chunk.endedAt === null ? {} : { endedAt: chunk.endedAt };
           if (body.mode === "segments") {
             if (!chunk.segMode) {
               // A first poll with text but no segments yet started this reply on
@@ -2227,10 +2233,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
               segments: body.view.rows.map((r) => r.seg),
               text: chunk.tailText || "",
               streaming: spanLive,
+              ...sealed,
             });
           } else {
             chunk.flatText = pollFlat;
-            if (!poll.done) replaceTurn(chunk.key, { text: chunk.flatText, streaming: spanLive });
+            if (!poll.done) replaceTurn(chunk.key, { text: chunk.flatText, streaming: spanLive, ...sealed });
           }
           // THE NEWEST reply's bubble is where a resolved card parks — a card
           // answered now belongs in the turn now streaming, never in one the
@@ -2301,14 +2308,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
           } else if (live.length) {
             for (const c of live) {
               if (c.segMode) {
-                replaceTurn(c.key as string, { streaming: false, text: c.tailText || "", endedAt });
+                replaceTurn(c.key as string, { streaming: false, text: c.tailText || "", endedAt: c.endedAt ?? endedAt });
               } else {
                 // The DONE poll's own text (T:16288/16360), so a poll that
                 // legitimately shortened the body can shrink the bubble and the
                 // typer's clamp fires (T:15075). An empty done poll is the one
                 // case that must not wipe a bubble it already filled, so it
                 // keeps what the last non-empty poll left.
-                replaceTurn(c.key as string, { streaming: false, text: c.flatText, endedAt });
+                replaceTurn(c.key as string, { streaming: false, text: c.flatText, endedAt: c.endedAt ?? endedAt });
               }
             }
           } else if (poll.text || (poll.segments || []).length) {
