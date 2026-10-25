@@ -95,6 +95,23 @@ describe("turnWorkedWords", () => {
   test("segment clocks win over the client end stamp", () => {
     expect(turnWorkedWords(T0, [tool("a", T0 + 1, T0 + 30)], T0 + 999)).toBe("Worked for 30s");
   });
+  test("a wait on the user is split out of the span", () => {
+    const segs = [{ ...tool("a", T0 + 6, T0 + 2530), waited: 2400 }];
+    expect(turnWorkedWords(T0, segs)).toBe("Worked for 2m 10s · waited 40m on you");
+  });
+  test("a wait longer than the span is clamped to it", () => {
+    const segs = [{ ...tool("a", T0 + 1, T0 + 30), waited: 999 }];
+    expect(turnWorkedWords(T0, segs)).toBe("Worked for 0s · waited 30s on you");
+  });
+  test("a nested child's wait counts", () => {
+    const child = { ...tool("c", T0 + 2, T0 + 100), waited: 60 };
+    const segs = [{ ...tool("a", T0 + 1, T0 + 130), children: [child] }];
+    expect(turnWorkedWords(T0, segs)).toBe("Worked for 1m 10s · waited 1m on you");
+  });
+  test("a sub-second wait is not shown", () => {
+    const segs = [{ ...tool("a", T0 + 1, T0 + 30), waited: 0.4 }];
+    expect(turnWorkedWords(T0, segs)).toBe("Worked for 30s");
+  });
   test("null when nothing can be computed or under a second", () => {
     expect(turnWorkedWords(undefined, [{ kind: "text", text: "hi" }])).toBeNull();
     expect(turnWorkedWords(T0, [])).toBeNull();

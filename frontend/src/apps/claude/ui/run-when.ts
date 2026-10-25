@@ -67,8 +67,11 @@ export function runSpan(segs: readonly (Segment | null | undefined)[]): RunWhen 
  *  from the user message that prompted it (`startTs`; the first segment's stamp
  *  when there is none) to the latest clock in its segments. A live turn's rows
  *  carry no clock, so `endedAt` — the page's own stamp at the run's end — stands
- *  in when the segments give nothing. Null when no span can be drawn or it is
- *  under a second. Epoch seconds in. */
+ *  in when the segments give nothing. Time the turn's tool calls sat on the
+ *  user (`ToolSegment.waited`, children included) is summed, clamped to the
+ *  span, and split out: `Worked for 1m · waited 40m on you` (the wait part only
+ *  from a second up). Null when no span can be drawn or it is under a second.
+ *  Epoch seconds in. */
 export function turnWorkedWords(
   startTs: number | null | undefined,
   segs: readonly (Segment | null | undefined)[],
@@ -79,7 +82,21 @@ export function turnWorkedWords(
   const start = ok(startTs) ? startTs : span?.started;
   const end = span && span.finished > span.started ? span.finished : ok(endedAt) ? endedAt : span?.finished;
   if (start === undefined || end === undefined || end - start < 1) return null;
-  return "Worked for " + spanWords(end - start);
+  const total = end - start;
+  const summed = Math.min(total, sumWaited(segs));
+  const wait = summed >= 1 ? summed : 0;
+  const words = "Worked for " + spanWords(total - wait);
+  return wait ? words + " · waited " + spanWords(wait) + " on you" : words;
+}
+
+function sumWaited(segs: readonly (Segment | null | undefined)[]): number {
+  let n = 0;
+  for (const s of segs) {
+    if (!s || s.kind !== "tool") continue;
+    if (typeof s.waited === "number" && Number.isFinite(s.waited) && s.waited > 0) n += s.waited;
+    if (s.children) n += sumWaited(s.children);
+  }
+  return n;
 }
 
 /** `3m ago · ran 12s` — the hover for ONE run: how long ago it finished,
