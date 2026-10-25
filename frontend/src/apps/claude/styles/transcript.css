@@ -506,6 +506,18 @@
   word-break: break-word;
   padding-top: 2px;
 }
+/* "Worked for 2m 10s" at the foot of a finished reply: the lane stamp's quiet
+   type (11px, faint, tabular) in the text column. Margins are spelled out — no
+   preflight, and `.body > :last-child` would zero the bottom one. */
+.chat-root .turn.assistant .body > .turn-worked {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--c-faint);
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+  user-select: none;
+}
 /* NOT pre-wrap: everything in here is marked's BLOCK html, and marked
    separates blocks with a literal newline — under pre-wrap every one of those
    is a visible blank line, inside lists included (T:1866-1876). */
