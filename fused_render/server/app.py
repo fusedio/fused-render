@@ -401,16 +401,6 @@ def _lifespan(startup_handlers: list, shutdown_handlers: list):
 STARTUP_SLOW_HANDLER_S = 1.0
 
 
-def _safe_artifacts_scan() -> None:
-    """Warm thread target for `_startup_artifacts_warm`; never raises."""
-    try:
-        from fused_render import claude_artifacts
-
-        claude_artifacts.list_artifacts()
-    except Exception:  # noqa: BLE001 - a warm-up must never matter
-        logger.exception("could not warm the Claude artifacts listing")
-
-
 def _handler_name(handler) -> str:
     return getattr(handler, "__name__", None) or repr(handler)
 
@@ -528,16 +518,19 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
 
     @on_startup_full
     async def _startup_prewarm_ai():
+        # Only when Claude is enabled (Preferences): the resident process IS
+        # a `claude` CLI, so a machine with Claude off would pay a spawn for
+        # nothing. Checked at hook time so a pref flipped before boot counts.
         # Delayed: the spawn would otherwise compete with the first requests
         # and the other startup warms.
+        from fused_render.agent_backends import registry as agent_registry
+
+        if not agent_registry.is_enabled("claude"):
+            return
         prewarm_ai(app, delay=5.0)
 
-    # Warm the fused engine off the request path (else the first /api/config pays the cold import).
-    @on_startup
-    async def _startup_warm_engine():
-        from fused_render import engine
-
-        engine.warm_unless_forced_builtin()
+    # No boot hook for the fused engine warm-up: `engine.ensure_warm()` starts
+    # it once, on the first shell load (/api/config) or the first Python run.
 
     # Background apps (background_apps.py): resurrect every autostart-opted-in
     # app's daemon at server startup. A daemon thread, not the create_app body
@@ -702,6 +695,19 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # event for the same reason as `_startup_tasks_watch`.
     @on_startup
     async def _startup_tasks_warm():
+        # Skipped on a machine with no agent transcript root at all (no
+        # Claude/Copilot/Codex/Gemini ever ran here): there is nothing to
+        # read and no builder worth keeping. `_listing`/`_narrowed` build on
+        # demand when the builder is not running, so `/api/tasks*` still
+        # answers; nothing waits on `tasks_warm` (None when skipped). The
+        # roots are checked rather than the enabled backends because
+        # `registry.enabled_ids` is never empty and a disabled backend's old
+        # sessions are still listed, so an enabled-check would never skip.
+        from fused_render import tasks_store
+
+        app.state.tasks_warm = None
+        if not any(os.path.isdir(root) for _, root in tasks_store.projects_roots()):
+            return
         from fused_render.server.routers import tasks as tasks_router_mod
 
         thread = threading.Thread(target=tasks_router_mod.warm, daemon=True,
@@ -711,14 +717,10 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         # before they count listings of their own.
         app.state.tasks_warm = thread
 
-    # Warm the Claude artifacts listing (claude_artifacts.py): the first scan of
-    # a big ~/.claude is seconds, so it is paid here on a daemon thread rather
-    # than by the first /api/claude-artifacts request.
-    @on_startup_full
-    async def _startup_artifacts_warm():
-        # Looked up at call time so tests can swap the target (conftest).
-        threading.Thread(target=_safe_artifacts_scan, name="artifacts-warm",
-                         daemon=True).start()
+    # No boot warm for the Claude artifacts listing (claude_artifacts.py): the
+    # first `/api/claude-artifacts` request runs `list_artifacts()` and its
+    # in-memory `_CACHE` serves the rest. A machine that never opens the
+    # artifacts view never scans ~/.claude for it.
 
     # `_AI_SESSION` is constructed at import time and can be started by the
     # first `/api/ai` request even under `lean` (its prewarm startup hook is
@@ -749,28 +751,16 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # too (where a startup hook would have been skipped) and never starts
     # it at all on a process that never touches an AI route.
 
-    # Hub-metadata pre-warming (code review finding 1, on top of SPEC AI-17):
-    # `ai_runtime._accepts_image`/`_capability_tags` used to call
-    # `hub_metadata.get(model_id)` — a synchronous `urllib` GET with an
-    # 8-second timeout — straight from `describe_catalog`, a route the AI
-    # Models picker polls. They now read `hub_metadata.cached()` only (a
-    # plain disk read), and this background thread is the sole writer.
-    @on_startup_full
-    async def _startup_ai_hub_metadata_refresh():
-        from fused_render.ai import supervisor
-
-        supervisor.start_hub_metadata_refresh()
-
-    # Hub-catalog daily delta refresh (SPEC docs/HUB_CATALOG_SPEC.md item 4):
-    # a BUILT capability pool (`api_hub_search`'s `ensure_build_started` path)
-    # goes stale as new repos land on the Hub between builds; this widens
-    # each built pool by one `lastModified` delta per day, same background-
-    # thread shape as the two hooks immediately above.
-    @on_startup_full
-    async def _startup_ai_hub_catalog_refresh():
-        from fused_render.ai import supervisor
-
-        supervisor.start_hub_catalog_refresh()
+    # Hub-metadata pre-warming (code review finding 1, on top of SPEC AI-17)
+    # and the daily Hub-catalog delta refresh (docs/HUB_CATALOG_SPEC.md item 4):
+    # no startup hooks. `ai_runtime._hub_meta_cached` (every `hub_metadata.cached()`
+    # read on the AI catalog path) and `api_hub_search` call
+    # `supervisor.start_hub_metadata_refresh()` / `start_hub_catalog_refresh()`
+    # on first use — idempotent, started in `lean` mode too, never started on a
+    # process that never opens an AI catalog page. Same shape as
+    # `hw_detect.cached_hardware()` -> `start_hardware_refresh()` above. The
+    # metadata thread is the sole writer behind those reads (they are plain disk
+    # reads, never a network GET on the polled route).
 
     # Local model workers die with the app. They hold GIGABYTES — a stranded one
     # is not a leaked file handle, it is a machine that has quietly lost 8GB of
@@ -1190,7 +1180,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     app.middleware("http")(_bots_forward)
 
     # The bots' scheduler thread. `@on_startup`, so a lean `fused-render open`
-    # starts none. Its first pass elects the owner; the winner then runs the
+    # starts none; and only on a machine that has used bots (else lazily, see below). Its first pass elects the owner; the winner then runs the
     # layout migration, the FusedBot import, the Super Bot seed, the orphan
     # browser sweep and the channels router before its first tick
     # (registry._become_owner) — all of which used to run here in every process.
@@ -1201,6 +1191,13 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
             return
         from fused_render.bots import registry as bots_registry
 
+        # Only a machine that has used bots (a bot, the Super seed stamp, or a
+        # pending FusedBot import) pays the election/migration/seed at boot; any
+        # other starts the scheduler on its first bots request
+        # (`bots/routes.forward_middleware` -> `registry.ensure_started`).
+        if not bots_registry.has_been_used():
+            logger.info("bots: no prior use on this machine; the scheduler starts on the first bots request")
+            return
         try:
             # Off the loop: a win runs the layout migration, the import and the takeover walk before returning.
             await asyncio.to_thread(bots_registry.start)

@@ -25,6 +25,7 @@ import time
 from fastapi import APIRouter, Body, Header, Query, Request, Response
 from starlette.responses import StreamingResponse
 
+from fused_render import _platform
 from fused_render._platform import is_within
 from fused_render.bots import paths as bpaths
 from fused_render.bots import registry
@@ -64,6 +65,15 @@ async def forward_middleware(request: Request, call_next):
         # (the prefix the LAN listener lets through, lan.py) would reach the desktop door on the owner. No route
         # has a dot segment, so the owner answers 404 to it as well.
         return _error("not found", 404)
+    if path.startswith(OWNED_PREFIXES) and not _platform.IS_WINDOWS and registry.needs_start():
+        # The boot hook starts the scheduler only on a machine that has used bots; the first bots request on
+        # any other starts it (idempotent), so creating the first bot from the UI brings the scheduler up.
+        import asyncio
+        try:
+            await asyncio.to_thread(registry.ensure_started)
+        except Exception:  # noqa: BLE001 - serve the request regardless
+            import logging
+            logging.getLogger(__name__).exception("could not start the bots scheduler")
     if not path.startswith(OWNED_PREFIXES) or registry.owns():
         return await call_next(request)
     if request.headers.get("x-fused-forwarded"):
