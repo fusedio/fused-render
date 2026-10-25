@@ -22,7 +22,6 @@ from fused_render.server.app import _lifespan
 from fused_render.server.routers.index import (
     start_startup_scan_and_warm as _REAL_START_SCAN_AND_WARM,  # conftest stubs the attribute
 )
-from fused_render.server.app import _safe_artifacts_scan as _REAL_SAFE_ARTIFACTS_SCAN
 
 #: Same real, spawnable fixture daemon test_background_apps.py uses — stdlib
 #: only, binds :0, publishes {port, token, pid} (see its own docstring).
@@ -138,7 +137,6 @@ EXPECTED_STARTUP = [
     "_startup_queue_manager",
     "_startup_tasks_watch",
     "_startup_tasks_warm",
-    "_startup_artifacts_warm",
     "_startup_ai_hub_metadata_refresh",
     "_startup_ai_hub_catalog_refresh",
     # Event-loop lag gauge + pool/lane snapshots for the Monitor dashboard.
@@ -738,29 +736,65 @@ def test_startup_prewarm_ai_defers_the_spawn(tmp_path, monkeypatch):
     assert seen["delay"] == 5.0
 
 
-def test_artifacts_warm_runs_off_the_startup_path(tmp_path, monkeypatch):
+def test_no_artifacts_warm_at_boot_and_first_request_lists(tmp_path, monkeypatch):
+    """The boot warm is gone: no hook, no thread; the first request scans."""
     import threading
-
-    from fused_render.server import app as app_mod
 
     from fused_render import claude_artifacts
 
-    entered = threading.Event()
-    release = threading.Event()
+    calls = []
+    monkeypatch.setattr(claude_artifacts, "list_artifacts",
+                        lambda: calls.append(1) or [])
+    app = create_app(start_dir=str(tmp_path))
+    assert "_startup_artifacts_warm" not in [f.__name__ for f in app.state.startup_handlers]
+    from fastapi.testclient import TestClient
 
-    def blocking_list():
-        entered.set()
-        release.wait(10)
-        return []
+    with TestClient(app) as client:
+        assert not any(t.name == "artifacts-warm" for t in threading.enumerate())
+        assert calls == []
+        assert client.get("/api/claude-artifacts").json() == {"artifacts": []}
+        assert calls == [1]
 
-    monkeypatch.setattr(claude_artifacts, "list_artifacts", blocking_list)
-    # conftest neutralizes the scan target for every app; this test wants the real one.
-    monkeypatch.setattr(app_mod, "_safe_artifacts_scan", _REAL_SAFE_ARTIFACTS_SCAN)
-    handler, run = _grab_startup_handler(
-        tmp_path, monkeypatch, "_startup_artifacts_warm")
-    run(handler())  # returns while the scan is still blocked
-    assert entered.wait(5)
-    assert not release.is_set()
-    release.set()
-    thread = next(t for t in threading.enumerate() if t.name == "artifacts-warm")
-    thread.join(5)
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_startup_prewarm_ai_gates_on_claude_enabled(tmp_path, monkeypatch, enabled):
+    from fused_render.agent_backends import registry
+    from fused_render.server import app as app_mod
+
+    seen = []
+    monkeypatch.setattr(app_mod, "prewarm_ai", lambda app, delay=0.0: seen.append(delay))
+    monkeypatch.setattr(registry, "is_enabled", lambda b: enabled and b == "claude")
+    handler, run = _grab_startup_handler(tmp_path, monkeypatch, "_startup_prewarm_ai")
+    run(handler())
+    assert seen == ([5.0] if enabled else [])
+
+
+def test_startup_tasks_warm_skips_without_any_transcript_root(tmp_path, monkeypatch):
+    from fused_render import tasks_store
+    from fused_render.server.routers import tasks as tasks_mod
+
+    started = []
+    monkeypatch.setattr(tasks_mod, "warm", lambda: started.append(1))
+    monkeypatch.setattr(tasks_store, "projects_roots",
+                        lambda *a: [("claude", str(tmp_path / "nope"))])
+    handler, run = _grab_startup_handler(tmp_path, monkeypatch, "_startup_tasks_warm")
+    run(handler())
+    assert started == []
+
+
+def test_startup_tasks_warm_runs_when_a_root_exists(tmp_path, monkeypatch):
+    from fused_render import tasks_store
+    from fused_render.server.routers import tasks as tasks_mod
+
+    started = []
+    monkeypatch.setattr(tasks_mod, "warm", lambda: started.append(1))
+    monkeypatch.setattr(tasks_store, "projects_roots",
+                        lambda *a: [("claude", str(tmp_path))])
+    handler, run = _grab_startup_handler(tmp_path, monkeypatch, "_startup_tasks_warm")
+    run(handler())
+    import time
+    for _ in range(100):
+        if started:
+            break
+        time.sleep(0.05)
+    assert started == [1]

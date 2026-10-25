@@ -744,16 +744,6 @@ def _no_legacy_mounts_cleanup(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _no_startup_artifacts_warm(monkeypatch):
-    """`_startup_artifacts_warm` scans every transcript under the developer's
-    real ~/.claude on a daemon thread; no test that merely boots the app wants
-    that. The test ABOUT the handler restores the real target."""
-    from fused_render.server import app as app_mod
-
-    monkeypatch.setattr(app_mod, "_safe_artifacts_scan", lambda: None)
-
-
-@pytest.fixture(autouse=True)
 def _no_startup_index_scan(monkeypatch):
     """`create_app` schedules a background scan of the user's HOME dir.
 

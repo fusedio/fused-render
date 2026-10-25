@@ -401,16 +401,6 @@ def _lifespan(startup_handlers: list, shutdown_handlers: list):
 STARTUP_SLOW_HANDLER_S = 1.0
 
 
-def _safe_artifacts_scan() -> None:
-    """Warm thread target for `_startup_artifacts_warm`; never raises."""
-    try:
-        from fused_render import claude_artifacts
-
-        claude_artifacts.list_artifacts()
-    except Exception:  # noqa: BLE001 - a warm-up must never matter
-        logger.exception("could not warm the Claude artifacts listing")
-
-
 def _handler_name(handler) -> str:
     return getattr(handler, "__name__", None) or repr(handler)
 
@@ -528,8 +518,15 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
 
     @on_startup_full
     async def _startup_prewarm_ai():
+        # Only when Claude is enabled (Preferences): the resident process IS
+        # a `claude` CLI, so a machine with Claude off would pay a spawn for
+        # nothing. Checked at hook time so a pref flipped before boot counts.
         # Delayed: the spawn would otherwise compete with the first requests
         # and the other startup warms.
+        from fused_render.agent_backends import registry as agent_registry
+
+        if not agent_registry.is_enabled("claude"):
+            return
         prewarm_ai(app, delay=5.0)
 
     # Warm the fused engine off the request path (else the first /api/config pays the cold import).
@@ -702,6 +699,19 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # event for the same reason as `_startup_tasks_watch`.
     @on_startup
     async def _startup_tasks_warm():
+        # Skipped on a machine with no agent transcript root at all (no
+        # Claude/Copilot/Codex/Gemini ever ran here): there is nothing to
+        # read and no builder worth keeping. `_listing`/`_narrowed` build on
+        # demand when the builder is not running, so `/api/tasks*` still
+        # answers; nothing waits on `tasks_warm` (None when skipped). The
+        # roots are checked rather than the enabled backends because
+        # `registry.enabled_ids` is never empty and a disabled backend's old
+        # sessions are still listed, so an enabled-check would never skip.
+        from fused_render import tasks_store
+
+        app.state.tasks_warm = None
+        if not any(os.path.isdir(root) for _, root in tasks_store.projects_roots()):
+            return
         from fused_render.server.routers import tasks as tasks_router_mod
 
         thread = threading.Thread(target=tasks_router_mod.warm, daemon=True,
@@ -711,14 +721,10 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         # before they count listings of their own.
         app.state.tasks_warm = thread
 
-    # Warm the Claude artifacts listing (claude_artifacts.py): the first scan of
-    # a big ~/.claude is seconds, so it is paid here on a daemon thread rather
-    # than by the first /api/claude-artifacts request.
-    @on_startup_full
-    async def _startup_artifacts_warm():
-        # Looked up at call time so tests can swap the target (conftest).
-        threading.Thread(target=_safe_artifacts_scan, name="artifacts-warm",
-                         daemon=True).start()
+    # No boot warm for the Claude artifacts listing (claude_artifacts.py): the
+    # first `/api/claude-artifacts` request runs `list_artifacts()` and its
+    # in-memory `_CACHE` serves the rest. A machine that never opens the
+    # artifacts view never scans ~/.claude for it.
 
     # `_AI_SESSION` is constructed at import time and can be started by the
     # first `/api/ai` request even under `lean` (its prewarm startup hook is
