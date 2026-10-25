@@ -99,6 +99,7 @@ ACTIONS: dict[str, str] = {
     "commands": "_commands",
     "task_output": "_task_output",
     "task_stop": "_task_stop",
+    "task_background": "_task_background",
     "tasks": "_run_tasks",
 }
 

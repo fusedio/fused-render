@@ -8563,6 +8563,41 @@ def _task_stop(run_id: str, task_id: str) -> dict:
     return {"ok": True}
 
 
+def _task_background(run_id: str, tool_use_id: str) -> dict:
+    """Send the running foreground Bash call `tool_use_id` to the background:
+    a `background_tasks` control request to the live session host (10 s).
+    `{"ok": True, "backgrounded": bool}`, or `{"error"}` (no live host, the
+    CLI's refusal for an unknown id, or no answer)."""
+    if _bad_id(run_id):
+        return {"error": "unknown run_id"}
+    tool_use_id = str(tool_use_id or "")
+    if (not tool_use_id or len(tool_use_id) > 200
+            or not re.fullmatch(r"[A-Za-z0-9_-]+", tool_use_id)):
+        return {"error": "missing tool_use_id"}
+    run_dir = os.path.join(RUNS, run_id)
+    if not os.path.isdir(run_dir):
+        return {"error": "unknown run_id"}
+    if _non_claude(_run_backend(run_dir)):
+        return {"error": "unsupported"}   # no background tasks (§7 bg_tasks)
+    if not _host_alive(run_dir):
+        return {"error": "no live session"}
+    try:
+        start_offset = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
+    except OSError:
+        start_offset = 0
+    try:
+        request_id = _write_control_request(run_dir, "background_tasks",
+                                            tool_use_id=tool_use_id)
+    except OSError as exc:
+        return {"error": f"could not reach the session: {exc}"}
+    refused = []
+    resp = _await_control_response(run_dir, request_id, timeout=10.0,
+                                   start_offset=start_offset, errors=refused)
+    if resp is None:
+        return {"error": refused[0] if refused else "the session did not answer"}
+    return {"ok": True, "backgrounded": bool(resp.get("backgrounded", True))}
+
+
 #: The most `out.jsonl` bytes one `_catch_up_registry` reads. A longer
 #: backlog (hours of a background Agent streaming with nobody polling) is
 #: folded this much per call, so the registry still converges.
@@ -12264,7 +12299,7 @@ def main(action: str = "start", file: str = "", message: str = "",
          read_dirs: str = "", path: str = "", queued: str = "",
          native: str = "", draft_key: str = "", queue: str = "",
          terminal_hint: str = "", task_id: str = "", backend: str = "",
-         fork_at: str = "") -> dict:
+         fork_at: str = "", tool_use_id: str = "") -> dict:
     # `backend` (D2/§8): which agent a NEW chat starts on; ignored where a
     # session already names one (`_start` resumes, `send`, `history`), which
     # answer with the session's own under the same key.
@@ -12443,6 +12478,9 @@ def main(action: str = "start", file: str = "", message: str = "",
     if action == "task_stop":
         # Stop a running task: `stop_task` control request.
         return _task_stop(run_id, task_id)
+    if action == "task_background":
+        # Ctrl+B: a running foreground Bash call -> background_tasks request.
+        return _task_background(run_id, tool_use_id)
     if action == "tasks":
         # A finished turn's tasks panel while its host runs on (`_run_tasks`).
         return _run_tasks(run_id)
