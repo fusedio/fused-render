@@ -178,7 +178,7 @@ export function searchTasks(tasks: readonly Task[], query: string): Task[] {
   return [...open, ...closed];
 }
 
-export type WorkspaceAction = "next" | "prev" | "open" | "close" | "check" | "new" | "search" | "needs" | "escape";
+export type WorkspaceAction = "next" | "prev" | "open" | "close" | "check" | "pin" | "new" | "search" | "needs" | "escape";
 
 export interface KeyLike {
   key: string;
@@ -207,6 +207,8 @@ export function workspaceKeyAction(
       return "close";
     case " ":
       return "check";
+    case "p":
+      return "pin";
     case "c":
       return "new";
     case "/":
@@ -276,9 +278,10 @@ export function pickBranch(
   return head ? { name: head, more: 0, also: [] } : null;
 }
 
-export type WorkspaceGroupKey = "needs" | "working" | "pr" | "turn" | "clear" | "archived";
+export type WorkspaceGroupKey = "pinned" | "needs" | "working" | "pr" | "turn" | "clear" | "archived";
 
 export const WORKSPACE_GROUPS: readonly { key: WorkspaceGroupKey; label: string }[] = [
+  { key: "pinned", label: "Pinned" },
   { key: "needs", label: "Needs you" },
   { key: "working", label: "Working" },
   { key: "pr", label: "PR open" },
@@ -319,15 +322,17 @@ export function workspaceGroup(task: Task, facts: WorkspaceFacts, now: number): 
 }
 
 /** `rows` split into the groups above, in that order, empty groups left out;
- *  each keeps `rows`' order. */
+ *  each keeps `rows`' order. A non-archived task whose key is in `pinned` goes
+ *  to "pinned"; archived tasks stay archived whether pinned or not. */
 export function groupTasks(
   rows: readonly Task[],
   facts: (task: Task) => WorkspaceFacts,
   now: number,
+  pinned: ReadonlySet<string>,
 ): { key: WorkspaceGroupKey; label: string; tasks: Task[] }[] {
   const by = new Map<WorkspaceGroupKey, Task[]>();
   for (const t of rows) {
-    const k = workspaceGroup(t, facts(t), now);
+    const k = t.status !== "archived" && pinned.has(t.key) ? "pinned" : workspaceGroup(t, facts(t), now);
     by.set(k, [...(by.get(k) ?? []), t]);
   }
   return WORKSPACE_GROUPS.filter((g) => by.has(g.key)).map((g) => ({ ...g, tasks: by.get(g.key)! }));
@@ -342,10 +347,10 @@ export function visibleGroupTasks<T>(items: readonly T[], expanded: boolean): { 
   return expanded ? { shown: [...items], more: 0 } : capList(items, GROUP_CAP);
 }
 
-/** Does a group start folded? Only "Safe to archive" does. A stored choice
+/** Does a group start folded? "Safe to archive" and "Archived" do. A stored choice
  *  (`stored[key]`, true = collapsed) wins over this default. */
 export function groupCollapsed(key: WorkspaceGroupKey, stored: Readonly<Record<string, boolean>>): boolean {
-  return key in stored ? stored[key] : key === "clear";
+  return key in stored ? stored[key] : key === "clear" || key === "archived";
 }
 
 export interface PortBadge {

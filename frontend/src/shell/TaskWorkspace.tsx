@@ -9,6 +9,9 @@ import {
   archiveTask,
   fetchTaskHolds,
   fetchTaskPorts,
+  dropSharedPrefsRead,
+  getPrefsShared,
+  putPinnedTasks,
   unarchiveTask,
 } from "@platform/lib/api";
 import type { Task, TaskHold } from "@platform/lib/api";
@@ -241,6 +244,8 @@ function WorkspaceCard({
   onSelect,
   onOpen,
   onFile,
+  pinned,
+  onPin,
   bulk,
 }: {
   task: Task;
@@ -263,6 +268,9 @@ function WorkspaceCard({
   onOpen: () => void;
   /** The ring-slot button: archive (with Undo) or unarchive, the `x` key's own path. */
   onFile: (intent: FilingIntent) => void;
+  /** Whether the card is pinned, and the pin button's press (the `p` key's own path). */
+  pinned: boolean;
+  onPin: () => void;
 }) {
   const file = filingIntent(task);
   const bg = bgJobBadge(task);
@@ -340,6 +348,23 @@ function WorkspaceCard({
         </span>
         <IdChip id={task.task_id} kind="task" />
         <span className={"ws-title" + (task.unread > 0 ? " is-unread" : "")}>{task.title || "(untitled)"}</span>
+        {task.status !== "archived" && (
+          <button
+            type="button"
+            className={"ws-pin" + (pinned ? " is-pinned" : "")}
+            data-hint={pinned ? "Unpin" : "Pin to top"}
+            aria-label={pinned ? "Unpin" : "Pin to top"}
+            aria-pressed={pinned}
+            onClick={(e) => {
+              e.stopPropagation();
+              onPin();
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill={pinned ? "currentColor" : "none"} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <path d="M12 17v5" /><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z" />
+            </svg>
+          </button>
+        )}
         {when.kind !== "none" && (
           <span className="ws-time" title={when.title}>
             {when.text}
@@ -445,12 +470,52 @@ export function TaskWorkspace({
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
   const [undo, setUndo] = useState<{ key: string; text: string } | null>(null);
   const undoTimer = useRef<number | null>(null);
+  // Pinned task keys (the `pinned_tasks` pref). `pinsRef` is the current list
+  // (what a write sends); state mirrors it for rendering. `loaded` says the
+  // stored list has been read: a toggle before that reads it first, so a failed
+  // load never makes a one-item PUT that wipes the stored pins.
+  const [pinnedKeys, setPinnedKeys] = useState<readonly string[]>([]);
+  const pinsRef = useRef<string[]>([]);
+  const pinsLoaded = useRef(false);
+  const pinWrites = useRef<Promise<void>>(Promise.resolve());
+  const archivedKnown = useRef<ReadonlySet<string>>(new Set());
+  archivedKnown.current = useMemo(
+    () => new Set(allTasks.filter((t) => t.status === "archived").map((t) => t.key)),
+    [allTasks],
+  );
+  const dropPinsRef = useRef<(keys: readonly string[]) => void>(() => undefined);
+  const setPins = useCallback((next: string[]): void => {
+    pinsRef.current = next;
+    setPinnedKeys(next);
+  }, []);
+  const readPins = useCallback(async (fresh: boolean): Promise<void> => {
+    if (fresh) dropSharedPrefsRead();
+    const p = await getPrefsShared();
+    if (pinsLoaded.current) return;
+    pinsLoaded.current = true;
+    if (Array.isArray(p.pinned_tasks)) setPins([...p.pinned_tasks]);
+  }, [setPins]);
+  useEffect(() => {
+    let alive = true;
+    void getPrefsShared()
+      .then((p) => {
+        if (!alive || pinsLoaded.current) return;
+        pinsLoaded.current = true;
+        if (Array.isArray(p.pinned_tasks)) setPins([...p.pinned_tasks]);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, [setPins]);
+  const pinnedSet = useMemo(() => new Set(pinnedKeys), [pinnedKeys]);
 
   const { tasks, selection, archiveSelected, node: bulkNode, bulk } = useBulkArchive({
     tasks: tasksIn,
     selectable: selectableTask,
     resetKey,
     onReload,
+    onArchived: (keys) => dropPinsRef.current(keys),
   });
   const base = useMemo(() => workspaceTasks(tasks).filter((t) => !hidden.has(t.key)), [tasks, hidden]);
   const keys = useMemo(() => base.filter((t) => t.status !== "archived").map((t) => t.key), [base]);
@@ -471,7 +536,7 @@ export function TaskWorkspace({
   );
   // Grouped by state; the flat list below is what j/k/n walk, so the keyboard
   // order is the order on screen. Hidden (just-closed) rows never count.
-  const groups = useMemo(() => groupTasks(base, factsFor, Date.now() / 1000), [base, factsFor]);
+  const groups = useMemo(() => groupTasks(base, factsFor, Date.now() / 1000, pinnedSet), [base, factsFor, pinnedSet]);
   // Only the cards on screen: a folded group has none, a capped one its first 8.
   // j/k/n walk this list, so they never land on a card that is not drawn.
   const shownGroups = useMemo(
@@ -491,6 +556,59 @@ export function TaskWorkspace({
   // What the key handler reads, kept current without re-binding it.
   const live = useRef({ rows, groups, collapsed, selected, peekedKey, searching, selection, archiveSelected });
   live.current = { rows, groups, collapsed, selected, peekedKey, searching, selection, archiveSelected };
+
+  // Writes run one at a time and each sends the list as it is when it starts,
+  // so the last PUT always carries every toggle. Keys of tasks known to be
+  // archived are pruned from every write (an archived card has no pin button).
+  const writePins = useCallback(
+    (onFail?: () => void): void => {
+      pinWrites.current = pinWrites.current.then(async () => {
+        const kept = pinsRef.current.filter((k) => !archivedKnown.current.has(k));
+        if (kept.length !== pinsRef.current.length) setPins(kept);
+        try {
+          await putPinnedTasks([...pinsRef.current]);
+        } catch (e) {
+          onFail?.();
+          notify({ title: (e as Error).message || "Could not update the pin", tone: "error" });
+        }
+      });
+    },
+    [setPins],
+  );
+  const applyToggle = useCallback(
+    (key: string): void => {
+      const was = pinsRef.current.includes(key);
+      setPins(was ? pinsRef.current.filter((k) => k !== key) : [...pinsRef.current, key]);
+      // A failure undoes only this key, against whatever the list is by then.
+      writePins(() => {
+        const has = pinsRef.current.includes(key);
+        if (was && !has) setPins([...pinsRef.current, key]);
+        else if (!was && has) setPins(pinsRef.current.filter((k) => k !== key));
+      });
+    },
+    [setPins, writePins],
+  );
+  const togglePin = useCallback(
+    (key: string): void => {
+      if (pinsLoaded.current) return applyToggle(key);
+      readPins(true).then(
+        () => applyToggle(key),
+        (e: Error) => notify({ title: e.message || "Could not read the pinned tasks", tone: "error" }),
+      );
+    },
+    [applyToggle, readPins],
+  );
+  /** A task archived from this view loses its pin (nothing else could remove it). */
+  const dropPins = useCallback(
+    (gone: readonly string[]): void => {
+      if (!pinsLoaded.current || !gone.some((k) => pinsRef.current.includes(k))) return;
+      setPins(pinsRef.current.filter((k) => !gone.includes(k)));
+      writePins();
+    },
+    [setPins, writePins],
+  );
+
+  dropPinsRef.current = dropPins;
 
   const toggleGroup = useCallback((key: WorkspaceGroupKey): void => {
     const next = { ...live.current.collapsed, [key]: !groupCollapsed(key, live.current.collapsed) };
@@ -534,6 +652,7 @@ export function TaskWorkspace({
       if (peeked === task.key) closePeek();
       archiveTask(task.key)
         .then((res) => {
+          dropPins([task.key]);
           setUndo({ key: task.key, text: closedToastText(`Closed \u201c${task.title}\u201d`, [res.teardown]) });
           if (undoTimer.current !== null) window.clearTimeout(undoTimer.current);
           undoTimer.current = window.setTimeout(() => setUndo(null), UNDO_MS);
@@ -548,7 +667,7 @@ export function TaskWorkspace({
           notify({ title: e.message || "Could not close the task", tone: "error" });
         });
     },
-    [onReload],
+    [onReload, dropPins],
   );
   // The `x` key and the ring-slot button both land here: a running task asks first.
   const close = useCallback(
@@ -625,6 +744,12 @@ export function TaskWorkspace({
             close(sel);
           }
           return;
+        case "pin":
+          if (sel && sel.status !== "archived") {
+            e.preventDefault();
+            togglePin(sel.key);
+          }
+          return;
         case "new":
           e.preventDefault();
           onNewTask();
@@ -636,17 +761,20 @@ export function TaskWorkspace({
         case "needs": {
           let to = nextNeedingYou(st.rows, st.selected);
           if (!to) {
-            // Every drawn card is checked first; a "Needs you" group that is
-            // folded or capped may hold one that is not drawn.
-            const g = st.groups.find((x) => x.key === "needs");
-            if (g && g.tasks.length > 0) {
-              to = g.tasks[0].key;
-              if (groupCollapsed("needs", st.collapsed)) {
-                const next = { ...st.collapsed, needs: false };
+            // Every drawn card is checked first; a folded or capped group may
+            // hold one that is not drawn. A pinned task that needs you lives in
+            // "Pinned", which is drawn before "Needs you", so it is checked first.
+            for (const key of ["pinned", "needs"] as const) {
+              const hit = st.groups.find((x) => x.key === key)?.tasks.find(needsYou);
+              if (!hit) continue;
+              to = hit.key;
+              if (groupCollapsed(key, st.collapsed)) {
+                const next = { ...st.collapsed, [key]: false };
                 writeCollapsed(next);
                 setCollapsed(next);
               }
-              setExpanded((x) => new Set([...x, "needs"]));
+              setExpanded((x) => new Set([...x, key]));
+              break;
             }
           }
           if (to) {
@@ -667,7 +795,7 @@ export function TaskWorkspace({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, close, onNewTask, peekOn]);
+  }, [open, close, onNewTask, peekOn, togglePin]);
 
   // Mod+K is App's cheat-sheet chord too, and App's document listener preventDefaults
   // it before the window handler above could act. This capture listener runs first
@@ -738,6 +866,8 @@ export function TaskWorkspace({
                     onSelect={() => setSelected(t.key)}
                     onOpen={() => open(t)}
                     onFile={(f) => (f.kind === "archive" ? close(t) : reopen(t.key, false))}
+                    pinned={pinnedSet.has(t.key)}
+                    onPin={() => togglePin(t.key)}
                     bulk={bulk}
                   />
                 );

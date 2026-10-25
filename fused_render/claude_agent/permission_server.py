@@ -495,8 +495,18 @@ TYPED_OPTION_NOTE = ("Written by the user in this window's \"Other\" box, not "
                      "offered by you.")
 
 
+# Mirrors the AskUserQuestion input schema's `options` maxItems. The CLI
+# re-validates `updatedInput` against it, and one option over makes it reject
+# the whole answer as a tool_use_error, so the model never sees what was said.
+MAX_OPTIONS = 4
+
+
 def _with_typed_options(questions, custom):
     """`questions` with each typed answer appended as an option of its question.
+
+    A question already at MAX_OPTIONS is left as it is: the answer still rides
+    in `answers`, and the CLI takes one outside the list (weaker wording) rather
+    than losing it.
 
     Copied, never mutated in place: `tool_input` is the parked request and other
     branches hand it back byte-identical. Only questions the user actually typed
@@ -514,7 +524,8 @@ def _with_typed_options(questions, custom):
             out.append(question)
             continue
         options = list(question.get("options") or [])
-        if not any(isinstance(o, dict) and o.get("label") == typed for o in options):
+        if len(options) < MAX_OPTIONS and not any(
+                isinstance(o, dict) and o.get("label") == typed for o in options):
             options.append({"label": typed, "description": TYPED_OPTION_NOTE})
         out.append(dict(question, options=options))
     return out
@@ -584,7 +595,7 @@ def _permission_result(tool_name: str, tool_input: dict, decision: dict) -> dict
         # "follow what they actually say" — measured, same finding as the
         # multi-select join. Writing the typed string in as an option is what
         # makes the user's own words land as a full answer rather than as an
-        # aside, and it is also the truth of what happened: the window offered a
+        # aside (unless the list is already at the CLI's cap, see MAX_OPTIONS), and it is also the truth of what happened: the window offered a
         # choice the model did not author, and the user took it.
         if typed:
             updated["questions"] = _with_typed_options(updated.get("questions"),

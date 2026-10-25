@@ -34,11 +34,14 @@ export function useBulkArchive({
   selectable,
   resetKey = "",
   onReload,
+  onArchived,
 }: {
   tasks: Task[];
   selectable: (task: Task) => boolean;
   resetKey?: string;
   onReload?: () => void;
+  /** Keys that were archived (after the call succeeded). */
+  onArchived?: (keys: string[]) => void;
 }) {
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
   const [confirm, setConfirm] = useState<{ keys: string[]; running: number } | null>(null);
@@ -65,9 +68,9 @@ export function useBulkArchive({
     });
   }, [tasksIn]);
 
-  const latest = useRef({ onReload });
+  const latest = useRef({ onReload, onArchived });
   useLayoutEffect(() => {
-    latest.current = { onReload };
+    latest.current = { onReload, onArchived };
   });
 
   const run = useCallback(
@@ -98,6 +101,7 @@ export function useBulkArchive({
         });
       }
       if (done.length > 0) {
+        latest.current.onArchived?.(done);
         setUndo({ keys: done, text: closedToastText(archivedLabel(done.length), done.map((k) => reports[k])) });
         if (timer.current !== null) window.clearTimeout(timer.current);
         timer.current = window.setTimeout(() => setUndo(null), BULK_UNDO_MS);

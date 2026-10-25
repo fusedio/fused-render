@@ -1568,6 +1568,9 @@ export interface Prefs {
    *  server-side as short identifiers only — the client still filters against
    *  tasks-lib.TASK_VIEWS, the one place a view NAME is decided. */
   tasks_view_tabs?: string[];
+  /** Task keys pinned to the top of the Tasks page's Detailed view
+   *  (shell/prefs.py `pinned_tasks`). */
+  pinned_tasks?: string[];
   /** Whether a task on the Tasks page opens in a side panel beside the list
    *  instead of navigating away (shell/prefs.py `task_peek_enabled`) — always
    *  `true` since 2026-09-20; the Preferences switch is gone. Optional because
@@ -2009,6 +2012,11 @@ export function putBotsPref(
 /** The Tasks switcher's tab row (`Prefs.tasks_view_tabs`). */
 export function putTasksViewTabs(tabs: string[]): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { tasks_view_tabs: tabs });
+}
+
+/** The Detailed view's pinned task keys (`Prefs.pinned_tasks`). */
+export function putPinnedTasks(keys: string[]): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { pinned_tasks: keys });
 }
 
 // ---- UI layout (shell/ui_layout.py, ~/.fused-render/ui_layout.json) ---------

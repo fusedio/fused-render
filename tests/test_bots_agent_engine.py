@@ -1499,6 +1499,18 @@ def test_super_ask_user_question_typed_answer_joins_the_options(server, fake_cli
     assert opts[-1]["description"] == agent_engine.TYPED_OPTION_NOTE
 
 
+def test_super_ask_user_question_typed_answer_stays_within_the_cli_option_cap(server, fake_cli, monkeypatch):
+    # The CLI rejects updatedInput whose options exceed 4, losing the answer entirely.
+    bot = super_bot()
+    t = start(bot, [_ask_q(_q("Which size?", "S", "M", "L", "XL")), {"result": "ok"}], monkeypatch)
+    bot.wait_event("question")
+    bot.say("medium, please")
+    finish(t)
+    ans = _answer(fake_cli)["updatedInput"]
+    assert ans["answers"] == {"Which size?": "medium, please"}
+    assert [o["label"] for o in ans["questions"][0]["options"]] == ["S", "M", "L", "XL"]
+
+
 def test_super_ask_user_question_multi_select_keeps_commas_in_labels(server, fake_cli, monkeypatch):
     bot = super_bot()
     t = start(bot, [_ask_q(_q("Which days?", "Mon, Tue", "Wed", "Thu", multi=True)), {"result": "ok"}], monkeypatch)
