@@ -174,6 +174,17 @@ def test_write_and_resize_reach_the_pty(registry, tmp_path):
     assert (session.rows, session.cols) == (40, 120)
 
 
+def test_a_multibyte_char_split_across_writes_arrives_whole(registry, tmp_path):
+    session = registry.spawn(_profile(tmp_path))
+    pty = FakePty.instances[0]
+    raw = "é".encode()
+    session.write(raw[:1])
+    session.write(raw[1:])
+    joined = "".join(pty.written)
+    assert joined == "é"
+    assert "\ufffd" not in joined
+
+
 def test_exit_sets_the_code_and_notifies_subscribers(registry, tmp_path):
     session = registry.spawn(_profile(tmp_path))
     _snap, _alive, _code, q = session.attach()

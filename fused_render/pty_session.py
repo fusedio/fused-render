@@ -30,6 +30,7 @@ this code.
 from __future__ import annotations
 
 import asyncio
+import codecs
 import collections
 import dataclasses
 import os
@@ -675,6 +676,8 @@ class WinPtySession(PtySession):
     def _start(self, profile: TerminalProfile, size: Optional[tuple]) -> None:
         import winpty  # pywinpty; lazy, see the class docstring
 
+        self._write_decoder = codecs.getincrementaldecoder("utf-8")(
+            errors="replace")
         rows, cols = size if size is not None else (DEFAULT_ROWS, DEFAULT_COLS)
         self._pty = winpty.PtyProcess.spawn(
             list(profile.argv), cwd=profile.cwd, env=dict(profile.env),
@@ -697,7 +700,10 @@ class WinPtySession(PtySession):
 
     def _write_raw(self, data: bytes) -> None:
         try:
-            self._pty.write(data.decode("utf-8", errors="replace"))
+            # Incremental: a character split across two writes stays whole.
+            text = self._write_decoder.decode(data)
+            if text:
+                self._pty.write(text)
         except Exception:  # EOFError once the console is gone
             pass
 
