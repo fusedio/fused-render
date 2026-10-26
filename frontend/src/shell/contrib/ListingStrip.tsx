@@ -132,6 +132,10 @@ export interface ListingKit {
   button: (a: ContribAction) => ReactNode;
   openDoctor: () => void;
   openPublish: () => void;
+  /** Re-read the listing fresh (GitHub re-checked): after a Source-panel
+   *  action moved the app — Publish now pushes the tip the listing
+   *  compares against, so "Publish update" must appear without a reload. */
+  refresh: () => Promise<void>;
   /** Every sheet the listing can open. Render exactly once. */
   sheets: ReactNode;
 }
@@ -408,6 +412,7 @@ export function useListing({
     button,
     openDoctor: () => setSheet("doctor"),
     openPublish: () => setSheet(doctorBlocks ? "doctor" : "publish"),
+    refresh: () => read(true),
     sheets,
   };
 }

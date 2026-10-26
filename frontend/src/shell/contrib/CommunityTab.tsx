@@ -25,7 +25,7 @@
 //
 // Sheets (each hook's `sheets`) are rendered ONCE, at the root, outside
 // every card: a re-read that moves a rung on never unmounts a dialog.
-import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { ArrowRight, Check, Copy, Download, ExternalLink, GitBranch, Laptop, Store } from "lucide-react";
 import {
   ackContrib,
@@ -90,11 +90,20 @@ export function CommunityTab({ dir, slug, contrib, variant, ladder: given }: Com
   const l = ladder.data;
   const mine = !!l?.ok && l.mine;
   const refreshLadder = () => void ladder.refresh();
+  // A Source-panel action (Publish now, Check now, Bring in) moves what the
+  // listing compares against: re-read the listing too, not only the ladder,
+  // or rung 3 keeps yesterday's answer until a reload.
+  const listingRef = useRef<ListingKit | null>(null);
+  const onSourceChanged = () => {
+    refreshLadder();
+    void listingRef.current?.refresh();
+  };
   // The page shows the block itself (the Overview's strip / BlockedNotice);
   // the sheet has no Overview, so it says it here.
-  const kit = useSourcePanel({ dir, slug, contrib, blockShown: variant === "page", onChanged: refreshLadder });
+  const kit = useSourcePanel({ dir, slug, contrib, blockShown: variant === "page", onChanged: onSourceChanged });
   const market = mine && !!l?.flags.marketplace && (l.rung ?? 1) >= 2;
   const listing = useListing({ dir, contrib, eligible: market, onChanged: refreshLadder });
+  listingRef.current = listing;
   const [doctorOpen, setDoctorOpen] = useState(false);
 
   // Seeing a copy's tab IS reading its newest event: say so once (the tab's
