@@ -47,6 +47,7 @@ import { requestRestart, useRestartFlow } from "@platform/lib/restart-store";
 import { useStatusChip, type StatusChipState } from "@platform/lib/statusChip";
 import { useManualUpdateCheck } from "@platform/lib/update-check";
 import { checkNowLabel, installUpdate, useUpdateStatus, type ManualCheckPhase } from "@platform/lib/update-status";
+import CommandLine from "@platform/ui/CommandLine";
 import StatusChip, { type ChipTone } from "@platform/ui/StatusChip";
 
 /** The disabled Check button's hint on a build with no updater. */
@@ -91,12 +92,14 @@ export function updatesChip(
 export function updatesDetail(
   status: UpdateStatus | null,
   stage: RestartStage,
-): { title: string; detail: string; action: { label: string; run: () => void } | null; error?: boolean; busy?: boolean } | null {
+): { title: string; detail: string; command?: string; action: { label: string; run: () => void } | null; error?: boolean; busy?: boolean } | null {
   if (!status) return null;
   const v = status.latest_version ? `v${status.latest_version}` : "The update";
   if (status.state === "available") {
     return status.check_only
-      ? { title: "Update available", detail: `${v} is out. This build does not install updates itself.`, action: null }
+      ? status.manual_command
+        ? { title: "Update available", detail: `${v} is out. Update from your terminal:`, command: status.manual_command, action: null }
+        : { title: "Update available", detail: `${v} is out. This build does not install updates itself.`, action: null }
       : { title: "Update available", detail: `${v} is ready to download.`, action: { label: "Download", run: () => void installUpdate(status) } };
   }
   if (status.state === "installing") {
@@ -211,6 +214,7 @@ export function UpdatesCardView({
                 {detail.title}
               </div>
               <div className="upd-state-detail">{detail.detail}</div>
+              {detail.command && <CommandLine command={detail.command} />}
               {progressLine && <div className="upd-state-detail upd-progress">{progressLine}</div>}
               {detail.busy && <div className="update-card-bar" aria-hidden />}
               {detail.action && (
