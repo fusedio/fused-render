@@ -170,6 +170,31 @@ def test_the_shots_dir_is_created_private_and_adopted_on_a_second_call(
     assert agent.main(action="shots_dir") == {"dir": agent._wire_path(str(shots))}
 
 
+def test_an_existing_shots_dir_is_adopted_on_windows(agent, tmp_path,
+                                                     monkeypatch):
+    """Windows has no mode bits: lstat reports every directory as 0o777 and
+    chmod cannot clear them. The first paste created the dir, and every later
+    one hit the "readable by others" refusal, so images never attached."""
+    shots = tmp_path / "fr" / "shots"
+    monkeypatch.setattr(agent, "SHOTS", str(shots))
+    assert "error" not in agent._shots_dir()
+    monkeypatch.delattr(os, "geteuid", raising=False)
+    real_lstat = os.lstat
+
+    class _Lstat:
+        def __init__(self, st):
+            self._st = st
+            self.st_mode = stat.S_IFDIR | 0o777
+
+        def __getattr__(self, name):
+            return getattr(self._st, name)
+
+    monkeypatch.setattr(os, "lstat", lambda p, *a, **k: _Lstat(real_lstat(p, *a, **k)))
+    monkeypatch.setattr(os, "chmod", lambda *a, **k: None)
+    got = agent._shots_dir()
+    assert "error" not in got, got
+
+
 def test_a_shots_dir_anyone_can_write_to_is_refused(agent, tmp_path, monkeypatch):
     """The temp root is world-writable and our path under it is predictable, so
     another account can pre-create this directory. Adopting theirs would hand
