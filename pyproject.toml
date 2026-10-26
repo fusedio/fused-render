@@ -42,6 +42,12 @@ dependencies = [
     # server.py imports httpx at module top for the pooled raw-proxy client, and
     # fastapi.testclient needs it too.
     "httpx",
+    # Behind a TLS-intercepting corporate proxy (Zscaler etc.) the proxy's root
+    # CA is in the OS trust store but not in certifi, so every outbound HTTPS
+    # call (httpx, and `requests` in the bundled `fused` OAuth exchange) fails
+    # verification. _system_trust injects truststore at package import so
+    # Python uses the macOS/Windows/Linux system store.
+    "truststore>=0.9",
     # PEP 508 requirement/specifier parsing, for deciding whether the app
     # interpreter already satisfies a script's PEP 723 header
     # (engine.app_satisfies: a header it already meets runs with no venv at
