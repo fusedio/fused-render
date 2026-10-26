@@ -229,3 +229,88 @@ def test_marketplace_preview_unknown(home):
     _mkt(home)
     res = skills.main(action="preview", marketplace="acme", plugin="kit", slug="../x")
     assert res["ok"] is False
+
+
+# -- review fixes ----------------------------------------------------------------
+
+
+def test_root_skill_takes_skill_md_and_its_resource_dirs_only(home, monkeypatch):
+    tree = [("SKILL.md", 10), ("README.md", 5), ("src/app.py", 5), ("package.json", 5),
+            ("references/a.md", 3), ("scripts/run.sh", 3), ("assets/x.png", 3), ("templates/t.md", 3),
+            ("docs/guide.md", 3)]
+    files = {"SKILL.md": "---\nname: rootskill\n---\nbody"}
+    _repo(monkeypatch, tree, files)
+    res = skills.main(action="remote_preview", source="o/r", skill_id="rootskill")
+    assert res["ok"] and res["files"] == [
+        "SKILL.md", "assets/x.png", "references/a.md", "scripts/run.sh", "templates/t.md"]
+
+
+def test_root_skill_in_a_big_repo_is_not_too_large(home, monkeypatch):
+    monkeypatch.setattr(skills, "_COPY_MAX_FILES", 3)
+    tree = [("SKILL.md", 10)] + [(f"src/f{i}.py", 1) for i in range(50)]
+    _repo(monkeypatch, tree, {"SKILL.md": "---\nname: big\n---\n"})
+    assert skills.main(action="remote_preview", source="o/r", skill_id="big")["files"] == ["SKILL.md"]
+
+
+def test_truncated_tree_is_refused_and_not_cached(home, monkeypatch):
+    calls = []
+
+    def http_get(url):
+        calls.append(url)
+        return json.dumps({"truncated": True, "tree": []}).encode()
+    monkeypatch.setattr(skills, "_http_get", http_get)
+    for _ in range(2):
+        res = skills.main(action="remote_preview", source="o/r", skill_id="foo")
+        assert res == {"ok": False, "error": "o/r is too large to read on GitHub"}
+    assert len(calls) == 2
+
+
+def test_frontmatter_search_that_stops_early_says_so(home, monkeypatch):
+    monkeypatch.setattr(skills, "_FRONTMATTER_PROBES", 2)
+    tree = [(f"pkg/s{i}/SKILL.md", 10) for i in range(5)]
+    files = {p: f"---\nname: n{i}\n---\n" for i, (p, _n) in enumerate(tree)}
+    _repo(monkeypatch, tree, files)
+    res = skills.main(action="remote_preview", source="o/r", skill_id="zzz")
+    assert res["ok"] is False and "stopped after 2 of 5" in res["error"]
+
+
+def test_tree_cache_drops_expired_sources_on_write(home, monkeypatch):
+    skills._trees["old/one"] = (0, [])
+    _repo(monkeypatch, TREE, FILES)
+    skills.main(action="remote_preview", source="o/r", skill_id="foo")
+    assert "old/one" not in skills._trees and "o/r" in skills._trees
+
+
+def test_remote_add_downloads_before_taking_the_config_lock(home, monkeypatch):
+    held = []
+    real = lib.config_lock
+
+    class Spy:
+        def __enter__(self):
+            held.append(True)
+            self.cm = real()
+            return self.cm.__enter__()
+
+        def __exit__(self, *a):
+            held.pop()
+            return self.cm.__exit__(*a)
+    monkeypatch.setattr(lib, "config_lock", lambda: Spy())
+    seen = []
+
+    def http_get(url):
+        seen.append(bool(held))
+        if "/git/trees/" in url:
+            return json.dumps({"tree": [{"path": "s/foo/SKILL.md", "type": "blob", "size": 5}]}).encode()
+        return b"---\nname: foo\n---\n"
+    monkeypatch.setattr(skills, "_http_get", http_get)
+    assert skills.main(action="remote_add", source="o/r", skill_id="foo")["ok"]
+    assert seen and not any(seen)
+
+
+def test_marketplace_preview_hides_symlinked_files(home):
+    mkt = _mkt(home)
+    sk = mkt / "kit" / "skills" / "brew"
+    (sk / "link.md").symlink_to(sk / "refs" / "a.md")
+    (sk / "linkdir").symlink_to(sk / "refs", target_is_directory=True)
+    res = skills.main(action="preview", marketplace="acme", plugin="kit", slug="brew")
+    assert res["files"] == ["SKILL.md", "refs/a.md"]

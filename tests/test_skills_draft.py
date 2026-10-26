@@ -280,3 +280,68 @@ def test_main_exposes_the_prompt_as_an_action():
     res = skills.main(action="draft_prompt", text="Do X", adapting=True)
     assert res["ok"] is True and "Do X" in res["prompt"] and "already contains" in res["prompt"]
     assert "already contains" not in skills.main(action="draft_prompt", text="Do X")["prompt"]
+
+
+# -- review fixes ----------------------------------------------------------------
+
+
+def test_check_rejects_a_symlinked_skill_md(home):
+    real = home / "src" / "real.md"
+    real.parent.mkdir(parents=True)
+    real.write_text(GOOD)
+    d = home / "src" / "linked"
+    d.mkdir()
+    (d / "SKILL.md").symlink_to(real)
+    res = skills.main(action="draft_check", path=str(d))
+    assert res["ok"] is False and "symbolic link" in res["error"]
+    assert skills.main(action="draft_start", path=str(d))["ok"] is False
+
+
+def test_start_does_not_count_dot_claude_against_the_size_cap(home, monkeypatch):
+    d = _skill(home / "src", extra=False)
+    (d / ".claude").mkdir()
+    (d / ".claude" / "big.bin").write_bytes(b"x" * 100)
+    monkeypatch.setattr(skills, "_COPY_MAX_BYTES", len(GOOD) + 10)
+    res = skills.main(action="draft_start", path=str(d))
+    assert res["ok"] is True and not os.path.exists(os.path.join(res["staging"], ".claude"))
+
+
+def test_save_does_not_count_dot_claude_against_the_size_cap(home, monkeypatch):
+    st = _stage()
+    os.makedirs(os.path.join(st, ".claude"))
+    open(os.path.join(st, ".claude", "big.bin"), "wb").write(b"x" * 100)
+    monkeypatch.setattr(skills, "_COPY_MAX_BYTES", len(GOOD) + 10)
+    assert skills.main(action="draft_save", staging=st, placement="claude")["ok"] is True
+
+
+def test_write_rejects_an_oversized_text(home, monkeypatch):
+    st = _stage()
+    monkeypatch.setattr(skills, "_COPY_MAX_BYTES", 10)
+    res = skills.main(action="draft_write", staging=st, path="SKILL.md", text="é" * 6)
+    assert res["ok"] is False and "too large" in res["error"]
+    assert open(os.path.join(st, "SKILL.md")).read() == GOOD
+
+
+def test_start_prunes_week_old_staging_dirs(home):
+    first = skills.main(action="draft_start")["staging"]
+    fresh = skills.main(action="draft_start")["staging"]
+    old = os.path.join(os.path.dirname(first), "20200101-000000-abcdef")
+    os.mkdir(old)
+    week = 7 * 24 * 3600 + 60
+    t = os.path.getmtime(old) - week
+    os.utime(old, (t, t))
+    third = skills.main(action="draft_start")["staging"]
+    assert not os.path.exists(old)
+    assert all(os.path.isdir(p) for p in (first, fresh, third))
+
+
+def test_save_key_matches_what_list_reports_under_symlinked_dirs(home):
+    real = home / "real-home"
+    real.mkdir()
+    (home / ".agents").symlink_to(real, target_is_directory=True)
+    st = _stage()
+    res = skills.main(action="draft_save", staging=st, placement="all")
+    assert res["ok"] is True
+    row = next(s for s in skills.main(action="list")["skills"] if s["slug"] == "design-review")
+    assert res["key"] == f"{row['location']}/{row['slug']}"
+    assert res["key"].startswith(str(home / ".agents"))

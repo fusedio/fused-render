@@ -74,6 +74,7 @@ import os
 import re
 import secrets
 import shutil
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -330,14 +331,17 @@ def _placement(slug: str, placement: str = "all") -> tuple:
     return lib.safe_subdir(SKILLS_DIR, slug), None
 
 
-def _copy_skill(src: str, dst: str) -> None:
+def _copy_skill(src: str, dst: str, skip_top: tuple = ()) -> None:
     """Copy one skill dir. Symlinks are skipped, not followed: a skill from a
-    clone must not pull files from outside it."""
+    clone must not pull files from outside it. `skip_top` names top-level
+    dirs left out (and so not counted against the size cap)."""
     files = size = 0
     for dirpath, dirnames, filenames in os.walk(src):
+        top = os.path.normpath(dirpath) == os.path.normpath(src)
         dirnames[:] = [
             d for d in dirnames
             if d not in _COPY_SKIP_DIRS and not os.path.islink(os.path.join(dirpath, d))
+            and not (top and d in skip_top)
         ]
         out = os.path.normpath(os.path.join(dst, os.path.relpath(dirpath, src)))
         os.makedirs(out, exist_ok=True)
@@ -397,6 +401,9 @@ _TREE_TTL = 600
 _FRONTMATTER_PROBES = 40
 _SOURCE_RE = re.compile(r"^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$")
 _trees: dict = {}  # source -> (fetched at, [(path, size)])
+_trees_lock = threading.Lock()
+# A root-level skill is the repo itself: only these travel with its SKILL.md.
+_ROOT_SKILL_DIRS = ("references", "scripts", "assets", "templates")
 
 
 def _http_get(url: str) -> bytes:
@@ -442,16 +449,24 @@ def _search(query: str) -> dict:
 def _repo_tree(source: str) -> list:
     """[(path, size)] of every blob in the repo's default branch. One request
     per source per _TREE_TTL: the unauthenticated GitHub limit is 60/hour."""
-    hit = _trees.get(source)
+    with _trees_lock:
+        hit = _trees.get(source)
     if hit and time.time() - hit[0] < _TREE_TTL:
         return hit[1]
     try:
         raw = _http_get(f"https://api.github.com/repos/{source}/git/trees/HEAD?recursive=1")
     except OSError as e:
         raise ValueError(f"could not read {source} on GitHub: {e}")
-    blobs = [(n["path"], n.get("size") or 0) for n in (json.loads(raw).get("tree") or [])
+    body = json.loads(raw)
+    if body.get("truncated"):
+        raise ValueError(f"{source} is too large to read on GitHub")
+    blobs = [(n["path"], n.get("size") or 0) for n in (body.get("tree") or [])
              if isinstance(n, dict) and n.get("type") == "blob" and isinstance(n.get("path"), str)]
-    _trees[source] = (time.time(), blobs)
+    now = time.time()
+    with _trees_lock:
+        for k in [k for k, (at, _b) in _trees.items() if now - at >= _TREE_TTL]:
+            del _trees[k]
+        _trees[source] = (now, blobs)
     return blobs
 
 
@@ -469,6 +484,7 @@ def _locate(source: str, skill_id: str) -> tuple:
     cands = sorted((p for p, _n in tree if p == "SKILL.md" or p.endswith("/SKILL.md")),
                    key=lambda p: (p.count("/"), p))
     found = next((p for p in cands if p.rpartition("/")[0].rpartition("/")[2].lower() == skill_id), None)
+    cut_short = found is None and len(cands) > _FRONTMATTER_PROBES
     if found is None:
         for p in cands[:_FRONTMATTER_PROBES]:
             try:
@@ -479,6 +495,10 @@ def _locate(source: str, skill_id: str) -> tuple:
                 found = p
                 break
     if found is None:
+        if cut_short:
+            raise ValueError(
+                f"no skill {skill_id} found in {source}: the search stopped after "
+                f"{_FRONTMATTER_PROBES} of {len(cands)} SKILL.md files")
         raise ValueError(f"no skill {skill_id} in {source}")
     root = found.rpartition("/")[0]
     prefix = root + "/" if root else ""
@@ -489,6 +509,8 @@ def _locate(source: str, skill_id: str) -> tuple:
         rel = p[len(prefix):]
         parts = rel.split("/")
         if any(x in ("", ".", "..") for x in parts) or any(x in _COPY_SKIP_DIRS for x in parts[:-1]):
+            continue
+        if not root and rel != "SKILL.md" and parts[0] not in _ROOT_SKILL_DIRS:
             continue
         files.append((p, rel, n))
         size += n
@@ -506,18 +528,22 @@ def _remote_preview(source: str, skill_id: str) -> dict:
 
 
 def _remote_add(source: str, skill_id: str) -> dict:
+    """Everything is fetched before the config lock is taken: only placing
+    the downloaded files holds it."""
     _root, files = _locate(source, skill_id)
+    blobs = [(rel, _raw(source, p)) for p, rel, _n in files]
 
     def fill(dst: str) -> None:
-        for p, rel, _n in files:
+        for rel, data in blobs:
             target = os.path.normpath(os.path.join(dst, rel))
             if not target.startswith(dst + os.sep):
                 raise ValueError(f"invalid path: {rel!r}")
             os.makedirs(os.path.dirname(target), exist_ok=True)
             with open(target, "wb") as f:
-                f.write(_raw(source, p))
+                f.write(data)
 
-    return _place(skill_id, fill)
+    with lib.config_lock():
+        return _place(skill_id, fill)
 
 
 def _preview(marketplace: str, plugin: str, slug: str) -> dict:
@@ -535,8 +561,10 @@ def _preview(marketplace: str, plugin: str, slug: str) -> dict:
                 text = f.read()
             files = []
             for dirpath, dirnames, names in os.walk(skill_dir):
-                dirnames[:] = [d for d in dirnames if d not in _COPY_SKIP_DIRS]
-                files.extend(os.path.relpath(os.path.join(dirpath, n), skill_dir) for n in names)
+                dirnames[:] = [d for d in dirnames if d not in _COPY_SKIP_DIRS
+                               and not os.path.islink(os.path.join(dirpath, d))]
+                files.extend(os.path.relpath(os.path.join(dirpath, n), skill_dir) for n in names
+                             if not os.path.islink(os.path.join(dirpath, n)))
             return {"ok": True, "text": text, "files": sorted(files)}
     return {"ok": False, "error": f"no skill {slug!r} in {plugin}@{marketplace}"}
 
@@ -583,6 +611,7 @@ def _skill_file(root: str, path: str) -> str:
 
 _DRAFT_NAME_MAX = 64
 _DRAFT_DESC_MAX = 1024
+_DRAFT_MAX_AGE = 7 * 24 * 3600
 
 
 def _drafts_root() -> str:
@@ -626,10 +655,33 @@ def _draft_check(path: str) -> dict:
     md = os.path.join(path, "SKILL.md")
     if not os.path.isfile(md):
         return {"ok": False, "error": "no SKILL.md in that folder"}
+    if os.path.islink(md):
+        return {"ok": False, "error": "SKILL.md is a symbolic link; use a real file"}
     with open(md, encoding="utf-8", errors="replace") as f:
         fm = lib.parse_frontmatter(f.read(4096))
     return {"ok": True, "root": path, "name": fm.get("name") or os.path.basename(path),
             "files": _draft_files(path)}
+
+
+def _prune_drafts(root: str) -> None:
+    """Drop staging dirs nobody came back to (a closed tab, a crash): a draft
+    untouched for _DRAFT_MAX_AGE is not coming back."""
+    cutoff = time.time() - _DRAFT_MAX_AGE
+    try:
+        names = os.listdir(root)
+    except OSError:
+        return
+    for n in names:
+        p = os.path.join(root, n)
+        try:
+            if os.lstat(p).st_mtime >= cutoff:
+                continue
+            if os.path.islink(p):
+                os.remove(p)
+            else:
+                shutil.rmtree(p, ignore_errors=True)
+        except OSError:
+            continue
 
 
 def _draft_start(path: str) -> dict:
@@ -638,12 +690,12 @@ def _draft_start(path: str) -> dict:
         return found
     root = _drafts_root()
     os.makedirs(root, exist_ok=True)
+    _prune_drafts(root)
     staging = os.path.join(root, f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}")
     os.mkdir(staging)
     if found:
         try:
-            _copy_skill(found["root"], staging)
-            shutil.rmtree(os.path.join(staging, ".claude"), ignore_errors=True)
+            _copy_skill(found["root"], staging, skip_top=(".claude",))
         except BaseException:
             shutil.rmtree(staging, ignore_errors=True)
             raise
@@ -693,8 +745,20 @@ def _draft_write(staging: str, path: str, text: str) -> dict:
         raise ValueError(f"invalid path: {path!r}")
     if os.path.islink(target):
         raise ValueError(f"invalid path: {path!r}")
+    if len((text or "").encode("utf-8")) > _COPY_MAX_BYTES:
+        raise ValueError(f"file is too large (at most {_COPY_MAX_BYTES // (1024 * 1024)} MB)")
     lib.write_text(target, text)
     return {"ok": True}
+
+
+def _listed_key(slug: str, path: str) -> str:
+    """`<location>/<slug>` exactly as `list` reports the skill at `path`
+    (location is a user dir as _user_dirs spells it, not its realpath)."""
+    real = os.path.realpath(path)
+    for s in _user_skills():
+        if os.path.realpath(s["path"]) == real:
+            return f"{s['location']}/{s['slug']}"
+    return f"{os.path.dirname(path)}/{slug}"
 
 
 def _draft_save(staging: str, placement: str) -> dict:
@@ -706,13 +770,9 @@ def _draft_save(staging: str, placement: str) -> dict:
     if status["problems"]:
         return {"ok": False, "error": "; ".join(status["problems"]), "problems": status["problems"]}
 
-    def fill(dst: str) -> None:
-        _copy_skill(staging, dst)
-        shutil.rmtree(os.path.join(dst, ".claude"), ignore_errors=True)
-
-    res = _place(status["name"], fill, placement)
+    res = _place(status["name"], lambda dst: _copy_skill(staging, dst, skip_top=(".claude",)), placement)
     if res["ok"]:
-        res["key"] = res["path"]
+        res["key"] = _listed_key(res["slug"], res["path"])
         shutil.rmtree(staging, ignore_errors=True)
     return res
 
@@ -798,8 +858,7 @@ def main(action: str = "list", slug: str = "", path: str = "", text: str = "",
             return _remote_preview(source, skill_id)
 
         if action == "remote_add":
-            with lib.config_lock():
-                return _remote_add(source, skill_id)
+            return _remote_add(source, skill_id)
 
         if action == "read":
             root = _skill_dir(slug, source, plugin, marketplace, location)
