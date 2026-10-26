@@ -26,6 +26,9 @@ export const HELP_BASE = "https://render.fused.io";
 /** The install line the download page tells people to run (guide step 1). */
 export const CLAUDE_INSTALL_COMMAND = "curl -fsSL https://claude.ai/install.sh | bash";
 
+/** The same step on Windows, where the in-app terminal is PowerShell. */
+export const CLAUDE_INSTALL_COMMAND_WINDOWS = "irm https://claude.ai/install.ps1 | iex";
+
 /** Codex's documented install route (docs/CODEX_BACKEND.md D10). */
 export const CODEX_INSTALL_COMMAND = "npm install -g @openai/codex";
 

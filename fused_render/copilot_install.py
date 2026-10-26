@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import subprocess
+import sys
 import threading
 import time
 
@@ -36,6 +37,10 @@ def install_argv() -> tuple:
     is spelled in copilot_health.INSTALL_COMMAND_POSIX and nothing from a
     request reaches it; `display` is that same line, shown before it runs."""
     display = copilot_health.install_command()
+    if sys.platform == "win32":
+        # npm is `npm.cmd` there; PowerShell resolves it, a bare argv does not.
+        return (["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                 "-Command", display], display)
     return (["bash", "-c", display], display)
 
 

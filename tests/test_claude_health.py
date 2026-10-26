@@ -878,8 +878,15 @@ def test_disable_updates_beats_the_install_method():
     assert still_on["updatable"] is True
 
 
-def test_the_install_command_is_the_native_installer():
+def test_the_install_command_is_the_native_installer(monkeypatch):
+    monkeypatch.setattr(claude_health.sys, "platform", "darwin")
     assert claude_health.install_command() == claude_health.INSTALL_COMMAND_POSIX
+
+
+def test_the_install_command_on_windows_is_powershell(monkeypatch):
+    monkeypatch.setattr(claude_health.sys, "platform", "win32")
+    assert claude_health.install_command() == claude_health.INSTALL_COMMAND_WINDOWS
+    assert claude_health.INSTALL_COMMAND_WINDOWS == "irm https://claude.ai/install.ps1 | iex"
 
 
 # -- the gate: doctor runs only when there is something to explain -------------

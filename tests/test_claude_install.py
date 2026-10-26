@@ -74,7 +74,16 @@ def _run_install(monkeypatch, lines, code=0, health=None):
 # -- what actually runs -------------------------------------------------------
 
 
-def test_the_install_argv_matches_the_line_we_show():
+def test_the_install_argv_on_windows_is_powershell(monkeypatch):
+    monkeypatch.setattr(claude_health.sys, "platform", "win32")
+    argv, display = claude_install.install_argv()
+    assert display == claude_health.INSTALL_COMMAND_WINDOWS
+    assert argv == ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                    "-Command", claude_health.INSTALL_COMMAND_WINDOWS]
+
+
+def test_the_install_argv_matches_the_line_we_show(monkeypatch):
+    monkeypatch.setattr(claude_health.sys, "platform", "darwin")
     """What the user is told will run and what runs have to be the same
     sentence, or the disclosure beside the button is decoration."""
     argv, display = claude_install.install_argv()

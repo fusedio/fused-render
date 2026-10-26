@@ -565,7 +565,14 @@ def test_install_method_and_update_plan(path, method, updatable):
         assert plan["command"] and "copilot" in plan["command"]
 
 
-def test_the_install_command_is_the_script():
+def test_the_install_command_on_windows_is_npm(monkeypatch):
+    monkeypatch.setattr(copilot_health.sys, "platform", "win32")
+    assert copilot_health.install_command() == copilot_health.INSTALL_COMMAND_WINDOWS
+    assert copilot_health.INSTALL_COMMAND_WINDOWS == "npm install -g @github/copilot"
+
+
+def test_the_install_command_is_the_script(monkeypatch):
+    monkeypatch.setattr(copilot_health.sys, "platform", "darwin")
     assert copilot_health.install_command().startswith("curl -fsSL https://gh.io/copilot-install")
 
 
@@ -636,12 +643,22 @@ def test_login_runs_the_cli_and_re_probes_on_a_clean_exit(tmp_path, monkeypatch)
 
 def test_install_has_its_own_slot_and_argv(monkeypatch):
     from fused_render import claude_install, copilot_install
+    monkeypatch.setattr(copilot_health.sys, "platform", "darwin")
     assert copilot_install.JOB_ID != claude_install.JOB_ID
     assert copilot_install.JOB_ID.startswith("sys:")
     argv, display = copilot_install.install_argv()
     assert argv == ["bash", "-c", copilot_health.INSTALL_COMMAND_POSIX]
     assert display == copilot_health.INSTALL_COMMAND_POSIX
     assert copilot_install.update_argv("/x/copilot") == (["/x/copilot", "update"], "copilot update")
+
+
+def test_install_argv_on_windows_is_powershell(monkeypatch):
+    from fused_render import copilot_install
+    monkeypatch.setattr(copilot_health.sys, "platform", "win32")
+    argv, display = copilot_install.install_argv()
+    assert display == copilot_health.INSTALL_COMMAND_WINDOWS
+    assert argv == ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                    "-Command", copilot_health.INSTALL_COMMAND_WINDOWS]
 
 
 def test_update_refuses_a_managed_install(tmp_path, monkeypatch):
