@@ -1790,7 +1790,7 @@
 
 .cc-new-lint.is-err,
 .cc-new-problems {
-  color: var(--destructive, #d33);
+  color: var(--error);
 }
 
 .cc-new-radio {
