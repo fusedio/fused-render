@@ -1226,3 +1226,504 @@ learn `HOME_BRANCH` for github copies. Q3 automatic bring-in when clean and
 Claude idle, Activity + Undo. Q4 keep `fused_aside` in this PR. Q5 silent
 migration with one Activity line. Q6 stacked PR on #1698's branch. Q7 accept
 the squash commit-list noise; no replay anywhere.
+
+## 18. Stage B — the reviewed marketplace (2026-10-26) — AUTHORITATIVE
+
+Handoff: claude.ai/artifact/XWJXP9xWBVFGGKK4DCU4GU (the owner's approval).
+Stacked on `github-contribution-loop` (branch `marketplace-stage-b`). Every
+rule of §16/§17 stands; this section adds the `marketplace` kind, the index,
+the review check, publishing, the block list and the listing page. Where
+the handoff and the code disagree about what exists, the code wins and the
+PR says so. Workstreams and their files are in §18.11; the contract is the
+only thing agents share, so a shape named here is the shape, not a sketch.
+
+### 18.0 Principles (on top of §16.0 P1–P9)
+
+- **M1** A `marketplace` copy only ever runs an approved commit. The mirror
+  (`refs/heads/<b>`, §17 I3) of a marketplace copy holds the **approved
+  commit** of its row, never the author's tip, after every fetch. Nothing
+  in fused — engine, Git panel, explorer dialog, reinstall, deep link —
+  moves it to an unreviewed commit. Undo never lands on a blocked commit.
+- **M2** The index holds pointers, not code. Installs and updates clone the
+  author's repo at the approved commit; no app code comes from Fused
+  storage. `marketplace_release` and the tar package path are deleted.
+- **M3** Review fails closed: an error, a timeout or a missing result is a
+  fail, in the check and in fused (an unreadable row = no move).
+- **M4** Changing the trust level is the user's explicit choice: a copy
+  never switches between `marketplace` and `github` on its own; a delisted
+  or blocked app never falls back to the author's main.
+- **M5** `github` copies behave exactly as §17. Every change here is a new
+  branch of an `if`, never a changed line of the github branch.
+- **M6** Automatic is fine, magic is not: a release move, a switch and a
+  rollback each write an Activity line (Undo where allowed), each exists as
+  a button, and every stuck state has a fix button.
+
+### 18.1 Words
+
+**Index** — public repo `vasu2001/fused-apps-index` for now (the owner moves
+it under `fusedio` later; `FUSED_RENDER_MARKETPLACE_INDEX` env + the backend
+constant are the only two places that know the name). **Row** — one file
+`apps/<slug>.json` in the index. **Approved commit** — `row.commit`.
+**Release** — a merged index PR that moved `row.commit`. **Review check** —
+the index's `review` GitHub Actions check. **What's new** — the check's
+plain-language changelog, stored in `reviews/<slug>.json`. **Block list** —
+`blocklist.json` in the index. **Delisted** — the row file deleted from the
+index. **Backend** — the Fused canvas `fused_app_marketplace` (env
+`unstable`); fused talks to it only through `marketplace._udf_get`.
+
+### 18.2 The index repo (WS-IDX)
+
+```
+apps/<slug>.json        the row — written ONLY through author PRs (review check)
+reviews/<slug>.json     written ONLY by the review bot after a merge (bypass-listed)
+blocklist.json          maintainers only, human-reviewed PRs
+collections.json        maintainers: featured + shelves
+categories.json         the four categories today's Marketplace shows
+scripts/review/         the check (stdlib + `anthropic`; no fused-render import)
+scripts/review/rules.py a VERBATIM copy of fused_render/contrib/review_rules.py
+fixtures/               the deliberately bad PRs (one dir each) + run_fixtures.py
+.github/workflows/review.yml
+README.md
+```
+
+Row (`apps/<slug>.json`, every key required, nothing else allowed):
+```json
+{"slug": "sine-starter", "repo": "vasu2001/sine-starter", "branch": "main",
+ "commit": "<40-hex>", "name": "Sine Starter", "description": "…",
+ "category": "starters", "tags": ["starter"], "icon": "icon.png" | null,
+ "preview": "preview.png" | null, "remix_of": "<slug>" | null, "version": "1.0.1"}
+```
+`slug` = file name = `[a-z0-9][a-z0-9-]{1,63}`; `icon`/`preview` are paths
+inside the repo at `commit`; `category` ∈ categories.json ids.
+
+Review file (`reviews/<slug>.json`): `[{"commit", "at", "whats_new",
+"new_powers": [str], "credits": ["<login>"], "pr": int, "first": bool}]`
+newest first. `credits` = logins of PR authors whose PRs merged into the
+author's repo between the previous approved commit and this one (GitHub
+`compare` → commits → PR search by sha; best effort, empty when unknown).
+
+Block list: `{"blocked": [{"slug", "commit", "level": "hard"|"soft",
+"reason", "what_to_do", "at"}]}`.
+
+Collections: `{"featured": ["<slug>"], "shelves": [{"id", "title",
+"slugs": []}]}`. Categories: `[{"id", "label", "order"}]`.
+
+**The review check** (`review.yml`, event `pull_request_target` types
+opened/synchronize/reopened, plus `issue_comment` created, plus
+`pull_request` closed). Runs the BASE branch's scripts; never executes
+anything from the PR or from the app repo (both are data). Steps, each a
+hard fail with a one-line plain reason posted on the PR:
+1. **Files.** The PR touches only `apps/<slug>.json` files (add, modify or
+   delete). At most one slug per PR.
+2. **Who.** PR author login == owner of `row.repo` (for both the old and the
+   new row when modified), or `row.repo`'s owner is an org of which the PR
+   author is a PUBLIC member (`GET /orgs/{org}/public_members/{login}` 204).
+   Private org membership cannot be checked with the index's token: documented
+   limit.
+3. **Shape.** Row schema above; `slug` unique; `repo` not listed under another
+   slug; `remix_of` names an existing row; `branch` == the repo's default branch.
+4. **Which commit.** `GET /repos/{repo}/compare/{branch}...{commit}` status
+   `identical` or `behind` (the commit is ON the author's branch). A commit
+   reachable only from a fork fails here even though GitHub serves it.
+5. **Fixed rules** over the app at `commit` (tarball from codeload, extracted
+   with a safe walk): `rules.hard_hits(files)` — runtime-fetched code,
+   obfuscated/long encoded blobs, binaries, install-time hooks, reading saved
+   passwords/keys, a committed `.fused/`, text addressed to an AI reviewer.
+   Any hit fails. No model answer overrules these.
+6. **Claude's review.** First listing (no previous approved commit): the
+   whole app (file list + contents, capped). Update: the GitHub `compare`
+   diff between the previous approved commit and `commit`, dependency files
+   included. Anthropic Messages API, model `claude-sonnet-5-5`, two attempts,
+   total budget 20 minutes; JSON `{"verdict": "pass"|"fail", "reasons":
+   [str], "whats_new": str, "new_powers": [{"kind", "detail"}]}`. Code is
+   fenced as data with a nonce (same `_fence` idea as `contrib/ai.py`). An
+   invalid answer, an API error or a timeout = fail.
+7. **New powers** (D9). Static detection (`rules.powers(diff_or_files)`:
+   new network host, writes outside the app folder, dependency added,
+   autostart/daemon, Claude tools) ∪ the model's list. Non-empty → the check
+   still passes, but the job does NOT enable auto-merge; it labels the PR
+   `needs-confirmation` and comments the list. A comment `fused: confirm
+   <head sha>` by the PR author (the `issue_comment` job) enables auto-merge
+   when the head still equals that sha.
+8. **Result.** The job posts ONE comment that fused reads, containing a
+   machine block `<!-- fused-review {"sha", "status": "pass"|"fail"|
+   "needs-confirmation", "reasons": [], "whats_new", "new_powers": []} -->`
+   above the human text (a re-run edits the same comment). Pass with no
+   powers → `gh pr merge --squash --auto`. Branch ruleset: PR required,
+   required check `review`, admins included, auto-merge allowed; bypass
+   list = the GitHub Actions app, used only by step 9.
+9. **After merge** (`pull_request` closed, merged): append the entry to
+   `reviews/<slug>.json` on main (bot commit "review: <slug> @ <sha7>").
+   A deleted row (delist) appends nothing.
+
+Fixtures (`fixtures/<name>/` = the PR's file set + `expect.json` with the
+failing step): `runtime-fetch`, `password-read`, `fork-only-commit`,
+`not-owner`, `prompt-injection`, `committed-fused-dir`, `other-row`,
+`timeout` (env `REVIEW_FORCE_TIMEOUT=1`). `run_fixtures.py` runs the check's
+pure parts against them and is a job in `review.yml` on pushes to main.
+
+Secrets the owner sets: `ANTHROPIC_API_KEY`. `GITHUB_TOKEN` is the default.
+
+### 18.3 The backend (WS-CANVAS)
+
+Canvas `~/Fused/canvas/unstable/fused_app_marketplace`. UDFs (each
+`fused.udf(cache_max_age="0s")`, answer `format=json` as a list of rows,
+error = one row `{error_code, error_message}` — today's API shape, so
+`marketplace._udf_get` is unchanged):
+
+| UDF | params | row |
+|---|---|---|
+| `marketplace_catalog` | `client_version` | one per app: `slug, name, description, author{name, github}, tags, category, version, requires_python, min_fused_render, ai_capabilities, ai_models, ai_model_param, icon_url, preview_url, size_bytes, file_count, release_id (= commit), commit, repo, branch, source_url (https://github.com/<repo>), published_at (first release), updated_at (last release), featured, remix_of, remix_count, contributor_count, last_release_at, releases: [{commit, at, whats_new, version, blocked: "hard"|"soft"|null}] newest first, catalog_version, generated_at` |
+| `marketplace_categories` | — | `{id, label, order, count, catalog_version}` |
+| `marketplace_collections` | `new_and_updated_limit` | `{collection: "featured"|"shelf"|"new_and_updated", shelf_id, title, position, slug, catalog_version}` |
+| `marketplace_search` | `q, category, cursor, limit, client_version` | catalog rows + `rank`, `next_cursor` |
+| `marketplace_app_detail` | `slug, client_version` | catalog row + `readme_markdown, readme_base_url (raw…/<repo>/<commit>/), files: [{path, size}], releases` |
+| `marketplace_blocklist` | — | `{slug, commit, level, reason, what_to_do, at, generated_at}` (one row per entry; an empty list is a valid answer; errors as above) |
+| `fused_app_listing` | `slug` | HTML (B6): the listing page — name, icon, preview, readme at the approved commit, "Reviewed by Fused · release <date>", What's new, Remix of, contributors, install button = `fused-render://open?marketplace=<slug>` with the "Didn't open?" fallback, "View on GitHub" |
+
+Sources: the index via `codeload.github.com/<index>/zip/HEAD` (`fused.cache`
+5 min); each app repo via `codeload.github.com/<repo>/zip/<commit>`
+(immutable, `fused.cache` 24 h): `name`/`description` from the row, `version`
+from the row, `requires_python`/`ai_*`/`min_fused_render` from the app's
+`metadata.json`/`pyproject.toml`/entry page exactly as today's catalog does,
+`icon_url`/`preview_url` = `https://raw.githubusercontent.com/<repo>/<commit>/
+<path>`, `size_bytes`/`file_count` from the zip. `remix_count` = rows whose
+`remix_of` is this slug; `contributor_count` = distinct `credits` across the
+review file (+1 for the author). No GitHub REST call is required to serve the
+catalog; a `GITHUB_TOKEN` Fused secret, when present, is used for the one
+optional call (none today). `catalog_version` = sha of the index HEAD.
+`fused_app_github` stays as it is.
+
+The canvas is pushed with `fused workbench --env unstable canvas push .`
+from inside the folder (`canvas.toml` gets one `[[canvas.nodes]]` row per
+UDF, same keys as the existing row). The owner shares the canvas and gives
+the share URL; until then `FUSED_RENDER_MARKETPLACE_API` carries it. The
+constant `marketplace.API_BASE` is updated when the owner hands it over.
+
+### 18.4 The `marketplace` kind in fused (WS-ENGINE)
+
+**Record.** `store.KINDS`/`classify.KINDS += "marketplace"`; a marketplace
+record is a github record plus:
+```python
+"slug": str,
+"approved": {"commit": sha, "at": iso|None, "whats_new": str|None, "version": str|None},  # last row seen
+"listing": {"status": "live"|"delisted", "checked_at": float, "delisted_at": float|None},
+"block": {"level": "hard"|"soft", "commit": sha, "reason": str, "what_to_do": str,
+          "at": str, "rolled_back_to": sha|None, "conflict": bool, "confirmed_at": float|None} | None,
+"switched": [{"from": "github"|"marketplace", "at": float, "backup": ref|None}],   # for Undo of a switch
+```
+A `github` record gains `"block_warn": {...same keys...} | None` (B4's
+warning for link copies). `store.RECORD_V` stays 3; `_view` fills the new
+keys with None.
+
+**One predicate, everywhere.** `classify.GITHUB_LIKE = ("github",
+"marketplace")` and `classify.is_github_like(kind)`. Every site §13 of the
+engine map lists that tests `kind == "github"` for git BEHAVIOUR (push guard,
+`_sync_locked`, `engine.sync/status/_record`, `actions.facts/decide`,
+`store._bind`, `follow.for_record`, `refresh.source`, router `_gate`/
+`_wrong_kind`, `git_upstream._is_github`/get-latest, `appfile_git` probe/
+install/update, `proposals`, `remix`, `contributors`, `app_git` identity,
+`app_doctor`, `share_app`, `claude_agent` marker read) uses the predicate.
+The git config marker `fused.kind` is written as `"marketplace"`;
+`contrib_guard.guarded_who` treats `fused.kind in ("github", "marketplace")`
+as guarded (the pushurl guard is set for both).
+
+**Follow.** `follow.for_record` returns `Follow("pinned", url, branch,
+commit=record.approved.commit)` for a marketplace record (`Follow` gains an
+optional `commit: str | None = None`). `follow.fetch` for a pinned follow:
+`fetch --no-tags <url> +refs/heads/<b>:refs/remotes/origin/<b> <commit>`
+(GitHub serves any reachable sha; a second fetch of the bare sha when the
+first refspec form is refused), then `update_mirror`. `update_mirror` for
+a pinned follow: `new = commit`; if `commit` is not an ancestor of
+`refs/remotes/origin/<b>` (`merge-base --is-ancestor`), it does NOT move and
+returns `{moved: False, reason: "not-on-branch"}` (sync_error "The reviewed
+version isn't in <who>'s app any more. Nothing was changed."). A non-ff
+mirror move (rollback, switch) pins the old tip under `refs/fused/backup/
+<ms>-<why>` and writes its Activity line with no Undo (§17 fetch row).
+I3 for a marketplace copy reads: **`refs/heads/<b>` == `record.approved.commit`
+after every fetch** (origin/<b> is the author's tip, fetched for objects
+and the ancestor check only).
+
+**Where the approved commit comes from** — new module `contrib/market.py`:
+```python
+def row_for(slug, *, fresh=False) -> dict | None      # marketplace.cached_snapshot() (get_snapshot(force) when fresh); None = unknown
+def approved_for(record, *, fresh=False) -> Approved   # Approved(commit, at, whats_new, version, status: "live"|"delisted"|"unknown", releases)
+```
+`approved_for` returns the row's commit when the row exists; `"delisted"`
+when the snapshot is FRESH (`status == "ok"`, not `stale`) and lacks the
+slug; `"unknown"` (→ `record.approved` is used, no listing change) when the
+catalog is stale, errored or absent. `engine._run_inner` calls
+`market.refresh_approved(root)` before the fetch for marketplace copies: it
+updates `record.approved`/`record.listing` and, when the approved commit
+changed, clears the undo hold (`skip_tip`) — "a new author tip clears it by
+itself" (§17.2) reads "a new release clears it" here. A delisted copy fetches
+nothing and makes no move; its state sentence is "No longer in the
+Marketplace. Your copy keeps working on its last reviewed version." and its
+card label "Marketplace · no longer listed".
+
+**Moves.** Unchanged from §17.3: ff, bring-in, settle, discard, match, keep
+working, move aside, go back, restore, push_to_main (collaborator) all run
+against the mirror, which now holds the approved commit. The Activity line
+for an automatic ff/bring-in on a marketplace copy is `"Updated to <who>'s
+release of <Mon D>: <whats_new>"` (kind `update`, Undo); `_subjects` is not
+used. The undo hold (`skip_tip`) holds until the next release.
+
+**B5 — merged but not released.** `merged` row of §17.2 on a marketplace
+copy: settle runs only when the PR head is an ancestor of the mirror
+(`merge-base --is-ancestor <pr head> main`). Until then nothing moves and the
+sentence is `"<who> merged your change. It ships in <who>'s next release."`
+(state stays `merged`, buttons: Check for a new release). When a release
+containing it arrives, the normal bring-in/settle runs with the Activity line
+`"<who> released your change. You're on the reviewed version."` + Undo, and
+`proposal.live = True` → page: "Your change is live for everyone." when the
+review file credits Bob's login (`row.releases[0].credits`), else the same
+line without the credit sentence.
+
+**Install at a commit.** `appfile_git.clone(url, repo, *, commit=None)`:
+with `commit`, after the clone `fetch origin <commit>` (then `<b>` ancestry
+check — refuse `GitInstallError("The reviewed version isn't in <repo>'s
+<b>")`), `checkout --detach <commit>`; `_home_branch` then creates
+`fused/mine` AT that commit and `update-ref refs/heads/<b> <commit>`.
+`appfile_git.install(..., kind="github"|"marketplace", market=None)`;
+`classify.record_install(app_dir, url, *, kind="github", market=None)`
+writes the marketplace fields from `market = {slug, approved}`.
+`appfile.write_stamp` keeps `git={url, commit}` as today.
+
+**Switching (D13).** `market.py`:
+```python
+def switch_to_link(root) -> dict     # marketplace → github: kind, marker, pushurl guard kept; mirror → origin/<b> (ff or pinned non-ff); then one ff when clean & not ahead; Activity kind "switch" "Following <who> directly now. You'll get every change, unreviewed." Undo
+def switch_to_reviewed(root, row) -> dict   # github → marketplace: refused with "Propose or discard your changes first." when ahead > 0 or dirty; mirror → approved (pin); HEAD ≠ approved → pin + reset --hard approved; Activity "Switched to reviewed releases." Undo
+```
+Undo of a `switch` line = the opposite switch (`engine.restore` dispatches
+on `kind == "switch"`; the backup ref, when one exists, is what the reverse
+`reset --hard` lands on). Both are buttons on the Source panel too
+(`switch-link` on marketplace copies, `switch-reviewed` on github copies
+whose repo has a row; both `confirm`). The prompts: `appfile_git.probe`
+gains state `switch-link` (a GitHub link opened for a repo whose copy is a
+marketplace copy) with the sentence "Follow <who> directly? You'll get every
+change, unreviewed."; `marketplace.start_install` on a slug whose repo has a
+`github` copy returns `{"status": "confirm", "switch": "reviewed", "path",
+"who"}` and runs `switch_to_reviewed` when called again with `switch=True`.
+
+**Legacy installs (today's package installs).** `market.adopt_legacy(path,
+row) -> dict`: the folder has `.fused/marketplace.json` and no `.git`:
+`git init`, `remote add origin <url>`, fetch `<b>` and the approved commit,
+`update-ref refs/heads/<b> <commit>`, `symbolic-ref HEAD refs/heads/fused/mine`,
+`update-ref refs/heads/fused/mine <commit>`, `reset` (mixed) so the user's
+edits show as dirty tracked edits and their data as untracked; `.fused/
+marketplace.json` deleted; record kind marketplace via `record_install`;
+Activity "Switched to the reviewed version. Your edits and data stayed." A
+folder that is already a repo with another origin is refused. Offered only
+when the slug is listed; otherwise the Installed row says "No longer updated".
+
+**Block list (B4)** — `contrib/blocks.py`:
+```python
+def refresh() -> bool                  # marketplace.blocklist(force) → <state>/blocklist.json; False offline (last list applies)
+def enforce_all() -> list[dict]        # every record: marketplace → enforce(root); github → warn(root)
+def enforce(root) -> dict | None       # see below
+def is_blocked_commit(slug, sha) -> dict | None
+def confirm_soft(root) -> None         # sets block.confirmed_at
+def gate(root) -> dict | None          # {"blocked": {...}} while a hard block stands (open gates answer 423 with it)
+```
+Cadence: `refresh()+enforce_all()` at server start (background thread,
+after the catalog warm-up), in `git_upstream.note_app_opened` (bounded by
+its TTL) BEFORE the sync, in `refresh._sweep_loop` every 30 min, and from
+the Source panel's Check. `enforce(root)` for a marketplace copy whose HEAD
+contains a blocked commit for its slug (`merge-base --is-ancestor`):
+- **hard**: stop the app (`background_apps`: stop its process, autostart
+  off; `render`/`apps` open gates answer `423 {"blocked": {...}}` while
+  the block stands); target = newest `row.releases[*].commit` that is not
+  blocked and is an ancestor of `origin/<b>`; mirror → target (pin, no
+  Undo); worktree: clean and `ahead == 0` → pin + `reset --hard target`;
+  else `merge_tree(HEAD, target, base=<blocked commit>)` (the revert as a
+  three-way merge) → clean → `commit-tree -p HEAD` "Rolled back to the
+  reviewed version of <date>" landed by `land_ff_locked`; conflict →
+  `block.conflict = True`, state `blocked-release`, button **Merge with
+  Claude** (purpose `update`, theirs = target, base = blocked) and the app
+  stays stopped. Activity kind `rollback`, text "Fused blocked the version
+  you were running: <reason>. Rolled back to the release of <date>. <what
+  to do>", NO Undo. No target (every release blocked) → stopped, sentence
+  says so, button "Remove this app".
+- **soft**: `block.level = soft`; automatic moves skip; opening asks
+  (`/api/apps` row `contrib.block = {level, reason, what_to_do, confirmed}`;
+  the app page / card shows the confirm sheet; `confirm_soft` lets it open).
+- `github` copy with a blocked commit of the same repo in HEAD: `block_warn`
+  only; the Source panel's strip says "Fused blocked a version of this app
+  that you're running: <reason>. You follow <who> directly, so nothing was
+  changed." No rollback.
+Enforcement runs under the copy lock and `replay.slot()`; it never runs
+while a merge job is open (it marks the record and the open gate still
+answers 423).
+
+**Engine states added**: `delisted` (quiet), `blocked-release` (attention),
+`soft-blocked` (attention). `actions._marketplace` = `_github` plus: Check
+label "Check for a new release"; `switch-link`; `confirm-block` (soft);
+`remove-app` (hard, no target). `market.py`/`blocks.py` are the only new
+modules; `engine.py` gains branches, not a second engine.
+
+**Guards.** `contrib_guard`: `guarded_who` reads the marker. For a
+marketplace copy `classify._set_upstream` points `fused/mine` at the MIRROR
+(`branch.fused/mine.remote = .`, `.merge = refs/heads/<b>`), so the Git
+panel's plain `pull --ff-only` lands on the approved commit and never past
+it, and `%(upstream:track)` counts against the mirror. `ops._fetch` on a
+guarded copy fetches by remote name as today (the mirror is only ever
+written by `update_mirror`, so a fetched `origin/<b>` ahead of it moves
+nothing). `reset` to a commit is allowed on `fused/mine` exactly as §17.8.
+`appfile_git._update_clone` (reinstall from a link) on a marketplace copy is
+the `switch-link` prompt, never a move.
+
+### 18.5 `marketplace.py` and its router (WS-CLIENT)
+
+- `API_BASE` → the backend; `SOURCE = "udf-api"` stays (cache validity).
+- Catalog row = §18.3's; `app_entry` passes the new fields through
+  (`repo, branch, remix_of, remix_count, contributor_count, last_release_at,
+  releases, whats_new = releases[0].whats_new`). `_asset_base` = `https://
+  raw.githubusercontent.com/<repo>/<commit>/` (no slug directory).
+- `installed` on a row: `{"path", "kind": "marketplace"|"legacy", "commit",
+  "update_available", "modified" (legacy only), "delisted", "block"}`.
+  Sources: marketplace records (`store.all()` filtered by kind, keyed by
+  slug) + legacy stamps (`app/*/.fused/marketplace.json` without a record).
+  `update_available` for a marketplace copy = `record.approved.commit !=
+  row.commit` (the next check moves it); for legacy = always False (a legacy
+  copy never updates; it offers the switch). `installed_list()` keeps the
+  orphans (`_local_entry`) for both.
+- `start_install(slug, *, update=False, switch=False)`: job steps named
+  (`download` → `place` → `done`): `appfile_git.clone(url, repo,
+  commit=row.commit)` + `appfile_git.install(..., kind="marketplace",
+  market={slug, approved})` for a new install; `engine.bring_in` for an
+  update (the record's approved moved); the `confirm`/`switch` answer of
+  §18.4 when a `github` copy exists. Legacy stamp present → the job refuses
+  with "Switch to the reviewed version first" (the Installed row's button).
+  Deleted: `_stage`, `_download_package`, `_extract_package`,
+  `_fetch_release`, `_prune_dropped`, `_write_stamp`, `MAX_PACKAGE_BYTES`,
+  `KEEP`, the staging sweep. `read_stamp`/`installed_apps` stay for legacy.
+- New routes: `POST /api/marketplace/adopt {slug}` → `market.adopt_legacy`;
+  `GET /api/marketplace/blocklist` → the cached list + `checked_at`;
+  `POST /api/marketplace/check {slug?}` → catalog force refresh + `blocks.
+  refresh()+enforce_all()` + sync of that copy (the Installed page's "Check
+  for a new release"). `/api/marketplace/install` body gains `switch`.
+- `marketplace.blocklist(force=False) -> {"blocked": [...], "checked_at"}`
+  with the same TTL/backoff pattern as the catalog; file `<state>/blocklist.json`.
+- Open gate: `apps.api_app_entry` and `render`'s app route consult
+  `blocks.gate(root)`; a hard block answers 423 with the notice payload; the
+  frontend shows `BlockedNotice` (reason, what to do, "Rolled back to …",
+  Remove this app).
+- Bots: `tools._market_install` unchanged in shape; `_market_target` learns
+  marketplace records (installed = record or legacy stamp) and the switch
+  answer is refused for a bot ("the user decides that in the app").
+- Deep link: `fused-render://open?marketplace=<slug>` → `/install?_fetch_
+  market=<slug>` → `InstallLinkPage` opens `/marketplace/app/<slug>?via=link`
+  which renders in bare mode (no store chrome) when the flag is off (the
+  .fused rule of §26 extends to listing links).
+- `community`: the Showcase tab is hidden while `marketplace_enabled` is on
+  (`/api/community` answers `{"status": "retired"}` then; the clone on disk
+  is left alone).
+
+### 18.6 Publish from fused (WS-PUBLISH) — `contrib/listing.py`
+
+For `own` copies whose record has a `repo`, while `marketplace_enabled`:
+```python
+def status(root, *, fresh=False) -> Listing   # cached in record.listing_own = {slug, row, pr, review, checked_at}
+def publish(root, details) -> dict            # list (first PR)  — details = {slug, name, description, category, tags, icon, preview}
+def publish_update(root) -> dict              # PR moving row.commit to the pushed tip
+def remove(root) -> dict                      # PR deleting the row
+def confirm_powers(root) -> dict              # comment "fused: confirm <sha>"
+def fix_prompt(root) -> str                   # the Claude prompt built from review.reasons
+```
+`Listing = {listed: bool, slug, approved: {commit, at}, pr: {number, url,
+head_sha, state} | None, review: {status: "in-review"|"live"|"needs-
+confirmation"|"failed"|None, reasons: [str], new_powers: [{kind, detail}],
+whats_new} , update_available: bool, doctor_clear: bool, unpushed: bool}`.
+`status` reads: the catalog row by repo (`market.row_for_repo`), the user's
+open PR in the index (`gh` search `repo:<index> is:pr is:open author:<login>
+head:fused-<slug>`), the `fused-review` comment block on it, and the
+`review` check-run conclusion for its head. `update_available` = the repo's
+pushed default-branch tip ≠ `approved.commit` and `approved.commit` ⊆ tip.
+`publish`: refuse unless App Doctor's `sharing` section is clear and the
+local tip is pushed (`unpushed`); `gh.ensure_fork(index)`; branch `fused-
+<slug>` (force-reset to index main each time); write the row file; push;
+`gh.open_pr(index, title="List <name>"|"Update <name>", body=<What
+changed>, head="<login>:fused-<slug>", base="main")`; record. A remix's row
+carries `remix_of` from `record.remix_of` when the original is listed.
+Actions (own kind, `actions._own`): `publish-market` (dialog `listing`,
+primary when not listed), `publish-update` (primary when update_available),
+`confirm-powers`, `fix-with-claude` (returns `{open: "/app?dir=…&task=
+<id>"}` after creating a task with `fix_prompt` through the tasks router's
+create path), `check-listing`, `remove-market` (confirm, danger). The
+status sentence per state: In review ("Fused is reviewing <name>. About 30
+minutes.") · Live ("<name> is in the Marketplace, release of <date>.") ·
+Needs your confirmation (lists powers + Confirm) · Failed (reasons + Fix
+with Claude + Check again).
+
+### 18.7 Frontend (WS-FE)
+
+- `AppCardContrib.kind` ∪ `"marketplace"`; card label "Marketplace ·
+  reviewed" / "Marketplace · no longer listed"; `block` badge.
+- `SourceLine`: marketplace → "Marketplace · reviewed · release of <date>".
+- `SourcePanel`: the server's buttons as today; new states' sentences come
+  from the server; `BlockedStrip` for `block`/`block_warn`; the soft-block
+  confirm sheet; the `switch` lines' Undo.
+- `ListingStrip` (own copies): status sentence + buttons; `PublishDialog`
+  (details form prefilled from `/api/contrib/listing-draft`, which returns
+  `{slug, name, description, category, categories, tags, icon, preview}`).
+- Marketplace pages: `AppEntry` gains the §18.5 fields; cards/detail show
+  "Remix of <name>", remix count, contributor count, last release; detail
+  shows releases with What's new and "Blocked" where blocked; trust card
+  text "Reviewed by Fused" replaces the unreviewed-GitHub warning on the
+  install surface for marketplace rows; Installed page rows: marketplace
+  (Check for a new release · Open · Undo last release via the app page),
+  legacy ("Switch to the reviewed version" / "No longer updated"), delisted;
+  the switch prompts ("Switch to reviewed releases?" from the job's
+  `confirm` answer; "Follow <who> directly?" on `FusedFilePage` state
+  `switch-link`); sort control on Discover (Recommended = remixes ×3 +
+  contributors ×2 + recency; Newest release; Most remixed); the Showcase
+  tab hidden while the flag is on; `CatalogFooter` links the index repo.
+- `InstallLinkPage`: `_fetch_market` kind.
+- `/marketplace/app/<slug>?via=link` bare mode.
+
+### 18.8 Flags
+
+`marketplace_enabled` stays the one switch: it gates the sidebar row, the
+`/marketplace` pages, the bots' tools, Publish to marketplace and the
+Showcase retirement. Marketplace copies BEHAVE as marketplace copies with
+the switch off (P1: kind decides git; a release move with the switch off
+still runs and writes its line; buttons appear with the switch). The block
+list is enforced whatever the switch says.
+
+### 18.9 Tests
+
+Targeted pytest only where git moves data (§17.9's rule): `tests/
+test_contrib_market.py` (pinned follow, release move + undo hold, delisted,
+switch both ways + undo, adopt_legacy, B5 merged-unreleased → released),
+`tests/test_contrib_blocks.py` (hard rollback clean/ahead/conflict, soft,
+link warn, offline keeps last list), `tests/test_marketplace.py` rewritten
+for the new rows and install path (FakeGitHub + a stub `_udf_get`),
+`tests/test_contrib_listing.py` (publish/update/remove/confirm with
+FakeGitHub). `invariants(m)` gains the marketplace reading of I3. Frontend:
+`tsc --noEmit` + `check-boundaries`.
+
+### 18.10 Decisions (the handoff's defaults, as built)
+
+D1 index repo `vasu2001/fused-apps-index` (owner's call for now); layout
+§18.2. D4 listed on merge; `collections.json` is the curated shelf. D9 new
+powers wait for the author's `fused: confirm`. D12 block list in the index,
+maintainers only. D13 install source decides; switching explicit, both ways
+buttons + prompts. D15 auto-merge on pass. Showcase hidden with the flag.
+Who publishes: repo owner (public org members for org repos). Blocked
+link copies: warning only. Categories: the four. No packages. Today's
+installs: adopt in place (`git init`), never automatically. Calls left to
+the builder: row format (§18.2), index read cadence = the catalog's 10-min
+TTL + Check, mirror upstream for `pull`, revert-as-merge for rollbacks on a
+copy with changes, the public-member limit for org repos, the bot bypass
+for `reviews/`.
+
+### 18.11 Ownership (agents do not commit)
+
+| WS | owns |
+|---|---|
+| WS-IDX | the index repo (created with `gh`), `review.yml`, `scripts/review/*`, fixtures, rulesets, `fused_render/contrib/review_rules.py` (extracted from `ai.py`'s tables; `ai.py` imports it) |
+| WS-CANVAS | the canvas folder: 6 UDFs + `fused_app_listing`, `canvas.toml`, push |
+| WS-ENGINE | `contrib/market.py`, `contrib/blocks.py`, edits in `store/classify/follow/engine/actions/refresh/replay`, `routers/contrib.py` (marketplace branches), `git_upstream.py`, `appfile_git.py`, `appfile.py`, `templates/shared/contrib_guard.py`, `templates/git/ops.py|log.py`, `app_git.py`, `app_doctor.py`, `share_app.py`, `claude_agent/agent.py` marker, `background_apps.py` stop helper, tests §18.9 (market, blocks) |
+| WS-CLIENT | `marketplace.py`, `routers/marketplace.py`, `routers/apps.py`+`render.py` open gate, `bots/tools.py`, `deeplink.py`, `community.py`+router, `server/app.py` startup thread, `tests/test_marketplace.py` |
+| WS-PUBLISH | `contrib/listing.py`, `actions._own` additions, router routes `/api/contrib/listing-draft`, dispatch ids, `gh.py` additions (`search_prs`, `check_runs`, `pr_comments`, `delete_file_pr` helpers), `tests/test_contrib_listing.py` |
+| WS-FE | everything under `frontend/` |
