@@ -138,3 +138,15 @@ def test_a_cache_hit_still_needs_read_access_to_the_source(client, tmp_path):
     finally:
         os.chmod(src, 0o644)
     assert client.get("/api/fs/thumb", params={"path": src}).status_code == 200
+
+
+def test_thumbnail_without_pillow_is_a_clear_415(client, tmp_path, monkeypatch):
+    import sys
+    monkeypatch.setitem(sys.modules, "PIL", None)
+    monkeypatch.setitem(sys.modules, "PIL.Image", None)
+    monkeypatch.setitem(sys.modules, "PIL.ImageOps", None)
+    pic = tmp_path / "a.png"
+    pic.write_bytes(b"\x89PNG\r\n\x1a\n")
+    resp = client.get("/api/fs/thumb", params={"path": str(pic), "size": 160})
+    assert resp.status_code == 415
+    assert "Pillow" in resp.json()["error"]

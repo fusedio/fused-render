@@ -147,3 +147,15 @@ def test_chat_run_dir_and_perm_dir_pass_on_windows(monkeypatch, tmp_path):
     agent._private_dir(run_dir)
     _fake_windows_lstat(monkeypatch)
     agent._private_dir(agent._perm_dir(run_dir))
+
+
+def test_imessage_channel_imports_without_fcntl(monkeypatch):
+    import importlib
+
+    monkeypatch.setitem(sys.modules, "fcntl", None)
+    sys.modules.pop("fused_render.bots.channels.imessage", None)
+    try:
+        mod = importlib.import_module("fused_render.bots.channels.imessage")
+        assert hasattr(mod, "ImessageChannel")
+    finally:
+        sys.modules.pop("fused_render.bots.channels.imessage", None)
