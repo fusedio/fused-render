@@ -220,7 +220,6 @@ export function AppDetailPage({ slug, snap, bare = false }: { slug: string; snap
     { label: "Installs", value: compactCount(installs), caption: installs === 1 ? "Install" : "Installs", title: `${installs} installs` },
     { label: "Remixes", value: String(remixes), caption: remix ? `Remix of ${remix.name}` : remixes === 1 ? "Remix" : "Remixes" },
     { label: "Contributors", value: String(Math.max(people, 1)), caption: people > 1 ? "Credited" : "The author" },
-    { label: "Python", value: app.requires_python ? "Required" : "Not required", caption: app.requires_python ? "Runs locally" : "Page only" },
   ];
   // The row's releases (the catalog's, else the detail's when it sends the
   // stage-B shape); an older server's package releases are not listed.
@@ -288,6 +287,7 @@ export function AppDetailPage({ slug, snap, bare = false }: { slug: string; snap
                 },
                 { label: "Size", value: app.size_bytes ? formatSize(app.size_bytes).replace(/\s/, NNBSP) : "—" },
                 { label: "Files", value: String(detail?.files.length ?? app.file_count) },
+                { label: "Python", value: app.requires_python ? "Required (runs locally)" : "Not required" },
                 ...(app.installed
                   ? [
                       {
