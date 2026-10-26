@@ -130,7 +130,15 @@ export interface SettingEntry {
   /** Whether the running app can honour this at all (a server-reported
    *  capability). Absent = always. */
   available?: (ctx: SettingsContext) => boolean;
+  /** A device capability the row depends on. When the server lists it under
+   *  `prefs.unavailable`, the row stays visible but disabled, with the reason
+   *  in place of its status line (see `unavailableReason`). Unlike `available`,
+   *  which hides a row for logic, this is for "this machine lacks it". */
+  needs?: DeviceFeature;
 }
+
+/** The keys of `prefs.unavailable` (fused_render/shell/prefs.py). */
+export type DeviceFeature = "index" | "hf" | "fused" | "update" | "native_windows" | "terminal";
 
 export interface SettingsContext {
   prefs: Prefs;
@@ -164,12 +172,12 @@ const ENTRIES = [
   },
   {
     id: "native-windows",
+    needs: "native_windows",
     group: "general",
     section: "Windows",
     label: "Open in native windows",
     description: "Use the app's own windows instead of browser tabs. Turning this off closes them and opens everything in your default browser.",
     keywords: "browser tabs window desktop safari chrome",
-    available: ({ prefs }) => !!prefs.native_windows?.available,
   },
   {
     id: "launcher-hotkey",
@@ -200,6 +208,7 @@ const ENTRIES = [
   },
   {
     id: "auto-update",
+    needs: "update",
     group: "general",
     section: "Updates",
     label: "Download updates automatically",
@@ -341,6 +350,7 @@ const ENTRIES = [
   },
   {
     id: "notify-terminal",
+    needs: "terminal",
     group: "tasks",
     section: "Notifications",
     label: "Notify for terminal sessions",
@@ -360,6 +370,7 @@ const ENTRIES = [
   },
   {
     id: "share-sheet",
+    needs: "fused",
     group: "apps",
     section: "Sharing",
     label: "Share sheet",
@@ -390,6 +401,7 @@ const ENTRIES = [
   // ── File index ───────────────────────────────────────────────────────────
   {
     id: "indexing",
+    needs: "index",
     group: "indexing",
     section: "Index",
     label: "File indexing",
@@ -399,6 +411,7 @@ const ENTRIES = [
   },
   {
     id: "ranked-search",
+    needs: "index",
     group: "indexing",
     section: "Index",
     label: "Rank results by relevance",
@@ -408,6 +421,7 @@ const ENTRIES = [
   },
   {
     id: "low-impact",
+    needs: "index",
     group: "indexing",
     section: "Index",
     label: "Low-impact indexing",
@@ -417,6 +431,7 @@ const ENTRIES = [
   },
   {
     id: "skipped-folders",
+    needs: "index",
     group: "indexing",
     section: "Scope",
     label: "Skipped folders",
@@ -426,6 +441,7 @@ const ENTRIES = [
   },
   {
     id: "rebuild-index",
+    needs: "index",
     group: "indexing",
     section: "Maintenance",
     label: "Rebuild the index",
@@ -437,6 +453,7 @@ const ENTRIES = [
   // ── Experimental flags ─────────────────────────────────────────────────────────────
   {
     id: "canvases",
+    needs: "fused",
     group: "features",
     section: "Sidebar",
     label: "Canvases",
@@ -446,6 +463,7 @@ const ENTRIES = [
   },
   {
     id: "canvases-embed-proxy",
+    needs: "fused",
     group: "features",
     section: "Sidebar",
     label: "Load a custom deployment's workbench through a local proxy",
@@ -508,6 +526,7 @@ const ENTRIES = [
   // ── Accounts ─────────────────────────────────────────────────────────────
   {
     id: "fused-account",
+    needs: "fused",
     group: "integrations",
     section: "Sign-ins",
     label: "Fused account",
@@ -517,6 +536,7 @@ const ENTRIES = [
   },
   {
     id: "workbench-env",
+    needs: "fused",
     group: "integrations",
     section: "Sign-ins",
     label: "Default environment",
@@ -527,6 +547,7 @@ const ENTRIES = [
   },
   {
     id: "huggingface",
+    needs: "hf",
     group: "integrations",
     section: "Sign-ins",
     label: "Hugging Face",
@@ -572,6 +593,7 @@ const ENTRIES = [
   },
   {
     id: "index-query",
+    needs: "index",
     group: "advanced",
     section: "Index query",
     label: "Query the file index",
@@ -609,6 +631,15 @@ export function isVisible(entry: SettingEntry, ctx: SettingsContext): boolean {
   if (entry.macOnly && !entry.available && !ctx.mac) return false;
   if (entry.available && !entry.available(ctx)) return false;
   return true;
+}
+
+/** Why this row is disabled on this device, or null when it is usable. */
+export function unavailableReason(
+  entry: Pick<SettingEntry, "needs">,
+  ctx: Pick<SettingsContext, "prefs"> | null | undefined,
+): string | null {
+  if (!entry.needs) return null;
+  return ctx?.prefs?.unavailable?.[entry.needs] ?? null;
 }
 
 /** The entry in this flavor's words: Fused Bot's `bot` overrides applied. */
