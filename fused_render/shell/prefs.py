@@ -498,9 +498,9 @@ def claude_strict_mcp_enabled() -> bool:
     """Whether chat and Tasks-page Claude sessions start lean —
     `--strict-mcp-config`, so the user's own MCP servers and claude.ai
     connectors are not launched (about 220 MB less per session; enabled
-    plugins' MCP servers are kept). Default ON: only a stored `false` turns it
-    off. `claude_agent/agent.py::_strict_mcp_pref` reads the same key."""
-    return read_prefs().get("claude_strict_mcp_enabled") is not False
+    plugins' MCP servers are kept). Default OFF: only a stored `true` turns it
+    on. `claude_agent/agent.py::_strict_mcp_pref` reads the same key."""
+    return read_prefs().get("claude_strict_mcp_enabled") is True
 
 
 VALID_CLAUDE_PERMISSIONS = ("plan", "prompt", "acceptEdits", "auto")
@@ -1085,7 +1085,7 @@ def _prefs_response() -> dict:
         "task_recap": {"enabled": task_recap_titles_enabled()},
         # Stable AI Tasks titles (`task_summary_titles_enabled`).
         "task_summary_titles": {"enabled": task_summary_titles_enabled()},
-        # Lean Claude sessions (`claude_strict_mcp_enabled`, default on).
+        # Lean Claude sessions (`claude_strict_mcp_enabled`, default off).
         "claude_strict_mcp": {"enabled": claude_strict_mcp_enabled()},
         "claude_default_permission": claude_default_permission(),
         # The Bots page's three switches and the Tasks page's view tabs —

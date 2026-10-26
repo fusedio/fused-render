@@ -1552,8 +1552,8 @@ export interface Prefs {
   // Stable AI titles: Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
   // shell/prefs.py; off by default). Optional: absent reads as off.
   task_summary_titles?: { enabled: boolean };
-  // Lean Claude sessions (`claude_strict_mcp_enabled`, shell/prefs.py; ON by
-  // default). Optional: absent (older server) reads as on.
+  // Lean Claude sessions (`claude_strict_mcp_enabled`, shell/prefs.py; OFF by
+  // default). Optional: absent (older server) reads as off.
   claude_strict_mcp?: { enabled: boolean };
   // The Approvals mode a new Claude chat starts in (`claude_default_permission`,
   // shell/prefs.py): plan | prompt | acceptEdits | auto, "auto" when unset.
