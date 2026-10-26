@@ -102,6 +102,12 @@ def release() -> None:
 
 def _install_excepthooks(kind: str) -> None:
     def sys_hook(exc_type, exc, tb):
+        # Ctrl+C is the user ending the process, not the process crashing —
+        # on a Windows console it reaches every child sharing the console
+        # too, and logging it there put two "uncaught exception" tracebacks
+        # on the terminal for an ordinary quit.
+        if issubclass(exc_type, KeyboardInterrupt):
+            return
         logger.critical("uncaught exception in %s main thread:\n%s", kind,
                         "".join(traceback.format_exception(exc_type, exc, tb)))
         try:

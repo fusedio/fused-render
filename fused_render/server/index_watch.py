@@ -319,7 +319,16 @@ def _spawn_kwargs() -> dict:
     Leaving fds open costs nothing, because every fd Python opens is
     non-inheritable (PEP 446): the child gets its two pipes and not the
     server's listening socket, and no other child holds the watcher's stdin
-    open past the server's exit. Same rule as `index.runner._detach_kwargs`."""
+    open past the server's exit. Same rule as `index.runner._detach_kwargs`.
+
+    Windows only: its own process group, so a console Ctrl+C aimed at the
+    server does not also land in the watcher mid-`scandir` as a
+    KeyboardInterrupt traceback on the user's terminal; stdin EOF remains how
+    the watcher learns the server is gone. Never `start_new_session` on
+    POSIX for symmetry — that is the fork path."""
+    if sys.platform == "win32":
+        return {"close_fds": False,
+                "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
     return {"close_fds": False}
 
 
