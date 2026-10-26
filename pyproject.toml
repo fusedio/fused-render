@@ -330,6 +330,9 @@ cli = [
     "pillow<13",
     # Fast HTTP request parser for the local uvicorn server (logs.uvicorn_fast_kwargs).
     "httptools>=0.6.3",
+    # ConPTY bindings for the status-bar terminal on Windows
+    # (pty_session.WinPtySession); lazy-imported, absent elsewhere.
+    "pywinpty>=2.0.14 ; sys_platform == 'win32'",
     "fused-render[index,data,hf,fused]",
 ]
 # `[cli]` plus the native desktop integrations; every packaged build and `[dev]`
@@ -338,6 +341,9 @@ all = [
     "pillow<13",
     # Fast HTTP request parser for the local uvicorn server (logs.uvicorn_fast_kwargs).
     "httptools>=0.6.3",
+    # ConPTY bindings for the status-bar terminal on Windows
+    # (pty_session.WinPtySession); lazy-imported, absent elsewhere.
+    "pywinpty>=2.0.14 ; sys_platform == 'win32'",
     "fused-render[index,data,desktop,hf,fused]",
 ]
 # ---------------------------------------------------------------------------

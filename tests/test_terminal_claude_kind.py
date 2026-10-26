@@ -301,3 +301,73 @@ def test_markers_do_not_count_as_activity_and_mark_never_creates_dir(logroot):
     claude_cmd_log.mark("ghost", claude_cmd_log.DISMISSED)
     claude_cmd_log.mark("../x", claude_cmd_log.DISMISSED)
     assert not (logroot / "ghost").exists()
+
+
+def _old_chat(root, chat, n, age=5 * 3600, code=0):
+    for i in range(n):
+        ident = "%011d-%d" % (i + 1, 1000 + i)
+        fake_cmd(root, chat, ident, "true", b"o", code=code)
+    for f in (root / chat).iterdir():
+        _age(f, age)
+
+
+def test_list_chats_never_opens_finished_commands(logroot, monkeypatch):
+    _old_chat(logroot, "old", 50)
+    fake_cmd(logroot, "live", "00000000001-1", "sleep 5")  # unfinished, our pid
+    fake_cmd(logroot, "done", "00000000001-2", "true", code=0)  # finished, fresh
+    opened = []
+    real = claude_cmd_log._read
+
+    def spy(path):
+        opened.append(os.path.basename(path))
+        return real(path)
+
+    monkeypatch.setattr(claude_cmd_log, "_read", spy)
+    monkeypatch.setattr(claude_cmd_log, "_last_prune", time.monotonic())
+    got = claude_cmd_log.list_chats()
+    assert [e["chat"] for e in got] == ["done", "live"] or [e["chat"] for e in got] == ["live", "done"]
+    assert {e["chat"]: e["running"] for e in got} == {"live": True, "done": False}
+    assert opened and all(n.startswith("00000000001-1.") for n in opened), opened
+
+
+def test_old_unfinished_command_with_live_pid_still_running(logroot):
+    fake_cmd(logroot, "c1", "00000000001-1", "sleep 5", pid=os.getpid())
+    for f in (logroot / "c1").iterdir():
+        _age(f, 10 * 3600)
+    got = claude_cmd_log.list_chats()
+    assert [(e["chat"], e["running"]) for e in got] == [("c1", True)]
+
+
+def test_prune_removes_old_finished_only(logroot):
+    _old_chat(logroot, "c1", 3, age=30 * 3600)
+    fake_cmd(logroot, "c1", "00000000100-1", "true", code=0)  # recent, finished
+    fake_cmd(logroot, "c1", "00000000101-1", "sleep 5")  # unfinished
+    for ext in (".cmd", ".meta", ".out"):
+        _age(logroot / "c1" / ("00000000101-1" + ext), 30 * 3600)
+    claude_cmd_log.mark("c1", claude_cmd_log.DISMISSED)
+    claude_cmd_log.mark("c1", claude_cmd_log.TURN_ENDED)
+    claude_cmd_log.prune()
+    left = sorted(p.name for p in (logroot / "c1").iterdir())
+    assert left == sorted([".dismissed", ".turn_ended"]
+                          + ["00000000100-1" + e for e in (".cmd", ".meta", ".out", ".exit")]
+                          + ["00000000101-1" + e for e in (".cmd", ".meta", ".out")])
+
+
+def test_prune_keeps_empty_chat_dir(logroot):
+    _old_chat(logroot, "c1", 2, age=30 * 3600)
+    claude_cmd_log.prune()
+    assert (logroot / "c1").is_dir() and list((logroot / "c1").iterdir()) == []
+
+
+def test_list_chats_prune_is_throttled(logroot, monkeypatch):
+    calls = []
+    monkeypatch.setattr(claude_cmd_log, "prune", lambda *a, **k: calls.append(1))
+    monkeypatch.setattr(claude_cmd_log, "_last_prune", None)
+    now = [1000.0]
+    monkeypatch.setattr(claude_cmd_log.time, "monotonic", lambda: now[0])
+    claude_cmd_log.list_chats()
+    claude_cmd_log.list_chats()
+    assert len(calls) == 1
+    now[0] += claude_cmd_log.PRUNE_EVERY_SECONDS + 1
+    claude_cmd_log.list_chats()
+    assert len(calls) == 2
