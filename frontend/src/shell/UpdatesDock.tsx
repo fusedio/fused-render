@@ -235,7 +235,7 @@ export function UpdatesCardView({
           ) : (
             <div className="upd-state-detail upd-none">Updates aren&rsquo;t managed from inside the app on this build &mdash; a packaged Fused app updates itself; a dev run does not.</div>
           )}
-          {hasUpdater && (
+          {hasUpdater && !status?.check_only && (
             <label className="upd-auto">
               <input
                 type="checkbox"

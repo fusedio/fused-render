@@ -131,3 +131,11 @@ test("collapsed: no panel; a pending update keeps the Check button", () => {
   expect(texts(pending.toJSON()).join(" | ")).toContain("Update available");
   expect(pending.root.findAllByProps({ className: "upd-check-btn" }).length).toBe(1);
 });
+
+test("a check-only updater hides the auto-download toggle but still shows the manual command", () => {
+  const all = texts(
+    view(st({ state: "available", check_only: true, manual_command: "pip install -U fused-render" })).toJSON(),
+  ).join(" | ");
+  expect(all).not.toContain("Automatically download updates");
+  expect(all).toContain("pip install -U fused-render");
+});
