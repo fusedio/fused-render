@@ -526,3 +526,35 @@ def test_snapshot_rowless_delete_leaves_toml_untouched(tmp_path):
     result = cs.apply_snapshot(d, new, view)
     assert result["deleted"] == ["udf_4"] and result["changed"] is True
     assert (open(toml).read(), os.stat(toml).st_mtime_ns) == before
+
+
+def test_snapshot_hidden_udf_row_beats_stale_node_mirror():
+    """Hiding a node flips `udfs[].is_visible` only; the node's
+    `data.config.visible` mirror keeps the value it was loaded with. The
+    UDF row is the record, so the snapshot reads hidden — and a show
+    (`is_visible: true` beside a stale `false`) reads visible again."""
+    node = _studio_node("a")
+    node["data"]["config"] = {"visible": True}
+    new = _snapshot_new([node], [{"slug": "a", "file": "a.py", "id": "sid-a",
+                                  "is_visible": False}])
+    assert new["nodes"]["a"]["visible"] is False
+    node["data"]["config"] = {"visible": False}
+    new = _snapshot_new([node], [{"slug": "a", "file": "a.py", "id": "sid-a",
+                                  "is_visible": True}])
+    assert new["nodes"]["a"]["visible"] is True
+    # No row flag at all: the mirror still stands in.
+    new = _snapshot_new([node], [{"slug": "a", "file": "a.py", "id": "sid-a"}])
+    assert new["nodes"]["a"]["visible"] is False
+
+
+def test_snapshot_hidden_udf_lands_on_disk(tmp_path):
+    """End to end on the clone: a hide snapshot writes `visible = false`."""
+    d = _clone(tmp_path, [dict(A_ROW, visible=True)], {"a.py": "A"})
+    view = cs.compact_state_from_disk(d)
+    node = _studio_node("a")
+    node["data"]["config"] = {"visible": True}
+    new = _snapshot_new([node], [{"slug": "a", "file": "a.py", "id": "sid-a",
+                                  "is_visible": False}])
+    result = cs.apply_snapshot(d, new, view)
+    assert result["changed"] is True
+    assert _rows(d)[0]["visible"] is False
