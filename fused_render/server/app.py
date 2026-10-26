@@ -1156,6 +1156,14 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         listing_router = None
     if listing_router is not None:
         app.include_router(listing_router)
+    # The Community tab's ladder read and its Put it on GitHub door
+    # (routers/ladder.py, §19.2). Guarded like the listing routes.
+    try:
+        from fused_render.server.routers.ladder import router as ladder_router
+    except ImportError:
+        ladder_router = None
+    if ladder_router is not None:
+        app.include_router(ladder_router)
 
     # The contrib inbox-count sweep (contrib/refresh.py): one daemon thread
     # that, only while the inbox phase is on, re-lists every own app's

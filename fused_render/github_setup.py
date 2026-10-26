@@ -982,7 +982,24 @@ def _run_publish(path: str, root: str, name: str, visibility: str) -> None:
         line = line.strip()
         if line:
             url = line  # the repo URL is the command's last line of output
+    _after_publish(root)
     _set_publish(state="done", finished_at=time.time(), detail=url, error=None)
+
+
+def _after_publish(root: str) -> None:
+    """The repository now has a GitHub `origin`: rebind the contribution
+    loop's record for the folder (docs/CONTRIB_LOOP.md §19.2) BEFORE the
+    record says `done`, so the page's next read already sees the app on
+    GitHub. Both doors land here — the Community tab's publish-github and
+    the Git panel's own Publish to GitHub. Never raises into the publish:
+    the repo is created and pushed whatever this does (`_kick` retries on
+    the next sync)."""
+    try:
+        from fused_render.contrib import classify
+
+        classify.rebind(root)
+    except Exception:  # noqa: BLE001 - a rebind must never fail a publish
+        logger.exception("could not rebind the contrib record of %s after publishing", root)
 
 
 def publish_start(root: str, name: str, visibility: str) -> dict:

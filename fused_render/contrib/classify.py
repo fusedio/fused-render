@@ -434,6 +434,11 @@ def _kick(root, rec) -> None:
             ensure_in_background(root)
     elif rec.get("kind") == "github" and not rec.get("owner_checked"):
         ensure_in_background(root)
+    elif _needs_rebind(root, rec):
+        # §19.2: the origin on disk names a GitHub repo the record does not
+        # (Publish to GitHub created it) — whatever the flags, like the
+        # re-check above: an own app that now has a repo must be one.
+        rebind_in_background(root)
 
 
 # --------------------------------------------------------------- public API
@@ -449,6 +454,8 @@ def ensure(app_dir, *, identity=None) -> dict | None:
     if rec is not None:
         if rec.get("kind") == "github" and not rec.get("owner_checked"):
             rec = _recheck(app_dir, rec, identity) or rec
+        elif _needs_rebind(app_dir, rec):
+            rec = rebind(app_dir, identity=identity) or rec  # §19.2
         _guard_soon(app_dir, identity)
         return store.get(app_dir) or rec
 
@@ -1203,11 +1210,9 @@ _kick_lock = threading.Lock()
 _kicking: set = set()
 
 
-def ensure_in_background(app_dir) -> bool:
-    """Run `ensure(app_dir)` on a daemon thread, at most one per folder at a
-    time — for callers that hold the slot (git_upstream's sync, `kind_of`
-    with `kick`) and so must not ask GitHub anything themselves. Answers
-    whether a thread started."""
+def _in_background(app_dir, fn, what: str) -> bool:
+    """Run `fn(app_dir)` on a daemon thread, at most one background job per
+    folder at a time. Answers whether a thread started."""
     k = store.key(app_dir)
     with _kick_lock:
         if k in _kicking:
@@ -1216,17 +1221,130 @@ def ensure_in_background(app_dir) -> bool:
 
     def run():
         try:
-            ensure(app_dir)
+            fn(app_dir)
         except Exception:  # noqa: BLE001
-            logger.exception("contrib: background classification failed for %s", app_dir)
+            logger.exception("contrib: background %s failed for %s", what, app_dir)
         finally:
             with _kick_lock:
                 _kicking.discard(k)
 
     try:
-        threading.Thread(target=run, daemon=True, name="contrib-classify").start()
+        threading.Thread(target=run, daemon=True, name=f"contrib-{what}").start()
     except RuntimeError:
         with _kick_lock:
             _kicking.discard(k)
         return False
     return True
+
+
+def ensure_in_background(app_dir) -> bool:
+    """Run `ensure(app_dir)` on a daemon thread, at most one per folder at a
+    time — for callers that hold the slot (git_upstream's sync, `kind_of`
+    with `kick`) and so must not ask GitHub anything themselves. Answers
+    whether a thread started."""
+    return _in_background(app_dir, ensure, "classify")
+
+
+def rebind_in_background(app_dir) -> bool:
+    """`rebind(app_dir)` on a daemon thread (it may ask GitHub who the user
+    is) — for `_kick`, which may run under the slot."""
+    return _in_background(app_dir, rebind, "rebind")
+
+
+# ------------------------------------------------------------------ rebind
+#
+# §19.2: a record made before its folder had a GitHub `origin` — an app made
+# here (`own`, `repo` null) or a `scratch` record — is reclassified in place
+# once Publish to GitHub (the Community tab's door or the Git panel's) gave
+# it one, so the Marketplace and the install link see a repo. Without this
+# the record kept `repo: null` forever: the store's binding keeps a record
+# whose `fused.copyid` matches, whatever `origin` says.
+#
+# NEVER a `marketplace` record (M4: it never turns into anything else on its
+# own), never a Try copy (`try_of`: fused's own trial clone), and never a
+# `github` record that names a repo: its origin differing is a RE-POINTED
+# origin (`.git/config` is app-writable), which `_point_back` undoes — a
+# rebind there would re-point where the contributor's changes go (I2). Nor an
+# `own` record that names a repo: its origin is its author's to change (a
+# rename, a transfer — §17.6), and the copy id keeps the row as it is.
+
+REBIND_KINDS = ("scratch", "own", "github")
+
+
+def _rebind_target(rec) -> bool:
+    """Whether `rec` is a record `rebind` may touch at all (no git): a
+    `scratch` record that is not a Try copy, or an `own`/`github` record
+    with no repo."""
+    if not isinstance(rec, dict) or rec.get("kind") not in REBIND_KINDS:
+        return False
+    if rec.get("kind") == "scratch":
+        return not rec.get("try_of")
+    return not rec.get("repo")
+
+
+def _origin_repo(root) -> str | None:
+    return repo_of_url(_origin_url(root)) if root else None
+
+
+def _needs_rebind(root, rec) -> bool:
+    """Whether the origin on disk names a GitHub repo `rec` does not (and
+    `rec` is one `rebind` may touch). One local git read; never raises."""
+    try:
+        if not _rebind_target(rec):
+            return False
+        return bool(_origin_repo(follow.is_repo_root(root)))
+    except Exception:  # noqa: BLE001 — housekeeping never fails its caller
+        logger.exception("contrib: rebind check failed for %s", root)
+        return False
+
+
+def rebind(app_dir, *, identity=None) -> dict | None:
+    """Reclassify `app_dir`'s record in place when its folder now has a
+    GitHub `origin` the record does not name (block comment above). The
+    ownership rule is `ensure`'s (`_classify`); unknown ownership reads as
+    `github`, unchecked — the safe direction, re-checked by the next `ensure`
+    with an identity. Keeps the copy id, activity and every other field;
+    writes one activity line, then settles the guards (`_guard`, slot not
+    waited for — the next sync settles too). Answers the new record, or None
+    when there was nothing to do. May ask GitHub who the user is: never
+    under the slot. Reads the RAW row — `store.get`'s binding would drop a
+    record whose folder has a new origin and no copy id yet — and returns
+    before any git or GitHub call when there is no record to rebind."""
+    k = store.key(app_dir)
+    raw = store.get_raw(k)
+    if not _rebind_target(raw) or not os.path.isdir(k):
+        return None
+    root = follow.is_repo_root(k)
+    repo = _origin_repo(root)
+    if not repo:
+        return None
+    before = (raw.get("kind"), raw.get("repo"))
+    ident = identity if identity is not None else _identity()
+    kind, checked = _classify(repo, ident)
+    branch = _local_default_branch(root)
+    can_push = _can_push(repo, ident) if kind == "github" and checked else None
+    changed = []
+
+    def fn(r):
+        if (r.get("kind"), r.get("repo")) != before:
+            return  # rewritten meanwhile (an install, another rebind): theirs stands
+        r.update(kind=kind, repo=repo, branch=branch, owner_checked=checked,
+                 classified_by="rebind", classified_at=time.time(), can_push=can_push)
+        r.pop("try_of", None)
+        changed.append(True)
+
+    out = store.update(k, fn)
+    if not changed or out is None:
+        return None
+    store._forget_binding(k)
+    _forget_kind(k)
+    with _guard_lock:
+        _guarded.pop(k, None)
+    logger.info("contrib: %s now has origin %s; record rebound from %s to %s",
+                k, repo, before, (kind, repo))
+    store.add_activity(k, "rebind", f"This app is on GitHub now, as {repo}.")
+    try:
+        _guard(k, ident, block=False, lookup=False)
+    except Exception:  # noqa: BLE001 — the next sync settles it
+        logger.exception("contrib: settling %s after a rebind failed", k)
+    return store.get(k) or out
