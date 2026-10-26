@@ -72,6 +72,13 @@ function matches(q: string, ...fields: (string | null | undefined)[]): boolean {
   return fields.some((f) => (f || "").toLowerCase().includes(needle));
 }
 
+/** The plugins that are on disk and match the (trimmed) filter. A plugin that
+ *  is only enabled in settings.json (`installed: false`) is not installed. */
+export function selectInstalled(plugins: Plugin[], filter: string): Plugin[] {
+  const q = filter.trim();
+  return plugins.filter((p) => p.installed && matches(q, p.name, p.id, p.description));
+}
+
 export default function PluginsSection({ filter = "", title, blurb }: HeadedSectionProps) {
   const { node: modal, ask } = useConfirm();
   const load = useCallback(() => cc.plugins.list(), []);
@@ -170,7 +177,9 @@ export default function PluginsSection({ filter = "", title, blurb }: HeadedSect
         return;
       }
       toastOk(`Uninstalled ${p.name}`);
+      // It left Installed and is installable again.
       reload();
+      loadAvail();
     } catch (e) {
       toastErr((e as Error).message);
     } finally {
@@ -275,6 +284,11 @@ export default function PluginsSection({ filter = "", title, blurb }: HeadedSect
     }
   };
 
+  // A new search starts on the first page of its results.
+  useEffect(() => {
+    setPage(0);
+  }, [filter]);
+
   if (error) return <ErrorBanner>{error}</ErrorBanner>;
   if (!data)
     return (
@@ -286,13 +300,14 @@ export default function PluginsSection({ filter = "", title, blurb }: HeadedSect
 
   const query = filter.trim();
   const searching = query !== "";
-  const installed = data.plugins.filter((p) => matches(filter, p.name, p.id, p.description));
+  const have = data.plugins.filter((p) => p.installed);
+  const installed = selectInstalled(data.plugins, filter);
   // The catalog is searched, not listed, until "Browse all". Plugins you
   // already have appear under Installed, so they are not repeated here.
   const showAvailable = searching || browseAll;
   const discover = showAvailable
     ? (avail?.plugins ?? []).filter(
-        (p) => !p.installed && matches(filter, p.name, p.id, p.description),
+        (p) => !p.installed && matches(query, p.name, p.id, p.description),
       )
     : [];
   const moreCount = (avail?.plugins ?? []).filter((p) => !p.installed).length;
@@ -309,7 +324,7 @@ export default function PluginsSection({ filter = "", title, blurb }: HeadedSect
   const rowCount = rowsInstalled.length + rowsDiscover.length;
   // Counted off the FULL list, not the filtered one: the summary says what you
   // have, and the select already says what the filter left.
-  const enabledCount = data.plugins.filter((p) => flipped[p.id] ?? p.enabled).length;
+  const enabledCount = have.filter((p) => flipped[p.id] ?? p.enabled).length;
   const catalogPending = showAvailable && !avail && !availError;
 
   // Paging is the LAST step, over the already-filtered catalog list. The page
@@ -329,8 +344,8 @@ export default function PluginsSection({ filter = "", title, blurb }: HeadedSect
           searching
             ? `Results for "${query}"`
             : browseAll
-              ? `${data.plugins.length} installed · ${plural(moreCount, "plugin")} to add`
-              : `${data.plugins.length} installed · ${enabledCount} enabled`
+              ? `${have.length} installed · ${plural(moreCount, "plugin")} to add`
+              : `${have.length} installed · ${enabledCount} enabled`
         }
         aside={
           <>
