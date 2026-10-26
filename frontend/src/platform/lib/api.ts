@@ -2656,7 +2656,10 @@ export type AppFileState =
   | "unknown"
   | "clash"
   | "local"
-  | "replace";
+  | "replace"
+  // stage B (§18.4): a GitHub link opened for an app installed from the
+  // Marketplace — following it directly is the user's explicit switch.
+  | "switch-link";
 
 /** The payload's `metadata.json`, type-checked field by field (display only). */
 export interface AppFileMetadata {
@@ -2736,9 +2739,13 @@ export function getAppFileProbe(path: string, opts?: { signal?: AbortSignal }): 
 export async function installAppFile(
   file: string,
   force: boolean,
+  opts: { switch?: boolean } = {},
 ): Promise<{ ok: AppFileInstallResult } | { needsConfirm: AppFileProbe }> {
   try {
-    return { ok: await postJson<AppFileInstallResult>("/api/appfile/install", { file, force }) };
+    // `switch`: the `switch-link` state's yes — a Marketplace copy starts
+    // following the author directly (§18.4 `switch_to_link`).
+    const body = opts.switch ? { file, force, switch: true } : { file, force };
+    return { ok: await postJson<AppFileInstallResult>("/api/appfile/install", body) };
   } catch (e) {
     const err = e as HttpError;
     const target = (err.body as { target?: AppFileProbe } | undefined)?.target;
@@ -2977,7 +2984,15 @@ export interface AppInfo {
 export interface AppCardContrib {
   label: string;
   inbox: number;
-  kind?: "own" | "github" | "remix";
+  kind?: "own" | "github" | "remix" | "marketplace";
+  /** Stage B (§18.4): a release Fused blocked is in this copy. `soft` and
+   *  not yet `confirmed`: opening the app asks first. */
+  block?: {
+    level: "hard" | "soft";
+    reason: string;
+    what_to_do: string;
+    confirmed?: boolean;
+  } | null;
 }
 
 // The uninstall policy class the server assigned (routers/app_uninstall.kind_for).

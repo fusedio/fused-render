@@ -503,8 +503,9 @@ const ENTRIES = [
     group: "features",
     section: "Sidebar",
     label: "Marketplace",
-    description: "Browse, install and update community apps from the sidebar.",
-    keywords: "store community apps gallery install",
+    description:
+      "Browse and install community apps from the sidebar. Every release is reviewed by Fused before it reaches you, and you can publish your own apps there.",
+    keywords: "store community apps gallery install reviewed releases publish",
     renderOnly: true,
   },
   {

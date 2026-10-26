@@ -79,10 +79,58 @@ export type CopyState =
   | "other-branch"
   | "merging"
   | "remix"
-  | "own";
+  | "own"
+  // stage B, marketplace copies (§18.4)
+  | "delisted"
+  | "blocked-release"
+  | "soft-blocked";
+
+/** A block-list entry on this copy (§18.4 `record.block`, or a GitHub-link
+ *  copy's `block_warn`). Names a release Fused found to be bad. */
+export interface CopyBlock {
+  level: "hard" | "soft";
+  reason: string;
+  what_to_do: string;
+  /** ISO, when Fused blocked it. */
+  at?: string | null;
+  commit?: string | null;
+  /** The release a hard block rolled the copy back to; null = none left. */
+  rolled_back_to?: string | null;
+  /** That release's date, already in words ("Oct 26") — `blocks.view`. */
+  rolled_back_date?: string | null;
+  /** …or as an ISO time, from a server that sends that instead. */
+  rolled_back_to_at?: string | null;
+  /** The roll-back met the user's own changes: Merge with Claude resolves it. */
+  conflict?: boolean;
+  /** Every release is blocked: nothing to roll back to. */
+  no_target?: boolean;
+  /** The user said "open anyway" to a soft block (`blocks.view`)… */
+  confirmed?: boolean;
+  /** …or when, as epoch seconds. */
+  confirmed_at?: number | null;
+}
+
+/** A soft block the user has not said yes to yet: opening asks first. */
+export function softBlockWaiting(b: CopyBlock | null | undefined): boolean {
+  return !!b && b.level === "soft" && !b.confirmed && !b.confirmed_at;
+}
+
+/** The reviewed release a marketplace copy runs (§18.4 `record.approved`). */
+export interface ApprovedRelease {
+  commit: string | null;
+  /** ISO date of the release. */
+  at: string | null;
+  version?: string | null;
+  whats_new?: string | null;
+}
 
 export interface CopyStatus {
-  kind: "own" | "github" | "scratch";
+  kind: "own" | "github" | "marketplace" | "scratch";
+  /** Marketplace copy: its row's slug and the reviewed release it runs. */
+  slug?: string | null;
+  approved?: ApprovedRelease | null;
+  /** Marketplace copy: "delisted" once the row left the index. */
+  listing_status?: "live" | "delisted" | null;
   state: CopyState;
   /** "alice/x": the repo this copy follows (github) or publishes to (own). */
   repo: string | null;
@@ -217,7 +265,12 @@ export interface Contributor {
 // sent and nothing more — no button is ever derived on this side.
 
 export interface SourcePanel {
-  kind: "github" | "own" | "remix" | "scratch" | "pending" | null;
+  kind: "github" | "marketplace" | "own" | "remix" | "scratch" | "pending" | null;
+  /** Marketplace copy: a release Fused blocked is (or was) in this copy. */
+  block?: CopyBlock | null;
+  /** GitHub-link copy: it runs a version Fused blocked for the Marketplace —
+   *  a warning only, nothing was changed (§18.4). */
+  block_warn?: CopyBlock | null;
   /** "alice/x". */
   repo: string | null;
   /** The name every sentence uses (the author's login, or the user's own). */
@@ -257,7 +310,9 @@ export interface ActivityLine {
   id: string;
   /** Epoch seconds. */
   at: number;
-  kind: string;
+  /** "update", "switch" (a trust-level switch, Undo = the opposite
+   *  switch), "rollback" (a block rolled the copy back; never Undo), … */
+  kind: "update" | "switch" | "rollback" | (string & {});
   text: string;
   /** Something moved away and can come back: offers Undo. */
   undo: boolean;
@@ -428,6 +483,114 @@ export const runAction = (
   });
 /** Undo / Restore one activity line (§16.9). */
 export const restoreActivity = (path: string, id: string) => post<ContribAnswer>("restore", { path, id });
+
+// ---- stage B: the author's Marketplace listing (§18.6) -----------------------
+
+/** The Source panel's buttons that belong to the listing: rendered by the
+ *  ListingStrip, posted to `/api/contrib/listing-action`. */
+export const LISTING_ACTION_IDS: ReadonlySet<string> = new Set([
+  "publish-market",
+  "publish-update",
+  "confirm-powers",
+  "fix-with-claude",
+  "check-listing",
+  "remove-market",
+]);
+
+export type ListingReviewStatus = "in-review" | "live" | "needs-confirmation" | "failed";
+
+export interface ListingPower {
+  kind: string;
+  detail: string;
+}
+
+export interface Listing {
+  listed: boolean;
+  slug: string | null;
+  approved: { commit: string | null; at: string | null } | null;
+  pr: { number: number; url: string; head_sha: string; state: string } | null;
+  review: {
+    status: ListingReviewStatus | null;
+    reasons: string[];
+    new_powers: ListingPower[];
+    whats_new: string | null;
+  } | null;
+  update_available: boolean;
+  /** App Doctor's sharing checks are clear — publishing needs it. */
+  doctor_clear: boolean;
+  /** The app has edits not on GitHub yet — publishing needs them pushed. */
+  unpushed: boolean;
+}
+
+/** GET /api/contrib/listing. `sentence` is the server's status line
+ *  (`actions_listing.sentence`); `actions` its buttons when it sends them
+ *  (else the page takes the listing ids from `/api/contrib/app`'s). */
+export interface ListingAnswer extends Partial<ContribAnswer> {
+  listing?: Listing | null;
+  /** `actions_listing.decide`'s state: "pending", "unknown", "signed-out",
+   *  "not-listed", "in-review", "needs-confirmation", "failed", "live". */
+  state?: string | null;
+  sentence?: string | null;
+  actions?: ContribAction[];
+  /** The listing is being re-read from GitHub: poll this job, then GET
+   *  again (§16.14's named wait). */
+  job?: string | null;
+}
+
+export interface ListingCategory {
+  id: string;
+  label: string;
+}
+
+/** GET /api/contrib/listing-draft: the Publish dialog's prefill. */
+export interface ListingDraft extends Partial<ContribAnswer> {
+  slug?: string;
+  name?: string;
+  description?: string;
+  category?: string;
+  categories?: (ListingCategory | string)[];
+  tags?: string[];
+  icon?: string | null;
+  preview?: string | null;
+}
+
+/** What `publish-market` sends as its `args`. */
+export interface ListingDetails {
+  slug: string;
+  name: string;
+  description: string;
+  category: string;
+  tags: string[];
+  icon: string | null;
+  preview: string | null;
+}
+
+export function getListing(path: string, opts: { fresh?: boolean; signal?: AbortSignal } = {}): Promise<ListingAnswer> {
+  return getJson<ListingAnswer>(
+    `/api/contrib/listing?path=${encodeURIComponent(path)}${opts.fresh ? "&fresh=1" : ""}`,
+    { signal: opts.signal },
+  ).catch(() => ({ ok: false }) as ListingAnswer);
+}
+
+export function getListingDraft(path: string): Promise<ListingDraft> {
+  return getJson<ListingDraft>(`/api/contrib/listing-draft?path=${encodeURIComponent(path)}`).catch(
+    () => ({ ok: false }) as ListingDraft,
+  );
+}
+
+/** The listing's one action route — same body and answer as `runAction`.
+ *  `fix-with-claude` answers `open`: where the new Claude session is. */
+export const runListingAction = (
+  path: string,
+  action: string,
+  opts: { confirm?: boolean; args?: Record<string, unknown> } = {},
+) =>
+  post<JobStarted & { open?: string }>("listing-action", {
+    path,
+    action,
+    ...(opts.confirm ? { confirm: true } : {}),
+    ...(opts.args ? { args: opts.args } : {}),
+  });
 
 /** A success toast's text: the server's own `message` when the answer (or a
  *  job's result) carries one, else the page's sentence. */

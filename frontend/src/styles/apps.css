@@ -493,3 +493,24 @@
   height: 1px;
   margin-top: -1px;
 }
+
+/* Stage B: a release Fused blocked is in this copy (CONTRIB_LOOP.md §18.4).
+   Soft ("Paused": opening asks first) in the warning tint, hard ("Blocked":
+   the app will not open) in the error tint. Same chip shape as the inbox
+   count beside it. */
+.app-pcard-block {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warning) 16%, transparent);
+  color: var(--warning);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 15px;
+  white-space: nowrap;
+}
+
+.app-pcard-block.is-hard {
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+  color: var(--error);
+}

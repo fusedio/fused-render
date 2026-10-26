@@ -33,11 +33,24 @@
 // "settled"), the one control here the server does not list: it is how the
 // server's own state is told it was read.
 //
+// STAGE B (CONTRIB_LOOP.md §18.7). A Marketplace copy is one more kind the
+// server words for itself; this file adds three things around it:
+//   block      `panel.block` / `panel.block_warn` → BlockedStrip above the
+//              strip (reason, what to do, where the copy went, Open anyway
+//              for a soft block, Remove this app for a hard one).
+//   listing    the author's Marketplace buttons (`publish-market`, …) arrive
+//              in the same `actions` list for an own app; they are drawn by
+//              the ListingStrip under this panel and posted to their own
+//              route, so they are taken out of this row.
+//   switch     Activity's `switch` lines carry Undo like any other line
+//              (the server's `undo`); a `rollback` line never does.
+//
 // The sheets are mounted outside any one state's branch, so a background
 // re-read that moves the state on never unmounts one mid-flight.
 import { useEffect, useState } from "react";
 import { Check, ChevronRight, Clock, Loader2, RotateCcw, TriangleAlert } from "lucide-react";
 import {
+  LISTING_ACTION_IDS,
   ackContrib,
   okMessage,
   plainMessage,
@@ -53,6 +66,7 @@ import {
 import { timeAgo } from "@platform/lib/format";
 import { notify } from "@platform/lib/notifications";
 import { cn } from "@platform/lib/utils";
+import { openUninstallApp } from "@platform/lib/uninstall-app";
 import { Button } from "@platform/shadcn/ui/button";
 import { Checkbox } from "@platform/shadcn/ui/checkbox";
 import {
@@ -65,6 +79,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@platform/shadcn/ui/alert-dialog";
+import { BlockedStrip, CONFIRM_BLOCK_ID, REMOVE_APP_ID } from "./BlockedStrip";
 import { ContribDialog } from "./ContribDialog";
 import { IncludeFiles, pickedOf } from "./IncludeFiles";
 import { JobProgress } from "./JobProgress";
@@ -89,9 +104,11 @@ const ATTENTION_STATES = new Set([
   "edits",
   "publish-failed",
   "publish-auth",
+  "blocked-release",
+  "soft-blocked",
 ]);
 /** States that say all is well. */
-const QUIET_STATES = new Set(["following", "merged", "published"]);
+const QUIET_STATES = new Set(["following", "merged", "published", "delisted"]);
 /** Check now's own line (the one action whose progress is not a step list). */
 const DOING = { check: "Checking…" };
 /** Opens the new-files sheet first when the copy has new files. */
@@ -111,7 +128,18 @@ type Sheet =
 /** Any action's answer, as `act` reads it. */
 type Outcome = { ok: boolean; message?: string; reason?: string };
 
-export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string; contrib: AppContribState }) {
+export function SourcePanel({
+  dir,
+  slug,
+  contrib,
+  blockShown,
+}: {
+  dir: string;
+  slug: string;
+  contrib: AppContribState;
+  /** The page already shows the block (BlockedNotice): no strip of our own. */
+  blockShown?: boolean;
+}) {
   const c = contrib.data;
   const [sheet, setSheet] = useState<Sheet>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -149,7 +177,17 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
   const panel = c?.panel;
   if (!c || !panel || !panel.sentence) return null;
   const proposal = c.proposal;
-  const actions = c.actions ?? [];
+  const block = blockShown ? null : (panel.block ?? null);
+  const blockWarn = blockShown ? null : (panel.block_warn ?? null);
+  // The listing's buttons belong to the ListingStrip, Open anyway and Remove
+  // this app to the BlockedStrip (or the page's BlockedNotice): never twice.
+  const allActions = c.actions ?? [];
+  const actions = allActions.filter(
+    (a) =>
+      !LISTING_ACTION_IDS.has(a.id) &&
+      a.id !== CONFIRM_BLOCK_ID &&
+      !(a.id === REMOVE_APP_ID && (block?.level === "hard" || blockShown)),
+  );
   const activity = c.activity ?? [];
   const who = panel.who || authorOf(c.copy);
   const signedIn = c.github.signed_in;
@@ -223,6 +261,10 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
 
   const press = (a: ContribAction) => {
     if (busy) return;
+    // The shell's own uninstall dialog (data kept or not, the Trash).
+    if (a.id === REMOVE_APP_ID) {
+      return openUninstallApp({ path: dir, name: dir.replace(/\/+$/, "").split("/").pop() || slug });
+    }
     if (a.dialog === "propose") return setSheet({ k: "propose" });
     if (a.dialog === "remix") return setSheet({ k: "remix" });
     if (a.dialog === "sign-in") {
@@ -289,6 +331,17 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
   return (
     <>
       <div className="contrib-stack">
+        {(block || blockWarn) && (
+          <BlockedStrip
+            dir={dir}
+            block={block}
+            warn={blockWarn}
+            who={who}
+            actions={allActions}
+            disabled={!!busy}
+            onChanged={() => void contrib.refresh()}
+          />
+        )}
         <StatusStrip
           tone={tone}
           icon={icon}
@@ -482,10 +535,19 @@ export function SourcePanel({ dir, slug, contrib }: { dir: string; slug: string;
         {sheet?.k === "undo" && (
           <AlertDialogContent>
             <AlertDialogHeader>
-              <AlertDialogTitle>Undo this?</AlertDialogTitle>
+              <AlertDialogTitle>{sheet.line.kind === "switch" ? "Switch back?" : "Undo this?"}</AlertDialogTitle>
               <AlertDialogDescription>
-                The app goes back to how it was before this: &ldquo;{sheet.line.text}&rdquo;. What it has now is
-                kept in the activity list too, so nothing is lost either way.
+                {sheet.line.kind === "switch" ? (
+                  <>
+                    This undoes &ldquo;{sheet.line.text}&rdquo; and puts the app back the way it was before the
+                    switch.
+                  </>
+                ) : (
+                  <>
+                    The app goes back to how it was before this: &ldquo;{sheet.line.text}&rdquo;. What it has now is
+                    kept in the activity list too, so nothing is lost either way.
+                  </>
+                )}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>

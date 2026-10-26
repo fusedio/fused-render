@@ -105,6 +105,12 @@ export function useHomeApps(limit: number | null, rows: number, sort: AppsSort =
         try {
           const local = await runCommunity<{ status?: string }>({ action: "catalog" });
           if (!alive) return;
+          // Retired with the reviewed Marketplace (§18.5): no showcase
+          // clone is coming, so the empty row is the answer.
+          if (local.status === "retired") {
+            setApps([]);
+            return;
+          }
           // A "no-cache" status means the clone is still missing — wait for
           // it. But the clone can just as easily land in the gap between the
           // first empty getHomeApps and this very check, which reports it

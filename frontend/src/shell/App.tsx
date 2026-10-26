@@ -1026,7 +1026,13 @@ export default function App({ config }: { config: Config }) {
     // `/marketplace/file` (a `.fused`'s install page by path) is NOT behind
     // the flag: it is the install page, which every `.fused` open renders
     // whatever the flag says (isFusedInstallView), reached by address here.
-    const fileRoute = pathname === "/marketplace/file";
+    // Nor is an app's page reached from a listing link (`?via=link`, the
+    // `fused-render://open?marketplace=<slug>` deep link via InstallLinkPage,
+    // CONTRIB_LOOP.md §18.5): the `.fused` rule extended to listings — the
+    // page renders bare while the store is off.
+    const fileRoute =
+      pathname === "/marketplace/file" ||
+      (pathname.startsWith("/marketplace/app/") && new URLSearchParams(location.search).get("via") === "link");
     main = (
       <div id="content">
         {marketplaceOn === null && !fileRoute ? (

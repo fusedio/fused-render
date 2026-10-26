@@ -34,11 +34,16 @@ export function trustItemsFor(app: AppEntry): TrustItem[] {
         : "Models download to this machine on first use and run offline.",
     });
   }
+  // Stage B (CONTRIB_LOOP.md §18): every catalog row is a reviewed release
+  // pinned in its author's GitHub repo — never the author's latest.
   items.push({
-    key: "community",
+    key: "reviewed",
     icon: <BadgeCheck size={15} strokeWidth={2} />,
-    title: "Community app",
-    detail: "Published to the Fused community repo and reviewed via pull request.",
+    title: "Reviewed by Fused",
+    detail: app.repo
+      ? `Every release is checked by Fused before it reaches you, and updates arrive only after that check. The code comes from ${app.repo} on GitHub.`
+      : "Every release is checked by Fused before it reaches you, and updates arrive only after that check.",
+    tone: "ok",
   });
   return items;
 }

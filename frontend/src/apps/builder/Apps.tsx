@@ -20,6 +20,7 @@ import type { AppInfo, AppsPage, Config } from "@platform/lib/api";
 import { useCurrentAppsChanged } from "@platform/lib/tasksChanged";
 import { appCardMenu } from "@platform/lib/appCardMenu";
 import { runCommunity } from "@platform/lib/community";
+import { useMarketplaceFeature } from "@platform/lib/marketplace-flag";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { AppPreviewCard } from "@platform/ui/AppPreviewCard";
@@ -93,9 +94,16 @@ type ShowcaseCatalog = { status?: string };
 // showcase app with nothing on screen to say why; the local grid still loads
 // either way, so it renders as a muted line rather than the page's error
 // banner. The backend composes the whole user-facing sentence.
-function useShowcaseSync(onSynced: () => void): string | null {
+//
+// RETIRED with the reviewed Marketplace (CONTRIB_LOOP.md §18.5, stage B):
+// while `marketplace_enabled` is on, nothing here asks for the clone (the
+// server answers `{status: "retired"}` then anyway) and the "showcase"
+// folder chip is not offered; a clone already on disk is left alone.
+function useShowcaseSync(onSynced: () => void, retired: boolean | null): string | null {
   const [syncError, setSyncError] = useState<string | null>(null);
   useEffect(() => {
+    // Not until the flag is known, and never while it is on.
+    if (retired !== false) return;
     let alive = true;
     (async () => {
       const local = await runCommunity<ShowcaseCatalog>({ action: "catalog" });
@@ -110,9 +118,9 @@ function useShowcaseSync(onSynced: () => void): string | null {
     return () => {
       alive = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per mount
-  }, []);
-  return syncError;
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- once per mount (per flag answer)
+  }, [retired]);
+  return retired === false ? syncError : null;
 }
 
 // Folder paths (keys of GET /api/apps/background/running) whose background
@@ -378,7 +386,8 @@ export default function Apps({ config }: { config: Config }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- loadMore guards itself through moreCtl
   }, [hasMore, shownCount, moreFailed, filterKey]);
 
-  const showcaseError = useShowcaseSync(() => setNonce((n) => n + 1));
+  const marketplaceOn = useMarketplaceFeature();
+  const showcaseError = useShowcaseSync(() => setNonce((n) => n + 1), marketplaceOn);
   const runningPaths = useRunningBackgroundApps();
   // Showcase apps are ordinary workspace apps now: the server clones the
   // community repo into <workspace>/showcase in the background on startup,
@@ -393,8 +402,11 @@ export default function Apps({ config }: { config: Config }) {
   // geospatial) first, then locale-alphabetical for anything else a workspace
   // turns up. Card order in the grid is unaffected.
   const tags = page?.tags ?? lastChips.tags;
+  // The retired Showcase's folder chip goes while the Marketplace is on —
+  // unless it is the filter in force, so the reader can still clear it.
+  const folderChips = tags.filter((t) => marketplaceOn !== true || t !== "showcase" || tag === t);
   const categories = orderCategories(page?.categories ?? lastChips.categories);
-  const chips = mode === "repo" ? tags : categories;
+  const chips = mode === "repo" ? folderChips : categories;
   const active = mode === "repo" ? tag : category;
 
   return (

@@ -1035,3 +1035,155 @@
   font-weight: 600;
 }
 
+
+/* ---- Stage B: block list + listing (CONTRIB_LOOP.md §18.7) ------------------------------ */
+
+/* BlockedStrip's lines under its sentence. */
+.contrib-block-note,
+.contrib-block-todo {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--fg-muted);
+}
+
+/* What to do (rotate a password, …): the line the user acts on. */
+.contrib-block-todo {
+  color: var(--fg);
+  font-weight: 500;
+}
+
+/* The app page's notice when opening the app answered 423. */
+.contrib-blocked-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  margin-bottom: 12px;
+  padding: 18px 20px;
+  border: 1px solid color-mix(in srgb, var(--error) 35%, var(--border));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--error) 5%, var(--bg-alt));
+}
+
+.contrib-blocked-mark {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  color: var(--error);
+  background: color-mix(in srgb, var(--error) 14%, transparent);
+}
+
+.contrib-blocked-mark svg {
+  width: 18px;
+  height: 18px;
+}
+
+.contrib-blocked-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.contrib-blocked-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  color: var(--fg);
+}
+
+.contrib-blocked-reason,
+.contrib-blocked-where {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+
+.contrib-blocked-todo {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.5;
+  color: var(--fg);
+}
+
+.contrib-blocked-todo svg {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin-top: 2px;
+  color: var(--success);
+}
+
+.contrib-blocked-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+@media (max-width: 560px) {
+  .contrib-blocked-notice {
+    flex-direction: column;
+    padding: 14px;
+  }
+}
+
+/* The listing strip sits right under the Source panel: no second gap. */
+.contrib-stack + .contrib-stack.contrib-listing {
+  margin-top: -4px;
+}
+
+.contrib-listing-reasons,
+.contrib-listing-powers {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+
+.contrib-listing-doctor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--fg-muted);
+}
+
+.contrib-listing-doctor svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  color: var(--warning);
+}
+
+/* The Publish dialog's paired fields (category + address, icon + screenshot). */
+.contrib-listing-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+@media (max-width: 560px) {
+  .contrib-listing-row {
+    grid-template-columns: 1fr;
+  }
+}

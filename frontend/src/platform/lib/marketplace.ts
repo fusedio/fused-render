@@ -33,16 +33,62 @@ export interface MarketplaceAuthor {
   github?: string | null;
 }
 
+/** A block-list entry as the Marketplace reports it on an installed copy
+ *  (CONTRIB_LOOP.md §18.2/§18.4). `hard`: the app is stopped and rolled back;
+ *  `soft`: updates pause and opening asks first. */
+export interface MarketBlock {
+  level: "hard" | "soft";
+  reason: string;
+  what_to_do: string;
+  at?: string | null;
+  commit?: string | null;
+  /** The release the copy went back to (hard), when there was one. */
+  rolled_back_to?: string | null;
+  /** That release's date, in words ("Oct 26") — `blocks.view`. */
+  rolled_back_date?: string | null;
+  /** …or as ISO, from a server that sends that instead. */
+  rolled_back_to_at?: string | null;
+  no_target?: boolean;
+  confirmed?: boolean;
+  confirmed_at?: number | null;
+  conflict?: boolean;
+  /** The app folder (the open gate's 423 carries it). */
+  path?: string | null;
+  slug?: string | null;
+}
+
+/** What is on this machine for a catalog row (§18.5). Stage B: `kind`
+ *  `marketplace` is a copy of the author's repo pinned to a reviewed release;
+ *  `legacy` is a plain-file install from the old package Marketplace, which
+ *  never updates and offers the switch instead. An older server's stamp has
+ *  no `kind` and reads as before. */
 export interface InstalledStamp {
   path: string;
+  kind?: "marketplace" | "legacy";
+  /** The release the copy runs (marketplace). */
+  commit?: string | null;
+  /** A newer release is waiting; the next check brings it in (marketplace). */
+  update_available?: boolean;
   /** Null when the stamp predates a version (or could not be read). */
+  version?: string | null;
+  /** The release the copy was installed from (legacy stamps). */
+  release_id?: string | null;
+  installed_at?: string;
+  /** Local files differ from the sha256s stamped at install time (legacy). */
+  modified?: boolean;
+  /** The row is gone from the index: the copy stays on its last release. */
+  delisted?: boolean;
+  block?: MarketBlock | null;
+}
+
+/** One release of a row, newest first: the review's What's new, and whether
+ *  Fused blocked it since. */
+export interface MarketRelease {
+  commit: string;
+  at: string | null;
+  whats_new: string | null;
   version: string | null;
-  /** The release the copy was installed from; null for a stamp that predates
-   *  the udf.ai backend (it then reads as update-available). */
-  release_id: string | null;
-  installed_at: string;
-  /** Local files differ from the sha256s stamped at install time. */
-  modified: boolean;
+  blocked: "hard" | "soft" | null;
 }
 
 export interface AppEntry {
@@ -71,6 +117,20 @@ export interface AppEntry {
   installed: InstalledStamp | null;
   update_available: boolean;
   compatible: boolean;
+  // ---- stage B (§18.3/§18.5); optional so an older server still types ----
+  /** "alice/sine-starter": the author's repo the release is pinned in. */
+  repo?: string | null;
+  branch?: string | null;
+  /** The slug of the listed app this one remixes. */
+  remix_of?: string | null;
+  remix_count?: number;
+  /** Distinct people credited across its releases, the author included. */
+  contributor_count?: number;
+  /** ISO date of the newest release. */
+  last_release_at?: string | null;
+  releases?: MarketRelease[];
+  /** The newest release's What's new (= releases[0].whats_new). */
+  whats_new?: string | null;
 }
 
 export interface MarketplaceCategory {
@@ -95,6 +155,8 @@ export interface Catalog {
   source?: "udf-api";
   api?: string;
   catalog_version?: string;
+  /** The index repo the catalog is read from ("owner/name"), for the footer. */
+  index?: string | null;
   generated_at?: string;
   fetched_at?: string;
   stale?: boolean;
@@ -135,7 +197,9 @@ export interface AppDetail {
   readme: string;
   files: AppFile[];
   readme_base: string;
-  releases: AppRelease[];
+  /** Stage B: the row's releases (§18.3 `marketplace_app_detail`); an older
+   *  server sent `AppRelease`s, which nothing reads any more. */
+  releases?: MarketRelease[] | AppRelease[];
 }
 
 export type JobState = "queued" | "downloading" | "installing" | "done" | "error";
@@ -178,8 +242,41 @@ export function fetchInstalled(): Promise<{ apps: AppEntry[] }> {
   return getJson<{ apps: AppEntry[] }>("/api/marketplace/installed");
 }
 
-export function postInstall(slug: string): Promise<{ status: "ok"; job: InstallJob }> {
-  return postJson<{ status: "ok"; job: InstallJob }>("/api/marketplace/install", { slug });
+/** The install POST's answers: a job, or (§18.4 D13) a question — the user
+ *  already follows this app's author by GitHub link, and installing from the
+ *  Marketplace would switch that copy to reviewed releases. Posting again
+ *  with `switch: true` is the yes. */
+export type InstallAnswer =
+  | { status: "ok"; job: InstallJob }
+  | { status: "confirm"; switch: "reviewed"; path: string; who: string | null };
+
+export function postInstall(slug: string, opts: { switch?: boolean } = {}): Promise<InstallAnswer> {
+  return postJson<InstallAnswer>("/api/marketplace/install", { slug, ...(opts.switch ? { switch: true } : {}) });
+}
+
+/** Stage B's answer shape for the two Installed-page buttons. */
+export interface MarketAnswer {
+  status: "ok" | "error";
+  message?: string;
+  error?: string;
+  path?: string;
+  /** /check: the copy's sync (`git_upstream.sync_repo`'s answer), null
+   *  when there was none; `app` the row as it reads after the check. */
+  sync?: { ok?: boolean; message?: string } | null;
+  app?: AppEntry | null;
+}
+
+/** "Check for a new release" (§18.5): a fresh catalog + block list read and a
+ *  sync of that copy — the way to move now instead of on the next check. */
+export function postCheck(slug: string): Promise<MarketAnswer> {
+  return postJson<MarketAnswer>("/api/marketplace/check", { slug });
+}
+
+/** "Switch to the reviewed version" on a plain-file install from the old
+ *  Marketplace (§18.4 `adopt_legacy`): the copy becomes a reviewed copy in
+ *  place, edits and data kept. */
+export function postAdopt(slug: string): Promise<MarketAnswer> {
+  return postJson<MarketAnswer>("/api/marketplace/adopt", { slug });
 }
 
 // -- Server search -----------------------------------------------------------
@@ -633,12 +730,22 @@ async function pollJobsOnce(): Promise<void> {
 
 /** Start an install (or an update — the server decides from what is on
  *  disk). The returned job is merged in at once so the pill turns into a
- *  ring on the same frame, then the poll takes over. */
-export async function installApp(app: { slug: string; name: string }): Promise<InstallJob> {
+ *  ring on the same frame, then the poll takes over. A `confirm` answer (a
+ *  GitHub-link copy of this app exists: switch it to reviewed releases?)
+ *  starts nothing and is handed back for the caller's sheet; the same call
+ *  with `switch: true` is the yes. */
+export async function installApp(
+  app: { slug: string; name: string },
+  opts: { switch?: boolean } = {},
+): Promise<InstallJob | Extract<InstallAnswer, { status: "confirm" }>> {
   startedHere.set(app.slug, app.name);
   announced.delete(app.slug);
   try {
-    const r = await postInstall(app.slug);
+    const r = await postInstall(app.slug, opts);
+    if (r.status === "confirm") {
+      startedHere.delete(app.slug);
+      return r;
+    }
     jobsGen += 1;
     setJobs({ ...jobs, [app.slug]: r.job });
     schedule();
@@ -662,6 +769,52 @@ export async function installApp(app: { slug: string; name: string }): Promise<I
     });
     throw e;
   }
+}
+
+// -- Release checks (stage B) ---------------------------------------------------
+//
+// A reviewed copy's Update is "Check for a new release" (POST
+// /api/marketplace/check): the server re-reads the catalog and the block
+// list and syncs that copy, which brings a waiting release in (with its
+// Activity line and Undo on the app page). Not a job — one request — so the
+// pill's ring reads this small set while it is in flight.
+
+const checking = new Set<string>();
+const checkListeners = new Set<() => void>();
+function emitChecking() {
+  for (const l of checkListeners) l();
+}
+
+/** Check one reviewed copy for a new release now. Resolves with the server's
+ *  answer (a refusal included); the catalog is re-read either way so the
+ *  pill and the Installed row follow. */
+export async function checkForRelease(app: { slug: string }): Promise<MarketAnswer> {
+  if (checking.has(app.slug)) return { status: "ok" };
+  checking.add(app.slug);
+  emitChecking();
+  try {
+    return await postCheck(app.slug).catch(
+      (e: Error) => ({ status: "error", message: e.message || "Couldn't check for a new release" }) as MarketAnswer,
+    );
+  } finally {
+    await refreshCatalog({ again: true }).catch(() => {});
+    checking.delete(app.slug);
+    emitChecking();
+  }
+}
+
+/** Whether a release check for `slug` is in flight. */
+export function useChecking(slug: string): boolean {
+  const [on, setOn] = useState(() => checking.has(slug));
+  useEffect(() => {
+    const l = () => setOn(checking.has(slug));
+    checkListeners.add(l);
+    l();
+    return () => {
+      checkListeners.delete(l);
+    };
+  }, [slug]);
+  return on;
 }
 
 /** The jobs readers see, synchronously (tests). */
@@ -691,6 +844,25 @@ export function useJob(slug: string): InstallJob | null {
 /** What an app's primary action is right now — the one rule every pill
  *  (card, hero, installed row) reads, so they can never disagree. */
 export type AppActionKind = "get" | "progress" | "open" | "update" | "retry" | "incompatible";
+
+/** The copy on disk is a stage-B reviewed copy (§18.4): its Update is
+ *  "Check for a new release", never the old package update. */
+export function isMarketCopy(app: AppEntry): boolean {
+  return app.installed?.kind === "marketplace";
+}
+
+/** A plain-file install from the old Marketplace: it never updates; the
+ *  Installed page offers the switch to the reviewed version instead. */
+export function isLegacyCopy(app: AppEntry): boolean {
+  return app.installed?.kind === "legacy";
+}
+
+/** A newer reviewed release is waiting for this copy. */
+export function releaseWaiting(app: AppEntry): boolean {
+  if (!app.installed) return false;
+  if (isLegacyCopy(app)) return false;
+  return !!(app.update_available || app.installed.update_available);
+}
 
 export interface AppAction {
   kind: AppActionKind;
@@ -723,7 +895,7 @@ export function actionFor(app: AppEntry, job: InstallJob | null): AppAction {
     return { kind: "open", progress: null, error: null, path };
   }
   if (app.installed) {
-    if (app.update_available && app.compatible) return { kind: "update", progress: null, error: null, path };
+    if (releaseWaiting(app) && app.compatible) return { kind: "update", progress: null, error: null, path };
     return { kind: "open", progress: null, error: null, path };
   }
   if (!app.compatible) return { kind: "incompatible", progress: null, error: null, path: null };

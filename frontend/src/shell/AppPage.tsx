@@ -132,9 +132,12 @@ import { useAppPageGitColumn } from "@shell/useAppPageGitColumn";
 import AppPageGitPeek from "./AppPageGitPeek";
 import { useAppPageGitPeekWidth } from "./useAppPageGitPeekWidth";
 import { peekSearch } from "./task-peek-store";
-import { useAppContrib, type AppContribState } from "@platform/lib/contrib";
+import { softBlockWaiting as blockWaits, useAppContrib, type AppContribState, type CopyBlock } from "@platform/lib/contrib";
+import type { HttpError } from "@platform/lib/api";
 import { SourceLine } from "./contrib/SourceLine";
 import { SourcePanel } from "./contrib/SourcePanel";
+import { BlockedNotice } from "./contrib/BlockedStrip";
+import { ListingStrip } from "./contrib/ListingStrip";
 import { Contributors } from "./contrib/Contributors";
 import { ProposalsTab } from "./contrib/ProposalsTab";
 
@@ -232,6 +235,11 @@ function renderOverviewFrame({ slug, dir, entry, snapshot }: TabCtx): ReactNode 
   );
 }
 
+/** A soft block the user has not said yes to (§18.4): opening asks first. */
+function softBlockWaiting(contrib: AppContribState): boolean {
+  return blockWaits(contrib.data?.panel?.block);
+}
+
 const TAB_DEFS: Record<AppPageTab, TabDef> = {
   overview: {
     label: "Overview",
@@ -259,15 +267,27 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     // buttons, its activity — and the contributors line. Live only: a past
     // version picked in the version picker is not the copy those sentences
     // are about.
+    //
+    // STAGE B (CONTRIB_LOOP.md §18.7): the author's Marketplace listing
+    // (ListingStrip, own apps with a repo, Marketplace switch on) sits under
+    // the Source panel; and a copy whose release Fused soft-blocked does not
+    // run here until the user says "Open anyway" in the panel's block strip.
     render: (ctx) => (
       <>
         {ctx.snapshot.sha === null && (
           <>
             <SourcePanel dir={ctx.dir} slug={ctx.slug} contrib={ctx.contrib} />
+            <ListingStrip dir={ctx.dir} contrib={ctx.contrib} />
             <Contributors contrib={ctx.contrib.data} />
           </>
         )}
-        {renderOverviewFrame(ctx)}
+        {softBlockWaiting(ctx.contrib) ? (
+          <p className="app-page-empty">
+            This app waits for your OK before it runs. Choose Open anyway above to use it.
+          </p>
+        ) : (
+          renderOverviewFrame(ctx)
+        )}
       </>
     ),
   },
@@ -319,6 +339,9 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
 type Resolved =
   | { kind: "missing" }
   | { kind: "error"; message: string }
+  // Stage B (§18.5 open gate): a hard block stands — the server answered the
+  // entry probe with 423 and the block's facts.
+  | { kind: "blocked"; block: CopyBlock }
   | {
       kind: "app";
       entry: string | null;
@@ -489,7 +512,11 @@ export default function AppPage({
         // `ensureAppFor`, archived tasks excluded); the explorer's "Open in
         // project" button stays the explicit way on.
       } catch (e) {
-        if (live) setResolved({ kind: "error", message: (e as Error).message });
+        if (!live) return;
+        const err = e as HttpError;
+        const blocked = (err.body as { blocked?: CopyBlock } | undefined)?.blocked;
+        if (err.status === 423 && blocked) setResolved({ kind: "blocked", block: blocked });
+        else setResolved({ kind: "error", message: err.message });
       }
     })();
     return () => {
@@ -906,6 +933,15 @@ export default function AppPage({
               <ErrorBanner>
                 Could not open {slug}: {resolved.message}
               </ErrorBanner>
+            )}
+            {resolved?.kind === "blocked" && (
+              <section className="app-page-panel app-page-overview" role="tabpanel">
+                <BlockedNotice dir={dir} block={resolved.block} />
+                {/* The panel still offers its way out (Merge with Claude when
+                    the roll-back met the user's changes, Check for a new
+                    release); its own block strip would repeat the notice. */}
+                <SourcePanel dir={dir} slug={slug} contrib={contrib} blockShown />
+              </section>
             )}
 
             {resolved?.kind === "app" &&
