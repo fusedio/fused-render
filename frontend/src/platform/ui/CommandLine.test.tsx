@@ -98,6 +98,19 @@ describe("with a terminal drawer mounted", () => {
     act(() => unregister());
   });
 
+  test("runnable={false} hides Run even though the drawer is mounted, Copy stays", () => {
+    let unregister!: () => void;
+    act(() => {
+      unregister = registerTerminalDrawerMounted();
+    });
+    const renderer = renderTracked(<CommandLine command="pip install -U fused-render" runnable={false} />);
+    const tree = renderer.toJSON() as ReactTestRendererJSON;
+    const buttons = findAll(tree, (n) => n.type === "button").map(text);
+    expect(buttons).not.toContain("Run");
+    expect(buttons).toContain("Copy");
+    act(() => unregister());
+  });
+
   test("Run is disabled while the row's own action is busy", () => {
     let unregister!: () => void;
     act(() => {

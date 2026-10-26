@@ -4,7 +4,8 @@
 // surface in the app (the Claude health strip's install/update/PATH-fix
 // commands, the trouble card's install box) renders through this instead of
 // keeping its own copy button, so "here is a line to run" looks and behaves
-// identically wherever the app offers one.
+// identically wherever the app offers one. The one exception is a command
+// that cannot work from the app's own terminal (`runnable={false}`).
 import { useState } from "react";
 
 import { copyToClipboard } from "@platform/lib/clipboard";
@@ -18,16 +19,21 @@ export function CommandLine({
    * already busy running — Run stays disabled rather than letting a second
    * click start a second one on top of it. */
   disabled = false,
+  /** False for a command that cannot work from the app's own terminal — e.g.
+   * the self-upgrade command, which must replace the running fused-render
+   * executable. Run is hidden; Copy stays. */
+  runnable = true,
 }: {
   command: string;
   disabled?: boolean;
+  runnable?: boolean;
 }) {
   const [copied, setCopied] = useState(false);
   const canRun = useCanRunInTerminal();
   return (
     <div className="update-badge-command">
       <code>{command}</code>
-      {canRun && (
+      {canRun && runnable && (
         <button
           type="button"
           className="update-badge-run"
