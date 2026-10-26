@@ -1567,6 +1567,43 @@ def start_install(slug: str, *, update: bool = False, switch: bool = False) -> d
     return out
 
 
+def resolve_install(slug: str, row: dict) -> dict:
+    """The row an install goes by: the marketplace's answer RIGHT NOW
+    (`fused_app_install`, §18.12), falling back to the cached catalog row
+    `row`. Why ask: the local catalog can be ten minutes behind the index,
+    so an install right after a release would pin the previous commit; and
+    the ask is what the marketplace counts as one install — the request
+    carries the slug and nothing else (no telemetry call exists: this is the
+    install's own lookup). Can't be asked, or answers nonsense → the cached
+    row, uncounted, logged. Answers a hard block → InstallError (the cached
+    row may predate the block)."""
+    try:
+        rows = _udf_get("fused_app_install", timeout=DETAIL_TIMEOUT_S, slug=slug)
+    except SourceError as exc:
+        logger.warning("marketplace: installing %s by the cached row (%s)", slug, exc)
+        return row
+    live = rows[0] if len(rows) == 1 and isinstance(rows[0], dict) else None
+    if not live or live.get("slug") != slug or not row_repo(live) or not is_sha(live.get("commit")):
+        logger.warning("marketplace: installing %s by the cached row (unexpected answer)", slug)
+        return row
+    if live.get("blocked") == "hard":
+        raise InstallError("Fused withdrew this release, so it can't be installed right now.")
+    if (row_repo(live), live["commit"]) == (row_repo(row), row.get("commit")):
+        return row
+    logger.info("marketplace: %s moved to %s@%s since the catalog was read; installing that",
+                slug, row_repo(live), live["commit"][:7])
+    out = dict(row)
+    out["repo"] = row_repo(live)
+    out["source_url"] = f"https://github.com/{out['repo']}"
+    for k in ("commit", "release_id", "branch", "version", "name"):
+        if _opt_str(live.get(k)):
+            out[k] = live[k]
+    # The catalog's releases list does not know this commit: `_approved`
+    # then takes the version from the row and leaves What's new empty.
+    out["whats_new"] = None
+    return out
+
+
 def install_app(slug: str, row: dict, report=lambda **kw: None) -> dict:
     """A NEW marketplace copy of `slug`, synchronously: the author's repo
     cloned at the row's approved commit and installed through the GitHub
@@ -1575,6 +1612,7 @@ def install_app(slug: str, row: dict, report=lambda **kw: None) -> dict:
     InstallError."""
     from fused_render import app_listing, appfetch, appfile, appfile_git
 
+    row = resolve_install(slug, row)
     repo, commit = row_repo(row), row.get("commit")
     if not repo or not is_sha(commit):
         raise InstallError("This app has no reviewed version to install yet.")

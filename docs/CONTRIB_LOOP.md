@@ -1392,7 +1392,12 @@ error = one row `{error_code, error_message}` — today's API shape, so
 | `marketplace_search` | `q, category, cursor, limit, client_version` | catalog rows + `rank`, `next_cursor` |
 | `marketplace_app_detail` | `slug, client_version` | catalog row + `readme_markdown, readme_base_url (raw…/<repo>/<commit>/), files: [{path, size}], releases` |
 | `marketplace_blocklist` | — | `{slug, commit, level, reason, what_to_do, at, generated_at}` (one row per entry; an empty list is a valid answer; errors as above) |
-| `fused_app_listing` | `slug` | HTML (B6): the listing page — name, icon, preview, readme at the approved commit, "Reviewed by Fused · release <date>", What's new, Remix of, contributors, install button = `fused-render://open?marketplace=<slug>` with the "Didn't open?" fallback, "View on GitHub" |
+| `fused_app_listing` | `slug` | HTML (B6): the listing page — name, icon, preview, readme at the approved commit, "Reviewed by Fused · release <date>", What's new, Remix of, contributors, install button = `fused-render://open?marketplace=<slug>` with the "Didn't open?" fallback, "View on GitHub". Serving it records one `views` event (§18.12) |
+| `fused_app_install` | `slug` | one row `{slug, name, repo, commit, release_id, branch, version, blocked, catalog_version, generated_at, stale, counted}` — the index's row RIGHT NOW; the ask records one `installs` event (§18.12) |
+| `marketplace_stats` | — | one per app: `{slug, name, version, installs, installs_30d, views, views_30d, window_days, catalog_version, generated_at}` |
+
+Catalog rows (and so search/detail rows) also carry `installs, installs_30d,
+views, views_30d` (§18.12).
 
 Sources: the index via `codeload.github.com/<index>/zip/HEAD` (`fused.cache`
 5 min); each app repo via `codeload.github.com/<repo>/zip/<commit>`
@@ -1769,6 +1774,64 @@ for `reviews/`.
 | WS-CLIENT | `marketplace.py`, `routers/marketplace.py`, `routers/apps.py`+`render.py` open gate, `bots/tools.py`, `deeplink.py`, `community.py`+router, `server/app.py` startup thread, `tests/test_marketplace.py` |
 | WS-PUBLISH | `contrib/listing.py`, `contrib/actions_listing.py`, `server/routers/listing.py` (registered in `server/app.py` next to the contrib router — one line), `gh.py` additions (`search_prs`, `check_runs`, `pr_comments`, `edit_comment` helpers, each appended at the end of the file with a FakeGitHub counterpart), `tests/test_contrib_listing.py`. Does NOT edit `actions.py` or `routers/contrib.py` (WS-ENGINE adds the one-line `actions_listing.buttons` call) |
 | WS-FE | everything under `frontend/` |
+
+### 18.12 The store and the count (owner 2026-10-26)
+
+Owner: "I want some metric of what app is being installed how many times.
+fused-render MUST not have any telemetry call" and "the S3 location is your
+DB for the canvas". Built:
+
+**No telemetry.** fused-render makes no request whose only purpose is
+reporting. The count is a side effect of the install's own lookup: when an
+install starts, `marketplace.resolve_install` asks `fused_app_install?slug=`
+for the row as the index has it RIGHT NOW (the local catalog can be ten
+minutes behind the index, so an install right after a release would
+otherwise pin the previous commit — a correctness need in its own right),
+and the marketplace counts that ask as one install. The request carries the
+slug (plus the `User-Agent: fused-render/<version>` every marketplace
+request carries); the event kept is `{slug, commit, at}` — no IP, no user
+agent, nothing about the machine. When the marketplace cannot answer, the
+install goes by the cached row, uncounted (logged). A live `blocked: "hard"`
+refuses the install ("Fused withdrew this release"). The clone itself is
+`git clone https://github.com/<repo>` as before; a counted redirect through
+the canvas was the first design but udf.ai answers 200 with the return
+value's type — a UDF cannot set a status or a `Location` header — so the
+lookup is the count. The public listing page records one `views` event when
+served.
+
+**S3 is the canvas's database.** `S3_PREFIX =
+s3://fused-users/fused/vasu/fused-render-marketplace/` (overridable by the
+`MARKETPLACE_S3_PREFIX` env var / Fused secret). GitHub stays the source of
+truth; S3 keeps what was read, what was built, and the stats. Every write is
+best-effort (`fused.api.upload`, logged on failure): no row ever waits on,
+or fails for, S3.
+
+| Key | What | Written when |
+|---|---|---|
+| `index/current.json` | the parsed index (`_load_index` output: version, generated_at, apps, reviews, blocked, featured, shelves, categories) | the index HEAD's version changed (one write per version per worker) |
+| `index/history/<generated_at>-<version>.json` | every index version seen | same |
+| `facts/<owner>__<name>/<commit>.json` | an app's facts at a commit (files, size, metadata, readme) — immutable | first read of that commit; read back before GitHub on a cache miss |
+| `catalog/current.json` | `{version, generated_at, apps: [rows]}` as last built | `marketplace_catalog` built a new version |
+| `listings/<slug>.json` | that app's catalog row | same |
+| `stats/<kind>/events/<YYYY-MM-DD>/<ms>-<rand>--<slug>.json` | one event, `{slug, commit, at}`; the slug is in the KEY so a day is counted from a listing alone | `fused_app_install` (kind `installs`), `fused_app_listing` (kind `views`) |
+| `stats/<kind>/days/<YYYY-MM-DD>.json` | `{slug: n}` — a recount of that day's keys, idempotent (two workers writing it at once cannot double-count) | each rollup recounts today and yesterday; older days are frozen |
+| `stats/<kind>/current.json` | `{totals, window (last 30 days), days, generated_at}` = the day files summed | each rollup (`fused.cache` 5 min per worker) |
+
+Reads: `_load_index` goes to GitHub first and, when it cannot be read,
+serves `index/current.json` with `stale: true` (the catalog is then not
+re-persisted). `_fetch_app_facts` reads `facts/…` before `codeload`.
+`_stats_for(slug)` (inside `_catalog_row`) and `marketplace_stats` read the
+rollups. The shared helper block (duplicated byte-for-byte across the nine
+`marketplace_*` / `fused_app_listing` / `fused_app_install` UDFs) carries
+all of it; `fused_app_github` is untouched.
+
+Pushing the canvas: the clone under `~/Fused/canvas/unstable/` is owned by
+the installed fused-render's watcher (port 1777); a Claude session without
+the app's `fused` wrapper on PATH pushes through it — `POST
+http://127.0.0.1:1777/api/canvases/sync/push {name, env: "unstable"}` with
+`X-Fused: 1` (pull first the same way when it answers `server_changed`).
+The raw `fused` CLI on PATH pushes to whatever env it is signed into (prod)
+and creates a stray canvas there — it did once, 2026-10-26.
 
 ## 19. The Community tab (owner 2026-10-26: "one coherent flow")
 

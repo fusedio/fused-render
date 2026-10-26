@@ -70,6 +70,8 @@ class FakeUdf:
         self.timeouts: list[tuple] = []         # (endpoint, timeout) per call
         self.fail: str | None = None            # set → every call raises SourceError
         self.catalog_version = "cv1"
+        self.installs: list[str] = []           # fused_app_install asks, in order
+        self.install_fail: str | None = None    # set → fused_app_install alone raises
 
     # -- authoring ------------------------------------------------------
     def add_app(self, slug, files, version="1.0.0", category="starters", **row):
@@ -148,6 +150,18 @@ class FakeUdf:
 
     def _marketplace_blocklist(self):
         return [dict(b, generated_at="2026-10-26T00:00:00Z") for b in self.blocked]
+
+    def _fused_app_install(self, slug):
+        if self.install_fail:
+            raise mp.SourceError(self.install_fail)
+        if slug not in self.apps:
+            raise mp.SourceError(f'The app "{slug}" isn\'t in the marketplace.', "app_not_found")
+        r = self.apps[slug]["row"]
+        self.installs.append(slug)
+        return [{"slug": slug, "name": r["name"], "repo": r["repo"], "commit": r["commit"],
+                 "release_id": r["commit"], "branch": r["branch"], "version": r["version"],
+                 "blocked": r.get("blocked"), "catalog_version": self.catalog_version,
+                 "generated_at": "2026-10-26T17:00:00Z", "stale": False, "counted": True}]
 
 
 @pytest.fixture()
@@ -681,6 +695,54 @@ def test_install_clones_the_approved_commit_not_the_authors_tip(env, gh_world):
     from fused_render import appfetch
 
     assert not [n for n in os.listdir(appfetch.downloads_dir()) if n.endswith(".fused")]
+
+
+def test_install_asks_the_marketplace_once_with_the_slug_alone(env, gh_world):
+    """§18.12: the install's one lookup is what the marketplace counts. It
+    carries the slug and nothing else."""
+    client = _client()
+    client.post("/api/marketplace/install", json={"slug": "sine-starter"}, headers=FUSED)
+    assert _wait_job(client, "sine-starter")["state"] == "done"
+    assert env["api"].installs == ["sine-starter"]
+    [(endpoint, params)] = [c for c in env["api"].calls if c[0] == "fused_app_install"]
+    assert params == {"slug": "sine-starter"}
+
+
+def test_install_takes_the_live_row_over_a_stale_catalog(env, gh_world):
+    """The catalog was read before a release: the marketplace's live answer
+    names the new approved commit, and that is what lands."""
+    mp.catalog()  # the cached snapshot: sine-starter at gh_world.approved
+    newer = gh_world.fake.commit(gh_world.full, "main", {"app.py": "A = 3\n"}, "Release 1.0.1",
+                                 author="alice")
+    env["api"].set_files("sine-starter", {"index.html": PAGE, "app.py": "A = 3\n"}, "1.0.1",
+                         commit=newer, repo=gh_world.full)
+    client = _client()
+    client.post("/api/marketplace/install", json={"slug": "sine-starter"}, headers=FUSED)
+    job = _wait_job(client, "sine-starter")
+    assert job["state"] == "done", job
+    assert _git(job["path"], "rev-parse", "HEAD") == newer
+    from fused_render.contrib import store
+
+    rec = store.get(job["path"])
+    assert rec["approved"]["commit"] == newer and rec["approved"]["version"] == "1.0.1"
+
+
+def test_install_goes_by_the_cached_row_when_the_marketplace_is_away(env, gh_world):
+    env["api"].install_fail = "the marketplace can't be reached"
+    client = _client()
+    client.post("/api/marketplace/install", json={"slug": "sine-starter"}, headers=FUSED)
+    job = _wait_job(client, "sine-starter")
+    assert job["state"] == "done", job
+    assert _git(job["path"], "rev-parse", "HEAD") == gh_world.approved
+    assert env["api"].installs == []
+
+
+def test_install_refuses_a_release_the_marketplace_withdrew(env, gh_world):
+    env["api"].apps["sine-starter"]["row"]["blocked"] = "hard"
+    client = _client()
+    client.post("/api/marketplace/install", json={"slug": "sine-starter"}, headers=FUSED)
+    job = _wait_job(client, "sine-starter")
+    assert job["state"] == "error" and "withdrew" in job["error"], job
 
 
 def test_a_release_moves_the_copy_through_the_real_engine(env, gh_world):
