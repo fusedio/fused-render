@@ -55,7 +55,7 @@ import { QuietAction } from "./StatusStrip";
 import { authorOf, githubUrl, plural, possessive } from "./words";
 
 /** The review every listing gets (§18.2), said the same way everywhere. */
-export const REVIEW_SENTENCE = "Fixed rules + Claude · every update · merged by a Fused maintainer";
+export const REVIEW_SENTENCE = "Claude, then a Fused maintainer";
 
 // ---- which card a copy's button belongs to (§19.1 "split by subject") --------
 //
@@ -487,13 +487,9 @@ function OwnView({
             <Row label="Review">
               <span className="contrib-row-quiet">{REVIEW_SENTENCE}</span>
             </Row>
-            <Row label="Repository visibility">
+            <Row label="Repository">
               <span className="contrib-row-quiet">
-                {l.github.visibility === "public"
-                  ? "Public (the Marketplace needs it)"
-                  : l.github.visibility === "private"
-                    ? "Private · the Marketplace needs a public repository"
-                    : "Checking…"}
+                {l.github.visibility === "public" ? "Public" : l.github.visibility === "private" ? "Private" : "Checking…"}
               </span>
             </Row>
           </Card>
