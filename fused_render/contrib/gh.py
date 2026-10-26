@@ -791,6 +791,21 @@ def check_runs(full: str, sha: str, *, name: str | None = None) -> list[dict]:
     return sorted(rows, key=lambda r: r.get("completed_at") or "~", reverse=True)
 
 
+def commit_statuses(full: str, sha: str, *, context: str | None = None) -> list[dict]:
+    """The commit statuses GitHub holds for `sha` of `full`, newest first:
+    `[{context, state, creator, url, created_at}]`, `state` one of pending |
+    success | failure | error. The index's review reports here (context
+    `review`, on the PR HEAD sha): under `pull_request_target` a workflow's
+    own check run is attached to the BASE commit, so only a status set
+    explicitly on the head says which version was reviewed."""
+    if not _SHA_RE.match(sha or ""):
+        return []
+    rows = _backend().commit_statuses(_full(full), sha)
+    if context is not None:
+        rows = [r for r in rows if r.get("context") == context]
+    return sorted(rows, key=lambda r: r.get("created_at") or "", reverse=True)
+
+
 def update_pr(full: str, number: int, *, title: str | None = None,
               body: str | None = None) -> None:
     """Retitle / rewrite the body of a pull request the signed-in user
@@ -1059,6 +1074,15 @@ class _Real:
                 out.append({"name": r.get("name"), "status": r.get("status"),
                             "conclusion": r.get("conclusion"), "url": r.get("html_url") or "",
                             "completed_at": r.get("completed_at")})
+        return out
+
+    def commit_statuses(self, full: str, sha: str) -> list[dict]:
+        out = []
+        for r in self._api("GET", f"repos/{full}/commits/{sha}/statuses?per_page=100") or []:
+            if isinstance(r, dict):
+                out.append({"context": r.get("context"), "state": r.get("state"),
+                            "creator": (r.get("creator") or {}).get("login"),
+                            "url": r.get("target_url") or "", "created_at": r.get("created_at")})
         return out
 
     def patch_pull(self, full: str, number: int, *, title: str | None,
@@ -1739,6 +1763,23 @@ class FakeGitHub:
             self._call(st, "check_runs")
             self._visible(st, full)
             return [dict(r) for r in st.get("checks", {}).get(full.lower(), {}).get(sha, [])]
+
+    def set_commit_status(self, full: str, sha: str, context: str, state: str, *,
+                          creator: str = "github-actions[bot]") -> None:
+        """A commit status on `sha` (mutator) — the index's review job
+        reporting on a PR head. Appended: GitHub keeps every status."""
+        with self._txn() as st:
+            rows = st.setdefault("statuses", {}).setdefault(full.lower(), {}).setdefault(sha, [])
+            rows.append({"context": context, "state": state, "creator": creator,
+                         "url": f"https://github.com/{full}/actions/{len(rows) + 1}",
+                         "created_at": _iso_now()})
+
+    def commit_statuses(self, full: str, sha: str) -> list[dict]:
+        with self._txn() as st:
+            self._call(st, "commit_statuses")
+            self._visible(st, full)
+            return [dict(r) for r in
+                    st.get("statuses", {}).get(full.lower(), {}).get(sha, [])][::-1]
 
     def patch_pull(self, full: str, number: int, *, title: str | None,
                    body: str | None) -> None:

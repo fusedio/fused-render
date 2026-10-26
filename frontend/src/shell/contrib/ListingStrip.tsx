@@ -15,9 +15,10 @@
 //   remove-market    asks first (danger), then posts
 //
 // All post to /api/contrib/listing-action. The buttons are the listing
-// answer's own `actions` (GET /api/contrib/listing), else the six listing
-// ids `/api/contrib/app` carries (actions._own → actions_listing.buttons);
-// SourcePanel leaves those out of its row so they are drawn here only. The
+// answer's own `actions` (GET /api/contrib/listing, always present) — never
+// `/api/contrib/app`'s: the listing follows the Marketplace switch alone,
+// and the Source panel exists only with a Community switch on. SourcePanel
+// leaves the six listing ids out of its row so they are drawn here only. The
 // listing route also offers a gated publish's fix in its place:
 // `publish-now` (posted like the rest), `open-doctor` (dialog "doctor":
 // App Doctor opens here) and `sign-in` (dialog "sign-in").
@@ -28,7 +29,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { BadgeCheck, Clock, Loader2, ShieldAlert, Stethoscope, Store } from "lucide-react";
 import {
-  LISTING_ACTION_IDS,
   getListing,
   okMessage,
   plainMessage,
@@ -84,7 +84,7 @@ function fallbackSentence(l: Listing, name: string): string {
 }
 
 function toneOf(l: Listing | null, state: string | null | undefined): StripTone {
-  if (state === "pending" || state === "in-review") return "working";
+  if (state === "pending" || state === "in-review" || state === "removing") return "working";
   if (state === "failed" || state === "needs-confirmation") return "attention";
   if (state === "live") return "success";
   if (state) return "neutral";
@@ -99,7 +99,11 @@ function toneOf(l: Listing | null, state: string | null | undefined): StripTone 
 export function ListingStrip({ dir, contrib }: { dir: string; contrib: AppContribState }) {
   const flag = useMarketplaceFeature();
   const c = contrib.data;
-  const eligible = flag === true && !!c && c.copy.kind === "own" && !!c.copy.repo;
+  // The Marketplace switch alone decides; the route answers `{ok:false}` for
+  // a folder that is not an own app with a repo. When the Source panel has
+  // already said the copy is someone else's, the read is skipped.
+  const notMine = !!c && (c.copy.kind !== "own" || !c.copy.repo);
+  const eligible = flag === true && !notMine;
   const [answer, setAnswer] = useState<ListingAnswer | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [job, setJob] = useState<{ id: string; since: number } | null>(null);
@@ -156,13 +160,16 @@ export function ListingStrip({ dir, contrib }: { dir: string; contrib: AppContri
 
   // Nothing until the first answer: a guess would say "not listed" for an
   // app that is.
-  if (!eligible || !c || !answer) return null;
-  const listing = answer?.ok !== false ? (answer?.listing ?? null) : null;
-  const fromPanel = (c.actions ?? []).filter((a) => LISTING_ACTION_IDS.has(a.id));
-  const actions = answer?.actions && answer.actions.length > 0 ? answer.actions : fromPanel;
+  if (!eligible || !answer || answer.ok === false) return null;
+  const listing = answer.listing ?? null;
+  const actions = answer.actions ?? [];
   if (!listing && actions.length === 0) return null;
 
-  const name = c.copy.repo?.split("/")[1] || dir.replace(/\/+$/, "").split("/").pop() || "Your app";
+  const name =
+    listing?.name ||
+    c?.copy.repo?.split("/")[1] ||
+    dir.replace(/\/+$/, "").split("/").pop() ||
+    "Your app";
   const sentence = answer?.sentence || (listing ? fallbackSentence(listing, name) : `${name} isn't in the Marketplace yet.`);
   const doctorOffered = actions.some((a) => a.id === "open-doctor" || a.dialog === "doctor");
   const doctorBlocks = !!listing && !listing.doctor_clear && !listing.listed;

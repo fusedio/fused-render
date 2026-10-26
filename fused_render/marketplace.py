@@ -739,6 +739,9 @@ def _block_view(b) -> dict | None:
     return {"level": b["level"], "commit": _opt_str(b.get("commit")),
             "reason": _opt_str(b.get("reason")) or "", "what_to_do": _opt_str(b.get("what_to_do")) or "",
             "at": _opt_str(b.get("at")), "rolled_back_to": _opt_str(b.get("rolled_back_to")),
+            # The rollback target's release date, for "Rolled back to the
+            # release of <date>" (the engine writes it when it rolls back).
+            "rolled_back_to_at": _opt_str(b.get("rolled_back_to_at")),
             "conflict": b.get("conflict") is True,
             "confirmed": isinstance(b.get("confirmed_at"), (int, float))}
 
@@ -830,6 +833,18 @@ def _releases(v) -> list[dict]:
                     "whats_new": _opt_str(r.get("whats_new")), "version": _opt_str(r.get("version")),
                     "blocked": r.get("blocked") if r.get("blocked") in _BLOCK_LEVELS else None})
     return out
+
+
+def _current(row: dict, releases: list[dict], key: str, *, top: bool = True, newest: bool = True):
+    """`key` of the row's CURRENT commit: the row's own top-level value
+    (`top`; the backend serves `whats_new`/`blocked` for it), else the release
+    entry of `row.commit`, else (`newest`) the newest release's."""
+    if top and _opt_str(row.get(key)):
+        return row[key]
+    rel = next((r for r in releases if r["commit"] == row.get("commit")), None)
+    if rel is not None:
+        return rel.get(key)
+    return releases[0].get(key) if newest and releases else None
 
 
 def row_repo(row: dict) -> str | None:
@@ -933,7 +948,12 @@ def app_entry(slug: str, row: dict, installed: dict | None, *, catalog_fresh: bo
         "remix_count": _int(row.get("remix_count")),
         "contributor_count": _int(row.get("contributor_count")),
         "releases": releases,
-        "whats_new": releases[0]["whats_new"] if releases else None,
+        # The CURRENT commit's (the backend's top-level keys; after a
+        # rollback releases[0] is not the current commit), else its release
+        # entry's, else the newest's.
+        "whats_new": _current(row, releases, "whats_new"),
+        "blocked": row.get("blocked") if row.get("blocked") in _BLOCK_LEVELS
+        else _current(row, releases, "blocked", top=False, newest=False),
         # A row the backend could not pin to a repo + commit browses but
         # does not install (`plan_install`).
         "installable": bool(row_repo(row) and is_sha(row.get("commit"))),
@@ -1331,7 +1351,7 @@ def _approved(row: dict) -> dict:
     rel = next((r for r in _releases(row.get("releases")) if r["commit"] == row.get("commit")), None)
     return {"commit": row.get("commit"),
             "at": (rel or {}).get("at") or _opt_str(row.get("last_release_at")),
-            "whats_new": (rel or {}).get("whats_new"),
+            "whats_new": (rel or {}).get("whats_new") or _opt_str(row.get("whats_new")),
             "version": (rel or {}).get("version") or _opt_str(row.get("version"))}
 
 
@@ -1818,33 +1838,127 @@ def cached_blocklist() -> dict:
 _GATE_MAX_UP = 8
 
 
-def open_gate(path: str) -> dict | None:
-    """`{"blocked": {...}}` while a hard block stands on the copy holding
-    `path` (a page, or an app folder), else None — what `render`'s app route
-    and `apps.api_app_entry` answer 423 with (§18.4: the app will not open).
-    The copy is the nearest folder at or above `path` heading a `.git`: a
-    marketplace copy is always a repo root, and one stat per level keeps
-    this cheap on the render path. The verdict is `contrib.blocks.gate`'s;
-    without that module (an older engine) nothing is gated. Never raises."""
+def copy_root(path: str) -> str | None:
+    """The copy holding `path` (a page, or an app folder): the nearest
+    folder at or above it heading a `.git` — a marketplace copy is always a
+    repo root, and one stat per level keeps this cheap on the render path.
+    None when there is none within `_GATE_MAX_UP` levels."""
+    d = os.path.abspath(path)
+    if not os.path.isdir(d):
+        d = os.path.dirname(d)
+    for _ in range(_GATE_MAX_UP):
+        if os.path.exists(os.path.join(d, ".git")):
+            return d
+        up = os.path.dirname(d)
+        if up == d:
+            return None
+        d = up
+    return None
+
+
+def open_gate_at(path: str) -> tuple[str, dict] | None:
+    """`(copy root, {"blocked": {...}})` while a hard block stands on the
+    copy holding `path`, else None — what `render`'s app route and
+    `apps.api_app_entry` answer 423 with (§18.4: the app will not open).
+    The verdict is `contrib.blocks.gate`'s; without that module (an older
+    engine) nothing is gated. Never raises."""
     try:
         from fused_render.contrib import blocks
     except ImportError:
         return None
     try:
-        d = os.path.abspath(path)
-        if not os.path.isdir(d):
-            d = os.path.dirname(d)
-        for _ in range(_GATE_MAX_UP):
-            if os.path.exists(os.path.join(d, ".git")):
-                got = blocks.gate(d)
-                return got if isinstance(got, dict) and got.get("blocked") else None
-            up = os.path.dirname(d)
-            if up == d:
-                return None
-            d = up
+        root = copy_root(path)
+        if root is None:
+            return None
+        got = blocks.gate(root)
+        return (root, got) if isinstance(got, dict) and got.get("blocked") else None
     except Exception:  # noqa: BLE001 — a broken gate must not take every page down
         logger.exception("marketplace: open gate failed for %s", path)
     return None
+
+
+def open_gate(path: str) -> dict | None:
+    """`open_gate_at`'s payload alone."""
+    got = open_gate_at(path)
+    return got[1] if got else None
+
+
+def _page_block(b) -> dict | None:
+    """A record's `block` as the page reads it: `contrib.blocks.view` (the
+    engine's one shape) when that module is there, else `_block_view`."""
+    try:
+        from fused_render.contrib import blocks
+
+        return blocks.view(b)
+    except ImportError:
+        return _block_view(b)
+
+
+def block_notices(paths) -> dict[str, dict]:
+    """`{path: block view}` for the app folders among `paths` that are
+    marketplace copies with a `block` on their record — ONE store read for a
+    whole listing. Independent of every Community flag: block enforcement
+    is (§18.8), so the page must be able to ask before a soft-blocked app
+    opens (`level`, `reason`, `what_to_do`, `confirmed`) whatever the flags
+    say. Never raises."""
+    try:
+        from fused_render.contrib import store
+
+        records = store.all() or {}
+        out = {}
+        for p in paths:
+            if not isinstance(p, str):
+                continue
+            rec = records.get(store.key(p))
+            if isinstance(rec, dict) and rec.get("kind") == "marketplace" and isinstance(rec.get("block"), dict):
+                view = _page_block(rec["block"])
+                if view:
+                    out[p] = view
+        return out
+    except Exception:  # noqa: BLE001 — a card line must never fail the listing
+        logger.exception("marketplace: block notices failed")
+        return {}
+
+
+def block_notice(path: str) -> dict | None:
+    """`block_notices` for the one copy holding `path`."""
+    root = copy_root(path)
+    return block_notices([root]).get(root) if root else None
+
+
+def blocked_page(root: str, notice: dict) -> str:
+    """The hard-block notice as a minimal HTML page — what `/render` answers
+    (423) to a browser or an iframe framing the app, instead of raw JSON:
+    the reason, what to do, what it was rolled back to, and a link to the
+    app's own page (`/apps/<folder>`, the shell's encoding), which holds the
+    BlockedNotice and its buttons. Self-contained (no runtime, no scripts),
+    every value escaped; follows the OS light/dark."""
+    import html as _html
+
+    b = notice.get("blocked") if isinstance(notice.get("blocked"), dict) else {}
+    esc = lambda v: _html.escape(str(v))  # noqa: E731
+    rolled = b.get("rolled_back_date") or b.get("rolled_back_to_at")
+    if not rolled and isinstance(b.get("rolled_back_to"), str):
+        rolled = b["rolled_back_to"][:7]
+    lines = [f"<p>{esc(b.get('reason') or 'Fused blocked the version of this app you were running.')}</p>"]
+    if b.get("what_to_do"):
+        lines.append(f"<p><strong>What to do:</strong> {esc(b['what_to_do'])}</p>")
+    if rolled:
+        lines.append(f"<p>Rolled back to the release of {esc(rolled)}.</p>")
+    href = "/apps/" + "/".join(quote(s, safe="") for s in root.replace(os.sep, "/").split("/") if s)
+    return ("<!doctype html><html><head><meta charset=utf-8>"
+            "<meta name=viewport content='width=device-width,initial-scale=1'>"
+            "<title>This app is blocked</title><style>"
+            ":root{color-scheme:light dark;--bg:#fff;--fg:#1c1c1e;--muted:#6b6b70;--line:#e3e3e6}"
+            "@media (prefers-color-scheme:dark){:root{--bg:#1c1c1e;--fg:#f2f2f4;--muted:#a1a1a6;--line:#3a3a3e}}"
+            "body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,system-ui,sans-serif}"
+            "main{max-width:520px;margin:12vh auto;padding:0 16px}"
+            "h1{font-size:20px;margin:0 0 12px}p{margin:0 0 10px}"
+            "a{display:inline-block;margin-top:8px;padding:6px 12px;border:1px solid var(--line);"
+            "border-radius:8px;color:inherit;text-decoration:none}"
+            "</style></head><body><main><h1>This app is blocked</h1>"
+            + "".join(lines)
+            + f"<a href='{esc(href)}' target='_top'>Open the app page</a></main></body></html>")
 
 
 def install_dest(slug: str, row: dict) -> str | None:

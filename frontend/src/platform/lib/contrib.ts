@@ -507,6 +507,8 @@ export interface ListingPower {
 export interface Listing {
   listed: boolean;
   slug: string | null;
+  /** The app's display name the sentences use. */
+  name?: string | null;
   approved: { commit: string | null; at: string | null } | null;
   pr: { number: number; url: string; head_sha: string; state: string } | null;
   review: {

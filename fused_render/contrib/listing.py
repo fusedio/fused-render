@@ -22,12 +22,14 @@ show`s after one fetch — no GitHub call per file. One lock per process
 around the scratch repo: two apps publishing at once take turns.
 
 FAILS CLOSED (§18.0 M3), HERE TOO. The review's verdict is the bot's
-`<!-- fused-review {...} -->` block — read ONLY from a comment by a bot
-account (the index is public: anyone can comment that text on Alice's pull
-request) and ONLY when its `sha` is the pull request's current head. The
-`review` check run on that head must agree: a finished run whose conclusion
-is not passing is a fail even with a "pass" block, and a failed run with no
-block is a fail with a plain "couldn't finish" reason. Anything else is "in
+`<!-- fused-review {...} -->` block — read ONLY from a comment by
+`github-actions[bot]` (the index is public: anyone can comment that text on
+Alice's pull request) and ONLY when its `sha` is the pull request's current
+head. The required `review` gate on that head must agree — the commit
+status the check sets on the HEAD sha (under `pull_request_target` its own
+check run sits on the base commit, so check runs are only a fallback):
+failure or error is a fail even with a "pass" block, and a failed gate with
+no block is a fail with a plain "couldn't finish" reason. Anything else is "in
 review". Nothing here ever says Live except the index's main holding the row.
 
 `listing_own` (on the store record) caches the last read —
@@ -87,8 +89,15 @@ DEFAULT_CATEGORIES = (
     {"id": "geospatial", "label": "Geospatial"},
 )
 DEFAULT_CATEGORY = "productivity"
-NAME_MAX = 80
-DESCRIPTION_MAX = 500
+#: The review check's shape rules (WS-IDX `scripts/review/check.py`
+#: `shape_problems`) — refused here first, in words, instead of on the PR.
+NAME_MAX = 60
+DESCRIPTION_MAX = 400
+VERSION_RE = re.compile(r"^\d{1,6}(\.\d{1,6}){0,3}([-+][0-9A-Za-z.-]{1,32})?$")
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".avif")
+#: The one account whose `fused-review` block is the verdict (the index's
+#: workflow token). Any other author's block is a forgery or noise.
+REVIEW_BOT = "github-actions[bot]"
 TAGS_MAX = 8
 #: The fix session's fixed first words: `_live_app_task` recognises a fix
 #: already running on this app by them (one live fix per app, like Doctor).
@@ -312,9 +321,10 @@ def _catalog() -> dict:
 
 def categories() -> list[dict]:
     """`[{id, label}]` the dialog offers: the cached catalog's, else the four."""
+    allowed = {c["id"] for c in DEFAULT_CATEGORIES}  # the review check's set
     cats = [{"id": c["id"], "label": c.get("label") or c["id"]}
             for c in _catalog().get("categories") or []
-            if isinstance(c, dict) and isinstance(c.get("id"), str) and c["id"]]
+            if isinstance(c, dict) and c.get("id") in allowed]
     return cats or [dict(c) for c in DEFAULT_CATEGORIES]
 
 
@@ -484,7 +494,7 @@ def _commit_row(scratch: str, base: str, slug: str, row: dict | None, message: s
 
 
 def _is_bot(login) -> bool:
-    return isinstance(login, str) and login.lower().endswith("[bot]")
+    return isinstance(login, str) and login.lower() == REVIEW_BOT
 
 
 def _block(comments: list[dict], head: str | None) -> dict | None:
@@ -531,11 +541,27 @@ TURNED_DOWN = "The review turned this version down without saying why. Send it a
 CLOSED_REASON = "The request was closed on GitHub before it went live."
 
 
+def _gate_failed(statuses: list[dict], checks: list[dict]) -> bool:
+    """The required `review` gate on the PR head says fail: the newest
+    commit status with context `review` set by the workflow bot (WS-IDX's
+    check sets it on the HEAD sha: pending → success | failure), else — no
+    such status yet — a finished `review` check run that did not pass (a
+    fallback only: under `pull_request_target` the run sits on the base)."""
+    status = next((s for s in statuses or [] if s.get("context") == REVIEW_CHECK
+                   and _is_bot(s.get("creator"))), None)
+    if status is not None:
+        return status.get("state") in ("failure", "error")
+    run = next((r for r in checks or [] if r.get("name") == REVIEW_CHECK), None)
+    return bool(run) and run.get("status") == "completed" \
+        and run.get("conclusion") not in gh.CHECK_PASSING
+
+
 def review_of(pr: dict | None, comments: list[dict], checks: list[dict],
-              login: str | None) -> dict | None:
+              login: str | None, statuses: list[dict] | None = None) -> dict | None:
     """The review state of the open pull request `pr` (see the module
-    docstring: bot block for the current head, the `review` check agreeing,
-    fail closed). Pure; None when there is no pull request."""
+    docstring: bot block for the current head, the `review` gate agreeing
+    — `_gate_failed` — fail closed). Pure; None when there is no pull
+    request."""
     if not isinstance(pr, dict):
         return None
     out = {"status": "in-review", "reasons": [], "new_powers": [], "whats_new": None,
@@ -547,9 +573,12 @@ def review_of(pr: dict | None, comments: list[dict], checks: list[dict],
         return out
     head = pr.get("head_sha")
     block = _block(comments, head)
-    run = next((r for r in checks or [] if r.get("name") == REVIEW_CHECK), None)
-    run_failed = bool(run) and run.get("status") == "completed" \
-        and run.get("conclusion") not in gh.CHECK_PASSING
+    run_failed = _gate_failed(statuses or [], checks)
+    want = CONFIRM_FMT.format(sha=head)
+    # The bot edits its block to "pass" once it accepts the confirm; the
+    # comment itself is what says the author confirmed.
+    out["confirmed"] = any(gh.same_login(c.get("author"), login)
+                           and (c.get("body") or "").strip() == want for c in comments or [])
     if block is not None:
         out.update(reasons=_clean_list(block.get("reasons")),
                    new_powers=_powers(block.get("new_powers")),
@@ -559,11 +588,7 @@ def review_of(pr: dict | None, comments: list[dict], checks: list[dict],
         out["status"] = "failed"
         out["reasons"] = out["reasons"] or [TURNED_DOWN if verdict == "fail" else COULDNT_FINISH]
     elif verdict == "needs-confirmation":
-        want = CONFIRM_FMT.format(sha=head)
-        confirmed = any(gh.same_login(c.get("author"), login)
-                        and (c.get("body") or "").strip() == want for c in comments or [])
-        out["confirmed"] = confirmed
-        out["status"] = "in-review" if confirmed else "needs-confirmation"
+        out["status"] = "in-review" if out["confirmed"] else "needs-confirmation"
     return out
 
 
@@ -679,12 +704,15 @@ def _read(root: str) -> dict:
             pr_row = (old.get("pr") or {}).get("row") if (old.get("pr") or {}).get(
                 "number") == pr.get("number") else None
         entry = _review_entry(scratch, slug, (row or {}).get("commit")) if slug and row else None
-    comments, checks = [], []
+    comments, checks, statuses = [], [], []
     if pr is not None and pr.get("state") == "open":
         comments = gh.pr_comments(index, pr["number"])
         with contextlib.suppress(gh.GitHubError):
-            checks = gh.check_runs(index, pr.get("head_sha") or "", name=REVIEW_CHECK)
-    review = review_of(pr, comments, checks, login)
+            statuses = gh.commit_statuses(index, pr.get("head_sha") or "", context=REVIEW_CHECK)
+        if not statuses:
+            with contextlib.suppress(gh.GitHubError):
+                checks = gh.check_runs(index, pr.get("head_sha") or "", name=REVIEW_CHECK)
+    review = review_of(pr, comments, checks, login, statuses)
     if pr is not None and pr.get("merged"):
         pr = None  # merged: the index's main is the answer now
     old_pr = old.get("pr") or {}
@@ -800,6 +828,9 @@ def _clean_path(root: str, commit: str, v, what: str) -> str | None:
     parts = p.split("/")
     if p.startswith("/") or any(s in ("", ".", "..") for s in parts) or len(p) > 200:
         raise PlainError(f"The {what} must be a file inside the app.", reason="invalid")
+    if not p.lower().endswith(IMAGE_EXTS):
+        raise PlainError(f"The {what} must be an image (png, jpg, gif, webp, svg or avif).",
+                         reason="invalid")
     if not _has_path(root, commit, p):
         raise PlainError(f"{p} isn't in the version of your app on GitHub. Publish it first, "
                          f"or pick another {what}.", reason="invalid")
@@ -839,8 +870,8 @@ def build_row(root: str, rec: dict, details: dict, *, repo: str, branch: str, co
         raise PlainError(f"Give your app a name (up to {NAME_MAX} characters).", reason="invalid")
     description = " ".join(_str(details.get("description") if "description" in details
                                 else base.get("description")).split())
-    if len(description) > DESCRIPTION_MAX:
-        raise PlainError(f"Keep the description under {DESCRIPTION_MAX} characters.",
+    if not description or len(description) > DESCRIPTION_MAX:
+        raise PlainError(f"Describe your app in up to {DESCRIPTION_MAX} characters.",
                          reason="invalid")
     category = _str(details.get("category") or base.get("category")) or DEFAULT_CATEGORY
     if category not in {c["id"] for c in categories()}:
@@ -851,12 +882,16 @@ def build_row(root: str, rec: dict, details: dict, *, repo: str, branch: str, co
                           else base.get("preview"), "preview")
     version = _str(details.get("version")) or _app_version(root) or _str(base.get("version")) \
         or "1.0.0"
+    if not VERSION_RE.match(version):
+        raise PlainError(f"The app's version \"{version[:40]}\" must look like 1.0.1 "
+                         "(set it in metadata.json).", reason="invalid")
+    remix_of = _remix_slug(rec) if not base else base.get("remix_of")
     return {"slug": slug, "repo": repo, "branch": branch, "commit": commit, "name": name,
             "description": description, "category": category,
             "tags": _tags(details["tags"] if "tags" in details else base.get("tags")),
             "icon": icon, "preview": preview,
-            "remix_of": _remix_slug(rec) if not base else base.get("remix_of"),
-            "version": version[:32]}
+            "remix_of": remix_of if remix_of != slug else None,
+            "version": version}
 
 
 def draft(root: str) -> dict:

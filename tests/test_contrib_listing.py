@@ -176,6 +176,64 @@ def test_slug_taken_by_another_repo_is_refused(w):
     assert w.gh.list_open_prs(INDEX) == []
 
 
+@pytest.mark.parametrize("bad", [
+    {"name": "x" * 61}, {"description": ""}, {"description": "y" * 401},
+    {"icon": "app.py"}, {"preview": "../preview.png"}, {"category": "games"},
+    {"version": "v1"}, {"slug": "Sine_Starter"},
+])
+def test_rows_the_review_check_would_refuse_are_refused_here(w, bad):
+    """WS-IDX's shape rules (scripts/review/check.py `shape_problems`), in
+    words before a PR exists."""
+    from fused_render.contrib import listing
+    from fused_render.contrib.jobs import PlainError
+
+    with pytest.raises(PlainError) as e:
+        listing.publish(w.app, _details(**bad))
+    assert e.value.reason == "invalid"
+    assert w.gh.list_open_prs(INDEX) == []
+
+
+def test_review_commit_status_on_the_head_is_the_gate(w):
+    """WS-IDX's check sets commit status `review` on the PR HEAD sha
+    (pending → success | failure); that, not the check run, is the gate."""
+    from fused_render.contrib import listing
+
+    n = _publish(w)
+    head = w.gh.get_pr(INDEX, n)["head_sha"]
+    w.fake.set_commit_status(INDEX, head, "review", "pending")
+    assert listing.status(w.app, fresh=True)["review"]["status"] == "in-review"
+    # A status someone else set is not the gate.
+    w.fake.set_commit_status(INDEX, head, "review", "failure", creator="mallory")
+    assert listing.status(w.app, fresh=True)["review"]["status"] == "in-review"
+    # The gate failed with no block (a crash): failed, fail closed.
+    w.fake.set_commit_status(INDEX, head, "review", "error")
+    lst = listing.status(w.app, fresh=True)
+    assert lst["review"]["status"] == "failed"
+    assert lst["review"]["reasons"] == [listing.COULDNT_FINISH]
+    # A re-run passed with powers: the block decides, the gate agrees.
+    w.fake.set_commit_status(INDEX, head, "review", "success")
+    w.fake.comment_as(BOT, INDEX, n, _block(head, "needs-confirmation", new_powers=[
+        {"kind": "files", "detail": "writes to ~/Documents"}]))
+    # An old failed check run on the base no longer matters once a status exists.
+    w.fake.set_check_run(INDEX, head, "review", conclusion="failure")
+    assert listing.status(w.app, fresh=True)["review"]["status"] == "needs-confirmation"
+    listing.confirm_powers(w.app)
+    # The bot accepts the confirm and edits its block to "pass".
+    w.fake.comment_as(BOT, INDEX, n, _block(head, "pass", new_powers=[
+        {"kind": "files", "detail": "writes to ~/Documents"}]))
+    lst = listing.status(w.app, fresh=True)
+    assert lst["review"]["status"] == "in-review" and lst["review"]["confirmed"]
+
+
+def test_only_the_workflow_bot_writes_the_verdict(w):
+    from fused_render.contrib import listing
+
+    n = _publish(w)
+    head = w.gh.get_pr(INDEX, n)["head_sha"]
+    w.fake.comment_as("evil[bot]", INDEX, n, _block(head, "fail", reasons=["spoof"]))
+    assert listing.status(w.app, fresh=True)["review"]["status"] == "in-review"
+
+
 def test_unpushed_tip_is_refused_and_publish_now_offered(w):
     from fused_render.contrib import actions_listing, listing
     from fused_render.contrib.jobs import PlainError

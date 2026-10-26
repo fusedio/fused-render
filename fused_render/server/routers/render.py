@@ -61,12 +61,18 @@ def render(
             "/render?" + urlencode([("path", entry), *q]), status_code=307)
     # The open gate (docs/CONTRIB_LOOP.md §18.4 B4): no page of a copy whose
     # running version Fused hard-blocked is served — a `_preview`/`_noopen`
-    # thumbnail runs the page's code too, so neither flag exempts it. 423
-    # with the notice payload (`{"blocked": {...}}`, contrib.blocks.gate's).
+    # thumbnail runs the page's code too, so neither flag exempts it. 423:
+    # a browser or an iframe framing the app (Accept names text/html) gets
+    # the notice as a small HTML page with a link to the app page — raw JSON
+    # in a frame reads as a crash; anything else gets the JSON payload
+    # (`{"blocked": {...}}`, contrib.blocks.gate's).
     from fused_render import marketplace
 
-    blocked = marketplace.open_gate(path)
-    if blocked:
+    gated = marketplace.open_gate_at(path)
+    if gated:
+        root, blocked = gated
+        if "text/html" in (request.headers.get("accept") or "").lower():
+            return HTMLResponse(marketplace.blocked_page(root, blocked), status_code=423)
         return JSONResponse(blocked, status_code=423)
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:

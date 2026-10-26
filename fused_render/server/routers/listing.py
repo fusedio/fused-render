@@ -108,16 +108,17 @@ def _answer(app_dir: str, *, job: str | None = None) -> dict:
 
 
 @router.get("/api/contrib/listing")
-def api_contrib_listing(path: str = ""):
+def api_contrib_listing(path: str = "", fresh: bool = False):
     """`{ok, listing, state, sentence, actions, job}` (see the docstring).
-    Starts the refresh job when the last read is stale and someone is
-    signed in."""
+    Starts the refresh job when the last read is stale (or `fresh=1`) and
+    someone is signed in — never waits for it: the answer is the cached
+    read plus the job's id."""
     t = _target(path, read=True)
     if not isinstance(t, _Target):
         return t
     L = _listing()
     job = None
-    if _signed_in() and _safely("stale", L.stale, t.app_dir):
+    if _signed_in() and (fresh or _safely("stale", L.stale, t.app_dir)):
         job = _safely("refresh", L.start_refresh, t.app_dir)
     return _answer(t.app_dir, job=job)
 

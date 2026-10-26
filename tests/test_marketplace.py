@@ -380,6 +380,23 @@ def test_releases_and_remix_fields_are_shape_checked(env):
     assert e["whats_new"] == "New"
 
 
+def test_whats_new_and_blocked_follow_the_current_commit(env):
+    # After a rollback the row's commit is not releases[0]: the current one wins.
+    row = env["api"].apps["sine-starter"]["row"]
+    cur = row["commit"]
+    row["releases"] = [{"commit": "a" * 40, "at": "x", "whats_new": "Bad one", "version": "2",
+                        "blocked": "hard", "release_id": "a" * 40, "changelog": "Bad one", "revoked": True},
+                       {"commit": cur, "at": "y", "whats_new": "Good one", "version": "1", "blocked": None}]
+    e = _entry("sine-starter", refresh=True)
+    assert (e["whats_new"], e["blocked"]) == ("Good one", None)
+    assert e["releases"][0] == {"commit": "a" * 40, "at": "x", "whats_new": "Bad one", "version": "2",
+                                "blocked": "hard"}
+    # The backend's top-level keys for the current commit take precedence.
+    row.update(whats_new="Top level", blocked="soft")
+    e = _entry("sine-starter", refresh=True)
+    assert (e["whats_new"], e["blocked"]) == ("Top level", "soft")
+
+
 def test_asset_base_new_and_old_backend_forms():
     c = "c" * 40
     assert mp._asset_base("x-app", {"repo": "alice/x", "commit": c}) == \
@@ -521,7 +538,7 @@ def test_installed_block_is_shown(env):
     b = _entry("sine-starter")["installed"]["block"]
     assert b == {"level": "hard", "commit": commit, "reason": "Reads saved passwords",
                  "what_to_do": "Rotate your keys", "at": "2026-10-26", "rolled_back_to": None,
-                 "conflict": False, "confirmed": False}
+                 "rolled_back_to_at": None, "conflict": False, "confirmed": False}
 
 
 def test_installed_list_keeps_delisted_copies(env):
@@ -944,6 +961,18 @@ def test_open_gate_answers_423_on_render_and_app_entry(env, tmp_path, monkeypatc
     assert set(asked) == {str(app_dir)}
     r = client.get("/api/apps/entry", params={"path": str(app_dir)})
     assert r.status_code == 423 and r.json() == notice
+    # A browser / an iframe framing the app gets the notice as HTML, not JSON;
+    # /api/apps/entry stays JSON whatever it is asked for.
+    notice["blocked"]["reason"] = "Reads <saved> passwords"
+    notice["blocked"]["rolled_back_date"] = "Oct 20"
+    r = client.get("/render", params={"path": str(app_dir / "index.html")},
+                   headers={"Accept": "text/html,application/xhtml+xml"})
+    assert r.status_code == 423 and r.headers["content-type"].startswith("text/html")
+    assert "Reads &lt;saved&gt; passwords" in r.text and "Rotate your keys" in r.text
+    assert "Rolled back to the release of Oct 20." in r.text
+    assert "href='/apps/" in r.text and "target='_top'" in r.text and "<script" not in r.text
+    r = client.get("/api/apps/entry", params={"path": str(app_dir)}, headers={"Accept": "text/html"})
+    assert r.status_code == 423 and r.json() == notice
     # No block: both open as ever.
     _stub_contrib(monkeypatch, "blocks", gate=lambda root: None)
     assert client.get("/render", params={"path": str(app_dir / "index.html")}).status_code == 200
@@ -952,6 +981,40 @@ def test_open_gate_answers_423_on_render_and_app_entry(env, tmp_path, monkeypatc
     # A gate that crashes never takes pages down.
     _stub_contrib(monkeypatch, "blocks", gate=lambda root: 1 / 0)
     assert client.get("/render", params={"path": str(app_dir / "index.html")}).status_code == 200
+
+
+def test_soft_block_rides_app_entry_and_apps_rows_with_every_flag_off(env, tmp_path):
+    from fused_render.server import create_app
+    from fused_render.shell import prefs
+
+    assert not prefs.read_prefs().get("contrib_enabled")  # the Community flags are off
+    app_dir = tmp_path / "ws" / "app" / "sine-starter"
+    app_dir.mkdir(parents=True)
+    _git(app_dir, "init", "-q")
+    # The record binds to the repo by its origin (store._bound), like a real copy.
+    _git(app_dir, "remote", "add", "origin", "https://github.com/alice/sine-starter")
+    (app_dir / "index.html").write_text(PAGE)
+    commit = env["api"].apps["sine-starter"]["row"]["commit"]
+    _market_record(str(app_dir), "sine-starter", commit,
+                   block={"level": "soft", "commit": commit, "reason": "Sends data to a new server",
+                          "what_to_do": "Check before opening", "at": "2026-10-26", "rolled_back_to": None,
+                          "conflict": False, "confirmed_at": None})
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    r = client.get("/api/apps/entry", params={"path": str(app_dir)})
+    assert r.status_code == 200 and r.json()["entry"].endswith("index.html")
+    b = r.json()["contrib"]["block"]
+    assert (b["level"], b["reason"], b["what_to_do"], b["confirmed"]) == (
+        "soft", "Sends data to a new server", "Check before opening", False)
+    # The page renders (a soft block asks; it does not gate).
+    assert client.get("/render", params={"path": str(app_dir / "index.html")}).status_code == 200
+    rows = client.get("/api/apps").json()["apps"]
+    [row] = [x for x in rows if os.path.basename(x["path"].rstrip("/")) == "sine-starter"]
+    assert row["contrib"]["block"]["level"] == "soft"
+    # No block, no key.
+    from fused_render.contrib import store
+
+    store.update(str(app_dir), lambda rec: rec.update(block=None) or rec)
+    assert "contrib" not in client.get("/api/apps/entry", params={"path": str(app_dir)}).json()
 
 
 # --- assets ----------------------------------------------------------------------

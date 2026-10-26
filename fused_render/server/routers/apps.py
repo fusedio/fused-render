@@ -238,10 +238,20 @@ def _with_contrib(rows: list[dict]) -> list[dict]:
     (CONTRIB_LOOP §12.2), in place on rows this request owns — never the discovery
     snapshot's shared ones. One store read for the whole list and no git
     (contrib/refresh.decorate); rows are untouched while the sources phase
-    is off."""
+    is off — EXCEPT `contrib.block` (docs/CONTRIB_LOOP.md §18.4 B4: `{level,
+    reason, what_to_do, confirmed, …}` of a Marketplace copy's block), which
+    every row carries whatever the flags: enforcement is flag-independent
+    (§18.8), so the card must be able to ask before a soft-blocked app opens."""
+    from fused_render import marketplace
     from fused_render.contrib import refresh as contrib_refresh
 
-    return contrib_refresh.decorate(rows)
+    rows = contrib_refresh.decorate(rows)
+    notices = marketplace.block_notices([r.get("path") for r in rows])
+    for row in rows:
+        b = notices.get(row.get("path"))
+        if b:
+            row["contrib"] = {**(row.get("contrib") or {}), "block": b}
+    return rows
 
 
 # Home renders one row, not the complete app catalog. Its common path follows
@@ -650,9 +660,18 @@ def api_app_entry(path: str, opened: bool = False):
         # enforcement they kick may already have rolled the copy back.
         from fused_render import marketplace
 
-        blocked = marketplace.open_gate(os.path.dirname(entry))
+        app_dir = os.path.dirname(entry)
+        blocked = marketplace.open_gate(app_dir)
         if blocked:
             return JSONResponse(blocked, status_code=423)
+        # A soft block (or a hard one already rolled back) rides the answer
+        # whatever the Community flags say — the app page asks before it
+        # opens off this, since it reads /api/contrib/app only with the flags
+        # on (§18.8: enforcement is flag-independent). Same shape as the
+        # /api/apps rows' `contrib.block`.
+        block = marketplace.block_notice(app_dir)
+        if block:
+            out["contrib"] = {"block": block}
     return out
 
 
