@@ -965,8 +965,7 @@ def _recap_tail(turns: list, ended: bool = False) -> str:
     TWO MODES. `ended=False` is the away fold (the endpoint): the last
     `_RECAP_TURNS` turns, and "" when the reader spoke last — an unanswered
     message is not news to them, and a recap taken now would be cached stale.
-    `ended=True` is the Tasks title worker, which only asks about a FINISHED
-    turn: when the last turns hold no assistant prose (a run that ended on tool
+    `ended=True` is the Tasks title worker: when the last turns hold no assistant prose (a run that ended on tool
     calls or a usage limit) the window reaches back to the most recent assistant
     prose and the user message before it, "" only when Claude never spoke in
     prose anywhere, and a user-last tail is fine. An interrupt marker is not a
@@ -1146,6 +1145,11 @@ def _recap_generate(agent, file: str, session_id: str, transcript: str = "",
     # the titles prompt with the fold's length rule.
     titles = _recap_titles_on()
     tail = _recap_tail(turns, ended)
+    if (not tail and ask is not None and not ask.get("want_recap")
+            and (ask.get("first") or "").strip()):
+        # A title asked mid-first-turn: no assistant prose yet, so the reader's
+        # own first message is all there is to title from.
+        tail = "User: " + ask["first"].strip()
     if not tail:
         if ended:
             raise _NothingToRecap
@@ -1402,7 +1406,7 @@ def _title_and_recap(agent, file: str, session_id: str, for_uuid: str,
                      transcript: str = "", *, want_recap: bool = False,
                      current: str = "", first: str = "",
                      prompts_seen: int = 0) -> tuple[str, str]:
-    """ONE haiku call for a finished turn's stable AI title and, when
+    """ONE haiku call for a session's stable AI title and, when
     `want_recap`, its recap too. Returns `(title, recap)`, "" for whichever
     failed, and stores what the call earned: the title through
     `record_ai_title(session_id, title, prompts_seen)` (an empty one stamps the

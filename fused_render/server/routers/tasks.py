@@ -2608,12 +2608,27 @@ def _failed(speaker: dict | None) -> bool:
 # ----------------------------------------------------------------- the titles
 
 
+# Must stay in step with `shortTitle` / `TITLE_MAX` in
+# frontend/src/shell/NewJobModal.tsx, the rule the New task form uses to derive
+# an entry's title from its message.
+_FORM_TITLE_MAX = 60
+
+
+def _form_short_title(line: str) -> str:
+    if len(line) <= _FORM_TITLE_MAX:
+        return line
+    boundary = line[:_FORM_TITLE_MAX + 1].rfind(" ")
+    return (line[:boundary] if boundary > 0
+            else line[:_FORM_TITLE_MAX]).rstrip()
+
+
 def _title(task: dict, rec: dict | None, first_prompt: str,
            custom: str = "") -> tuple[str, str]:
     """(title, where it came from). The precedence is §4's: a title the user
     typed over the task in the Tasks UI (`renamed`, the stored `custom_title`,
     passed in as `custom` so the caller's one settings read serves it), then
-    what the user called it (`user`), then Claude Code's own one-liner for the session (`ai`), then
+    what the user called it (`user`: a name the entry carries that is NOT just
+    the first line of its own message), then Claude Code's own one-liner for the session (`ai`), then
     the first line of the first message. No summarisation call anywhere — the
     title we want is already written into the transcript once per turn.
 
@@ -2654,6 +2669,20 @@ def _title(task: dict, rec: dict | None, first_prompt: str,
         return custom[:200], "renamed"
     for entry in reversed(task["entries"]):
         title = str(entry.get("title") or "").strip()
+        # The one-box New task form derives the entry's title from the first
+        # line of its message (`shortTitle`: the line itself, or clamped at a
+        # word boundary with a trailing "…"), so that is not a name the user
+        # chose — and treating it as one blocked stable AI titles for the task
+        # forever. Only an EXACT match of that derivation is skipped: a title
+        # that merely shares a prefix with the message ("Fix" over "Fix the
+        # login redirect") is a name a bot or API caller chose, hence `user`.
+        t = title.rstrip("…").strip()
+        if t:
+            first = next((ln.strip() for ln in
+                          str(entry.get("message") or "").splitlines()
+                          if ln.strip()), "")
+            if first and (t == first or t == _form_short_title(first)):
+                continue
         if title:
             return title[:200], "user"
     if rec is not None and rec.get("title"):
@@ -3753,12 +3782,16 @@ def _title_candidate(task: dict, rec: dict | None, status: str, reply: str,
 
     Wanted when: there is a session and an anchor; the name is not one the
     person chose (`renamed` / `user` — never spend a call on it); the turn has
-    ended and is not a queued reply; and EITHER nothing is stored, or the
+    started running or ended (`in_progress`, `needs_attention`, `done`,
+    `blocked`, `archived`; a RUNNING session is titled at once, from the
+    reader's first message, instead of waiting out its first turn) and is not a
+    queued reply; and EITHER nothing is stored, or the
     reader has sent `TITLE_REFRESH_PROMPTS` more prompts since the stored one
     (`turns`), or the last attempt failed and `_RECAP_RETRY_S` has passed. A
     failure inside that cooldown holds every trigger off, so a broken CLI is
-    not asked on each listing. The settle minute is the recap's own: the job
-    carries the same `due`. The current title handed to the model is the
+    not asked on each listing. A title-only job has no settle minute (that is
+    the recap's, for a reply still being written); merged into a recap job it
+    keeps that job's `due`. The current title handed to the model is the
     stored AI title, else the row's own (`title`: the first message line, a
     slash command, or Claude Code's `ai-title`)."""
     sid = task["session_id"]
@@ -3768,8 +3801,9 @@ def _title_candidate(task: dict, rec: dict | None, status: str, reply: str,
         return
     folder = task["project"]
     path = task.get("path") or ""
-    if not (status in ("done", "blocked", "archived") and reply != _QUEUED_REPLY
-            and (folder or path)):
+    if not (status in ("in_progress", "needs_attention", "done", "blocked",
+                       "archived")
+            and reply != _QUEUED_REPLY and (folder or path)):
         return
     stored = tasks_store.session_ai_title(settings or {}, sid)
     prompts = int(rec.get("count") or 0) if rec else 0
@@ -3795,8 +3829,6 @@ def _title_candidate(task: dict, rec: dict | None, status: str, reply: str,
            "transcript": path, "session_id": sid, "for_uuid": anchor,
            "reply_at": reply_at, "stale_before": 0.0, "want_recap": False,
            **fields}
-    if now - reply_at < _RECAP_SETTLE_S:
-        job["due"] = reply_at + _RECAP_SETTLE_S
     out.append(job)
 
 
