@@ -452,8 +452,9 @@ function OwnView({
         )}
       </div>
 
-      {/* Two columns, the tall pair first (Proposals beside Listing) so the
-          rows read even; cards stretch to their row. */}
+      {/* Two columns, 60/40: Proposals and Activity on the wide side, the
+          tall pair first (Proposals beside Listing) so the rows read even;
+          cards stretch to their row. */}
       <div className="contrib-grid">
         {inboxOffered && (
           <Card title={waiting > 0 ? `Proposals · ${waiting} waiting` : "Proposals"}>
