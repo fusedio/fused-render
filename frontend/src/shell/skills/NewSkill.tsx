@@ -55,9 +55,12 @@ export function NewSkill({
 
   const [change, setChange] = useState("");
   const [editing, setEditing] = useState<string | null>(null);
-  const [rename, setRename] = useState("");
+  // null until the user types: the input shows the suggested free name, and a
+  // cleared field stays cleared ("" is a value, null is "untouched").
+  const [rename, setRename] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveProblems, setSaveProblems] = useState<string[]>([]);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
 
   // "Start from": checked a moment after typing stops.
   const dsource = useDebounced(source.trim(), 400);
@@ -164,8 +167,14 @@ export function NewSkill({
       toastErr(r.error || "Could not write the draft");
       return false;
     }
-    const s = await cc.skills.draftStatus(staging);
-    if (s.ok) setStatus(s as cc.DraftStatus);
+    setRefreshError(null);
+    try {
+      const s = await cc.skills.draftStatus(staging);
+      if (s.ok) setStatus(s as cc.DraftStatus);
+    } catch (e) {
+      // The write landed; only the re-read failed. Say so inline, keep going.
+      setRefreshError(`Saved the edit, but could not refresh the draft: ${(e as Error).message}`);
+    }
     return true;
   };
 
@@ -304,6 +313,11 @@ export function NewSkill({
                   ))}
                 </ul>
               )}
+              {refreshError && (
+                <p className="cc-new-problems m-0" role="alert">
+                  {refreshError}
+                </p>
+              )}
               {saveProblems.length > 0 && problems.length === 0 && (
                 <ul className="cc-new-problems m-0" role="alert">
                   {saveProblems.map((p) => (
@@ -317,7 +331,7 @@ export function NewSkill({
                   <Input
                     aria-label="A different name"
                     className="cc-mono"
-                    value={rename || freeName(status.name, (n) => existing.includes(n))}
+                    value={rename ?? freeName(status.name, (n) => existing.includes(n))}
                     onChange={(e) => setRename(e.target.value)}
                   />
                   <Button
@@ -325,7 +339,7 @@ export function NewSkill({
                     variant="outline"
                     onClick={() =>
                       void writeSkillMd(
-                        renameSkill(status.text ?? "", (rename || freeName(status.name, (n) => existing.includes(n))).trim()),
+                        renameSkill(status.text ?? "", (rename ?? freeName(status.name, (n) => existing.includes(n))).trim()),
                       )
                     }
                   >

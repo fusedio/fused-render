@@ -22,6 +22,7 @@ let taskStatus = "in_progress";
 let draftStatus: Record<string, unknown> = {};
 let checkReply: Record<string, unknown> = {};
 let gen = 1;
+let statusFails = false;
 let saveReply: Record<string, unknown> = { ok: true, slug: "design-review", key: "/h/.agents/skills/design-review" };
 
 function reply(data: unknown): Promise<Response> {
@@ -39,7 +40,7 @@ function fakeFetch(url: unknown, init?: RequestInit): Promise<Response> {
       case "draft_check": return reply(checkReply);
       case "draft_start": return reply({ ok: true, staging: "/h/.fused-render/skill-drafts/s1" });
       case "draft_prompt": return reply({ ok: true, prompt: "PROMPT:" + body.text + (body.adapting ? ":adapt" : "") });
-      case "draft_status": return reply({ ok: true, ...draftStatus });
+      case "draft_status": if (statusFails) return Promise.reject(new Error("offline")); return reply({ ok: true, ...draftStatus });
       case "draft_save": return reply(saveReply);
       default: return reply({ ok: true });
     }
@@ -60,6 +61,7 @@ function fakeFetch(url: unknown, init?: RequestInit): Promise<Response> {
 
 beforeEach(() => {
   skillCalls = [];
+  statusFails = false;
   taskPosts = [];
   taskStatus = "in_progress";
   draftStatus = { files: [], text: null, name: "", description: "", problems: [] };
@@ -192,6 +194,28 @@ describe("New skill", () => {
     await tick();
     const write = skillCalls.find((c) => c.action === "draft_write")!;
     expect(write.body).toMatchObject({ path: "SKILL.md", text: GOOD.replace("name: design-review", "name: design-review-2") });
+  }, 15000);
+
+  test("the rename input can be cleared and retyped, not snapped back to the suggestion", async () => {
+    const { box } = await mount({ initialDesc: "Review pages", existing: ["design-review"] });
+    await drafted(box, { files: ["SKILL.md"], text: GOOD, name: "design-review", description: "d",
+      problems: ["a skill named design-review already exists; pick a different name"] });
+    await change(box.root.findByProps({ "aria-label": "A different name" }), "");
+    expect(box.root.findByProps({ "aria-label": "A different name" }).props.value).toBe("");
+    await change(box.root.findByProps({ "aria-label": "A different name" }), "mine");
+    expect(box.root.findByProps({ "aria-label": "A different name" }).props.value).toBe("mine");
+  }, 15000);
+
+  test("Apply edits closes the editor even if re-reading the draft fails, and says so inline", async () => {
+    const { box } = await mount({ initialDesc: "Review pages" });
+    await drafted(box, { files: ["SKILL.md"], text: GOOD, name: "design-review", description: "d", problems: [] });
+    await act(async () => { button(box, "Edit before saving").props.onClick({ preventDefault() {} }); });
+    await change(box.root.findByProps({ "aria-label": "SKILL.md", rows: 16 }), GOOD + "x\n");
+    statusFails = true;
+    await act(async () => { button(box, "Apply edits").props.onClick({ preventDefault() {} }); });
+    await tick();
+    expect(box.root.findAllByProps({ "aria-label": "SKILL.md", rows: 16 }).length).toBe(0);
+    expect(textOf(box.root)).toContain("could not refresh the draft");
   }, 15000);
 
   test("Ask for changes sends a follow-up to the same task", async () => {
