@@ -1499,6 +1499,20 @@
   color: var(--fg-muted);
 }
 
+/* A dashed hint row under a list: "type to search more", with its button. */
+.cc-findmore {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px 0;
+  padding: 10px 14px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+
 .cc-link {
   padding: 0;
   border: none;

@@ -1,5 +1,11 @@
 // Plugins section: what is on this machine (Installed) and what the
-// marketplaces you have cloned publish that you don't have yet (Discover).
+// marketplaces you have cloned publish that you don't have yet.
+//
+// ONE search box (the page's filter) drives both. Empty, the page lists the
+// installed plugins and a dashed row saying how many more the marketplaces
+// hold, with a "Browse all" button; typed, it lists the installed matches and
+// then the catalog's matches ("Available in your marketplaces"), each with
+// Install. There is no Installed | Discover switch.
 //
 // Both lists are full width, ONE ROW PER PLUGIN through the shared `ListRow`
 // (see ../plugin-row): the name over a muted description, the marketplace, the
@@ -35,7 +41,6 @@ import {
   SKELETON_ROWS,
   Head,
   RefreshButton,
-  Seg,
   plural,
   toastErr,
   toastOk,
@@ -44,8 +49,6 @@ import {
 } from "../bits";
 import type { HeadedSectionProps } from "../bits";
 import { DiscoverPluginRow, InstalledPluginRow } from "../plugin-row";
-
-type Tab = "installed" | "discover";
 
 // The filter's "no marketplace picked" value. A sentinel rather than null so
 // the index rows and the state share one type.
@@ -75,8 +78,10 @@ export default function PluginsSection({ filter = "", title, blurb }: HeadedSect
   const { data, error, reload } = useModuleData(load);
   const loadMkt = useCallback(() => cc.marketplaces.list(), []);
   const { data: mktData, reload: reloadMkt } = useModuleData(loadMkt);
-  const [tab, setTab] = useState<Tab>(() =>
-    new URLSearchParams(location.search).get("view") === "discover" ? "discover" : "installed",
+  // "Browse all": the catalog without a query. `?view=discover` (an older
+  // link) opens on it.
+  const [browseAll, setBrowseAll] = useState(
+    () => new URLSearchParams(location.search).get("view") === "discover",
   );
   const [marketplace, setMarketplace] = useState(ALL);
   // The add-a-marketplace form, in its own dialog.
@@ -95,10 +100,9 @@ export default function PluginsSection({ filter = "", title, blurb }: HeadedSect
   const [flipped, setFlipped] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState<string | null>(null);
 
-  // The catalog read is DEFERRED until you actually ask for Discover: it is the
-  // longer of the two lists (a marketplace can publish hundreds of plugins) and
-  // most visits to this page never leave Installed. Once fetched it is kept —
-  // switching tabs back and forth must not re-read every marketplace.json.
+  // The catalog is read once the page is up: the "N more plugins" line needs
+  // its count, and a typed query searches it. Once fetched it is kept — typing
+  // must not re-read every marketplace.json.
   const [avail, setAvail] = useState<AvailablePlugins | null>(null);
   const [availError, setAvailError] = useState<string | null>(null);
   const loadAvail = useCallback(() => {
@@ -116,8 +120,8 @@ export default function PluginsSection({ filter = "", title, blurb }: HeadedSect
     );
   }, []);
   useEffect(() => {
-    if (tab === "discover" && !avail && !availError) loadAvail();
-  }, [tab, avail, availError, loadAvail]);
+    if (!avail && !availError) loadAvail();
+  }, [avail, availError, loadAvail]);
 
   const toggle = async (p: Plugin, next: boolean) => {
     setFlipped((f) => ({ ...f, [p.id]: next }));
@@ -196,19 +200,6 @@ export default function PluginsSection({ filter = "", title, blurb }: HeadedSect
   const filterTo = (next: string) => {
     setMarketplace(next);
     setPage(0);
-  };
-
-  // Switching lists clears the marketplace filter: the two lists have different
-  // marketplaces in them, and a filter naming one that isn't in the new index
-  // would show an empty list with no visible reason.
-  const pick = (next: Tab) => {
-    setTab(next);
-    setMarketplace(ALL);
-    setPage(0);
-    // Switching lists is also the cheap retry: clearing the error re-opens the
-    // auto-load gate, so coming back to Discover tries once more rather than
-    // showing the same stale banner until the panel remounts.
-    setAvailError(null);
   };
 
   const share = async (command: string) => {
@@ -293,30 +284,34 @@ export default function PluginsSection({ filter = "", title, blurb }: HeadedSect
       </>
     );
 
+  const query = filter.trim();
+  const searching = query !== "";
   const installed = data.plugins.filter((p) => matches(filter, p.name, p.id, p.description));
-  // Discover lists every plugin the catalogs publish; the ones you already
-  // have say "Installed" where the others have Install.
-  const discover = (avail?.plugins ?? []).filter((p) =>
-    matches(filter, p.name, p.id, p.description),
-  );
+  // The catalog is searched, not listed, until "Browse all". Plugins you
+  // already have appear under Installed, so they are not repeated here.
+  const showAvailable = searching || browseAll;
+  const discover = showAvailable
+    ? (avail?.plugins ?? []).filter(
+        (p) => !p.installed && matches(filter, p.name, p.id, p.description),
+      )
+    : [];
+  const moreCount = (avail?.plugins ?? []).filter((p) => !p.installed).length;
   // The select counts what the SEARCH left, so a marketplace's number is what
-  // picking it will actually show. Kept as one un-narrowed list because the
-  // count doesn't care which shape it is counting.
-  const shown: { marketplace: string }[] = tab === "installed" ? installed : discover;
+  // picking it will actually show.
+  const shown: { marketplace: string }[] = [...installed, ...discover];
   const index = indexOf(shown);
   const inMarketplace = (m: string) => marketplace === ALL || m === marketplace;
   const rowsInstalled = installed.filter((p) => inMarketplace(p.marketplace));
   const rowsDiscover = discover.filter((p) => inMarketplace(p.marketplace));
-  const rowCount = tab === "installed" ? rowsInstalled.length : rowsDiscover.length;
+  const rowCount = rowsInstalled.length + rowsDiscover.length;
   // Counted off the FULL list, not the filtered one: the summary says what you
   // have, and the select already says what the filter left.
   const enabledCount = data.plugins.filter((p) => flipped[p.id] ?? p.enabled).length;
+  const catalogPending = showAvailable && !avail && !availError;
 
-  // Paging is the LAST step, over the already-filtered list, and only on
-  // Discover — Installed is a handful of plugins with a search box over it.
-  // The page is clamped at render rather than corrected in an effect: a
-  // marketplace removal can shrink the list under a page number that was valid
-  // a moment ago.
+  // Paging is the LAST step, over the already-filtered catalog list. The page
+  // is clamped at render rather than corrected in an effect: a marketplace
+  // removal can shrink the list under a page number that was valid a moment ago.
   const pages = Math.max(1, Math.ceil(rowsDiscover.length / PAGE_SIZE));
   const safePage = Math.min(page, pages - 1);
   const pagedDiscover = rowsDiscover.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE);
@@ -327,124 +322,127 @@ export default function PluginsSection({ filter = "", title, blurb }: HeadedSect
       {modal}
       <Head
         title={title}
-        // Discover's summary counts the SAME set the pager pages over, so the
-        // two can never disagree about how many results there are.
         blurb={
-          tab === "installed"
-            ? `${data.plugins.length} installed · ${enabledCount} enabled`
-            : avail
-              ? `${rowsDiscover.length} available from ${plural(index.length, "marketplace")}`
-              : "reading marketplace catalogs…"
+          searching
+            ? `Results for "${query}"`
+            : browseAll
+              ? `${data.plugins.length} installed · ${plural(moreCount, "plugin")} to add`
+              : `${data.plugins.length} installed · ${enabledCount} enabled`
         }
         aside={
           <>
-            <select
-              className="field-control cc-mkt-select"
-              aria-label="Marketplace"
-              value={marketplace}
-              onChange={(e) => filterTo(e.target.value)}
-            >
-              <option value={ALL}>All marketplaces ({shown.length})</option>
-              {marketplaces.map((m) => (
-                <option key={m.name} value={m.name}>
-                  {m.name} ({index.find((x) => x.name === m.name)?.n ?? 0})
-                </option>
-              ))}
-            </select>
+            {showAvailable && (
+              <select
+                className="field-control cc-mkt-select"
+                aria-label="Marketplace"
+                value={marketplace}
+                onChange={(e) => filterTo(e.target.value)}
+              >
+                <option value={ALL}>All marketplaces ({shown.length})</option>
+                {marketplaces.map((m) => (
+                  <option key={m.name} value={m.name}>
+                    {m.name} ({index.find((x) => x.name === m.name)?.n ?? 0})
+                  </option>
+                ))}
+              </select>
+            )}
             <button type="button" className="btn" onClick={() => setManaging(true)}>
-              Marketplaces
+              Marketplaces{marketplaces.length > 0 ? ` (${marketplaces.length})` : ""}
             </button>
-            <Seg
-              label="Plugin source"
-              value={tab}
-              onChange={pick}
-              options={[
-                { id: "installed", label: "Installed", title: "Plugins on this machine" },
-                {
-                  id: "discover",
-                  label: "Discover",
-                  title: "Plugins your marketplaces publish",
-                },
-              ]}
+            <RefreshButton
+              onClick={() => {
+                reload();
+                loadAvail();
+              }}
             />
-            {/* Refetches whichever list is showing: refreshing Installed must
-                not trigger the catalog read that the Discover switch defers. */}
-            <RefreshButton onClick={tab === "installed" ? reload : loadAvail} />
           </>
         }
       />
-      {tab === "discover" && availError && <ErrorBanner>{availError}</ErrorBanner>}
+      {showAvailable && availError && <ErrorBanner>{availError}</ErrorBanner>}
       {/* A marketplace whose catalog we could not read is stated, not
           swallowed: the list below is short for a reason the user can act
           on (a hand-edited or half-cloned marketplace.json). */}
-      {tab === "discover" && avail && avail.skipped.length > 0 && (
+      {showAvailable && avail && avail.skipped.length > 0 && (
         <div className="cc-change">
           Could not read the catalog for {avail.skipped.join(", ")}.
         </div>
       )}
-      {tab === "discover" && !avail && !availError && (
-        <ListSkeleton rows={SKELETON_ROWS} label="Reading marketplace catalogs" />
+      {(searching || rowsInstalled.length > 0) && (
+        <section className="settings-section">
+          {searching && <h3 className="settings-section-title">Installed · {rowsInstalled.length}</h3>}
+          {rowsInstalled.length > 0 && (
+            <List>
+              {rowsInstalled.map((p) => (
+                <InstalledPluginRow
+                  key={p.id}
+                  plugin={p}
+                  enabled={flipped[p.id] ?? p.enabled}
+                  busy={busy === p.id}
+                  onToggle={(next) => toggle(p, next)}
+                  onUpdate={() => update(p)}
+                  onUninstall={() => uninstall(p)}
+                  onCopy={share}
+                />
+              ))}
+            </List>
+          )}
+        </section>
       )}
-      {tab === "installed" && rowsInstalled.length > 0 && (
-        <List>
-          {rowsInstalled.map((p) => (
-            <InstalledPluginRow
-              key={p.id}
-              plugin={p}
-              enabled={flipped[p.id] ?? p.enabled}
-              busy={busy === p.id}
-              onToggle={(next) => toggle(p, next)}
-              onUpdate={() => update(p)}
-              onUninstall={() => uninstall(p)}
-              onCopy={share}
-            />
-          ))}
-        </List>
+      {!showAvailable && avail && moreCount > 0 && (
+        <div className="cc-findmore" data-testid="plugins-findmore">
+          <span>
+            Your {plural(marketplaces.length || new Set(avail.plugins.map((p) => p.marketplace)).size, "marketplace")}{" "}
+            list {moreCount} more {moreCount === 1 ? "plugin" : "plugins"}. Type to search them.
+          </span>
+          <button type="button" className="btn" onClick={() => setBrowseAll(true)}>
+            Browse all
+          </button>
+        </div>
       )}
-      {tab === "discover" && pagedDiscover.length > 0 && (
-        <List>
-          {pagedDiscover.map((p) => (
-            <DiscoverPluginRow
-              key={p.id}
-              plugin={p}
-              busy={busy === p.id}
-              onInstall={() => install(p)}
-              onCopy={share}
-            />
-          ))}
-        </List>
-      )}
-      {tab === "discover" && (
-        <Pager
-          page={safePage}
-          total={rowsDiscover.length}
-          label="Discover results pages"
-          onPage={setPage}
-        />
+      {catalogPending && <ListSkeleton rows={SKELETON_ROWS} label="Reading marketplace catalogs" />}
+      {showAvailable && avail && (
+        <section className="settings-section">
+          <h3 className="settings-section-title">
+            Available in your marketplaces · {rowsDiscover.length}
+          </h3>
+          {pagedDiscover.length > 0 && (
+            <List>
+              {pagedDiscover.map((p) => (
+                <DiscoverPluginRow
+                  key={p.id}
+                  plugin={p}
+                  busy={busy === p.id}
+                  onInstall={() => install(p)}
+                  onCopy={share}
+                />
+              ))}
+            </List>
+          )}
+          <Pager
+            page={safePage}
+            total={rowsDiscover.length}
+            label="Available plugin pages"
+            onPage={setPage}
+          />
+        </section>
       )}
       {/* Each empty state names what is missing and offers the control
-          that fixes it — which on this tab is usually the other list. */}
-      {(tab === "installed" || avail) && rowCount === 0 && (
+          that fixes it. */}
+      {(!showAvailable || avail) && rowCount === 0 && (
         <Empty
           action={
-            tab === "installed" && data.plugins.length === 0 ? (
-              <button type="button" className="btn btn-primary" onClick={() => pick("discover")}>
-                Browse Discover
-              </button>
-            ) : marketplace !== ALL ? (
+            marketplace !== ALL ? (
               <button type="button" className="btn" onClick={() => filterTo(ALL)}>
                 Show every marketplace
               </button>
             ) : null
           }
         >
-          {tab === "installed"
-            ? data.plugins.length === 0
-              ? "No plugins installed. Discover shows what your marketplaces offer."
-              : "No plugin matches this filter."
-            : (avail?.plugins.length ?? 0) === 0
+          {searching
+            ? `No plugin matches "${query}".`
+            : browseAll
               ? "No marketplace catalog to read. Add a marketplace and its plugins show up here."
-              : "No plugin matches this filter."}
+              : "No plugins installed. Type to search your marketplaces, or add a marketplace."}
         </Empty>
       )}
       {managing && (
