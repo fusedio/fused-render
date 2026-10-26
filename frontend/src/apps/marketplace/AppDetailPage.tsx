@@ -52,7 +52,7 @@ import {
   type CatalogSnapshot,
   type MarketRelease,
 } from "@platform/lib/marketplace";
-import { AppActionPill, CategoryGlyph, EmptyState, MarketCard, openDetail, remixOf } from "./shared";
+import { AppActionPill, CategoryGlyph, EmptyState, MarketCard, compactCount, openDetail, remixOf } from "./shared";
 import { trustItemsFor } from "./trust";
 
 /** U+202F NARROW NO-BREAK SPACE: "12.4 MB" never wraps between number and
@@ -212,10 +212,12 @@ export function AppDetailPage({ slug, snap, bare = false }: { slug: string; snap
   const released = releaseDate(app.last_release_at ?? app.updated_at);
   const remixes = app.remix_count ?? 0;
   const people = app.contributor_count ?? 0;
+  const installs = app.install_count ?? 0;
   const strip: InfoStripItem[] = [
     { label: "Category", value: <CategoryGlyph id={app.category} size={18} />, caption: cat },
     { label: "Version", value: app.version, caption: app.installed?.version && app.installed.version !== app.version ? `You have ${app.installed.version}` : "Latest" },
     { label: "Released", value: <span className="mp-strip-dev">{released ?? "—"}</span>, caption: "Reviewed by Fused" },
+    { label: "Installs", value: compactCount(installs), caption: installs === 1 ? "Install" : "Installs", title: `${installs} installs` },
     { label: "Remixes", value: String(remixes), caption: remix ? `Remix of ${remix.name}` : remixes === 1 ? "Remix" : "Remixes" },
     { label: "Contributors", value: String(Math.max(people, 1)), caption: people > 1 ? "Credited" : "The author" },
     { label: "Python", value: app.requires_python ? "Required" : "Not required", caption: app.requires_python ? "Runs locally" : "Page only" },

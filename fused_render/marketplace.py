@@ -1029,6 +1029,8 @@ def app_entry(slug: str, row: dict, installed: dict | None, *, catalog_fresh: bo
         "remix_of": row.get("remix_of") if is_slug(row.get("remix_of")) else None,
         "remix_count": _int(row.get("remix_count")),
         "contributor_count": _int(row.get("contributor_count")),
+        # §18.12: installs the marketplace counted (fused_app_install asks).
+        "install_count": _int(row.get("installs")),
         "releases": releases,
         # The CURRENT commit's (the backend's top-level keys; after a
         # rollback releases[0] is not the current commit), else its release
@@ -1136,7 +1138,7 @@ def _local_entry(slug: str, copy: dict, *, catalog_fresh: bool = False) -> dict:
         version = _opt_str(_dict(_dict(copy.get("record")).get("approved")).get("version"))
     row = {**{k: v for k, v in meta.items() if k not in (
         "icon_url", "preview_url", "source_url", "featured", "release_id", "commit", "repo",
-        "releases", "remix_count", "contributor_count")},
+        "releases", "remix_count", "contributor_count", "install_count")},
         "size_bytes": size, "file_count": count}
     entry = app_entry(slug, row, copy, catalog_fresh=catalog_fresh, listed=False)
     entry.update(update_available=False, featured=False, installable=False)

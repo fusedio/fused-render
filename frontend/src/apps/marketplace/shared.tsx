@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import {
   AlertTriangle,
   Globe2,
+  Download,
   LayoutGrid,
   MessageSquareText,
   Repeat2,
@@ -65,15 +66,33 @@ export function remixOf(app: AppEntry, catalog: Catalog | null): { slug: string;
   return { slug, name: catalog?.apps.find((a) => a.slug === slug)?.name ?? slug };
 }
 
-/** The card's proof line (handoff B6): lineage, remixes, contributors and
- *  the last release, each only when there is something to say. */
+/** 1234 → "1.2k": a count that fits a card. */
+export function compactCount(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 10_000) return `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k`;
+  if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
+  return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+}
+
+/** The card's proof line (handoff B6): installs, lineage, remixes,
+ *  contributors and the last release, each only when there is something to
+ *  say. */
 export function ProofLine({ app, catalog }: { app: AppEntry; catalog: Catalog | null }) {
   const remix = remixOf(app, catalog);
   const remixes = app.remix_count ?? 0;
   const people = app.contributor_count ?? 0;
+  const installs = app.install_count ?? 0;
   const when = releaseDate(app.last_release_at ?? app.updated_at);
   const bits: ReactNode[] = [];
   if (remix) bits.push(<span key="of">Remix of {remix.name}</span>);
+  if (installs > 0) {
+    bits.push(
+      <span key="in" className="mp-proof-count" title={`${installs} ${installs === 1 ? "install" : "installs"}`}>
+        <Download size={12} strokeWidth={2.2} aria-hidden="true" />
+        {compactCount(installs)}
+      </span>,
+    );
+  }
   if (remixes > 0) {
     bits.push(
       <span key="rx" className="mp-proof-count" title={`${remixes} ${remixes === 1 ? "remix" : "remixes"}`}>
@@ -174,7 +193,13 @@ export function MarketCard({ app, catalog, variant = "default" }: { app: AppEntr
   // contributors, last release) when the row has any — else the old
   // category · version line.
   const proof = <ProofLine app={app} catalog={catalog} />;
-  const hasProof = !!(app.remix_of || app.remix_count || (app.contributor_count ?? 0) > 1 || app.last_release_at);
+  const hasProof = !!(
+    app.install_count ||
+    app.remix_of ||
+    app.remix_count ||
+    (app.contributor_count ?? 0) > 1 ||
+    app.last_release_at
+  );
   const meta = hasProof ? (
     <>
       {app.author?.name || "Unknown"}

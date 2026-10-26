@@ -48,7 +48,7 @@ CATALOG_KEYS = (
     "ai_model_param", "icon_url", "preview_url", "size_bytes", "file_count",
     "release_id", "commit", "repo", "branch", "source_url", "published_at", "updated_at",
     "featured", "remix_of", "remix_count", "contributor_count", "last_release_at",
-    "releases", "catalog_version", "generated_at")
+    "releases", "installs", "installs_30d", "views", "views_30d", "catalog_version", "generated_at")
 OWNER = "alice"
 FUSED = {"X-Fused": "1"}
 
@@ -103,7 +103,7 @@ class FakeUdf:
             source_url=f"https://github.com/{repo}",
             published_at="2026-08-18T12:54:44Z", updated_at="2026-10-20T10:00:00Z",
             last_release_at="2026-10-20T10:00:00Z", remix_of=None, remix_count=2,
-            contributor_count=3, releases=releases,
+            contributor_count=3, installs=12, installs_30d=4, views=40, views_30d=9, releases=releases,
             featured=r["featured"] or False, catalog_version=self.catalog_version,
             generated_at="2026-10-15T08:02:00Z")
         r.update(row)
@@ -351,6 +351,7 @@ def test_catalog_payload(env):
     assert chat["release_id"] == chat["commit"] == row["commit"]
     assert (chat["repo"], chat["branch"]) == ("alice/local-chat", "main")
     assert (chat["remix_of"], chat["remix_count"], chat["contributor_count"]) == (None, 2, 3)
+    assert chat["install_count"] == 12  # §18.12: the marketplace's count, passed through
     assert chat["last_release_at"] == "2026-10-20T10:00:00Z"
     assert chat["releases"] == [{"commit": row["commit"], "at": "2026-10-20T10:00:00Z",
                                  "whats_new": "1.2.0 notes", "version": "1.2.0", "blocked": None}]

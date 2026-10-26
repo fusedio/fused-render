@@ -128,6 +128,8 @@ export interface AppEntry {
   remix_count?: number;
   /** Distinct people credited across its releases, the author included. */
   contributor_count?: number;
+  /** Installs the marketplace counted (§18.12); absent on an older server. */
+  install_count?: number;
   /** ISO date of the newest release. */
   last_release_at?: string | null;
   releases?: MarketRelease[];
