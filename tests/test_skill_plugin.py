@@ -1118,13 +1118,22 @@ def test_both_canvas_entry_points_fetch_and_neither_can_fail_over_it():
     already existed never got the skills, and a session that cannot find the
     skills its own CLAUDE.md names goes hunting for the format across the
     filesystem. The kick is off-thread and swallows everything, so neither route
-    can fail or stall over a skill fetch."""
+    can fail or stall over a skill fetch. The sync entry points (sync/start and
+    sync/takeover) get the kick through the shared `_sync_start_response`."""
     src = open(os.path.join(REPO_ROOT, "fused_render", "canvases.py"),
                encoding="utf-8").read()
-    for entry in ("def api_canvases_clone", "def api_canvases_sync_start"):
+
+    def _route(entry):
         route = src[src.index(entry):]
-        route = route[:route.index("\n@router")]
-        assert "_kick_workbench_skills()" in route, entry
+        return route[:route.index("\n@router")]
+
+    assert "_kick_workbench_skills()" in _route("def api_canvases_clone")
+    for entry in ("def api_canvases_sync_start",
+                  "def api_canvases_sync_takeover"):
+        assert "_sync_start_response(" in _route(entry), entry
+    shared = src[src.index("def _sync_start_response"):]
+    shared = shared[:shared.index("\ndef ")]
+    assert "_kick_workbench_skills()" in shared
     helper = src[src.index("def _kick_workbench_skills"):]
     helper = helper[:helper.index("\ndef ")]
     assert "sync_workbench_plugin" in helper
