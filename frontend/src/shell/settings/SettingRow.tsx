@@ -4,7 +4,7 @@
 // looks the same in its group and in search results — where it also carries
 // the path back to its group and, for a synonym match, the word that matched.
 import { Children, createContext, useContext, useState, type ReactNode } from "react";
-import { ChevronRight } from "lucide-react";
+import { Ban, ChevronRight } from "lucide-react";
 import { Badge } from "@platform/shadcn/ui/badge";
 import { Switch } from "@platform/shadcn/ui/switch";
 import { Dropdown } from "@shell/Dropdown";
@@ -12,7 +12,7 @@ import { cn } from "@platform/lib/utils";
 import type { Prefs } from "@platform/lib/api";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { isBot } from "@platform/lib/flavor";
-import { forFlavor, groupOf, settingById, type SettingEntry, type SettingId } from "./registry";
+import { forFlavor, groupOf, settingById, unavailableReason, type SettingEntry, type SettingId } from "./registry";
 import { matchedVia, splitLabel } from "./search";
 
 export interface SettingsView {
@@ -23,6 +23,9 @@ export interface SettingsView {
   /** Leave the search and show this row in its group. Any row id — the
    *  registry's or one built at runtime (settings/claude.tsx). */
   jump: (id: string) => void;
+  /** The page's prefs, so a row can read `prefs.unavailable` (device
+   *  capabilities) without a fetch of its own. Absent outside the page. */
+  prefs?: Prefs;
 }
 
 export const SettingsViewContext = createContext<SettingsView>({
@@ -58,6 +61,11 @@ export function SettingRow({
   const tokens = view.tokens;
   const label = tokens ? splitLabel(entry.label, tokens) : { pre: entry.label, hit: "", post: "" };
   const via = tokens ? matchedVia(entry, tokens) : [];
+  const unavailable = unavailableReason(entry, view.prefs ? { prefs: view.prefs } : null);
+  // `inert` takes every control inside out of focus and clicks at once, so no
+  // control needs a `disabled` of its own. React 18 only passes it through as
+  // a string attribute.
+  const inertProps = unavailable ? { inert: "" } : {};
   return (
     <div
       id={rowId(id)}
@@ -67,6 +75,7 @@ export function SettingRow({
         "child" in entry && entry.child && "settings-row-child",
         view.flashId === id && "settings-row-flash",
       )}
+      data-unavailable={unavailable ? "true" : undefined}
     >
       <div className={cn("settings-row-main", off && "opacity-55")}>
         {tokens && (
@@ -89,11 +98,26 @@ export function SettingRow({
           {"macOnly" in entry && entry.macOnly && <Badge variant="secondary">macOS</Badge>}
         </div>
         <p className="settings-row-desc">{entry.description}</p>
-        {status && <div className="settings-row-status">{status}</div>}
+        {unavailable ? (
+          <div className="settings-row-status" data-unavailable-reason>
+            <Ban aria-hidden="true" className="mr-1 inline size-3.5 align-[-2px]" />
+            {unavailable}
+          </div>
+        ) : (
+          status && <div className="settings-row-status">{status}</div>
+        )}
         {via.length > 0 && <div className="settings-row-via">Matched: {via.join(", ")}</div>}
       </div>
-      {control && <div className="settings-row-control">{control}</div>}
-      {Children.toArray(children).length > 0 && <div className="settings-row-extra">{children}</div>}
+      {control && (
+        <div className={cn("settings-row-control", unavailable && "opacity-55")} {...inertProps}>
+          {control}
+        </div>
+      )}
+      {Children.toArray(children).length > 0 && (
+        <div className={cn("settings-row-extra", unavailable && "opacity-55")} {...inertProps}>
+          {children}
+        </div>
+      )}
     </div>
   );
 }

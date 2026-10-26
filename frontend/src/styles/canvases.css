@@ -218,31 +218,6 @@
   padding: 32px 0;
 }
 
-/* The canvas workspace's NODE PANE strip (CanvasWorkspace.tsx): the node's
-   name and the Claude / Code tabs over the explorer engine. Shares the
-   explorer sidebar's header rule (.preview-side-header, preview.css). */
-.canvas-node-side-name {
-  font-size: 12px;
-  font-weight: 600;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--fg);
-}
-
-/* The peek's close: the ✕ after the Claude / Code strip (CanvasWorkspace). */
-.canvas-node-close {
-  flex: none;
-  margin-left: 6px;
-  font-size: 12px;
-  line-height: 1;
-  color: var(--fg-muted);
-}
-.canvas-node-close:hover {
-  color: var(--fg);
-}
-
 /* ---- The canvas project page (/canvases-project/<env>/<name>, CanvasPage.tsx) */
 /* The app page's header, tab strip AND body (app-page.css) as they are: the
    same 1050px column and gutters on every tab as the app page (owner,

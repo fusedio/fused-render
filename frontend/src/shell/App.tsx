@@ -40,6 +40,7 @@ import {
   appIconUrl,
   getAppIcon,
   botsAvailable,
+  terminalAvailable,
   statPath,
   type Config,
   type HttpError,
@@ -688,6 +689,7 @@ export default function App({ config }: { config: Config }) {
   // The server runs no bots on Windows: a bookmarked /bots URL goes Home rather
   // than to a page whose every call answers 503.
   const botsOn = botsAvailable(config);
+  const terminalOn = terminalAvailable(config);
   if (!botsOn && isBotsPath(location.pathname)) {
     history.replaceState(null, "", "/home");
   }
@@ -1296,10 +1298,14 @@ export default function App({ config }: { config: Config }) {
             `fsPathFromLocation()`) is the terminal's cwd — the folder
             currently shown in the explorer, per PLAN's "How we'll know it
             works". */}
-        {!IS_EMBED && <TerminalDrawer cwd={fsPath} />}
+        {/* Not mounted where the server cannot run a terminal (Windows without
+            pywinpty): `canRunInTerminal()` and `window._fusedOpenTerminal`
+            both ride this mount, so every Run affordance and
+            `fused.terminal.open/run` go away with it instead of failing. */}
+        {!IS_EMBED && terminalOn && <TerminalDrawer cwd={fsPath} />}
         {!IS_EMBED && (
           <StatusBar
-            terminalDock={<TerminalDock />}
+            terminalDock={terminalOn && <TerminalDock />}
             updates={<UpdatesDock version={config.version} hasUpdater={config.update != null} />}
             system={monitorOn === true && <SystemDock />}
             models={<ModelsDock />}

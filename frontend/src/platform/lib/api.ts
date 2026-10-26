@@ -38,6 +38,10 @@ export interface Config {
   // Windows, where the bot process manager is POSIX-only and every /api/bots
   // call answers 503. Absent from an older server: treated as available.
   bots_available?: boolean;
+  // Whether the status-bar terminal can start here (server/routers/config.py):
+  // always true off Windows, and on Windows only with pywinpty installed (the
+  // `[cli]` extra). Absent from an older server: treated as available.
+  terminal_available?: boolean;
   // Self-update state (fused_render/update/mac.py) — present only when the
   // packaged mac app started the update manager; absent on dev servers and
   // the Linux package (it updates through its supervisor).
@@ -797,9 +801,9 @@ export interface UpdateStatus {
   // "installing" from the mount to the swap; null outside state "installing".
   phase?: "downloading" | "installing" | null;
   error: string | null;
-  // Always null since D767; kept for wire compatibility. There is one install
-  // path for every install type and no terminal command to hand the user, so
-  // no surface reads this field any more.
+  // Null for every packaged install (D767: one install path, no terminal
+  // command). Set only by the CLI/PyPI check-only manager, whose update IS a
+  // terminal command; the Updates dock shows it copyable.
   manual_command: string | null;
   // True only for the dev-run manager (mac.DEV_MANAGER_ENV): it looks but never
   // swaps, so the badge draws "Update available" without its Update button.
@@ -1653,6 +1657,10 @@ export interface Prefs {
   // `available` is false off macOS and under `fused-render serve`, where the
   // section is not rendered. OPTIONAL like `launcher`.
   native_windows?: { enabled: boolean; available: boolean };
+  // Device features this machine lacks, each with the one-line reason
+  // (fused_render/shell/prefs.py `_unavailable_features`). Absent key =
+  // available. The Preferences rows tagged `needs` stay visible but disabled.
+  unavailable?: Record<string, string>;
   // Chromium (CEF) engine for app windows (fused_render/shell/prefs.py's
   // `chromium_windows_enabled`): on by default, the app ships the engine
   // (D1415). `available` is false unless this is the macOS app with native
@@ -6878,4 +6886,12 @@ export function ackScheduleEvents(id: number): Promise<{ delivered: number }> {
  *  that predates the flag keeps its Bots page. */
 export function botsAvailable(config: Pick<Config, "bots_available"> | null | undefined): boolean {
   return config?.bots_available !== false;
+}
+
+/** Can this machine run the status-bar terminal? Only an explicit `false`
+ *  removes it, so a server that predates the flag keeps its terminal. */
+export function terminalAvailable(
+  config: Pick<Config, "terminal_available"> | null | undefined,
+): boolean {
+  return config?.terminal_available !== false;
 }

@@ -965,8 +965,57 @@ def _workbench_state() -> dict:
     }
 
 
+def _unavailable_features() -> dict:
+    """`{feature: reason}` for what this device cannot do; an absent key means
+    available. The Preferences rows tagged `needs: <feature>` stay visible but
+    disabled, and show the reason in place of their status line. Cheap and
+    never raises: each probe is wrapped, and a probe that fails reports
+    nothing (a row left enabled is better than one wrongly locked)."""
+    from fused_render import _platform, extras
+
+    out: dict = {}
+
+    def probe(feature: str, missing, reason) -> None:
+        try:
+            if missing():
+                out[feature] = reason() if callable(reason) else reason
+        except Exception:  # noqa: BLE001 - a broken probe must not break /api/prefs
+            pass
+
+    for extra in ("index", "hf", "fused"):
+        probe(extra, lambda extra=extra: not extras.available(extra),
+              f"Needs {extras.install_hint(extra)}")
+
+    def update_missing() -> bool:
+        from fused_render import update
+        from fused_render.update import pypi
+
+        # The CLI's PyPI manager is check-only: it cannot install, so it
+        # counts as "no updater" for the auto-download pref.
+        m = update.manager()
+        return (m is None or m is pypi.manager()) and not update.supported()
+
+    probe("update", update_missing,
+          lambda: "Not available on Windows" if _platform.IS_WINDOWS
+          else "Only the packaged desktop app updates itself \u2014 "
+               "update with pip install -U fused-render")
+    probe("native_windows", lambda: not _native_windows_state()["available"],
+          lambda: "Not available on Windows" if _platform.IS_WINDOWS
+          else "Only in the desktop app")
+
+    def terminal_missing() -> bool:
+        from fused_render import pty_session
+
+        return not pty_session.terminal_available()
+
+    probe("terminal", terminal_missing, f"Needs {extras.install_hint('cli')}")
+    return out
+
+
 def _prefs_response() -> dict:
     return {
+        # Features this device lacks, with the reason (see `_unavailable_features`).
+        "unavailable": _unavailable_features(),
         "engine": engine_state(),
         # Whether the Reader (listen-to-files) accessibility mode is offered (opt-in).
         "reader": {"enabled": reader_enabled()},

@@ -208,7 +208,8 @@ test("codex: a missing CLI names Codex and offers npm, even from a server too ol
   expect(issue.id).toBe("missing");
   expect(issue.title).toBe("The app can't find Codex");
   expect(issue.command).toBe(CODEX_INSTALL_COMMAND);
-  expect(issue.action).toEqual({ kind: "install", label: "Install Codex" });
+  expect(issue.action).toBeUndefined();
+  expect(issue.command).toBeTruthy();
   // The server's own line still wins when it states one.
   const stated = agentIssues(codexHealthy({ found: false, install_command: "brew install codex" }), "codex");
   expect(stated[0].command).toBe("brew install codex");
@@ -316,7 +317,8 @@ test("gemini: a missing CLI names Gemini CLI and offers npm, and a stale overrid
   expect(issue.id).toBe("missing");
   expect(issue.title).toBe("The app can't find Gemini CLI");
   expect(issue.command).toBe(GEMINI_INSTALL_COMMAND);
-  expect(issue.action).toEqual({ kind: "install", label: "Install Gemini CLI" });
+  expect(issue.action).toBeUndefined();
+  expect(issue.command).toBeTruthy();
   const [override] = agentIssues(geminiHealthy({ found: false, source: "override" }), "gemini");
   expect(override.id).toBe("unusable-override");
   expect(override.title).toContain(GEMINI_BIN_ENV);

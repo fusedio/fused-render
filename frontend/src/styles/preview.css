@@ -184,6 +184,17 @@
   flex: 1 1 auto;
   position: relative;
   min-width: 0;
+  /* A flex COLUMN with min-height 0, not a block: the mode iframes are
+     absolute (inset 0) and never size this box, but the chat mount
+     (`.chat-mount.preview-frame`, ChatMount in content-pane claude) is in
+     flow — as a block child of the content stack this box took the chat's
+     full height (min-height auto) and the document grew past the viewport,
+     so the chat's header and composer scrolled out of a framed embed (the
+     canvas node pane, 2026-10-26). As a flex column it is pinned to the
+     stack's height and the chat's own list scrolls. */
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 /* Preview.tsx's content-pane counterpart to Listing.tsx's own
