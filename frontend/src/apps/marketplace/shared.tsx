@@ -21,6 +21,7 @@ import {
   appDetailHref,
   categoryLabel,
   isMarketCopy,
+  isOwnCopy,
   useChecking,
   useJob,
   type AppAction,
@@ -200,7 +201,9 @@ export function MarketCard({ app, catalog, variant = "default" }: { app: AppEntr
           : action.kind === "update"
             ? "Update"
             : action.kind === "open" && app.installed
-              ? "Installed"
+              ? isOwnCopy(app)
+                ? "Your app"
+                : "Installed"
               : undefined
       }
       variant={variant}

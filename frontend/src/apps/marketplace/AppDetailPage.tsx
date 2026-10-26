@@ -42,6 +42,7 @@ import {
   appDetailHref,
   appPageHref,
   isMarketCopy,
+  isOwnCopy,
   categoryLabel,
   showInstalledFolder,
   useAppDetail,
@@ -148,6 +149,8 @@ export function AppDetailPage({ slug, snap, bare = false }: { slug: string; snap
         {block.level === "hard" ? "Blocked by Fused · see the app page" : "Updates paused by Fused"}
       </span>
     );
+  } else if (action.kind === "open" && isOwnCopy(app)) {
+    note = <>Your app · you publish its releases</>;
   } else if (action.kind === "update" && market) {
     note = (
       <>

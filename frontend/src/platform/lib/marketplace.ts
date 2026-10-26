@@ -64,7 +64,9 @@ export interface MarketBlock {
  *  no `kind` and reads as before. */
 export interface InstalledStamp {
   path: string;
-  kind?: "marketplace" | "legacy";
+  /** `own`: the author's own clone of the listed repo — "Your app"; it
+   *  never updates or switches from here, it only opens. */
+  kind?: "marketplace" | "legacy" | "own";
   /** The release the copy runs (marketplace). */
   commit?: string | null;
   /** A newer release is waiting; the next check brings it in (marketplace). */
@@ -857,10 +859,15 @@ export function isLegacyCopy(app: AppEntry): boolean {
   return app.installed?.kind === "legacy";
 }
 
+/** The author's own copy of the listed app: "Your app", Open only. */
+export function isOwnCopy(app: AppEntry): boolean {
+  return app.installed?.kind === "own";
+}
+
 /** A newer reviewed release is waiting for this copy. */
 export function releaseWaiting(app: AppEntry): boolean {
   if (!app.installed) return false;
-  if (isLegacyCopy(app)) return false;
+  if (isLegacyCopy(app) || isOwnCopy(app)) return false;
   return !!(app.update_available || app.installed.update_available);
 }
 

@@ -39,6 +39,7 @@ import {
   isActive,
   isLegacyCopy,
   isMarketCopy,
+  isOwnCopy,
   postAdopt,
   refreshCatalog,
   releaseWaiting,
@@ -192,6 +193,7 @@ function InstalledRow({ app, snap }: { app: AppEntry; snap: CatalogSnapshot }) {
   const inCatalog = !!snap.catalog?.apps.some((a) => a.slug === app.slug);
   const market = isMarketCopy(app);
   const legacy = isLegacyCopy(app);
+  const own = isOwnCopy(app);
   const block = app.installed?.block ?? null;
   const delisted = !!app.installed?.delisted || (market && !inCatalog && !!snap.catalog);
   const path = action.path;
@@ -215,7 +217,9 @@ function InstalledRow({ app, snap }: { app: AppEntry; snap: CatalogSnapshot }) {
   }
   const have = app.installed?.version;
   const version =
-    market && action.kind === "update" ? (
+    own ? (
+      <>Your app</>
+    ) : market && action.kind === "update" ? (
       <span className="mp-row-v-new">New release</span>
     ) : market ? (
       <>Reviewed</>
@@ -233,7 +237,9 @@ function InstalledRow({ app, snap }: { app: AppEntry; snap: CatalogSnapshot }) {
       ? job?.message || "Installing…"
       : action.kind === "retry"
         ? action.error
-        : checking
+        : own
+          ? "Your app"
+          : checking
           ? "Checking for a new release…"
           : block
             ? block.level === "hard"

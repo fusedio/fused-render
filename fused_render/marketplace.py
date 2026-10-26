@@ -87,7 +87,12 @@ and the proxy share one API call).
 slug: `marketplace` records in the contribution store (`store.all()`, kind
 `marketplace`, `record.slug`, folder present) — the clones this module
 installs — and LEGACY stamps, `app/*/.fused/marketplace.json`, which the old
-package installer wrote, for folders with no marketplace record. A legacy
+package installer wrote, for folders with no marketplace record AND no
+`.git`. A stamped folder that IS a clone is asked its kind (`classify`):
+`own` is the author's own copy ("Your app", `installed.kind == "own"`: no
+switch, no update), `github` is a link copy (install's confirm/switch); for
+both the stamp is dead bookkeeping and is removed. An `own` record whose
+repo a listed row names is "Your app" too, stamp or not. A legacy
 copy keeps working and never updates; once its slug is listed the Installed
 page offers "Switch to the reviewed version" (POST /adopt →
 `market.adopt_legacy`, which turns the folder into a marketplace clone in
@@ -713,17 +718,89 @@ def marketplace_records() -> dict[str, dict]:
     return {slug: v for slug, (_at, v) in out.items()}
 
 
+def _clone_kind(path: str) -> str | None:
+    """The contribution loop's kind of the clone at `path`: the record's
+    (`classify.kind_of`, a store read), else a first classification
+    (`classify.ensure`, which may ask GitHub who the user is once — cached by
+    gh.py; it answers None while that cannot be told). None = unknown."""
+    try:
+        from fused_render.contrib import classify
+
+        kind = classify.kind_of(path)
+        if kind is None:
+            rec = classify.ensure(path)
+            kind = rec.get("kind") if rec else None
+        return kind
+    except Exception:  # noqa: BLE001 — unknown, never "legacy"
+        logger.debug("marketplace: could not classify %s", path, exc_info=True)
+        return None
+
+
+def _drop_dead_stamp(path: str) -> None:
+    """A legacy stamp in a folder that is a git clone of the app's repo (the
+    author's own clone, or a GitHub-link copy) is DEAD bookkeeping: the old
+    package installer merged its files into a folder that was already a
+    clone, and the clone — not the stamp — is what the copy is now. Left
+    there it reads as a legacy install and offers "Switch to the reviewed
+    version" (adopt) on a repo, so it goes. Best-effort."""
+    with contextlib.suppress(OSError):
+        os.remove(stamp_path(path))
+        logger.info("marketplace: removed a stale legacy stamp from the clone %s", path)
+
+
+def _own_records() -> dict[str, dict]:
+    """`repo (lowercased) → {path, record}` for every `own` record whose
+    folder is there — the author's own copies of listed apps."""
+    try:
+        from fused_render.contrib import store
+
+        rows = store.all()
+    except Exception:  # noqa: BLE001
+        return {}
+    out = {}
+    for k, rec in rows.items():
+        if (isinstance(rec, dict) and rec.get("kind") == "own" and isinstance(rec.get("repo"), str)
+                and os.path.isdir(k)):
+            out.setdefault(rec["repo"].lower(), {"path": k, "record": rec})
+    return out
+
+
 def installed_copies() -> dict[str, dict]:
-    """slug → {"path", "kind": "marketplace", "record"} | {"path", "kind":
-    "legacy", "stamp"} — every Marketplace copy in the workspace (module
-    docstring "Installed copies"). A record beats a stamp for the same slug
-    or folder."""
+    """slug → the copy of that app in the workspace (module docstring
+    "Installed copies"):
+      {"path", "kind": "marketplace", "record"}  a marketplace clone;
+      {"path", "kind": "legacy", "stamp"}        an old package install —
+          the stamp AND no `.git` (a folder with a repo is never legacy);
+      {"path", "kind": "own", "record"}          the AUTHOR's own copy of a
+          listed app ("Your app": no switch, no update — it follows her own
+          pushes), found by a stamped clone that classifies `own` or by an
+          `own` record whose repo a cached catalog row names.
+    A stamped clone that classifies `github` is not listed here: installing
+    from the Marketplace reaches it through `plan_install`'s confirm/switch.
+    A record beats a stamp for the same slug or folder."""
     out: dict[str, dict] = {s: {**v, "kind": "marketplace"} for s, v in marketplace_records().items()}
     clones = {_store_key(v["path"]) for v in out.values()}
     for slug, rec in installed_apps().items():
         if slug in out or _store_key(rec["path"]) in clones:
             continue
-        out[slug] = {**rec, "kind": "legacy"}
+        if not os.path.lexists(os.path.join(rec["path"], ".git")):
+            out[slug] = {**rec, "kind": "legacy"}
+            continue
+        kind = _clone_kind(rec["path"])
+        if kind in ("own", "github"):
+            _drop_dead_stamp(rec["path"])
+        if kind == "own":
+            out[slug] = {"path": rec["path"], "kind": "own", "record": None}
+        # marketplace: its record is listed above (or binds on the next read);
+        # github / unknown: not an installed Marketplace copy.
+    owned = _own_records()
+    if owned:
+        apps = (_read_cache() or {}).get("apps") or {}
+        for slug, row in apps.items():
+            repo = row_repo(row) if isinstance(row, dict) else None
+            hit = owned.get(repo.lower()) if repo else None
+            if hit and slug not in out:
+                out[slug] = {**hit, "kind": "own"}
     return out
 
 
@@ -773,6 +850,11 @@ def _installed_info(copy: dict | None, row: dict | None, *, catalog_fresh: bool 
             "delisted": row is None and (listed == "delisted" or catalog_fresh),
             "block": _block_view(rec.get("block")),
         }
+    if copy["kind"] == "own":
+        # The author's own copy ("Your app"): it follows her own pushes, so
+        # there is nothing to update to and nothing to switch.
+        return {"path": path, "kind": "own", "commit": None, "version": None, "installed_at": None,
+                "update_available": False, "modified": None, "delisted": row is None, "block": None}
     stamp = copy["stamp"]
     return {
         "path": path, "kind": "legacy",
@@ -1051,7 +1133,7 @@ def _local_entry(slug: str, copy: dict, *, catalog_fresh: bool = False) -> dict:
         count = len(paths)
         version = _opt_str(copy["stamp"].get("version"))
     else:
-        version = _opt_str(_dict(copy["record"].get("approved")).get("version"))
+        version = _opt_str(_dict(_dict(copy.get("record")).get("approved")).get("version"))
     row = {**{k: v for k, v in meta.items() if k not in (
         "icon_url", "preview_url", "source_url", "featured", "release_id", "commit", "repo",
         "releases", "remix_count", "contributor_count")},
@@ -1380,6 +1462,9 @@ def plan_install(slug: str, row: dict) -> dict:
         return {**plan, "action": "refuse", "path": copy["path"], "code": "legacy",
                 "reason": "Switch to the reviewed version first: this app was installed from the "
                           "old Marketplace. Use “Switch to the reviewed version” on the Installed page."}
+    if copy and copy["kind"] == "own":
+        return {**plan, "action": "refuse", "path": copy["path"], "code": "own",
+                "reason": f"This is your own app; it's already at {copy['path']}."}
     if copy:
         return {**plan, "action": "update", "path": copy["path"]}
     repo, commit = row_repo(row), row.get("commit")
@@ -1644,6 +1729,10 @@ def adopt(slug: str) -> dict:
     if not is_slug(slug):
         raise InstallError("invalid app slug")
     copy = installed_copies().get(slug)
+    if copy and os.path.lexists(os.path.join(copy["path"], ".git")):
+        # Never `git init` over a repo (the author's own clone, a link copy):
+        # only a plain-files folder is a legacy install.
+        raise InstallError("This is already a copy of the app's repo.")
     if not copy or copy["kind"] != "legacy":
         raise InstallError("There is no copy from the old Marketplace to switch.")
     snap, error = cached_snapshot()

@@ -757,6 +757,44 @@ def test_a_github_link_copy_asks_before_switching(env, gh_world, monkeypatch):
     assert switched == [(os.path.realpath(d), gh_world.approved)]
 
 
+def test_the_authors_own_clone_with_a_stale_stamp_is_her_app_not_legacy(env, gh_world, monkeypatch):
+    # The live shape: Alice's own clone (origin her repo, HEAD main, no record
+    # yet) still carrying the old package installer's stamp.
+    gh_world.fake.sign_in("alice")
+    d = _app_dir(env, "sine-starter")
+    os.makedirs(os.path.dirname(d), exist_ok=True)
+    _git(os.path.dirname(d), "clone", "-q", f"https://github.com/{gh_world.full}", d)
+    _write(d, ".fused/marketplace.json", json.dumps({"slug": "sine-starter", "version": "0.9.0",
+                                                     "files": {"index.html": "0" * 64}}))
+    adopted = []
+    _stub_contrib(monkeypatch, "market", adopt_legacy=lambda root, row: adopted.append(root) or {"ok": True})
+    inst = _entry("sine-starter")["installed"]
+    assert inst["kind"] == "own" and inst["update_available"] is False and inst["modified"] is None
+    assert os.path.realpath(inst["path"]) == os.path.realpath(d)
+    # The dead stamp is gone; the record says own; she stays "Your app".
+    assert not os.path.exists(os.path.join(d, ".fused", "marketplace.json"))
+    from fused_render.contrib import store
+
+    assert store.get(d)["kind"] == "own"
+    assert _entry("sine-starter")["installed"]["kind"] == "own"
+    [app] = mp.installed_list()["apps"]
+    assert app["installed"]["kind"] == "own"
+    # Never adopted (no `git init` over a repo), never installed over.
+    r = _client().post("/api/marketplace/adopt", json={"slug": "sine-starter"}, headers=FUSED)
+    assert r.status_code == 400 and r.json()["message"] == "This is already a copy of the app's repo."
+    assert adopted == []
+    with pytest.raises(mp.InstallError, match="your own app"):
+        mp.start_install("sine-starter")
+
+
+def test_a_link_clone_with_a_stale_stamp_asks_to_switch(env, gh_world):
+    d = _link_copy(env, gh_world)
+    _write(d, ".fused/marketplace.json", json.dumps({"slug": "sine-starter", "version": "0.9.0"}))
+    assert _entry("sine-starter")["installed"] is None
+    assert not os.path.exists(os.path.join(d, ".fused", "marketplace.json"))
+    assert mp.start_install("sine-starter")["status"] == "confirm"
+
+
 def test_an_unrecorded_clone_of_the_repo_is_refused(env, gh_world):
     from fused_render.contrib import store
 
