@@ -26,6 +26,7 @@ from fused_render import claude_health, codex_health, copilot_health
 
 # The real function: the autouse fixture below replaces `candidates` per test.
 _REAL_CANDIDATES = codex_health.candidates
+_REAL_SHELL_PROBE = codex_health._shell_probe
 
 
 @pytest.fixture(autouse=True)
@@ -1032,3 +1033,11 @@ def test_registry_path_is_empty_off_windows(monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setitem(sys.modules, "winreg", _FakeWinreg(user="X", machine="Y"))
     assert claude_health._windows_registry_path() == []
+
+
+def test_codex_shell_probe_is_skipped_on_windows(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("must not spawn a shell on Windows")
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(codex_health.subprocess, "run", boom)
+    assert _REAL_SHELL_PROBE() is None

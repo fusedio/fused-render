@@ -165,6 +165,8 @@ def _shell_probe() -> Optional[str]:
     guess), why PYTHONHOME/PYTHONPATH are scrubbed, and why three flag
     spellings are tried. Last resort, and cached like everything else here.
     """
+    if sys.platform == "win32":
+        return None  # no login shell to ask; the plain PATH was already searched
     shell = os.environ.get("SHELL") or "/bin/bash"
     if not executable(shell):
         return None
