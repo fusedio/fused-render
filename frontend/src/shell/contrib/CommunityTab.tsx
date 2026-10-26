@@ -452,21 +452,12 @@ function OwnView({
         )}
       </div>
 
+      {/* Two columns, the tall pair first (Proposals beside Listing) so the
+          rows read even; cards stretch to their row. */}
       <div className="contrib-grid">
         {inboxOffered && (
           <Card title={waiting > 0 ? `Proposals · ${waiting} waiting` : "Proposals"}>
             <ProposalsTab dir={dir} slug={slug} contrib={contrib} />
-          </Card>
-        )}
-        {kit && kit.activity.length > 0 && (
-          <Card title="Activity">
-            <ActivityList kit={kit} />
-          </Card>
-        )}
-        {people.length > 0 && (
-          <Card title="Contributors">
-            <People people={people} author={l.github.login} />
-            <Remixes slug={listing?.listing?.slug ?? null} />
           </Card>
         )}
         {marketOn && current >= 2 && (
@@ -504,6 +495,17 @@ function OwnView({
                     : "Checking…"}
               </span>
             </Row>
+          </Card>
+        )}
+        {kit && kit.activity.length > 0 && (
+          <Card title="Activity">
+            <ActivityList kit={kit} />
+          </Card>
+        )}
+        {people.length > 0 && (
+          <Card title="Contributors">
+            <People people={people} author={l.github.login} />
+            <Remixes slug={listing?.listing?.slug ?? null} />
           </Card>
         )}
       </div>
