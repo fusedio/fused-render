@@ -12,12 +12,15 @@ module boundary (the same discipline as test_server_ai.py).
 """
 import json
 import os
+import shutil
 import sys
 import time
 
 import pytest
 
 from fused_render import claude_health
+
+_REAL_CANDIDATES = claude_health.candidates
 
 
 # Captured before any fixture stubs them, so a test that wants the REAL probe
@@ -987,3 +990,25 @@ def test_a_generic_bindir_is_unknown_rather_than_guessed_as_system(path):
 @pytest.mark.parametrize("path", ["/usr/bin/claude", "/bin/claude", "/usr/lib/claude/claude"])
 def test_a_real_system_bindir_is_still_recognised(path):
     assert claude_health.install_method(path, None) == "system"
+
+
+# -- Windows discovery -----------------------------------------------------------
+
+
+def test_claude_windows_candidate_found_with_stale_path(tmp_path, monkeypatch):
+    local = tmp_path / "winhome" / ".local" / "bin"
+    local.mkdir(parents=True)
+    shim = local / "claude.exe"
+    shim.write_text("MZ\n")
+    shim.chmod(0o755)  # os.access(X_OK) on macOS
+    (tmp_path / "unrelated").mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path / "winhome"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "winhome"))
+    monkeypatch.setattr(sys, "platform", "win32")
+    # shutil.which on win32 reaches for _winapi, which a POSIX host lacks.
+    monkeypatch.setattr(shutil, "which", lambda *a, **k: None)
+    monkeypatch.setattr(claude_health, "candidates", _REAL_CANDIDATES)
+    monkeypatch.setenv("PATH", str(tmp_path / "unrelated"))
+    assert claude_health.resolve(allow_shell=False) == (str(shim), "candidate")
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert _REAL_CANDIDATES() is claude_health.POSIX_CANDIDATES

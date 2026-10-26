@@ -10,8 +10,10 @@ speaks the JSON-RPC messages and answers the way 0.65.0 was observed to
 """
 import collections
 import json
+import ntpath
 import os
 import stat
+import shutil
 import sys
 import textwrap
 import time
@@ -19,6 +21,8 @@ import time
 import pytest
 
 from fused_render import claude_health, codex_health, copilot_health, gemini_health
+
+_REAL_CANDIDATES = gemini_health.candidates
 
 
 @pytest.fixture(autouse=True)
@@ -799,3 +803,29 @@ def test_the_server_app_mounts_the_gemini_routes():
     assert paths == {"/api/gemini/health", "/api/gemini/health/refresh",
                      "/api/gemini/install", "/api/gemini/link-path",
                      "/api/gemini/login", "/api/gemini/login/cancel"}
+
+
+# -- Windows discovery -----------------------------------------------------------
+
+
+def test_gemini_windows_candidate_found_with_stale_path(tmp_path, monkeypatch):
+    npm = tmp_path / "appdata" / "npm"
+    npm.mkdir(parents=True)
+    shim = npm / "gemini.cmd"
+    shim.write_text("@echo off\n")
+    shim.chmod(0o755)  # os.access(X_OK) on macOS
+    (tmp_path / "unrelated").mkdir()
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.setattr(sys, "platform", "win32")
+    # shutil.which on win32 reaches for _winapi, which a POSIX host lacks.
+    monkeypatch.setattr(shutil, "which", lambda *a, **k: None)
+    # POSIX host: expand %VAR% like ntpath, and spell the separators as "/".
+    monkeypatch.setattr(os.path, "expandvars", ntpath.expandvars)
+    monkeypatch.setattr(gemini_health, "WINDOWS_CANDIDATES", tuple(
+        c.replace("\\", "/") for c in gemini_health.WINDOWS_CANDIDATES))
+    monkeypatch.setattr(gemini_health, "candidates", _REAL_CANDIDATES)
+    monkeypatch.setenv("PATH", str(tmp_path / "unrelated"))
+    assert gemini_health.resolve(allow_shell=False) == (str(shim), "candidate")
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert _REAL_CANDIDATES() is gemini_health.POSIX_CANDIDATES
