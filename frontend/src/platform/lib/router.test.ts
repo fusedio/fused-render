@@ -268,7 +268,11 @@ test("the Claude Config panel path and the old /claude-code path land on the Cla
   expect(row("plugins")).toBe("/claude-config?tab=plugins");
   expect(row("marketplaces")).toBe("/claude-config?tab=plugins");
   expect(row("memory")).toBe("/claude-config?tab=memory");
-  expect(row("skills")).toBe("/claude-config?tab=skills");
+  expect(row("skills")).toBe("/skills");
+  expect(rewriteLegacyUrl("/claude-config?tab=skills&skill=user%2Fdemo")).toBe("/skills?skill=user%2Fdemo");
+  expect(rewriteLegacyUrl("/claude-md?cctab=skills&embed=1")).toBe("/skills?embed=1");
+  expect(rewriteLegacyUrl("/preferences?tab=claude-skills")).toBe("/skills");
+  expect(rewriteLegacyUrl("/skills?skill=user%2Fdemo")).toBe("/skills?skill=user%2Fdemo");
   expect(row("statusline")).toBe("/preferences?tab=claude-cli");
   expect(row("mcp")).toBe("/claude-config?tab=mcp");
   expect(row("preferences")).toBe("/preferences?tab=claude-cli");

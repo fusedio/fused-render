@@ -156,7 +156,7 @@ def test_update_runs_on_a_native_install(monkeypatch):
 
 
 def test_the_job_report_carries_an_explicit_origin(monkeypatch):
-    """`_report` (claude_install.py) states `origin="Claude setup"` on every
+    """`_report` (claude_install.py) states `origin="Claude Code"` on every
     mirrored tick — the fixture's own `_clean` stubs `jobs.upsert` to a no-op,
     so this reads the call the real registry would have received instead of
     the row it would have produced."""
@@ -168,7 +168,7 @@ def test_the_job_report_carries_an_explicit_origin(monkeypatch):
     monkeypatch.setattr(claude_health, "executable", lambda p: True)
     monkeypatch.setattr(claude_install.threading, "Thread", _FakeThread)
     claude_install.start("update")
-    assert captured.get("origin") == "Claude setup"
+    assert captured.get("origin") == "Claude Code"
 
 
 def test_update_never_sources_the_login_shell(monkeypatch):

@@ -119,7 +119,7 @@ def _report(snapshot: dict) -> None:
                       else "error" if state == "error" else "done"),
             "detail": snapshot["detail"],
             "message": snapshot["error"] or "",
-            "origin": "Claude setup",
+            "origin": "Claude Code",
         }, page="/claude-config", server=True)
     except Exception:  # noqa: BLE001 - reporting must never break the work
         logger.debug("could not report the Claude Code %s job", snapshot["action"])

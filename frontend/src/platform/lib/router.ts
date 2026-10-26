@@ -101,7 +101,14 @@ export function rewriteLegacyUrl(url: string): string {
   return url;
 }
 
+// Skills left the Claude Code page for `/skills`; `?skill=` and the rest of
+// the query ride along, `?tab=` has no meaning there.
 function claudeConfigUrl(params: URLSearchParams): string {
+  if (params.get("tab") === "skills") {
+    params.delete("tab");
+    const sq = params.toString();
+    return "/skills" + (sq ? "?" + sq : "");
+  }
   const q = params.toString();
   return "/claude-config" + (q ? "?" + q : "");
 }

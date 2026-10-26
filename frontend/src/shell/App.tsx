@@ -4,7 +4,8 @@
 //   "/explorer"              -> file-explorer homepage (FilesHome)
 //   "/explorer/view/<path>"  -> stat it: directory -> listing, file -> preview
 //   "/explorer/embed/<path>" -> chrome-free embed variant
-//   "/claude-config"         -> legacy; the Claude Code group of Preferences
+//   "/claude-config"         -> Claude Code: plugins, MCP servers, memory
+//   "/skills"                -> Skills: yours + skills.sh, Draft with Claude
 //   "/claude-md"             -> legacy; same (platform/lib/router rewrites both)
 //   "/ai-models/<tab>"       -> AI Models (playground/local/engines/usage);
 //                             bare "/ai-models" redirects to the default tab
@@ -127,6 +128,7 @@ const AiModels = lazy(() =>
 );
 const Scheduled = lazy(() => import("@shell/Scheduled"));
 const ClaudeConfig = lazy(() => import("@shell/ClaudeConfig"));
+const SkillsPage = lazy(() => import("@shell/Skills"));
 const MonitorPage = lazy(() => import("@shell/monitor/MonitorPage"));
 const MarketplacePage = lazy(() =>
   import("@apps/marketplace").then((m) => ({ default: m.MarketplacePage })),
@@ -735,6 +737,9 @@ export default function App({ config }: { config: Config }) {
   // Claude Code's own configuration (shell/ClaudeConfig.tsx) — chrome-free
   // settings pattern; the tab is a query param of its own.
   const isClaudeConfig = pathname === "/claude-config";
+  // Skills (shell/Skills.tsx) — what the coding CLIs read; same chrome-free
+  // settings pattern. `?skill=` / `?new=1` are the page's own params.
+  const isSkills = pathname === "/skills";
   // Every process on the machine, live (shell/monitor/MonitorPage.tsx) —
   // the System chip's "Open Monitor". BEHIND THE FLAG (monitor-flag.ts,
   // `monitor_enabled`, default off): off, the chip is not rendered and the
@@ -808,6 +813,7 @@ export default function App({ config }: { config: Config }) {
     isTemplates ||
     isTasks ||
     isClaudeConfig ||
+    isSkills ||
     isMonitor ||
     isMarketplace ||
     isAiModels ||
@@ -838,6 +844,8 @@ export default function App({ config }: { config: Config }) {
                 ? "Tasks"
                 : isClaudeConfig
                 ? "Claude Code"
+                : isSkills
+                ? "Skills"
                 : isMonitor
                 ? "Monitor"
                 : isMarketplace
@@ -974,6 +982,17 @@ export default function App({ config }: { config: Config }) {
       <div id="content" key={epoch}>
         <Suspense fallback={<RouteFallback />}>
           <ClaudeConfig key={epoch} />
+        </Suspense>
+      </div>
+    );
+  } else if (isSkills) {
+    // Skills: list, skills.sh search, the editor and the Draft-with-Claude
+    // flow, no topbar. All state lives in the page's own query params
+    // (written with replaceState), so only a navigation remounts it.
+    main = (
+      <div id="content" key={epoch}>
+        <Suspense fallback={<RouteFallback />}>
+          <SkillsPage key={epoch} />
         </Suspense>
       </div>
     );
