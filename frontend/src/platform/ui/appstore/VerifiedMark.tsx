@@ -1,6 +1,6 @@
-// The green "reviewed" tick that follows a listed app's name — the same
-// shape Instagram and X put after a verified account: a scalloped green
-// badge with a white check, scaled to the surrounding text (1em) so it sits
+// The green "reviewed" tick that follows a listed app's name — the scalloped
+// badge Instagram and X put after a verified account, in GitHub's outline
+// colouring (green stroke + green check), scaled to the text (1em) so it sits
 // in a 28px hero title and a 13px card name alike. Shown only for a row of
 // the reviewed Marketplace (CONTRIB_LOOP.md §18): every row there passed
 // the review check, so the mark means "Fused reviewed this release".
@@ -22,18 +22,24 @@ export function VerifiedMark({ title = "Reviewed by Fused", className }: Verifie
       focusable="false"
     >
       <title>{title}</title>
-      {/* Twelve-point scalloped badge. */}
+      {/* Twelve-point scalloped badge, drawn as a green outline over a faint
+          green tint with a green check (GitHub's verified style, owner's
+          pick) rather than a solid disc with a white check. */}
       <path
         fill="currentColor"
-        d="M12 1.6l2.3 1.9 2.9-.6 1.2 2.8 2.8 1.2-.6 2.9 1.9 2.3-1.9 2.3.6 2.9-2.8 1.2-1.2 2.8-2.9-.6L12 22.4l-2.3-1.9-2.9.6-1.2-2.8-2.8-1.2.6-2.9L1.5 12l1.9-2.3-.6-2.9 2.8-1.2 1.2-2.8 2.9.6z"
+        fillOpacity="0.16"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+        d="M12 2.2l2.1 1.7 2.7-.5 1.1 2.5 2.5 1.1-.5 2.7L21.8 12l-1.7 2.1.5 2.7-2.5 1.1-1.1 2.5-2.7-.5L12 21.8l-2.1-1.7-2.7.5-1.1-2.5-2.5-1.1.5-2.7L2.2 12l1.7-2.1-.5-2.7 2.5-1.1 1.1-2.5 2.7.5z"
       />
       <path
         fill="none"
-        stroke="#fff"
-        strokeWidth="2.4"
+        stroke="currentColor"
+        strokeWidth="2"
         strokeLinecap="round"
         strokeLinejoin="round"
-        d="M7.6 12.3l2.9 2.9 5.9-6"
+        d="M8.2 12.3l2.6 2.6 5.2-5.4"
       />
     </svg>
   );
