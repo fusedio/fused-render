@@ -29,6 +29,7 @@ import { useEffect, useMemo, useState, type MouseEvent, type ReactNode } from "r
 import { ArrowRight, Check, Copy, Download, ExternalLink, GitBranch, Laptop, Store } from "lucide-react";
 import {
   ackContrib,
+  ladderListing,
   useLadder,
   type AppContribState,
   type ContribAction,
@@ -214,9 +215,10 @@ function githubSentence(g: LadderAnswer["github"]): string {
 function listingTitle(k: ListingKit | null, l: LadderAnswer): string {
   const state = k?.state ?? l.listing?.state ?? null;
   const when = releaseDate(k?.listing?.approved?.at ?? l.listing?.listing?.approved?.at ?? null);
+  const version = ladderListing(l.listing).version;
   switch (state) {
     case "live":
-      return when ? `Live · release of ${when}` : "Live";
+      return version ? `Live · v${version.replace(/^v/, "")}` : when ? `Live · release of ${when}` : "Live";
     case "in-review":
       return "In review";
     case "removing":

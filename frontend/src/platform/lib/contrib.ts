@@ -539,6 +539,9 @@ export interface ListingAnswer extends Partial<ContribAnswer> {
   /** The listing is being re-read from GitHub: poll this job, then GET
    *  again (§16.14's named wait). */
   job?: string | null;
+  /** The live release's version, when the ladder's copy of this answer
+   *  carries one (§19.2). */
+  version?: string | null;
 }
 
 export interface ListingCategory {
@@ -968,6 +971,23 @@ export function useLadder(dir: string | null): LadderState {
     }, LADDER_PENDING_MS);
     return () => window.clearTimeout(t);
   }, [pending, data, read]);
+
+  // A fresh read may start the listing's GitHub check (`listing.job`) and
+  // answer before it ends: wait for that job, then read once more — its
+  // outcome can move the rung (§19.2: the server never waits on GitHub).
+  const listingJob = data?.listing?.job ?? null;
+  useEffect(() => {
+    if (!listingJob) return;
+    const ctl = new AbortController();
+    pollJob(listingJob, { signal: ctl.signal })
+      .then(() => {
+        if (!ctl.signal.aborted) void read();
+      })
+      .catch(() => {
+        /* unmounted, or the job could not be read: the next focus re-reads */
+      });
+    return () => ctl.abort();
+  }, [listingJob, read]);
 
   const refresh = useCallback(() => read(true), [read]);
   return { data, refresh };
