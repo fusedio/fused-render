@@ -206,11 +206,38 @@
   color: var(--fg-muted);
 }
 
-/* New-canvas inline form (replaces the head actions while open). */
+/* New-canvas inline form (replaces the head actions while open). The error
+   line hangs BELOW the row out of flow: it comes and goes per keystroke, and
+   in-flow it would grow the head and nudge the title and search box on every
+   character. */
 .canvases-new-form {
+  position: relative;
+}
+
+.canvases-new-row {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.canvases-new-name {
+  width: 220px;
+}
+
+.canvases-new-name[aria-invalid="true"],
+.canvases-new-name[aria-invalid="true"]:focus {
+  border-color: var(--error);
+}
+
+.canvases-new-error {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--error);
+  white-space: normal;
 }
 
 .canvases-empty {
