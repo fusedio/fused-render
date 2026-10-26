@@ -120,10 +120,11 @@ export function SyncStrip({
    *  the strip draws none of them. */
   embedded?: boolean;
   /** The right pane (the Claude chat beside the workbench) is up. The strip's
-   *  LAST control toggles it — the thing at the window's right edge is the
+   *  LAST control is its Hide — the thing at the window's right edge is the
    *  button for the right-hand column, the same panel glyph the explorer's
-   *  sidebar and the global sidebar wear (platform/ui/PanelIcon). Not drawn
-   *  embedded (the viewer has no pane). */
+   *  sidebar and the global sidebar wear (platform/ui/PanelIcon). Drawn only
+   *  while the pane is up: shut, the Claude rail (ClaudeRail.tsx) stands at
+   *  that edge and carries the Show. Not drawn embedded (no pane). */
   sideOpen?: boolean;
   onToggleSide?: () => void;
 }) {
@@ -299,7 +300,9 @@ export function SyncStrip({
           · polling
         </span>
       )}
-      {!embedded && onToggleSide && (
+      {!embedded && onToggleSide && sideOpen && (
+        // Only while the pane is UP: shut, the rail at the right edge carries
+        // the Show (ClaudeRail) — one control per state, never both.
         <button
           type="button"
           className="bar-ctl bar-ctl-icon side-toggle"
