@@ -1352,9 +1352,14 @@ hard fail with a one-line plain reason posted on the PR:
    powers → `gh pr merge --squash --auto`. Branch ruleset: PR required,
    required check `review`, admins included, auto-merge allowed; bypass
    list = the GitHub Actions app, used only by step 9.
-9. **After merge** (`pull_request` closed, merged): append the entry to
-   `reviews/<slug>.json` on main (bot commit "review: <slug> @ <sha7>").
-   A deleted row (delist) appends nothing.
+9. **After merge.** Events caused by `GITHUB_TOKEN` never start workflows,
+   so a `pull_request: closed` job would not fire after the auto-merge. A
+   `schedule` job (every 10 min) + `workflow_dispatch` scans merged PRs
+   (`is:pr is:merged` since the last entry) whose `apps/<slug>.json` row has
+   no `reviews/<slug>.json` entry for `row.commit`, reads that PR's
+   `fused-review` block and appends the entry (bot commit "review: <slug> @
+   <sha7>"). A deleted row (delist) appends nothing. The catalog serves a row
+   without a review entry with `whats_new: null` until the job runs.
 
 Fixtures (`fixtures/<name>/` = the PR's file set + `expect.json` with the
 failing step): `runtime-fetch`, `password-read`, `fork-only-commit`,
@@ -1391,7 +1396,9 @@ from the row, `requires_python`/`ai_*`/`min_fused_render` from the app's
 `remix_of` is this slug; `contributor_count` = distinct `credits` across the
 review file (+1 for the author). No GitHub REST call is required to serve the
 catalog; a `GITHUB_TOKEN` Fused secret, when present, is used for the one
-optional call (none today). `catalog_version` = sha of the index HEAD.
+optional call (none today). `catalog_version` = the index HEAD's short sha
+read from the zip's `Content-Disposition` filename (`<repo>-<sha7>.zip`),
+falling back to a sha256 of the zip bytes.
 `fused_app_github` stays as it is.
 
 The canvas is pushed with `fused workbench --env unstable canvas push .`
@@ -1553,22 +1560,42 @@ contains a blocked commit for its slug (`merge-base --is-ancestor`):
   changed." No rollback.
 Enforcement runs under the copy lock and `replay.slot()`; it never runs
 while a merge job is open (it marks the record and the open gate still
-answers 423).
+answers 423). **Undo never lands on a blocked commit (M1):** `store.
+activity()` reports `undo: False` and `engine.restore` refuses ("That
+version was blocked by Fused") when the line's backup commit, or any commit
+it contains for this slug, is on the block list (`blocks.is_blocked_commit`
+walks `rev-list <backup> ^<mirror>` ∪ the backup itself).
+**Tools in Claude:** WS-ENGINE finds how an installed app's tools reach
+Claude (`claude_config/plugins.py`, `user_plugin.py`, `skill_plugin.py`,
+`claude_agent/agent._plugin_mcp_servers`) and unregisters them on a hard
+block (re-registered after a clean rollback); if apps never register tools
+today, the PR says so and the handoff's sentence is reported as not
+applicable.
 
 **Engine states added**: `delisted` (quiet), `blocked-release` (attention),
 `soft-blocked` (attention). `actions._marketplace` = `_github` plus: Check
-label "Check for a new release"; `switch-link`; `confirm-block` (soft);
+label "Check for a new release" — on a marketplace copy the `check` action
+runs `marketplace.get_snapshot(force=True)` and `blocks.refresh()` +
+`enforce(root)` BEFORE `sync_repo`, so the 10-minute catalog cache never
+makes the button a no-op; `switch-link`; `confirm-block` (soft);
 `remove-app` (hard, no target). `market.py`/`blocks.py` are the only new
 modules; `engine.py` gains branches, not a second engine.
 
-**Guards.** `contrib_guard`: `guarded_who` reads the marker. For a
-marketplace copy `classify._set_upstream` points `fused/mine` at the MIRROR
-(`branch.fused/mine.remote = .`, `.merge = refs/heads/<b>`), so the Git
-panel's plain `pull --ff-only` lands on the approved commit and never past
-it, and `%(upstream:track)` counts against the mirror. `ops._fetch` on a
-guarded copy fetches by remote name as today (the mirror is only ever
-written by `update_mirror`, so a fetched `origin/<b>` ahead of it moves
-nothing). `reset` to a commit is allowed on `fused/mine` exactly as §17.8.
+**Guards.** `contrib_guard`: `guarded_who` reads the marker and returns
+the kind (`guarded_who(root) -> (who, unknown, kind)`; the two existing
+callers unpack three). For a marketplace copy `classify._set_upstream`
+points `fused/mine` at the MIRROR (`branch.fused/mine.remote = .`, `.merge =
+refs/heads/<b>`), so `%(upstream:track)` and `contrib_guard.ahead` count
+against the approved commit, never the author's tip. `ops._pull` builds its
+target from the remote name literally (`pull --ff-only -- <remote> <target>`),
+which on a marketplace copy would fetch the author's tip: so `pull_blocked`
+is ALWAYS true for a marketplace copy (sentence "Get latest brings in the
+reviewed version.") and the panel's Get latest posts `/api/git-upstream
+get-latest` (engine ff / bring-in) whenever `repo.guard.kind ==
+"marketplace"` — `log._guard` adds `kind`. `ops._fetch` on a guarded copy
+fetches by remote name as today (the mirror is only ever written by
+`update_mirror`, so a fetched `origin/<b>` ahead of it moves nothing).
+`reset` to a commit is allowed on `fused/mine` exactly as §17.8.
 `appfile_git._update_clone` (reinstall from a link) on a marketplace copy is
 the `switch-link` prompt, never a move.
 
@@ -1645,7 +1672,14 @@ local tip is pushed (`unpushed`); `gh.ensure_fork(index)`; branch `fused-
 `gh.open_pr(index, title="List <name>"|"Update <name>", body=<What
 changed>, head="<login>:fused-<slug>", base="main")`; record. A remix's row
 carries `remix_of` from `record.remix_of` when the original is listed.
-Actions (own kind, `actions._own`): `publish-market` (dialog `listing`,
+Actions (own kind): WS-PUBLISH owns `contrib/actions_listing.py`
+(`buttons(f, b)` adds the ids below to the `_Buttons` of `_own`, and
+`sentence(f)`), `server/routers/listing.py` (`/api/contrib/listing`,
+`/api/contrib/listing-draft`, `/api/contrib/listing-action` with the same
+body shape as `/api/contrib/action`); `actions._own` calls
+`actions_listing.buttons` in ONE line and `routers/contrib.py` is not
+edited by WS-PUBLISH (the frontend posts listing ids to
+`/api/contrib/listing-action`). Ids: `publish-market` (dialog `listing`,
 primary when not listed), `publish-update` (primary when update_available),
 `confirm-powers`, `fix-with-claude` (returns `{open: "/app?dir=…&task=
 <id>"}` after creating a task with `fix_prompt` through the tasks router's
@@ -1725,5 +1759,5 @@ for `reviews/`.
 | WS-CANVAS | the canvas folder: 6 UDFs + `fused_app_listing`, `canvas.toml`, push |
 | WS-ENGINE | `contrib/market.py`, `contrib/blocks.py`, edits in `store/classify/follow/engine/actions/refresh/replay`, `routers/contrib.py` (marketplace branches), `git_upstream.py`, `appfile_git.py`, `appfile.py`, `templates/shared/contrib_guard.py`, `templates/git/ops.py|log.py`, `app_git.py`, `app_doctor.py`, `share_app.py`, `claude_agent/agent.py` marker, `background_apps.py` stop helper, tests §18.9 (market, blocks) |
 | WS-CLIENT | `marketplace.py`, `routers/marketplace.py`, `routers/apps.py`+`render.py` open gate, `bots/tools.py`, `deeplink.py`, `community.py`+router, `server/app.py` startup thread, `tests/test_marketplace.py` |
-| WS-PUBLISH | `contrib/listing.py`, `actions._own` additions, router routes `/api/contrib/listing-draft`, dispatch ids, `gh.py` additions (`search_prs`, `check_runs`, `pr_comments`, `delete_file_pr` helpers), `tests/test_contrib_listing.py` |
+| WS-PUBLISH | `contrib/listing.py`, `contrib/actions_listing.py`, `server/routers/listing.py` (registered in `server/app.py` next to the contrib router — one line), `gh.py` additions (`search_prs`, `check_runs`, `pr_comments`, `edit_comment` helpers, each appended at the end of the file with a FakeGitHub counterpart), `tests/test_contrib_listing.py`. Does NOT edit `actions.py` or `routers/contrib.py` (WS-ENGINE adds the one-line `actions_listing.buttons` call) |
 | WS-FE | everything under `frontend/` |
