@@ -32,12 +32,15 @@
 //            load; null from the sidebar's close button, so both sides agree)
 //   parent → { type: "fused-embed-pushed", push_seq }  after a push, for the
 //            workbench's save chip ("Published"); it triggers no reload.
-//   iframe → { type: "fused-embed-open-code", udfName, backendId? }  RETIRED
-//            here: the node toolbar's code button toggles the workbench's OWN
-//            code pane (live against the clone through the body channel,
-//            `caps: ["body"]`); the right pane here is Claude's alone and has
-//            no Code tab. A workbench that still posts it (one older than the
-//            body channel) is ignored.
+//   iframe → { type: "fused-embed-open-code", udfName, backendId? }  LEGACY:
+//            a workbench on the body channel (`caps: ["body"]`) toggles its
+//            OWN code pane from the node toolbar's code button and never
+//            posts this. The right pane here is Claude's alone and has no
+//            Code tab, so from an older workbench the message selects that
+//            node (fused-embed-select when it is not the one shown) and
+//            opens the pane on the node's chat — the nearest thing the host
+//            has, rather than a dead button. Accepted only from the
+//            workbench frame's own window.
 //   iframe → { type: "fused-embed-delete", id, name }  the canvas menu's
 //            "Delete canvas", after the frame's own two confirmations: the
 //            host deletes (POST /api/canvases/delete — sync stopped, server
@@ -1810,6 +1813,21 @@ export default function CanvasWorkspace({
           // for what the right pane is about.
           setNode(null);
         }
+      }
+      if (type === "fused-embed-open-code") {
+        // A legacy workbench's node toolbar code button (header): show the
+        // node's pane. The workbench frame's own window only, on top of the
+        // origin check above.
+        if (embedded) return;
+        if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
+        const udfName = event.data?.udfName;
+        if (typeof udfName !== "string" || !udfName) return;
+        // Not the node shown: select it in the workbench, whose selection
+        // echo (above) is what sets `node` — it alone states the node's kind
+        // and file.
+        if (nodeRef.current?.udfName !== udfName) sendSelect(udfName);
+        setSideOpen(true);
+        return;
       }
       if (type === "fused-embed-delete") {
         // The canvas menu's confirmed "Delete canvas" (header). The editor
