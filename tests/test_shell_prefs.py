@@ -1688,24 +1688,24 @@ def test_task_summary_titles_solo_put_saves_and_turns_off(tmp_path, monkeypatch)
     assert client.get("/api/prefs").json()["task_summary_titles"] == {"enabled": False}
 
 
-def test_claude_strict_mcp_defaults_on_toggles_and_rejects_junk(tmp_path, monkeypatch):
-    """Lean sessions are the default: only a stored `false` turns them off."""
+def test_claude_strict_mcp_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
+    """Lean sessions are opt-in: only a stored `true` turns them on."""
     client, home = _client(tmp_path, monkeypatch)
-    assert client.get("/api/prefs").json()["claude_strict_mcp"] == {"enabled": True}
-    assert prefs_mod.claude_strict_mcp_enabled() is True
-    body = client.put("/api/prefs", json={"claude_strict_mcp_enabled": False},
-                      headers=FUSED).json()
-    assert body["claude_strict_mcp"]["enabled"] is False
-    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["claude_strict_mcp_enabled"] is False
+    assert client.get("/api/prefs").json()["claude_strict_mcp"] == {"enabled": False}
     assert prefs_mod.claude_strict_mcp_enabled() is False
+    body = client.put("/api/prefs", json={"claude_strict_mcp_enabled": True},
+                      headers=FUSED).json()
+    assert body["claude_strict_mcp"]["enabled"] is True
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["claude_strict_mcp_enabled"] is True
+    assert prefs_mod.claude_strict_mcp_enabled() is True
     bad = client.put("/api/prefs", json={"claude_strict_mcp_enabled": "yes"},
                      headers=FUSED)
     assert bad.status_code == 400
     assert "claude_strict_mcp_enabled" in bad.json()["error"]
-    (home / "prefs.json").write_text(json.dumps({"claude_strict_mcp_enabled": 0}),
+    (home / "prefs.json").write_text(json.dumps({"claude_strict_mcp_enabled": 1}),
                                      encoding="utf-8")
-    assert prefs_mod.claude_strict_mcp_enabled() is True
+    assert prefs_mod.claude_strict_mcp_enabled() is False
 
 
 def test_put_rejects_bad_project_queue_enabled(tmp_path, monkeypatch):

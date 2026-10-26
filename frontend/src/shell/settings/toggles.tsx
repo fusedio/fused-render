@@ -88,12 +88,12 @@ export function TaskSummaryTitlesControl({ prefs, onChange }: PrefControlProps) 
 }
 
 // Lean Claude sessions: no user MCP servers / connectors in chat and tasks.
-// ON unless stored false, so `!== false` (an older server has no field).
+// OFF unless stored true, so `=== true` (an older server has no field).
 export function ClaudeStrictMcpControl({ prefs, onChange }: PrefControlProps) {
   return (
     <PrefToggleRow
       id="claude-strict-mcp"
-      checked={prefs.claude_strict_mcp?.enabled !== false}
+      checked={prefs.claude_strict_mcp?.enabled === true}
       put={putClaudeStrictMcpEnabled}
       onChange={onChange}
     />

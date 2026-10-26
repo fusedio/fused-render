@@ -816,17 +816,17 @@ def _backend_enabled(backend: str) -> bool:
 def _strict_mcp_pref() -> bool:
     """Whether chat and Tasks-page sessions start "lean" — with
     `--strict-mcp-config`, so the user's own MCP servers and claude.ai
-    connectors are not launched (about 220 MB less per session). On unless
-    `claude_strict_mcp_enabled` is stored False in `<home>/prefs.json`;
+    connectors are not launched (about 220 MB less per session). Off unless
+    `claude_strict_mcp_enabled` is stored True in `<home>/prefs.json`;
     a stdlib read for the same reason as `_backend_enabled`. A missing or
     unreadable file reads as the default."""
     try:
         with open(os.path.join(_home_dir(), "prefs.json"), encoding="utf-8") as fh:
             prefs = json.load(fh)
     except (OSError, ValueError):
-        return True
-    return not (isinstance(prefs, dict)
-                and prefs.get("claude_strict_mcp_enabled") is False)
+        return False
+    return (isinstance(prefs, dict)
+            and prefs.get("claude_strict_mcp_enabled") is True)
 
 
 def _default_permission_pref() -> str:
@@ -4504,7 +4504,9 @@ def _spawn_env(chat_id: str = "", backend: str = "") -> dict:
     # reads (D1327). The CLI runs EVERYTHING it spawns (hooks, MCP servers, the
     # statusline) through the prefix; the wrapper is transparent for all but
     # Bash-tool commands. A prefix the user exported themselves is left alone.
-    if (chat_id and not _bad_id(chat_id)
+    # The wrapper is a POSIX sh script, so Windows gets no prefix (and no
+    # drawer "Claude" command-log tab).
+    if (chat_id and not _bad_id(chat_id) and not _platform.IS_WINDOWS
             and not env.get("CLAUDE_CODE_SHELL_PREFIX")):
         prefix = _shell_prefix_path()
         if prefix:
