@@ -1657,6 +1657,10 @@ export interface Prefs {
   // `available` is false off macOS and under `fused-render serve`, where the
   // section is not rendered. OPTIONAL like `launcher`.
   native_windows?: { enabled: boolean; available: boolean };
+  // Device features this machine lacks, each with the one-line reason
+  // (fused_render/shell/prefs.py `_unavailable_features`). Absent key =
+  // available. The Preferences rows tagged `needs` stay visible but disabled.
+  unavailable?: Record<string, string>;
   // Chromium (CEF) engine for app windows (fused_render/shell/prefs.py's
   // `chromium_windows_enabled`): on by default, the app ships the engine
   // (D1415). `available` is false unless this is the macOS app with native

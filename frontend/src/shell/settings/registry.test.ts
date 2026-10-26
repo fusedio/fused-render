@@ -7,8 +7,10 @@ import {
   navSections,
   resolveGroup,
   sectionsOf,
+  unavailableReason,
   visibleGroups,
   visibleSettings,
+  type DeviceFeature,
   type SettingsContext,
 } from "./registry";
 import { matchedVia, searchSettings as searchTokens, splitLabel, tokenize } from "./search";
@@ -105,10 +107,7 @@ describe("visibility", () => {
   });
 
   test("capabilities the server says are missing are not drawn", () => {
-    const ids = visibleSettings(ctx({}, { native_windows: undefined, launcher: undefined } as Partial<Prefs>)).map(
-      (s) => s.id,
-    );
-    expect(ids).not.toContain("native-windows");
+    const ids = visibleSettings(ctx({}, { launcher: undefined } as Partial<Prefs>)).map((s) => s.id);
     expect(ids).not.toContain("launcher-hotkey");
   });
 
@@ -256,5 +255,40 @@ describe("search", () => {
   test("the label is split around the first word it contains", () => {
     expect(splitLabel("Low-impact indexing", ["index"])).toEqual({ pre: "Low-impact ", hit: "index", post: "ing" });
     expect(splitLabel("Reader", ["tts"])).toEqual({ pre: "Reader", hit: "", post: "" });
+  });
+});
+
+describe("device capability gates", () => {
+  const byId = (id: string) => SETTINGS.find((s) => s.id === id)!;
+
+  test("a tagged row reports the server's reason, an untagged or present one null", () => {
+    const missing = ctx({}, { unavailable: { index: "Needs pip install 'fused-render[index]'" } });
+    expect(unavailableReason(byId("indexing"), missing)).toBe("Needs pip install 'fused-render[index]'");
+    expect(unavailableReason(byId("huggingface"), missing)).toBeNull();
+    expect(unavailableReason(byId("appearance"), missing)).toBeNull();
+    expect(unavailableReason(byId("indexing"), ctx())).toBeNull();
+    expect(unavailableReason(byId("indexing"), null)).toBeNull();
+  });
+
+  test("every capability row carries the right tag", () => {
+    const tags: Record<DeviceFeature, string[]> = {
+      index: ["indexing", "ranked-search", "low-impact", "skipped-folders", "rebuild-index", "index-query"],
+      hf: ["huggingface"],
+      fused: ["fused-account", "workbench-env", "canvases", "canvases-embed-proxy", "share-sheet"],
+      update: ["auto-update"],
+      native_windows: ["native-windows"],
+      terminal: ["notify-terminal"],
+    };
+    for (const [need, ids] of Object.entries(tags) as [DeviceFeature, string[]][]) for (const id of ids) expect(byId(id).needs).toBe(need);
+  });
+
+  test("native-windows is shown, not hidden, when this process has no windows", () => {
+    const c = ctx({}, { native_windows: { available: false, enabled: true } });
+    expect(visibleSettings(c).some((e) => e.id === "native-windows")).toBe(true);
+  });
+
+  test("a disabled row stays findable by search", () => {
+    const c = ctx({}, { unavailable: { index: "x" } });
+    expect(searchSettings(visibleSettings(c), "index").some((e) => e.id === "indexing")).toBe(true);
   });
 });
