@@ -449,8 +449,9 @@ export default function Canvases() {
     }
   };
 
-  // Names the duplicate rule checks against: the listing as loaded (the
-  // workbench's modal does the same — captured when its dialog opens).
+  // Names the duplicate rule checks against: the LIVE listing, so a canvas
+  // that appears while the box is open (poll, another session) is caught by
+  // onCreate's re-check even if the keystroke validation missed it.
   const existingNames = useMemo(
     () => (canvases ?? []).map((c) => c.name),
     [canvases],
@@ -522,7 +523,7 @@ export default function Canvases() {
   return (
     <div className="canvases-page">
       <div className="canvases-inner">
-        <div className="canvases-head">
+        <div className={"canvases-head" + (creating ? " is-creating" : "")}>
           <h1 className="canvases-title">Workbench Canvases</h1>
           {/* The picker shows signed out too: each env can be its own login
               (custom's `[auth]`, D1412), so a signed-out pick must still be
@@ -606,7 +607,11 @@ export default function Canvases() {
                         </button>
                       </div>
                       {createError && (
-                        <div id="canvases-new-error" className="canvases-new-error" role="alert">
+                        <div
+                          id="canvases-new-error"
+                          className="canvases-new-error"
+                          title={createError}
+                        >
                           {createError}
                         </div>
                       )}
