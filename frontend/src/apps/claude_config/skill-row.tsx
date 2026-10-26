@@ -1,7 +1,9 @@
 // One installed skill in the Skills list: its name and the CLIs that read it
-// over its description, and at the right edge the plugin it came with.
+// over its description, and at the right edge the plugin it came with or, for
+// the user's own skill, the dir it lives in.
 import * as cc from "./api";
 import { CLI_LABEL, visibleReaders } from "./readers";
+import { tildify } from "./skill-detail";
 
 export function SkillRow({
   skill: s,
@@ -30,7 +32,7 @@ export function SkillRow({
           </span>
         )}
       </span>
-      {s.plugin && <span className="cc-lrow-meta">{s.plugin}</span>}
+      <span className="cc-lrow-meta">{s.plugin ?? tildify(s.location)}</span>
     </button>
   );
 }
