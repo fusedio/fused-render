@@ -49,7 +49,8 @@ export function rewriteLegacyUrl(url: string): string {
   if (mapped) return mapped + q;
   if (p.startsWith("/view/") || p.startsWith("/embed/")) return "/explorer" + p + q;
   // `/claude-code` was this page's earlier path; the query rides along.
-  if (p === "/claude-code") return "/claude-config" + q;
+  // It goes through claudeConfigUrl so `?tab=skills` still reaches /skills.
+  if (p === "/claude-code") return claudeConfigUrl(new URLSearchParams(q.startsWith("?") ? q.slice(1) : q));
   // The retired /claude-md page folded into /claude-config, and the panel's
   // `?cctab=<section>` becomes
   // `?tab=<tab>`. Kept for good: the server's jobs and notifications

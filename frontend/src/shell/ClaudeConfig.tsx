@@ -6,6 +6,7 @@
 // Each tab draws its own heading, so the description can carry a live count.
 import { useEffect, useState } from "react";
 import { Blocks, Brain, Search, Server, X, type LucideIcon } from "lucide-react";
+import { isBrowserHandledClick } from "@platform/lib/appEntry";
 import { navigateUrl, replaceSearch } from "@platform/lib/router";
 import { cn } from "@platform/lib/utils";
 import { Button } from "@platform/shadcn/ui/button";
@@ -128,6 +129,7 @@ export default function ClaudeConfig() {
                 href="/skills"
                 className="cc-link"
                 onClick={(e) => {
+                  if (isBrowserHandledClick(e)) return;
                   e.preventDefault();
                   navigateUrl("/skills");
                 }}

@@ -262,6 +262,8 @@ test("the Claude Config panel path and the old /claude-code path land on the Cla
   expect(rewriteLegacyUrl("/claude-config")).toBe("/claude-config");
   expect(rewriteLegacyUrl("/claude-code?tab=memory&embed=1")).toBe("/claude-config?tab=memory&embed=1");
   expect(rewriteLegacyUrl("/claude-code")).toBe("/claude-config");
+  expect(rewriteLegacyUrl("/claude-code?tab=skills&skill=user%2Fdemo")).toBe("/skills?skill=user%2Fdemo");
+  expect(rewriteLegacyUrl("/claude-code?tab=skills")).toBe("/skills");
   expect(rewriteLegacyUrl("/claude-md")).toBe("/claude-config");
 
   const row = (tab: string) => rewriteLegacyUrl(`/claude-config?cctab=${tab}`);
