@@ -58,10 +58,11 @@ def test_disk_space_check_reads_shutil_not_statvfs(monkeypatch, tmp_path):
         mgr._check_disk_space(str(tmp_path))
 
 
-def test_terminal_sessions_are_refused_on_windows(monkeypatch):
+def test_terminal_sessions_need_pywinpty_on_windows(monkeypatch):
     from fused_render import _platform, pty_session
     monkeypatch.setattr(_platform, "IS_WINDOWS", True)
-    with pytest.raises(RuntimeError, match="not supported on Windows"):
+    monkeypatch.setitem(sys.modules, "winpty", None)
+    with pytest.raises(RuntimeError, match="needs pywinpty"):
         pty_session.PtySessionRegistry().spawn(None)
 
 

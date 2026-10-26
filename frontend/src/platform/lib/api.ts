@@ -38,6 +38,10 @@ export interface Config {
   // Windows, where the bot process manager is POSIX-only and every /api/bots
   // call answers 503. Absent from an older server: treated as available.
   bots_available?: boolean;
+  // Whether the status-bar terminal can start here (server/routers/config.py):
+  // always true off Windows, and on Windows only with pywinpty installed (the
+  // `[cli]` extra). Absent from an older server: treated as available.
+  terminal_available?: boolean;
   // Self-update state (fused_render/update/mac.py) — present only when the
   // packaged mac app started the update manager; absent on dev servers and
   // the Linux package (it updates through its supervisor).
@@ -6878,4 +6882,12 @@ export function ackScheduleEvents(id: number): Promise<{ delivered: number }> {
  *  that predates the flag keeps its Bots page. */
 export function botsAvailable(config: Pick<Config, "bots_available"> | null | undefined): boolean {
   return config?.bots_available !== false;
+}
+
+/** Can this machine run the status-bar terminal? Only an explicit `false`
+ *  removes it, so a server that predates the flag keeps its terminal. */
+export function terminalAvailable(
+  config: Pick<Config, "terminal_available"> | null | undefined,
+): boolean {
+  return config?.terminal_available !== false;
 }
