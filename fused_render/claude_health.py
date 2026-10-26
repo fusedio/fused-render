@@ -460,9 +460,17 @@ def signed_in(path: Optional[str] = None) -> Optional[bool]:
 #: the download page and the chat template already carry.
 INSTALL_COMMAND_POSIX = "curl -fsSL https://claude.ai/install.sh | bash"
 
+#: The Windows spelling: Anthropic's documented PowerShell installer. The
+#: in-app Windows terminal is PowerShell (`terminal_profiles.py`), so this
+#: line runs there as shown. Pinned against the frontend by
+#: `test_trouble_parity.py`.
+INSTALL_COMMAND_WINDOWS = "irm https://claude.ai/install.ps1 | iex"
+
 
 def install_command() -> str:
     """The native install line, as a user would type it."""
+    if sys.platform == "win32":
+        return INSTALL_COMMAND_WINDOWS
     return INSTALL_COMMAND_POSIX
 
 
