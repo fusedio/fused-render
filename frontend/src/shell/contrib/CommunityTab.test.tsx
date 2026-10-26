@@ -142,6 +142,62 @@ test("own app on rung 2: the repo sentence, and List it in the Marketplace waits
   expect(list.every((b) => b.props.disabled === true)).toBe(true);
 });
 
+test("own app with unpushed edits: one Publish now, List it waits on it", async () => {
+  listingAnswer = {
+    ok: true,
+    state: "not-listed",
+    sentence: "sine isn't in the Marketplace yet. Your latest changes aren't on GitHub yet; the Marketplace lists what is on GitHub.",
+    listing: null,
+    actions: [{ id: "publish-now", label: "Publish now", primary: true }],
+  };
+  const own: AppContrib = {
+    ...COPY,
+    copy: { ...COPY.copy, kind: "own", repo: "vasu/sine", author: "vasu", can_push: true },
+    panel: {
+      ...COPY.panel!,
+      kind: "own",
+      repo: "vasu/sine",
+      who: "vasu",
+      state: "unpublished",
+      sentence: "1 edit not on GitHub yet.",
+      files: [],
+      unproposed: 0,
+      unpublished: 1,
+    },
+    actions: [
+      { id: "publish-now", label: "Publish now", primary: true },
+      { id: "check", label: "Check now", primary: false },
+    ],
+  };
+  const t = await mount(
+    <CommunityTab
+      dir="/apps/sine"
+      slug="sine"
+      contrib={contribOf(own)}
+      ladder={ladderOf({
+        rung: 2,
+        kind: "own",
+        github: {
+          installed: true,
+          signed_in: true,
+          login: "vasu",
+          repo: "vasu/sine",
+          visibility: "public",
+          unpushed: 1,
+          link: "https://udf.ai/x",
+        },
+      })}
+      variant="page"
+    />,
+  );
+  const buttons = t.root.findAll((n) => n.type === "button").map(textOf);
+  expect(buttons.filter((b) => b === "Publish now")).toHaveLength(1);
+  expect(buttons.filter((b) => b.includes("List it in the Marketplace"))).toHaveLength(1);
+  const list = t.root.findAll((n) => n.type === "button" && textOf(n).includes("List it in the Marketplace"));
+  expect(list[0].props.disabled).toBe(true);
+  expect(text(t)).toContain("Turns on once your edits are on GitHub.");
+});
+
 test("marketplace switch off: two rungs, and rung 2's next action is Copy install link", async () => {
   const t = await mount(
     <CommunityTab

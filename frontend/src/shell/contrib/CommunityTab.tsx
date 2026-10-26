@@ -211,6 +211,13 @@ function githubSentence(g: LadderAnswer["github"]): string {
   return `${vis ? `${vis} · ` : ""}${pushed}.`;
 }
 
+/** Why List it waits, when the listing's fix is a button rung 2 already has. */
+function gateHint(gate: { id: string; label: string }): string {
+  if (gate.id === PUBLISH_ID || gate.id === "publish-now") return "Turns on once your edits are on GitHub.";
+  if (gate.id === "sign-in") return "Turns on once you sign in to GitHub.";
+  return `Turns on after ${gate.label}.`;
+}
+
 /** Rung 3's title for the listing's state. */
 function listingTitle(k: ListingKit | null, l: LadderAnswer): string {
   const state = k?.state ?? l.listing?.state ?? null;
@@ -283,6 +290,12 @@ function OwnView({
       )
     ) : null;
 
+  // The Source panel's buttons sit on rung 2 (the GitHub side): the server's
+  // primary as a button, the rest quiet, Check now in the foot line.
+  const sourceButtons = kit ? kit.rest.map(kit.button) : [];
+  const sourceIds = new Set([...(kit?.rest ?? []), ...(kit?.footCheck ? [kit.footCheck] : [])].map((a) => a.id));
+  const panelSays = kit && kit.tone !== "success" && kit.tone !== "neutral" ? kit.panel.sentence : null;
+
   // ---- rung 2's next action: List it in the Marketplace ----------------------
   let next: ReactNode = null;
   if (current === 2 && !marketOn) {
@@ -313,9 +326,20 @@ function OwnView({
           List it in the Marketplace
         </Button>
       );
+    } else if (gate && listing && sourceIds.has(gate.id)) {
+      // The listing's own fix (Publish now while edits are not on GitHub) is
+      // a button this card already shows: say so instead of a second copy.
+      next = (
+        <div className="contrib-rung-gate">
+          <Button size="sm" disabled>
+            <Store data-icon="inline-start" />
+            List it in the Marketplace
+          </Button>
+          <span className="contrib-rung-hint">{gateHint(gate)}</span>
+        </div>
+      );
     } else if (gate && listing) {
-      // The listing's own fix comes first (Publish now while edits are not on
-      // GitHub, Sign in): rung 3's sentence says why.
+      // The listing's own fix comes first (Sign in): rung 3's sentence says why.
       next = <div className="contrib-rung-gate">{listing.button({ ...gate, primary: true })}</div>;
     } else {
       next = (
@@ -326,11 +350,6 @@ function OwnView({
       );
     }
   }
-
-  // The Source panel's buttons sit on rung 2 (the GitHub side): the server's
-  // primary as a button, the rest quiet, Check now in the foot line.
-  const sourceButtons = kit ? kit.rest.map(kit.button) : [];
-  const panelSays = kit && kit.tone !== "success" && kit.tone !== "neutral" ? kit.panel.sentence : null;
 
   const inboxOffered = !!c?.flags.inbox && !!c.inbox;
   const waiting = c?.inbox?.count ?? 0;
