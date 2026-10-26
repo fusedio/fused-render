@@ -992,6 +992,39 @@ def test_every_backend_gets_the_title_prompt_and_its_raw_reply(
     assert "Current title: Cur title" in sent[0]
 
 
+def test_a_title_ask_mid_first_turn_titles_from_the_first_message(
+        project, agent, monkeypatch):
+    """No assistant prose yet: the reader's own message is the tail."""
+    target, write = project
+    write(("user", "go"))
+    sent = []
+
+    class Proc(_FakeProc):
+        def communicate(self, input=None, timeout=None):
+            sent.append(input)
+            return super().communicate(input, timeout)
+
+    monkeypatch.setattr(recap_mod.subprocess, "Popen",
+                        lambda argv, **kw: Proc(_ok(_TITLE_REPLY)))
+    monkeypatch.setattr(agent, "_claude_bin", lambda: "/bin/claude")
+    raw = recap_mod._recap_generate(
+        agent, target, SESSION, ended=True,
+        ask={"want_recap": False, "current": "x", "first": "hello world"})
+    assert raw == _TITLE_REPLY
+    assert "User: hello world" in sent[0]
+
+
+def test_a_recap_ask_with_no_prose_still_has_nothing_to_recap(
+        project, agent, monkeypatch):
+    target, write = project
+    write(("user", "go"))
+    monkeypatch.setattr(recap_mod.subprocess, "Popen", lambda *a, **k: 1 / 0)
+    with pytest.raises(recap_mod._NothingToRecap):
+        recap_mod._recap_generate(
+            agent, target, SESSION, ended=True,
+            ask={"want_recap": True, "current": "x", "first": "hello world"})
+
+
 def test_a_switched_off_agent_is_not_asked_but_stamps_the_cooldown(
         agent, project, calls, store, monkeypatch):
     """Else the worker's wake-up would re-queue the same title on every listing."""

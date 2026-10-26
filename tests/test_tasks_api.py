@@ -602,6 +602,49 @@ def test_an_explicit_user_title_beats_the_ai_one(client, projects_dir):
     assert task["title_source"] == "user"
 
 
+def test_a_title_derived_from_the_entrys_own_message_is_not_a_user_name(
+        client, projects_dir):
+    """The one-box New task form saves the first line of the message as the
+    entry's title; that is not a name the user chose, so it must not block the
+    message / AI title steps."""
+    msg = "/development:investigate on windows:\nFused Render - problem report\n..."
+    _write_transcript(projects_dir, "sess-a", "/p", [_user(msg, T9)])
+    _seed_schedule([_entry("e1", msg, T9, state=schedule.SENT, fired=T9,
+                           turn="ok", claude_session_id="sess-a",
+                           title="/development:investigate on windows:")])
+    task = _tasks(client)[0]
+    assert task["title"] == "/development:investigate on windows:"
+    assert task["title_source"] == "message"
+
+
+def test_a_word_clamped_derived_title_is_not_a_user_name(client, projects_dir):
+    msg = "pull today's news and file it in the shared folder\nmore"
+    _write_transcript(projects_dir, "sess-a", "/p", [_user(msg, T9)])
+    _seed_schedule([_entry("e1", msg, T9, state=schedule.SENT, fired=T9,
+                           turn="ok", claude_session_id="sess-a",
+                           title="pull today's news and file it\u2026")])
+    assert _tasks(client)[0]["title_source"] == "message"
+
+
+def test_an_explicit_title_unrelated_to_the_message_stays_user(
+        client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("pull the news", T9)])
+    _seed_schedule([_entry("e1", "pull the news", T9, state=schedule.SENT,
+                           fired=T9, turn="ok", claude_session_id="sess-a",
+                           title="Morning briefing")])
+    assert _tasks(client)[0]["title_source"] == "user"
+
+
+def test_a_renamed_title_still_beats_a_derived_entry_title(client, projects_dir):
+    _write_transcript(projects_dir, "sess-a", "/p", [_user("pull the news", T9)])
+    _seed_schedule([_entry("e1", "pull the news", T9, state=schedule.SENT,
+                           fired=T9, turn="ok", claude_session_id="sess-a",
+                           title="pull the news")])
+    assert _rename(client, "sess-a", "My name").status_code == 200
+    row = _tasks(client)[0]
+    assert (row["title"], row["title_source"]) == ("My name", "renamed")
+
+
 def test_a_corrupt_line_costs_that_line_and_nothing_else(client, projects_dir):
     """A truncated write — the shape a transcript takes for the seconds a turn
     is in flight — must not take the listing down with it."""
@@ -6028,26 +6071,33 @@ def test_title_candidate_first_title_then_waits_three_prompts(tmp_path):
     assert _title_job(task, _title_rec(count=5), stored(4)) == []
 
 
-def test_title_candidate_skips_chosen_names_and_unended_turns(tmp_path):
+def test_title_candidate_skips_chosen_names_and_unstarted_turns(tmp_path):
     task = _title_task(tmp_path)
     for source in ("renamed", "user"):
         assert _title_job(task, _title_rec(), source=source) == []
     assert _title_job(task, _title_rec(), source="ai") != []
-    assert _title_job(task, _title_rec(), status="in_progress") == []
-    assert _title_job(task, _title_rec(), status="needs_attention") == []
+    for status in ("upcoming", "queued"):
+        assert _title_job(task, _title_rec(), status=status) == []
     assert _title_job(task, _title_rec(), reply=tasks_mod._QUEUED_REPLY) == []
-    for status in ("blocked", "archived"):
+    for status in ("blocked", "archived", "in_progress", "needs_attention"):
         assert len(_title_job(task, _title_rec(), status=status)) == 1
     assert _title_job(dict(task, session_id=""), _title_rec()) == []
     assert _title_job(task, {"tail": [], "count": 0}) == []
 
 
-def test_title_candidate_waits_out_the_settle_minute(tmp_path):
+def test_title_candidate_titles_a_running_session_at_once(tmp_path):
     task = _title_task(tmp_path)
-    young, = _title_job(task, _title_rec(age=30.0))
-    assert young["due"] > time.time()
-    old, = _title_job(task, _title_rec(age=120.0))
-    assert "due" not in old
+    job, = _title_job(task, _title_rec(age=1.0), status="in_progress", reply="")
+    assert job["want_title"] is True and job["want_recap"] is False
+    assert "due" not in job
+
+
+def test_title_candidate_merged_into_a_recap_job_keeps_its_due(tmp_path):
+    task = _title_task(tmp_path)
+    recap = {"session_id": "s", "for_uuid": "u1", "want_recap": True,
+             "want_title": False, "due": 123.0}
+    out = _title_job(task, _title_rec(age=30.0), out=[recap])
+    assert out == [recap] and recap["want_title"] is True and recap["due"] == 123.0
 
 
 def test_title_candidate_retries_a_failure_after_the_cooldown(tmp_path):
