@@ -80,9 +80,18 @@ POSIX_CANDIDATES = (
 )
 
 
+# Windows installs: the native installer, npm and bun. Expanded by the same
+# expanduser(expandvars()) the resolvers already apply.
+WINDOWS_CANDIDATES = (
+    "~/.local/bin/claude.exe",
+    r"%APPDATA%\npm\claude.cmd",
+    "~/.bun/bin/claude.exe",
+)
+
+
 def candidates() -> tuple:
     """The known install locations, unexpanded."""
-    return POSIX_CANDIDATES
+    return WINDOWS_CANDIDATES if sys.platform == "win32" else POSIX_CANDIDATES
 
 
 # The lowest `claude` this app's spawn line is known to work with.

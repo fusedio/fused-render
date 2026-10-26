@@ -8,8 +8,10 @@ against a fake `copilot` written in Python that speaks the two JSON-RPC
 messages and answers `session/new` the way 1.0.98 was observed to.
 """
 import json
+import ntpath
 import os
 import stat
+import shutil
 import sys
 import textwrap
 import time
@@ -17,6 +19,8 @@ import time
 import pytest
 
 from fused_render import claude_health, copilot_health
+
+_REAL_CANDIDATES = copilot_health.candidates
 from fused_render.shell import storage
 
 
@@ -1172,3 +1176,29 @@ def test_cached_models_reads_the_raw_cache_past_the_freshness_gates(tmp_path, mo
 def test_the_effort_vocabulary_is_the_backends_one_list():
     from fused_render.agent_backends import copilot
     assert copilot_health._effort_vocabulary() == tuple(copilot.EFFORTS)
+
+
+# -- Windows discovery -----------------------------------------------------------
+
+
+def test_copilot_windows_candidate_found_with_stale_path(tmp_path, monkeypatch):
+    npm = tmp_path / "appdata" / "npm"
+    npm.mkdir(parents=True)
+    shim = npm / "copilot.cmd"
+    shim.write_text("@echo off\n")
+    shim.chmod(0o755)  # os.access(X_OK) on macOS
+    (tmp_path / "unrelated").mkdir()
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.setattr(sys, "platform", "win32")
+    # shutil.which on win32 reaches for _winapi, which a POSIX host lacks.
+    monkeypatch.setattr(shutil, "which", lambda *a, **k: None)
+    # POSIX host: expand %VAR% like ntpath, and spell the separators as "/".
+    monkeypatch.setattr(os.path, "expandvars", ntpath.expandvars)
+    monkeypatch.setattr(copilot_health, "WINDOWS_CANDIDATES", tuple(
+        c.replace("\\", "/") for c in copilot_health.WINDOWS_CANDIDATES))
+    monkeypatch.setattr(copilot_health, "candidates", _REAL_CANDIDATES)
+    monkeypatch.setenv("PATH", str(tmp_path / "unrelated"))
+    assert copilot_health.resolve(allow_shell=False) == (str(shim), "candidate")
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert _REAL_CANDIDATES() is copilot_health.POSIX_CANDIDATES

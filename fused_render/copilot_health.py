@@ -85,9 +85,18 @@ POSIX_CANDIDATES = (
 )
 
 
+# Windows installs: npm, WinGet and the install script. Expanded by the same
+# expanduser(expandvars()) the resolvers already apply.
+WINDOWS_CANDIDATES = (
+    r"%APPDATA%\npm\copilot.cmd",
+    r"%LOCALAPPDATA%\Microsoft\WinGet\Links\copilot.exe",
+    "~/.local/bin/copilot.exe",
+)
+
+
 def candidates() -> tuple:
     """The known install locations, unexpanded."""
-    return POSIX_CANDIDATES
+    return WINDOWS_CANDIDATES if sys.platform == "win32" else POSIX_CANDIDATES
 
 
 # The lowest `copilot` the host's spawn line is known to work with.

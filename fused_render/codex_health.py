@@ -73,9 +73,18 @@ POSIX_CANDIDATES = (
 )
 
 
+# Windows installs: npm, bun and pnpm global bins. Expanded by the same
+# expanduser(expandvars()) the resolvers already apply.
+WINDOWS_CANDIDATES = (
+    r"%APPDATA%\npm\codex.cmd",
+    "~/.bun/bin/codex.exe",
+    r"%LOCALAPPDATA%\pnpm\codex.cmd",
+)
+
+
 def candidates() -> tuple:
     """The known install locations, unexpanded."""
-    return POSIX_CANDIDATES
+    return WINDOWS_CANDIDATES if sys.platform == "win32" else POSIX_CANDIDATES
 
 
 # The lowest `codex` the host's protocol is known to work with.

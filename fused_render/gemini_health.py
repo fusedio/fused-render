@@ -75,9 +75,18 @@ POSIX_CANDIDATES = (
 )
 
 
+# Windows installs: npm, bun and pnpm global bins. Expanded by the same
+# expanduser(expandvars()) the resolvers already apply.
+WINDOWS_CANDIDATES = (
+    r"%APPDATA%\npm\gemini.cmd",
+    "~/.bun/bin/gemini.exe",
+    r"%LOCALAPPDATA%\pnpm\gemini.cmd",
+)
+
+
 def candidates() -> tuple:
     """The known install locations, unexpanded."""
-    return POSIX_CANDIDATES
+    return WINDOWS_CANDIDATES if sys.platform == "win32" else POSIX_CANDIDATES
 
 
 # The lowest `gemini` the host is known to work with.

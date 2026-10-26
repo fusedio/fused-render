@@ -26,7 +26,6 @@ from fused_render import claude_health, codex_health, copilot_health
 
 # The real function: the autouse fixture below replaces `candidates` per test.
 _REAL_CANDIDATES = codex_health.candidates
-_REAL_SHELL_PROBE = codex_health._shell_probe
 
 
 @pytest.fixture(autouse=True)
@@ -966,6 +965,47 @@ class _FakeWinreg:
         return self.values[key], 2
 
 
+def test_windows_candidates_are_the_contract():
+    assert codex_health.WINDOWS_CANDIDATES == (
+        r"%APPDATA%\npm\codex.cmd",
+        "~/.bun/bin/codex.exe",
+        r"%LOCALAPPDATA%\pnpm\codex.cmd",
+    )
+
+
+def test_candidates_on_darwin_is_still_the_posix_list(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    assert _REAL_CANDIDATES() is codex_health.POSIX_CANDIDATES
+
+
+def test_candidates_on_windows_is_the_windows_list(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    assert _REAL_CANDIDATES() is codex_health.WINDOWS_CANDIDATES
+
+
+def test_windows_stale_path_still_finds_the_npm_cmd_shim(tmp_path, monkeypatch):
+    """A server started before npm existed has no %APPDATA%\\npm on PATH."""
+    npm = tmp_path / "appdata" / "npm"
+    npm.mkdir(parents=True)
+    shim = npm / "codex.cmd"
+    shim.write_text("@echo off\n")
+    shim.chmod(0o755)  # executable() is os.access(X_OK); a tmp file needs it on macOS
+    unrelated = tmp_path / "unrelated"
+    unrelated.mkdir()
+    monkeypatch.setattr(sys, "platform", "win32")
+    # shutil.which on win32 reaches for _winapi, which a POSIX host lacks.
+    monkeypatch.setattr(shutil, "which", lambda *a, **k: None)
+    # POSIX host: expand %VAR% like ntpath, and spell the separators as "/".
+    monkeypatch.setattr(os.path, "expandvars", ntpath.expandvars)
+    monkeypatch.setattr(codex_health, "WINDOWS_CANDIDATES", tuple(
+        c.replace("\\", "/") for c in codex_health.WINDOWS_CANDIDATES))
+    monkeypatch.setattr(codex_health, "candidates", _REAL_CANDIDATES)
+    monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "local"))
+    monkeypatch.setenv("PATH", str(unrelated))
+    assert codex_health.resolve() == (str(shim), "candidate")
+
+
 def test_windows_augmented_path_adds_registry_dirs_deduped(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(os.path, "normcase", str.lower)
@@ -992,5 +1032,3 @@ def test_registry_path_is_empty_off_windows(monkeypatch):
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setitem(sys.modules, "winreg", _FakeWinreg(user="X", machine="Y"))
     assert claude_health._windows_registry_path() == []
-
-
