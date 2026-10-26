@@ -1275,7 +1275,11 @@ index. **Backend** — the Fused canvas `fused_app_marketplace` (env
 
 ```
 apps/<slug>.json        the row — written ONLY through author PRs (review check)
-reviews/<slug>.json     written ONLY by the review bot after a merge (bypass-listed)
+reviews/<slug>.json     written ONLY by the review bot after a merge — on the
+                        unprotected `reviews` BRANCH (main's copy is a hand
+                        fallback): a user-owned repo cannot bypass-list the
+                        GitHub Actions app, and the `main` ruleset binds
+                        everyone with no bypass actor at all
 blocklist.json          maintainers only, human-reviewed PRs
 collections.json        maintainers: featured + shelves
 categories.json         the four categories today's Marketplace shows
@@ -1358,7 +1362,9 @@ hard fail with a one-line plain reason posted on the PR:
    (`is:pr is:merged` since the last entry) whose `apps/<slug>.json` row has
    no `reviews/<slug>.json` entry for `row.commit`, reads that PR's
    `fused-review` block and appends the entry (bot commit "review: <slug> @
-   <sha7>"). A deleted row (delist) appends nothing. The catalog serves a row
+   <sha7>" on the `reviews` branch, created from main's `reviews/` when
+   absent; the backend reads that branch first, main's `reviews/` as the
+   fallback). A deleted row (delist) appends nothing. The catalog serves a row
    without a review entry with `whats_new: null` until the job runs.
 
 Fixtures (`fixtures/<name>/` = the PR's file set + `expect.json` with the
