@@ -1090,6 +1090,15 @@
   outline-offset: -2px;
 }
 
+/* The long one-line description must not squeeze the location column: keep
+   it on one line at its natural width, capped. overflow, ellipsis and
+   text-align come from .cc-lrow-meta. */
+.cc-skill-row .cc-lrow-meta {
+  flex: 0 0 auto;
+  max-width: 40%;
+  white-space: nowrap;
+}
+
 .cc-skill-title {
   display: flex;
   align-items: center;
