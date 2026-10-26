@@ -109,6 +109,13 @@ const NO_ANN_TOOLS = new URLSearchParams(location.search).get("_noann") === "1";
 // workbench on request (CanvasWorkspace's `fused-canvas-shot`) — the chat's
 // Screenshot seat takes that picture (ChatMount `canvasShot`).
 const CANVAS_SHOT = new URLSearchParams(location.search).get("_canvasshot") === "1";
+// `?_hidepane=1`: the host frames this chat in a pane it can shut (the canvas
+// page's Claude pane): the chat draws the pane's close at its top row's left
+// end, and a click asks the parent to shut it (`fused-canvas-hide-pane`).
+const HIDE_PANE = new URLSearchParams(location.search).get("_hidepane") === "1";
+const hidePaneInParent = () => {
+  window.parent.postMessage({ type: "fused-canvas-hide-pane" }, location.origin);
+};
 // `?_saveon=blur`: the host frames this document as a canvas node's code pane
 // (CanvasWorkspace). Forwarded onto the CONTENT frame's render URL, where the
 // code template reads it and saves on blur / Shift+Enter instead of 250 ms
@@ -2272,6 +2279,7 @@ function TemplatePreview({
                       { noAnnTools: true }
                     : {})}
                   {...(CANVAS_SHOT ? { canvasShot: CANVAS_SHOT_FROM_PARENT } : {})}
+                  {...(HIDE_PANE ? { onHidePane: hidePaneInParent } : {})}
                   {...(nativeAsk && claudeAskRoute === "content"
                     ? { initialAsk: nativeAsk }
                     : {})}

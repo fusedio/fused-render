@@ -211,6 +211,7 @@ import {
   type Task,
 } from "@platform/lib/api";
 import { GATE_FALLBACK_MS, useFallbackAfter } from "@platform/lib/clock";
+import PanelIcon from "@platform/ui/PanelIcon";
 import "./styles/ann.css";
 import "./styles/chat.css";
 import "./styles/hljs.css";
@@ -298,6 +299,12 @@ export interface ClaudeChatProps {
    *  mount without the ann strip (`noAnnTools`, the node pane) the seat is
    *  drawn beside the ⋮ instead, so the camera is where it always is. */
   canvasShot?: CanvasShot;
+  /** The host's "hide this panel": the chat sits in a collapsible side pane
+   *  the host owns (the canvas page's Claude pane), and the pane's close
+   *  control rides the FIRST seat of this chat's top row — the explorer
+   *  sidebar's SideCloseButton, same glyph, same place (the header's left
+   *  end, on the seam the pane collapses toward). Absent: no button. */
+  onHidePane?: () => void;
   /** `_noopen=1` — this mount must not record the app it frames as OPENED
    *  (D622, the listing pane). Unlike `preview` it is not display-only: the
    *  pane is fully interactive, so it carries the no-open stamp WITHOUT the
@@ -5261,6 +5268,20 @@ function ChatBody(props: ChatBodyProps) {
           // state). `AnnStrip` returns null for itself when there is nothing to
           // photograph.
           <div className="c-anntools" ref={stripRef}>
+            {/* The host pane's close, the row's very first seat (`onHidePane`).
+                In BOTH views, landing and transcript: the pane is the host's,
+                not the conversation's. */}
+            {props.onHidePane ? (
+              <button
+                type="button"
+                className="bar-ctl bar-ctl-icon c-hide-pane"
+                title="Hide the Claude panel"
+                aria-label="Hide the Claude panel"
+                onClick={props.onHidePane}
+              >
+                <PanelIcon side="right" />
+              </button>
+            ) : null}
             {/* The way back, at the strip's left end (T:3941). Absent on the
                 landing: there is no chat to leave. */}
             {inChat && !mergedHeadRow ? backBtn : null}

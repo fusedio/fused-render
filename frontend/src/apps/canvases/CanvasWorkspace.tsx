@@ -388,7 +388,9 @@ function nodeEmbedSrc(file: string, sessionId: string | null): string {
     // `_canvasshot=1`: the chat's Screenshot seat asks THIS page (its
     // parent) for a picture of the canvas — see the `fused-canvas-shot`
     // handler below.
-    "?_mode=claude&_side=off&_noann=1&_canvasshot=1" +
+    // `_hidepane=1`: the chat draws this pane's close at its top row's left
+    // end and asks for it with `fused-canvas-hide-pane` (handler below).
+    "?_mode=claude&_side=off&_noann=1&_canvasshot=1&_hidepane=1" +
       (sessionId ? "&session_id=" + encodeURIComponent(sessionId) : ""),
   );
 }
@@ -548,9 +550,9 @@ export default function CanvasWorkspace({
     if (seeded) seedNodeSessionFromUrl(env, name, seeded);
     return seeded;
   });
-  // The right pane shown or hidden: the sync strip's panel toggle (its last
-  // control, `onToggleSide`), a legacy workbench's edge chips, or `side=off`
-  // on the URL. Hiding it leaves the selection alone: the canvas goes on
+  // The right pane shown or hidden: the close at the chat's top row's left
+  // end (`onHidePane`, both chats), the rail's doors (ClaudeRail), a legacy
+  // workbench's edge chips, or `side=off` on the URL. Hiding it leaves the selection alone: the canvas goes on
   // selecting, and the pane opens on whatever node is selected by then.
   const [sideOpen, setSideOpen] = useState<boolean>(() => sideOpenFromUrl());
   // Bumped when the node pane must REBOOT on a session for the node already
@@ -758,6 +760,19 @@ export default function CanvasWorkspace({
   useEffect(() => {
     setHostViewing(null);
   }, [node]);
+  // The node chat's "Hide the Claude panel" (`_hidepane=1` on its frame URL):
+  // same origin, and only from the node pane's own frame.
+  useEffect(() => {
+    const onHidePane = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      if (event.data?.type !== "fused-canvas-hide-pane") return;
+      const frame = document.querySelector<HTMLIFrameElement>(".canvas-node-file iframe");
+      if (!frame || event.source !== frame.contentWindow) return;
+      setSideOpen(false);
+    };
+    window.addEventListener("message", onHidePane);
+    return () => window.removeEventListener("message", onHidePane);
+  }, []);
   // The framed chat's ask, from a same-origin child frame (the node pane). The
   // answer goes back to the asking window — `event.source` — so a pane that
   // swapped frames meanwhile never receives a picture it did not ask for.
@@ -2335,8 +2350,6 @@ export default function CanvasWorkspace({
         onBack={() => navigateUrl(catalogPath(env))}
         workbenchUrl={workbenchUrl}
         embedded={embedded}
-        sideOpen={sideOpen}
-        onToggleSide={() => setSideOpen((o) => !o)}
         pull={{
           busy: pullBusy,
           error: pullError,
@@ -2589,6 +2602,8 @@ export default function CanvasWorkspace({
               // The Screenshot seat photographs the canvas through the frame's
               // own capture (`requestCanvasShot`), not a cross-origin DOM walk.
               canvasShot={canvasShot}
+              // The pane's close, at the chat's top row's left end.
+              onHidePane={() => setSideOpen(false)}
               // A Recent row that is a FILE chat on one of this canvas's nodes
               // does not leave for the explorer: it selects the node in the
               // workbench and opens that chat in the node pane. Everything

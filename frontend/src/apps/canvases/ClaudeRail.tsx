@@ -8,9 +8,9 @@
 // (sidebar.css: .sidebar-rail-btn, .sidebar-rail-items, .sidebar-rail-dot), so
 // the two edges of the window read as one idea. Top to bottom:
 //   - the panel glyph (platform/ui/PanelIcon) — the way back IN. Its other
-//     half, the Hide, is the sync strip's last control while the pane is up
-//     (SyncStrip `onToggleSide`): exactly one of the two is on screen at any
-//     moment, the explorer sidebar's own rule (SideChrome.tsx).
+//     half, the Hide, is the first seat of the chat's own top row while the
+//     pane is up (ClaudeChat `onHidePane`): exactly one of the two is on
+//     screen at any moment, the explorer sidebar's own rule (SideChrome.tsx).
 //   - the canvas chat, with the Tasks dot the sidebar's Tasks row wears: red
 //     for a run parked on a question, yellow for one in flight, green for one
 //     finished and not yet read. Reads this canvas's rows out of the shared
