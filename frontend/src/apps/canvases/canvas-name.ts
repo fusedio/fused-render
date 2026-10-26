@@ -38,8 +38,11 @@ export function validateCanvasName(
  *  `canvas_<n>` already present, bumped until free (case-insensitive). */
 export function generateCanvasName(existing: readonly string[]): string {
   const names = existing.map((n) => n.trim()).filter((n) => n.length > 0);
+  // Suffixes past 15 digits are not counted: `parseInt` would round them,
+  // `+ 1` could then not move, and the bump loop below would never end.
+  // Such a name is still a taken name; the loop just starts below it.
   const numbers = names
-    .map((n) => /^canvas_(\d+)$/i.exec(n))
+    .map((n) => /^canvas_(\d{1,15})$/i.exec(n))
     .map((m) => (m ? parseInt(m[1], 10) : 0))
     .filter((n) => n > 0);
   let current = numbers.length > 0 ? Math.max(...numbers) + 1 : 1;

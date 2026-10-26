@@ -133,10 +133,13 @@ export default function Canvases() {
   const [query, setQuery] = useState("");
   const [creating, setCreating] = useState(false); // form visible
   const [newName, setNewName] = useState("");
-  // The line under the name box: a rule the name breaks (per keystroke) or
-  // the create call's failure. Separate from `error` (the page banner) so a
-  // typo never paints a banner over the listing.
-  const [createError, setCreateError] = useState<string | null>(null);
+  // The line under the name box. Two sources, kept apart because only one
+  // gates Create: a rule the typed name breaks (`nameError`, per keystroke,
+  // disables Create) and the create call's failure (`submitError`, leaves
+  // Create on so the same name can be retried). Separate from `error` (the
+  // page banner) so a typo never paints a banner over the listing.
+  const [nameError, setNameError] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [createBusy, setCreateBusy] = useState(false);
   const newNameRef = useRef<HTMLInputElement | null>(null);
   // The form mounts with the suggestion selected: Enter keeps it, typing
@@ -287,6 +290,9 @@ export default function Canvases() {
     setPreviews({});
     previewsAskedRef.current = new Set();
     setError(null);
+    // So does the new-canvas form: its suggestion and its duplicate verdict
+    // were judged against the old env's listing.
+    closeCreate();
     // Stop watching the old env's browser sign-in: its stamp is the old
     // env's store (custom's is its own, D1412), so judging the new env by it
     // would call the sign-in done or failed wrongly. The sign-in itself
@@ -452,42 +458,66 @@ export default function Canvases() {
   // Names the duplicate rule checks against: the LIVE listing, so a canvas
   // that appears while the box is open (poll, another session) is caught by
   // onCreate's re-check even if the keystroke validation missed it.
+  // null until the listing has loaded: there is no duplicate rule to apply
+  // against nothing, so the form stays closed (button disabled) rather than
+  // suggesting `canvas_1` and letting a taken name through.
   const existingNames = useMemo(
-    () => (canvases ?? []).map((c) => c.name),
+    () => (canvases === null ? null : canvases.map((c) => c.name)),
     [canvases],
   );
 
+  // The listing moves under an open form (poll, env switch, a canvas created
+  // elsewhere): re-judge the typed name against the names as they are now.
+  useEffect(() => {
+    if (!creating) return;
+    setNameError(
+      existingNames === null
+        ? "Loading canvases…"
+        : validateCanvasName(newName, existingNames),
+    );
+    // newName is judged on every keystroke already (onNewNameChange).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [creating, existingNames]);
+
   const openCreate = () => {
+    if (existingNames === null) return;
     // The workbench prefills `canvas_<n>` and selects it, so Enter alone
     // creates and typing replaces.
     const suggested = generateCanvasName(existingNames);
     setNewName(suggested);
-    setCreateError(validateCanvasName(suggested, existingNames));
+    setNameError(validateCanvasName(suggested, existingNames));
+    setSubmitError(null);
     setCreating(true);
   };
 
   const closeCreate = () => {
     setCreating(false);
     setNewName("");
-    setCreateError(null);
+    setNameError(null);
+    setSubmitError(null);
   };
 
   const onNewNameChange = (raw: string) => {
     const name = sanitizeCanvasName(raw);
     setNewName(name);
-    setCreateError(validateCanvasName(name, existingNames));
+    setNameError(
+      existingNames === null
+        ? "Loading canvases…"
+        : validateCanvasName(name, existingNames),
+    );
+    setSubmitError(null);
   };
 
   const onCreate = async () => {
     const name = newName.trim();
-    if (!env) return;
+    if (!env || existingNames === null) return;
     const invalid = validateCanvasName(name, existingNames);
     if (invalid) {
-      setCreateError(invalid);
+      setNameError(invalid);
       return;
     }
     setCreateBusy(true);
-    setCreateError(null);
+    setSubmitError(null);
     setError(null);
     try {
       await createCanvas(env, name);
@@ -495,10 +525,12 @@ export default function Canvases() {
       await startSyncForOpen(env, name);
       navigateUrl(canvasWorkspacePath(env, name));
     } catch (e) {
-      setCreateError((e as Error).message);
+      setSubmitError((e as Error).message);
       setCreateBusy(false);
     }
   };
+
+  const createError = nameError ?? submitError;
 
   const filtered = useMemo(() => {
     if (canvases === null) return null;
@@ -593,7 +625,7 @@ export default function Canvases() {
                         <button
                           className="btn btn-primary"
                           type="submit"
-                          disabled={createBusy || !!createError}
+                          disabled={createBusy || !!nameError}
                         >
                           {createBusy ? "Creating…" : "Create"}
                         </button>
@@ -617,7 +649,11 @@ export default function Canvases() {
                       )}
                     </form>
                   ) : (
-                    <button className="btn btn-primary" onClick={openCreate}>
+                    <button
+                      className="btn btn-primary"
+                      onClick={openCreate}
+                      disabled={existingNames === null}
+                    >
                       + New canvas
                     </button>
                   )}
