@@ -431,16 +431,18 @@ export function peekCatalog(): CatalogSnapshot {
 
 /** The catalog, from the module cache when there is one (instant on a Back),
  *  revalidated in the background on every mount. */
-export function useCatalog(): CatalogSnapshot {
+/** `read` false: subscribe to what is cached but never ask the server — a
+ *  `.fused` install page shown with the store off (MarketplacePage `bare`). */
+export function useCatalog(read = true): CatalogSnapshot {
   const [s, setS] = useState(snapshot);
   useEffect(() => {
     catalogListeners.add(setS);
     setS(snapshot);
-    void refreshCatalog();
+    if (read) void refreshCatalog();
     return () => {
       catalogListeners.delete(setS);
     };
-  }, []);
+  }, [read]);
   return s;
 }
 

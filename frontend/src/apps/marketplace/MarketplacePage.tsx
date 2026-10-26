@@ -17,6 +17,7 @@ import { useEffect, useRef, useState } from "react";
 import { IS_EMBED, navigateUrl, pushHistory, replaceSearch } from "@platform/lib/router";
 import { useNavEpoch } from "@platform/lib/hooks";
 import { MARKETPLACE_HOME, useCatalog } from "@platform/lib/marketplace";
+import { useMarketplaceFeature } from "@platform/lib/marketplace-flag";
 import { StoreHeader, type StoreTab } from "./StoreHeader";
 import { CatalogFooter, Discover } from "./Discover";
 import { InstalledPage } from "./InstalledPage";
@@ -79,9 +80,14 @@ export function MarketplacePage({ fusedFile }: { fusedFile?: string } = {}) {
   const navEpoch = useNavEpoch();
   const route: Route = fusedFile ? { kind: "file", path: fusedFile } : parseMarketplacePath(location.pathname, location.search);
   // A chrome-free embed (the window a `.fused` double-click opened) shows the
-  // page alone: no store header to wander off into the catalog from.
-  const bare = route.kind === "file" && IS_EMBED;
-  const snap = useCatalog();
+  // page alone: no store header to wander off into the catalog from. So does
+  // a `.fused` opened with the store OFF (`marketplace_enabled`; the install
+  // page is the one `.fused` view whatever the flag says): no header whose
+  // tabs would land on the "Marketplace is off" notice, and no catalog read
+  // — the store's API is not asked for on a file open the flag never offered.
+  const storeOn = useMarketplaceFeature();
+  const bare = route.kind === "file" && (IS_EMBED || storeOn !== true);
+  const snap = useCatalog(!bare);
   const initial = route.kind === "discover" ? readParams() : { category: "all", q: "" };
   const [category, setCategory] = useState(initial.category);
   const [q, setQ] = useState(initial.q);

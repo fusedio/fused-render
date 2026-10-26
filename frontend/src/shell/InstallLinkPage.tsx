@@ -121,7 +121,9 @@ export default function InstallLinkPage() {
         // IS_TOP_EMBED) is read once at module init, so a pushState onto the
         // embed url would keep the shell's chrome and never mount the
         // EmbedStrip — the same rule EmbedStrip applies going back.
-        location.assign(embedUrlForFsPath(r.file));
+        // `replace`, not `assign`: this page must not stay in history, or Back
+        // from the install page lands here and re-runs the download forward.
+        location.replace(embedUrlForFsPath(r.file));
       } catch (e) {
         if (!alive.current) return;
         setPhase({ state: "failed", error: (e as Error).message || "download failed" });
