@@ -1332,9 +1332,15 @@
 
 .contrib-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   align-items: start;
+}
+
+@media (max-width: 640px) {
+  .contrib-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .contrib-card {
@@ -1369,6 +1375,9 @@
 
 .contrib-card .contrib-inbox-empty {
   margin-top: 4px;
+  /* The slot's edge: one hairline in the border grey, not the kit's thick
+     dashes in the text colour. */
+  border: 1px dashed var(--border);
 }
 
 .contrib-card .contrib-activity {
