@@ -36,11 +36,13 @@
 //            a workbench on the body channel (`caps: ["body"]`) toggles its
 //            OWN code pane from the node toolbar's code button and never
 //            posts this. The right pane here is Claude's alone and has no
-//            Code tab, so from an older workbench the message selects that
-//            node (fused-embed-select when it is not the one shown) and
-//            opens the pane on the node's chat — the nearest thing the host
-//            has, rather than a dead button. Accepted only from the
-//            workbench frame's own window.
+//            Code tab, so from an older workbench the message is a TOGGLE of
+//            the pane on that node's chat — the nearest thing the host has,
+//            rather than a dead button: with the pane up on that node it
+//            shuts; otherwise the node is selected (fused-embed-select when
+//            it is not the one shown; the pane opens once the selection
+//            echoes, so another node's chat never shows in between) and the
+//            pane opens. Accepted only from the workbench frame's own window.
 //   iframe → { type: "fused-embed-delete", id, name }  the canvas menu's
 //            "Delete canvas", after the frame's own two confirmations: the
 //            host deletes (POST /api/canvases/delete — sync stopped, server
@@ -281,7 +283,7 @@ function hostFocused(): boolean {
  * No `instanceof` here: an element from a child document belongs to that
  * frame's realm, where `HTMLIFrameElement`/`HTMLElement` are different
  * constructors — the walk would stop one level down (the explorer embed's
- * own frames, the Code tab's CodeMirror) and read the typing user as idle.
+ * own frames, the chat's editors) and read the typing user as idle.
  */
 function activeElementIsEditable(doc: Document): boolean {
   let el: Element | null = doc.activeElement;
@@ -1561,6 +1563,10 @@ export default function CanvasWorkspace({
   // without re-subscribing it on every selection.
   const nodeRef = useRef<NodeSel | null>(node);
   nodeRef.current = node;
+  // A legacy open-code for a node not yet shown: the pane opens only once
+  // the workbench's selection echo has set that node (a refused select
+  // changes nothing).
+  const pendingOpenRef = useRef<string | null>(null);
 
   // A HOP ONTO THIS CANVAS WHILE IT IS MOUNTED — the Tasks page's door on
   // another node of the canvas the reader is already on, a notification —
@@ -1806,7 +1812,12 @@ export default function CanvasWorkspace({
             // Another node: its pane replaces this one.
             setNode({ udfName, kind, file });
           }
+          if (pendingOpenRef.current === udfName) {
+            pendingOpenRef.current = null;
+            setSideOpen(true);
+          }
         } else {
+          pendingOpenRef.current = null;
           // The canvas deselected (pane click, folder node, multi-select, or
           // the node is gone after a re-hydrate): follow it back to the
           // canvas chat. Owner call — the canvas is the one source of truth
@@ -1822,10 +1833,19 @@ export default function CanvasWorkspace({
         if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
         const udfName = event.data?.udfName;
         if (typeof udfName !== "string" || !udfName) return;
+        // The pane already up on that node: the button is its "Hide".
+        if (sidePanelStateRef.current.open && nodeRef.current?.udfName === udfName) {
+          setSideOpen(false);
+          return;
+        }
         // Not the node shown: select it in the workbench, whose selection
         // echo (above) is what sets `node` — it alone states the node's kind
-        // and file.
-        if (nodeRef.current?.udfName !== udfName) sendSelect(udfName);
+        // and file — and opens the pane then (`pendingOpenRef`).
+        if (nodeRef.current?.udfName !== udfName) {
+          pendingOpenRef.current = udfName;
+          sendSelect(udfName);
+          return;
+        }
         setSideOpen(true);
         return;
       }
@@ -1858,10 +1878,13 @@ export default function CanvasWorkspace({
         return;
       }
       if (type === "fused-embed-open-side" || type === "fused-embed-close-side") {
-        // An older workbench's right-edge chips (header).
+        // An older workbench's right-edge chips (header). A close also drops
+        // an open-code still waiting on its selection echo: the close wins.
         if (embedded) return;
         if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
-        setSideOpen(type === "fused-embed-open-side");
+        const open = type === "fused-embed-open-side";
+        if (!open) pendingOpenRef.current = null;
+        setSideOpen(open);
       }
     };
     window.addEventListener("message", onMessage);
