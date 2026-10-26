@@ -163,6 +163,7 @@ function Rung({
   eyebrow,
   Icon,
   state,
+  done = false,
   title,
   chip,
   children,
@@ -172,6 +173,9 @@ function Rung({
   eyebrow: string;
   Icon: typeof Laptop;
   state: RungState;
+  /** The rung's fact holds (on this Mac / on GitHub / live): a green check,
+   *  whether or not it is the current card — the three marks read the same. */
+  done?: boolean;
   title: ReactNode;
   chip?: ReactNode;
   children?: ReactNode;
@@ -179,14 +183,14 @@ function Rung({
 }) {
   return (
     <section
-      className={cn("contrib-rung", `is-${state}`)}
+      className={cn("contrib-rung", `is-${state}`, done && "is-reached")}
       aria-label={`Step ${n}: ${eyebrow}`}
       aria-current={state === "now" ? "step" : undefined}
       data-rung={n}
     >
       <div className="contrib-rung-eyebrow">
         <span className="contrib-rung-mark" aria-hidden="true">
-          {state === "done" ? <Check /> : <Icon />}
+          {done ? <Check /> : <Icon />}
         </span>
         {eyebrow}
       </div>
@@ -216,6 +220,16 @@ function gateHint(gate: { id: string; label: string }): string {
   if (gate.id === PUBLISH_ID || gate.id === "publish-now") return "Turns on once your edits are on GitHub.";
   if (gate.id === "sign-in") return "Turns on once you sign in to GitHub.";
   return `Turns on after ${gate.label}.`;
+}
+
+/** The Listing card's "Last published" value: the approved release's date
+ *  (+ version), or "Never" before the first one. */
+function lastPublished(k: ListingKit | null, l: LadderAnswer): string {
+  const approved = k?.listing?.approved ?? l.listing?.listing?.approved ?? null;
+  const when = releaseDate(approved?.at ?? null);
+  if (!when) return "Never";
+  const version = ladderListing(l.listing).version;
+  return version ? `${when} · v${String(version).replace(/^v/, "")}` : when;
 }
 
 /** Rung 3's title for the listing's state. */
@@ -358,7 +372,7 @@ function OwnView({
   return (
     <>
       <div className={cn("contrib-ladder", !marketOn && "is-two")} aria-label="Where this app stands">
-        <Rung n={1} eyebrow="On this Mac" Icon={Laptop} state={rungState(1, current)} title="Your app">
+        <Rung n={1} eyebrow="On this Mac" Icon={Laptop} state={rungState(1, current)} done title="Your app">
           <p className="contrib-rung-sentence">{current === 1 ? "Only you have it." : `${slug}, on this Mac.`}</p>
           {current === 1 && l.github.blocked && <p className="contrib-rung-detail">{l.github.blocked}</p>}
           <div className="contrib-rung-actions">
@@ -380,6 +394,7 @@ function OwnView({
           eyebrow="On GitHub"
           Icon={GitBranch}
           state={rungState(2, current)}
+          done={rung >= 2}
           title={
             l.github.repo ? (
               <a href={githubUrl(l.github.repo)} target="_blank" rel="noopener noreferrer">
@@ -428,6 +443,7 @@ function OwnView({
             eyebrow="In the Marketplace"
             Icon={Store}
             state={rungState(3, current)}
+            done={listingState === "live"}
             title={listingTitle(listing, l)}
             chip={
               listingState === "live" ? (
@@ -462,14 +478,16 @@ function OwnView({
           </Card>
         )}
         {marketOn && current >= 2 && (
-          <Card title="Listing">
-            <Row label="Name, description, category, tags, icon, preview">
-              {listing ? (
+          <Card
+            title="Listing"
+            action={
+              listing ? (
                 <Button size="sm" variant="outline" onClick={listing.openPublish} disabled={busy}>
                   Edit details
                 </Button>
-              ) : null}
-            </Row>
+              ) : null
+            }
+          >
             <Row label="Doctor">
               <button
                 type="button"
@@ -491,6 +509,9 @@ function OwnView({
               <span className="contrib-row-quiet">
                 {l.github.visibility === "public" ? "Public" : l.github.visibility === "private" ? "Private" : "Checking…"}
               </span>
+            </Row>
+            <Row label="Last published">
+              <span className="contrib-row-quiet">{lastPublished(listing, l)}</span>
             </Row>
           </Card>
         )}
@@ -718,10 +739,28 @@ function CopyView({
 
 // ---- small pieces ------------------------------------------------------------
 
-function Card({ title, children, wide }: { title: string; children: ReactNode; wide?: boolean }) {
+function Card({
+  title,
+  children,
+  wide,
+  action,
+}: {
+  title: string;
+  children: ReactNode;
+  wide?: boolean;
+  /** One button on the title line, right-aligned (Listing's Edit details). */
+  action?: ReactNode;
+}) {
   return (
     <section className={cn("contrib-card", wide && "is-wide")} aria-label={title}>
-      <h3 className="contrib-card-title">{title}</h3>
+      {action ? (
+        <div className="contrib-card-head">
+          <h3 className="contrib-card-title">{title}</h3>
+          {action}
+        </div>
+      ) : (
+        <h3 className="contrib-card-title">{title}</h3>
+      )}
       {children}
     </section>
   );

@@ -1199,11 +1199,6 @@
   background: var(--bg-alt);
 }
 
-.contrib-rung.is-now {
-  border-color: color-mix(in srgb, var(--fg) 34%, var(--border));
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--fg) 8%, transparent);
-}
-
 .contrib-rung.is-next {
   background: transparent;
 }
@@ -1235,12 +1230,12 @@
   height: 11px;
 }
 
-.contrib-rung.is-done .contrib-rung-mark {
+.contrib-rung.is-reached .contrib-rung-mark {
   background: color-mix(in srgb, var(--success) 15%, transparent);
   color: var(--success);
 }
 
-.contrib-rung.is-now .contrib-rung-mark {
+.contrib-rung.is-now:not(.is-reached) .contrib-rung-mark {
   color: var(--fg);
 }
 
@@ -1357,6 +1352,13 @@
 
 .contrib-card.is-wide {
   grid-column: 1 / -1;
+}
+
+.contrib-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .contrib-card-title {

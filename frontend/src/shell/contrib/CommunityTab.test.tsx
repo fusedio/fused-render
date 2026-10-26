@@ -134,6 +134,11 @@ test("own app on rung 2: the repo sentence, and List it in the Marketplace waits
   expect(out).toContain("Public · 2 edits not pushed yet.");
   expect(out).toContain("List it in the Marketplace");
   expect(out).toContain("Turns on when Doctor is green");
+  // The Listing card: Edit details on the title line, Last published Never.
+  expect(out).toContain("Edit details");
+  expect(out).not.toContain("Name, description, category");
+  expect(out).toContain("Last published");
+  expect(out).toContain("Never");
   expect(out).toContain("Fix with Claude");
   expect(out).toContain("Copy install link");
   // The List button is there but off until Doctor is green.
