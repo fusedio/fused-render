@@ -171,6 +171,27 @@ describe("switching tabs on the Claude Config page", () => {
     expect(text).toContain("Installed · 0");
   });
 
+  test("a marketplace picked while searching stops filtering Installed once the search is cleared", async () => {
+    pluginRows = [PLUGIN];
+    availRows = [{ ...AVAIL("figma"), marketplace: "other" }];
+    const box = await mount();
+    const search = () => box.root.findAllByType("input").find((i) => i.props.type === "search")!;
+    const type = async (value: string) =>
+      act(async () => {
+        search().props.onChange({ currentTarget: { value }, target: { value }, nativeEvent: { defaultPrevented: false } });
+      });
+    await type("e");
+    const select = box.root.findByProps({ "aria-label": "Marketplace" });
+    await act(async () => {
+      select.props.onChange({ target: { value: "other" } });
+    });
+    await type("");
+    const text = textOf(box.root);
+    expect(box.root.findAllByProps({ "aria-label": "Marketplace" }).length).toBe(0);
+    expect(text).toContain("mine");
+    expect(text).not.toContain("No plugins installed");
+  });
+
   test("the nav has no heading above the tabs", async () => {
     const box = await mount();
     expect(nav(box).findAll((n) => n.props.className === "settings-nav-heading")).toHaveLength(0);

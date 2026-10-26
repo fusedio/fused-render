@@ -300,7 +300,10 @@ export default function PluginsSection({ filter = "", title, blurb }: HeadedSect
   // picking it will actually show.
   const shown: { marketplace: string }[] = [...installed, ...discover];
   const index = indexOf(shown);
-  const inMarketplace = (m: string) => marketplace === ALL || m === marketplace;
+  // The picker only exists while the catalog shows; a marketplace chosen there
+  // must not keep filtering Installed once the picker is gone and cannot be undone.
+  const inMarketplace = (m: string) =>
+    !showAvailable || marketplace === ALL || m === marketplace;
   const rowsInstalled = installed.filter((p) => inMarketplace(p.marketplace));
   const rowsDiscover = discover.filter((p) => inMarketplace(p.marketplace));
   const rowCount = rowsInstalled.length + rowsDiscover.length;
