@@ -1817,6 +1817,19 @@ or fails for, S3.
 | `stats/<kind>/days/<YYYY-MM-DD>.json` | `{slug: n}` — a recount of that day's keys, idempotent (two workers writing it at once cannot double-count) | each rollup recounts today and yesterday; older days are frozen |
 | `stats/<kind>/current.json` | `{totals, window (last 30 days), days, generated_at}` = the day files summed | each rollup (`fused.cache` 5 min per worker) |
 
+Caching, as built (owner: "have a pass at the canvas"): the PARSED index is
+what `fused.cache` keeps (`_index_text`, 5 min per worker), not only the
+zip, so a request pays `json.loads`, not unzip + two archives + parse; the
+stats rollups are `fused.cache` 5 min and read once per request (a 60 s
+worker memo), not once per row; the rollup writes a day file or
+`current.json` only when a count changed; the read-only UDFs (catalog,
+search, categories, collections, blocklist, app_detail, stats) answer from
+the platform cache for 60 s (`cache_max_age="60s"`, same params → same
+answer) while the two that COUNT — `fused_app_install`, `fused_app_listing`
+— stay at 0 s. The store shows the count: the card's proof line and the
+detail strip's Installs cell (`install_count` on the catalog row; Python
+and Contributors moved to the Information list).
+
 Known ceiling: `fused.api.list` takes no pagination parameter (the server
 answers the listing whole), so if the platform ever caps a listing, a day
 with more events of one kind than that cap undercounts silently. Not
