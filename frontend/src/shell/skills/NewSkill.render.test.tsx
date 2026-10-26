@@ -377,7 +377,9 @@ describe("New skill", () => {
   test("Enter in Ask for changes does nothing while Claude is running", async () => {
     const { box } = await mount({ initialDesc: "Review pages" });
     await act(async () => { button(box, "Draft it").props.onClick({ preventDefault() {} }); });
-    await tick();
+    // A stale row from an earlier test can sit in the shared feed for one poll.
+    for (let i = 0; i < 20 && !textOf(box.root.findByProps({ "data-testid": "draft-card" })).includes("Claude is drafting"); i++) await tick(50, 1);
+    expect(textOf(box.root.findByProps({ "data-testid": "draft-card" }))).toContain("Claude is drafting");
     const input = box.root.findByProps({ "aria-label": "Ask for changes" });
     await change(input, "more");
     await act(async () => { input.props.onKeyDown({ key: "Enter" }); });
