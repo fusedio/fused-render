@@ -4,7 +4,7 @@ editing any of the user's dotfiles.
 
 Two halves:
 
-  * `integrate(profile)` rewrites a `TerminalProfile` for zsh and bash so the
+  * `integrate(profile)` rewrites a `TerminalProfile` for zsh, bash and PowerShell so the
     shell, once it has finished its own startup files, installs hooks that emit
     escape sequences into the output stream. Other shells (fish, sh, ...) are
     returned untouched; their fields simply stay null.
@@ -36,6 +36,10 @@ set — the same trade VS Code makes. `shopt login_shell` reads off as a result.
 bash has no preexec, so the command line comes from a DEBUG trap plus
 `history 1`.
 
+PowerShell (pwsh / Windows PowerShell, via ConPTY): `-NoExit -Command` dot-sources
+a shim that wraps `prompt` (133;D, 7, 133;A) and PSReadLine's
+`PSConsoleHostReadLine` (633;E, 133;C), after the user's $PROFILE has loaded.
+
 The shim files are generated from the strings below into a per-user directory
 under the system temp dir (not shipped as package data, so every bundle layout
 gets them for free).
@@ -45,6 +49,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import os
+import re
 import shutil
 import stat
 import tempfile
@@ -174,11 +179,72 @@ if [ -z "$(trap -p DEBUG)" ]; then
 fi
 """
 
+_POWERSHELL = r"""# fused-render shell integration shim (PowerShell 5.1 and 7+). ASCII only:
+# Windows PowerShell reads a BOM-less file as ANSI.
+# The user's $PROFILE has already run (no -NoProfile); this wraps whatever
+# `prompt` and PSReadLine's line reader it left behind.
+if (-not (Test-Path variable:global:__FrOrigPrompt)) {
+  $Global:__FrOrigPrompt = $function:prompt
+  $Global:__FrRan = $false
+
+  function Global:__FrEscape([string]$v) {
+    $v.Replace('\', '\\').Replace(';', '\x3b').Replace([string][char]27, '\x1b').Replace([string][char]7, '\x07').Replace("`n", '\x0a')
+  }
+
+  function Global:__FrCwd {
+    $loc = $ExecutionContext.SessionState.Path.CurrentLocation
+    if ($loc.Provider.Name -ne 'FileSystem') { return '' }
+    $segments = $loc.ProviderPath.Replace('\', '/').Split('/') | ForEach-Object {
+      [System.Uri]::EscapeDataString($_).Replace('%3A', ':')
+    }
+    $hostName = if ($env:COMPUTERNAME) { $env:COMPUTERNAME } else { 'localhost' }
+    return "$([char]27)]7;file://$hostName/$($segments -join '/')$([char]7)"
+  }
+
+  function Global:prompt {
+    $ok = $?
+    $code = $LASTEXITCODE
+    $esc = [char]27
+    $bel = [char]7
+    $out = ''
+    if ($Global:__FrRan) {
+      $Global:__FrRan = $false
+      $exit = 0
+      if (-not $ok) {
+        $exit = 1
+        if ($null -ne $code -and $code -ne 0) { $exit = $code }
+      }
+      $out += "$esc]133;D;$exit$bel"
+    }
+    $out += __FrCwd
+    $out += "$esc]133;A$bel"
+    $global:LASTEXITCODE = $code
+    $text = & $Global:__FrOrigPrompt
+    return $out + $text
+  }
+
+  if (Get-Module -Name PSReadLine) {
+    $Global:__FrOrigReadLine = $function:PSConsoleHostReadLine
+    function Global:PSConsoleHostReadLine {
+      $code = $global:LASTEXITCODE
+      $line = & $Global:__FrOrigReadLine
+      $global:LASTEXITCODE = $code
+      $Global:__FrRan = $true
+      $esc = [char]27
+      $bel = [char]7
+      [Console]::Write("$esc]633;E;$(__FrEscape $line)$bel$esc]133;C$bel")
+      return $line
+    }
+  }
+}
+"""
+
 _SHIM_FILES = {
     "zsh/.zshenv": _ZSHENV,
     "zsh/.zprofile": _ZPROFILE,
     "zsh/.zshrc": _ZSHRC,
     "bash/bashrc": _BASHRC,
+    "powershell/fused.ps1": _POWERSHELL,
 }
 
 
@@ -275,10 +341,14 @@ def _shim_root() -> str:
     return _fallback_shim_root(uid)
 
 
+_POWERSHELLS = ("pwsh", "pwsh.exe", "powershell", "powershell.exe")
+
+
 def integrate(profile: TerminalProfile) -> TerminalProfile:
     """`profile` rewritten to load the shell-integration hooks, or `profile`
     itself for a shell this does not know."""
-    name = os.path.basename(profile.shell)
+    # Both separators: os.path.basename keeps a Windows path whole on POSIX.
+    name = profile.shell.replace("\\", "/").rsplit("/", 1)[-1]
     if "FUSED_SHIM_DIR" in profile.env or "--init-file" in profile.argv:
         return profile  # already integrated; twice would lose the user's ZDOTDIR
     if name == "zsh":
@@ -292,6 +362,18 @@ def integrate(profile: TerminalProfile) -> TerminalProfile:
         env["ZDOTDIR"] = shim
         env["FUSED_SHIM_DIR"] = shim
         return dataclasses.replace(profile, env=env)
+    if name.lower() in _POWERSHELLS:
+        shim = os.path.join(_shim_root(), "powershell", "fused.ps1")
+        env = dict(profile.env)
+        env["FUSED_SHIM_DIR"] = os.path.dirname(shim)
+        # `. <scriptblock>` rather than `. <file>`: dot-sourcing a script FILE
+        # is refused under the default Restricted execution policy of Windows
+        # PowerShell, a scriptblock built from the text is not. No
+        # -NoProfile, so the user's $PROFILE still loads first.
+        quoted = shim.replace("'", "''")
+        load = f". ([scriptblock]::Create([IO.File]::ReadAllText('{quoted}')))"
+        argv = [profile.argv[0], "-NoLogo", "-NoExit", "-Command", load]
+        return dataclasses.replace(profile, argv=argv, env=env)
     if name == "bash":
         rcfile = os.path.join(_shim_root(), "bash", "bashrc")
         env = dict(profile.env)
@@ -344,7 +426,12 @@ def _decode_cwd(uri: str) -> Optional[str]:
     slash = rest.find("/")
     if slash < 0:
         return None
-    return unquote(rest[slash:])
+    path = unquote(rest[slash:])
+    if re.match(r"/[A-Za-z]:(/|\\|$)", path):
+        # A Windows drive URI (`file:///C:/Users/x`): drop the leading slash
+        # and use the native separators.
+        path = path[1:].replace("/", "\\")
+    return path
 
 
 class ShellEventParser:

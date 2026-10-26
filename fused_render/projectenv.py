@@ -1021,6 +1021,7 @@ _MODULE_TO_DIST = {
     # mpl_toolkits must still connect.
     "mpl-toolkits": "matplotlib",
     "multipart": "python-multipart",
+    "winpty": "pywinpty",
     "appkit": "pyobjc-framework-cocoa",
     "foundation": "pyobjc-framework-cocoa",
     "cocoa": "pyobjc-framework-cocoa",
