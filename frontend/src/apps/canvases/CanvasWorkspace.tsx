@@ -32,12 +32,17 @@
 //            load; null from the sidebar's close button, so both sides agree)
 //   parent → { type: "fused-embed-pushed", push_seq }  after a push, for the
 //            workbench's save chip ("Published"); it triggers no reload.
-//   iframe → { type: "fused-embed-open-code", udfName, backendId? }  the node
-//            toolbar's code button in embed mode. A TOGGLE: with that node's
-//            Code tab already up, the right pane shuts; otherwise this page
-//            selects the node (fused-embed-select first when it is not the
-//            one shown), opens the right pane if it was hidden, and switches
-//            it to Code. Accepted only from the workbench frame's own window.
+//   iframe → { type: "fused-embed-open-code", udfName, backendId? }  LEGACY:
+//            a workbench on the body channel (`caps: ["body"]`) toggles its
+//            OWN code pane from the node toolbar's code button and never
+//            posts this. The right pane here is Claude's alone and has no
+//            Code tab, so from an older workbench the message is a TOGGLE of
+//            the pane on that node's chat — the nearest thing the host has,
+//            rather than a dead button: with the pane up on that node it
+//            shuts; otherwise the node is selected (fused-embed-select when
+//            it is not the one shown; the pane opens once the selection
+//            echoes, so another node's chat never shows in between) and the
+//            pane opens. Accepted only from the workbench frame's own window.
 //   iframe → { type: "fused-embed-delete", id, name }  the canvas menu's
 //            "Delete canvas", after the frame's own two confirmations: the
 //            host deletes (POST /api/canvases/delete — sync stopped, server
@@ -51,12 +56,13 @@
 //            embedded): open or shut the right pane here. Accepted only from
 //            the workbench frame's own window.
 //   parent → { type: "fused-embed-side-panel", open, code, width }  whether the
-//            right pane is up, whether it is up on the shown node's Code tab,
-//            and its width in px over the frame — always 0: the pane shares
-//            the row with the frame, it never covers it — on every change and
-//            on every frame load: the frame's expand chip shows while the pane
-//            is shut, its collapse chip while it is up, and the toolbar's code
-//            button reads "Hide" / "Show code panel".
+//            right pane is up, `code` (whether it is up on a Code tab — there
+//            is none, so always false) and its width in px over the frame —
+//            always 0: the pane shares the row with the frame, it never covers
+//            it — on every change and on every frame load. A workbench on the
+//            body channel draws its own pane and chips and ignores this; an
+//            older one shows its expand chip while the pane is shut and its
+//            collapse chip while it is up.
 //   parent → { type: "fused-embed-pan", dx, dy }  on every tick of a seam drag,
 //            half the pane's width change: the canvas pans to keep its visible
 //            centre put, as the workbench's own sidebar drags do.
@@ -167,9 +173,8 @@ import { createPortal } from "react-dom";
 import { addCurrentApp } from "@platform/lib/api";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { ChatMount, ShotViewer, type CanvasShot, type CanvasShotAnswer, type CanvasShotWhat, type Viewable } from "@apps/claude";
-import { rawUrl, statPath, type TemplateEntry } from "@platform/lib/api";
+import { statPath } from "@platform/lib/api";
 import { EMBED_PREFIX, NAV_EVENT, VIEW_PREFIX, embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
-import { Tabs, TabsList, TabsTrigger } from "@platform/shadcn/ui/tabs";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import {
   CanvasOwnedError,
@@ -264,12 +269,6 @@ const FAILED_POLLS_BEFORE_RELEASE = 3;
 // clicked in and out of repeatedly must not become a probe per click.
 const FOCUS_CHECK_MIN_MS = 3000;
 
-// The node pane's Code tab saves on blur / Shift+Enter (`_saveon=blur`, the code
-// template), and a blur save can still be in flight when the frame goes away:
-// anything that unmounts or remounts it asks the frame to flush first, waiting
-// at most this long (a hung write must not wedge the canvas).
-const NODE_CODE_FLUSH_MS = 10_000;
-
 /** This window's focus as the canvas should count it. */
 function hostFocused(): boolean {
   return document.visibilityState === "visible" && document.hasFocus();
@@ -284,7 +283,7 @@ function hostFocused(): boolean {
  * No `instanceof` here: an element from a child document belongs to that
  * frame's realm, where `HTMLIFrameElement`/`HTMLElement` are different
  * constructors — the walk would stop one level down (the explorer embed's
- * own frames, the Code tab's CodeMirror) and read the typing user as idle.
+ * own frames, the chat's editors) and read the typing user as idle.
  */
 function activeElementIsEditable(doc: Document): boolean {
   let el: Element | null = doc.activeElement;
@@ -323,15 +322,6 @@ function nodeFile(dir: string, node: NodeSel): string {
   return `${dir.replace(/\/+$/, "")}/${node.file}`;
 }
 
-/** Which of the explorer's content modes the node pane frames: the chat on
- *  the file, or the file's code. It is the `_mode` of the framed embed URL and
- *  rides this page's URL as `node_tab` so a reload keeps it. */
-type NodeTab = "claude" | "code";
-
-function nodeTabFromUrl(): NodeTab {
-  return new URLSearchParams(window.location.search).get("node_tab") === "code" ? "code" : "claude";
-}
-
 /** Whether the right pane (canvas chat or node pane) is up. Shut rides this
  *  page's URL as `side=off` — the explorer's own word for a shut companion
  *  column (`_side=off`, apps/explorer/lib/preview-side.ts) — so a reload keeps
@@ -340,20 +330,6 @@ const SIDE_OFF = "off";
 
 function sideOpenFromUrl(): boolean {
   return new URLSearchParams(window.location.search).get("side") !== SIDE_OFF;
-}
-
-/** A node tab's icon: the mode's own template icon.svg off the node file's
- *  stat, drawn exactly as the explorer's sidebar tabs draw theirs
- *  (apps/explorer/ModeSwitcher's templateModeIcon, which an app may not
- *  import): a currentColor mask, else the mode's first letter in a box. */
-function nodeTabIcon(mode: NodeTab, templates: readonly TemplateEntry[]): React.ReactNode {
-  const entry = templates.find((t) => t.mode === mode);
-  if (!entry) return null;
-  if (entry.icon === null) {
-    return <span className="mode-icon-placeholder">{mode.charAt(0).toUpperCase()}</span>;
-  }
-  const mask = `url("${rawUrl(entry.icon)}")`;
-  return <span className="mode-icon-mask" style={{ WebkitMaskImage: mask, maskImage: mask }} />;
 }
 
 /**
@@ -391,26 +367,20 @@ function rememberHandle(env: string, handle: string): void {
   }
 }
 
-function nodeEmbedSrc(file: string, tab: NodeTab, sessionId: string | null): string {
+function nodeEmbedSrc(file: string, sessionId: string | null): string {
   // `_noann=1` on the chat: its Screenshot / Annotate seats and view toggle
-  // would open the chat's own preview of the file, which is the Code tab's
-  // job here (owner, 2026-10-17). It also pins the chat to its narrow CHAT
+  // would open the chat's own preview of the file, which the workbench's own
+  // code pane does here (owner, 2026-10-17). It also pins the chat to its narrow CHAT
   // view at every width (useNarrowView `chatViewOnly`): the chat's own file
   // pane stays mounted — it is what files the session under the file — but
   // never on screen, so a wide node pane is the chat alone, not code + chat. `session_id` when a Recent row on the
   // canvas chat hopped here: the frame's chat resumes that conversation.
   return embedUrlForFsPath(
     file,
-    "?_mode=" + tab + "&_side=off" +
-      // `_canvasshot=1`: the chat's Screenshot seat asks THIS page (its
-      // parent) for a picture of the canvas — see the `fused-canvas-shot`
-      // handler below.
-      (tab === "claude" ? "&_noann=1&_canvasshot=1" : "") +
-      // `_saveon=blur`: the code template saves when the editor loses focus
-      // or on Shift+Enter, not 250 ms after every edit — each save of a node
-      // file reaches the canvas as a delta that RUNS the node (owner,
-      // 2026-10-24: "when I keep typing it should not evaluate").
-      (tab === "code" ? "&_saveon=blur" : "") +
+    // `_canvasshot=1`: the chat's Screenshot seat asks THIS page (its
+    // parent) for a picture of the canvas — see the `fused-canvas-shot`
+    // handler below.
+    "?_mode=claude&_side=off&_noann=1&_canvasshot=1" +
       (sessionId ? "&session_id=" + encodeURIComponent(sessionId) : ""),
   );
 }
@@ -563,10 +533,6 @@ export default function CanvasWorkspace({
   // too. Needed because the chat is framed DIRECTLY via /render (below), not
   // through /explorer/embed.
   const [chatTpl, setChatTpl] = useState<string | null>(null);
-  // The clone dir's templates, off the same stat: the node tabs' icons until
-  // the shown node's own stat answers (a template's icon is the template's,
-  // not the file's, so the dir's entries draw the same glyphs).
-  const [dirTemplates, setDirTemplates] = useState<TemplateEntry[] | null>(null);
   // The selected node (null = the canvas chat). Seeded from `?node=` so a
   // reload keeps the node; written back below.
   const [node, setNode] = useState<NodeSel | null>(() => {
@@ -574,7 +540,6 @@ export default function CanvasWorkspace({
     if (seeded) seedNodeSessionFromUrl(env, name, seeded);
     return seeded;
   });
-  const [nodeTab, setNodeTab] = useState<NodeTab>(() => nodeTabFromUrl());
   // The right pane shown or hidden (the sync strip's panel toggle). Hiding it
   // leaves the selection alone: the canvas goes on selecting, and the pane
   // opens on whatever node is selected by then.
@@ -779,11 +744,11 @@ export default function CanvasWorkspace({
     return () => window.removeEventListener("message", onShotView);
   }, []);
   // The picture is the node frame's blob: URL, which dies with that
-  // document: a node switch or tab switch remounts the frame, so the viewer
-  // shuts rather than show a broken image.
+  // document: a node switch remounts the frame, so the viewer shuts rather
+  // than show a broken image.
   useEffect(() => {
     setHostViewing(null);
-  }, [node, nodeTab]);
+  }, [node]);
   // The framed chat's ask, from a same-origin child frame (the node pane). The
   // answer goes back to the asking window — `event.source` — so a pane that
   // swapped frames meanwhile never receives a picture it did not ask for.
@@ -827,8 +792,6 @@ export default function CanvasWorkspace({
   }, []);
 
   const [nodeFileReady, setNodeFileReady] = useState<string | null>(null);
-  // The node file's templates, off the same stat, for the tab icons.
-  const [nodeTemplates, setNodeTemplates] = useState<{ path: string; templates: TemplateEntry[] } | null>(null);
   const nodePath = node && dir ? nodeFile(dir, node) : null;
   useEffect(() => {
     if (!nodePath || nodeFileReady === nodePath) return;
@@ -837,9 +800,8 @@ export default function CanvasWorkspace({
     const started = Date.now();
     const probe = async () => {
       try {
-        const st = await statPath(nodePath);
+        await statPath(nodePath);
         if (cancelled) return;
-        setNodeTemplates({ path: nodePath, templates: st.templates ?? [] });
         setNodeFileReady(nodePath);
       } catch {
         if (cancelled) return;
@@ -878,59 +840,20 @@ export default function CanvasWorkspace({
   const agentCatalog = useAgentBackends();
   const agentCatalogRef = useRef(agentCatalog);
   agentCatalogRef.current = agentCatalog;
-  // The node pane's frame (the explorer embed on the node's file).
-  const nodeFrameRef = useRef<HTMLIFrameElement | null>(null);
-  // Re-select the shown node in the workbench (set below, once `sendSelect`
-  // and `nodeRef` exist): what a refused flush falls back to.
-  const reselectShownNodeRef = useRef<() => void>(() => {});
-  /** Run `fn` once the Code tab's buffer is on disk — at once when no Code
-   *  tab is up (nothing to flush: the order of what follows must not change),
-   *  else after the frame's flush relay (explorer Preview → code template)
-   *  answers or NODE_CODE_FLUSH_MS passes. A flush the template REFUSES
-   *  (`{ok:false}`: its conflict banner is up, or the write failed) keeps the
-   *  pane — the banner is the user's only way to resolve it, and the buffer
-   *  would die with the frame — and re-selects the node so the canvas
-   *  agrees with the pane again. A hung flush (the timer) lets `fn` run. */
-  const afterNodeCodeFlush = useCallback((fn: () => void) => {
-    const frame = nodeFrameRef.current;
-    const flush =
-      frame && frame.dataset.tab === "code" && frame.contentWindow
-        ? (frame.contentWindow as unknown as { __fusedFlushEdits?: () => Promise<unknown> })
-            .__fusedFlushEdits
-        : undefined;
-    if (typeof flush !== "function") {
-      fn();
-      return;
-    }
-    void Promise.race([
-      flush().catch(() => undefined),
-      new Promise((r) => window.setTimeout(r, NODE_CODE_FLUSH_MS)),
-    ]).then((res) => {
-      if (res && (res as { ok?: boolean }).ok === false) {
-        reselectShownNodeRef.current();
-        return;
-      }
-      fn();
-    });
-  }, []);
   const baseOriginRef = useRef<string | null>(null);
 
-  // The node frame's src, COMPUTED ONCE per node, tab and boot: it reads the
+  // The node frame's src, COMPUTED ONCE per node and boot: it reads the
   // remembered session at that moment, and must not be re-derived on every
   // host render — the frame moves on to new sessions on its own, so a src
   // re-read later would differ from the one it booted on and React would set
   // the attribute, reloading the frame onto the session it is already on.
   const nodeBootRef = useRef<{ key: string; src: string } | null>(null);
-  const nodeBootSrc = (path: string, file: string, tab: NodeTab): string => {
-    const key = path + "\0" + tab + "\0" + nodeBootSeq;
+  const nodeBootSrc = (path: string, file: string): string => {
+    const key = path + "\0" + nodeBootSeq;
     if (nodeBootRef.current?.key !== key) {
       nodeBootRef.current = {
         key,
-        src: nodeEmbedSrc(
-          path,
-          tab,
-          tab === "claude" ? (nodeSessions.get(nodeSessionKey(env, name, file)) ?? null) : null,
-        ),
+        src: nodeEmbedSrc(path, nodeSessions.get(nodeSessionKey(env, name, file)) ?? null),
       };
     }
     return nodeBootRef.current.src;
@@ -942,12 +865,11 @@ export default function CanvasWorkspace({
     if (!node || !sideOpen) nodeBootRef.current = null;
   }, [node, sideOpen]);
   // Mirror the frame's chat session as it changes (see `nodeSessions`). Bound
-  // on every load — a new src and the tab remount both replace the window —
-  // and only for the Claude tab: the Code tab's URL carries no session.
+  // on every load — a new src replaces the window.
   const onNodeFrameLoad = useCallback(
     (e: SyntheticEvent<HTMLIFrameElement>) => {
       const frame = e.currentTarget;
-      if (frame.dataset.tab !== "claude" || !frame.dataset.file) return;
+      if (!frame.dataset.file) return;
       let win: Window | null = null;
       try {
         win = frame.contentWindow;
@@ -1096,7 +1018,6 @@ export default function CanvasWorkspace({
       .then((st) => {
         if (cancelled) return;
         setChatTpl(st.templates?.find((t) => t.mode === "claude")?.path ?? null);
-        setDirTemplates(st.templates ?? []);
       })
       .catch((e) => {
         if (!cancelled) setError((e as Error).message);
@@ -1191,23 +1112,23 @@ export default function CanvasWorkspace({
     frame.contentWindow.postMessage({ type: "fused-embed-select", udfName }, origin);
   }, []);
 
-  // Whether the right pane is up, and up on the shown node's Code tab (see
-  // the header): the frame's expand chip and its toolbar code button act on
-  // this pane, so they need the state to show and label themselves. Sent on
-  // every change, and on every frame load below.
+  // Whether the right pane is up (see the header): an older workbench's
+  // expand chip acts on this pane, so it needs the state to show itself.
+  // Sent on every change, and on every frame load below. `code` is always
+  // false: the pane has no Code tab (the workbench's own code pane is the
+  // code view).
   // The viewer (`embedded`) renders no pane at all: it reports shut, so the
-  // frame draws neither chip and labels its code button "Show".
-  const codePanelOpen = !embedded && sideOpen && nodeTab === "code" && node !== null;
+  // frame draws no chip.
   // The pane shares the row with the frame (it never covers it), so the
   // width it reports over the frame is always 0: the frame's collapse chip
   // sits at its own right edge.
   // Written after commit, not during render: a discarded render must not
   // leave a pane state the message handler reads that was never shown.
   const paneOpen = !embedded && sideOpen;
-  const sidePanelStateRef = useRef({ open: paneOpen, code: codePanelOpen, width: 0 });
+  const sidePanelStateRef = useRef({ open: paneOpen, code: false, width: 0 });
   useLayoutEffect(() => {
-    sidePanelStateRef.current = { open: paneOpen, code: codePanelOpen, width: 0 };
-  }, [paneOpen, codePanelOpen]);
+    sidePanelStateRef.current = { open: paneOpen, code: false, width: 0 };
+  }, [paneOpen]);
   const sendCodePanelState = useCallback(() => {
     const frame = frameRef.current;
     const origin = baseOriginRef.current;
@@ -1219,7 +1140,7 @@ export default function CanvasWorkspace({
   }, []);
   useEffect(() => {
     sendCodePanelState();
-  }, [sideOpen, codePanelOpen, embedded, sendCodePanelState]);
+  }, [sideOpen, embedded, sendCodePanelState]);
 
   // Tell the canvas whether THIS window is focused (see the header): on every
   // change, and whenever the frame (re)loads or re-hydrates, since it starts
@@ -1642,13 +1563,10 @@ export default function CanvasWorkspace({
   // without re-subscribing it on every selection.
   const nodeRef = useRef<NodeSel | null>(node);
   nodeRef.current = node;
-  reselectShownNodeRef.current = () => {
-    if (nodeRef.current) sendSelect(nodeRef.current.udfName);
-  };
-  // An open-code for a node not yet shown: the pane switches to Code only
-  // once the workbench's selection echo has set that node, so the old node's
-  // code never shows in between (and a refused select changes nothing).
-  const pendingCodeRef = useRef<string | null>(null);
+  // A legacy open-code for a node not yet shown: the pane opens only once
+  // the workbench's selection echo has set that node (a refused select
+  // changes nothing).
+  const pendingOpenRef = useRef<string | null>(null);
 
   // A HOP ONTO THIS CANVAS WHILE IT IS MOUNTED — the Tasks page's door on
   // another node of the canvas the reader is already on, a notification —
@@ -1675,9 +1593,7 @@ export default function CanvasWorkspace({
       // A URL naming no node states the pane's own shut/open (`side=off`,
       // sideOpenFromUrl); one naming a node asks to see its pane (below).
       if (!next) {
-        // Shutting hides the node pane: a Code buffer is flushed first.
-        if (sideOpenFromUrl()) setSideOpen(true);
-        else afterNodeCodeFlush(() => setSideOpen(false));
+        setSideOpen(sideOpenFromUrl());
       }
       const had = next ? nodeSessions.get(nodeSessionKey(env, name, next.file)) : undefined;
       const sid = next ? seedNodeSessionFromUrl(env, name, next) : null;
@@ -1697,19 +1613,14 @@ export default function CanvasWorkspace({
         canvasChatSidRef.current = new URLSearchParams(window.location.search).get("session_id");
         navHopRef.current = true;
         sendSelect(null);
-        afterNodeCodeFlush(() => setNode(null));
+        setNode(null);
         return;
       }
       // A link naming a node is a request to see its pane: a shut one opens.
       setSideOpen(true);
       if (cur && cur.file === next.file) {
-        // The same node: the link's tab wins (a Code tab left open would
-        // otherwise hide the chat the task named), and a session the pane
-        // is not on reboots it.
-        afterNodeCodeFlush(() => {
-          setNodeTab(nodeTabFromUrl());
-          if (sid && sid !== had) setNodeBootSeq((n) => n + 1);
-        });
+        // The same node: a session the pane is not on reboots it.
+        if (sid && sid !== had) setNodeBootSeq((n) => n + 1);
         return;
       }
       // Marked as a hop so the node effect leaves the `session_id` the link
@@ -1717,11 +1628,8 @@ export default function CanvasWorkspace({
       // but the address should still restore the task's session on reload.
       navHopRef.current = true;
       sendSelect(next.udfName);
-      afterNodeCodeFlush(() => {
-        setNodeTab(nodeTabFromUrl());
-        setNodeBootSeq((n) => n + 1);
-        setNode(next);
-      });
+      setNodeBootSeq((n) => n + 1);
+      setNode(next);
     };
     // Back / Forward move the URL without a push: `popstate`, which the
     // router does not re-announce, lands on this same reader.
@@ -1731,7 +1639,7 @@ export default function CanvasWorkspace({
       window.removeEventListener(NAV_EVENT, onNav);
       window.removeEventListener("popstate", onNav);
     };
-  }, [env, name, sendSelect, afterNodeCodeFlush]);
+  }, [env, name, sendSelect]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -1887,11 +1795,8 @@ export default function CanvasWorkspace({
             typeof stated === "string" && stated && !stated.includes("/")
               ? stated
               : `${udfName}.${kind === "widget" ? "json" : "py"}`;
-          // The node already shown: nothing to do — and nothing to FLUSH.
-          // The embed re-posts its selection after every delta it applies
-          // (endEmbedRehydrate), the one from the Code tab's own save
-          // included; flushing on that echo would save (and run) a buffer
-          // the user is still typing into.
+          // The node already shown: nothing to do. The embed re-posts its
+          // selection after every delta it applies (endEmbedRehydrate).
           const cur = nodeRef.current;
           if (cur && cur.udfName === udfName && cur.file !== file) {
             // The SAME node, whose file changed kind (Claude rewrote
@@ -1899,58 +1804,50 @@ export default function CanvasWorkspace({
             // The pane is keyed by file, so it remounts on the new one: the
             // chat it was on — likely the very run that made the change —
             // comes along under the new key, or the pane would boot a fresh
-            // chat while Claude's turn ran on invisibly. No flush: the old
-            // file is gone, and a Code buffer saved to it would resurrect
-            // `w.json` beside `w.html` (`_find_source` prefers `.json`) and
-            // retype the node straight back.
+            // chat while Claude's turn ran on invisibly.
             const sid = nodeSessions.get(nodeSessionKey(env, name, cur.file));
             if (sid) nodeSessions.set(nodeSessionKey(env, name, file), sid);
             setNode({ udfName, kind, file });
           } else if (!cur || cur.udfName !== udfName) {
-            // Another node: its pane replaces this one, so the Code tab's
-            // buffer (a blur save may be in flight) is flushed first.
-            afterNodeCodeFlush(() => setNode({ udfName, kind, file }));
+            // Another node: its pane replaces this one.
+            setNode({ udfName, kind, file });
           }
-          if (pendingCodeRef.current === udfName) {
-            pendingCodeRef.current = null;
+          if (pendingOpenRef.current === udfName) {
+            pendingOpenRef.current = null;
             setSideOpen(true);
-            setNodeTab("code");
           }
         } else {
-          pendingCodeRef.current = null;
+          pendingOpenRef.current = null;
           // The canvas deselected (pane click, folder node, multi-select, or
           // the node is gone after a re-hydrate): follow it back to the
           // canvas chat. Owner call — the canvas is the one source of truth
-          // for what the right pane is about. The Code tab's buffer is
-          // flushed first: the click that deselected also blurred the
-          // editor, whose save is on its way — the save is what runs the
-          // node (owner: "the code is saved when you click outside the
-          // node"), and an unmounting frame would drop it.
-          afterNodeCodeFlush(() => setNode(null));
+          // for what the right pane is about.
+          setNode(null);
         }
       }
       if (type === "fused-embed-open-code") {
-        // The node toolbar's "Show code panel" (header). The workbench frame's
-        // own window only, on top of the origin check above.
+        // A legacy workbench's node toolbar code button (header): show the
+        // node's pane. The workbench frame's own window only, on top of the
+        // origin check above.
         if (embedded) return;
         if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
-        const name = event.data?.udfName;
-        if (typeof name !== "string" || !name) return;
-        // That node's Code tab already up: the button is its "Hide".
-        if (sidePanelStateRef.current.code && nodeRef.current?.udfName === name) {
-          afterNodeCodeFlush(() => setSideOpen(false));
+        const udfName = event.data?.udfName;
+        if (typeof udfName !== "string" || !udfName) return;
+        // The pane already up on that node: the button is its "Hide".
+        if (sidePanelStateRef.current.open && nodeRef.current?.udfName === udfName) {
+          setSideOpen(false);
           return;
         }
         // Not the node shown: select it in the workbench, whose selection
         // echo (above) is what sets `node` — it alone states the node's kind
-        // and file — and opens the Code tab then (`pendingCodeRef`).
-        if (nodeRef.current?.udfName !== name) {
-          pendingCodeRef.current = name;
-          sendSelect(name);
+        // and file — and opens the pane then (`pendingOpenRef`).
+        if (nodeRef.current?.udfName !== udfName) {
+          pendingOpenRef.current = udfName;
+          sendSelect(udfName);
           return;
         }
         setSideOpen(true);
-        setNodeTab("code");
+        return;
       }
       if (type === "fused-embed-delete") {
         // The canvas menu's confirmed "Delete canvas" (header). The editor
@@ -1981,19 +1878,18 @@ export default function CanvasWorkspace({
         return;
       }
       if (type === "fused-embed-open-side" || type === "fused-embed-close-side") {
-        // The workbench's right-edge chips (header). A close also drops a
-        // Code request still waiting on its selection echo: the close wins.
+        // An older workbench's right-edge chips (header). A close also drops
+        // an open-code still waiting on its selection echo: the close wins.
         if (embedded) return;
         if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
         const open = type === "fused-embed-open-side";
-        if (!open) pendingCodeRef.current = null;
-        if (open) setSideOpen(true);
-        else afterNodeCodeFlush(() => setSideOpen(false));
+        if (!open) pendingOpenRef.current = null;
+        setSideOpen(open);
       }
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, [seedToken, sendSelect, sendHostFocus, sendCodePanelState, sendAiModels, relaySnapshot, relayBody, relayAi, abortAi, relayDelta, enqueueRelay, env, name, embedded, settleShot, afterNodeCodeFlush]);
+  }, [seedToken, sendSelect, sendHostFocus, sendCodePanelState, sendAiModels, relaySnapshot, relayBody, relayAi, abortAi, relayDelta, enqueueRelay, env, name, embedded, settleShot]);
 
   // The hosted editor's URL, for the project page's header (`onWorkbenchUrl`).
   const workbenchUrl =
@@ -2025,13 +1921,13 @@ export default function CanvasWorkspace({
     if (node) {
       url.searchParams.set("node", node.udfName);
       url.searchParams.set("node_file", node.file);
-      if (nodeTab === "code") url.searchParams.set("node_tab", "code");
-      else url.searchParams.delete("node_tab");
     } else {
       url.searchParams.delete("node");
       url.searchParams.delete("node_file");
-      url.searchParams.delete("node_tab");
     }
+    // `node_tab` is from the days the pane had a Code tab: an old link's is
+    // dropped.
+    url.searchParams.delete("node_tab");
     if (nodeEffectRanRef.current && prevNodeKeyRef.current !== key && !navHopRef.current) {
       url.searchParams.delete("session_id");
       url.searchParams.delete("run");
@@ -2042,7 +1938,7 @@ export default function CanvasWorkspace({
     if (url.href !== window.location.href) {
       window.history.replaceState(window.history.state, "", url);
     }
-  }, [node, nodeTab]);
+  }, [node]);
 
   // …and the right pane's shut state (`side=off`, see `sideOpenFromUrl`).
   useEffect(() => {
@@ -2288,7 +2184,7 @@ export default function CanvasWorkspace({
       // the canvas chat's to show: leave the node, on both sides.
       if (nodeRef.current) {
         sendSelect(null);
-        afterNodeCodeFlush(() => setNode(null));
+        setNode(null);
       }
       // …and shown: the button now says "see chat →", so a shut pane opens.
       setSideOpen(true);
@@ -2325,12 +2221,6 @@ export default function CanvasWorkspace({
   // the server moved, and the sync log drawer on click.
   const s2dState = sync?.legs.server_to_disk.state;
 
-  // The node tabs' icons (SideChrome's SideTabs: icon + label): the shown
-  // node's own templates once its stat has answered, the clone dir's before
-  // that (same glyphs, no empty slot while the probe runs); nothing until
-  // either answers.
-  const nodeIcons =
-    nodeTemplates && nodePath !== null && nodeTemplates.path === nodePath ? nodeTemplates.templates : dirTemplates;
   const pushLeg = sync?.legs.disk_to_server;
 
   // The sync chrome. In the editor it sits above the panes (the strip, the
@@ -2576,70 +2466,22 @@ export default function CanvasWorkspace({
           }}
         >
           {chatHere && dir && node ? (
-            // A node is selected: the explorer, open on the node's file —
-            // its preview (the code template, writable) and its Claude / Git
-            // sidebar, per-file sessions and all. Keyed per file so a node
-            // switch is a fresh open.
+            // A node is selected: the explorer's embed, open on the node's
+            // file in its chat mode — per-file sessions and all, no header
+            // strip (the workbench's own code pane is the code view). Keyed
+            // per file so a node switch is a fresh open.
             <div
               key={nodeFile(dir, node)}
               className="canvas-node-file"
               style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}
             >
-              {/* The framed embed's content mode, as two tabs — the same shadcn
-                  line strip the explorer's own sidebar uses (SideChrome). The
-                  strip is this page's; everything under it is the explorer's. */}
-              <div className="preview-side-header">
-                <span className="canvas-node-side-name" title={nodeFile(dir, node)}>
-                  {node.udfName}
-                </span>
-                <div className="side-header-tail">
-                  <Tabs
-                    value={nodeTab}
-                    onValueChange={(v) => {
-                      // Keyed on the tab: the switch remounts the frame, so
-                      // a Code buffer is flushed first.
-                      if (v === "claude" || v === "code") afterNodeCodeFlush(() => setNodeTab(v));
-                    }}
-                    className="side-tabs self-stretch"
-                  >
-                    <TabsList
-                      variant="line"
-                      aria-label="Node panel"
-                      className="h-full justify-start gap-3 rounded-none border-b-0 p-0"
-                    >
-                      <TabsTrigger value="claude" className="flex-none px-2 text-[12px]">
-                        {nodeIcons && nodeTabIcon("claude", nodeIcons) && (
-                          <span className="mode-menu-icon" data-icon="inline-start">
-                            {nodeTabIcon("claude", nodeIcons)}
-                          </span>
-                        )}
-                        Claude
-                      </TabsTrigger>
-                      <TabsTrigger value="code" className="flex-none px-2 text-[12px]">
-                        {nodeIcons && nodeTabIcon("code", nodeIcons) && (
-                          <span className="mode-menu-icon" data-icon="inline-start">
-                            {nodeTabIcon("code", nodeIcons)}
-                          </span>
-                        )}
-                        Code
-                      </TabsTrigger>
-                    </TabsList>
-                  </Tabs>
-                </div>
-              </div>
               {nodeFileReady === nodeFile(dir, node) ? (
                 <iframe
-                  // Keyed on the mode so a tab switch is a fresh document: the
-                  // chat's own `session_id` lives on the frame URL, and the
-                  // explorer's content-mode swap is for its own switcher.
-                  key={nodeTab}
-                  ref={nodeFrameRef}
                   className="preview-side-frame"
-                  src={nodeBootSrc(nodeFile(dir, node), node.file, nodeTab)}
-                  data-tab={nodeTab}
+                  src={nodeBootSrc(nodeFile(dir, node), node.file)}
                   data-file={node.file}
                   onLoad={onNodeFrameLoad}
-                  title={`${node.udfName} — ${nodeTab === "code" ? "Code" : "Claude"}`}
+                  title={`${node.udfName} — Claude`}
                 />
               ) : (
                 <p style={{ padding: 16, opacity: 0.7 }}>Saving {node.file}…</p>
@@ -2685,11 +2527,8 @@ export default function CanvasWorkspace({
                 const key = nodeSessionKey(env, name, hop.node.file);
                 if (hop.sessionId) nodeSessions.set(key, hop.sessionId);
                 else nodeSessions.delete(key);
-                afterNodeCodeFlush(() => {
-                  setNodeTab("claude");
-                  setNodeBootSeq((n) => n + 1);
-                  setNode(hop.node);
-                });
+                setNodeBootSeq((n) => n + 1);
+                setNode(hop.node);
               }}
             />
           ) : (
