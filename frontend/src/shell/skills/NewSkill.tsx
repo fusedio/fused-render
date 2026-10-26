@@ -13,6 +13,7 @@ import { CLI_LABEL, useEnabledClis } from "@apps/claude_config/readers";
 import {
   tasksCancel,
   tasksCreate,
+  tasksList,
   tasksSend,
   tasksWatch,
   type TaskHandle,
@@ -23,6 +24,47 @@ import { draftTitle, freeName, renameSkill, splitFrontmatter, useDebounced } fro
 
 const LIVE = new Set(["in_progress", "queued"]);
 const POLL_MS = 2000;
+// A task that is over for good: nothing left to cancel.
+const FINISHED = new Set(["done", "archived"]);
+// A task whose worker has stopped: safe to delete the dir it was writing in.
+const HALTED = new Set(["done", "archived", "blocked"]);
+const STOP_WAIT_MS = 10000;
+const STOP_POLL_MS = 500;
+
+const sameTask = (r: TaskRow, h: TaskHandle) => r.key === h.key || (!!h.entryId && r.entry_id === h.entryId);
+
+/** Cancel the draft's task and wait (up to ~10 s) until its worker has stopped.
+ *  Resolves null when it is safe to delete the staging dir, else why not. */
+async function stopTask(h: TaskHandle | null, known: TaskRow | null): Promise<string | null> {
+  if (!h) return null;
+  if (!(known && FINISHED.has(known.status))) {
+    try {
+      await tasksCancel(h.key);
+    } catch (e) {
+      // "not running" means it already stopped; anything else, it may still be writing.
+      if (!/not running/i.test((e as Error).message)) return (e as Error).message;
+    }
+  }
+  const until = Date.now() + STOP_WAIT_MS;
+  for (;;) {
+    try {
+      const r = (await tasksList({ scope: "all" })).find((x) => sameTask(x, h));
+      if (!r || HALTED.has(r.status)) return null;
+    } catch {
+      /* try again until the deadline */
+    }
+    if (Date.now() >= until) return "Claude is still working in the draft. Try again in a moment.";
+    await new Promise((res) => setTimeout(res, STOP_POLL_MS));
+  }
+}
+
+/** Stop the task, then delete the staging dir. Resolves null when both happened. */
+async function stopAndDiscard(dir: string, h: TaskHandle | null, known: TaskRow | null): Promise<string | null> {
+  const why = await stopTask(h, known);
+  if (why) return why;
+  await cc.skills.draftDiscard(dir).catch(() => {});
+  return null;
+}
 
 type Check = { state: "idle" } | { state: "ok"; name: string; others: number } | { state: "error"; error: string };
 
@@ -45,11 +87,19 @@ export function NewSkill({
   const [placement, setPlacement] = useState<cc.DraftPlacement>("all");
   const [check, setCheck] = useState<Check>({ state: "idle" });
   const [starting, setStarting] = useState(false);
+  const [discarding, setDiscarding] = useState(false);
 
   const [staging, setStaging] = useState<string | null>(null);
   const [adapting, setAdapting] = useState(false);
   const handle = useRef<TaskHandle | null>(null);
   const [row, setRow] = useState<TaskRow | null>(null);
+  // What the unmount cleanup and the async draft() need without a re-render.
+  const rowRef = useRef<TaskRow | null>(null);
+  rowRef.current = row;
+  const stagingRef = useRef<string | null>(null);
+  // Saved or discarded: nothing left for the unmount cleanup to remove.
+  const settledRef = useRef(false);
+  const mountedRef = useRef(true);
   const [finished, setFinished] = useState(false);
   const [status, setStatus] = useState<cc.DraftStatus | null>(null);
 
@@ -61,6 +111,17 @@ export function NewSkill({
   const [saving, setSaving] = useState(false);
   const [saveProblems, setSaveProblems] = useState<string[]>([]);
   const [refreshError, setRefreshError] = useState<string | null>(null);
+
+  // Leaving the page with a draft that was neither saved nor discarded (a
+  // navigation, a closed tab group) stops the task and removes the staging dir.
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      const dir = stagingRef.current;
+      if (dir && !settledRef.current) void stopAndDiscard(dir, handle.current, rowRef.current).catch(() => {});
+    };
+  }, []);
 
   // "Start from": checked a moment after typing stops.
   const dsource = useDebounced(source.trim(), 400);
@@ -103,7 +164,11 @@ export function NewSkill({
     let alive = true;
     const read = () =>
       cc.skills.draftStatus(staging).then(
-        (r) => alive && r.ok && setStatus(r as cc.DraftStatus),
+        (r) => {
+          if (!alive || !r.ok) return;
+          setStatus(r as cc.DraftStatus);
+          setRefreshError(null);
+        },
         () => {},
       );
     void read();
@@ -118,38 +183,62 @@ export function NewSkill({
   const draft = async () => {
     if (!desc.trim() || starting) return;
     setStarting(true);
+    // The path is always sent as typed: the backend validates a non-empty one
+    // and refuses before it creates anything, so a path pasted and submitted
+    // before the debounced check lands is not silently dropped.
+    const from = source.trim();
     let dir: string | null = null;
+    let h: TaskHandle | null = null;
     try {
-      const withSource = check.state === "ok";
-      const start = await cc.skills.draftStart(withSource ? source.trim() : "");
+      const start = await cc.skills.draftStart(from);
       if (!start.ok || !start.staging) throw new Error(start.error || "Could not start the draft");
       dir = start.staging;
-      const p = await cc.skills.draftPrompt(desc.trim(), withSource);
+      stagingRef.current = dir;
+      const adaptingNow = from !== "";
+      const p = await cc.skills.draftPrompt(desc.trim(), adaptingNow);
       if (!p.ok || !p.prompt) throw new Error(p.error || "Could not build the prompt");
-      const h = await tasksCreate({ prompt: p.prompt, target: dir, title: draftTitle(desc), queue: false });
+      h = await tasksCreate({ prompt: p.prompt, target: dir, title: draftTitle(desc), queue: false });
       handle.current = h;
+      if (!mountedRef.current) {
+        // Left the page while the task was being created.
+        void stopAndDiscard(dir, h, null).catch(() => {});
+        return;
+      }
       void h.done.then(() => setFinished(true));
-      setAdapting(withSource);
+      setAdapting(adaptingNow);
       setStaging(dir);
     } catch (e) {
       if (dir) void cc.skills.draftDiscard(dir).catch(() => {});
-      toastErr((e as Error).message);
+      stagingRef.current = null;
+      if (mountedRef.current) toastErr((e as Error).message);
     } finally {
-      setStarting(false);
+      if (mountedRef.current) setStarting(false);
     }
   };
 
   const discard = async () => {
-    const h = handle.current;
-    if (h && running) await tasksCancel(h.key).catch(() => {});
-    if (staging) await cc.skills.draftDiscard(staging).catch(() => {});
-    onClose();
+    if (discarding) return;
+    setDiscarding(true);
+    try {
+      if (staging) {
+        const why = await stopAndDiscard(staging, handle.current, rowRef.current);
+        if (why) {
+          // The task may still be writing there: keep the draft rather than pull the dir from under it.
+          toastErr(why);
+          return;
+        }
+      }
+      settledRef.current = true;
+      onClose();
+    } finally {
+      if (mountedRef.current) setDiscarding(false);
+    }
   };
 
   const askChanges = async () => {
     const h = handle.current;
     const text = change.trim();
-    if (!h || !text) return;
+    if (!h || !text || running) return;
     try {
       await tasksSend(h.key, text);
       setChange("");
@@ -167,15 +256,23 @@ export function NewSkill({
       toastErr(r.error || "Could not write the draft");
       return false;
     }
+    await refresh("Saved the edit, but could not refresh the draft");
+    return true;
+  };
+
+  // Re-read the draft. On failure the old status no longer describes the files,
+  // so Save and the preview go away until a retry succeeds.
+  const refresh = async (lead: string) => {
+    if (!staging) return;
     setRefreshError(null);
     try {
       const s = await cc.skills.draftStatus(staging);
-      if (s.ok) setStatus(s as cc.DraftStatus);
+      if (!s.ok) throw new Error(s.error || "the draft could not be read");
+      setStatus(s as cc.DraftStatus);
     } catch (e) {
-      // The write landed; only the re-read failed. Say so inline, keep going.
-      setRefreshError(`Saved the edit, but could not refresh the draft: ${(e as Error).message}`);
+      setStatus(null);
+      setRefreshError(`${lead}: ${(e as Error).message}`);
     }
-    return true;
   };
 
   const save = async () => {
@@ -188,6 +285,7 @@ export function NewSkill({
         setSaveProblems(r.problems?.length ? r.problems : [r.error || "Save failed"]);
         return;
       }
+      settledRef.current = true;
       toastOk(`Saved ${r.slug ?? "skill"}`);
       onSaved?.(r.key ?? "");
     } catch (e) {
@@ -275,7 +373,7 @@ export function NewSkill({
           <div className="cc-new-footer">
             <span className="cc-new-note">Runs as a Claude task. You review the files before anything is saved.</span>
             <span className="cc-new-btns">
-              <Button variant="outline" onClick={onClose}>
+              <Button variant="outline" disabled={starting} onClick={onClose}>
                 Cancel
               </Button>
               <Button disabled={!desc.trim() || starting} onClick={() => void draft()}>
@@ -296,6 +394,8 @@ export function NewSkill({
                   <>
                     Drafted <b>{status.name || "the skill"}</b>: {status.files.join(", ")}.
                   </>
+                ) : refreshError ? (
+                  <>The draft could not be read just now.</>
                 ) : row?.status === "needs_attention" ? (
                   <>Claude needs your answer to carry on.</>
                 ) : (
@@ -315,7 +415,10 @@ export function NewSkill({
               )}
               {refreshError && (
                 <p className="cc-new-problems m-0" role="alert">
-                  {refreshError}
+                  {refreshError}{" "}
+                  <Button size="sm" variant="outline" onClick={() => void refresh("Could not refresh the draft")}>
+                    Retry refresh
+                  </Button>
                 </p>
               )}
               {saveProblems.length > 0 && problems.length === 0 && (
@@ -378,7 +481,7 @@ export function NewSkill({
                       placeholder="Ask for changes"
                       value={change}
                       onChange={(e) => setChange(e.target.value)}
-                      onKeyDown={(e) => e.key === "Enter" && void askChanges()}
+                      onKeyDown={(e) => e.key === "Enter" && !running && void askChanges()}
                     />
                     <Button variant="outline" disabled={!change.trim() || running} onClick={() => void askChanges()}>
                       Send
@@ -395,8 +498,8 @@ export function NewSkill({
                     >
                       Edit before saving
                     </Button>
-                    <Button variant="ghost" onClick={() => void discard()}>
-                      Discard draft
+                    <Button variant="ghost" disabled={discarding} onClick={() => void discard()}>
+                      {discarding ? "Discarding…" : "Discard draft"}
                     </Button>
                   </div>
                 </>

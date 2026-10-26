@@ -23,6 +23,8 @@ let draftStatus: Record<string, unknown> = {};
 let checkReply: Record<string, unknown> = {};
 let gen = 1;
 let statusFails = false;
+let cancelReply: { ok: boolean; status: number; error?: string } = { ok: true, status: 200 };
+let startDelay = 0;
 let saveReply: Record<string, unknown> = { ok: true, slug: "design-review", key: "/h/.agents/skills/design-review" };
 
 function reply(data: unknown): Promise<Response> {
@@ -38,7 +40,7 @@ function fakeFetch(url: unknown, init?: RequestInit): Promise<Response> {
     skillCalls.push({ action, body });
     switch (action) {
       case "draft_check": return reply(checkReply);
-      case "draft_start": return reply({ ok: true, staging: "/h/.fused-render/skill-drafts/s1" });
+      case "draft_start": if (startDelay) return new Promise((r) => setTimeout(() => r(reply({ ok: true, staging: "/h/.fused-render/skill-drafts/s1" })), startDelay)); return reply({ ok: true, staging: "/h/.fused-render/skill-drafts/s1" });
       case "draft_prompt": return reply({ ok: true, prompt: "PROMPT:" + body.text + (body.adapting ? ":adapt" : "") });
       case "draft_status": if (statusFails) return Promise.reject(new Error("offline")); return reply({ ok: true, ...draftStatus });
       case "draft_save": return reply(saveReply);
@@ -51,6 +53,10 @@ function fakeFetch(url: unknown, init?: RequestInit): Promise<Response> {
   }
   if (u.includes("/api/tasks/") && (u.endsWith("/send") || u.endsWith("/cancel"))) {
     taskPosts.push({ url: u, body });
+    if (u.endsWith("/cancel")) {
+      if (!cancelReply.ok) return Promise.resolve({ ok: false, status: cancelReply.status, json: async () => ({ error: cancelReply.error }), text: async () => "" } as unknown as Response);
+      taskStatus = "archived";
+    }
     return reply({ ok: true });
   }
   const taskRow = () => ({ key: "s1", entry_id: "e1", status: taskStatus, session_id: "s1", target: "/h/.fused-render/skill-drafts/s1" });
@@ -62,6 +68,8 @@ function fakeFetch(url: unknown, init?: RequestInit): Promise<Response> {
 beforeEach(() => {
   skillCalls = [];
   statusFails = false;
+  cancelReply = { ok: true, status: 200 };
+  startDelay = 0;
   taskPosts = [];
   taskStatus = "in_progress";
   draftStatus = { files: [], text: null, name: "", description: "", problems: [] };
@@ -266,4 +274,135 @@ describe("New skill", () => {
     expect(skillCalls.some((c) => c.action === "draft_discard")).toBe(true);
     expect(button(box, "Draft it")).toBeTruthy();
   });
+
+  test("a source path submitted before the debounced check lands is still sent, and adapts", async () => {
+    const { box } = await mount({ initialDesc: "Review pages" });
+    await change(sourceInput(box), "~/s/ui");
+    await act(async () => { button(box, "Draft it").props.onClick({ preventDefault() {} }); });
+    await tick();
+    expect(skillCalls.find((c) => c.action === "draft_start")?.body.path).toBe("~/s/ui");
+    expect(skillCalls.find((c) => c.action === "draft_prompt")?.body).toMatchObject({ adapting: true });
+  });
+
+  test("a path cleared right after a valid check drafts blank", async () => {
+    const { box } = await mount({ initialDesc: "Review pages" });
+    await change(sourceInput(box), "~/s/ui");
+    await tick(450, 1);
+    await tick();
+    await change(sourceInput(box), "  ");
+    await act(async () => { button(box, "Draft it").props.onClick({ preventDefault() {} }); });
+    await tick();
+    expect(skillCalls.find((c) => c.action === "draft_start")?.body.path).toBe("");
+    expect(skillCalls.find((c) => c.action === "draft_prompt")?.body).toMatchObject({ adapting: false });
+  });
+
+  test("a bad source makes Draft it toast and create nothing", async () => {
+    const { box } = await mount({ initialDesc: "Review pages" });
+    const ok = globalThis.fetch;
+    globalThis.fetch = ((u: unknown, i?: RequestInit) =>
+      String(i?.body ?? "").includes("draft_start")
+        ? reply({ ok: false, error: "no SKILL.md in that folder" })
+        : (ok as typeof fetch)(u as string, i)) as typeof fetch;
+    await change(sourceInput(box), "~/s/nope");
+    await act(async () => { button(box, "Draft it").props.onClick({ preventDefault() {} }); });
+    await tick();
+    expect(taskPosts.length).toBe(0);
+    expect(skillCalls.some((c) => c.action === "draft_prompt")).toBe(false);
+  });
+
+  test("Cancel is disabled while Draft it is starting", async () => {
+    startDelay = 200;
+    const { box } = await mount({ initialDesc: "Review pages" });
+    await act(async () => { button(box, "Draft it").props.onClick({ preventDefault() {} }); });
+    expect(button(box, "Cancel").props.disabled).toBe(true);
+    await act(async () => { await new Promise((r) => setTimeout(r, 400)); });
+  });
+
+  test("Discard also cancels a task that needs attention", async () => {
+    const { box, calls } = await mount({ initialDesc: "Review pages" });
+    taskStatus = "needs_attention";
+    await act(async () => { button(box, "Draft it").props.onClick({ preventDefault() {} }); });
+    await tick();
+    await act(async () => { await new Promise((r) => setTimeout(r, 300)); });
+    await act(async () => { button(box, "Discard draft").props.onClick({ preventDefault() {} }); });
+    await tick(20, 5);
+    expect(taskPosts.some((p) => p.url.endsWith("/cancel"))).toBe(true);
+    expect(skillCalls.some((c) => c.action === "draft_discard")).toBe(true);
+    expect(calls.closed).toBe(1);
+  });
+
+  test("Discard keeps the draft when the cancel fails for a reason other than not running", async () => {
+    const { box, calls } = await mount({ initialDesc: "Review pages" });
+    await act(async () => { button(box, "Draft it").props.onClick({ preventDefault() {} }); });
+    await tick();
+    await act(async () => { await new Promise((r) => setTimeout(r, 300)); });
+    cancelReply = { ok: false, status: 500, error: "kill failed" };
+    await act(async () => { button(box, "Discard draft").props.onClick({ preventDefault() {} }); });
+    await tick(20, 5);
+    expect(skillCalls.some((c) => c.action === "draft_discard")).toBe(false);
+    expect(calls.closed).toBe(0);
+    expect(box.root.findByProps({ "data-testid": "draft-card" })).toBeTruthy();
+  });
+
+  test("Discard goes ahead when the cancel says the task is not running", async () => {
+    const { box, calls } = await mount({ initialDesc: "Review pages" });
+    await act(async () => { button(box, "Draft it").props.onClick({ preventDefault() {} }); });
+    await tick();
+    await act(async () => { await new Promise((r) => setTimeout(r, 300)); });
+    cancelReply = { ok: false, status: 409, error: "task is not running" };
+    taskStatus = "done";
+    await act(async () => { button(box, "Discard draft").props.onClick({ preventDefault() {} }); });
+    await tick(20, 5);
+    expect(skillCalls.some((c) => c.action === "draft_discard")).toBe(true);
+    expect(calls.closed).toBe(1);
+  });
+
+  test("a failed refresh after an edit hides the preview, disables Save, and Retry refresh recovers", async () => {
+    const { box } = await mount({ initialDesc: "Review pages" });
+    await drafted(box, { files: ["SKILL.md"], text: GOOD, name: "design-review", description: "d", problems: [] });
+    await act(async () => { button(box, "Edit before saving").props.onClick({ preventDefault() {} }); });
+    await change(box.root.findByProps({ "aria-label": "SKILL.md", rows: 16 }), GOOD + "x\n");
+    statusFails = true;
+    await act(async () => { button(box, "Apply edits").props.onClick({ preventDefault() {} }); });
+    await tick();
+    expect(button(box, "Save skill").props.disabled).toBe(true);
+    expect(textOf(box.root.findByProps({ "data-testid": "draft-aside" }))).not.toContain("## Steps");
+    statusFails = false;
+    await act(async () => { button(box, "Retry refresh").props.onClick({ preventDefault() {} }); });
+    await tick();
+    expect(button(box, "Save skill").props.disabled).toBe(false);
+    expect(textOf(box.root)).not.toContain("could not refresh");
+  }, 15000);
+
+  test("Enter in Ask for changes does nothing while Claude is running", async () => {
+    const { box } = await mount({ initialDesc: "Review pages" });
+    await act(async () => { button(box, "Draft it").props.onClick({ preventDefault() {} }); });
+    await tick();
+    const input = box.root.findByProps({ "aria-label": "Ask for changes" });
+    await change(input, "more");
+    await act(async () => { input.props.onKeyDown({ key: "Enter" }); });
+    await tick();
+    expect(taskPosts.some((p) => p.url.endsWith("/send"))).toBe(false);
+  });
+
+  test("leaving the page with an unsaved draft stops the task and removes the staging dir", async () => {
+    const { box } = await mount({ initialDesc: "Review pages" });
+    await act(async () => { button(box, "Draft it").props.onClick({ preventDefault() {} }); });
+    await tick();
+    await act(async () => { await new Promise((r) => setTimeout(r, 300)); });
+    await act(async () => { box.unmount(); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 700)); });
+    expect(taskPosts.some((p) => p.url.endsWith("/cancel"))).toBe(true);
+    expect(skillCalls.some((c) => c.action === "draft_discard")).toBe(true);
+  });
+
+  test("a saved draft is not discarded on unmount", async () => {
+    const { box } = await mount({ initialDesc: "Review pages" });
+    await drafted(box, { files: ["SKILL.md"], text: GOOD, name: "design-review", description: "d", problems: [] });
+    await act(async () => { button(box, "Save skill").props.onClick({ preventDefault() {} }); });
+    await tick();
+    await act(async () => { box.unmount(); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 300)); });
+    expect(skillCalls.some((c) => c.action === "draft_discard")).toBe(false);
+  }, 15000);
 });
