@@ -177,7 +177,7 @@ def _gate(body, x_fused, phase, kinds=None):
     app_dir = _app_dir(body.get("path"))
     if app_dir is None:
         return _refuse("not-an-app", "That isn't an app in your Fused folder.")
-    if not _phase_on(phase):
+    if not _phase_on(phase) and not (phase == "sources" and _market_ui_for(app_dir)):
         return _disabled()
     try:
         record = _mod("classify").ensure(app_dir)
@@ -193,6 +193,20 @@ def _gate(body, x_fused, phase, kinds=None):
     if kinds is not None and record.get("kind") not in kinds:
         return _wrong_kind(kinds)
     return _Target(app_dir, record)
+
+
+def _market_ui_for(app_dir: str) -> bool:
+    """A MARKETPLACE copy's panel routes (the app read, the action route,
+    Undo, Merge with Claude's review) answer with the Marketplace switch OR
+    the loop on (`flags.marketplace_ui`, §18.8); every other kind keeps the
+    loop's own gate. A store read, no classification."""
+    try:
+        if not _mod("flags").marketplace_ui():
+            return False
+        rec = _mod("store").get(app_dir)
+        return isinstance(rec, dict) and rec.get("kind") == "marketplace"
+    except Exception:  # noqa: BLE001 — unknown reads as the loop's gate
+        return False
 
 
 def _wrong_kind(kinds) -> dict:
@@ -284,7 +298,7 @@ def api_contrib_app(path: str = ""):
     if app_dir is None:
         return _refuse("not-an-app", "That isn't an app in your Fused folder.")
     flags = _mod("flags").snapshot()
-    if not flags.get("sources"):
+    if not flags.get("sources") and not _market_ui_for(app_dir):
         return {**_disabled(), "flags": flags}
     refresh.note_app_opened(app_dir)
     copy = _safely("status", _mod("engine").status, app_dir)
@@ -470,6 +484,11 @@ def _merge_start(t: _Target) -> dict:
         # Bob's changes) is offered with the panel itself — the block list
         # is enforced whatever the switches say (§18.8), so its one fix
         # button is too (P6).
+        return _start_merge(t, plan)
+    if plan["purpose"] == "update" and t.record.get("kind") == "marketplace" \
+            and _market_ui_for(t.app_dir):
+        # A release overlapping Bob's changes: the needs-merge fix of a
+        # panel the Marketplace switch shows (§18.8).
         return _start_merge(t, plan)
     if not _phase_on(_MERGE_PHASE[plan["purpose"]]):
         return _disabled()

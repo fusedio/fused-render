@@ -40,6 +40,9 @@ ROUTE_IDS = ("publish-now", "open-doctor", "sign-in")
 
 REMOVE_CONFIRM = ("{name} leaves the Marketplace. People who installed it keep their copy "
                   "on its last reviewed version.")
+#: Said while the index's check runs without an Anthropic key (WS-IDX: the
+#: block carries `"claude": "skipped"`).
+CLAUDE_OFF = "Claude's review is off; only the fixed rules ran."
 CONFIRM_POWERS = ("{name} will be allowed to: {powers}. Everyone who installs this version "
                   "gets it.")
 
@@ -160,6 +163,8 @@ def decide(lst: dict, *, signed_in: bool = True, refreshing: bool = False) -> di
             acts.append(_btn("publish-market", "Publish to Marketplace", primary=True,
                              dialog="listing"))
         acts.append(_btn("check-listing", "Check again"))
+    if review.get("claude_skipped") and state in ("in-review", "needs-confirmation", "failed"):
+        extra.append(CLAUDE_OFF)
     if lst.get("error"):
         extra.append(lst["error"])
     seen, out, primary = set(), [], False

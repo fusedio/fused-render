@@ -379,7 +379,9 @@ def test_panel_fields():
            changes=2)
     p = actions.decide(f)["panel"]
     assert set(p) == {"kind", "repo", "who", "last_checked", "state", "sentence", "files",
-                      "unproposed", "unpublished", "github_new", "untracked", "merge"}
+                      "unproposed", "unpublished", "github_new", "untracked", "merge",
+                      "block_warn"}   # §18.4 B4: a GitHub-link copy's block warning (None)
+    assert p["block_warn"] is None
     assert p["kind"] == "github" and p["repo"] == "alice/x" and p["who"] == "alice"
     assert p["state"] == "changes" and p["files"] == ["a.py", "b.py"]
     assert p["last_checked"] == 1000.0 and p["untracked"] == ["new.csv"]

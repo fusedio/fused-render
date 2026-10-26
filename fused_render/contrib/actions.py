@@ -136,7 +136,8 @@ def facts(app_dir: str, *, copy=_UNSET, proposal=_UNSET, github=_UNSET) -> dict:
     from fused_render.contrib import refresh
 
     flags = _call("flags", "flags", "snapshot") or {}
-    out = {"app_dir": app_dir, "kind": None, "repo": None, "remix_of": None, "owner_checked": True,
+    out = {"app_dir": app_dir, "market_ui": bool(_call("market ui", "flags", "marketplace_ui")),
+           "kind": None, "repo": None, "remix_of": None, "owner_checked": True,
            "original_update": False, "flags": flags,
            "github": (_safely("identity", refresh.github_identity) if github is _UNSET
                       else github) or {},
@@ -257,7 +258,10 @@ def decide(f: dict) -> dict:
     """`{panel, actions}` for the facts `facts()` gathered. Pure."""
     flags = f.get("flags") or {}
     kind = f.get("kind")
-    if not flags.get("sources"):
+    if not flags.get("sources") and not (kind == "marketplace" and f.get("market_ui")):
+        # A marketplace copy's panel shows with the Marketplace switch too
+        # (`flags.marketplace_ui`, §18.8); its proposal/remix buttons still
+        # need their own phases (`_github` reads them from `flags`).
         return {"panel": None, "actions": []}
     if kind is None:
         return {"panel": _panel(f, kind="pending", state="pending",

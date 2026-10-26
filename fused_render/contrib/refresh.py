@@ -12,7 +12,9 @@ own with a repo, how many proposals are waiting: `{label, inbox, kind}`.
 the record store (`store.all()`, a small JSON file) plus the in-memory inbox
 counts below — never `engine.status`, never a subprocess — so a 50-app
 listing pays one file read, not 50 git spawns. With `flags.sources()` off, `decorate` returns the
-rows untouched: the listing is byte for byte what it was.
+rows untouched: the listing is byte for byte what it was — except, with the
+Marketplace switch on (`flags.marketplace_ui`, §18.8), marketplace copies'
+cards and GitHub-link copies' block warnings.
 
 BACKGROUND. Three refreshes run when an app is opened (`note_app_opened`, the
 same two triggers as `git_upstream.note_app_opened` — GET /render's D301 block
@@ -285,16 +287,28 @@ def cards() -> dict:
     still exists (keys are the store's realpath'd ones) — the
     GET /api/contrib/cards answer. `{}` with sources off."""
     flags = _mod("flags").snapshot()
-    if not flags["sources"]:
+    market_ui = flags["sources"] or _mod("flags").marketplace_ui()
+    if not market_ui:
         return {}
     records = {k: r for k, r in (_mod("store").all() or {}).items() if os.path.isdir(k)}
     out = {}
     with _lock:
         for key, record in records.items():
+            if not flags["sources"] and not _market_card(record):
+                continue
             card = _card(key, record, flags["inbox"])
             if card is not None:
                 out[key] = card
     return out
+
+
+def _market_card(record) -> bool:
+    """A card the Marketplace switch alone shows (§18.8): a marketplace
+    copy's, and a GitHub-link copy's block warning (block enforcement and
+    its words are switch-independent)."""
+    return isinstance(record, dict) and (
+        record.get("kind") == "marketplace"
+        or (record.get("kind") == "github" and isinstance(record.get("block_warn"), dict)))
 
 
 def decorate(rows: list[dict]) -> list[dict]:
@@ -304,7 +318,7 @@ def decorate(rows: list[dict]) -> list[dict]:
     `classify_soon` so the next listing has their label."""
     try:
         flags = _mod("flags").snapshot()
-        if not flags["sources"] or not rows:
+        if not rows or not (flags["sources"] or _mod("flags").marketplace_ui()):
             return rows
         store = _mod("store")
         records = store.all() or {}
@@ -318,8 +332,11 @@ def decorate(rows: list[dict]) -> list[dict]:
         for row, key in keyed:
             record = records.get(key)
             if record is None:
-                unrecorded.append(row["path"])
+                if flags["sources"]:
+                    unrecorded.append(row["path"])
                 continue
+            if not flags["sources"] and not _market_card(record):
+                continue  # the loop off: only the Marketplace's own cards (§18.8)
             card = _card(key, record, flags["inbox"])
             if card is not None:
                 row["contrib"] = card

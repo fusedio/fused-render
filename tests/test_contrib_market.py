@@ -374,6 +374,50 @@ def test_git_panel_pull_is_refused_and_get_latest_brings_in_the_release(m, monke
     inv(m)
 
 
+# --------------------------------------------- the Marketplace switch alone
+
+
+def test_marketplace_switch_alone_shows_a_marketplace_copys_ui(m, monkeypatch):
+    """§18.8 (owner 2026-10-26): with the Marketplace switch on and the
+    loop off, a marketplace copy's panel, Undo and card show; a GitHub-link
+    copy's stay hidden; Propose/Remix still need the loop."""
+    from _contrib_gh_world import write_prefs
+
+    from fused_render import app_git
+    from fused_render.contrib import flags, refresh
+    from fused_render.server.routers import contrib as route
+    write_prefs(contrib_enabled=False, contrib_remix_enabled=False, marketplace_enabled=True)
+    assert flags.marketplace_ui() and not flags.sources()
+    monkeypatch.setattr(app_git, "app_dir_for", lambda p: m.app if p.startswith(m.app) else None)
+    c2 = _alice(m, {"NOTES.md": "n\n"}, "Notes")
+    m.cat.release("sine", c2, whats_new="Adds notes", at="2026-10-20T10:00:00Z")
+    assert m.sync()["status"] == "synced" and m.head() == c2
+    page = route.api_contrib_app(path=m.app)
+    assert page["ok"] and page["panel"]["kind"] == "marketplace", page
+    ids = {a["id"] for a in page["actions"]}
+    assert "check" in ids and "switch-link" in ids
+    assert not ids & {"propose", "update-proposal", "withdraw", "remix"}
+    line = page["activity"][0]
+    assert line["undo"] and line["text"].startswith("Updated to alice's release")
+    out = route.api_contrib_restore({"path": m.app, "id": line["id"]}, x_fused="1")
+    assert out["ok"], out
+    assert m.head() == m.c1
+    inv(m)
+    claude_commit(m.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    page = route.api_contrib_app(path=m.app)
+    assert not {a["id"] for a in page["actions"]} & {"propose", "remix"}
+    assert refresh.cards()[m.app]["label"] == "Marketplace · reviewed"
+    # A GitHub-link copy: the loop's own gate, unchanged.
+    m.g("reset", "-q", "--hard", m.c1)
+    assert market.switch_to_link(m.app)["ok"]
+    assert route.api_contrib_app(path=m.app)["reason"] == "disabled"
+    out = route.api_contrib_action({"path": m.app, "action": "check"}, x_fused="1")
+    assert out["reason"] == "disabled"
+    assert m.app not in refresh.cards()
+    write_prefs(marketplace_enabled=False)
+    assert not flags.marketplace_ui()
+
+
 # ------------------------------------------------------------ install path
 
 

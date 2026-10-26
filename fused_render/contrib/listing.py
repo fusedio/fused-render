@@ -565,7 +565,7 @@ def review_of(pr: dict | None, comments: list[dict], checks: list[dict],
     if not isinstance(pr, dict):
         return None
     out = {"status": "in-review", "reasons": [], "new_powers": [], "whats_new": None,
-           "sha": pr.get("head_sha"), "confirmed": False}
+           "sha": pr.get("head_sha"), "confirmed": False, "claude_skipped": False}
     if pr.get("state") != "open":
         if pr.get("merged"):
             return None
@@ -582,7 +582,9 @@ def review_of(pr: dict | None, comments: list[dict], checks: list[dict],
     if block is not None:
         out.update(reasons=_clean_list(block.get("reasons")),
                    new_powers=_powers(block.get("new_powers")),
-                   whats_new=_str(block.get("whats_new")) or None)
+                   whats_new=_str(block.get("whats_new")) or None,
+                   # The check ran without Claude (no key): fixed rules only.
+                   claude_skipped=block.get("claude") == "skipped")
     verdict = (block or {}).get("status")
     if verdict == "fail" or run_failed:
         out["status"] = "failed"
@@ -774,10 +776,12 @@ def view(root: str, lo: dict | None = None) -> dict:
         "review": ({"status": review.get("status"), "reasons": review.get("reasons") or [],
                     "new_powers": review.get("new_powers") or [],
                     "whats_new": review.get("whats_new"),
-                    "confirmed": bool(review.get("confirmed"))}
+                    "confirmed": bool(review.get("confirmed")),
+                    "claude_skipped": bool(review.get("claude_skipped"))}
                    if review else {"status": "live" if row else None, "reasons": [],
                                    "new_powers": [], "whats_new": (approved or {}).get(
-                                       "whats_new"), "confirmed": False}),
+                                       "whats_new"), "confirmed": False,
+                                   "claude_skipped": False}),
         "update_available": update_available,
         "doctor_clear": lo.get("doctor_clear") is not False,
         "doctor_blockers": lo.get("doctor_blockers") or [],
@@ -960,14 +964,18 @@ def _body(kind: str, row: dict | None, name: str, *, repo: str, subjects=()) -> 
                 "their copy on its last reviewed version.")
     elif kind == "update":
         text = f"Moves **{name}** (`{repo}`) to `{row['commit'][:7]}`."
-        if subjects:
-            text += "\n\nWhat changed:\n" + "\n".join(f"- {s}" for s in subjects[:20])
+        changed = "; ".join(s.rstrip(".") for s in subjects[:20])
+        text += "\n\n## What changed\n" + (f"{changed}." if changed
+                                           else f"A new version of {name}.")
     else:
         text = f"Lists **{name}** (`{repo}` at `{row['commit'][:7]}`) in the Fused Marketplace."
-        if row.get("description"):
-            text += f"\n\n{row['description']}"
+        desc = (row.get("description") or "").rstrip(".")
+        text += "\n\n## What changed\n" + (f"First release: {desc}." if desc
+                                           else "First release.")
         if row.get("remix_of"):
             text += f"\n\nA remix of `{row['remix_of']}`."
+    # "## What changed" + one line is what the index's check uses as What's
+    # new while Claude's review is off (WS-IDX `fallback_whats_new`).
     return text + "\n\n---\nOpened from fused"
 
 

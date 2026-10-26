@@ -9,7 +9,9 @@ backend lacks). Raw GitHub (the asset proxy) is faked at `_http_get`. The
 install path is git-real: the author's repo lives on a FakeGitHub
 (contrib/gh.py, `FUSED_RENDER_CONTRIB_FAKE_GH`, every `https://github.com/
 <o>/<r>` rewritten to its bare repos), and an install is a real clone at the
-row's approved commit placed by the GitHub link installer. The engine's moves
+row's approved commit placed by the GitHub link installer (the real
+`appfile_git.clone(commit=)` / `install(kind="marketplace", market=)`). The
+engine's moves
 (`engine.bring_in`, `market.switch_to_reviewed` / `adopt_legacy`,
 `blocks.*`) belong to contrib's own tests (test_contrib_market/blocks.py);
 here they are stubbed at their seams to prove this module routes to them.
@@ -49,11 +51,6 @@ CATALOG_KEYS = (
     "releases", "catalog_version", "generated_at")
 OWNER = "alice"
 FUSED = {"X-Fused": "1"}
-
-#: Engine parameters this suite had to shim because WS-ENGINE's appfile_git
-#: did not have them yet when it ran (reported in the PR notes).
-SHIMMED: list[str] = []
-
 
 def _sha1(text: str) -> str:
     import hashlib
@@ -619,47 +616,6 @@ def _git(root, *args):
     return r.stdout.strip()
 
 
-def _ensure_engine_params(monkeypatch):
-    """WS-ENGINE adds `clone(commit=)` and `install(kind=, market=)` to
-    appfile_git (§18.4 "Install at a commit"). Until those land this suite
-    shims them with the same observable result — a clone detached at the
-    commit, a record of kind `marketplace` — and says so (SHIMMED)."""
-    from fused_render import appfile_git
-
-    if "commit" not in inspect.signature(appfile_git.clone).parameters:
-        real_clone = appfile_git.clone
-
-        def clone(url, repo, *, commit=None):
-            d, head, at = real_clone(url, repo)
-            if commit and commit != head:
-                _git(d, "fetch", "-q", "origin", commit)
-                _git(d, "checkout", "-q", "--detach", commit)
-                head = commit
-            return d, head, at
-
-        monkeypatch.setattr(appfile_git, "clone", clone)
-        SHIMMED.append("appfile_git.clone(commit=)")
-    if "kind" not in inspect.signature(appfile_git.install).parameters:
-        real_install = appfile_git.install
-
-        def install(fused_path, target, manifest, *, force, kind="github", market=None):
-            out = real_install(fused_path, target, manifest, force=force)
-            if kind == "marketplace":
-                from fused_render.contrib import store
-
-                def mark(rec):
-                    rec.update(kind="marketplace", slug=market["slug"], approved=market["approved"],
-                               listing={"status": "live", "checked_at": time.time(), "delisted_at": None},
-                               block=None, switched=[])
-                    return rec
-
-                store.update(target["path"], mark)
-            return out
-
-        monkeypatch.setattr(appfile_git, "install", install)
-        SHIMMED.append("appfile_git.install(kind=, market=)")
-
-
 @pytest.fixture()
 def gh_world(env, monkeypatch):
     """Alice's `sine-starter` repo on a FakeGitHub, and the catalog row for
@@ -678,7 +634,6 @@ def gh_world(env, monkeypatch):
     approved = fake.tip(full, "main")
     env["api"].set_files("sine-starter", {"index.html": PAGE, "app.py": "A = 1\n"}, "1.0.0",
                          commit=approved, repo=full)
-    _ensure_engine_params(monkeypatch)
     return types.SimpleNamespace(fake=fake, full=full, approved=approved)
 
 
@@ -726,6 +681,27 @@ def test_install_clones_the_approved_commit_not_the_authors_tip(env, gh_world):
     from fused_render import appfetch
 
     assert not [n for n in os.listdir(appfetch.downloads_dir()) if n.endswith(".fused")]
+
+
+def test_a_release_moves_the_copy_through_the_real_engine(env, gh_world):
+    client = _client()
+    client.post("/api/marketplace/install", json={"slug": "sine-starter"}, headers=FUSED)
+    dest = _wait_job(client, "sine-starter")["path"]
+    # Alice pushes; nothing moves (M1). Then the row moves to that commit: a release.
+    tip = gh_world.fake.commit(gh_world.full, "main", {"app.py": "A = 2\n"}, "Faster", author="alice")
+    assert _entry("sine-starter")["installed"]["update_available"] is False
+    env["api"].set_files("sine-starter", {"index.html": PAGE, "app.py": "A = 2\n"}, "1.1.0",
+                         commit=tip, whats_new="Faster sine")
+    assert _entry("sine-starter", refresh=True)["installed"]["update_available"] is True
+    r = client.post("/api/marketplace/install", json={"slug": "sine-starter"}, headers=FUSED)
+    assert r.json()["job"]["action"] == "update"
+    job = _wait_job(client, "sine-starter")
+    assert job["state"] == "done", job
+    assert _git(dest, "rev-parse", "HEAD") == tip
+    from fused_render.contrib import store
+
+    assert store.get(dest)["approved"]["commit"] == tip
+    assert _entry("sine-starter")["installed"]["update_available"] is False
 
 
 def test_second_install_is_an_update_through_the_engine(env, gh_world, monkeypatch):

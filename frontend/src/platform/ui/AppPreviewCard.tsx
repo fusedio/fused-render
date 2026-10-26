@@ -35,6 +35,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { AppCardContrib, AppInfo } from "@platform/lib/api";
 import { useContribFlags } from "@platform/lib/contrib-flags";
+import { useMarketplaceFeature } from "@platform/lib/marketplace-flag";
 import { appIconUrl, appfilePreviewUrl, rawUrl } from "@platform/lib/api";
 import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { exportAppFileOnly, openShareApp } from "@platform/lib/share-app";
@@ -209,7 +210,12 @@ export function AppPreviewCard({
   // the label earns its slot only when the app follows, or remixes, somebody
   // else's (the app page states "Your app" for the one that asks).
   const contribFlags = useContribFlags();
-  const source = contribFlags?.sources ? cardSource(app.contrib) : null;
+  // A Marketplace copy's label shows with the Marketplace switch too (§18.8).
+  const marketplaceOn = useMarketplaceFeature();
+  const source =
+    contribFlags?.sources || (marketplaceOn === true && app.contrib?.kind === "marketplace")
+      ? cardSource(app.contrib)
+      : null;
   const inbox = contribFlags?.inbox ? (app.contrib?.inbox ?? 0) : 0;
   // Stage B's block list (CONTRIB_LOOP.md §18.4): shown whatever the flags
   // say — the block is enforced whatever they say. A HARD block opens the

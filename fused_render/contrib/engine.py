@@ -1606,6 +1606,9 @@ def status(root) -> dict:
         return view
     who = _who(rec)
     view.update(who=who, author=who)
+    if rec.get("kind") == "github" and isinstance(rec.get("block_warn"), dict):
+        # §18.4 B4: a GitHub-link copy running a blocked commit: warning only.
+        view["block_warn"] = {**(_blocks().view(rec["block_warn"]) or {}), "warn": True}
     fol = follow.for_record(rec)
     head = replay.rev(root, "HEAD")
     if fol is None or not head:
@@ -1684,6 +1687,8 @@ def _market_view(root, rec, view, main) -> dict:
                 approved={k: v for k, v in approved.items() if k not in ("prev", "from_row")}
                 if approved else None,
                 listing=rec.get("listing"), block=blocks.view(rec.get("block")),
+                listing_status=(rec.get("listing") or {}).get("status")
+                if isinstance(rec.get("listing"), dict) else None,
                 released=bool(p and main and _landed_in(root, p, main)),
                 live=bool(p and p.get("live")))
     b = rec.get("block") if isinstance(rec.get("block"), dict) else {}

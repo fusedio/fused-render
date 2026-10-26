@@ -503,7 +503,7 @@ function describeGit(t: AppFileProbe, git: GitLink): StateView {
       return {
         callout: true,
         tone: "warn",
-        title: `Follow ${who} directly? You'll get every change, unreviewed.`,
+        title: git.switch || `Follow ${who} directly? You'll get every change, unreviewed.`,
         body: (
           <>
             You installed this app from the Marketplace, so {at} gets only releases Fused reviewed. Following {who}{" "}
@@ -647,10 +647,16 @@ export function FusedFilePage({ path }: { path: string }) {
         return;
       }
       const res = r.ok;
-      const updated = res.action === "updated";
+      const updated = res.action === "updated" || res.action === "switched";
       setPhase({ kind: "done", entry: res.entry, updated });
       announceCurrentAppsChanged();
-      notify({ title: `${name} ${updated ? "updated" : "installed"}`, tone: "info" });
+      notify({
+        title:
+          res.action === "switched"
+            ? res.message || `${name} follows its author directly now`
+            : `${name} ${updated ? "updated" : "installed"}`,
+        tone: "info",
+      });
       // A beat for the pill's check, then the app — the template's go().
       setTimeout(() => openEntry(res.entry), 700);
     } catch (e) {

@@ -1536,8 +1536,12 @@ def install_app(slug: str, row: dict, report=lambda **kw: None) -> dict:
             raise InstallError(f"{target['path']} already holds this app, installed another way. "
                                "Uninstall it first, then install it from the Marketplace.")
         try:
-            appfile_git.install(built, target, manifest, force=False, kind="marketplace",
-                                market={"slug": slug, "approved": _approved(row)})
+            # `approved` is a dict with the 40-hex commit (plan_install checked
+            # it): a bare sha would leave the copy with no approved commit.
+            market = {"slug": slug, "approved": _approved(row)}
+            if _opt_str(row.get("branch")):
+                market["branch"] = row["branch"]
+            appfile_git.install(built, target, manifest, force=False, kind="marketplace", market=market)
         except (appfile_git.GitInstallError, appfile.AppFileError) as exc:
             raise InstallError(str(exc))
         dest = os.path.normpath(target["path"])

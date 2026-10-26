@@ -225,6 +225,20 @@ def test_review_commit_status_on_the_head_is_the_gate(w):
     assert lst["review"]["status"] == "in-review" and lst["review"]["confirmed"]
 
 
+def test_review_without_claude_says_so(w):
+    """No Anthropic key on the index: the block carries "claude": "skipped"
+    and What's new comes from the PR body's "## What changed" line."""
+    from fused_render.contrib import actions_listing, listing
+
+    n = _publish(w)
+    pr = w.gh.get_pr(INDEX, n)
+    assert "\n## What changed\nFirst release: A sine wave.\n" in pr["body"]
+    w.fake.comment_as(BOT, INDEX, n, _block(pr["head_sha"], "pass", claude="skipped"))
+    lst = listing.status(w.app, fresh=True)
+    assert lst["review"]["claude_skipped"] is True
+    assert actions_listing.CLAUDE_OFF in actions_listing.decide(lst)["sentence"]
+
+
 def test_only_the_workflow_bot_writes_the_verdict(w):
     from fused_render.contrib import listing
 

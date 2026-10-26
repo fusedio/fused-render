@@ -25,7 +25,9 @@ function RepoLink({ repo }: { repo: string }) {
 }
 
 export function SourceLine({ contrib }: { contrib: AppContrib | null }) {
-  if (!contrib?.flags.sources) return null;
+  // A Marketplace copy says where it came from with the Marketplace switch
+  // alone (the server only answers for it then, §18.8).
+  if (!contrib || (!contrib.flags.sources && contrib.copy.kind !== "marketplace")) return null;
   const { kind, repo, remix_of } = contrib.copy;
   let body: ReactNode = null;
   if (kind === "marketplace") {

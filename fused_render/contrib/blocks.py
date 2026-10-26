@@ -155,11 +155,15 @@ def refresh(*, force: bool = True) -> bool:
     except Exception:  # noqa: BLE001 — offline: the last list applies
         logger.warning("contrib blocks: block list refresh failed", exc_info=True)
         return False
+    # marketplace.blocklist answers `status` "ok" | "stale" (the old list
+    # kept) | "error" (none ever): only "ok" is a fresh list.
     if not isinstance(ans, dict) or not isinstance(ans.get("blocked"), list) \
-            or ans.get("stale") or ans.get("error"):
+            or ans.get("stale") or ans.get("status", "ok") != "ok":
         return False
     got = _clean(ans["blocked"])
-    if got != entries() or _stamp(path()) is None:
+    # marketplace.blocklist persists the file itself (its fuller shape);
+    # written here only when it did not (a stand-in, an older build).
+    if _stamp(path()) is None or got != entries():
         from fused_render.shell import storage
 
         try:
@@ -255,9 +259,12 @@ def view(block) -> dict | None:
         return None
     from fused_render.contrib import market
 
-    return {"level": block["level"], "reason": block.get("reason") or "",
+    return {"level": block["level"], "commit": block.get("commit"),
+            "reason": block.get("reason") or "",
             "what_to_do": block.get("what_to_do") or "", "at": block.get("at"),
             "rolled_back_to": block.get("rolled_back_to"),
+            # The rollback target's release time (ISO) and its "Oct 3" form.
+            "rolled_back_to_at": block.get("target_at"),
             "rolled_back_date": market.release_date(block.get("target_at")) or None,
             "conflict": bool(block.get("conflict")), "no_target": bool(block.get("no_target")),
             "confirmed": bool(block.get("confirmed_at"))}
@@ -281,14 +288,15 @@ def gate(root) -> dict | None:
         rec = store.get(root)
         if not isinstance(rec, dict) or rec.get("kind") != "marketplace":
             return None
+        where = {"slug": _slug(rec), "path": store.key(root)}
         if standing(rec):
-            return {"blocked": view(rec.get("block"))}
-        hit = is_blocked_commit(_slug(rec), rec.get("last_head"))
+            return {"blocked": {**view(rec.get("block")), **where}}
+        hit = is_blocked_commit(where["slug"], rec.get("last_head"))
         if hit and hit["level"] == "hard":
             b = (rec.get("block") or {}) if isinstance(rec.get("block"), dict) else {}
             if b.get("commit") == hit["commit"] and b.get("rolled_back_to"):
                 return None
-            return {"blocked": view({**hit, "rolled_back_to": None})}
+            return {"blocked": {**view({**hit, "rolled_back_to": None}), **where}}
     except Exception:  # noqa: BLE001 — a broken gate must not lock every app
         logger.exception("contrib blocks: gate failed for %s", root)
     return None
@@ -417,7 +425,8 @@ def _hard(root, rec, hits, all_hard, *, slug) -> dict:
         if not old.get("no_target") or old.get("commit") != hit["commit"]:
             store.add_activity(root, "rollback", _no_target_text(hit))
         return {"level": "hard", "action": "no-target"}
-    block.update(target=target["commit"], target_at=target.get("at"))
+    block.update(target=target["commit"], target_at=target.get("at"),
+                 rolled_back_to_at=target.get("at"))
     fol = follow.Follow("pinned", follow.github_url(rec["repo"]), rec["branch"],
                         commit=target["commit"])
     m = follow.update_mirror(root, fol, why="blocked")

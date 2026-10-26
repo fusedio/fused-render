@@ -21,6 +21,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { getJson, postJson } from "@platform/lib/api";
 import { pauseWhileHidden } from "@platform/lib/pause-while-hidden";
 import { useContribFlags, type ContribFlags } from "@platform/lib/contrib-flags";
+import { useMarketplaceFeature } from "@platform/lib/marketplace-flag";
 
 export type { ContribFlags };
 
@@ -756,7 +757,11 @@ export interface AppContribState {
  *  so the page with the feature off makes exactly the requests it always did. */
 export function useAppContrib(dir: string | null): AppContribState {
   const flags = useContribFlags();
-  const enabled = !!dir && flags !== null && anyFlag(flags);
+  // Stage B (§18.8): a Marketplace copy's panel, buttons and block strips
+  // answer with the Marketplace switch on too, Community flags or not; the
+  // server answers `{ok:false}` for any other copy then, and nothing shows.
+  const market = useMarketplaceFeature();
+  const enabled = !!dir && ((flags !== null && anyFlag(flags)) || market === true);
   const [data, setData] = useState<AppContrib | null>(null);
   const [settled, setSettled] = useState(false);
   const [pending, setPending] = useState(false);
@@ -849,11 +854,12 @@ export function useAppContrib(dir: string | null): AppContribState {
   const refresh = useCallback(() => (enabled ? read() : Promise.resolve()), [enabled, read]);
   // Not settled while the flags themselves are still being read: a
   // `?_tab=proposals` link must keep its tab through that window too.
+  const known = flags !== null || market === true;
   return {
     data: enabled ? data : null,
-    settled: flags !== null && settled,
+    settled: known && settled,
     // Every flag off is a real answer too: there is no inbox to offer.
-    answered: flags !== null && (!enabled || answered),
+    answered: known && (!enabled || answered),
     refresh,
   };
 }

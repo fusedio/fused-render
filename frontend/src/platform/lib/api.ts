@@ -2699,6 +2699,10 @@ export interface AppFileProbe {
     /** Installed GitHub-link copy only: its app page has the Source panel to
      *  act on (the A1 switch) — only then does the page point at it. */
     app_page?: boolean;
+    /** Stage B, state `switch-link`: the copy is a Marketplace copy (`kind`)
+     *  and `switch` is the server's question ("Follow alice directly? …"). */
+    kind?: string | null;
+    switch?: string | null;
   } | null;
   /** The file sits in the deep-link downloads cache, not a folder of the user's. */
   downloaded?: boolean;
@@ -2722,7 +2726,10 @@ export interface AppFileProbe {
 }
 
 export interface AppFileInstallResult extends AppFileProbe {
-  action: "installed" | "updated";
+  /** `switched`: a Marketplace copy now follows the author directly. */
+  action: "installed" | "updated" | "switched";
+  /** The engine's own sentence for a switch. */
+  message?: string | null;
   /** The installed entry page (absolute). */
   entry: string;
   entry_view: string;
