@@ -25,6 +25,13 @@ the author's branch is a fetch-only mirror of `origin/<b>`. So:
   fast-forward and runs.
 - Reset-to-commit is allowed on `HOME_BRANCH` (it is the contributor's own
   branch) and refused anywhere else (the author's mirror, or another branch).
+
+A MARKETPLACE copy (§18.4, marker `fused.kind=marketplace`) is guarded the
+same way, with one difference: its mirror holds the approved commit and its
+upstream IS the mirror (`branch.fused/mine.remote = .`), but a plain pull
+names `origin` and would fetch the author's unreviewed tip — so Pull is
+always refused there (`MARKET_PULL_SENTENCE`) and the panel's Get latest is
+always the engine's (`/api/git-upstream get-latest`).
 """
 import importlib.util
 import json
@@ -66,24 +73,36 @@ def _load_sibling_appenv():
     return module
 
 
+#: The kinds a guarded copy can be (`classify.GITHUB_LIKE`): a GitHub-link
+#: copy, or a marketplace copy (§18.4) — which runs only the approved commit.
+GUARDED_KINDS = ("github", "marketplace")
+
+#: A marketplace copy's Get latest is never a plain pull (§18.4): `pull
+#: --ff-only -- origin <b>` would fetch the AUTHOR's tip, an unreviewed
+#: commit. The panel posts get-latest (the engine) instead.
+MARKET_PULL_SENTENCE = "Get latest brings in the reviewed version."
+
+
 def guarded_who(root, run):
-    """`(who, unknown)` for a copy of someone else's GitHub app (the push
-    guard on origin, or the `fused.kind=github` marker), else None. `who` is
+    """`(who, unknown, kind)` for a copy of someone else's GitHub app (the
+    push guard on origin, or the `fused.kind` marker), else None. `who` is
     `owner/name` (or `UNNAMED`); `unknown` (`fused.ownerunknown`): whose app
     this is is not known yet — if it turns out to be the user's own, it
-    publishes as usual."""
+    publishes as usual; `kind` the marker's `github` | `marketplace`
+    (`github` when only the pushurl guard says so)."""
+    code, out = run(root, "config", "--local", "--get", KIND_CONFIG)
+    marker = _text(out).strip() if code == 0 else ""
     code, out = run(root, "config", "--get-all", "remote.origin.pushurl")
     guarded = code == 0 and NO_PUSH_URL in _text(out).split()
-    if not guarded:
-        code, out = run(root, "config", "--local", "--get", KIND_CONFIG)
-        if not (code == 0 and _text(out).strip() == "github"):
-            return None
+    if not guarded and marker not in GUARDED_KINDS:
+        return None
+    kind = marker if marker in GUARDED_KINDS else "github"
     code, out = run(root, "config", "--get", "remote.origin.url")
     m = GITHUB_REPO.match(_text(out).strip()) if code == 0 else None
     who = m.group(1) if m else UNNAMED
     code, out = run(root, "config", "--local", "--get", "fused.ownerunknown")
     unknown = code == 0 and _text(out).strip() == "true"
-    return who, unknown
+    return who, unknown, kind
 
 
 def owner_of(who):
@@ -93,10 +112,13 @@ def owner_of(who):
     return None
 
 
-def bring_in_label(who):
+def bring_in_label(who, kind=None):
     """The Git panel's Get latest label on a copy with changes of its own —
-    the app page's own words (`actions.py`'s "Bring in <who>'s latest")."""
+    the app page's own words (`actions.py`'s "Bring in <who>'s latest"); a
+    marketplace copy's names the reviewed release instead."""
     owner = owner_of(who)
+    if kind == "marketplace":
+        return f"Bring in {owner}'s release" if owner else "Bring in the reviewed version"
     return f"Bring in {owner}'s latest" if owner else "Bring in the latest"
 
 
@@ -144,7 +166,7 @@ def push_blocked(root, run, home_dir=None):
     guarded = guarded_who(root, run)
     if guarded is None:
         return None
-    who, unknown = guarded
+    who, unknown, _kind = guarded
     until = " until fused knows whether this app is yours" if unknown else ""
     if app_page_on(home_dir):
         return f"This app follows {who}{until}. Send your changes from its app page."
@@ -164,6 +186,8 @@ def pull_blocked(root, run):
     guarded = guarded_who(root, run)
     if guarded is None:
         return None
+    if guarded[2] == "marketplace":
+        return MARKET_PULL_SENTENCE
     n = ahead(root, run)
     if n == 0:
         return None

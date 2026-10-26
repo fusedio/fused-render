@@ -591,7 +591,7 @@ def _github_copy_repo(path: str, *, nested: bool = True) -> str | None:
         here = store.key(path)
         while True:
             record = records.get(here)
-            if (isinstance(record, dict) and record.get("kind") == "github"
+            if (isinstance(record, dict) and record.get("kind") in ("github", "marketplace")
                     and record.get("repo") and os.path.isdir(here)):
                 return record["repo"]
             parent = os.path.dirname(here)

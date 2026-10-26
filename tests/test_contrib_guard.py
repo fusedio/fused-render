@@ -75,14 +75,27 @@ def test_one_value_per_constant(guard):
 @pytest.mark.parametrize("answers,want", [
     ({}, None),
     ({URL: "https://github.com/alice/x\n"}, None),
-    (COPY, ("alice/x", False)),
-    ({KIND: "github\n", URL: "https://github.com/alice/x.git\n"}, ("alice/x", False)),
+    (COPY, ("alice/x", False, "github")),
+    ({KIND: "github\n", URL: "https://github.com/alice/x.git\n"}, ("alice/x", False, "github")),
     ({GUARD: "no-push://fused\n", URL: "/tmp/somewhere.git\n"},
-     ("its author's version on GitHub", False)),
-    ({**COPY, UNKNOWN: "true\n"}, ("alice/x", True)),
+     ("its author's version on GitHub", False, "github")),
+    ({**COPY, UNKNOWN: "true\n"}, ("alice/x", True, "github")),
+    # §18.4: a marketplace copy is guarded by its marker alone too, and says so.
+    ({KIND: "marketplace\n", URL: "https://github.com/alice/x.git\n"},
+     ("alice/x", False, "marketplace")),
 ])
 def test_guarded_who(guard, answers, want):
     assert guard.guarded_who("/r", fake(answers)) == want
+
+
+def test_marketplace_pull_is_always_the_engines(guard):
+    """§18.4: a plain pull names `origin` and would fetch the author's
+    unreviewed tip — refused on a marketplace copy even with nothing of its
+    own (`ahead == 0`)."""
+    answers = {KIND: "marketplace\n", GUARD: "no-push://fused\n",
+               URL: "https://github.com/alice/x.git\n"}
+    assert guard.pull_blocked("/r", fake(answers)) == guard.MARKET_PULL_SENTENCE
+    assert guard.bring_in_label("alice/x", "marketplace") == "Bring in alice's release"
 
 
 def test_labels_use_the_login(guard):

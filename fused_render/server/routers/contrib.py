@@ -185,6 +185,11 @@ def _gate(body, x_fused, phase, kinds=None):
         return _failure(e, "classify")
     if not isinstance(record, dict):
         return _refuse("unknown", "Can't tell where this app came from yet. Try again in a moment.")
+    if kinds is not None and "github" in kinds and record.get("kind") == "marketplace":
+        # §18.4: a marketplace copy is a copy of someone else's app like a
+        # GitHub-link one — Propose, Discard, Bring in, Remix, Merge with
+        # Claude all apply (B5); only what its mirror follows differs.
+        return _Target(app_dir, record)
     if kinds is not None and record.get("kind") not in kinds:
         return _wrong_kind(kinds)
     return _Target(app_dir, record)
@@ -459,6 +464,13 @@ def _merge_start(t: _Target) -> dict:
         return _failure(e, "merge plan")
     if not isinstance(plan, dict) or plan.get("purpose") not in _MERGE_PHASE:
         return _refuse("nothing-to-merge", "There's nothing to combine right now.")
+    block = t.record.get("block") if t.record.get("kind") == "marketplace" else None
+    if isinstance(block, dict) and block.get("conflict") and plan.get("base") == block.get("commit"):
+        # §18.4 B4: the fix of a `blocked-release` (a rollback that overlaps
+        # Bob's changes) is offered with the panel itself — the block list
+        # is enforced whatever the switches say (§18.8), so its one fix
+        # button is too (P6).
+        return _start_merge(t, plan)
     if not _phase_on(_MERGE_PHASE[plan["purpose"]]):
         return _disabled()
     return _start_merge(t, plan)
@@ -694,6 +706,11 @@ def _check(t: _Target) -> dict:
     it to the engine's table (and never pushes one, P2). Then the GitHub
     side (proposal state, inbox) is re-read too."""
     def run():
+        if t.record.get("kind") == "marketplace":
+            # §18.4 "Check for a new release": the catalog and the block
+            # list are asked NOW (past their 10-minute caches) and enforced
+            # BEFORE the sync, so the button is never a no-op.
+            _market_check(t.app_dir)
         if t.record.get("kind") == "own":
             res = _mod("ownsync").check_now(t.app_dir)
         else:
@@ -712,6 +729,17 @@ def _check(t: _Target) -> dict:
         return res
 
     return _job("action-check", t.app_dir, run)
+
+
+def _market_check(app_dir: str) -> None:
+    """A marketplace copy's Check, before its sync: `marketplace.
+    get_snapshot(force=True)` (through `market.refresh_approved`, which
+    also writes the row into the record), `blocks.refresh()` +
+    `blocks.enforce`. Each piece best-effort: an offline catalog leaves the
+    copy where it is (M3)."""
+    _safely("catalog", _mod("market").refresh_approved, app_dir, fresh=True)
+    _safely("block list", _mod("blocks").refresh, force=True)
+    _safely("block enforce", _mod("blocks").enforce, app_dir)
 
 
 def _retry(t: _Target) -> dict:
@@ -853,6 +881,19 @@ def _update_proposal(t: _Target, args) -> dict:
     return _call("propose update", _mod("proposals").start_update, t.app_dir, **extra)
 
 
+def _switch_reviewed(t: _Target) -> dict:
+    """A github copy → reviewed releases (§18.4 D13), as a job: the copy's
+    row by its repo (the cached catalog — read inside the job, which may
+    build it), then the switch (`switch_to_reviewed` refuses a missing
+    row in plain words)."""
+    market = _mod("market")
+    repo, app_dir = t.record.get("repo"), t.app_dir
+
+    def run():
+        return market.switch_to_reviewed(app_dir, market.row_for_repo(repo))
+    return _job("action-switch-reviewed", app_dir, run)
+
+
 def _withdraw(t: _Target, _args) -> dict:
     return _job("action-withdraw", t.app_dir, _mod("proposals").withdraw, t.app_dir)
 
@@ -886,6 +927,13 @@ _DISPATCH = {
     "save-edits": _as_job("ownsync", "save_edits"),
     # The page runs the sign-in flow itself (GitHubSignIn); nothing to do here.
     "sign-in": lambda t, a: {"ok": True, "dialog": "sign-in"},
+    # §18.4 (marketplace kind). The switches fetch: jobs. The soft block's
+    # "Open it anyway" is a record write. Remove this app (a hard block with
+    # nothing to roll back to) is the page's own uninstall flow.
+    "switch-link": _as_job("market", "switch_to_link"),
+    "switch-reviewed": lambda t, a: _switch_reviewed(t),
+    "confirm-block": _now("blocks", "confirm_soft"),
+    "remove-app": lambda t, a: {"ok": True, "dialog": "remove-app"},
 }
 
 

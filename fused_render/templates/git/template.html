@@ -2035,7 +2035,13 @@ function toolbar(data) {
       expanded: panel === "publish",
       onClick: () => setParams({ panel: panel === "publish" ? null : "publish" }),
     }));
-  } else if (behind && repo.push_blocked && ahead) {
+  } else if (behind && repo.push_blocked
+             && (ahead || (repo.guard && repo.guard.kind === "marketplace"))) {
+    /* A marketplace copy (contrib §18.4) takes this branch even with
+       nothing of its own: its plain pull would fetch the author's
+       unreviewed tip, so Get latest is always the engine's (which brings in
+       the reviewed release); `behind` here counts against the mirror, which
+       holds the approved commit. */
     /* A copy of someone else's app (contrib §17.8) with commits of its own the
        author's version lacks can't fast-forward onto it: `git pull --ff-only`
        would only ever say "diverged — do it in a terminal". The server's

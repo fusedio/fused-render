@@ -65,6 +65,11 @@ from fused_render.contrib.jobs import PlainError
 
 logger = logging.getLogger(__name__)
 
+#: The kinds that propose (`classify.GITHUB_LIKE`): a GitHub-link copy, and
+#: a marketplace copy (§18.4 B5 — Propose goes to the author's branch, not
+#: to the index).
+_COPY_KINDS = ("github", "marketplace")
+
 FOOTER = "\n\n---\nSent from Fused\n" + gh.PROPOSAL_MARKER
 
 #: Proposal status from GitHub is re-read at most this often per app,
@@ -351,7 +356,7 @@ def _prepare(root, record, ident: dict, *, include=(), commit: bool = True) -> s
         branch = gu._current_branch(root)
         if not branch:
             raise PlainError("This copy can't send proposals right now.")
-        if (record or {}).get("kind") == "github" and branch != home_branch():
+        if (record or {}).get("kind") in _COPY_KINDS and branch != home_branch():
             raise PlainError("You're looking at a different version of this app. "
                              "Go back to your usual version first, then send.")
         _gate(root)
@@ -384,7 +389,8 @@ def _record(app_dir) -> tuple[str, dict]:
 
 def _contributor_record(app_dir) -> tuple[str, dict]:
     root, record = _record(app_dir)
-    if record.get("kind") != "github" or not record.get("repo") or not record.get("branch"):
+    if record.get("kind") not in _COPY_KINDS or not record.get("repo") \
+            or not record.get("branch"):
         raise PlainError("Proposals are for apps you installed from someone else.")
     return root, record
 
@@ -411,7 +417,7 @@ def _settled(record, p: dict) -> bool:
     if p.get("direct"):
         return True
     if state == "merged":
-        return bool(p.get("landed_at")) or (record or {}).get("kind") != "github"
+        return bool(p.get("landed_at")) or (record or {}).get("kind") not in _COPY_KINDS
     if state == "closed":
         return bool((p.get("cache") or {}).get("note_checked"))
     return False
@@ -598,7 +604,7 @@ def view(app_dir) -> dict | None:
            # After a remix (kind "own") the copy carries the credit line and
            # a new app id, which must never be sent into the author's app:
            # still followed, still withdrawable, never updated.
-           "can_update": waiting and record.get("kind") == "github",
+           "can_update": waiting and record.get("kind") in _COPY_KINDS,
            "can_withdraw": waiting,
            # GitHub's own "does it still merge" (None = not known yet), and
            # whether HEAD lacks edits made on GitHub or holds new ones of
@@ -874,7 +880,7 @@ def update(app_dir, *, include=None, step=None) -> dict:
     p = record.get("proposal")
     if not isinstance(p, dict) or not p.get("number"):
         raise PlainError("There's no proposal to update.")
-    if record.get("kind") != "github":
+    if record.get("kind") not in _COPY_KINDS:
         raise PlainError("Your remix is its own app now, so this proposal can't take "
                          "its newer edits.")
     _gate(root)

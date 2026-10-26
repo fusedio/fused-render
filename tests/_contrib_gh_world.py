@@ -153,3 +153,125 @@ def assert_home_invariants(root, branch: str = "main") -> None:
     assert git(root, "symbolic-ref", "HEAD") == f"refs/heads/{HOME}", "I4: HEAD off fused/mine"
     assert git(root, "rev-parse", f"refs/heads/{branch}") == \
         git(root, "rev-parse", f"refs/remotes/origin/{branch}"), "I3: mirror != origin"
+
+
+# ---------------------------------------------- stage B (§18.4) helpers — WS-ENGINE
+
+
+def assert_market_invariants(root, branch: str = "main") -> None:
+    """I3 + I4 read for a `marketplace` copy (§18.4): HEAD on `fused/mine`,
+    tracking the MIRROR (`branch.fused/mine.remote = .`), and the mirror ==
+    the record's approved commit — never the author's tip."""
+    from fused_render.contrib import store
+    rec = store.get(root) or {}
+    assert rec.get("kind") == "marketplace"
+    assert git(root, "symbolic-ref", "HEAD") == f"refs/heads/{HOME}", "I4: HEAD off fused/mine"
+    assert git(root, "config", f"branch.{HOME}.remote") == ".", "upstream is not the mirror"
+    approved = (rec.get("approved") or {}).get("commit")
+    assert approved and git(root, "rev-parse", f"refs/heads/{branch}") == approved, \
+        "I3 (marketplace): mirror != approved commit"
+
+
+def assert_copy_invariants(root, branch: str = "main") -> None:
+    """The kind's reading of I3 + I4: a github copy's mirror is origin's,
+    a marketplace copy's the approved commit."""
+    from fused_render.contrib import classify
+    kind = classify.kind_of(root)
+    if kind == "marketplace":
+        assert_market_invariants(root, branch)
+    elif kind == "github":
+        assert_home_invariants(root, branch)
+
+
+class Catalog:
+    """The backend's catalog and block list for one test (§18.3 rows):
+    `marketplace.cached_snapshot/get_snapshot/_read_cache/blocklist`
+    answer from here — `status`/`stale` steer the freshness rule, `down`
+    makes every read fail (offline)."""
+
+    def __init__(self, tmp_path):
+        self.rows: dict = {}
+        self.blocked: list = []
+        self.status = "ok"
+        self.stale = False
+        self.down = False
+        self.state = str(tmp_path / "market-state")
+        os.makedirs(self.state, exist_ok=True)
+
+    def snap(self):
+        import copy
+        if self.down:
+            return None
+        return {"status": self.status, "stale": self.stale, "apps": copy.deepcopy(self.rows)}
+
+    def list_app(self, slug, repo, commit, *, whats_new="First release", at="2026-10-01T10:00:00Z",
+                 branch="main", version="1.0.0"):
+        self.rows[slug] = {"slug": slug, "repo": repo, "branch": branch, "commit": commit,
+                           "name": slug, "author": {"name": repo.split("/")[0]},
+                           "version": version,
+                           "releases": [{"commit": commit, "at": at, "whats_new": whats_new,
+                                         "version": version, "blocked": None}]}
+        return self.rows[slug]
+
+    def release(self, slug, commit, *, whats_new="Better", at="2026-10-20T10:00:00Z",
+                credits=None, version="1.1.0"):
+        row = self.rows[slug]
+        row["commit"] = commit
+        row["version"] = version
+        rel = {"commit": commit, "at": at, "whats_new": whats_new, "version": version,
+               "blocked": None}
+        if credits is not None:
+            rel["credits"] = credits
+        row["releases"].insert(0, rel)
+        return row
+
+    def delist(self, slug):
+        self.rows.pop(slug, None)
+
+    def block(self, slug, commit, level="hard", reason="It read saved passwords",
+              what_to_do="Change your passwords."):
+        self.blocked.append({"slug": slug, "commit": commit, "level": level, "reason": reason,
+                             "what_to_do": what_to_do, "at": "2026-10-25T10:00:00Z"})
+        for r in (self.rows.get(slug) or {}).get("releases") or []:
+            if r["commit"] == commit:
+                r["blocked"] = level
+
+    def install(self, monkeypatch):
+        import time as _time
+
+        from fused_render import marketplace
+        monkeypatch.setattr(marketplace, "cached_snapshot", lambda: (self.snap(), None),
+                            raising=False)
+        monkeypatch.setattr(marketplace, "get_snapshot",
+                            lambda refresh=False, force=False: (self.snap(), None), raising=False)
+        monkeypatch.setattr(marketplace, "_read_cache", lambda: self.snap(), raising=False)
+        monkeypatch.setattr(marketplace, "state_dir", lambda: self.state, raising=False)
+
+        def blocklist(force=False):
+            if self.down:
+                raise OSError("offline")
+            return {"blocked": list(self.blocked), "checked_at": _time.time()}
+        monkeypatch.setattr(marketplace, "blocklist", blocklist, raising=False)
+        return self
+
+
+def make_market_copy(w, cat, slug="sine", commit=None):
+    """Turn the world's GitHub-link copy into what a Marketplace install
+    leaves (§18.4): kind `marketplace`, the row's approved commit, HEAD and
+    the mirror at it, upstream = the mirror, marker `marketplace`."""
+    from fused_render.contrib import classify, replay, store
+    app = w.app
+    commit = commit or git(app, "rev-parse", "refs/remotes/origin/main")
+    if slug not in cat.rows:
+        cat.list_app(slug, "alice/sine", commit)
+    git(app, "reset", "-q", "--hard", commit)
+    git(app, "update-ref", "refs/heads/main", commit)
+    rec = store.get(app)
+    rec.update(kind="marketplace", owner_checked=True,
+               **store.market_fields({"slug": slug, "approved": cat.rows[slug]["releases"][0]}))
+    store.put(app, rec)
+    classify._forget_kind(app)
+    with replay.slot() as held:
+        assert held
+        classify.settle_locked(app)
+    return commit

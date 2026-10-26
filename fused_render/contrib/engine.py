@@ -91,6 +91,11 @@ ELSEWHERE_MESSAGE = "This app is in the middle of something else; try again late
 OFFLINE_MESSAGE = "Can't reach GitHub right now."
 OTHER_VERSION_MESSAGE = ("You're on a different version of this app. Go back to your usual "
                          "version first.")
+#: §18.4: a delisted marketplace copy's state sentence (and a button's
+#: refusal: nothing to update from).
+DELISTED_MESSAGE = ("No longer in the Marketplace. Your copy keeps working on its last "
+                    "reviewed version.")
+BLOCKED_MESSAGE = "Fused blocked the version of this app you were running."
 
 #: A proposal's head after Update's fetch (proposals.PR_HEAD_REF).
 _PR_HEAD_REF = "refs/fused/pr-head"
@@ -230,6 +235,10 @@ def _files_words(files) -> str:
 
 
 def _sync_error_words(reason, who) -> str:
+    if reason == follow.NOT_ON_BRANCH:
+        # §18.4: the approved commit is not on the author's branch (any
+        # more): the mirror stays where it is.
+        return _market().not_on_branch_words(who)
     return {
         "redirected": follow.REDIRECTED_MESSAGE,
         "auth": f"fused couldn't read {who}'s app on GitHub. Sign in to GitHub again.",
@@ -273,7 +282,13 @@ def _mirror(fol) -> str:
 def _main(root, fol) -> str | None:
     """The author's latest this copy knows: the mirror, else (never moved
     yet) git's own tracking ref — which is also the answer while the mirror
-    is checked out (it is not moved then, §17.3)."""
+    is checked out (it is not moved then, §17.3). A marketplace copy
+    (pinned, §18.4): the mirror, else the approved commit — never
+    `origin/<b>`, the author's unreviewed tip (M1)."""
+    if fol.pinned:
+        if gu._current_branch(root) == fol.branch:
+            return replay.rev(root, fol.commit)
+        return replay.rev(root, _mirror(fol)) or replay.rev(root, fol.commit)
     if gu._current_branch(root) == fol.branch:
         return follow.tip(root, fol) or replay.rev(root, _mirror(fol))
     return replay.rev(root, _mirror(fol)) or follow.tip(root, fol)
@@ -300,9 +315,25 @@ _inside = threading.local()
 
 def _record(root):
     rec = store.get(root)
-    if not rec or rec.get("kind") != "github":
+    if not rec or not classify.is_github_like(rec.get("kind")):
         return None, None
     return rec, follow.for_record(rec)
+
+
+def _is_market(rec) -> bool:
+    return isinstance(rec, dict) and rec.get("kind") == "marketplace"
+
+
+def _market():
+    from fused_render.contrib import market
+
+    return market
+
+
+def _blocks():
+    from fused_render.contrib import blocks
+
+    return blocks
 
 
 def _proposal(rec) -> dict | None:
@@ -338,9 +369,17 @@ def sync(root, *, action, push) -> dict:
         res = None
         try:
             rec = store.get(root)
-            if rec is None or rec.get("kind") != "github":
+            if rec is None or not classify.is_github_like(rec.get("kind")):
                 return gu._skipped("unavailable")
             _housekeep(root, rec)
+            # §18.4 B4: the block list is enforced on every open's sync,
+            # BEFORE the fetch — a hard block rolls back (or marks) here; a
+            # github copy only gets its warning. Never waits for the copy
+            # lock (a button holding it re-enforces itself).
+            try:
+                _blocks().enforce(root, wait=False)
+            except Exception:  # noqa: BLE001 — the gate still answers from the record
+                logger.exception("contrib: block enforcement failed for %s", root)
             lock = _copy_lock(root)
             if not lock.acquire(blocking=False):
                 return gu._skipped("integrating")
@@ -447,10 +486,50 @@ def _run(root, *, user, action="Bring in") -> dict:
         _inside.depth -= 1
 
 
+def _market_gate(root, rec) -> tuple:
+    """A marketplace copy's row, before the fetch (§18.4): the catalog's
+    approved commit into the record (`market.refresh_approved`, its own
+    10-minute TTL), then whether it may move at all — `(rec, fol, why)`,
+    `why` "delisted" (no fetch, no move: it keeps its last reviewed
+    version) or "blocked" (a hard block stands: enforcement owns the copy)
+    or None."""
+    try:
+        _market().refresh_approved(root)
+    except Exception:  # noqa: BLE001 — M3: an unreadable catalog is no move
+        logger.exception("contrib: catalog read failed for %s", root)
+    rec, fol = _record(root)
+    if rec is None:
+        return None, None, None
+    if _market().is_delisted(rec):
+        return rec, fol, "delisted"
+    if _blocks().standing(rec):
+        return rec, fol, "blocked"
+    return rec, fol, None
+
+
+def _soft_paused(root, rec, main) -> bool:
+    """§18.4 soft block: automatic moves pause while the copy runs a
+    soft-blocked commit, or the release waiting for it is one."""
+    b = rec.get("block") if isinstance(rec.get("block"), dict) else None
+    if b and b.get("level") == "soft":
+        return True
+    try:
+        return _blocks().contains_blocked(root, rec.get("slug"), main, None,
+                                          levels=("soft",)) is not None
+    except Exception:  # noqa: BLE001 — unknown reads as paused (fails closed)
+        return True
+
+
 def _run_inner(root, *, user, action) -> dict:
     rec, fol = _record(root)
     if rec is None:
         return _out("skipped", "not-a-copy")
+    if _is_market(rec):
+        rec, fol, why = _market_gate(root, rec)
+        if rec is None:
+            return _out("skipped", "not-a-copy")
+        if why:
+            return _out("skipped", why)
     if fol is None:
         return _out("skipped", "no-source")
     if not os.path.isdir(root):
@@ -459,14 +538,35 @@ def _run_inner(root, *, user, action) -> dict:
         if not held:
             return _out("deferred", "slot-busy")
         if rec.get("v") != store.RECORD_V:
-            rec = classify.settle_locked(root, "github") or rec
+            rec = classify.settle_locked(root, rec.get("kind")) or rec
         old_main = replay.rev(root, _mirror(fol))
         # Fetch first whatever is checked out, so the page can still say how
         # far behind the copy is; only a move needs fused/mine. The fetch
         # moves the mirror (and names an author's rewind) on fused/mine;
         # `update_mirror` again covers another version checked out.
         tip, reason = follow.fetch(root, fol)
-        if tip:
+        if tip and _is_market(rec):
+            # §18.4: the mirror holds the approved commit — vetted first
+            # against the block list (a release built on a blocked commit is
+            # not safe either), and only when it is on the author's branch.
+            safe = _blocks().vet_approved(root)
+            if safe is None:
+                # Every release left contains a hard-blocked commit: the
+                # mirror stays where it is (M1, not even briefly);
+                # enforcement owns the copy.
+                return _out("skipped", "blocked")
+            if safe != fol.commit:
+                rec, fol = _record(root)
+                if fol is None:
+                    return _out("skipped", "blocked")
+            m = follow.update_mirror(root, fol)
+            if replay.rev(root, _mirror(fol)) != replay.rev(root, fol.commit) \
+                    and not gu._current_branch(root) == fol.branch:
+                reason = m.get("reason") or follow.NOT_ON_BRANCH
+                tip = None
+            else:
+                tip = _main(root, fol)
+        elif tip:
             follow.update_mirror(root, fol)
         on_home = _on_home(root)
         in_flight = gu._operation_in_flight(root) is not None
@@ -477,6 +577,8 @@ def _run_inner(root, *, user, action) -> dict:
         return _out("skipped", reason)
     _note_checked(root)
     done = {"branch": fol.branch, "tip": tip}
+    if _is_market(rec) and not user and _soft_paused(root, rec, tip):
+        return _out("skipped", "soft-blocked", **done)
     if not on_home:
         return _out("skipped", "not-default", **done)
     if in_flight:
@@ -677,6 +779,18 @@ def _after_in(root, fol, done, *, move, backup, pulled, text) -> dict:
     p = _proposal(rec)
     head = replay.rev(root, "HEAD")
     main = _main(root, fol)
+    if _is_market(rec) and move:
+        # §18.4: a marketplace copy's automatic move is a RELEASE — its
+        # Activity line names it and says what's new (the review check's
+        # words); the author's commit subjects are never the story here.
+        text = _market().release_words(who, rec.get("approved"))
+    if p and not p.get("landed_at") and _is_market(rec) and _landed_in(root, p, main):
+        # B5: Bob's merged proposal reached the mirror only because a
+        # RELEASE containing it did (`_landed_in`: what GitHub merged ⊆ the
+        # approved commit) — until then nothing settles and the panel says
+        # "It ships in <who>'s next release.".
+        return _released(root, fol, done, rec, p, head=head, main=main, move=move,
+                         backup=backup, pulled=pulled, text=text)
     if p and not p.get("landed_at") and _landed_in(root, p, main):
         settled = False
         undo = backup
@@ -710,6 +824,44 @@ def _after_in(root, fol, done, *, move, backup, pulled, text) -> dict:
     return _out("noop", **done)
 
 
+RELEASED_TEXT = "{who} released your change. You're on the reviewed version."
+
+
+def _released(root, fol, done, rec, p, *, head, main, move, backup, pulled, text) -> dict:
+    """`_after_in`'s `merged` row for a marketplace copy (§18.4 B5): the
+    release containing Bob's merged change arrived — the same settle as a
+    GitHub-link copy's, its line "<who> released your change…" (Undo = the
+    settle's backup, else the move's), and `proposal.live` set in the same
+    store update as `landed_at` (the page: "Your change is live for
+    everyone.", crediting Bob when the review credits his login)."""
+    who = _who(rec)
+    settled, undo = False, backup
+    same = head != main and replay.tree_of(root, head) == replay.tree_of(root, main)
+    if same:
+        with replay.slot() as held:
+            ok, sb = (replay.settle_locked(root, why="settle", main=_mirror(fol))
+                      if held and not _claude_busy(root) else (False, None))
+        if not ok:
+            if move:
+                _activity(root, "update", text, backup=backup)
+                return _out("synced", move=move, pulled=pulled, **done)
+            return _out("noop", **done)
+        settled, undo = True, sb
+    line = store.new_activity("merged", RELEASED_TEXT.format(who=who), backup=undo)
+    number = p.get("number")
+
+    def stamp(r):
+        q = r.get("proposal")
+        if isinstance(q, dict) and q.get("number") == number and not q.get("landed_at"):
+            q["landed_at"] = time.time()
+            q["live"] = True
+            store.append_activity(r, line)
+    store.update(root, stamp)
+    if settled:
+        _note_head(root)
+    return _out("synced", move="settle" if settled else move, pulled=pulled, **done)
+
+
 # ------------------------------------------------------------ user actions
 
 
@@ -725,6 +877,12 @@ def _deferred_message(res, who) -> dict:
         return _refuse("claude", CLAUDE_BUSY_MESSAGE)
     if why in ("redirected", "auth", "not-found", "forbidden", "failed"):
         return _refuse(why, _sync_error_words(why, who))
+    if why == follow.NOT_ON_BRANCH:
+        return _refuse(why, _sync_error_words(why, who))
+    if why == "delisted":
+        return _refuse(why, DELISTED_MESSAGE)
+    if why == "blocked":
+        return _refuse(why, BLOCKED_MESSAGE)
     if why == "not-default":
         return _refuse("off-default", OTHER_VERSION_MESSAGE)
     if why in ("in-progress", "slot-busy", "merge-job"):
@@ -752,15 +910,26 @@ def _user_run(root, fn):
 def bring_in(root) -> dict:
     """Bring in the author's latest now (§17.3, the same moves as a sync,
     with auto-sync off too). `{ok, message, reason?, needs_merge?,
-    files?}`."""
+    files?}`. A marketplace copy: the approved release (§18.4)."""
     rec, fol = _record(root)
-    if rec is None or fol is None:
+    if rec is None or (fol is None and not _is_market(rec)):
         return _refuse("not-a-copy", "There is nothing to update here.")
     who = _who(rec)
     if getattr(_inside, "depth", 0):
         return _refuse("busy", BUSY_MESSAGE)
     res = _user_run(root, lambda: _run(root, user=True))
+    if _is_market(rec) and res["status"] in ("synced", "noop"):
+        return _market_answer(res, who)
     return _bring_in_answer(res, who)
+
+
+def _market_answer(res, who) -> dict:
+    """A marketplace copy's Bring in, in release words (§18.4)."""
+    if res["status"] == "noop":
+        return {"ok": True, "message": "You're on the reviewed version."}
+    if res.get("move") == "settle":
+        return {"ok": True, "message": RELEASED_TEXT.format(who=who)}
+    return {"ok": True, "message": f"You're on {who}'s newest reviewed release."}
 
 
 def _bring_in_answer(res, who) -> dict:
@@ -1007,6 +1176,10 @@ def go_back_main(root) -> dict:
             # saved version): reset it straight to the author's tip — that is
             # not the author rewinding (no line, no pin).
             old, tip = replay.rev(root, _mirror(fol)), follow.tip(root, fol)
+            if fol.pinned:
+                # §18.4: a marketplace copy's mirror goes back to the
+                # APPROVED commit, never the author's tip (M1).
+                tip = replay.rev(root, fol.commit)
             if old and tip and old != tip and not replay.is_ancestor(root, old, tip) and (
                     replay.is_ancestor(root, old, replay.rev(root, "HEAD"))
                     or (backup and replay.is_ancestor(root, old, backup))):
@@ -1045,9 +1218,13 @@ def restore(root, activity_id) -> dict:
     Undo of an automatic move (`_HOLD_KINDS`) sets the undo hold
     (`skip_tip` = the author's tip now)."""
     rec, fol = _record(root)
+    entry = store.activity_entry(root, activity_id) if rec is not None else None
+    if entry and entry.get("kind") == store.SWITCH_KIND and not entry.get("restored_at"):
+        # §18.4 D13: Undo of a switch is the opposite switch (landing on the
+        # line's backup when it has one) — market's, which takes the locks.
+        return _market().undo_switch(root, entry)
     if rec is None or fol is None:
         return _refuse("not-a-copy", "There is nothing to bring back here.")
-    entry = store.activity_entry(root, activity_id)
     backup = (entry or {}).get("backup")
     if isinstance(backup, list):  # a tip and its -wip: the tip names both
         backup = next((b for b in backup if isinstance(b, str)
@@ -1055,6 +1232,9 @@ def restore(root, activity_id) -> dict:
     aside = (entry or {}).get("aside") if isinstance((entry or {}).get("aside"), dict) else None
     if not entry or not (backup or aside) or entry.get("restored_at"):
         return _refuse("nothing", "There's nothing to bring back for that.")
+    if _is_market(rec) and backup and _blocks().backup_blocked(root, rec, backup):
+        # M1: Undo never lands a marketplace copy on a blocked commit.
+        return _refuse("blocked", "That version was blocked by Fused, so it can't come back.")
     if _claude_busy(root):
         return _refuse("claude", CLAUDE_BUSY_MESSAGE)
 
@@ -1258,6 +1438,16 @@ def merge_plan(root) -> dict | None:
     no overlap. No network."""
     if not _on_home(root):
         return None
+    rec = store.get(root)
+    b = (rec or {}).get("block") if _is_market(rec) else None
+    if isinstance(b, dict) and b.get("level") == "hard" and b.get("conflict") and b.get("target"):
+        # §18.4 B4: a hard block whose rollback overlaps Bob's changes — the
+        # revert as a merge (theirs = the safe release, base = the blocked
+        # commit), resolved by Claude; `merge_landed` opens the gate.
+        head = replay.rev(root, "HEAD")
+        mt = replay.merge_tree(root, head, b["target"], base=b["commit"])
+        return {"purpose": "update", "ours": head, "theirs": b["target"], "onto": b["target"],
+                "base": b["commit"], "files": list(mt.get("files") or []) or ["(unknown)"]}
     c = conflict(root)
     if not c["files"]:
         return None
@@ -1277,7 +1467,13 @@ def merge_landed(root, *, purpose, old_tip, new_tip, backup=None) -> None:
         _note_head(root, new_tip)
         rec = store.get(root) or {}
         who = _who(rec)
-        if purpose == "update":
+        b = rec.get("block") if _is_market(rec) else None
+        if purpose == "update" and isinstance(b, dict) and b.get("conflict"):
+            # §18.4 B4: Claude's merge WAS the rollback of a blocked release.
+            _blocks().after_merge(root, new_tip)
+            _activity(root, "rollback", "Rolled back the blocked version with Claude's help. "
+                                        "Your changes are kept.")
+        elif purpose == "update":
             _activity(root, "combined", f"Combined your changes with {who}'s latest.",
                       backup=backup)
         elif purpose == "original":
@@ -1316,9 +1512,10 @@ _status_lock = threading.Lock()
 _status_cache: dict = {}
 _STATUS_CACHE_MAX = 256
 
-#: CopyStatus states (§17.2).
+#: CopyStatus states (§17.2), + a marketplace copy's (§18.4): `delisted`
+#: (quiet), `blocked-release` and `soft-blocked` (attention).
 STATES = ("following", "changes", "proposed", "merged", "declined", "needs-merge", "blocked",
-          "other-branch", "merging")
+          "other-branch", "merging", "delisted", "blocked-release", "soft-blocked")
 
 
 def _job_view(root):
@@ -1404,7 +1601,7 @@ def status(root) -> dict:
     if err and err.get("reason"):
         view["sync_error"] = err.get("message") or _sync_error_words(err["reason"], _who(rec))
         view["sync_error_code"] = err["reason"]
-    if view["kind"] != "github":
+    if not classify.is_github_like(view["kind"]):
         view["state"] = "remix" if remix_of else "own"
         return view
     who = _who(rec)
@@ -1413,7 +1610,7 @@ def status(root) -> dict:
     head = replay.rev(root, "HEAD")
     if fol is None or not head:
         view["state"] = "following"
-        return view
+        return _market_view(root, rec, view, None) if _is_market(rec) else view
     if rec.get("last_head") != head:
         _note_head(root, head)
     main = _main(root, fol)
@@ -1468,4 +1665,33 @@ def status(root) -> dict:
     else:
         state = "following"
     view["state"] = state
+    if _is_market(rec):
+        return _market_view(root, rec, view, main)
+    return view
+
+
+def _market_view(root, rec, view, main) -> dict:
+    """A marketplace copy's CopyStatus additions (§18.4): its row
+    (`slug`, `approved`, `listing`), the block (`blocks.view`), `released`
+    (B5: Bob's merged change is in the approved commit) and `live` (the
+    engine stamped it so), and the three states it adds — a standing hard
+    block wins over everything, a soft one not confirmed over everything
+    but a merge, delisted only over a plain `following`."""
+    blocks = _blocks()
+    p = _proposal(rec)
+    approved = rec.get("approved") if isinstance(rec.get("approved"), dict) else None
+    view.update(slug=rec.get("slug"),
+                approved={k: v for k, v in approved.items() if k not in ("prev", "from_row")}
+                if approved else None,
+                listing=rec.get("listing"), block=blocks.view(rec.get("block")),
+                released=bool(p and main and _landed_in(root, p, main)),
+                live=bool(p and p.get("live")))
+    b = rec.get("block") if isinstance(rec.get("block"), dict) else {}
+    if blocks.standing(rec):
+        view["state"] = "blocked-release"
+    elif b.get("level") == "soft" and not b.get("confirmed_at") \
+            and view["state"] not in ("merging", "other-branch"):
+        view["state"] = "soft-blocked"
+    elif view["state"] == "following" and _market().is_delisted(rec):
+        view["state"] = "delisted"
     return view

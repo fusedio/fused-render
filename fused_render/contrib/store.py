@@ -87,10 +87,24 @@ RENDERED_EVENTS = frozenset({"updated-kept", "merged-back"})
 #: this long has passed since a sweep first found it so.
 ORPHAN_TTL_S = 30 * 24 * 3600
 
-#: The record fields `adopt` carries to a new folder.
+#: Every record kind (`classify.KINDS` is the same list).
+KINDS = ("github", "own", "scratch", "marketplace")
+
+#: What a `marketplace` record carries on top of a github one (§18.4):
+#: `slug` (its index row), `approved` {commit, at, whats_new, version,
+#: credits} (the last row seen — the commit the mirror holds), `listing`
+#: {status live|delisted, checked_at, delisted_at}, `block` (a block-list
+#: entry this copy ran into, `contrib/blocks.py`), `switched` (one entry per
+#: explicit switch between kinds, for the record; Undo lives on the Activity
+#: line). A `github` record carries `block_warn` (B4's warning).
+MARKET_FIELDS = ("slug", "approved", "listing", "block", "switched")
+
+#: The record fields `adopt` carries to a new folder. A Finder-moved
+#: marketplace copy keeps its row (slug, approved) and its block: without
+#: them it would follow nothing — and a blocked copy must stay blocked.
 ADOPT_KEEP = ("kind", "repo", "branch", "remix_of", "proposal", "classified_by",
               "classified_at", "owner_checked", "copy_id", "last_head",
-              "seen_tips", "hold")
+              "seen_tips", "hold") + MARKET_FIELDS + ("block_warn",)
 
 #: How long a binding answer is trusted for an unchanged folder (its memo
 #: key already changes on a re-clone; this only bounds a stale object DB).
@@ -169,6 +183,35 @@ def new_record(kind: str, *, repo: str | None = None, branch: str | None = None,
     }
 
 
+def approved_entry(src) -> dict | None:
+    """`{commit, at, whats_new, version, credits}` from a release, a row or
+    an `approved` dict — None without a 40-hex commit (an unreadable row is
+    no approved commit, M3)."""
+    if not isinstance(src, dict):
+        return None
+    commit = src.get("commit")
+    if not isinstance(commit, str) or len(commit) != 40 \
+            or any(c not in "0123456789abcdef" for c in commit):
+        return None
+    credits = src.get("credits")
+    return {"commit": commit,
+            "at": src.get("at") if isinstance(src.get("at"), str) else None,
+            "whats_new": src.get("whats_new") if isinstance(src.get("whats_new"), str) else None,
+            "version": src.get("version") if isinstance(src.get("version"), str) else None,
+            "credits": [c for c in credits if isinstance(c, str)]
+            if isinstance(credits, list) else []}
+
+
+def market_fields(market) -> dict:
+    """The marketplace fields of a new record from `market = {slug,
+    approved}` (the install's row, `classify.record_install`)."""
+    market = market if isinstance(market, dict) else {}
+    slug = market.get("slug") if isinstance(market.get("slug"), str) else None
+    return {"slug": slug, "approved": approved_entry(market.get("approved")),
+            "listing": {"status": "live", "checked_at": time.time(), "delisted_at": None},
+            "block": None, "switched": []}
+
+
 def _view(rec: dict) -> dict:
     """What a reader sees: `rec` (a copy) with every field present — v2's
     `root_commit` and `needs_merge` as None when the row has none (old
@@ -178,7 +221,11 @@ def _view(rec: dict) -> dict:
     persists here; `migrate_v3` does that."""
     for name, default in (("root_commit", None), ("needs_merge", None), ("activity", []),
                           ("skip_tip", None), ("own_state", None), ("hold", None), ("seen_tips", []),
-                          ("last_head", None), ("copy_id", None)):
+                          ("last_head", None), ("copy_id", None),
+                          # §18.4: the marketplace fields and a github
+                          # record's block warning, None until written.
+                          ("slug", None), ("approved", None), ("listing", None),
+                          ("block", None), ("switched", None), ("block_warn", None)):
         rec.setdefault(name, default)
     p = rec.get("proposal")
     if isinstance(p, dict) and "landed_at" not in p:
@@ -188,7 +235,7 @@ def _view(rec: dict) -> dict:
 
 #: Fields `_view` shows as None for old readers that v3 does not store
 #: (§17.6): written back only when something set them.
-_VIEW_ONLY = ("root_commit", "needs_merge")
+_VIEW_ONLY = ("root_commit", "needs_merge") + MARKET_FIELDS + ("block_warn",)
 
 
 def _stored(rec: dict) -> dict:
@@ -320,7 +367,7 @@ def _bind(k: str, rec: dict) -> dict | None:
     judged — a Try copy's origin is fused's own scratch remote. Git runs
     OUTSIDE the store lock; the drop is a compare-and-set against the row as
     read."""
-    if rec.get("kind") not in ("github", "own"):
+    if rec.get("kind") not in ("github", "own", "marketplace"):
         return rec
     if _bound(k, rec) is not False:
         return rec
@@ -668,7 +715,14 @@ def append_activity(rec: dict, entry: dict) -> None:
     rec["activity"] = lines[-ACTIVITY_KEEP:]
 
 
+#: An explicit switch between kinds (§18.4 D13): its Undo is the opposite
+#: switch (`engine.restore`), backup or not.
+SWITCH_KIND = "switch"
+
+
 def _undoable(e: dict) -> bool:
+    if e.get("kind") == SWITCH_KIND:
+        return not e.get("restored_at")
     return bool(e.get("backup") or e.get("aside")) and not e.get("restored_at")
 
 

@@ -75,7 +75,27 @@ from fused_render.contrib import follow, replay, store
 
 logger = logging.getLogger(__name__)
 
-KINDS = ("github", "own", "scratch")
+KINDS = ("github", "own", "scratch", "marketplace")
+
+#: The kinds that are a copy of SOMEONE ELSE'S GitHub app (§18.4): a
+#: GitHub-link copy follows the author's branch, a `marketplace` copy the
+#: approved commit of its index row — everything else about them (fused/mine,
+#: the mirror, the push guard, proposals, Merge with Claude) is one model. Every
+#: site that decides git BEHAVIOUR asks `is_github_like`; the few that differ
+#: (what the mirror follows, the release words, the block list) branch on
+#: `kind == "marketplace"` inside it, never by changing a github line (M5).
+GITHUB_LIKE = ("github", "marketplace")
+
+
+def is_github_like(kind) -> bool:
+    """`kind` is a copy of someone else's GitHub app (`GITHUB_LIKE`)."""
+    return kind in GITHUB_LIKE
+
+
+#: The record fields a `marketplace` record carries on top of a github one
+#: (§18.4); `store.MARKET_FIELDS` is the one list.
+MARKET_FIELDS = store.MARKET_FIELDS
+
 
 def _load_guard():
     """`templates/shared/contrib_guard.py` (§17.8) — the one copy of the
@@ -281,7 +301,7 @@ def _with_push_rights(rec: dict, ident) -> dict:
     """`rec` with `can_push` noted for a checked `github` copy (§16.6): the
     one fact `actions.for_app` needs to offer a collaborator the direct
     publish. An own copy has no such button; the field stays None."""
-    if rec.get("kind") == "github" and rec.get("owner_checked") and ident:
+    if is_github_like(rec.get("kind")) and rec.get("owner_checked") and ident:
         rec["can_push"] = _can_push(rec.get("repo"), ident)
     return rec
 
@@ -311,7 +331,7 @@ def apply_identity(app_dir, ident=None, *, block=False) -> bool:
     try:
         rec = store.get(app_dir)
         root = follow.is_repo_root(app_dir)
-        if not rec or rec.get("kind") != "github" or root is None:
+        if not rec or not is_github_like(rec.get("kind")) or root is None:
             return False
         who = _commit_identity(ident if ident is not None else _identity())
         if who is None:
@@ -339,7 +359,7 @@ def apply_identity_everywhere(ident=None) -> int:
         return 0
     n = 0
     for k, rec in store.all().items():
-        if isinstance(rec, dict) and rec.get("kind") == "github" and os.path.isdir(k):
+        if isinstance(rec, dict) and is_github_like(rec.get("kind")) and os.path.isdir(k):
             n += apply_identity(k, ident, block=True)
     return n
 
@@ -438,6 +458,12 @@ def ensure(app_dir, *, identity=None) -> dict | None:
         if marked is not None:
             _guard_soon(app_dir, identity)
             return store.get(app_dir) or marked
+        if _local_config(root, KIND_CONFIG) == "marketplace":
+            # A marketplace copy's duplicate with nothing to copy its row
+            # from (`claim_marked`): never classified by the ownership rule
+            # into a copy that follows the author's tip (M4). Unrecorded =
+            # git_upstream skips it (the marker), nothing moves or pushes.
+            return None
     repo = repo_of_url(_origin_url(root)) if root else None
     if repo and root:
         adopted = _adopt(app_dir, repo)
@@ -477,7 +503,8 @@ def claim_marked(root) -> dict | None:
     written by the next `settle_locked`. No network; answers the record, or
     None when nothing can be built (the caller then skips — never pushes)."""
     try:
-        if _local_config(root, KIND_CONFIG) != "github" or store.get(root) is not None:
+        marker = _local_config(root, KIND_CONFIG)
+        if not is_github_like(marker) or store.get(root) is not None:
             return None
         k = store.key(root)
         cid = _local_config(root, COPY_ID_CONFIG)
@@ -492,6 +519,15 @@ def claim_marked(root) -> dict | None:
                         adopted = _adopt(root, r["repo"])
                         if adopted is not None:
                             return adopted
+        if marker == "marketplace" and (live or {}).get("kind") != "marketplace":
+            # A marketplace copy's duplicate with no live record to clone:
+            # which approved commit it runs (slug, approved) is not in the
+            # folder, and building a `github` record would make it follow
+            # the author's tip (M4). No record → the caller skips; nothing
+            # moves, nothing pushes.
+            logger.info("contrib: %s carries a marketplace marker and no record to "
+                        "copy; left unrecorded", root)
+            return None
         repo = (live or {}).get("repo") or repo_of_url(_origin_url(root))
         if not repo:
             return None
@@ -500,6 +536,11 @@ def claim_marked(root) -> dict | None:
             branch=(live or {}).get("branch") or _local_default_branch(root),
             classified_by="duplicate" if live else "marked",
             owner_checked=bool((live or {}).get("owner_checked")) and live.get("kind") == "github")
+        if marker == "marketplace":
+            # The live copy's row: same slug, same approved commit, its block
+            # state (a duplicate of a blocked copy is just as blocked).
+            rec.update(kind="marketplace", owner_checked=True,
+                       **{f: live.get(f) for f in MARKET_FIELDS})
         if not store.create(root, rec):
             return store.get(root)
         _forget_kind(root)
@@ -511,8 +552,9 @@ def claim_marked(root) -> dict | None:
 
 
 def is_marked(root) -> bool:
-    """Whether fused marked `root` as a GitHub-link copy (`fused.kind`)."""
-    return _local_config(root, KIND_CONFIG) == "github"
+    """Whether fused marked `root` as a copy of someone else's app
+    (`fused.kind` = github or marketplace)."""
+    return is_github_like(_local_config(root, KIND_CONFIG))
 
 
 def _stamp_copy(root, rec) -> None:
@@ -689,12 +731,18 @@ def after_sign_in(ident=None) -> dict:
     return {"rechecked": rechecked, "identity": apply_identity_everywhere(ident)}
 
 
-def record_install(app_dir, url) -> dict | None:
+def record_install(app_dir, url, *, kind="github", market=None) -> dict | None:
     """`appfile_git.install` placed or updated the clone of `url` at
     `app_dir`: classify it as an install (§4). An existing record for the
     same repo is kept as it is (an update install must not drop a proposal —
     a fresh place dropped any record first, appfile_git); any other record at
-    this folder is replaced. Written whatever the flags (§16.1 Migration)."""
+    this folder is replaced. Written whatever the flags (§16.1 Migration).
+
+    `kind="marketplace"` (§18.4): an install from the Marketplace, `market =
+    {slug, approved}` its row. The kind is the INSTALL SOURCE, not the
+    ownership rule: GitHub is never asked whose app it is (`owner_checked`
+    True, never re-checked — M4: a marketplace copy never turns into
+    anything else on its own, not even into the author's own app)."""
     repo = repo_of_url(url)
     existing = store.get(app_dir)
     if existing is not None and repo and (existing.get("repo") or "").lower() == repo.lower():
@@ -703,6 +751,17 @@ def record_install(app_dir, url) -> dict | None:
     from fused_render.contrib import flags
 
     root = follow.is_repo_root(app_dir)
+    if kind == "marketplace":
+        branch = (market or {}).get("branch") if isinstance(market, dict) else None
+        rec = store.new_record("marketplace", repo=repo,
+                               branch=branch if follow._valid("o/r", branch) else
+                               (_local_default_branch(root) if root else None),
+                               classified_by="marketplace", owner_checked=True)
+        rec.update(store.market_fields(market))
+        store.put(app_dir, rec)
+        _forget_kind(app_dir)
+        _guard(app_dir, None, block=True, lookup=_sources_on())
+        return store.get(app_dir) or rec
     # With the loop off the record is written (it is invisible) but GitHub
     # is not asked anything during an install: ownership then stays
     # unchecked (`github`: never pushes), and the first `ensure` with the
@@ -726,7 +785,7 @@ def protect_fused_dir(app_dir, *, block=True) -> int:
     protected."""
     try:
         rec = store.get(app_dir)
-        if not rec or rec.get("kind") not in ("github", "own"):
+        if not rec or not (is_github_like(rec.get("kind")) or rec.get("kind") == "own"):
             return 0
         root = follow.is_repo_root(app_dir)
         if root is None:
@@ -756,12 +815,15 @@ def ensure_push_guard(root, kind) -> bool:
         have = gu._out(r).split("\n") if gu._ok(r) and gu._out(r) else []
         marker = _local_config(root, KIND_CONFIG)
         changed = False
-        if kind == "github":
+        if is_github_like(kind):
+            # Both kinds are guarded the same way (§18.4); the marker names
+            # which one, for the Git panel (`contrib_guard.guarded_who`'s
+            # kind: a marketplace copy's Get latest is always the engine's).
             if _origin_url(root) and have != [NO_PUSH_URL]:
                 _g(root, "config", "--replace-all", "remote.origin.pushurl", NO_PUSH_URL)
                 changed = True
-            if marker != "github":
-                _g(root, "config", "--local", KIND_CONFIG, "github")
+            if marker != kind:
+                _g(root, "config", "--local", KIND_CONFIG, kind)
                 changed = True
             return _set_hook(root, True) or changed
         if NO_PUSH_URL in have:
@@ -889,16 +951,16 @@ def settle_locked(root, kind=None) -> dict | None:
                 rec = store.migrate_v3(root)[0] or rec
         if not is_root:
             return rec
-        if kind in ("github", "own"):
+        if is_github_like(kind) or kind == "own":
             replay.protect_locked(root)
-        if kind == "github":
+        if is_github_like(kind):
             _point_back(root, rec)
-            ensure_home_locked(root, rec.get("branch"))
+            ensure_home_locked(root, rec.get("branch"), kind=kind)
         elif kind == "own":
             _unhome_locked(root, rec)
         ensure_push_guard(root, kind)
-        _mark_unchecked(root, kind == "github" and not rec.get("owner_checked"))
-        if kind in ("github", "own"):
+        _mark_unchecked(root, is_github_like(kind) and not rec.get("owner_checked"))
+        if is_github_like(kind) or kind == "own":
             _stamp_copy(root, rec)
         return store.get(root) or rec
     except Exception:  # noqa: BLE001 — a guard failure never costs a sync
@@ -914,17 +976,32 @@ def _valid_branch(branch) -> bool:
         and follow._valid("o/r", branch)
 
 
-def _set_upstream(root, branch) -> None:
+def _upstream_remote(root, kind=None) -> str:
+    """Which remote `fused/mine` tracks: `origin` for a GitHub-link copy;
+    `.` (this repo itself) for a marketplace copy (§18.4) — its upstream is
+    the MIRROR `refs/heads/<b>`, which holds the approved commit, so
+    `%(upstream:track)`, `@{upstream}` and `contrib_guard.ahead` count
+    against the reviewed version, never the author's tip (`origin/<b>`,
+    fetched for objects and the ancestor check only). `kind` None: the
+    record's."""
+    if kind is None:
+        kind = (store.get(root) or {}).get("kind")
+    return "." if kind == "marketplace" else "origin"
+
+
+def _set_upstream(root, branch, kind=None) -> None:
     """`fused/mine` tracks the author's branch (`origin/<b>`), so every git
     tool — the Git panel, a terminal's `git status` — reads "ahead/behind"
-    against the author's version."""
-    if _local_config(root, f"branch.{HOME_BRANCH}.remote") != "origin":
-        _g(root, "config", "--local", f"branch.{HOME_BRANCH}.remote", "origin")
+    against the author's version. A marketplace copy tracks the mirror
+    instead (`_upstream_remote`)."""
+    remote = _upstream_remote(root, kind)
+    if _local_config(root, f"branch.{HOME_BRANCH}.remote") != remote:
+        _g(root, "config", "--local", f"branch.{HOME_BRANCH}.remote", remote)
     if _local_config(root, f"branch.{HOME_BRANCH}.merge") != f"refs/heads/{branch}":
         _g(root, "config", "--local", f"branch.{HOME_BRANCH}.merge", f"refs/heads/{branch}")
 
 
-def ensure_home_locked(root, branch) -> bool:
+def ensure_home_locked(root, branch, *, kind=None) -> bool:
     """I4 for a `github` copy (§17.6): HEAD on `fused/mine`, tracking the
     author's `branch`. When the branch is missing and HEAD is on the
     author's branch (a fresh clone, an install or a move that died half
@@ -934,9 +1011,11 @@ def ensure_home_locked(root, branch) -> bool:
     The caller holds the slot. Answers whether HEAD is on `fused/mine`."""
     if not _valid_branch(branch):
         return False
+    if kind is None:
+        kind = (store.get(root) or {}).get("kind")
     cur = gu._current_branch(root)
     if cur == HOME_BRANCH:
-        _set_upstream(root, branch)
+        _set_upstream(root, branch, kind)
         return True
     if cur != branch or replay.rev(root, HOME_REF) or gu._operation_in_flight(root):
         return False
@@ -944,7 +1023,11 @@ def ensure_home_locked(root, branch) -> bool:
     if not gu._ok(r) or gu._current_branch(root) != HOME_BRANCH:
         logger.warning("contrib: could not create %s in %s: %s", HOME_BRANCH, root, gu._text(r))
         return False
-    _set_upstream(root, branch)
+    _set_upstream(root, branch, kind)
+    if kind == "marketplace":
+        # The mirror holds the APPROVED commit, never origin's tip (M1):
+        # `follow.update_mirror` (pinned) sets it on the next fetch.
+        return True
     # The author's branch is no longer checked out: from here on it is the
     # mirror of origin's (I3). What it held is on fused/mine now.
     tip = replay.rev(root, f"refs/remotes/origin/{branch}")
@@ -972,7 +1055,7 @@ def _migrate_v3_git_locked(root, rec, kind) -> bool:
         if replay.rev(root, ref):
             _g(root, "update-ref", "-d", ref)
     branch = rec.get("branch")
-    if kind != "github" or not _valid_branch(branch):
+    if not is_github_like(kind) or not _valid_branch(branch):
         return True
     _migrate_pr_head(root, rec)
     main_ref = f"refs/heads/{branch}"

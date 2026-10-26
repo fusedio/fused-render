@@ -943,13 +943,13 @@ def _contrib_git_row(app_dir: str) -> dict | None:
         if root is None or root != os.path.realpath(app_dir):
             return None
         kind = classify.kind_of(root)
-        if kind not in ("github", "own"):
+        if not (classify.is_github_like(kind) or kind == "own"):
             return None
         rec = store.get(root) or {}
     except Exception:  # noqa: BLE001 — fall back to the ordinary row
         return None
     # A read: no `note_app_opened` here (opening the app already syncs it).
-    if kind == "github":
+    if classify.is_github_like(kind):
         if _contrib_overlaps(root):
             state, detail = FAIL, ("The author's latest overlaps your changes — "
                                    "open the app page to combine them.")

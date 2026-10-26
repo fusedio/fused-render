@@ -419,12 +419,13 @@ def discover(roots, registry_files, skip_dir=None):
         return []
     seen, out = set(), []
     skip = os.path.realpath(skip_dir) if skip_dir else None
+    blocked = _blocked_dirs()
     for d in _candidate_dirs(roots, registry_files):
         try:
             rp = os.path.realpath(d)
         except OSError:
             continue
-        if rp in seen or rp == skip or not os.path.isdir(rp):
+        if rp in seen or rp == skip or not os.path.isdir(rp) or rp in blocked:
             continue
         seen.add(rp)
         out.extend(_load_dir(d))
@@ -438,8 +439,21 @@ _cache_at = 0.0
 _cache_sig = None
 
 
+def _blocked_dirs():
+    """Apps whose installed version Fused blocked (the Marketplace block
+    list, docs/CONTRIB_LOOP.md §18.4 B4): their tools leave every bot until
+    the copy is rolled back. Unreadable → none (the open gates still stop
+    the app)."""
+    try:
+        from fused_render.contrib import blocks
+        return blocks.blocked_dirs()
+    except Exception:  # noqa: BLE001
+        return set()
+
+
 def _signature(roots, registry_files, skip_dir):
-    sig = []
+    # A block standing or lifted re-discovers (its mtimes do not change).
+    sig = [("blocked", d, 0.0) for d in sorted(_blocked_dirs())]
     for d in _candidate_dirs(roots, registry_files):
         mp = os.path.join(d, "mcp.toml")
         rp = os.path.realpath(d)
