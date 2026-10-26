@@ -250,7 +250,7 @@ def _run_serve(args: argparse.Namespace) -> None:
     # create_app, so importing the server in a test probes nothing.
     # Each agent's probe follows its Preferences switch (D17): a disabled
     # agent is never probed, so a machine with no Copilot never spawns one.
-    from fused_render import claude_health, codex_health, copilot_health
+    from fused_render import claude_health, codex_health, copilot_health, gemini_health
     from fused_render.agent_backends import registry as _agent_registry
 
     if _agent_registry.is_enabled("claude"):
@@ -259,6 +259,8 @@ def _run_serve(args: argparse.Namespace) -> None:
         copilot_health.warm_in_background()
     if _agent_registry.is_enabled("codex"):
         codex_health.warm_in_background()
+    if _agent_registry.is_enabled("gemini"):
+        gemini_health.warm_in_background()
     start_dir = os.path.abspath(os.path.expanduser(args.start_dir))
     app = create_app(start_dir=start_dir)
 

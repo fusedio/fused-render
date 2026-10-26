@@ -41,6 +41,31 @@ def manager() -> "UpdateManager | None":
     return linux.manager()
 
 
+def supported() -> bool:
+    """Whether `start()` would create a manager here: the same predicate as the
+    per-platform `start()`s, answered without starting (or importing the
+    platform modules' singletons). False on Windows and other platforms, on a
+    lean install without `cryptography`, and in an unpackaged run (no .app
+    bundle / AppImage) unless the check-only dev manager was asked for. Lets a
+    caller tell "never started" from "cannot run here"."""
+    import os
+
+    from fused_render.update import common
+    from fused_render.update._manager import DEV_MANAGER_ENV
+
+    if sys.platform == "darwin":
+        from fused_render.update import mac
+        packaged = mac.bundle_path() is not None
+    elif sys.platform.startswith("linux"):
+        from fused_render.supervisor._linux import startup
+        packaged = startup.appimage_path() is not None
+    else:
+        return False
+    if not common.CRYPTO_AVAILABLE:
+        return False
+    return packaged or bool(os.environ.get(DEV_MANAGER_ENV))
+
+
 def start() -> "UpdateManager | None":
     """Create and start the singleton in-app update manager for this
     platform, if any. See mac.start()/linux.start() for the per-platform

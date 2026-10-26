@@ -571,44 +571,41 @@ export function useRowFit(
  * since they are hidden together.
  */
 export const TOOLBAR_DROPS = [
-  // ---- words → marks. Nothing leaves the row; it stops being spelled out.
-  ".schedule-view-seg .schedule-fit-lbl",
+  // ---- words → marks, FILTER labels first (Workspace scope, Unit 7). Status
+  // and Project are the widest labelled controls on the row and the ones whose
+  // value a count badge or a chosen name already says; the view toggle's words
+  // are the page's own vocabulary and go LAST of the words (rung 5).
   ".schedule-tv-filter-btn .schedule-fit-lbl",
-  // ---- THE SEARCH GOES, and it goes BEFORE "+ New task" loses its words
+  // ---- THE SEARCH GOES next, and before "+ New task" loses its words
   // (Akshil, 2026-09-14 — design.md, Polish batch 4). It is the widest seat on
-  // the row by a distance (140px at its floor against the New task button's 76)
-  // and the one whose question the omnibox also answers, and "+ New task" is
-  // the only control here that STARTS something — a bare "+" beside a row of
-  // glyphs is a button a newcomer has to press to learn about. The wide thing
-  // folds before the important thing.
-  //
-  // A RUNG THAT HIDES, not one that folds (Polish batch 5). It spent a day
-  // taking the field to a 32px magnifier that opened over the row on focus —
-  // its tab stop kept, at the price of a control whose caption, value and caret
-  // were painted out and put back by rules. ⌘K is a real search that is always
-  // there; a field pretending to be a button is not.
+  // the row by a distance (140px at its floor) and the one whose question the
+  // omnibox (⌘K) also answers, and "+ New task" is the only control here that
+  // STARTS something. A RUNG THAT HIDES, not one that folds (Polish batch 5):
+  // a field pretending to be a button is not a control, ⌘K is a real search.
   ".schedule-tv-search",
+  // ---- THE COG MOVES INTO AN OVERFLOW `…` (Unit 7). "Edit views" is a thing a
+  // reader does once; it keeps a door (the `…` takes its seat and its auto
+  // margin) but stops being a bare glyph beside the view toggle.
+  ".schedule-view-edit",
   ".schedule-new .schedule-fit-lbl",
+  // ---- VIEW LABELS fold last of the words, after nothing else is left to fold
+  // but controls. They are four shapes a reader recognises before they read.
+  ".schedule-view-seg .schedule-fit-lbl",
   // ---- and then CONTROLS LEAVE, lowest priority first (design.md, Widths v2:
   // Project filter, Status filter, Calendar, Cards, Board; List, New task and
-  // the search never go).
+  // the overflow never go).
   //
-  // PROJECT GOES BY MERGING rather than by vanishing, and that is the rung's
-  // whole point: the two filter triggers become ONE (TaskFilterControls
-  // `merged`), so the Project rows are still a press away under their own
-  // heading instead of being unreachable. It is the overflow menu this toolbar
-  // would otherwise have to grow. What the rung MEASURES is the Project
+  // PROJECT GOES BY MERGING rather than by vanishing: the two filter triggers
+  // become ONE (TaskFilterControls `merged`), so the Project rows are still a
+  // press away under their own heading. What the rung MEASURES is the Project
   // trigger — the width that stops existing when they merge — and `naturalNeed`
   // adds it back to answer "would they still fit apart?".
   '.schedule-tv-filters .schedule-tv-pop-wrap[data-filter="project"]',
   // …and then the one remaining trigger goes too. Measured as whichever of the
-  // two shapes is on screen: the Status trigger while they are still apart (the
-  // merged one does not exist yet to be measured), the merged one after.
+  // two shapes is on screen.
   '.schedule-tv-filters .schedule-tv-pop-wrap[data-filter="status"], ' +
     '.schedule-tv-filters .schedule-tv-pop-wrap[data-filter="all"]',
-  // The three views that are not List, newest-to-oldest in how much the page
-  // leans on them. LIST NEVER GOES: it is the default and the one view the page
-  // must always be able to get back to.
+  // The three views that are not List. LIST NEVER GOES.
   '.schedule-view-btn[data-view="calendar"]',
   '.schedule-view-btn[data-view="cards"]',
   '.schedule-view-btn[data-view="board"]',
@@ -616,7 +613,7 @@ export const TOOLBAR_DROPS = [
 
 /** The last rung at which a control is merely FOLDED rather than gone. Read by
  *  the page to decide `merged`, and by the stylesheet's comment. */
-export const TOOLBAR_MERGE_LEVEL = 5;
+export const TOOLBAR_MERGE_LEVEL = 6;
 
 /**
  * How many of `TOOLBAR_DROPS` to fold.

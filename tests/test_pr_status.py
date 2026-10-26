@@ -71,7 +71,8 @@ class Gh:
                 r'\{ pullRequest\(number:(\d+)\)', body["query"]):
             st = self.states.get(f"{owner}/{name}#{num}")
             data[alias] = None if st is None else {
-                "pullRequest": {"state": st[0], "isDraft": st[1]}}
+                "pullRequest": {"state": st[0], "isDraft": st[1],
+                                "headRefName": st[2] if len(st) > 2 else None}}
         return _Resp({"data": data})
 
 
@@ -177,3 +178,21 @@ def test_endpoint(monkeypatch, tmp_path):
     assert seen["refs"] == ["a/b#1"]
     assert client.post("/api/tasks/pr-status", json={"refs": []}).status_code in (
         400, 403)
+
+
+def test_head_branch_is_fetched_and_the_state_shape_is_unchanged(monkeypatch):
+    gh = Gh(monkeypatch, {"a/b#1": ("OPEN", False, "feat/x"),
+                          "a/b#2": ("MERGED", False)})
+    got = pr_status.fetch_statuses(["a/b#1", "a/b#2"])
+    assert got == {"a/b#1": "open", "a/b#2": "merged"}
+    assert "headRefName" in gh.calls[0][1]
+    assert pr_status.head_refs(["a/b#1", "a/b#2"]) == {"a/b#1": "feat/x"}
+
+
+def test_endpoint_adds_heads_only_when_known(monkeypatch, tmp_path):
+    Gh(monkeypatch, {"a/b#1": ("OPEN", False, "feat/x"), "a/b#2": ("OPEN", False)})
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    r = client.post("/api/tasks/pr-status", json={"refs": ["a/b#1", "a/b#2"]},
+                    headers={"X-Fused": "1"})
+    assert r.json() == {"a/b#1": "open", "a/b#2": "open",
+                        "_heads": {"a/b#1": "feat/x"}}

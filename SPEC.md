@@ -253,7 +253,21 @@ const { text, usage, response, provider } = await fused.ai.text({
   the same; `"local"` → the catalog's default text model for this machine
   (`catalog.default_for`, a 409 `ai_unavailable` where no text runner resolves).
   `provider: "claude"` with a repo id is a `bad_request` naming the tier that would
-  take it. **The same `provider` option is on `.image`, `.video`, `.transcribe`,
+  take it. **Three more tiers are the agent CLIs** (D1433): `provider: "copilot" |
+  "codex" | "gemini"` runs the same tool-less, session-free one-shot the session
+  recaps use (`agent_oneshot.py`: prompt on stdin, no tools, nothing from the
+  server's cwd, no session left behind) — text only, `history`/`raw`/`images`
+  refused like the Claude tier, sampling knobs and `thinking` dropped into
+  `warnings[]`, `effort` passed where the CLI takes it (Copilot per model, Codex
+  as `model_reasoning_effort`, never Gemini), `model` passed through as Tasks pass
+  it (omitted = the agent's catalog default), **no streaming** (the whole text
+  arrives as one chunk then `done`), `usage` null. Gated on the agent's
+  Preferences switch: off → 409 `ai_unavailable` with `reason: "backend_disabled"`;
+  `"claude"` stays ungated (D17). These tiers are never inferred from a model's
+  shape — only an explicit `provider` reaches them. They are also the AI gateway
+  the canvas host runs for the embedded workbench (CanvasWorkspace.tsx module
+  doc, host-ai.ts): the host posts the enabled agents' models to the frame and
+  relays its inline AI requests to this route. **The same `provider` option is on `.image`, `.video`, `.transcribe`,
   `.embed` and `.decide`** (their D413 envelopes grow that one key), and every reply of the six
   carries `provider`; those five have only a local tier today, so omitted means
   `"local"` and `"claude"` answers `unavailable` on a 409 — a well-formed request
@@ -12372,8 +12386,9 @@ and not a sync nicety.
   exists. `tests/test_browser_storage_allowlist.py` lists the files allowed to
   touch storage in code, each with its category; a new storage use anywhere
   else fails the suite.
-- **BS-2 Stores.** Projects order = the `apps` array of `current_apps.json`
-  (`POST /api/current-apps/order`). Notifications seen/dismissed =
+- **BS-2 Stores.** Projects order = the `apps` array of `current_apps.json`,
+  listed by recency (newest task activity, else added; no drag since
+  2026-10-23). Notifications seen/dismissed =
   `notifications.json` (`GET`/merge-`POST /api/notifications/state`). Tasks
   done-and-seen = `__seen_done__` in tasks `read.json`, carried by
   `/api/tasks/pulse`, replaced by `POST /api/tasks/seen`. Bot unread baseline =

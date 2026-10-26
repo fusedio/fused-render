@@ -7,13 +7,21 @@ the panel shows a message instead of a traceback overlay.
 The folder is listed with a single os.scandir pass.
 """
 import os
+import re
 
 _CAD_EXT = (".dxf", ".dwg")
 _MAX = 2000  # bound a local scan so a pathological directory can't build a huge response
 
 
+def _norm(p: str) -> str:
+    # Mirror the shell's URL codec (router.ts urlForFsPath): normalize ONLY
+    # drive-letter paths to forward slashes; on POSIX a backslash is a legal
+    # filename character and must survive untouched.
+    return p.replace("\\", "/") if re.match(r"^[A-Za-z]:[\\/]", p) else p
+
+
 def _entry(folder, name, size):
-    return {"name": name, "path": os.path.join(folder, name), "size": size}
+    return {"name": name, "path": _norm(os.path.join(folder, name)), "size": size}
 
 
 def _list_local(folder):
@@ -31,9 +39,9 @@ def _list_local(folder):
                 except OSError:
                     continue
     except OSError as e:
-        return {"folder": folder, "files": [], "error": str(e)}
+        return {"folder": _norm(folder), "files": [], "error": str(e)}
     files.sort(key=lambda f: f["name"].lower())
-    return {"folder": folder, "files": files}
+    return {"folder": _norm(folder), "files": files}
 
 
 def main(folder: str) -> dict:

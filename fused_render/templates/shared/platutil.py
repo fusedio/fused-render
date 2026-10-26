@@ -156,6 +156,39 @@ def venv_python(venv_dir: str) -> str:
     return os.path.join(venv_dir, "bin", "python")
 
 
+def _is_fs_root(root: str) -> bool:
+    """`/`, a drive root (`C:\\`) or a UNC share root (`\\\\srv\\share\\`)."""
+    return os.path.splitdrive(root)[1].strip(os.sep + "/") == ""
+
+
+def is_within(path: str, root: str, *, strict: bool = False,
+              fs_root_ok: bool = True) -> bool:
+    """Whether *path* is *root* or lies beneath it, compared as `normcase` forms
+    (case-insensitive and slash-agnostic on Windows, byte-exact on POSIX).
+
+    Tolerates a *root* that already ends in a separator (a drive root `C:\\`
+    or POSIX `/`), which `startswith(root + os.sep)` gets wrong. Segment-aware:
+    `/a/bc` is not within `/a/b`; a trailing separator on *path* counts as
+    beneath, as `startswith(root + os.sep)` did. `strict=True` excludes *root*
+    itself. An empty *path* or *root* is never within anything.
+
+    Trust boundaries (LAN allow-list, zip-slip, container checks) pass
+    `fs_root_ok=False`: a *root* that is a whole filesystem or drive then
+    contains nothing, so a mis-registered `D:\\` or `/` fails closed instead of
+    exposing the volume. Pure string work: callers that need symlinks resolved
+    pass realpath'd inputs."""
+    if not path or not root:
+        return False
+    if not fs_root_ok and _is_fs_root(root):
+        return False
+    p = os.path.normcase(path)
+    r = os.path.normcase(root)
+    base = r.rstrip(os.sep)
+    if p == r or p == base:
+        return not strict
+    return p.startswith(base + os.sep)
+
+
 def relpath_within(path: str, start: str) -> str:
     """`os.path.relpath(path, start)`, except that a *path* with no relative
     spelling from *start* (a different drive on Windows, where relpath raises)

@@ -62,9 +62,17 @@ the bottom of the module):
   a node deleted in the first moments of a generation is still a deletion,
   and a node Claude added on disk meanwhile (in neither set) survives.
 
-  Code files (`.py`), JSON-UI (`.json`) and HTML (`.html`) bodies are
-  DISK-OWNED: with the workbench's code editor hidden under v3 they cannot be
-  edited in the embed, so they are never written from this leg.
+  Code files (`.py`), JSON-UI (`.json`) and HTML (`.html`) bodies are never
+  written from this leg. A workbench that speaks the BODY CHANNEL
+  (`body_channel: true` on the snapshot) sends EVERY source text — code and
+  notes, new files included — through `POST /api/canvases/body` instead
+  (canvases.SyncManager.apply_body): one file per request, accepted only
+  when the hash of what disk holds equals the `base_hash` the frame names,
+  so a Claude edit that landed meanwhile is never overwritten; the frame
+  rebases on the disk text it gets back and resends. Such a snapshot carries
+  no `file_body` and no `udf_body`, and this module writes no source file
+  for it. An older workbench (no flag) still ships note bodies and new
+  files here, as below.
 
   Every write is content-gated. A write that changed nothing would still bump
   mtimes, so `disk_rev` would move, the page would cut a delta and post it,
@@ -77,6 +85,7 @@ clear error, not a silent skip.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import time
@@ -533,6 +542,10 @@ def compact_state(body: dict) -> dict:
     ids: dict[str, str] = {}
     bodies: dict[str, str] = {}
     new_files: list[dict] = []
+    # The workbench sends source texts over the body channel: nothing here
+    # is a body to write (a `file_body` such a frame still sent would be a
+    # stale re-send racing its own body posts).
+    body_channel = body.get("body_channel") is True
     for udf in body.get("udfs") or []:
         if not isinstance(udf, dict):
             continue
@@ -553,6 +566,8 @@ def compact_state(body: dict) -> dict:
         # `file_body` is the exact file text as `fused canvas pull` would
         # write it (a note's README-shaped markdown, not its raw text);
         # `udf_body.code` is the file for a never-saved code UDF.
+        if body_channel:
+            continue
         text = udf.get("file_body")
         if not isinstance(text, str):
             text = _udf_code_from_body(udf.get("udf_body"))
@@ -918,9 +933,11 @@ def apply_snapshot(
     overwritten. `rowless_prev` are slugs earlier snapshots reported as
     `rowless_files` and the host still holds in grace: one this snapshot
     no longer lists (no UDF, no node, no row) has its file trashed and is
-    reported in `deleted`. Returns `{changed, upserted, deleted, renamed, created,
-    written, synthesized, rowless_files, deferred_deletes, folder_fixes}`
-    (`rowless_files`:
+    reported in `deleted`. Returns `{changed, upserted, deleted, deleted_files,
+    renamed, created, written, synthesized, rowless_files, deferred_deletes,
+    folder_fixes}` (`deleted_files`: the source files this snapshot removed
+    from the clone, by basename — a folder in `deleted` has none;
+    `rowless_files`:
     slugs of new UDFs whose file came without a node — file created, no row;
     `synthesized`: always empty here, kept for the ack's shape;
     `deferred_deletes`: known nodes the snapshot omitted while still listing
@@ -955,6 +972,7 @@ def apply_snapshot(
     changed = False
     upserted: list[str] = []
     deleted: list[str] = []
+    deleted_files: list[str] = []
     renamed: list[list[str]] = []
     created: list[str] = []
     written: list[str] = []
@@ -1056,6 +1074,8 @@ def apply_snapshot(
                     os.remove(fpath)
                 except OSError:
                     pass
+                else:
+                    deleted_files.append(file)
 
     # Row-less files still in the host's grace window (`rowless_prev`, the
     # earlier snapshots' `rowless_files`) are in no view, so the loop above
@@ -1076,6 +1096,7 @@ def apply_snapshot(
             continue
         files_changed = True
         deleted.append(slug)
+        deleted_files.append(file)
 
     # Upserts: rows that differ on the keys the embed owns. A key the embed's
     # row LACKS is deleted from disk only when the embed's own PREVIOUS row
@@ -1196,7 +1217,8 @@ def apply_snapshot(
     if changed:
         _write_atomic(path, _dump_toml(doc))
     return {"changed": changed or files_changed or bool(created) or bool(written),
-            "upserted": upserted, "deleted": deleted, "renamed": renamed,
+            "upserted": upserted, "deleted": deleted, "deleted_files": deleted_files,
+            "renamed": renamed,
             "created": created, "written": written, "synthesized": synthesized,
             "rowless_files": rowless_files, "deferred_deletes": deferred_deletes,
             "folder_fixes": folder_fixes, "at": time.time()}
@@ -1289,6 +1311,24 @@ def rename_prev(prev: dict | None, frm: str, to: str, file_to: str | None) -> di
 # verbatim. A text note's `.md` is README-shaped (`Udf.makeZipReadme`), NOT
 # the note's text, so it is sent as `body` instead and the frame decides.
 CODE_SUFFIXES = (".py", ".json", ".html")
+
+# Every source file kind a body post may name: the four the clone holds.
+BODY_SUFFIXES = CODE_SUFFIXES + EMBED_BODY_SUFFIXES
+
+
+def body_hash(text: str) -> str:
+    """The hash both ends of the body channel compute over a source text:
+    sha256 of the TEXT re-encoded as UTF-8, never of the raw disk bytes. Disk
+    is read with `decode("utf-8", "replace")`, so an invalid byte becomes
+    U+FFFD on the way to the frame, and the frame hashes the string it got;
+    hashing the bytes would make such a file differ forever."""
+    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
+
+
+def read_body(path: str) -> str | None:
+    """A source file as the body channel reads it (None when missing)."""
+    data = _read_bytes(path)
+    return None if data is None else data.decode("utf-8", "replace")
 
 
 def compact_state_from_disk(clone_dir: str, remote_ids: dict[str, str] | None = None,
@@ -1412,10 +1452,13 @@ def _upsert_op(disk: dict, name: str, *, row: bool, body: bool, sid: bool,
             del node["position"]
         op["node"] = node
     if body and name in disk["bodies"]:
+        text = disk["bodies"][name]
         if file and file.endswith(CODE_SUFFIXES):
-            op["code"] = disk["bodies"][name]
+            op["code"] = text
         else:
-            op["body"] = disk["bodies"][name]
+            op["body"] = text
+        # The frame's base for its next body post (canvases.apply_body).
+        op["hash"] = body_hash(text)
     if sid and name in disk["ids"]:
         op["id"] = disk["ids"][name]
     return op
@@ -1425,13 +1468,18 @@ def diff_views(disk: dict, view: dict | None) -> list[dict]:
     """The ops that take `view` (what the embed holds; None = nothing known,
     a full state) to `disk`. Node-level, by UDF name:
 
-        upsert {name, file, row?, node?, code?|body?, id?}  — new or changed;
-                                           an absent field means "unchanged",
-                                           never "cleared"
+        upsert {name, file, row?, node?, code?|body?, hash?, id?}  — new or
+                                           changed; an absent field means
+                                           "unchanged", never "cleared";
+                                           `hash` = body_hash of the text sent
         rename {from, to, file}           — a name vanished whose server id
                                            reappears under a name the view
                                            lacks (then diffed as `to`)
         delete {name}
+        delete {name} + upsert {name, …}  — the node's source file changed
+                                           KIND (`w.json` → `w.html`): the
+                                           frame rebuilds the Udf from the
+                                           file; `edges` is then always sent
         edges  {set: [[a, b]]}            — the whole set, when it differs
         canvas {comments?, viewportBounds?} — the scalars that differ; the
                                            frame never moves its own camera
@@ -1450,22 +1498,47 @@ def diff_views(disk: dict, view: dict | None) -> list[dict]:
     vnodes, dnodes = view["nodes"], disk["nodes"]
     vids, dids = view.get("ids", {}), disk["ids"]
     vbodies = view.get("bodies", {})
+    vfiles = view.get("files", {})
     renamed_to: dict[str, str] = {}
     id_to_disk = {sid: n for n, sid in dids.items()}
+    # A node whose source file changed KIND (Claude turned `w.json` into
+    # `w.html`) is not an upsert: the frame's Udf carries its kind in
+    # `metadata.nodeTemplateType` (a JSON-UI widget, a note, an HTML node, a
+    # Python UDF), the applier never re-reads it from `file`, and so a plain
+    # upsert would leave a JSON-UI widget holding HTML text — rendered wrong,
+    # and written back to disk under the OLD name on the frame's next body
+    # post. So the frame is told `delete` then a full `upsert` under the same
+    # name: it drops the Udf and builds a fresh one of the new kind from the
+    # file (the row carries the position and size the node keeps). Its
+    # edges go with the deleted node, so the edge set is always re-sent.
+    retyped = False
+
+    def kind_changed(view_file: str | None, disk_file: str | None) -> bool:
+        if not view_file or not disk_file:
+            return False
+        return os.path.splitext(view_file)[1] != os.path.splitext(disk_file)[1]
+
     for name in vnodes:
         if name in dnodes:
             continue
         sid = vids.get(name)
         to = id_to_disk.get(sid) if sid else None
-        if to and to not in vnodes:
+        if to and to not in vnodes and not kind_changed(vfiles.get(name), disk["files"].get(to)):
             renamed_to[to] = name
             ops.append({"op": "rename", "from": name, "to": to,
                         "file": disk["files"].get(to)})
         else:
+            # A rename that also changed kind is a delete plus a new node.
             ops.append({"op": "delete", "name": name})
+            retyped = retyped or bool(to)
     for name in disk["order"]:
         was = renamed_to.get(name, name)
         if was not in vnodes:
+            ops.append(_upsert_op(disk, name, row=True, body=True, sid=True))
+            continue
+        if kind_changed(vfiles.get(was), disk["files"].get(name)):
+            retyped = True
+            ops.append({"op": "delete", "name": name})
             ops.append(_upsert_op(disk, name, row=True, body=True, sid=True))
             continue
         row = dnodes[name] != vnodes[was]
@@ -1474,7 +1547,7 @@ def diff_views(disk: dict, view: dict | None) -> list[dict]:
         if row or body or sid:
             ops.append(_upsert_op(disk, name, row=row, body=body, sid=sid,
                                   view_row=vnodes[was]))
-    if sorted(map(tuple, disk["edges"])) != sorted(map(tuple, view.get("edges", []))):
+    if retyped or sorted(map(tuple, disk["edges"])) != sorted(map(tuple, view.get("edges", []))):
         ops.append({"op": "edges", "set": [list(e) for e in disk["edges"]]})
     vcanvas = view.get("canvas", {})
     scalars = {k: v for k, v in disk["canvas"].items()

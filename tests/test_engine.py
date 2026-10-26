@@ -1928,3 +1928,58 @@ def test_build_code_exports_fused_render_page_for_children(tmp_path, monkeypatch
     g = _run_wrapped(tmp_path, "import os\nresult = os.environ.get('FUSED_RENDER_PAGE')\n", {})
     assert g["result"] == str(tmp_path / "page" / "target.py")
     monkeypatch.delenv("FUSED_RENDER_PAGE", raising=False)
+
+
+# --- ensure_warm: lazy, once per process --------------------------------------
+
+def test_ensure_warm_starts_once_across_calls(monkeypatch):
+    calls = []
+    monkeypatch.setattr(engine, "_warm_started", False)
+    monkeypatch.setattr(engine, "warm_unless_forced_builtin", lambda: calls.append(1))
+    engine.ensure_warm()
+    engine.ensure_warm()
+    assert calls == [1]
+
+
+def test_no_engine_warm_hook_at_boot(tmp_path):
+    from fused_render.server import create_app
+
+    app = create_app(start_dir=str(tmp_path))
+    assert "_startup_warm_engine" not in [f.__name__ for f in app.state.startup_handlers]
+
+
+def test_run_python_calls_ensure_warm(monkeypatch, tmp_path):
+    import asyncio
+
+    calls = []
+    monkeypatch.setattr(engine, "ensure_warm", lambda: calls.append(1))
+    asyncio.run(engine.run_python(str(tmp_path / "missing.py"), {}))
+    assert calls == [1]
+
+
+def test_api_config_starts_the_warm_once_and_never_waits(monkeypatch, tmp_path):
+    import threading
+
+    from fastapi.testclient import TestClient
+
+    from fused_render.server import create_app
+
+    release = threading.Event()
+    entered = []
+    monkeypatch.setattr(engine, "_warm_started", False)
+    # conftest stubs warm_in_background; restore a real thread around a blocking warm.
+    monkeypatch.setattr(engine, "warm_in_background", lambda: threading.Thread(
+        target=lambda: (entered.append(1), release.wait(10)), daemon=True).start())
+    monkeypatch.delenv("FUSED_RENDER_ENGINE", raising=False)
+    try:
+        with TestClient(create_app(start_dir=str(tmp_path))) as client:
+            assert client.get("/api/config").status_code == 200  # warm still blocked
+            assert client.get("/api/config").status_code == 200
+            for _ in range(100):
+                if entered:
+                    break
+                threading.Event().wait(0.05)
+            assert entered == [1]
+            assert not release.is_set()
+    finally:
+        release.set()

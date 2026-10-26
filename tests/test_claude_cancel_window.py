@@ -240,10 +240,13 @@ def test_run_hands_the_future_to_on_cancel_and_reraises():
 # ------------------------------------------------------- the control lane
 
 def test_stop_allow_and_app_state_ride_their_own_lane():
-    for action in ("cancel", "decide", "app_state"):
+    # `canvas_shot` joined the control lane with #1924: the page's answer to
+    # a blocked `canvas_screenshot` tool call must not queue behind polls.
+    control = ("cancel", "decide", "app_state", "canvas_shot")
+    assert set(control) == set(pool.CONTROL_ACTIONS)
+    for action in control:
         assert pool.pool_for(action) is pool.CONTROL_POOL, action
-    for action in set(router.ACTIONS) - {"cancel", "decide", "app_state"} \
-            - set(pool.SIDE_POOLS):
+    for action in set(router.ACTIONS) - set(control) - set(pool.SIDE_POOLS):
         assert pool.pool_for(action) is pool.POOL, action
     for action, lane in pool.SIDE_POOLS.items():
         assert pool.pool_for(action) is lane, action

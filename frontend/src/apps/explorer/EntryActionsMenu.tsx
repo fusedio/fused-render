@@ -48,6 +48,7 @@
 //     (McpDialog) rather than in the sidebar, whose two remaining companions are
 //     tabs now (SideChrome's SideTabs). The dialog's open state lives in
 //     Preview.tsx because Open With → MCP has to reach it too.
+import { canonFsPath } from "@platform/lib/path-url";
 import { useEffect, useState, type ReactNode } from "react";
 import { GitPullRequestArrow, Plug, Stethoscope } from "lucide-react";
 import { addCurrentApp, getAppEntry } from "@platform/lib/api";
@@ -70,6 +71,11 @@ import type { MenuEntry } from "@platform/ui/ContextMenu";
 // lucide at MenuIcons' own weight (1.5 on a 24 grid, 16px) so the two rows that
 // have no MenuIcons glyph sit in the list at the same stroke as the rest.
 const LUCIDE = { size: 16, strokeWidth: 1.5, "aria-hidden": true } as const;
+
+// The server answers os.path.abspath (backslashes on Windows) while fsPath is
+// the shell's canonical forward-slash form — same drive-letter-only
+// normalization rule as the URL codec (a backslash in a POSIX filename must not
+// be rewritten).
 
 export interface EntryActionsMenuProps {
   // The app's ENTRY PAGE, or the page that might be one. Over a file preview
@@ -171,7 +177,7 @@ export function useAppActionRows({
     if (isEntryKnown !== undefined) return; // the caller answered; nothing to ask
     getAppEntry(dir)
       .then((r) => {
-        if (alive) setIsEntry(r.entry != null && r.entry === fsPath);
+        if (alive) setIsEntry(r.entry != null && canonFsPath(r.entry) === fsPath);
       })
       .catch(() => {
         /* indeterminate reads as "not an entry" — no rows for nothing */
@@ -338,8 +344,9 @@ export function useAppActionRows({
   // whose parent IS the folder; the file preview hands it the previewed
   // file, whose parent is the file's own directory — exactly "a folder →
   // that folder, a file → its parent" the row is meant to open.
-  // `useCanRunInTerminal()` is the one place the gate lives
-  // (platform/lib/terminalDockStore.ts).
+  // Also hidden on Windows: the server routes 501 there regardless (see
+  // fused_render/server/routers/terminal.py). `useCanRunInTerminal()` is the
+  // one place both conditions live (platform/lib/terminalDockStore.ts).
   const canRun = useCanRunInTerminal();
   const terminal: MenuEntry[] = !canRun
     ? []

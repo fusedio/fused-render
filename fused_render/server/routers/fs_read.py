@@ -489,12 +489,20 @@ def api_fs_reveal(body: dict = Body(...), x_fused: str | None = Header(default=N
         return _error(f"no such path: {path}", status=404)
 
     is_dir = os.path.isdir(path)
-    if sys.platform == "darwin":
+    if sys.platform == "win32":
+        # A directory opens in Explorer via the shell verb; a file is revealed
+        # selected inside its folder (`explorer /select,` wants backslashes).
+        # Explorer exits 1 even on success, so the exit code is never read.
+        if is_dir:
+            os.startfile(path)  # type: ignore[attr-defined]
+            return JSONResponse({"ok": True})
+        cmd = ["explorer", f"/select,{os.path.normpath(path)}"]
+    elif sys.platform == "darwin":
         cmd = ["open", path] if is_dir else ["open", "-R", path]
     else:
         cmd = ["xdg-open", path if is_dir else os.path.dirname(path)]
-    # posix-spawn-exempt: `cmd` is assembled above as "open"/"xdg-open" — the
-    # OS's file-manager launcher, never git. The static sweep in
+    # posix-spawn-exempt: `cmd` is assembled above as "open"/"xdg-open"/
+    # "explorer" — the OS's file-manager launcher, never git. The static sweep in
     # tests/test_git_posix_spawn.py cannot see through the variable to know
     # that, and this file's own `e["git"] = status` a few lines up (a JSON
     # field name, not an argv) is enough to put it in the sweep's scope.
@@ -651,7 +659,12 @@ def _make_thumb(src: str, dst: str, size: int) -> None:
                 raise ValueError(proc.stderr.decode("utf-8", "replace").strip()
                                  or f"sips exited with status {proc.returncode}")
         else:
-            from PIL import Image, ImageOps
+            try:
+                from PIL import Image, ImageOps
+            except ImportError:
+                raise LookupError(
+                    "thumbnails need Pillow (pip install 'fused-render[cli]')"
+                ) from None
 
             with Image.open(src) as image:
                 image = ImageOps.exif_transpose(image)

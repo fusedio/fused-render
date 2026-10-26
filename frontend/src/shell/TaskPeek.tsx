@@ -38,6 +38,7 @@ import { useCanRunInTerminal } from "@platform/lib/terminalDockStore";
 import { runOrCopyInTerminal } from "@platform/lib/runOrCopyInTerminal";
 import { withNoFocus } from "@platform/lib/frame-focus";
 import { navigateUrl } from "@platform/lib/router";
+import { useArchiveConfirm } from "@shell/archive-confirm";
 import { anyModalOpen } from "@platform/ui/modal/esc-stack";
 import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
 import { SkeletonLines } from "@platform/ui/Skeleton";
@@ -894,7 +895,12 @@ export function TaskPeek({
   };
 
   const filing = task ? filingIntent(task) : null;
-  const refile = async () => {
+  const archiveAsk = useArchiveConfirm();
+  const refile = (): void => {
+    if (filing?.kind === "archive" && task) archiveAsk.guard(task, () => void doRefile());
+    else void doRefile();
+  };
+  const doRefile = async () => {
     if (!filing || !task || acting) return;
     const from = task.key;
     setActing(true);
@@ -1446,6 +1452,7 @@ export function TaskPeek({
           }}
         />
       )}
+      {archiveAsk.node}
     </>
   );
 }

@@ -7,8 +7,10 @@ import {
   navSections,
   resolveGroup,
   sectionsOf,
+  unavailableReason,
   visibleGroups,
   visibleSettings,
+  type DeviceFeature,
   type SettingsContext,
 } from "./registry";
 import { matchedVia, searchSettings as searchTokens, splitLabel, tokenize } from "./search";
@@ -23,7 +25,7 @@ function ctx(over: Partial<SettingsContext> = {}, prefs: Partial<Prefs> = {}): S
     prefs: {
       native_windows: { available: true, enabled: true },
       launcher: { available: true },
-      agents: { claude: true, copilot: false, codex: false, default: "claude" },
+      agents: { claude: true, copilot: false, codex: false, gemini: false, default: "claude" },
       ...prefs,
     } as unknown as Prefs,
     ...over,
@@ -114,10 +116,7 @@ describe("visibility", () => {
   });
 
   test("capabilities the server says are missing are not drawn", () => {
-    const ids = visibleSettings(ctx({}, { native_windows: undefined, launcher: undefined } as Partial<Prefs>)).map(
-      (s) => s.id,
-    );
-    expect(ids).not.toContain("native-windows");
+    const ids = visibleSettings(ctx({}, { launcher: undefined } as Partial<Prefs>)).map((s) => s.id);
     expect(ids).not.toContain("launcher-hotkey");
   });
 
@@ -133,22 +132,25 @@ describe("visibility", () => {
 
   test("the default-agent picker appears only with two or more agents on", () => {
     expect(visibleSettings(ctx()).map((s) => s.id)).not.toContain("agent-default");
-    const agents = (claude: boolean, copilot: boolean, codex: boolean) =>
-      visibleSettings(ctx({}, { agents: { claude, copilot, codex, default: "claude" } } as Partial<Prefs>))
+    const agents = (claude: boolean, copilot: boolean, codex: boolean, gemini = false) =>
+      visibleSettings(ctx({}, { agents: { claude, copilot, codex, gemini, default: "claude" } } as Partial<Prefs>))
         .map((s) => s.id);
     expect(agents(true, true, false)).toContain("agent-default");
     expect(agents(true, false, true)).toContain("agent-default");
     expect(agents(false, true, true)).toContain("agent-default");
     expect(agents(true, true, true)).toContain("agent-default");
     expect(agents(false, false, true)).not.toContain("agent-default");
+    // Gemini counts as one of the two (docs/GEMINI_BACKEND.md D17).
+    expect(agents(true, false, false, true)).toContain("agent-default");
+    expect(agents(false, false, false, true)).not.toContain("agent-default");
     // An older server says nothing of Codex: two of the other two still count.
     const old = ctx({}, { agents: { claude: true, copilot: true, default: "claude" } } as unknown as Partial<Prefs>);
     expect(visibleSettings(old).map((s) => s.id)).toContain("agent-default");
   });
 
-  test("the three agent switches stand in the registry's order", () => {
-    const ids = visibleSettings(ctx()).map((s) => s.id as string).filter((id) => /^agent-(claude|copilot|codex)$/.test(id));
-    expect(ids).toEqual(["agent-claude", "agent-copilot", "agent-codex"]);
+  test("the four agent switches stand in the registry's order", () => {
+    const ids = visibleSettings(ctx()).map((s) => s.id as string).filter((id) => /^agent-(claude|copilot|codex|gemini)$/.test(id));
+    expect(ids).toEqual(["agent-claude", "agent-copilot", "agent-codex", "agent-gemini"]);
   });
 
   test("sections come out in first-appearance order", () => {
@@ -164,7 +166,7 @@ describe("visibility", () => {
     expect(visibleSettings(on).map((s) => s.id)).toContain("chromium-windows");
   });
 
-  test("Labs keeps its sections in order, Windows last", () => {
+  test("Experimental flags keeps its sections in order, Windows last", () => {
     const on = ctx({}, { chromium_windows: { available: true, enabled: false } } as unknown as Partial<Prefs>);
     const secs = sectionsOf(visibleSettings(on), "features").map((s) => s.section);
     expect(secs).toEqual(["Sidebar", "Windows"]);
@@ -239,6 +241,13 @@ describe("search", () => {
     expect(ids(true)).toEqual([]);
   });
 
+  test("Gemini is findable by its own words and Google's", () => {
+    for (const q of ["gemini", "google"]) {
+      expect(searchSettings(all, q).map((h) => h.id)).toContain("agent-gemini");
+    }
+    expect(searchSettings(all, "gemini sign").map((h) => h.id)).toEqual(["agent-gemini", "agent-signin"]);
+  });
+
   test("Codex is findable by its own words and its account's", () => {
     for (const q of ["codex", "openai", "chatgpt"]) {
       expect(searchSettings(all, q).map((h) => h.id)).toContain("agent-codex");
@@ -255,5 +264,40 @@ describe("search", () => {
   test("the label is split around the first word it contains", () => {
     expect(splitLabel("Low-impact indexing", ["index"])).toEqual({ pre: "Low-impact ", hit: "index", post: "ing" });
     expect(splitLabel("Reader", ["tts"])).toEqual({ pre: "Reader", hit: "", post: "" });
+  });
+});
+
+describe("device capability gates", () => {
+  const byId = (id: string) => SETTINGS.find((s) => s.id === id)!;
+
+  test("a tagged row reports the server's reason, an untagged or present one null", () => {
+    const missing = ctx({}, { unavailable: { index: "Needs pip install 'fused-render[index]'" } });
+    expect(unavailableReason(byId("indexing"), missing)).toBe("Needs pip install 'fused-render[index]'");
+    expect(unavailableReason(byId("huggingface"), missing)).toBeNull();
+    expect(unavailableReason(byId("appearance"), missing)).toBeNull();
+    expect(unavailableReason(byId("indexing"), ctx())).toBeNull();
+    expect(unavailableReason(byId("indexing"), null)).toBeNull();
+  });
+
+  test("every capability row carries the right tag", () => {
+    const tags: Record<DeviceFeature, string[]> = {
+      index: ["indexing", "ranked-search", "low-impact", "skipped-folders", "rebuild-index", "index-query"],
+      hf: ["huggingface"],
+      fused: ["fused-account", "workbench-env", "canvases", "canvases-embed-proxy", "share-sheet"],
+      update: ["auto-update"],
+      native_windows: ["native-windows"],
+      terminal: ["notify-terminal"],
+    };
+    for (const [need, ids] of Object.entries(tags) as [DeviceFeature, string[]][]) for (const id of ids) expect(byId(id).needs).toBe(need);
+  });
+
+  test("native-windows is shown, not hidden, when this process has no windows", () => {
+    const c = ctx({}, { native_windows: { available: false, enabled: true } });
+    expect(visibleSettings(c).some((e) => e.id === "native-windows")).toBe(true);
+  });
+
+  test("a disabled row stays findable by search", () => {
+    const c = ctx({}, { unavailable: { index: "x" } });
+    expect(searchSettings(visibleSettings(c), "index").some((e) => e.id === "indexing")).toBe(true);
   });
 });

@@ -65,6 +65,15 @@ export interface SharedAppRecord {
   /** Found on the account by name rather than published from here: the
    *  canvas may carry an older file than this folder. */
   adopted?: boolean;
+  /** `public` unless the deployment refused public scope — then the shim
+   *  fell back to `temporary` (team canvas + 30-minute session token). */
+  mode?: "public" | "temporary";
+  session_expires?: string | number | null;
+  /** Computed by share_app.py at read time: a `temporary` link past its
+   *  session expiry. Update mints a fresh one. */
+  expired?: boolean;
+  /** The fallback happened because this deployment forbids public links. */
+  public_refused?: boolean;
 }
 
 export interface ShareStatus {

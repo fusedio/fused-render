@@ -1,4 +1,4 @@
-// The one-switch settings: Chats & tasks, Sharing & sync, Labs.
+// The one-switch settings: Chats & tasks, Sharing & sync, Experimental flags.
 //
 // Most of them publish after the PUT as well as saving: the surface the switch
 // governs is usually already on screen (the sidebar beside this page, a grid
@@ -244,7 +244,7 @@ export function ContribRemixControl({ prefs, onChange }: PrefControlProps) {
   );
 }
 
-// ── Labs ───────────────────────────────────────────────────────────────
+// ── Experimental flags ───────────────────────────────────────────────────────────────
 // Each is off by default and this is the only place it turns on (Canvases:
 // D427). Each one gates its ENTRY POINTS — a sidebar row, a status-bar chip, a
 // file view — never the routes behind them.

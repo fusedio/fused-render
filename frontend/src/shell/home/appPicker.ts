@@ -1,4 +1,5 @@
 // Ordering, folder line and filter for the add sheet's App picker.
+import { canonFsPath } from "@platform/lib/path-url";
 import type { AppInfo } from "@platform/lib/api";
 import { sortApps } from "@platform/lib/appEntry";
 
@@ -7,10 +8,10 @@ const title = (a: AppInfo) => a.title || a.name;
 /** The folder an app lives in (the parent of its folder, or of its `.fused`
     file), with the home directory shown as "~". */
 export function appFolderLine(app: AppInfo, home?: string): string {
-  const p = app.path.replace(/\/+$/, "");
+  const p = canonFsPath(app.path).replace(/\/+$/, "");
   const i = p.lastIndexOf("/");
   const dir = i > 0 ? p.slice(0, i) : i === 0 ? "/" : "";
-  const h = home ? home.replace(/\/+$/, "") : "";
+  const h = home ? canonFsPath(home).replace(/\/+$/, "") : "";
   if (h && dir === h) return "~";
   if (h && dir.startsWith(h + "/")) return "~" + dir.slice(h.length);
   const m = /^\/(?:Users|home)\/[^/]+(\/.*)?$/.exec(dir);
@@ -55,6 +56,6 @@ export function pageTitle(path: string): string {
       // fall through to the segment logic
     }
   }
-  const parts = path.split(/\/+/).filter(Boolean);
+  const parts = path.split(/[\\/]+/).filter(Boolean);
   return parts[parts.length - 1] ?? path;
 }

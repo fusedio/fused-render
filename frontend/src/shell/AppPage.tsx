@@ -608,6 +608,8 @@ export default function AppPage({
   const gitPeekLayout = useAppPageGitPeekWidth(gitSplitRef);
   const gitTaken = gitOpen ? gitPeekLayout.width : 0;
 
+  // `home` is already forward-slash (getConfig folds it), matching `dir` and
+  // the root, so the prefix test for "~/…" below compares like with like.
   const home = config.home;
   const entry = resolved?.kind === "app" ? resolved.entry : null;
 

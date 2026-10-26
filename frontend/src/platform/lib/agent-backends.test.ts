@@ -7,6 +7,7 @@ import {
   CLAUDE_FALLBACK,
   CODEX_FALLBACK,
   COPILOT_FALLBACK,
+  GEMINI_FALLBACK,
   agentLabel,
   agentNamed,
   backendOf,
@@ -52,6 +53,43 @@ test("a Codex model on a Claude chat is foreign, and the other way round", () =>
   expect(isForeignModel("gpt-6-luna", "codex")).toBe(false);
   // An id no agent lists is a pinned or newer one, carried as typed.
   expect(isForeignModel("gpt-7-nova", "codex")).toBe(false);
+});
+
+test("a Gemini chat answers with Gemini's row before the catalog lands (docs/GEMINI_BACKEND.md §7)", () => {
+  resetAgentBackendsForTests();
+  expect(backendOf("gemini")).toBe(GEMINI_FALLBACK);
+  expect(agentLabel("gemini")).toBe("Gemini");
+  expect(defaultModelOf("gemini")).toBe("auto");
+  expect(modesOf("gemini")).toEqual(["prompt", "acceptEdits", "auto"]);
+  const caps = capsOf("gemini");
+  expect(caps.plan_mode).toBe(false);
+  expect(caps.live_model_switch).toBe(true);
+  expect(caps.live_mode_switch).toBe(true);
+  expect(caps.worktrees).toBe(false);
+  // No effort control at all (D7): nothing to offer, for any model, and so
+  // no default level either — the pill stays hidden.
+  expect(effortsOf("gemini")).toEqual([]);
+  expect(effortsForModel("gemini", "auto")).toEqual([]);
+  expect(effortsForModel("gemini", "gemini-2.5-pro")).toEqual([]);
+  expect(effortsForModel("gemini", "gemini-9-unknown")).toEqual([]);
+  expect(defaultEffortFor("gemini", "gemini-2.5-pro")).toBe("");
+  // Off until the server says otherwise (D17), and named even so.
+  expect(GEMINI_FALLBACK.enabled).toBe(false);
+  expect(isBackendEnabled("gemini")).toBe(false);
+  expect(agentNamed("gemini")).toBe(true);
+  // A Gemini id is foreign on a Claude chat and the other way round.
+  expect(isForeignModel("gemini-2.5-pro", "claude")).toBe(true);
+  expect(isForeignModel("sonnet", "gemini")).toBe(true);
+  expect(isForeignModel("gpt-6-luna", "gemini")).toBe(true);
+  expect(isForeignModel("gemini-2.5-pro", "gemini")).toBe(false);
+  expect(isForeignModel("gemini-9-unknown", "gemini")).toBe(false);
+});
+
+test("with all four on, the server's default can be Gemini", () => {
+  const rows = [CLAUDE_FALLBACK, COPILOT_FALLBACK, CODEX_FALLBACK, GEMINI_FALLBACK].map((r) => ({ ...r, enabled: true }));
+  resetAgentBackendsForTests({ backends: rows, default: "gemini", all: rows });
+  expect(defaultBackend()).toBe("gemini");
+  expect(isBackendEnabled("gemini")).toBe(true);
 });
 
 test("with all three on, the server's default can be Codex", () => {

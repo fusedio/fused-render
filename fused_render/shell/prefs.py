@@ -39,7 +39,9 @@ the proposals inbox, merged proposals — one switch, opt-in, default off) and
 **contrib_remix_enabled** (remix, needs the loop on; see ``CONTRIB_PREF_KEYS``
 and ``fused_render.contrib.flags``),
 **indexing_enabled** (whether
-background file-index scanning may run — default ON, see ``indexing_enabled``),
+background file-index scanning may run — default ON only inside the native
+desktop app, OFF for browser/CLI installs and dev runs; see
+``indexing_enabled``),
 **chromium_windows_enabled** (whether the macOS app's NEW windows are hosted
 by the Chromium engine the app ships instead of WKWebView — default ON,
 ``false`` opts out; see ``chromium_windows_enabled`` and
@@ -454,9 +456,11 @@ def task_recap_titles_enabled() -> bool:
 
 def task_summary_titles_enabled() -> bool:
     """Whether Tasks rows are titled ONLY by the server's stable `title` (a
-    user-set title, else Claude Code's `ai-title` summary, else the first
-    line of the first message) — never by the newest message, the haiku
-    recap or Claude's reply (default off; only a stored `true` is on).
+    name the reader chose, else the app's own haiku AI title refreshed every
+    few prompts, else Claude Code's `ai-title`, else the first line of the
+    first message) — never by the newest message, the haiku recap or
+    Claude's reply (default off; only a stored `true` is on). Shown as
+    "Stable AI titles"; the key predates that name.
     Rows then carry `title_mode: "summary"`; the key is absent when off."""
     return read_prefs().get("task_summary_titles_enabled") is True
 # ---- moved off localStorage (D1386) -----------------------------------------
@@ -473,6 +477,7 @@ def task_summary_titles_enabled() -> bool:
 #: what it does not know, so a newer client's tab survives an older server.
 _TASKS_VIEW_TAB_RE = re.compile(r"^[a-z_]{1,24}$")
 MAX_TASKS_VIEW_TABS = 8
+MAX_PINNED_TASKS = 500
 
 
 def bots_autostage() -> bool:
@@ -506,6 +511,15 @@ def tasks_view_tabs() -> list[str]:
     return list(dict.fromkeys(tabs))[:MAX_TASKS_VIEW_TABS]
 
 
+def pinned_tasks() -> list[str]:
+    """Task keys pinned to the top of the Tasks page's Detailed view, in order.
+    ``[]`` when unset or unreadable; never raises."""
+    value = read_prefs().get("pinned_tasks")
+    if not isinstance(value, list):
+        return []
+    return list(dict.fromkeys(t for t in value if isinstance(t, str) and t))[:MAX_PINNED_TASKS]
+
+
 def claude_strict_mcp_enabled() -> bool:
     """Whether chat and Tasks-page Claude sessions start lean —
     `--strict-mcp-config`, so the user's own MCP servers and claude.ai
@@ -536,21 +550,22 @@ def lan_enabled() -> bool:
     return read_prefs().get("lan_enabled") is True
 
 
-#: The three agent switches (D17, docs/COPILOT_BACKEND.md; the third from
-#: docs/CODEX_BACKEND.md). Claude Code is on unless a stored `false` turns it
-#: off; Copilot and Codex are off unless a stored `true` turns them on.
-#: Asymmetric defaults on purpose — "Claude by default" is the owner's rule —
-#: and `put_prefs` refuses the write that would clear all three.
+#: The four agent switches (D17, docs/COPILOT_BACKEND.md; the third from
+#: docs/CODEX_BACKEND.md, the fourth from docs/GEMINI_BACKEND.md). Claude Code
+#: is on unless a stored `false` turns it off; Copilot, Codex and Gemini are
+#: off unless a stored `true` turns them on. Asymmetric defaults on purpose —
+#: "Claude by default" is the owner's rule — and `put_prefs` refuses the write
+#: that would clear all four.
 #: `VALID_DEFAULT_BACKENDS` is in `registry.ORDER`: the PUT's default re-point
 #: walks it and takes the first agent that is on.
 AGENT_BACKEND_KEYS = {"claude": "claude_enabled", "copilot": "copilot_enabled",
-                      "codex": "codex_enabled"}
-VALID_DEFAULT_BACKENDS = ("claude", "copilot", "codex")
+                      "codex": "codex_enabled", "gemini": "gemini_enabled"}
+VALID_DEFAULT_BACKENDS = ("claude", "copilot", "codex", "gemini")
 
 
 def backend_enabled(backend: str) -> bool:
-    """Whether `backend` ("claude" | "copilot" | "codex") may start chats and
-    tasks. Unknown backend reads as off. See
+    """Whether `backend` ("claude" | "copilot" | "codex" | "gemini") may start
+    chats and tasks. Unknown backend reads as off. See
     `agent_backends.registry.enabled_ids` for the never-empty guarantee this
     feeds."""
     key = AGENT_BACKEND_KEYS.get(backend)
@@ -574,6 +589,10 @@ def codex_enabled() -> bool:
     return backend_enabled("codex")
 
 
+def gemini_enabled() -> bool:
+    return backend_enabled("gemini")
+
+
 def default_backend() -> str:
     """The agent new chats and tasks start from, as stored — `"claude"` when
     unset or junk. Whether it is ENABLED is the registry's question
@@ -583,16 +602,17 @@ def default_backend() -> str:
 
 
 def _agents_state() -> dict:
-    """`{"claude": bool, "copilot": bool, "codex": bool, "default": id}` for
-    `GET /api/prefs`. Imported lazily: the registry reads this module for the
-    switches. The REGISTRY's answer, not the raw switches: a hand-edited
-    prefs.json that turns all three off reads as Claude on there, and this
-    page must agree."""
+    """`{"claude": bool, "copilot": bool, "codex": bool, "gemini": bool,
+    "default": id}` for `GET /api/prefs`. Imported lazily: the registry reads
+    this module for the switches. The REGISTRY's answer, not the raw switches:
+    a hand-edited prefs.json that turns every switch off reads as Claude on
+    there, and this page must agree."""
     from fused_render.agent_backends import registry
 
     return {"claude": registry.is_enabled("claude"),
             "copilot": registry.is_enabled("copilot"),
             "codex": registry.is_enabled("codex"),
+            "gemini": registry.is_enabled("gemini"),
             "default": registry.default_id()}
 
 
@@ -679,35 +699,51 @@ def is_dev_run() -> bool:
     return os.environ.get("FUSED_RENDER_DEV") == "1"
 
 
+def is_desktop_app() -> bool:
+    """The server runs inside the native desktop app: the macOS app
+    (`app.py configure_desktop_instance`) or the Linux/Windows supervisor
+    (`supervisor/paths.py child_environment`) sets the desktop instance
+    id + token env pair; a pip/CLI/browser server and dev.sh never do. A
+    half-set pair is not the app."""
+    from fused_render import paths
+    try:
+        return paths.desktop_instance() is not None
+    except RuntimeError:
+        return False
+
+
 def indexing_enabled() -> bool:
     """Whether background file-index scanning may run at all (default ON
-    for the installed app, default OFF for a dev run).
+    only inside the native desktop app; OFF for browser/CLI installs and
+    dev runs).
 
-    Mirrors `calls_enabled()`'s idiom: absence and any non-`false` stored
-    value both read as enabled, so a preference file that predates this
-    setting — every existing install — keeps scanning exactly as before.
+    With NO stored preference the default is ON only when `is_desktop_app()`
+    and not `is_dev_run()`. A whole-home scan is a heavy background cost the
+    user did not ask for outside the app, and the desktop app has the Full
+    Disk Access onboarding flow that makes it worthwhile. Opt in with
+    Preferences -> Indexing (stores `indexing_enabled: true`) or
+    `FUSED_RENDER_INDEXING=1` for the process. The stored preference wins
+    over the default either way, so a user who turned it on (or off) stays
+    that way across restarts; the env override wins over both.
 
-    Dev runs (`is_dev_run`) default OFF with NO stored preference: every
-    worktree server used to watch the whole home dir and compact the index
-    alongside the installed app, which is what put a 10-core Mac at load
-    ~500 and the desktop app past its boot cutoff (2026-10-16 diagnostics).
-    A dev server that needs the index opts in — Preferences → Indexing
-    (stores `indexing_enabled: true`) or `FUSED_RENDER_INDEXING=1` for the
-    process — and the stored preference still wins over the dev default, so
-    a developer who turned it on stays on across restarts.
+    Dev runs stay OFF even if desktop were faked: every worktree server used
+    to watch the whole home dir and compact the index alongside the installed
+    app, which put a 10-core Mac at load ~500 and the desktop app past its
+    boot cutoff (2026-10-16 diagnostics).
 
-    Turning this off does not delete the on-disk index or stop
-    `/api/index/rank` from answering it — only new scans are refused. Every
-    trigger that can start one (the startup scheduler, the on-demand scan
-    routes, the freshness cadence, mutation-triggered rescans) reads this
-    per call, same as `reader_enabled`, so a toggle applies to the very next
-    one with no server restart.
+    An existing non-desktop install with no stored preference now stops
+    starting new scans; its on-disk index is kept and still answers
+    `/api/index/rank`. Turning this off never deletes the index or stops
+    ranking — only new scans are refused. Every trigger that can start one
+    (the startup scheduler, the on-demand scan routes, the freshness cadence,
+    mutation-triggered rescans) reads this per call, same as `reader_enabled`,
+    so a toggle applies to the very next one with no server restart.
     """
     override = indexing_override()
     if override is not None:
         return override
     stored = read_prefs().get("indexing_enabled")
-    if stored is None and is_dev_run():
+    if stored is None and (is_dev_run() or not is_desktop_app()):
         return False
     return stored is not False
 
@@ -955,8 +991,53 @@ def _workbench_state() -> dict:
     }
 
 
+def _unavailable_features() -> dict:
+    """`{feature: reason}` for what this device cannot do; an absent key means
+    available. The Preferences rows tagged `needs: <feature>` stay visible but
+    disabled, and show the reason in place of their status line. Cheap and
+    never raises: each probe is wrapped, and a probe that fails reports
+    nothing (a row left enabled is better than one wrongly locked)."""
+    from fused_render import _platform, extras
+
+    out: dict = {}
+
+    def probe(feature: str, missing, reason) -> None:
+        try:
+            if missing():
+                out[feature] = reason() if callable(reason) else reason
+        except Exception:  # noqa: BLE001 - a broken probe must not break /api/prefs
+            pass
+
+    for extra in ("index", "hf", "fused"):
+        probe(extra, lambda extra=extra: not extras.available(extra),
+              f"Needs {extras.install_hint(extra)}")
+
+    def update_missing() -> bool:
+        from fused_render import update
+
+        return update.manager() is None and not update.supported()
+
+    probe("update", update_missing,
+          lambda: "Not available on Windows" if _platform.IS_WINDOWS
+          else "Only the packaged desktop app updates itself \u2014 "
+               "update with pip install -U fused-render")
+    probe("native_windows", lambda: not _native_windows_state()["available"],
+          lambda: "Not available on Windows" if _platform.IS_WINDOWS
+          else "Only in the desktop app")
+
+    def terminal_missing() -> bool:
+        from fused_render import pty_session
+
+        return not pty_session.terminal_available()
+
+    probe("terminal", terminal_missing, f"Needs {extras.install_hint('cli')}")
+    return out
+
+
 def _prefs_response() -> dict:
     return {
+        # Features this device lacks, with the reason (see `_unavailable_features`).
+        "unavailable": _unavailable_features(),
         "engine": engine_state(),
         # Whether the Reader (listen-to-files) accessibility mode is offered (opt-in).
         "reader": {"enabled": reader_enabled()},
@@ -1027,7 +1108,7 @@ def _prefs_response() -> dict:
         # Whether finished turns are recapped by haiku and the Tasks rows
         # titled by it (opt-in beta, `task_recap_titles_enabled`).
         "task_recap": {"enabled": task_recap_titles_enabled()},
-        # Summary-only Tasks titles (`task_summary_titles_enabled`).
+        # Stable AI Tasks titles (`task_summary_titles_enabled`).
         "task_summary_titles": {"enabled": task_summary_titles_enabled()},
         # Lean Claude sessions (`claude_strict_mcp_enabled`, default on).
         "claude_strict_mcp": {"enabled": claude_strict_mcp_enabled()},
@@ -1037,12 +1118,14 @@ def _prefs_response() -> dict:
         "bots": {"autostage": bots_autostage(), "sounds": bots_sounds(),
                  "clear_enabled": bots_clear_enabled()},
         "tasks_view_tabs": tasks_view_tabs(),
+        "pinned_tasks": pinned_tasks(),
         # Local-network sharing of ~/Fused/local (lan.py): the STORED switch plus
         # the live listener state (url once it is up, error when it is not), so
         # the Preferences section can show the address a phone types.
         "lan": {"enabled": lan_enabled(), **_lan_status()},
-        # The three agent switches and the agent new chats/tasks start from
-        # (docs/COPILOT_BACKEND.md D17, docs/CODEX_BACKEND.md D17). `default`
+        # The four agent switches and the agent new chats/tasks start from
+        # (docs/COPILOT_BACKEND.md D17, docs/CODEX_BACKEND.md D17,
+        # docs/GEMINI_BACKEND.md D17). `default`
         # is the EFFECTIVE one — the stored choice re-pointed to an enabled
         # agent by the registry — so the page never shows a default that is
         # switched off.
@@ -1393,6 +1476,16 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             # Order kept, repeats dropped; [] stores "use the defaults".
             prefs["tasks_view_tabs"] = list(dict.fromkeys(value))
             changed = True
+        if "pinned_tasks" in body:
+            value = body.get("pinned_tasks")
+            if (not isinstance(value, list) or len(value) > MAX_PINNED_TASKS
+                    or not all(isinstance(t, str) and t for t in value)):
+                return JSONResponse(
+                    {"error": "'pinned_tasks' must be a list of at most "
+                              f"{MAX_PINNED_TASKS} non-empty task keys"},
+                    status_code=400)
+            prefs["pinned_tasks"] = list(dict.fromkeys(value))
+            changed = True
         if "claude_strict_mcp_enabled" in body:
             value = body.get("claude_strict_mcp_enabled")
             if not isinstance(value, bool):
@@ -1598,12 +1691,12 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             changed = launcher_changed = True
         agent_keys = tuple(AGENT_BACKEND_KEYS[b] for b in VALID_DEFAULT_BACKENDS)
         if any(k in body for k in (*agent_keys, "default_backend")):
-            # THE FOUR AGENT KEYS TOGETHER (D17, invariant 11): three switches
+            # THE FIVE AGENT KEYS TOGETHER (D17, invariant 11): four switches
             # and the default. Each is applied onto the merged record first
             # and the RESULT is judged, so one PUT that turns Claude off and
-            # Codex on in the same body is fine, and so is one that turns two
-            # off while the third stays on, while one that would leave all
-            # three off is refused whole — there is no "no agent" state.
+            # Codex on in the same body is fine, and so is one that turns three
+            # off while the fourth stays on, while one that would leave all
+            # four off is refused whole — there is no "no agent" state.
             # `default_backend` naming an agent that ends up off is re-pointed
             # to the first one that is on (in `VALID_DEFAULT_BACKENDS` order,
             # which is `registry.ORDER`), in the same write, so a reader never
@@ -1624,10 +1717,11 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                         status_code=400)
                 prefs["default_backend"] = value
             # The same defaults `backend_enabled` reads: Claude on unless
-            # stored False, Copilot and Codex off unless stored True.
+            # stored False, the other agents off unless stored True.
             on = {"claude": prefs.get("claude_enabled") is not False,
                   "copilot": prefs.get("copilot_enabled") is True,
-                  "codex": prefs.get("codex_enabled") is True}
+                  "codex": prefs.get("codex_enabled") is True,
+                  "gemini": prefs.get("gemini_enabled") is True}
             if not any(on.values()):
                 return JSONResponse(
                     {"error": "turn on another agent first"}, status_code=400)
@@ -1650,9 +1744,10 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'task_summary_titles_enabled', "
                           "'claude_strict_mcp_enabled', 'claude_default_permission', "
                           "'bots_autostage', 'bots_sounds', 'bots_clear_enabled', "
-                          "'tasks_view_tabs', "
+                          "'tasks_view_tabs', 'pinned_tasks', "
                           "'lan_enabled', 'canvases_embed_proxy', "
                           "'claude_enabled', 'copilot_enabled', 'codex_enabled', "
+                          "'gemini_enabled', "
                           "'default_backend', 'indexing_enabled', 'ranked_search_enabled', "
                           "'warm_run_enabled', "
                           "'index_low_impact_enabled', "

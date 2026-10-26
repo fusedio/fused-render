@@ -51,7 +51,8 @@ def require_private(path: str) -> None:
         raise PermissionError(
             "%s belongs to uid %d, not %d — refusing to keep this conversation "
             "under a directory another account controls" % (path, st.st_uid, os.geteuid()))
-    if st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+    # Nor does it have mode bits: lstat reports every directory as 0o777 there.
+    if hasattr(os, "geteuid") and st.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
         raise PermissionError(
             "%s is writable by others (mode %04o) — refusing to keep this "
             "conversation there" % (path, stat.S_IMODE(st.st_mode)))

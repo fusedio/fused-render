@@ -1,4 +1,5 @@
 // Server API wrappers. Non-ok responses throw with the server's error message.
+import { canonFsPath } from "./path-url";
 import { noteFsMutation, noteIndexLifecycle } from "@platform/lib/index-freshness";
 import { outcomeFrom } from "@platform/lib/index-query";
 import type { IndexQueryOutcome } from "@platform/lib/index-query";
@@ -33,6 +34,14 @@ export interface Config {
   // session, where `pickFile`/pick-folder answer 501 and a caller needs its own
   // fallback. One backend set raises both dialogs, hence the one flag.
   native_dir_picker: boolean;
+  // Whether this server runs bots at all (server/routers/config.py) — false on
+  // Windows, where the bot process manager is POSIX-only and every /api/bots
+  // call answers 503. Absent from an older server: treated as available.
+  bots_available?: boolean;
+  // Whether the status-bar terminal can start here (server/routers/config.py):
+  // always true off Windows, and on Windows only with pywinpty installed (the
+  // `[cli]` extra). Absent from an older server: treated as available.
+  terminal_available?: boolean;
   // Self-update state (fused_render/update/mac.py) — present only when the
   // packaged mac app started the update manager; absent on dev servers and
   // the Linux package (it updates through its supervisor).
@@ -287,8 +296,15 @@ export const postJson = <T>(
   opts?: { signal?: AbortSignal; headers?: Record<string, string> },
 ) => mutateJson<T>("POST", url, body, opts);
 
+// `home` / `fused_dir` are raw expanduser values and arrive with backslashes on
+// Windows. Folded to the shell's canonical forward-slash form HERE, once, so no
+// consumer has to remember to (drive-letter paths only: see canonFsPath).
 export function getConfig(opts?: { signal?: AbortSignal }): Promise<Config> {
-  return getJson<Config>("/api/config", opts);
+  return getJson<Config>("/api/config", opts).then((c) => ({
+    ...c,
+    home: typeof c.home === "string" ? canonFsPath(c.home) : c.home,
+    fused_dir: typeof c.fused_dir === "string" ? canonFsPath(c.fused_dir) : c.fused_dir,
+  }));
 }
 
 // -- Diagnostics bundle (SPEC §50; Preferences → Diagnostics) ----------------
@@ -479,7 +495,10 @@ export interface ClaudeHealth {
       by `agentAccountLine` in platform/lib/claude-health. The CODEX snapshot
       (`/api/codex/health`, docs/CODEX_BACKEND.md D10) says "chatgpt" or
       "api_key", with the ChatGPT plan in `plan` (or `planType`, Codex's own
-      key, from a server that passes it through). */
+      key, from a server that passes it through). The GEMINI snapshot
+      (`/api/gemini/health`, docs/GEMINI_BACKEND.md D10) says "google",
+      "api_key", "vertex" or "gateway", with the Google account's email when
+      the CLI cached one. */
   account: {
     method: string | null;
     email: string | null;
@@ -628,7 +647,8 @@ export function cancelClaudeLogin(): Promise<ClaudeLoginStatus & { canceled: boo
 
 // -- The same doors, PER AGENT (docs/COPILOT_BACKEND.md D10) ----------------
 //
-// `/api/copilot/*` and `/api/codex/*` (docs/CODEX_BACKEND.md D10) — `health,
+// `/api/copilot/*`, `/api/codex/*` (docs/CODEX_BACKEND.md D10) and
+// `/api/gemini/*` (docs/GEMINI_BACKEND.md D10) — `health,
 // health/refresh, install, login, login/cancel, link-path` — answer the same
 // bodies as the Claude ones above, so one set of functions keyed on the
 // backend id serves every agent — `useAgentSetup(backend)` in claude-setup.ts
@@ -637,7 +657,7 @@ export function cancelClaudeLogin(): Promise<ClaudeLoginStatus & { canceled: boo
 // contract) and is not generalised.
 
 /** Each agent's route segment; an id not here (or none) is Claude's. */
-const AGENT_ROUTES: Record<string, string> = { claude: "claude", copilot: "copilot", codex: "codex" };
+const AGENT_ROUTES: Record<string, string> = { claude: "claude", copilot: "copilot", codex: "codex", gemini: "gemini" };
 
 function agentRoute(backend: string, tail: string): string {
   return `/api/${AGENT_ROUTES[backend] ?? "claude"}/${tail}`;
@@ -709,7 +729,7 @@ export interface AgentCaps {
 
 export interface AgentBackendRow {
   id: string;
-  /** "Claude" / "Copilot" / "Codex" — the word every surface names the agent by. */
+  /** "Claude" / "Copilot" / "Codex" / "Gemini" — the word every surface names the agent by. */
   label: string;
   enabled: boolean;
   /** `reasoning: false` marks a model its CLI takes no effort for (the spawn
@@ -1542,7 +1562,7 @@ export interface Prefs {
   // (`task_recap_titles_enabled`, shell/prefs.py; opt-in, off by default).
   // Optional like `queue`: absent reads as off.
   task_recap?: { enabled: boolean };
-  // Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
+  // Stable AI titles: Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
   // shell/prefs.py; off by default). Optional: absent reads as off.
   task_summary_titles?: { enabled: boolean };
   // Lean Claude sessions (`claude_strict_mcp_enabled`, shell/prefs.py; ON by
@@ -1565,6 +1585,9 @@ export interface Prefs {
    *  server-side as short identifiers only — the client still filters against
    *  tasks-lib.TASK_VIEWS, the one place a view NAME is decided. */
   tasks_view_tabs?: string[];
+  /** Task keys pinned to the top of the Tasks page's Detailed view
+   *  (shell/prefs.py `pinned_tasks`). */
+  pinned_tasks?: string[];
   /** Whether a task on the Tasks page opens in a side panel beside the list
    *  instead of navigating away (shell/prefs.py `task_peek_enabled`) — always
    *  `true` since 2026-09-20; the Preferences switch is gone. Optional because
@@ -1617,8 +1640,9 @@ export interface Prefs {
   // How long an idle resident local model stays loaded before the reaper
   // unloads it (SPEC AI-13). Same stored/effective/forced_by shape as `calls`.
   ai_idle: AiIdlePrefs;
-  // Whether background file-index scanning may run at all (default ON — an
-  // opt-OUT, the opposite polarity from `reader`). Turning it off does not
+  // Whether background file-index scanning may run at all (default ON only in
+  // the native desktop app, OFF for browser/CLI installs and dev runs; a
+  // stored choice wins either way). Turning it off does not
   // delete the on-disk index or stop search from answering it; only new
   // scans are refused (fused_render/shell/prefs.py's `indexing_enabled`).
   // `ranked` (D720, also default ON) is a separate, sibling preference:
@@ -1646,6 +1670,10 @@ export interface Prefs {
   // `available` is false off macOS and under `fused-render serve`, where the
   // section is not rendered. OPTIONAL like `launcher`.
   native_windows?: { enabled: boolean; available: boolean };
+  // Device features this machine lacks, each with the one-line reason
+  // (fused_render/shell/prefs.py `_unavailable_features`). Absent key =
+  // available. The Preferences rows tagged `needs` stay visible but disabled.
+  unavailable?: Record<string, string>;
   // Chromium (CEF) engine for app windows (fused_render/shell/prefs.py's
   // `chromium_windows_enabled`): on by default, the app ships the engine
   // (D1415). `available` is false unless this is the macOS app with native
@@ -1660,12 +1688,13 @@ export interface Prefs {
   // OPTIONAL: an older server answers without it.
   workbench?: { env: string; locked: boolean; choices: string[] };
   // WHICH AGENTS MAY RUN CHATS AND TASKS (docs/COPILOT_BACKEND.md D17):
-  // `claude_enabled` (default on) / `copilot_enabled` / `codex_enabled`
-  // (default off, docs/CODEX_BACKEND.md D17), and the one new chats and tasks
+  // `claude_enabled` (default on) / `copilot_enabled` / `codex_enabled` /
+  // `gemini_enabled` (default off, docs/CODEX_BACKEND.md D17,
+  // docs/GEMINI_BACKEND.md D17), and the one new chats and tasks
   // open on. The server refuses a PUT that would turn the last one off (400
   // "turn on another agent first"). OPTIONAL: an older server answers without
   // it, and the reader treats absence as Claude only.
-  agents?: { claude: boolean; copilot: boolean; codex: boolean; default: string };
+  agents?: { claude: boolean; copilot: boolean; codex: boolean; gemini?: boolean; default: string };
 }
 
 export type ChromiumEngineState = "unsupported" | "missing" | "ready";
@@ -2016,6 +2045,11 @@ export function putTasksViewTabs(tabs: string[]): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { tasks_view_tabs: tabs });
 }
 
+/** The Detailed view's pinned task keys (`Prefs.pinned_tasks`). */
+export function putPinnedTasks(keys: string[]): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { pinned_tasks: keys });
+}
+
 // ---- UI layout (shell/ui_layout.py, ~/.fused-render/ui_layout.json) ---------
 // The per-machine layout the shell used to keep in a dozen localStorage keys
 // (D1386): sidebar width and fold, the two sidebar section folds, the explorer
@@ -2039,6 +2073,8 @@ export interface UiLayoutDoc {
     calRange?: string;
   };
   recentPaths?: string[];
+  /** New task opens on the last folder used instead of the workspace. */
+  rememberLastFolder?: boolean;
 }
 
 export function getUiLayout(): Promise<{ exists: boolean; layout: UiLayoutDoc | null }> {
@@ -3403,6 +3439,9 @@ export interface CurrentAppEntry {
   /** Epoch (server clock) of the last `openCurrentApp`; 0 for a row a task
    *  put on the desk that has never been opened. */
   opened_at?: number | null;
+  /** Epoch of the newest task activity under the app (0 for none) — what the
+   *  server lists by; the client draws the array as it arrives. */
+  active_at?: number;
   /** A task under the app finished since `opened_at` — the sidebar's green
    *  dot. The server's flag (current_apps.observe), cleared by `openCurrentApp`
    *  and by nothing done to the tasks. */
@@ -3429,18 +3468,6 @@ export interface OpenCurrentAppResult {
 
 export function openCurrentApp(path: string): Promise<OpenCurrentAppResult> {
   return postJson<OpenCurrentAppResult>("/api/current-apps/open", { path });
-}
-
-/** The user dragged a Projects row: `paths` is the whole visible list, top
- *  first, and the SERVER's `apps` array becomes that order (D1386 — the order
- *  lives in current_apps.json, not in this browser). Unknown paths are ignored;
- *  live apps the list does not name keep their place ABOVE the named ones (the
- *  tab that dragged did not have them, so its arrangement says nothing about
- *  where they go). Answers with the table as it now stands. */
-export function setCurrentAppsOrder(
-  paths: string[],
-): Promise<{ ok: boolean; apps: CurrentAppEntry[] }> {
-  return postJson<{ ok: boolean; apps: CurrentAppEntry[] }>("/api/current-apps/order", { paths });
 }
 
 /** The optional `icon.svg` of the app that owns `fsPath` (the folder itself
@@ -3606,7 +3633,7 @@ export function createApp(
   effort: SessionEffort = "",
   // Paths from uploadTaskShot — the composer's pasted/dropped attachments.
   images: string[] = [],
-  // Which agent runs the scaffolding task: "claude" | "copilot" | "codex" | "" for the
+  // Which agent runs the scaffolding task: "claude" | "copilot" | "codex" | "gemini" | "" for the
   // catalog's default (docs/COPILOT_BACKEND.md D17).
   backend: string = "",
 ): Promise<NewAppResult> {
@@ -3859,7 +3886,7 @@ export interface Task {
    */
   model: string;
   effort: string;
-  /** WHICH AGENT RUNS THIS TASK — "claude" | "copilot" | "codex"
+  /** WHICH AGENT RUNS THIS TASK — "claude" | "copilot" | "codex" | "gemini"
    *  (docs/COPILOT_BACKEND.md D2), chosen at the first turn and immutable. Optional: an older server
    *  sends nothing, and nothing reads as Claude everywhere a mark is drawn. */
   backend?: string;
@@ -4192,7 +4219,7 @@ export type TaskPulseTask = Pick<
   | "canvas"
   | "background_jobs"
   // What the notice titles a task by (tasks-lib `taskNoticeTitle`: the newest
-  // user message, unless renamed / summary-only) — optional, each absent with
+  // user message, unless renamed / stable AI titles) — optional, each absent with
   // its flag off or on an older server. Recap titles are deliberately NOT
   // here: the notice ignores them, the Tasks cards do not.
   | "title_mode"
@@ -4722,13 +4749,89 @@ export function recordChatSettings(
 //
 // The way back is `unarchiveTask` below — a drag, not a button. Nothing is
 // destroyed either way: the conversation and its transcript are kept (D306).
-export function archiveTask(
+export interface TeardownKept {
+  path: string;
+  /** "dirty" | "unpushed" | "unknown" | "not-managed" | "remove-failed". */
+  reasons: string[];
+  /** null: git did not answer. */
+  dirty_files: number | null;
+  unpushed: number | null;
+  error?: string;
+}
+
+/** What archiving tore down: the runs it ended, the worktrees it removed, and
+ *  the ones it KEPT (with why). Absent on an older server. */
+export interface TeardownReport {
+  stopped: number;
+  killed: number[];
+  removed: string[];
+  kept: TeardownKept[];
+  gone: string[];
+}
+
+export interface ArchiveResult {
+  ok: boolean;
+  key: string;
+  cancelled: number;
+  filed: boolean;
+  teardown?: TeardownReport;
+}
+
+type ArchiveListener = (key: string, result: ArchiveResult) => void;
+const archiveListeners = new Set<ArchiveListener>();
+
+/** Hear every archive, whichever of the eight call sites made it. A registry
+ *  here (not an import of notifications) because notifications -> jobs -> api:
+ *  this file cannot import it back. Returns the way to stop listening. */
+export function onTaskArchived(fn: ArchiveListener): () => void {
+  archiveListeners.add(fn);
+  return () => {
+    archiveListeners.delete(fn);
+  };
+}
+
+export async function archiveTask(key: string): Promise<ArchiveResult> {
+  const res = await postJson<ArchiveResult>("/api/tasks/archive", { key });
+  for (const fn of [...archiveListeners]) {
+    try {
+      fn(key, res);
+    } catch {
+      // A listener's bug is never the archive's failure: it has happened.
+    }
+  }
+  return res;
+}
+
+/** Live listening ports of each task's process tree, by task key. */
+export async function fetchTaskPorts(ids: string[]): Promise<Record<string, number[]>> {
+  const res = await postJson<{ ports: Record<string, number[]> }>("/api/tasks/ports", { ids });
+  return res.ports ?? {};
+}
+
+export interface TaskHold {
+  path: string;
+  dirty_files: number | null;
+  /** `dirty_files` minus untracked paths: what the card counts. Absent from an older backend. */
+  tracked_dirty?: number | null;
+  unpushed: number | null;
+  /** The checked-out branch; null on a git error or a detached HEAD. */
+  branch?: string | null;
+  reasons: string[];
+}
+
+/** What each task's recorded worktrees hold open, by task key. Tasks with no
+ *  recorded worktree are absent. */
+export async function fetchTaskHolds(ids: string[]): Promise<Record<string, TaskHold[]>> {
+  const res = await postJson<{ holds: Record<string, TaskHold[]> }>("/api/tasks/holds", { ids });
+  return res.holds ?? {};
+}
+
+/** "Remove anyway": force-remove a task's recorded worktrees (all, or `paths`). */
+export function removeTaskWorktrees(
   key: string,
-): Promise<{ ok: boolean; key: string; cancelled: number; filed: boolean }> {
-  return postJson<{ ok: boolean; key: string; cancelled: number; filed: boolean }>(
-    "/api/tasks/archive",
-    { key },
-  );
+  paths?: string[],
+): Promise<{ ok: boolean; key: string; removed: string[]; kept: TeardownKept[]; gone: string[] }> {
+  return postJson("/api/tasks/worktrees/remove", paths ? { key, paths } : { key });
 }
 
 /** Give a started task a title of the reader's own; "" takes it back and the
@@ -6834,4 +6937,18 @@ export function getScheduleEvents(): Promise<{ events: ScheduleEvent[] }> {
 // silently consume the user's notifications with a no-cors fetch.
 export function ackScheduleEvents(id: number): Promise<{ delivered: number }> {
   return postJson<{ delivered: number }>("/api/schedule/events/ack", { id });
+}
+
+/** Does this server offer Bots? Only an explicit `false` hides them, so a server
+ *  that predates the flag keeps its Bots page. */
+export function botsAvailable(config: Pick<Config, "bots_available"> | null | undefined): boolean {
+  return config?.bots_available !== false;
+}
+
+/** Can this machine run the status-bar terminal? Only an explicit `false`
+ *  removes it, so a server that predates the flag keeps its terminal. */
+export function terminalAvailable(
+  config: Pick<Config, "terminal_available"> | null | undefined,
+): boolean {
+  return config?.terminal_available !== false;
 }

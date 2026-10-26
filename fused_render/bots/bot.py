@@ -26,6 +26,7 @@ import threading
 import time
 import uuid
 
+from fused_render._platform import is_within
 from fused_render.bots import apptools, imessage, store
 from fused_render.bots import browser as browser_mod
 from fused_render.bots import browsers
@@ -215,7 +216,7 @@ APP_GUIDE = """APP GUIDE (Browser Bots, a local desktop app; every bot has its o
 - Inbox: everything you produce lands in the user's Inbox, a Finder folder at ~/Fused/bots/<your name>/ with one subfolder per task: `save` results, downloads that arrived during the task, and a README with the task and your final answer. The Inbox list under your screenshot shows the most recent items with "Open folder" to reveal them in Finder. Files the user attaches in the composer land in FILES instead, for `upload`. There is no other export path. FOLDERS (when present) are the user's own folders they let you READ (`ls`, `find`, `readfile` with a path); you cannot write, move or delete anything there, and no other path on this Mac is readable.
 - iMessage: only Super Bot takes tasks by text (from the phone number or Apple ID set in its Settings > Advanced) and texts its replies back; it can hand a browsing task to a bot like you, whose final answer goes back to it as the result. Other bots are not reachable by text. "Contacts the bot may text" (Settings > Advanced) is the allowlist your `text` action can message and `texts` can read replies from (shown to you as CONTACTS). You cannot add contacts yourself: tell the user where.
 - Builds (button under the bots list): Claude Code sessions that create fused-render apps. The user can start one there, and you can start one with `build` (say so, then `done` with the link it returns). Apps land under @APPS_ROOT@/<name>; the Builds panel tracks progress and holds Claude's chat for each build; a chat message (and a text, if iMessage is on) arrives when one is ready, and a card when one is stuck (Claude waits for an OK or an answer, fails, or hits its usage limit) whose button opens it under Builds. Settings > Advanced > Builds picks "Scoped" (Claude asks the user before risky steps) or "Full access" (unattended).
-- Apps: every fused app under @APPS_ROOT@ is visible to every bot, whoever built it: the APPS section of your prompt lists them all (folder, name, description, link). `show` any of them as a card, `goto` its link to use it in the browser, or `build` with its exact name to update it. You also OFFER apps on your own (`offer`): an existing one that fits the task, or a new one worth building, as a card with "Use it" / "Build it" / "Not now". A yes starts the build with no further step (the yes is the approval), "Not now" keeps that app out of offers for a week, and an unanswered offer stays clickable in the chat after the task ends (a plain yes or no later settles it). When the user asks for an app in so many words you `build` it straight away and the approval card confirms it with one click. The Marketplace (Preferences › Labs, off by default) is a catalog of community apps: when it is on, `marketplace_search` finds one and `marketplace_install` installs it under @APPS_ROOT@/<slug> behind an approval card, every time; an installed one is in APPS like any other app.
+- Apps: every fused app under @APPS_ROOT@ is visible to every bot, whoever built it: the APPS section of your prompt lists them all (folder, name, description, link). `show` any of them as a card, `goto` its link to use it in the browser, or `build` with its exact name to update it. You also OFFER apps on your own (`offer`): an existing one that fits the task, or a new one worth building, as a card with "Use it" / "Build it" / "Not now". A yes starts the build with no further step (the yes is the approval), "Not now" keeps that app out of offers for a week, and an unanswered offer stays clickable in the chat after the task ends (a plain yes or no later settles it). When the user asks for an app in so many words you `build` it straight away and the approval card confirms it with one click. The Marketplace (Preferences › Experimental flags, off by default) is a catalog of community apps: when it is on, `marketplace_search` finds one and `marketplace_install` installs it under @APPS_ROOT@/<slug> behind an approval card, every time; an installed one is in APPS like any other app.
 - App tools: local apps that expose MCP tools (an `mcp.toml` curated in fused-render's MCP panel) are available to you through the `tool` action; the APP TOOLS section of your prompt lists them by app. Reading tools run at once; tools that change something ask the user first. Cards in the Apps panel show a tools badge when an app exposes any. Nothing has to be attached: every app with a manifest is available to every bot.
 - App skills: an app that ships a SKILL.md (marked [py] in APPS) tells you what each of its .py files does and how to call it; the `py` action runs one (its main(**args), exactly as the app's page would run it). Skills load only when needed: apps you built this task and apps the task names are mounted under APP SKILLS; `py` with an app and no file loads any other. Apps you build get a SKILL.md as part of the build; an older app without one can get it from an update build. Your own builds run at once; other apps' files ask the user first, showing the file's line from its SKILL.md.
 - Bots list: New bot, search, pin or hide a bot (pinned first, then bots waiting on the user, then most recent); "Clone" makes a new bot on your logins (sharing them, not a copy) with your memory, instructions and skills; "Delete" removes a bot, and its logins unless another bot shares them. The Usage button shows model calls per hour, day and bot. Other local scripts can hand you tasks through botsend.py; they show up as normal tasks.
@@ -3923,10 +3924,10 @@ def clean_folders(raw) -> list:
         whole = (os.path.sep, os.path.realpath(os.path.expanduser("~")))
         if r in whole or (_ids(r) is not None and _ids(r) in {_ids(w) for w in whole}):
             continue  # the whole disk or the whole home is not a folder grant: not by string, symlink or case (APFS)
-        if any(r == x or r.startswith(x + os.sep) for x in reals):
+        if any(is_within(r, x) for x in reals):
             continue
         # a parent arriving after its child replaces it
-        keep = [(o, x) for o, x in zip(out, reals) if not x.startswith(r + os.sep)]
+        keep = [(o, x) for o, x in zip(out, reals) if not is_within(x, r, strict=True)]
         out, reals = [o for o, _ in keep] + [p], [x for _, x in keep] + [r]
         if len(out) > FOLDERS_MAX:
             raise ValueError(f"at most {FOLDERS_MAX} folders per bot; grant a parent folder instead")
@@ -3951,7 +3952,7 @@ def inside(path: str, roots) -> str | None:
     real = os.path.realpath(path)
     rr = [(os.path.realpath(r), _ids(os.path.realpath(r))) for r in roots]
     for root, _ in rr:
-        if real == root or real.startswith(root.rstrip(os.sep) + os.sep):
+        if is_within(real, root, fs_root_ok=False):
             return root
     cur = real
     while True:

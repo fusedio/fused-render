@@ -86,6 +86,7 @@ export {
   ago,
   draftHref,
   paneChatUrl,
+  paneSlashes,
   sessionTitle,
   taskInPane,
   taskPane,

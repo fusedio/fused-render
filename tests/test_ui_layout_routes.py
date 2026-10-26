@@ -26,6 +26,7 @@ def _doc():
         "viewState": {"/Users/me/Fused": "?view=grid", "/tmp": ""},
         "tasks": {"view": "board", "calRange": "week"},
         "recentPaths": ["/Users/me/Fused/local/foo"],
+        "rememberLastFolder": True,
     }
 
 
@@ -74,6 +75,8 @@ def test_put_invalid_is_400(tmp_path, monkeypatch):
         {**base, "tasks": {"calRange": "x" * 33}},
         {**base, "recentPaths": ["/a"] * 9},
         {**base, "recentPaths": [1]},
+        {**base, "rememberLastFolder": "yes"},
+        {**base, "rememberLastFolder": 1},
     ]
     for doc in bad:
         assert client.put("/api/ui-layout", json=doc, headers=FUSED).status_code == 400, doc

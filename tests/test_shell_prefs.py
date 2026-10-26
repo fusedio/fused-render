@@ -18,6 +18,9 @@ from fused_render.ai import registry as ai_registry
 from fused_render.server import create_app
 from _hardware_probe_helpers import force_no_accelerators
 
+# Taken at import, before conftest's autouse fixture patches it to True.
+_REAL_IS_DESKTOP_APP = prefs_mod.is_desktop_app
+
 
 FUSED = {"X-Fused": "1"}  # D3 guard header required on writes
 
@@ -411,6 +414,65 @@ def test_indexing_enabled_defaults_on_and_toggles(tmp_path, monkeypatch):
     assert client.put("/api/prefs", json={"indexing_enabled": True}, headers=FUSED).json()[
         "indexing"
     ]["enabled"] is True
+
+
+def _indexing_env(tmp_path, monkeypatch, *, desktop, stored=None, dev=False, env=None):
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path))
+    monkeypatch.delenv(prefs_mod.INDEXING_ENV, raising=False)
+    monkeypatch.delenv("FUSED_RENDER_DEV", raising=False)
+    if dev:
+        monkeypatch.setenv("FUSED_RENDER_DEV", "1")
+    if env is not None:
+        monkeypatch.setenv(prefs_mod.INDEXING_ENV, env)
+    monkeypatch.setattr(prefs_mod, "is_desktop_app", lambda: desktop)
+    if stored is not None:
+        (tmp_path / "prefs.json").write_text(
+            json.dumps({"indexing_enabled": stored}), encoding="utf-8")
+
+
+def test_indexing_default_off_outside_desktop(tmp_path, monkeypatch):
+    _indexing_env(tmp_path, monkeypatch, desktop=False)
+    assert prefs_mod.indexing_enabled() is False
+
+
+def test_indexing_default_on_in_desktop(tmp_path, monkeypatch):
+    _indexing_env(tmp_path, monkeypatch, desktop=True)
+    assert prefs_mod.indexing_enabled() is True
+
+
+def test_indexing_stored_true_wins_outside_desktop(tmp_path, monkeypatch):
+    _indexing_env(tmp_path, monkeypatch, desktop=False, stored=True)
+    assert prefs_mod.indexing_enabled() is True
+
+
+def test_indexing_stored_false_wins_in_desktop(tmp_path, monkeypatch):
+    _indexing_env(tmp_path, monkeypatch, desktop=True, stored=False)
+    assert prefs_mod.indexing_enabled() is False
+
+
+def test_indexing_env_override_wins_outside_desktop(tmp_path, monkeypatch):
+    _indexing_env(tmp_path, monkeypatch, desktop=False, env="1")
+    assert prefs_mod.indexing_enabled() is True
+
+
+def test_indexing_dev_run_stays_off_even_in_desktop(tmp_path, monkeypatch):
+    _indexing_env(tmp_path, monkeypatch, desktop=True, dev=True)
+    assert prefs_mod.indexing_enabled() is False
+
+
+def test_is_desktop_app_reads_the_instance_env(monkeypatch):
+    ident = "FUSED_RENDER_DESKTOP_INSTANCE_ID"
+    token = "FUSED_RENDER_DESKTOP_INSTANCE_TOKEN"
+    monkeypatch.delenv(ident, raising=False)
+    monkeypatch.delenv(token, raising=False)
+    assert _REAL_IS_DESKTOP_APP() is False
+    monkeypatch.setenv(ident, "abc")
+    assert _REAL_IS_DESKTOP_APP() is False  # half-set pair is not the app
+    monkeypatch.delenv(ident)
+    monkeypatch.setenv(token, "tok")
+    assert _REAL_IS_DESKTOP_APP() is False
+    monkeypatch.setenv(ident, "abc")
+    assert _REAL_IS_DESKTOP_APP() is True
 
 
 def test_put_rejects_bad_indexing_enabled(tmp_path, monkeypatch):
@@ -1864,3 +1926,120 @@ def test_warm_run_env_beats_the_pref_and_windows_is_always_off(tmp_path, monkeyp
     assert prefs_mod.warm_run_enabled() is True
     monkeypatch.setattr(os, "name", "nt")
     assert prefs_mod.warm_run_enabled() is False
+
+
+# -- unavailable features --------------------------------------------------------
+
+
+@pytest.fixture
+def everything_present(monkeypatch):
+    """Every probe says "available", so a test forces one feature missing."""
+    from fused_render import _platform, extras, pty_session, update
+
+    monkeypatch.setattr(extras, "available", lambda extra: True)
+    monkeypatch.setattr(_platform, "IS_WINDOWS", False)
+    monkeypatch.setattr(update, "manager", lambda: object())
+    monkeypatch.setattr(prefs_mod, "_native_windows_state",
+                        lambda: {"enabled": True, "available": True})
+    monkeypatch.setattr(pty_session, "terminal_available", lambda: True)
+
+
+def test_nothing_is_unavailable_when_everything_is_present(everything_present):
+    assert prefs_mod._unavailable_features() == {}
+
+
+@pytest.mark.parametrize("extra", ["index", "hf", "fused"])
+def test_a_missing_extra_is_reported_with_its_install_line(everything_present,
+                                                           monkeypatch, extra):
+    from fused_render import extras
+
+    monkeypatch.setattr(extras, "available", lambda e: e != extra)
+    assert prefs_mod._unavailable_features() == {
+        extra: f"Needs pip install 'fused-render[{extra}]'"}
+
+
+def test_update_unavailable_off_windows_names_pip(everything_present, monkeypatch):
+    from fused_render import update
+
+    monkeypatch.setattr(update, "manager", lambda: None)
+    monkeypatch.setattr(update, "supported", lambda: False)
+    reason = prefs_mod._unavailable_features()["update"]
+    assert "pip install -U fused-render" in reason
+
+
+def test_update_is_available_when_supported_but_not_started(everything_present,
+                                                            monkeypatch):
+    from fused_render import update
+
+    monkeypatch.setattr(update, "manager", lambda: None)
+    monkeypatch.setattr(update, "supported", lambda: True)
+    assert "update" not in prefs_mod._unavailable_features()
+
+
+def test_windows_reasons(everything_present, monkeypatch):
+    from fused_render import _platform, update
+
+    monkeypatch.setattr(_platform, "IS_WINDOWS", True)
+    monkeypatch.setattr(update, "manager", lambda: None)
+    monkeypatch.setattr(update, "supported", lambda: False)
+    monkeypatch.setattr(prefs_mod, "_native_windows_state",
+                        lambda: {"enabled": True, "available": False})
+    out = prefs_mod._unavailable_features()
+    assert out["update"] == "Not available on Windows"
+    assert out["native_windows"] == "Not available on Windows"
+
+
+def test_native_windows_off_a_desktop_app(everything_present, monkeypatch):
+    monkeypatch.setattr(prefs_mod, "_native_windows_state",
+                        lambda: {"enabled": True, "available": False})
+    assert prefs_mod._unavailable_features() == {"native_windows": "Only in the desktop app"}
+
+
+def test_terminal_unavailable_names_the_cli_extra(everything_present, monkeypatch):
+    from fused_render import pty_session
+
+    monkeypatch.setattr(pty_session, "terminal_available", lambda: False)
+    assert prefs_mod._unavailable_features() == {
+        "terminal": "Needs pip install 'fused-render[cli]'"}
+
+
+def test_a_failing_probe_reports_nothing(everything_present, monkeypatch):
+    from fused_render import extras
+
+    def boom(extra):
+        raise RuntimeError("probe broke")
+
+    monkeypatch.setattr(extras, "available", boom)
+    assert prefs_mod._unavailable_features() == {}
+
+
+def test_prefs_response_carries_the_unavailable_map(tmp_path, monkeypatch,
+                                                    everything_present):
+    from fused_render import extras
+
+    monkeypatch.setattr(extras, "available", lambda e: e != "index")
+    client, _ = _client(tmp_path, monkeypatch)
+    body = client.get("/api/prefs").json()
+    assert body["unavailable"] == {"index": "Needs pip install 'fused-render[index]'"}
+
+
+def test_update_supported_follows_start_rules(monkeypatch):
+    from fused_render import update
+    from fused_render.update import common, mac
+
+    monkeypatch.setattr("sys.platform", "win32")
+    assert update.supported() is False
+    monkeypatch.setattr("sys.platform", "darwin")
+    monkeypatch.setattr(common, "CRYPTO_AVAILABLE", True)
+    monkeypatch.setattr(mac, "bundle_path", lambda: "/Applications/X.app")
+    assert update.supported() is True
+    monkeypatch.setattr(common, "CRYPTO_AVAILABLE", False)
+    assert update.supported() is False
+    monkeypatch.setattr(common, "CRYPTO_AVAILABLE", True)
+    monkeypatch.setattr(mac, "bundle_path", lambda: None)
+    monkeypatch.delenv("FUSED_RENDER_DEV_UPDATE_MANAGER", raising=False)
+    from fused_render.update._manager import DEV_MANAGER_ENV
+    monkeypatch.delenv(DEV_MANAGER_ENV, raising=False)
+    assert update.supported() is False
+    monkeypatch.setenv(DEV_MANAGER_ENV, "1")
+    assert update.supported() is True

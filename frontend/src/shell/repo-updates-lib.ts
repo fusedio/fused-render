@@ -10,6 +10,7 @@
 // behind GET /api/git-upstream): it already reports only repos with a
 // non-zero behind count. What this file decides is presentation only: the
 // row's label, and — the one real decision here — which action is PRIMARY.
+import { canonFsPath, isDriveAbs } from "@platform/lib/path-url";
 import { urlForFsPath } from "@platform/lib/router";
 
 export interface RepoStatus {
@@ -43,9 +44,9 @@ export interface RepoRow {
   primaryAction: RepoAction;
 }
 
-/** The repo's own last path segment. */
+/** The repo's own last path segment, forward-slash or backslash either way. */
 export function repoName(root: string): string {
-  const norm = (root || "").replace(/\/+$/, "");
+  const norm = canonFsPath(root || "").replace(/\/+$/, "");
   const i = norm.lastIndexOf("/");
   return i === -1 ? norm : norm.slice(i + 1);
 }
@@ -323,7 +324,11 @@ export function syncFailureActions(reason: string): SyncFailureAction[] {
 /** Is `appPath` (the window's entry file or app folder) the repo root or below it? */
 export function appPathInRepo(appPath: string | null, root: string): boolean {
   if (!appPath) return false;
-  const norm = (p: string) => p.replace(/\/+$/, "");
+  // Drive paths are case-insensitive (NTFS); POSIX stays exact.
+  const norm = (p: string) => {
+    const c = canonFsPath(p);
+    return (isDriveAbs(c) ? c.toLowerCase() : c).replace(/\/+$/, "");
+  };
   const a = norm(appPath);
   const r = norm(root);
   return a === r || a.startsWith(r + "/");

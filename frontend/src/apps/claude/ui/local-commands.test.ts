@@ -71,6 +71,17 @@ describe("/model argument", () => {
     expect("refuse" in bad && bad.refuse).toContain("gpt-6-luna, gpt-6.1-sol, gpt-5.6-terra, gpt-5.6-luna, or a full model id");
   });
 
+  test("Gemini's shortlist and its own full ids, and no effort at all (GEMINI D7)", () => {
+    expect(localModelArg("gemini-2.5-pro", "gemini")).toBe("gemini-2.5-pro");
+    expect(localModelArg("Gemini 2.5 Flash", "gemini")).toBe("gemini-2.5-flash");
+    expect(localModelArg("gemini-9-unknown", "gemini")).toBe("gemini-9-unknown");
+    expect(localModelArg("gemini 2", "gemini")).toBe("");
+    expect(localEffortArg("high", "gemini")).toBe("");
+    const at = (text: string) => planLocalCommand(classifyCommand(text)!, { worktreeReady: true, backend: "gemini" });
+    const wt = at("/worktree feat");
+    expect("refuse" in wt && wt.refuse).toBe("Gemini has no worktrees");
+  });
+
   test("Codex has no worktrees and no background tasks (§7)", () => {
     const at = (text: string) => planLocalCommand(classifyCommand(text)!, { worktreeReady: true, backend: "codex" });
     const wt = at("/worktree feat");

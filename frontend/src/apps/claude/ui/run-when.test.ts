@@ -2,7 +2,7 @@
 import { describe, expect, test } from "bun:test";
 
 import type { Segment, ToolSegment } from "../protocol/types";
-import { chipHint, chipWhen, runSpan, runWhenWords, spanWords } from "./run-when";
+import { chipHint, chipWhen, runSpan, runWhenWords, spanWords, turnWorkedWords } from "./run-when";
 
 const tool = (id: string, ts?: number, ended?: number): ToolSegment => ({
   kind: "tool",
@@ -78,5 +78,62 @@ describe("the chip's lane stamp and its hover (Akshil, 2026-10-06)", () => {
     expect(chipHint({ ts: T0, status: "running" })).toMatch(/ · still running$/);
     expect(chipHint({ ts: T0, status: "ok" })).toMatch(/\d\d:\d\d:\d\d$/);
     expect(chipHint({ status: "ok" })).toBeNull();
+  });
+});
+
+describe("turnWorkedWords", () => {
+  test("measures from the user turn to the latest segment clock", () => {
+    const segs = [think(T0 + 5), tool("a", T0 + 6, T0 + 130)];
+    expect(turnWorkedWords(T0, segs)).toBe("Worked for 2m 10s");
+  });
+  test("falls back to the first segment stamp when there is no user ts", () => {
+    expect(turnWorkedWords(undefined, [think(T0), tool("a", T0 + 1, T0 + 12)])).toBe("Worked for 12s");
+  });
+  test("a live turn with no segment clocks uses the client end stamp", () => {
+    expect(turnWorkedWords(T0, [{ kind: "text", text: "hi" }], T0 + 65)).toBe("Worked for 1m 5s");
+  });
+  test("segment clocks win over the client end stamp", () => {
+    expect(turnWorkedWords(T0, [tool("a", T0 + 1, T0 + 30)], T0 + 999)).toBe("Worked for 30s");
+  });
+  test("a wait on the user is split out of the span", () => {
+    const segs = [{ ...tool("a", T0 + 6, T0 + 2530), waited: [T0 + 10, T0 + 2410] as [number, number] }];
+    expect(turnWorkedWords(T0, segs)).toBe("Worked for 2m 10s · waited 40m on you");
+  });
+  test("a wait longer than the span is clamped to it", () => {
+    const segs = [{ ...tool("a", T0 + 1, T0 + 30), waited: [T0 - 500, T0 + 999] as [number, number] }];
+    expect(turnWorkedWords(T0, segs)).toBe("Worked for 0s · waited 30s on you");
+  });
+  test("a nested child's wait counts", () => {
+    const child = { ...tool("c", T0 + 2, T0 + 100), waited: [T0 + 2, T0 + 62] as [number, number] };
+    const segs = [{ ...tool("a", T0 + 1, T0 + 130), children: [child] }];
+    expect(turnWorkedWords(T0, segs)).toBe("Worked for 1m 10s · waited 1m on you");
+  });
+  test("two overlapping waits count their shared time once", () => {
+    const segs = [
+      { ...tool("a", T0 + 1, T0 + 50), waited: [T0 + 10, T0 + 40] as [number, number] },
+      { ...tool("b", T0 + 2, T0 + 50), waited: [T0 + 15, T0 + 40] as [number, number] },
+    ];
+    expect(turnWorkedWords(T0, segs)).toBe("Worked for 20s · waited 30s on you");
+  });
+  test("disjoint waits sum", () => {
+    const segs = [
+      { ...tool("a", T0 + 1, T0 + 50), waited: [T0 + 5, T0 + 15] as [number, number] },
+      { ...tool("b", T0 + 2, T0 + 50), waited: [T0 + 30, T0 + 40] as [number, number] },
+    ];
+    expect(turnWorkedWords(T0, segs)).toBe("Worked for 30s · waited 20s on you");
+  });
+  test("a wait partly outside the span is clipped", () => {
+    const segs = [{ ...tool("a", T0 + 1, T0 + 50), waited: [T0 + 40, T0 + 90] as [number, number] }];
+    expect(turnWorkedWords(T0, segs)).toBe("Worked for 40s · waited 10s on you");
+  });
+  test("a sub-second wait is not shown", () => {
+    const segs = [{ ...tool("a", T0 + 1, T0 + 30), waited: [T0 + 5, T0 + 5.4] as [number, number] }];
+    expect(turnWorkedWords(T0, segs)).toBe("Worked for 30s");
+  });
+  test("null when nothing can be computed or under a second", () => {
+    expect(turnWorkedWords(undefined, [{ kind: "text", text: "hi" }])).toBeNull();
+    expect(turnWorkedWords(T0, [])).toBeNull();
+    expect(turnWorkedWords(T0, [think(T0)])).toBeNull();
+    expect(turnWorkedWords(T0, [], T0 + 0.5)).toBeNull();
   });
 });

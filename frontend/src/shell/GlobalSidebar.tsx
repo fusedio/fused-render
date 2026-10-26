@@ -14,7 +14,7 @@ import { useEffect, useRef, useState } from "react";
 import { ListTodo, Store, Terminal } from "lucide-react";
 import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
-import type { Config } from "@platform/lib/api";
+import { botsAvailable, type Config } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { isBrowserHandledClick } from "@platform/lib/appEntry";
 import { availableTours, startTour } from "@platform/lib/tours";
@@ -668,7 +668,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // news in the list beside it is still unread. The dot therefore says exactly
   // what the chip says, and both clear when the bot is opened (markSeen), not
   // when the page is.
-  const botsPulse = useBotsPulse();
+  // No Bots row, and no poll behind it, where the server runs no bots (Windows).
+  const botsOn = botsAvailable(config);
+  const botsPulse = useBotsPulse(botsOn);
   const botsTip = botsPulseTitle(botsPulse);
   const botsDot = botsPulse.waiting > 0 ? (
     <span className="sidebar-rail-dot is-attention" title={botsTip} />
@@ -911,14 +913,18 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     ...(bot
       ? []
       : [{ key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive }]),
-    {
-      key: "bots",
-      label: botsTip ? `Bots — ${botsTip}` : "Bots",
-      icon: BOTS_ICON,
-      href: "/bots",
-      active: botsActive,
-      badge: botsDot,
-    },
+    ...(botsOn
+      ? [
+          {
+            key: "bots",
+            label: botsTip ? `Bots — ${botsTip}` : "Bots",
+            icon: BOTS_ICON,
+            href: "/bots",
+            active: botsActive,
+            badge: botsDot,
+          },
+        ]
+      : []),
     {
       key: "tasks",
       label: tasksTip ? `Tasks — ${tasksTip}` : "Tasks",
@@ -1013,18 +1019,20 @@ export default function GlobalSidebar({ config }: { config: Config }) {
               active={homeActive}
             />
           )}
-          <NavItem
-            href="/bots"
-            id="bots-link"
-            label="Bots"
-            icon={BOTS_ICON}
-            active={botsActive}
-            extra={botsDot}
-            trailing={botsTrailing}
-            // Errors have no dot and no words, so the row itself carries the
-            // sentence; the rail says it through its label either way.
-            title={botsTip}
-          />
+          {botsOn && (
+            <NavItem
+              href="/bots"
+              id="bots-link"
+              label="Bots"
+              icon={BOTS_ICON}
+              active={botsActive}
+              extra={botsDot}
+              trailing={botsTrailing}
+              // Errors have no dot and no words, so the row itself carries the
+              // sentence; the rail says it through its label either way.
+              title={botsTip}
+            />
+          )}
           {/* Tasks took Inbox's place as well as its job: the two pages showed
               the same pile of work from two ends, and the one that survives is
               the one that can say when the work runs. Inbox is deleted. */}

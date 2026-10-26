@@ -1596,6 +1596,8 @@ def _ask(bot, sess: Turn, args: dict):
 # The description carried by an option the USER typed (claude_agent/permission_server.py TYPED_OPTION_NOTE): the
 # model reads its own input back and must know which entry it did not author.
 TYPED_OPTION_NOTE = "Written by the user in the chat, not offered by you."
+# Mirrors permission_server.MAX_OPTIONS (the AskUserQuestion schema's options maxItems).
+MAX_OPTIONS = 4
 
 
 def _ask_builtin(bot, sess: Turn, args: dict):
@@ -1649,7 +1651,9 @@ def _ask_builtin(bot, sess: Turn, args: dict):
             typed = [] if value in labels else [value]
         answers[text] = value
         if typed:
-            options = options + [{"label": t, "description": TYPED_OPTION_NOTE} for t in typed]
+            # Only while the list stays within the CLI's cap: past it the CLI rejects the whole answer.
+            room = max(0, MAX_OPTIONS - len(options))
+            options = options + [{"label": t, "description": TYPED_OPTION_NOTE} for t in typed[:room]]
             out_qs.append(dict(q, options=options))
         else:
             out_qs.append(q)

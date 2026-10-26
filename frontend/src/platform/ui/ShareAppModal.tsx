@@ -28,9 +28,13 @@
 //         sent stops working.
 //       snapshot (request.link false) → the card stands down with one
 //         sentence; links always publish the live app.
-//     PUBLIC ONLY, by decision — there is no visibility control here. The
+//     No visibility control here: every publish asks for public, and the
 //     one line under the link says so, because "anyone with the link" is
-//     the fact a reader needs before pasting it somewhere.
+//     the fact a reader needs before pasting it somewhere. A deployment
+//     that forbids public canvases makes the shim fall back to a team
+//     canvas with a 30-minute session token (`mode: temporary`,
+//     `public_refused`); the badge then says the link expires and the
+//     note under it says why — same Clock badge as ShareFileModal.
 //
 //   • App file: the same `.fused` saved to Downloads (api.saveAppFileToDisk).
 //     The result lands INLINE in the card — the path, Reveal folder, Open
@@ -62,6 +66,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   Check,
+  Clock,
   Copy,
   ExternalLink,
   FolderOpen,
@@ -543,23 +548,23 @@ export function ShareAppModal({
           <Input
             type="text"
             readOnly
-            value={url ?? "No public link yet — press Update to publish one."}
+            value={url ?? "No link yet — press Update to publish one."}
             onFocus={(e) => e.currentTarget.select()}
-            aria-label="Public link"
+            aria-label={shared.mode === "temporary" ? "Team link" : "Public link"}
             className="h-8 flex-1 truncate bg-muted/40 font-mono text-[12.5px] text-foreground"
           />
           <Button
             size="icon-sm"
             variant="outline"
             onClick={copy}
-            disabled={!url}
+            disabled={!url || shared.expired}
             title={copied ? "Copied" : "Copy link"}
             aria-label={copied ? "Copied" : "Copy link"}
             className={copied ? "text-foreground" : "text-muted-foreground hover:text-foreground"}
           >
             {copied ? <Check /> : <Copy />}
           </Button>
-          {url && (
+          {url && !shared.expired && (
             <Button
               size="icon-sm"
               variant="outline"
@@ -574,7 +579,15 @@ export function ShareAppModal({
         <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
             <Badge variant="secondary" className="gap-1">
-              <Globe /> Anyone with the link
+              {shared.mode === "temporary" ? (
+                <>
+                  <Clock /> {shared.expired ? "Expired — Update for a fresh link" : "Expires in 30 minutes"}
+                </>
+              ) : (
+                <>
+                  <Globe /> Anyone with the link
+                </>
+              )}
             </Badge>
             {shared.adopted ? (
               <span>Found on your account — Update publishes this folder.</span>
@@ -611,6 +624,12 @@ export function ShareAppModal({
             </Button>
           </div>
         </div>
+        {shared.public_refused && (
+          <p className="m-0 text-[13px] leading-5 text-muted-foreground">
+            Public links are off for this Fused environment, so this one is shared with your
+            team and expires after 30 minutes. Update mints a fresh link.
+          </p>
+        )}
         {busy === "update" && (
           <p className="m-0 text-[13px] leading-5 text-muted-foreground">
             Exporting and uploading — this can take up to a minute.
@@ -622,8 +641,8 @@ export function ShareAppModal({
 
   const linkTitle = (
     <>
-      Public link
-      {linkEligible && shared?.url && !linkBusy && (
+      {shared?.mode === "temporary" ? "Team link" : "Public link"}
+      {linkEligible && shared?.url && !shared.expired && !linkBusy && (
         <Badge variant="outline" className="h-4.5 px-1.5 text-[10.5px] font-medium">
           Live
         </Badge>
@@ -632,7 +651,9 @@ export function ShareAppModal({
   );
   const linkDescription = !linkEligible
     ? "Links always publish the live app. Pick Live in the version picker to share one."
-    : shared
+    : shared?.mode === "temporary"
+      ? "A page with the app's README and a download, for your team. Update replaces what's behind the link and renews it."
+      : shared
       ? "A page on udf.ai with the app's README and a download. Update replaces what's behind the link."
       : "Publish to your Fused account as a public page anyone can open.";
 

@@ -18,6 +18,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
+import fused_render.canvas_sync_state as canvas_sync_state_mod
 import fused_render.canvases as canvases_mod
 import fused_render.fusedcli as fusedcli_mod
 from fused_render.server import create_app
@@ -141,7 +142,7 @@ def main():
             sys.stderr.write("error: node 'x' has no source file\n")
             sys.exit(1)
         return
-    if plain[:2] == ["canvas", "create"]:
+    if plain[:2] in (["canvas", "create"], ["canvas", "delete"]):
         return
     if plain[:1] == ["logout"]:
         os.remove(os.environ.get("FUSED_STUB_LOGOUT_FILE")
@@ -583,6 +584,156 @@ def test_logout_clears_credentials_and_stops_watchers(harness):
     assert not harness.creds.exists()
     assert manager.stop_event.is_set()
     assert canvases_mod._syncs == {}
+
+
+def test_delete_canvas_stops_sync_runs_cli_and_removes_clone(harness):
+    harness.log_in()
+    harness.client.post("/api/canvases/clone", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    manager = canvases_mod._syncs.get((ENV, "alpha"))
+    assert manager is not None
+    sync = harness.root / ".sync"
+    (sync / "push" / "alpha").mkdir(parents=True)
+    (sync / "trash" / "alpha").mkdir(parents=True)
+    (sync / "alpha.json").write_text("{}", encoding="utf-8")
+    res = harness.client.post("/api/canvases/delete", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    assert res.status_code == 200, res.text
+    assert res.json() == {"ok": True, "name": "alpha", "env": ENV, "removed_local": True}
+    assert ["workbench", "canvas", "delete", "alpha"] in harness.calls()
+    assert manager.stop_event.is_set()
+    assert (ENV, "alpha") not in canvases_mod._syncs
+    assert not (harness.root / "alpha").exists()
+    for leftover in ("push/alpha", "trash/alpha", "alpha.json", "alpha.lock"):
+        assert not (sync / leftover).exists(), leftover
+    # The root itself, and the other clones' state, are untouched.
+    assert harness.root.is_dir()
+
+
+def test_delete_canvas_holds_sync_start_off_mid_delete(harness, monkeypatch):
+    # Stopping the manager wakes the page, which reads "no watcher" and asks
+    # sync/start to heal — while canvas.toml still exists. Mid-delete that
+    # must be refused, or a fresh watcher (and lock) runs under the rmtree.
+    harness.log_in()
+    harness.client.post("/api/canvases/clone", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    assert (ENV, "alpha") in canvases_mod._syncs
+    seen: list[int] = []
+    real_cli = canvases_mod._run_cli
+
+    def cli_with_heal(args, timeout, env):
+        if args[:3] == ["workbench", "canvas", "delete"]:
+            res = harness.client.post("/api/canvases/sync/start",
+                                      json={"env": ENV, "name": "alpha"}, headers=GUARD)
+            seen.append(res.status_code)
+            assert res.json().get("code") == "deleting"
+            # And the clone's writer lock is this request's for the whole
+            # delete: the stopped manager released nothing, another process
+            # would be refused.
+            held = canvas_sync_state_mod.read_lock(str(harness.root / ".sync" / "alpha.lock"))
+            assert held is not None and held["pid"] == os.getpid()
+        return real_cli(args, timeout, env)
+
+    monkeypatch.setattr(canvases_mod, "_run_cli", cli_with_heal)
+    res = harness.client.post("/api/canvases/delete", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    assert res.status_code == 200, res.text
+    assert seen == [409]
+    assert (ENV, "alpha") not in canvases_mod._syncs
+    assert not (harness.root / "alpha").exists()
+    assert not (harness.root / ".sync" / "alpha.lock").exists()
+    # The hold lifts with the delete: a clone of the same name syncs again.
+    harness.client.post("/api/canvases/clone", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    res = harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    assert res.status_code == 200, res.text
+
+
+def test_delete_canvas_cli_failure_keeps_clone(harness, monkeypatch):
+    harness.log_in()
+    harness.client.post("/api/canvases/clone", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+
+    def failing_cli(args, timeout, env):
+        if args[:3] == ["workbench", "canvas", "delete"]:
+            return None, canvases_mod._error("server said no", 502)
+        return real_cli(args, timeout, env)
+
+    real_cli = canvases_mod._run_cli
+    monkeypatch.setattr(canvases_mod, "_run_cli", failing_cli)
+    res = harness.client.post("/api/canvases/delete", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    assert res.status_code == 502
+    assert (harness.root / "alpha" / "canvas.toml").is_file()
+
+
+def test_forget_file_sessions_erases_the_files_chats_and_skips_running_ones(
+        tmp_path, monkeypatch):
+    """A node deleted in the canvas takes the chats filed on its file: every
+    non-running session `_cli_sessions` lists for the file is erased the way
+    the erase route does it (`erase_task`), its transcript backed up first;
+    a running one is left alone and reported."""
+    from fused_render.server.routers import tasks as tasks_router
+
+    transcript = tmp_path / "s1.jsonl"
+    transcript.write_text("{}\n")
+    rows = [
+        {"id": "s1", "running": False, "backend": "claude", "path": str(transcript)},
+        {"id": "s2", "running": True, "backend": "claude", "path": str(tmp_path / "s2.jsonl")},
+    ]
+
+    class Agent:
+        calls = []
+
+        def _cli_sessions(self, file, limit=30):
+            self.calls.append((file, limit))
+            return rows
+
+    agent = Agent()
+    monkeypatch.setattr(canvases_mod, "_agent_module", lambda: agent)
+    monkeypatch.setattr(tasks_router, "_collect", lambda: {"s1": {"key": "s1", "session_id": "s1"}})
+    erased = []
+    monkeypatch.setattr(tasks_router, "erase_task", lambda key, task: erased.append((key, task["key"])))
+    backups = []
+    out = canvases_mod.forget_file_sessions(
+        ["/clone/udf_2.py"], backup=lambda rel, data: backups.append((rel, data)))
+    assert agent.calls == [("/clone/udf_2.py", None)]
+    assert erased == [("s1", "s1")]
+    assert out["erased"] == ["s1"] and out["skipped"] == ["s2"]
+    assert backups == [(os.path.join("_sessions", "claude", "s1.jsonl"), b"{}\n")]
+
+
+def test_forget_file_sessions_fallback_refusal_is_a_skip(tmp_path, monkeypatch):
+    """A transcript the Tasks page does not list goes through
+    `_erase_session_files` directly; a file that would not go leaves the
+    session's state alone and reports it skipped, not erased."""
+    from fused_render.server.routers import tasks as tasks_router
+
+    class Agent:
+        def _cli_sessions(self, file, limit=30):
+            return [{"id": "s9", "running": False, "backend": "claude",
+                     "path": str(tmp_path / "s9.jsonl")}]
+
+    monkeypatch.setattr(canvases_mod, "_agent_module", lambda: Agent())
+    monkeypatch.setattr(tasks_router, "_collect", lambda: {})
+    monkeypatch.setattr(tasks_router, "_erase_session_files",
+                        lambda sid, path: (0, False, 0, 1))
+    forgotten = []
+    monkeypatch.setattr(tasks_router.sessions, "forget_triage", lambda sid: forgotten.append(sid))
+    out = canvases_mod.forget_file_sessions(["/clone/udf_9.py"])
+    assert out["erased"] == [] and out["skipped"] == ["s9"]
+    assert forgotten == []
+
+
+def test_forget_file_sessions_without_an_agent_module_is_a_no_op(monkeypatch):
+    monkeypatch.setattr(canvases_mod, "_agent_module", lambda: None)
+    assert canvases_mod.forget_file_sessions(["/clone/udf_2.py"]) == {
+        "erased": [], "skipped": [], "files": 1}
+
+
+def test_delete_canvas_rejects_bad_names(harness):
+    harness.log_in()
+    harness.client.post("/api/canvases/clone", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    for bad in ("a-b", "../x", "", ".", "alpha/.."):
+        res = harness.client.post("/api/canvases/delete", json={"env": ENV, "name": bad}, headers=GUARD)
+        assert res.status_code == 400, bad
+    assert not any(c[:3] == ["workbench", "canvas", "delete"] for c in harness.calls())
+    assert (harness.root / "alpha" / "canvas.toml").is_file()
 
 
 def test_logout_failure_keeps_sync_alive_and_preserves_pending_edit(harness, monkeypatch):
@@ -1648,6 +1799,91 @@ def test_sync_merges_remote_changes_while_dirty(harness, tmp_path, monkeypatch, 
     _stop_sync("alpha")
 
 
+def test_stamp_only_move_with_unchanged_files_is_adopted_not_stale(
+    harness, tmp_path, monkeypatch, fake_agent
+):
+    # The workbench's share settings (access scope / passcode) bump the
+    # collection stamp and change no file. The server re-serializes
+    # canvas.toml, so its bytes differ while it parses the same: that is
+    # still "nothing to pull" — the probe becomes the baseline, no chip.
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)
+    shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    assert _wait_for(lambda: _manager()._remote is not None)
+
+    with _staged():
+        shims.set_remote_files({**_BASE_FILES, "canvas.toml": "type = 'canvas'\n"})
+        shims.set_manifest("t2")
+
+    assert _wait_for(lambda: _manager()._remote["last_updated"] == "t2"), _watcher_diag()
+    assert _sync_view("alpha")["server_stale"] is None
+    # _save_base runs just after _rotate_remote: wait for the file, too.
+    assert _wait_for(lambda: json.loads(
+        (harness.root / ".sync" / "alpha.json").read_text())["remote"]["last_updated"] == "t2")
+    _stop_sync("alpha")
+
+
+def test_stamp_only_move_is_adopted_over_an_unpushed_layout_edit(
+    harness, tmp_path, monkeypatch, fake_agent
+):
+    # The local canvas.toml was edited (not pushed yet) when the share
+    # settings bumped the stamp: the server's toml is checked against the
+    # sync point's rows instead of the edited local file — still adopted.
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)
+    shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    assert _wait_for(lambda: _manager()._remote is not None)
+    m = _manager()
+    with m._op_lock:
+        m._base_toml = canvases_mod.canvas_snapshot.rows_of_doc({"type": "canvas"})
+        m._save_base()
+
+    with _staged():
+        (harness.root / "alpha" / "canvas.toml").write_text(
+            'type = "canvas"\n\n[canvas]\nx = 1\n', encoding="utf-8")
+        shims.set_remote_files({**_BASE_FILES, "canvas.toml": "type = 'canvas'\n"})
+        shims.set_manifest("t2")
+
+    assert _wait_for(lambda: _manager()._remote["last_updated"] == "t2"), _watcher_diag()
+    assert _sync_view("alpha")["server_stale"] is None
+    _stop_sync("alpha")
+
+
+def test_stamp_only_move_with_a_layout_change_still_reads_stale(
+    harness, tmp_path, monkeypatch, fake_agent
+):
+    # Same stamp-only manifest move, but canvas.toml really changed (a layout
+    # save): the chip goes up as before, and the bundle is downloaded once
+    # for that stamp, not on every poll.
+    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
+    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 0.1)
+    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)
+    shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    assert _wait_for(lambda: _manager()._remote is not None)
+    fetches = []
+    real_fetch = canvases_mod._SyncManager._fetch_bundle
+    monkeypatch.setattr(
+        canvases_mod._SyncManager, "_fetch_bundle",
+        lambda self, probe: fetches.append(probe.get("last_updated")) or real_fetch(self, probe),
+    )
+
+    with _staged():
+        shims.set_remote_files({**_BASE_FILES, "canvas.toml": 'type = "canvas"\nx = 1\n'})
+        shims.set_manifest("t2")
+
+    status = _wait_sync(lambda s: s["server_stale"] is not None)
+    assert status["server_stale"] is not None, f"{status} | {_watcher_diag()}"
+    time.sleep(0.5)  # several more polls
+    assert fetches == ["t2"], fetches
+    assert _manager()._remote["last_updated"] == "t1"
+    _stop_sync("alpha")
+
+
 def test_sync_merge_keeps_local_delete(harness, tmp_path, monkeypatch, fake_agent):
     # Local deleted b.py; the bundle still carries it. The merge must NOT
     # recreate it — the push propagates the delete.
@@ -1752,9 +1988,9 @@ def test_sync_shim_poll_pulls_clean_via_cli_force(harness, tmp_path, monkeypatch
     harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
 
     assert _wait_for(lambda: getattr(_manager(), "_remote", None) is not None)
-    harness.set_scenario(
-        {"pull_files": {**_BASE_FILES, "remote_udf.py": "print('from workbench')\n"}}
-    )
+    remote = {**_BASE_FILES, "remote_udf.py": "print('from workbench')\n"}
+    harness.set_scenario({"pull_files": remote})
+    shims.set_remote_files(remote)  # a stamp move over unchanged files is adopted
     shims.set_manifest("t2")
 
     body = _pull_when_stale(harness)
@@ -1803,6 +2039,7 @@ def test_sync_shim_force_pull_rechecks_before_adopting_clean(harness, tmp_path, 
         "pull_files": {**_BASE_FILES, "remote_udf.py": "print('from workbench')\n"},
         "pull_dry": "Would write 1 file (local differs from the canvas).",
     })
+    shims.set_remote_files({**_BASE_FILES, "remote_udf.py": "print('from workbench')\n"})
     shims.set_manifest("t2")
 
     body = _pull_when_stale(harness)
@@ -2784,6 +3021,7 @@ def test_sync_state_reports_pulling_during_a_clean_pull(harness, tmp_path, monke
         "pull_files": {**_BASE_FILES, "remote_udf.py": "print('x')\n"},
         "pull_delay": 0.6,
     })
+    shims.set_remote_files({**_BASE_FILES, "remote_udf.py": "print('x')\n"})
     shims.set_manifest("t2")
     assert _wait_sync(lambda s: s["server_stale"] is not None)["server_stale"] is not None
     monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 30.0)

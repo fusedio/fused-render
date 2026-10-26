@@ -65,13 +65,18 @@ def file_lock(path, timeout=600):
 
 
 def pid_alive(pid):
-    # os.kill(pid, 0) is the no-op liveness check.
+    # platutil.probe_pid, never a bare os.kill(pid, 0): on Windows signal 0
+    # is CTRL_C_EVENT and Ctrl+C's the whole console, server included.
     try:
         pid = int(pid)
     except (TypeError, ValueError):
         return False
+    if pid <= 0:
+        return False
     try:
-        os.kill(pid, 0)
+        _platutil.probe_pid(pid)
+        return True
+    except PermissionError:
         return True
     except OSError:
         return False

@@ -11,6 +11,7 @@ The user's own skills live in the dirs the three CLIs read:
   ~/.agents/skills            Copilot and Codex
   ~/.copilot/skills           Copilot   (COPILOT_HOME moves it)
   ~/.codex/skills             Codex     (CODEX_HOME moves it)
+  ~/.gemini/skills            Gemini    (GEMINI_CLI_HOME moves it)
 
 A skill reachable from several of them by symlink is ONE row whose `readers`
 are the union. Dot-dirs (Codex's bundled .system) are not the user's.
@@ -28,7 +29,7 @@ installed_plugins.json's installPath, never a path from the caller.
 main(action=...):
   list -> {skills: [{slug, name, description, source, plugin?, marketplace?,
                      linked, path, location, paths, readers}]}
-          readers: ["claude" | "copilot" | "codex"]; paths: every entry (copy
+          readers: ["claude" | "copilot" | "codex" | "gemini"]; paths: every entry (copy
           and link) that is this skill
   available -> {skills: [{slug, name, description, plugin, pluginDescription,
                           marketplace, path, pluginInstalled, added}], skipped}
@@ -50,14 +51,14 @@ import os
 import re
 import shutil
 
-from fused_render import codex_health, copilot_health
+from fused_render import codex_health, copilot_health, gemini_health
 from fused_render.shell import prefs
 
 from . import lib, marketplaces, plugins
 
 SKILLS_DIR = os.path.join(lib.CLAUDE_DIR, "skills")
 
-_CLIS = ("claude", "copilot", "codex")
+_CLIS = ("claude", "copilot", "codex", "gemini")
 
 
 # A plugin ships its skills across at most a few dozen dirs; the walk budget
@@ -74,9 +75,12 @@ def _user_dirs() -> list:
     that read it, in the order a row's readers are listed."""
     dirs = [
         (SKILLS_DIR, ["claude"]),
-        (_agents_dir(), ["copilot", "codex"]),
+        # Gemini too: `discoverSkills` loads `~/.gemini/skills` AND the
+        # shared `~/.agents/skills` (0.65.0 source, `getUserAgentSkillsDir`).
+        (_agents_dir(), ["copilot", "codex", "gemini"]),
         (os.path.join(copilot_health.config_dir(), "skills"), ["copilot"]),
         (os.path.join(codex_health.config_dir(), "skills"), ["codex"]),
+        (os.path.join(gemini_health.config_dir(), "skills"), ["gemini"]),
     ]
     merged: dict = {}
     for path, readers in dirs:
@@ -290,7 +294,7 @@ def _placement(slug: str) -> tuple:
     """(home, link): where the one copy of a new skill lives, and the link
     that lets Claude read it from there (None when none is needed)."""
     on = _enabled_clis()
-    if "copilot" in on or "codex" in on:
+    if "copilot" in on or "codex" in on or "gemini" in on:
         return (lib.safe_subdir(_agents_dir(), slug),
                 lib.safe_subdir(SKILLS_DIR, slug) if "claude" in on else None)
     return lib.safe_subdir(SKILLS_DIR, slug), None

@@ -144,6 +144,7 @@ export function sanitizeUiLayout(raw: unknown): UiLayoutDoc {
     const paths = [...new Set(src.recentPaths.filter(isKey))];
     out.recentPaths = paths.slice(0, RECENT_PATHS_MAX);
   }
+  if (typeof src.rememberLastFolder === "boolean") out.rememberLastFolder = src.rememberLastFolder;
   return out;
 }
 
