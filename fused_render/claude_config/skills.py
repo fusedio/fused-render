@@ -49,6 +49,17 @@ main(action=...):
   remote_add -> {ok, slug, path}  params: source, skill_id  (downloads that skill
             dir from GitHub and places it like add; the file paths come from the
             repo's tree, never from the caller)
+  draft_check -> {ok, root, name, files}  params: path  (a folder holding SKILL.md or
+            the SKILL.md itself, `~` allowed; {ok: False, error} when it is neither)
+  draft_start -> {ok, staging}  params: [path]  (a fresh dir under the state dir's
+            skill-drafts/ for Claude to write one skill into; `path` is copied in
+            first as the starting point)
+  draft_status -> {ok, files, text, name, description, problems}  params: staging
+  draft_save -> {ok, slug, path, key}  params: staging, placement ("all" | "claude")
+            (validates, places like create, then removes the staging dir; a
+            failed validation is {ok: False, error, problems} and keeps it)
+  draft_discard -> {ok}  params: staging
+  draft_prompt -> {ok, prompt}  params: text [, adapting]  (the task prompt)
   open -> {ok}   params: slug [, source, plugin, marketplace, location]  (reveal folder)
   create -> {ok, slug}  params: slug  (scaffolds SKILL.md where add would put it)
   read   -> {ok, text, files}  params: slug, path (default SKILL.md) [, source, plugin, marketplace, location]
@@ -60,13 +71,14 @@ main(action=...):
 import json
 import os
 import re
+import secrets
 import shutil
 import time
 import urllib.parse
 import urllib.request
 
 from fused_render import codex_health, copilot_health, gemini_health
-from fused_render.shell import prefs
+from fused_render.shell import prefs, storage
 
 from . import lib, marketplaces, plugins
 
@@ -304,9 +316,12 @@ def _enabled_clis() -> list:
     return [c for c in _CLIS if prefs.backend_enabled(c)]
 
 
-def _placement(slug: str) -> tuple:
+def _placement(slug: str, placement: str = "all") -> tuple:
     """(home, link): where the one copy of a new skill lives, and the link
-    that lets Claude read it from there (None when none is needed)."""
+    that lets Claude read it from there (None when none is needed).
+    placement "claude" skips the shared dir: ~/.claude/skills alone."""
+    if placement == "claude":
+        return lib.safe_subdir(SKILLS_DIR, slug), None
     on = _enabled_clis()
     if "copilot" in on or "codex" in on or "gemini" in on:
         return (lib.safe_subdir(_agents_dir(), slug),
@@ -336,10 +351,10 @@ def _copy_skill(src: str, dst: str) -> None:
             shutil.copy2(path, os.path.join(out, fn))
 
 
-def _place(slug: str, fill) -> dict:
+def _place(slug: str, fill, placement: str = "all") -> dict:
     """Create the skill `slug` where the enabled CLIs read it; `fill(dir)`
     writes its files into a fresh dir that is moved into place whole."""
-    home, link = _placement(slug)
+    home, link = _placement(slug, placement)
     if any(os.path.lexists(os.path.join(d, slug)) for d, _ in _user_dirs()):
         return {"ok": False, "error": f"skill {slug} already exists"}
     parent = os.path.dirname(home)
@@ -563,9 +578,154 @@ def _skill_file(root: str, path: str) -> str:
     return target
 
 
+# -- Draft with Claude: a staging dir the task writes one skill into ----------------
+
+_DRAFT_NAME_MAX = 64
+_DRAFT_DESC_MAX = 1024
+
+
+def _drafts_root() -> str:
+    return os.path.join(storage.home_dir(), "skill-drafts")
+
+
+def _staging_dir(arg: str, must_exist: bool = True) -> str:
+    """`arg` if it is a direct child of the drafts root (never a link, never
+    a path that merely normalises into one), else ValueError."""
+    root = os.path.normpath(_drafts_root())
+    if not arg or not os.path.isabs(arg) or os.path.normpath(arg) != arg \
+            or os.path.dirname(arg) != root or os.path.basename(arg).startswith("."):
+        raise ValueError("not a skill draft directory")
+    if os.path.islink(arg) or (must_exist and not os.path.isdir(arg)):
+        raise ValueError("not a skill draft directory")
+    return arg
+
+
+def _draft_files(root: str) -> list:
+    out = []
+    for dirpath, dirnames, names in os.walk(root):
+        top = os.path.normpath(dirpath) == os.path.normpath(root)
+        dirnames[:] = [d for d in dirnames
+                       if d not in _COPY_SKIP_DIRS and not os.path.islink(os.path.join(dirpath, d))
+                       and not (top and d == ".claude")]
+        out.extend(os.path.relpath(os.path.join(dirpath, n), root) for n in names
+                   if not os.path.islink(os.path.join(dirpath, n)))
+    return sorted(out)
+
+
+def _draft_check(path: str) -> dict:
+    path = os.path.expanduser((path or "").strip())
+    if not path:
+        return {"ok": False, "error": "enter the path of a skill folder or its SKILL.md"}
+    if os.path.isfile(path):
+        if os.path.basename(path) != "SKILL.md":
+            return {"ok": False, "error": "that file is not a SKILL.md"}
+        path = os.path.dirname(os.path.abspath(path))
+    if not os.path.isdir(path):
+        return {"ok": False, "error": f"{path} was not found"}
+    md = os.path.join(path, "SKILL.md")
+    if not os.path.isfile(md):
+        return {"ok": False, "error": "no SKILL.md in that folder"}
+    with open(md, encoding="utf-8", errors="replace") as f:
+        fm = lib.parse_frontmatter(f.read(4096))
+    return {"ok": True, "root": path, "name": fm.get("name") or os.path.basename(path),
+            "files": _draft_files(path)}
+
+
+def _draft_start(path: str) -> dict:
+    found = _draft_check(path) if (path or "").strip() else None
+    if found is not None and not found["ok"]:
+        return found
+    root = _drafts_root()
+    os.makedirs(root, exist_ok=True)
+    staging = os.path.join(root, f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}")
+    os.mkdir(staging)
+    if found:
+        try:
+            _copy_skill(found["root"], staging)
+            shutil.rmtree(os.path.join(staging, ".claude"), ignore_errors=True)
+        except BaseException:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+    return {"ok": True, "staging": staging}
+
+
+def _draft_problems(name: str, description: str) -> list:
+    problems = []
+    if not name:
+        problems.append("name is missing from the SKILL.md frontmatter")
+    elif not _SLUG_RE.match(name):
+        problems.append("name must be lowercase letters, digits, - and _, starting with a letter or digit")
+    if len(name) > _DRAFT_NAME_MAX:
+        problems.append(f"name must be at most {_DRAFT_NAME_MAX} characters")
+    if not description:
+        problems.append("description is missing from the SKILL.md frontmatter")
+    elif len(description) > _DRAFT_DESC_MAX:
+        problems.append(f"description must be at most {_DRAFT_DESC_MAX} characters")
+    if _SLUG_RE.match(name) and any(os.path.lexists(os.path.join(d, name)) for d, _ in _user_dirs()):
+        problems.append(f"a skill named {name} already exists; pick a different name")
+    return problems
+
+
+def _draft_status(staging: str) -> dict:
+    staging = _staging_dir(staging)
+    files = _draft_files(staging)
+    md = os.path.join(staging, "SKILL.md")
+    if not os.path.isfile(md) or os.path.islink(md):
+        return {"ok": True, "files": files, "text": None, "name": "", "description": "", "problems": []}
+    with open(md, encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    fm = lib.parse_frontmatter(text)
+    name, description = fm.get("name") or "", fm.get("description") or ""
+    return {"ok": True, "files": files, "text": text, "name": name, "description": description,
+            "problems": _draft_problems(name, description)}
+
+
+def _draft_save(staging: str, placement: str) -> dict:
+    if placement not in ("all", "claude"):
+        return {"ok": False, "error": f"unknown placement: {placement!r}"}
+    status = _draft_status(staging)
+    if status["text"] is None:
+        return {"ok": False, "error": "the draft has no SKILL.md yet", "problems": []}
+    if status["problems"]:
+        return {"ok": False, "error": "; ".join(status["problems"]), "problems": status["problems"]}
+
+    def fill(dst: str) -> None:
+        _copy_skill(staging, dst)
+        shutil.rmtree(os.path.join(dst, ".claude"), ignore_errors=True)
+
+    res = _place(status["name"], fill, placement)
+    if res["ok"]:
+        res["key"] = res["path"]
+        shutil.rmtree(staging, ignore_errors=True)
+    return res
+
+
+def draft_prompt(text: str, adapting: bool = False) -> str:
+    """The prompt of the Claude task that drafts a skill in its cwd."""
+    lines = [
+        "Write exactly one agent skill as a folder in the current directory, from this description:",
+        "",
+        text,
+        "",
+        "Rules:",
+        "- Put a SKILL.md at the top of the current directory. It starts with YAML frontmatter "
+        "holding `name` (lowercase letters, digits, - and _, at most 64 characters) and "
+        "`description` (at most 1024 characters, starting \"Use when\" and saying when the "
+        "skill applies, not what it does).",
+        "- After the frontmatter, write the body: the steps to follow, concrete and short.",
+        "- Add files under references/ or scripts/ only if the skill needs them.",
+        "- Write only inside the current directory. Do not read or change anything outside it.",
+    ]
+    if adapting:
+        lines += ["", "The current directory already contains a copy of an existing skill. "
+                  "Adapt that copy to the description rather than starting from nothing."]
+    return "\n".join(lines)
+
+
 def main(action: str = "list", slug: str = "", path: str = "", text: str = "",
          source: str = "user", plugin: str = "", marketplace: str = "",
-         location: str = "", query: str = "", skill_id: str = "") -> dict:
+         location: str = "", query: str = "", skill_id: str = "",
+         staging: str = "", placement: str = "all", adapting: bool = False) -> dict:
     if action == "list":
         return _list()
 
@@ -576,6 +736,26 @@ def main(action: str = "list", slug: str = "", path: str = "", text: str = "",
         return _available()
 
     try:
+        if action == "draft_check":
+            return _draft_check(path)
+
+        if action == "draft_start":
+            return _draft_start(path)
+
+        if action == "draft_status":
+            return _draft_status(staging)
+
+        if action == "draft_save":
+            with lib.config_lock():
+                return _draft_save(staging, placement)
+
+        if action == "draft_discard":
+            shutil.rmtree(_staging_dir(staging, must_exist=False), ignore_errors=True)
+            return {"ok": True}
+
+        if action == "draft_prompt":
+            return {"ok": True, "prompt": draft_prompt(text, adapting)}
+
         if action == "open":
             lib.reveal(_skill_dir(slug, source, plugin, marketplace, location))
             return {"ok": True}
