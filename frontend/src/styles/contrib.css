@@ -990,6 +990,15 @@
 }
 
 /* The explorer's Community sheet: the tab's body, in one scroll. */
+/* "Open app page" is a Button rendered as an <a>: the page's link colour
+   and underline must not leak onto it. */
+.contrib-modal-open,
+.contrib-modal-open:hover,
+.contrib-modal-open:focus-visible {
+  color: inherit;
+  text-decoration: none;
+}
+
 .contrib-modal-body {
   display: flex;
   flex-direction: column;

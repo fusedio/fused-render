@@ -49,6 +49,7 @@ export function ContribModal({ dir, slug, onClose }: { dir: string; slug: string
                 render={
                   <a
                     href={href}
+                    className="contrib-modal-open"
                     onClick={(e) => {
                       if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
                       e.preventDefault();
