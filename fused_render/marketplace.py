@@ -144,12 +144,12 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-#: The backend's base URL. STILL the old udf.ai marketplace API: the owner
-#: swaps this constant for the `fused_app_marketplace` canvas's share URL
-#: when they hand it over (§18.3); until then FUSED_RENDER_MARKETPLACE_API
-#: carries it. Rows the old API serves have no `repo`, so they browse but do
+#: The backend's base URL: the `fused_app_marketplace` canvas (§18.3),
+#: shared from Fused's `unstable` environment for now (the owner moves it to
+#: prod with the index repo later). FUSED_RENDER_MARKETPLACE_API overrides
+#: it, read per call. Rows without a `repo` (an older backend) browse but do
 #: not install (`plan_install` refuses with a sentence).
-API_BASE = "https://udf.ai/fc_1g1McHwVfq5S6gNL43FxBp"
+API_BASE = "https://unstable.udf.ai/fc_5OHf9uj6AGOKqLRH25kkFU"
 #: The Fused index repo the backend reads (§18.1 "Index"); the catalog
 #: footer links it. One of the only two places that know the name (the
 #: backend canvas holds the other); FUSED_RENDER_MARKETPLACE_INDEX overrides.
