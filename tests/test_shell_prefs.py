@@ -1967,6 +1967,24 @@ def test_update_unavailable_off_windows_names_pip(everything_present, monkeypatc
     assert "pip install -U fused-render" in reason
 
 
+def test_update_unavailable_with_check_only_pypi_manager(everything_present,
+                                                         monkeypatch):
+    from fused_render import update
+    from fused_render.update import pypi
+
+    from fused_render.update import linux, mac
+
+    inst = pypi.PyPIUpdateManager()
+    monkeypatch.setattr(pypi, "_manager", inst)
+    monkeypatch.setattr(mac, "manager", lambda: None)
+    monkeypatch.setattr(linux, "manager", lambda: None)
+    monkeypatch.setattr(update, "manager", lambda: pypi.manager())
+    monkeypatch.setattr(update, "supported", lambda: False)
+    assert update.manager() is inst
+    reason = prefs_mod._unavailable_features()["update"]
+    assert "pip install -U fused-render" in reason
+
+
 def test_update_is_available_when_supported_but_not_started(everything_present,
                                                             monkeypatch):
     from fused_render import update

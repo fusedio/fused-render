@@ -47,6 +47,12 @@ test("every update state has its own label, tone and progress", () => {
 test("the detail sentence names the version and carries one action", () => {
   expect(updatesDetail(st({ state: "available" }), "ready")?.action?.label).toBe("Download");
   expect(updatesDetail(st({ state: "available", check_only: true }), "ready")?.action).toBeNull();
+  expect(updatesDetail(st({ state: "available", check_only: true }), "ready")?.command).toBeUndefined();
+  expect(updatesDetail(st({ state: "available", check_only: true, latest_version: "0.6.99", manual_command: "uv tool upgrade fused-render" }), "ready")).toMatchObject({
+    detail: "v0.6.99 is out. Update from your terminal:",
+    command: "uv tool upgrade fused-render",
+    action: null,
+  });
   expect(updatesDetail(st({ state: "installed" }), "ready")?.action?.label).toBe("Restart now");
   expect(updatesDetail(st({ state: "error", error: "no network" }), "ready")).toMatchObject({ detail: "no network", error: true });
   expect(updatesDetail(st({ state: "idle" }), "ready")).toBeNull();
@@ -124,4 +130,12 @@ test("collapsed: no panel; a pending update keeps the Check button", () => {
   const pending = view(st({ state: "available" }), { collapsed: true });
   expect(texts(pending.toJSON()).join(" | ")).toContain("Update available");
   expect(pending.root.findAllByProps({ className: "upd-check-btn" }).length).toBe(1);
+});
+
+test("a check-only updater hides the auto-download toggle but still shows the manual command", () => {
+  const all = texts(
+    view(st({ state: "available", check_only: true, manual_command: "pip install -U fused-render" })).toJSON(),
+  ).join(" | ");
+  expect(all).not.toContain("Automatically download updates");
+  expect(all).toContain("pip install -U fused-render");
 });

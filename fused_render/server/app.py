@@ -1379,7 +1379,12 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     #   the sidebar's "Check for updates" row would have nowhere to try
     #   against. Each platform's own start() already contains this fallback,
     #   so there is nothing left for this hook to gate on.
-    # - the env var unset and nothing packaged: a no-op (None).
+    # - `fused-render serve` from a pip/uv/pipx install (cli.py calls
+    #   update.enable_cli_check() before create_app): start() falls through to
+    #   the check-only PyPI manager (update/pypi.py), which surfaces a newer
+    #   release plus the upgrade command. The flag lives in the CLI, not here,
+    #   so create_app() in tests never reaches the network.
+    # - the env var unset, nothing packaged, not the CLI: a no-op (None).
     # Last, and off the request path: the manager's first manifest fetch runs
     # on its own thread.
     # Kept as `_startup_update_dev_manager` (not renamed to match the comment

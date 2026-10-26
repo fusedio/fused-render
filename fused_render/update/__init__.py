@@ -28,17 +28,31 @@ if TYPE_CHECKING:
     from fused_render.update._manager import UpdateManager
 
 
+# Set by `fused-render serve` (cli.py) — NOT by create_app(), so tests and
+# embedded servers never reach PyPI. See update/pypi.py.
+_cli_check = False
+
+
+def enable_cli_check() -> None:
+    """Opt this process into the PyPI update notice (check-only), used when no
+    packaged updater applies."""
+    global _cli_check
+    _cli_check = True
+
+
 def manager() -> "UpdateManager | None":
     """The process-wide in-app update manager, whichever platform module's
     singleton is actually set — None when none applies (an unsupported
     platform, or start() was never called) — /api/config omits `update`
     then. See the module docstring for why this checks both modules rather
-    than sys.platform."""
-    from fused_render.update import linux, mac
+    than sys.platform. The CLI's PyPI manager is the last resort."""
+    from fused_render.update import linux, mac, pypi
 
     if (found := mac.manager()) is not None:
         return found
-    return linux.manager()
+    if (found := linux.manager()) is not None:
+        return found
+    return pypi.manager()
 
 
 def supported() -> bool:
@@ -69,11 +83,16 @@ def supported() -> bool:
 def start() -> "UpdateManager | None":
     """Create and start the singleton in-app update manager for this
     platform, if any. See mac.start()/linux.start() for the per-platform
-    "nothing to swap" no-op rules."""
+    "nothing to swap" no-op rules. When none applies and the CLI opted in
+    (enable_cli_check), fall back to the check-only PyPI manager."""
+    started = None
     if sys.platform == "darwin":
         from fused_render.update import mac
-        return mac.start()
-    if sys.platform.startswith("linux"):
+        started = mac.start()
+    elif sys.platform.startswith("linux"):
         from fused_render.update import linux
-        return linux.start()
-    return None
+        started = linux.start()
+    if started is None and _cli_check:
+        from fused_render.update import pypi
+        return pypi.start()
+    return started
