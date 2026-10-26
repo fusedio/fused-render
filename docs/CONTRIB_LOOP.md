@@ -1779,7 +1779,9 @@ with five blockers → back to Share), nothing ever said "next: the
 Marketplace", proposals lived in their own tab and the explorer's kebab had a
 separate GitHub modal. Also a bug: a `scratch` record was never reclassified
 after Publish to GitHub created `origin`, so the Marketplace strip never
-showed (§19.2).
+showed (§19.2). In this codebase a fresh app's record is `own` with
+`repo: null` (`scratch` is written only for Try copies); the rebind below
+covers both.
 
 ### 19.1 The ladder
 
@@ -1807,39 +1809,59 @@ the panel, actions and activity of §16.9/§18.7 are shown as they are.
   null>, doctor: {clear: bool, failing: int}, flags: {sources, marketplace,
   github_link}}`. `rung` = 3 when the listing is live or in review, 2 when
   the folder is an own repo with a GitHub origin, else 1. `visibility`
-  comes from `gh repo view --json visibility` (cached 10 min; null while
-  unknown). `link` = the §15 install link when eligible. Not an app, or a
-  copy that is not the user's own: `mine:false` and the ladder is skipped
-  (the tab shows the other-side view from `/api/contrib/app`).
+  comes from `gh.repo(full).private` (the existing `gh api repos/<full>` helper,
+  cached; null while unknown — it fills on the next read). `link` = the
+  §15 install link when eligible. `rung` is null (and `mine:false`) for a
+  copy that is not the user's own: the tab shows the other-side view from
+  `/api/contrib/app`. `pending:true` during the short rebind window after
+  a publish (listing is null until the record names its repo: re-read).
+  Extra fields: `remix_of`, `github.checking`, `github.blocked` (the
+  rung-1 preflight sentence when publish-github would refuse: nested
+  elsewhere, or a remote already present). `doctor` = the listing's
+  publish gate (`doctor_blockers`), not the whole Doctor report. `rung`
+  3 = `listing.state` in {live, in-review, needs-confirmation, removing};
+  a failed review stays on rung 2.
 - `POST /api/contrib/publish-github {dir, name, visibility}` — rung 1 → 2
-  in one call: `git init` when the folder is not a repo (refused when it is
-  nested inside one: "lives inside a bigger project"), identity from
+  in one call: `git init` when the folder is not a repo. An app directly
+  under the shared, remote-less `<workspace>/local` repo (nearly every app
+  made in fused) is NOT refused: it gets its own repo — init in the app
+  folder + the folder taken out of the shared repo's tracking in one
+  commit there ("Move <name> to its own repository", on a private index so
+  nothing else staged rides along) — the nested state `local_monorepo`
+  already keeps for apps with a remote. Any other enclosing repo, or a
+  `local` repo with a remote, is refused: "This app lives inside a bigger
+  project on GitHub, so it can't have a repository of its own." Identity from
   `git config --global` else from the gh account's login (`gh api user`
   name + `<login>@users.noreply.github.com`) — never a dialog, the Git
   panel can still change it later; `stage_all` + first commit "Initial
   commit" when there are no commits; then `github_setup.publish_start`.
-  Returns `github_setup`'s publish record; the client polls `GET
-  /api/github/publish` as the Git panel does. On `state: "done"` the
-  server calls `classify.rebind(dir)` (below) itself, so the next ladder
-  read says rung 2. Refusals are 409 with a plain sentence (`PlainError`):
-  no gh CLI, not signed in, a remote already there, nested.
-- `classify.rebind(app_dir)`: a record whose `kind` is `scratch` (or
-  `own`/`github` with `repo` null) whose folder now has a GitHub `origin`
-  is reclassified in place (`_classify_live` with the identity; `own` when
-  the account owns the repo). Called by publish-github on done, by `_kick`
-  when the origin on disk disagrees with the record (`scratch` + origin
-  present, or record repo ≠ origin repo), and by the Git panel's own
-  publish completion (`github_setup.publish` done path). Never changes a
-  `marketplace` record.
+  Returns `github_setup`'s publish record (`ok:true` added); the client
+  polls `GET /api/github/publish` as the Git panel does. The server calls
+  `classify.rebind(dir)` (below) right before the record turns `done`, so
+  `done` implies the next ladder read says rung 2. Refusals are 409
+  `{ok:false, error, message, reason}` with a plain sentence: no gh CLI,
+  not signed in, a remote already there, nested.
+- `classify.rebind(app_dir)`: a record whose `kind` is `scratch` (not a
+  Try copy: no `try_of`) or `own`/`github` with `repo` null, whose folder
+  now has a GitHub `origin`, is reclassified in place with the identity
+  (`own` when the account owns the repo). Called by publish-github before
+  done, by `_kick` when such a record's folder has an origin, and by the
+  Git panel's own publish completion (same `github_setup` path). Never
+  touches a `marketplace` record, a Try copy, or an own/github record that
+  already names a repo (§17.6: an own copy keeps its repo across an origin
+  rename; a github copy's re-pointed origin is what I2 undoes).
 - Default visibility: **public** (the index's check refuses private repos,
   check.py step 2). Private stays a choice in the sheet, with the sentence
   "the Marketplace needs a public repository".
 - Switches: the Community tab and sheet exist for EVERY app that is an own
-  app or a classified copy, whatever the switches say. `marketplace_ui()`
-  off hides rung 3 (the ladder shows two rungs and rung 2's next action is
-  "Copy install link"); `github_link_enabled` off hides the install link;
+  app or a classified copy, whatever the switches say. `flags.marketplace`
+  = the Marketplace switch alone (`listing._enabled()`, what the listing
+  routes gate on — not `marketplace_ui()`, or rung 3 would show buttons
+  the POST refuses); off hides rung 3 (two rungs; rung 2's next action is
+  "Copy install link") and the Share sheet's Next strip. `github_link`
+  off hides the install link, Copy and Open the install page only.
   `contrib_enabled` off hides Proposals/Contributors/other-side view
-  (today's rule). Nothing else is gated.
+  (today's rule). Putting an app on GitHub needs no switch.
 
 ### 19.3 Share sheet A (`platform/ui/ShareAppModal.tsx`)
 
@@ -1858,7 +1880,8 @@ The GitHub card is rung 2's door, inline:
   rung 3 is offered and not yet listed; "Doctor has N checks to fix first"
   in the same strip when `doctor.clear` is false. Unpushed edits keep
   today's "Your latest edits aren't on GitHub yet" + "Publish changes"
-  (`push-main` via the contrib action, not the Git panel).
+  (the contrib action the Source panel offers — `publish-now` for an own
+  app; `push-main` refuses own apps — never the Git panel).
 - Rung 3: the strip says "Live · v<version>" / "In review" with "Open
   Community".
 - The Git panel's modal stays as it is (plumbing; other entry points); the
@@ -1871,8 +1894,11 @@ The GitHub card is rung 2's door, inline:
   `?tab=community`; `?tab=proposals` redirects to it.
 - Own app: the ladder (three rung cards, the current rung emphasised, each
   with its sentence, chips and buttons — the SAME `ContribAction`s and
-  listing actions the Source panel and ListingStrip run today; no new
-  server actions), then a 2-column grid: Proposals (today's `ProposalsTab`
+  listing actions the Source panel and ListingStrip run today, with the
+  server's own labels; no new server actions; the page reads the ladder on
+  every open whatever the switches, and an own app on rung 2/3 reads the
+  listing twice — once inside the ladder, once for the listing buttons —
+  accepted), then a 2-column grid: Proposals (today's `ProposalsTab`
   content, Try/Accept/Decline), Activity (`contrib.activity` + listing
   events, Undo as today), Contributors, Listing (Edit details → the
   PublishDialog prefilled; Doctor chip; review sentence; repository
@@ -1901,8 +1927,10 @@ The GitHub card is rung 2's door, inline:
 ### 19.6 What is removed
 
 The Proposals tab; the Share sheet's "Publish to GitHub" deep link into the
-Git panel; SourcePanel/ListingStrip/Contributors on Overview (the components
-survive, reused inside the tab). Nothing in §16–§18's server contract
+Git panel; SourcePanel/ListingStrip/Contributors on Overview. SourcePanel's
+and ListingStrip's logic moved into `useSourcePanel` / `useListing` hooks
+that both the old renderers and the tab use; `Contributors.tsx` is gone
+(the tab renders the list itself). Nothing in §16–§18's server contract
 changes: ladder is a composition read, publish-github wraps existing
 machinery, rebind is a store fix.
 
