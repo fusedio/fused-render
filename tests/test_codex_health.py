@@ -11,8 +11,10 @@ JSON-RPC messages and answers `account/read` the way 0.163.0 was observed to
 import collections
 import glob
 import json
+import ntpath
 import os
 import stat
+import shutil
 import sys
 import tempfile
 import textwrap
@@ -21,6 +23,10 @@ import time
 import pytest
 
 from fused_render import claude_health, codex_health, copilot_health
+
+# The real function: the autouse fixture below replaces `candidates` per test.
+_REAL_CANDIDATES = codex_health.candidates
+_REAL_SHELL_PROBE = codex_health._shell_probe
 
 
 @pytest.fixture(autouse=True)
@@ -928,3 +934,63 @@ def test_the_server_app_mounts_the_codex_routes():
     assert paths == {"/api/codex/health", "/api/codex/health/refresh",
                      "/api/codex/install", "/api/codex/link-path",
                      "/api/codex/login", "/api/codex/login/cancel"}
+
+
+# -- Windows discovery -----------------------------------------------------------
+
+
+class _FakeWinreg:
+    """Just enough of `winreg`: two keys, each holding one Path value."""
+    HKEY_CURRENT_USER = "HKCU"
+    HKEY_LOCAL_MACHINE = "HKLM"
+
+    def __init__(self, user=None, machine=None, error=None):
+        self.values = {"HKCU": user, "HKLM": machine}
+        self.error = error
+
+    def OpenKey(self, root, sub):
+        if self.error or self.values[root] is None:
+            raise self.error or OSError("no such key")
+        outer = self
+
+        class _Key:
+            def __enter__(self_):
+                return root
+
+            def __exit__(self_, *exc):
+                return False
+        return _Key()
+
+    def QueryValueEx(self, key, name):
+        assert name == "Path"
+        return self.values[key], 2
+
+
+def test_windows_augmented_path_adds_registry_dirs_deduped(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(os.path, "normcase", str.lower)
+    monkeypatch.setattr(os.path, "expandvars", ntpath.expandvars)
+    monkeypatch.setenv("FAKE_ROOT", "/Root")
+    monkeypatch.setenv("PATH", os.pathsep.join(["/Node", "/Other"]))
+    fake = _FakeWinreg(
+        user=os.pathsep.join(["%FAKE_ROOT%/npm", "/node"]),
+        machine=os.pathsep.join(["/Program Files/nodejs", "/OTHER", ""]),
+    )
+    monkeypatch.setitem(sys.modules, "winreg", fake)
+    parts = codex_health.augmented_path().split(os.pathsep)
+    assert parts == ["/Node", "/Other", "/Root/npm",
+                     "/Program Files/nodejs"]
+
+
+def test_windows_registry_path_swallows_oserror(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setitem(sys.modules, "winreg", _FakeWinreg(error=OSError("denied")))
+    assert claude_health._windows_registry_path() == []
+
+
+def test_registry_path_is_empty_off_windows(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setitem(sys.modules, "winreg", _FakeWinreg(user="X", machine="Y"))
+    assert claude_health._windows_registry_path() == []
+
+
