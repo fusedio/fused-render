@@ -47,7 +47,13 @@
 //
 // The sheets are mounted outside any one state's branch, so a background
 // re-read that moves the state on never unmounts one mid-flight.
-import { useEffect, useState } from "react";
+//
+// TWO RENDERERS, ONE LOGIC (§19.4). `useSourcePanel` holds everything above
+// — the state, `act`/`post`/`press`, the sheets — and hands back the pieces;
+// `SourcePanel` draws them as one strip, and the Community tab
+// (CommunityTab.tsx) places the same pieces in its cards. Either renders
+// `kit.sheets` exactly once, outside every card, so the rule above holds.
+import { useEffect, useState, type ReactNode } from "react";
 import { Check, ChevronRight, Clock, Loader2, RotateCcw, TriangleAlert } from "lucide-react";
 import {
   LISTING_ACTION_IDS,
@@ -59,9 +65,13 @@ import {
   runJob,
   useUnmountSignal,
   type ActivityLine,
+  type AppContrib,
   type AppContribState,
   type ContribAction,
   type ContribJob,
+  type CopyBlock,
+  type MergeJobView,
+  type SourcePanel as SourcePanelView,
 } from "@platform/lib/contrib";
 import { timeAgo } from "@platform/lib/format";
 import { notify } from "@platform/lib/notifications";
@@ -91,7 +101,7 @@ import { QuietAction, StatusStrip, type StripTone } from "./StatusStrip";
 import { authorOf, checksWhen, plural, STEPS_FOR } from "./words";
 
 /** Drawn in the "checked" line, not the button row. */
-const CHECK_ID = "check";
+export const CHECK_ID = "check";
 /** Files listed before "N more". */
 const FILES_SHOWN = 6;
 /** States whose sentence names a problem only the user can fix. */
@@ -128,25 +138,75 @@ type Sheet =
 /** Any action's answer, as `act` reads it. */
 type Outcome = { ok: boolean; message?: string; reason?: string };
 
-export function SourcePanel({
+/** What `useSourcePanel` hands a renderer: the server's panel, its buttons
+ *  (listing / block ids already taken out), and every way to press them. */
+export interface SourcePanelKit {
+  c: AppContrib;
+  panel: SourcePanelView;
+  /** The panel's buttons in the server's order, minus Check now when it is
+   *  not the primary (that one is `footCheck`). */
+  rest: ContribAction[];
+  /** The primary, when the server sent one (first of `rest`). */
+  first: ContribAction | null;
+  /** `rest` without `first`. */
+  others: ContribAction[];
+  /** Check now as the quiet "checked" line's action, when not the primary. */
+  footCheck: ContribAction | null;
+  /** Every action the server sent (the BlockedStrip reads its own ids). */
+  allActions: ContribAction[];
+  activity: ActivityLine[];
+  who: string;
+  block: CopyBlock | null;
+  blockWarn: CopyBlock | null;
+  busy: string | null;
+  error: string | null;
+  /** A confirm sheet is open (it shows the error inside, not the strip). */
+  sheetOpen: boolean;
+  job: { id: string; step: string | null; since: number } | null;
+  merge: MergeJobView | null;
+  mergeOpen: boolean;
+  working: boolean;
+  tone: StripTone;
+  icon: ReactNode;
+  /** "3m ago", or null when never checked. */
+  checked: string | null;
+  /** The ✕ for a merged / declined answer; undefined for any other state. */
+  dismiss: (() => void) | undefined;
+  press: (a: ContribAction) => void;
+  /** The primary as a Button, any other as a quiet text action. */
+  button: (a: ContribAction) => ReactNode;
+  /** Ask before undoing one Activity line. */
+  askUndo: (line: ActivityLine) => void;
+  /** Check now's quiet label ("Checking…" while it runs). */
+  checkLabel: (a: ContribAction) => string;
+  /** Every sheet the panel can open. Render exactly once, outside any card. */
+  sheets: ReactNode;
+}
+
+/** The Source panel's logic, for any renderer. Null when the server has
+ *  nothing to say (no panel, or a settled answer the user dismissed). */
+export function useSourcePanel({
   dir,
   slug,
   contrib,
   blockShown,
+  onChanged,
 }: {
   dir: string;
   slug: string;
   contrib: AppContribState;
   /** The page already shows the block (BlockedNotice): no strip of our own. */
   blockShown?: boolean;
-}) {
+  /** Called after every action's re-read (the Community tab re-reads its
+   *  ladder too). */
+  onChanged?: () => void;
+}): SourcePanelKit | null {
   const c = contrib.data;
   const [sheet, setSheet] = useState<Sheet>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   // The job a long action is running, for its progress line.
   const [job, setJob] = useState<{ id: string; step: string | null; since: number } | null>(null);
-  const [activityOpen, setActivityOpen] = useState(false);
   const [withdrawToo, setWithdrawToo] = useState(false);
   const [include, setInclude] = useState<ReadonlySet<string>>(() => new Set());
   // Dismissed here ahead of the re-read, keyed by which settlement it was,
@@ -162,7 +222,6 @@ export function SourcePanel({
     setBusy(null);
     setError(null);
     setJob(null);
-    setActivityOpen(false);
     setWithdrawToo(false);
     setInclude(new Set());
     setAcked(null);
@@ -217,6 +276,7 @@ export function SourcePanel({
     }
     setJob(null);
     await contrib.refresh();
+    onChanged?.();
     setBusy(null);
     return r.ok;
   };
@@ -306,7 +366,7 @@ export function SourcePanel({
   const first = rest[0]?.primary ? rest[0] : null;
   const others = first ? rest.slice(1) : rest;
 
-  const merge = mergeShown(panel.merge, true) ? panel.merge : null;
+  const merge = mergeShown(panel.merge, true) ? (panel.merge ?? null) : null;
   // Nothing may move the copy back while Claude's merge is open.
   const mergeOpen = merge?.status === "running" || merge?.status === "landing" || merge?.status === "ready";
   const working = !!job || merge?.status === "running" || merge?.status === "landing" || panel.state === "pending";
@@ -326,92 +386,9 @@ export function SourcePanel({
   ) : (
     <Clock />
   );
-  const checked = timeAgo(panel.last_checked);
 
-  return (
+  const sheets = (
     <>
-      <div className="contrib-stack">
-        {(block || blockWarn) && (
-          <BlockedStrip
-            dir={dir}
-            block={block}
-            warn={blockWarn}
-            who={who}
-            actions={allActions}
-            disabled={!!busy}
-            onChanged={() => void contrib.refresh()}
-          />
-        )}
-        <StatusStrip
-          tone={tone}
-          icon={icon}
-          busy={working}
-          sentence={panel.sentence}
-          primary={first ? button(first) : null}
-          secondary={others.length > 0 ? others.map(button) : null}
-          onDismiss={SETTLED_STATES.has(panel.state) ? dismiss : undefined}
-        >
-          <FileList files={panel.files} />
-          {/* Check now says "Checking…" in its own line: no second spinner. */}
-          {job && job.id !== CHECK_ID && (
-            <JobProgress
-              steps={STEPS_FOR[job.id] ?? [{ key: "run", label: "Working…" }]}
-              current={job.step ?? STEPS_FOR[job.id]?.[0]?.key ?? "run"}
-              since={job.since}
-            />
-          )}
-          {merge && <MergeReview dir={dir} job={merge} brief disabled={!!busy} refresh={contrib.refresh} />}
-          {error && sheet?.k !== "confirm" && (
-            <p className="contrib-error" role="alert">
-              {error}
-            </p>
-          )}
-          <div className="contrib-panel-foot">
-            <span className="contrib-panel-checked">
-              {checked ? `Checked ${checked}` : "Not checked yet"}
-              {footCheck && (
-                <>
-                  {" · "}
-                  <QuietAction onClick={() => press(footCheck)} disabled={!!busy}>
-                    {busy === CHECK_ID ? DOING.check : footCheck.label}
-                  </QuietAction>
-                </>
-              )}
-            </span>
-            {(panel.state === "proposed" || panel.state === "merged") && (
-              <span className="contrib-panel-when">{checksWhen(panel.state, who)}</span>
-            )}
-            {activity.length > 0 && (
-              <button
-                type="button"
-                className={cn("contrib-panel-disclose", activityOpen && "is-open")}
-                aria-expanded={activityOpen}
-                onClick={() => setActivityOpen((o) => !o)}
-              >
-                <ChevronRight aria-hidden="true" />
-                Activity
-              </button>
-            )}
-          </div>
-          {activityOpen && activity.length > 0 && (
-            <ol className="contrib-activity" aria-label="Activity">
-              {activity.map((line) => (
-                <li key={line.id} className="contrib-activity-line">
-                  <span className="contrib-activity-at">{timeAgo(line.at) ?? ""}</span>
-                  <span className="contrib-activity-text">{line.text}</span>
-                  {line.undo && (
-                    <QuietAction onClick={() => setSheet({ k: "undo", line })} disabled={!!busy || mergeOpen}>
-                      <RotateCcw aria-hidden="true" />
-                      {busy === `undo:${line.id}` ? "Putting it back…" : "Undo"}
-                    </QuietAction>
-                  )}
-                </li>
-              ))}
-            </ol>
-          )}
-        </StatusStrip>
-      </div>
-
       {sheet?.k === "propose" && (
         <ProposeDialog
           dir={dir}
@@ -420,7 +397,10 @@ export function SourcePanel({
           again={proposal?.state === "declined"}
           untracked={panel.untracked ?? []}
           onClose={() => setSheet(null)}
-          onSent={() => void contrib.refresh()}
+          onSent={() => {
+            void contrib.refresh();
+            onChanged?.();
+          }}
         />
       )}
       {sheet?.k === "remix" && (
@@ -431,7 +411,10 @@ export function SourcePanel({
           original={panel.repo}
           signedIn={signedIn}
           onClose={() => setSheet(null)}
-          onPublished={() => void contrib.refresh()}
+          onPublished={() => {
+            void contrib.refresh();
+            onChanged?.();
+          }}
         />
       )}
       {signIn && (
@@ -573,10 +556,159 @@ export function SourcePanel({
       </AlertDialog>
     </>
   );
+
+  return {
+    c,
+    panel,
+    rest,
+    first,
+    others,
+    footCheck,
+    allActions,
+    activity,
+    who,
+    block,
+    blockWarn,
+    busy,
+    error,
+    sheetOpen: sheet?.k === "confirm",
+    job,
+    merge,
+    mergeOpen,
+    working,
+    tone,
+    icon,
+    checked: timeAgo(panel.last_checked),
+    dismiss: SETTLED_STATES.has(panel.state) ? dismiss : undefined,
+    press,
+    button,
+    askUndo: (line) => setSheet({ k: "undo", line }),
+    checkLabel: (a) => (busy === CHECK_ID ? DOING.check : a.label),
+    sheets,
+  };
+}
+
+/** The progress line of a long action the kit is running (Check now says
+ *  "Checking…" in its own line: no second spinner). */
+export function KitProgress({ kit }: { kit: SourcePanelKit }) {
+  const job = kit.job;
+  if (!job || job.id === CHECK_ID) return null;
+  return (
+    <JobProgress
+      steps={STEPS_FOR[job.id] ?? [{ key: "run", label: "Working…" }]}
+      current={job.step ?? STEPS_FOR[job.id]?.[0]?.key ?? "run"}
+      since={job.since}
+    />
+  );
+}
+
+/** What moved and when, each line with Undo when something moved away. */
+export function ActivityList({ kit }: { kit: SourcePanelKit }) {
+  if (kit.activity.length === 0) return null;
+  return (
+    <ol className="contrib-activity" aria-label="Activity">
+      {kit.activity.map((line) => (
+        <li key={line.id} className="contrib-activity-line">
+          <span className="contrib-activity-at">{timeAgo(line.at) ?? ""}</span>
+          <span className="contrib-activity-text">{line.text}</span>
+          {line.undo && (
+            <QuietAction onClick={() => kit.askUndo(line)} disabled={!!kit.busy || kit.mergeOpen}>
+              <RotateCcw aria-hidden="true" />
+              {kit.busy === `undo:${line.id}` ? "Putting it back…" : "Undo"}
+            </QuietAction>
+          )}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+export function SourcePanel({
+  dir,
+  slug,
+  contrib,
+  blockShown,
+}: {
+  dir: string;
+  slug: string;
+  contrib: AppContribState;
+  /** The page already shows the block (BlockedNotice): no strip of our own. */
+  blockShown?: boolean;
+}) {
+  const kit = useSourcePanel({ dir, slug, contrib, blockShown });
+  const [activityOpen, setActivityOpen] = useState(false);
+  useEffect(() => setActivityOpen(false), [dir]);
+  if (!kit) return null;
+  const { panel, first, others, footCheck, block, blockWarn, busy } = kit;
+
+  return (
+    <>
+      <div className="contrib-stack">
+        {(block || blockWarn) && (
+          <BlockedStrip
+            dir={dir}
+            block={block}
+            warn={blockWarn}
+            who={kit.who}
+            actions={kit.allActions}
+            disabled={!!busy}
+            onChanged={() => void contrib.refresh()}
+          />
+        )}
+        <StatusStrip
+          tone={kit.tone}
+          icon={kit.icon}
+          busy={kit.working}
+          sentence={panel.sentence}
+          primary={first ? kit.button(first) : null}
+          secondary={others.length > 0 ? others.map(kit.button) : null}
+          onDismiss={kit.dismiss}
+        >
+          <FileList files={panel.files} />
+          <KitProgress kit={kit} />
+          {kit.merge && <MergeReview dir={dir} job={kit.merge} brief disabled={!!busy} refresh={contrib.refresh} />}
+          {kit.error && !kit.sheetOpen && (
+            <p className="contrib-error" role="alert">
+              {kit.error}
+            </p>
+          )}
+          <div className="contrib-panel-foot">
+            <span className="contrib-panel-checked">
+              {kit.checked ? `Checked ${kit.checked}` : "Not checked yet"}
+              {footCheck && (
+                <>
+                  {" · "}
+                  <QuietAction onClick={() => kit.press(footCheck)} disabled={!!busy}>
+                    {kit.checkLabel(footCheck)}
+                  </QuietAction>
+                </>
+              )}
+            </span>
+            {(panel.state === "proposed" || panel.state === "merged") && (
+              <span className="contrib-panel-when">{checksWhen(panel.state, kit.who)}</span>
+            )}
+            {kit.activity.length > 0 && (
+              <button
+                type="button"
+                className={cn("contrib-panel-disclose", activityOpen && "is-open")}
+                aria-expanded={activityOpen}
+                onClick={() => setActivityOpen((o) => !o)}
+              >
+                <ChevronRight aria-hidden="true" />
+                Activity
+              </button>
+            )}
+          </div>
+          {activityOpen && <ActivityList kit={kit} />}
+        </StatusStrip>
+      </div>
+      {kit.sheets}
+    </>
+  );
 }
 
 /** The paths a sentence is about, a few at a time with "N more". */
-function FileList({ files }: { files: string[] }) {
+export function FileList({ files }: { files: string[] }) {
   const [all, setAll] = useState(false);
   if (files.length === 0) return null;
   const shown = all ? files : files.slice(0, FILES_SHOWN);

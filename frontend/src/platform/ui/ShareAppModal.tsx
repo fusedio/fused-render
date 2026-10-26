@@ -287,6 +287,10 @@ type LadderStep = null | "install" | "login" | "cancel" | "publish" | "push";
  *  first ladder read after a done publish can still say rung 1. */
 const PUBLISH_SETTLE_TRIES = 4;
 const PUBLISH_SETTLE_MS = 700;
+/** While the ladder says `pending`: re-read this often, this many times
+ *  (contrib.ts `useLadder`'s cadence). */
+const LADDER_PENDING_MS = 5_000;
+const LADDER_PENDING_TRIES = 12;
 
 /** The app page's Community tab (§19.4). Spelled here, not imported from the
  *  shell's current-apps-lib: this sheet renders inside the explorer too, and
@@ -343,11 +347,16 @@ function CheckRow({
   );
 }
 
-/** The listing's state as the strip's one line. */
+/** The listing's state as the strip's one line. Keyed on the answer's
+ *  `state` (`actions_listing.decide` — the same value the server picks rung 3
+ *  by, ladder.py RUNG3_STATES), else the listing's own review status. */
 function listingLine(ladder: LadderAnswer): { text: string; detail: string | null } {
   const { listing, sentence, version } = ladderListing(ladder.listing);
-  const status = listing?.review?.status ?? (listing?.listed ? "live" : null);
+  const status =
+    ladder.listing?.state ?? listing?.review?.status ?? (listing?.listed ? "live" : null);
   switch (status) {
+    case "removing":
+      return { text: "Leaving the Marketplace", detail: sentence };
     case "live":
       return { text: version ? `Live · v${version.replace(/^v/i, "")}` : "Live in the Marketplace", detail: null };
     case "in-review":
@@ -385,7 +394,8 @@ export function GithubLadderCard({
   onClose: () => void;
 }) {
   const gh = ladder.github;
-  const rung = ladder.rung;
+  // Never null for an own app's answer (`ownLadder`); 1 is the safe floor.
+  const rung = ladder.rung ?? 1;
   const flags = ladder.flags ?? { sources: false, marketplace: false, github_link: false };
   const goneRef = useRef(false);
   useEffect(() => {
@@ -465,7 +475,7 @@ export function GithubLadderCard({
   const settlePublish = useCallback(async () => {
     for (let i = 0; i < PUBLISH_SETTLE_TRIES; i++) {
       const next = await reload();
-      if (goneRef.current || (next?.ok && next.mine && next.rung >= 2)) return;
+      if (goneRef.current || (next?.ok && next.mine && (next.rung ?? 1) >= 2)) return;
       await sleep(PUBLISH_SETTLE_MS);
       if (goneRef.current) return;
     }
@@ -581,7 +591,10 @@ export function GithubLadderCard({
   };
 
   const repoName = name.trim();
-  const ready = found && signedIn && !!repoName && !installing && !signingIn;
+  // The sentence Put it on GitHub would refuse with (nested in a bigger
+  // project, a remote already there) — said up front, button off.
+  const blocked = rung === 1 ? (gh.blocked ?? null) : null;
+  const ready = found && signedIn && !!repoName && !installing && !signingIn && !blocked;
 
   const onPublish = async () => {
     if (busy || publishing || !ready) return;
@@ -768,6 +781,11 @@ export function GithubLadderCard({
             </span>
           </CheckRow>
         </div>
+        {blocked && (
+          <p className="m-0 text-[13px] leading-5 text-muted-foreground" role="note">
+            {blocked}
+          </p>
+        )}
         <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-2">
           {progress && (
             <p className="m-0 mr-auto min-w-0 text-[13px] leading-5 text-muted-foreground">{progress}</p>
@@ -798,11 +816,12 @@ export function GithubLadderCard({
   if (flags.marketplace && rung === 3) {
     strip = listingLine(ladder);
   } else if (flags.marketplace) {
+    // `clear` null = Doctor could not say: no verdict, so no "fix first".
     const failing = ladder.doctor?.failing ?? 0;
     strip = {
       text: "Next: list it in the Marketplace",
       detail:
-        ladder.doctor && !ladder.doctor.clear
+        ladder.doctor?.clear === false
           ? `Doctor has ${failing || "some"} check${failing === 1 ? "" : "s"} to fix first.`
           : vis === "private"
             ? "The Marketplace needs a public repository."
@@ -962,15 +981,28 @@ export function ShareAppModal({
   // this is not an own app's (a copy, or a server without the ladder); only
   // then does the switch-gated link card read `/api/share/github` (local git
   // only, no fetch). Not for a snapshot: that card stands down without asking.
+  // `pending` (who owns the repo is still being asked): the answer so far is
+  // shown and the ladder re-read every LADDER_PENDING_MS, as `useLadder` does,
+  // so a copy that turns out to be the user's own swaps to the ladder card.
   const [notOwn, setNotOwn] = useState(false);
   useEffect(() => {
     if (!linkEligible) return;
     let cancelled = false;
-    void getLadder(app.path).then((l) => {
-      if (cancelled) return;
-      if (ownLadder(l)) setLadder(l);
-      else setNotOwn(true);
-    });
+    void (async () => {
+      for (let i = 0; i < LADDER_PENDING_TRIES; i++) {
+        const l = await getLadder(app.path);
+        if (cancelled) return;
+        if (ownLadder(l)) {
+          setLadder(l);
+          setNotOwn(false);
+        } else {
+          setNotOwn(true);
+        }
+        if (!(l.ok && l.pending)) return;
+        await sleep(LADDER_PENDING_MS);
+        if (cancelled) return;
+      }
+    })();
     return () => {
       cancelled = true;
     };

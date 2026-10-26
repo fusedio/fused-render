@@ -19,6 +19,7 @@
 // answer — which is why `useAppContrib` polls fast while one runs.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getJson, postJson } from "@platform/lib/api";
+import type { SetupRecord } from "@platform/lib/github-setup";
 import { pauseWhileHidden } from "@platform/lib/pause-while-hidden";
 import { useContribFlags, type ContribFlags } from "@platform/lib/contrib-flags";
 import { useMarketplaceFeature } from "@platform/lib/marketplace-flag";
@@ -862,4 +863,146 @@ export function useAppContrib(dir: string | null): AppContribState {
     answered: known && (!enabled || answered),
     refresh,
   };
+}
+
+// ---- the ladder (§19.1/§19.2) -------------------------------------------------
+
+/** GET /api/contrib/ladder: where an app the user owns stands — rung 1 on
+ *  this Mac, 2 on GitHub, 3 in the Marketplace. `mine:false` (not an app, or
+ *  a copy of someone else's) skips the ladder; the other-side view reads
+ *  `/api/contrib/app` instead. Answers whatever the Community switches say:
+ *  the switches ride in `flags`. */
+export interface LadderAnswer {
+  ok: boolean;
+  reason?: string;
+  message?: string;
+  /** Null when `mine` is false (no ladder for someone else's app). */
+  rung: 1 | 2 | 3 | null;
+  kind: string | null;
+  mine: boolean;
+  /** Who owns the repo is still being asked: read again shortly. */
+  pending?: boolean;
+  remix_of?: string | null;
+  github: {
+    installed: boolean;
+    signed_in: boolean;
+    /** This machine has not asked GitHub who is signed in yet. */
+    checking?: boolean;
+    login: string | null;
+    repo: string | null;
+    /** Null while unknown (asked in the background). */
+    visibility: "public" | "private" | null;
+    unpushed: number;
+    link: string | null;
+    /** Rung 1: the sentence Put it on GitHub would refuse with (nested in a
+     *  bigger project, a remote already there), else null. */
+    blocked?: string | null;
+  };
+  /** The §18.7 listing answer, or null. */
+  listing: ListingAnswer | null;
+  /** `clear` null: Doctor could not say (not on GitHub yet, or it failed). */
+  doctor: { clear: boolean | null; failing: number | null };
+  flags: { sources: boolean; marketplace: boolean; github_link: boolean };
+}
+
+export function getLadder(dir: string, opts?: { fresh?: boolean }): Promise<LadderAnswer> {
+  return getJson<LadderAnswer>(
+    `/api/contrib/ladder?dir=${encodeURIComponent(dir)}${opts?.fresh ? "&fresh=1" : ""}`,
+  ).catch(() => ({ ok: false, reason: "failed" }) as LadderAnswer);
+}
+
+const LADDER_PENDING_MS = 5_000;
+const LADDER_PENDING_TRIES = 12;
+
+export interface LadderState {
+  /** The last answer for THIS folder (`ok:false` included), or null while
+   *  the first read is out. */
+  data: LadderAnswer | null;
+  /** Re-read now (fresh). Resolves when the answer is painted. */
+  refresh: () => Promise<void>;
+}
+
+/** The ladder for `dir`: read on mount, on window focus and whenever a caller
+ *  says `refresh()` (after every action that can move a rung). Never cached
+ *  across folders — a folder switch starts over (§19.1: read live). */
+export function useLadder(dir: string | null): LadderState {
+  const [data, setData] = useState<LadderAnswer | null>(null);
+  const genRef = useRef(0);
+  const dirRef = useRef(dir);
+  dirRef.current = dir;
+
+  const read = useCallback(async (fresh = false) => {
+    const target = dirRef.current;
+    if (!target) return;
+    const gen = ++genRef.current;
+    const next = await getLadder(target, { fresh });
+    if (genRef.current !== gen || dirRef.current !== target) return;
+    setData(next);
+  }, []);
+
+  useEffect(() => {
+    genRef.current += 1;
+    setData(null);
+    if (dir) void read();
+  }, [dir, read]);
+
+  useEffect(() => {
+    if (!dir) return;
+    const onFocus = () => void read();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [dir, read]);
+
+  // Ownership still being asked (`pending`): read again shortly, a bounded
+  // number of times — the answer moves on by itself on the server.
+  const pending = !!data?.pending;
+  const triesRef = useRef(0);
+  useEffect(() => {
+    triesRef.current = 0;
+  }, [dir]);
+  useEffect(() => {
+    if (!pending || triesRef.current >= LADDER_PENDING_TRIES) return;
+    const t = window.setTimeout(() => {
+      triesRef.current += 1;
+      void read();
+    }, LADDER_PENDING_MS);
+    return () => window.clearTimeout(t);
+  }, [pending, data, read]);
+
+  const refresh = useCallback(() => read(true), [read]);
+  return { data, refresh };
+}
+
+/** The ladder's listing as a page reads it: the bare `Listing`, the server's
+ *  status sentence, and the version rung 3 names ("Live · v1.2.0") when the
+ *  answer carries one (`approved.version`, else a top-level `version`).
+ *  Tolerates a bare `Listing` in place of the §18.7 answer. */
+export function ladderListing(answer: LadderAnswer["listing"] | undefined): {
+  listing: Listing | null;
+  sentence: string | null;
+  version: string | null;
+} {
+  if (!answer || typeof answer !== "object") return { listing: null, sentence: null, version: null };
+  const wrapped = "listing" in answer || "sentence" in answer || "state" in answer;
+  const listing = (wrapped ? answer.listing : (answer as unknown as Listing)) ?? null;
+  const str = (v: unknown) => (typeof v === "string" && v.trim() ? v : null);
+  const version =
+    str((listing?.approved as { version?: unknown } | null | undefined)?.version) ??
+    str((listing as { version?: unknown } | null)?.version) ??
+    str((answer as { version?: unknown }).version);
+  return { listing, sentence: wrapped ? str(answer.sentence) : null, version };
+}
+
+/** POST /api/contrib/publish-github (§19.2): rung 1 → 2 in one call — `git
+ *  init`, identity and a first commit when needed, then github_setup's
+ *  publish. Answers the publish record; poll `GET /api/github/publish`
+ *  (github-setup.ts) until it settles. NOT through `post()` above: a refusal
+ *  is a 409 whose `error` sentence ("lives inside a bigger project", "already
+ *  has a remote") is shown as-is, so it must throw with that message rather
+ *  than be swallowed into the generic one. */
+export function publishGithub(
+  dir: string,
+  body: { name: string; visibility: "public" | "private" },
+): Promise<SetupRecord> {
+  return postJson<SetupRecord>("/api/contrib/publish-github", { dir, ...body });
 }

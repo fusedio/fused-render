@@ -26,7 +26,12 @@
 // A GET whose answer carries `job` is re-reading GitHub: that job is
 // watched to its end and the listing read once more (a named wait, never a
 // loop).
-import { useCallback, useEffect, useRef, useState } from "react";
+//
+// TWO RENDERERS, ONE LOGIC (§19.4): `useListing` holds the read, the
+// buttons and the sheets; `ListingStrip` draws them as one strip and the
+// Community tab's rung 3 and Listing card place the same pieces. Render
+// `kit.sheets` exactly once.
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { BadgeCheck, Clock, Loader2, ShieldAlert, Stethoscope, Store } from "lucide-react";
 import {
   getListing,
@@ -40,6 +45,7 @@ import {
   type ContribAction,
   type Listing,
   type ListingAnswer,
+  type ListingPower,
 } from "@platform/lib/contrib";
 import { releaseDate } from "@platform/lib/format";
 import { useMarketplaceFeature } from "@platform/lib/marketplace-flag";
@@ -63,7 +69,7 @@ import { SignInSheet } from "./SignInSheet";
 import { QuietAction, StatusStrip, type StripTone } from "./StatusStrip";
 import { STEPS_FOR } from "./words";
 
-const PUBLISH_ID = "publish-market";
+export const PUBLISH_ID = "publish-market";
 const FIX_ID = "fix-with-claude";
 const CHECK_ID = "check-listing";
 const REMOVE_ID = "remove-market";
@@ -96,14 +102,63 @@ function toneOf(l: Listing | null, state: string | null | undefined): StripTone 
   return "neutral";
 }
 
-export function ListingStrip({ dir, contrib }: { dir: string; contrib: AppContribState }) {
+/** What `useListing` hands a renderer once the first answer is in. */
+export interface ListingKit {
+  answer: ListingAnswer;
+  listing: Listing | null;
+  /** `actions_listing.decide`'s state ("not-listed", "live", …). */
+  state: string | null;
+  sentence: string;
+  actions: ContribAction[];
+  primary: ContribAction | null;
+  others: ContribAction[];
+  tone: StripTone;
+  icon: ReactNode;
+  busy: string | null;
+  error: string | null;
+  /** A confirm sheet is open (it shows the error inside, not the strip). */
+  sheetOpen: boolean;
+  job: { id: string; since: number } | null;
+  /** The review's reasons when it failed. */
+  reasons: string[];
+  /** The new powers waiting on the author's confirm. */
+  powers: ListingPower[];
+  /** App Doctor stands between this app and a first listing. */
+  doctorBlocks: boolean;
+  /** The server already offers Open App Doctor as a button. */
+  doctorOffered: boolean;
+  press: (a: ContribAction) => void;
+  /** A listing button: `primary` as a Button, else a quiet text action. */
+  button: (a: ContribAction) => ReactNode;
+  openDoctor: () => void;
+  openPublish: () => void;
+  /** Every sheet the listing can open. Render exactly once. */
+  sheets: ReactNode;
+}
+
+/** The listing's logic, for any renderer. Null while not eligible, before
+ *  the first answer, or when the route has nothing for this folder. */
+export function useListing({
+  dir,
+  contrib,
+  eligible: eligibleOverride,
+  onChanged,
+}: {
+  dir: string;
+  contrib: AppContribState;
+  /** The caller already knows (the ladder's `flags.marketplace` + `mine`);
+   *  else the Marketplace switch and `/api/contrib/app`'s copy decide. */
+  eligible?: boolean;
+  /** Called after every action's re-read. */
+  onChanged?: () => void;
+}): ListingKit | null {
   const flag = useMarketplaceFeature();
   const c = contrib.data;
   // The Marketplace switch alone decides; the route answers `{ok:false}` for
   // a folder that is not an own app with a repo. When the Source panel has
   // already said the copy is someone else's, the read is skipped.
   const notMine = !!c && (c.copy.kind !== "own" || !c.copy.repo);
-  const eligible = flag === true && !notMine;
+  const eligible = eligibleOverride ?? (flag === true && !notMine);
   const [answer, setAnswer] = useState<ListingAnswer | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [job, setJob] = useState<{ id: string; since: number } | null>(null);
@@ -208,6 +263,7 @@ export function ListingStrip({ dir, contrib }: { dir: string; contrib: AppContri
     }
     await read(a.id === CHECK_ID);
     await contrib.refresh();
+    onChanged?.();
     setBusy(null);
     return ok;
   };
@@ -232,6 +288,17 @@ export function ListingStrip({ dir, contrib }: { dir: string; contrib: AppContri
   };
 
   const label = (a: ContribAction) => (busy === a.id ? `${a.label}…` : a.label);
+  const button = (a: ContribAction) =>
+    a.primary ? (
+      <Button key={a.id} variant={a.danger ? "destructive" : "default"} onClick={() => press(a)} disabled={!!busy}>
+        {busy === a.id && <Loader2 data-icon="inline-start" className="animate-spin" />}
+        {label(a)}
+      </Button>
+    ) : (
+      <QuietAction key={a.id} onClick={() => press(a)} disabled={!!busy} tone={a.danger ? "danger" : undefined}>
+        {label(a)}
+      </QuietAction>
+    );
   const primary = actions.find((a) => a.primary) ?? null;
   const others = actions.filter((a) => a !== primary);
   const tone = job || answer?.job ? "working" : toneOf(listing, state);
@@ -248,84 +315,15 @@ export function ListingStrip({ dir, contrib }: { dir: string; contrib: AppContri
   const reasons = status === "failed" ? (listing?.review?.reasons ?? []) : [];
   const powers = status === "needs-confirmation" ? (listing?.review?.new_powers ?? []) : [];
 
-  return (
+  const sheets = (
     <>
-      <div className="contrib-stack contrib-listing">
-        <StatusStrip
-          tone={tone}
-          icon={icon}
-          busy={!!job}
-          sentence={sentence}
-          primary={
-            primary ? (
-              <Button
-                variant={primary.danger ? "destructive" : "default"}
-                onClick={() => press(primary)}
-                disabled={!!busy}
-              >
-                {busy === primary.id && <Loader2 data-icon="inline-start" className="animate-spin" />}
-                {label(primary)}
-              </Button>
-            ) : null
-          }
-          secondary={
-            others.length > 0
-              ? others.map((a) => (
-                  <QuietAction
-                    key={a.id}
-                    onClick={() => press(a)}
-                    disabled={!!busy}
-                    tone={a.danger ? "danger" : undefined}
-                  >
-                    {label(a)}
-                  </QuietAction>
-                ))
-              : null
-          }
-        >
-          {reasons.length > 0 && (
-            <ul className="contrib-listing-reasons" aria-label="Why the review didn't pass">
-              {reasons.map((r, i) => (
-                <li key={i}>{r}</li>
-              ))}
-            </ul>
-          )}
-          {powers.length > 0 && (
-            <ul className="contrib-listing-powers" aria-label="New powers">
-              {powers.map((p, i) => (
-                <li key={i}>{p.detail || p.kind}</li>
-              ))}
-            </ul>
-          )}
-          {doctorBlocks && !doctorOffered && (
-            <p className="contrib-listing-doctor">
-              <Stethoscope aria-hidden="true" />
-              <span>Run App Doctor first. Its sharing checks must be clear before the app can be listed.</span>
-              <QuietAction onClick={() => setSheet("doctor")}>Open App Doctor</QuietAction>
-            </p>
-          )}
-          {job && (
-            <JobProgress
-              steps={STEPS_FOR[job.id] ?? [{ key: "run", label: "Working…" }]}
-              current={STEPS_FOR[job.id]?.[0]?.key ?? "run"}
-              since={job.since}
-            />
-          )}
-          {error && sheet === null && (
-            <p className="contrib-error" role="alert">
-              {error}
-            </p>
-          )}
-        </StatusStrip>
-      </div>
-
       {sheet === "publish" && (
         <PublishDialog
           dir={dir}
           onClose={() => setSheet(null)}
           onPublished={(m) => {
             notify({ title: m || "Sent for review. It usually takes about 30 minutes.", tone: "info" });
-            void read(true).then(() => contrib.refresh());
+            void read(true).then(() => contrib.refresh()).then(() => onChanged?.());
           }}
         />
       )}
@@ -335,7 +333,7 @@ export function ListingStrip({ dir, contrib }: { dir: string; contrib: AppContri
           onClose={() => setSheet(null)}
           onSignedIn={() => {
             setSheet(null);
-            void read(true).then(() => contrib.refresh());
+            void read(true).then(() => contrib.refresh()).then(() => onChanged?.());
           }}
         />
       )}
@@ -344,7 +342,7 @@ export function ListingStrip({ dir, contrib }: { dir: string; contrib: AppContri
           dir={dir}
           onClose={() => {
             setSheet(null);
-            void read(true);
+            void read(true).then(() => onChanged?.());
           }}
         />
       )}
@@ -385,6 +383,97 @@ export function ListingStrip({ dir, contrib }: { dir: string; contrib: AppContri
           </AlertDialogContent>
         )}
       </AlertDialog>
+    </>
+  );
+
+  return {
+    answer,
+    listing,
+    state,
+    sentence,
+    actions,
+    primary,
+    others,
+    tone,
+    icon,
+    busy,
+    error,
+    sheetOpen: sheet !== null,
+    job,
+    reasons,
+    powers,
+    doctorBlocks,
+    doctorOffered,
+    press,
+    button,
+    openDoctor: () => setSheet("doctor"),
+    openPublish: () => setSheet(doctorBlocks ? "doctor" : "publish"),
+    sheets,
+  };
+}
+
+/** The review's reasons, the powers waiting on a confirm, App Doctor's gate,
+ *  a running action's progress and the last error — everything the strip
+ *  says under its sentence. */
+export function ListingNotes({ kit }: { kit: ListingKit }) {
+  return (
+    <>
+      {kit.reasons.length > 0 && (
+        <ul className="contrib-listing-reasons" aria-label="Why the review didn't pass">
+          {kit.reasons.map((r, i) => (
+            <li key={i}>{r}</li>
+          ))}
+        </ul>
+      )}
+      {kit.powers.length > 0 && (
+        <ul className="contrib-listing-powers" aria-label="New powers">
+          {kit.powers.map((p, i) => (
+            <li key={i}>{p.detail || p.kind}</li>
+          ))}
+        </ul>
+      )}
+      {kit.doctorBlocks && !kit.doctorOffered && (
+        <p className="contrib-listing-doctor">
+          <Stethoscope aria-hidden="true" />
+          <span>Run App Doctor first. Its sharing checks must be clear before the app can be listed.</span>
+          <QuietAction onClick={kit.openDoctor}>Open App Doctor</QuietAction>
+        </p>
+      )}
+      {kit.job && (
+        <JobProgress
+          steps={STEPS_FOR[kit.job.id] ?? [{ key: "run", label: "Working…" }]}
+          current={STEPS_FOR[kit.job.id]?.[0]?.key ?? "run"}
+          since={kit.job.since}
+        />
+      )}
+      {kit.error && !kit.sheetOpen && (
+        <p className="contrib-error" role="alert">
+          {kit.error}
+        </p>
+      )}
+    </>
+  );
+}
+
+export function ListingStrip({ dir, contrib }: { dir: string; contrib: AppContribState }) {
+  const kit = useListing({ dir, contrib });
+  if (!kit) return null;
+  const { primary, others } = kit;
+  return (
+    <>
+      <div className="contrib-stack contrib-listing">
+        <StatusStrip
+          tone={kit.tone}
+          icon={kit.icon}
+          busy={!!kit.job}
+          sentence={kit.sentence}
+          primary={primary ? kit.button(primary) : null}
+          secondary={others.length > 0 ? others.map(kit.button) : null}
+        >
+          <ListingNotes kit={kit} />
+        </StatusStrip>
+      </div>
+      {kit.sheets}
     </>
   );
 }

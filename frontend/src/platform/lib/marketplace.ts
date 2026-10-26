@@ -427,6 +427,17 @@ export function appDetailHref(slug: string): string {
   return `/marketplace/app/${encodeURIComponent(slug)}`;
 }
 
+/** The Marketplace backend's base (the `fused_app_marketplace` canvas,
+ *  §18.3) — mirrors fused_render/marketplace.py `API_BASE`, which the
+ *  server reads per call (FUSED_RENDER_MARKETPLACE_API overrides it there,
+ *  not here). Only the public listing page link is built from it. */
+export const MARKETPLACE_API_BASE = "https://unstable.udf.ai/fc_5OHf9uj6AGOKqLRH25kkFU";
+
+/** A listed app's public listing page (its README, releases, reviews). */
+export function listingPageUrl(slug: string): string {
+  return `${MARKETPLACE_API_BASE}/fused_app_listing?slug=${encodeURIComponent(slug)}`;
+}
+
 // -- Catalog store -----------------------------------------------------------
 
 export interface CatalogSnapshot {

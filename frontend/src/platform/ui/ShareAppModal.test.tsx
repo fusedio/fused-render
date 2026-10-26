@@ -164,6 +164,29 @@ test("rung 1 without the CLI: the CLI row offers Install, Sign in waits on it, t
   await act(async () => r.unmount());
 });
 
+test("rung 1 with a refusal ahead (nested): the server's sentence up front, the publish disabled", async () => {
+  stubFetch(GITHUB_ROUTES);
+  const nested = "This app lives inside a bigger project on GitHub, so it can't have a repository of its own.";
+  const r = await mount(ladder({ rung: 1, github: { ...ladder({}).github, blocked: nested } }));
+  expect(textOf(r.root)).toContain(nested);
+  expect(buttonLabelled(r, "Put it on GitHub")!.props.disabled).toBeTruthy();
+  await act(async () => r.unmount());
+});
+
+test("rung 2 with Doctor's verdict unknown (clear null): no 'fix first' line", async () => {
+  stubFetch(GITHUB_ROUTES);
+  const r = await mount(
+    ladder({
+      rung: 2,
+      github: { ...ladder({}).github, repo: "octocat/weather-board", visibility: "public", link: "https://x" },
+      doctor: { clear: null, failing: null },
+    }),
+  );
+  const strip = r.root.find((n) => n.type === "div" && n.props["data-strip"] === "next");
+  expect(textOf(strip)).not.toContain("Doctor has");
+  await act(async () => r.unmount());
+});
+
 test("rung 2, not listed: the install link with Copy and Open, and the Next strip to Community", async () => {
   const asked = stubFetch(GITHUB_ROUTES);
   const link = "https://udf.ai/install/github/octocat/weather-board";

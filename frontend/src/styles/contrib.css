@@ -1,6 +1,6 @@
 /* The GitHub contribution loop on the app page (shell/contrib/*): the source
-   line under the app's name, the Source panel above the Overview's frame,
-   the Proposals tab, and the bits of the Propose / Remix / Decline sheets that
+   line under the app's name, the Overview's block strip and Community line,
+   the Community tab (ladder, cards, the Proposals inbox), and the bits of the Propose / Remix / Decline sheets that
    Tailwind utilities do not already say.
 
    The visual idea is RESTRAINT. Everything here sits beside a running app and
@@ -529,25 +529,7 @@
   color: var(--error);
 }
 
-/* The contributors line: a caption, not a section. */
-.contrib-contributors {
-  flex: 0 0 auto;
-  margin: 0 0 10px;
-  font-size: 12px;
-  color: var(--fg-muted);
-}
-
-.contrib-contributors a {
-  color: var(--fg);
-  text-decoration: none;
-}
-
-.contrib-contributors a:hover {
-  text-decoration: underline;
-  text-underline-offset: 2px;
-}
-
-/* ---- the Proposals tab trigger's count ------------------------------------
+/* ---- the Community tab trigger's count ------------------------------------
    Seated where the Doctor dot sits (.app-page-doctor-mark, app-page.css), so
    it survives the strip folding to icons. */
 .contrib-tab-count {
@@ -1007,7 +989,7 @@
   color: var(--fg-muted);
 }
 
-/* The explorer's dialog: the Source panel, then the inbox, in one scroll. */
+/* The explorer's Community sheet: the tab's body, in one scroll. */
 .contrib-modal-body {
   display: flex;
   flex-direction: column;
@@ -1015,24 +997,6 @@
   min-height: 0;
   overflow-y: auto;
   padding-right: 2px;
-}
-.contrib-modal-off {
-  margin: 0;
-  font-size: 13px;
-  line-height: 20px;
-  color: var(--fg-muted);
-}
-.contrib-modal-inbox {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  border-top: 1px solid var(--border);
-  padding-top: 12px;
-}
-.contrib-modal-h {
-  margin: 0;
-  font-size: 13px;
-  font-weight: 600;
 }
 
 
@@ -1186,4 +1150,363 @@
   .contrib-listing-row {
     grid-template-columns: 1fr;
   }
+}
+
+/* ---- the Community tab (CONTRIB_LOOP.md §19.4, shell/contrib/CommunityTab) ---
+   The ladder's three rung cards, then a two-column grid of quiet cards. Same
+   surface as the strip (--bg-alt, --border), the current rung lifted by its
+   border alone; colour stays in the small marks (a done rung's check, the
+   chips). Inside .app-page-body's frame, scrolling on its own. */
+.contrib-community {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-bottom: 16px;
+  animation: contrib-arrive 160ms ease-out;
+}
+
+.contrib-community.is-sheet {
+  overflow: visible;
+  padding-bottom: 0;
+  gap: 12px;
+}
+
+.contrib-community-empty {
+  margin: 24px 0 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--fg-muted);
+}
+
+.contrib-ladder {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  align-items: stretch;
+}
+
+.contrib-rung {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-alt);
+}
+
+.contrib-rung.is-now {
+  border-color: color-mix(in srgb, var(--fg) 34%, var(--border));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--fg) 8%, transparent);
+}
+
+.contrib-rung.is-next {
+  background: transparent;
+}
+
+.contrib-rung-eyebrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.contrib-rung-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--fg) 7%, transparent);
+  color: var(--fg-muted);
+}
+
+.contrib-rung-mark svg {
+  width: 11px;
+  height: 11px;
+}
+
+.contrib-rung.is-done .contrib-rung-mark {
+  background: color-mix(in srgb, var(--success) 15%, transparent);
+  color: var(--success);
+}
+
+.contrib-rung.is-now .contrib-rung-mark {
+  color: var(--fg);
+}
+
+.contrib-rung-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0;
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  color: var(--fg);
+}
+
+.contrib-rung-title-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.contrib-rung-title a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.contrib-rung-title a:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.contrib-rung-chip.is-ok {
+  border-color: color-mix(in srgb, var(--success) 40%, transparent);
+  color: var(--success);
+}
+
+.contrib-rung-sentence,
+.contrib-rung-detail,
+.contrib-rung-foot {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+
+.contrib-rung-detail {
+  color: var(--fg);
+}
+
+.contrib-rung-foot {
+  font-size: 12px;
+}
+
+.contrib-rung .contrib-files,
+.contrib-rung .contrib-listing-reasons,
+.contrib-rung .contrib-listing-powers {
+  margin-top: 0;
+}
+
+/* Buttons sit at the card's foot so the three rungs line up. */
+.contrib-rung-actions {
+  margin-top: auto;
+  padding-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+
+.contrib-rung-next {
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+  margin-top: 4px;
+}
+
+.contrib-rung-gate {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+
+.contrib-rung-hint {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fg-muted);
+}
+
+.contrib-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+
+.contrib-card {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-alt);
+}
+
+.contrib-card.is-wide {
+  grid-column: 1 / -1;
+}
+
+.contrib-card-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+/* The inbox inside a card grows with its cards; the tab scrolls. */
+.contrib-card .contrib-inbox {
+  flex: 0 0 auto;
+  overflow: visible;
+}
+
+.contrib-card .contrib-inbox-empty {
+  margin-top: 4px;
+}
+
+.contrib-card .contrib-activity {
+  margin: 0;
+}
+
+.contrib-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--fg);
+}
+
+.contrib-row-label {
+  min-width: 0;
+  color: var(--fg);
+}
+
+.contrib-row-quiet {
+  min-width: 0;
+  color: var(--fg-muted);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.contrib-row a {
+  color: var(--fg);
+}
+
+.contrib-people {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.contrib-person {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.contrib-person a {
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.contrib-person a:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* Doctor's chip in the Listing card: a button, it opens App Doctor. */
+.contrib-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--fg) 7%, transparent);
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.contrib-chip.is-ok {
+  background: color-mix(in srgb, var(--success) 14%, transparent);
+  color: var(--success);
+}
+
+.contrib-chip.is-warn {
+  background: color-mix(in srgb, var(--warning) 14%, transparent);
+  color: var(--warning);
+}
+
+.contrib-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The Overview's one line pointing at the tab. */
+.contrib-community-line {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0 4px;
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-alt);
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--fg);
+}
+
+.contrib-community-line-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.contrib-community-line a {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--fg);
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.contrib-community-line a:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.contrib-community-line a svg {
+  width: 12px;
+  height: 12px;
+}
+
+/* A copy's unread event: a dot where the count sits on an own app. */
+.contrib-tab-dot {
+  position: absolute;
+  top: -3px;
+  right: -4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
 }

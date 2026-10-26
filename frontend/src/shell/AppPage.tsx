@@ -88,11 +88,11 @@ import {
   Download,
   Files,
   FolderOpen,
-  Inbox,
   ListTodo,
   Loader2,
   Share2,
   Stethoscope,
+  Users,
   Webhook,
   type LucideIcon,
 } from "lucide-react";
@@ -113,7 +113,9 @@ import { SkeletonLines } from "@platform/ui/Skeleton";
 import { basename } from "@platform/lib/format";
 import { opensElsewhere, tildePath } from "./tasks-lib";
 import {
+  APP_PAGE_TAB_PARAM,
   APP_PAGE_TABS,
+  LEGACY_PROPOSALS_TAB,
   appPageTabFromSearch,
   appPageUrl,
   type AppPageTab,
@@ -132,14 +134,20 @@ import { useAppPageGitColumn } from "@shell/useAppPageGitColumn";
 import AppPageGitPeek from "./AppPageGitPeek";
 import { useAppPageGitPeekWidth } from "./useAppPageGitPeekWidth";
 import { peekSearch } from "./task-peek-store";
-import { softBlockWaiting as blockWaits, useAppContrib, type AppContribState, type CopyBlock } from "@platform/lib/contrib";
+import {
+  softBlockWaiting as blockWaits,
+  useAppContrib,
+  useLadder,
+  type AppContribState,
+  type CopyBlock,
+  type LadderState,
+} from "@platform/lib/contrib";
 import type { HttpError } from "@platform/lib/api";
 import { SourceLine } from "./contrib/SourceLine";
 import { SourcePanel } from "./contrib/SourcePanel";
-import { BlockedNotice } from "./contrib/BlockedStrip";
-import { ListingStrip } from "./contrib/ListingStrip";
-import { Contributors } from "./contrib/Contributors";
-import { ProposalsTab } from "./contrib/ProposalsTab";
+import { BlockedNotice, BlockedStrip } from "./contrib/BlockedStrip";
+import { CommunityLine, CommunityTab, communityBadge, communityLine } from "./contrib/CommunityTab";
+import { authorOf } from "./contrib/words";
 
 // ---- the tabs, as ONE registry -----------------------------------------------
 //
@@ -173,8 +181,14 @@ type TabCtx = {
   openGit: () => void;
   /** The folder's GitHub contribution-loop state (platform/lib/contrib.ts
    *  `useAppContrib`) — read once by this page and handed to the Overview
-   *  (the copy-status card above the frame) and the Proposals tab. */
+   *  (its block strip and one-line pointer) and the Community tab. */
   contrib: AppContribState;
+  /** The folder's ladder (§19.2 `useLadder`): whether the Community tab is
+   *  offered for an own app, and its rungs. */
+  ladder: LadderState;
+  /** The Community tab's address, and the click that goes there in place. */
+  communityHref: string;
+  openCommunity: (e: MouseEvent<HTMLAnchorElement>) => void;
 };
 
 type TabDef = {
@@ -235,6 +249,31 @@ function renderOverviewFrame({ slug, dir, entry, snapshot }: TabCtx): ReactNode 
   );
 }
 
+/** The Overview's share of the loop (§19.4): the block strip, then the one
+ *  line pointing at the Community tab. */
+function OverviewContrib({ ctx }: { ctx: TabCtx }) {
+  const c = ctx.contrib.data;
+  const panel = c?.panel;
+  const sentence = communityLine(ctx.contrib, ctx.ladder.data);
+  const blocked = !!panel && (!!panel.block || !!panel.block_warn);
+  if (!blocked && !sentence) return null;
+  return (
+    <div className="contrib-stack">
+      {blocked && c && panel && (
+        <BlockedStrip
+          dir={ctx.dir}
+          block={panel.block ?? null}
+          warn={panel.block_warn ?? null}
+          who={panel.who || authorOf(c.copy)}
+          actions={c.actions ?? []}
+          onChanged={() => void ctx.contrib.refresh()}
+        />
+      )}
+      {sentence && <CommunityLine sentence={sentence} href={ctx.communityHref} onOpen={ctx.openCommunity} />}
+    </div>
+  );
+}
+
 /** A soft block the user has not said yes to (§18.4): opening asks first. */
 function softBlockWaiting(contrib: AppContribState): boolean {
   return blockWaits(contrib.data?.panel?.block);
@@ -262,25 +301,16 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     // prefix alone, which gets the wrong FILENAME whenever the app's entry
     // was renamed since that commit.
     //
-    // THE CONTRIBUTION LOOP sits above the frame (shell/contrib/): the Source
-    // panel — where this copy stands against where it came from, the server's
-    // buttons, its activity — and the contributors line. Live only: a past
-    // version picked in the version picker is not the copy those sentences
-    // are about.
-    //
-    // STAGE B (CONTRIB_LOOP.md §18.7): the author's Marketplace listing
-    // (ListingStrip, own apps with a repo, Marketplace switch on) sits under
-    // the Source panel; and a copy whose release Fused soft-blocked does not
-    // run here until the user says "Open anyway" in the panel's block strip.
+    // THE CONTRIBUTION LOOP lives in the Community tab (§19.4). The Overview
+    // keeps two things of it above the frame, live only (a past version
+    // picked in the version picker is not the copy those sentences are
+    // about): the block strip — a copy whose release Fused soft-blocked does
+    // not run here until the user says "Open anyway" in it (§18.7) — and one
+    // line, "<sentence> · Community →", when there is something to say (a
+    // needs-merge, waiting proposals, unpushed edits).
     render: (ctx) => (
       <>
-        {ctx.snapshot.sha === null && (
-          <>
-            <SourcePanel dir={ctx.dir} slug={ctx.slug} contrib={ctx.contrib} />
-            <ListingStrip dir={ctx.dir} contrib={ctx.contrib} />
-            <Contributors contrib={ctx.contrib.data} />
-          </>
-        )}
+        {ctx.snapshot.sha === null && <OverviewContrib ctx={ctx} />}
         {softBlockWaiting(ctx.contrib) ? (
           <p className="app-page-empty">
             This app waits for your OK before it runs. Choose Open anyway above to use it.
@@ -324,14 +354,17 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     // Ignores the version picker on purpose — see AppDoctorPanel.
     render: ({ dir, openGit }) => <AppDoctorPanel dir={dir} onOpenGit={openGit} />,
   },
-  proposals: {
-    label: "Proposals",
-    Icon: Inbox,
-    // The author's inbox (shell/contrib/ProposalsTab.tsx). Offered only on an
-    // app the user owns with a GitHub repo — see `offered` in the page below.
-    // Not keepMounted: its list comes from the page's own contrib read, so a
-    // return costs nothing.
-    render: ({ dir, slug, contrib }) => <ProposalsTab dir={dir} slug={slug} contrib={contrib} />,
+  community: {
+    label: "Community",
+    Icon: Users,
+    // The contribution loop (shell/contrib/CommunityTab.tsx, §19.4): the
+    // ladder for an own app, the other side for a copy. Offered only for an
+    // own app or a classified copy — see `offered` in the page below. Not
+    // keepMounted: it reads from the page's own contrib and ladder reads, so
+    // a return costs nothing.
+    render: ({ dir, slug, contrib, ladder }) => (
+      <CommunityTab dir={dir} slug={slug} contrib={contrib} ladder={ladder} variant="page" />
+    ),
   },
 };
 
@@ -364,35 +397,53 @@ export default function AppPage({
 
   // The GitHub contribution loop (platform/lib/contrib.ts): one read of this
   // folder's copy status, shared by the header's source line, the Overview's
-  // card and the Proposals tab. Nothing is fetched while every contrib flag is
-  // off, so the page with the feature off is the page it always was.
+  // block strip and line, and the Community tab. Nothing is fetched while
+  // every contrib flag is off, so the page with the feature off is the page
+  // it always was — except the ladder (§19.2), which answers whatever the
+  // switches say: an app of the user's own always has its Community tab.
   const contrib = useAppContrib(dir);
-  // The one conditional tab. While the first read is still out, a
-  // `?_tab=proposals` link keeps its tab (the panel shows its own skeleton)
-  // rather than flashing the Overview; once answered, a folder without an
-  // inbox falls back to the default like any unknown tab.
-  const inboxOffered = !!contrib.data?.flags.inbox && !!contrib.data.inbox;
+  const ladder = useLadder(dir);
+  // The one conditional tab (§19.4): offered for an own app (the ladder says
+  // `mine`) or a classified copy (`/api/contrib/app` answered). While either
+  // first read is still out, a `?_tab=community` link keeps its tab (the
+  // panel shows its own skeleton) rather than flashing the Overview; once
+  // both answered, a folder with neither falls back to the default like any
+  // unknown tab.
+  const ladderAnswered = ladder.data !== null && ladder.data.reason !== "failed";
+  const communityOffered = (!!ladder.data?.ok && ladder.data.mine) || !!contrib.data;
   const offered = (id: AppPageTab) =>
-    id !== "proposals" || inboxOffered || (!contrib.settled && urlTab === "proposals");
+    id !== "community" ||
+    communityOffered ||
+    ((!contrib.settled || ladder.data === null) && urlTab === "community");
   const tab: AppPageTab = offered(urlTab) ? urlTab : APP_PAGE_TABS[0];
   const offeredRef = useRef(offered);
   offeredRef.current = offered;
-  // The tab ACTUALLY shown (a `?_tab=proposals` this folder does not offer
+  // The tab ACTUALLY shown (a `?_tab=community` this folder does not offer
   // shows the Overview) — what the arrow keys step from.
   const tabRef = useRef(tab);
   tabRef.current = tab;
-  // Once answered, a `?_tab=proposals` this folder does not offer (a switch
+  // Once answered, a `?_tab=community` this folder does not offer (a switch
   // from an app that had one, a stale link) is rewritten to the default
   // tab's address in place — so the URL, the strip and Back all agree on the
   // tab that is on screen.
-  // A REAL answer only (`answered`): a read that merely failed says nothing
-  // about the inbox, and must not rewrite the address the user typed.
-  const dropProposalsTab = contrib.answered && urlTab === "proposals" && !inboxOffered;
+  // REAL answers only (`answered`, a ladder read that reached the server): a
+  // read that merely failed says nothing, and must not rewrite the address
+  // the user typed.
+  const dropCommunityTab = contrib.answered && ladderAnswered && urlTab === "community" && !communityOffered;
   useEffect(() => {
-    if (!dropProposalsTab) return;
+    if (!dropCommunityTab) return;
     replaceSearch(appPageUrl(dir, APP_PAGE_TABS[0], peekSearch(location.search, null)));
-  }, [dropProposalsTab, dir]);
-  const inboxCount = contrib.data?.inbox?.count ?? 0;
+  }, [dropCommunityTab, dir]);
+  // The old Proposals tab's address names the Community tab: rewritten in
+  // place so the URL says what is on screen — unless this folder drops the
+  // tab anyway (the rewrite above lands on the Overview instead).
+  const legacyTab =
+    !dropCommunityTab && new URLSearchParams(location.search).get(APP_PAGE_TAB_PARAM) === LEGACY_PROPOSALS_TAB;
+  useEffect(() => {
+    if (!legacyTab) return;
+    replaceSearch(appPageUrl(dir, "community", location.search));
+  }, [legacyTab, dir, urlVersion]);
+  const badge = communityBadge(contrib, ladder.data);
 
   // This page's OWN resolution of the URL's `_snapshot` sha — extracted into
   // useAppPageSnapshot.ts, which has its own header comment for why this is
@@ -865,10 +916,14 @@ export default function AppPage({
                 >
                   {APP_PAGE_TABS.filter(offered).map((id) => {
                     const { label, Icon } = TAB_DEFS[id];
-                    // The inbox count rides in the accessible name too: the
-                    // badge is drawn on the icon, and the fold hides the word.
+                    // The badge rides in the accessible name too: it is drawn
+                    // on the icon, and the fold hides the word.
                     const name =
-                      id === "proposals" && inboxCount > 0 ? `${label} (${inboxCount})` : label;
+                      id !== "community" || badge === null
+                        ? label
+                        : badge === "dot"
+                          ? `${label} (new)`
+                          : `${label} (${badge})`;
                     return (
                       <TabsTrigger
                         key={id}
@@ -898,16 +953,19 @@ export default function AppPage({
                             <Icon data-icon="inline-start" />
                             <AppDoctorStatusDot checks={doctorChecks} />
                           </span>
-                        ) : id === "proposals" ? (
+                        ) : id === "community" ? (
                           // Same corner-badge seat as the Doctor dot, so the
-                          // count survives the strip folding to icons.
+                          // badge survives the strip folding to icons: waiting
+                          // proposals (own app), or a dot for a copy's unread
+                          // event.
                           <span className="app-page-doctor-mark">
                             <Icon data-icon="inline-start" />
-                            {inboxCount > 0 && (
+                            {typeof badge === "number" && (
                               <span className="contrib-tab-count" aria-hidden="true">
-                                {inboxCount > 99 ? "99+" : inboxCount}
+                                {badge > 99 ? "99+" : badge}
                               </span>
                             )}
+                            {badge === "dot" && <span className="contrib-tab-dot" aria-hidden="true" />}
                           </span>
                         ) : (
                           <Icon data-icon="inline-start" />
@@ -958,7 +1016,17 @@ export default function AppPage({
                     role="tabpanel"
                     aria-hidden={!active}
                   >
-                    {def.render({ slug, dir, entry, snapshot, openGit, contrib })}
+                    {def.render({
+                      slug,
+                      dir,
+                      entry,
+                      snapshot,
+                      openGit,
+                      contrib,
+                      ladder,
+                      communityHref: tabUrl("community"),
+                      openCommunity: (e) => pickTab(e, "community"),
+                    })}
                   </section>
                 );
               })}
