@@ -2608,6 +2608,20 @@ def _failed(speaker: dict | None) -> bool:
 # ----------------------------------------------------------------- the titles
 
 
+# Must stay in step with `shortTitle` / `TITLE_MAX` in
+# frontend/src/shell/NewJobModal.tsx, the rule the New task form uses to derive
+# an entry's title from its message.
+_FORM_TITLE_MAX = 60
+
+
+def _form_short_title(line: str) -> str:
+    if len(line) <= _FORM_TITLE_MAX:
+        return line
+    boundary = line[:_FORM_TITLE_MAX + 1].rfind(" ")
+    return (line[:boundary] if boundary > 0
+            else line[:_FORM_TITLE_MAX]).rstrip()
+
+
 def _title(task: dict, rec: dict | None, first_prompt: str,
            custom: str = "") -> tuple[str, str]:
     """(title, where it came from). The precedence is §4's: a title the user
@@ -2655,18 +2669,19 @@ def _title(task: dict, rec: dict | None, first_prompt: str,
         return custom[:200], "renamed"
     for entry in reversed(task["entries"]):
         title = str(entry.get("title") or "").strip()
-        # The one-box New task form always derives the entry's title from the
-        # first line of its message (clamped at a word boundary, maybe with a
-        # trailing "…"), so that is not a name the user chose — and treating it
-        # as one blocked stable AI titles for the task forever. Only a title
-        # that differs from the message's own opening (a bot or API caller
-        # naming the task explicitly) is `user`.
-        derived = title.rstrip("…").strip()
-        if derived:
-            lines = [ln.strip() for ln in
-                     str(entry.get("message") or "").strip().splitlines()
-                     if ln.strip()]
-            if lines and lines[0].startswith(derived):
+        # The one-box New task form derives the entry's title from the first
+        # line of its message (`shortTitle`: the line itself, or clamped at a
+        # word boundary with a trailing "…"), so that is not a name the user
+        # chose — and treating it as one blocked stable AI titles for the task
+        # forever. Only an EXACT match of that derivation is skipped: a title
+        # that merely shares a prefix with the message ("Fix" over "Fix the
+        # login redirect") is a name a bot or API caller chose, hence `user`.
+        t = title.rstrip("…").strip()
+        if t:
+            first = next((ln.strip() for ln in
+                          str(entry.get("message") or "").splitlines()
+                          if ln.strip()), "")
+            if first and (t == first or t == _form_short_title(first)):
                 continue
         if title:
             return title[:200], "user"

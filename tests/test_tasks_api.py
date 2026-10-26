@@ -617,13 +617,44 @@ def test_a_title_derived_from_the_entrys_own_message_is_not_a_user_name(
     assert task["title_source"] == "message"
 
 
-def test_a_word_clamped_derived_title_is_not_a_user_name(client, projects_dir):
-    msg = "pull today's news and file it in the shared folder\nmore"
+_LONG_LINE = ("pull today's news and file it in the shared folder every "
+              "morning before standup")
+# What the New task form's shortTitle (TITLE_MAX = 60) makes of it: cut at the
+# last space within the first 61 characters.
+_LONG_CLAMP = "pull today's news and file it in the shared folder every"
+
+
+@pytest.mark.parametrize("title", [_LONG_CLAMP, _LONG_CLAMP + "\u2026"])
+def test_a_word_clamped_derived_title_is_not_a_user_name(
+        client, projects_dir, title):
+    msg = _LONG_LINE + "\nmore"
+    assert len(_LONG_LINE) > 60 and _LONG_CLAMP == _LONG_LINE[:56]
     _write_transcript(projects_dir, "sess-a", "/p", [_user(msg, T9)])
     _seed_schedule([_entry("e1", msg, T9, state=schedule.SENT, fired=T9,
                            turn="ok", claude_session_id="sess-a",
-                           title="pull today's news and file it\u2026")])
+                           title=title)])
     assert _tasks(client)[0]["title_source"] == "message"
+
+
+def test_a_title_that_merely_starts_the_message_stays_user(client, projects_dir):
+    """A caller naming a task "Fix" over "Fix the login redirect" chose that
+    name; a shared prefix is not a derivation."""
+    msg = "Fix the login redirect\nmore"
+    _write_transcript(projects_dir, "sess-a", "/p", [_user(msg, T9)])
+    _seed_schedule([_entry("e1", msg, T9, state=schedule.SENT, fired=T9,
+                           turn="ok", claude_session_id="sess-a",
+                           title="Fix")])
+    task = _tasks(client)[0]
+    assert (task["title"], task["title_source"]) == ("Fix", "user")
+
+
+def test_an_arbitrary_prefix_title_of_a_long_line_stays_user(client, projects_dir):
+    msg = _LONG_LINE + "\nmore"
+    _write_transcript(projects_dir, "sess-a", "/p", [_user(msg, T9)])
+    _seed_schedule([_entry("e1", msg, T9, state=schedule.SENT, fired=T9,
+                           turn="ok", claude_session_id="sess-a",
+                           title="pull today's news and file it")])
+    assert _tasks(client)[0]["title_source"] == "user"
 
 
 def test_an_explicit_title_unrelated_to_the_message_stays_user(
