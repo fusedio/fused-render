@@ -988,8 +988,12 @@ def _unavailable_features() -> dict:
 
     def update_missing() -> bool:
         from fused_render import update
+        from fused_render.update import pypi
 
-        return update.manager() is None and not update.supported()
+        # The CLI's PyPI manager is check-only: it cannot install, so it
+        # counts as "no updater" for the auto-download pref.
+        m = update.manager()
+        return (m is None or m is pypi.manager()) and not update.supported()
 
     probe("update", update_missing,
           lambda: "Not available on Windows" if _platform.IS_WINDOWS
