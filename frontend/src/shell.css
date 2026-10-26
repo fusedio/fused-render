@@ -35,6 +35,7 @@
 /* The /monitor process monitor (shell/monitor) — after fields/buttons so its
    compact toolbar controls override their 32px defaults by order. */
 @import "./styles/monitor.css";
+@import "./styles/install-link.css";
 /* After preferences.css:
    the scheduled-messages page is another settings-family surface that only adds
    its own row layout over the .prefs-* / .field-* / .btn vocabulary above. */

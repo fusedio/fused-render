@@ -68,6 +68,10 @@ def shell_explorer(path: str = "", shell_path: str = Depends(get_shell_path)):
 # Monitor — every process on the machine, live (frontend shell/monitor),
 # the System chip's "Open Monitor".
 @router.get("/monitor")
+# A deep link's download page (frontend shell/InstallLinkPage): where
+# GET /clone sends a `fused-render://open?url=` / `open?git=` link
+# (deeplink.py INSTALL_PAGE); the payload is query state.
+@router.get("/install")
 # The first-run setup wizard (frontend shell/onboarding): its own page, so
 # the client lands on it with a plain navigation and leaves it the same way,
 # and Help › Setup wizard is an ordinary link. A refresh mid-wizard stays on it.

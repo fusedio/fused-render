@@ -15,13 +15,14 @@ writes (D3) and has no page of its own:
 - `file=` (Render App's title-bar Edit button): the path is percent-encoded
   once by the sender and unquoted once here; a 303 to the file's install page,
   where the user installs or updates behind the X-Fused
-  `/api/appfile/install`. A malformed payload goes to Home under
+  `/api/appfile/install`. A malformed payload goes to the shell's /install
+  page under
   `?_edit_appfile=` for the shell to report.
 - `url=` (a web page's "Open in fused-render" link, Render App's
   `render-app://open?url=` ported): a 303 to Home with the link as
   `?_fetch_appfile=`.
-- `git=` (a public GitHub repo holding ONE app): a 303 to Home with the repo
-  link as `?_fetch_appgit=`.
+- `git=` (a public GitHub repo holding ONE app): a 303 to the shell's
+  /install page with the repo link as `?_fetch_appgit=`.
 
 The shell's `FetchAppFileBoot` reads either hand-off once, downloads through
 the X-Fused `POST /api/appfile/fetch` (appfetch.py — `{url}` downloads the
@@ -169,9 +170,9 @@ def app_file_path_from(src: str) -> str | None:
 
 
 #: The query param a MALFORMED file link is handed to the shell under (DL-7),
-#: so the shell can report it in-app; a well-formed one goes straight to the
-#: file's install page. Underscore like `_preview`: shell-internal, stripped
-#: by the shell on first read. Mirrored in frontend edit-appfile-lib.ts.
+#: so the shell's /install page can report it; a well-formed one goes straight
+#: to the file's install page. Underscore like `_preview`: shell-internal.
+#: Mirrored in frontend edit-appfile-lib.ts.
 EDIT_APPFILE_PARAM = "_edit_appfile"
 #: A url link's http(s) link, for the shell to download (DL-8).
 FETCH_APPFILE_PARAM = "_fetch_appfile"
@@ -188,8 +189,14 @@ def edit_appfile_redirect(path: str) -> str:
     return _view_url_path(os.path.abspath(path))
 
 
-def _home_with(param: str, value: str) -> RedirectResponse:
-    return RedirectResponse(f"/?{param}=" + quote(value, safe=""), status_code=303)
+#: The shell page that downloads a url/git link and reports a malformed one
+#: (shell/InstallLinkPage.tsx): a page of its own, so the download is the
+#: whole window rather than a toast over Home.
+INSTALL_PAGE = "/install"
+
+
+def _install_with(param: str, value: str) -> RedirectResponse:
+    return RedirectResponse(f"{INSTALL_PAGE}?{param}=" + quote(value, safe=""), status_code=303)
 
 
 # ---- Routes (included by server.create_app) ---------------------------------
@@ -200,21 +207,21 @@ def open_link(src: str = ""):
     """Every OS-delivered fused-render: link lands here (the path predates
     the clone flow's removal; every platform's launcher builds it, see
     `_view_url_codec.open_target_path`). Nothing is written on this GET (D3):
-    a file link redirects to its install page, a url/git link to Home for the
-    shell's guarded download."""
+    a file link redirects to its install page, a url/git link to the shell's
+    /install page for the guarded download."""
     raw = file_payload_from(src)
     if raw is not None:
         try:
             return RedirectResponse(edit_appfile_redirect(app_file_path_from(src)),
                                     status_code=303)
         except DeeplinkError:
-            return _home_with(EDIT_APPFILE_PARAM, unquote(raw))
+            return _install_with(EDIT_APPFILE_PARAM, unquote(raw))
     raw = url_payload_from(src)
     if raw is not None:
-        return _home_with(FETCH_APPFILE_PARAM, unquote(raw).strip())
+        return _install_with(FETCH_APPFILE_PARAM, unquote(raw).strip())
     git = git_payload_from(src)
     if git is not None:
-        return _home_with(FETCH_APPGIT_PARAM, git)
+        return _install_with(FETCH_APPGIT_PARAM, git)
     return HTMLResponse(
         "<!doctype html><meta charset=utf-8><title>Unsupported link</title>"
         "<p>Unsupported link. fused-render opens <code>open?file=</code>, "

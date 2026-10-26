@@ -76,14 +76,14 @@ def _route(tmp_path, src):
 
 def test_git_link_hands_repo_to_shell(tmp_path):
     path, query = _route(tmp_path, DEEPLINK)
-    assert path == "/"
+    assert path == "/install"
     assert query == "_fetch_appgit=" + quote(REPO_URL, safe="")
 
 
 def test_url_link_hands_link_to_shell(tmp_path):
     link = "https://example.com/a.fused?x=1&y=2"
     path, query = _route(tmp_path, "fused-render://open?url=" + quote(link, safe=""))
-    assert path == "/"
+    assert path == "/install"
     assert unquote(query.removeprefix("_fetch_appfile=")) == link
 
 

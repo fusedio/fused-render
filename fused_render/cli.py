@@ -356,8 +356,8 @@ def _open_target(path: str) -> str:
       link's shell hand-off runs — and then treated as that `.fused` file
       (below), so it opens on its install page. Errors exit non-zero.
     - A `.fused` file: used exactly as given. It is not installed here —
-      `/explorer/embed/<path>.fused` renders through the `fusedapp` template,
-      the file's install page (AF-14), and the user installs from there via
+      `/explorer/embed/<path>.fused` renders the shell's install page
+      (AF-14), and the user installs from there via
       the guarded `/api/appfile/install` route (D390).
     - An app folder, or a file inside one: a folder resolves to its app
       entry page (`app_listing.app_entry` — the same rule the Home grid's

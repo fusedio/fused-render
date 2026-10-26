@@ -1167,7 +1167,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     app.include_router(deeplink_router)
     # .fused single-file app export/install (SPEC §43, AF-14): GET
     # /api/appfile/export download + the GET/POST /api/appfile/install pair
-    # the fusedapp template (the install page) calls (no user-facing open route).
+    # the install page (frontend FusedFilePage) calls (no user-facing open route).
     from fused_render.server.routers.appfile import router as appfile_router
 
     app.include_router(appfile_router)

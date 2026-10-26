@@ -24,9 +24,10 @@ payload-relative path, resolved at *export* time by the one shared entry rule
 page an app opens on.
 
 Opening is INSTALLING, never running from the file (owner, 2026-10-13): a
-``.fused`` renders at its own ``/explorer/view|embed/<path>`` URL through the
-``fusedapp`` template, which is an install page — the file's icon, name,
-export date, README and member list, and one button. Install unpacks the
+``.fused`` renders at its own ``/explorer/view|embed/<path>`` URL as the
+shell's install page (frontend apps/marketplace FusedFilePage; the ``fusedapp``
+template draws only card peeks) — the file's icon, name, export date, README
+and member list, and one button. Install unpacks the
 payload through the hardened extractor into ``<workspace>/app/<slug>`` as an
 ordinary editable app folder heading its own git repo: the ONE working copy
 of the app. A later file for the same app (its ``app_id``, D884) UPDATES
@@ -603,7 +604,7 @@ def _lift_read_only(root: str) -> None:
 # ------------------------------------------------------------------ install
 #
 # A `.fused` is an INSTALLER, not an app: nothing runs from the file or from a
-# cache of it. Opening one shows the install page (templates/fusedapp), and
+# cache of it. Opening one shows the install page (the shell's FusedFilePage), and
 # the one working copy of the app lives at `<workspace>/app/<slug>` — where
 # new apps are created and where the `local/` ones were moved (#1592). The
 # copy is an ordinary app folder: editable, heading its own git repo, with
