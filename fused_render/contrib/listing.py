@@ -1096,8 +1096,8 @@ def remove(root: str) -> dict:
 
 def confirm_powers(root: str) -> dict:
     """The author's go-ahead for new powers (§18.2 step 7): the comment
-    `fused: confirm <head sha>` — the review job turns auto-merge on only
-    while the head is still that sha."""
+    `fused: confirm <head sha>` — the review job accepts it only while the
+    head is still that sha; a maintainer then merges by hand."""
     _rec, _me, lo = _require(root)
     pr = lo.get("pr") or {}
     if (lo.get("review") or {}).get("status") != "needs-confirmation" or not pr.get("number"):

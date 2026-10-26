@@ -1345,20 +1345,22 @@ hard fail with a one-line plain reason posted on the PR:
 7. **New powers** (D9). Static detection (`rules.powers(diff_or_files)`:
    new network host, writes outside the app folder, dependency added,
    autostart/daemon, Claude tools) ∪ the model's list. Non-empty → the check
-   still passes, but the job does NOT enable auto-merge; it labels the PR
-   `needs-confirmation` and comments the list. A comment `fused: confirm
-   <head sha>` by the PR author (the `issue_comment` job) enables auto-merge
-   when the head still equals that sha.
+   still passes, but the job labels the PR `needs-confirmation` and
+   comments the list. A comment `fused: confirm <head sha>` by the PR author
+   (the `issue_comment` job) turns the block to `pass` when the head still
+   equals that sha.
 8. **Result.** The job posts ONE comment that fused reads, containing a
    machine block `<!-- fused-review {"sha", "status": "pass"|"fail"|
    "needs-confirmation", "reasons": [], "whats_new", "new_powers": []} -->`
-   above the human text (a re-run edits the same comment). Pass with no
-   powers → `gh pr merge --squash --auto`. Branch ruleset: PR required,
-   required check `review`, admins included, auto-merge allowed; bypass
-   list = the GitHub Actions app, used only by step 9.
-9. **After merge.** Events caused by `GITHUB_TOKEN` never start workflows,
-   so a `pull_request: closed` job would not fire after the auto-merge. A
-   `schedule` job (every 10 min) + `workflow_dispatch` scans merged PRs
+   above the human text (a re-run edits the same comment). NOTHING MERGES
+   ON ITS OWN (owner, 2026-10-26; D15's auto-merge is withdrawn): a Fused
+   maintainer merges every pull request by hand once the `review` status is
+   green. Branch ruleset: PR required, required check `review`, admins
+   included, squash only, no bypass actors (step 9 writes the `reviews`
+   branch, which the ruleset does not cover).
+9. **After merge.** A merge is a maintainer's click, which fires nothing the
+   bot can rely on across every merge path (events caused by `GITHUB_TOKEN`
+   start no workflow), so a `schedule` job (every 10 min) + `workflow_dispatch` scans merged PRs
    (`is:pr is:merged` since the last entry) whose `apps/<slug>.json` row has
    no `reviews/<slug>.json` entry for `row.commit`, reads that PR's
    `fused-review` block and appends the entry (bot commit "review: <slug> @
@@ -1748,7 +1750,7 @@ D1 index repo `vasu2001/fused-apps-index` (owner's call for now); layout
 §18.2. D4 listed on merge; `collections.json` is the curated shelf. D9 new
 powers wait for the author's `fused: confirm`. D12 block list in the index,
 maintainers only. D13 install source decides; switching explicit, both ways
-buttons + prompts. D15 auto-merge on pass. Showcase hidden with the flag.
+buttons + prompts. D15 withdrawn: a maintainer merges by hand. Showcase hidden with the flag.
 Who publishes: repo owner (public org members for org repos). Blocked
 link copies: warning only. Categories: the four. No packages. Today's
 installs: adopt in place (`git init`), never automatically. Calls left to
