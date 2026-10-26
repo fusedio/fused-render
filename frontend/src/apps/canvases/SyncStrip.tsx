@@ -8,6 +8,7 @@
 // re-render the whole workspace (and its two iframes' parents) every second.
 import { ArrowLeftIcon } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import PanelIcon from "@platform/ui/PanelIcon";
 import { ENV_NAMES, type WorkbenchEnv } from "./api";
 import {
   LEG_LABEL,
@@ -88,6 +89,8 @@ export function SyncStrip({
   onBack,
   workbenchUrl,
   embedded = false,
+  sideOpen,
+  onToggleSide,
 }: {
   /** The canvas's environment, shown as a chip beside the way back: with a
    *  prod and an unstable canvas open at once, the strip is the one place on
@@ -116,6 +119,13 @@ export function SyncStrip({
    *  page header owns the way back, the env chip and the workbench link, so
    *  the strip draws none of them. */
   embedded?: boolean;
+  /** The right pane (the Claude chat beside the workbench) is up. The strip's
+   *  LAST control toggles it — the thing at the window's right edge is the
+   *  button for the right-hand column, the same panel glyph the explorer's
+   *  sidebar and the global sidebar wear (platform/ui/PanelIcon). Not drawn
+   *  embedded (the viewer has no pane). */
+  sideOpen?: boolean;
+  onToggleSide?: () => void;
 }) {
   const now = useNow(tickFor(queue, server, true));
   const merged: MergedSyncState = mergeEmbedLeg(server, name, queue, failure, now);
@@ -288,6 +298,24 @@ export function SyncStrip({
         <span style={{ flex: "none", color: "var(--fg-muted)" }} title="Polling every 2 s">
           · polling
         </span>
+      )}
+      {!embedded && onToggleSide && (
+        <button
+          type="button"
+          className="bar-ctl bar-ctl-icon side-toggle"
+          style={{ flex: "none", marginLeft: "auto" }}
+          title={sideOpen ? "Hide the Claude panel" : "Show the Claude panel"}
+          aria-label={sideOpen ? "Hide the Claude panel" : "Show the Claude panel"}
+          aria-expanded={!!sideOpen}
+          onClick={(e) => {
+            // The strip itself toggles the sync log on click.
+            e.stopPropagation();
+            onToggleSide();
+          }}
+          onKeyDown={(e) => e.stopPropagation()}
+        >
+          <PanelIcon side="right" />
+        </button>
       )}
     </div>
   );

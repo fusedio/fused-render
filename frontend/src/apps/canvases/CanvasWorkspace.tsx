@@ -540,9 +540,10 @@ export default function CanvasWorkspace({
     if (seeded) seedNodeSessionFromUrl(env, name, seeded);
     return seeded;
   });
-  // The right pane shown or hidden (the sync strip's panel toggle). Hiding it
-  // leaves the selection alone: the canvas goes on selecting, and the pane
-  // opens on whatever node is selected by then.
+  // The right pane shown or hidden: the sync strip's panel toggle (its last
+  // control, `onToggleSide`), a legacy workbench's edge chips, or `side=off`
+  // on the URL. Hiding it leaves the selection alone: the canvas goes on
+  // selecting, and the pane opens on whatever node is selected by then.
   const [sideOpen, setSideOpen] = useState<boolean>(() => sideOpenFromUrl());
   // Bumped when the node pane must REBOOT on a session for the node already
   // shown (a Recent row's hop onto the selected node, below): the frame's src
@@ -2264,6 +2265,8 @@ export default function CanvasWorkspace({
         onBack={() => navigateUrl(catalogPath(env))}
         workbenchUrl={workbenchUrl}
         embedded={embedded}
+        sideOpen={sideOpen}
+        onToggleSide={() => setSideOpen((o) => !o)}
         pull={{
           busy: pullBusy,
           error: pullError,
