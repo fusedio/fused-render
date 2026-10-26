@@ -518,6 +518,9 @@ OPTIONS = {
         "boto3", "botocore", "s3transfer", "jmespath",
         "cryptography", "keyring",
         "anthropic", "mcp", "httpx", "httpcore",
+        # Core dependency, imported inside a try/except in _system_trust; named
+        # here so a traced-module copy cannot silently drop the OS trust store.
+        "truststore",
         "pluggy", "tomlkit", "jwt", "yaml", "loguru",
         "aiohttp", "yarl", "multidict", "frozenlist",
         "fsspec", "tabulate", "tqdm", "rtoml",

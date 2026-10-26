@@ -17,10 +17,16 @@ process gets it. Set FUSED_RENDER_SYSTEM_TRUST=0 to opt out.
 """
 import logging
 import os
+import ssl
 
 logger = logging.getLogger("fused_render._system_trust")
 
 _done = False
+
+# The stdlib class, captured before injection replaces `ssl.SSLContext`.
+# truststore's wrapper is a client-side verifier: a TLS *server* built from it
+# fails its handshake on macOS, so server listeners (lan.py) build from this.
+ORIGINAL_SSL_CONTEXT = ssl.SSLContext
 
 
 def _inside(path: str, root: str) -> bool:

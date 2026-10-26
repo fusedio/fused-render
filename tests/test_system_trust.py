@@ -110,11 +110,10 @@ def test_import_strips_py2app_var_in_a_fresh_process(tmp_path):
 
 
 def test_lan_style_tls_server_handshake_still_works(tmp_path, monkeypatch):
-    """lan.py serves TLS through uvicorn, which builds `ssl.SSLContext(...)` at
-    call time; after injection that is truststore's class. A real handshake
-    against a lan_tls-issued cert proves the server side survives it."""
-    from uvicorn.config import create_ssl_context
-
+    """After injection `ssl.SSLContext` is truststore's client-side class, whose
+    server handshake fails on macOS; lan.py therefore builds its listener's
+    context from the stdlib class (lan_tls.server_ssl_context). A real
+    handshake against a lan_tls-issued cert proves it."""
     from fused_render import lan_tls
 
     monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path))
@@ -125,9 +124,7 @@ def test_lan_style_tls_server_handshake_still_works(tmp_path, monkeypatch):
 
     _system_trust.use_system_trust()
     assert ssl.SSLContext is truststore.SSLContext
-    server_ctx = create_ssl_context(
-        certfile=cert, keyfile=key, password=None, ssl_version=ssl.PROTOCOL_TLS_SERVER,
-        cert_reqs=ssl.CERT_NONE, ca_certs=None, ciphers=None)
+    server_ctx = lan_tls.server_ssl_context(cert, key)
 
     lsock = socket.socket()
     lsock.bind(("127.0.0.1", 0))
@@ -150,7 +147,8 @@ def test_lan_style_tls_server_handshake_still_works(tmp_path, monkeypatch):
     with socket.create_connection(("127.0.0.1", port), timeout=10) as raw:
         with client_ctx.wrap_socket(raw, server_hostname="localhost") as tls:
             tls.sendall(b"ping")
-            assert tls.recv(4) == b"pong"
+            reply = tls.recv(4)
     t.join(10)
     lsock.close()
     assert result.get("got") == b"ping", result
+    assert reply == b"pong"
