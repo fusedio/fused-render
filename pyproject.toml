@@ -77,7 +77,7 @@ dependencies = [
     # deploy, share and MCP features need on top. The version must match that
     # extra's pin (tests/test_bundle_contents.py checks it), so the base
     # engine and the full one are the same build.
-    "fused==2.9.3b12",
+    "fused==2.9.3b13",
 ]
 
 [project.optional-dependencies]
@@ -307,7 +307,7 @@ hf = [
 # WARNS on an unknown extra, so tests/test_bundle_contents.py checks that every
 # extra named here is one the installed `fused` provides.
 fused = [
-    'fused[aws,mcp]==2.9.3b12 ; python_version >= "3.11"',
+    'fused[aws,mcp]==2.9.3b13 ; python_version >= "3.11"',
     'anthropic>=0.40.0 ; python_version >= "3.11"',
     # Platform-conditional ceiling (LEAN_WHEEL_SPEC.md item 1). fused-render
     # does not use cryptography itself, but `pyjwt[crypto]` from both
