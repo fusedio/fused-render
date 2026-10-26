@@ -200,6 +200,27 @@ def test_save_rejects_an_unknown_placement(home):
     assert res["ok"] is False
 
 
+# -- draft_write ----------------------------------------------------------------
+
+
+def test_write_replaces_a_file_in_the_draft(home):
+    st = _stage()
+    new = GOOD.replace("design-review", "other-name")
+    assert skills.main(action="draft_write", staging=st, path="SKILL.md", text=new) == {"ok": True}
+    assert skills.main(action="draft_status", staging=st)["name"] == "other-name"
+    skills.main(action="draft_write", staging=st, path="references/a.md", text="x")
+    assert open(os.path.join(st, "references", "a.md")).read() == "x"
+
+
+def test_write_cannot_leave_the_draft(home):
+    st = _stage()
+    for bad in ("../escape.md", "/etc/passwd", "a/../../escape.md", "", ".claude/x"):
+        res = skills.main(action="draft_write", staging=st, path=bad, text="x")
+        assert res["ok"] is False, bad
+    assert not os.path.exists(os.path.join(os.path.dirname(st), "escape.md"))
+    assert skills.main(action="draft_write", staging=str(home), path="SKILL.md", text="x")["ok"] is False
+
+
 # -- discard + traversal -------------------------------------------------------
 
 

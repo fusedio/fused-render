@@ -51,3 +51,32 @@ export function useDebounced<T>(value: T, ms: number): T {
   }, [value, ms]);
   return v;
 }
+
+/** The task's title: the first line of the description, cut short. */
+export function draftTitle(desc: string): string {
+  const line = desc.trim().split("\n")[0].trim();
+  return `Draft skill: ${line.length > 50 ? line.slice(0, 49).trimEnd() + "…" : line}`;
+}
+
+/** [frontmatter block, rest] of a SKILL.md, so the block can be tinted. */
+export function splitFrontmatter(text: string): [string, string] {
+  const m = /^---[ \t]*\r?\n[\s\S]*?\r?\n---[ \t]*(?:\r?\n|$)/.exec(text);
+  return m ? [m[0], text.slice(m[0].length)] : ["", text];
+}
+
+/** SKILL.md with its frontmatter `name:` replaced; the rest is untouched. */
+export function renameSkill(text: string, name: string): string {
+  const [fm, rest] = splitFrontmatter(text);
+  if (!fm) return `---\nname: ${name}\n---\n\n${text}`;
+  const has = /^name:.*$/m.test(fm);
+  const next = has
+    ? fm.replace(/^name:.*$/m, `name: ${name}`)
+    : fm.replace(/^---[ \t]*\r?\n/, `---\nname: ${name}\n`);
+  return next + rest;
+}
+
+/** A free name to offer when `name` is taken: name-2, name-3, … */
+export function freeName(name: string, taken: (n: string) => boolean): string {
+  for (let i = 2; i < 100; i++) if (!taken(`${name}-${i}`)) return `${name}-${i}`;
+  return `${name}-copy`;
+}

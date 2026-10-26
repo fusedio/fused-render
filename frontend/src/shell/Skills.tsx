@@ -156,6 +156,7 @@ export default function Skills() {
     return frame(
       <NewSkill
         initialDesc={params.desc}
+        existing={data?.skills.map((x) => x.slug) ?? []}
         onClose={() => go({ newSkill: false, desc: "" })}
         onSaved={(key) => {
           reload();

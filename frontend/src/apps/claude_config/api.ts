@@ -351,6 +351,8 @@ export const skills = {
       staging,
       placement,
     }),
+  draftWrite: (staging: string, path: string, text: string) =>
+    callModule<OkResult>("skills", { action: "draft_write", staging, path, text }),
   draftDiscard: (staging: string) => callModule<OkResult>("skills", { action: "draft_discard", staging }),
   draftPrompt: (text: string, adapting: boolean) =>
     callModule<OkResult & { prompt?: string }>("skills", { action: "draft_prompt", text, adapting }),

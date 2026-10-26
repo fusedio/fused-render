@@ -58,6 +58,7 @@ main(action=...):
   draft_save -> {ok, slug, path, key}  params: staging, placement ("all" | "claude")
             (validates, places like create, then removes the staging dir; a
             failed validation is {ok: False, error, problems} and keeps it)
+  draft_write -> {ok}  params: staging, path, text  (one file of the draft)
   draft_discard -> {ok}  params: staging
   draft_prompt -> {ok, prompt}  params: text [, adapting]  (the task prompt)
   open -> {ok}   params: slug [, source, plugin, marketplace, location]  (reveal folder)
@@ -680,6 +681,22 @@ def _draft_status(staging: str) -> dict:
             "problems": _draft_problems(name, description)}
 
 
+def _draft_write(staging: str, path: str, text: str) -> dict:
+    """Write one file of the draft (the user's edit before saving)."""
+    staging = _staging_dir(staging)
+    parts = (path or "").split("/")
+    if not path or os.path.isabs(path) or any(p in ("", ".", "..") for p in parts) or parts[0] == ".claude":
+        raise ValueError(f"invalid path: {path!r}")
+    target = _skill_file(staging, path)
+    if not os.path.realpath(os.path.dirname(target)).startswith(os.path.realpath(staging) + os.sep) \
+            and os.path.realpath(os.path.dirname(target)) != os.path.realpath(staging):
+        raise ValueError(f"invalid path: {path!r}")
+    if os.path.islink(target):
+        raise ValueError(f"invalid path: {path!r}")
+    lib.write_text(target, text)
+    return {"ok": True}
+
+
 def _draft_save(staging: str, placement: str) -> dict:
     if placement not in ("all", "claude"):
         return {"ok": False, "error": f"unknown placement: {placement!r}"}
@@ -748,6 +765,9 @@ def main(action: str = "list", slug: str = "", path: str = "", text: str = "",
         if action == "draft_save":
             with lib.config_lock():
                 return _draft_save(staging, placement)
+
+        if action == "draft_write":
+            return _draft_write(staging, path, text)
 
         if action == "draft_discard":
             shutil.rmtree(_staging_dir(staging, must_exist=False), ignore_errors=True)
