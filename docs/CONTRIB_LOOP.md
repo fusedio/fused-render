@@ -1817,6 +1817,13 @@ or fails for, S3.
 | `stats/<kind>/days/<YYYY-MM-DD>.json` | `{slug: n}` — a recount of that day's keys, idempotent (two workers writing it at once cannot double-count) | each rollup recounts today and yesterday; older days are frozen |
 | `stats/<kind>/current.json` | `{totals, window (last 30 days), days, generated_at}` = the day files summed | each rollup (`fused.cache` 5 min per worker) |
 
+Known ceiling: `fused.api.list` takes no pagination parameter (the server
+answers the listing whole), so if the platform ever caps a listing, a day
+with more events of one kind than that cap undercounts silently. Not
+measured; when a day approaches a thousand installs, split the day folder
+into hours. Not counted: updates (`engine.bring_in`) and detail reads —
+only installs that start; listing-page views count crawlers too.
+
 Reads: `_load_index` goes to GitHub first and, when it cannot be read,
 serves `index/current.json` with `stale: true` (the catalog is then not
 re-persisted). `_fetch_app_facts` reads `facts/…` before `codeload`.
