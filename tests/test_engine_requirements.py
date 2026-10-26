@@ -157,6 +157,10 @@ _IMPORT_TO_DIST = {
     # package only locates the binary; a template has no reason to import it,
     # but it ships, so the map names it.
     "uv": "uv",
+    # OS trust store for Python TLS (`_system_trust.use_system_trust`, core
+    # `dependencies`). The app imports it at package import; a template has no
+    # reason to, but it ships, so the map names it.
+    "truststore": "truststore",
     # The Hub client, for the Preferences sign-in (routers/hf_auth.py, D402): hf
     # owns the token store, so the app imports hf rather than keeping a
     # credential of its own. Underscore in the import name, hyphen in the
