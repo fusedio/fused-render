@@ -950,7 +950,7 @@ def _contrib_git_row(app_dir: str) -> dict | None:
         return None
     # A read: no `note_app_opened` here (opening the app already syncs it).
     if kind == "github":
-        if rec.get("needs_merge"):
+        if _contrib_overlaps(root):
             state, detail = FAIL, ("The author's latest overlaps your changes — "
                                    "open the app page to combine them.")
         elif not rec.get("owner_checked"):
@@ -977,6 +977,24 @@ def _contrib_git_row(app_dir: str) -> dict | None:
     row.update({"behind": 0, "ahead": 0, "gitRoot": root, "onDefault": True, "clean": True,
                 "contrib": True})
     return row
+
+
+def _contrib_overlaps(root: str) -> bool:
+    """Whether bringing the author's latest into this GitHub-link copy
+    overlaps its changes — `engine.status`'s derived `needs_merge`
+    (docs/CONTRIB_LOOP.md §17.2: nothing is recorded; the record field is
+    gone). Cached in the engine on (head, main, proposal), so a read costs
+    no merge-tree when nothing moved. A status that can't be read, or is
+    still pending, is not a failure here (the app page says what it is)."""
+    try:
+        from fused_render.contrib import engine
+
+        st = engine.status(root)
+    except Exception:  # noqa: BLE001 — never fail the row on a read error
+        return False
+    if not isinstance(st, dict) or st.get("pending"):
+        return False
+    return bool(st.get("needs_merge")) or st.get("state") == "needs-merge"
 
 
 def _same_path(a, b) -> bool:

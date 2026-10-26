@@ -84,11 +84,12 @@ def env(tmp_path, monkeypatch):
     e.lap = os.path.join(str(ws), "app", "sine")
     git(str(tmp_path), "clone", "-q", e.remote, e.lap)
     e.lap = os.path.realpath(e.lap)
-    # Bound to its root commit (origin here is a local path, not the repo's
-    # GitHub URL, so an unbound row would be dropped as a stranger's).
-    store.put(e.lap, store.new_record("own", repo=REPO, branch="main",
-                                      classified_by="install",
-                                      root_commit=store.root_commit_of(e.lap)))
+    # Bound by its copy id (§17.6: origin here is a local path, not the
+    # repo's GitHub URL, so a row without it would be dropped as a
+    # stranger's) — what the first settle's `_stamp_copy` writes.
+    rec = store.new_record("own", repo=REPO, branch="main", classified_by="install")
+    store.put(e.lap, rec)
+    git(e.lap, "config", "--local", "fused.copyid", rec["copy_id"])
     # Fused has seen GitHub's version once (the app was opened after the
     # clone): what the rewind check vouches from. V3b tests the unseen case.
     ownsync.note_seen(e.lap)

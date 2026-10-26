@@ -30,12 +30,17 @@ remote `original`. The record becomes `own` with `remix_of`; an open proposal
 stays on the record and keeps being followed (`proposals.refresh`) until it
 settles — a merged one on a remix never returns, so it settles at merged.
 
-IDENTITY AND THE SWITCH (§16.6). Everything published is Bob's: tracked
-edits are committed as him, and the same credit-once rewrite a first Send
-runs (`proposals._prepare`) puts his name on Fused-authored commits first.
-The switch to `own` happens under the slot in one stretch, RECORD FIRST:
-the record's `repo`/`kind` change before `origin` does (§16.1: the record,
-never `.git/config`, says what a copy is), then `origin` is re-pointed, then
+IDENTITY AND THE SWITCH (§16.6, v3 §17). Everything published is Bob's:
+tracked edits are committed as him (`proposals._prepare`, the copy's
+install identity), and nothing is ever re-created — there is no credit
+rewrite (§17.7); commits keep their ids and authors. A `github` copy works
+on `fused/mine` with `<b>` (the record's branch) a mirror of the author's;
+the remix is pushed from HEAD to `<b>` of Bob's new repo, never to a branch
+named after the local checkout. The switch to `own` happens under the slot
+in one stretch, RECORD FIRST: the record's `repo`/`kind` change before
+`origin` does (§16.1: the record, never `.git/config`, says what a copy
+is), then `origin` is re-pointed, then the checkout becomes `<b>` at HEAD
+(`fused/mine` deleted: an own copy has no home branch), then
 `classify.ensure_push_guard(root, "own")` lifts the no-push guard — which
 the rename carried to `original`, so the original stays never-push. No sync
 can run in between and see a `github` record whose origin is Bob's, or an
@@ -279,6 +284,30 @@ def _repoint_locked(root, *, full: str, original: str, branch: str, follow_tip: 
         p._git(root, "update-ref", ORIGINAL_REF, follow_tip)
 
 
+def _own_branch_locked(root, branch: str) -> None:
+    """The checkout becomes `branch` at HEAD (§17 for an `own` copy): `branch
+    -f <b> HEAD` over the old mirror (the original's commits stay under
+    `original/` and `ORIGINAL_REF`), `switch <b>` (same commit: no file
+    changes, uncommitted edits carried), `branch -D fused/mine`, upstream
+    `origin/<b>` (`_repoint_locked` wrote it). A copy already on `<b>`
+    (v2-shaped) is left as it is. Caller holds the slot."""
+    p = _p()
+    home = p.home_branch()
+    current = _gu()._current_branch(root)
+    if current == branch or current != home:
+        return
+    head = p._rev(root, "HEAD")
+    if not head or not p._ok(p._git(root, "branch", "-f", branch, head)):
+        logger.warning("remix: could not point %s at HEAD in %s", branch, root)
+        return
+    if not p._ok(p._git(root, "switch", "-q", branch)):
+        logger.warning("remix: could not switch %s to %s", root, branch)
+        return
+    p._git(root, "branch", "-D", home)
+    p._git(root, "config", f"branch.{branch}.remote", "origin")
+    p._git(root, "config", f"branch.{branch}.merge", f"refs/heads/{branch}")
+
+
 def _push_remix(root, tip: str, full: str, branch: str, name: str) -> None:
     """Push the remix NEVER over anything we did not put there. A reused repo
     (same owner + our description) is normally empty, or holds an earlier
@@ -335,7 +364,7 @@ def publish(app_dir, *, name: str, credit: str, step=None) -> dict:
 
     p._say(step, "send")
     follow_tip = p.tip_of(root, record, fetch=True)
-    p._prepare(root, record, me, tip=follow_tip)
+    p._prepare(root, record, me)
     replay = _replay()
     with replay.slot() as held:
         if not held:
@@ -345,25 +374,26 @@ def publish(app_dir, *, name: str, credit: str, step=None) -> dict:
                                    me=p.commit_identity(root, me))
     if not tip:
         raise PlainError("Couldn't prepare your remix. Try again.")
-    gu = _gu()
-    local_branch = gu._current_branch(root) or branch
-    _push_remix(root, tip, full, local_branch, name)
+    # HEAD goes to the RECORD's branch (`<b>`), never to the local
+    # checkout's name (`fused/mine` on a v3 copy).
+    _push_remix(root, tip, full, branch, name)
 
     now = time.time()
 
     def become_own(rec):
-        rec.update(kind="own", repo=full, branch=local_branch, classified_by="remix",
+        rec.update(kind="own", repo=full, branch=branch, classified_by="remix",
                    classified_at=now, owner_checked=True,
                    remix_of={"repo": original, "branch": branch},
-                   needs_merge=None, original_update=None, skip_tip=None)
+                   original_update=None, skip_tip=None)
 
     with replay.slot() as held:
         if not held:
             raise PlainError("Your app is busy updating. Try again in a moment.")
         # Record first, then origin, then the guard (module docstring).
         _store().update(root, become_own)
-        _repoint_locked(root, full=full, original=original, branch=local_branch,
+        _repoint_locked(root, full=full, original=original, branch=branch,
                         follow_tip=follow_tip)
+        _own_branch_locked(root, branch)
         _push_guard(root)
     try:
         _store().add_event(root, "remixed", who=me["login"])

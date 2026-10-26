@@ -21,15 +21,23 @@ to someone else's main. `kind_of` answers `github` for an unchecked record
 too (§16.1): an unknown owner never pushes.
 
 KIND DECIDES GIT BEHAVIOUR, WHATEVER THE FLAGS (§16.0 P1). `kind_of` is a
-store read plus the record's root-commit binding (store.py), no network, any
+store read plus the record's binding (store.py), no network, any
 flags, memoised 30 s per folder. git_upstream asks it on every sync: a
 `github` copy goes to the engine and never to the plain push. Flags only
 decide whether a folder WITHOUT a record is classified at all (A1, as v1) —
 a link install records at install whatever the flags.
 
 THE GUARDS (`settle_locked`, every sync of a recorded copy, slot held):
-- the v1 → v2 conversion of the record and the deletion of v1's private
-  refs (§16.0 P3), once;
+- the v1/v2 → v3 move (§17.6), once per record: a `github` copy's work
+  moves onto its own branch `fused/mine` (`HOME_BRANCH`, I4), its
+  `refs/heads/<b>` becomes a mirror of the author's branch (I3), v1's
+  private refs go, and the record is converted (`store.migrate_v3`) LAST,
+  so a git step that failed is retried by the next sync;
+- a `github` copy's home branch whenever it has none and HEAD is on the
+  author's branch (a fresh `git clone`, an install that died half way —
+  `ensure_home_locked`); an `own` copy left on `fused/mine` (it was a
+  `github` copy until sign-in said it is the author's) goes back to its
+  default branch, its work carried (`_unhome_locked`);
 - skip-worktree on every tracked `.fused/` path for any `github`/`own`
   record — never undone (a repo that commits `.fused/` must not turn fused's
   own writes into edits; and every commit fused makes excludes `.fused` by
@@ -44,7 +52,7 @@ THE GUARDS (`settle_locked`, every sync of a recorded copy, slot held):
 Identity (`apply_identity`) needs GitHub's answer, so it runs on `ensure` /
 `record_install` / sign-in, never under the slot.
 
-NOTHING HERE READS `.fused/`. The origin URL, the root commit and the
+NOTHING HERE READS `.fused/`. The origin URL, the copy id and the
 repo-root test are git facts; the record is ours.
 
 Who calls what: `record_install` from `appfile_git.install` (inline, the
@@ -69,9 +77,23 @@ logger = logging.getLogger(__name__)
 
 KINDS = ("github", "own", "scratch")
 
+def _load_guard():
+    """`templates/shared/contrib_guard.py` (§17.8) — the one copy of the
+    guard's constants, loaded once by path (`replay._guard_module`, the one
+    loader; templates/shared is not a package)."""
+    return replay._guard_module()
+
+
+_guard_mod = _load_guard()
+
+#: A `github` copy's own branch (§17.1 I4): HEAD is always here; the
+#: author's branch is a fetch-only mirror (I3). One value, the guard's.
+HOME_BRANCH = _guard_mod.HOME_BRANCH
+HOME_REF = "refs/heads/" + HOME_BRANCH
+
 #: The push guard's value (§16.0 P2): not a URL any git transport speaks, so
 #: every push by remote name fails before it leaves the machine.
-NO_PUSH_URL = "no-push://fused"
+NO_PUSH_URL = _guard_mod.NO_PUSH_URL
 
 #: Repo-local marker of the recorded kind, for the one reader that cannot
 #: import this module (claude_agent/agent.py's turn commit, D166): it picks
@@ -137,7 +159,11 @@ def _local_default_branch(root) -> str | None:
     for name in ("main", "master"):
         if replay.rev(root, f"refs/remotes/origin/{name}"):
             return name
-    return gu._current_branch(root)
+    cur = gu._current_branch(root)
+    if cur == HOME_BRANCH:  # a v3 copy: its upstream names the author's branch
+        ref = replay.mirror_ref(root)
+        return ref[len("refs/heads/"):] if ref else None
+    return cur
 
 
 def _in_workspace(root) -> bool:
@@ -413,9 +439,8 @@ def ensure(app_dir, *, identity=None) -> dict | None:
             _guard_soon(app_dir, identity)
             return store.get(app_dir) or marked
     repo = repo_of_url(_origin_url(root)) if root else None
-    rc = store.root_commit_of(app_dir)
-    if repo and rc:
-        adopted = _adopt(app_dir, repo, rc)
+    if repo and root:
+        adopted = _adopt(app_dir, repo)
         if adopted is not None:
             _guard_soon(app_dir, identity)
             return store.get(app_dir) or adopted
@@ -428,7 +453,7 @@ def ensure(app_dir, *, identity=None) -> dict | None:
         # today's plain sync; the next `ensure` with an identity decides.
         return None
     rec = store.new_record(kind, repo=repo, branch=_local_default_branch(root) if root else None,
-                           classified_by="migration", owner_checked=checked, root_commit=rc)
+                           classified_by="migration", owner_checked=checked)
     _with_push_rights(rec, ident)
     if not store.create(app_dir, rec):
         return store.get(app_dir)
@@ -456,7 +481,6 @@ def claim_marked(root) -> dict | None:
             return None
         k = store.key(root)
         cid = _local_config(root, COPY_ID_CONFIG)
-        rc = store.root_commit_of(root)
         live = None
         if cid:
             for other, r in store.all().items():
@@ -464,8 +488,8 @@ def claim_marked(root) -> dict | None:
                     if os.path.isdir(other):
                         live = r
                         break
-                    if r.get("repo") and rc:
-                        adopted = _adopt(root, r["repo"], rc)
+                    if r.get("repo"):
+                        adopted = _adopt(root, r["repo"])
                         if adopted is not None:
                             return adopted
         repo = (live or {}).get("repo") or repo_of_url(_origin_url(root))
@@ -475,8 +499,7 @@ def claim_marked(root) -> dict | None:
             "github", repo=repo,
             branch=(live or {}).get("branch") or _local_default_branch(root),
             classified_by="duplicate" if live else "marked",
-            owner_checked=bool((live or {}).get("owner_checked")) and live.get("kind") == "github",
-            root_commit=rc)
+            owner_checked=bool((live or {}).get("owner_checked")) and live.get("kind") == "github")
         if not store.create(root, rec):
             return store.get(root)
         _forget_kind(root)
@@ -506,19 +529,19 @@ def _stamp_copy(root, rec) -> None:
     store.note_head(root, replay.rev(root, "HEAD"))
 
 
-def _adopt(app_dir, repo, rc) -> dict | None:
+def _adopt(app_dir, repo) -> dict | None:
     """A Finder move the server never saw (§3 self-healing): an orphaned row
     for the same repo whose folder is gone is THIS copy's — and ONLY this
     copy's (audit V10/V12: a fresh clone into a new folder took a deleted
     copy's open proposal; of two copies of one repo the newest orphan won,
-    the deleted sibling's). An orphan qualifies when it has the same root
-    commit (§16.1) and either names the folder's own `fused.copyid` (written
+    the deleted sibling's). An orphan of the same repo qualifies when it
+    either names the folder's own `fused.copyid` (written
     into `.git/config` by `_stamp_copy`, so it moves with the folder and a
     fresh clone has none), or — an orphan from before copy ids — the
     folder's HEAD is or contains its `last_head` (and its sent proposal, if
     any). Among those, `last_head == HEAD` first, then the newest. A v1
-    orphan with neither a root commit nor a last HEAD is adopted only when
-    it is the ONLY orphan of the repo."""
+    orphan with neither a copy id nor a last HEAD is adopted only when it is
+    the ONLY orphan of the repo and the folder carries no copy id."""
     orphans = [(k, r) for k, r in store.find_by_repo(repo) if not os.path.isdir(k)]
     root = follow.is_repo_root(app_dir)
     mine = _local_config(root, COPY_ID_CONFIG) if root else None
@@ -529,8 +552,6 @@ def _adopt(app_dir, repo, rc) -> dict | None:
             replay.rev(app_dir, sha) is not None and replay.is_ancestor(app_dir, sha, head)
 
     def qualifies(r):
-        if r.get("root_commit") and r["root_commit"] != rc:
-            return False
         if r.get("copy_id") or mine:
             return bool(mine) and r.get("copy_id") == mine
         p = r.get("proposal") if isinstance(r.get("proposal"), dict) else {}
@@ -539,7 +560,7 @@ def _adopt(app_dir, repo, rc) -> dict | None:
             return False
         if r.get("last_head"):
             return contains(r["last_head"])
-        return not r.get("root_commit") and len(orphans) == 1
+        return len(orphans) == 1
 
     cands = [(k, r) for k, r in orphans if qualifies(r)]
     cands.sort(key=lambda kr: kr[1].get("last_head") != head)  # stable: newest first within
@@ -689,8 +710,7 @@ def record_install(app_dir, url) -> dict | None:
     ident = _identity() if flags.sources() else None
     kind, checked = _classify(repo, ident)
     rec = store.new_record(kind, repo=repo, branch=_local_default_branch(root) if root else None,
-                           classified_by="install", owner_checked=checked,
-                           root_commit=store.root_commit_of(app_dir))
+                           classified_by="install", owner_checked=checked)
     _with_push_rights(rec, ident)
     store.put(app_dir, rec)
     _forget_kind(app_dir)
@@ -858,20 +878,24 @@ def settle_locked(root, kind=None) -> dict | None:
     "THE GUARDS"); the caller holds the slot. No network. Answers the record
     (None: no record). Never raises."""
     try:
-        rec, migrated = store.migrate_v2(root)
+        rec = store.get(root)
         if rec is None:
             return None
-        if migrated:
-            for ref in store.V1_REFS:
-                if replay.rev(root, ref):
-                    _g(root, "update-ref", "-d", ref)
         kind = kind or rec.get("kind")
-        if follow.is_repo_root(root) is None:
+        is_root = follow.is_repo_root(root) is not None
+        if rec.get("v") != store.RECORD_V:
+            moved = _migrate_v3_git_locked(root, rec, kind) if is_root else True
+            if moved:
+                rec = store.migrate_v3(root)[0] or rec
+        if not is_root:
             return rec
         if kind in ("github", "own"):
             replay.protect_locked(root)
         if kind == "github":
             _point_back(root, rec)
+            ensure_home_locked(root, rec.get("branch"))
+        elif kind == "own":
+            _unhome_locked(root, rec)
         ensure_push_guard(root, kind)
         _mark_unchecked(root, kind == "github" and not rec.get("owner_checked"))
         if kind in ("github", "own"):
@@ -880,6 +904,177 @@ def settle_locked(root, kind=None) -> dict | None:
     except Exception:  # noqa: BLE001 — a guard failure never costs a sync
         logger.exception("contrib: settle failed for %s", root)
         return None
+
+
+# --------------------------------------------------------- v3 home branch
+
+
+def _valid_branch(branch) -> bool:
+    return isinstance(branch, str) and bool(branch) and branch != HOME_BRANCH \
+        and follow._valid("o/r", branch)
+
+
+def _set_upstream(root, branch) -> None:
+    """`fused/mine` tracks the author's branch (`origin/<b>`), so every git
+    tool — the Git panel, a terminal's `git status` — reads "ahead/behind"
+    against the author's version."""
+    if _local_config(root, f"branch.{HOME_BRANCH}.remote") != "origin":
+        _g(root, "config", "--local", f"branch.{HOME_BRANCH}.remote", "origin")
+    if _local_config(root, f"branch.{HOME_BRANCH}.merge") != f"refs/heads/{branch}":
+        _g(root, "config", "--local", f"branch.{HOME_BRANCH}.merge", f"refs/heads/{branch}")
+
+
+def ensure_home_locked(root, branch) -> bool:
+    """I4 for a `github` copy (§17.6): HEAD on `fused/mine`, tracking the
+    author's `branch`. When the branch is missing and HEAD is on the
+    author's branch (a fresh clone, an install or a move that died half
+    way) it is created right there — `switch -c`, same commit: no file
+    changes, uncommitted edits carried. When `fused/mine` exists and HEAD
+    is elsewhere, nothing moves: that is the `other-branch` state (Go back).
+    The caller holds the slot. Answers whether HEAD is on `fused/mine`."""
+    if not _valid_branch(branch):
+        return False
+    cur = gu._current_branch(root)
+    if cur == HOME_BRANCH:
+        _set_upstream(root, branch)
+        return True
+    if cur != branch or replay.rev(root, HOME_REF) or gu._operation_in_flight(root):
+        return False
+    r = _g(root, "switch", "-q", "-c", HOME_BRANCH)
+    if not gu._ok(r) or gu._current_branch(root) != HOME_BRANCH:
+        logger.warning("contrib: could not create %s in %s: %s", HOME_BRANCH, root, gu._text(r))
+        return False
+    _set_upstream(root, branch)
+    # The author's branch is no longer checked out: from here on it is the
+    # mirror of origin's (I3). What it held is on fused/mine now.
+    tip = replay.rev(root, f"refs/remotes/origin/{branch}")
+    old = replay.rev(root, f"refs/heads/{branch}")
+    if tip and old and tip != old:
+        _g(root, "update-ref", f"refs/heads/{branch}", tip, old)
+    return True
+
+
+#: The Activity line of the v2 → v3 move, written only when the copy had
+#: work of its own (§17.6, Q5). No git words (§0.1).
+MOVED_TEXT = "Your changes now have a place of their own in this app. Nothing in your files changed."
+
+
+def _migrate_v3_git_locked(root, rec, kind) -> bool:
+    """The git side of the v1/v2 → v3 move (§17.6); slot held. A `github`
+    copy on its author's branch (v2's only shape) gets `fused/mine` there
+    and the branch becomes the mirror, its old tip pinned when it carried
+    work of Bob's; a copy on some other version keeps HEAD where it is
+    (`other-branch`, Go back) and gets `fused/mine` at the author's
+    branch's tip, which is where v2 kept Bob's work. v1's private refs go
+    for every kind. Answers whether the record may be stamped `v: 3` (False
+    = try again next sync)."""
+    for ref in store.V1_REFS:
+        if replay.rev(root, ref):
+            _g(root, "update-ref", "-d", ref)
+    branch = rec.get("branch")
+    if kind != "github" or not _valid_branch(branch):
+        return True
+    _migrate_pr_head(root, rec)
+    main_ref = f"refs/heads/{branch}"
+    origin = replay.rev(root, f"refs/remotes/origin/{branch}")
+    main = replay.rev(root, main_ref)
+    cur = gu._current_branch(root)
+    ahead = bool(main and origin and not replay.is_ancestor(root, main, origin))
+    pin = None
+    if cur == branch:
+        if ahead:
+            pin = (replay.backup_locked(root, main, why="v3-move") or [None])[0]
+        if not ensure_home_locked(root, branch):
+            return False
+    elif not replay.rev(root, HOME_REF) and main:
+        # HEAD on some other version (or detached): Bob's v2 work is on the
+        # author's branch — it becomes his branch; HEAD stays put.
+        if not gu._ok(_g(root, "update-ref", HOME_REF, main, "")):
+            return False
+        _set_upstream(root, branch)
+        if ahead:
+            pin = (replay.backup_locked(root, main, why="v3-move") or [None])[0]
+        if origin and gu._current_branch(root) != branch:
+            _g(root, "update-ref", main_ref, origin, main)
+    if ahead:
+        store.add_activity(root, "moved", MOVED_TEXT, backup=pin)
+    return True
+
+
+#: The proposal head ref (proposals.PR_HEAD_REF).
+_PR_HEAD_REF = "refs/fused/pr-head"
+
+
+def _migrate_pr_head(root, rec) -> None:
+    """v2 wrote `refs/fused/pr-head` only on Update's fetch of maintainer
+    edits and kept pushing past it; v3 reads it as what the proposal holds
+    (§17.5). So the move points it at what v2 last sent (`sent`, or v1's
+    `pushed_head`/`proposed_head`) when that is a local commit, else
+    deletes it (v3 then falls back to the cache's head)."""
+    p = rec.get("proposal") if isinstance(rec.get("proposal"), dict) else {}
+    sent = p.get("sent") or p.get("pushed_head") or p.get("proposed_head")
+    sha = replay.rev(root, sent) if isinstance(sent, str) and sent else None
+    if sha and p.get("number"):
+        _g(root, "update-ref", _PR_HEAD_REF, sha)
+    elif replay.rev(root, _PR_HEAD_REF):
+        _g(root, "update-ref", "-d", _PR_HEAD_REF)
+
+
+#: The Activity line when an own copy's default branch had work of its own
+#: that fused/mine lacked (pinned, Undo). No git words (§0.1).
+OWN_MOVE_TEXT = ("This is your app: your changes are back on its usual version. A version "
+                 "that was there before is saved.")
+
+
+def _unhome_locked(root, rec) -> None:
+    """An `own` copy still on `fused/mine` — it was a `github` copy until
+    sign-in said it is the author's (`_recheck`), or an install fused put
+    there before it knew: back to its default branch, where today's plain
+    sync and ownsync work, every commit carried — and NO FILE MOVES here
+    (review P0 #1): the default branch is pointed at `fused/mine`'s commit
+    (`update-ref`, compare-and-set), so the `switch` is a same-commit move.
+    When the default branch was AHEAD, those commits are the author's
+    (`origin/<b>`'s): nothing is lost, and `_sync_plain` fast-forwards to
+    them later under its own gates. Only commits found nowhere else (not in
+    `fused/mine`, not in `origin/<b>`) are pinned, with an Activity line
+    (Undo). Waits while a Claude turn is open. Slot held."""
+    branch = rec.get("branch")
+    if gu._current_branch(root) != HOME_BRANCH or not _valid_branch(branch):
+        return
+    if gu._operation_in_flight(root) is not None:
+        return
+    try:
+        from fused_render.contrib import engine
+
+        if engine.claude_busy(root):
+            return
+    except Exception:  # noqa: BLE001 — unknown reads as busy: try next sync
+        return
+    home = replay.rev(root, HOME_REF)
+    main_ref = f"refs/heads/{branch}"
+    main = replay.rev(root, main_ref)
+    if not home:
+        return
+    pin = None
+    if main != home:
+        origin = replay.rev(root, f"refs/remotes/origin/{branch}")
+        if main and not replay.is_ancestor(root, main, home) and \
+                not (origin and replay.is_ancestor(root, main, origin)):
+            pin = (replay.backup_locked(root, main, why="own-move") or [None])[0]
+            if not pin:
+                return
+        if not gu._ok(_g(root, "update-ref", main_ref, home, main or "")):
+            if pin:
+                replay.unbackup_locked(root, [pin, pin + "-wip"])
+            return
+    r = _g(root, "switch", "-q", branch)  # same commit: no file changes
+    if not gu._ok(r) or gu._current_branch(root) != branch:
+        logger.info("contrib: %s stays on %s for now: %s", root, HOME_BRANCH, gu._text(r))
+        return
+    _g(root, "branch", "-q", "-D", HOME_BRANCH)
+    replay.protect_after_move(root)
+    if pin:
+        store.add_activity(root, "own-move", OWN_MOVE_TEXT, backup=pin)
 
 
 def _sources_on() -> bool:

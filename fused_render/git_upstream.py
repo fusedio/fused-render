@@ -702,8 +702,18 @@ def switch_repo(root):
     raw git text, and refused (never silently taking some other action on
     the user's behalf; the fix is a terminal, the same as every other
     refusal this module surfaces)."""
-    if _is_github(root) and _sources_on():
-        return _refuse("contrib", _FOLLOWS_REFUSAL)
+    if _is_github(root):
+        if _sources_on():
+            return _refuse("contrib", _FOLLOWS_REFUSAL)
+        # A GitHub-link copy's usual version is its own branch, never the
+        # author's (a fetch-only mirror, §17.1 I3/I4): the engine's Go back.
+        from fused_render.contrib import engine as _contrib
+        out = _contrib.go_back_main(root)
+        if not out.get("ok"):
+            return _refuse(out.get("reason") or "failed", out.get("message") or "")
+        with _state_lock:
+            _state.pop(root, None)
+        return {"ok": True, "op": "switch", "root": root, "message": out.get("message")}
     with _mutation_slot() as slot:
         if not slot:
             return _refuse("busy", _BUSY_REFUSAL)
@@ -1020,15 +1030,18 @@ def _sources_on():
 
 
 def _with_off_default_state(root, result):
-    """A GitHub-link copy on another branch with A1 OFF keeps today's Switch
-    card (round 2, R5: the app page's Go back exists only with A1 on): the
-    engine's result gets a `check_repo`-shaped state saying so, from the
-    tracking ref its fetch refreshed."""
+    """A GitHub-link copy on another version with A1 OFF keeps today's
+    Switch card (round 2, R5: the app page's Go back exists only with A1
+    on): the engine's result gets a `check_repo`-shaped state saying so,
+    from the tracking ref its fetch refreshed. "Default" for such a copy is
+    its own branch `fused/mine` (§17.6); `default_branch` names the
+    author's."""
     if _sources_on() or result.get("why") != "not-default":
         return result
+    from fused_render.contrib import classify as _cls
     default_branch = _default_branch(root)
     branch = _current_branch(root)
-    if not default_branch or branch == default_branch:
+    if not default_branch or branch == _cls.HOME_BRANCH:
         return result
     ahead, behind = _ahead_behind_counts(root, default_branch)
     if behind is None:

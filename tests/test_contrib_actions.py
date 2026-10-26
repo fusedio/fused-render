@@ -1,5 +1,7 @@
 """Tests for contrib/actions.py — the ONE place that decides which Source
-panel buttons exist (docs/CONTRIB_LOOP.md §16.9).
+panel buttons exist (docs/CONTRIB_LOOP.md §16.9; §17.2 for a GitHub-link
+copy under the v3 git model: no Keep mine, Use <who>'s version is `match`,
+a declined proposal offers Keep working on it).
 
 A table over `decide`: literal facts (kind × state × flags × sign-in) →
 the exact action ids, primary first. `decide` is pure, so nothing here
@@ -40,8 +42,8 @@ def gh(state="following", *, flags=ALL, github=IN, proposal=None, owner_checked=
     c.update(copy)
     if state == "needs-merge" and "needs_merge" not in copy:
         c["needs_merge"] = True
-    if state == "merged" and "merged_in_tip" not in copy:
-        c["merged_in_tip"] = True
+    if state == "merged":
+        c["merged_in_tip"] = True  # §17.2: kept, = pr merged
     return {"kind": "github", "repo": "alice/x", "remix_of": None,
             "owner_checked": owner_checked, "original_update": False, "flags": flags,
             "github": github, "copy": c, "own": None, "proposal": proposal,
@@ -68,6 +70,8 @@ def ids(f):
     return [a["id"] for a in actions.decide(f)["actions"]]
 
 
+MOVED_JOB = {"id": "m", "status": "failed", "purpose": "update",
+             "error": "Your copy changed meanwhile; run it again."}
 WAITING = {"number": 4, "state": "waiting", "can_update": True, "can_withdraw": True,
            "asked_update": False}
 CH = {"changes_files": ["a.py"], "changes": 1}
@@ -83,42 +87,56 @@ TABLE = [
      ["propose", "remix", "push-main", "discard", "check"]),
     ("changes, behind", gh("changes", behind=1, **CH),
      ["propose", "remix", "discard", "bring-in", "check"]),
-    ("changes, kept mine", gh("changes", behind=1, kept_mine=True, **CH),
+    # §17.2 undo hold: the user undid an automatic bring-in; Bring in is the
+    # way forward (no Keep mine any more).
+    ("changes, undone bring-in", gh("changes", behind=1, kept_mine=True, **CH),
      ["propose", "remix", "discard", "bring-in", "check"]),
     ("dirty only", gh("changes", dirty=True, changes_files=["a.py"], changes=1),
      ["propose", "remix", "discard", "check"]),
+    # §17.2: Merge with Claude · Use <who>'s version — no Keep mine.
     ("needs-merge update", gh("needs-merge", needs_merge_purpose="update",
                               needs_merge_files=["a"], behind=3, **CH),
-     ["merge-claude", "keep-mine", "use-theirs", "check"]),
-    ("needs-merge return", gh("needs-merge", needs_merge_purpose="return"),
-     ["merge-claude", "use-theirs", "check"]),
-    ("needs-merge proposal", gh("needs-merge", needs_merge_purpose="proposal"),
-     ["merge-claude", "check"]),
+     ["merge-claude", "match", "check"]),
+    ("needs-merge while proposed", gh("needs-merge", proposal=WAITING, behind=1, **CH),
+     ["merge-claude", "match", "check"]),
     ("blocked by a file", gh("changes", blocked_files=["data.csv"], behind=1, **CH),
-     ["move-aside", "keep-mine", "check"]),
+     ["move-aside", "check"]),
     ("other branch", gh("changes", off_default=True, behind=2, **CH), ["go-back-main", "check"]),
+    ("other branch, state only", gh("other-branch", behind=2), ["go-back-main", "check"]),
     ("merge job running", gh("needs-merge", merge_job={"id": "m", "status": "running"}), []),
     ("merge job landing", gh("needs-merge", merge_job={"id": "m", "status": "landing"}), []),
     ("merge job ready", gh("needs-merge", merge_job={"id": "m", "status": "ready",
                                                      "summary": "Both."}), []),
     ("merge job failed", gh("needs-merge", needs_merge_purpose="update",
                             merge_job={"id": "m", "status": "failed"}),
-     ["merge-claude", "keep-mine", "use-theirs", "check"]),
+     ["merge-claude", "match", "check"]),
+    ("merge job kept on a moved copy", gh("needs-merge", merge_job=MOVED_JOB),
+     ["merge-claude", "match", "check"]),
     ("merge job choice", gh("needs-merge", needs_merge_purpose="update",
                             merge_job={"id": "m", "status": "choice", "files": ["logo.png"],
                                        "error": "logo.png isn't text."}),
-     ["choose-mine", "choose-theirs", "keep-mine", "use-theirs", "check"]),
+     ["choose-mine", "choose-theirs", "match", "check"]),
     ("merge job choice, nothing else recorded", gh(merge_job={"id": "m", "status": "choice",
                                                                "files": ["x.bin"]}),
-     ["choose-mine", "choose-theirs", "keep-mine", "use-theirs", "check"]),
-    ("merge job choice, return", gh("needs-merge", needs_merge_purpose="return",
-                                    merge_job={"id": "m", "status": "choice"}),
-     ["choose-mine", "choose-theirs", "keep-mine", "use-theirs", "check"]),
+     ["choose-mine", "choose-theirs", "match", "check"]),
     ("merged", gh("merged"), ["check"]),
+    ("merged, not in yet", gh("merged", behind=2), ["bring-in", "check"]),
+    ("merged, not in yet, automatic updates off", gh("merged", behind=2, auto_sync=False),
+     ["bring-in", "check"]),
+    ("merged, not in yet, undo hold", gh("merged", behind=2, kept_mine=True),
+     ["bring-in", "check"]),
     # §16.12: edits kept after a merge can go in a new proposal.
     ("merged, kept edits", gh("merged", **CH), ["propose", "remix", "discard", "check"]),
     ("merged, kept edits, A1", gh("merged", flags=A1, **CH), ["discard", "check"]),
-    ("declined", gh("declined", **CH), ["propose", "remix", "discard", "check"]),
+    ("declined", gh("declined", **CH),
+     ["propose", "remix", "discard", "keep-working", "check"]),
+    ("declined, collaborator", gh("declined", can_push=True, **CH),
+     ["propose", "remix", "push-main", "discard", "keep-working", "check"]),
+    ("declined, signed out", gh("declined", github=OUT, **CH),
+     ["sign-in", "discard", "keep-working", "check"]),
+    # Keep working is proposal UI: with `changes` off a declined copy reads
+    # as plain changes.
+    ("declined, A1", gh("declined", flags=A1, **CH), ["discard", "check"]),
     # §16.12: Remix and Discard stay offered while proposed (V6).
     ("proposed, nothing new", gh("proposed", proposal=WAITING, **CH),
      ["withdraw", "remix", "discard", "check"]),
@@ -161,9 +179,9 @@ TABLE = [
     ("A1 changes, collaborator", gh("changes", can_push=True, flags=A1, **CH),
      ["discard", "check"]),
     ("A1 needs-merge", gh("needs-merge", flags=A1, **CH),
-     ["merge-claude", "keep-mine", "use-theirs", "check"]),
+     ["merge-claude", "match", "check"]),
     ("A1 blocked (V4)", gh(blocked_files=["x"], behind=1, flags=A1),
-     ["move-aside", "keep-mine", "check"]),
+     ["move-aside", "check"]),
     ("A1 proposed", gh("proposed", unproposed=1, proposal=WAITING, flags=A1, **CH),
      ["discard", "check"]),
     ("A1 other branch", gh(off_default=True, behind=3, flags=A1), ["go-back-main", "check"]),
@@ -251,6 +269,7 @@ def test_buttons(name, f, want):
     ("signed out", gh("changes", github=OUT, **CH), "sign-in"),
     ("behind", gh(behind=1), "bring-in"),
     ("needs-merge", gh("needs-merge"), "merge-claude"),
+    ("declined", gh("declined", **CH), "propose"),
     ("blocked", gh(blocked_files=["x"]), "move-aside"),
     ("own needs-merge", own("needs-merge", unpublished=1), "merge-claude"),
     ("github-changed", own("github-changed", unpublished=1), "put-on-top"),
@@ -280,8 +299,7 @@ def test_primary(name, f, first):
 
 STUCK = [
     gh("needs-merge", needs_merge_purpose="update"),
-    gh("needs-merge", needs_merge_purpose="return"),
-    gh("needs-merge", needs_merge_purpose="proposal"),
+    gh("needs-merge", merge_job={"id": "m", "status": "choice"}),
     gh(blocked_files=["x"]),
     gh(off_default=True),
     gh(sync_error="Couldn't reach GitHub."),
@@ -315,7 +333,12 @@ def _button(f, id_):
 
 def test_confirm_and_danger():
     nm = gh("needs-merge")
-    assert _button(nm, "use-theirs")["confirm"] and _button(nm, "use-theirs")["danger"]
+    assert _button(nm, "match")["danger"]
+    assert _button(nm, "match")["confirm"] == (
+        "Your copy becomes alice's version. Your changes are kept in Activity so you can "
+        "bring them back.")
+    kw = _button(gh("declined", **CH), "keep-working")
+    assert "confirm" not in kw and "danger" not in kw and not kw["primary"]
     ch = gh("changes", can_push=True, **CH)
     assert _button(ch, "discard")["confirm"] and _button(ch, "discard")["danger"]
     assert _button(ch, "push-main")["confirm"]
@@ -332,7 +355,9 @@ def test_labels_name_the_author():
     assert _button(ch, "propose")["label"] == "Propose to alice"
     assert _button(ch, "bring-in")["label"] == "Bring in alice's latest"
     assert _button(ch, "push-main")["label"] == "Update alice's app directly"
-    assert _button(gh("needs-merge"), "use-theirs")["label"] == "Use alice's version"
+    assert _button(gh("needs-merge"), "match")["label"] == "Use alice's version"
+    assert _button(gh("needs-merge"), "merge-claude")["label"] == "Merge with Claude"
+    assert _button(gh("declined", **CH), "keep-working")["label"] == "Keep working on it"
     assert _button(gh("declined", **CH), "propose")["label"] == "Propose again"
     assert _button(own(remix_of="alice/x", original_update=True), "bring-in")["label"] \
         == "Bring it in"
@@ -380,20 +405,27 @@ def test_nothing_to_show_is_null():
     (gh(), "following", "Following alice's latest."),
     (gh(behind=1), "following", "alice has a newer version."),
     (gh("merged"), "merged", "alice merged your change. You're on alice's latest version."),
-    (gh("merged", merged_in_tip=False), "merged",
+    (gh("merged", behind=1), "merged",
      "alice merged your change. It comes into your copy the next time you open the app, or when you press Check now."),
-    (gh("merged", taken_back=True), "merged", "alice merged your change, then took it back."),
+    # Review #8: with automatic updates off or an undo hold, neither opening
+    # nor Check now brings it in — only Bring in does.
+    (gh("merged", behind=1, auto_sync=False), "merged",
+     "alice merged your change. Bring it in when you're ready."),
+    (gh("merged", behind=1, kept_mine=True), "merged",
+     "alice merged your change. Bring it in when you're ready."),
     (gh("needs-merge", merge_job={"id": "m", "status": "choice",
                                   "error": "logo.png isn't text, so it can't be combined."}),
      "needs-merge", "logo.png isn't text, so it can't be combined."),
     (own("needs-merge", merge_job={"id": "m", "status": "choice", "purpose": "own-sync",
                                    "error": "a.py was removed on GitHub."}),
      "needs-merge", "a.py was removed on GitHub."),
-    (gh("merged", **CH), "merged", "Your newer changes: 1 file."),
+    (gh("merged", **CH), "merged",
+     "alice merged your change. You're on alice's latest version. Your newer changes: 1 file."),
     (gh(off_default=True, behind=3), "other-branch", "which has 3 newer changes."),
     (gh("proposed", proposal={**WAITING, "fits": False}, **CH), "proposed",
      "Your proposal no longer fits alice's latest."),
-    (gh("declined", **CH), "declined", "alice declined your proposal."),
+    (gh("declined", **CH), "declined",
+     "alice declined your proposal. Your changes are still here."),
     (gh("proposed", proposal=WAITING, **CH), "proposed", "Waiting for alice."),
     (gh("proposed", unproposed=2, proposal=WAITING, **CH), "proposed",
      "2 edits not in your proposal."),
@@ -404,6 +436,8 @@ def test_nothing_to_show_is_null():
      "alice asked you to update your proposal."),
     (gh("needs-merge", needs_merge_purpose="update", needs_merge_files=["a.py"]),
      "needs-merge", "alice changed the same parts you did: a.py."),
+    (gh("needs-merge", needs_merge_files=["a.py"], merge_job={"id": "m", "status": "failed"}),
+     "needs-merge", "a.py. Claude couldn't combine them last time."),
     (gh(blocked_files=["data.csv"]), "blocked", "data.csv is in the way of alice's update."),
     (gh(off_default=True), "other-branch", "different version"),
     (gh(sync_error="Couldn't reach GitHub."), "error", "Couldn't reach GitHub."),
@@ -412,8 +446,13 @@ def test_nothing_to_show_is_null():
      "Claude combined both versions. Kept both."),
     (gh("changes", github=OUT, **CH), "changes", "Sign in to GitHub to send your proposal."),
     (gh(claude_busy=True), "following", "Claude is still working on this app."),
-    (gh("changes", behind=1, kept_mine=True, **CH), "changes", "alice's latest is waiting"),
     (gh("changes", flags=A1, **CH), "changes", "You have your own changes in this app."),
+    (gh("changes", behind=1, kept_mine=True, **CH), "changes",
+     "Your changes: 1 file. You undid that; alice's latest is waiting."),
+    (gh(behind=2, kept_mine=True), "following",
+     "alice has a newer version. You undid that; alice's latest is waiting."),
+    (gh("needs-merge", needs_merge_files=["a.py"], merge_job=MOVED_JOB), "needs-merge",
+     "alice changed the same parts you did: a.py. Your copy changed meanwhile; run it again."),
     (own("needs-merge", files=["a.py"]), "needs-merge", "both change a.py"),
     (own("unpublished", unpublished=1), "unpublished", ownsync.MESSAGES["unpublished"]),
     (own(remix_of="alice/x", original_update=True), "original-moved",
@@ -452,8 +491,8 @@ CALLED = [
     ("store", "ack", ()),
     ("classify", "kind_of", ()), ("classify", "ensure", ()),
     ("flags", "snapshot", ()),
-    ("engine", "status", ()), ("engine", "bring_in", ()), ("engine", "keep_mine", ()),
-    ("engine", "use_theirs", ()), ("engine", "move_aside", ()),
+    ("engine", "status", ()), ("engine", "bring_in", ()), ("engine", "match", ()),
+    ("engine", "keep_working", ()), ("engine", "move_aside", ()),
     ("engine", "go_back_main", ()), ("engine", "discard", ("withdraw",)),
     ("engine", "restore", ()), ("engine", "push_to_main", ()), ("engine", "merge_plan", ()),
     ("ownsync", "status", ()), ("ownsync", "check_now", ()), ("ownsync", "publish_now", ()),
@@ -498,17 +537,53 @@ def test_git_upstream_names_exist():
     assert {"action", "push"} <= set(inspect.signature(git_upstream.sync_repo).parameters)
 
 
-def test_round2_new_files_and_taken_back():
+def test_round2_new_files():
     """Audit r2: an open proposal with new untracked files offers them via
-    a secondary Update (sheet lists them); a merge taken back never claims
-    the copy is on the author's latest."""
+    a secondary Update (sheet lists them)."""
     f = gh("proposed", proposal=WAITING, untracked=["new.csv"], **CH)
     out = actions.decide(f)
     up = _button(f, "update-proposal")
     assert up["label"] == "Add new files to your proposal" and not up["primary"]
     assert out["panel"]["untracked"] == ["new.csv"]
-    p = actions.decide(gh("merged", taken_back=True, merged_in_tip=True))["panel"]
-    assert "You're on" not in p["sentence"]
+
+
+def test_v2_ids_and_facts_are_gone():
+    """§17.7: Keep mine / Use theirs and the `return` purpose are deleted;
+    `taken_back` (kept False for one release) no longer changes a word or a
+    button. (`kept_mine` is the v3 undo hold: a sentence, never a button.)"""
+    assert not {"keep-mine", "use-theirs"} & set(actions.IDS)
+    assert {"match", "keep-working"} <= set(actions.IDS)
+    assert actions.CHOICE_PURPOSES["github"] == ("update", "proposal")
+    for f in (gh("changes", behind=1, **CH), gh("merged"), gh("merged", **CH)):
+        plain = actions.decide(f)
+        stale = actions.decide({**f, "copy": {**f["copy"], "taken_back": True}})
+        assert stale == plain
+    held = gh("changes", behind=1, kept_mine=True, **CH)
+    assert ids(held) == ids(gh("changes", behind=1, **CH))
+    assert actions.decide({**held, "copy": {**held["copy"], "behind": 0}})["panel"]["sentence"] \
+        == "Your changes: 1 file."  # nothing waiting: nothing to say
+
+
+def test_merged_with_an_undo_hold_says_it_once():
+    """The held `merged` sentence already says Bring in is theirs to press;
+    the undo-hold line is not repeated after it."""
+    p = actions.decide(gh("merged", behind=1, kept_mine=True))["panel"]
+    assert p["sentence"] == "alice merged your change. Bring it in when you're ready."
+    assert actions.decide(gh("merged", behind=0, auto_sync=False))["panel"]["sentence"] \
+        == "alice merged your change. You're on alice's latest version."
+
+
+def test_moved_merge_offers_merge_with_claude_again():
+    """WS-2 §17.4: Keep after the copy moved fails the job with merge_job's
+    own sentence; the panel shows that sentence (not "couldn't combine")
+    and offers Merge with Claude again."""
+    from fused_render.contrib import merge_job
+
+    assert MOVED_JOB["error"] == merge_job.MOVED_MESSAGE
+    f = gh("needs-merge", merge_job=MOVED_JOB)
+    assert _button(f, "merge-claude")["label"] == "Merge with Claude again"
+    assert _button(f, "merge-claude")["primary"]
+    assert "couldn't combine" not in actions.decide(f)["panel"]["sentence"]
 
 
 def test_own_merge_reaches_the_panel_through_the_real_registry(tmp_path, monkeypatch):
@@ -571,7 +646,7 @@ def test_choice_buttons_name_the_files():
     f = gh("needs-merge", merge_job={"id": "m", "status": "choice", "files": ["logo.png"]})
     assert _button(f, "choose-mine")["label"] == "Keep mine for logo.png"
     assert _button(f, "choose-theirs")["label"] == "Use alice's for logo.png"
-    assert not _button(f, "keep-mine")["primary"]
+    assert not _button(f, "match")["primary"]
     o = own("needs-merge", merge_job={"id": "m", "status": "choice", "purpose": "own-sync",
                                       "files": ["a.py", "b.py"]})
     assert _button(o, "choose-theirs")["label"] == "Use GitHub's for a.py, b.py"
