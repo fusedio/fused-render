@@ -2123,9 +2123,23 @@ export default function CanvasWorkspace({
   // pointer-events are disabled on both panes while dragging).
   useEffect(() => {
     if (!dragging) return;
-    // Seeded from the seam's position as the drag starts, so the first tick
-    // pans like every later one.
+    // Seeded from the seam's RENDERED position as the drag starts, so the
+    // first tick pans like every later one. Not `leftFrac` alone: the pane's
+    // floor (PANE_MIN_W) and the canvas's flex-shrink can hold the seam left
+    // of the ratio `leftFrac` names after a window shrink, and seeding from
+    // that ratio would pan the canvas by the whole gap on the first move.
+    // The ratio is snapped to the seam too, so the pane does not jump either.
     let prevFrac: number | null = leftFracRef.current;
+    {
+      const row = rowRef.current;
+      const canvas = row?.firstElementChild as HTMLElement | null | undefined;
+      const rowW = row?.getBoundingClientRect().width ?? 0;
+      if (canvas && rowW > 0) {
+        const actual = canvas.getBoundingClientRect().width / rowW;
+        prevFrac = actual;
+        if (Math.abs(actual - leftFracRef.current) > 0.001) setLeftFrac(actual);
+      }
+    }
     const onMove = (e: MouseEvent) => {
       const row = rowRef.current;
       if (!row) return;
@@ -2178,11 +2192,14 @@ export default function CanvasWorkspace({
   // sides, so the canvas chat is what shows; "new" also drops the session
   // the URL names and remounts the canvas chat on its home.
   const openFromRail = useCallback((target: RailTarget) => {
-    if (target !== "node" && nodeRef.current) {
-      sendSelect(null);
-      setNode(null);
-    }
-    if (target === "new") {
+    const leavingNode = target !== "node" && nodeRef.current !== null;
+    // The URL's `session_id` / `run` are dropped BEFORE the canvas chat
+    // mounts: it reads them as it boots, and that is earlier than the node
+    // effect's own cleanup (a child's effects run before its parent's). With
+    // a node selected, a `session_id` on the URL is the NODE's (a Tasks hop
+    // onto it) — booting the canvas chat on it would show the node's
+    // conversation as the canvas's.
+    if (leavingNode || target === "new") {
       const url = new URL(window.location.href);
       url.searchParams.delete("session_id");
       url.searchParams.delete("run");
@@ -2190,6 +2207,16 @@ export default function CanvasWorkspace({
         window.history.replaceState(window.history.state, "", url);
       }
       canvasChatSidRef.current = null;
+    }
+    if (leavingNode) {
+      sendSelect(null);
+      setNode(null);
+    }
+    if (target === "new") {
+      // A Fix with Claude run is kept after it lands (`fixRunId`), and the
+      // chat is keyed on it and handed it as `runId` — so a New chat that
+      // left it set would re-adopt the fix session instead of its home.
+      setFixRunId(null);
       setCanvasChatSeq((n) => n + 1);
     }
     setSideOpen(true);
