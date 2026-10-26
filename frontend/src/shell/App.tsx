@@ -1181,6 +1181,11 @@ export default function App({ config }: { config: Config }) {
         <FilesHome key={epoch} config={config} />
       </div>
     );
+  } else if (isInstallLink) {
+    // A deep link's download page — keyed on epoch so a re-navigation with
+    // another link is a fresh page (the link is read once on mount). Before
+    // the `!fsPath` branch: `/install` is a sentinel, so its fsPath is null.
+    main = <InstallLinkPage key={epoch} />;
   } else if (!fsPath) {
     main = (
       <>
@@ -1194,10 +1199,6 @@ export default function App({ config }: { config: Config }) {
     );
   } else if (fusedFile) {
     main = <FusedFileView key={epoch + ":" + fusedFile} fsPath={fusedFile} />;
-  } else if (isInstallLink) {
-    // A deep link's download page — keyed on epoch so a re-navigation with
-    // another link is a fresh page (the link is read once on mount).
-    main = <InstallLinkPage key={epoch} />;
   } else {
     main = (
       <StatView
