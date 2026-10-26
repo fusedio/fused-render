@@ -23,7 +23,7 @@ const realHistory = globalThis.history;
 let pushes = 0;
 
 // Every module answers with empty lists unless a test fills one in.
-const PLUGIN = { id: "mine@mk", name: "mine", marketplace: "mk", description: "my plugin", version: "1", enabled: true, scope: "user", updateAvailable: false };
+const PLUGIN = { id: "mine@mk", name: "mine", marketplace: "mk", description: "my plugin", version: "1", enabled: true, installed: true, scope: "user", updateAvailable: false };
 const AVAIL = (id: string, installed = false) => ({ id: `${id}@mk`, name: id, marketplace: "mk", description: `${id} does things`, keywords: [], installed, enabled: installed });
 let pluginRows: unknown[] = [];
 let availRows: unknown[] = [];
