@@ -31,9 +31,7 @@ dependencies = [
     # Adding a line here is a cost every `open` user pays on first install.
     # The bar is "the embed page or `/api/run` cannot work without it".
     "fastapi>=0.110",
-    # >=0.47 for `ssl_context_factory`: lan.py builds its https listener's
-    # context itself (see _system_trust.ORIGINAL_SSL_CONTEXT).
-    "uvicorn>=0.47",
+    "uvicorn>=0.29",
     # /api/fs/events is a WebSocket (D74); plain uvicorn has no WS protocol
     # implementation, so the ws library is a hard dependency.
     "websockets>=12",

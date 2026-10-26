@@ -152,3 +152,57 @@ def test_lan_style_tls_server_handshake_still_works(tmp_path, monkeypatch):
     lsock.close()
     assert result.get("got") == b"ping", result
     assert reply == b"pong"
+
+
+def test_uvicorn_serves_https_with_the_lan_pattern(tmp_path, monkeypatch):
+    """The exact shape lan.py uses: Config loaded without TLS, then `config.ssl`
+    set to the stdlib-built context, served by a real uvicorn.Server."""
+    import http.client
+    import time
+
+    import uvicorn
+
+    from fused_render import lan_tls
+
+    monkeypatch.setenv("FUSED_RENDER_HOME", str(tmp_path))
+    monkeypatch.delenv("FUSED_RENDER_BRANCH", raising=False)
+    lan_tls._ca_by_dir.clear()
+    cert, key = lan_tls.ensure_server_cert(["localhost"], ["127.0.0.1"])
+    ca = lan_tls.ca_pem_path()
+    _system_trust.use_system_trust()
+
+    async def app(scope, receive, send):
+        if scope["type"] == "lifespan":
+            while True:
+                msg = await receive()
+                if msg["type"] == "lifespan.startup":
+                    await send({"type": "lifespan.startup.complete"})
+                else:
+                    await send({"type": "lifespan.shutdown.complete"})
+                    return
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    sock.listen(8)
+    port = sock.getsockname()[1]
+    config = uvicorn.Config(app, log_level="warning", lifespan="on")
+    config.load()
+    config.ssl = lan_tls.server_ssl_context(
+        cert, key, getattr(config.http_protocol_class, "alpn_protocols", None))
+    server = uvicorn.Server(config)
+    t = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+    t.start()
+    try:
+        deadline = time.time() + 10
+        while not server.started and time.time() < deadline:
+            time.sleep(0.05)
+        conn = http.client.HTTPSConnection(
+            "localhost", port, timeout=10, context=ssl.create_default_context(cafile=ca))
+        conn.request("GET", "/")
+        assert conn.getresponse().read() == b"ok"
+        conn.close()
+    finally:
+        server.should_exit = True
+        t.join(10)
