@@ -166,10 +166,11 @@ export default function Skills() {
     );
   }
 
-  if (error) return frame(<ErrorBanner>{error}</ErrorBanner>, undefined, true);
-  if (!data) return frame(<ListSkeleton rows={SKELETON_ROWS} label="Loading skills" />, undefined, true);
+  if (!data && !error) return frame(<ListSkeleton rows={SKELETON_ROWS} label="Loading skills" />, undefined, true);
 
-  const open = params.skill ? data.skills.find((s) => skillKey(s) === params.skill) : undefined;
+  // A failed local read is shown inside the local list; skills.sh below stays usable.
+  const skills = data?.skills ?? [];
+  const open = params.skill ? skills.find((s) => skillKey(s) === params.skill) : undefined;
   if (open) {
     return frame(
       <SkillDetail
@@ -190,7 +191,7 @@ export default function Skills() {
     <SkillRow key={skillKey(s)} skill={s} enabledClis={enabledClis} onOpen={() => go({ skill: skillKey(s) })} />
   );
   const searching = q.length > 0;
-  const matched = matchSkills(data.skills, q);
+  const matched = matchSkills(skills, q);
   const mine = matched.filter((s) => s.source === "user");
   const bundled = matched
     .filter((s) => s.source === "plugin")
@@ -199,6 +200,7 @@ export default function Skills() {
   const remoteRows = remote.state === "ok" && remoteSettled ? remote.rows : [];
   const nothing =
     searching &&
+    !error &&
     matched.length === 0 &&
     (q.length < REMOTE_MIN || (remoteSettled && (remote.state === "error" || (remote.state === "ok" && remoteRows.length === 0))));
   const isAdded = (r: cc.RemoteSkill) => r.added || added.has(r.id);
@@ -208,12 +210,22 @@ export default function Skills() {
       {!searching && (
         <p className="cc-skills-blurb m-0">Each skill teaches your coding CLIs how to do one job.</p>
       )}
-      {(mine.length > 0 || !searching) && (
+      {(mine.length > 0 || !searching || error) && (
         <section className="settings-section">
           <h3 className="settings-section-title">{searching ? "Installed" : "Your skills"}</h3>
-          <div className="settings-card">
-            {mine.length > 0 ? mine.map(row) : <p className="cc-skill-empty">No skills of your own yet.</p>}
-          </div>
+          {error && (
+            <ErrorBanner>
+              <b>Couldn&apos;t read your skills.</b> {error}{" "}
+              <button type="button" className="cc-link" onClick={reload}>
+                Retry
+              </button>
+            </ErrorBanner>
+          )}
+          {(!error || mine.length > 0) && (
+            <div className="settings-card">
+              {mine.length > 0 ? mine.map(row) : <p className="cc-skill-empty">No skills of your own yet.</p>}
+            </div>
+          )}
         </section>
       )}
       {bundled.length > 0 && (

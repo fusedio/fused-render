@@ -4,9 +4,9 @@
 import { useEffect, useState } from "react";
 import type { Skill, SkillRef } from "@apps/claude_config/api";
 
-/** `<location>/<slug>` for a user skill, `plugin:<plugin>/<slug>` for a plugin's. */
+/** `<location>/<slug>` for a user skill, `plugin:<plugin>@<marketplace>/<slug>` for a plugin's. */
 export const skillKey = (s: SkillRef) =>
-  s.source === "plugin" ? `plugin:${s.plugin}/${s.slug}` : `${s.location}/${s.slug}`;
+  s.source === "plugin" ? `plugin:${s.plugin}@${s.marketplace ?? ""}/${s.slug}` : `${s.location}/${s.slug}`;
 
 /** skills.sh is asked from this many letters on. */
 export const REMOTE_MIN = 2;
@@ -75,8 +75,13 @@ export function renameSkill(text: string, name: string): string {
   return next + rest;
 }
 
-/** A free name to offer when `name` is taken: name-2, name-3, … */
+/** A skill name is at most this long (the backend's name limit). */
+export const NAME_MAX = 64;
+
+/** A free name to offer when `name` is taken: name-2, name-3, … Always within
+ *  NAME_MAX: the base is cut to leave room for the suffix. */
 export function freeName(name: string, taken: (n: string) => boolean): string {
-  for (let i = 2; i < 100; i++) if (!taken(`${name}-${i}`)) return `${name}-${i}`;
-  return `${name}-copy`;
+  const cand = (suffix: string) => name.slice(0, NAME_MAX - suffix.length).replace(/[-_]+$/, "") + suffix;
+  for (let i = 2; i < 100; i++) if (!taken(cand(`-${i}`))) return cand(`-${i}`);
+  return cand("-copy");
 }

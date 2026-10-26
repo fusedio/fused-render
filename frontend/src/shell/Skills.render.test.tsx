@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { createElement } from "react";
 import { installDomShim } from "@platform/lib/testDomShim";
-import { matchSkills, readParams, writeParams } from "./skills/model";
+import { freeName, matchSkills, readParams, skillKey, writeParams } from "./skills/model";
 
 installDomShim();
 const { default: Skills } = await import("./Skills");
@@ -35,6 +35,7 @@ const HIT = { id: "vercel-labs/agent-skills/web-design-guidelines", source: "ver
 let calls: { action: string; body: Record<string, unknown> }[] = [];
 let searchReply: () => unknown = () => ({ ok: true, skills: [HIT] });
 let searchQueries: string[] = [];
+let listFails = false;
 
 function fakeFetch(url: unknown, init?: RequestInit): Promise<Response> {
   let body: Record<string, unknown> = {};
@@ -44,6 +45,7 @@ function fakeFetch(url: unknown, init?: RequestInit): Promise<Response> {
   if (u.endsWith("/claude-config/skills")) calls.push({ action, body });
   let data: unknown = {};
   if (u.endsWith("/claude-config/skills")) {
+    if (action === "list" && listFails) return Promise.reject(new Error("offline"));
     if (action === "list") data = { skills: [MINE, OTHER, BUNDLED] };
     else if (action === "search") { searchQueries.push(String(body.query)); data = searchReply(); }
     else if (action === "remote_preview") data = { ok: true, text: "---\nname: web-design-guidelines\n---\n\n## Rules\nBe tidy.\n", files: ["SKILL.md", "rules.md"] };
@@ -69,6 +71,7 @@ function setLocation(search: string) {
 beforeEach(() => {
   calls = [];
   searchQueries = [];
+  listFails = false;
   searchReply = () => ({ ok: true, skills: [HIT] });
   setLocation("");
   globalThis.fetch = fakeFetch as unknown as typeof fetch;
@@ -106,6 +109,19 @@ describe("model helpers", () => {
     expect(matchSkills(all, "frontend").map((s) => s.slug)).toEqual(["frontend-design"]);
     expect(matchSkills(all, "  ")).toHaveLength(2);
   });
+  test("a plugin skill's key names its marketplace, so two marketplaces' plugins do not collide", () => {
+    expect(skillKey(BUNDLED as never)).toBe("plugin:frontend-design@mk/frontend-design");
+    expect(skillKey({ ...BUNDLED, marketplace: "other" } as never)).not.toBe(skillKey(BUNDLED as never));
+  });
+
+  test("freeName stays within 64 characters", () => {
+    const long = "a".repeat(63);
+    expect(freeName(long, () => false).length).toBeLessThanOrEqual(64);
+    expect(freeName(long, () => false)).toBe("a".repeat(62) + "-2");
+    expect(freeName(long, () => true).length).toBeLessThanOrEqual(64);
+    expect(freeName("a", (n) => n === "a-2")).toBe("a-3");
+  });
+
   test("page params round-trip and keep unrelated params", () => {
     expect(readParams("?new=1&desc=hi")).toEqual({ skill: null, newSkill: true, desc: "hi" });
     expect(writeParams("?x=1&skill=a", { skill: null, newSkill: true, desc: "a b" })).toBe("?x=1&new=1&desc=a+b");
@@ -163,6 +179,22 @@ describe("the Skills page", () => {
     await tick();
     expect(searchQueries).toEqual(["design", "design"]);
     expect(textOf(box.root)).toContain("web-design-guidelines");
+  });
+
+  test("a failed local list is shown in place, with Retry, and skills.sh still works", async () => {
+    listFails = true;
+    const box = await mount();
+    expect(textOf(box.root)).toContain("Couldn't read your skills.");
+    expect(textOf(box.root)).not.toContain("No skills of your own yet.");
+    await type(box, "design");
+    expect(searchQueries).toEqual(["design"]);
+    expect(textOf(box.root)).toContain("web-design-guidelines");
+    expect(textOf(box.root)).not.toContain("No installed skills match");
+    listFails = false;
+    await act(async () => { button(box, "Retry").props.onClick(); });
+    await tick();
+    expect(textOf(box.root)).not.toContain("Couldn't read your skills.");
+    expect(textOf(box.root)).toContain("ui-design-review");
   });
 
   test("picking a skills.sh row previews it without frontmatter and Add places it", async () => {
