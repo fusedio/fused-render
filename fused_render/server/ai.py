@@ -1762,7 +1762,7 @@ async def _ai_relay(body: dict, session: "_AiSession | None" = None, page: str =
         # that reaches this relay with no `X-Fused-Page` at all is the AI
         # Models Playground itself (it runs in the shell, not inside a page
         # iframe — `_ai_relay`'s own docstring says so), never Claude Code's
-        # settings page, so attributing the empty case to "Claude setup"
+        # settings page, so attributing the empty case to "Claude Code"
         # would caption a Playground generation as if the settings page had
         # raised it.
         _report_remote(title=title[:80], model=model, state="running", kind="task",
