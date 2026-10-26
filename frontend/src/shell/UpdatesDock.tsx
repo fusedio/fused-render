@@ -98,7 +98,7 @@ export function updatesDetail(
   if (status.state === "available") {
     return status.check_only
       ? status.manual_command
-        ? { title: "Update available", detail: `${v} is out. Update from your terminal:`, command: status.manual_command, action: null }
+        ? { title: "Update available", detail: `${v} is out. Quit fused-render, then run in your terminal:`, command: status.manual_command, action: null }
         : { title: "Update available", detail: `${v} is out. This build does not install updates itself.`, action: null }
       : { title: "Update available", detail: `${v} is ready to download.`, action: { label: "Download", run: () => void installUpdate(status) } };
   }
@@ -214,7 +214,9 @@ export function UpdatesCardView({
                 {detail.title}
               </div>
               <div className="upd-state-detail">{detail.detail}</div>
-              {detail.command && <CommandLine command={detail.command} />}
+              {/* No Run: the in-app terminal is a child of this server, so the
+                  self-upgrade would try to replace the executable it runs from. */}
+              {detail.command && <CommandLine command={detail.command} runnable={false} />}
               {progressLine && <div className="upd-state-detail upd-progress">{progressLine}</div>}
               {detail.busy && <div className="update-card-bar" aria-hidden />}
               {detail.action && (
