@@ -204,6 +204,7 @@ import {
 import { findHostAiModel, hostAiModels } from "./host-ai";
 import { SyncDrawer } from "./SyncDrawer";
 import { SyncFramePoster, SyncStrip } from "./SyncStrip";
+import { ClaudeRail, type RailTarget } from "./ClaudeRail";
 import {
   mergeLogEvents,
   noWatcher,
@@ -268,6 +269,13 @@ const FAILED_POLLS_BEFORE_RELEASE = 3;
 // A focus-triggered server check at most this often: a window that is
 // clicked in and out of repeatedly must not become a probe per click.
 const FOCUS_CHECK_MIN_MS = 3000;
+
+// THE RIGHT PANE'S FLOOR, and the canvas's: the explorer sidebar's own
+// (apps/explorer/lib/side-width MIN_W / CONTENT_MIN_W — restated, not
+// imported: apps do not import each other, check-boundaries). The same chat
+// sits in both columns, and under 380px its header and composer clip.
+const PANE_MIN_W = 380;
+const CANVAS_MIN_W = 320;
 
 /** This window's focus as the canvas should count it. */
 function hostFocused(): boolean {
@@ -2122,7 +2130,20 @@ export default function CanvasWorkspace({
       const row = rowRef.current;
       if (!row) return;
       const rect = row.getBoundingClientRect();
-      const frac = Math.min(0.85, Math.max(0.15, (e.clientX - rect.left) / rect.width));
+      // THE PANE'S FLOOR IS THE EXPLORER SIDEBAR'S (PANE_MIN_W): the
+      // same chat, and below it the composer and the header clip. Dragged
+      // past that floor by a hand's width the pane SHUTS — the explorer's
+      // own gesture (SideChrome) — and the rail takes the edge. The canvas
+      // keeps the explorer's content floor on its side.
+      const paneW = rect.right - e.clientX;
+      if (paneW < PANE_MIN_W - 60) {
+        setDragging(false);
+        setSideOpen(false);
+        return;
+      }
+      const maxFrac = rect.width > 0 ? Math.max(0, (rect.width - PANE_MIN_W) / rect.width) : 0.85;
+      const minFrac = rect.width > 0 ? Math.min(maxFrac, CANVAS_MIN_W / rect.width) : 0.15;
+      const frac = Math.min(maxFrac, Math.max(minFrac, (e.clientX - rect.left) / rect.width));
       setLeftFrac(frac);
       // Half the pane's width change, to the canvas (header: fused-embed-pan)
       // — from the drag itself, so a window resize mid-drag never pans twice.
@@ -2151,6 +2172,28 @@ export default function CanvasWorkspace({
   // own left preview would be a second canvas beside the live workbench. Shown
   // once the clone exists and the registry says a chat serves it.
   const chatHere = !!(dir && chatTpl);
+
+  // The rail's doors (ClaudeRail `onOpen`): "node" opens the pane as it is
+  // (on the selected node's chat); "canvas" leaves the node first, on both
+  // sides, so the canvas chat is what shows; "new" also drops the session
+  // the URL names and remounts the canvas chat on its home.
+  const openFromRail = useCallback((target: RailTarget) => {
+    if (target !== "node" && nodeRef.current) {
+      sendSelect(null);
+      setNode(null);
+    }
+    if (target === "new") {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("session_id");
+      url.searchParams.delete("run");
+      if (url.href !== window.location.href) {
+        window.history.replaceState(window.history.state, "", url);
+      }
+      canvasChatSidRef.current = null;
+      setCanvasChatSeq((n) => n + 1);
+    }
+    setSideOpen(true);
+  }, [sendSelect]);
 
   // Hand a fresh fix run to the chat: `run` goes on this page's own URL (the
   // chat's "url" params store reads it — the chat adopts the session and then
@@ -2386,7 +2429,10 @@ export default function CanvasWorkspace({
           style={{
             // The viewer has no right pane, and a shut pane leaves the row to
             // the canvas; up, the seam's drag sets the split (`leftFrac`).
-            flex: embedded || !sideOpen ? "1 1 auto" : `0 0 ${leftFrac * 100}%`,
+            // `0 1`: the canvas yields when the window narrows under the
+            // pane's floor (the pane column's minWidth below), never the
+            // other way round.
+            flex: embedded || !sideOpen ? "1 1 auto" : `0 1 ${leftFrac * 100}%`,
             minWidth: 0,
             position: "relative",
             pointerEvents: dragging ? "none" : "auto",
@@ -2441,7 +2487,9 @@ export default function CanvasWorkspace({
             // the row past the canvas's share.
             style={{
               flex: "1 1 auto",
-              minWidth: 0,
+              // The chat's floor (see the drag above): a window resize that
+              // leaves the split under it shrinks the canvas, not the chat.
+              minWidth: PANE_MIN_W,
               display: "flex",
               flexDirection: "row",
               background: "var(--bg)",
@@ -2539,6 +2587,21 @@ export default function CanvasWorkspace({
           )}
         </div>
           </div>
+        )}
+        {!embedded && !sideOpen && (
+          // The pane shut: the rail takes its edge (ClaudeRail.tsx) — the way
+          // back in, plus Claude's state on this canvas, which is what the
+          // pane was showing.
+          <ClaudeRail
+            env={env}
+            name={name}
+            dir={dir}
+            nodeName={node?.udfName ?? null}
+            nodeFile={node?.file ?? null}
+            tasksHref={canvasProjectPath(env, name, { tab: "tasks" })}
+            onTasks={() => navigateUrl(canvasProjectPath(env, name, { tab: "tasks" }))}
+            onOpen={openFromRail}
+          />
         )}
       </div>
       <ShotViewer shot={hostViewing} paneNoun="canvas" onClose={() => setHostViewing(null)} />
