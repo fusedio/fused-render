@@ -29,6 +29,7 @@ import {
   PreviewStage,
   TagsSection,
   TrustCard,
+  VerifiedMark,
   plainClick,
   type InfoStripItem,
 } from "@platform/ui/appstore";
@@ -141,6 +142,8 @@ export function AppDetailPage({ slug, snap, bare = false }: { slug: string; snap
   }
 
   const block = app.installed?.block ?? null;
+  // Every listed row passed the review check; a hard block withdraws the mark.
+  const verified = block?.level !== "hard";
   const market = isMarketCopy(app);
   let note: ReactNode = null;
   if (block) {
@@ -236,7 +239,12 @@ export function AppDetailPage({ slug, snap, bare = false }: { slug: string; snap
     >
       <DetailHero
         icon={<AppIcon src={app.icon_url} name={app.name} seed={app.slug} size={112} raised />}
-        name={app.name}
+        name={
+          <>
+            {app.name}
+            {verified && <VerifiedMark />}
+          </>
+        }
         subtitle={app.description}
         author={
           <>

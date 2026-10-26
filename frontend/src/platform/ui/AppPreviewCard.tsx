@@ -42,6 +42,7 @@ import { exportAppFileOnly, openShareApp } from "@platform/lib/share-app";
 import { useAppShareOffered } from "@platform/lib/share-app-flag";
 import { useLivePreviewsFeature } from "@platform/lib/live-previews-flag";
 import { AppStar } from "@platform/ui/AppStar";
+import { VerifiedMark } from "@platform/ui/appstore";
 import { ThumbPlaceholder } from "@platform/ui/ThumbPlaceholder";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { thumbFrame } from "@platform/lib/thumb-frame";
@@ -324,7 +325,10 @@ export function AppPreviewCard({
             as the name. */}
         <span className="app-pcard-lines">
           <span className="app-pcard-titlerow">
-            <span className="app-pcard-title">{title}</span>
+            <span className="app-pcard-title">
+              {title}
+              {app.contrib?.kind === "marketplace" && !(enforced && block?.level === "hard") && <VerifiedMark />}
+            </span>
             {/* Proposals waiting on one of the reader's own apps (the
                 contribution loop's inbox, Community → Proposals inbox). In
                 the name's row so the card keeps its height; a count only,

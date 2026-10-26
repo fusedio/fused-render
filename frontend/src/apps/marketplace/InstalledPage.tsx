@@ -23,7 +23,7 @@
 //   unknown    an older server's stamp: as before.
 import { useEffect, useMemo, useState } from "react";
 import { BadgeCheck, FolderOpen, History, LayoutPanelTop, PackageOpen, RefreshCw, Trash2 } from "lucide-react";
-import { AppIcon, Delayed, MoreMenuButton, RowSkeleton } from "@platform/ui/appstore";
+import { AppIcon, Delayed, MoreMenuButton, RowSkeleton, VerifiedMark } from "@platform/ui/appstore";
 import type { MenuEntry } from "@platform/ui/ContextMenu";
 import { navigateUrl } from "@platform/lib/router";
 import { isBrowserHandledClick } from "@platform/lib/appEntry";
@@ -299,9 +299,13 @@ function InstalledRow({ app, snap }: { app: AppEntry; snap: CatalogSnapshot }) {
               }}
             >
               {app.name}
+              {market && !delisted && block?.level !== "hard" && <VerifiedMark />}
             </a>
           ) : (
-            <span className="as-row-title">{app.name}</span>
+            <span className="as-row-title">
+              {app.name}
+              {market && !delisted && block?.level !== "hard" && <VerifiedMark />}
+            </span>
           )}
           <span className="as-row-cat">{categoryLabel(snap.catalog, app.category)}</span>
         </span>

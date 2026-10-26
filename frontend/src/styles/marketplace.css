@@ -1946,6 +1946,20 @@
   min-width: 0;
 }
 
+/* The green reviewed tick after a listed app's name (VerifiedMark): em-sized
+   so it follows the title it sits in, a hair below the cap height like the
+   Instagram/X badge. Green in both themes (--success-bright is the
+   signed-in dot's green). */
+.as-verified {
+  display: inline-block;
+  width: 0.82em;
+  height: 0.82em;
+  margin-left: 0.3em;
+  vertical-align: -0.06em;
+  color: var(--success-bright);
+  flex: none;
+}
+
 .as-hero-name {
   margin: 0;
   font-size: 28px;

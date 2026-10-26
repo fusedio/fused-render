@@ -15,7 +15,7 @@ import {
 } from "lucide-react";
 import { releaseDate } from "@platform/lib/format";
 import { navigateUrl } from "@platform/lib/router";
-import { ActionPill, AppIcon, StoreCard, type ActionPillSize } from "@platform/ui/appstore";
+import { ActionPill, AppIcon, StoreCard, VerifiedMark, type ActionPillSize } from "@platform/ui/appstore";
 import {
   actionFor,
   appDetailHref,
@@ -189,7 +189,12 @@ export function MarketCard({ app, catalog, variant = "default" }: { app: AppEntr
       href={appDetailHref(app.slug)}
       onOpen={() => openDetail(app.slug)}
       icon={<AppIcon src={app.icon_url} name={app.name} seed={app.slug} size={variant === "compact" ? 40 : 44} />}
-      name={app.name}
+      name={
+        <>
+          {app.name}
+          {block?.level !== "hard" && <VerifiedMark />}
+        </>
+      }
       description={app.description}
       meta={meta}
       thumb={app.preview_url}
