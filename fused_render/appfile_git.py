@@ -422,8 +422,6 @@ _CARRY = (".fused", ".venv")
 
 
 def _place(staged: str, dest: str, *, park_existing: bool) -> None:
-    from fused_render import appfile
-
     root = os.path.dirname(dest)
     os.makedirs(root, exist_ok=True)
     work = tempfile.mkdtemp(dir=root, prefix=f".install-{os.path.basename(dest)}-")

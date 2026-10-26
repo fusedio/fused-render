@@ -840,9 +840,9 @@ def _take_in_pr_head(root, record, ident: dict, fork: str, head_branch: str,
     if not mt.get("clean"):
         job = _start_merge_job(root, purpose="proposal", ours=head, theirs=fetched)
         raise MergeStarted(
-            f"Your proposal was also changed on GitHub, in the same places as your newer "
-            f"edits. Claude is combining them — check the result on this page, and it's "
-            f"sent once you keep it.", job)
+            "Your proposal was also changed on GitHub, in the same places as your newer "
+            "edits. Claude is combining them — check the result on this page, and it's "
+            "sent once you keep it.", job)
     ident = commit_identity(root, ident)
     me = (ident["name"], ident["email"])
     merged = _commit_tree(root, mt["tree"], [head, fetched],

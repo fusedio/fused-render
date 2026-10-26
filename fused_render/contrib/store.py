@@ -238,14 +238,6 @@ def _roots(path: str) -> list | None:
     return sorted(ln for ln in gu._out(r).split() if len(ln) >= 40) or None
 
 
-def root_commit_of(path: str) -> str | None:
-    """A root commit of HEAD in the repo at `path` (the lowest-sorting one
-    when a history has several, so every reader picks the same), or None —
-    not a repo, no commits yet, git unavailable."""
-    roots = _roots(path)
-    return roots[0] if roots else None
-
-
 def _folder_stamp(k: str):
     """What changes when a different repo moves in at `k`: the folder's own
     inode and mtime, and its `.git`'s (dir, or a worktree's file) inode.
@@ -320,21 +312,6 @@ def _root_present(k: str, root_commit: str) -> bool | None:
 def _forget_binding(k: str) -> None:
     with _bind_lock:
         _bind_memo.pop(k, None)
-
-
-def _origin_matches(k: str, rec: dict) -> bool:
-    """Whether the folder's `origin` names the record's repo (both None for
-    an own app with no GitHub repo). Only `github`/`own` rows are judged — a
-    Try copy's origin is fused's own scratch remote."""
-    if rec.get("kind") not in ("github", "own"):
-        return True
-    from fused_render import git_upstream as gu
-    from fused_render.contrib import classify
-
-    r = _git(k, "config", "--get", "remote.origin.url")
-    url = gu._out(r) if gu._ok(r) else ""
-    have = (classify.repo_of_url(url) or "").lower()
-    return have == (rec.get("repo") or "").lower()
 
 
 def _bind(k: str, rec: dict) -> dict | None:
@@ -494,17 +471,6 @@ def drop(app_dir: str) -> bool:
         return False
 
 
-def drop_key(k: str) -> bool:
-    try:
-        with _lock:
-            data = _read()
-            if data["apps"].pop(k, None) is None:
-                return False
-            return _write(data)
-    except Exception:  # noqa: BLE001
-        return False
-
-
 def adopt(old_key: str, app_dir: str) -> dict | None:
     """Re-key the orphaned row at `old_key` onto `app_dir` (a Finder move the
     server never saw — or a fresh clone of the same repo), atomically:
@@ -652,15 +618,6 @@ def ack(app_dir: str, kind: str) -> dict | None:
             raise ValueError(f"unknown ack kind {kind!r}")
 
     return update(app_dir, fn)
-
-
-def add_backup(app_dir: str, ref: str, why: str) -> dict | None:
-    """v1's backup list, kept only as a shim for callers not yet moved to
-    `add_activity`: the ref is named by one activity line instead (§16.1
-    "Drop backups list")."""
-    add_activity(app_dir, "backup", "Saved a copy of your work before changing it.",
-                 backup=ref)
-    return get(app_dir)
 
 
 # -------------------------------------------------------------------- activity

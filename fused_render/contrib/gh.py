@@ -239,11 +239,6 @@ def git_net_args() -> list[str]:
             *fixed]
 
 
-def git_auth_args() -> list[str]:
-    """inbox.py's spelling of `git_net_args`."""
-    return git_net_args()
-
-
 def clone_url(full_or_url: str) -> str:
     """The URL git should fetch from / push to for a repo: real GitHub's https
     URL, or the fake's bare repo path."""

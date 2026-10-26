@@ -388,19 +388,8 @@ async function post<T extends ContribAnswer>(route: string, body: Record<string,
 export const ackContrib = (path: string, kind: "event" | "settled") =>
   post<ContribAnswer>("ack", { path, kind });
 export const startProposalDraft = (path: string) => post<JobStarted>("propose/draft", { path });
-export const sendProposal = (path: string, v: { title: string; description: string; note: string }) =>
-  post<JobStarted>("propose/send", { path, ...v });
-export const updateProposal = (path: string) => post<JobStarted>("propose/update", { path });
-export const withdrawProposal = (path: string) => post<ContribAnswer>("propose/withdraw", { path });
-export const discardChanges = (path: string, withdraw: boolean) =>
-  post<ContribAnswer>("discard", { path, withdraw });
-export const pushToMain = (path: string) => post<ContribAnswer>("push-main", { path });
-/** Bring the author's waiting updates in now (auto-update off). */
-export const updateCopy = (path: string) => post<ContribAnswer>("update-copy", { path });
-export const startMerge = (path: string) => post<JobStarted>("merge/start", { path });
 export const acceptMerge = (path: string, job: string) => post<ContribAnswer>("merge/accept", { path, job });
 export const discardMerge = (path: string, job: string) => post<ContribAnswer>("merge/discard", { path, job });
-export const refreshContrib = (path: string) => post<ContribAnswer>("refresh", { path });
 export const reviewProposal = (path: string, number: number) =>
   post<JobStarted>("inbox/review", { path, number });
 export const tryProposal = (path: string, number: number, confirm: boolean) =>
@@ -419,9 +408,6 @@ export const askToUpdate = (path: string, number: number, note: string) =>
 /** …or have Claude merge it onto the app's latest here (§16.6) → a job. */
 export const startInboxMerge = (path: string, number: number) => post<JobStarted>("inbox/merge", { path, number });
 export const startRemixDraft = (path: string) => post<JobStarted>("remix/draft", { path });
-export const publishRemix = (path: string, v: { name: string; credit: string }) =>
-  post<JobStarted>("remix/publish", { path, ...v });
-export const bringInOriginal = (path: string) => post<JobStarted>("remix/bring-in", { path });
 
 /** v2's one action route (§16.9): every button the server sent, by its id.
  *  `confirm`: the user said yes to the action's confirm sentence. Answers
@@ -442,18 +428,6 @@ export const runAction = (
   });
 /** Undo / Restore one activity line (§16.9). */
 export const restoreActivity = (path: string, id: string) => post<ContribAnswer>("restore", { path, id });
-
-/** Retry sending an own app's edits to GitHub (`copy.sync_error`): the same
- *  background sync the app's own changes trigger (POST /api/git-upstream
- *  `action:"sync"`, which the contrib engine intercepts). Answers at once —
- *  the sync is queued — so the caller re-reads a moment later. */
-export async function retrySync(path: string): Promise<ContribAnswer> {
-  try {
-    return await postJson<ContribAnswer>("/api/git-upstream", { action: "sync", path, trigger: "retry" });
-  } catch {
-    return { ok: false };
-  }
-}
 
 /** A success toast's text: the server's own `message` when the answer (or a
  *  job's result) carries one, else the page's sentence. */

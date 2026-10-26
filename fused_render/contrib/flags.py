@@ -92,8 +92,3 @@ def loop() -> bool:
 
 def remix() -> bool:
     return snapshot()["remix"]
-
-
-def any_on() -> bool:
-    """Whether the loop is on — `sources` is every phase's root prerequisite."""
-    return sources()

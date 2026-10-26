@@ -32,12 +32,6 @@ export function possessive(name: string): string {
   return name.endsWith("s") ? `${name}'` : `${name}'s`;
 }
 
-/** Edits the user would count: committed edits plus one for unsaved work on
- *  top, so a copy with only an unsaved tweak still reads "1 edit". */
-export function editCount(copy: Pick<CopyStatus, "changes" | "dirty">): number {
-  return copy.changes + (copy.dirty ? 1 : 0);
-}
-
 export function githubUrl(repo: string): string {
   return `https://github.com/${repo}`;
 }
