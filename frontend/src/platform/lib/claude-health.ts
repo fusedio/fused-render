@@ -235,13 +235,13 @@ export function agentIssues(health: ClaudeHealth | null, backend: string): Claud
       title: `The app can't find ${name}`,
       detail:
         `Fused Render uses ${name} on this computer to build and fix ` +
-        "things. Install it and the app will pick it up — no restart needed.",
+        "things. Run the command below in your terminal (or press Run) and the app " +
+        "will pick it up — no restart needed.",
       helpKind: "notfound",
       // THE SERVER'S LINE, not the module constant: the server knows its own
       // platform; the fallback is only for a payload from a server too old to
       // say.
       command: health.install_command || words.install,
-      action: { kind: "install", label: `Install ${name}` },
     });
     return issues; // everything below is about an install that exists
   }
