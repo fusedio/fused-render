@@ -50,6 +50,6 @@ describe("the page", () => {
     expect(APP).toContain('title="Open the app in the Explorer"');
     // The name is the label, plus the inbox count on the Proposals tab.
     expect(APP).toContain("title={name}");
-    expect(APP).toContain("aria-label={label}");
+    expect(APP).toContain("aria-label={name}");
   });
 });
