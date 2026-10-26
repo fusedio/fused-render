@@ -4504,7 +4504,9 @@ def _spawn_env(chat_id: str = "", backend: str = "") -> dict:
     # reads (D1327). The CLI runs EVERYTHING it spawns (hooks, MCP servers, the
     # statusline) through the prefix; the wrapper is transparent for all but
     # Bash-tool commands. A prefix the user exported themselves is left alone.
-    if (chat_id and not _bad_id(chat_id)
+    # The wrapper is a POSIX sh script, so Windows gets no prefix (and no
+    # drawer "Claude" command-log tab).
+    if (chat_id and not _bad_id(chat_id) and not _platform.IS_WINDOWS
             and not env.get("CLAUDE_CODE_SHELL_PREFIX")):
         prefix = _shell_prefix_path()
         if prefix:
