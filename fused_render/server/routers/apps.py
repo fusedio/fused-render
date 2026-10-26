@@ -627,7 +627,7 @@ def api_app_entry(path: str, opened: bool = False):
             contrib_refresh.note_app_opened(os.path.dirname(entry))
         except Exception:  # noqa: BLE001 — housekeeping must not fail the probe
             logger.warning("contrib open note failed for %s", path, exc_info=True)
-    return {
+    out = {
         "entry": entry,
         # The fused page API version the entry declares (`<meta
         # name="fused-api-version">`, 0 when undeclared — every app authored
@@ -641,6 +641,19 @@ def api_app_entry(path: str, opened: bool = False):
         # reads "in progress" instead of offering a second one. Null when none.
         "migration_task": _live_migration_task(entry) if entry else None,
     }
+    if entry:
+        # The open gate (docs/CONTRIB_LOOP.md §18.4 B4): a copy whose running
+        # version Fused hard-blocked does not open — every caller, not only
+        # `opened=1`, since the app page probes without it. 423 with the
+        # notice payload (`{"blocked": {...}}`, contrib.blocks.gate's) the
+        # shell's BlockedNotice draws. Asked AFTER the open notes above: the
+        # enforcement they kick may already have rolled the copy back.
+        from fused_render import marketplace
+
+        blocked = marketplace.open_gate(os.path.dirname(entry))
+        if blocked:
+            return JSONResponse(blocked, status_code=423)
+    return out
 
 
 def _live_app_task(entry_html: str, is_ours) -> dict | None:

@@ -2061,15 +2061,25 @@ hit: `slug: name vX [category] — description (flags)`, the flags being
 the steps engine's gate now checks `ALWAYS_ASK` beside the approval setting —
 and `forever_rule` returns None, so there is no "approve forever" button; a
 phone-started Super Bot task asks anyway). `_market_target` resolves the call
-before anything is raised: a non-slug, a slug the catalog does not list (the
+before anything is raised, through `marketplace.plan_install` — the ONE answer
+the install job reads too (2026-10-26, the reviewed marketplace,
+docs/CONTRIB_LOOP.md §18.5): a non-slug, a slug the catalog does not list (the
 cached snapshot first; when it is missing there, ONE forced rebuild, since the
-server's search can rank an app the cache predates), an installed app without
-`update: true`, or a folder at `app/<slug>` that is not a Marketplace install
-(install_app would refuse it after the approval) is an ERROR the model reads
-(`risk` returns "", no card), never a card the user has to deny. `describe`
-says `install|update the Marketplace app "Name" vX into <workspace>/app/<slug>`
-— the same install-vs-update decision `start_install` makes, so what the user
-approves is what runs. `execute` calls `marketplace.start_install` and polls
+server's search can rank an app the cache predates), an installed app (a
+marketplace copy, or a legacy copy from the old package Marketplace) without
+`update: true`, a copy the installer refuses (a legacy copy: "Switch to the
+reviewed version first"; the user's own repo; an unrecorded clone; a row with
+no reviewed source), or a GitHub-link copy of the same repo (switching it to
+reviewed releases is the user's explicit choice, D13: "the user decides that
+in the app") is an ERROR the model reads (`risk` returns "", no card), never a
+card the user has to deny. An install is a clone of the author's GitHub repo
+at the row's approved commit (Marketplace apps are reviewed GitHub releases;
+no app code comes from Fused storage); an update is the engine's release move.
+`describe` says `install|update the Marketplace app "Name" vX into|at <folder>`
+(`marketplace.install_dest`: the copy's folder, else `app/<repo>`) — the same
+plan `start_install` runs, so what the user approves is what runs. `execute`
+calls `marketplace.start_install` (a `confirm` answer, the plan having changed
+since the card, is the same refusal) and polls
 `list_jobs` up to `MARKET_INSTALL_WAIT_S` (240 s; mcp.json's timeout is above
 the hour-long approval wait, so the poll is never the longest wait), then
 forces `apptools.apps` / `registry` to rebuild so the 10 s cache never hides
@@ -2079,8 +2089,9 @@ non-error install under it (beside hand-offs and bot management; a plain
 result, not `RESULT:`), so a second install of the same slug on one
 instruction is NOT RUN AGAIN and never a second card.
 
-**"Use it".** Installs land in `<workspace>/app/<slug>` (`marketplace.install_root()`,
-#1674), the builds root every bot's APPS already scans (`apptools.ROOTS`), so
+**"Use it".** Installs land in `<workspace>/app/<repo>` (`marketplace.install_root()`,
+#1674; named by the GitHub link installer since the reviewed marketplace), the
+builds root every bot's APPS already scans (`apptools.ROOTS`), so
 the installed app is in APPS, `show`, `tool`, `py` and `offer` with no further
 plumbing; `_market_install` only forces the 10 s `apps` / `registry` caches
 to rebuild.

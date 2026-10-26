@@ -320,12 +320,15 @@ TOOL_SPECS: dict[str, dict] = {
                        "that is not in APPS, or when a community app would do the task better than browsing.",
         "inputSchema": _s(query={"type": "string", "description": "words to match; omit for the whole catalog"})},
     "marketplace_install": {
-        "description": "Install one Marketplace app (by `slug` from marketplace_search) into the user's workspace. ALWAYS "
-                       "raises an approval card first: say which app and why in one sentence before calling it, and never "
-                       "call it for an app the search marked installed (use `update: true` only when the user asks to "
-                       "update it). Waits for the download; the result names the app's folder, which is then in APPS: "
-                       "`show` it as a card, `goto` its link, or call its tools.",
-        "inputSchema": _s(slug=REQ, update={"type": "boolean", "description": "true: update an installed copy to the catalog's version"})},
+        "description": "Install one Marketplace app (by `slug` from marketplace_search) into the user's workspace: a copy of "
+                       "the author's GitHub repo at the version Fused reviewed (Marketplace apps are reviewed GitHub "
+                       "releases). ALWAYS raises an approval card first: say which app and why in one sentence before "
+                       "calling it, and never call it for an app the search marked installed (use `update: true` only when "
+                       "the user asks to update it to the newest reviewed release). Waits for the download; the result "
+                       "names the app's folder, which is then in APPS: `show` it as a card, `goto` its link, or call its "
+                       "tools. If the user already follows the app by GitHub link, switching it to reviewed releases is "
+                       "the user's choice in the app: this tool refuses it.",
+        "inputSchema": _s(slug=REQ, update={"type": "boolean", "description": "true: update an installed copy to the newest reviewed release"})},
 }
 
 
@@ -1116,9 +1119,9 @@ def describe(bot, act: str, d: dict, obs: dict) -> str:
         if err:
             return f"install Marketplace app \"{slug or '?'}\" ({err})"
         name, ver = _market_name(slug)
-        from fused_render import marketplace as _mkt
+        where = _market_where(slug)
         return (f"{'update' if update else 'install'} the Marketplace app \"{name}\"" + (f" v{ver}" if ver else "")
-                + f" into {os.path.join(_mkt.install_root(), slug)}")
+                + (f" {'at' if update else 'into'} {where}" if where else ""))
     if act == "tool":
         app, name, args = apptools.tool_ref(d)
         rec = apptools.find(apptools.registry(), app, name)
@@ -1241,9 +1244,10 @@ def risk(bot, act: str, d: dict, obs: dict) -> str:
         slug, update, err = _market_target(d)
         if err or not marketplace_on():
             return ""
-        return ("It downloads this community app's files (code written by someone else) onto this Mac and "
-                + ("replaces the installed copy's app files with the catalog's version." if update
-                   else "puts them under the apps folder, where every bot and the Apps page can open it."))
+        return ("It downloads this community app (code written by someone else, at the version Fused reviewed) "
+                "from its author's GitHub repo onto this Mac and "
+                + ("moves the installed copy to the newest reviewed release, the user's own changes kept." if update
+                   else "puts it under the apps folder, where every bot and the Apps page can open it."))
     if act == "build":
         return ("It starts a Claude Code session that writes files and spends model credit"
                 + (", unattended (Builds: full access)." if effective_build_access(bot) == "full" else "."))
@@ -1352,7 +1356,9 @@ def marketplace_on() -> bool:
 
 def _market_target(d: dict) -> tuple[str, bool, str]:
     """(slug, update, error) for a `marketplace_install` decision: the error names why
-    no card is raised (bad slug, unknown app, already installed without `update`)."""
+    no card is raised (bad slug, unknown app, already installed without `update`, a copy
+    the installer refuses, or a GitHub-link copy whose switch to reviewed releases is the
+    user's to make). `marketplace.plan_install` is the one answer, the same the job reads."""
     from fused_render import marketplace as _mkt
     slug = str((d or {}).get("slug") or (d or {}).get("name") or (d or {}).get("value") or "").strip()
     update = (d or {}).get("update") is True
@@ -1366,18 +1372,37 @@ def _market_target(d: dict) -> tuple[str, bool, str]:
         snap, err = _mkt.get_snapshot(force=True)
     if snap is None:
         return slug, update, f"the Marketplace catalog is unavailable ({err or 'no catalog'})"
-    if slug not in (snap.get("apps") or {}):
+    row = (snap.get("apps") or {}).get(slug)
+    if row is None:
         return slug, update, "no such app in the catalog; take the slug from marketplace_search"
-    rec = _mkt.installed_apps().get(slug)
-    if rec and not update:
-        return slug, update, f"already installed at {rec['path']} (in APPS; pass update: true only to update it)"
-    if not rec and update:
+    try:
+        plan = _mkt.plan_install(slug, row)
+    except Exception as e:  # noqa: BLE001 — a plan that cannot be read raises no card
+        return slug, update, f"could not check this Mac for a copy of the app ({e.__class__.__name__})"
+    where = plan.get("path")
+    if plan["action"] == "refuse":
+        return slug, update, plan.get("reason") or "the installer refuses this app here"
+    if plan["action"] == "switch":
+        # D13 (docs/CONTRIB_LOOP.md §18.4): changing a copy's trust level is the user's explicit choice.
+        return slug, update, (f"the user already follows this app by GitHub link at {where} (every change, "
+                              "unreviewed); switching it to reviewed releases is not a bot's call: the user decides "
+                              "that in the app (its Marketplace page)")
+    if plan["action"] == "update" and not update:
+        return slug, update, f"already installed at {where} (in APPS; pass update: true only to update it)"
+    if plan["action"] == "install" and update:
         update = False  # nothing to update: a plain install
-    dest = os.path.join(_mkt.install_root(), slug)
-    if not rec and os.path.lexists(dest) and not _mkt._is_husk(dest):
-        # install_app refuses a folder it did not stamp; refuse here, before the user approves a write into it.
-        return slug, update, f"a local app already occupies {dest} (not a Marketplace install); the user has to move or rename it first"
     return slug, update, ""
+
+
+def _market_where(slug: str) -> str:
+    """The folder a `marketplace_install` of `slug` lands in (or updates), for the card."""
+    from fused_render import marketplace as _mkt
+    snap, _ = _mkt.cached_snapshot()
+    row = ((snap or {}).get("apps") or {}).get(slug)
+    try:
+        return (_mkt.install_dest(slug, row) or "") if row else ""
+    except Exception:  # noqa: BLE001 — a sentence on a card
+        return ""
 
 
 def _market_name(slug: str) -> tuple[str, str]:
@@ -1461,9 +1486,13 @@ def _market_install(bot, d: dict) -> str:
     if err:
         return f"error: {err}"
     try:
-        job = _mkt.start_install(slug)
+        job = _mkt.start_install(slug, update=update)
     except _mkt.InstallError as e:
         return f"error: {e}"
+    if job.get("status") == "confirm":
+        # The plan changed between the card and the call (the user installed by link meanwhile).
+        return ("error: the user follows this app by GitHub link; switching it to reviewed releases is the user's "
+                "choice: the user decides that in the app (its Marketplace page)")
     deadline = time.monotonic() + MARKET_INSTALL_WAIT_S
     while job.get("state") not in ("done", "error"):
         if bot.stop_flag.is_set():
@@ -1477,7 +1506,7 @@ def _market_install(bot, d: dict) -> str:
         return f"error: {job.get('error') or job.get('message') or 'install failed'}"
     apptools.apps(force=True)
     apptools.registry(force=True)
-    path = job.get("path") or os.path.join(_mkt.install_root(), slug)
+    path = job.get("path") or _market_where(slug) or _mkt.install_root()
     name, ver = _market_name(slug)
     folder = os.path.basename(path.rstrip("/"))
     verb = "Updated" if job.get("action") == "update" else "Installed"

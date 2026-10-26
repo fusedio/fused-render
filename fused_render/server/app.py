@@ -1147,6 +1147,15 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     from fused_render.server.routers.contrib import router as contrib_router
 
     app.include_router(contrib_router)
+    # Publish to the Marketplace (routers/listing.py, §18.6): an own copy's
+    # listing status, draft and actions. Guarded: the module lands with its
+    # workstream, and a build without it simply has no listing routes.
+    try:
+        from fused_render.server.routers.listing import router as listing_router
+    except ImportError:
+        listing_router = None
+    if listing_router is not None:
+        app.include_router(listing_router)
 
     # The contrib inbox-count sweep (contrib/refresh.py): one daemon thread
     # that, only while the inbox phase is on, re-lists every own app's
@@ -1158,6 +1167,25 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
         from fused_render.contrib import refresh as contrib_refresh
 
         contrib_refresh.start()
+
+    # The Marketplace block list at launch (docs/CONTRIB_LOOP.md §18.4 B4):
+    # fetch the list and enforce it on every copy (`contrib.blocks.startup`
+    # — refresh + enforce_all on its own daemon thread, the last list on
+    # disk when offline): it touches the network and git, and a hard block
+    # found here must not hold up the boot. `on_startup`, not `_full`: Fused
+    # Bot's bots install Marketplace apps too, and the block list is
+    # enforced whatever the Marketplace switch says (§18.8). A build
+    # without the module skips.
+    @on_startup
+    async def _startup_marketplace_blocks():
+        try:
+            from fused_render.contrib import blocks
+        except ImportError:
+            return
+        try:
+            blocks.startup()
+        except Exception:  # noqa: BLE001 — a background check never fails the server
+            logger.exception("marketplace block list check at startup failed")
 
     # Deep links (SPEC §26): GET /clone routes every OS-delivered open link
     # to an install page or the shell's fetch hand-off. deeplink.py never

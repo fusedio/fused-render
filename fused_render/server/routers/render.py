@@ -4,7 +4,7 @@ import os
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 from fastapi import APIRouter, Header, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from fused_render.server.asset_version import rewrite_asset_refs, versioned
 from fused_render.server.common import _error
@@ -59,6 +59,15 @@ def render(
         q = [(k, v) for k, v in request.query_params.multi_items() if k != "path"]
         return RedirectResponse(
             "/render?" + urlencode([("path", entry), *q]), status_code=307)
+    # The open gate (docs/CONTRIB_LOOP.md §18.4 B4): no page of a copy whose
+    # running version Fused hard-blocked is served — a `_preview`/`_noopen`
+    # thumbnail runs the page's code too, so neither flag exempts it. 423
+    # with the notice payload (`{"blocked": {...}}`, contrib.blocks.gate's).
+    from fused_render import marketplace
+
+    blocked = marketplace.open_gate(path)
+    if blocked:
+        return JSONResponse(blocked, status_code=423)
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             html = f.read()
