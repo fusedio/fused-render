@@ -952,23 +952,35 @@ export function NewAppModal({ onClose }: { onClose: () => void }) {
   // unmounts this modal. `onCreated` closes it for the case where the
   // composer stays put (no chat run started).
   //
-  // The heading IS the optional name field: "New app" is its placeholder,
-  // and whatever is typed over it becomes the folder name, verbatim, with
-  // the AI naming step skipped. Left alone, the composer names the app as
-  // it does everywhere else. The dialog's accessible name stays "New app"
-  // (`ariaLabel`), since an input cannot be the heading it is labelled by.
+  // The heading IS the optional name field: a muted "Untitled (optional)"
+  // placeholder says it is an input, and whatever is typed there becomes the
+  // folder name, verbatim — any name the server takes, spaces and capitals
+  // included — with the AI naming step skipped. Left alone, the composer
+  // names the app as it does everywhere else; when it cannot (haiku refused,
+  // or the typed name is taken) it calls `onNameNeeded` and THIS field goes
+  // red and takes focus — the composer's own ask row never unfolds here, so
+  // the dialog has one name input, not two. Typing clears the red. The
+  // dialog's accessible name stays "New app" (`ariaLabel`), since an input
+  // cannot be the heading it is labelled by.
   const [name, setName] = useState("");
+  const [nameNeeded, setNameNeeded] = useState(false);
+  const nameRef = useRef<HTMLInputElement>(null);
   return (
     <Modal
       title={
         <input
+          ref={nameRef}
           className="current-apps-compose-name"
           aria-label="App name (optional)"
-          placeholder="New app"
+          aria-invalid={nameNeeded || undefined}
+          placeholder={nameNeeded ? "Type a name" : "Untitled (optional)"}
           value={name}
           spellCheck={false}
           autoComplete="off"
-          onChange={(e) => setName(e.target.value)}
+          onChange={(e) => {
+            setName(e.target.value);
+            setNameNeeded(false);
+          }}
         />
       }
       ariaLabel="New app"
@@ -980,7 +992,14 @@ export function NewAppModal({ onClose }: { onClose: () => void }) {
       // button in it. Owner: "we should not be redesigning anything".
       plainBody
     >
-      <HeroComposer onCreated={onClose} givenName={name} />
+      <HeroComposer
+        onCreated={onClose}
+        givenName={name}
+        onNameNeeded={() => {
+          setNameNeeded(true);
+          requestAnimationFrame(() => nameRef.current?.focus());
+        }}
+      />
     </Modal>
   );
 }

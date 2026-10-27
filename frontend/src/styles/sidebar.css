@@ -1495,10 +1495,10 @@ a.bookmark-name::after {
 }
 
 /* The modal's heading is an input (CurrentAppsSection.tsx NewAppModal): it
-   wears the h2's own type and nothing else at rest — no border, no fill — so
-   the bar reads "New app" exactly as before until someone types over it. The
-   placeholder is the heading colour, not the muted one, for the same reason.
-   A faint wash on hover/focus is the only tell that the words can be edited. */
+   wears the h2's own type with no border or fill, and its muted
+   "Untitled (optional)" placeholder is what says it is a field. A faint wash
+   on hover/focus; a red ring and placeholder when the composer asks for a
+   name (`aria-invalid`, see onNameNeeded). */
 .current-apps-compose .deploy-head h2 {
   flex: 1;
   min-width: 0;
@@ -1517,7 +1517,8 @@ a.bookmark-name::after {
 }
 
 .current-apps-compose .current-apps-compose-name::placeholder {
-  color: inherit;
+  color: var(--fg-muted);
+  font-weight: 400;
   opacity: 1;
 }
 
@@ -1526,8 +1527,12 @@ a.bookmark-name::after {
   background: var(--bg-alt);
 }
 
-.current-apps-compose .current-apps-compose-name:focus::placeholder {
-  color: var(--fg-muted);
+.current-apps-compose .current-apps-compose-name[aria-invalid="true"] {
+  box-shadow: inset 0 0 0 1px var(--error);
+}
+
+.current-apps-compose .current-apps-compose-name[aria-invalid="true"]::placeholder {
+  color: var(--error);
 }
 
 /* -- The setup meter (shell/onboarding/SetupProgress) --------------------------

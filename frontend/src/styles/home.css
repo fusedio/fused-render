@@ -601,7 +601,6 @@
   width: 180px;
   padding: 3px 8px;
   font-size: 12px;
-  font-family: var(--font-mono, ui-monospace, monospace);
 }
 
 .home-composer .home-composer-name-input[aria-invalid="true"] {
