@@ -15,7 +15,10 @@ A PAGE READ NEVER WAITS ON GITHUB. GitHub facts are cached reads
 visibility is cached 10 min and, on a miss, looked up on the contrib
 background lane (`refresh._submit`) while this read answers `null`. The rung
 is read LIVE from the folder (origin on disk), not from the record: a
-rebind running in the background must not make the ladder lag.
+rebind running in the background must not make the ladder lag. With every
+Community switch off it asks GitHub nothing (no visibility, no org role)
+and the App Doctor verdict is computed only with the Marketplace switch on,
+the one gate it feeds.
 
 `publish_github(app_dir, name, visibility)` is rung 1 → 2 in one call:
 `git init` when the folder is not a repository (an app inside the shared,
@@ -23,7 +26,9 @@ remote-less `<workspace>/local` repo gets one of its own: the folder leaves
 the shared repo's index in one commit there, the nested state
 `local_monorepo` already keeps for apps with a remote — `app_git._repo_scope`
 commits into the nested repo from then on); refused when nested inside any
-other repository; the commit identity from git config, else the gh
+other repository; refused for a PUBLIC repository while App Doctor's
+`secrets` row fails (or the doctor cannot run) — a SKIP (no check engine on
+this machine) does not refuse; the commit identity from git config, else the gh
 account's name and `<login>@users.noreply.github.com`; a first commit
 "Initial commit" when there are none; then `github_setup.publish_start`,
 whose record the client polls on `GET /api/github/publish`. Its done path
@@ -127,9 +132,9 @@ def _flags() -> dict:
         from fused_render.shell import prefs
 
         # Owner 2026-10-27: one switch for Community/GitHub sharing — the
-        # install link is part of it (the old github_link_enabled pref still
-        # counts, for a stored value, but has no row of its own any more).
-        link = bool(prefs.github_link_enabled() or prefs.contrib_enabled())
+        # install link is part of it (the old `github_link_enabled` pref is
+        # folded into this one by `prefs.read_prefs`, never read here).
+        link = bool(prefs.contrib_enabled())
     except Exception:  # noqa: BLE001 — an unreadable pref reads as off
         link = False
     return {"sources": bool(flags.sources()), "marketplace": bool(listing._enabled()),
@@ -273,11 +278,13 @@ def _doctor(app_dir: str, root: str | None, unpushed: int = 0, *, fresh: bool = 
 # ------------------------------------------------------------------- status
 
 
-def _who(app_dir: str, root: str | None, origin: str | None, login: str | None) -> dict:
+def _who(app_dir: str, root: str | None, origin: str | None, login: str | None,
+         *, ask: bool = True) -> dict:
     """`{kind, mine, repo, remix_of, pending, recorded}` from the record
     (`recorded`: the record's own repo) — or, for a folder with no record
     yet, the ownership rule applied to what is known without asking GitHub
-    (`pending: True` while that is not enough)."""
+    (`pending: True` while that is not enough). `ask`: queue the org-role
+    lookup that settles it (off with every Community switch off)."""
     from fused_render.contrib import classify, flags, store
 
     rec = store.get(app_dir)
@@ -290,7 +297,7 @@ def _who(app_dir: str, root: str | None, origin: str | None, login: str | None) 
             return {"kind": "own", "mine": True, "repo": None, "remix_of": None,
                     "pending": False, "recorded": None}
         owned = _owns_cached(_owner_of(origin), login)
-        if owned is None and login:
+        if owned is None and login and ask:
             _ask_owner(_owner_of(origin))
         return {"kind": None if owned is None else ("own" if owned else "github"),
                 "mine": bool(owned), "repo": origin, "remix_of": None,
@@ -356,7 +363,14 @@ def status(app_dir: str, *, fresh: bool = False) -> dict:
     root = follow.is_repo_root(app_dir)
     top = root or gu.repo_root(app_dir)
     origin = classify._origin_repo(root)
-    who = _who(app_dir, root, origin, login)
+    # With every Community switch off this read asks GitHub nothing and
+    # runs no App Doctor (an existing user who never turned them on pays
+    # nothing for a tab they did not ask for): the visibility and org-role
+    # lookups need the loop or the Community on, the doctor verdict only
+    # feeds the Marketplace listing gate, so it follows that switch as
+    # `listing` does.
+    community = bool(fl["marketplace"] or fl["sources"] or fl["github_link"])
+    who = _who(app_dir, root, origin, login, ask=community)
     mine = who["mine"]
     github = {"installed": _gh_installed(), "signed_in": bool(ident.get("signed_in")),
               "checking": bool(ident.get("checking")), "login": login,
@@ -370,7 +384,7 @@ def status(app_dir: str, *, fresh: bool = False) -> dict:
     on_github = bool(root and origin)
     if on_github:
         github["repo"] = who["repo"] or origin
-        github["visibility"] = visibility(github["repo"], fresh=fresh)
+        github["visibility"] = visibility(github["repo"], fresh=fresh) if community else None
         github["unpushed"] = classify._unpublished(root)
         if fl["github_link"]:
             from fused_render import share_app
@@ -391,7 +405,7 @@ def status(app_dir: str, *, fresh: bool = False) -> dict:
         state = (out["listing"] or {}).get("state")
         if state in RUNG3_STATES:
             rung = 3
-    if on_github:
+    if on_github and fl["marketplace"]:
         out["doctor"] = _doctor(app_dir, root, github["unpushed"], fresh=fresh)
     out["rung"] = rung
     return out
@@ -581,6 +595,18 @@ def publish_github(app_dir: str, name: str | None = None,
         raise PlainError(NESTED, reason="nested")
     if blocked == HAS_REMOTE:
         raise PlainError(HAS_REMOTE, reason="has-remote")
+    if vis == "public":
+        # `git add -A` then a push to a PUBLIC repository, one click: a
+        # `.env` or a config holding a key would be out for good. App
+        # Doctor's `secrets` row gates it, as it gates a listing (a doctor
+        # that cannot run blocks too — `doctor_blockers` fails closed). A
+        # private repo is the user's own place to keep things.
+        leaks = _secret_blockers(real)
+        if leaks:
+            from fused_render.contrib import listing
+
+            raise PlainError(listing._doctor_sentence(leaks) + " Open App Doctor to fix "
+                             "them, or make the repository private.", reason="doctor")
     # The record rebind will find (an app made here is `own`, repo null).
     # Never under the slot: `ensure` may ask GitHub.
     classify.ensure(real, identity=ident)
@@ -606,6 +632,15 @@ def publish_github(app_dir: str, name: str | None = None,
         raise PlainError(_sentence(str(e)), reason="refused")
     note_visibility(f"{ident['login']}/{repo_name}", vis)
     return record
+
+
+def _secret_blockers(app_dir: str) -> list[dict]:
+    """The `doctor_blockers` rows that stop a PUBLIC first push: `secrets`
+    (a leaked key), and `doctor` (App Doctor could not run — fail closed).
+    Rows about polish (a README, an icon) gate a listing, not a repo."""
+    from fused_render.contrib import listing
+
+    return [b for b in listing.doctor_blockers(app_dir) if b.get("id") in ("secrets", "doctor")]
 
 
 def _sentence(text: str) -> str:

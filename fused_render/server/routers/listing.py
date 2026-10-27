@@ -5,7 +5,9 @@ THREE ROUTES:
   * `GET /api/contrib/listing?path=` → `{ok, listing, state, sentence,
     actions, job}` — the ListingStrip. `listing` is `listing.view` (the last
     read of GitHub + local git; never waits on GitHub). When that read is
-    older than `listing.STATUS_TTL_S` (or there is none) a refresh job is
+    stale (`listing.stale`: older than `AUTO_TTL_S`, or `STATUS_TTL_S`
+    while a request is open on the index; none at all; or `fresh=1`) a
+    refresh job is
     started (`listing-check`, one per app) and its id answered as `job`: the
     page polls `GET /api/contrib/job?id=` and GETs again when it ends — a
     named wait (§16.14), not a background loop.

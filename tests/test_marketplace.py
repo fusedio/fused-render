@@ -51,6 +51,7 @@ CATALOG_KEYS = (
     "releases", "installs", "installs_30d", "views", "views_30d", "catalog_version", "generated_at")
 OWNER = "alice"
 FUSED = {"X-Fused": "1"}
+_REAL_UDF_GET = mp._udf_get
 
 def _sha1(text: str) -> str:
     import hashlib
@@ -738,6 +739,60 @@ def test_install_goes_by_the_cached_row_when_the_marketplace_is_away(env, gh_wor
     assert env["api"].installs == []
 
 
+def _older_and_newer(env, gh_world):
+    """sine-starter released twice: the approved commit, then a newer
+    release (the row's commit), both on Alice's branch."""
+    newer = gh_world.fake.commit(gh_world.full, "main", {"app.py": "A = 2\n"}, "Release 1.1.0",
+                                 author="alice")
+    env["api"].set_files("sine-starter", {"index.html": PAGE, "app.py": "A = 2\n"}, "1.1.0",
+                         commit=newer, repo=gh_world.full)
+    return gh_world.approved, newer
+
+
+@pytest.mark.parametrize("where", ["release", "row", "blocklist"])
+def test_the_cached_row_fallback_never_installs_a_blocked_release(env, gh_world, where):
+    """M3, fail closed: with the marketplace away the install goes by the
+    cached row, which may predate a hard block. The commit is vetted there
+    too (`market._pick`): the newest release not blocked — by the row's
+    release, the row itself, or the block list on disk — is what lands and
+    what the copy records, and the open gate knows its HEAD at once."""
+    older, newer = _older_and_newer(env, gh_world)
+    row = env["api"].apps["sine-starter"]["row"]
+    if where == "release":
+        row["releases"][0]["blocked"] = "hard"
+    elif where == "row":
+        row["blocked"] = "hard"
+    else:
+        env["api"].blocked = [_blk(commit=newer)]
+        assert mp.blocklist(force=True)["blocked"][0]["commit"] == newer
+    mp.catalog(refresh=True)                          # the cache now holds the blocked row
+    env["api"].install_fail = "the marketplace can't be reached"
+    client = _client()
+    client.post("/api/marketplace/install", json={"slug": "sine-starter"}, headers=FUSED)
+    job = _wait_job(client, "sine-starter")
+    assert job["state"] == "done", job
+    assert _git(job["path"], "rev-parse", "HEAD") == older
+    from fused_render.contrib import blocks, store
+
+    rec = store.get(job["path"])
+    assert rec["approved"]["commit"] == older and rec["approved"]["version"] == "1.0.0"
+    assert rec["last_head"] == older
+    assert blocks.gate(job["path"]) is None
+
+
+def test_the_cached_row_fallback_refuses_when_every_release_is_blocked(env, gh_world):
+    row = env["api"].apps["sine-starter"]["row"]
+    for r in row["releases"]:
+        r["blocked"] = "hard"
+    mp.catalog(refresh=True)
+    env["api"].install_fail = "the marketplace can't be reached"
+    client = _client()
+    client.post("/api/marketplace/install", json={"slug": "sine-starter"}, headers=FUSED)
+    job = _wait_job(client, "sine-starter")
+    assert job["state"] == "error" and "withdrew" in job["error"], job
+    assert not os.path.exists(_app_dir(env, "sine-starter"))
+
+
 def test_install_refuses_a_release_the_marketplace_withdrew(env, gh_world):
     env["api"].apps["sine-starter"]["row"]["blocked"] = "hard"
     client = _client()
@@ -968,13 +1023,170 @@ def test_blocklist_fetch_ttl_force_and_route(env):
         assert json.load(f)["blocked"] == bl["blocked"]
     # Within the TTL: no second call; `force` fetches.
     n = len([c for c in api.calls if c[0] == "marketplace_blocklist"])
-    api.blocked = []
+    api.blocked = [_blk(commit="e" * 40)]
     assert mp.blocklist()["blocked"] == bl["blocked"]
     assert len([c for c in api.calls if c[0] == "marketplace_blocklist"]) == n
-    assert mp.blocklist(force=True)["blocked"] == []
+    assert mp.blocklist(force=True)["blocked"] == [_blk(commit="e" * 40)]
     # The route answers the cached list.
     r = _client().get("/api/marketplace/blocklist").json()
-    assert r["blocked"] == [] and r["status"] == "ok"
+    assert r["blocked"] == [_blk(commit="e" * 40)] and r["status"] == "ok"
+
+
+def _header(entries, generated_at="2026-10-27T00:00:00Z", **kw):
+    """The self-describing block list answer (contract 5), as `_udf_get`
+    hands it on: one row."""
+    return [{"generated_at": generated_at, "entries": entries, **kw}]
+
+
+def test_blocklist_reads_both_shapes_and_never_trusts_an_unknown_answer(env, monkeypatch):
+    """Contract 5, client half: the bare list (the older canvas) and the
+    self-describing header both read; an answer that cannot vouch for itself
+    (stale, a header without `generated_at`, older than the list here, or
+    every known entry gone without a newer header) keeps the last list —
+    it may add entries, never remove one."""
+    api = env["api"]
+    api.blocked = [_blk()]
+    assert mp.blocklist(force=True)["blocked"] == [_blk()]
+    answers = []
+    monkeypatch.setattr(api, "_marketplace_blocklist", lambda: answers.pop(0))
+
+    def ask(answer):
+        answers.append(answer)
+        return mp.blocklist(force=True)
+
+    # Every known entry gone from a bare list (an unreadable index used to read so).
+    bl = ask([])
+    assert bl["status"] == "stale" and bl["blocked"] == [_blk()]
+    # A bare list whose every row is garbled is the same thing.
+    bl = ask([{"slug": "../x", "commit": "short", "generated_at": "2026-10-28T00:00:00Z"}])
+    assert bl["status"] == "stale" and bl["blocked"] == [_blk()]
+    # A row flagged stale (the backend's fallback copy): unknown, but it may ADD.
+    bl = ask([dict(_blk(commit="b" * 40), stale=True, generated_at="2026-10-28T00:00:00Z")])
+    assert bl["status"] == "stale" and bl["blocked"] == [_blk(), _blk(commit="b" * 40)]
+    # A header without `generated_at`, or flagged stale: unknown.
+    assert ask(_header([], generated_at=None))["blocked"] == [_blk(), _blk(commit="b" * 40)]
+    assert ask(_header([], stale=True))["status"] == "stale"
+    # A header with the list: trusted, and it may shrink the list.
+    bl = ask(_header([_blk(level="Hard")]))           # a malformed level reads as hard
+    assert bl["status"] == "ok" and bl["header"] is True and bl["blocked"] == [_blk()]
+    assert bl["generated_at"] == "2026-10-27T00:00:00Z"
+    # Older than the list here: unknown.
+    assert ask(_header([], generated_at="2026-10-01T00:00:00Z"))["blocked"] == [_blk()]
+    # A newer header carrying an entry fused cannot read never lifts one.
+    bl = ask(_header([{"slug": "sine-starter", "commit": "abc", "level": "hard",
+                       "malformed": True}], generated_at="2026-10-28T00:00:00Z"))
+    assert bl["status"] == "stale" and bl["blocked"] == [_blk()]
+    # The same `generated_at` and empty: unknown (nothing says it changed).
+    assert ask(_header([]))["blocked"] == [_blk()]
+    # A NEWER header that names nothing: Fused lifted the last block.
+    bl = ask(_header([], generated_at="2026-10-28T00:00:00Z"))
+    assert bl["status"] == "ok" and bl["blocked"] == []
+    from fused_render.contrib import blocks
+    assert blocks.list_vouched()
+
+
+def test_udf_get_answers_a_self_describing_object_as_one_row(env, monkeypatch):
+    monkeypatch.setattr(mp, "_udf_get", _REAL_UDF_GET)
+
+    class R:
+        status_code = 200
+
+        def __init__(self, body):
+            self.body = body
+
+        def json(self):
+            return self.body
+
+    bodies = [{"generated_at": "g", "entries": []}, {"rows": []}]
+    monkeypatch.setattr(mp, "_http_get", lambda url, **kw: (R(bodies.pop(0)), None))
+    assert mp._udf_get("marketplace_blocklist") == [{"generated_at": "g", "entries": []}]
+    with pytest.raises(mp.SourceError):
+        mp._udf_get("marketplace_blocklist")
+
+
+def test_an_implausible_catalog_is_stale_until_it_repeats(env):
+    """A zero-app catalog, or one missing most of the apps the cache holds,
+    is how an unreadable index looks: the last build stands, flagged stale,
+    so no copy reads as delisted. The same answer twice is believed (a real
+    mass delisting looks that way too)."""
+    api = env["api"]
+    mp.catalog(refresh=True)
+    saved = dict(api.apps)
+    api.apps.clear()
+    snap, _e = mp.get_snapshot(force=True)
+    assert snap["stale"] and set(snap["apps"]) == set(saved)
+    assert "empty catalog" in snap["warning"]
+    snap, _e = mp.get_snapshot(force=True)            # the same answer again: believed
+    assert not snap["stale"] and snap["apps"] == {}
+    api.apps.update(saved)
+    assert set(mp.get_snapshot(force=True)[0]["apps"]) == set(saved)
+    # One of two apps missing is not "most": believed at once.
+    api.apps.pop("local-chat")
+    assert not mp.get_snapshot(force=True)[0]["stale"]
+
+
+def test_a_catalog_the_backend_served_stale_never_delists(env):
+    api = env["api"]
+    mp.catalog(refresh=True)
+    api.apps["sine-starter"]["row"]["stale"] = True
+    api.apps["local-chat"]["row"]["stale"] = True
+    gone = api.apps.pop("local-chat")
+    snap, _e = mp.get_snapshot(force=True)
+    assert snap["stale"] and "local-chat" in snap["apps"]
+    from fused_render.contrib import market
+
+    assert not market._fresh(snap)
+    api.apps["local-chat"] = gone
+
+
+def test_check_waits_for_a_build_in_flight_instead_of_answering_the_old_cache(env):
+    import threading
+
+    mp.catalog(refresh=True)
+    env["api"].set_files("sine-starter", {"index.html": "<html>v2</html>"}, "2.0.0")
+    mp._CATALOG_LOCK.acquire()
+    threading.Timer(0.3, mp._CATALOG_LOCK.release).start()
+    snap, _e = mp.get_snapshot(force=True)
+    assert not snap["stale"] and snap["apps"]["sine-starter"]["version"] == "2.0.0"
+
+
+@pytest.mark.parametrize("url,want", [
+    ("javascript:alert(1)", "https://github.com/alice/sine-starter"),
+    ("https://evil.example/x", "https://github.com/alice/sine-starter"),
+    ("https://github.com/x/y\"onclick=1", "https://github.com/alice/sine-starter"),
+    ("https://github.com/alice/sine-starter", "https://github.com/alice/sine-starter"),
+])
+def test_source_url_is_only_ever_a_github_page(env, url, want):
+    env["api"].apps["sine-starter"]["row"]["source_url"] = url
+    mp.catalog(refresh=True)
+    assert _entry("sine-starter")["source_url"] == want
+
+
+def test_a_hard_block_shuts_the_run_doors_too(env, tmp_path):
+    """A window already open on a blocked copy keeps calling runPython, and
+    its background daemon can be started again: both are refused (423)."""
+    from fused_render.server import create_app
+
+    app_dir = tmp_path / "ws" / "app" / "sine-starter"
+    app_dir.mkdir(parents=True)
+    _git(app_dir, "init", "-q")
+    _git(app_dir, "remote", "add", "origin", "https://github.com/alice/sine-starter")
+    (app_dir / "index.html").write_text(PAGE)
+    (app_dir / "pyproject.toml").write_text(
+        '[project]\nname = "s"\nversion = "0"\n[tool.fused-render.app]\nmain = "app.py"\n')
+    (app_dir / "app.py").write_text("def ping():\n    return 1\n")
+    commit = env["api"].apps["sine-starter"]["row"]["commit"]
+    _market_record(str(app_dir), "sine-starter", commit,
+                   block={"level": "hard", "commit": commit, "reason": "Reads saved passwords",
+                          "what_to_do": "", "at": "2026-10-26", "rolled_back_to": None,
+                          "conflict": True, "confirmed_at": None})
+    client = TestClient(create_app(start_dir=str(tmp_path)))
+    html = str(app_dir / "index.html")
+    r = client.post("/api/run", json={"html": html, "py": "x.py"}, headers=FUSED)
+    assert r.status_code == 423 and r.json()["blocked"]["level"] == "hard"
+    for door in ("start", "restart"):
+        r = client.post(f"/api/apps/background/{door}", json={"html": html}, headers=FUSED)
+        assert r.status_code == 423 and r.json()["blocked"]["conflict"] is True, (door, r.text)
 
 
 def test_blocklist_offline_keeps_the_last_list(env, monkeypatch):
@@ -1077,12 +1289,27 @@ def test_soft_block_rides_app_entry_and_apps_rows_with_every_flag_off(env, tmp_p
                           "what_to_do": "Check before opening", "at": "2026-10-26", "rolled_back_to": None,
                           "conflict": False, "confirmed_at": None})
     client = TestClient(create_app(start_dir=str(tmp_path)))
+    # Contract 1: an unconfirmed soft block shuts every run door with a 423
+    # carrying `level: "soft"` — the app page asks first off it.
     r = client.get("/api/apps/entry", params={"path": str(app_dir)})
-    assert r.status_code == 200 and r.json()["entry"].endswith("index.html")
-    b = r.json()["contrib"]["block"]
+    assert r.status_code == 423
+    b = r.json()["blocked"]
     assert (b["level"], b["reason"], b["what_to_do"], b["confirmed"]) == (
         "soft", "Sends data to a new server", "Check before opening", False)
-    # The page renders (a soft block asks; it does not gate).
+    page = client.get("/render", params={"path": str(app_dir / "index.html")},
+                      headers={"Accept": "text/html"})
+    assert page.status_code == 423 and "asks before it opens" in page.text
+    run = client.post("/api/run", json={"html": str(app_dir / "index.html"), "py": "x.py"},
+                      headers=FUSED)
+    assert run.status_code == 423 and run.json()["blocked"]["level"] == "soft"
+    # confirm-block is the way through — the action route answers it with
+    # every switch off (a blocked copy's panel route, §18.8).
+    r = client.post("/api/contrib/action", json={"path": str(app_dir), "action": "confirm-block"},
+                    headers=FUSED)
+    assert r.status_code == 200 and r.json().get("ok") is not False, r.text
+    r = client.get("/api/apps/entry", params={"path": str(app_dir)})
+    assert r.status_code == 200 and r.json()["entry"].endswith("index.html")
+    assert r.json()["contrib"]["block"]["confirmed"] is True
     assert client.get("/render", params={"path": str(app_dir / "index.html")}).status_code == 200
     rows = client.get("/api/apps").json()["apps"]
     [row] = [x for x in rows if os.path.basename(x["path"].rstrip("/")) == "sine-starter"]
@@ -1368,3 +1595,37 @@ def test_community_route_is_retired_while_the_marketplace_is_on(env, monkeypatch
     assert client.post("/api/community", json={"action": "catalog"}).json() == {"status": "ok", "apps": []}
     monkeypatch.setattr(prefs, "marketplace_enabled", lambda: True)
     assert client.post("/api/community", json={"action": "catalog"}).json()["status"] == "retired"
+
+
+def test_a_community_copy_is_never_uploaded_and_shares_its_listing(env, tmp_path):
+    """P1, the kind decides: a `marketplace` copy is someone else's code
+    whatever the switches say — the Fused upload is refused with the loop
+    off too — and the link it hands on is its LISTING page (the reviewed
+    install), never the author's GitHub link (that one follows the author's
+    unreviewed tip)."""
+    from fused_render import backend_canvas, share_app
+    from fused_render.shell import prefs
+
+    assert not prefs.read_prefs().get("contrib_enabled")      # the loop is off
+    app_dir = tmp_path / "ws" / "app" / "sine-starter"
+    app_dir.mkdir(parents=True)
+    _git(app_dir, "init", "-q")
+    _git(app_dir, "remote", "add", "origin", "https://github.com/alice/sine-starter")
+    (app_dir / "index.html").write_text(PAGE)
+    _market_record(str(app_dir), "sine-starter", "c" * 40)
+    api = FastAPI()
+    api.include_router(share_app.router)
+    c = TestClient(api)
+    st = c.get("/api/share/status", params={"path": str(app_dir)}).json()
+    assert (st["can_share"], st["refusal_code"]) == (False, "github_copy")
+    r = c.post("/api/share/publish", data={"path": str(app_dir)}, headers=FUSED)
+    assert r.status_code == 409 and r.json()["code"] == "github_copy"
+    link = share_app.github_link_state(str(app_dir), copy_status={"changes": 0})
+    assert link["code"] == "contributor"
+    assert link["url"] == backend_canvas.listing_page_url("sine-starter")
+    # No slug on the record: no link at all, never the author's GitHub one.
+    from fused_render.contrib import store
+
+    store.update(str(app_dir), lambda rec: rec.update(slug=None) or rec)
+    link = share_app.github_link_state(str(app_dir), copy_status={"changes": 0})
+    assert link["ok"] is False and link["url"] is None

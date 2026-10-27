@@ -264,3 +264,30 @@ def test_a_failing_rebind_never_fails_the_publish(w, monkeypatch):
     assert _post(w, app).status_code == 200
     rec = _wait_done()
     assert rec["state"] == "done" and rec["error"] is None
+
+
+def test_a_public_repo_is_refused_while_app_doctor_finds_a_secret(w, monkeypatch):
+    """`git add -A` then a push to a PUBLIC repository in one click: a key
+    in the folder would be out for good. App Doctor's `secrets` row (or a
+    doctor that cannot run) refuses it before anything is written; rows
+    about polish do not, and a private repository is not gated."""
+    from fused_render.contrib import listing
+
+    found = [{"id": "secrets", "label": "No leaked credentials"},
+             {"id": "readme", "label": "Has a README"}]
+    monkeypatch.setattr(listing, "doctor_blockers", lambda root: list(found))
+    app = _fresh(w.ws, name="leaky")
+    r = _post(w, app)
+    assert r.status_code == 409 and r.json()["reason"] == "doctor"
+    assert r.json()["message"].startswith(
+        "App Doctor found things to fix before sharing: No leaked credentials.")
+    assert not os.path.exists(os.path.join(app, ".git")) and w.spawned == []
+    found[:] = [{"id": "doctor", "label": "App Doctor couldn't check this app"}]
+    assert _post(w, app).json()["reason"] == "doctor"          # fails closed
+    found[:] = [{"id": "readme", "label": "Has a README"}]     # polish gates a listing only
+    assert _post(w, app).status_code == 200
+    assert _wait_done()["state"] == "done"
+    found[:] = [{"id": "secrets", "label": "No leaked credentials"}]
+    other = _fresh(w.ws, name="private-leaky")
+    assert _post(w, other, visibility="private").status_code == 200
+    assert _wait_done()["state"] == "done"

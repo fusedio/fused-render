@@ -42,7 +42,7 @@ def w(tmp_path, monkeypatch):
     fake = gh.fake()
     for k, v in fake.git_env().items():
         monkeypatch.setenv(k, v)
-    write_prefs(marketplace_enabled=True, github_link_enabled=True)
+    write_prefs(marketplace_enabled=True, contrib_enabled=True)
     gh.forget_identity()
     ladder.forget_caches()
     monkeypatch.setattr(refresh, "_INLINE", True)
@@ -110,7 +110,7 @@ def test_a_scratch_folder_stands_on_rung_one(w):
     assert out["github"]["blocked"] is None
     assert out["listing"] is None
     assert out["doctor"] == {"clear": None, "failing": None}
-    assert out["flags"] == {"sources": False, "marketplace": True, "github_link": True}
+    assert out["flags"] == {"sources": True, "marketplace": True, "github_link": True}
 
 
 def test_rung_one_says_when_the_door_is_shut(w):
@@ -191,13 +191,30 @@ def test_switches_hide_rung_three_and_the_link_only(w):
     w.fake.commit(INDEX, "main", {"apps/sine-starter.json": json.dumps(row) + "\n"},
                   "List sine-starter", author="fusedio")
     w.listing.refresh(w.app)
-    write_prefs(marketplace_enabled=False, github_link_enabled=False)
-    out = w.read(w.app)
+    write_prefs(marketplace_enabled=False, contrib_enabled=False)
+    calls = []
+    from fused_render.contrib import gh, listing
+    real_repo, real_doctor = gh.repo, listing.doctor_blockers
+    gh.repo = lambda *a, **k: calls.append("gh.repo") or real_repo(*a, **k)
+    listing.doctor_blockers = lambda *a, **k: calls.append("doctor") or real_doctor(*a, **k)
+    try:
+        out = w.read(w.app)
+    finally:
+        gh.repo, listing.doctor_blockers = real_repo, real_doctor
     assert out["flags"]["marketplace"] is False and out["flags"]["github_link"] is False
     assert out["rung"] == 2  # the ladder shows two rungs
     assert out["listing"] is None
     assert out["github"]["link"] is None
-    assert out["github"]["repo"] == REPO and out["github"]["visibility"] == "public"
+    assert out["github"]["repo"] == REPO
+    # Every switch off: no GitHub lookup and no App Doctor run for the read.
+    assert out["github"]["visibility"] is None and out["doctor"] == {"clear": None,
+                                                                    "failing": None}
+    assert calls == []
+    # The loop on (Marketplace still off): the visibility comes back, the
+    # doctor (it only feeds the listing gate) still does not run.
+    write_prefs(contrib_enabled=True)
+    out = w.read(w.app)
+    assert out["github"]["visibility"] == "public" and out["doctor"]["clear"] is None
 
 
 def test_a_github_copy_is_not_mine(w):
@@ -241,6 +258,25 @@ def test_every_switch_off_still_answers_the_whole_ladder(w):
     assert out["flags"] == {"sources": False, "marketplace": False, "github_link": False}
     for key in ("kind", "github", "listing", "doctor", "pending", "remix_of"):
         assert key in out
+
+
+def test_a_legacy_github_link_switch_folds_into_the_loop_once(w):
+    """Contract 3: the old Share-sheet switch has no Preferences row, so a
+    stored value is folded into `contrib_enabled` once and deleted — never
+    left as a switch the UI cannot turn off."""
+    from fused_render.shell import prefs, storage
+
+    path = prefs._path()
+    storage.write_json(path, {"marketplace_enabled": False, "github_link_enabled": True})
+    assert prefs.read_prefs() == {"marketplace_enabled": False, "contrib_enabled": True}
+    assert "github_link_enabled" not in storage.read_json(path)  # written back once
+    assert w.read(w.app)["flags"]["github_link"] is True
+    # An explicit loop choice wins; `false` only goes away.
+    storage.write_json(path, {"contrib_enabled": False, "github_link_enabled": True})
+    assert prefs.read_prefs() == {"contrib_enabled": False}
+    storage.write_json(path, {"github_link_enabled": False})
+    assert prefs.read_prefs() == {}
+    assert w.read(w.app)["flags"]["github_link"] is False
 
 
 def test_fresh_re_asks_what_is_cached(w):

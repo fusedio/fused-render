@@ -330,7 +330,9 @@ def _udf_get(endpoint: str, *, timeout: float = HTTP_TIMEOUT_S, **params) -> lis
     Params that are None are dropped (an empty string is kept). Raises
     SourceError on a transport failure, a body that is not a list of objects,
     or an error row (HTTP 200, one row with `error_code`). An empty list is
-    a valid answer (an empty block list)."""
+    a valid answer (an empty block list). A self-describing object (`{...,
+    "entries": [...]}`, the block list's newer shape) is answered as its one
+    row; any other object is unexpected."""
     from fused_render import __version__
 
     query = {k: v for k, v in params.items() if v is not None}
@@ -345,6 +347,8 @@ def _udf_get(endpoint: str, *, timeout: float = HTTP_TIMEOUT_S, **params) -> lis
         rows = r.json()
     except ValueError:
         raise SourceError("the Community answered something unexpected")
+    if isinstance(rows, dict) and isinstance(rows.get("entries"), list):
+        rows = [rows]
     if not isinstance(rows, list) or not all(isinstance(x, dict) for x in rows):
         raise SourceError("the Community answered something unexpected")
     if len(rows) == 1 and rows[0].get("error_code"):
@@ -427,7 +431,29 @@ def _build_snapshot() -> dict:
             "catalog_version": _opt_text(first.get("catalog_version")),
             "generated_at": _opt_text(first.get("generated_at")),
             "apps": apps, "categories": categories,
-            "collections": _group_collections(cols, apps)}
+            "collections": _group_collections(cols, apps),
+            # The backend answered from its last copy of the index (GitHub
+            # unreadable): never "fresh" here (`_fresh`), so a slug missing
+            # from it is unknown, not delisted.
+            "backend_stale": any(bool(r.get("stale")) for r in rows)}
+
+
+def _implausible(snap: dict, cached: dict | None) -> str | None:
+    """Why a freshly built catalog cannot be taken as the index's current
+    answer yet, or None: no apps at all, or more than half of the apps the
+    cache holds missing at once. Either is how an unreadable or truncated
+    index looks; trusting it would mark every copy of the missing apps
+    delisted. The same answer twice in a row (`suspect`, kept on the cache
+    by the first) is believed: a real mass delisting reads that way too."""
+    apps = sorted(snap.get("apps") or {})
+    known = set((cached or {}).get("apps") or {})
+    if (cached or {}).get("suspect") == apps:
+        return None
+    if not apps and (known or cached is None):
+        return "the Community answered an empty catalog"
+    if known and len(known - set(apps)) * 2 > len(known):
+        return "the Community's catalog is missing most of the apps it had"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -531,14 +557,29 @@ def _build_locked(cached: dict | None) -> tuple[dict | None, str | None]:
         if cached:
             return _mark_failed(cached, now, None), None
         return None, f"Could not load the community catalog: {exc.__class__.__name__}"
+    # The backend answered from its last copy of the index, or an answer
+    # that cannot be the index's current one (`_implausible`): never fresh
+    # here. With a cache, the last good build stands, flagged stale (an
+    # implausible answer is remembered as `suspect`: the next build that
+    # answers the same apps is believed). Without one, the answer is kept,
+    # flagged stale.
+    older = bool(snap.pop("backend_stale", False))
+    odd = ("the Community answered from an older copy of its catalog" if older
+           else _implausible(snap, cached))
+    if odd and cached:
+        logger.warning("marketplace: catalog answer not trusted (%s)", odd)
+        suspect = {} if older else {"suspect": sorted(snap.get("apps") or {})}
+        return _mark_failed({**cached, **suspect}, now,
+                            f"Could not refresh the catalog ({odd}) — showing apps "
+                            f"cached at {cached.get('fetched_at')}"), None
     snap["fetched_at"] = _utc_now()
     snap["checked_at"] = now
-    snap["stale"] = False
+    snap["stale"] = bool(odd)
     # The backend's current answer (module docstring "Snapshot"); a failed
     # refresh keeps it but `_mark_failed` sets `stale`, so a fallback never
     # reads as fresh.
     snap["status"] = "ok"
-    snap["warning"] = None
+    snap["warning"] = f"{odd[:1].upper()}{odd[1:]}." if odd else None
     try:
         _write_cache(snap)
     except OSError:
@@ -547,6 +588,10 @@ def _build_locked(cached: dict | None) -> tuple[dict | None, str | None]:
             or cached.get("catalog_version") != snap.get("catalog_version")):
         _prune_asset_cache(_release_ids(snap))
     return snap, None
+
+
+#: How long `force` waits for a build already in flight (`check`).
+FORCE_WAIT_S = 30.0
 
 
 def get_snapshot(refresh: bool = False, force: bool = False) -> tuple[dict | None, str | None]:
@@ -561,9 +606,17 @@ def get_snapshot(refresh: bool = False, force: bool = False) -> tuple[dict | Non
     cached = _read_cache()
     if not force and _fresh_enough(cached, refresh, time.time()):
         return cached, None
-    if cached is not None:
+    if cached is not None and not force:
         if not _CATALOG_LOCK.acquire(blocking=False):
             return cached, None  # a rebuild is in flight; it will land shortly
+    elif cached is not None:
+        # `force` is a caller that must not answer from the old cache (the
+        # "Check for a new release" button): wait for a build in flight,
+        # bounded, then build again — what it built may predate the ask.
+        if not _CATALOG_LOCK.acquire(timeout=FORCE_WAIT_S):
+            stale = dict(cached)
+            stale["stale"] = True
+            return stale, None
     else:
         _CATALOG_LOCK.acquire()  # nothing to serve without a build anyway
     try:
@@ -884,6 +937,18 @@ def _opt_str(v) -> str | None:
     return v if isinstance(v, str) and v.strip() else None
 
 
+def _source_url(row: dict) -> str | None:
+    """The row's `source_url` for the page's "View source" link — ONLY a
+    `https://github.com/` page (the row comes from the backend canvas and
+    the index; a `javascript:` or any other scheme there would be a live
+    link on the page), else one built from the row's repo, else None."""
+    v = _opt_str(row.get("source_url"))
+    if v and v.startswith("https://github.com/") and not any(c in v for c in "\"'<> \t\r\n"):
+        return v
+    repo = row_repo(row)
+    return f"https://github.com/{repo}" if repo else None
+
+
 def _author(v) -> dict:
     if isinstance(v, str):
         return {"name": v, "github": None}
@@ -1026,7 +1091,7 @@ def app_entry(slug: str, row: dict, installed: dict | None, *, catalog_fresh: bo
         "published_at": _opt_str(row.get("published_at")),
         "updated_at": _opt_str(row.get("updated_at")),
         "last_release_at": _opt_str(row.get("last_release_at")) or _opt_str(row.get("updated_at")),
-        "source_url": _opt_str(row.get("source_url")),
+        "source_url": _source_url(row),
         "featured": row.get("featured") is True,
         "remix_of": row.get("remix_of") if is_slug(row.get("remix_of")) else None,
         "remix_count": _int(row.get("remix_count")),
@@ -1431,16 +1496,6 @@ def _who(row: dict) -> str:
     return repo.split("/", 1)[0] if repo else "the author"
 
 
-def _approved(row: dict) -> dict:
-    """The `approved` block a marketplace record carries (§18.4) for `row`:
-    its commit, and the newest release's date / What's new / version."""
-    rel = next((r for r in _releases(row.get("releases")) if r["commit"] == row.get("commit")), None)
-    return {"commit": row.get("commit"),
-            "at": (rel or {}).get("at") or _opt_str(row.get("last_release_at")),
-            "whats_new": (rel or {}).get("whats_new") or _opt_str(row.get("whats_new")),
-            "version": (rel or {}).get("version") or _opt_str(row.get("version"))}
-
-
 def _record_kind(path: str) -> str | None:
     try:
         from fused_render.contrib import store
@@ -1602,8 +1657,11 @@ def resolve_install(slug: str, row: dict) -> dict:
     for k in ("commit", "release_id", "branch", "version", "name"):
         if _opt_str(live.get(k)):
             out[k] = live[k]
-    # The catalog's releases list does not know this commit: `_approved`
-    # then takes the version from the row and leaves What's new empty.
+    # The cached row's `blocked` was about ITS commit, not the live one.
+    out["blocked"] = live.get("blocked") if live.get("blocked") in _BLOCK_LEVELS else None
+    # The catalog's releases list does not know this commit: the vetted
+    # entry (`install_app`, `market._pick`) then takes the version from the
+    # row and leaves What's new empty.
     out["whats_new"] = None
     return out
 
@@ -1616,10 +1674,21 @@ def install_app(slug: str, row: dict, report=lambda **kw: None) -> dict:
     InstallError."""
     from fused_render import app_listing, appfetch, appfile, appfile_git
 
+    from fused_render.contrib import market as contrib_market
+
     row = resolve_install(slug, row)
     repo, commit = row_repo(row), row.get("commit")
     if not repo or not is_sha(commit):
         raise InstallError("This app has no reviewed version to install yet.")
+    # The commit is VETTED here whichever row it came from (M3): the live
+    # answer refuses a hard block itself, but the cached row the fallback
+    # uses may predate one. `_pick` skips a release the row or the block
+    # list on disk marks hard-blocked and answers the newest one left — an
+    # older release, possibly — and the copy records exactly that one.
+    ap = contrib_market._pick(row, slug)
+    if ap is None or ap.entry() is None:
+        raise InstallError("Fused withdrew this release, so it can't be installed right now.")
+    commit = ap.commit
     url = f"https://github.com/{repo}"
     report(state="downloading", step="download", progress=0.05,
            message=f"Downloading {repo} at its reviewed version…")
@@ -1663,9 +1732,10 @@ def install_app(slug: str, row: dict, report=lambda **kw: None) -> dict:
             raise InstallError(f"{target['path']} already holds this app, installed another way. "
                                "Uninstall it first, then install it from the Community.")
         try:
-            # `approved` is a dict with the 40-hex commit (plan_install checked
-            # it): a bare sha would leave the copy with no approved commit.
-            market = {"slug": slug, "approved": _approved(row)}
+            # `approved` is the vetted release (`_pick` above), a dict with
+            # the 40-hex commit: a bare sha would leave the copy with no
+            # approved commit.
+            market = {"slug": slug, "approved": ap.entry()}
             if _opt_str(row.get("branch")):
                 market["branch"] = row["branch"]
             appfile_git.install(built, target, manifest, force=False, kind="marketplace", market=market)
@@ -1684,6 +1754,14 @@ def install_app(slug: str, row: dict, report=lambda **kw: None) -> dict:
     # truth now (adopt_legacy deletes the stamp the same way).
     with contextlib.suppress(OSError):
         os.remove(stamp_path(dest))
+    # The HEAD the copy starts at, so the open gate (`blocks.gate`, a record
+    # read) knows it from the first open — before any enforcement ran.
+    try:
+        from fused_render.contrib import store as contrib_store
+
+        contrib_store.note_head(dest, commit)
+    except Exception:  # noqa: BLE001 — the engine's first sync notes it too
+        logger.warning("marketplace: could not note the head of %s", dest, exc_info=True)
     _reset_apps_snapshot()
     return {"action": "install", "path": dest}
 
@@ -1854,6 +1932,21 @@ def check(slug: str | None = None) -> dict:
 # Fail-closed where the data is ours to judge: an entry whose slug or commit
 # is malformed is dropped (it can name nothing), a `level` that is neither
 # hard nor soft reads as hard (M3).
+#
+# THE ANSWER'S SHAPE. The backend answers either the older bare list of
+# entry rows (each carrying the index's `generated_at`) or the
+# self-describing one, `{"generated_at", "entries": [...], "stale"?}` (one
+# row, `_udf_get`). An answer the client cannot vouch for is "unknown", never
+# a fresh list: a row or header saying `stale: true` (the backend fell back
+# to its last copy of the index), a header without `generated_at`, a
+# `generated_at` older than the list already here, or EVERY known entry
+# gone at once — unless a header with a newer `generated_at` says so (an
+# empty bare list, or a garbled one whose rows all fail to parse, is how an
+# unreadable index used to look). An unknown answer can only ADD entries:
+# the file keeps the last list plus anything new it named, flagged stale
+# (`contrib.blocks.refresh` then answers False). `header` records that the
+# list on disk came from the self-describing shape — the one answer that
+# may also lift a hard block that never rolled back (`contrib.blocks`).
 
 _BLOCKLIST_LOCK = threading.Lock()
 
@@ -1905,7 +1998,63 @@ def _blocklist_view(data: dict) -> dict:
         status = "stale" if data.get("stale") else "ok"  # the slim shape (see `_had_list`)
     return {"blocked": list(data.get("blocked") or []), "checked_at": data.get("checked_at"),
             "fetched_at": data.get("fetched_at"), "generated_at": data.get("generated_at"),
+            "header": data.get("header") is True,
             "stale": bool(data.get("stale")), "status": status, "message": data.get("message")}
+
+
+def _iso_time(v) -> datetime | None:
+    if not isinstance(v, str) or not v:
+        return None
+    try:
+        t = datetime.fromisoformat(v.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.replace(tzinfo=timezone.utc)
+
+
+def _blocklist_answer(rows: list[dict], cached: dict | None, now: float) -> dict:
+    """The file to keep for a backend answer (the comment above: shapes,
+    and when an answer is "unknown")."""
+    head = rows[0] if len(rows) == 1 and isinstance(rows[0].get("entries"), list) else None
+    if head is not None:
+        raw = head["entries"]
+        generated = _opt_str(head.get("generated_at"))
+        stale = bool(head.get("stale")) or generated is None
+    else:
+        raw = rows
+        generated = next((_opt_text(r.get("generated_at")) for r in rows
+                          if r.get("generated_at")), None)
+        stale = any(bool(r.get("stale")) for r in rows)
+    got = [b for b in (_clean_block(r) for r in raw) if b]
+    known = list((cached or {}).get("blocked") or []) if _had_list(cached) else []
+    had_gen, new_gen = _iso_time((cached or {}).get("generated_at")), _iso_time(generated)
+    # Only a header newer than the list here may say "nothing is blocked any
+    # more" after something was.
+    newer = head is not None and new_gen is not None and (had_gen is None or new_gen > had_gen)
+    why = None
+    if stale:
+        why = "the Community answered from an older copy of the block list"
+    elif had_gen and new_gen and new_gen < had_gen:
+        why = "the Community answered an older block list than the one here"
+    elif known and not got and not newer:
+        why = "the Community's block list came back empty"
+    elif any(_clean_block(r) is None or (isinstance(r, dict) and r.get("malformed"))
+             for r in raw) and {(b["slug"], b["commit"]) for b in known} - {
+                 (b["slug"], b["commit"]) for b in got}:
+        # An entry fused cannot read could be the one that left: it may
+        # add (below), never lift.
+        why = "the Community's block list has entries fused could not read"
+    if why is None:
+        return {"blocked": got, "checked_at": now, "fetched_at": _utc_now(),
+                "generated_at": generated, "header": head is not None,
+                "stale": False, "status": "ok", "message": None}
+    logger.warning("marketplace: block list answer not trusted (%s); keeping the last list", why)
+    have = {(b["slug"], b["commit"]) for b in known}
+    merged = known + [b for b in got if (b["slug"], b["commit"]) not in have]
+    base = dict(cached) if cached is not None else {"fetched_at": None, "generated_at": None}
+    return {**base, "blocked": merged, "checked_at": now, "stale": True,
+            "status": "stale" if _had_list(cached) or merged else "error",
+            "message": why}
 
 
 def blocklist(force: bool = False) -> dict:
@@ -1940,11 +2089,7 @@ def blocklist(force: bool = False) -> dict:
             data = {**base, "checked_at": now, "stale": True, "message": exc.__class__.__name__,
                     "status": "stale" if _had_list(cached) else "error"}
         else:
-            data = {"blocked": [b for b in (_clean_block(r) for r in rows) if b],
-                    "checked_at": now, "fetched_at": _utc_now(),
-                    "generated_at": next((_opt_text(r.get("generated_at")) for r in rows
-                                          if r.get("generated_at")), None),
-                    "stale": False, "status": "ok", "message": None}
+            data = _blocklist_answer(rows, cached, now)
         try:
             _write_blocklist(data)
         except OSError:
@@ -1992,9 +2137,11 @@ def copy_root(path: str) -> str | None:
 
 
 def open_gate_at(path: str) -> tuple[str, dict] | None:
-    """`(copy root, {"blocked": {...}})` while a hard block stands on the
-    copy holding `path`, else None — what `render`'s app route and
-    `apps.api_app_entry` answer 423 with (§18.4: the app will not open).
+    """`(copy root, {"blocked": {...}})` while the copy holding `path` may
+    not run (a hard block stands, or a soft one is not confirmed yet), else
+    None — what `render`'s app route, `apps.api_app_entry`, `/api/run` and
+    `/api/apps/background/start|restart` answer 423 with (§18.4: the app will
+    not open).
     The verdict is `contrib.blocks.gate`'s; without that module (an older
     engine) nothing is gated. Never raises."""
     try:
@@ -2062,7 +2209,7 @@ def block_notice(path: str) -> dict | None:
 
 
 def blocked_page(root: str, notice: dict) -> str:
-    """The hard-block notice as a minimal HTML page — what `/render` answers
+    """The block notice (hard, or a soft one not confirmed yet) as a minimal HTML page — what `/render` answers
     (423) to a browser or an iframe framing the app, instead of raw JSON:
     the reason, what to do, what it was rolled back to, and a link to the
     app's own page (`/apps/<folder>`, the shell's encoding), which holds the
@@ -2072,18 +2219,22 @@ def blocked_page(root: str, notice: dict) -> str:
 
     b = notice.get("blocked") if isinstance(notice.get("blocked"), dict) else {}
     esc = lambda v: _html.escape(str(v))  # noqa: E731
+    soft = b.get("level") == "soft"
     rolled = b.get("rolled_back_date") or b.get("rolled_back_to_at")
     if not rolled and isinstance(b.get("rolled_back_to"), str):
         rolled = b["rolled_back_to"][:7]
-    lines = [f"<p>{esc(b.get('reason') or 'Fused blocked the version of this app you were running.')}</p>"]
+    title = "This app asks before it opens" if soft else "This app is blocked"
+    lines = [f"<p>{esc(b.get('reason') or ('Fused flagged the version of this app you have.' if soft else 'Fused blocked the version of this app you were running.'))}</p>"]
     if b.get("what_to_do"):
         lines.append(f"<p><strong>What to do:</strong> {esc(b['what_to_do'])}</p>")
-    if rolled:
+    if soft:
+        lines.append("<p>Open the app page to read more and decide whether to open it anyway.</p>")
+    elif rolled:
         lines.append(f"<p>Rolled back to the release of {esc(rolled)}.</p>")
     href = "/apps/" + "/".join(quote(s, safe="") for s in root.replace(os.sep, "/").split("/") if s)
     return ("<!doctype html><html><head><meta charset=utf-8>"
             "<meta name=viewport content='width=device-width,initial-scale=1'>"
-            "<title>This app is blocked</title><style>"
+            f"<title>{title}</title><style>"
             ":root{color-scheme:light dark;--bg:#fff;--fg:#1c1c1e;--muted:#6b6b70;--line:#e3e3e6}"
             "@media (prefers-color-scheme:dark){:root{--bg:#1c1c1e;--fg:#f2f2f4;--muted:#a1a1a6;--line:#3a3a3e}}"
             "body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,system-ui,sans-serif}"
@@ -2091,7 +2242,7 @@ def blocked_page(root: str, notice: dict) -> str:
             "h1{font-size:20px;margin:0 0 12px}p{margin:0 0 10px}"
             "a{display:inline-block;margin-top:8px;padding:6px 12px;border:1px solid var(--line);"
             "border-radius:8px;color:inherit;text-decoration:none}"
-            "</style></head><body><main><h1>This app is blocked</h1>"
+            f"</style></head><body><main><h1>{title}</h1>"
             + "".join(lines)
             + f"<a href='{esc(href)}' target='_top'>Open the app page</a></main></body></html>")
 

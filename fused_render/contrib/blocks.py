@@ -7,12 +7,18 @@ into `<marketplace.state_dir()>/blocklist.json` — `{"blocked": [{slug,
 commit, level: hard|soft, reason, what_to_do, at}], "checked_at"}`. Offline,
 the last list this machine saw applies (`refresh` answers False and the file
 stands); no file at all = nothing blocked. Read here memoised on the file's
-stat, so the open gates and the Activity reads cost a stat.
+stat, so the open gates and the Activity reads cost a stat. The list FAILS
+CLOSED: an answer `marketplace.blocklist` cannot vouch for (stale, older,
+every entry gone at once, unreadable entries) only ever adds to the file;
+and a hard block whose code still runs is lifted by an entry's absence only
+from a fresh self-describing list (`list_vouched`).
 
 ENFORCED WHATEVER THE SWITCHES SAY (§18.8), at four moments: server start
 (`startup`, a background thread), an app opened (`git_upstream`'s open
 check → `engine.sync`, before the fetch), the sweep every 30 minutes
-(`refresh._sweep_loop`) and the Source panel's Check. Enforcement holds the
+(`refresh._sweep_loop`) and the Source panel's Check — startup and the
+sweep ask the backend only when `needed()` (the Community on, or a copy the
+list can act on). Enforcement holds the
 copy lock and `replay.slot()`; it never moves a folder while a Merge with
 Claude job is open (it marks the record — the open gate still answers 423).
 
@@ -35,8 +41,9 @@ stays stopped. The Activity line (kind `rollback`) names the pin as `ref`:
 NO Undo — Undo would run the blocked code again (M1). Every release blocked
 → stopped, and the panel offers Remove this app.
 
-SOFT: `block.level = soft`; automatic moves pause; opening asks first (the
-`/api/apps` row's `contrib.block`, `confirm_soft`).
+SOFT: `block.level = soft`; automatic moves pause; opening asks first: the
+open gate answers 423 `level: "soft"` until `confirm_soft` (then the
+`/api/apps` row's `contrib.block` carries it, `confirmed`).
 
 A `github` copy running a blocked commit of a listed repo gets `block_warn`
 only — its owner chose to trust the author directly (§18.10).
@@ -142,6 +149,23 @@ def for_slug(slug) -> list:
     return [e for e in entries() if e["slug"] == slug] if isinstance(slug, str) else []
 
 
+def list_vouched() -> bool:
+    """The list on disk is a fresh SELF-DESCRIBING answer (`marketplace`'s
+    block list comment: the header shape, with its `generated_at`, not
+    flagged stale) — the one list whose silence about an entry may lift a
+    hard block that never rolled back (`_enforce_locked`). A bare list (the
+    older backend), a stale one or none at all cannot vouch for that."""
+    from fused_render.shell import storage
+
+    try:
+        data = storage.read_json(path())
+    except Exception:  # noqa: BLE001
+        return False
+    return (isinstance(data, dict) and data.get("header") is True
+            and bool(data.get("generated_at")) and not data.get("stale")
+            and data.get("status", "ok") == "ok")
+
+
 def refresh(*, force: bool = True) -> bool:
     """Ask the backend for the list (`marketplace.blocklist(force=)`, its
     own TTL/backoff) and keep it at `path()`. False offline, on an error or
@@ -168,7 +192,9 @@ def refresh(*, force: bool = True) -> bool:
 
         try:
             storage.write_json(path(), {"blocked": got,
-                                        "checked_at": ans.get("checked_at") or time.time()})
+                                        "checked_at": ans.get("checked_at") or time.time(),
+                                        "generated_at": ans.get("generated_at"),
+                                        "header": bool(ans.get("header"))})
         except Exception:  # noqa: BLE001
             logger.exception("contrib blocks: could not write %s", path())
             return False
@@ -280,10 +306,14 @@ def standing(rec) -> bool:
 
 
 def gate(root) -> dict | None:
-    """`{"blocked": view}` while a hard block stands on the copy at `root`
-    — the open gates (`render`, `/api/apps/entry`) answer 423 with it. Also
-    before enforcement caught up: the last HEAD this copy was seen at is
-    hard-blocked. No git; a record read and the list's stat."""
+    """`{"blocked": view}` while the copy at `root` may not run: a hard block
+    stands, or a SOFT block the user has not confirmed yet (`view.level`
+    says which). Every door that runs the copy's code answers 423 with it:
+    `render`, `/api/apps/entry`, `/api/run`, `/api/apps/background/start`
+    and `/restart`.
+    For a soft block, `confirm-block` (`confirm_soft`) is the way through.
+    Also before enforcement caught up: the last HEAD this copy was seen at
+    is on the list. No git; a record read and the list's stat."""
     try:
         rec = store.get(root)
         if not isinstance(rec, dict) or rec.get("kind") != "marketplace":
@@ -291,11 +321,15 @@ def gate(root) -> dict | None:
         where = {"slug": _slug(rec), "path": store.key(root)}
         if standing(rec):
             return {"blocked": {**view(rec.get("block")), **where}}
+        b = (rec.get("block") or {}) if isinstance(rec.get("block"), dict) else {}
         hit = is_blocked_commit(where["slug"], rec.get("last_head"))
         if hit and hit["level"] == "hard":
-            b = (rec.get("block") or {}) if isinstance(rec.get("block"), dict) else {}
             if b.get("commit") == hit["commit"] and b.get("rolled_back_to"):
                 return None
+            return {"blocked": {**view({**hit, "rolled_back_to": None}), **where}}
+        if b.get("level") == "soft":
+            return None if b.get("confirmed_at") else {"blocked": {**view(b), **where}}
+        if hit and hit["level"] == "soft":
             return {"blocked": {**view({**hit, "rolled_back_to": None}), **where}}
     except Exception:  # noqa: BLE001 — a broken gate must not lock every app
         logger.exception("contrib blocks: gate failed for %s", root)
@@ -316,11 +350,25 @@ def blocked_dirs() -> set:
 
 
 def confirm_soft(root) -> None:
-    """The user saw the soft-block sheet and opens the app anyway."""
+    """The user saw the soft-block sheet and opens the app anyway. Before
+    enforcement caught up (no `block` on the record yet, the gate answering
+    from `last_head` on a soft entry) the block is written here, confirmed —
+    else "Open it anyway" would do nothing until the next sync."""
+    rec = store.get(root) or {}
+    hit = None
+    if not isinstance(rec.get("block"), dict) and rec.get("kind") == "marketplace":
+        hit = is_blocked_commit(_slug(rec), rec.get("last_head"))
+        hit = hit if hit and hit["level"] == "soft" else None
+
     def fn(r):
         b = r.get("block")
         if isinstance(b, dict) and b.get("level") == "soft":
             b["confirmed_at"] = time.time()
+        elif b is None and hit is not None:
+            r["block"] = {"level": "soft", "commit": hit["commit"], "reason": hit["reason"],
+                          "what_to_do": hit["what_to_do"], "at": hit["at"],
+                          "rolled_back_to": None, "conflict": False,
+                          "confirmed_at": time.time()}
     store.update(root, fn)
 
 
@@ -522,8 +570,17 @@ def _enforce_locked(root, rec) -> dict | None:
                     and not old.get("conflict") and a.get("commit")
                     and a["commit"] != old.get("target")
                     and replay.is_ancestor(root, a["commit"], head))
-    if old and (old.get("level") == "soft" or moved_on
-                or not any(e["commit"] == old.get("commit") for e in listed)):
+    gone = old is not None and not any(e["commit"] == old.get("commit") for e in listed)
+    if gone and standing(rec) and not list_vouched():
+        # A hard block whose blocked code still runs here (a conflict never
+        # rolled back, nothing to roll back to) is NOT lifted because its
+        # entry is missing from a list that cannot vouch for that (M3, fail
+        # closed): an empty or garbled answer used to read exactly like
+        # "Fused lifted it". The gate stays shut until a self-describing
+        # list leaves it out, Merge with Claude rolls it back
+        # (`after_merge`), or the app is removed.
+        return {"level": "hard", "action": "kept"}
+    if old and (old.get("level") == "soft" or moved_on or gone):
         # `moved_on`: a later SAFE release is in (HEAD past the rollback's
         # target) — the notice has done its job.
         # Soft and HEAD moved past it, or the entry left the list: over.
@@ -674,9 +731,30 @@ _last_sweep = [0.0]
 SWEEP_EVERY_S = 30 * 60.0
 
 
+def needed() -> bool:
+    """Whether asking the backend for the list buys anything here: the
+    Community is switched on, or the store holds a copy the list can act on
+    (a `marketplace` copy, or a `github` one that gets `block_warn`). A
+    machine with neither never calls the backend for it — on main, with
+    the store off, fused never did. One prefs read and one store read."""
+    try:
+        from fused_render.shell import prefs
+
+        if prefs.marketplace_enabled():
+            return True
+    except Exception:  # noqa: BLE001 — fall through to the store
+        pass
+    try:
+        return any(isinstance(r, dict) and r.get("kind") in ("marketplace", "github")
+                   for r in (store.all() or {}).values())
+    except Exception:  # noqa: BLE001 — unknown: ask (enforcement is the safe side)
+        return True
+
+
 def startup() -> bool:
     """Server start: `refresh() + enforce_all()` on a daemon thread (the
-    caller — server/app.py — runs it after the catalog warm-up). Idempotent."""
+    caller — server/app.py — runs it after the catalog warm-up), the refresh
+    only when `needed()`. Idempotent."""
     with _start_lock:
         if _started[0]:
             return False
@@ -684,7 +762,8 @@ def startup() -> bool:
 
     def run():
         try:
-            refresh(force=True)
+            if needed():
+                refresh(force=True)
             enforce_all()
         except Exception:  # noqa: BLE001
             logger.exception("contrib blocks: startup enforcement failed")
@@ -698,9 +777,13 @@ def startup() -> bool:
 
 def sweep_tick(now: float | None = None) -> bool:
     """`refresh._sweep_loop`'s tick: every SWEEP_EVERY_S, `refresh() +
-    enforce_all()`. Answers whether it ran."""
+    enforce_all()` — only when `needed()` (asked each tick: switching the
+    Community on, or installing from it, needs no restart). Answers whether
+    it ran."""
     now = time.time() if now is None else now
     if now - _last_sweep[0] < SWEEP_EVERY_S:
+        return False
+    if not needed():
         return False
     _last_sweep[0] = now
     refresh(force=True)

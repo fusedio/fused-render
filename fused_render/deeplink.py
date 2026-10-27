@@ -20,8 +20,8 @@ writes (D3) and has no page of its own:
   page under
   `?_edit_appfile=` for the shell to report.
 - `url=` (a web page's "Open in fused-render" link, Render App's
-  `render-app://open?url=` ported): a 303 to Home with the link as
-  `?_fetch_appfile=`.
+  `render-app://open?url=` ported): a 303 to the shell's /install page with
+  the link as `?_fetch_appfile=`.
 - `git=` (a public GitHub repo holding ONE app): a 303 to the shell's
   /install page with the repo link as `?_fetch_appgit=`.
 - `marketplace=` (the listing page's install button, docs/CONTRIB_LOOP.md
@@ -31,7 +31,8 @@ writes (D3) and has no page of its own:
   GitHub link's). The slug is validated here (`marketplace.is_slug`): a
   malformed one gets the "Unsupported link" page, never a hand-off.
 
-The shell's `FetchAppFileBoot` reads either hand-off once, downloads through
+The shell's /install page (`InstallLinkPage`) reads the hand-off once — a
+page of its own, never a toast over Home — downloads through
 the X-Fused `POST /api/appfile/fetch` (appfetch.py — `{url}` downloads the
 `.fused`, `{git}` clones the repo and packs its root app — both into
 `~/.fused-render/downloads/<app_id>.fused`; installing a git build moves

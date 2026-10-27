@@ -269,6 +269,41 @@ def test_adopt_legacy_keeps_edits_and_data(m, tmp_path):
     assert not again["ok"]
 
 
+def test_adopt_marks_the_folder_before_its_origin_so_a_racing_ensure_records_nothing(
+        m, tmp_path, monkeypatch):
+    """M1/M4: `adopt_legacy` spends seconds fetching after `git init` and
+    `remote add origin`. A `classify.ensure` in that window (a catalog GET's
+    `installed_copies`, an app open's kick) must not find a repo with
+    someone else's origin and no marker — it would record a `github` copy
+    following the author's unreviewed tip, and the adopt's `record_install`
+    would keep it."""
+    legacy = tmp_path / "ws" / "racing-sine"
+    legacy.mkdir(parents=True)
+    (legacy / "index.html").write_text(PAGE, encoding="utf-8")
+    (legacy / "app.py").write_text(m.fake.read(REPO, "app.py", m.c1), encoding="utf-8")
+    os.makedirs(legacy / ".fused")
+    (legacy / ".fused" / "marketplace.json").write_text("{}", encoding="utf-8")
+    root = str(legacy)
+    seen = []
+    real_fetch = follow.fetch
+
+    def racing_fetch(path, fol, *a, **k):
+        # The racer: someone signed in who is NOT the author asks.
+        rec = classify.ensure(path, identity={"login": "bob"})
+        seen.append((rec, store.get(path),
+                     git(path, "config", "--local", classify.KIND_CONFIG)))
+        return real_fetch(path, fol, *a, **k)
+    monkeypatch.setattr(follow, "fetch", racing_fetch)
+    out = market.adopt_legacy(root, market.row_for("sine"))
+    assert out["ok"], out
+    [(rec, stored, marker)] = seen
+    assert rec is None and stored is None and marker == "marketplace"
+    final = store.get(root)
+    assert final["kind"] == "marketplace" and final["slug"] == "sine"
+    # The open gate knows the HEAD it starts at (`last_head`) at once.
+    assert final["last_head"] == git(root, "rev-parse", "HEAD") == m.c1
+
+
 # ---------------------------------------------------------------------- B5
 
 

@@ -575,27 +575,31 @@ def _origin_default_branch(gu, root: str) -> str | None:
     return None
 
 
-def _github_copy_repo(path: str, *, nested: bool = True) -> str | None:
-    """The AUTHOR's `owner/name` when the folder at `path` is — or, with
-    `nested`, sits anywhere inside — a GitHub-link copy (contribution loop
-    on, contrib record kind "github"), else None: the loop off, no record,
-    any other kind, or the store unreadable (then today's behaviour
-    answers). Nested matters for the upload refusal: an app folder inside
-    Bob's copy of Alice's repo is still Alice's code. One store read for the
-    whole walk. The record lives outside the folder, so no file in the repo
-    can make a copy look like the user's own."""
+def _copy_record(path: str, *, nested: bool = True) -> dict | None:
+    """The contrib record of someone else's app holding the folder at `path`
+    — the folder itself or, with `nested`, any folder above it — when the
+    record says so: kind `marketplace` WHATEVER THE FLAGS SAY (a Community
+    copy is someone else's code with the loop off too; the kind decides,
+    P1), kind `github` only with the contribution loop on (off, today's
+    behaviour answers). None otherwise, or when the store is unreadable.
+    Nested matters for the upload refusal: an app folder inside Bob's copy
+    of Alice's repo is still Alice's code. One store read for the whole
+    walk. The record lives outside the folder, so no file in the repo can
+    make a copy look like the user's own."""
     try:
         from fused_render.contrib import flags, store
 
-        if not flags.sources():
-            return None
         records = store.all() or {}
         here = store.key(path)
+        loop = None
         while True:
             record = records.get(here)
-            if (isinstance(record, dict) and record.get("kind") in ("github", "marketplace")
-                    and record.get("repo") and os.path.isdir(here)):
-                return record["repo"]
+            kind = record.get("kind") if isinstance(record, dict) else None
+            if kind in ("github", "marketplace") and record.get("repo") and os.path.isdir(here):
+                if kind == "github":
+                    loop = flags.sources() if loop is None else loop
+                if kind == "marketplace" or loop:
+                    return record
             parent = os.path.dirname(here)
             if not nested or parent == here:
                 return None
@@ -605,21 +609,38 @@ def _github_copy_repo(path: str, *, nested: bool = True) -> str | None:
     return None
 
 
+def _github_copy_repo(path: str, *, nested: bool = True) -> str | None:
+    """The AUTHOR's `owner/name` when the folder at `path` is (or, with
+    `nested`, sits inside) someone else's app (`_copy_record`), else None."""
+    record = _copy_record(path, nested=nested)
+    return record["repo"] if record else None
+
+
 #: Why a GitHub-link copy is never uploaded to Fused storage: it is someone
 #: else's code, and its public way to be shared is the author's own link.
 GITHUB_COPY_REFUSAL = "This app came from someone else's GitHub — share its GitHub link instead."
 
 
 def _contributor_link(path: str, copy_status: dict | None = None) -> dict | None:
-    """The author's link for a GitHub-link copy — the copy itself, never a
+    """The author's link for someone else's app — the copy itself, never a
     folder nested in one (that link would install the whole repo) — or None
-    (`_github_copy_repo`). `changes` counts what the link does NOT carry:
-    the engine's local count of this copy's own edits, plus one for
-    uncommitted edits (no network) — from `copy_status` when the caller
-    already has it (the app page's read does), else one `engine.status`."""
-    repo = _github_copy_repo(path, nested=False)
-    if repo is None:
+    (`_copy_record`). A Community copy shares its LISTING page (the
+    reviewed install), never the author's GitHub link: handing that on
+    would give the recipient a copy that follows the author's unreviewed
+    tip. `changes` counts what the link does NOT carry: the engine's local
+    count of this copy's own edits, plus one for uncommitted edits (no
+    network) — from `copy_status` when the caller already has it (the app
+    page's read does), else one `engine.status`."""
+    record = _copy_record(path, nested=False)
+    if record is None:
         return None
+    repo = record["repo"]
+    slug = record.get("slug") if isinstance(record.get("slug"), str) and record.get("slug") else None
+    if record.get("kind") == "marketplace" and slug is None:
+        # No listing to point at, and the author's GitHub link would hand
+        # on an unreviewed copy: no link at all (the upload stays refused).
+        return {"ok": False, "url": None, "repo": repo, "code": "contributor", "changes": 0,
+                "reason": "This app came from the Community; it has no link to share yet."}
     try:
         if copy_status is None:
             from fused_render.contrib import engine
@@ -630,7 +651,9 @@ def _contributor_link(path: str, copy_status: dict | None = None) -> dict | None
     except Exception:  # noqa: BLE001 — the count is a hint, the link stands
         logger.warning("contrib: change count failed for %s", path, exc_info=True)
         changes = 0
-    return {"ok": True, "url": backend_canvas.github_link_url(repo), "repo": repo,
+    url = (backend_canvas.listing_page_url(slug) if record.get("kind") == "marketplace"
+           else backend_canvas.github_link_url(repo))
+    return {"ok": True, "url": url, "repo": repo,
             "reason": None, "code": "contributor", "changes": changes}
 
 

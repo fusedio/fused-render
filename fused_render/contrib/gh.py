@@ -1272,9 +1272,10 @@ class FakeGitHub:
 
     def commit(self, full: str, branch: str, files: dict, message: str, *,
                author: str) -> str:
-        """Commit `files` ({path: text, or None to delete}) onto `branch` of
-        `full` as GitHub user `author` — Alice pushing to main, or Alice pushing
-        onto Bob's proposal branch through maintainer edits."""
+        """Commit `files` ({path: text | bytes, or None to delete}) onto
+        `branch` of `full` as GitHub user `author` — Alice pushing to main, or
+        Alice pushing onto Bob's proposal branch through maintainer edits.
+        Bytes are stored as they are (a picture, a zip)."""
         bare = self.bare_path(full)
         parent = self.tip(full, branch)
         email = self.email_of(self.add_user(author)["login"])
@@ -1289,7 +1290,18 @@ class FakeGitHub:
                 if text is None:
                     self._g(bare, "update-index", "--force-remove", "--", path, env=env)
                     continue
-                blob = self._g(bare, "hash-object", "-w", "--stdin", input=text).stdout.strip()
+                if isinstance(text, bytes):
+                    # The text pipe would re-encode bytes; a file keeps them.
+                    bfd, raw = tempfile.mkstemp(prefix="fakegh-blob-", dir=self.root)
+                    with os.fdopen(bfd, "wb") as fh:
+                        fh.write(text)
+                    try:
+                        blob = self._g(bare, "hash-object", "-w", "--", raw).stdout.strip()
+                    finally:
+                        os.unlink(raw)
+                else:
+                    blob = self._g(bare, "hash-object", "-w", "--stdin",
+                                   input=text).stdout.strip()
                 self._g(bare, "update-index", "--add", "--cacheinfo",
                         f"100644,{blob},{path}", env=env)
             tree = self._g(bare, "write-tree", env=env).stdout.strip()

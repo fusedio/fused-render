@@ -188,8 +188,11 @@ def _releases(row) -> list:
 
 
 def hard_blocked(slug, commit, row=None) -> bool:
-    """`commit` is hard-blocked for `slug`: the row's release says so, or
-    the block list file does (`blocks.is_blocked_commit`)."""
+    """`commit` is hard-blocked for `slug`: the row says so (its top-level
+    `blocked` for the row's own commit, or the release's), or the block list
+    file does (`blocks.is_blocked_commit`)."""
+    if isinstance(row, dict) and row.get("commit") == commit and row.get("blocked") == "hard":
+        return True
     for r in _releases(row):
         if r["commit"] == commit and r.get("blocked") == "hard":
             return True
@@ -672,6 +675,16 @@ def adopt_legacy(path, row) -> dict:
         if not replay.ok(r):
             return refuse("failed", "Couldn't set this app up for reviewed updates.")
         try:
+            # The marketplace marker goes in BEFORE the origin: from here on
+            # a `classify.ensure` racing this adopt (a catalog GET's
+            # `installed_copies`, an app open's kick) sees a marked folder
+            # with no record and leaves it alone — it never finds a repo
+            # with someone else's origin and no marker, which it would
+            # record as a `github` copy following the author's unreviewed
+            # tip (M1/M4). The `_Undo` below takes it away with `.git`.
+            if not replay.ok(replay.git(path, "config", "--local", classify.KIND_CONFIG,
+                                        "marketplace")):
+                raise _Undo("failed")
             replay.git(path, "symbolic-ref", "HEAD", f"refs/heads/{home}")
             replay.git(path, "remote", "add", "origin", url)
             try:
@@ -718,6 +731,8 @@ def adopt_legacy(path, row) -> dict:
         logger.warning("contrib market: could not remove %s", legacy_stamp(path), exc_info=True)
     classify.record_install(path, url, kind="marketplace",
                             market={"slug": slug, "approved": ap.entry(), "branch": branch})
+    # The HEAD it starts at, for the open gate's first answer (as an install).
+    store.note_head(path, ap.commit)
     store.add_activity(path, "adopt", ADOPT_TEXT)
     return {"ok": True, "message": ADOPT_TEXT, "path": path}
 

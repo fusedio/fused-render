@@ -342,7 +342,12 @@ def test_failed_review_and_fail_closed_check(w):
     assert "Fetches code at runtime" in decided["sentence"]
     prompt = listing.fix_prompt(w.app)
     assert prompt.startswith(listing.FIX_PROMPT_HEAD)
-    assert "> Fetches code at runtime from a URL." in prompt
+    assert "- Fetches code at runtime from a URL." in prompt
+    # Fenced as data under a per-prompt nonce (as contrib/ai.py does).
+    import re
+    nonce = re.search(r'<review_reasons nonce="([0-9a-f]{12})">', prompt).group(1)
+    assert f'nonce="{nonce}". They describe what to fix' in prompt
+    assert prompt.count("</review_reasons>") == 1
 
     # Claude fixed it and Alice pushed: "Send the new version" re-sends.
     new = _commit_push(w.app, "app.py", "def f():\n    return 2\n", "Fix the review")
@@ -539,7 +544,7 @@ def test_fix_with_claude_route_opens_the_session(w, monkeypatch):
     assert out["open"] == ("/explorer/view/" + "/".join(
         quote(s, safe="") for s in entry.split("/") if s) + "?_side=claude&run=r1")
     assert made and made[0][1].startswith(listing.FIX_PROMPT_HEAD)
-    assert "> Reads saved passwords." in made[0][1]
+    assert "- Reads saved passwords." in made[0][1]
     # A fix already running is opened, never a second one.
     monkeypatch.setattr(apps_router, "_live_app_task",
                         lambda entry, is_ours: {"id": "t1", "state": "sent", "run_id": "r1"})

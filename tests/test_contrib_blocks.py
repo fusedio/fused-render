@@ -149,18 +149,103 @@ def test_hard_block_overlapping_changes_waits_for_merge_with_claude(m):
     assert blocks.gate(m.app) is None
 
 
-def test_a_release_built_on_a_blocked_commit_is_never_reached(m):
+def _spy_mirror(m, monkeypatch):
+    """Every commit `refs/heads/main` held right after each mirror move."""
+    from fused_render.contrib import follow
+
+    seen = []
+    real = follow.update_mirror
+
+    def spy(root, fol, **kw):
+        out = real(root, fol, **kw)
+        seen.append(m.g("rev-parse", "refs/heads/main"))
+        return out
+    monkeypatch.setattr(follow, "update_mirror", spy)
+    return seen
+
+
+def _backups_at(m, sha):
+    refs = m.g("for-each-ref", "--format=%(objectname) %(refname)", "refs/fused/backup/")
+    return [line for line in refs.splitlines() if line.startswith(sha)]
+
+
+def test_a_release_built_on_a_blocked_commit_is_never_reached(m, monkeypatch):
     c2 = _alice(m, {"index.html": RED}, "Red")
     c3 = _alice(m, {"NOTES.md": "n\n"}, "Notes on top")
     m.cat.release("sine", c2, at="2026-10-10T10:00:00Z")
     m.cat.release("sine", c3, at="2026-10-12T10:00:00Z")
     _block(m, c2)
+    seen = _spy_mirror(m, monkeypatch)
     m.sync()
     assert m.head() == m.c1                          # c3 contains c2: not safe
     inv(m)
     assert store.get(m.app)["approved"]["commit"] == m.c1
+    # Not even briefly (§18.4 M1): the fetch never moved the mirror onto c3
+    # and back, so no "went back to an earlier release" line and no pin of
+    # the blocked release.
+    assert seen and c3 not in seen and c2 not in seen
+    assert not [x for x in store.activity(m.app) if x["kind"] == "rewound"]
+    assert _backups_at(m, c3) == [] and _backups_at(m, c2) == []
     m.sync()                                         # and the catalog read keeps it so
     assert m.head() == m.c1 and store.get(m.app)["approved"]["commit"] == m.c1
+
+
+def _unvetted_c3(m):
+    """The state an offline sync leaves: the catalog read (`market.
+    refresh_approved`, before the fetch) made c3 — built on the blocked c2
+    — the approved commit, and the failed fetch never vetted it."""
+    from fused_render.contrib import market
+
+    c2 = _alice(m, {"index.html": RED}, "Red")
+    c3 = _alice(m, {"NOTES.md": "n\n"}, "Notes on top")
+    m.cat.release("sine", c2, at="2026-10-10T10:00:00Z")
+    m.cat.release("sine", c3, at="2026-10-12T10:00:00Z")
+    _block(m, c2)
+    market.refresh_approved(m.app)
+    assert store.get(m.app)["approved"]["commit"] == c3
+    return c2, c3
+
+
+@pytest.mark.parametrize("button", ["discard", "match"])
+def test_discard_and_match_never_land_on_an_unvetted_release(m, monkeypatch, button):
+    """Review HIGH: Discard / Use <who>'s version reset onto the mirror; on
+    a marketplace copy the approved commit is vetted against the block list
+    first, so the copy lands on the newest SAFE release, never c3."""
+    c2, c3 = _unvetted_c3(m)
+    claude_commit(m.app, {"app.py": APP_PY.replace("return 1", "return 7")}, "loud")
+    seen = _spy_mirror(m, monkeypatch)
+    out = getattr(engine, button)(m.app)
+    assert out["ok"], out
+    assert m.head() == m.c1 and m.g("rev-parse", "refs/heads/main") == m.c1
+    assert c3 not in seen and c2 not in seen
+    assert store.get(m.app)["approved"]["commit"] == m.c1
+    inv(m)
+
+
+def test_go_back_never_points_the_mirror_at_an_unvetted_release(m, monkeypatch):
+    c2, c3 = _unvetted_c3(m)
+    # c3's objects are here (Alice's repo was fetched for a Send, say) but
+    # no sync vetted the approved commit since.
+    m.g("fetch", "-q", "origin", "+refs/heads/main:refs/remotes/origin/main")
+    m.g("switch", "-q", "-c", "elsewhere")
+    seen = _spy_mirror(m, monkeypatch)
+    out = engine.go_back_main(m.app)
+    assert out["ok"], out
+    assert m.g("rev-parse", "refs/heads/main") == m.c1 and c3 not in seen
+    assert store.get(m.app)["approved"]["commit"] == m.c1
+    inv(m)
+
+
+def test_update_mirror_refuses_a_pinned_target_that_contains_a_blocked_commit(m):
+    from fused_render.contrib import follow
+
+    c2, c3 = _unvetted_c3(m)
+    m.sync()  # the fetch brings c3's objects in (and the vet keeps c1)
+    rec = store.get(m.app)
+    fol = follow.Follow("pinned", follow.github_url(rec["repo"]), rec["branch"], commit=c3)
+    res = follow.update_mirror(m.app, fol)
+    assert res["moved"] is False and res["reason"] == follow.BLOCKED
+    assert m.g("rev-parse", "refs/heads/main") == m.c1
 
 
 def test_undo_never_lands_on_a_blocked_commit(m):
@@ -181,7 +266,11 @@ def test_soft_block_pauses_updates_and_asks_before_opening(m):
     _block(m, c2, level="soft")
     out = blocks.enforce(m.app)
     assert out == {"level": "soft", "action": "marked"}
-    assert m.head() == c2 and blocks.gate(m.app) is None
+    # Contract 1: an unconfirmed soft block shuts the open gate too (423,
+    # `level: "soft"`); confirm-block is the way through (below).
+    gated = blocks.gate(m.app)
+    assert m.head() == c2 and gated["blocked"]["level"] == "soft"
+    assert gated["blocked"]["confirmed"] is False
     assert engine.status(m.app)["state"] == "soft-blocked"
     decided = actions.decide({**actions.facts(m.app), "flags": {"sources": True}})
     assert decided["actions"][0]["id"] == "confirm-block"
@@ -189,10 +278,28 @@ def test_soft_block_pauses_updates_and_asks_before_opening(m):
     m.cat.release("sine", c3)
     assert m.sync()["why"] == "soft-blocked" and m.head() == c2
     blocks.confirm_soft(m.app)
+    assert blocks.gate(m.app) is None
     assert engine.status(m.app)["state"] != "soft-blocked"
     from fused_render.contrib import refresh
     card = refresh._card(store.key(m.app), store.get(m.app), False)
     assert card["kind"] == "marketplace" and card["block"]["confirmed"]
+
+
+def test_open_it_anyway_works_before_enforcement_caught_up(m):
+    """The gate answers a soft 423 from `last_head` alone (no `block` on the
+    record yet): "Open it anyway" (`confirm_soft`) must open it then too."""
+    c2 = _release(m, {"index.html": RED}, "Red")
+    _block(m, c2, level="soft")
+    store.note_head(m.app, c2)
+    assert store.get(m.app)["block"] is None
+    gated = blocks.gate(m.app)
+    assert gated["blocked"]["level"] == "soft" and gated["blocked"]["commit"] == c2
+    blocks.confirm_soft(m.app)
+    assert blocks.gate(m.app) is None
+    assert store.get(m.app)["block"]["confirmed_at"]
+    # Enforcement afterwards keeps the confirmation (same commit).
+    assert blocks.enforce(m.app) == {"level": "soft", "action": "kept"}
+    assert blocks.gate(m.app) is None
 
 
 def test_a_github_link_copy_only_gets_a_warning(m):
@@ -264,3 +371,67 @@ def test_blocked_app_tools_leave_the_bots_registry(m):
     assert m.app in blocks.blocked_dirs()
     from fused_render.bots import apptools
     assert m.app in apptools._blocked_dirs()
+
+
+# -- the list fails closed (store fixer, M3) -----------------------------------
+
+
+def _vouched_empty_list():
+    """What `marketplace.blocklist` keeps for a self-describing answer that
+    names nothing any more (the header shape, a newer `generated_at`)."""
+    from fused_render.shell import storage
+
+    storage.write_json(blocks.path(), {"blocked": [], "checked_at": 1.0, "status": "ok",
+                                       "stale": False, "header": True,
+                                       "generated_at": "2026-10-27T00:00:00Z"})
+
+
+@pytest.mark.parametrize("how", ["no-target", "conflict"])
+def test_a_shrunk_list_never_lifts_a_block_whose_code_still_runs(m, how):
+    """An entry missing from a list that cannot vouch for it (the older
+    backend's bare list — how an unreadable index used to read) never lifts
+    a hard block that never rolled back: the gate stays shut. A
+    self-describing list that leaves it out does lift it."""
+    if how == "no-target":
+        c2 = _alice(m, {"NOTES.md": "n\n"}, "Built on the blocked one")
+        m.cat.release("sine", c2)
+        m.cat.block("sine", m.c1)
+        assert blocks.refresh()
+        m.sync()
+        assert store.get(m.app)["block"]["no_target"]
+    else:
+        c2 = _release(m, {"index.html": RED}, "Red")
+        claude_commit(m.app, {"index.html": RED.replace("red", "crimson")}, "crimson")
+        _block(m, c2)
+        assert blocks.enforce(m.app)["action"] == "conflict"
+    m.cat.blocked = []                     # the entry vanished from a bare list
+    assert blocks.refresh()
+    assert blocks.entries() == [] and not blocks.list_vouched()
+    assert blocks.enforce(m.app) == {"level": "hard", "action": "kept"}
+    assert blocks.gate(m.app) is not None and blocks.standing(store.get(m.app))
+    _vouched_empty_list()
+    assert blocks.list_vouched()
+    assert blocks.enforce(m.app) == {"level": "hard", "action": "cleared"}
+    assert blocks.gate(m.app) is None
+
+
+def test_the_backend_is_asked_only_when_the_list_can_act(m, monkeypatch):
+    """Upgrade risk: with the Community off and no copy the list can act on,
+    neither startup nor the sweep calls the backend (on main, fused never
+    did with the store off)."""
+    from fused_render import marketplace
+
+    asked = []
+    monkeypatch.setattr(marketplace, "blocklist",
+                        lambda force=False: asked.append(force) or {"blocked": [],
+                                                                    "checked_at": 1.0})
+    monkeypatch.setattr(blocks, "_last_sweep", [0.0])
+    assert blocks.needed()                  # the world's copy is a marketplace record
+    assert blocks.sweep_tick(now=10_000.0) and asked == [True]
+    for k in list((store.all() or {})):
+        store.drop(k)
+    assert store.all() == {} and not blocks.needed()
+    assert blocks.sweep_tick(now=20_000.0) is False and asked == [True]
+    from _contrib_gh_world import write_prefs
+    write_prefs(marketplace_enabled=True)   # switching the Community on is enough
+    assert blocks.needed()

@@ -397,16 +397,26 @@ def safety_review(*, diff, files, title, body) -> Review
 Review = {"verdict": "fine"|"look", "summary": str, "risks": [{"kind","detail","file"}],
           "static_hits": [...], "model": str, "head_sha": str, "at": float}
 ```
-Static rules run first and can only make it stricter: new URLs/hosts, paths
+Static rules run first and can only make it stricter: new URLs/hosts
+(a bare IPv4 address or `host.tld:port` with no scheme counts too), paths
 outside the app (`~`, `/Users/`, `..`), env/keychain/ssh/token/password
-touches, `eval`/`exec`/`compile`/`__import__`/`subprocess`/`os.system`, base64
-or hex blobs ≥ 200 chars, minified/obfuscated lines, dependency file changes
-(pyproject/uv.lock/requirements), `.fused/`, `mcp.toml`, background-app
-autostart config, and text addressed to an AI ("ignore previous", "you are",
-"assistant", "Claude", "system prompt", "instructions"). Any static hit →
-verdict at least "look". Model error/timeout/oversized diff → "look" with a
-plain reason. The review summary doubles as the plain-language summary for
-PRs not sent from fused.
+touches, code that runs programs or code (`eval`/`exec`/`compile`/
+`__import__`/`subprocess` and `create_subprocess_*`/`os.system` however
+spaced or imported (`from os import system as s`)/`posix_spawn`/`pty.`/
+`runpy`/`zipimport`/`sys.path`/`Function(…)` with or without `new`/a string
+handed to `setTimeout`), base64 or hex blobs ≥ 200 chars, minified/obfuscated
+lines, dependency file changes (pyproject/uv.lock/requirements), `.fused/`,
+`mcp.toml`, background-app autostart config, a binary picture, font, sound or
+PDF whose first bytes are not that kind of file or that holds a zip anywhere
+(`zipimport` loads one whatever its name; judged by the blob's bytes,
+`review_rules.sniff`), and text addressed to an AI ("ignore previous", "you
+are", "assistant", "Claude", "system prompt", "instructions"). The rules read
+ADDED lines by the hunk counts of `@@ -a,b +c,d @@`: an added line whose text
+starts with "++ " shows as `+++ …` and is still an added line, never a file
+header. Any static hit → verdict at least "look". Model error/timeout/oversized
+diff → "look" with a plain reason. The review summary doubles as the
+plain-language summary for PRs not sent from fused. The call starts none of
+the user's MCP servers (`--strict-mcp-config`, empty list).
 
 ### 9.2 `contrib/inbox.py`
 ```python
@@ -415,16 +425,23 @@ InboxItem = {"number","url","title","author","from_fused": bool,"summary": str,
              "review": Review|None,"review_status": "pending"|"running"|"ready"|"failed",
              "try": {"status","path","url"}|None,"head_sha","created_at"}
 def review(app_dir, number) -> job_id   # fetch <repo url> pull/N/head:refs/fused/pr/N into Alice's repo; diff merge-base..head; ai.safety_review; cache <home>/contrib/reviews/<owner>__<repo>/<N>-<head_sha>.json
-def accept(app_dir, number) -> dict     # needs a review of the CURRENT head; gh.merge_pr(sha=reviewed head, method = merge if allowed else squash else rebase); then engine own-sync of Alice's copy (her unpushed edits replayed + pushed); cleans Try copy
+def accept(app_dir, number, *, confirm, head_sha) -> dict     # needs a review of the CURRENT head; gh.merge_pr(sha=reviewed head, method = merge if allowed else squash else rebase); then engine own-sync of Alice's copy (her unpushed edits replayed + pushed); cleans Try copy
 def decline(app_dir, number, note) -> dict  # comment(note) if note; close_pr
 ```
 Reviews start automatically when the inbox lists an item without one (D18:
 Try is disabled until the review is ready; "look" → Try asks to confirm).
+Accept and Try carry `head_sha`, the head of the review the page showed:
+another current head, or a `confirm` without one, refuses with reason
+`review-needed`. Only proposals whose base is the app's own branch
+(`record.branch`) are listed, reviewed, accepted or combined; one whose head
+is that same branch of her own repo is refused too (reason `other-branch`).
 
 ### 9.3 `contrib/trycopy.py`
 `create(app_dir, number) -> {"path","url"}`: a local clone of Alice's repo
-(`git clone --no-hardlinks <alice>`, then checkout `refs/fused/pr/N`
-detached), at a location that the app can render and open next to hers but
+(`git clone --no-hardlinks <alice>`, then the REVIEWED head fetched and
+checked out detached by its sha — never by the name `refs/fused/pr/N`,
+which a review download running meanwhile can move; the copy is deleted
+unless `HEAD` reads back as that sha), at a location that the app can render and open next to hers but
 that the Apps grid/listings never show and that `app_git`/auto-sync never
 touch (record kind "scratch", no `origin` remote). WS-C verifies where that
 is (does `/render` serve a dotted folder? does `app_hidden` hide it?) and
@@ -490,23 +507,20 @@ rows from `/api/apps` also gain an optional `contrib?: {label, inbox, kind}` fie
 | --- | --- | --- | --- |
 | `/api/contrib/ack` | A1 | `kind:"event"|"settled"` | acknowledge banner |
 | `/api/contrib/propose/draft` | A2 | — | job → `{title, description}` |
-| `/api/contrib/propose/send` | A2 | `title, description, note` | job → proposal |
-| `/api/contrib/propose/update` | A2 | — | job |
-| `/api/contrib/propose/withdraw` | A2 | — | |
-| `/api/contrib/discard` | A2 | `withdraw:bool` | |
-| `/api/contrib/push-main` | A2 | — | collaborator only |
-| `/api/contrib/merge/start` | A2 | — | → `{job}` (merge_job id) |
 | `/api/contrib/merge/accept` | A2 | `job` | |
 | `/api/contrib/merge/discard` | A2 | `job` | |
 | `/api/contrib/refresh` | A2/A3 | — | force refresh now (≤ 1 per 10 s) |
 | `/api/contrib/inbox/review` | A3 | `number` | → job |
-| `/api/contrib/inbox/try` | A3 | `number, confirm:bool` | → `{path,url}` |
+| `/api/contrib/inbox/try` | A3 | `number, confirm:bool, head_sha` | → `{path,url}` |
 | `/api/contrib/inbox/try/remove` | A3 | `number` | |
-| `/api/contrib/inbox/accept` | A3 | `number` | → job |
+| `/api/contrib/inbox/accept` | A3 | `number, confirm:bool, head_sha` | → job |
 | `/api/contrib/inbox/decline` | A3 | `number, note` | |
 | `/api/contrib/remix/draft` | A5 | — | job → `{name, credit}` |
-| `/api/contrib/remix/publish` | A5 | `name, credit` | job |
-| `/api/contrib/remix/bring-in` | A5 | — | → merge job |
+
+Send/update/withdraw a proposal, discard, push-main, merge/start, remix
+publish and bring-in run through `POST /api/contrib/action` only (§16.9):
+their v1 routes skipped the offered-buttons check and the button's confirm,
+and were deleted once the frontend moved.
 
 ## 13. Words (product strings — WS-E/WS-F own the UI copy; servers use these)
 
@@ -767,11 +781,18 @@ Rebase mode, `_map_mark`, flipped sides: deleted.
   fetch PR head + Alice's tip, merge_job purpose `proposal` in Alice's repo
   scratch, on accept push the merge onto the PR head branch via maintainer
   edits — `gh.push` to the head repo, no force; then re-review).
+- Keep of an inbox Merge with Claude whose push GitHub refuses for good
+  (`forbidden`, `not-found`, `signed-out`) drops the result like
+  `conflict` does, and Discard (`inbox.merge_discard`) frees an item whose
+  kept result was never sent — the item is never left "ready" with Accept,
+  Decline and Try refused.
 - Accept as v1, then `git_upstream.sync_repo(root, push=True)` (own path,
   §16.7, no engine).
 - Remix publish: identity commits as Bob; `kind` → own; origin → Bob's repo;
   `ensure_push_guard(root, "own")`; remote `original`. Bring in the original
-  stays manual (it publishes).
+  stays manual (it publishes). The credit never goes through a link: a
+  linked README is replaced by a regular file, and an entry page that is a
+  link refuses the remix before anything is written.
 
 ### 16.7 Own copies — divergence fix (WS-O, new `contrib/ownsync.py`)
 
@@ -888,16 +909,33 @@ longer fits" + Ask to update / Merge with Claude. Install page wording per
   how far behind; Go back button under `sources`.
 - **Classification while signed out**: pre-loop folders (migration) are NOT
   classified until a GitHub identity exists (no record → today's plain sync).
-  Fresh link installs still record `github` unchecked at install.
+  Fresh link installs ask GitHub whose app it is at install whenever someone
+  is signed in, whatever the flags (fix round 2026-10-27: the user's own
+  repo installed by link is `own` and pushes as ever); signed out or offline
+  they record `github` unchecked — pushurl guard, no pre-push hook, so a
+  deliberate push by URL from a terminal still works until sign-in decides.
 - **github→own upgrade with unpublished commits** (sign-in re-check): never
   auto-push them. Record `own_state = held` ("This is your app. N edits are
   ready to publish.") with **Publish now**; ahead-only sync skips the push
   while held; Publish now clears it.
-- **No-push hook**: `github` copies get a fused `pre-push` hook in the repo's
-  own `.git/hooks` that refuses every push with a plain sentence; fused's own
-  pushes run with `core.hooksPath=/dev/null`. Removed on `own`.
+- **No-push hook**: `github` copies whose owner is known to be someone else,
+  and every `marketplace` copy, get a fused `pre-push` hook in the repo's own
+  `.git/hooks` that refuses every push with a plain sentence; `settle_locked`
+  removes a repo-local `core.hooksPath` on a guarded copy (it would skip the
+  hook); fused's own pushes run with `core.hooksPath=/dev/null`. Removed on
+  `own`. The hook is ADVISORY — `git push --no-verify` skips it — a speed
+  bump against a terminal or a Claude session, not a boundary (the pushurl
+  and fused never pushing on its own are).
 - **Every fused git call on a contrib repo** runs with `-c core.fsmonitor=
-  -c core.hooksPath=/dev/null` (and the existing non-interactive env).
+  -c core.hooksPath=/dev/null -c core.attributesFile=/dev/null` (and the
+  existing non-interactive env). Repo-local keys that `-c` cannot switch off
+  and that run a command or move the work tree during a status, merge,
+  reset or checkout — a `filter.<x>.clean|smudge|process`, a
+  `merge.<x>.driver`, `diff.external` / `diff.<x>.command|textconv`,
+  `core.worktree`, `core.sshCommand` — stop every engine entry
+  (`replay.config_hazards`, one config read, fails closed like
+  `gh.url_rewrites`): `sync_error.reason = unsafe-config`, a plain sentence,
+  nothing moves (fix round 2026-10-27).
 - **Merge with Claude sandbox**: the resolver runs with `--setting-sources=`
   (no project/user settings, hooks, CLAUDE.md), `--strict-mcp-config` with no
   servers, tools limited to Read/Edit/Write on the conflicted files, and the
@@ -1075,7 +1113,11 @@ merged), `taken_back` (False), `needs_merge`/`needs_merge_purpose`/
 ### 17.3 Moves — the exact git (`engine.py`, `replay.py`)
 
 Every write is one git command with git's own guard; fused has no
-check-then-act window of its own. All under `replay.slot()`.
+check-then-act window of its own. All under `replay.slot()` — the fetch takes
+it itself when its caller (Send, Update proposal, remix publish) has not.
+A marketplace copy's mirror is never moved by the fetch: the engine moves it
+once, after the vet, and `follow.update_mirror` refuses (`reason: blocked`)
+a pinned target that is or contains a hard-blocked commit (§18.4 M1).
 
 | move | command | guard |
 |---|---|---|
@@ -1083,11 +1125,11 @@ check-then-act window of its own. All under `replay.slot()`.
 | ff | `merge --ff-only main` (HEAD == fused/mine, main ⊄ HEAD, HEAD ⊆ main) | git refuses on dirty overlap / untracked collision → `blocked` (clobber) or deferred |
 | bring in | `replay.merge_tree(HEAD, main)` — with the PR head as the merge base (`base=`) when the proposal is merged and the PR head ⊆ HEAD, so a squash/rebase accept's content counts as common ground and Bob's sent commit never conflicts with the author's later edits of the same lines; result tree == tree(main) → settle instead — clean → `commit-tree <tree> -p HEAD -p main` ("Bring in <who>'s latest", Bob's identity) → `replay.land_ff_locked(root, new)` = `merge --ff-only <new>` | ff needs HEAD == new^1 (CAS); dirty overlap → commit "Your edits" first (row 6 kept, on the branch) |
 | settle | after a bring-in with pr merged: when tree(HEAD) == tree(main) and clean: `replay.settle_locked(root)` = pin HEAD, `update-ref refs/heads/fused/mine main HEAD` (CAS), `reset --hard` (same tree: no file changes) | CAS; requires clean; skipped otherwise (cosmetic) |
-| discard | pin HEAD (+wip), `reset --hard main`, remove backed-up untracked files; `withdraw` closes the PR | button + confirm |
+| discard | pin HEAD (+wip), `reset --hard main`, remove backed-up untracked files; `withdraw` closes the PR. Refused while a Send / Update proposal job runs. A marketplace copy's `main` is the approved commit VETTED against the block list first (`blocks.vet_approved`), never one that contains a hard-blocked commit | button + confirm |
 | match ("Use <who>'s version") | same as discard with text "Switched to <who>'s version. Your version is saved." (replaces use_theirs) | button + confirm |
 | keep working | `proposal = None` after a declined/withdrawn PR; nothing moves | button |
-| move aside | as v2 `move_aside`, then ff/bring-in | button |
-| go back | `switch fused/mine` when clean (create from main if missing) | button |
+| move aside | as v2 `move_aside`, then ff/bring-in. A path reached through a symlinked folder is never "in the way" nor moved (`replay.in_tree`): it is outside the copy | button |
+| go back | `switch fused/mine` when clean (create from main if missing). A marketplace copy's mirror then goes to the vetted approved commit, and only when that commit is on this computer and safe; else it stays where it is until the next sync's vet | button |
 | restore | pin current, `reset --hard <backup>` (same branch) / re-place aside files | button |
 | push_to_main | bring-in must be clean and HEAD ⊇ main; `gh.push` HEAD → author's `<b>` by URL, no force; sync then ff's main and settles | button + confirm |
 
@@ -1166,7 +1208,13 @@ writes the Activity line and notes the head.
   own branch" only when HEAD was ahead of origin.
 - `appfile_git._place` / `record_install` / `claim_marked`: right after the
   clone, before any hook or sync: `switch -c fused/mine`, upstream config as
-  above, push guard, identity.
+  above, push guard, identity. A repo whose default branch is `fused` or
+  `fused/…` is refused at the clone (git cannot hold both `fused` and
+  `fused/mine`); `follow._valid` never accepts such a branch either. A
+  `marketplace` install replaces a `github` record a classification wrote
+  for the same folder meanwhile (the adopt race). An unrecorded folder that
+  carries the `fused.kind` marker is still a copy to git_upstream
+  (`_is_github`): no plain Update / Switch there (fix round 2026-10-27).
 - `git_upstream`: for a `github` copy the engine's `state` dict reports
   `on_default = (HEAD == fused/mine)`, `branch = fused/mine`,
   `default_branch = <b>`, `ahead/behind = rev-list --left-right --count
@@ -1207,8 +1255,11 @@ whenever `ahead == 0`); with `ahead > 0` and behind, the button reads
 "Bring in <who>'s latest" and posts `/api/git-upstream get-latest`
 (engine.bring_in); Push refused as today; reset-to-commit allowed on
 fused/mine (it is Bob's branch), refused when HEAD is `main`. `ops.py:_pull`
-refuses a guarded copy only when `ahead > 0` (the JS picks pull vs
-get-latest from `repo.ahead`); with `ahead == 0` the plain pull runs.
+refuses a guarded copy when `ahead > 0` (the JS picks pull vs
+get-latest from `repo.ahead`) and whenever HEAD is not `fused/mine` (the
+author's mirror or another version checked out: a plain pull would move the
+mirror in the worktree and fetch from whatever `origin` says — fix round
+2026-10-27); on `fused/mine` with `ahead == 0` the plain pull runs.
 
 ### 17.9 Tests
 
@@ -1303,13 +1354,22 @@ Row (`apps/<slug>.json`, every key required, nothing else allowed):
 inside the repo at `commit`; `category` ∈ categories.json ids.
 
 Review file (`reviews/<slug>.json`): `[{"commit", "at", "whats_new",
-"new_powers": [str], "credits": ["<login>"], "pr": int, "first": bool}]`
-newest first. `credits` = logins of PR authors whose PRs merged into the
-author's repo between the previous approved commit and this one (GitHub
-`compare` → commits → PR search by sha; best effort, empty when unknown).
+"new_powers": [str], "credits": ["<login>"], "pr": int, "first": bool,
+"claude"?: "skipped", "repo_id"?: int}]` newest first. `credits` = logins of
+PR authors whose PRs merged into the author's repo between the previous
+approved commit and this one (GitHub `compare` → commits → PR search by
+sha; best effort, empty when unknown). `claude` copies the block's marker
+(step 6 skipped: only the fixed rules ran); `repo_id` = GitHub's numeric id
+of the app repo when the entry was written (step 2 compares it). Entries
+written before 2026-10-27 carry neither.
 
 Block list: `{"blocked": [{"slug", "commit", "level": "hard"|"soft",
-"reason", "what_to_do", "at"}]}`.
+"reason", "what_to_do", "at"}]}` — exactly these keys, `commit` 40 hex, `at`
+`YYYY-MM-DDTHH:MM:SSZ`, `reason`/`what_to_do` non-empty. The check
+schema-validates it on every maintainer PR that touches it (deleting it
+fails), and `run_fixtures.py` validates the repo's own copy, so the
+`fixtures` workflow catches a broken one on any PR. Should a broken one reach
+main anyway, the backend fails closed (§18.3: last good list, `stale`).
 
 Collections: `{"featured": ["<slug>"], "shelves": [{"id", "title",
 "slugs": []}]}`. Categories: `[{"id", "label", "order"}]`.
@@ -1320,12 +1380,23 @@ opened/synchronize/reopened, plus `issue_comment` created, plus
 anything from the PR or from the app repo (both are data). Steps, each a
 hard fail with a one-line plain reason posted on the PR:
 1. **Files.** The PR touches only `apps/<slug>.json` files (add, modify or
-   delete). At most one slug per PR.
-2. **Who.** PR author login == owner of `row.repo` (for both the old and the
-   new row when modified), or `row.repo`'s owner is an org of which the PR
-   author is a PUBLIC member (`GET /orgs/{org}/public_members/{login}` 204).
-   Private org membership cannot be checked with the index's token: documented
-   limit.
+   delete). At most one slug per PR. Anything else is a maintainer change:
+   from a non-maintainer it fails here; from an index admin/maintainer a
+   changed `blocklist.json` must pass its schema (fails at step 3), a row the
+   PR also changes runs steps 2–7 like an author's (one row per PR; a
+   maintainer may delist any row, a delist merges no code), and the rest
+   passes with "a person reviews and merges this".
+2. **Who.** By the repo's IDENTITY, not the text of its name:
+   `GET /repos/{row.repo}` must answer `full_name` equal to `row.repo` (GitHub
+   silently follows a renamed or transferred repo's old name, so a moved repo
+   fails until a maintainer moves the listing), and the PR author login ==
+   that answer's `owner.login` (old row too when modified to another repo), or
+   the owner is an org of which the PR author is a PUBLIC member
+   (`GET /orgs/{org}/public_members/{login}` 204). When the slug's review
+   entries recorded a `repo_id` and the repo now answers another `id` (an
+   account renamed and its old login taken, a repo deleted and re-made), the
+   check fails. Private org membership cannot be checked with the index's
+   token: documented limit.
 3. **Shape.** Row schema above; `slug` unique; `repo` not listed under another
    slug; `remix_of` names an existing row; `branch` == the repo's default branch.
 4. **Which commit.** `GET /repos/{repo}/compare/{branch}...{commit}` status
@@ -1343,18 +1414,30 @@ hard fail with a one-line plain reason posted on the PR:
    total budget 20 minutes; JSON `{"verdict": "pass"|"fail", "reasons":
    [str], "whats_new": str, "new_powers": [{"kind", "detail"}]}`. Code is
    fenced as data with a nonce (same `_fence` idea as `contrib/ai.py`). An
-   invalid answer, an API error or a timeout = fail.
+   invalid answer, an API error or a timeout = fail. **Carve-out (owner's
+   call, 2026-10-26, kept 2026-10-27):** while `ANTHROPIC_API_KEY` is unset
+   the step is SKIPPED, not failed — M3's "a missing result is a fail" does
+   not apply to a review that was never asked for. The block says
+   `"claude": "skipped"`, the comment says "Claude's review is off (no key
+   set); only the fixed rules ran.", What's new comes from the PR's own
+   "What changed" text and new powers from `rules.powers` alone; the review
+   entry and the backend's rows carry the marker (`claude`,
+   `claude_review`). Labels and the listing page's "Reviewed by Fused" line
+   are unchanged (open question to the owner).
 7. **New powers** (D9). Static detection (`rules.powers(diff_or_files)`:
    new network host, writes outside the app folder, dependency added,
-   autostart/daemon, Claude tools) ∪ the model's list. Non-empty → the check
-   still passes, but the job labels the PR `needs-confirmation` and
-   comments the list. A comment `fused: confirm <head sha>` by the PR author
-   (the `issue_comment` job) turns the block to `pass` when the head still
-   equals that sha.
+   autostart/daemon, Claude tools) ∪ the model's list. Non-empty → the
+   review passes but the job labels the PR `needs-confirmation`, comments the
+   list and leaves the required `review` status PENDING, so the PR cannot be
+   merged. A comment `fused: confirm <head sha>` by the PR author (the
+   `issue_comment` job, `statuses: write`) turns the block to `pass` and the
+   status to success when the head still equals that sha.
 8. **Result.** The job posts ONE comment that fused reads, containing a
    machine block `<!-- fused-review {"sha", "status": "pass"|"fail"|
    "needs-confirmation", "reasons": [], "whats_new", "new_powers": []} -->`
-   above the human text (a re-run edits the same comment). NOTHING MERGES
+   above the human text (a re-run edits the same comment). The `review`
+   status: pending while running, success on `pass`, pending on
+   `needs-confirmation`, failure on `fail` or any crash. NOTHING MERGES
    ON ITS OWN (owner, 2026-10-26; D15's auto-merge is withdrawn): a Fused
    maintainer merges every pull request by hand once the `review` status is
    green. Branch ruleset: PR required, required check `review`, admins
@@ -1363,9 +1446,14 @@ hard fail with a one-line plain reason posted on the PR:
 9. **After merge.** A merge is a maintainer's click, which fires nothing the
    bot can rely on across every merge path (events caused by `GITHUB_TOKEN`
    start no workflow), so a `schedule` job (every 10 min) + `workflow_dispatch` scans merged PRs
-   (`is:pr is:merged` since the last entry) whose `apps/<slug>.json` row has
-   no `reviews/<slug>.json` entry for `row.commit`, reads that PR's
-   `fused-review` block and appends the entry (bot commit "review: <slug> @
+   (`is:pr is:merged` since the newest entry minus 2 days, then, for every
+   row on main still lacking an entry, the merged PR behind that row's newest
+   commit) that changed exactly one `apps/<slug>.json` (not a delete; a
+   maintainer PR may carry other files) whose row has no
+   `reviews/<slug>.json` entry for `row.commit`, reads that PR's
+   `fused-review` block — only a `pass` for the merged head
+   (`needs-confirmation` = never confirmed, no entry) — and appends the entry
+   (bot commit "review: <slug> @
    <sha7>" on the `reviews` branch, created from main's `reviews/` when
    absent; the backend reads that branch first, main's `reviews/` as the
    fallback). A deleted row (delist) appends nothing. The catalog serves a row
@@ -1374,10 +1462,23 @@ hard fail with a one-line plain reason posted on the PR:
 Fixtures (`fixtures/<name>/` = the PR's file set + `expect.json` with the
 failing step): `runtime-fetch`, `password-read`, `fork-only-commit`,
 `not-owner`, `prompt-injection`, `committed-fused-dir`, `other-row`,
-`timeout` (env `REVIEW_FORCE_TIMEOUT=1`). `run_fixtures.py` runs the check's
-pure parts against them and is a job in `review.yml` on pushes to main.
+`timeout` (env `REVIEW_FORCE_TIMEOUT=1`), and since 2026-10-27
+`blocklist-bad-json`, `blocklist-bad-entry`, `blocklist-removed`,
+`maintainer-with-row`, `maintainer-own-row`, `maintainer-delist`,
+`moved-repo`, `reused-repo-name`. `run_fixtures.py` runs the check's pure
+parts against them (+ self-checks: the repo's own `blocklist.json`, the
+status map, `reviews_sync.accepts`, the entry marker) and is a job in
+`review.yml` on pushes to main and `fixtures.yml` on every PR (the PR's own
+scripts: the only test a change to the check gets before merge, since
+`pull_request_target` runs the base's). Third-party actions are pinned by
+commit sha and `anthropic` by version (the review job holds write scopes).
 
 Secrets the owner sets: `ANTHROPIC_API_KEY`. `GITHUB_TOKEN` is the default.
+
+Known limits: two listing PRs for the same repo under different slugs can
+both pass (each is checked against the base; the ruleset does not require
+up-to-date branches): the merging maintainer catches it. GitHub disables
+`schedule` workflows after 60 days without repo activity.
 
 ### 18.3 The backend (WS-CANVAS)
 
@@ -1391,28 +1492,39 @@ the links the page builds. The GitHub install page (`fused_app_github`) was
 a canvas of its own on prod; it is served from this canvas now. The canvases
 the user's own Fused account creates for public sharing (share_app.py, one
 per app under the user's login) are the user's, not the backend's, and stay
-separate. UDFs (each
-`fused.udf(cache_max_age="0s")`, answer `format=json` as a list of rows,
-error = one row `{error_code, error_message}` — today's API shape, so
-`marketplace._udf_get` is unchanged):
+separate. UDFs (answer `format=json` as a list of rows, error = one row
+`{error_code, error_message}` — today's API shape, so `marketplace._udf_get`
+is unchanged; every row carries `catalog_version`, `generated_at` (when this
+index version was first read from GitHub) and `stale` (true = the S3 copy:
+GitHub unreadable or main's block list broken; a reader treats the answer as
+"unknown", never as the current index); caching in §18.12):
 
 | UDF | params | row |
 |---|---|---|
-| `marketplace_catalog` | `client_version` | one per app: `slug, name, description, author{name, github}, tags, category, version, requires_python, min_fused_render, ai_capabilities, ai_models, ai_model_param, icon_url, preview_url, size_bytes, file_count, release_id (= commit), commit, repo, branch, source_url (https://github.com/<repo>), published_at (first release), updated_at (last release), featured, remix_of, remix_count, contributor_count, last_release_at, releases: [{commit, at, whats_new, version, blocked: "hard"|"soft"|null}] newest first, catalog_version, generated_at` |
-| `marketplace_categories` | — | `{id, label, order, count, catalog_version}` |
-| `marketplace_collections` | `new_and_updated_limit` | `{collection: "featured"|"shelf"|"new_and_updated", shelf_id, title, position, slug, catalog_version}` |
+| `marketplace_catalog` | `client_version` | one per app: `slug, name, description, author{name, github}, tags, category, version, requires_python, min_fused_render, ai_capabilities, ai_models, ai_model_param, icon_url, preview_url, size_bytes, file_count, release_id (= commit), commit, repo, branch, source_url (https://github.com/<repo>), published_at (first release), updated_at (last release), featured, remix_of, remix_count, contributor_count, last_release_at, whats_new, blocked, claude_review ("skipped"|null: the current release's step-6 marker, null = not recorded), releases: [{commit, at, whats_new, version, blocked: "hard"|"soft"|null, claude}] newest first, catalog_version, generated_at, stale` |
+| `marketplace_categories` | — | `{id, label, order, count, catalog_version, generated_at, stale}` |
+| `marketplace_collections` | `new_and_updated_limit` | `{collection: "featured"|"shelf"|"new_and_updated", shelf_id, title, position, slug, catalog_version, generated_at, stale}` |
 | `marketplace_search` | `q, category, cursor, limit, client_version` | catalog rows + `rank`, `next_cursor` |
 | `marketplace_app_detail` | `slug, client_version` | catalog row + `readme_markdown, readme_base_url (raw…/<repo>/<commit>/), files: [{path, size}], releases` |
-| `marketplace_blocklist` | — | `{slug, commit, level, reason, what_to_do, at, generated_at}` (one row per entry; an empty list is a valid answer; errors as above) |
-| `fused_app_listing` | `slug` | HTML (B6): the listing page — name, icon, preview, readme at the approved commit, "Reviewed by Fused · release <date>", What's new, Remix of, contributors, install button = `fused-render://open?marketplace=<slug>` with the "Didn't open?" fallback, "View on GitHub". Serving it records one `views` event (§18.12) |
-| `fused_app_install` | `slug` | one row `{slug, name, repo, commit, release_id, branch, version, blocked, catalog_version, generated_at, stale, counted}` — the index's row RIGHT NOW; the ask records one `installs` event (§18.12) |
-| `marketplace_stats` | — | one per app: `{slug, name, version, installs, installs_30d, views, views_30d, window_days, catalog_version, generated_at}` |
+| `marketplace_blocklist` | — | EXACTLY ONE row, also when nothing is blocked: `{generated_at, catalog_version, stale, entries: [{slug, commit, level, reason, what_to_do, at, malformed}]}` (contract 5, 2026-10-27; the old shape was one row per entry, and the client reads both). Fail closed: main's `blocklist.json` absent, not JSON, or not `{"blocked": [list]}` → the last good index S3 keeps, `stale: true`; entries are never dropped — any level but exactly `"soft"` is `"hard"`, and so is an entry whose slug or commit is unusable (`malformed: true`; a short commit naming exactly one known release of the slug is expanded) |
+| `fused_app_listing` | `slug` | HTML (B6): the listing page — name, icon, preview, readme at the approved commit, "Reviewed by Fused · release <date>", What's new, Remix of, contributors, install button = `fused-render://open?marketplace=<slug>` with the "Didn't open?" fallback, "View on GitHub". Serving it records one `views` event (§18.12). The README is `DOMPurify.sanitize(marked.parse(…), {FORBID_TAGS: style, form, input, button, textarea, select; FORBID_ATTR: style})` (no UI redress on a Fused-branded page), both jsdelivr scripts carry SRI `integrity` hashes, and inline script data escapes every `<` as `\u003c`. `fused_app_github` does the same three |
+| `fused_app_install` | `slug` | one row `{slug, name, repo, commit, release_id, branch, version, blocked, catalog_version, generated_at, stale, counted}` — the index's row as of the index's HEAD at most `REFS_OK_S` (15 s) ago; the ask records one `installs` event (§18.12) |
+| `marketplace_stats` | — | one per app: `{slug, name, version, installs, installs_30d, views, views_30d, window_days, catalog_version, generated_at, stale}` |
 
 Catalog rows (and so search/detail rows) also carry `installs, installs_30d,
 views, views_30d` (§18.12).
 
-Sources: the index via `codeload.github.com/<index>/zip/HEAD` (`fused.cache`
-5 min); each app repo via `codeload.github.com/<repo>/zip/<commit>`
+Sources: the index's HEAD and `reviews` shas via the smart-HTTP ref
+advertisement `https://github.com/<index>.git/info/refs?service=git-upload-pack`
+(served uncached, about a kilobyte; worker memo 15 s, a failure memo 60 s),
+then both archives BY SHA via `codeload.github.com/<index>/zip/<sha>` and the
+parse cached by `(head, reviews, INDEX_PARSE_VERSION)` (`fused.cache` 24 h —
+immutable, so a new index commit is a new key and no cache sits on another;
+fused.cache hashes the cached function's OWN source and its arguments, not
+the helpers it calls, so a change to what the parse produces must bump
+`INDEX_PARSE_VERSION`); a failed archive fetch is remembered per sha for
+60 s per worker (codeload down costs one slow request a minute, then the S3
+copy); each app repo via `codeload.github.com/<repo>/zip/<commit>`
 (immutable, `fused.cache` 24 h): `name`/`description` from the row, `version`
 from the row, `requires_python`/`ai_*`/`min_fused_render` from the app's
 `metadata.json`/`pyproject.toml`/entry page exactly as today's catalog does,
@@ -1422,8 +1534,11 @@ from the row, `requires_python`/`ai_*`/`min_fused_render` from the app's
 review file (+1 for the author). No GitHub REST call is required to serve the
 catalog; a `GITHUB_TOKEN` Fused secret, when present, is used for the one
 optional call (none today). `catalog_version` = the index HEAD's short sha
-read from the zip's `Content-Disposition` filename (`<repo>-<sha7>.zip`),
-falling back to a sha256 of the zip bytes.
+(from the ref advertisement). The `reviews` branch failing alone keeps
+main's fresh index with the review entries of the S3 copy
+(`reviews_stale`, not re-persisted); GitHub failing, or main's
+`blocklist.json` broken, serves the S3 copy with `stale: true` (a damaged
+head is remembered per worker, so it is not re-downloaded per request).
 `fused_app_github` stays as it is.
 
 The canvas is pushed with `fused workbench --env unstable canvas push .`
@@ -1537,13 +1652,28 @@ change, unreviewed."; `marketplace.start_install` on a slug whose repo has a
 `github` copy returns `{"status": "confirm", "switch": "reviewed", "path",
 "who"}` and runs `switch_to_reviewed` when called again with `switch=True`.
 
+**The install commit is vetted (M3).** `marketplace.install_app` clones
+the commit `market._pick(row, slug)` answers, whichever row it came from
+(the live `fused_app_install` answer, or the cached row when that cannot be
+asked): `row.commit` unless it is hard-blocked by the row (its top-level
+`blocked` or its release's) or by the block list on disk, then the newest
+release that is not; refused ("Fused withdrew this release") when none is.
+The record gets that release (`ap.entry()`) and `last_head` = the cloned
+commit, so the open gate answers from the first open.
+
 **Legacy installs (today's package installs).** `market.adopt_legacy(path,
 row) -> dict`: the folder has `.fused/marketplace.json` and no `.git`:
-`git init`, `remote add origin <url>`, fetch `<b>` and the approved commit,
+`git init`, the `fused.kind=marketplace` marker (BEFORE the origin: a
+`classify.ensure` racing the adopt — a catalog GET's `installed_copies`, an
+app open's kick — then sees a marked folder with no record and leaves it
+alone, instead of recording a `github` copy that follows the author's
+unreviewed tip), `remote add origin <url>`, fetch `<b>` and the approved commit,
 `update-ref refs/heads/<b> <commit>`, `symbolic-ref HEAD refs/heads/fused/mine`,
 `update-ref refs/heads/fused/mine <commit>`, `reset` (mixed) so the user's
 edits show as dirty tracked edits and their data as untracked; `.fused/
-marketplace.json` deleted; record kind marketplace via `record_install`;
+marketplace.json` deleted; record kind marketplace via `record_install`,
+its `last_head` seeded with the approved commit (the open gate's first
+answer, as an install's);
 Activity "Switched to the reviewed version. Your edits and data stayed." A
 folder that is already a repo with another origin is refused. Offered only
 when the slug is listed; otherwise the Installed row says "No longer updated".
@@ -1555,16 +1685,41 @@ def enforce_all() -> list[dict]        # every record: marketplace → enforce(r
 def enforce(root) -> dict | None       # see below
 def is_blocked_commit(slug, sha) -> dict | None
 def confirm_soft(root) -> None         # sets block.confirmed_at
-def gate(root) -> dict | None          # {"blocked": {...}} while a hard block stands (open gates answer 423 with it)
+def gate(root) -> dict | None          # {"blocked": {...}} while a hard block stands, or a soft one is unconfirmed (every run door answers 423 with it)
+def needed() -> bool                   # Community on, or a marketplace/github record in the store
+def list_vouched() -> bool             # the list on disk is a fresh self-describing answer
 ```
 Cadence: `refresh()+enforce_all()` at server start (background thread,
 after the catalog warm-up), in `git_upstream.note_app_opened` (bounded by
 its TTL) BEFORE the sync, in `refresh._sweep_loop` every 30 min, and from
-the Source panel's Check. `enforce(root)` for a marketplace copy whose HEAD
+the Source panel's Check. Startup and the sweep ask the backend only when
+`needed()`: with the Community off and no `marketplace`/`github` record
+there is nothing the list can act on, and fused never calls the backend
+(as on main with the store off); enforcement itself still runs.
+
+**The list fails closed (M3).** `marketplace.blocklist` reads both of the
+backend's shapes: the older bare list of entry rows, and the
+self-describing one-row envelope `{generated_at, catalog_version, stale,
+entries}` (§18.3). An answer the client cannot vouch for is "unknown",
+never a fresh list: `stale: true` (the backend's fallback copy of the
+index), an envelope without `generated_at`, a `generated_at` older than the
+list on disk, an entry fused cannot read (or one marked `malformed`) while
+a known entry is missing, or EVERY known entry gone at once without a newer
+envelope (an empty bare list is how an unreadable index used to look). An
+unknown answer can only ADD: the file keeps the last list plus anything new
+it named, flagged stale (`refresh` answers False). Enforcement never lifts
+a hard block whose blocked code still runs (`standing`: not rolled back, a
+conflict, or no target) because its entry is missing, unless the list on
+disk is a fresh envelope (`list_vouched`); otherwise it stays until Merge
+with Claude rolls it back or the app is removed. `enforce(root)` for a marketplace copy whose HEAD
 contains a blocked commit for its slug (`merge-base --is-ancestor`):
 - **hard**: stop the app (`background_apps`: stop its process, autostart
-  off; `render`/`apps` open gates answer `423 {"blocked": {...}}` while
-  the block stands); target = newest `row.releases[*].commit` that is not
+  off; every door that runs the copy's code answers `423 {"blocked":
+  {...}}` while the block stands: `render`, `/api/apps/entry`, `/api/run`
+  (a window already open keeps calling runPython) and
+  `/api/apps/background/start|restart` — `marketplace.open_gate`. Scheduled
+  Claude tasks in the folder are not gated: they run Claude, not the app);
+  target = newest `row.releases[*].commit` that is not
   blocked and is an ancestor of `origin/<b>`; mirror → target (pin, no
   Undo); worktree: clean and `ahead == 0` → pin + `reset --hard target`;
   else `merge_tree(HEAD, target, base=<blocked commit>)` (the revert as a
@@ -1576,9 +1731,12 @@ contains a blocked commit for its slug (`merge-base --is-ancestor`):
   you were running: <reason>. Rolled back to the release of <date>. <what
   to do>", NO Undo. No target (every release blocked) → stopped, sentence
   says so, button "Remove this app".
-- **soft**: `block.level = soft`; automatic moves skip; opening asks
-  (`/api/apps` row `contrib.block = {level, reason, what_to_do, confirmed}`;
-  the app page / card shows the confirm sheet; `confirm_soft` lets it open).
+- **soft**: `block.level = soft`; automatic moves skip; opening asks:
+  until `confirm_soft` (the `confirm-block` action) the same doors answer
+  `423 {"blocked": {level: "soft", …}}` — `render` draws "This app asks
+  before it opens" — and the app page holds the frame and shows the confirm
+  sheet; after it the app opens and `/api/apps` rows / `/api/apps/entry`
+  carry `contrib.block = {level, reason, what_to_do, confirmed}`.
 - `github` copy with a blocked commit of the same repo in HEAD: `block_warn`
   only; the Source panel's strip says "Fused blocked a version of this app
   that you're running: <reason>. You follow <who> directly, so nothing was
@@ -1738,6 +1896,10 @@ with Claude + Check again).
   contributors ×2 + recency; Newest release; Most remixed); the Showcase
   tab hidden while the flag is on; `CatalogFooter` links the index repo.
 - `InstallLinkPage`: `_fetch_market` kind.
+- A 423 from the open gate carries `blocked.level`: `hard` draws the
+  BlockedNotice; `soft` holds the Overview frame and asks (the confirm
+  sheet → `confirm-block`) — for a `marketplace` copy whatever the
+  switches say (§18.4).
 - `/marketplace/app/<slug>?via=link` bare mode.
 
 ### 18.8 Flags
@@ -1754,9 +1916,15 @@ list is enforced whatever the switch says.
 Targeted pytest only where git moves data (§17.9's rule): `tests/
 test_contrib_market.py` (pinned follow, release move + undo hold, delisted,
 switch both ways + undo, adopt_legacy, B5 merged-unreleased → released),
-`tests/test_contrib_blocks.py` (hard rollback clean/ahead/conflict, soft,
-link warn, offline keeps last list), `tests/test_marketplace.py` rewritten
-for the new rows and install path (FakeGitHub + a stub `_udf_get`),
+`tests/test_contrib_blocks.py` (hard rollback clean/ahead/conflict, soft
+and its gate, link warn, offline keeps last list, a shrunk list never lifts
+a block still running, the backend asked only when `needed`),
+`tests/test_contrib_market.py` also races a `classify.ensure` against
+`adopt_legacy`, `tests/test_marketplace.py` rewritten
+for the new rows and install path (FakeGitHub + a stub `_udf_get`; the
+cached-row fallback never installs a blocked release; both block list
+shapes and every "unknown" answer; an implausible catalog; the run doors'
+423),
 `tests/test_contrib_listing.py` (publish/update/remove/confirm with
 FakeGitHub). `invariants(m)` gains the marketplace reading of I3. Frontend:
 `tsc --noEmit` + `check-boundaries`.
@@ -1765,14 +1933,19 @@ FakeGitHub). `invariants(m)` gains the marketplace reading of I3. Frontend:
 
 D1 index repo `vasu2001/fused-apps-index` (owner's call for now); layout
 §18.2. D4 listed on merge; `collections.json` is the curated shelf. D9 new
-powers wait for the author's `fused: confirm`. D12 block list in the index,
-maintainers only. D13 install source decides; switching explicit, both ways
+powers wait for the author's `fused: confirm` — enforced, not only labelled:
+the required `review` status stays pending until the confirm (2026-10-27).
+D12 block list in the index, maintainers only, schema-checked by the review
+check, and fail-closed in the backend (a broken list serves the last good
+one, `stale`). Claude's review runs only with `ANTHROPIC_API_KEY` set; without
+it the step is skipped and says so (owner's call, §18.2 step 6). D13 install source decides; switching explicit, both ways
 buttons + prompts. D15 withdrawn: a maintainer merges by hand. Showcase hidden with the flag.
 Who publishes: repo owner (public org members for org repos). Blocked
 link copies: warning only. Categories: the four. No packages. Today's
 installs: adopt in place (`git init`), never automatically. Calls left to
-the builder: row format (§18.2), index read cadence = the catalog's 10-min
-TTL + Check, mirror upstream for `pull`, revert-as-merge for rollbacks on a
+the builder: row format (§18.2), index read cadence = the backend's ref
+read (≤15 s) + the read UDFs' 60 s + the catalog's 10-min TTL + Check
+(§18.12 Freshness), mirror upstream for `pull`, revert-as-merge for rollbacks on a
 copy with changes, the public-member limit for org repos, the bot bypass
 for `reviews/`.
 
@@ -1781,7 +1954,7 @@ for `reviews/`.
 | WS | owns |
 |---|---|
 | WS-IDX | the index repo (created with `gh`), `review.yml`, `scripts/review/*`, fixtures, rulesets, `fused_render/contrib/review_rules.py` (extracted from `ai.py`'s tables; `ai.py` imports it) |
-| WS-CANVAS | the canvas folder: 6 UDFs + `fused_app_listing`, `canvas.toml`, push |
+| WS-CANVAS | the canvas folder: the nine UDFs sharing the helper block (`marketplace_*`, `fused_app_listing`, `fused_app_install`) + `fused_app_github`, `canvas.toml`, push |
 | WS-ENGINE | `contrib/market.py`, `contrib/blocks.py`, edits in `store/classify/follow/engine/actions/refresh/replay`, `routers/contrib.py` (marketplace branches), `git_upstream.py`, `appfile_git.py`, `appfile.py`, `templates/shared/contrib_guard.py`, `templates/git/ops.py|log.py`, `app_git.py`, `app_doctor.py`, `share_app.py`, `claude_agent/agent.py` marker, `background_apps.py` stop helper, tests §18.9 (market, blocks) |
 | WS-CLIENT | `marketplace.py`, `routers/marketplace.py`, `routers/apps.py`+`render.py` open gate, `bots/tools.py`, `deeplink.py`, `community.py`+router, `server/app.py` startup thread, `tests/test_marketplace.py` |
 | WS-PUBLISH | `contrib/listing.py`, `contrib/actions_listing.py`, `server/routers/listing.py` (registered in `server/app.py` next to the contrib router — one line), `gh.py` additions (`search_prs`, `check_runs`, `pr_comments`, `edit_comment` helpers, each appended at the end of the file with a FakeGitHub counterpart), `tests/test_contrib_listing.py`. Does NOT edit `actions.py` or `routers/contrib.py` (WS-ENGINE adds the one-line `actions_listing.buttons` call) |
@@ -1820,21 +1993,28 @@ or fails for, S3.
 
 | Key | What | Written when |
 |---|---|---|
-| `index/current.json` | the parsed index (`_load_index` output: version, generated_at, apps, reviews, blocked, featured, shelves, categories) | the index HEAD's version changed (one write per version per worker) |
+| `index/current.json` | the parsed index (`_load_index` output: version, head, reviews_version, index_at, reviews_at, generated_at, apps, reviews, blocked, featured, shelves, categories) — the last GOOD index (a broken block list never gets here) | a newer index was read: main's or the reviews branch's version changed AND its archive stamp (`index_at`, then `reviews_at`) is not older than the stored one — a worker holding an older parse, or a failed read of the stored copy, writes nothing (it is what the next outage serves, blocks included) |
 | `index/history/<generated_at>-<version>.json` | every index version seen | same |
 | `facts/<owner>__<name>/<commit>.json` | an app's facts at a commit (files, size, metadata, readme) — immutable | first read of that commit; read back before GitHub on a cache miss |
-| `catalog/current.json` | `{version, generated_at, apps: [rows]}` as last built | `marketplace_catalog` built a new version |
+| `catalog/current.json` | `{version, reviews_version, generated_at, apps: [rows]}` as last built | `marketplace_catalog` built a new main or reviews version (never from a `stale` or `reviews_stale` index) |
 | `listings/<slug>.json` | that app's catalog row | same |
-| `stats/<kind>/events/<YYYY-MM-DD>/<ms>-<rand>--<slug>.json` | one event, `{slug, commit, at}`; the slug is in the KEY so a day is counted from a listing alone | `fused_app_install` (kind `installs`), `fused_app_listing` (kind `views`) |
-| `stats/<kind>/days/<YYYY-MM-DD>.json` | `{slug: n}` — a recount of that day's keys, idempotent (two workers writing it at once cannot double-count) | each rollup recounts today and yesterday; older days are frozen |
-| `stats/<kind>/current.json` | `{totals, window (last 30 days), days, generated_at}` = the day files summed | each rollup (`fused.cache` 5 min per worker) |
+| `stats/<kind>/events/<YYYY-MM-DD>/<HH>-<slot>--<slug>.json` | one event, `{slug, commit, at}`; the slug is in the KEY so a day is counted from a listing alone. `slot` < `EVENT_SLOTS_PER_HOUR` (100), per worker sequential from a random start: at most 100 objects per slug per hour (2,400 a day) — a scripted flood saturates its own count and cannot crowd other apps out of a day's listing (keys written before 2026-10-27 are `<ms>-<rand>--<slug>.json`; both parse) | `fused_app_install` (kind `installs`), `fused_app_listing` (kind `views`) |
+| `stats/<kind>/days/<YYYY-MM-DD>.json` | `{slug: n}` — a recount of that day's keys, idempotent (two workers writing it at once cannot double-count) | each rollup recounts every day from the day before the last rollup to today (at most 35 days back; with no `current.json`, every day that has events), so a UDF-quiet UTC day is still recounted later |
+| `stats/<kind>/current.json` | `{totals, window (last 30 days), days, generated_at}` = every day file folded in | each rollup (`fused.cache` 5 min per worker), run by `fused_app_install`, `fused_app_listing` and `marketplace_stats` — never by catalog/search/detail, which read this file |
 
-Caching, as built (owner: "have a pass at the canvas"): the PARSED index is
-what `fused.cache` keeps (`_index_text`, 5 min per worker), not only the
-zip, so a request pays `json.loads`, not unzip + two archives + parse; the
-stats rollups are `fused.cache` 5 min and read once per request (a 60 s
-worker memo), not once per row; the rollup writes a day file or
-`current.json` only when a count changed; the read-only UDFs (catalog,
+Caching, as built (owner: "have a pass at the canvas"; reworked
+2026-10-27): the index's shas come from the ref advertisement (§18.3; 15 s
+worker memo), and the PARSED index is what `fused.cache` keeps
+(`_index_text(repo, head, reviews)`, 24 h, keyed by the two shas — immutable,
+so no cache stacks on another: the old 5-min parse over a 5-min zip cache
+could be ~10 min behind even in `fused_app_install`); a request pays
+`json.loads`, not unzip + two archives + parse; the stats are read from
+`current.json` once per request (a 60 s worker memo that keeps its last value
+when a read fails), not once per row; the rollup writes a day file or
+`current.json` only when a count changed, and ABORTS with no write when any
+S3 read fails (`_s3_read_json`/`_s3_list_strict` tell "absent" — a 404 or an
+empty listing — from "error"), so a transient error can never rewrite the
+totals from a partial view; the read-only UDFs (catalog,
 search, categories, collections, blocklist, app_detail, stats) answer from
 the platform cache for 60 s (`cache_max_age="60s"`, same params → same
 answer) while the two that COUNT — `fused_app_install`, `fused_app_listing`
@@ -1844,16 +2024,55 @@ and Contributors moved to the Information list).
 
 Known ceiling: `fused.api.list` takes no pagination parameter (the server
 answers the listing whole), so if the platform ever caps a listing, a day
-with more events of one kind than that cap undercounts silently. Not
-measured; when a day approaches a thousand installs, split the day folder
-into hours. Not counted: updates (`engine.bring_in`) and detail reads —
-only installs that start; listing-page views count crawlers too.
+with more events of one kind than that cap undercounts silently. The slot
+cap bounds a day at 2,400 objects per slug; not measured against the
+platform's cap. It is also a ceiling on the real metric: an app with more
+than 100 genuine installs (or views) in one UTC hour, or 2,400 in a day,
+undercounts — raise `EVENT_SLOTS_PER_HOUR` before any app gets near it. Not counted: updates (`engine.bring_in`) and detail reads —
+only installs that start; listing-page views count crawlers too. Counts are
+inflatable by anyone who loops the two public counting endpoints — by design
+(no identity is kept); the slot cap only bounds the damage to that one app's
+number and to S3.
 
-Reads: `_load_index` goes to GitHub first and, when it cannot be read,
-serves `index/current.json` with `stale: true` (the catalog is then not
-re-persisted). `_fetch_app_facts` reads `facts/…` before `codeload`.
-`_stats_for(slug)` (inside `_catalog_row`) and `marketplace_stats` read the
-rollups. The shared helper block (duplicated byte-for-byte across the nine
+Reads: `_load_index` goes to GitHub first and, when it cannot be read or
+main's `blocklist.json` is broken, serves `index/current.json` with
+`stale: true` (the catalog is then not re-persisted); every row says so
+(§18.3). `_fetch_app_facts` reads `facts/…` before `codeload`.
+`_stats_for(slug)` (inside `_catalog_row`) and `marketplace_stats` read
+`stats/<kind>/current.json`.
+
+**Freshness, end to end (backend half, 2026-10-27).** From a merge on the
+index's main (a block, a release, a delist) to:
+
+| Reader | Lag |
+|---|---|
+| `fused_app_install` (0 s platform cache) | ≤ 15 s (the ref memo) |
+| `fused_app_listing` (0 s) | ≤ 15 s |
+| catalog / search / detail / blocklist / categories / collections / stats (60 s platform cache) | ≤ 75 s |
+| fused-render's cached catalog and block list | ≤ 75 s + the client's own TTL (client half below) |
+
+**Freshness, client half (2026-10-27).** fused-render re-reads the block
+list after `CACHE_TTL_S` (10 min) since its last attempt, and ENFORCES at
+four moments: server start, an app open (`note_app_opened`: the refresh is
+queued on the background lane, bounded by that TTL, and the sync that
+follows enforces the list already on disk), the sweep
+(`blocks.SWEEP_EVERY_S`, 30 min, on the 10-minute sweep loop, forcing its
+own refresh) and the Check button (forced, no TTL). From a block merged on
+the index: the list lands on disk ≤ 75 s (backend) + ≤ 10 min (client TTL,
+on an open) later, and from then the open gate shuts every run door of a
+copy whose `last_head` it names (it reads the record and the list on disk,
+no fetch) — about 11 minutes for an app in use. The rollback itself runs on
+the next open's sync after that, or the sweep: ≤ 75 s + ≤ 30 min for a copy
+nobody opens; ≤ 75 s on Check. A new install asks `fused_app_install` (≤ 15 s), and when that
+cannot answer, vets the cached row against the list on disk (§18.4). A
+catalog row or block list answer flagged `stale` is "unknown" here: it
+never marks a copy delisted, never lifts a block (it may add one); a
+catalog with no apps, or missing more than half the cached apps, is kept
+out the same way until the next build answers the same apps.
+
+A GitHub outage adds nothing to the lag of what was already read: the S3
+copy is served, flagged `stale`. A `reviews`-branch-only change (a new
+What's new) follows the same path. The shared helper block (duplicated byte-for-byte across the nine
 `marketplace_*` / `fused_app_listing` / `fused_app_install` UDFs) carries
 all of it; `fused_app_github` is untouched.
 
@@ -1913,9 +2132,16 @@ the panel, actions and activity of §16.9/§18.7 are shown as they are.
   Extra fields: `remix_of`, `github.checking`, `github.blocked` (the
   rung-1 preflight sentence when publish-github would refuse: nested
   elsewhere, or a remote already present). `doctor` = the listing's
-  publish gate (`doctor_blockers`), not the whole Doctor report. `rung`
+  publish gate (`doctor_blockers`), not the whole Doctor report — computed
+  only with the Marketplace switch on (the one gate it feeds; else
+  `{clear: null, failing: null}`). With every Community switch off the read
+  asks GitHub nothing: `visibility` stays null and the org-role lookup is
+  not queued. `rung`
   3 = `listing.state` in {live, in-review, needs-confirmation, removing};
-  a failed review stays on rung 2.
+  a failed review stays on rung 2. The listing it embeds refreshes itself
+  (a `listing-check` job) when its last read is over 15 min old, or over
+  60 s while a request is open on the index; `fresh=1` (Check again) asks
+  at once.
 - `POST /api/contrib/publish-github {dir, name, visibility}` — rung 1 → 2
   in one call: `git init` when the folder is not a repo. An app directly
   under the shared, remote-less `<workspace>/local` repo (nearly every app
@@ -1935,7 +2161,12 @@ the panel, actions and activity of §16.9/§18.7 are shown as they are.
   `classify.rebind(dir)` (below) right before the record turns `done`, so
   `done` implies the next ladder read says rung 2. Refusals are 409
   `{ok:false, error, message, reason}` with a plain sentence: no gh CLI,
-  not signed in, a remote already there, nested.
+  not signed in, a remote already there, nested, and — for a PUBLIC repo
+  only — App Doctor's `secrets` row failing or the doctor unable to run
+  (reason `doctor`, "App Doctor found things to fix before sharing: …
+  Open App Doctor to fix them, or make the repository private."), checked
+  before anything is written. A `secrets` SKIP (no check engine on this
+  machine) does not refuse.
 - `classify.rebind(app_dir)`: a record whose `kind` is `scratch` (not a
   Try copy: no `try_of`) or `own`/`github` with `repo` null, whose folder
   now has a GitHub `origin`, is reclassified in place with the identity
@@ -1954,7 +2185,11 @@ the panel, actions and activity of §16.9/§18.7 are shown as they are.
   routes gate on — not `marketplace_ui()`, or rung 3 would show buttons
   the POST refuses); off hides rung 3 (two rungs; rung 2's next action is
   "Copy install link") and the Share sheet's Next strip. `github_link`
-  off hides the install link, Copy and Open the install page only.
+  = `contrib_enabled` (owner 2026-10-27: the link is part of Community
+  apps); off hides the install link, Copy and Open the install page only.
+  The old `github_link_enabled` pref is folded once by `prefs.read_prefs`
+  (a stored `true` turns `contrib_enabled` on when that was never set) and
+  deleted, so no switch is left that the UI cannot turn off.
   `contrib_enabled` off hides Proposals/Contributors/other-side view
   (today's rule). Putting an app on GitHub needs no switch.
 
