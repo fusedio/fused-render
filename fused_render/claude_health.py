@@ -295,7 +295,7 @@ def _shell_probe() -> Optional[str]:
     for flags in (["-lic"], ["-l", "-c"], ["-ic"]):
         try:
             out = subprocess.run(
-                [shell, *flags, "command -v claude"],
+                detached_argv([shell, *flags, "command -v claude"]),
                 capture_output=True, timeout=_SHELL_TIMEOUT_S, env=env,
                 **SUBPROCESS_KWARGS,
             ).stdout
