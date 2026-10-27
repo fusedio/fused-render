@@ -12,7 +12,7 @@ import { afterEach, expect, test } from "bun:test";
 import { installDomShim } from "./testDomShim";
 
 installDomShim();
-const { acceptProposal, contribReadEnabled, tryProposal } = await import("./contrib");
+const { acceptProposal, contribReadEnabled, opensDoctor, tryProposal } = await import("./contrib");
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -65,4 +65,11 @@ test("the copy-status read runs for a known Marketplace copy with every switch o
 test("the switches still turn the read on by themselves", () => {
   expect(contribReadEnabled("/w/app", { ...OFF, sources: true }, false, false)).toBe(true);
   expect(contribReadEnabled("/w/app", OFF, true, false)).toBe(true);
+});
+
+test("a publish refused for Doctor's checks or a missing app id offers App Doctor; nothing else does", () => {
+  expect(opensDoctor("doctor")).toBe(true);
+  expect(opensDoctor("app-id")).toBe(true);
+  expect(opensDoctor("unpushed")).toBe(false);
+  expect(opensDoctor(undefined)).toBe(false);
 });

@@ -329,6 +329,7 @@ export function useListing({
             notify({ title: m || "Sent for review. It usually takes about 30 minutes.", tone: "info" });
             void read(true).then(() => contrib.refresh()).then(() => onChanged?.());
           }}
+          onOpenDoctor={() => setSheet("doctor")}
         />
       )}
       {sheet === "sign-in" && (

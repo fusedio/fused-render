@@ -199,6 +199,18 @@ test("any other refusal says its sentence with no Doctor button", async () => {
   await act(async () => r.unmount());
 });
 
+test("Put it on GitHub refused for a missing app id: the sentence, and Open App Doctor", async () => {
+  const said = "This app has no Fused app id yet. Open App Doctor to add one.";
+  stubFetch(GITHUB_ROUTES, {
+    "/api/contrib/publish-github": { status: 409, body: { ok: false, error: said, message: said, reason: "app-id" } },
+  });
+  const r = await mount(ladder({ rung: 1 }));
+  await pressPublish(r);
+  expect(textOf(r.root)).toContain(said);
+  expect(buttonLabelled(r, "Open App Doctor")).toBeDefined();
+  await act(async () => r.unmount());
+});
+
 test("rung 1 with a refusal ahead (nested): the server's sentence up front, the publish disabled", async () => {
   stubFetch(GITHUB_ROUTES);
   const nested = "This app lives inside a bigger project on GitHub, so it can't have a repository of its own.";

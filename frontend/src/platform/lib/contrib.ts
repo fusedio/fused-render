@@ -567,9 +567,9 @@ export interface ListingDraft extends Partial<ContribAnswer> {
   preview?: string | null;
 }
 
-/** What `publish-market` sends as its `args`. */
+/** What `publish-market` sends as its `args`. No slug: the listing is named
+ *  after the app's fused-app-id, which the server derives. */
 export interface ListingDetails {
-  slug: string;
   name: string;
   description: string;
   category: string;
@@ -589,6 +589,13 @@ export function getListingDraft(path: string): Promise<ListingDraft> {
   return getJson<ListingDraft>(`/api/contrib/listing-draft?path=${encodeURIComponent(path)}`).catch(
     () => ({ ok: false }) as ListingDraft,
   );
+}
+
+/** A publish refusal that App Doctor fixes: its checks are not clear
+ *  ("doctor"), or the app has no fused-app-id yet ("app-id") — the page
+ *  offers Open App Doctor beside the server's sentence. */
+export function opensDoctor(reason: string | null | undefined): boolean {
+  return reason === "doctor" || reason === "app-id";
 }
 
 /** The listing's one action route — same body and answer as `runAction`.

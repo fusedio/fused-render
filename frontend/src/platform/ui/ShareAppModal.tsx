@@ -97,6 +97,7 @@ import {
   getAppContrib,
   getLadder,
   ladderListing,
+  opensDoctor,
   plainMessage,
   publishGithub,
   runAction,
@@ -371,9 +372,6 @@ function listingLine(ladder: LadderAnswer): { text: string; detail: string | nul
   }
 }
 
-/** Put it on GitHub's refusal while App Doctor has sharing checks left. */
-const DOCTOR_REASON = "doctor";
-
 export function GithubLadderCard({
   dir,
   ladder,
@@ -417,8 +415,10 @@ export function GithubLadderCard({
   const [publish, setPublish] = useState<SetupRecord | null>(null);
   const [step, setStep] = useState<LadderStep>(null);
   const [err, setErr] = useState("");
-  // Put it on GitHub refused because App Doctor has sharing checks left
-  // (409 reason "doctor"; a public repo needs them clear): the error line
+  // Put it on GitHub refused for something App Doctor fixes (409 reason
+  // "doctor": sharing checks left, which a public repo needs clear; or
+  // "app-id": the app has no fused-app-id yet — contrib.ts `opensDoctor`):
+  // the error line
   // then offers App Doctor itself, opened over the sheet — for as long as
   // that refusal is the line on screen (any later error replaces it).
   const [doctorErr, setDoctorErr] = useState<string | null>(null);
@@ -626,7 +626,8 @@ export function GithubLadderCard({
       if (goneRef.current) return;
       const said = (e as Error).message;
       setErr(said);
-      setDoctorErr((e as { body?: { reason?: unknown } }).body?.reason === DOCTOR_REASON ? said : null);
+      const reason = (e as { body?: { reason?: unknown } }).body?.reason;
+      setDoctorErr(typeof reason === "string" && opensDoctor(reason) ? said : null);
     } finally {
       if (!goneRef.current) setStep(null);
     }

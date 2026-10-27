@@ -1,10 +1,16 @@
 // "Publish to marketplace" (CONTRIB_LOOP.md §18.6, handoff B3): the listing
 // details, prefilled from the app (GET /api/contrib/listing-draft — name,
-// description, category, tags, icon, preview, the slug the index row will
-// use), all editable, then `publish-market` with them as its args on
+// description, category, tags, icon, preview), all editable, then
+// `publish-market` with them as its args on
 // /api/contrib/listing-action. The server opens the index request in the
 // author's name; the review takes about half an hour and the ListingStrip
 // says where it stands.
+//
+// THE LISTING ID IS NOT EDITABLE: the index row is named after the app's
+// own fused-app-id, which the server derives from the app. The draft's
+// `slug` is shown as a read-only "Listing id" line and never sent back. An
+// app with no id yet is refused with reason "app-id" (App Doctor adds one),
+// said like Doctor's own refusal: the sentence, and Open App Doctor.
 //
 // Same posture as RemixDialog: mounted per open, refuses to close while
 // sending, a refusal's sentence shown inside so the next move is to fix and
@@ -12,6 +18,7 @@
 import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 import {
+  opensDoctor,
   plainMessage,
   getListingDraft,
   runJob,
@@ -21,16 +28,13 @@ import {
   type ListingDetails,
 } from "@platform/lib/contrib";
 import { Button } from "@platform/shadcn/ui/button";
-import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "@platform/shadcn/ui/field";
+import { Field, FieldDescription, FieldGroup, FieldLabel } from "@platform/shadcn/ui/field";
 import { Input } from "@platform/shadcn/ui/input";
 import { NativeSelect, NativeSelectOption } from "@platform/shadcn/ui/native-select";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
 import { Textarea } from "@platform/shadcn/ui/textarea";
 import { ContribDialog } from "./ContribDialog";
 import { JobProgress } from "./JobProgress";
-
-/** The index's own rule for a row's file name (§18.2). */
-const SLUG_OK = /^[a-z0-9][a-z0-9-]{1,63}$/;
 
 /** The four categories today's Marketplace shows — the fallback when the
  *  draft does not list them. */
@@ -66,16 +70,21 @@ export function PublishDialog({
   dir,
   onClose,
   onPublished,
+  onOpenDoctor,
 }: {
   dir: string;
   onClose: () => void;
   /** The request is open: re-read the listing (it now says In review). */
   onPublished: (message: string | null) => void;
+  /** Swap this sheet for App Doctor (a "doctor" / "app-id" refusal). */
+  onOpenDoctor?: () => void;
 }) {
   const [phase, setPhase] = useState<Phase>("loading");
   const [error, setError] = useState<string | null>(null);
+  // The refusal on screen is one App Doctor fixes: offer it beside the line.
+  const [doctorFix, setDoctorFix] = useState(false);
   const [categories, setCategories] = useState<ListingCategory[]>(FALLBACK_CATEGORIES);
-  const [slug, setSlug] = useState("");
+  const [listingId, setListingId] = useState("");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [category, setCategory] = useState("");
@@ -91,7 +100,7 @@ export function PublishDialog({
       if (d.ok === false) setError(plainMessage(d));
       const cats = categoriesOf(d.categories);
       setCategories(cats);
-      setSlug(d.slug ?? "");
+      setListingId(d.slug ?? "");
       setName(d.name ?? "");
       setDescription(d.description ?? "");
       setCategory(d.category && cats.some((c) => c.id === d.category) ? d.category : (cats[0]?.id ?? ""));
@@ -105,15 +114,14 @@ export function PublishDialog({
     };
   }, [dir]);
 
-  const slugOk = SLUG_OK.test(slug);
-  const canSend = phase === "form" && slugOk && name.trim() !== "" && description.trim() !== "" && category !== "";
+  const canSend = phase === "form" && name.trim() !== "" && description.trim() !== "" && category !== "";
 
   const send = async () => {
     if (!canSend) return;
     setPhase("sending");
     setError(null);
+    setDoctorFix(false);
     const details: ListingDetails = {
-      slug,
       name: name.trim(),
       description: description.trim(),
       category,
@@ -124,6 +132,7 @@ export function PublishDialog({
     const started = await runListingAction(dir, "publish-market", { args: { ...details } });
     if (!started.ok) {
       setError(plainMessage(started));
+      setDoctorFix(opensDoctor(started.reason));
       setPhase("form");
       return;
     }
@@ -136,6 +145,7 @@ export function PublishDialog({
     if (!r.ok) {
       if (r.reason === "aborted") return;
       setError(r.message);
+      setDoctorFix(opensDoctor(r.reason));
       setPhase("form");
       return;
     }
@@ -191,16 +201,13 @@ export function PublishDialog({
                 ))}
               </NativeSelect>
             </Field>
-            <Field data-invalid={!slugOk || undefined}>
-              <FieldLabel htmlFor="listing-slug">Address</FieldLabel>
-              <Input
-                id="listing-slug"
-                value={slug}
-                aria-invalid={!slugOk || undefined}
-                onChange={(e) => setSlug(e.target.value.toLowerCase())}
-              />
-              {!slugOk && <FieldError>Lowercase letters, numbers and dashes.</FieldError>}
-            </Field>
+            {listingId && (
+              <Field>
+                <FieldLabel htmlFor="listing-id">Listing id</FieldLabel>
+                <Input id="listing-id" value={listingId} readOnly />
+                <FieldDescription>Your app&rsquo;s own id. It can&rsquo;t be changed.</FieldDescription>
+              </Field>
+            )}
           </div>
           <Field>
             <FieldLabel htmlFor="listing-tags">Tags</FieldLabel>
@@ -252,6 +259,13 @@ export function PublishDialog({
         <p className="m-0 text-[13px] leading-5 text-destructive" role="alert">
           {error}
         </p>
+      )}
+      {error && doctorFix && onOpenDoctor && (
+        <div>
+          <Button size="sm" variant="outline" onClick={onOpenDoctor}>
+            Open App Doctor
+          </Button>
+        </div>
       )}
     </ContribDialog>
   );
