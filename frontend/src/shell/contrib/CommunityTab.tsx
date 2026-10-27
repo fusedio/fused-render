@@ -82,9 +82,16 @@ export interface CommunityTabProps {
   /** The page's own ladder read (shared with its tab offer); the tab reads
    *  its own when not given. */
   ladder?: LadderState;
+  /** Kept mounted behind another tab (the app page keeps it once visited, so
+   *  a running action's progress and outcome survive a tab switch): nothing
+   *  is marked as seen while it is out of sight. */
+  hidden?: boolean;
+  /** Told whenever an action of the tab's own starts or ends — the sheet
+   *  (ContribModal) stays open while one runs. */
+  onBusy?: (busy: boolean) => void;
 }
 
-export function CommunityTab({ dir, slug, contrib, variant, ladder: given }: CommunityTabProps) {
+export function CommunityTab({ dir, slug, contrib, variant, ladder: given, hidden, onBusy }: CommunityTabProps) {
   const own = useLadder(given ? null : dir);
   const ladder = given ?? own;
   const l = ladder.data;
@@ -105,16 +112,22 @@ export function CommunityTab({ dir, slug, contrib, variant, ladder: given }: Com
   const listing = useListing({ dir, contrib, eligible: market, onChanged: refreshLadder });
   listingRef.current = listing;
   const [doctorOpen, setDoctorOpen] = useState(false);
+  const busy = !!kit?.busy || !!listing?.busy;
+  const onBusyRef = useRef(onBusy);
+  onBusyRef.current = onBusy;
+  useEffect(() => {
+    onBusyRef.current?.(busy);
+  }, [busy]);
 
   // Seeing a copy's tab IS reading its newest event: say so once (the tab's
   // dot goes out on the re-read).
   const event = !mine ? (contrib.data?.copy.event ?? null) : null;
   const eventKey = event ? `${event.kind}:${event.at}` : null;
   useEffect(() => {
-    if (!eventKey) return;
+    if (!eventKey || hidden) return;
     void ackContrib(dir, "event").then(() => contrib.refresh());
     // eslint-disable-next-line react-hooks/exhaustive-deps -- once per event
-  }, [dir, eventKey]);
+  }, [dir, eventKey, hidden]);
 
   // The ladder decides which side this is: wait for it (and, for a copy,
   // for the contrib read) rather than flash the wrong view.
@@ -289,7 +302,9 @@ function OwnView({
   // Without the Marketplace the ladder has two rungs (§19.2).
   const rung = l.rung ?? 1;
   const current = marketOn ? rung : Math.min(rung, 2);
-  const link = l.flags.github_link ? l.github.link : null;
+  // The install link follows Contributing (`sources`) alone; the legacy
+  // `github_link_enabled` switch is folded into it on the server.
+  const link = l.flags.sources ? l.github.link : null;
   const listingState = listing?.state ?? l.listing?.state ?? null;
   const notListed = !listingState || NOT_LISTED.has(listingState);
   const busy = !!kit?.busy || !!listing?.busy;

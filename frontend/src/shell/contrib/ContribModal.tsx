@@ -9,6 +9,14 @@
 // CommunityTab), so the explorer hands it only the folder. The body IS the
 // tab (`CommunityTab variant="sheet"`): same content, same server reads,
 // nothing decided here. "Open app page" goes to the tab itself.
+//
+// LOCKED WHILE AN ACTION RUNS (as ShareAppModal is while it works): the
+// tab's own progress line and outcome sentence live inside the sheet, so
+// closing it mid-Publish or mid-Accept dropped both — the job ran on, and a
+// failure read as nothing happening. Escape, an outside click, the close
+// button and a plain click on "Open app page" all wait until it ends (a new
+// tab from that link leaves this sheet where it is).
+import { useState } from "react";
 import { X } from "lucide-react";
 import { useAppContrib } from "@platform/lib/contrib";
 import { navigateUrl } from "@platform/lib/router";
@@ -27,12 +35,13 @@ import { CommunityTab } from "./CommunityTab";
 export function ContribModal({ dir, slug, onClose }: { dir: string; slug: string; onClose: () => void }) {
   const contrib = useAppContrib(dir);
   const href = appPageUrl(dir, "community");
+  const [busy, setBusy] = useState(false);
 
   return (
     <Dialog
       open
       onOpenChange={(open) => {
-        if (!open) onClose();
+        if (!open && !busy) onClose();
       }}
     >
       <DialogContent
@@ -53,6 +62,7 @@ export function ContribModal({ dir, slug, onClose }: { dir: string; slug: string
                     onClick={(e) => {
                       if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
                       e.preventDefault();
+                      if (busy) return;
                       onClose();
                       navigateUrl(href);
                     }}
@@ -62,7 +72,7 @@ export function ContribModal({ dir, slug, onClose }: { dir: string; slug: string
               >
                 Open app page
               </Button>
-              <DialogClose render={<Button variant="ghost" size="icon-sm" />}>
+              <DialogClose render={<Button variant="ghost" size="icon-sm" disabled={busy} />}>
                 <X aria-hidden />
                 <span className="sr-only">Close</span>
               </DialogClose>
@@ -71,7 +81,7 @@ export function ContribModal({ dir, slug, onClose }: { dir: string; slug: string
           <DialogDescription>Where it stands, what changed, and who took part.</DialogDescription>
         </DialogHeader>
         <div className="contrib-modal-body">
-          <CommunityTab dir={dir} slug={slug} contrib={contrib} variant="sheet" />
+          <CommunityTab dir={dir} slug={slug} contrib={contrib} variant="sheet" onBusy={setBusy} />
         </div>
       </DialogContent>
     </Dialog>

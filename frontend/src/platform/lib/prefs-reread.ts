@@ -1,5 +1,5 @@
 // Re-reading the prefs when a window comes back, for the one-fetch flag
-// modules (contrib-flags.ts, share-app-flag.ts, github-link-flag.ts).
+// modules (contrib-flags.ts, share-app-flag.ts).
 //
 // Each of those reads `/api/prefs` once and then only moves when THIS page's
 // Preferences publishes a new value — right within one window, stale in every

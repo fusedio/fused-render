@@ -400,6 +400,15 @@ export function categoryLabel(catalog: Catalog | null, id: string): string {
     .join(" ");
 }
 
+/** The row's "Source" link, or null: only an `https://github.com/` address
+ *  is drawn. The row comes from the backend canvas and the index, and an
+ *  href is a sink — a `javascript:` string there would run in the shell on
+ *  a click (React 18 does not block it). */
+export function sourceUrlOf(app: Pick<AppEntry, "source_url">): string | null {
+  const u = app.source_url;
+  return typeof u === "string" && /^https:\/\/github\.com\//.test(u) ? u : null;
+}
+
 /** Where "Open" lands for an installed app: its ENTRY PAGE in the explorer's
  *  file view — the same destination an /apps card opens (appEntry.ts,
  *  D269: a card opens the app's top-level page, not its folder). Every

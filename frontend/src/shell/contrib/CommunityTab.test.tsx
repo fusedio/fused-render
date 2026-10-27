@@ -17,8 +17,11 @@ const { CommunityTab, communityBadge, communityLine, copyCardOf } = await import
 
 const realFetch = globalThis.fetch;
 let listingAnswer: ListingAnswer = { ok: false };
+/** Every URL asked this test. */
+let calls: string[] = [];
 const stubFetch = (async (url: unknown) => {
   const u = String(url);
+  calls.push(u);
   const body = u.startsWith("/api/contrib/listing?") ? listingAnswer : { ok: false };
   return { ok: true, status: 200, json: async () => body };
 }) as unknown as typeof fetch;
@@ -26,6 +29,7 @@ const stubFetch = (async (url: unknown) => {
 let r: ReactTestRenderer | null = null;
 beforeEach(() => {
   listingAnswer = { ok: false };
+  calls = [];
   globalThis.fetch = stubFetch;
 });
 afterEach(() => {
@@ -300,6 +304,48 @@ test("a copy of someone else's app: It comes from / Your changes / Your proposal
   expect(source.findAll((n) => n.type === "button").map(textOf)).toContain("Check now");
   // No ladder words on the other side.
   expect(out).not.toContain("Put it on GitHub");
+});
+
+test("kept mounted behind another tab, a copy's new event is not marked seen until the tab is shown", async () => {
+  const withEvent = { ...COPY, copy: { ...COPY.copy, event: { kind: "merged-back", at: 1, who: "sina" } } } as AppContrib;
+  const el = (hidden: boolean) => (
+    <CommunityTab
+      dir="/apps/sine"
+      slug="sine"
+      contrib={contribOf(withEvent)}
+      ladder={ladderOf({ mine: false, kind: "github" })}
+      variant="page"
+      hidden={hidden}
+    />
+  );
+  const t = await mount(el(true));
+  expect(calls.filter((u) => u.startsWith("/api/contrib/ack"))).toHaveLength(0);
+  await act(async () => {
+    t.update(el(false));
+  });
+  expect(calls.filter((u) => u.startsWith("/api/contrib/ack"))).toHaveLength(1);
+});
+
+test("the tab tells its host while one of its actions runs (the sheet stays open meanwhile)", async () => {
+  const said: boolean[] = [];
+  const t = await mount(
+    <CommunityTab
+      dir="/apps/sine"
+      slug="sine"
+      contrib={contribOf(COPY)}
+      ladder={ladderOf({ mine: false, kind: "github" })}
+      variant="sheet"
+      onBusy={(b) => said.push(b)}
+    />,
+  );
+  const check = t.root.findAll((n) => n.type === "button" && textOf(n) === "Check now")[0]!;
+  await act(async () => {
+    check.props.onClick();
+    await new Promise((res) => setTimeout(res, 0));
+  });
+  expect(said[0]).toBe(false);
+  expect(said).toContain(true);
+  expect(said[said.length - 1]).toBe(false);
 });
 
 test("copyCardOf: unknown ids stay with It comes from", () => {

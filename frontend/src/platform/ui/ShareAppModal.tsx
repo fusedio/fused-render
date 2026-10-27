@@ -41,17 +41,17 @@
 //     file — rather than as a toast, because the reader is looking at the
 //     card that did it.
 //
-//   • GitHub link (third card, only with `github_link_enabled` —
-//     github-link-flag.ts): a udf.ai page that installs the app from its
+//   • GitHub link (only with Community → Where apps come from on —
+//     contrib-flags.ts `sources`; the old `github_link_enabled` switch is
+//     folded into it server-side and nothing here reads it): a udf.ai page
+//     that installs the app from its
 //     GitHub repo. Nothing is uploaded, so it is copyable only when the
 //     folder IS the repo root, `origin` is GitHub, and nothing is unpushed
 //     (share_app.py `github_link_state`); otherwise the card stays muted with
 //     the one sentence saying which condition failed. Muted for a snapshot
 //     too, like the public link: the repo is the live app.
-//     With Community → Where apps come from on (contrib-flags.ts `sources`)
-//     it is the sheet's public link: first, primary, shown whatever
-//     `github_link_enabled` says, and the Fused-storage link card above is
-//     not offered (hidden, not deleted — removing it waits on the owner).
+//     It is then the sheet's public link: first and primary, with the
+//     Fused-storage link card second (owner 2026-10-27, see below).
 //     For an app the user OWNS (`/api/contrib/ladder` answers `mine`), the
 //     card is the ladder's GitHub door instead (docs/CONTRIB_LOOP.md §19.3,
 //     `GithubLadderCard` below): rung 1 puts it on GitHub inline — three
@@ -59,7 +59,7 @@
 //     the install link plus a "Next: list it in the Marketplace" strip, rung
 //     3 the listing's status. It shows for every own app WHATEVER the
 //     switches say (owner, 2026-10-26): putting an app on GitHub is plain
-//     publishing; `github_link` off hides only the install link, and the
+//     publishing; Contributing off hides only the install link, and the
 //     Marketplace switch off only the Next strip. A copy of someone else's
 //     app (`mine:false`) or a server without the ladder keeps the link card
 //     as described above, switches included.
@@ -133,7 +133,6 @@ import {
   type ShareStatus,
   type SharedAppRecord,
 } from "@platform/lib/share-app";
-import { useGithubLinkFeature } from "@platform/lib/github-link-flag";
 import { useContribFlags } from "@platform/lib/contrib-flags";
 import { useAppSharingFeature } from "@platform/lib/share-app-flag";
 import {
@@ -397,7 +396,7 @@ export function GithubLadderCard({
   const gh = ladder.github;
   // Never null for an own app's answer (`ownLadder`); 1 is the safe floor.
   const rung = ladder.rung ?? 1;
-  const flags = ladder.flags ?? { sources: false, marketplace: false, github_link: false };
+  const flags = ladder.flags ?? { sources: false, marketplace: false };
   const goneRef = useRef(false);
   useEffect(() => {
     goneRef.current = false;
@@ -661,7 +660,9 @@ export function GithubLadderCard({
     navigateUrl(communityTabUrl(dir));
   };
 
-  const link = flags.github_link ? gh.link : null;
+  // The install link follows Contributing (`sources`) alone — the legacy
+  // `github_link_enabled` switch is folded into it on the server.
+  const link = flags.sources ? gh.link : null;
   const copyLink = async () => {
     if (!link) return;
     if (await copyToClipboard(link)) {
@@ -952,8 +953,10 @@ export function ShareAppModal({
   const loginStampRef = useRef<number | null>(null);
   const pollRef = useRef<number | null>(null);
   // Community → Where apps come from (contrib-flags.ts) makes the GitHub link
-  // THE public way to share: its card shows whatever `github_link_enabled`
-  // says and comes first as the primary. The Fused-storage link card (the
+  // THE public way to share: its card shows, first, as the primary — and only
+  // then (the legacy `github_link_enabled` switch is folded into this one on
+  // the server, so a user who once turned it on does not keep a card no
+  // switch on Preferences can turn off). The Fused-storage link card (the
   // public link on the user's Fused account) stays on the sheet either way
   // — owner 2026-10-27: "let's keep that around for a bit more" — second
   // under Community, first without it. `null` until the prefs read settles
@@ -968,7 +971,6 @@ export function ShareAppModal({
   const publicLinkOn = useAppSharingFeature();
   const fusedLinkShown = publicLinkOn;
   const fusedLinkReads = flagsKnown && publicLinkOn;
-  const githubEnabled = useGithubLinkFeature() || githubFirst;
   const [github, setGithub] = useState<GithubLinkState | null>(null);
   const [githubErr, setGithubErr] = useState("");
   const [githubCopied, setGithubCopied] = useState(false);
@@ -981,7 +983,7 @@ export function ShareAppModal({
 
   // The ladder first, WHATEVER the switches say (§19.2): an app the user owns
   // always gets the ladder card — putting it on GitHub is plain publishing,
-  // no flag; inside the card `github_link` hides only the install link and
+  // no flag; inside the card Contributing off hides only the install link and
   // `marketplace` only the Next strip. `notOwn` flips once the answer says
   // this is not an own app's (a copy, or a server without the ladder); only
   // then does the switch-gated link card read `/api/share/github` (local git
@@ -1014,7 +1016,7 @@ export function ShareAppModal({
   }, [linkEligible, app.path]);
 
   useEffect(() => {
-    if (!githubEnabled || !linkEligible || !notOwn) return;
+    if (!githubFirst || !linkEligible || !notOwn) return;
     let cancelled = false;
     getGithubLink(app.path)
       .then((g) => {
@@ -1026,7 +1028,7 @@ export function ShareAppModal({
     return () => {
       cancelled = true;
     };
-  }, [githubEnabled, linkEligible, notOwn, app.path]);
+  }, [githubFirst, linkEligible, notOwn, app.path]);
 
   // Re-read after each ladder step; an answer that is no longer an own
   // app's (a transient failure) keeps the card where it was.
@@ -1420,7 +1422,7 @@ export function ShareAppModal({
   // from rung 2 (when a link is offered).
   const fileSecondary = githubFirst
     ? ladder
-      ? ladder.rung === 1 || (!!ladder.flags?.github_link && !!ladder.github.link)
+      ? ladder.rung === 1 || (!!ladder.flags?.sources && !!ladder.github.link)
       : linkEligible && !!github && (github.ok || githubLinkSentence(github.code).next !== null)
     : linkEligible && signedIn;
   const fileAction = (
@@ -1625,7 +1627,7 @@ export function ShareAppModal({
             <DialogDescription className="sr-only">
               {githubFirst
                 ? "Share this app as a GitHub link, a public link, or a .fused file."
-                : githubEnabled || ladder !== null
+                : ladder !== null
                   ? "Share this app as a public link, a .fused file, or a GitHub link."
                   : "Share this app as a public link or as a .fused file."}
             </DialogDescription>
@@ -1674,9 +1676,9 @@ export function ShareAppModal({
               )}
             </OptionCard>
             {/* Third and secondary without `sources`: the ladder card for an
-                own app whatever the switches; the link card only with
-                `github_link_enabled`. */}
-            {flagsKnown && !githubFirst && (ladder !== null || githubEnabled) && githubCard}
+                own app whatever the switches. A copy's link card needs
+                `sources`, so it is never drawn here. */}
+            {flagsKnown && !githubFirst && ladder !== null && githubCard}
           </div>
           {/* NESTED inside DialogContent, not a sibling of the Dialog: Base UI
               only coordinates dialogs through the React tree — a nested root

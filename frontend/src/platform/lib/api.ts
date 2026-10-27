@@ -1536,11 +1536,6 @@ export interface Prefs {
   // OPTIONAL: an older server answers without it, and the reader
   // (marketplace-flag.ts) treats absence as off.
   marketplace?: { enabled: boolean };
-  // Whether the Share sheet offers its GitHub install-link card (opt-in,
-  // default off — shell/prefs.py `github_link_enabled`). Gates the card, not
-  // /api/share/github. OPTIONAL: an older server answers without it, and the
-  // reader (github-link-flag.ts) treats absence as off.
-  github_link?: { enabled: boolean };
   // The GitHub contribution loop's switches, RAW as set (shell/prefs.py
   // `contrib_enabled` + `contrib_remix_enabled`, opt-in, default off —
   // docs/CONTRIB_LOOP.md §1). Readers want the per-phase values with "remix
@@ -1985,10 +1980,6 @@ export function putMonitorEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putMarketplaceEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { marketplace_enabled: enabled });
-}
-
-export function putGithubLinkEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { github_link_enabled: enabled });
 }
 
 /** The contribution loop's switch (`contrib_enabled`). */

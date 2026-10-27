@@ -135,7 +135,6 @@ import AppPageGitPeek from "./AppPageGitPeek";
 import { useAppPageGitPeekWidth } from "./useAppPageGitPeekWidth";
 import { peekSearch } from "./task-peek-store";
 import {
-  softBlockWaiting as blockWaits,
   useAppContrib,
   useLadder,
   type AppContribState,
@@ -143,6 +142,7 @@ import {
   type LadderState,
 } from "@platform/lib/contrib";
 import type { HttpError } from "@platform/lib/api";
+import { asksFirst, openRefusal, overviewGate } from "./contrib/open-gate";
 import { SourceLine } from "./contrib/SourceLine";
 import { SourcePanel } from "./contrib/SourcePanel";
 import { BlockedNotice, BlockedStrip } from "./contrib/BlockedStrip";
@@ -159,7 +159,8 @@ import { authorOf } from "./contrib/words";
 // `keepMounted`: the panel stays in the tree behind the other tabs (hidden, not
 // unmounted). The Overview needs it — the frame holds live app state and a tab
 // switch must not reload it. Nothing else should want it: a hidden panel still
-// polls and paints.
+// polls and paints. `keepAfterVisit` is the narrower form — kept only once the
+// user opened the tab — for the Community tab, whose actions watch a job.
 type TabCtx = {
   slug: string;
   dir: string;
@@ -186,6 +187,11 @@ type TabCtx = {
   /** The folder's ladder (§19.2 `useLadder`): whether the Community tab is
    *  offered for an own app, and its rungs. */
   ladder: LadderState;
+  /** The folder is known to be a Marketplace copy (the ladder's `kind`, or
+   *  the copy status): the frame waits for the copy's first status read. */
+  marketplace: boolean;
+  /** This tab is the one on screen (false for a kept, hidden panel). */
+  active: boolean;
   /** The Community tab's address, and the click that goes there in place. */
   communityHref: string;
   openCommunity: (e: MouseEvent<HTMLAnchorElement>) => void;
@@ -195,6 +201,9 @@ type TabDef = {
   label: string;
   Icon: LucideIcon;
   keepMounted?: boolean;
+  /** Mounted on the first visit, then kept (hidden) while the folder offers
+   *  the tab — for a tab whose work outlives a tab switch. */
+  keepAfterVisit?: boolean;
   render: (ctx: TabCtx) => ReactNode;
 };
 
@@ -274,11 +283,6 @@ function OverviewContrib({ ctx }: { ctx: TabCtx }) {
   );
 }
 
-/** A soft block the user has not said yes to (§18.4): opening asks first. */
-function softBlockWaiting(contrib: AppContribState): boolean {
-  return blockWaits(contrib.data?.panel?.block);
-}
-
 const TAB_DEFS: Record<AppPageTab, TabDef> = {
   overview: {
     label: "Overview",
@@ -308,18 +312,29 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     // not run here until the user says "Open anyway" in it (§18.7) — and one
     // line, "<sentence> · Community →", when there is something to say (a
     // needs-merge, waiting proposals, unpushed edits).
-    render: (ctx) => (
-      <>
-        {ctx.snapshot.sha === null && <OverviewContrib ctx={ctx} />}
-        {softBlockWaiting(ctx.contrib) ? (
-          <p className="app-page-empty">
-            This app waits for your OK before it runs. Choose Open anyway above to use it.
-          </p>
-        ) : (
-          renderOverviewFrame(ctx)
-        )}
-      </>
-    ),
+    //
+    // The server's open gate (the entry probe's 423, see the page below) is
+    // what keeps a soft-blocked release from running; this render adds the
+    // hold for a known Marketplace copy (shell/contrib/open-gate.ts), so the
+    // frame never mounts only to be torn down when the first status read
+    // says the copy waits.
+    render: (ctx) => {
+      const gate = overviewGate(ctx.contrib, ctx.marketplace);
+      return (
+        <>
+          {ctx.snapshot.sha === null && <OverviewContrib ctx={ctx} />}
+          {gate === "ask" ? (
+            <p className="app-page-empty">
+              This app waits for your OK before it runs. Choose Open anyway above to use it.
+            </p>
+          ) : gate === "hold" ? (
+            <SkeletonLines rows={2} label="Loading app" />
+          ) : (
+            renderOverviewFrame(ctx)
+          )}
+        </>
+      );
+    },
   },
   tasks: {
     label: "Tasks",
@@ -359,11 +374,16 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     Icon: Users,
     // The contribution loop (shell/contrib/CommunityTab.tsx, §19.4): the
     // ladder for an own app, the other side for a copy. Offered only for an
-    // own app or a classified copy — see `offered` in the page below. Not
-    // keepMounted: it reads from the page's own contrib and ladder reads, so
-    // a return costs nothing.
-    render: ({ dir, slug, contrib, ladder }) => (
-      <CommunityTab dir={dir} slug={slug} contrib={contrib} ladder={ladder} variant="page" />
+    // own app or a classified copy — see `offered` in the page below. Kept
+    // mounted once visited: its actions (Publish, Accept, Propose…) watch a
+    // server job from inside the tab, and an unmounted tab stops watching —
+    // a switch away mid-action came back to no progress line and no outcome
+    // sentence, so a failed Publish read as nothing happening. Never mounted
+    // for a folder whose tab was not opened, so the page's reads stay as
+    // they were for everyone who never looks at it.
+    keepAfterVisit: true,
+    render: ({ dir, slug, contrib, ladder, active }) => (
+      <CommunityTab dir={dir} slug={slug} contrib={contrib} ladder={ladder} variant="page" hidden={!active} />
     ),
   },
 };
@@ -372,8 +392,9 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
 type Resolved =
   | { kind: "missing" }
   | { kind: "error"; message: string }
-  // Stage B (§18.5 open gate): a hard block stands — the server answered the
-  // entry probe with 423 and the block's facts.
+  // Stage B (§18.5 open gate): the server answered the entry probe with 423
+  // and the block's facts — a hard block stands, or (`level: "soft"`) a soft
+  // block waits for the user's "Open anyway" before the app may run.
   | { kind: "blocked"; block: CopyBlock }
   | {
       kind: "app";
@@ -390,6 +411,9 @@ export default function AppPage({
 }) {
   const slug = useMemo(() => basename(dir) || dir, [dir]);
   const [resolved, setResolved] = useState<Resolved | undefined>(undefined);
+  // Bumped after the user said "Open anyway" to a soft block: the entry probe
+  // runs again, and this time the server lets the app through.
+  const [resolveGen, setResolveGen] = useState(0);
   // The tab is the `_tab` query param, re-read on every URL event so
   // back/forward between the two tabs lands on the right one.
   const urlVersion = useUrlVersion();
@@ -401,8 +425,13 @@ export default function AppPage({
   // every contrib flag is off, so the page with the feature off is the page
   // it always was — except the ladder (§19.2), which answers whatever the
   // switches say: an app of the user's own always has its Community tab.
-  const contrib = useAppContrib(dir);
   const ladder = useLadder(dir);
+  // A Marketplace copy (the ladder names its kind; the open gate's 423 says
+  // so too) is read whatever the switches say: its block is enforced
+  // whatever they say, and the page must know whether opening it asks first.
+  const knownMarketplace = ladder.data?.kind === "marketplace" || resolved?.kind === "blocked";
+  const contrib = useAppContrib(dir, { marketplace: knownMarketplace });
+  const marketplace = knownMarketplace || contrib.data?.copy.kind === "marketplace";
   // The one conditional tab (§19.4): offered for an own app (the ladder says
   // `mine`) or a classified copy (`/api/contrib/app` answered). While either
   // first read is still out, a `?_tab=community` link keeps its tab (the
@@ -416,6 +445,13 @@ export default function AppPage({
     communityOffered ||
     ((!contrib.settled || ladder.data === null) && urlTab === "community");
   const tab: AppPageTab = offered(urlTab) ? urlTab : APP_PAGE_TABS[0];
+  // The tabs shown for this folder so far, for `keepAfterVisit`: written
+  // during render (adding the tab on screen is idempotent), and started over
+  // on a folder switch so app A's Community tab never stays behind app B.
+  const visitedRef = useRef<{ dir: string; tabs: Set<AppPageTab> }>({ dir, tabs: new Set() });
+  if (visitedRef.current.dir !== dir) visitedRef.current = { dir, tabs: new Set() };
+  visitedRef.current.tabs.add(tab);
+  const visited = visitedRef.current.tabs;
   const offeredRef = useRef(offered);
   offeredRef.current = offered;
   // The tab ACTUALLY shown (a `?_tab=community` this folder does not offer
@@ -564,16 +600,15 @@ export default function AppPage({
         // project" button stays the explicit way on.
       } catch (e) {
         if (!live) return;
-        const err = e as HttpError;
-        const blocked = (err.body as { blocked?: CopyBlock } | undefined)?.blocked;
-        if (err.status === 423 && blocked) setResolved({ kind: "blocked", block: blocked });
-        else setResolved({ kind: "error", message: err.message });
+        const blocked = openRefusal(e);
+        if (blocked) setResolved({ kind: "blocked", block: blocked });
+        else setResolved({ kind: "error", message: (e as HttpError).message });
       }
     })();
     return () => {
       live = false;
     };
-  }, [dir]);
+  }, [dir, resolveGen]);
 
   // Left/Right step the tabs (owner, 2026-08-26), the sibling of the sidebar's
   // Up/Down over its rows (sidebarArrowNav.ts): together the two axes make the
@@ -992,7 +1027,31 @@ export default function AppPage({
                 Could not open {slug}: {resolved.message}
               </ErrorBanner>
             )}
-            {resolved?.kind === "blocked" && (
+            {resolved?.kind === "blocked" && asksFirst(resolved.block) && (
+              <section className="app-page-panel app-page-overview" role="tabpanel">
+                {/* A soft block waits for a yes: the strip asks ("Open
+                    anyway" posts `confirm-block`), then the entry probe runs
+                    again and the app opens. Nothing of the app ran before. */}
+                <div className="contrib-stack">
+                  <BlockedStrip
+                    dir={dir}
+                    block={resolved.block}
+                    warn={null}
+                    who={contrib.data?.panel?.who || ""}
+                    actions={contrib.data?.actions ?? []}
+                    onChanged={() => {
+                      void contrib.refresh();
+                      setResolveGen((g) => g + 1);
+                    }}
+                  />
+                </div>
+                <p className="app-page-empty">
+                  This app waits for your OK before it runs. Choose Open anyway above to use it.
+                </p>
+                <SourcePanel dir={dir} slug={slug} contrib={contrib} blockShown />
+              </section>
+            )}
+            {resolved?.kind === "blocked" && !asksFirst(resolved.block) && (
               <section className="app-page-panel app-page-overview" role="tabpanel">
                 <BlockedNotice dir={dir} block={resolved.block} />
                 {/* The panel still offers its way out (Merge with Claude when
@@ -1006,7 +1065,8 @@ export default function AppPage({
               APP_PAGE_TABS.map((id) => {
                 const def = TAB_DEFS[id];
                 const active = tab === id;
-                if (!active && !def.keepMounted) return null;
+                const kept = def.keepMounted || (def.keepAfterVisit && visited.has(id) && offered(id));
+                if (!active && !kept) return null;
                 return (
                   <section
                     key={id}
@@ -1024,6 +1084,8 @@ export default function AppPage({
                       openGit,
                       contrib,
                       ladder,
+                      marketplace,
+                      active,
                       communityHref: tabUrl("community"),
                       openCommunity: (e) => pickTab(e, "community"),
                     })}

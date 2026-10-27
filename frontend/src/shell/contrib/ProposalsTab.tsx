@@ -158,6 +158,10 @@ export function ProposalsTab({ dir, slug, contrib }: { dir: string; slug: string
 
 type Ask = null | "try" | "accept" | "decline" | "ask-update";
 
+/** The server's refusal when Accept or Try named a head that is no longer
+ *  the proposal's: the sender pushed after the review on screen. */
+const REVIEW_NEEDED = "review-needed";
+
 function InboxCard({
   dir,
   slug,
@@ -187,6 +191,12 @@ function InboxCard({
   const signal = useUnmountSignal();
 
   const review = item.review_status === "ready" ? item.review : null;
+  // The head whose review is on screen: Accept and Try send it, and the
+  // server refuses ("review-needed") when the sender has pushed since — so a
+  // yes, the flagged kind above all, only ever lets through the code whose
+  // findings the user read. An older server's review has no `head_sha`;
+  // the item's own head is the one it reviewed then.
+  const reviewedSha = review?.head_sha || item.head_sha;
   const reading =
     item.review_status === "none" || item.review_status === "pending" || item.review_status === "running";
   const flagged = review?.verdict === "look";
@@ -226,7 +236,7 @@ function InboxCard({
   }, [item.try]);
   const startTry = (confirm: boolean) =>
     act("try", async () => {
-      const r = await tryProposal(dir, item.number, confirm);
+      const r = await tryProposal(dir, item.number, confirm, reviewedSha);
       if (r.ok && r.url) setMadeTry({ url: r.url });
       // The server asks first for a proposal Claude flagged (D18), even if
       // this card had not seen the verdict yet: ask, then re-POST.
@@ -417,7 +427,7 @@ function InboxCard({
                 void act("accept", async () => {
                   const since = Date.now();
                   setAccepting({ step: null, since });
-                  const r = await runJob(acceptProposal(dir, item.number, confirmLook), {
+                  const r = await runJob(acceptProposal(dir, item.number, confirmLook, reviewedSha), {
                     signal: signal(),
                     onTick: (j) => setAccepting({ step: j.step ?? null, since }),
                   });
@@ -431,6 +441,12 @@ function InboxCard({
                     setMustConfirm(true);
                     setAsk("accept");
                     return { ok: true };
+                  } else if (r.reason === REVIEW_NEEDED) {
+                    // The proposal moved since its review: the yes given
+                    // here was for other code. The server's sentence shows
+                    // and `act` re-reads, so the new head's review is what
+                    // the next Accept asks about.
+                    setMustConfirm(false);
                   }
                   return r;
                 });

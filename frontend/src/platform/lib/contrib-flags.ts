@@ -11,7 +11,7 @@
 //   loop     changes && inbox && itself  (A4 merge closes the loop)
 //   remix    changes && itself           (A5 remix)
 //
-// Same shape as github-link-flag.ts — ONE FETCH, NOT A POLL: the prefs can
+// Same shape as marketplace-flag.ts — ONE FETCH, NOT A POLL: the prefs can
 // only change on this app's Preferences page, and that page PUBLISHES the new
 // values (and another window's flip is picked up when this one comes back —
 // prefs-reread.ts). The `generation` counter keeps a pre-toggle GET landing after the

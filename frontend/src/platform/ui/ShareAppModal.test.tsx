@@ -338,19 +338,35 @@ test("with the Community off, rung 2 has no Next strip", async () => {
   await act(async () => r.unmount());
 });
 
-test("with the GitHub link switch off, rung 2 hides only the install link; the Next strip stays", async () => {
+test("with Contributing off, rung 2 hides only the install link; the Next strip stays", async () => {
   stubFetch(GITHUB_ROUTES);
   const r = await mount(
     ladder({
       rung: 2,
       github: { ...ladder({}).github, repo: "octocat/weather-board", visibility: "public", link: "https://x" },
-      flags: { sources: false, marketplace: true, github_link: false },
+      // An older server's legacy key says on: it no longer counts.
+      flags: { sources: false, marketplace: true, github_link: true },
     }),
   );
   expect(r.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "GitHub link")).toHaveLength(0);
   expect(buttonLabelled(r, "Copy link")).toBeUndefined();
   expect(textOf(r.root)).toContain("On GitHub as octocat/weather-board");
   expect(r.root.findAll((n) => n.type === "div" && n.props["data-strip"] === "next")).toHaveLength(1);
+  await act(async () => r.unmount());
+});
+
+test("the install link follows Contributing alone, whatever the legacy GitHub link key says", async () => {
+  stubFetch(GITHUB_ROUTES);
+  const r = await mount(
+    ladder({
+      rung: 2,
+      github: { ...ladder({}).github, repo: "octocat/weather-board", visibility: "public", link: "https://x" },
+      flags: { sources: true, marketplace: true, github_link: false },
+    }),
+  );
+  const linkInput = r.root.find((n) => n.type === "input" && n.props["aria-label"] === "GitHub link");
+  expect(linkInput.props.value).toBe("https://x");
+  expect(buttonLabelled(r, "Copy link")).toBeDefined();
   await act(async () => r.unmount());
 });
 

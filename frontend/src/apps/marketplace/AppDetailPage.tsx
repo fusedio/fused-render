@@ -46,6 +46,7 @@ import {
   isOwnCopy,
   categoryLabel,
   showInstalledFolder,
+  sourceUrlOf,
   useAppDetail,
   useJob,
   type AppEntry,
@@ -109,6 +110,9 @@ export function AppDetailPage({ slug, snap, bare = false }: { slug: string; snap
   const cat = categoryLabel(snap.catalog, app.category);
   const more = (snap.catalog?.apps ?? []).filter((a) => a.category === app.category && a.slug !== app.slug).slice(0, 6);
 
+  // Only a github.com address is linked (sourceUrlOf): the row's string is
+  // the catalog's, not ours.
+  const sourceUrl = sourceUrlOf(app);
   const menu: MenuEntry[] = [];
   if (installedPath) {
     menu.push({
@@ -122,8 +126,8 @@ export function AppDetailPage({ slug, snap, bare = false }: { slug: string; snap
       onClick: () => showInstalledFolder(installedPath),
     });
   }
-  if (app.source_url) {
-    const src = app.source_url;
+  if (sourceUrl) {
+    const src = sourceUrl;
     menu.push({
       label: "View source on GitHub",
       icon: <ExternalLink size={14} strokeWidth={2} />,
@@ -230,8 +234,8 @@ export function AppDetailPage({ slug, snap, bare = false }: { slug: string; snap
     <DetailLayout
       back={back}
       topRight={
-        app.source_url ? (
-          <a className="as-toplink" href={app.source_url} target="_blank" rel="noopener noreferrer">
+        sourceUrl ? (
+          <a className="as-toplink" href={sourceUrl} target="_blank" rel="noopener noreferrer">
             Source <ArrowUpRight size={13} strokeWidth={2.2} aria-hidden="true" />
           </a>
         ) : undefined
@@ -300,12 +304,12 @@ export function AppDetailPage({ slug, snap, bare = false }: { slug: string; snap
                       },
                     ]
                   : []),
-                ...(app.source_url
+                ...(sourceUrl
                   ? [
                       {
                         label: "Source",
                         value: (
-                          <a href={app.source_url} target="_blank" rel="noopener noreferrer">
+                          <a href={sourceUrl} target="_blank" rel="noopener noreferrer">
                             GitHub <ArrowUpRight size={12} strokeWidth={2.2} aria-hidden="true" />
                           </a>
                         ),

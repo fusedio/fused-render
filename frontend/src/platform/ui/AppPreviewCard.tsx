@@ -49,6 +49,8 @@ import { thumbFrame } from "@platform/lib/thumb-frame";
 import { embedUrlForFsPath, encodeFsPathSegments, navigateUrl } from "@platform/lib/router";
 import {
   appRecency,
+  blockedCardHref,
+  cardBlockGate,
   hrefFor,
   isBrowserHandledClick,
   onAppCardClick,
@@ -171,7 +173,13 @@ export function AppPreviewCard({
   // user has OPENED before (`opened_at`): one they never ran stays the empty
   // thumb rather than a placeholder-in-a-frame, and a peek must not be the
   // first run of a stranger's pages anyway.
-  const liveSrc = app.entry_html
+  // A Marketplace copy the block list stops, or asks about, has no live
+  // look: the frame would run the very release the block holds back (the
+  // server's open gate refuses it with 423 anyway — this keeps an error page
+  // out of the thumbnail). Its still, if any, stays.
+  const liveSrc = cardBlockGate(app)
+    ? null
+    : app.entry_html
     ? entryRenderUrl(app.entry_html)
     : app.kind === "appfile" && app.opened_at != null
       ? embedUrlForFsPath(app.path)
@@ -226,14 +234,15 @@ export function AppPreviewCard({
   // Only a Marketplace copy is stopped or asks: a GitHub-link copy that runs
   // a blocked version gets a warning and nothing else (§18.4 — its owner
   // chose to trust the author directly).
+  const gate = cardBlockGate(app);
   const enforced = !!block && app.contrib?.kind === "marketplace";
-  const softWaiting = enforced && block!.level === "soft" && !block!.confirmed;
+  const softWaiting = gate === "ask";
   const [asking, setAsking] = useState(false);
   const openPlain = () => (href ? navigateUrl(href, { isDir: false }) : openApp(app));
   /** True when the block took the click. */
   const blockGate = (e: React.MouseEvent): boolean => {
     if (!block || !enforced || e.defaultPrevented || isBrowserHandledClick(e)) return false;
-    if (block.level === "hard") {
+    if (gate === "stop") {
       e.preventDefault();
       navigateUrl("/apps/" + encodeFsPathSegments(app.path));
       return true;
@@ -260,12 +269,15 @@ export function AppPreviewCard({
     setBodyPainted(false);
   }, [liveStarted, liveSrc]);
   // An anchor, not a button — see AppCard. The href is what makes middle-click
-  // and "Open in new tab" land on the same place a left click does.
+  // and "Open in new tab" land on the same place a left click does. A copy
+  // the block list gates names its app page instead (appEntry.ts
+  // `blockedCardHref`): those gestures never reach `blockGate`, and the page
+  // asks before the app runs.
   return (
     <>
     <a
       className="app-pcard"
-      href={href ?? hrefFor(app)}
+      href={blockedCardHref(app) ?? href ?? hrefFor(app)}
       onClick={(e) => {
         if (blockGate(e)) return;
         if (!href) return onAppCardClick(e, app);

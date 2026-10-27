@@ -449,13 +449,19 @@ export const acceptMerge = (path: string, job: string) => post<ContribAnswer>("m
 export const discardMerge = (path: string, job: string) => post<ContribAnswer>("merge/discard", { path, job });
 export const reviewProposal = (path: string, number: number) =>
   post<JobStarted>("inbox/review", { path, number });
-export const tryProposal = (path: string, number: number, confirm: boolean) =>
-  post<ContribAnswer & Partial<TryCopy>>("inbox/try", { path, number, confirm });
+/** `head_sha`: the head of the review the user read (Accept and Try are
+ *  pinned to a head). The server refuses with reason "review-needed" and a
+ *  plain sentence when the proposal moved since — a yes is for the code on
+ *  screen, never for whatever the sender pushed after it. */
+export const tryProposal = (path: string, number: number, confirm: boolean, head_sha: string) =>
+  post<ContribAnswer & Partial<TryCopy>>("inbox/try", { path, number, confirm, head_sha });
 export const removeTry = (path: string, number: number) => post<ContribAnswer>("inbox/try/remove", { path, number });
 /** `confirm`: the user accepted a "needs a look" proposal knowingly — the
- *  server refuses one without it (job fails with reason "confirm"). */
-export const acceptProposal = (path: string, number: number, confirm = false) =>
-  post<JobStarted>("inbox/accept", { path, number, confirm });
+ *  server refuses one without it (job fails with reason "confirm").
+ *  `head_sha`: as for `tryProposal` — the yes is pinned to the head whose
+ *  review was on screen. */
+export const acceptProposal = (path: string, number: number, confirm: boolean, head_sha: string) =>
+  post<JobStarted>("inbox/accept", { path, number, confirm, head_sha });
 export const declineProposal = (path: string, number: number, note: string) =>
   post<ContribAnswer>("inbox/decline", { path, number, note });
 /** A proposal that no longer fits (`fits: false`): ask its sender to bring
@@ -739,6 +745,20 @@ function anyFlag(f: ContribFlags): boolean {
   return f.sources || f.changes || f.inbox || f.loop || f.remix;
 }
 
+/** Whether `useAppContrib` reads at all: any contrib switch, the Marketplace
+ *  switch, or `force` — a folder the caller already knows is a Marketplace
+ *  copy. Such a copy's block is enforced whatever the switches say (§18.4),
+ *  so the page must learn whether opening it asks first even with every
+ *  switch off. */
+export function contribReadEnabled(
+  dir: string | null,
+  flags: ContribFlags | null,
+  market: boolean | null,
+  force: boolean,
+): boolean {
+  return !!dir && ((flags !== null && anyFlag(flags)) || market === true || force);
+}
+
 export interface AppContribState {
   /** The last answer for THIS folder, or null (not asked yet / every flag
    *  off / the first read failed). */
@@ -759,13 +779,17 @@ export interface AppContribState {
  *  and whenever a caller says `refresh()`
  *  (after every mutation). Nothing is read while every contrib flag is off,
  *  so the page with the feature off makes exactly the requests it always did. */
-export function useAppContrib(dir: string | null): AppContribState {
+export function useAppContrib(dir: string | null, opts: { marketplace?: boolean } = {}): AppContribState {
   const flags = useContribFlags();
   // Stage B (§18.8): a Marketplace copy's panel, buttons and block strips
   // answer with the Marketplace switch on too, Community flags or not; the
   // server answers `{ok:false}` for any other copy then, and nothing shows.
+  // `marketplace`: the caller knows this folder is a Marketplace copy (the
+  // ladder's `kind`, or the open gate's 423) — read whatever the switches
+  // say, since its block asks before it opens whatever they say.
   const market = useMarketplaceFeature();
-  const enabled = !!dir && ((flags !== null && anyFlag(flags)) || market === true);
+  const force = !!opts.marketplace;
+  const enabled = contribReadEnabled(dir, flags, market, force);
   const [data, setData] = useState<AppContrib | null>(null);
   const [settled, setSettled] = useState(false);
   const [pending, setPending] = useState(false);
@@ -858,7 +882,7 @@ export function useAppContrib(dir: string | null): AppContribState {
   const refresh = useCallback(() => (enabled ? read() : Promise.resolve()), [enabled, read]);
   // Not settled while the flags themselves are still being read: a
   // `?_tab=proposals` link must keep its tab through that window too.
-  const known = flags !== null || market === true;
+  const known = flags !== null || market === true || force;
   return {
     data: enabled ? data : null,
     settled: known && settled,
@@ -905,7 +929,9 @@ export interface LadderAnswer {
   listing: ListingAnswer | null;
   /** `clear` null: Doctor could not say (not on GitHub yet, or it failed). */
   doctor: { clear: boolean | null; failing: number | null };
-  flags: { sources: boolean; marketplace: boolean; github_link: boolean };
+  /** `github_link`: an older server's copy of the install-link switch, now
+   *  folded into `sources` — not read. */
+  flags: { sources: boolean; marketplace: boolean; github_link?: boolean };
 }
 
 export function getLadder(dir: string, opts?: { fresh?: boolean }): Promise<LadderAnswer> {

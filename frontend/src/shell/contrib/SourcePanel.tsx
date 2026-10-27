@@ -127,11 +127,25 @@ const DISCARD_ID = "discard";
 /** States that stand until the user dismisses them (ack "settled"). */
 const SETTLED_STATES = new Set(["merged", "declined"]);
 
+/** The args a confirm sheet's yes posts: the first POST's own (a "confirm"
+ *  refusal must not drop them), plus Discard's "Also withdraw my proposal"
+ *  when that box is offered. Undefined when there are none. */
+export function confirmArgs(
+  first: Record<string, unknown> | undefined,
+  withdrawOffered: boolean,
+  withdraw: boolean,
+): Record<string, unknown> | undefined {
+  const args = { ...(first ?? {}), ...(withdrawOffered ? { withdraw } : {}) };
+  return Object.keys(args).length ? args : undefined;
+}
+
 type Sheet =
   | null
   | { k: "propose" }
   | { k: "remix" }
-  | { k: "confirm"; action: ContribAction; sentence: string }
+  // `args`: what the first POST carried, when a "confirm" refusal opened the
+  // sheet — the yes re-posts them, not a bare action.
+  | { k: "confirm"; action: ContribAction; sentence: string; args?: Record<string, unknown> }
   | { k: "update"; action: ContribAction }
   | { k: "undo"; line: ActivityLine };
 
@@ -294,7 +308,7 @@ export function useSourcePanel({
     act(a.id, async () => {
       const started = await runAction(dir, a.id, { confirm, args });
       if (!started.ok && started.reason === "confirm" && !confirm) {
-        setSheet({ k: "confirm", action: a, sentence: plainMessage(started) });
+        setSheet({ k: "confirm", action: a, sentence: plainMessage(started), args });
         return started;
       }
       // Merge with Claude answers its merge job (`merge: true`): its
@@ -463,8 +477,7 @@ export function useSourcePanel({
                 disabled={!!busy}
                 onClick={async () => {
                   const a = sheet.action;
-                  const args = a.id === DISCARD_ID && openProposal ? { withdraw: withdrawToo } : undefined;
-                  const r = await post(a, true, args);
+                  const r = await post(a, true, confirmArgs(sheet.args, a.id === DISCARD_ID && openProposal, withdrawToo));
                   // Another action running: nothing happened, keep the sheet.
                   // A refusal keeps it too, its sentence shown inside — the
                   // next move is to wait and press again, not to start over.
