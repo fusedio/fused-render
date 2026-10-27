@@ -7653,7 +7653,13 @@ Skills were `~/.claude/skills` plus enabled plugins, so a skill Copilot or Codex
 - **Decision.** `_spawn_env` skips the prefix and `FUSED_CLAUDE_CMD_LOG` when `_platform.IS_WINDOWS` (no drawer "Claude" command-log tab there). Lean sessions are opt-in: `_strict_mcp_pref()` and `prefs.claude_strict_mcp_enabled()` return True only for a stored `true`; the Preferences toggle reads `=== true`. The user's own MCP servers and connectors load by default.
 - **Unchanged.** Explicit `strict_mcp=True` callers (scheduled runs, canvas agents, App Doctor) stay lean regardless of the pref; enabled plugins' MCP servers are kept either way.
 
-## D1445: A new canvas gets its starter UDF on the server at create time (2026-10-27, new-canvas-default-udf)
+## D1445: The Linux window host disables WebKitGTK's DMABUF renderer (2026-10-26, webkit-dmabuf)
+
+- **Context.** In the Linux native window every page navigation flickered. Side-by-side windows of the same code on system WebKitGTK 2.54.1: with `WEBKIT_DISABLE_DMABUF_RENDERER=1` no flicker; with no variable, flicker; with `WEBKIT_DISABLE_COMPOSITING_MODE=1`, still flicker. The DMABUF renderer is the cause.
+- **Decision.** `window_host.configure_webkit_env()` does `os.environ.setdefault("WEBKIT_DISABLE_DMABUF_RENDERER", "1")`, called first in `load_toolkit`, before `gi` or WebKit2 is imported. The host is the only WebKit entry point and the supervisor passes it no env dict, so WebKit's web and network processes inherit the value. `setdefault` lets a user's own value (for example `0`) win.
+- **Cost.** With DMABUF off WebKit uses the shared-memory rendering path, which costs slightly more CPU on large repaints.
+
+## D1446: A new canvas gets its starter UDF on the server at create time (2026-10-27, new-canvas-default-udf)
 
 - **Context.** `fused workbench canvas create` makes an empty collection. The embedded workbench seeds a default `udf` into an empty canvas client-side only (unsaved, waiting on autosave); the host's full disk state on `fused-embed-hello` names no UDF and removes it, so a new canvas showed the starter for a moment and then came up empty.
 - **Decision.** `/api/canvases/create` follows the CLI create with `_seed_default_udf`: pull into a temp folder, write `udf.py` (the workbench's `default_udf.py` text) plus its synthesized row (`canvas_snapshot.persist_synthesized`), push with `--canvas <name>`. The clone that follows pulls a canvas that already holds it. Seeding in the clone instead was rejected: a fresh watcher adopts seconds-old files as its clean baseline and would never push them.

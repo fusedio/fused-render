@@ -1888,7 +1888,10 @@ def api_canvases_create(body: dict = Body(...), x_fused: str | None = Header(def
     if err is not None:
         return err
     _cli_cache_clear()
-    _seed_default_udf(env, name)
+    try:
+        _seed_default_udf(env, name)
+    except Exception as e:  # noqa: BLE001 — best effort, see _seed_default_udf
+        logger.warning("canvas %s: starter UDF not seeded — %s", _sync_key(env, name), e)
     return {"ok": True, "name": name}
 
 
@@ -1929,7 +1932,8 @@ def _seed_default_udf(env: str, name: str) -> None:
             ["workbench", "canvas", "pull", name, "-o", target, "--force"], SEED_TIMEOUT, env
         )
         if err is not None:
-            logger.warning("canvas %s: starter UDF not seeded — pull failed", key)
+            logger.warning("canvas %s: starter UDF not seeded — pull failed: %s",
+                           key, err.body.decode("utf-8", "replace"))
             return
         try:
             doc = canvas_snapshot._load_toml(os.path.join(target, "canvas.toml"))
@@ -1949,7 +1953,8 @@ def _seed_default_udf(env: str, name: str) -> None:
             ["workbench", "canvas", "push", target, "--canvas", name], SEED_TIMEOUT, env
         )
         if err is not None:
-            logger.warning("canvas %s: starter UDF not seeded — push failed", key)
+            logger.warning("canvas %s: starter UDF not seeded — push failed: %s",
+                           key, err.body.decode("utf-8", "replace"))
 
 
 @router.post("/api/canvases/logout")
