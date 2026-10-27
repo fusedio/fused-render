@@ -661,6 +661,13 @@ def test_a_blocked_marketplace_copy_answers_with_every_switch_off(env, monkeypat
     assert env.client.get("/api/contrib/app", params={"path": plain}).json()["reason"] \
         == "disabled"
     assert _act(env, plain, "check")["reason"] == "disabled"
+    # Before enforcement wrote a block, the open gate already refuses from
+    # the list: the panel answers then too.
+    real_gate = blocks.gate
+    monkeypatch.setattr(blocks, "gate", lambda root: {"blocked": {"level": "soft"}}
+                        if store.key(root) == store.key(plain) else real_gate(root))
+    assert env.client.get("/api/contrib/app", params={"path": plain}).json()["ok"] is True
+    assert _act(env, plain, "confirm-block")["ok"] is True
 
 
 def test_unrecorded_app_reads_a_pending_panel(env):

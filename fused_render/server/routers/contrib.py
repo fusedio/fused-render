@@ -205,13 +205,16 @@ def _market_ui_for(app_dir: str) -> bool:
     the loop on (`flags.marketplace_ui`, §18.8) — and for a BLOCKED copy
     whatever the switches say: the block list is enforced with every switch
     off, so its way through (a soft block's confirm-block, contract 1; a
-    hard block's fix) answers too (`actions.facts` agrees). Every other
-    kind keeps the loop's own gate. A store read, no classification."""
+    hard block's fix) answers too (`actions.facts` agrees). Blocked = a
+    block on the record, or the open gate refusing before enforcement wrote
+    one (`blocks.gate`: a record read and the list's stat). Every other
+    kind keeps the loop's own gate. No classification."""
     try:
         rec = _mod("store").get(app_dir)
         if not isinstance(rec, dict) or rec.get("kind") != "marketplace":
             return False
-        return bool(_mod("flags").marketplace_ui()) or isinstance(rec.get("block"), dict)
+        return (bool(_mod("flags").marketplace_ui()) or isinstance(rec.get("block"), dict)
+                or _mod("blocks").gate(app_dir) is not None)
     except Exception:  # noqa: BLE001 — unknown reads as the loop's gate
         return False
 

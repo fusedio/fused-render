@@ -150,10 +150,12 @@ def facts(app_dir: str, *, copy=_UNSET, proposal=_UNSET, github=_UNSET) -> dict:
     out.update(kind=kind, repo=record.get("repo"), remix_of=_remix_of(record),
                owner_checked=record.get("owner_checked", True) is not False,
                original_update=bool(record.get("original_update")))
-    if kind == "marketplace" and isinstance(record.get("block"), dict):
+    if kind == "marketplace" and (isinstance(record.get("block"), dict)
+                                  or _call("block gate", "blocks", "gate", app_dir)):
         # The block list is enforced whatever the switches say (§18.8), so a
         # blocked copy's panel — its way through — shows whatever they say
-        # too (the router's `_market_ui_for` agrees).
+        # too, also before enforcement wrote the block (the gate already
+        # refuses then). The router's `_market_ui_for` agrees.
         out["market_ui"] = True
     if kind not in ("github", "own", "marketplace"):
         return out

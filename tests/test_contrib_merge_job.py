@@ -386,9 +386,12 @@ def test_one_job_per_app_and_discard(overlap):
     assert merge_job.for_app(bob)["id"] == first
     assert merge_job.discard(first)["ok"]
     gate.append(1)
-    deadline = time.time() + 10
+    # The job's thread removes its worktree once it sees the discard. Under
+    # a parallel CI load that took past 10 s; the bound only stops a hang,
+    # it is not what the test measures.
+    deadline = time.time() + 90
     while worktrees(bob) != [f"worktree {os.path.realpath(bob)}"] and time.time() < deadline:
-        time.sleep(0.05)
+        time.sleep(0.1)
     assert worktrees(bob) == [f"worktree {os.path.realpath(bob)}"]
     assert git(bob, "rev-parse", "HEAD") == ours
 

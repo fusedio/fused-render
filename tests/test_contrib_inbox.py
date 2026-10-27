@@ -1014,3 +1014,35 @@ def test_a_zip_named_like_a_picture_needs_a_look(world):
     hits = {(h["rule"], h["file"]) for h in review["static_hits"]}
     assert hits == {("unreadable", "icon.png")}
     assert review["verdict"] == "look"
+
+
+def _png() -> bytes:
+    """A real 1x1 PNG, built byte for byte (no imaging library)."""
+    import struct
+    import zlib
+
+    def chunk(kind, data):
+        return (struct.pack(">I", len(data)) + kind + data
+                + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(b"\x00\xff\x00\x00\xff")) + chunk(b"IEND", b""))
+
+
+def test_a_real_picture_passes_and_one_carrying_a_zip_does_not(world):
+    """Through the real review download and diff: the blob's own bytes reach
+    the rules (`_not_text` evidence), so an ordinary PNG raises nothing and
+    the same PNG with a zip appended — `zipimport` loads it — is a hard hit."""
+    alice, fake = world["alice"], world["fake"]
+    png = _png()
+    zipped = png + ZIP.encode("ascii")
+    pr = propose(fake, {"preview.png": png, "icon.png": zipped})
+    review = jobs.wait(inbox.review(alice, pr["number"]))["result"]
+    hits = {(h["rule"], h["file"]) for h in review["static_hits"]}
+    assert hits == {("unreadable", "icon.png")}
+
+
+def test_a_proposal_adding_only_a_real_picture_is_fine(world):
+    alice, fake = world["alice"], world["fake"]
+    pr = propose(fake, {"shot.png": _png()}, title="Only a picture")
+    review = jobs.wait(inbox.review(alice, pr["number"]))["result"]
+    assert review["static_hits"] == [] and review["verdict"] == "fine"
