@@ -30,12 +30,15 @@ afterEach(() => {
 const DIR = "/Users/me/Fused/local/Weather Board";
 
 /** Route-keyed fetch stub (ShareFileModal.test.tsx's): a URL path → JSON
- *  body; anything unlisted is a loud 404. Records every path asked. */
-function stubFetch(routes: Record<string, unknown>) {
+ *  body; anything unlisted is a loud 404. Records every path asked. A route
+ *  given as `{ status, body }` under `refuse` answers with that status. */
+function stubFetch(routes: Record<string, unknown>, refuse: Record<string, { status: number; body: unknown }> = {}) {
   const asked: string[] = [];
   globalThis.fetch = (async (url: string) => {
     const path = url.split("?")[0]!;
     asked.push(path);
+    const refused = refuse[path];
+    if (refused) return new Response(JSON.stringify(refused.body), { status: refused.status });
     const body = routes[path];
     if (body === undefined) return new Response(JSON.stringify({ error: "unmocked" }), { status: 404 });
     return new Response(JSON.stringify(body), { status: 200 });
@@ -161,6 +164,38 @@ test("rung 1 without the CLI: the CLI row offers Install, Sign in waits on it, t
   expect(buttonLabelled(r, "Sign in")!.props.disabled).toBeTruthy();
   expect(buttonLabelled(r, "Put it on GitHub")!.props.disabled).toBeTruthy();
   expect(textOf(r.root)).toContain("github.com/you/");
+  await act(async () => r.unmount());
+});
+
+async function pressPublish(r: ReactTestRenderer) {
+  await act(async () => {
+    buttonLabelled(r, "Put it on GitHub")!.props.onClick();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+test("Put it on GitHub refused for Doctor's checks: the server's sentence, and Open App Doctor", async () => {
+  const said =
+    "App Doctor found 2 things to fix before this can be public. Open App Doctor to fix them, or make the repository private.";
+  stubFetch(GITHUB_ROUTES, {
+    "/api/contrib/publish-github": { status: 409, body: { ok: false, error: said, message: said, reason: "doctor" } },
+  });
+  const r = await mount(ladder({ rung: 1 }));
+  await pressPublish(r);
+  expect(textOf(r.root)).toContain(said);
+  expect(buttonLabelled(r, "Open App Doctor")).toBeDefined();
+  await act(async () => r.unmount());
+});
+
+test("any other refusal says its sentence with no Doctor button", async () => {
+  const said = "This folder already has a remote.";
+  stubFetch(GITHUB_ROUTES, {
+    "/api/contrib/publish-github": { status: 409, body: { ok: false, error: said, message: said, reason: "refused" } },
+  });
+  const r = await mount(ladder({ rung: 1 }));
+  await pressPublish(r);
+  expect(textOf(r.root)).toContain(said);
+  expect(buttonLabelled(r, "Open App Doctor")).toBeUndefined();
   await act(async () => r.unmount());
 });
 

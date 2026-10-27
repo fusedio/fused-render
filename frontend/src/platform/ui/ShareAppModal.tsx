@@ -135,6 +135,7 @@ import {
 } from "@platform/lib/share-app";
 import { useContribFlags } from "@platform/lib/contrib-flags";
 import { useAppSharingFeature } from "@platform/lib/share-app-flag";
+import { AppDoctorModal } from "@platform/ui/AppDoctorModal";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -370,6 +371,9 @@ function listingLine(ladder: LadderAnswer): { text: string; detail: string | nul
   }
 }
 
+/** Put it on GitHub's refusal while App Doctor has sharing checks left. */
+const DOCTOR_REASON = "doctor";
+
 export function GithubLadderCard({
   dir,
   ladder,
@@ -413,6 +417,12 @@ export function GithubLadderCard({
   const [publish, setPublish] = useState<SetupRecord | null>(null);
   const [step, setStep] = useState<LadderStep>(null);
   const [err, setErr] = useState("");
+  // Put it on GitHub refused because App Doctor has sharing checks left
+  // (409 reason "doctor"; a public repo needs them clear): the error line
+  // then offers App Doctor itself, opened over the sheet — for as long as
+  // that refusal is the line on screen (any later error replaces it).
+  const [doctorErr, setDoctorErr] = useState<string | null>(null);
+  const [doctorOpen, setDoctorOpen] = useState(false);
   const [name, setName] = useState(() => slugRepoName(folderName(dir)));
   const [visibility, setVisibility] = useState<"public" | "private">("public");
   const [pushAction, setPushAction] = useState<ContribAction | null>(null);
@@ -613,7 +623,10 @@ export function GithubLadderCard({
       await settlePublish();
     } catch (e) {
       // A refusal (409): the server's sentence as-is.
-      if (!goneRef.current) setErr((e as Error).message);
+      if (goneRef.current) return;
+      const said = (e as Error).message;
+      setErr(said);
+      setDoctorErr((e as { body?: { reason?: unknown } }).body?.reason === DOCTOR_REASON ? said : null);
     } finally {
       if (!goneRef.current) setStep(null);
     }
@@ -674,9 +687,30 @@ export function GithubLadderCard({
   };
 
   const errLine = err ? (
-    <p className="m-0 text-[13px] leading-5 text-destructive" role="alert">
-      {err}
-    </p>
+    <>
+      <p className="m-0 text-[13px] leading-5 text-destructive" role="alert">
+        {err}
+      </p>
+      {doctorErr !== null && err === doctorErr && (
+        <div>
+          <Button size="sm" variant="outline" onClick={() => setDoctorOpen(true)}>
+            Open App Doctor
+          </Button>
+        </div>
+      )}
+      {/* Nested inside the sheet's own Dialog through this card (see the
+          note on the revoke alert below): a sibling would read its clicks
+          as outside presses on the sheet. */}
+      {doctorOpen && (
+        <AppDoctorModal
+          dir={dir}
+          onClose={() => {
+            setDoctorOpen(false);
+            void reload();
+          }}
+        />
+      )}
+    </>
   ) : null;
 
   // ---- rung 1: on this Mac --------------------------------------------------

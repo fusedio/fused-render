@@ -3455,6 +3455,10 @@
           attempt().then((next) => handle(next, installed))
         );
       }
+      // The open gate's 423 (a blocked Community copy): no `ok`, no `error`,
+      // just the block — said as its sentence, the same over the socket and
+      // the POST (the socket strips `status`, so the body is the signal).
+      if (data.blocked && data.ok === undefined) throw blockedError(data.blocked);
       if (!data.ok) {
         const err = new Error(data.error && data.error.message);
         err.type = data.error && data.error.type;
@@ -3587,6 +3591,29 @@
     ));
   }
 
+  // The open gate's refusal (docs/CONTRIB_LOOP.md §18.4 B4): a Community copy
+  // Fused blocked — hard, or soft and not said yes to yet — answers 423
+  // `{blocked: {level, reason, what_to_do, …}}` on every run door (`/api/run`,
+  // its socket, the background start/restart). The page gets one Error whose
+  // message is the plain sentence, never a bare "undefined" or an HTTP code:
+  // `type: "blocked"`, `status: 423`, and the facts on `.blocked`.
+  function blockedError(blocked) {
+    const b = blocked && typeof blocked === "object" ? blocked : {};
+    const reason = typeof b.reason === "string" ? b.reason.trim() : "";
+    const todo = typeof b.what_to_do === "string" ? b.what_to_do.trim() : "";
+    const head = b.level === "soft"
+      ? "This app waits for your OK before it runs"
+      : "This app is blocked by Fused";
+    let message = reason ? head + ": " + reason : head + ".";
+    if (todo) message += " " + todo;
+    if (b.level === "soft") message += " Open its app page and choose Open anyway to use it.";
+    const err = new Error(message);
+    err.type = "blocked";
+    err.status = 423;
+    err.blocked = b;
+    return err;
+  }
+
   function _daemonPost(path, marksRunning, extraBody) {
     return fetch(path, {
       method: "POST",
@@ -3600,6 +3627,7 @@
           // only note the engine_id (still useful for status()), never
           // marksRunning.
           _noteDaemonPayload(data, undefined);
+          if (res.status === 423 && data && data.blocked) throw blockedError(data.blocked);
           const err = new Error((data && data.error) || `${path} failed`);
           throw err;
         }
