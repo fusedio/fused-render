@@ -220,8 +220,8 @@ describe("search", () => {
   });
 
   test("every word must match", () => {
-    // "sync" also matches the page name (Sharing & sync), so the page's child row follows.
-    expect(searchSettings(all, "git sync").map((h) => h.id)).toEqual(["git-sync", "github-link"]);
+    // "sync" also matches the page name (Sharing & sync); "git" matches Community apps (its GitHub install link).
+    expect(searchSettings(all, "git sync").map((h) => h.id)).toEqual(["git-sync", "contrib"]);
     expect(searchSettings(all, "git nonsenseword")).toEqual([]);
   });
 

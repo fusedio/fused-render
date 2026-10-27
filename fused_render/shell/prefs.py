@@ -31,9 +31,10 @@ and /monitor page — is offered; opt-in, default off; see ``monitor_enabled``),
 **marketplace_enabled** (whether the Marketplace — sidebar row and the
 /marketplace pages — is offered; opt-in, default off; see
 ``marketplace_enabled``),
-**github_link_enabled** (whether the Share sheet offers a GitHub install link
-for an app whose folder is its own pushed GitHub repo — opt-in, default off;
-see ``github_link_enabled``),
+**github_link_enabled** (legacy: the Share sheet's GitHub install link used
+to have its own switch; since 2026-10-27 the link is part of Community apps
+(``contrib_enabled``) and this key has no Preferences row — a stored ``true``
+still counts; see ``github_link_enabled``),
 **contrib_enabled** (the GitHub contribution loop — sources, your changes,
 the proposals inbox, merged proposals — one switch, opt-in, default off) and
 **contrib_remix_enabled** (remix, needs the loop on; see ``CONTRIB_PREF_KEYS``

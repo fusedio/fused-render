@@ -126,7 +126,10 @@ def _flags() -> dict:
     try:
         from fused_render.shell import prefs
 
-        link = bool(prefs.github_link_enabled())
+        # Owner 2026-10-27: one switch for Community/GitHub sharing — the
+        # install link is part of it (the old github_link_enabled pref still
+        # counts, for a stored value, but has no row of its own any more).
+        link = bool(prefs.github_link_enabled() or prefs.contrib_enabled())
     except Exception:  # noqa: BLE001 — an unreadable pref reads as off
         link = False
     return {"sources": bool(flags.sources()), "marketplace": bool(listing._enabled()),

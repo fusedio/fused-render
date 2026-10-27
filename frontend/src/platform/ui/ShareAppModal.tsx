@@ -135,6 +135,7 @@ import {
 } from "@platform/lib/share-app";
 import { useGithubLinkFeature } from "@platform/lib/github-link-flag";
 import { useContribFlags } from "@platform/lib/contrib-flags";
+import { useAppSharingFeature } from "@platform/lib/share-app-flag";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -962,8 +963,11 @@ export function ShareAppModal({
   const contribFlags = useContribFlags();
   const githubFirst = contribFlags?.sources === true;
   const flagsKnown = contribFlags !== null;
-  const fusedLinkShown = true;
-  const fusedLinkReads = flagsKnown;
+  // Owner 2026-10-27: three switches — Public link (this card), Community
+  // apps (the GitHub card), Remix; the sheet opens when any is on.
+  const publicLinkOn = useAppSharingFeature();
+  const fusedLinkShown = publicLinkOn;
+  const fusedLinkReads = flagsKnown && publicLinkOn;
   const githubEnabled = useGithubLinkFeature() || githubFirst;
   const [github, setGithub] = useState<GithubLinkState | null>(null);
   const [githubErr, setGithubErr] = useState("");

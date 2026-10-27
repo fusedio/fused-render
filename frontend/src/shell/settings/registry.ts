@@ -368,25 +368,19 @@ const ENTRIES = [
     keywords: "git push pull commit fast-forward sync github remote auto",
     renderOnly: true,
   },
+  // Owner 2026-10-27: three switches decide what Share offers — Public link
+  // (this row), Community apps (the GitHub card + install link) and Remix.
+  // The Share button itself is there when any of them is on
+  // (share-app-flag.ts `useAppShareOffered`); .fused file export always.
   {
     id: "share-sheet",
     needs: "fused",
     group: "apps",
     section: "Sharing",
-    label: "Share sheet",
-    description: "Replace Export with one Share button: a public link on your Fused account, or a .fused file.",
-    keywords: "share export link publish .fused file public download",
+    label: "Public link",
+    description: "Share an app as a public link on your Fused account. The Share button offers it next to the .fused file.",
+    keywords: "share export link publish .fused file public download canvas account",
     renderOnly: true,
-  },
-  {
-    id: "github-link",
-    group: "apps",
-    section: "Sharing",
-    label: "Offer a GitHub install link",
-    description: "For an app whose folder is its own GitHub repository, once everything is pushed.",
-    keywords: "github udf.ai repo install link share",
-    renderOnly: true,
-    child: true,
   },
   {
     id: "live-previews",
@@ -405,7 +399,7 @@ const ENTRIES = [
     section: "Community (preview)",
     label: "Community apps",
     description:
-      "Cards say whether an app is yours or follows someone else's, and Share offers its install link. Your edits to someone else's app stay on top of theirs and you can propose them to the author; proposals to your apps show up on the app with a safety review to try, accept or decline. Once accepted, your copy goes back to following theirs and you're credited.",
+      "Cards say whether an app is yours or follows someone else's, and Share offers its GitHub install link. Your edits to someone else's app stay on top of theirs and you can propose them to the author; proposals to your apps show up on the app with a safety review to try, accept or decline. Once accepted, your copy goes back to following theirs and you're credited.",
     keywords:
       "community contribute follow author source origin propose proposals proposal edits pull request inbox review accept decline merged accepted credit contributors",
     renderOnly: true,
