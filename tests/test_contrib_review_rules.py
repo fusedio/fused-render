@@ -203,3 +203,24 @@ def test_proposal_entries_carry_the_evidence():
     assert good == []
     bad = rules.static_hits(diff="", files=[{**entry, **rules.sniff(PNG + ZIP)}])
     assert [(h["rule"], h["file"]) for h in bad] == [("unreadable", "icon.png")]
+
+
+def test_a_decoder_call_is_a_look_not_a_fail():
+    # jszip.min.js calls String.fromCharCode on one 97 KB line; the hard
+    # "hidden-code" rule used to fail the whole listing on that word alone
+    # (index PR #8, 2026-10-27). The decoders are a soft rule now; a real
+    # encoded blob is still hard.
+    from fused_render.contrib import review_rules as R
+
+    diff = (
+        "diff --git a/jszip.min.js b/jszip.min.js\n"
+        "new file mode 100644\n--- /dev/null\n+++ b/jszip.min.js\n@@ -0,0 +1 @@\n"
+        "+var t=String.fromCharCode(65),u=atob(x);\n"
+    )
+    hits = R.static_hits(diff)
+    kinds = {(h["rule"], h["soft"]) for h in hits}
+    assert ("decodes", True) in kinds
+    assert not any(h["rule"] == "hidden-code" for h in hits)
+    blob = "A" * 240
+    diff2 = diff.replace("+var t=String.fromCharCode(65),u=atob(x);", f"+var p=\"{blob}\";")
+    assert any(h["rule"] == "hidden-code" and not h["soft"] for h in R.static_hits(diff2))

@@ -212,13 +212,19 @@ _HARD_LINE_RULES = [
                 r"\b(?:execSync|execFile\w*|spawnSync)\s*\(|\bBun\s*\.\s*spawn|"
                 r"\bDeno\s*\.\s*(?:run|Command)\b|"
                 r"child_process|importlib|\bctypes\b|\bpickle\.loads?|marshal\.loads)")),
+    # The decoders themselves (`atob`, `b64decode`, `fromCharCode`) are NOT
+    # here: every zip, image and text library calls them, so as a hard rule
+    # they failed vendored code outright (jszip.min.js, index PR #8). They
+    # are the soft "decodes" rule below — a look, never a fail on their own.
     ("hidden-code", "Contains a long block of scrambled or encoded text",
      re.compile(r"(?:[A-Za-z0-9+/]{200,}={0,2}|(?:[0-9a-fA-F]{2}){100,}|"
                 r"(?:\\x[0-9a-fA-F]{2}){40,}|(?:\\u[0-9a-fA-F]{4}){40,}|"
-                r"(?:%[0-9a-fA-F]{2}){60,}|\b(?:atob|b64decode|fromCharCode)\b)")),
+                r"(?:%[0-9a-fA-F]{2}){60,})")),
     ("ai-text", _AI_TEXT, _HARD_AI),
 ]
 _SOFT_LINE_RULES = [
+    ("decodes", "Decodes encoded text (atob, b64decode, fromCharCode)",
+     re.compile(r"\b(?:atob|b64decode|fromCharCode)\b")),
     ("secrets", "Mentions passwords, tokens, keys, cookies or other secrets",
      re.compile(r"(?:os\.environ|getenv|process\.env|\btokens?\b|password|passwd|"
                 r"secret|api[_-]?key|credential|\bcookies?\b|localStorage)", re.I)),
