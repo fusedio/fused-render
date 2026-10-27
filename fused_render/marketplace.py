@@ -147,6 +147,8 @@ from urllib.parse import quote, unquote, urlencode
 
 import httpx
 
+from fused_render import backend_canvas
+
 logger = logging.getLogger(__name__)
 
 #: The backend's base URL: the `fused_app_marketplace` canvas (§18.3),
@@ -154,7 +156,7 @@ logger = logging.getLogger(__name__)
 #: prod with the index repo later). FUSED_RENDER_MARKETPLACE_API overrides
 #: it, read per call. Rows without a `repo` (an older backend) browse but do
 #: not install (`plan_install` refuses with a sentence).
-API_BASE = "https://unstable.udf.ai/fc_5OHf9uj6AGOKqLRH25kkFU"
+API_BASE = backend_canvas.API_BASE  # the one backend canvas (backend_canvas.py)
 #: The Fused index repo the backend reads (§18.1 "Index"); the catalog
 #: footer links it. One of the only two places that know the name (the
 #: backend canvas holds the other); FUSED_RENDER_MARKETPLACE_INDEX overrides.
@@ -239,8 +241,8 @@ def install_root() -> str:
 
 def api_base() -> str:
     """The API's base URL (no trailing slash); `FUSED_RENDER_MARKETPLACE_API`
-    overrides the constant, read per call."""
-    return (os.environ.get("FUSED_RENDER_MARKETPLACE_API") or API_BASE).strip().rstrip("/")
+    overrides the constant, read per call (backend_canvas.api_base)."""
+    return backend_canvas.api_base()
 
 
 def index_repo() -> str:

@@ -22,6 +22,7 @@
 // jobs + install plumbing.
 import { useEffect, useRef, useState } from "react";
 import { getJson, postJson } from "@platform/lib/api";
+import { BACKEND_CANVAS_BASE, listingPageUrl } from "@platform/lib/backend-canvas";
 import { notify } from "@platform/lib/notifications";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { encodeFsPathSegments, navigateUrl, urlForFsPath, viewUrlForFsPath } from "@platform/lib/router";
@@ -429,16 +430,13 @@ export function appDetailHref(slug: string): string {
   return `/marketplace/app/${encodeURIComponent(slug)}`;
 }
 
-/** The Marketplace backend's base (the `fused_app_marketplace` canvas,
- *  §18.3) — mirrors fused_render/marketplace.py `API_BASE`, which the
- *  server reads per call (FUSED_RENDER_MARKETPLACE_API overrides it there,
- *  not here). Only the public listing page link is built from it. */
-export const MARKETPLACE_API_BASE = "https://unstable.udf.ai/fc_5OHf9uj6AGOKqLRH25kkFU";
+/** The Marketplace backend's base: the one backend canvas (backend-canvas.ts
+ *  mirrors fused_render/backend_canvas.py; FUSED_RENDER_MARKETPLACE_API
+ *  overrides it on the server, not here). */
+export const MARKETPLACE_API_BASE = BACKEND_CANVAS_BASE;
 
 /** A listed app's public listing page (its README, releases, reviews). */
-export function listingPageUrl(slug: string): string {
-  return `${MARKETPLACE_API_BASE}/fused_app_listing?slug=${encodeURIComponent(slug)}`;
-}
+export { listingPageUrl };
 
 // -- Catalog store -----------------------------------------------------------
 

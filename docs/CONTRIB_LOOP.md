@@ -1379,7 +1379,17 @@ Secrets the owner sets: `ANTHROPIC_API_KEY`. `GITHUB_TOKEN` is the default.
 
 ### 18.3 The backend (WS-CANVAS)
 
-Canvas `~/Fused/canvas/unstable/fused_app_marketplace`. UDFs (each
+Canvas `~/Fused/canvas/unstable/fused_app_marketplace` — THE one hosted
+canvas fused-render's backend lives on (owner 2026-10-27: "only have 1
+canvas for all the backend required in fused-render"; unstable for now).
+`fused_render/backend_canvas.py` declares the host + share token and builds
+every URL (`api_base`, `udf_url`, `github_link_url`, `listing_page_url`);
+`frontend/src/platform/lib/backend-canvas.ts` mirrors the two constants for
+the links the page builds. The GitHub install page (`fused_app_github`) was
+a canvas of its own on prod; it is served from this canvas now. The canvases
+the user's own Fused account creates for public sharing (share_app.py, one
+per app under the user's login) are the user's, not the backend's, and stay
+separate. UDFs (each
 `fused.udf(cache_max_age="0s")`, answer `format=json` as a list of rows,
 error = one row `{error_code, error_message}` — today's API shape, so
 `marketplace._udf_get` is unchanged):
