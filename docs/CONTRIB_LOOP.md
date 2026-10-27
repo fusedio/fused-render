@@ -1388,8 +1388,9 @@ opened/synchronize/reopened, plus `issue_comment` created, plus
 anything from the PR or from the app repo (both are data). Steps, each a
 hard fail with a one-line plain reason posted on the PR:
 1. **Files.** The PR touches only `apps/<slug>.json` files (add, modify or
-   delete). At most one slug per PR. Anything else is a maintainer change:
-   from a non-maintainer it fails here; from an index admin/maintainer a
+   delete). At most one slug per PR. Anything else is a maintainer change
+   (a maintainer = anyone with write access to the index; owner 2026-10-27,
+   "simplify it"): from anyone else it fails here; from a maintainer a
    changed `blocklist.json` must pass its schema (fails at step 3), a row the
    PR also changes runs steps 2–7 like an author's (one row per PR; a
    maintainer may delist any row, a delist merges no code), and the rest
@@ -1457,9 +1458,12 @@ hard fail with a one-line plain reason posted on the PR:
    `needs-confirmation`, failure on `fail` or any crash. NOTHING MERGES
    ON ITS OWN (owner, 2026-10-26; D15's auto-merge is withdrawn): a Fused
    maintainer merges every pull request by hand once the `review` status is
-   green. Branch ruleset: PR required, required check `review`, admins
-   included, squash only, no bypass actors (step 9 writes the `reviews`
-   branch, which the ruleset does not cover).
+   green — or over a red one: the owner's call (2026-10-27) is that a
+   maintainer can always force a merge. Branch ruleset: PR required,
+   required check `review`, squash only; bypass actors Admin and Maintain
+   always (merge over a red check, push main directly) and Write for pull
+   requests (merge over a red check, never a direct push). Step 9 writes the
+   `reviews` branch, which the ruleset does not cover.
 9. **After merge.** A merge is a maintainer's click, which fires nothing the
    bot can rely on across every merge path (events caused by `GITHUB_TOKEN`
    start no workflow), so a `schedule` job (every 10 min) + `workflow_dispatch` scans merged PRs
