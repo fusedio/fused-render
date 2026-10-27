@@ -55,6 +55,31 @@ SUBPROCESS_KWARGS = {
     "errors": "replace",
 }
 
+# Run a login-shell probe with NO controlling terminal. An interactive shell
+# (-i) opens /dev/tty even with stdin=DEVNULL, enables job control and
+# tcsetpgrp()s itself foreground; probes running in parallel threads restore the
+# foreground group out of order, leaving the terminal owned by a dead group
+# (the server gets SIGTTOU, the launching shell "error on TTY read"). A child in
+# its own session has no controlling terminal, so none of that can happen.
+# The setsid is done by a python wrapper rather than start_new_session= /
+# preexec_fn= / cwd=, any of which forces fork()+exec and a fork with libproj
+# resident dies SIGSEGV (same pattern as claude_agent/headsup._spawn_argv).
+_SETSID_EXEC = "import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])"
+
+
+def detached_argv(argv: list) -> list:
+    """`argv`, prefixed so the child runs in its own session (no controlling tty).
+
+    After the wrapper's execvp the target IS the direct child, so
+    `subprocess.run(timeout=)` still kills the right process. Windows has no
+    setsid, and a non-absolute `sys.executable` cannot be trusted to spawn
+    (`-B -I`: the bundled app's python must never write .pyc), so both return
+    `argv` unchanged."""
+    if os.name == "nt" or not os.path.isabs(sys.executable or ""):
+        return list(argv)
+    return [sys.executable, "-B", "-I", "-c", _SETSID_EXEC, *argv]
+
+
 # An explicit override beats every probe below. It is what both the `notfound` error text and the
 # troubleshooting guide tell users to set — so it has to be honoured by
 # everything that resolves the CLI, not merely by most things.
@@ -270,7 +295,7 @@ def _shell_probe() -> Optional[str]:
     for flags in (["-lic"], ["-l", "-c"], ["-ic"]):
         try:
             out = subprocess.run(
-                [shell, *flags, "command -v claude"],
+                detached_argv([shell, *flags, "command -v claude"]),
                 capture_output=True, timeout=_SHELL_TIMEOUT_S, env=env,
                 **SUBPROCESS_KWARGS,
             ).stdout

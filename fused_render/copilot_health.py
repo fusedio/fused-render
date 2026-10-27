@@ -60,6 +60,7 @@ from fused_render import github_setup
 from fused_render import claude_health
 from fused_render.claude_health import (
     SUBPROCESS_KWARGS,
+    detached_argv,
     _too_old,
     executable,
     parse_version,
@@ -186,7 +187,7 @@ def _shell_probe() -> Optional[str]:
     for flags in (["-lic"], ["-l", "-c"], ["-ic"]):
         try:
             out = subprocess.run(
-                [shell, *flags, "command -v copilot"],
+                detached_argv([shell, *flags, "command -v copilot"]),
                 capture_output=True, timeout=_SHELL_TIMEOUT_S, env=env,
                 **SUBPROCESS_KWARGS,
             ).stdout
