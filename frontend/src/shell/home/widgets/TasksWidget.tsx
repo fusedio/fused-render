@@ -69,7 +69,9 @@ export function emptyMessage({ drafts, archived }: Pick<HomeTasks, "drafts" | "a
 }
 
 /** List order: open tasks first, then done ones; each group keeps its incoming
-    (newest-first) order. */
+    order — the Tasks page's own (`splitHomeTasks` → tasks-lib.sortForList),
+    which already puts the done lane last, so this partition only moves a row
+    whose lane and `settled` disagree. */
 export function listOrder<T extends Row>(tasks: T[]): T[] {
   return [...tasks.filter((t) => !settled(t)), ...tasks.filter((t) => settled(t))];
 }

@@ -1654,9 +1654,14 @@ export default function CanvasWorkspace({
         }
         // Restore the node this page is on (a reload, or a frame that
         // reloaded): the workbench answers with a selection message, which is
-        // what keeps the two sides in step — see the handler below.
-        if (type === "fused-embed-auth-ready" && nodeRef.current) {
-          sendSelect(nodeRef.current.udfName);
+        // what keeps the two sides in step — see the handler below. Sent for
+        // NO node too: the page is the owner of what the right pane is about,
+        // and a frame left to its own default (UDF #0 on hydration) would
+        // announce that node and move the pane off the canvas chat — the
+        // Tasks door on a canvas-level task landed on the task's session and
+        // then lost it to the first node's file (Akshil, 2026-10-27).
+        if (type === "fused-embed-auth-ready") {
+          sendSelect(nodeRef.current?.udfName ?? null);
         }
       }
       if (type === "fused-embed-snapshot") {
