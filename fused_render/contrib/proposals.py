@@ -1,4 +1,4 @@
-"""Proposals (contract §8, v2 §16.5, v3 §17.5): Bob's changes to Alice's
+"""Proposals (contract v2 §16.5, v3 §17.5): Bob's changes to Alice's
 app, sent to her for review as a pull request from his own copy of the repo
 on GitHub, in his name — plus Update, Withdraw, the status refresh that
 follows the proposal on GitHub, and `settle_direct` for a collaborator
@@ -73,7 +73,7 @@ _COPY_KINDS = ("github", "marketplace")
 FOOTER = "\n\n---\nSent from Fused\n" + gh.PROPOSAL_MARKER
 
 #: Proposal status from GitHub is re-read at most this often per app,
-#: however many pages poll (contract §8: 60 s).
+#: however many pages poll.
 REFRESH_TTL_S = 60.0
 
 #: The proposal's head as this copy last saw it on GitHub: written by Send
@@ -345,7 +345,7 @@ def _prepare(root, record, ident: dict, *, include=(), commit: bool = True) -> s
     """Under the slot: commit the edits that go (`commit`: the tracked
     edits plus the ticked new files in `include`, as one "Your edits"
     commit in the copy's identity) on HEAD, and answer the HEAD to send.
-    Nothing is re-created (§17.7). A `github` copy sends only from
+    Nothing is re-created (§17.5). A `github` copy sends only from
     `fused/mine` (§17.1 I4): on any other branch ("a different version")
     it refuses. Send, Update and Remix publish all go through here."""
     gu = _gu()
@@ -669,7 +669,7 @@ def _no_tip(record) -> PlainError:
 
 def draft(app_dir) -> dict:
     """`{title, description}` for the Propose dialog, written by Claude from
-    the change and Bob's own requests (contract §8). Never fails for a model
+    the change and Bob's own requests (contract §9.1). Never fails for a model
     problem — `ai.draft_proposal` falls back to a plain line."""
     root, record = _contributor_record(app_dir)
     tip = tip_of(root, record)

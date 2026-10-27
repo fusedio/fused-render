@@ -495,7 +495,7 @@ def edits(root) -> list[tuple[str, str]]:
 
 def tracked_edits(root) -> list[str]:
     """Paths of uncommitted edits to TRACKED files (staged or not, a staged
-    new file included) — never an untracked file (§16.3 status, row 6)."""
+    new file included) — never an untracked file (§17.2)."""
     return [p for code, p in edits(root) if code != "??"]
 
 
@@ -649,7 +649,7 @@ def unbackup_locked(root, refs) -> None:
 #: Backups whose `why` keeps them forever (the pin of a commit that raced an
 #: update in: nothing names it, and it may be the only copy of that commit).
 KEEP_FOREVER = frozenset({"race"})
-#: An unreferenced backup older than this may be pruned (§16.3).
+#: An unreferenced backup older than this may be pruned.
 BACKUP_AGE_OUT_S = 30 * 24 * 3600
 
 
@@ -781,7 +781,7 @@ def merge_tree(root, ours, theirs, *, base=None) -> dict:
 
 
 def merge_into(root, *, head, onto, message, identity=None) -> dict:
-    """A merge commit with parents `head` and `onto` (§16.3 row 11), built
+    """A merge commit with parents `head` and `onto` (§17.3 bring in), built
     without touching the folder, as Bob (`identity_args`).
     `{"ok", "tip", "conflict", "files", "supported"}`."""
     mt = merge_tree(root, head, onto)
@@ -801,7 +801,7 @@ def merge_into(root, *, head, onto, message, identity=None) -> dict:
 
 def pick(root, *, onto, commits, identity=None) -> dict:
     """Re-apply exactly `commits` (oldest first) onto `onto` — A4's return
-    (§16.3 row 7) keeps only the edits made after sending. Each is the
+    keeps only the edits made after sending. Each is the
     three-way merge a cherry-pick does (its parent as the base), in memory
     or in scratch (`merge_tree`), never in the real folder; each keeps its
     author, date and message; one whose change is already there comes out

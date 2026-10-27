@@ -33,7 +33,7 @@ settles — a merged one on a remix never returns, so it settles at merged.
 IDENTITY AND THE SWITCH (§16.6, v3 §17). Everything published is Bob's:
 tracked edits are committed as him (`proposals._prepare`, the copy's
 install identity), and nothing is ever re-created — there is no credit
-rewrite (§17.7); commits keep their ids and authors. A `github` copy works
+rewrite (§17.5); commits keep their ids and authors. A `github` copy works
 on `fused/mine` with `<b>` (the record's branch) a mirror of the author's;
 the remix is pushed from HEAD to `<b>` of Bob's new repo, never to a branch
 named after the local checkout. The switch to `own` happens under the slot

@@ -1,5 +1,5 @@
 """A tiny in-memory registry for the contribution loop's long operations
-(contract §12.3): a proposal draft, a send, a review, an inbox accept. The
+(contract §16.9): a proposal draft, a send, a review, an inbox accept. The
 HTTP route starts one and answers `{ok, job}`; the page polls
 `GET /api/contrib/job?id=` until it is done or failed.
 

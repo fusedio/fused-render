@@ -105,7 +105,7 @@ _LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
 _BRANCH_RE = re.compile(r"^(?!-)(?!.*\.\.)(?!.*//)[A-Za-z0-9._/-]{1,200}(?<![./])$")
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
-#: The marker every proposal body sent from fused ends with (contract §8), so
+#: The marker every proposal body sent from fused ends with, so
 #: a proposal whose local record was lost can still be recognised on GitHub.
 PROPOSAL_MARKER = "<!-- fused:proposal v1 -->"
 #: The marker the author's "Ask <sender> to update" comment carries (§16.6),

@@ -550,7 +550,7 @@ def test_round2_new_files():
 
 
 def test_v2_ids_and_facts_are_gone():
-    """§17.7: Keep mine / Use theirs and the `return` purpose are deleted;
+    """§17: Keep mine / Use theirs and the `return` purpose are deleted;
     `taken_back` (kept False for one release) no longer changes a word or a
     button. (`kept_mine` is the v3 undo hold: a sentence, never a button.)"""
     assert not {"keep-mine", "use-theirs"} & set(actions.IDS)

@@ -1,4 +1,4 @@
-// The GitHub contribution loop's client half (docs/CONTRIB_LOOP.md §6.4,
+// The GitHub contribution loop's client half (docs/CONTRIB_LOOP.md §17.2,
 // §12): the shapes `/api/contrib/*` answers with, one wrapper per route, the
 // job poller, and `useAppContrib` — the app page's one subscription to a
 // folder's copy status.
@@ -14,7 +14,7 @@
 //
 // MERGE JOBS ARE NOT JOBS. `/propose/send`, `/remix/publish` and the inbox
 // accept are jobs.py jobs, polled at `/api/contrib/job` (`pollJob` below).
-// "Merge with Claude" is a merge_job (§6.3): `/merge/start` hands back its id
+// "Merge with Claude" is a merge_job (§17.4): `/merge/start` hands back its id
 // and its state is read from `copy.merge_job` on the next `/api/contrib/app`
 // answer — which is why `useAppContrib` polls fast while one runs.
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -26,7 +26,7 @@ import { useMarketplaceFeature } from "@platform/lib/marketplace-flag";
 
 export type { ContribFlags };
 
-// ---- shapes (§6.4, §9, §12) --------------------------------------------------
+// ---- shapes (§17.2, §9, §12) -------------------------------------------------
 
 export type ContribEventKind =
   | "updated"
@@ -428,7 +428,7 @@ export function getContribJob<R>(id: string, opts?: { signal?: AbortSignal }): P
   return getJson<ContribJob<R>>(`/api/contrib/job?id=${encodeURIComponent(id)}`, opts);
 }
 
-// ---- mutations (§12.3) -------------------------------------------------------
+// ---- mutations (§16.9) -------------------------------------------------------
 //
 // Each resolves with the server's answer, refusals included; a transport
 // failure resolves as `{ok:false}` with no message, so `plainMessage` gives the

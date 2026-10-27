@@ -413,7 +413,7 @@ def test_head_moved_before_start_fails_stale(overlap):
 
 
 def test_return_purpose_is_gone(overlap):
-    """§17.7: a merged proposal comes back by the engine's bring-in + settle;
+    """§17: a merged proposal comes back by the engine's bring-in + settle;
     there is no `return` merge any more."""
     bob, ours, theirs = overlap
     assert "return" not in merge_job.PURPOSES

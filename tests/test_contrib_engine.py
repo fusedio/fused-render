@@ -397,7 +397,7 @@ def _failures(w):
 
 
 def test_loop_off_still_brings_in_cleanly(w):
-    """§17.7: with the switch off the engine still ff's and brings in."""
+    """§17: with the switch off the engine still ff's and brings in."""
     _off()
     mine = claude_commit(w.app, {"tweak.txt": "mine\n"}, "tweak")
     for i in range(2):
@@ -410,7 +410,7 @@ def test_loop_off_still_brings_in_cleanly(w):
 
 
 def test_loop_off_stuck_states_are_todays_failure_rows(w):
-    """§17.7 (review P2 #16): with the loop off an edit in the way is still
+    """§17 (review P2 #16): with the loop off an edit in the way is still
     saved as "Your edits" on Bob's own branch and the update comes in; an
     overlap or a file in the way is git_upstream's failure row in plain
     words, tree untouched."""

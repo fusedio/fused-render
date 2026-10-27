@@ -20,7 +20,7 @@ their ids (§16.0 P4). Purposes:
 | `own-sync` | the author's HEAD    | the tip on GitHub      | land; the own path pushes     |
 | `original` | the remix's HEAD     | the original's tip     | land; the own path pushes     |
 
-v2's `return` purpose is gone (§17.7): a merged proposal comes back through
+v2's `return` purpose is gone (§17): a merged proposal comes back through
 the engine's ordinary bring-in + settle.
 
 When nothing overlaps (`merge-tree` clean) the merge commit is built

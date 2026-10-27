@@ -44,7 +44,7 @@ THE GUARDS (`settle_locked`, every sync of a recorded copy, slot held):
   pathspec as well, app_git/agent);
 - a `github` copy's `origin` pointed back at the RECORD's repo when the
   folder's config disagrees (`.git/config` is app-writable; the record is
-  ours — §5), with one activity line; an own copy's origin is its author's;
+  ours — §16.2), with one activity line; an own copy's origin is its author's;
 - the push guard (P2): `remote.origin.pushurl = no-push://fused` on a
   `github` copy, so nothing that pushes by remote name — a terminal, the git
   panel, a Claude session's `git push` — reaches the author. Removed when

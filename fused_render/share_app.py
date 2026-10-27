@@ -676,7 +676,7 @@ def github_link_state(path: str, *, copy_status: dict | None = None) -> dict:
     `no_remote`, `not_github`, `dirty`, `unpushed`, `no_default`; None when
     ok) for a surface that must not show `reason`'s git words — the
     contribution loop's share sheet maps it to its own sentence
-    (docs/CONTRIB_LOOP.md §15). `copy_status`: the engine's CopyStatus for
+    (docs/CONTRIB_LOOP.md §13). `copy_status`: the engine's CopyStatus for
     this folder when the caller already computed it, so a contributor's link
     does not run `engine.status` a second time.
 

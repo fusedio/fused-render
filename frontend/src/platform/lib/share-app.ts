@@ -103,7 +103,7 @@ export interface GithubLinkState {
   reason: string | null;
   /** Which condition failed, for a surface that must not show `reason`'s git
    *  words (the contribution loop's share sheet maps it to a sentence —
-   *  docs/CONTRIB_LOOP.md §15). Null when `ok`, except "contributor", which
+   *  docs/CONTRIB_LOOP.md §13). Null when `ok`, except "contributor", which
    *  comes WITH `ok`: a GitHub-link copy of someone else's app shares the
    *  author's link (`repo` is theirs). Absent on older servers. */
   code?:

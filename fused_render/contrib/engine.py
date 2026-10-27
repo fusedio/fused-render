@@ -48,7 +48,7 @@ explicit act, by URL). Tree moves wait while a Claude turn is open in the
 folder (P8) and run on their own only with `git_upstream.auto_sync_enabled()`
 (a button runs them anyway). With the loop switched off (`flags.sources()`)
 the moves still run — "Your edits" included: it is a commit on Bob's own
-branch (§17.7) — and a stuck state (overlap, a file in the way) is
+branch (§17) — and a stuck state (overlap, a file in the way) is
 git_upstream's failure row in plain words instead of a page state.
 
 WHERE IT RUNS. git_upstream's intercept hands a `github` root to `sync`,
@@ -490,7 +490,7 @@ def _stuck_words(who, status, files) -> str:
 def _failure_row(root, rec, res, *, action) -> dict:
     """A stuck state while the loop's page (and its fix buttons) is off:
     git_upstream's failure row in plain words, tree untouched (§16.12,
-    §17.7)."""
+    §17)."""
     reason = _FAILURE_REASONS[res["status"]]
     words = _stuck_words(_who(rec), res["status"], res.get("files") or [])
     failure = gu.record_sync_failure(

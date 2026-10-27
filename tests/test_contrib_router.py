@@ -407,7 +407,7 @@ def test_quick_fixes_answer_inline(env):
     """§17.3: Use <who>'s version (`match`, confirmed first) and Keep working
     on it (`keep_working`, after a declined proposal) answer inline, the
     engine called with the app folder only. v2's Keep mine / Use theirs are
-    not ids any more (§17.7)."""
+    not ids any more (§17)."""
     d = env.app("a")
     seen = []
     env.engine.status = lambda app_dir: _v2("needs-merge", needs_merge_files=["a"])

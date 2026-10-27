@@ -6,7 +6,7 @@ original moving is noticed and brought in by a merge job.
 v3 (§17): Bob's copy starts on `fused/mine` (`make_world`). Publish pushes
 HEAD to the record's branch (`main`) of the new repo and the checkout
 becomes `main` — an own copy has no home branch. No commit is rewritten
-(§17.7)."""
+(§17)."""
 from __future__ import annotations
 
 import pytest

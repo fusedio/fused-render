@@ -10,7 +10,7 @@ five-key shape because `/api/contrib/app` returns it as `flags`.
 At most one `read_prefs()` per change of prefs.json (`_raw`'s stat memo): the
 flag is asked on every sync, card and Doctor row, and a `stat` is all an
 unchanged file costs. An unreadable prefs file reads as off — the default,
-and the only answer that keeps today's behaviour byte for byte (§0.6).
+and the only answer that keeps today's behaviour byte for byte (§16.0 P1).
 """
 from __future__ import annotations
 

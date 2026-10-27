@@ -6,10 +6,13 @@ code and this file disagree about what exists today, trust the code and tell
 the TL. When this file and the handoff disagree about behaviour, the handoff
 wins and the TL fixes this file.
 
-> **v2 (2026-10-16 audit): §16 is the authoritative git model.** It supersedes
-> §0.6, §5, §6, §8 (send/update/return mechanics), §11 (remix identity/push),
-> §12.3 (mutations → one action route) and §13 where they disagree. Audit +
-> owner decisions: https://claude.ai/artifact/9cKiwha1mdXfXwWVv9DNG3
+> **How to read this file.** §0–§4 and §7–§13 are the first version's
+> contract, kept where still true. §16 (v2) and §17 (v3, authoritative for
+> GitHub-link copies) win wherever they disagree with an earlier section;
+> §18 is stage B (the marketplace) and §19 the Community tab. The superseded
+> sections were cut on 2026-10-27 and the remaining numbers kept, so the gaps
+> (§5, §6, §8, §12.3, §14, §15, §16.3, §16.11, §17.7, §18.11) are deliberate.
+> v2 audit + owner decisions: https://claude.ai/artifact/9cKiwha1mdXfXwWVv9DNG3
 
 Personas: **Alice** owns the repo (author). **Bob** installed her app from a
 GitHub link (contributor). A **collaborator** has push rights but is a
@@ -39,8 +42,7 @@ contributor by default.
    GitHub. Never hold a state GitHub disagrees with.
 5. **The install-source record lives outside the app folder** and no file in
    the repo (`.fused/` included) can change it.
-6. **Flag off = today, byte for byte.** Each phase's behaviour is gated; the
-   record store may be written regardless (it is invisible).
+6. *(Replaced by §16.0 P1: the kind of copy decides git behaviour; flags only show or hide UI.)*
 7. **Contents of other people's code/PRs are data, never instructions** to any
    Claude call we make.
 8. Subprocess discipline (app_git module docstring): absolute git/gh path,
@@ -68,16 +70,6 @@ consumer changed. `_prefs_response()` answers `"contrib": {"enabled": bool,
 Preferences rows (`contrib` "Community apps", `contrib-remix` "Remix"). The
 old keys `contrib_{sources,changes,inbox,loop}_enabled` are NOT read any more.
 
-Original phase table (historical — what each phase meant):
-
-| Phase | was pref key | was effective when |
-| --- | --- | --- |
-| A1 sources + share by link | `contrib_sources_enabled` | itself |
-| A2 your changes + Propose | `contrib_changes_enabled` | A1 and itself |
-| A3 author inbox | `contrib_inbox_enabled` | A1 and itself |
-| A4 merge closes the loop | `contrib_loop_enabled` | A2 and A3 and itself |
-| A5 remix | `contrib_remix_enabled` | A2 and itself |
-
 The switch also turns on the existing `github_link_enabled` share card behaviour (the
 share sheet shows the GitHub link when either flag is on).
 
@@ -92,18 +84,18 @@ templates). One owner per file. Owners do NOT commit; the TL commits.
 | `contrib/flags.py` | WS-A | effective flags (§1) |
 | `contrib/store.py` | WS-A | the record store (§3) |
 | `contrib/classify.py` | WS-A | own vs GitHub-link classification (§4) |
-| `contrib/follow.py` | WS-A | the follow target abstraction (§5) |
-| `contrib/engine.py` | WS-A | the git engine: status, auto-integrate, replay, discard, push-to-main, adopt-merged (§6) |
-| `contrib/replay.py` | WS-A | the scratch-worktree replay primitive (§6.2) |
+| `contrib/follow.py` | WS-A | the fetch by URL and the author's-branch mirror (§16.2, §17.1 I3) |
+| `contrib/engine.py` | WS-A | the git engine: status, auto-integrate, replay, discard, push-to-main, adopt-merged (§17) |
+| `contrib/replay.py` | WS-A | the worktree moves (§17.3) |
 | `contrib/gh.py` | WS-B | the ONLY module that runs `gh` / calls GitHub (§7), + `FakeGitHub` for tests |
-| `contrib/proposals.py` | WS-B | Propose / Update / Withdraw / status refresh / A4 adoption trigger (§8) |
+| `contrib/proposals.py` | WS-B | Propose / Update / Withdraw / status refresh / A4 adoption trigger (§17.5) |
 | `contrib/remix.py` | WS-B | Publish as remix + bring-in-the-original (§11) |
 | `contrib/contributors.py` | WS-B | contributor list from local history (§10) |
 | `contrib/ai.py` | WS-C | proposal draft text, remix credit draft, safety review (static rules + Claude) (§9) |
-| `contrib/merge_job.py` | WS-C | "Merge with Claude" jobs (§6.3) |
+| `contrib/merge_job.py` | WS-C | "Merge with Claude" jobs (§17.4) |
 | `contrib/inbox.py` | WS-C | Alice's inbox: list, review, Try, Accept, Decline (§9) |
 | `contrib/trycopy.py` | WS-C | scratch "Try" copies (§9.3) |
-| `contrib/jobs.py` | WS-C | tiny in-memory job registry for long ops (§12.3) |
+| `contrib/jobs.py` | WS-C | tiny in-memory job registry for long ops (§16.9) |
 | `server/routers/contrib.py` | WS-D | every `/api/contrib/*` route (§12) |
 | Edits: `git_upstream.py` (one intercept), `appfile_git.py` (install hook + install-page wording), `app_state_move.py`, `app_state_remove.py`, `shell/prefs.py`, `app_doctor.py` (one check) | WS-A | |
 | Edits: `server/routers/apps.py` (`AppInfo` gains `contrib` field), `server/app.py`/router registration, `share_app.py` (if needed) | WS-D | |
@@ -121,36 +113,7 @@ key = `app_state_remove.canonical(app_dir)` (absolute, realpath'd). One
 module-level `threading.Lock` around read-modify-write; atomic write via
 `storage.write_json`.
 
-```python
-Record = {
-  "kind": "own" | "github" | "scratch",   # stage B adds "marketplace"
-  "repo": "owner/name" | None,             # GitHub repo this copy follows (github) or publishes to (own)
-  "branch": "main" | None,                 # the followed branch name (author's default branch)
-  "classified_by": "install" | "migration" | "remix" | "publish",
-  "classified_at": float,
-  "owner_checked": bool,                   # False = classified without a GitHub identity; re-check once later
-  "remix_of": {"repo": "alice/x", "branch": "main"} | None,
-  "proposal": Proposal | None,             # the ONE open (or last-settled, until acknowledged) proposal
-  "events": [Event],                       # newest last, capped 10 — what the page says once
-  "needs_merge": {"onto": sha, "since": float} | None,   # set by integrate on overlap
-  "original_update": {"sha": sha, "since": float} | None, # A5: original moved, not yet brought in
-  "backups": [{"ref": "refs/fused/backup/…", "at": float, "why": str}],  # capped 10
-}
-Proposal = {
-  "repo": "alice/x", "number": int, "url": str,
-  "head_repo": "bob/x", "head_branch": "fused-<slug>-<yyyymmdd-hhmm>",
-  "proposed_head": sha,        # local tip whose content was last sent (after author rewrite)
-  "proposed_onto": sha,        # follow tip it was based on when sent
-  "title": str, "opened_at": float,
-  "cache": {"state": "open"|"merged"|"closed", "merge_commit_sha": sha|None,
-            "comment": {"author": str, "body": str, "at": str} | None,
-            "checked_at": float} ,
-  "settled_seen": bool,        # page acknowledged Merged/Declined banner
-}
-Event = {"kind": "updated" | "updated-kept" | "merged-back" | "declined" |
-                  "merge-accepted" | "discarded" | "remixed" | "original-brought-in",
-         "at": float, "who": "alice" | None}
-```
+The record's fields today: §17.1 I5 (GitHub-link copies), §16.9 (activity), §18.4 (the `marketplace` kind), §19.2 (the Community tab's binding).
 
 API (all never raise on I/O; return None/False):
 `get(app_dir) -> Record | None`, `put(app_dir, record)`, `update(app_dir, fn)`
@@ -191,140 +154,6 @@ sharing, severity warning, fact): "This app's repo includes its .fused folder,
 which holds this machine's data. Remove it from the repo." — that row's text
 may say ".fused folder" (it is the author's checklist).
 
-## 5. The follow target (`contrib/follow.py`)
-
-Everything in the engine is written against "what this copy follows", never
-`main` specifically, so stage B adds a case:
-
-```python
-@dataclass(frozen=True)
-class Follow:
-    kind: str          # "branch" (stage A); stage B adds "pinned"
-    url: str           # https://github.com/O/R  (from the RECORD, not from .git/config)
-    branch: str        # e.g. "main"
-    ref: str = "refs/fused/follow"   # private local ref the tip is fetched into
-
-def for_record(record) -> Follow | None     # github → the author's branch; own w/ repo → its own branch (origin)
-def fetch(root, follow) -> str | None       # git fetch <url> +refs/heads/<branch>:<ref>; returns tip sha; None offline/unreachable
-def tip(root, follow) -> str | None         # rev-parse <ref> without network
-```
-Fetch by URL from the record: `.git/config` is app-writable and never decides
-what a copy follows. For `own` copies the engine uses `origin` as today (the
-author's own remote is theirs to change).
-
-## 6. The engine (`contrib/engine.py`, `contrib/replay.py`)
-
-### 6.1 Model
-
-A GitHub-link copy stays on its local default branch (`main`). Bob's changes
-are the commits on it that the follow tip does not have:
-`changes = rev-list --count <follow-tip>..HEAD` (no merges ever exist in it:
-the engine only rebases). Uncommitted tracked edits (excluding `.fused/`) are
-`dirty`. "The author's latest" = the follow tip. No extra branch exists, so
-nothing else in the app (Switch card, Doctor row, `↑N` marks) sees an
-off-default branch.
-
-### 6.2 Replay primitive (`replay.py`)
-
-```python
-def replay(root, *, onto, upstream, branch, job_id=None) -> ReplayResult
-# Rebase the commits upstream..<branch> onto `onto` INSIDE a scratch worktree
-# (git worktree add --detach <home>/contrib/work/<id> <branch-tip>).
-# ReplayResult = {"ok": bool, "tip": sha|None, "conflict": bool,
-#                 "worktree": path|None (kept only when conflict and job_id given),
-#                 "files": [paths in conflict]}
-def land(root, *, branch, old_tip, new_tip, why) -> bool
-# Backup ref at old_tip, then (under the slot) verify branch still == old_tip,
-# `git reset --keep new_tip` (HEAD on branch). False (and nothing moved) when
-# the branch moved meanwhile or an uncommitted edit overlaps.
-def cleanup(worktree)  # git worktree remove --force + prune; never raises
-```
-Callers: auto-integrate (onto = new follow tip, upstream = old base),
-A4 return (onto = follow tip, upstream = proposed_head), Alice's own copy after
-Accept (onto = origin tip, upstream = origin tip before), remix bring-in uses a
-MERGE instead (§11) because the remix's history is published.
-
-### 6.3 Merge with Claude (`merge_job.py`, WS-C) — API used by WS-A/B/D
-
-```python
-def start(app_dir, *, purpose: "needs-merge"|"return"|"own-sync"|"original", onto: sha, upstream: sha) -> job_id
-# Runs replay in a kept scratch worktree; on each stopped step spawns Claude
-# (claude_spawn.spawn_helper(worktree, prompt, "auto")) to resolve the conflict
-# markers in the listed files ONLY (prompt says: do not run git, keep both
-# intents, explain in 2-4 plain sentences what you combined), then the server
-# verifies no unmerged paths + no conflict markers, `git add -A`,
-# `GIT_EDITOR=true git rebase --continue`; loops, capped at 8 rounds / 15 min.
-def get(job_id) -> {"status": "running"|"ready"|"failed"|"accepted"|"discarded",
-                    "summary": str, "files": [str], "error": str|None, "purpose": str}
-def accept(job_id) -> {"ok": bool, "message": str}   # replay.land(); clears record.needs_merge
-def discard(job_id) -> {"ok": bool}                  # cleanup; record unchanged
-```
-One job per app at a time; a new start for the same app returns the running id.
-A finished job not acted on for 24 h is discarded.
-
-### 6.4 Engine entry points (`engine.py`)
-
-```python
-def owns(root) -> bool
-# True when flags.changes() and the record for root is kind "github", or
-# flags.inbox() and kind "own" with a GitHub repo (A3's sync-error-free rule).
-def sync(root, *, action, push) -> dict   # same return shape as git_upstream._sync_locked
-# Called by git_upstream._sync_locked's intercept, slot already held. NEVER
-# records a git_upstream sync_failure for an owned root (clears any standing one).
-#  github kind: fetch follow; no changes → ff (merge --ff-only) when tree allows;
-#    changes and follow moved → replay; ok → land + event "updated-kept";
-#    conflict → record.needs_merge (no tree change, no failure row);
-#    proposal merged & contained (A4, flags.loop()) → return_to_following().
-#    Never pushes anywhere. auto_sync_enabled() False → fetch + status only.
-#  own kind with repo: today's ff/push, but diverged → replay ONLY the commits
-#    this machine never pushed (`<synced>..HEAD`) onto origin's tip, land, push.
-#    synced = newest BY HISTORY, among those HEAD contains, of
-#    refs/fused/origin-seen (the tracking ref pinned BEFORE each engine fetch,
-#    forward-only), every tracking-ref reflog value (old and new sides) and
-#    refs/fused/base. THE INVARIANT: an automatic push (or the replay feeding
-#    one) only when origin's new tip contains synced. Otherwise: synced == HEAD
-#    (all published; GitHub rewrote or rewound) → follow origin's tip (old tip
-#    backed up, base never moved backward); else, or synced unknown (no reflog,
-#    no pin) → needs_merge (own-sync, rewritten: true, plain sentence;
-#    merge_plan None): nothing replayed or pushed. Uncommitted edits to files
-#    GitHub's side changed → needs_merge, no button, sentence naming the file
-#    (never committed for). Overlap → needs_merge (purpose "own-sync"). A commit
-#    the author removed from GitHub is never re-published.
-def status(root) -> CopyStatus            # NO network, cheap, for the page/cards
-def discard(root, *, withdraw: bool) -> dict   # backup (incl. wip), reset --hard follow tip; withdraw → proposals.withdraw
-def push_to_main(root) -> dict            # collaborator only (gh.can_push): integrate first, push HEAD to follow branch on the author's repo, record base
-def return_to_following(root) -> dict     # A4: replay <proposed_head>..HEAD onto follow tip (unproposed edits kept); clean → land, event "merged-back"; conflict → merge_job purpose "return"
-```
-
-`CopyStatus` (also the `copy` field of §12.1):
-```python
-{"kind": "own"|"github"|"scratch",
- "state": "following"|"changes"|"proposed"|"needs-merge"|"merged"|"declined"|"remix"|"own",
- "repo": "alice/x"|None, "author": "alice"|None, "remix_of": "alice/x"|None,
- "changes": int, "dirty": bool, "unproposed": int,
- "needs_merge": bool, "merge_job": {"id","status","summary","files","purpose"}|None,
- "event": Event|None,                      # newest unacknowledged event < 24 h old
- "original_update": bool,                  # A5
- "can_push": bool|None}                    # collaborator; None = unknown
-```
-State precedence: needs-merge > proposed-merged ("merged") > declined (until
-acknowledged) > proposed > changes > following. `own` with a remix_of →
-"remix", else "own".
-
-### 6.5 The intercept (`git_upstream._sync_locked`)
-
-First lines of `_sync_locked` (both auto-sync callers pass through it):
-```python
-try:
-    from fused_render.contrib import engine as _contrib
-    if _contrib.owns(root):
-        return _contrib.sync(root, action=action, push=push)
-except Exception:
-    logger.exception("contrib sync failed for %s", root)
-    return {"ok": True, "status": "skipped", "why": "contrib-error"}
-```
-With every contrib flag off `owns` is False and nothing changes.
-
 ## 7. GitHub (`contrib/gh.py`, WS-B) — the only GitHub caller
 
 Runs `gh` resolved by `github_setup.resolve()`, `gh api` with `--jsonc`-free
@@ -351,35 +180,6 @@ def close_pr(full, number, *, comment=None)
 def comment(full, number, body)
 def create_repo(name, *, description, private=False) -> full
 ```
-
-## 8. Proposals (`contrib/proposals.py`, WS-B)
-
-- **Draft**: `draft(app_dir) -> {title, description}` via `ai.draft_proposal` (§9);
-  inputs: `git log --format=%s%n%b <follow>..HEAD`, `--stat`, a truncated diff,
-  and the user lines of this app's recent Claude sessions (`agent._sessions` +
-  `_history`, best-effort).
-- **Send** `send(app_dir, *, title, description, note) -> Proposal` (job):
-  1. `gh.identity()` or reason `signed-out` (frontend runs sign-in first).
-  2. Refuse if an open proposal exists (that's Update). Adopt an open PR found by
-     `find_open_pr` for this head branch instead of opening a second one.
-  3. Dirty tracked edits → one local commit "Your edits" first (exactly what Bob runs, D16).
-  4. Author rewrite: re-create each commit in `<follow-tip>..HEAD` with the same
-     tree/message, author+committer = Bob's identity, message gains
-     `Co-authored-by: Claude <noreply@anthropic.com>` once; `replay.land` the
-     rewritten tip (identical tree, so no file changes). This is `proposed_head`.
-  5. `ensure_fork` → push `proposed_head` to `<fork>:<head_branch>` (force: the
-     branch is Bob's; Update re-sends after rebases).
-  6. `open_pr(base=<follow branch>)`, body = description + (note → "**Note from
-     <Bob>:** …") + footer `\n\n---\nSent from Fused\n<!-- fused:proposal v1 -->`.
-- **Update** `update(app_dir)`: same steps 3–5 for the current HEAD; no new PR.
-- **Withdraw** `withdraw(app_dir)`: close_pr with a short comment; record cleared.
-- **Refresh** `refresh(app_dir, *, force=False)`: throttled 60 s per app; `get_pr` +
-  `pr_comments`; "Alice commented" = newest comment by someone other than Bob
-  after the last send. Merged → when the follow tip contains `merge_commit_sha`
-  (after a fetch) and `flags.loop()` → `engine.return_to_following`.
-  Closed unmerged → state declined, Bob's changes untouched.
-- Branch name: `fused-<app-slug>-<yyyymmdd-hhmm>`; fork name = GitHub's default.
-- One open proposal per app.
 
 ## 9. AI + inbox (WS-C)
 
@@ -482,7 +282,7 @@ Flag-gated routes answer `{ok:false, reason:"disabled"}` when their phase is off
 ```ts
 type AppContrib = {
   flags: ContribFlags;
-  copy: CopyStatus;                       // §6.4
+  copy: CopyStatus;                       // §17.2
   proposal: null | { number:number; url:string; title:string;
                      state:"waiting"|"commented"|"merged"|"declined";
                      comment?: {author:string; body:string; at:string};
@@ -501,26 +301,6 @@ For the Apps grid; cached values only. `label` is the source line
 ("GitHub link · follows alice/x", "Your app", "Remix of alice/x"); `AppInfo`
 rows from `/api/apps` also gain an optional `contrib?: {label, inbox, kind}` field
 (WS-D) so cards need no second fetch.
-
-### 12.3 Mutations (POST, body `{path, …}`) — long ones return `{ok, job}`; poll `GET /api/contrib/job?id=` → `{status:"running"|"done"|"failed", message?, result?}`
-| route | phase | body extra | does |
-| --- | --- | --- | --- |
-| `/api/contrib/ack` | A1 | `kind:"event"|"settled"` | acknowledge banner |
-| `/api/contrib/propose/draft` | A2 | — | job → `{title, description}` |
-| `/api/contrib/merge/accept` | A2 | `job` | |
-| `/api/contrib/merge/discard` | A2 | `job` | |
-| `/api/contrib/refresh` | A2/A3 | — | force refresh now (≤ 1 per 10 s) |
-| `/api/contrib/inbox/review` | A3 | `number` | → job |
-| `/api/contrib/inbox/try` | A3 | `number, confirm:bool, head_sha` | → `{path,url}` |
-| `/api/contrib/inbox/try/remove` | A3 | `number` | |
-| `/api/contrib/inbox/accept` | A3 | `number, confirm:bool, head_sha` | → job |
-| `/api/contrib/inbox/decline` | A3 | `number, note` | |
-| `/api/contrib/remix/draft` | A5 | — | job → `{name, credit}` |
-
-Send/update/withdraw a proposal, discard, push-main, merge/start, remix
-publish and bring-in run through `POST /api/contrib/action` only (§16.9):
-their v1 routes skipped the offered-buttons check and the button's confirm,
-and were deleted once the frontend moved.
 
 ## 13. Words (product strings — WS-E/WS-F own the UI copy; servers use these)
 
@@ -543,49 +323,6 @@ and were deleted once the frontend moved.
 Display names: the GitHub login (`alice`); the UI may show the owner part of
 the repo. Pronoun-free phrasing ("alice's latest" is fine; avoid "her").
 
-## 14. Tests (targeted, data-loss paths only)
-
-Owner normally skips tests; this feature's git engine is where data loss
-lives, so WS-A/B/C each add `tests/test_contrib_<module>.py` against REAL
-temp git repos (local bare "github" remotes) and `FakeGitHub`, run with the
-main venv `-n0`. No UI tests. Required scenarios: unrelated author push keeps
-changes; overlapping push → needs-merge, tree untouched; merge job accept /
-discard; propose → update → squash-merge → return keeps unproposed edits;
-discard backs up; dirty overlap defers; committed `.fused/` stays clean;
-flags off → `_sync_locked` behaves exactly as before.
-
-## 15. Amendments (TL, during build)
-
-- 2026-10-16: `github_login` status record gains `code: str|None` (the one-time
-  device code parsed from gh's output) and `url: "https://github.com/login/device"`
-  — owner WS-E (small edit to `github_login.py`).
-- 2026-10-16: `share_app.github_link_state` gains `code: "not_repo"|"nested"|
-  "no_remote"|"not_github"|"dirty"|"unpushed"|"no_default"|None` next to
-  `reason` — owner WS-D. The UI maps codes to sentences, never shows `reason`.
-- 2026-10-16: card `contrib` gains `kind` (§12.2); cards hide the label for `own`.
-- 2026-10-16 (WS-A notes, approved): `refs/fused/base` = the follow tip HEAD
-  sits on (lower bound of "Bob's commits"; `replay.land` advances it);
-  `refs/fused/proposed` pins `proposed_head` and the engine rewrites both on a
-  two-stage replay (base..proposed_head, proposed_head..HEAD), writing the new
-  `proposal.proposed_head` back. Record: `needs_merge` gains `head`, `purpose`
-  ("needs-merge"|"own-sync"); events gain `seen`; `store.ack`, `store.add_backup`.
-  CopyStatus gains `behind:int`, `sync_error:str|None`. `owns()` never calls
-  GitHub; migration records with `owner_checked: False` are NOT owned until the
-  one-time identity check runs. Migration only classifies workspace app
-  folders. `protect_fused_dir` + the Doctor row only when `flags.sources()`.
-  `merge_job.for_app(app_dir)`. Inbox accept → `git_upstream.sync_repo(root,
-  action="Accept proposal", push=True)`.
-- 2026-10-16: `jobs.PlainError(message, reason=None)`; job dicts carry `reason`.
-  `merge_job` owns remix bring-in (clean merge-tree → ready, no Claude).
-- 2026-10-16 (round 3): own copies push under ONE invariant (§6.4, `decide`'s
-  docstring) with `refs/fused/origin-seen` as a new private ref. GitHub-link
-  rows: the ignored-file and dirty-edit rows come before the merged-proposal
-  return. "Your edits" commits only the blocking paths. A land that cannot
-  happen defers with `why` `slot-busy` | `claude` | `moved` | `in-progress` |
-  `reset-refused` (was one `land`); `replay.land_locked` answers that reason
-  or None. `gh.url_rewrites` raises `GitHubError("failed")` when the repo's
-  config cannot be read (fail closed).
-
 ## 16. v2 git model (2026-10-16) — AUTHORITATIVE
 
 Why: the audit (artifact above; 67 repros in the session scratchpad) found the
@@ -603,9 +340,9 @@ calls, review, Try, inbox, remix UI mostly stay.
   proposal, which needs A2 UI). With a `github` record the engine syncs the
   folder whatever the flags — BUT a state that needs a button must never be
   created while its button is hidden: with `flags.changes()` off a `github`
-  copy only fetches and fast-forwards (§16.3 rows 1–4, 8, 9; anything else is
-  a silent `skipped`, tree untouched). Rows 5–7, 10, 11 run only with
-  `flags.changes()` on. The never-push rule (P2) is unconditional.
+  copy only fetches and fast-forwards (anything else is a silent `skipped`,
+  tree untouched); every other move runs only with `flags.changes()` on
+  (§17.2 has today's states). The never-push rule (P2) is unconditional.
 - **P2 A `github` copy never pushes on its own.** No automatic code path pushes
   it anywhere. Enforced twice: git_upstream's intercept hands every `github`
   record to the engine and NEVER falls back to `_sync_plain` (an engine error
@@ -650,7 +387,7 @@ calls, review, Try, inbox, remix UI mostly stay.
   `git cat-file -e <root_commit>` fails (a different repo now lives at the
   path); the record is dropped and the folder reclassified in the background.
   Bind on `root_commit` ONLY: `.git/config` never decides what a copy follows
-  (§5). An origin URL that disagrees with a `github` record is reset to the
+  (§16.2). An origin URL that disagrees with a `github` record is reset to the
   record's URL (+ an activity line "Pointed this copy back at <repo>"); for an
   `own` record origin is the author's own to change. Remix updates the
   record's `repo` BEFORE it touches `origin`. A fresh install
@@ -684,51 +421,6 @@ calls, review, Try, inbox, remix UI mostly stay.
 (url_rewrites guard first, reasons as v1). `follow.tip(root, fol)` reads
 `refs/remotes/origin/<b>`. Own copies are not fetched here (git_upstream
 fetches `origin` as today).
-
-### 16.3 `github` copy sync — the v2 table (WS-C, `engine.py`)
-
-`engine.sync(root, *, action, push)` (intercept, slot held) and
-`engine.bring_in(root)` (the button; same table, user=True). Steps: fetch; if
-a proposal is open/unsettled and `tip != proposal.checked_tip` →
-`proposals.refresh(force=True)` OUTSIDE the slot first (so a merged proposal
-is known before the tip is merged in); gather facts; `decide`; execute.
-`auto_sync_enabled()` False → fetch + status only (buttons still work).
-
-| # | situation | action | activity |
-|---|---|---|---|
-| 1 | Claude turn open in the folder | wait (button answers "Claude is still working…") | — |
-| 2 | Merge with Claude job open | skip | — |
-| 3 | needs_merge recorded for this (tip, HEAD) | standing | — |
-| 4 | `skip_tip == tip` (Keep mine) and not user | skip | — |
-| 5 | an untracked/ignored local file is a path the tip adds | blocked → fix **Move my file aside and update** | — |
-| 6 | uncommitted tracked edits to files `merge-base..tip` changes | commit those paths as "Your edits" (Bob's identity), decide again | "Saved your edit to <file> so <who>'s update could come in" |
-| 7 | proposal merged (GitHub) and its merge commit ⊆ tip | **return**: new = tip + cherry-pick of `rev-list --reverse --first-parent --no-merges HEAD ^sent ^tip` (scratch worktree); none → tip. Conflict → needs_merge `return`. Land with backup | "<who> merged your change. You're on <who>'s latest version." (+ "N edits kept") · Undo |
-| 8 | tip ⊆ HEAD | noop | — |
-| 9 | HEAD ⊆ tip | fast-forward (`reset --keep tip`) | "Got <who>'s latest: <subjects>" |
-| 10 | tree(HEAD) == tree(tip) | move to tip (backup) | "Got <who>'s latest" · Undo |
-| 11 | otherwise | `merge-tree --write-tree HEAD tip`: clean → merge commit (parents HEAD, tip; "Bring in <who>'s latest"; Bob's identity) landed by `reset --keep` (HEAD is its parent: nothing dropped). Conflict → needs_merge `update` (files), tree untouched | "Brought in <who>'s <subjects>, your changes kept" |
-
-Status derived (no network): `changes_files = git diff --name-only tip HEAD`
-∪ dirty tracked paths (never untracked); state `following` when empty.
-`unproposed = rev-list --count --first-parent --no-merges HEAD ^sent ^tip`
-(+1 when dirty tracked). Precedence for the page: needs-merge > merged >
-declined (until seen) > proposed > changes > following.
-
-Fix actions (engine, each writes activity): `keep_mine(root)` (sets
-`skip_tip`, clears needs_merge; Bring in still offered), `use_theirs(root)`
-(backup incl. wip, `reset --hard tip`, clears needs_merge — "Use <who>'s
-version"), `move_aside(root)` (moves the colliding files to
-`<home>/contrib/aside/<key>/<ms>/…`, activity line with Restore, then
-`bring_in`), `go_back_main(root)` (another branch checked out → checkout the
-default branch when clean; dirty → plain sentence), `discard(root, *,
-withdraw)`, `restore(root, activity_id)` (backup current first, then
-`reset --keep` / re-place aside files), `push_to_main(root)` (collaborator;
-§16.6).
-
-Backups: only for moves that can drop something (rows 7, 10, use_theirs,
-discard, restore, credit rewrite): `refs/fused/backup/<ms>-<why>[-wip]`,
-referenced from the activity line. Never auto-deleted while referenced;
-activity capped at 50 (backups of dropped lines pruned after 30 days).
 
 ### 16.4 Merge with Claude (WS-C, `merge_job.py`)
 
@@ -879,17 +571,6 @@ disclosure listing the activity lines with Undo/Restore. Propose dialog lists
 untracked files as unticked checkboxes (`include`). Inbox items show "No
 longer fits" + Ask to update / Merge with Claude. Install page wording per
 §16.8. Never invent a button the server did not send.
-
-### 16.11 Ownership (v2 workstreams; agents do not commit)
-
-| WS | files |
-|---|---|
-| WS-C core | `contrib/engine.py`, `contrib/follow.py`, `contrib/replay.py`, `contrib/merge_job.py`, `tests/test_contrib_engine.py`, `tests/test_contrib_merge_job.py` |
-| WS-G guards | `contrib/store.py`, `contrib/classify.py`, `contrib/flags.py`, `git_upstream.py`, `app_git.py`, `claude_agent/agent.py` (commit pathspec/identity only), `appfile_git.py`, `appfile.py` (install-state only), `app_doctor.py`, `templates/git/ops.py`, `templates/fusedapp/template.html`, `tests/test_contrib_store.py` + touched existing suites |
-| WS-O own | `contrib/ownsync.py` (new), `tests/test_contrib_ownsync.py` |
-| WS-P proposals | `contrib/proposals.py`, `contrib/inbox.py`, `contrib/remix.py`, `contrib/gh.py`, `contrib/contributors.py`, `contrib/trycopy.py`, `tests/test_contrib_{proposals,inbox,remix}.py` |
-| WS-A api | `server/routers/contrib.py`, `contrib/actions.py` (new), `server/routers/apps.py` (card field), `tests/test_contrib_router.py`, `tests/test_contrib_actions.py` |
-| WS-F frontend | `frontend/src/platform/lib/contrib.ts`, `frontend/src/shell/contrib/*`, `frontend/src/styles/contrib.css`, `frontend/src/apps/marketplace/FusedFilePage.tsx`, git panel UI file for Push |
 
 ### 16.12 Review round 1 amendments (TL, 2026-10-21) — override §16.0–16.10
 
@@ -1043,8 +724,8 @@ the app layer may import (`scripts/check-boundaries.mjs`,
 
 ## 17. v3 git model for `github` copies (2026-10-23) — AUTHORITATIVE
 
-Supersedes §16.3, §16.7's github half, the github parts of §16.1/§16.5/§16.9
-and every v2 mechanism named in §17.7. Own copies (§16.7 ownsync), remix,
+Supersedes §16.3 (cut), §16.7's github half and the github parts of
+§16.1/§16.5/§16.9. Own copies (§16.7 ownsync), remix,
 inbox review, Merge with Claude's resolver and the Propose dialog keep their
 v2 shape. Design page: claude.ai/artifact/TWMuMa5BeQFzgzVpmntiCV.
 
@@ -1228,21 +909,6 @@ writes the Activity line and notes the head.
   commit on `fused/mine` via `merge --ff-only` AND moves the `<b>` ref with
   `update-ref` (I3) — WS-1.
 
-### 17.7 Deleted from v2
-
-`engine.decide`/`Facts`/`_facts`/`_execute`/`_return`/`_return_text`/
-`_taken_back`/`_merged_in`/`_merge_in_tip`/`_refresh_if_moved`/`keep_mine`/
-`use_theirs`/`_hard_to_tip`/`_AGAIN`/`_fail`/`_fail_words`; the flag gates
-inside engine (`sources_on`/`changes_on` in behaviour — §16.12's "flags-off
-form of a stuck row" is gone: with the switch off the engine still ff's and
-brings in cleanly; a blocked/conflict state shows the same sentence through
-the git_upstream failure row as today, buttons appear with the switch);
-`replay.pick` callers in engine (ownsync keeps its own); `proposals.credit*`;
-`store` fields above (not `skip_tip`); `classify` `root_commit` binding; `actions` ids
-`keep-mine`, `use-theirs` (→ `match`), new id `keep-working`;
-`merge_job` purpose `return`; `CHOICE_PURPOSES["github"] = ("update",
-"proposal")`.
-
 ### 17.8 One guard module (`templates/shared/contrib_guard.py`)
 
 stdlib-only, imported by path (the adding-a-shared-template-utility skill):
@@ -1287,7 +953,7 @@ Stacked on `github-contribution-loop` (branch `marketplace-stage-b`). Every
 rule of §16/§17 stands; this section adds the `marketplace` kind, the index,
 the review check, publishing, the block list and the listing page. Where
 the handoff and the code disagree about what exists, the code wins and the
-PR says so. Workstreams and their files are in §18.11; the contract is the
+PR says so. The contract is the
 only thing agents share, so a shape named here is the shape, not a sketch.
 
 ### 18.0 Principles (on top of §16.0 P1–P9)
@@ -2000,17 +1666,6 @@ read (≤15 s) + the read UDFs' 60 s + the catalog's 10-min TTL + Check
 copy with changes, the public-member limit for org repos, the bot bypass
 for `reviews/`.
 
-### 18.11 Ownership (agents do not commit)
-
-| WS | owns |
-|---|---|
-| WS-IDX | the index repo (created with `gh`), `review.yml`, `scripts/review/*`, fixtures, rulesets, `fused_render/contrib/review_rules.py` (extracted from `ai.py`'s tables; `ai.py` imports it) |
-| WS-CANVAS | the canvas folder: the nine UDFs sharing the helper block (`marketplace_*`, `fused_app_listing`, `fused_app_install`) + `fused_app_github`, `canvas.toml`, push |
-| WS-ENGINE | `contrib/market.py`, `contrib/blocks.py`, edits in `store/classify/follow/engine/actions/refresh/replay`, `routers/contrib.py` (marketplace branches), `git_upstream.py`, `appfile_git.py`, `appfile.py`, `templates/shared/contrib_guard.py`, `templates/git/ops.py|log.py`, `app_git.py`, `app_doctor.py`, `share_app.py`, `claude_agent/agent.py` marker, `background_apps.py` stop helper, tests §18.9 (market, blocks) |
-| WS-CLIENT | `marketplace.py`, `routers/marketplace.py`, `routers/apps.py`+`render.py` open gate, `bots/tools.py`, `deeplink.py`, `community.py`+router, `server/app.py` startup thread, `tests/test_marketplace.py` |
-| WS-PUBLISH | `contrib/listing.py`, `contrib/actions_listing.py`, `server/routers/listing.py` (registered in `server/app.py` next to the contrib router — one line), `gh.py` additions (`search_prs`, `check_runs`, `pr_comments`, `edit_comment` helpers, each appended at the end of the file with a FakeGitHub counterpart), `tests/test_contrib_listing.py`. Does NOT edit `actions.py` or `routers/contrib.py` (WS-ENGINE adds the one-line `actions_listing.buttons` call) |
-| WS-FE | everything under `frontend/` |
-
 ### 18.12 The store and the count (owner 2026-10-26)
 
 Owner: "I want some metric of what app is being installed how many times.
@@ -2176,7 +1831,7 @@ the panel, actions and activity of §16.9/§18.7 are shown as they are.
   the folder is an own repo with a GitHub origin, else 1. `visibility`
   comes from `gh.repo(full).private` (the existing `gh api repos/<full>` helper,
   cached; null while unknown — it fills on the next read). `link` = the
-  §15 install link when eligible. `rung` is null (and `mine:false`) for a
+  GitHub install link (`share_app.github_link_state`) when eligible. `rung` is null (and `mine:false`) for a
   copy that is not the user's own: the tab shows the other-side view from
   `/api/contrib/app`. `pending:true` during the short rebind window after
   a publish (listing is null until the record names its repo: re-read).

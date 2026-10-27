@@ -398,7 +398,7 @@ def api_contrib_propose_draft(body: dict = Body(...), x_fused: str | None = Head
 
 
 # The phase that offers each kind of merge (v1 and v3 purpose names; v2's
-# `return` is gone, §17.7). An own app's own-sync overlap is offered
+# `return` is gone, §17). An own app's own-sync overlap is offered
 # whenever its panel is (P5/P6).
 _MERGE_PHASE = {"needs-merge": "changes", "update": "changes",
                 "proposal": "changes", "own-sync": "sources", "original": "remix"}

@@ -1,5 +1,5 @@
 """What a GitHub-link copy follows, the one fetch of it, and its mirror
-(docs/CONTRIB_LOOP.md §5, §16.2, §17.3).
+(docs/CONTRIB_LOOP.md §16.2, §17.3).
 
 ONE UPSTREAM (§16.0 P3). The author's latest lives in git's own
 `refs/remotes/origin/<branch>` — the ref every git tool, the Explorer's ↑N

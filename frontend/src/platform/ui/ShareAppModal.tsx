@@ -182,7 +182,7 @@ interface CanvasesStatusLite {
 type Busy = null | "publish" | "update" | "remove" | "export";
 
 // Why an app has no GitHub link yet, in product words (docs/CONTRIB_LOOP.md
-// §0.1, §15): keyed on share_app.github_link_state's `code`, because its
+// §0.1, §13): keyed on share_app.github_link_state's `code`, because its
 // `reason` speaks git. An unknown or missing code (an older server) gets the
 // plain catch-all rather than the raw reason.
 //

@@ -1,4 +1,4 @@
-"""Proposals against a real temp clone and FakeGitHub (contract §8, v2
+"""Proposals against a real temp clone and FakeGitHub (contract v2
 §16.5, v3 §17.5): send pushes `fused/mine` as it is (no rewrite ever) with
 ticked new files, Update as a plain push that merges edits made on GitHub
 (landed by fast-forward), `unproposed` as a first-parent no-merges count,
@@ -447,7 +447,7 @@ def test_r8_nothing_moves_or_leaves_while_claude_works(w, monkeypatch):
         with pytest.raises(PlainError) as e:
             call()
         assert e.value.reason == "claude" and "Claude is still working" in e.value.message
-    assert not hasattr(_p(), "credit_once")                       # §17.7: no credit rewrite
+    assert not hasattr(_p(), "credit_once")                       # §17: no credit rewrite
     w.fake.add_collaborator("alice/sine", "bob")
     assert engine.push_to_main(w.app)["reason"] == "claude"       # end to end
     w.store.update(w.app, lambda r: r.update(proposal=None))
@@ -919,7 +919,7 @@ def test_r7_direct_publish_keeps_the_proposal_commits_and_settles_it(sw):
 
 
 def test_direct_publish_sends_the_commits_as_they_are(sw):
-    """§17.7: no credit rewrite before a direct publish either — the
+    """§17: no credit rewrite before a direct publish either — the
     commit Bob has is the one the author's app gets."""
     from fused_render.contrib import engine
     w = sw
@@ -1145,7 +1145,7 @@ def test_r11_an_author_push_racing_send_keeps_the_sent_commit(sw, monkeypatch):
 def test_r10_everything_fused_commits_is_bobs(sw):
     """R10, v3: the engine's "Your edits" commit and its bring-in merge carry
     the copy's own identity (Bob's GitHub one, set at install) — no machine
-    identity reaches the proposal. There is no credit rewrite (§17.7): a
+    identity reaches the proposal. There is no credit rewrite (§17): a
     commit made before Bob signed in goes exactly as it was."""
     w = sw
     red = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
