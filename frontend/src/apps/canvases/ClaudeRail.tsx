@@ -45,6 +45,21 @@ function when(t: Pick<TaskPulseTask, "last_active">): number {
   return Number.isFinite(ms) ? ms : 0;
 }
 
+/** A chat ring's state IN WORDS, for its accessible name (CodeRabbit on
+ *  #1971): the ring says it in colour and fill only, and the link's
+ *  `aria-label` replaces its content, so the ring's own label never reaches a
+ *  screen reader. Same precedence as the ring: a background job, then a run
+ *  waiting on the reader, then one in flight; settled rows say their lane and
+ *  whether they are unread. */
+function statusWords(t: TaskPulseTask, failed: boolean): string {
+  if (liveJobRow(t)) return "running in the background";
+  const column = taskColumn(t);
+  if (column === "needs_attention") return "waiting for you";
+  if (inFlight(column)) return "running";
+  const base = failed ? "blocked" : String(column).replace(/_/g, " ");
+  return t.unread > 0 ? `${base}, unread` : base;
+}
+
 export function ClaudeRail({
   env,
   name,
@@ -162,7 +177,7 @@ export function ClaudeRail({
                     "sidebar-rail-btn canvas-rail-chat" +
                     (activeSessionId && t.session_id === activeSessionId ? " active" : "")
                   }
-                  aria-label={label}
+                  aria-label={`${label} — ${statusWords(t, !!row?.failed)}`}
                   // The list row's own caption (platform/lib/hints): the
                   // title's line, then the reply's — what the row clamps.
                   data-hint={line.hint || label}
@@ -202,7 +217,7 @@ export function ClaudeRail({
           className="sidebar-rail-btn canvas-rail-item"
           href={tasksHref}
           title={running > 0 ? `Tasks on this canvas · ${running} running` : "Tasks on this canvas"}
-          aria-label="Tasks on this canvas"
+          aria-label={running > 0 ? `Tasks on this canvas, ${running} running` : "Tasks on this canvas"}
           onClick={(e) => {
             if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
             e.preventDefault();
