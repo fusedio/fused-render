@@ -441,7 +441,7 @@ def switch_to_link(root, *, backup=None) -> dict:
     engine = _engine()
     rec = store.get(root)
     if not isinstance(rec, dict) or rec.get("kind") != "marketplace":
-        return engine._refuse("not-a-copy", "This app isn't from the Marketplace.")
+        return engine._refuse("not-a-copy", "This app isn't from the Community.")
     repo, branch = rec.get("repo"), rec.get("branch")
     if not follow._valid(repo, branch):
         return engine._refuse("no-source", "fused can't tell where this app comes from.")
@@ -517,7 +517,7 @@ def switch_to_reviewed(root, row, *, backup=None) -> dict:
     if not isinstance(rec, dict) or rec.get("kind") != "github":
         return engine._refuse("not-a-copy", "This only works for an app you follow by GitHub link.")
     if not _row_ok(row) or (row.get("repo") or "").lower() != (rec.get("repo") or "").lower():
-        return engine._refuse("not-listed", "This app isn't in the Marketplace.")
+        return engine._refuse("not-listed", "This app isn't in the Community.")
     slug = row.get("slug") if isinstance(row.get("slug"), str) else None
     ap = _pick(row, slug)
     if ap is None or ap.entry() is None:
@@ -616,7 +616,7 @@ def undo_switch(root, entry) -> dict:
             {**_unknown(rec).__dict__, "repo": rec.get("repo"), "branch": rec.get("branch"),
              "slug": rec.get("slug")} if (rec.get("approved") or {}).get("commit") else None)
         if row is None:
-            return engine._refuse("not-listed", "This app isn't in the Marketplace any more.")
+            return engine._refuse("not-listed", "This app isn't in the Community any more.")
         out = switch_to_reviewed(root, row, backup=backup)
     else:
         return engine._refuse("nothing", "There's nothing to bring back for that.")
@@ -652,10 +652,10 @@ def adopt_legacy(path, row) -> dict:
         return {"ok": False, "reason": reason, "message": message}
 
     if not _row_ok(row):
-        return refuse("not-listed", "This app isn't in the Marketplace any more.")
+        return refuse("not-listed", "This app isn't in the Community any more.")
     slug = row.get("slug") if isinstance(row.get("slug"), str) else None
     if not os.path.isfile(legacy_stamp(path)):
-        return refuse("not-legacy", "This app wasn't installed from the old Marketplace.")
+        return refuse("not-legacy", "This app wasn't installed from the old app store.")
     if os.path.lexists(os.path.join(path, ".git")):
         return refuse("is-repo", "This app is already connected to another source, so fused "
                                  "won't change it.")

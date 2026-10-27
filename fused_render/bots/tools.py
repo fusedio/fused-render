@@ -312,7 +312,7 @@ TOOL_SPECS: dict[str, dict] = {
         "inputSchema": _s()},
     # The Marketplace (every bot, only while the Marketplace is enabled in Preferences; docs §15).
     "marketplace_search": {
-        "description": "Search the Marketplace, the catalog of community apps the user can install on this Mac: `query` "
+        "description": "Search the Community, the catalog of apps people share that the user can install on this Mac: `query` "
                        "words are matched against each app's name, description, tags and category (omit it for the "
                        f"whole catalog; at most {MARKET_HITS} results). Each hit gives the app's slug, what it does, its "
                        "version, whether it needs Python, and whether it is already INSTALLED (then it is in APPS: `show` "
@@ -320,8 +320,8 @@ TOOL_SPECS: dict[str, dict] = {
                        "that is not in APPS, or when a community app would do the task better than browsing.",
         "inputSchema": _s(query={"type": "string", "description": "words to match; omit for the whole catalog"})},
     "marketplace_install": {
-        "description": "Install one Marketplace app (by `slug` from marketplace_search) into the user's workspace: a copy of "
-                       "the author's GitHub repo at the version Fused reviewed (Marketplace apps are reviewed GitHub "
+        "description": "Install one Community app (by `slug` from marketplace_search) into the user's workspace: a copy of "
+                       "the author's GitHub repo at the version Fused reviewed (Community apps are reviewed GitHub "
                        "releases). ALWAYS raises an approval card first: say which app and why in one sentence before "
                        "calling it, and never call it for an app the search marked installed (use `update: true` only when "
                        "the user asks to update it to the newest reviewed release). Waits for the download; the result "
@@ -1113,14 +1113,14 @@ def describe(bot, act: str, d: dict, obs: dict) -> str:
         return "press Ctrl-C in the terminal"
     if act == "marketplace_search":
         q = " ".join(str(d.get("query") or d.get("text") or "").split())
-        return f"search the Marketplace for \"{q[:80]}\"" if q else "list the Marketplace"
+        return f"search the Community for \"{q[:80]}\"" if q else "list the Community"
     if act == "marketplace_install":
         slug, update, err = _market_target(d)
         if err:
-            return f"install Marketplace app \"{slug or '?'}\" ({err})"
+            return f"install Community app \"{slug or '?'}\" ({err})"
         name, ver = _market_name(slug)
         where = _market_where(slug)
-        return (f"{'update' if update else 'install'} the Marketplace app \"{name}\"" + (f" v{ver}" if ver else "")
+        return (f"{'update' if update else 'install'} the Community app \"{name}\"" + (f" v{ver}" if ver else "")
                 + (f" {'at' if update else 'into'} {where}" if where else ""))
     if act == "tool":
         app, name, args = apptools.tool_ref(d)
@@ -1363,7 +1363,7 @@ def _market_target(d: dict) -> tuple[str, bool, str]:
     slug = str((d or {}).get("slug") or (d or {}).get("name") or (d or {}).get("value") or "").strip()
     update = (d or {}).get("update") is True
     if not _mkt.is_slug(slug):
-        return slug, update, "not a Marketplace slug; take it from marketplace_search"
+        return slug, update, "not a Community slug; take it from marketplace_search"
     snap, err = _mkt.cached_snapshot()
     if snap is not None and slug not in (snap.get("apps") or {}):
         # The server's search (marketplace_search) can rank an app the cached catalog predates: rebuild it
@@ -1371,7 +1371,7 @@ def _market_target(d: dict) -> tuple[str, bool, str]:
         # same cache file, so what passed here is what it installs.
         snap, err = _mkt.get_snapshot(force=True)
     if snap is None:
-        return slug, update, f"the Marketplace catalog is unavailable ({err or 'no catalog'})"
+        return slug, update, f"the Community catalog is unavailable ({err or 'no catalog'})"
     row = (snap.get("apps") or {}).get(slug)
     if row is None:
         return slug, update, "no such app in the catalog; take the slug from marketplace_search"
@@ -1386,7 +1386,7 @@ def _market_target(d: dict) -> tuple[str, bool, str]:
         # D13 (docs/CONTRIB_LOOP.md §18.4): changing a copy's trust level is the user's explicit choice.
         return slug, update, (f"the user already follows this app by GitHub link at {where} (every change, "
                               "unreviewed); switching it to reviewed releases is not a bot's call: the user decides "
-                              "that in the app (its Marketplace page)")
+                              "that in the app (its Community page)")
     if plan["action"] == "update" and not update:
         return slug, update, f"already installed at {where} (in APPS; pass update: true only to update it)"
     if plan["action"] == "install" and update:
@@ -1427,7 +1427,7 @@ def _market_hits(q: str) -> tuple[list[dict], int, str]:
             return apps[:MARKET_HITS], len(apps) + (1 if got.get("next_cursor") else 0), ""
     cat = _mkt.catalog()
     if cat.get("status") != "ok":
-        return [], 0, f"error: the Marketplace is unavailable ({cat.get('message') or 'no catalog'})"
+        return [], 0, f"error: the Community is unavailable ({cat.get('message') or 'no catalog'})"
     words = [w for w in re.split(r"[^a-z0-9+#.]+", q) if w]
     scored = []
     for a in cat.get("apps") or []:
@@ -1492,14 +1492,14 @@ def _market_install(bot, d: dict) -> str:
     if job.get("status") == "confirm":
         # The plan changed between the card and the call (the user installed by link meanwhile).
         return ("error: the user follows this app by GitHub link; switching it to reviewed releases is the user's "
-                "choice: the user decides that in the app (its Marketplace page)")
+                "choice: the user decides that in the app (its Community page)")
     deadline = time.monotonic() + MARKET_INSTALL_WAIT_S
     while job.get("state") not in ("done", "error"):
         if bot.stop_flag.is_set():
-            return f"error: stopped while the {job.get('action') or 'install'} of {slug} was running; it finishes on its own (see the Marketplace page)."
+            return f"error: stopped while the {job.get('action') or 'install'} of {slug} was running; it finishes on its own (see the Community page)."
         if time.monotonic() > deadline:
             return (f"error: the {job.get('action') or 'install'} of {slug} is still running after "
-                    f"{MARKET_INSTALL_WAIT_S} s ({job.get('message') or '…'}); the user can follow it on the Marketplace page.")
+                    f"{MARKET_INSTALL_WAIT_S} s ({job.get('message') or '…'}); the user can follow it on the Community page.")
         time.sleep(1.0)
         job = (_mkt.list_jobs().get("jobs") or {}).get(slug) or job
     if job.get("state") == "error":
@@ -1713,7 +1713,7 @@ def execute(bot, act: str, d: dict, obs: dict) -> tuple[str, str]:
             label = describe(bot, act, d, obs)  # BEFORE the install: afterwards the same call describes as "already installed"
             if not marketplace_on():
                 # The roster and the steps prompt drop these while the pref is off; a model that names one anyway is refused.
-                return label, "error: the Marketplace is off (the user turns it on in Preferences › Experimental flags)"
+                return label, "error: the Community is off (the user turns it on in Preferences › Experimental flags)"
             return label, (_market_search(d) if act == "marketplace_search" else _market_install(bot, d))
         if act in TERMINAL_TOOLS:
             label = describe(bot, act, d, obs)

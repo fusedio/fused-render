@@ -314,13 +314,13 @@ def _http_get(url: str, *, headers: dict | None = None,
     try:
         r = httpx.get(url, headers=headers, timeout=timeout, follow_redirects=True)
     except httpx.HTTPError as e:
-        return None, f"could not reach the marketplace ({e.__class__.__name__})"
+        return None, f"could not reach the Community ({e.__class__.__name__})"
     if r.status_code == 429:
-        return None, "the marketplace is rate-limiting requests"
+        return None, "the Community is rate-limiting requests"
     if r.status_code == 404:
         return None, "not found (404)"
     if r.status_code >= 400:
-        return None, f"the marketplace answered {r.status_code}"
+        return None, f"the Community answered {r.status_code}"
     return r, None
 
 
@@ -344,9 +344,9 @@ def _udf_get(endpoint: str, *, timeout: float = HTTP_TIMEOUT_S, **params) -> lis
     try:
         rows = r.json()
     except ValueError:
-        raise SourceError("the marketplace answered something unexpected")
+        raise SourceError("the Community answered something unexpected")
     if not isinstance(rows, list) or not all(isinstance(x, dict) for x in rows):
-        raise SourceError("the marketplace answered something unexpected")
+        raise SourceError("the Community answered something unexpected")
     if len(rows) == 1 and rows[0].get("error_code"):
         code = str(rows[0]["error_code"])
         raise SourceError(str(rows[0].get("error_message") or code), code)
@@ -1203,7 +1203,7 @@ def ack_python(slug: str) -> list[str]:
     """Record that the user accepted `slug`'s Python notice; idempotent.
     Returns the acknowledged slugs. ValueError when `slug` is not a slug."""
     if not is_slug(slug):
-        raise ValueError("not a marketplace slug")
+        raise ValueError("not a Community slug")
     os.makedirs(state_dir(), exist_ok=True)
     # `_ACKS_LOCK` serialises this process's threads; the advisory flock on a
     # sidecar file serialises PROCESSES — other worktrees' servers share this
@@ -1465,7 +1465,7 @@ def plan_install(slug: str, row: dict) -> dict:
         # Installed row's "Switch to the reviewed version" (adopt) is the way.
         return {**plan, "action": "refuse", "path": copy["path"], "code": "legacy",
                 "reason": "Switch to the reviewed version first: this app was installed from the "
-                          "old Marketplace. Use “Switch to the reviewed version” on the Installed page."}
+                          "old app store. Use “Switch to the reviewed version” on the Installed page."}
     if copy and copy["kind"] == "own":
         return {**plan, "action": "refuse", "path": copy["path"], "code": "own",
                 "reason": f"This is your own app; it's already at {copy['path']}."}
@@ -1661,7 +1661,7 @@ def install_app(slug: str, row: dict, report=lambda **kw: None) -> dict:
             # place; replacing it would send it to the Trash. Never on the
             # user's behalf from here.
             raise InstallError(f"{target['path']} already holds this app, installed another way. "
-                               "Uninstall it first, then install it from the Marketplace.")
+                               "Uninstall it first, then install it from the Community.")
         try:
             # `approved` is a dict with the 40-hex commit (plan_install checked
             # it): a bare sha would leave the copy with no approved commit.
@@ -1776,11 +1776,11 @@ def adopt(slug: str) -> dict:
         # only a plain-files folder is a legacy install.
         raise InstallError("This is already a copy of the app's repo.")
     if not copy or copy["kind"] != "legacy":
-        raise InstallError("There is no copy from the old Marketplace to switch.")
+        raise InstallError("There is no copy from the old app store to switch.")
     snap, error = cached_snapshot()
     row = ((snap or {}).get("apps") or {}).get(slug)
     if row is None:
-        raise InstallError("This app is no longer in the Marketplace, so there is no reviewed "
+        raise InstallError("This app is no longer in the Community, so there is no reviewed "
                            "version to switch to.")
     if not row_repo(row) or not is_sha(row.get("commit")):
         raise InstallError("This app has no reviewed version to switch to yet.")

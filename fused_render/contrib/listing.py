@@ -101,7 +101,7 @@ REVIEW_BOT = "github-actions[bot]"
 TAGS_MAX = 8
 #: The fix session's fixed first words: `_live_app_task` recognises a fix
 #: already running on this app by them (one live fix per app, like Doctor).
-FIX_PROMPT_HEAD = "Fix what the Fused Marketplace review found in this app."
+FIX_PROMPT_HEAD = "Fix what the Fused Community review found in this app."
 #: The App Doctor rows outside the sharing section that still gate a
 #: publish: a leaked key is the one essentials finding the review would
 #: ship to everyone.
@@ -160,7 +160,7 @@ def _record(root: str) -> dict:
     from fused_render.contrib import store
     rec = store.get(root)
     if not isinstance(rec, dict) or rec.get("kind") != "own" or not rec.get("repo"):
-        raise PlainError("Only an app of your own that is on GitHub can go in the Marketplace.",
+        raise PlainError("Only an app of your own that is on GitHub can go in the Community.",
                          reason="not-allowed")
     return rec
 
@@ -390,7 +390,7 @@ def _scratch(index: str) -> str:
         os.makedirs(path, exist_ok=True)
         res = gh._git(path, "init", "-q", "--bare")
         if res is None or res.returncode != 0:
-            raise PlainError("fused couldn't prepare the Marketplace request. Try again.")
+            raise PlainError("fused couldn't prepare the Community request. Try again.")
     return path
 
 
@@ -398,7 +398,7 @@ def _sg(scratch: str, *args: str, env: dict | None = None, input: str | None = N
     res = gh._git(scratch, *args, env=env, input=input)
     if res is None or res.returncode != 0:
         logger.info("listing: git %s failed: %s", args[:2], (res.stderr if res else "")[:300])
-        raise PlainError("fused couldn't prepare the Marketplace request. Try again.")
+        raise PlainError("fused couldn't prepare the Community request. Try again.")
     return res.stdout.strip()
 
 
@@ -600,7 +600,7 @@ def review_of(pr: dict | None, comments: list[dict], checks: list[dict],
 def _identity() -> dict:
     me = gh.identity(strict=True)
     if not me:
-        raise gh.GitHubError("signed-out", "Sign in to GitHub to publish to the Marketplace.")
+        raise gh.GitHubError("signed-out", "Sign in to GitHub to publish to the Community.")
     return me
 
 
@@ -867,7 +867,7 @@ def build_row(root: str, rec: dict, details: dict, *, repo: str, branch: str, co
     base = base or {}
     slug = _str(details.get("slug") or base.get("slug")).lower()
     if not SLUG_RE.match(slug):
-        raise PlainError("The Marketplace name must be 2 to 64 lowercase letters, numbers or "
+        raise PlainError("The Community name must be 2 to 64 lowercase letters, numbers or "
                          "dashes, starting with a letter or number.", reason="invalid")
     name = " ".join(_str(details.get("name") or base.get("name")).split())
     if not name or len(name) > NAME_MAX:
@@ -879,7 +879,7 @@ def build_row(root: str, rec: dict, details: dict, *, repo: str, branch: str, co
                          reason="invalid")
     category = _str(details.get("category") or base.get("category")) or DEFAULT_CATEGORY
     if category not in {c["id"] for c in categories()}:
-        raise PlainError("Pick one of the Marketplace's categories.", reason="invalid")
+        raise PlainError("Pick one of the Community's categories.", reason="invalid")
     icon = _clean_path(root, commit, details["icon"] if "icon" in details else base.get("icon"),
                        "icon")
     preview = _clean_path(root, commit, details["preview"] if "preview" in details
@@ -948,7 +948,7 @@ def _gate_publish(root: str, rec: dict) -> tuple[str, str, str]:
     tip = gh.branch_tip(repo, branch)
     if not tip or _head(root) != tip:
         raise PlainError("Your copy and the version on GitHub differ. Publish your changes to "
-                         "GitHub first; the Marketplace lists what is on GitHub.",
+                         "GitHub first; the Community lists what is on GitHub.",
                          reason="unpushed")
     _step("doctor")
     blockers = doctor_blockers(root)
@@ -960,7 +960,7 @@ def _gate_publish(root: str, rec: dict) -> tuple[str, str, str]:
 
 def _body(kind: str, row: dict | None, name: str, *, repo: str, subjects=()) -> str:
     if kind == "remove":
-        text = (f"Removes **{name}** from the Fused Marketplace. People who installed it keep "
+        text = (f"Removes **{name}** from the Fused Community. People who installed it keep "
                 "their copy on its last reviewed version.")
     elif kind == "update":
         text = f"Moves **{name}** (`{repo}`) to `{row['commit'][:7]}`."
@@ -968,7 +968,7 @@ def _body(kind: str, row: dict | None, name: str, *, repo: str, subjects=()) -> 
         text += "\n\n## What changed\n" + (f"{changed}." if changed
                                            else f"A new version of {name}.")
     else:
-        text = f"Lists **{name}** (`{repo}` at `{row['commit'][:7]}`) in the Fused Marketplace."
+        text = f"Lists **{name}** (`{repo}` at `{row['commit'][:7]}`) in the Fused Community."
         desc = (row.get("description") or "").rstrip(".")
         text += "\n\n## What changed\n" + (f"First release: {desc}." if desc
                                            else "First release.")
@@ -997,10 +997,10 @@ def _send(root: str, me: dict, slug: str, row: dict | None, *, kind: str, title:
         base = _sg(scratch, "rev-parse", f"{_IDX_REF}^{{commit}}")
         on_main = _row_at(scratch, _IDX_REF, slug)
         if row is not None and on_main and _str(on_main.get("repo")).lower() != row["repo"].lower():
-            raise PlainError("That Marketplace name is taken by another app. Pick another one.",
+            raise PlainError("That Community name is taken by another app. Pick another one.",
                              reason="slug-taken")
         if row is None and on_main is None:
-            raise PlainError(f"{lo.get('name') or 'This app'} isn't in the Marketplace.",
+            raise PlainError(f"{lo.get('name') or 'This app'} isn't in the Community.",
                              reason="not-listed")
         sha = _commit_row(scratch, base, slug, row, title, me)
         _step("push")
@@ -1026,7 +1026,7 @@ def _send(root: str, me: dict, slug: str, row: dict | None, *, kind: str, title:
 
 def _require(root: str) -> tuple[dict, dict, dict]:
     if not _enabled():
-        raise PlainError("The Marketplace isn't turned on.", reason="disabled")
+        raise PlainError("The Community isn't turned on.", reason="disabled")
     rec = _record(root)
     me = _identity()
     _step("check")
@@ -1040,7 +1040,7 @@ def publish(root: str, details: dict) -> dict:
     description, category, tags, icon, preview}` (+ optional `version`)."""
     rec, me, lo = _require(root)
     if lo.get("row"):
-        raise PlainError(f"{lo['name']} is already in the Marketplace. Use Publish update to "
+        raise PlainError(f"{lo['name']} is already in the Community. Use Publish update to "
                          "send a new version.", reason="listed")
     repo, branch, tip = _gate_publish(root, rec)
     row = build_row(root, rec, details, repo=repo, branch=branch, commit=tip)
@@ -1062,18 +1062,18 @@ def publish_update(root: str) -> dict:
     pr = lo.get("pr") or {}
     base = lo.get("row") or (pr.get("row") if pr.get("kind") != "remove" else None)
     if not isinstance(base, dict):
-        raise PlainError(f"{lo['name']} isn't in the Marketplace yet. Publish it first.",
+        raise PlainError(f"{lo['name']} isn't in the Community yet. Publish it first.",
                          reason="not-listed")
     repo, branch, tip = _gate_publish(root, rec)
     current = pr.get("commit") if pr.get("state") == "open" and pr.get("row") else base.get(
         "commit")
     if current == tip and not _resend_allowed(lo):
-        raise PlainError("The Marketplace already has this version. Change your app and "
+        raise PlainError("The Community already has this version. Change your app and "
                          "publish it to GitHub first.", reason="up-to-date")
     approved = (lo.get("row") or {}).get("commit")
     if approved and not _is_ancestor(root, approved, tip):
         raise PlainError("The version on GitHub doesn't continue from the one in the "
-                         "Marketplace, so it can't go out as an update.", reason="rewritten")
+                         "Community, so it can't go out as an update.", reason="rewritten")
     row = build_row(root, rec, {}, repo=repo, branch=branch, commit=tip, base=base)
     kind = "update" if lo.get("row") else "list"
     title = f"{'Update' if kind == 'update' else 'List'} {row['name']}"
@@ -1087,10 +1087,10 @@ def remove(root: str) -> dict:
     keep their last approved commit; nothing here touches them."""
     rec, me, lo = _require(root)
     if not lo.get("row") or not lo.get("slug"):
-        raise PlainError(f"{lo['name']} isn't in the Marketplace.", reason="not-listed")
+        raise PlainError(f"{lo['name']} isn't in the Community.", reason="not-listed")
     name = lo["name"]
     return _send(root, me, lo["slug"], None, kind="remove",
-                 title=f"Remove {name} from the Marketplace",
+                 title=f"Remove {name} from the Community",
                  body=_body("remove", None, name, repo=lo.get("repo") or rec["repo"]), lo=lo)
 
 
@@ -1128,7 +1128,7 @@ def fix_prompt(root: str) -> str:
     pr = lo.get("pr") or {}
     at = f" at {pr['commit'][:7]}" if isinstance(pr.get("commit"), str) else ""
     lines = [FIX_PROMPT_HEAD, "",
-             f"The Fused Marketplace review turned down {name} ({lo.get('repo') or ''}{at}). "
+             f"The Fused Community review turned down {name} ({lo.get('repo') or ''}{at}). "
              "Its reasons, quoted from the review:", ""]
     lines += [f"> {r}" for r in reasons]
     lines += ["",

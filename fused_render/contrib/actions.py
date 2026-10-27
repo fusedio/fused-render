@@ -628,7 +628,7 @@ def _marketplace(f: dict, flags: dict) -> dict:
 
 
 def _delisted() -> str:
-    return ("No longer in the Marketplace. Your copy keeps working on its last reviewed "
+    return ("No longer in the Community. Your copy keeps working on its last reviewed "
             "version.")
 
 

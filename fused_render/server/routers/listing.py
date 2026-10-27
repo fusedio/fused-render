@@ -78,9 +78,9 @@ def _target(path, *, read: bool = False) -> _Target | dict:
     if not isinstance(record, dict):
         return _refuse("unknown", "Can't tell where this app came from yet. Try again in a moment.")
     if record.get("kind") != "own":
-        return _refuse("not-allowed", "Only an app of your own can go in the Marketplace.")
+        return _refuse("not-allowed", "Only an app of your own can go in the Community.")
     if not record.get("repo"):
-        return _refuse("no-repo", "Publish this app to GitHub first; the Marketplace lists "
+        return _refuse("no-repo", "Publish this app to GitHub first; the Community lists "
                                   "apps that are on GitHub.")
     return _Target(app_dir, record)
 

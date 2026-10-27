@@ -396,7 +396,7 @@ def test_remove_opens_a_delete_pr(w):
     _go_live(w)
     out = listing.remove(w.app)
     pr, row = _row_at_head(w, out["pr"]["number"])
-    assert pr["title"] == "Remove Sine Starter from the Marketplace"
+    assert pr["title"] == "Remove Sine Starter from the Community"
     assert row is None  # the row is deleted on the branch
     assert w.fake.read(pr["head_repo"], "apps/other.json", ref=pr["head_sha"]) is not None
     lst = listing.view(w.app)

@@ -33,5 +33,5 @@ def _retired() -> bool:
 def api_community(body: dict = Body(...)):
     if _retired():
         return {"status": "retired",
-                "message": "The Showcase is now the Marketplace."}
+                "message": "The Showcase is now the Community."}
     return community.main(action=str(body.get("action") or "catalog"))

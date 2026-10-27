@@ -154,7 +154,7 @@ def clone(url: str, repo: str, *, commit: str | None = None) -> tuple[str, str, 
     anyway), and HEAD is detached there; `_home_branch` then makes
     `fused/mine` at it, with the mirror `refs/heads/<b>` = the commit."""
     if commit is not None and not _SHA_RE.match(commit or ""):
-        raise GitInstallError("the Marketplace named a version fused can't read")
+        raise GitInstallError("the Community named a version fused can't read")
     root = _staging_root(url)
     os.makedirs(os.path.dirname(root), exist_ok=True)
     work = tempfile.mkdtemp(dir=os.path.dirname(root), prefix=".clone-")
@@ -753,7 +753,7 @@ def _update_clone(dest: str, src: dict, *, aside) -> None:
     if _kind(dest) == "marketplace":
         # M1 (§18.4): a marketplace copy is never fast-forwarded to a link's
         # commit — `install` answers it with the switch-link prompt.
-        raise GitInstallError("This app updates from the Marketplace's reviewed versions only.")
+        raise GitInstallError("This app updates from the Community's reviewed versions only.")
     fetch = ("fetch", "-q", "origin")
     branch = None
     if aside is not None:

@@ -180,7 +180,7 @@ def test_delisted_needs_a_fresh_catalog_and_keeps_the_last_version(m):
     st = engine.status(m.app)
     assert st["state"] == "delisted"
     panel = actions.decide({**actions.facts(m.app), "flags": {"sources": True}})["panel"]
-    assert panel["sentence"].startswith("No longer in the Marketplace.")
+    assert panel["sentence"].startswith("No longer in the Community.")
     inv(m)
 
 
@@ -406,7 +406,7 @@ def test_marketplace_switch_alone_shows_a_marketplace_copys_ui(m, monkeypatch):
     claude_commit(m.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     page = route.api_contrib_app(path=m.app)
     assert not {a["id"] for a in page["actions"]} & {"propose", "remix"}
-    assert refresh.cards()[m.app]["label"] == "Marketplace · reviewed"
+    assert refresh.cards()[m.app]["label"] == "Community · reviewed"
     # A GitHub-link copy: the loop's own gate, unchanged.
     m.g("reset", "-q", "--hard", m.c1)
     assert market.switch_to_link(m.app)["ok"]

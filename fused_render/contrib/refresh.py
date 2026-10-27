@@ -143,9 +143,9 @@ def source(record: dict | None) -> tuple[str, str] | None:
         return "github", f"GitHub link · follows {record['repo']}"
     if kind == "marketplace":
         listing = record.get("listing") if isinstance(record.get("listing"), dict) else {}
-        return "marketplace", ("Marketplace · no longer listed"
+        return "marketplace", ("Community · no longer listed"
                                if listing.get("status") == "delisted"
-                               else "Marketplace · reviewed")
+                               else "Community · reviewed")
     if kind == "own":
         original = remix_of(record)
         return ("remix", f"Remix of {original}") if original else ("own", "Your app")

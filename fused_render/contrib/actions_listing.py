@@ -38,7 +38,7 @@ LISTING_IDS = ("publish-market", "publish-update", "confirm-powers", "fix-with-c
 #: Ids the listing route also offers in place of a gated publish.
 ROUTE_IDS = ("publish-now", "open-doctor", "sign-in")
 
-REMOVE_CONFIRM = ("{name} leaves the Marketplace. People who installed it keep their copy "
+REMOVE_CONFIRM = ("{name} leaves the Community. People who installed it keep their copy "
                   "on its last reviewed version.")
 #: Said while the index's check runs without an Anthropic key (WS-IDX: the
 #: block carries `"claude": "skipped"`).
@@ -73,22 +73,22 @@ def decide(lst: dict, *, signed_in: bool = True, refreshing: bool = False) -> di
     extra: list[str] = []
     if not signed_in:
         return {"state": "signed-out",
-                "sentence": f"Sign in to GitHub to publish {name} to the Marketplace.",
+                "sentence": f"Sign in to GitHub to publish {name} to the Community.",
                 "actions": [_btn("sign-in", "Sign in to GitHub", primary=True,
                                  dialog="sign-in")]}
     if not lst.get("checked_at"):
         if refreshing:
-            return {"state": "pending", "sentence": f"Checking the Marketplace for {name}…",
+            return {"state": "pending", "sentence": f"Checking the Community for {name}…",
                     "actions": []}
         return {"state": "unknown",
-                "sentence": f"fused hasn't checked the Marketplace for {name} yet.",
-                "actions": [_btn("check-listing", "Check the Marketplace", primary=True)]}
+                "sentence": f"fused hasn't checked the Community for {name} yet.",
+                "actions": [_btn("check-listing", "Check the Community", primary=True)]}
 
     def gates_ok() -> bool:
         """Publish is offered only when it would not be refused; the
         refusal's own fix is offered in its place."""
         if lst.get("unpushed"):
-            extra.append("Your latest changes aren't on GitHub yet; the Marketplace lists "
+            extra.append("Your latest changes aren't on GitHub yet; the Community lists "
                          "what is on GitHub.")
             acts.append(_btn("publish-now", "Publish now", primary=True))
             return False
@@ -126,7 +126,7 @@ def decide(lst: dict, *, signed_in: bool = True, refreshing: bool = False) -> di
             acts.append(_btn("fix-with-claude", "Fix with Claude", primary=not moved))
         if pr.get("kind") == "remove":
             if listed:
-                acts.append(_btn("remove-market", "Remove from Marketplace", danger=True,
+                acts.append(_btn("remove-market", "Remove from Community", danger=True,
                                  confirm=REMOVE_CONFIRM.format(name=name)))
         elif listed or pr.get("commit"):
             if gates_ok():
@@ -134,12 +134,12 @@ def decide(lst: dict, *, signed_in: bool = True, refreshing: bool = False) -> di
                                  "Send the new version" if moved else "Send again",
                                  primary=moved or closed))
         elif gates_ok():
-            acts.append(_btn("publish-market", "Publish to Marketplace", primary=True,
+            acts.append(_btn("publish-market", "Publish to Community", primary=True,
                              dialog="listing"))
         acts.append(_btn("check-listing", "Check again"))
     elif status == "in-review":
         state = "removing" if removing else "in-review"
-        sentence = (f"Removing {name} from the Marketplace. About 30 minutes." if removing
+        sentence = (f"Removing {name} from the Community. About 30 minutes." if removing
                     else f"Fused is reviewing {name}. About 30 minutes.")
         if review.get("confirmed"):
             sentence += " You confirmed its new abilities."
@@ -147,20 +147,20 @@ def decide(lst: dict, *, signed_in: bool = True, refreshing: bool = False) -> di
     elif listed:
         state = "live"
         when = L.day((lst.get("approved") or {}).get("at"))
-        sentence = (f"{name} is in the Marketplace, release of {when}." if when
-                    else f"{name} is in the Marketplace.")
+        sentence = (f"{name} is in the Community, release of {when}." if when
+                    else f"{name} is in the Community.")
         if lst.get("update_available"):
             sentence += " Your app has changed since."
             if gates_ok():
                 acts.append(_btn("publish-update", "Publish update", primary=True))
-        acts.append(_btn("remove-market", "Remove from Marketplace", danger=True,
+        acts.append(_btn("remove-market", "Remove from Community", danger=True,
                          confirm=REMOVE_CONFIRM.format(name=name)))
         acts.append(_btn("check-listing", "Check again"))
     else:
         state = "not-listed"
-        sentence = f"{name} isn't in the Marketplace yet."
+        sentence = f"{name} isn't in the Community yet."
         if gates_ok():
-            acts.append(_btn("publish-market", "Publish to Marketplace", primary=True,
+            acts.append(_btn("publish-market", "Publish to Community", primary=True,
                              dialog="listing"))
         acts.append(_btn("check-listing", "Check again"))
     if review.get("claude_skipped") and state in ("in-review", "needs-confirmation", "failed"):

@@ -318,7 +318,7 @@ def test_udf_get_error_row_transport_and_shape(monkeypatch):
     with pytest.raises(mp.SourceError, match="no such app") as ei:
         mp._udf_get("marketplace_app_detail", slug="x")
     assert ei.value.error_code == "app_not_found"
-    monkeypatch.setattr(mp, "_http_get", lambda url, **kw: (None, "could not reach the marketplace (X)"))
+    monkeypatch.setattr(mp, "_http_get", lambda url, **kw: (None, "could not reach the Community (X)"))
     with pytest.raises(mp.SourceError, match="could not reach"):
         mp._udf_get("marketplace_catalog")
     for body in ({"not": "a list"}, ["not-a-dict"], ValueError("html")):
@@ -456,7 +456,7 @@ def test_snapshot_written_by_the_old_backend_is_no_cache(env):
 def test_stale_cache_fallback(env):
     cat = mp.catalog()
     assert cat["stale"] is False
-    env["api"].fail = "could not reach the marketplace (ConnectError)"
+    env["api"].fail = "could not reach the Community (ConnectError)"
     cat2 = mp.catalog(refresh=True)
     assert cat2["status"] == "ok" and cat2["stale"] is True
     assert "could not reach" in cat2["warning"]
@@ -506,9 +506,9 @@ def test_search_merges_installed_and_reports_errors_as_200(env):
     [hit] = _client().get("/api/marketplace/search", params={"q": "sine"}).json()["apps"]
     assert hit["installed"]["kind"] == "marketplace" and hit["installed"]["commit"] == commit
     assert hit["update_available"] is False
-    env["api"].fail = "the marketplace answered 502"
+    env["api"].fail = "the Community answered 502"
     r = _client().get("/api/marketplace/search", params={"q": "sine"})
-    assert r.status_code == 200 and r.json() == {"status": "error", "message": "the marketplace answered 502"}
+    assert r.status_code == 200 and r.json() == {"status": "error", "message": "the Community answered 502"}
 
 
 def test_search_row_without_commit_does_not_flag_an_installed_current_app(env):
@@ -917,9 +917,9 @@ def test_adopt_a_legacy_copy(env, monkeypatch):
     del env["api"].apps["sine-starter"]
     mp.catalog(refresh=True)
     r = client.post("/api/marketplace/adopt", json={"slug": "sine-starter"}, headers=FUSED)
-    assert r.status_code == 400 and "no longer in the Marketplace" in r.json()["message"]
+    assert r.status_code == 400 and "no longer in the Community" in r.json()["message"]
     r = client.post("/api/marketplace/adopt", json={"slug": "local-chat"}, headers=FUSED)
-    assert r.status_code == 400 and "no copy from the old Marketplace" in r.json()["message"]
+    assert r.status_code == 400 and "no copy from the old app store" in r.json()["message"]
 
 
 def test_check_forces_the_catalog_refreshes_blocks_and_syncs_the_copy(env, monkeypatch):
@@ -980,7 +980,7 @@ def test_blocklist_fetch_ttl_force_and_route(env):
 def test_blocklist_offline_keeps_the_last_list(env, monkeypatch):
     env["api"].blocked = [_blk()]
     mp.blocklist()
-    env["api"].fail = "could not reach the marketplace (ConnectError)"
+    env["api"].fail = "could not reach the Community (ConnectError)"
     bl = mp.blocklist(force=True)
     assert bl["status"] == "stale" and bl["stale"] is True and bl["blocked"] == [_blk()]
     assert "could not reach" in bl["message"]
@@ -1181,7 +1181,7 @@ def test_detail_found_and_not_found(env):
 
 def test_detail_falls_back_to_the_snapshot_when_the_api_is_down(env):
     mp.catalog()
-    env["api"].fail = "the marketplace answered 502"
+    env["api"].fail = "the Community answered 502"
     d = mp.app_detail("local-chat")
     assert d["status"] == "ok" and d["app"]["slug"] == "local-chat"
     assert d["readme"] == "" and d["files"] == [] and d["releases"] == d["app"]["releases"]

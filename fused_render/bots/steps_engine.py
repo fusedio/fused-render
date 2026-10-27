@@ -104,12 +104,12 @@ def system_prompt() -> str:
 # The Marketplace's two actions (docs §15), in the prompt only while the Marketplace is on (tools.marketplace_on):
 # the same pref that shows the shell its entry points.
 MARKETPLACE_ACTIONS = (
-    "- marketplace_search [query]: search the Marketplace, the catalog of community apps the user can install (`query` words "
+    "- marketplace_search [query]: search the Community, the catalog of apps people share that the user can install (`query` words "
     "against name, description, tags, category; omit it for the whole catalog). Each hit gives the app's slug, what it does and "
     "whether it is INSTALLED already (then it is in APPS: `show` it, do not install again). Read-only. Use it when the user asks "
     "for an app that is not in APPS, or when a community app would do the task better than browsing.\n"
-    "- marketplace_install slug [update]: install one Marketplace app (slug from marketplace_search) into the user's workspace: "
-    "a copy of its author's GitHub repo at the version Fused reviewed (Marketplace apps are reviewed GitHub releases). "
+    "- marketplace_install slug [update]: install one Community app (slug from marketplace_search) into the user's workspace: "
+    "a copy of its author's GitHub repo at the version Fused reviewed (Community apps are reviewed GitHub releases). "
     "ALWAYS raises an approval card first (say which app and why in `thought`); `update: true` only when the user asks to "
     "update an installed one to the newest reviewed release. An app the user already follows by GitHub link is refused: "
     "switching it is the user's choice in the app. The result names its folder, now in APPS: `show` it, `goto` its link, "

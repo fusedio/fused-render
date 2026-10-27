@@ -93,7 +93,7 @@ OTHER_VERSION_MESSAGE = ("You're on a different version of this app. Go back to 
                          "version first.")
 #: §18.4: a delisted marketplace copy's state sentence (and a button's
 #: refusal: nothing to update from).
-DELISTED_MESSAGE = ("No longer in the Marketplace. Your copy keeps working on its last "
+DELISTED_MESSAGE = ("No longer in the Community. Your copy keeps working on its last "
                     "reviewed version.")
 BLOCKED_MESSAGE = "Fused blocked the version of this app you were running."
 

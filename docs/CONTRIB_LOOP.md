@@ -1229,6 +1229,8 @@ the squash commit-list noise; no replay anywhere.
 
 ## 18. Stage B — the reviewed marketplace (2026-10-26) — AUTHORITATIVE
 
+**Name (owner 2026-10-27): the feature is called Community** in every word a person sees — status sentences, button labels, dialogs, bot tool descriptions, the hosted listing page's brand — because there is no money involved and it is open source. Identifiers keep their names: the routes (`/api/marketplace/*`), the pref key (`marketplace_enabled`), the module and UDF names (`marketplace.py`, `marketplace_catalog` …), the record `kind: "marketplace"`, the `market` keys and the deep link param (`open?marketplace=`). This section's own wording predates the rename and is left as written.
+
 Handoff: claude.ai/artifact/XWJXP9xWBVFGGKK4DCU4GU (the owner's approval).
 Stacked on `github-contribution-loop` (branch `marketplace-stage-b`). Every
 rule of §16/§17 stands; this section adds the `marketplace` kind, the index,
