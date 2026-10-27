@@ -3,6 +3,7 @@ repair round, plain words. The CLI call is the `_run_cli` seam."""
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 
@@ -131,6 +132,62 @@ def test_removed_lines_do_not_count():
     assert ai.static_hits(diff=d, files=["a.py"]) == []
 
 
+# ------------------------------------------------------------- the CLI call
+
+
+def test_the_call_starts_no_mcp_server_and_can_posix_spawn(monkeypatch):
+    """The user's MCP servers never start for a review (--strict-mcp-config
+    with an empty list), and the spawn keeps CPython on posix_spawn: no
+    cwd, no new session (fork with libproj resident SIGSEGVs)."""
+    monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", sys.executable)
+    monkeypatch.setattr(ai, "_children", set())
+    seen = {}
+
+    class FakeProc:
+        returncode = 0
+
+        def __init__(self, argv, **kw):
+            seen["argv"], seen["kw"] = argv, kw
+            seen["live"] = None
+
+        def communicate(self, input=None, timeout=None):
+            seen["live"] = self in ai._children
+            return json.dumps({"type": "result", "subtype": "success", "is_error": False,
+                               "result": "ok"}) + "\n", ""
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(ai.subprocess, "Popen", FakeProc)
+    assert ai._run_cli("sys", "hi", model="sonnet", timeout=5) == "ok"
+    argv, kw = seen["argv"], seen["kw"]
+    assert "--strict-mcp-config" in argv
+    assert json.loads(argv[argv.index("--mcp-config") + 1]) == {"mcpServers": {}}
+    assert kw["close_fds"] is False and "cwd" not in kw and "start_new_session" not in kw
+    assert seen["live"] is True and ai._children == set()   # registered while it ran
+
+
+def test_claude_children_are_found_at_quit(monkeypatch):
+    monkeypatch.setattr(ai, "_children", set())
+    monkeypatch.setattr(ai, "_quitting", False)
+
+    class P:
+        killed = False
+
+        def kill(self):
+            self.killed = True
+
+    running = P()
+    assert ai.child_started(running) and ai.accepting_children()
+    ai.refuse_children()
+    ai.stop_children()
+    assert running.killed and ai._children == set()
+    late = P()        # spawned between the check and the latch
+    assert ai.child_started(late) is False and late.killed
+    assert not ai.accepting_children()
+    assert ai._run_cli("sys", "hi", model="sonnet", timeout=5) is None
+
+
 # ------------------------------------------------------------ the safety review
 
 
@@ -202,7 +259,9 @@ def test_protocol_relative_and_shared_host_sources():
 
 
 def test_file_flags_from_inbox_entries():
-    files = [{"path": "logo.png", "binary": True, "status": "A", "mode": "100644"},
+    png = b"\x89PNG\r\n\x1a\n" + b"\0" * 40
+    files = [{"path": "logo.png", "binary": True, "status": "A", "mode": "100644",
+              "head": png, "zip": False},
              {"path": "blob.dat", "binary": True, "status": "A", "mode": "100644"},
              {"path": "data", "binary": False, "status": "A", "mode": "120000"},
              {"path": ".gitattributes", "status": "A", "mode": "100644"},

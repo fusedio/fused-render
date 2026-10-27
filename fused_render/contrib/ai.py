@@ -10,7 +10,18 @@ stream-json message, the reply read off the terminal `result` event. The
 answer is a JSON object parsed strictly; a reply that is not one gets ONE
 repair round ("that was not valid JSON, answer again"), then the caller's
 fallback. Spawned on the posix_spawn path (absolute argv[0], close_fds=False,
-no cwd=) like every subprocess in this server.
+no cwd=) like every subprocess in this server, with no MCP server of the
+user's (`--strict-mcp-config` and an empty list: nothing starts for a
+review).
+
+EVERY `claude` CHILD IS FOUND AT QUIT. This module's calls and merge_job's
+resolver register their child (`child_started`/`child_done`); the app's
+quit rung (app.py `_stop_children`) arms `refuse_children` and then
+`stop_children` kills what is left — on the packaged app the server's own
+shutdown never runs, and a child left behind would outlive the app. NOT a
+new session (`start_new_session`) for a process group: that forces CPython
+off posix_spawn onto fork(), which SIGSEGVs with libproj resident
+(claude_spawn's history note).
 
 UNTRUSTED TEXT IS DATA. A proposal's diff, title and description, a commit
 log and a contributor's chat lines are written by someone else. Each is
@@ -41,6 +52,7 @@ import logging
 import re
 import secrets
 import subprocess
+import threading
 import time
 
 from fused_render.contrib.review_rules import (  # noqa: F401 — re-exported
@@ -67,6 +79,58 @@ _MAX_SUMMARY_CHARS = 700
 _MAX_RISKS = 12
 
 
+# ------------------------------------------------------- children at quit
+
+_children: set = set()
+_children_lock = threading.Lock()
+_quitting = False
+
+
+def _kill(proc) -> None:
+    try:
+        proc.kill()
+    except Exception:  # noqa: BLE001 — already gone
+        pass
+
+
+def accepting_children() -> bool:
+    """False once the app's quit has begun: start no new `claude`."""
+    with _children_lock:
+        return not _quitting
+
+
+def child_started(proc) -> bool:
+    """Register a running `claude` child for the quit rung. False — and the
+    child killed — when the quit began between the check and the spawn."""
+    with _children_lock:
+        if not _quitting:
+            _children.add(proc)
+            return True
+    _kill(proc)
+    return False
+
+
+def child_done(proc) -> None:
+    with _children_lock:
+        _children.discard(proc)
+
+
+def refuse_children() -> None:
+    """The quit rung's latch, armed before `stop_children`."""
+    global _quitting
+    with _children_lock:
+        _quitting = True
+
+
+def stop_children() -> None:
+    """Kill every registered `claude` child (the quit rung)."""
+    with _children_lock:
+        procs = list(_children)
+        _children.clear()
+    for proc in procs:
+        _kill(proc)
+
+
 # ------------------------------------------------------------------ the call
 
 
@@ -81,9 +145,12 @@ def _run_cli(system: str, prompt: str, *, model: str, timeout: float) -> str | N
                 "--input-format", "stream-json",
                 "--output-format", "stream-json", "--verbose",
                 "--max-turns", "1", "--tools=", "--setting-sources=",
+                "--strict-mcp-config", "--mcp-config", json.dumps({"mcpServers": {}}),
                 "--model", model, "--system-prompt", system]
     except FileNotFoundError:
         logger.warning("contrib ai: claude CLI not found")
+        return None
+    if not accepting_children():
         return None
     message = json.dumps({"type": "user", "message": {
         "role": "user", "content": [{"type": "text", "text": prompt}]}})
@@ -95,6 +162,9 @@ def _run_cli(system: str, prompt: str, *, model: str, timeout: float) -> str | N
     except OSError:
         logger.exception("contrib ai: could not start claude")
         return None
+    if not child_started(proc):
+        proc.communicate()
+        return None
     try:
         stdout, stderr = proc.communicate(input=message + "\n", timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -102,6 +172,8 @@ def _run_cli(system: str, prompt: str, *, model: str, timeout: float) -> str | N
         proc.communicate()
         logger.warning("contrib ai: claude timed out after %.0fs", timeout)
         return None
+    finally:
+        child_done(proc)
     if proc.returncode != 0:
         logger.warning("contrib ai: claude exited %s: %s", proc.returncode,
                        (stderr or "")[-500:])

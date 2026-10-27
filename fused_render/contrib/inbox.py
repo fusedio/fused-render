@@ -20,6 +20,19 @@ not cached (it is a fact about the network, not the proposal) and is redone
 once its job ages out. At most REVIEW_SLOTS reviews run at once; the rest
 read "pending".
 
+ONLY PROPOSALS FOR THE APP'S OWN BRANCH. A pull request on GitHub names
+the branch it would merge into (`base_branch`); the author's copy follows
+`record.branch`. One aimed anywhere else (a `dev` or `gh-pages` branch)
+would be "accepted" into a branch her copy never reads, so it is not
+listed, reviewed, accepted or combined here (`_branch_refusal`); nor is
+one whose head IS her own branch of her own repo, which Keep would push
+onto.
+
+ACCEPT AND TRY ARE PINNED TO THE REVIEW THE AUTHOR READ. The page sends the
+head its review was of (`head_sha`); a different current head refuses with
+reason "review-needed", and a confirm sent without one is refused the same
+way — a "look" she agreed to is about one version, never the next.
+
 ACCEPT requires a review of the proposal's CURRENT head, merges with that
 head as GitHub's `sha` guard (GitHub refuses if the contributor sent more
 since), using the first method the repo allows (merge > squash > rebase),
@@ -178,12 +191,15 @@ def list(app_dir: str, *, review: bool = True, force: bool = False) -> builtins.
     review for every item that has none for its current head. Also throws
     away Try copies whose proposal is no longer open. Never raises."""
     app_dir = _key(app_dir)
-    repo, _ = _repo_of(app_dir)
+    repo, record = _repo_of(app_dir)
     if repo is None:
         return []
     prs = _open_prs(repo, force=force)
     if prs is None:
         return []
+    # Off-branch proposals first: they cost no GitHub reads below, and a Try
+    # copy or review left from before one was retargeted is swept with them.
+    prs = _for_app(prs, record, repo)
     open_numbers = [p.get("number") for p in prs if isinstance(p.get("number"), int)]
     try:
         _mod("trycopy").sweep(app_dir, open_numbers)
@@ -266,14 +282,37 @@ def cached(app_dir: str, *, start_reviews: bool = False) -> builtins.list | None
     behind REVIEW_SLOTS); without it such an item reads "none", so the page
     never shows "reading" for a review nobody started."""
     app_dir = _key(app_dir)
-    repo, _ = _repo_of(app_dir)
+    repo, record = _repo_of(app_dir)
     if repo is None:
         return None
     with _lock:
         hit = _lists.get(repo)
     if hit is None:
         return None
-    return _items(app_dir, repo, hit[1], start_reviews=start_reviews)
+    return _items(app_dir, repo, _for_app(hit[1], record, repo),
+                  start_reviews=start_reviews)
+
+
+OTHER_BRANCH = ("This proposal is for another version of your app on GitHub, so it "
+                "can't be handled here.")
+
+
+def _branch_refusal(pr: dict, record: dict, repo: str) -> dict | None:
+    """The refusal for a proposal that is not for the app's own branch
+    (module docstring), or None. A record with no branch decides nothing."""
+    branch = record.get("branch")
+    if not isinstance(branch, str) or not branch:
+        return None
+    own_head = str(pr.get("head_repo") or "").lower() == repo.lower() \
+        and pr.get("head_branch") == branch
+    if pr.get("base_branch") != branch or own_head:
+        return {"ok": False, "reason": "other-branch", "message": OTHER_BRANCH}
+    return None
+
+
+def _for_app(prs, record: dict, repo: str) -> builtins.list:
+    return [p for p in prs or [] if isinstance(p, dict)
+            and _branch_refusal(p, record, repo) is None]
 
 
 def _items(app_dir: str, repo: str, prs, *, start_reviews: bool) -> builtins.list:
@@ -483,6 +522,8 @@ def _review_job(app_dir: str, number: int) -> dict:
         raise
     if pr.get("state") != "open" or pr.get("merged"):
         raise PlainError("This proposal is no longer open.")
+    if _branch_refusal(pr, record, repo):
+        raise PlainError(OTHER_BRANCH)
     head = pr.get("head_sha") or ""
     with _lock:
         _asked[(app_dir, number)] = head
@@ -611,14 +652,18 @@ def _raw_entries(raw: bytes) -> builtins.list:
 _TEXT_CHECK_MAX = 8 * 1024 * 1024
 
 
-def _not_text(app_dir: str, entries) -> set:
+def _not_text(app_dir: str, entries, evidence: dict | None = None) -> set:
     """Paths whose NEW content is not UTF-8 text (a NUL anywhere, or bytes
     that do not decode) — binary files and other encodings alike. Read from
     the blobs the raw entries name (`git cat-file --batch`), never by
     matching names in the patch: git writes `+++ b/my page.html<TAB>` for a
     name with a space and C-quotes others, and a name that fails to match is
     a file nobody checks. A blob past _TEXT_CHECK_MAX counts as not text
-    (nobody reviews 8 MB by reading it); a missing one too."""
+    (nobody reviews 8 MB by reading it); a missing one too. `evidence`, when
+    given, gets `{path: review_rules.sniff(bytes)}` for each binary blob that
+    was read — what the rules judge a picture or font by; a blob that was
+    not read gets none, which the rules read as unreadable."""
+    from fused_render.contrib import review_rules
     gu = _gu()
     want = {}
     for e in entries:
@@ -669,13 +714,17 @@ def _not_text(app_dir: str, entries) -> set:
         size = int(parts[2])
         content = data[nl + 1:nl + 1 + size]
         pos = nl + 1 + size + 1
-        if b"\0" in content:
+        text = b"\0" not in content
+        if text:
+            try:
+                content.decode("utf-8")
+            except UnicodeDecodeError:
+                text = False
+        if not text:
             bad.add(blob)
-            continue
-        try:
-            content.decode("utf-8")
-        except UnicodeDecodeError:
-            bad.add(blob)
+            if evidence is not None:
+                for p in want.get(blob, []):
+                    evidence[p] = review_rules.sniff(content)
     return {p for blob in bad for p in want.get(blob, [])}
 
 
@@ -698,9 +747,11 @@ def _proposal_diff(app_dir: str, number: int, base: str | None = None,
     if not patch or patch[0] != 0 or not raw or raw[0] != 0:
         raise PlainError("Couldn't read this proposal. Try again.")
     files = _raw_entries(raw[1])
-    not_text = _not_text(app_dir, files)
+    evidence: dict = {}
+    not_text = _not_text(app_dir, files, evidence)
     for e in files:
         e["binary"] = e["path"] in not_text
+        e.update(evidence.get(e["path"]) or {})
         e.pop("blob", None)
     # Cut far past ai.MAX_DIFF_CHARS, so a cut diff always reads as oversized.
     diff = patch[1][:_MAX_DIFF_BYTES].decode("utf-8", "replace").replace("\0", "\\0")
@@ -724,10 +775,27 @@ def _merging(app_dir: str, number: int) -> dict | None:
     return None
 
 
-def try_open(app_dir: str, number: int, *, confirm: bool = False) -> dict:
+REVIEW_MOVED = ("This proposal changed since the review you read. Read Claude's "
+                "new review, then try again.")
+
+
+def _not_what_was_read(app_dir: str, number: int, head: str | None,
+                       head_sha: str | None, confirm: bool) -> dict | None:
+    """The refusal when the page's `head_sha` (the review it showed) is not
+    the current head, or a confirm came without one (module docstring)."""
+    if (confirm and not head_sha) or (head_sha and head and head_sha != head):
+        review(app_dir, number)
+        return {"ok": False, "reason": "review-needed", "message": REVIEW_MOVED}
+    return None
+
+
+def try_open(app_dir: str, number: int, *, confirm: bool = False,
+             head_sha: str | None = None) -> dict:
     """Make the Try copy. Refuses until the review of the current head is
     ready; on a "look" verdict, refuses with reason "confirm" unless
-    `confirm`. `{ok, path, url}` or `{ok: False, reason, message}`."""
+    `confirm`; refuses "review-needed" when `head_sha` (the review the page
+    showed) is not the current head, or `confirm` comes without it.
+    `{ok, path, url}` or `{ok: False, reason, message}`."""
     app_dir = _key(app_dir)
     repo, _ = _repo_of(app_dir)
     if repo is None:
@@ -736,6 +804,9 @@ def try_open(app_dir: str, number: int, *, confirm: bool = False) -> dict:
     if busy:
         return busy
     head = _current_head(app_dir, repo, number)
+    moved = _not_what_was_read(app_dir, number, head, head_sha, confirm)
+    if moved:
+        return moved
     base = _local_base(app_dir, number) if head else None
     review_obj = _review_for(app_dir, repo, number, head, base) if base else None
     if review_obj is None:
@@ -785,14 +856,16 @@ def _merge_method(repo: str) -> str:
     return "merge"
 
 
-def accept(app_dir: str, number: int, *, confirm: bool = False) -> dict:
+def accept(app_dir: str, number: int, *, confirm: bool = False,
+           head_sha: str | None = None) -> dict:
     """Merge proposal `number` on GitHub and bring the author's copy up to
     date. Needs a review of exactly what would be merged (the head GitHub
     reports now, against the merge base a fresh download gives); a "look"
-    verdict refuses with reason "confirm" unless `confirm`, like Try. Long
+    verdict refuses with reason "confirm" unless `confirm`, like Try, and
+    `head_sha` pins it to the review the page showed (`try_open`). Long
     (a download and a sync run): the route runs it as a job."""
     app_dir = _key(app_dir)
-    repo, _ = _repo_of(app_dir)
+    repo, record = _repo_of(app_dir)
     if repo is None:
         return {"ok": False, "reason": "not-own", "message": "This app has no proposals."}
     busy = _merging(app_dir, number)
@@ -812,7 +885,13 @@ def accept(app_dir: str, number: int, *, confirm: bool = False) -> dict:
     if pr.get("state") != "open":
         _cleanup(app_dir, number)
         return {"ok": False, "reason": "closed", "message": "This proposal is no longer open."}
+    off = _branch_refusal(pr, record, repo)
+    if off:
+        return off
     head = pr.get("head_sha") or ""
+    moved = _not_what_was_read(app_dir, number, head, head_sha, confirm)
+    if moved:
+        return moved
     try:
         fetched = _fetch_pr(app_dir, repo, number,
                             pr.get("base_branch") or _repo_of(app_dir)[1].get("branch")
@@ -933,8 +1012,9 @@ def decline(app_dir: str, number: int, note: str = "") -> dict:
 
 
 def _open_pr(app_dir: str, number: int) -> tuple[str | None, dict | None, dict | None]:
-    """`(repo, pr, refusal)` for an open proposal on the author's app."""
-    repo, _ = _repo_of(app_dir)
+    """`(repo, pr, refusal)` for an open proposal on the author's app,
+    aimed at its own branch (`_branch_refusal`)."""
+    repo, record = _repo_of(app_dir)
     if repo is None:
         return None, None, {"ok": False, "reason": "not-own",
                             "message": "This app has no proposals."}
@@ -948,6 +1028,9 @@ def _open_pr(app_dir: str, number: int) -> tuple[str | None, dict | None, dict |
     if pr.get("state") != "open" or pr.get("merged"):
         return repo, None, {"ok": False, "reason": "closed",
                             "message": "This proposal is no longer open."}
+    off = _branch_refusal(pr, record, repo)
+    if off:
+        return repo, None, off
     return repo, pr, None
 
 
@@ -1049,7 +1132,14 @@ def _merge_for(app_dir: str, number: int) -> dict | None:
                 if info.get("app") == app_dir and info.get("number") == int(number)]
     for jid, info in reversed(mine):
         job = _mod("merge_job").get(jid)
-        status = (job or {}).get("status")
+        if job is None:
+            # merge_job forgot it (pruned after a day, or a restart): Keep and
+            # Discard both need the job, so an entry left here would hold the
+            # item "ready" — refusing Accept, Decline and Try — for good.
+            with _lock:
+                _merges.pop(jid, None)
+            continue
+        status = job.get("status")
         if info.get("tip"):
             status = "ready"
         elif status not in ("running", "ready", "landing", "failed"):
@@ -1080,6 +1170,29 @@ def merge_accept(app_dir: str, job_id: str) -> dict:
     return merge_accepted(app_dir, {"id": job_id, "tip": tip})
 
 
+def merge_discard(app_dir: str, job_id: str) -> dict:
+    """Discard an inbox Merge with Claude (the page's Discard on the item).
+    Also the way out of one that was kept but never reached the proposal
+    (Keep's push failed): `merge_job.discard` has nothing to undo for an
+    accepted job — her folder was never touched (`land=False`) — so the
+    item's own entry is what goes."""
+    with _lock:
+        info = _merges.pop(job_id, None)
+    out = _mod("merge_job").discard(job_id) or {}
+    return {"ok": True} if info is not None else out
+
+
+#: Keep's push failures that waiting will not fix: the sender turned off
+#: changes, deleted the branch, or this machine is signed out. The result
+#: is dropped (as for "conflict") so the item is free again.
+_PUSH_FINAL = {
+    "forbidden": "{author} no longer allows changes to this proposal. Ask {author} "
+                 "to update it instead.",
+    "not-found": "{author}'s proposal can't be found on GitHub any more.",
+    "signed-out": "Sign in to GitHub, then Merge with Claude again.",
+}
+
+
 def merge_accepted(app_dir: str, job: dict) -> dict:
     """The author kept Claude's combination (`merge_job.accept` of a job
     `merge_start` made): send it onto the proposal's own branch — a plain
@@ -1098,14 +1211,19 @@ def merge_accepted(app_dir: str, job: dict) -> dict:
     except Exception as exc:  # noqa: BLE001
         if not _gh_error(exc):
             raise
-        if getattr(exc, "reason", None) == "conflict":
+        reason = getattr(exc, "reason", None)
+        if reason == "conflict":
             with _lock:   # combined with a version that is gone: start over
                 _merges.pop(job.get("id"), None)
             return {"ok": False, "reason": "moved",
                     "message": f"{author} changed this proposal meanwhile. "
                                "Merge with Claude again."}
-        return {"ok": False, "reason": getattr(exc, "reason", "failed"),
-                "message": _plain_gh(exc)}
+        if reason in _PUSH_FINAL:
+            with _lock:
+                _merges.pop(job.get("id"), None)
+            return {"ok": False, "reason": reason,
+                    "message": _PUSH_FINAL[reason].format(author=author)}
+        return {"ok": False, "reason": reason or "failed", "message": _plain_gh(exc)}
     with _lock:
         _merges.pop(job.get("id"), None)
         _fits.pop((info["repo"], info["number"]), None)

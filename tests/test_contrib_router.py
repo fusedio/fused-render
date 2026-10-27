@@ -123,8 +123,9 @@ def env(tmp_path, monkeypatch):
                     cached=lambda d, **_: [{"number": 7, "title": "x"}], invalidate=lambda d: None,
                     refreshing=lambda d: False,
                     review=lambda d, n: "rv-1",
-                    try_open=lambda d, n, confirm=False: {"ok": True, "path": "/p", "url": "/u",
-                                                          "confirm": confirm},
+                    try_open=lambda d, n, confirm=False, head_sha=None: {
+                        "ok": True, "path": "/p", "url": "/u", "confirm": confirm,
+                        "head_sha": head_sha},
                     try_remove=lambda d, n: {"ok": True}, accept=_boom,
                     owns_merge=lambda job: False,
                     decline=lambda d, n, note="": {"ok": True, "note": note})
@@ -195,7 +196,6 @@ def test_wrong_kind_is_refused_in_plain_words(env):
     assert _post(env, "inbox/review", path=g, number=1)["reason"] == "not-allowed"
     own_no_repo = env.app("local", kind="own", repo=None)
     assert _post(env, "inbox/review", path=own_no_repo, number=1)["reason"] == "not-allowed"
-    assert _post(env, "remix/bring-in", path=d)["reason"] == "not-allowed"  # not a remix
 
 
 def test_a_path_inside_the_app_resolves_to_the_app(env):
@@ -225,8 +225,9 @@ def test_double_clicked_send_runs_one_job(env, monkeypatch):
         return {"number": 3}
 
     monkeypatch.setattr(proposals, "send", send)
-    a = _post(env, "propose/send", path=d, title="Brighter", description="", note="")
-    b = _post(env, "propose/send", path=d, title="Brighter", description="", note="")
+    env.engine.status = lambda app_dir: _v2("changes")
+    a = _act(env, d, "propose", args={"title": "Brighter"})
+    b = _act(env, d, "propose", args={"title": "Brighter"})
     gate.set()
     assert a["ok"] and a["job"] == b["job"]
     assert _job(env, a["job"])["status"] == "done"
@@ -235,11 +236,12 @@ def test_double_clicked_send_runs_one_job(env, monkeypatch):
 
 def test_start_refusals_pass_through_untouched(env):
     d = env.app("a")
-    assert _post(env, "propose/send", path=d, title="")["reason"] == "missing"
+    env.engine.status = lambda app_dir: _v2("changes")
+    assert _act(env, d, "propose", args={"title": ""})["reason"] == "missing"
     signed_out = {"ok": False, "reason": "signed-out",
                   "message": "Sign in to GitHub to send your proposal."}
     env.proposals.start_send = lambda app_dir, **_: signed_out
-    assert _post(env, "propose/send", path=d, title="x") == signed_out
+    assert _act(env, d, "propose", args={"title": "x"}) == signed_out
 
 
 def test_a_github_failure_fails_the_job_with_its_plain_sentence(env):
@@ -250,49 +252,45 @@ def test_a_github_failure_fails_the_job_with_its_plain_sentence(env):
         raise GitHubError("forbidden", "GitHub didn't let you do that.")
 
     env.proposals.start_send = lambda app_dir, **_: _started("propose-send")(app_dir, send)
-    out = _job(env, _post(env, "propose/send", path=d, title="x")["job"])
+    env.engine.status = lambda app_dir: _v2("changes")
+    out = _job(env, _act(env, d, "propose", args={"title": "x"})["job"])
     assert out["status"] == "failed"
     assert out["message"] == "GitHub didn't let you do that."
     assert "step" in out and "reason" in out
 
 
 def test_an_unexpected_exception_never_reaches_the_page(env):
-    d = env.app("a", proposal={"number": 1, "cache": {"state": "open"}})
+    d = env.app("a")
 
-    def withdraw(app_dir):
+    def draft(app_dir):
         raise RuntimeError("fatal: refusing to merge unrelated histories")
 
-    env.proposals.withdraw = withdraw
-    out = _post(env, "propose/withdraw", path=d)
+    env.proposals.start_draft = draft
+    out = _post(env, "propose/draft", path=d)
     assert out == {"ok": False, "reason": "failed", "message": "Something went wrong. Try again."}
     assert out["message"] == jobs.GENERIC_MESSAGE
 
 
-def test_a_remix_may_withdraw_but_not_update(env):
-    remix = env.app("r", kind="own", repo="bob/r", remix_of={"repo": "alice/x", "branch": "main"},
-                    proposal={"number": 2, "cache": {"state": "open"}})
-    assert _post(env, "propose/withdraw", path=remix) == {"ok": True}
-    assert _post(env, "propose/update", path=remix)["reason"] == "not-allowed"
-    settled = env.app("s", proposal={"number": 3, "cache": {"state": "merged"}})
-    assert _post(env, "propose/withdraw", path=settled)["reason"] == "no-proposal"
-    assert _post(env, "propose/withdraw", path=env.app("n"))["reason"] == "no-proposal"
-
-
-def test_update_copy_answers_the_engine(env):
+def test_the_v1_button_routes_are_gone(env):
+    """Review finding: these ran a panel button without `actions.for_app`
+    or the button's confirm (push-main published into the author's app
+    unasked). The page posts `action` for every one of them."""
     d = env.app("a")
-    env.engine.bring_in = lambda app_dir: {"ok": True, "message": "Up to date."}
-    assert _post(env, "update-copy", path=d) == {"ok": True, "message": "Up to date."}
-    own = env.app("m", kind="own", repo="bob/m")
-    assert _post(env, "update-copy", path=own)["reason"] == "not-allowed"
-    env.flags["changes"] = False
-    assert _post(env, "update-copy", path=d)["reason"] == "disabled"
+    for route in ("propose/send", "propose/update", "propose/withdraw", "discard",
+                  "update-copy", "push-main", "merge/start", "remix/publish",
+                  "remix/bring-in"):
+        r = env.client.post(f"/api/contrib/{route}", json={"path": d, "title": "x"}, headers=H)
+        assert r.status_code in (404, 405), route
+    assert env.calls == []
 
 
-def test_discard_and_push_main_answer_the_engine(env):
+def test_push_main_is_the_confirmed_action(env):
     d = env.app("a")
-    assert _post(env, "discard", path=d) == {"ok": True, "withdrew": False}
-    assert _post(env, "discard", path=d, withdraw=True)["withdrew"] is True
-    assert _post(env, "push-main", path=d)["reason"] == "forbidden"
+    env.engine.status = lambda app_dir: _v2("changes", can_push=True)
+    out = _act(env, d, "push-main")
+    assert out["ok"] is False and out["reason"] == "confirm"
+    job = _job(env, _act(env, d, "push-main", confirm=True)["job"])
+    assert (job["status"], job["reason"]) == ("failed", "forbidden")
 
 
 # -- v2: the one action route ---------------------------------------------------
@@ -639,6 +637,32 @@ def test_app_read_carries_panel_actions_activity(env, monkeypatch):
     assert [a["id"] for a in out["actions"]] == ["check"]
 
 
+def test_a_blocked_marketplace_copy_answers_with_every_switch_off(env, monkeypatch):
+    """Contract 1: a soft block shuts the app's doors whatever the switches
+    say, so its way through (confirm-block) must answer whatever they say
+    too — the app read shows the panel and the action route runs it. An
+    unblocked marketplace copy keeps the switches' gate."""
+    from fused_render.contrib import blocks
+    for k in list(env.flags):
+        env.flags[k] = False
+    block = {"level": "soft", "commit": "c" * 40, "reason": "Sends data to a new server",
+             "what_to_do": "", "at": "2026-10-27", "confirmed_at": None}
+    d = env.app("m", kind="marketplace", repo="alice/x", block=dict(block))
+    plain = env.app("p", kind="marketplace", repo="alice/y")
+    env.engine.status = lambda app_dir: {**_v2("following"), "state": "soft-blocked",
+                                         "block": dict(block)}
+    read = env.client.get("/api/contrib/app", params={"path": d}).json()
+    assert read["ok"] is True and read["panel"]["state"] == "soft-blocked"
+    assert read["actions"][0]["id"] == "confirm-block"
+    confirmed = []
+    monkeypatch.setattr(blocks, "confirm_soft", lambda root: confirmed.append(root))
+    assert _act(env, d, "confirm-block")["ok"] is True
+    assert confirmed == [d]
+    assert env.client.get("/api/contrib/app", params={"path": plain}).json()["reason"] \
+        == "disabled"
+    assert _act(env, plain, "check")["reason"] == "disabled"
+
+
 def test_unrecorded_app_reads_a_pending_panel(env):
     d = env.app("new", kind=None)
     env.engine.status = lambda app_dir: {"pending": True}
@@ -648,27 +672,6 @@ def test_unrecorded_app_reads_a_pending_panel(env):
 
 
 # -- merges and jobs ------------------------------------------------------------
-
-
-def test_merge_start_follows_the_engine_plan(env):
-    d = env.app("a")
-    assert _post(env, "merge/start", path=d)["reason"] == "nothing-to-merge"
-    started = []
-    env.merge_job.start = lambda app_dir, **kw: started.append(kw) or "mj-9"
-    env.engine.merge_plan = lambda app_dir: {"purpose": "needs-merge", "onto": "aaa",
-                                             "upstream": "bbb", "strategy": "rebase",
-                                             "mark": "m1", "files": ["x"], "resolver": "no"}
-    assert _post(env, "merge/start", path=d) == {"ok": True, "job": "mj-9"}
-    # Every key merge_job.start takes is passed through; bookkeeping keys are not.
-    assert started == [{"purpose": "needs-merge", "onto": "aaa", "upstream": "bbb",
-                        "strategy": "rebase", "mark": "m1"}]
-    # An own app's overlap is ownsync's to start, offered whenever the panel is.
-    own = env.app("c", kind="own", repo="bob/c")
-    env.ownsync.start_merge = lambda app_dir: {"ok": True, "job": "mj-own"}
-    env.flags["changes"] = False
-    assert _post(env, "merge/start", path=own) == {"ok": True, "job": "mj-own"}
-    env.engine.merge_plan = lambda app_dir: {"purpose": "needs-merge", "onto": "a", "upstream": "b"}
-    assert _post(env, "merge/start", path=d)["reason"] == "disabled"
 
 
 def test_merge_accept_only_for_this_apps_job(env):
@@ -698,11 +701,13 @@ def test_keeping_an_inbox_merge_sends_it_to_the_proposal(env):
     env.inbox.owns_merge = lambda job: job == "mj"
     kept, discarded = [], []
     env.inbox.merge_accept = lambda d, job: kept.append(job) or {"ok": True, "message": "Sent."}
-    env.merge_job.discard = lambda i: discarded.append(i) or {"ok": True}
+    env.inbox.merge_discard = lambda d, job: discarded.append(("inbox", job)) or {"ok": True}
+    env.merge_job.discard = _boom
     assert _post(env, "merge/accept", path=mine, job="mj") == {"ok": True, "message": "Sent."}
     assert kept == ["mj"]
+    # Discard goes through the inbox too: it frees a kept result never sent.
     assert _post(env, "merge/discard", path=mine, job="mj") == {"ok": True}
-    assert discarded == ["mj"]
+    assert discarded == [("inbox", "mj")]
     env.flags["inbox"] = False
     assert _post(env, "merge/accept", path=mine, job="mj")["reason"] == "disabled"
 
@@ -726,7 +731,9 @@ def test_inbox_routes(env):
     assert _post(env, "inbox/review", path=d, number="x")["reason"] == "missing"
     tried = _post(env, "inbox/try", path=d, number=7)
     assert (tried["path"], tried["url"], tried["confirm"]) == ("/p", "/u", False)
-    assert _post(env, "inbox/try", path=d, number=7, confirm=True)["confirm"] is True
+    assert tried["head_sha"] is None
+    tried = _post(env, "inbox/try", path=d, number=7, confirm=True, head_sha="b" * 40)
+    assert (tried["confirm"], tried["head_sha"]) == (True, "b" * 40)
     assert _post(env, "inbox/decline", path=d, number=7, note=" thanks ")["note"] == "thanks"
 
 
@@ -734,7 +741,7 @@ def test_accepting_two_proposals_runs_two_jobs(env):
     d = env.app("mine", kind="own", repo="bob/mine")
     gate, accepted = threading.Event(), []
 
-    def accept(app_dir, number, confirm=False):
+    def accept(app_dir, number, confirm=False, head_sha=None):
         accepted.append(number)
         gate.wait(5)
         return {"ok": True, "merged": True}
@@ -752,8 +759,8 @@ def test_accepting_two_proposals_runs_two_jobs(env):
 
 def test_an_accept_refusal_fails_its_job(env):
     d = env.app("mine", kind="own", repo="bob/mine")
-    env.inbox.accept = lambda app_dir, n, confirm=False: {"ok": False, "reason": "closed",
-                                                          "message": "This proposal is no longer open."}
+    env.inbox.accept = lambda app_dir, n, confirm=False, head_sha=None: {
+        "ok": False, "reason": "closed", "message": "This proposal is no longer open."}
     out = _job(env, _post(env, "inbox/accept", path=d, number=7)["job"])
     assert (out["status"], out["message"], out["reason"]) == (
         "failed", "This proposal is no longer open.", "closed")
@@ -788,20 +795,22 @@ def test_after_decline_or_accept_the_inbox_reloads_not_unavailable(env, monkeypa
 
     # Accept: the reset runs when the job ends, refusal or not.
     queued.clear()
-    env.inbox.accept = lambda d, n, confirm=False: lists.clear() or {"ok": True}
+    env.inbox.accept = lambda d, n, confirm=False, head_sha=None: lists.clear() or {"ok": True}
     job = _post(env, "inbox/accept", path=mine, number=8)["job"]
     jobs.wait(job)
     assert jobs.get(job)["app_dir"] == key  # keyed on the store's spelling
     assert [w for w, _ in queued] == ["inbox-open"]
 
 
-def test_accept_passes_confirm_through(env):
+def test_accept_passes_confirm_and_the_read_head_through(env):
     d = env.app("mine", kind="own", repo="bob/mine")
     seen = []
-    env.inbox.accept = lambda app_dir, n, confirm=False: seen.append(confirm) or {"ok": True}
+    env.inbox.accept = lambda app_dir, n, confirm=False, head_sha=None: seen.append(
+        (confirm, head_sha)) or {"ok": True}
     jobs.wait(_post(env, "inbox/accept", path=d, number=7)["job"])
-    jobs.wait(_post(env, "inbox/accept", path=d, number=8, confirm=True)["job"])
-    assert seen == [False, True]
+    jobs.wait(_post(env, "inbox/accept", path=d, number=8, confirm=True,
+                    head_sha="a" * 40)["job"])
+    assert seen == [(False, None), (True, "a" * 40)]
 
 
 def test_a_github_copy_is_never_uploaded_to_fused(env):

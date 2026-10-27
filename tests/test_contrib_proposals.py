@@ -970,8 +970,11 @@ def test_real_push_args_force_the_gh_credential_helper(monkeypatch):
 
 def test_split_full_refuses_paths():
     from fused_render.contrib import gh
-    with pytest.raises(gh.GitHubError):
-        gh.split_full("../../user/repos")
+    for bad in ("../../user/repos", "alice/..", "alice/.", "alice/...git"):
+        with pytest.raises(gh.GitHubError):
+            gh.split_full(bad)
+    assert gh.split_full("alice/.dotfiles") == ("alice", ".dotfiles")
+    assert gh.split_full("alice/x.y") == ("alice", "x.y")
 
 
 def test_plain_push_is_never_force(w):

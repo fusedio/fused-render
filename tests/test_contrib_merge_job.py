@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import time
 
 import pytest
@@ -196,6 +197,64 @@ def test_markers_left_every_round_fails_and_leaves_app_alone(overlap, monkeypatc
     assert len(calls) == 2
     assert git(bob, "rev-parse", "HEAD") == ours
     assert worktrees(bob) == [f"worktree {os.path.realpath(bob)}"]
+
+
+def test_a_marker_hidden_by_gitattributes_is_still_seen(overlap):
+    """The server's last check reads the result's every byte: a proposal's
+    `.gitattributes` marking files `binary` (or `-diff`) must not turn a
+    marker line into "Binary files differ"."""
+    bob, ours, theirs = overlap
+    git(bob, "checkout", "-q", "--detach", ours)
+    write(os.path.join(bob, ".gitattributes"), "* binary\n")
+    write(os.path.join(bob, "index.html"), "<<<<<<< ours\n<p>hi</p>\n=======\n>>>>>>> x\n")
+    git(bob, "add", "-A")
+    tree = git(bob, "write-tree")
+    tip = git(bob, "commit-tree", tree, "-p", ours, "-p", theirs, "-m", "merged")
+    job = {"id": "t", "worktree": bob, "root": bob, "ours": ours, "theirs": theirs}
+    assert merge_job._result_sound(job, tip, tip, {"index.html", ".gitattributes"}) is False
+    write(os.path.join(bob, "index.html"), "<p>hi</p>\n")
+    git(bob, "add", "-A")
+    clean = git(bob, "commit-tree", git(bob, "write-tree"), "-p", ours, "-p", theirs,
+                "-m", "merged")
+    assert merge_job._result_sound(job, clean, clean, {"index.html", ".gitattributes"})
+
+
+def test_a_copy_whose_own_config_runs_commands_is_never_merged(overlap, tmp_path):
+    """A GitHub-link copy's `.git/config` is the app's to write: a filter
+    or merge driver there would run during the scratch merge or the land.
+    Refused at start and at Keep, like every engine move
+    (`replay.config_hazards`)."""
+    bob, ours, theirs = overlap
+    marker = tmp_path / "driver-ran"
+    git(bob, "config", "filter.x.smudge", f"touch {marker}; cat")
+    job = wait(merge_job.start(bob, purpose="update", ours=ours, theirs=theirs,
+                               resolver=resolve_with(COMBINED)))
+    assert job["status"] == "failed" and job["error"] == replay.UNSAFE_CONFIG_MESSAGE
+    git(bob, "config", "--unset", "filter.x.smudge")
+    job = wait(merge_job.start(bob, purpose="update", ours=ours, theirs=theirs,
+                               resolver=resolve_with(COMBINED)))
+    assert job["status"] == "ready", job
+    git(bob, "config", "merge.x.driver", f"touch {marker}")
+    res = merge_job.accept(job["id"])
+    assert res == {"ok": False, "reason": "unsafe-config",
+                   "message": replay.UNSAFE_CONFIG_MESSAGE}
+    assert merge_job.get(job["id"])["status"] == "ready"
+    assert git(bob, "rev-parse", "HEAD") == ours and not marker.exists()
+    git(bob, "config", "--unset", "merge.x.driver")
+    assert merge_job.accept(job["id"])["ok"]
+
+
+def test_a_quitting_app_starts_no_resolver(planted, monkeypatch):
+    """The quit rung (ai.refuse_children) is armed: Merge with Claude fails
+    plainly instead of starting a `claude` the app would leave behind."""
+    from fused_render.contrib import ai
+    bob, ours, theirs, _marker = planted
+    monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", sys.executable)
+    monkeypatch.setattr(ai, "_quitting", True)
+    monkeypatch.setattr(merge_job, "_popen", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("spawned while quitting")))
+    job = wait(merge_job.start(bob, purpose="update", ours=ours, theirs=theirs))
+    assert job["status"] == "failed" and job["error"] == merge_job.FAILED_MESSAGE
 
 
 def test_edits_outside_the_overlap_are_put_back(overlap):
@@ -509,8 +568,11 @@ def test_planted_hook_and_claude_md_never_reach_claude(planted, monkeypatch):
     """rev-sec S1 fixed: Claude runs in a sandbox holding only copies of the
     conflicted files under neutral names — no `.claude/`, no CLAUDE.md — with
     project/user settings, MCP servers and every tool but Read/Edit/Write
-    off. Its edits come back to the real paths."""
+    off. Its edits come back to the real paths. The CLI is faked whole — a
+    machine without Claude Code (CI) still runs every assertion: the binary
+    is resolved to a file that exists, and never started."""
     bob, ours, theirs, marker = planted
+    monkeypatch.setenv("FUSED_RENDER_CLAUDE_BIN", sys.executable)
     seen = {}
 
     class FakeClaude:
@@ -546,6 +608,7 @@ def test_planted_hook_and_claude_md_never_reach_claude(planted, monkeypatch):
     monkeypatch.setattr(merge_job, "_popen", FakeClaude)
     job = wait(merge_job.start(bob, purpose="update", ours=ours, theirs=theirs))
     assert job["status"] == "ready", job
+    assert seen["argv"][0] == sys.executable
     assert sorted(seen["tree"]) == ["part1/settings.json", "part2/file-CLAUDE.md.txt",
                                     "part3/index.html"]
     assert not any(os.path.basename(d) == ".claude" for d in seen["dirs"])

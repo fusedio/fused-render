@@ -98,8 +98,9 @@ _MESSAGES = {
 
 # owner/name as GitHub allows them. Validated before a value is ever spliced
 # into an API path, so a hostile string ("../../user/repos") cannot address
-# a different endpoint than the one the caller meant.
-_FULL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}$")
+# a different endpoint than the one the caller meant — nor can a name of
+# "." or "..", which `repos/<owner>/../…` would collapse onto another path.
+_FULL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/(?!\.\.?$)[A-Za-z0-9._-]{1,100}$")
 _LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$")
 _BRANCH_RE = re.compile(r"^(?!-)(?!.*\.\.)(?!.*//)[A-Za-z0-9._/-]{1,200}(?<![./])$")
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")

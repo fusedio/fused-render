@@ -139,8 +139,8 @@ def _git(root: str, *args, env: dict | None = None, timeout: float = _GIT_TIMEOU
             [_git_bin(), "-C", root, *replay.SAFE_CONFIG, *args], stdout=subprocess.PIPE,
             stderr=subprocess.PIPE, timeout=timeout,
             env={**os.environ, **git_upstream._ENV, **(env or {})},
-            close_fds=False,
-            **({"input": input} if input is not None else {"stdin": subprocess.DEVNULL}))
+            close_fds=False, input=input,
+            stdin=None if input is not None else subprocess.DEVNULL)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return None
     return (proc.returncode, proc.stdout.decode("utf-8", "replace"),
@@ -506,9 +506,15 @@ def _message(job: dict) -> str:
 
 
 def _run_inner(job: dict, resolver) -> None:
-    from fused_render.contrib import replay
+    from fused_render.contrib import engine, replay
 
     root = job["root"]
+    if job["land"] and job["purpose"] in FF_PURPOSES and engine._unsafe_config(root):
+        # A `github` copy whose own settings run commands (a filter or merge
+        # driver, …): the scratch merge shares that config, so it is refused
+        # like every engine move (`replay.config_hazards`).
+        _finish(job, "failed", error=replay.UNSAFE_CONFIG_MESSAGE)
+        return
     head = replay.rev(root, "HEAD")
     job["ours"] = replay.rev(root, job["ours"]) if job["ours"] else head
     job["theirs"] = replay.rev(root, job["theirs"])
@@ -803,7 +809,12 @@ def _result_sound(job: dict, new_tip: str, expected_tree: str, allowed: set) -> 
     if parents != [job["ours"], job["theirs"]]:
         logger.warning("merge job %s: result has parents %s", job["id"], parents)
         return False
-    res = _git(wt, "diff", "--no-color", "--no-ext-diff", job["ours"], new_tip, timeout=120.0)
+    # Every byte, whatever the proposal's `.gitattributes` says: `binary` or
+    # `-diff` would hide a marker line from this check, and a textconv
+    # driver would run the user's own filter on a stranger's file (the
+    # inbox review's neutral flags).
+    res = _git(wt, "-c", "core.attributesFile=" + os.devnull, "diff", "-a", "--no-textconv",
+               "--no-color", "--no-ext-diff", job["ours"], new_tip, timeout=120.0)
     if not _ok(res):
         return False
     for line in res[1].splitlines():
@@ -936,6 +947,8 @@ def _accept_ff(job: dict) -> dict:
                 why = "slot-busy"
             elif engine.claude_busy(root):
                 why = "claude"
+            elif engine._unsafe_config(root):
+                why = engine.UNSAFE_CONFIG
             elif (gu._current_branch(root) != job["branch"]
                   or replay.rev(root, "HEAD") != job["ours"]):
                 why = "moved"
@@ -948,6 +961,13 @@ def _accept_ff(job: dict) -> dict:
         with _lock:
             job["status"] = "ready"
         return {"ok": False, "reason": "claude", "message": engine.CLAUDE_BUSY_MESSAGE}
+    if why == engine.UNSAFE_CONFIG:
+        # Its own settings would run a command during the move (asked under
+        # the slot, like every engine move): nothing moves, and the result
+        # waits until they are gone.
+        with _lock:
+            job["status"] = "ready"
+        return {"ok": False, "reason": why, "message": replay.UNSAFE_CONFIG_MESSAGE}
     if why and why != "moved":
         with _lock:
             job["status"] = "ready"
@@ -1169,6 +1189,10 @@ def _run_claude(box: str, prompt: str, job: dict, deadline: float) -> dict:
                                       "installed and signed in, then try again."}
     message = json.dumps({"type": "user", "message": {
         "role": "user", "content": [{"type": "text", "text": prompt}]}}) + "\n"
+    from fused_render.contrib import ai
+
+    if not ai.accepting_children():   # the app is quitting
+        return {"ok": False, "error": FAILED_MESSAGE}
     try:
         # cwd= is the point here (Claude's working folder is the sandbox);
         # git's -C rule (§0.8) is about git.
@@ -1179,6 +1203,19 @@ def _run_claude(box: str, prompt: str, job: dict, deadline: float) -> dict:
         logger.exception("merge job: could not start Claude")
         return {"ok": False, "error": "Claude couldn't start. Check that Claude Code is "
                                       "installed and signed in, then try again."}
+    # Found by the app's quit rung (ai.stop_children) while it runs.
+    if not ai.child_started(proc):   # the quit began meanwhile: it was killed
+        proc.communicate()
+        return {"ok": False, "error": FAILED_MESSAGE}
+    try:
+        return _await_claude(proc, message, job, deadline)
+    finally:
+        ai.child_done(proc)
+
+
+def _await_claude(proc, message: str, job: dict, deadline: float) -> dict:
+    """Feed the prompt, wait for the turn (stopping it at the deadline or
+    on discard), and read its answer."""
     feed = message
     while True:
         try:

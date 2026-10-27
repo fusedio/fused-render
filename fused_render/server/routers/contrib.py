@@ -41,10 +41,14 @@ re-derives that list and refuses an id it does not offer right now, so a
 stale page or a hand-made POST can never run a button the state, kind or
 flags hide; a button with a `confirm` sentence needs `confirm: true`.
 `POST /api/contrib/restore {path, id}` undoes one Activity line. The v1
-mutation routes below stay as thin aliases until the frontend moves.
+routes that ran a panel button by another door (send, update and withdraw
+a proposal, discard, update-copy, push-main, merge/start, remix publish and
+bring-in) are gone: they skipped that check and the button's confirm. What
+stays outside the action route runs no panel button: the Propose and remix
+drafts, Keep/Discard of a merge job, and the inbox (the proposals tab).
 
 LONG OPERATIONS ARE JOBS. Drafting, sending and updating a proposal, an
-inbox accept, a remix draft/publish/bring-in answer `{ok: true, job}` at
+inbox accept, a remix draft or publish answer `{ok: true, job}` at
 once and run on `contrib/jobs.py`'s registry, which runs one job per (kind,
 app) at a time: a double-clicked Send returns the first click's job instead
 of opening a second proposal (proposals' own one-open-proposal guard is the
@@ -198,13 +202,16 @@ def _gate(body, x_fused, phase, kinds=None):
 def _market_ui_for(app_dir: str) -> bool:
     """A MARKETPLACE copy's panel routes (the app read, the action route,
     Undo, Merge with Claude's review) answer with the Marketplace switch OR
-    the loop on (`flags.marketplace_ui`, §18.8); every other kind keeps the
-    loop's own gate. A store read, no classification."""
+    the loop on (`flags.marketplace_ui`, §18.8) — and for a BLOCKED copy
+    whatever the switches say: the block list is enforced with every switch
+    off, so its way through (a soft block's confirm-block, contract 1; a
+    hard block's fix) answers too (`actions.facts` agrees). Every other
+    kind keeps the loop's own gate. A store read, no classification."""
     try:
-        if not _mod("flags").marketplace_ui():
-            return False
         rec = _mod("store").get(app_dir)
-        return isinstance(rec, dict) and rec.get("kind") == "marketplace"
+        if not isinstance(rec, dict) or rec.get("kind") != "marketplace":
+            return False
+        return bool(_mod("flags").marketplace_ui()) or isinstance(rec.get("block"), dict)
     except Exception:  # noqa: BLE001 — unknown reads as the loop's gate
         return False
 
@@ -387,77 +394,6 @@ def api_contrib_propose_draft(body: dict = Body(...), x_fused: str | None = Head
     return _call("propose draft", _mod("proposals").start_draft, t.app_dir)
 
 
-@router.post("/api/contrib/propose/send")
-def api_contrib_propose_send(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    """Signed-out and already-proposed are `proposals.start_send`'s refusals;
-    a double click lands on the first click's job (jobs dedupe)."""
-    t = _gate(body, x_fused, "changes", ("github",))
-    if not isinstance(t, _Target):
-        return t
-    title = _text(body, "title")
-    if not title:
-        return _refuse("missing", "Give your proposal a title.")
-    return _call("propose send", _mod("proposals").start_send, t.app_dir, title=title,
-                 description=_text(body, "description"), note=_text(body, "note"))
-
-
-@router.post("/api/contrib/propose/update")
-def api_contrib_propose_update(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    t = _gate(body, x_fused, "changes", ("github",))
-    if not isinstance(t, _Target):
-        return t
-    return _call("propose update", _mod("proposals").start_update, t.app_dir)
-
-
-@router.post("/api/contrib/propose/withdraw")
-def api_contrib_propose_withdraw(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    """Gated on an OPEN proposal, not on kind: a remix (now "own") may still
-    withdraw the proposal it sent as a GitHub-link copy. Update stays
-    GitHub-link only — a remix's latest carries its credit line and new app
-    id, which must never be sent into the author's app."""
-    t = _gate(body, x_fused, "changes")
-    if not isinstance(t, _Target):
-        return t
-    proposal = t.record.get("proposal")
-    cache = proposal.get("cache") if isinstance(proposal, dict) else None
-    if not isinstance(proposal, dict) or (cache or {}).get("state", "open") != "open":
-        return _refuse("no-proposal", "There's no open proposal to withdraw.")
-    return _call("withdraw", _mod("proposals").withdraw, t.app_dir)
-
-
-@router.post("/api/contrib/discard")
-def api_contrib_discard(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    """Back to the author's version (a backup is kept first — engine). With
-    `withdraw`, an open proposal is closed too; the default leaves it."""
-    t = _gate(body, x_fused, "changes", ("github",))
-    if not isinstance(t, _Target):
-        return t
-    withdraw = body.get("withdraw") is True
-    return _call("discard", _mod("engine").discard, t.app_dir, withdraw=withdraw)
-
-
-@router.post("/api/contrib/update-copy")
-def api_contrib_update_copy(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    """v1 alias of the `bring-in` action: bring the author's latest into
-    this copy now, keeping its changes (`engine.bring_in`, the sync table
-    run on demand). The engine answers `{ok, reason?, message}` in plain
-    words."""
-    t = _gate(body, x_fused, "changes", ("github",))
-    if not isinstance(t, _Target):
-        return t
-    return _call("update copy", _mod("engine").bring_in, t.app_dir)
-
-
-@router.post("/api/contrib/push-main")
-def api_contrib_push_main(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    """The collaborator's deliberate "publish straight to the author's app";
-    the engine asks GitHub whether this person may, and refuses if not."""
-    t = _gate(body, x_fused, "changes", ("github",))
-    if not isinstance(t, _Target):
-        return t
-    return _call("push-main", _mod("engine").push_to_main, t.app_dir)
-
-
 # The phase that offers each kind of merge (v1 and v3 purpose names; v2's
 # `return` is gone, §17.7). An own app's own-sync overlap is offered
 # whenever its panel is (P5/P6).
@@ -495,17 +431,6 @@ def _merge_start(t: _Target) -> dict:
     return _start_merge(t, plan)
 
 
-@router.post("/api/contrib/merge/start")
-def api_contrib_merge_start(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    """v1 alias of the `merge-claude` action."""
-    t = _gate(body, x_fused, "sources", ("github", "own"))
-    if not isinstance(t, _Target):
-        return t
-    out = _merge_start(t)
-    out.pop("merge", None)
-    return out
-
-
 def _merge_job_for(t: _Target, body) -> tuple[dict | None, dict | None]:
     """`(job, None)` when the posted merge job is one of this app's —
     whoever started it (Merge with Claude, ownsync, the inbox, remix's
@@ -540,12 +465,18 @@ def api_contrib_merge_accept(body: dict = Body(...), x_fused: str | None = Heade
 
 @router.post("/api/contrib/merge/discard")
 def api_contrib_merge_discard(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """Throw a merge away. An inbox Merge with Claude goes through
+    `inbox.merge_discard`, which also frees an item whose kept result never
+    reached the proposal (`merge_job.discard` alone has nothing to undo
+    there, and the item would stay "ready")."""
     t = _gate(body, x_fused, "sources")
     if not isinstance(t, _Target):
         return t
     job, refused = _merge_job_for(t, body)
     if refused is not None:
         return refused
+    if _mod("inbox").owns_merge(job["id"]):
+        return _call("inbox merge discard", _mod("inbox").merge_discard, t.app_dir, job["id"])
     return _call("merge discard", _mod("merge_job").discard, job["id"])
 
 
@@ -602,13 +533,15 @@ def api_contrib_inbox_review(body: dict = Body(...), x_fused: str | None = Heade
 def api_contrib_inbox_try(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     """A scratch copy of the proposal, next to the author's own. D18 is
     enforced by `inbox.try_open`, not here: it refuses until the review of
-    the CURRENT head is ready ("review-pending"), and on a "look" verdict
-    until `confirm` ("confirm")."""
+    the CURRENT head is ready ("review-pending"), on a "look" verdict until
+    `confirm` ("confirm"), and when `head_sha` — the head of the review the
+    page showed — is not the current one, or `confirm` comes without it
+    ("review-needed")."""
     t, number = _inbox_gate(body, x_fused)
     if not isinstance(t, _Target):
         return t
     return _call("try", _mod("inbox").try_open, t.app_dir, number,
-                 confirm=body.get("confirm") is True)
+                 confirm=body.get("confirm") is True, head_sha=_text(body, "head_sha") or None)
 
 
 @router.post("/api/contrib/inbox/try/remove")
@@ -625,12 +558,13 @@ def api_contrib_inbox_accept(body: dict = Body(...), x_fused: str | None = Heade
     author's copy), so the route runs it as a job — one per PROPOSAL:
     accepting #8 while #7's accept runs is a second job, not #7's. On a
     "look" verdict `inbox.accept` refuses without `confirm` (the job fails
-    with reason "confirm"; the page asks, then posts again with it)."""
+    with reason "confirm"; the page asks, then posts again with it). Like
+    Try, `head_sha` pins it to the review the page showed."""
     t, number = _inbox_gate(body, x_fused)
     if not isinstance(t, _Target):
         return t
     return _job(f"inbox-accept-{number}", t.app_dir, _mod("inbox").accept, t.app_dir, number,
-                confirm=body.get("confirm") is True,
+                confirm=body.get("confirm") is True, head_sha=_text(body, "head_sha") or None,
                 after=lambda: refresh.inbox_changed(t.app_dir, number))
 
 
@@ -680,30 +614,6 @@ def api_contrib_remix_draft(body: dict = Body(...), x_fused: str | None = Header
     if not isinstance(t, _Target):
         return t
     return _call("remix draft", _mod("remix").start_draft, t.app_dir)
-
-
-@router.post("/api/contrib/remix/publish")
-def api_contrib_remix_publish(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    t = _gate(body, x_fused, "remix", ("github",))
-    if not isinstance(t, _Target):
-        return t
-    name = _text(body, "name")
-    if not name:
-        return _refuse("missing", "Give your remix a name.")
-    return _call("remix publish", _mod("remix").start_publish, t.app_dir,
-                 name=name, credit=_text(body, "credit"))
-
-
-@router.post("/api/contrib/remix/bring-in")
-def api_contrib_remix_bring_in(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    """Bring the original's update into a remix — a merge job either way
-    (clean: `ready` to confirm; overlap: Claude combines)."""
-    t = _gate(body, x_fused, "remix", ("own",))
-    if not isinstance(t, _Target):
-        return t
-    if not refresh.remix_of(t.record):
-        return _refuse("not-allowed", "This app isn't a remix.")
-    return _call("bring in", _mod("remix").start_bring_in, t.app_dir)
 
 
 # -- v2: one action route (§16.9) ---------------------------------------------------

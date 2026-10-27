@@ -192,13 +192,32 @@ def _scope_specs(spec: str) -> list[str]:
     return [_pathspec(spec), ":(exclude,literal)" + _fused_path(spec)]
 
 
-def _add_scoped(repo_dir: str, spec: str, safe=False) -> subprocess.CompletedProcess:
+def _add_scoped(repo_dir: str, spec: str, safe=False,
+                keep_fused=False) -> subprocess.CompletedProcess:
     """`add -A -- <spec>`, then `.fused/` taken back out of the index
-    (`_scope_specs`)."""
+    (`_scope_specs`) — unless `keep_fused` (`_is_recorded`)."""
     r = _git_retry_lock(repo_dir, "add", "-A", "--", _pathspec(spec), safe=safe)
-    if r.returncode == 0:
+    if r.returncode == 0 and not keep_fused:
         _git_retry_lock(repo_dir, "reset", "-q", "--", _fused_spec(spec), safe=safe)
     return r
+
+
+def _is_recorded(repo_dir: str) -> bool:
+    """Whether `repo_dir` is a copy the contribution loop records (any
+    kind). Only those get the matching protection — skip-worktree on a
+    tracked `.fused/` (`classify.settle_locked`) — so only their commits
+    leave `.fused/` out: in any other repo that tracks it, an edit left out
+    would sit uncommitted for good and block the next update ("the working
+    tree has uncommitted changes"). Unknown reads as recorded: leaving this
+    machine's state out of a commit is the safe side."""
+    if repo_dir == local_repo_root():
+        return False
+    try:
+        from fused_render.contrib import classify
+
+        return classify.kind_of(repo_dir) is not None
+    except Exception:  # noqa: BLE001
+        return True
 
 
 def _is_github_copy(repo_dir: str) -> bool:
@@ -423,9 +442,10 @@ def commit(path: str, message: str, only_shared: bool = False,
         # Repos initialized before a _GITIGNORE pattern existed must not
         # sweep new bookkeeping files into history via the scoped add below.
         _ensure_excludes(repo_dir)
-        specs = _scope_specs(spec)
+        recorded = _is_recorded(repo_dir)
+        specs = _scope_specs(spec) if recorded else [_pathspec(spec)]
         safe = _is_github_copy(repo_dir)
-        r = _add_scoped(repo_dir, spec, safe=safe)
+        r = _add_scoped(repo_dir, spec, safe=safe, keep_fused=not recorded)
         if r.returncode != 0:
             logger.warning("app commit skipped (%s): add failed rc=%s "
                            "stdout=%r stderr=%r", app_dir, r.returncode,

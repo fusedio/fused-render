@@ -108,12 +108,34 @@ _TAG_RE = re.compile(r"<meta\s[^>]*name\s*=\s*[\"']?fused-app-id[\"']?[^>]*>", r
 _CONTENT_RE = re.compile(r"(content\s*=\s*)([\"'])([^\"']*)\2", re.I)
 
 
+def _plain_inside(root: str, path: str) -> bool:
+    """`path` is not a link and resolves inside `root` — no linked folder on
+    the way either. The author's repo can commit a link (`README.md ->
+    ../../../.zshrc`), and git checks it out as one: a write through it
+    lands outside the app, where no commit ever shows it."""
+    real_root = os.path.realpath(root)
+    return not os.path.islink(path) and \
+        os.path.realpath(path).startswith(real_root + os.sep)
+
+
+def _write_new(path: str, text: str) -> None:
+    """Write `text` to `path` as a regular file, never through a link: a
+    link put there meanwhile fails the open (`O_NOFOLLOW`) instead of
+    being followed."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0),
+                 0o644)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
 def restamp(entry_html: str, new_id: str) -> bool:
     """Give the entry page `new_id`, replacing the id it declares (or adding
-    one when it has none). True when the page reads back with `new_id`."""
+    one when it has none). True when the page reads back with `new_id`.
+    Never through a link (`_plain_inside` is the caller's check of where
+    the page is; a link here is refused)."""
     from fused_render import app_id
 
-    if not app_id.is_valid(new_id):
+    if not app_id.is_valid(new_id) or os.path.islink(entry_html):
         return False
     try:
         with open(entry_html, encoding="utf-8") as fh:
@@ -129,8 +151,7 @@ def restamp(entry_html: str, new_id: str) -> bool:
     if app_id.id_from_text(updated) != new_id:
         return False
     try:
-        with open(entry_html, "w", encoding="utf-8") as fh:
-            fh.write(updated)
+        _write_new(entry_html, updated)
     except OSError:
         return False
     return app_id.app_id(entry_html) == new_id
@@ -144,19 +165,39 @@ def _readme(root: str) -> str:
 
 
 def _write_credit(root: str, name: str, credit: str) -> str:
-    """Append the credit line to the README (creating one) — idempotent."""
+    """Append the credit line to the README (creating one) — idempotent.
+    A README that is a link, or reached through one, is REPLACED by a
+    regular file (its text kept only when it pointed inside the app): the
+    credit is written into the app, never wherever the link points."""
     path = _readme(root)
-    try:
-        with open(path, encoding="utf-8") as fh:
-            text = fh.read()
-    except FileNotFoundError:
+    linked = os.path.lexists(path) and not _plain_inside(root, path)
+    text = None
+    if linked:
+        target = os.path.realpath(path)
+        if target.startswith(os.path.realpath(root) + os.sep) and os.path.isfile(target):
+            try:
+                with open(target, encoding="utf-8") as fh:
+                    text = fh.read()
+            except (OSError, UnicodeError):
+                text = None
+        if os.path.islink(path):
+            os.unlink(path)
+        else:   # a linked folder on the way: nothing in the app to write
+            raise PlainError("This app's README is outside its folder, so the credit "
+                             "can't be added. Remove the link, then try again.")
+    else:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                text = fh.read()
+        except FileNotFoundError:
+            text = None
+    if text is None:
         text = f"# {name}\n"
-    if credit in text:
+    if credit in text and not linked:
         return path
     if not text.endswith("\n"):
         text += "\n"
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write(text + "\n" + credit + "\n")
+    _write_new(path, text if credit in text else text + "\n" + credit + "\n")
     return path
 
 
@@ -245,11 +286,16 @@ def _remix_commit_locked(root, *, name: str, credit: str, original: str, me: dic
     head_info = p._out(p._git(root, "log", "-1", "--format=%s%x00%ae", "HEAD")).split("\x00")
     if len(head_info) == 2 and head_info[0] == subject and head_info[1] == me["email"]:
         return p._rev(root, "HEAD")
-    paths = [_write_credit(root, name, credit)]
     try:
         entry = app_listing.app_entry(root)
     except OSError:
         entry = None
+    if entry and not _plain_inside(root, entry):
+        # Checked before anything is written (`app_id.stamp_entry` follows
+        # links too): an entry page that is a link may point anywhere.
+        raise PlainError("This app's main page is a link to a file outside its folder, "
+                         "so your remix can't get its own identity.")
+    paths = [_write_credit(root, name, credit)]
     if entry and not restamp(entry, app_id.mint(name)):
         raise PlainError("Couldn't give your remix its own identity. Try again.")
     if entry:

@@ -130,7 +130,7 @@ def test_list_without_review_starts_nothing(world):
 def test_invalidate_keeps_the_other_cards(world, monkeypatch):
     alice = world["alice"]
     pr = lambda n: {"number": n, "head_sha": f"{n}" * 40, "title": f"#{n}",  # noqa: E731
-                    "user": "bob", "body": ""}
+                    "user": "bob", "body": "", "base_branch": "main"}
     inbox._lists["alice/x"] = (time.time(), [pr(7), pr(8)])
     inbox.invalidate(alice, 7)  # #7 was just accepted here
     assert [i["number"] for i in inbox.cached(alice)] == [8]
@@ -153,7 +153,12 @@ def test_ai_addressed_text_needs_a_look(world):
     # Try asks to confirm first.
     res = inbox.try_open(alice, pr["number"])
     assert res["ok"] is False and res["reason"] == "confirm"
-    res = inbox.try_open(alice, pr["number"], confirm=True)
+    # The confirm is about the review the page showed: without its head, or
+    # with another one, it is refused (frontend contract 2).
+    for head in (None, "0" * 40):
+        res = inbox.try_open(alice, pr["number"], confirm=True, head_sha=head)
+        assert res == {"ok": False, "reason": "review-needed", "message": inbox.REVIEW_MOVED}
+    res = inbox.try_open(alice, pr["number"], confirm=True, head_sha=pr["head_sha"])
     assert res["ok"] is True
 
 
@@ -180,6 +185,46 @@ def test_try_copy_is_hidden_unsynced_and_removable(world):
     assert inbox.try_open(alice, pr["number"])["path"] == path
     inbox.try_remove(alice, pr["number"])
     assert not os.path.exists(path) and store.get(path) is None
+
+
+def test_try_copy_is_the_reviewed_head_even_when_the_ref_moves(world, monkeypatch):
+    """Review finding: the copy was checked out by the NAME refs/fused/pr/N,
+    which a review download running meanwhile moves to whatever the sender
+    just pushed. It is checked out by the reviewed sha now."""
+    alice, fake = world["alice"], world["fake"]
+    pr = propose(fake, {"index.html": PAGE.replace("hello", "hello there")})
+    jobs.wait(inbox.review(alice, pr["number"]))
+    reviewed = pr["head_sha"]
+    fake.commit("bob/x", "main", {"app.py": "x = 666\n"}, "more", author="bob")
+    real_clone = trycopy._clone
+
+    def racing(app_dir, path, sha):
+        gh.get_pr("alice/x", pr["number"])          # GitHub sees Bob's push
+        inbox._fetch_pr(alice, "alice/x", pr["number"], "main")   # lands meanwhile
+        return real_clone(app_dir, path, sha)
+
+    monkeypatch.setattr(trycopy, "_clone", racing)
+    made = trycopy.create(alice, pr["number"], head_sha=reviewed)
+    assert git(alice, "rev-parse", f"refs/fused/pr/{pr['number']}") != reviewed
+    assert git(made["path"], "rev-parse", "HEAD") == reviewed
+    assert "x = 666" not in open(os.path.join(made["path"], "app.py")).read()
+
+
+def test_a_try_copy_at_another_head_is_thrown_away(world, monkeypatch):
+    alice, fake = world["alice"], world["fake"]
+    pr = propose(fake, {"index.html": PAGE.replace("hello", "hello there")})
+    jobs.wait(inbox.review(alice, pr["number"]))
+    real_clone, mine = trycopy._clone, git(alice, "rev-parse", "HEAD")
+
+    def elsewhere(app_dir, path, sha):
+        ok = real_clone(app_dir, path, sha)
+        git(path, "checkout", "-q", "--detach", mine)
+        return ok
+
+    monkeypatch.setattr(trycopy, "_clone", elsewhere)
+    with pytest.raises(jobs.PlainError, match="changed since Claude read it"):
+        trycopy.create(alice, pr["number"], head_sha=pr["head_sha"])
+    assert not os.path.exists(trycopy.path_for("alice/x", pr["number"]))
 
 
 def test_accept_needs_review_of_current_head(world):
@@ -361,7 +406,25 @@ def test_accept_on_look_needs_confirm(world):
     res = inbox.accept(alice, pr["number"])
     assert res["ok"] is False and res["reason"] == "confirm"
     assert gh.get_pr("alice/x", pr["number"])["state"] == "open"
-    assert inbox.accept(alice, pr["number"], confirm=True)["merged"] is True
+    assert inbox.accept(alice, pr["number"], confirm=True)["reason"] == "review-needed"
+    assert gh.get_pr("alice/x", pr["number"])["state"] == "open"
+    assert inbox.accept(alice, pr["number"], confirm=True,
+                        head_sha=pr["head_sha"])["merged"] is True
+
+
+def test_accept_and_try_refuse_a_head_the_page_did_not_show(world):
+    """Bob sent more after Alice read the review: even a "fine" review of
+    the NEW head does not stand in for the one she read."""
+    alice, fake = world["alice"], world["fake"]
+    pr = propose(fake, {"app.py": "x = 2\n"})
+    jobs.wait(inbox.review(alice, pr["number"]))
+    read = pr["head_sha"]
+    fake.commit("bob/x", "main", {"app.py": "x = 3\n"}, "more", author="bob")
+    inbox.list(alice, review=False, force=True)
+    for res in (inbox.try_open(alice, pr["number"], head_sha=read),
+                inbox.accept(alice, pr["number"], head_sha=read)):
+        assert res["ok"] is False and res["reason"] == "review-needed"
+    assert gh.get_pr("alice/x", pr["number"])["state"] == "open"
 
 
 # ----------------------------------------------- what the review is shown
@@ -583,7 +646,8 @@ def test_try_copy_python_env_and_daemon(world, monkeypatch):
     pr = propose(fake, {"pyproject.toml": '[project]\nname = "x"\nversion = "0"\n'
                         'dependencies = ["six"]\n'})
     jobs.wait(inbox.review(alice, pr["number"]))
-    path = inbox.try_open(alice, pr["number"], confirm=True)["path"]
+    path = inbox.try_open(alice, pr["number"], confirm=True,
+                          head_sha=pr["head_sha"])["path"]
     assert projectenv.project_root_for(os.path.join(path, "app.py")) == path
     assert projectenv.venv_dir_for(path) == os.path.join(path, ".venv")
     inbox.try_remove(alice, pr["number"])
@@ -815,7 +879,7 @@ def test_r2_inbox_git_calls_never_run_repo_configured_commands(fits_world, tmp_p
     marker = arm_repo_config(alice, tmp_path)
     inbox.list(alice)
     assert settle(alice, pr["number"])["status"] == "done"
-    inbox.try_open(alice, pr["number"], confirm=True)
+    assert inbox.try_open(alice, pr["number"], confirm=True, head_sha=pr["head_sha"])["ok"]
     inbox.try_remove(alice, pr["number"])
     out = inbox.merge_start(alice, pr["number"])
     assert _wait_merge(out["job"])["status"] == "ready"
@@ -840,3 +904,113 @@ def test_accept_decline_and_try_wait_for_an_open_merge(fits_world):
     assert gh.get_pr("alice/x", pr["number"])["state"] == "open"
     merge_job.discard(out["job"])
     assert inbox.decline(alice, pr["number"])["ok"]
+
+
+@pytest.mark.parametrize("reason", ["forbidden", "not-found", "signed-out"])
+def test_a_keep_that_can_never_be_sent_frees_the_item(fits_world, monkeypatch, reason):
+    """Review finding: Keep's push refused for good (Bob turned off changes,
+    deleted his branch, Alice signed out) left the item "ready" forever —
+    Accept, Decline and Try refusing, Discard answering {ok: False}."""
+    alice, fake = fits_world["alice"], fits_world["fake"]
+    pr = propose(fake, {"index.html": PAGE.replace("hello", "hey")})
+    fake.commit("alice/x", "main", {"NOTES.md": "n\n"}, "Notes", author="alice")
+    out = inbox.merge_start(alice, pr["number"])
+    assert _wait_merge(out["job"])["status"] == "ready"
+
+    def refused(*a, **k):
+        raise gh.GitHubError(reason)
+
+    monkeypatch.setattr(gh, "push", refused)
+    res = inbox.merge_accept(alice, out["job"])
+    assert res["ok"] is False and res["reason"] == reason and res["message"]
+    assert not inbox.owns_merge(out["job"])
+    assert all(i["merge_job"] is None for i in inbox.list(alice, review=False))
+    assert inbox.decline(alice, pr["number"], "")["ok"]
+
+
+def test_discard_frees_a_kept_merge_that_was_not_sent(fits_world, monkeypatch):
+    """A transient push failure keeps the result for a retry; Discard is
+    the other way out, even though merge_job already counts it accepted."""
+    alice, fake = fits_world["alice"], fits_world["fake"]
+    pr = propose(fake, {"index.html": PAGE.replace("hello", "hey")})
+    fake.commit("alice/x", "main", {"NOTES.md": "n\n"}, "Notes", author="alice")
+    out = inbox.merge_start(alice, pr["number"])
+    assert _wait_merge(out["job"])["status"] == "ready"
+
+    def offline(*a, **k):
+        raise gh.GitHubError("offline")
+
+    monkeypatch.setattr(gh, "push", offline)
+    assert inbox.merge_accept(alice, out["job"])["reason"] == "offline"
+    assert inbox.list(alice, review=False)[0]["merge_job"]["status"] == "ready"   # Keep retries
+    assert inbox.merge_discard(alice, out["job"]) == {"ok": True}
+    assert inbox.list(alice, review=False)[0]["merge_job"] is None
+    assert inbox.decline(alice, pr["number"], "")["ok"]
+
+
+def test_a_forgotten_merge_job_does_not_pin_the_item(fits_world, monkeypatch):
+    from fused_render.contrib import merge_job
+    alice, fake = fits_world["alice"], fits_world["fake"]
+    pr = propose(fake, {"index.html": PAGE.replace("hello", "hey")})
+    fake.commit("alice/x", "main", {"NOTES.md": "n\n"}, "Notes", author="alice")
+    out = inbox.merge_start(alice, pr["number"])
+    assert _wait_merge(out["job"])["status"] == "ready"
+    inbox._merges[out["job"]]["tip"] = "f" * 40          # kept, never sent
+    monkeypatch.setattr(merge_job, "get", lambda jid: None)   # pruned after a day
+    assert inbox.list(alice, review=False)[0]["merge_job"] is None
+    assert not inbox.owns_merge(out["job"])
+
+
+def test_only_proposals_for_the_apps_branch(fits_world):
+    """A proposal into another branch of her repo is not hers to accept
+    here: her copy follows `main`, so it is not listed, reviewed, accepted
+    or combined."""
+    alice, fake = fits_world["alice"], fits_world["fake"]
+    git(fake.bare_path("alice/x"), "update-ref", "refs/heads/dev",
+        fake.tip("alice/x", "main"))
+    fake.sign_in("bob")
+    gh.forget_identity()
+    fork = gh.ensure_fork("alice/x")
+    fake.commit(fork, "main", {"app.py": "x = 2\n"}, "Bob's change", author="bob")
+    other = gh.open_pr("alice/x", title="Dev", body="b", head="bob:main", base="dev")
+    fake.sign_in("alice")
+    gh.forget_identity()
+    assert inbox.list(alice, review=False) == []
+    assert inbox.cached(alice) == []
+    assert jobs.wait(inbox.review(alice, other["number"]))["status"] == "failed"
+    for res in (inbox.accept(alice, other["number"], head_sha=other["head_sha"]),
+                inbox.merge_start(alice, other["number"]),
+                inbox.ask_update(alice, other["number"])):
+        assert res == {"ok": False, "reason": "other-branch", "message": inbox.OTHER_BRANCH}
+    assert gh.get_pr("alice/x", other["number"])["state"] == "open"
+    # Her own repo's `main` as the head of a proposal: Keep would push there.
+    assert inbox._branch_refusal({"base_branch": "main", "head_repo": "Alice/X",
+                                  "head_branch": "main"}, {"branch": "main"}, "alice/x")
+
+
+def test_the_real_listing_row_names_its_base_branch():
+    """The branch rule drops a row with no `base_branch`, and the fake's rows
+    always carry one — so the real mapper GitHub's list goes through is
+    pinned here on a canned row."""
+    row = gh._pr_out({"number": 3, "state": "open", "html_url": "u", "user": {"login": "bob"},
+                      "head": {"sha": "a" * 40, "ref": "fix",
+                               "repo": {"full_name": "bob/x"}},
+                      "base": {"ref": "main"}})
+    assert (row["base_branch"], row["head_repo"], row["head_branch"]) == ("main", "bob/x", "fix")
+    assert inbox._branch_refusal(row, {"branch": "main"}, "alice/x") is None
+
+
+# All below 0x80, so the fake's text commit stores exactly these bytes.
+ZIP = "PK\x03\x04" + "\x14\x00" * 20 + "PK\x05\x06" + "\x00" * 18
+
+
+def test_a_zip_named_like_a_picture_needs_a_look(world):
+    """The review reads a binary file's bytes (review_rules.sniff): a zip
+    called icon.png is code `sys.path` can import, so it is a hard hit."""
+    alice, fake = world["alice"], world["fake"]
+    gif = "GIF89a" + "\x00" * 40
+    pr = propose(fake, {"icon.png": ZIP, "logo.gif": gif})
+    review = jobs.wait(inbox.review(alice, pr["number"]))["result"]
+    hits = {(h["rule"], h["file"]) for h in review["static_hits"]}
+    assert hits == {("unreadable", "icon.png")}
+    assert review["verdict"] == "look"

@@ -34,8 +34,10 @@ copy out of every listing.
 
 The copy is a `git clone --no-hardlinks` of the author's repo (local, no
 network; nothing shared on disk with her folder) checked out detached at the
-proposal's head, which `inbox.review` fetched into `refs/fused/pr/<N>` of her
-repo. Removed on accept, decline, and when the proposal is closed on GitHub
+proposal's REVIEWED head — fetched by its sha, never by the name
+`refs/fused/pr/<N>`, which the next review download may move to a newer
+head the sender just pushed; the copy is thrown away unless `HEAD` reads
+back as exactly that sha. Removed on accept, decline, and when the proposal is closed on GitHub
 (`inbox.list` sweeps copies whose proposal is no longer open).
 
 ITS PYTHON is its own: outside `app_git.app_dir_for`, `projectenv` takes the
@@ -153,7 +155,13 @@ def create(app_dir: str, number: int, *, head_sha: str | None = None) -> dict:
             return {"path": path, "url": url_for(path)}
         _remove_path(path)
         os.makedirs(try_root(), exist_ok=True)
-        ok = _clone(app_dir, path, ref)
+        ok = _clone(app_dir, path, want)
+        if ok and _head(path) != want:
+            # Whatever went on meanwhile, the copy is not of what Claude read.
+            logger.warning("try copy: %s is not at the reviewed head", path)
+            _remove_path(path)
+            raise PlainError("This proposal changed since Claude read it. "
+                             "Wait for the new review, then try it.")
         if not ok:
             _remove_path(path)
             raise PlainError("Couldn't make a copy to try. Try again.")
@@ -164,7 +172,9 @@ def create(app_dir: str, number: int, *, head_sha: str | None = None) -> dict:
     return {"path": path, "url": url_for(path)}
 
 
-def _clone(app_dir: str, path: str, ref: str) -> bool:
+def _clone(app_dir: str, path: str, sha: str) -> bool:
+    """Clone the author's repo to `path` and check out commit `sha` (the
+    reviewed head) by its id — never by a ref name another job can move."""
     gu = _gu()
     parent = os.path.dirname(path)
     # Cloning READS the author's repo; nothing in it is written, so no slot.
@@ -172,8 +182,8 @@ def _clone(app_dir: str, path: str, ref: str) -> bool:
         (parent, ("clone", "--no-hardlinks", "--no-checkout", "-q",
                   os.path.abspath(app_dir), path)),
         (path, ("fetch", "-q", "--no-tags", os.path.abspath(app_dir),
-                f"+{ref}:refs/fused/try")),
-        (path, ("checkout", "-q", "--detach", "refs/fused/try")),
+                f"+{sha}:refs/fused/try")),
+        (path, ("checkout", "-q", "--detach", sha)),
         (path, ("remote", "remove", "origin")),
     ]
     for root, args in steps:
@@ -269,9 +279,24 @@ def _orphaned(path: str) -> bool:
     return not flags.inbox()
 
 
+def _has_edits(path: str) -> bool:
+    """Uncommitted edits in a Try copy (machine state such as `.venv/` and
+    `.fused/` aside, `replay.edits`): the user or Claude changed something
+    there, and a copy is removed with no backup."""
+    try:
+        from fused_render.contrib import replay
+
+        return bool(replay.edits(path))
+    except Exception:  # noqa: BLE001 — unknown reads as edited: kept
+        logger.exception("try copy: could not read %s's edits", path)
+        return True
+
+
 def sweep_orphans() -> int:
-    """Remove every Try copy that is `_orphaned`. For a startup pass and the
-    background sweep; never raises. Returns how many went."""
+    """Remove every Try copy that is `_orphaned` — unless something was
+    changed in it (`_has_edits`): that one stays until its author's app
+    removes it (`remove_all_for`) or the edits go. For a startup pass and
+    the background sweep; never raises. Returns how many went."""
     root = try_root()
     try:
         names = os.listdir(root)
@@ -288,6 +313,9 @@ def sweep_orphans() -> int:
             # would otherwise read as orphaned.
             with _lock:
                 if not _orphaned(path):
+                    continue
+                if _has_edits(path):
+                    logger.info("try copy: %s has edits of its own; not swept", path)
                     continue
                 _remove_path(path)
             gone += 1

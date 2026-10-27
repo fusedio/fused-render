@@ -27,6 +27,14 @@ An app tree (`files` for `hard_hits`/`powers`) is `[{"path", "text": str |
 None, "mode": "100644" | "100755" | "120000" | None, "binary": bool}]` or a
 `{path: str | bytes}` mapping; `app_files` normalises either.
 
+A BINARY file is judged by its bytes, so an entry for one carries them:
+`"data": bytes`, or `sniff(data)`'s `"head"`/`"zip"` pair. A picture, font,
+sound or PDF whose first bytes are not that kind of file, or that holds a
+zip archive anywhere, fails like any file nobody can read — Python's
+`zipimport` loads code from a zip whatever it is called. A binary
+media file with NO bytes given fails too: "could not check" never reads
+as "fine".
+
 UNTRUSTED TEXT IS DATA: `_fence`/`_DATA_RULE` are the one way either judge
 hands someone else's text to a model.
 """
@@ -106,6 +114,63 @@ _MEDIA_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico", ".bmp"
                ".mp3", ".mp4", ".wav", ".ogg", ".webm", ".m4a", ".mov", ".pdf"}
 _COMPILED_EXTS = {".pyc", ".pyo", ".pyd", ".so", ".dylib", ".dll", ".wasm", ".node",
                   ".exe", ".bin", ".jar", ".class", ".o", ".a", ".dat"}
+# A zip's local-file and end-of-directory signatures. `zipimport` finds the
+# second near the end of any file, so a picture with a zip appended is a
+# module; the first is a zip's start, wherever it sits.
+_ZIP_SIGS = (b"PK\x03\x04", b"PK\x05\x06")
+_SNIFF_HEAD = 64
+# What each media kind starts with. ISO media (mp4, mov, heic, avif) names
+# its first box at byte 4; RIFF (wav, webp) its form at byte 8.
+_MAGIC = {".png": (b"\x89PNG\r\n\x1a\n",), ".jpg": (b"\xff\xd8\xff",),
+          ".jpeg": (b"\xff\xd8\xff",), ".gif": (b"GIF87a", b"GIF89a"), ".bmp": (b"BM",),
+          ".ico": (b"\x00\x00\x01\x00", b"\x00\x00\x02\x00"),
+          ".tif": (b"II*\x00", b"MM\x00*"), ".tiff": (b"II*\x00", b"MM\x00*"),
+          ".woff": (b"wOFF",), ".woff2": (b"wOF2",),
+          ".ttf": (b"\x00\x01\x00\x00", b"true", b"OTTO"),
+          ".otf": (b"OTTO", b"\x00\x01\x00\x00"),
+          ".ogg": (b"OggS",), ".webm": (b"\x1a\x45\xdf\xa3",), ".pdf": (b"%PDF-",)}
+_ISO_EXTS = {".mp4", ".m4a", ".mov", ".heic", ".avif"}
+_ISO_BOXES = {b"ftyp", b"moov", b"mdat", b"wide", b"free", b"skip", b"pnot"}
+_RIFF_FORM = {".wav": b"WAVE", ".webp": b"WEBP"}
+
+
+def sniff(data: bytes) -> dict:
+    """The evidence a binary file's entry carries (module doc): its first
+    bytes, and whether a zip signature sits anywhere in it."""
+    data = bytes(data or b"")
+    return {"head": data[:_SNIFF_HEAD], "zip": any(s in data for s in _ZIP_SIGS)}
+
+
+def _media_ok(ext: str, evidence) -> bool:
+    """Whether a binary file named `*<ext>` is that kind of file and holds
+    no zip. No evidence is not "ok"."""
+    if not isinstance(evidence, dict) or not isinstance(evidence.get("head"), bytes) \
+            or evidence.get("zip") is not False:
+        return False
+    head = evidence["head"]
+    if ext in _MAGIC:
+        return head.startswith(_MAGIC[ext])
+    if ext in _ISO_EXTS:
+        return head[4:8] in (_ISO_BOXES if ext == ".mov" else {b"ftyp"})
+    if ext in _RIFF_FORM:
+        return head[:4] == b"RIFF" and head[8:12] == _RIFF_FORM[ext]
+    if ext == ".mp3":
+        return head.startswith(b"ID3") or (len(head) > 1 and head[0] == 0xFF
+                                           and head[1] & 0xE0 == 0xE0)
+    if ext == ".eot":
+        return head[34:36] == b"LP"
+    return False
+
+
+def _evidence(f) -> dict | None:
+    """`sniff` evidence from an entry: its `data`, or a `head`/`zip` pair."""
+    if not isinstance(f, dict):
+        return None
+    if isinstance(f.get("data"), (bytes, bytearray)):
+        return sniff(f["data"])
+    if isinstance(f.get("head"), (bytes, bytearray)) and isinstance(f.get("zip"), bool):
+        return {"head": bytes(f["head"][:_SNIFF_HEAD]), "zip": f["zip"]}
+    return None
 # Files that change how git stores or shows the others (what a review sees).
 _REPO_FILES = {".gitattributes", ".lfsconfig", ".gitmodules"}
 # An inline picture is data, not code; any other base64 run is "hidden".
@@ -129,11 +194,24 @@ _HARD_LINE_RULES = [
     ("secrets", "Reaches for the keychain or this computer's sign-in keys",
      re.compile(r"(?:keychain|keyring|\bsecurity\s+find-|\.ssh\b|id_rsa|id_ed25519|"
                 r"\.netrc|\.aws/credentials|\.git-credentials)", re.I)),
+    # Defence in depth, not a parser: each alternative is a spelling seen in
+    # the wild or in review (`from os import system as s`, `os . system`,
+    # `create_subprocess_shell`, `pty.spawn`, `Function("…")()` without
+    # `new`, a string handed to setTimeout, a zip put on `sys.path`).
     ("runs-code", "Runs other programs, or code it builds while running",
-     re.compile(r"(?:\beval\s*\(|\bexec\s*\(|\bcompile\s*\(|__import__|"
-                r"\bsubprocess\b|os\.system|os\.popen|os\.exec|os\.spawn|"
-                r"\bnew\s+Function\s*\(|child_process|importlib|\bctypes\b|"
-                r"\bpickle\.loads?|marshal\.loads)")),
+     re.compile(r"(?:\beval\s*\(|\bexec\s*\(|\bcompile\s*\(|__import__|__builtins__|"
+                r"subprocess|\bos\s*\.\s*(?:system|popen|exec|spawn|posix_spawn|fork)|"
+                r"\b(?:system|popen|posix_spawnp?|exec[lv]p?e?|spawn[lv]p?e?)\s*\(|"
+                r"\bposix_spawn|\bpty\s*\.|\brunpy\b|\bzipimport\b|\bsys\s*\.\s*path\b|"
+                r"\bfrom\s+(?:os|posix|nt)\s+import\s*(?:[(\\*]|[^\n#]*\b(?:system|popen|"
+                r"exec\w*|spawn\w*|posix_spawn\w*|fork\w*)\b)|"
+                r"\bfrom\s+(?:pty|runpy|ctypes|zipimport)\s+import\b|"
+                r"\bgetattr\s*\(\s*(?:os|posix|nt|subprocess|builtins)\b|"
+                r"(?<![.\w])Function\s*\(|\bnew\s+Function\s*\(|"
+                r"\bset(?:Timeout|Interval)\s*\(\s*[\"'`]|"
+                r"\b(?:execSync|execFile\w*|spawnSync)\s*\(|\bBun\s*\.\s*spawn|"
+                r"\bDeno\s*\.\s*(?:run|Command)\b|"
+                r"child_process|importlib|\bctypes\b|\bpickle\.loads?|marshal\.loads)")),
     ("hidden-code", "Contains a long block of scrambled or encoded text",
      re.compile(r"(?:[A-Za-z0-9+/]{200,}={0,2}|(?:[0-9a-fA-F]{2}){100,}|"
                 r"(?:\\x[0-9a-fA-F]{2}){40,}|(?:\\u[0-9a-fA-F]{4}){40,}|"
@@ -157,6 +235,8 @@ _DEP_FILES = {"pyproject.toml", "uv.lock", "setup.py", "setup.cfg", "pipfile",
 _KIND_DETAIL = {
     "network": "Sends or loads data from {host}",
     "unreadable": "Adds or changes a file that isn't plain text, so it can't be checked",
+    "disguised": "Adds a file that isn't the kind of file its name says, so it can't be "
+                 "checked",
     "compiled": "Adds a ready-made program file that can't be read",
     "symlink": "Adds a shortcut that can point anywhere on this computer",
     "repo-files": "Changes how the app's files are stored and shown",
@@ -170,34 +250,99 @@ _KIND_DETAIL = {
 _MINIFIED_LINE = 600
 
 
-def _added_lines(diff: str):
-    """`(file, line_no, text)` for each line the diff ADDS. `line_no` is the
-    new file's line number (1-based)."""
-    file, new_no = None, 0
-    for raw in (diff or "").splitlines():
-        if raw.startswith("+++ "):
+_HUNK_RE = re.compile(r"^@@ -\d+(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
+
+
+def _diff_lines(diff: str):
+    """`(tag, file, line_no, text)` for each line of the diff's hunks: tag
+    "+" (added), "-" (removed) or " " (context); `line_no` the new file's
+    line number (1-based; None for a removed line).
+
+    A hunk header's counts (`@@ -a,b +c,d @@`) say where the hunk ends, and
+    only between hunks is a line a header. Inside one, an added line whose
+    text starts with "++ " reads `+++ …` and is still an added line — read
+    as a file header, it and every line after it would go unchecked, under
+    a file name the proposal chose. Between hunks, `+++ ` is a header only
+    right after a `--- ` header; any other `+` line there is read as added
+    (a diff whose counts are short loses nothing). Removed and context
+    lines count only inside a hunk: they only ever make a finding NOT new.
+
+    Lines end at "\\n" alone. `splitlines` also ends one at a form feed,
+    U+2028 and the like, so one added line could become an added line plus
+    an unchecked one."""
+    file, new_no, old_left, new_left, after_minus = None, 0, 0, 0, False
+    for raw in (diff or "").split("\n"):
+        if old_left > 0 or new_left > 0:
+            tag = raw[:1]
+            if tag == "\\":            # git's "No newline at end of file" note
+                continue
+            if tag == "+":
+                new_left -= 1
+                yield "+", file, new_no, raw[1:]
+                new_no += 1
+            elif tag == "-":
+                old_left -= 1
+                yield "-", file, None, raw[1:]
+            else:                       # context (git writes " "; some tools "")
+                old_left, new_left = old_left - 1, new_left - 1
+                yield " ", file, new_no, raw[1:]
+                new_no += 1
+            continue
+        minus, after_minus = after_minus, False
+        if raw.startswith("diff --git"):
+            file = None
+        elif raw.startswith("--- "):
+            after_minus = True
+        elif raw.startswith("+++ ") and minus:
             path = raw[4:].strip()
             file = path[2:] if path.startswith("b/") else (None if path == "/dev/null" else path)
-            continue
-        if raw.startswith("--- ") or raw.startswith("diff --git"):
-            continue
-        if raw.startswith("@@"):
-            m = re.search(r"\+(\d+)", raw)
-            new_no = int(m.group(1)) if m else 0
-            continue
-        if raw.startswith("+"):
-            yield file, new_no, raw[1:]
+        elif raw.startswith("@@"):
+            m = _HUNK_RE.match(raw)
+            if m:
+                old_left = int(m.group(1)) if m.group(1) is not None else 1
+                new_no = int(m.group(2))
+                new_left = int(m.group(3)) if m.group(3) is not None else 1
+        elif raw.startswith("+"):
+            yield "+", file, new_no, raw[1:]
             new_no += 1
-        elif raw.startswith(" "):
-            new_no += 1
+
+
+def _added_lines(diff: str):
+    """`(file, line_no, text)` for each line the diff ADDS (`_diff_lines`)."""
+    for tag, file, line_no, text in _diff_lines(diff):
+        if tag == "+":
+            yield file, line_no, text
+
+
+# A host with no scheme at all: an IPv4 address (`nc 10.0.0.1 80`,
+# `connect(("10.0.0.1", 80))`) or a dotted name with a port
+# (`"evil.example:4444"`). Only where a value starts — after a quote, space,
+# `=`, `(`, `,` or a backtick — so `buf[hdr.size:100]` is not a host; and a
+# name ending in a file kind (`app.py:120` in a comment) is a file, not a host.
+_OCTET = r"(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)"
+_BARE_HOST_RE = re.compile(
+    r"(?:^|(?<=[\"'\s=(,`]))(?:"
+    r"(" + _OCTET + r"(?:\." + _OCTET + r"){3})(?![\w]|\.\d)"
+    r"|((?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,63}):\d{2,5}\b)")
+_FILE_SUFFIXES = {"py", "js", "mjs", "cjs", "ts", "tsx", "jsx", "html", "htm", "css",
+                  "json", "md", "txt", "toml", "yml", "yaml", "lock", "log", "sql",
+                  "csv", "sh", "rs", "go", "rb", "java", "kt", "swift", "c", "h", "cc",
+                  "cpp", "hpp", "vue", "svelte", "ipynb", "xml", "svg", "cfg", "ini"}
 
 
 def _urls(text: str):
-    """`(host, path)` for every absolute or protocol-relative URL."""
+    """`(host, path)` for every absolute or protocol-relative URL, and every
+    host written without a scheme (`_BARE_HOST_RE`, path "")."""
     for m in _URL_RE.finditer(text):
         yield m.group(1).lower().rstrip("."), m.group(2)
     for m in _REL_URL_RE.finditer(text):
         yield m.group(1).lower().rstrip("."), m.group(2)
+    rest = _REL_URL_RE.sub(" ", _URL_RE.sub(" ", text))
+    for m in _BARE_HOST_RE.finditer(rest):
+        host = (m.group(1) or m.group(2)).lower()
+        if m.group(2) and host.rsplit(".", 1)[-1] in _FILE_SUFFIXES:
+            continue
+        yield host, ""
 
 
 def _url_key(host: str, path: str) -> str:
@@ -209,10 +354,11 @@ def _url_key(host: str, path: str) -> str:
 
 
 def _old_sources(diff: str) -> set:
+    """Sources the file already used: removed and context lines' URLs."""
     keys = set()
-    for raw in (diff or "").splitlines():
-        if (raw.startswith("-") and not raw.startswith("---")) or raw.startswith(" "):
-            keys.update(_url_key(h, p) for h, p in _urls(fold(raw)))
+    for tag, _file, _n, text in _diff_lines(diff):
+        if tag in ("-", " "):
+            keys.update(_url_key(h, p) for h, p in _urls(fold(text)))
     return keys
 
 
@@ -222,17 +368,18 @@ def _snippet(text: str) -> str:
 
 
 def _file_entries(files) -> list:
-    """`[{"path", "old_path", "mode", "binary"}]` from `[path]` or
-    `[{"path", ...}]` (inbox passes the full entries)."""
+    """`[{"path", "old_path", "mode", "binary", "status", "sniff"}]` from
+    `[path]` or `[{"path", ...}]` (inbox passes the full entries, a binary
+    one with its `head`/`zip` evidence)."""
     out = []
     for f in files or []:
         if isinstance(f, dict) and isinstance(f.get("path"), str) and f["path"]:
             out.append({"path": f["path"], "old_path": f.get("old_path"),
                         "mode": f.get("mode"), "binary": bool(f.get("binary")),
-                        "status": f.get("status") or ""})
+                        "status": f.get("status") or "", "sniff": _evidence(f)})
         elif isinstance(f, str) and f:
             out.append({"path": f, "old_path": None, "mode": None, "binary": False,
-                        "status": ""})
+                        "status": "", "sniff": None})
     return out
 
 
@@ -273,6 +420,8 @@ def _scan_entry(add, e) -> None:
             add("compiled", _KIND_DETAIL["compiled"], p)
         elif e["binary"] and ext not in _MEDIA_EXTS:
             add("unreadable", _KIND_DETAIL["unreadable"], p)
+        elif e["binary"] and not _media_ok(ext, e.get("sniff")):
+            add("unreadable", _KIND_DETAIL["disguised"], p)
     for name in (p, e["old_path"]):
         if name and (_INVISIBLE_RE.search(name) or _HARD_AI.search(fold(name))):
             add("ai-text", _AI_TEXT, p, None, f"file name: {name}")
@@ -398,26 +547,32 @@ def _is_doc(path: str) -> bool:
 
 
 def app_files(files) -> list:
-    """An app tree as `[{"path", "text", "mode", "binary"}]`. Accepts that
-    list already, or `{path: str | bytes}`. Bytes are text when they decode
-    as UTF-8 and hold no NUL; anything else is binary (`text` None)."""
+    """An app tree as `[{"path", "text", "mode", "binary", "sniff"}]`.
+    Accepts that list already (with `data` or `head`/`zip` for a binary
+    file), or `{path: str | bytes}`. Bytes are text when they decode as
+    UTF-8 and hold no NUL; anything else is binary (`text` None) and keeps
+    its `sniff` evidence."""
     out = []
     items = files.items() if isinstance(files, dict) else \
         ((f.get("path"), f) for f in (files or []) if isinstance(f, dict))
     for path, v in items:
         if not isinstance(path, str) or not path:
             continue
+        evidence = None
         if isinstance(v, dict):
             text, mode, binary = v.get("text"), v.get("mode"), bool(v.get("binary"))
             data = v.get("data")
             if text is None and isinstance(data, (bytes, bytearray)):
                 text, binary = _decode(bytes(data))
+            evidence = _evidence(v)
         elif isinstance(v, (bytes, bytearray)):
             (text, binary), mode = _decode(bytes(v)), None
+            evidence = sniff(v)
         else:
             text, mode, binary = (v if isinstance(v, str) else None), None, False
         out.append({"path": path, "text": text if isinstance(text, str) else None,
-                    "mode": mode, "binary": binary or not isinstance(text, str)})
+                    "mode": mode, "binary": binary or not isinstance(text, str),
+                    "sniff": evidence})
     out.sort(key=lambda e: e["path"])
     return out
 
@@ -433,7 +588,7 @@ def _decode(data: bytes):
 
 def _tree_entry(e) -> dict:
     return {"path": e["path"], "old_path": None, "mode": e["mode"],
-            "binary": e["binary"], "status": ""}
+            "binary": e["binary"], "status": "", "sniff": e.get("sniff")}
 
 
 def hard_hits(files) -> list:
@@ -599,11 +754,11 @@ def _diff_entries(diff: str) -> list:
     """`[{"path", "old_path", "mode", "binary", "status"}]` from git headers."""
     out: list = []
     cur = None
-    for raw in (diff or "").splitlines():
+    for raw in (diff or "").split("\n"):
         if raw.startswith("diff --git "):
             m = re.match(r"diff --git a/(.*) b/(.*)$", raw)
             cur = {"path": m.group(2) if m else raw[11:], "old_path": None, "mode": None,
-                   "binary": False, "status": "M"}
+                   "binary": False, "status": "M", "sniff": None}
             out.append(cur)
         elif cur is None:
             continue
@@ -651,15 +806,9 @@ def powers(diff_or_files) -> list:
                 _scan_entry(collect, e)
         added: dict = {}
         removed: dict = {}
-        file = None
-        for raw in diff.splitlines():
-            if raw.startswith("+++ "):
-                path = raw[4:].strip()
-                file = path[2:] if path.startswith("b/") else (None if path == "/dev/null" else path)
-            elif raw.startswith("--- "):
-                continue
-            elif raw.startswith("-") and file is not None:
-                removed.setdefault(file, []).append(raw[1:])
+        for tag, f, _n, text in _diff_lines(diff):
+            if tag == "-" and f is not None:
+                removed.setdefault(f, []).append(text)
         for f, n, text in _added_lines(diff):
             if f and not _is_doc(f):
                 _scan_line(collect, old, f, n, text)

@@ -256,6 +256,50 @@ def test_restamp_replaces_only_the_id():
         assert fh.read() == PAGE.replace("sine-starter-0a1b2c3d", "new-app-12345678")
 
 
+def test_the_credit_never_goes_through_a_linked_readme(tmp_path):
+    """Review finding (the reviewer's repro): the author's repo commits
+    `README.md -> ../../../victim.txt`; the credit line was appended to the
+    file OUTSIDE the app. The link is replaced by a regular README now."""
+    import os
+    victim = tmp_path / "victim.txt"
+    victim.write_text("victim original\n")
+    app = tmp_path / "ws" / "tag" / "app"
+    app.mkdir(parents=True)
+    os.symlink("../../../victim.txt", app / "README.md")
+    path = _r()._write_credit(str(app), "x", CREDIT)
+    assert victim.read_text() == "victim original\n"
+    assert not os.path.islink(path) and CREDIT in read(str(app), "README.md")
+    assert read(str(app), "README.md").startswith("# x\n")
+    # A link that stays inside the app keeps its text.
+    (app / "docs.md").write_text("# Docs\n")
+    os.unlink(app / "README.md")
+    os.symlink("docs.md", app / "README.md")
+    _r()._write_credit(str(app), "x", CREDIT)
+    assert read(str(app), "README.md") == f"# Docs\n\n{CREDIT}\n"
+    assert read(str(app), "docs.md") == "# Docs\n"
+
+
+def test_a_linked_entry_page_is_refused_before_anything_is_written(w, tmp_path):
+    import os
+    from fused_render.contrib.jobs import PlainError
+    outside = tmp_path / "outside.html"
+    outside.write_text(PAGE)
+    entry = os.path.join(w.app, "index.html")
+    os.unlink(entry)
+    os.symlink(str(outside), entry)
+    git(w.app, "add", "-A")
+    git(w.app, "commit", "-q", "-m", "Claude: link")
+    readme = read(w.app, "README.md") if os.path.exists(os.path.join(w.app, "README.md")) \
+        else None
+    with pytest.raises(PlainError, match="main page is a link"):
+        _publish(w)
+    assert outside.read_text() == PAGE
+    now = read(w.app, "README.md") if os.path.exists(os.path.join(w.app, "README.md")) \
+        else None
+    assert now == readme
+    assert not _r().restamp(entry, "new-app-12345678")
+
+
 def test_publish_needs_a_github_link_copy(w):
     from fused_render.contrib.jobs import PlainError
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
