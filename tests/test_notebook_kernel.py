@@ -30,9 +30,9 @@ def _load_kernel_module():
 
 
 class KernelProc:
-    def __init__(self):
+    def __init__(self, argv=None):
         self.proc = subprocess.Popen(
-            [sys.executable, BODY],
+            argv or [sys.executable, BODY],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             text=True, encoding="utf-8", bufsize=1)
@@ -238,6 +238,34 @@ def test_interrupt_running_cell(kernel):
     # still serving afterwards
     events = kernel.run("e2", "1 + 1")
     assert _of_type(events, "execute_result")[0]["data"] == {"text/plain": "2"}
+
+
+def test_interrupt_without_pthread_kill():
+    """Windows has no `signal.pthread_kill`: the interrupt must fall back to
+    `_thread.interrupt_main` instead of raising in (and killing) the stdin
+    reader thread. A busy loop, because interrupt_main cannot wake a
+    C-blocked time.sleep."""
+    code = ("import runpy, signal, sys; del signal.pthread_kill; "
+            "sys.argv=[%r]; runpy.run_path(%r, run_name='__main__')"
+            % (BODY, BODY))
+    kernel = KernelProc([sys.executable, "-c", code])
+    try:
+        kernel.send({"op": "execute", "id": "e1",
+                     "code": "print('spinning', flush=True)\nwhile True: pass"})
+        kernel.wait_for(lambda e: e.get("type") == "stream"
+                        and "spinning" in (e.get("text") or ""))
+        time.sleep(0.2)
+        kernel.send({"op": "interrupt"})
+        kernel.wait_for(lambda e: e.get("type") == "done" and e.get("id") == "e1",
+                        timeout=15)
+        with kernel.lock:
+            errs = [e for e in kernel.events
+                    if e.get("type") == "error" and e.get("id") == "e1"]
+        assert errs and errs[0]["ename"] == "KeyboardInterrupt"
+        events = kernel.run("e2", "1 + 1")  # the reader thread survived
+        assert _of_type(events, "execute_result")[0]["data"] == {"text/plain": "2"}
+    finally:
+        kernel.close()
 
 
 def test_matplotlib_figure(kernel):

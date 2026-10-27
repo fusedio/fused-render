@@ -1148,7 +1148,8 @@ def _pid_alive(pid: int) -> bool:
     # ECHILD, which subprocess reports as **exit status 0**: a crashed or
     # still-needed child read as "finished successfully", and every one of those
     # owners branches on that status.
-    if pid in _SPAWNED:
+    # Windows has no WNOHANG (nor waitpid reaping): fall through to probe_pid.
+    if pid in _SPAWNED and hasattr(os, "WNOHANG"):
         try:
             reaped, status = os.waitpid(pid, os.WNOHANG)
             if reaped == pid:

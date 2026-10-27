@@ -9,6 +9,7 @@ import contextlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -403,6 +404,26 @@ def run_task(bot, script, monkeypatch, task="say hi"):
 
 
 # ----------------------------------------------------------------- tests ---
+def test_terminate_without_sigkill_attr(monkeypatch):
+    """Windows has no `signal.SIGKILL`: stopping a turn must not raise
+    AttributeError evaluating it at the `_terminate` call site."""
+    monkeypatch.delattr(signal, "SIGKILL")
+    sent = []
+
+    class FakeProc:
+        pid = 2 ** 22 + 12345  # no such process group: _signal falls back
+        stdin = None
+
+        def send_signal(self, sig):
+            sent.append(sig)
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired("fake", timeout)
+
+    agent_engine._terminate(FakeProc(), grace=0.01)
+    assert len(sent) == 2 and sent[0] == signal.SIGTERM
+
+
 def test_text_then_done(server, fake_cli, monkeypatch):
     bot = FakeBot()
     run_task(bot, [{"text": "Hi! How can I help?"}, {"result": "Hi! How can I help?"}], monkeypatch)

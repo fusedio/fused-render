@@ -73,7 +73,7 @@ import traceback
 from collections import deque
 from urllib.parse import quote
 
-from fused_render import permission_risk
+from fused_render import _platform, permission_risk
 from fused_render.bots import apptools, channels, claude_cli, paths, tools
 
 # The step cap (bot.MAX_STEPS / SUPER_MAX_STEPS, or the bot's own `max_steps`): --max-turns does not exist on this
@@ -639,7 +639,7 @@ def _terminate(proc, grace: float = 1.5) -> None:
         proc.stdin.close()
     except (OSError, ValueError, AttributeError):
         pass
-    for sig, wait in ((None, grace), (signal.SIGTERM, 2.0), (signal.SIGKILL, 2.0)):
+    for sig, wait in ((None, grace), (signal.SIGTERM, 2.0), (_platform.SIGKILL, 2.0)):
         if sig is not None:
             _signal(proc, sig)
         try:
@@ -677,7 +677,7 @@ def stop(bot) -> None:
         try:
             proc.wait(timeout=2.0)
         except subprocess.TimeoutExpired:
-            _signal(proc, signal.SIGKILL)
+            _signal(proc, _platform.SIGKILL)
 
     threading.Thread(target=reap, daemon=True, name=f"bot-stop-{bot.id}").start()
 
