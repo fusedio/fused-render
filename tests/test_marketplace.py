@@ -294,7 +294,7 @@ class _Resp:
         return self._body
 
 
-def test_udf_get_adds_format_json_and_reads_rows(monkeypatch):
+def test_udf_get_asks_for_json_and_reads_rows(monkeypatch):
     seen = {}
 
     def fake(url, **kw):
@@ -305,9 +305,10 @@ def test_udf_get_adds_format_json_and_reads_rows(monkeypatch):
     monkeypatch.setenv("FUSED_RENDER_MARKETPLACE_API", "https://api.test/base/")
     assert mp._udf_get("marketplace_search", q="", category=None) == [{"a": 1}]
     u = urlparse(seen["url"])
-    assert f"{u.scheme}://{u.netloc}{u.path}" == "https://api.test/base/marketplace_search"
-    # format=json always; an empty value is kept; None is dropped.
-    assert parse_qs(u.query, keep_blank_values=True) == {"q": [""], "format": ["json"]}
+    # `<endpoint>.json` always (the public canvas path 404s without it); an
+    # empty value is kept; None is dropped; no `format` param.
+    assert f"{u.scheme}://{u.netloc}{u.path}" == "https://api.test/base/marketplace_search.json"
+    assert parse_qs(u.query, keep_blank_values=True) == {"q": [""]}
     # An empty list is a valid answer (an empty block list).
     monkeypatch.setattr(mp, "_http_get", lambda url, **kw: (_Resp([]), None))
     assert mp._udf_get("marketplace_blocklist") == []

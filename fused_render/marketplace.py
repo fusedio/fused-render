@@ -21,9 +21,10 @@ Marketplace is on: routers/community.py answers `{status: "retired"}`).
 
 **The API** is a set of GET endpoints under `api_base()` (the constant
 `API_BASE`, overridable by `FUSED_RENDER_MARKETPLACE_API`, read per call).
-Every request carries `format=json` and every answer is a JSON list of rows;
+Every request asks for `<endpoint>.json` (the public canvas path needs the
+extension; backend_canvas.py) and every answer is a JSON list of rows;
 an error is HTTP 200 with ONE row `{error_code, error_message}`. `_udf_get`
-is the single seam: it adds `format=json`, goes through `_http_get` (never
+is the single seam: it builds that URL, goes through `_http_get` (never
 raises) and raises `SourceError` — `error_code` kept — for a transport
 failure, a non-list body or an error row. Endpoints (§18.3):
 `marketplace_catalog` (one row per app: the listing fields plus `repo,
@@ -325,7 +326,7 @@ def _http_get(url: str, *, headers: dict | None = None,
 
 
 def _udf_get(endpoint: str, *, timeout: float = HTTP_TIMEOUT_S, **params) -> list[dict]:
-    """GET `<api>/<endpoint>?format=json&...` → the list of row dicts.
+    """GET `<api>/<endpoint>.json?...` → the list of row dicts.
     `timeout` (seconds) bounds the request; it is never sent as a parameter.
     Params that are None are dropped (an empty string is kept). Raises
     SourceError on a transport failure, a body that is not a list of objects,
@@ -336,8 +337,7 @@ def _udf_get(endpoint: str, *, timeout: float = HTTP_TIMEOUT_S, **params) -> lis
     from fused_render import __version__
 
     query = {k: v for k, v in params.items() if v is not None}
-    query["format"] = "json"
-    url = f"{api_base()}/{endpoint}?{urlencode(query)}"
+    url = f"{api_base()}/{endpoint}.json" + (f"?{urlencode(query)}" if query else "")
     r, err = _http_get(url, headers={"Accept": "application/json",
                                      "User-Agent": f"fused-render/{__version__}"},
                        timeout=timeout)

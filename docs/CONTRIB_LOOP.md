@@ -1506,16 +1506,20 @@ up-to-date branches): the merging maintainer catches it. GitHub disables
 Canvas `~/Fused/canvas/unstable/fused_app_marketplace` — THE one hosted
 canvas fused-render's backend lives on (owner 2026-10-27: "only have 1
 canvas for all the backend required in fused-render"; unstable for now).
-`fused_render/backend_canvas.py` declares the host + share token and builds
+It is public (owner 2026-10-27) and addressed by name:
+`https://udf.ai/fc_public/fused_app_marketplace/<udf>.<ext>`, where the
+extension is required (`.json` for data, `.html` for a page; a bare `<udf>`
+or `?format=json` answers 404 on the public path).
+`fused_render/backend_canvas.py` declares the host + canvas path and builds
 every URL (`api_base`, `udf_url`, `github_link_url`, `listing_page_url`);
 `frontend/src/platform/lib/backend-canvas.ts` mirrors the two constants for
 the links the page builds. The GitHub install page (`fused_app_github`) was
 a canvas of its own on prod; it is served from this canvas now. The canvases
 the user's own Fused account creates for public sharing (share_app.py, one
 per app under the user's login) are the user's, not the backend's, and stay
-separate. UDFs (answer `format=json` as a list of rows, error = one row
+separate. UDFs (answer `<udf>.json` as a list of rows, error = one row
 `{error_code, error_message}` — today's API shape, so `marketplace._udf_get`
-is unchanged; every row carries `catalog_version`, `generated_at` (when this
+only builds the `.json` path; every row carries `catalog_version`, `generated_at` (when this
 index version was first read from GitHub) and `stale` (true = the S3 copy:
 GitHub unreadable or main's block list broken; a reader treats the answer as
 "unknown", never as the current index); caching in §18.12):
