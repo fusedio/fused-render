@@ -965,6 +965,10 @@ export function NewAppModal({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState("");
   const [nameNeeded, setNameNeeded] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
+  // Enter in the name field is Build: the composer fills this with its own
+  // submit, so a name typed after onNameNeeded resumes the create from the
+  // keyboard, as the ask row it replaces did.
+  const submitRef = useRef<(() => void) | null>(null);
   return (
     <Modal
       title={
@@ -981,6 +985,11 @@ export function NewAppModal({ onClose }: { onClose: () => void }) {
             setName(e.target.value);
             setNameNeeded(false);
           }}
+          onKeyDown={(e) => {
+            if (e.key !== "Enter") return;
+            e.preventDefault();
+            submitRef.current?.();
+          }}
         />
       }
       ariaLabel="New app"
@@ -995,6 +1004,7 @@ export function NewAppModal({ onClose }: { onClose: () => void }) {
       <HeroComposer
         onCreated={onClose}
         givenName={name}
+        submitRef={submitRef}
         onNameNeeded={() => {
           setNameNeeded(true);
           requestAnimationFrame(() => nameRef.current?.focus());

@@ -8,7 +8,7 @@
 // on, else the one that is on — so Claude switched off in Preferences with
 // Copilot on still builds apps (owner, 2026-10-19; this reverses the earlier
 // "building an app is Claude's" line that closed the composer).
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import {
   aiComplete,
   createApp,
@@ -92,6 +92,11 @@ function userNameError(name: string): string | null {
 // instead of an invented brand — Haiku, given nothing concrete, will happily
 // produce "flux-name-bot" and that passes every syntactic check.
 const NAME_NONE = "none";
+
+// The banner a hosted composer shows when it hands naming to the host's field
+// (onNameNeeded). A constant so the clear-on-edit effect can tell it apart
+// from every other message `error` carries.
+const NAME_ABOVE_MSG = "Couldn't name it automatically — type a name above.";
 
 // The ask is a folder name, so it reads like one: the subject first, 2-3
 // words, no filler. Examples carry more of the standard than the rules do —
@@ -351,6 +356,7 @@ export function HeroComposer({
   autoFocus = false,
   givenName,
   onNameNeeded,
+  submitRef,
 }: {
   onCreated: () => void;
   /** Focus the prompt on mount (onboarding: the focus ring IS the step's cue). */
@@ -374,6 +380,12 @@ export function HeroComposer({
    * (hero, Build widget, onboarding), which keep the ask row.
    */
   onNameNeeded?: () => void;
+  /**
+   * Filled with the composer's own Build action, so the host's name field can
+   * submit on Enter — the ask row it replaces confirmed on Enter, and a
+   * keyboard left on a focused name with nowhere to go is a dead end.
+   */
+  submitRef?: MutableRefObject<(() => void) | null>;
 }) {
   const [prompt, setPrompt] = useState("");
   // The chip above the box — set by the Playground's "Build an app with this
@@ -695,9 +707,12 @@ export function HeroComposer({
         // Escape / a corrected name work without a click first.
         if (back === "askName")
           requestAnimationFrame(() => nameRef.current?.select());
-        // A host-given name the server refused ("'reports' already exists"):
-        // the fix is in the host's field, so send the user there.
-        else if (exact) onNameNeeded?.();
+        // A host-given name the server refused as TAKEN ("'reports' already
+        // exists", 409): the fix is in the host's field, so send the user
+        // there. Any other failure (a 500, the network) is not the name's
+        // fault, and a red field would say it was.
+        else if (exact && (e as { status?: number }).status === 409)
+          onNameNeeded?.();
       }
     }
   };
@@ -726,7 +741,7 @@ export function HeroComposer({
     // takes focus, the prompt stays put, and the next Build arrives with
     // `givenName` set. No ask row — the modal would then have two name inputs.
     if (onNameNeeded) {
-      setError("Couldn't name it automatically — type a name above.");
+      setError(NAME_ABOVE_MSG);
       setPhase("idle");
       onNameNeeded();
       return;
@@ -737,6 +752,16 @@ export function HeroComposer({
     setPhase("askName");
     requestAnimationFrame(() => nameRef.current?.select());
   };
+
+  // The host's Enter key reaches Build through this (see submitRef). Kept
+  // current every render: `submit` closes over this render's state.
+  if (submitRef) submitRef.current = submit;
+  // The "type a name above" banner is answered by typing a name above: clear
+  // THAT message when the host's name changes, and only that one — an
+  // attachment failure in `error` is still news.
+  useEffect(() => {
+    setError((e) => (e === NAME_ABOVE_MSG ? null : e));
+  }, [givenName]);
 
   const nameOk = userNameError(nameDraft) === null;
   const confirmName = () => {
