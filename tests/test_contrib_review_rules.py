@@ -217,10 +217,10 @@ def test_a_decoder_call_is_a_look_not_a_fail():
         "new file mode 100644\n--- /dev/null\n+++ b/jszip.min.js\n@@ -0,0 +1 @@\n"
         "+var t=String.fromCharCode(65),u=atob(x);\n"
     )
-    hits = R.static_hits(diff)
-    kinds = {(h["rule"], h["soft"]) for h in hits}
-    assert ("decodes", True) in kinds
+    hits = R.static_hits(diff=diff, files=["jszip.min.js"])
+    kinds = {(h["rule"], h["level"]) for h in hits}
+    assert ("decodes", "soft") in kinds
     assert not any(h["rule"] == "hidden-code" for h in hits)
     blob = "A" * 240
     diff2 = diff.replace("+var t=String.fromCharCode(65),u=atob(x);", f"+var p=\"{blob}\";")
-    assert any(h["rule"] == "hidden-code" and not h["soft"] for h in R.static_hits(diff2))
+    assert any(h["rule"] == "hidden-code" and h["level"] == "hard" for h in R.static_hits(diff=diff2, files=["jszip.min.js"]))
