@@ -266,10 +266,33 @@ def _git_failure(res: subprocess.CompletedProcess | None, *, pushing: bool) -> G
         return GitHubError("signed-out", detail=raw)
     if "repository not found" in low or "does not appear to be a git repository" in low:
         return GitHubError("not-found", detail=raw)
+    if pushing and is_workflow_scope_refusal(raw):
+        # Before the "rejected" catch-all below: this refusal's text carries
+        # "[remote rejected]" too, and it is not a conflict — nothing moved.
+        return GitHubError("forbidden", WORKFLOW_SCOPE_MESSAGE, detail=raw)
     if pushing and any(m in low for m in ("stale info", "rejected", "non-fast-forward",
                                           "fetch first")):
         return GitHubError("conflict", detail=raw)
     return GitHubError("failed", detail=raw)
+
+
+#: GitHub refuses a push from an OAuth-app token (gh's) that would create or
+#: change a file under `.github/workflows/` unless the token has the
+#: `workflow` scope — gh's default login has not got it. The check covers
+#: only commits NEW to the repo: a workflow commit the repo already holds
+#: (its default branch, synced) passes. The same refusal (422) comes back
+#: from the `merge-upstream` API, so a fork cannot be synced past such a
+#: commit with that token either.
+WORKFLOW_SCOPE_MESSAGE = ("GitHub refused the push: your GitHub sign-in cannot change workflow "
+                          "files. Run `gh auth refresh -s workflow` in a terminal, or sync "
+                          "your fork on github.com, then try again.")
+
+
+def is_workflow_scope_refusal(text: str | None) -> bool:
+    """True for GitHub's "refusing to allow an OAuth App to create or update
+    workflow … without `workflow` scope" refusal, from a push or the API."""
+    low = (text or "").lower()
+    return "workflow" in low and "scope" in low and "refusing to allow" in low
 
 
 _OFFLINE_MARKERS = (
