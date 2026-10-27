@@ -2526,10 +2526,17 @@ export default function CanvasWorkspace({
             // The right pane's column: the seam and the pane, the rest of
             // the row past the canvas's share.
             style={{
-              flex: "1 1 auto",
+              // Basis 0, not auto: the pane is what the canvas's share leaves.
+              // With `auto` its basis was the chat's content width (a long
+              // transcript is wide), and once the canvas could shrink too the
+              // two split the squeeze — a drag to the floor stopped at ~580px.
+              flex: "1 1 0px",
               // The chat's floor (see the drag above): a window resize that
-              // leaves the split under it shrinks the canvas, not the chat.
-              minWidth: PANE_MIN_W,
+              // leaves the split under it shrinks the canvas, not the chat —
+              // down to the canvas's own floor. On a row too narrow for both
+              // (under PANE_MIN_W + CANVAS_MIN_W) the pane yields the rest, so
+              // the canvas never collapses to nothing.
+              minWidth: `min(${PANE_MIN_W}px, calc(100% - ${CANVAS_MIN_W}px))`,
               display: "flex",
               flexDirection: "row",
               background: "var(--bg)",
