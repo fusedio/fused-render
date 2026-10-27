@@ -1313,7 +1313,7 @@ only thing agents share, so a shape named here is the shape, not a sketch.
 
 ### 18.1 Words
 
-**Index** — public repo `vasu2001/fused-apps-index` for now (the owner moves
+**Index** — public repo `fusedio/fused-apps-index` (moved from the owner's account on 2026-10-27; the owner moves
 it under `fusedio` later; `FUSED_RENDER_MARKETPLACE_INDEX` env + the backend
 constant are the only two places that know the name). **Row** — one file
 `apps/<slug>.json` in the index. **Approved commit** — `row.commit`.
@@ -1974,7 +1974,7 @@ found by its page's app id, not its stamp's old name slug). `invariants(m)` gain
 
 ### 18.10 Decisions (the handoff's defaults, as built)
 
-D1 index repo `vasu2001/fused-apps-index` (owner's call for now); layout
+D1 index repo `fusedio/fused-apps-index` (under the owner's account until 2026-10-27); layout
 §18.2. D4 listed on merge; `collections.json` is the curated shelf. D9 new
 powers wait for the author's `fused: confirm` — enforced, not only labelled:
 the required `review` status stays pending until the confirm (2026-10-27).

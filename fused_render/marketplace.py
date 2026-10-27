@@ -3,7 +3,7 @@ reviewed marketplace of docs/CONTRIB_LOOP.md §18 (stage B).
 
 A browsable catalog of community apps, each a POINTER into its author's
 GitHub repo: the Fused index repo (`index_repo()`, default
-``vasu2001/fused-apps-index``) holds one row per app — repo, branch and the
+``fusedio/fused-apps-index``) holds one row per app — repo, branch and the
 **approved commit** an automated review passed — and a backend canvas reads
 the index and serves the catalog. Installing makes a real clone of the
 author's repo AT the approved commit (stage A's installer, appfile_git.py),
@@ -160,7 +160,7 @@ API_BASE = backend_canvas.API_BASE  # the one backend canvas (backend_canvas.py)
 #: The Fused index repo the backend reads (§18.1 "Index"); the catalog
 #: footer links it. One of the only two places that know the name (the
 #: backend canvas holds the other); FUSED_RENDER_MARKETPLACE_INDEX overrides.
-INDEX_REPO = "vasu2001/fused-apps-index"
+INDEX_REPO = "fusedio/fused-apps-index"
 RAW_BASE = "https://raw.githubusercontent.com"
 SOURCE = "udf-api"
 #: How many "new and updated" apps the home shelf asks the API for.

@@ -74,7 +74,7 @@ from fused_render.contrib.review_rules import _fence
 logger = logging.getLogger(__name__)
 
 INDEX_ENV = "FUSED_RENDER_MARKETPLACE_INDEX"
-INDEX_DEFAULT = "vasu2001/fused-apps-index"
+INDEX_DEFAULT = "fusedio/fused-apps-index"
 #: The index's required check (§18.2 `review.yml`).
 REVIEW_CHECK = "review"
 #: The fork branch a slug's pull request comes from — one per slug, reused.

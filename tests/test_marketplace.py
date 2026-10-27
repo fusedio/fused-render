@@ -334,7 +334,7 @@ def test_catalog_payload(env):
     cat = mp.catalog()
     assert cat["status"] == "ok" and cat["source"] == "udf-api" and cat["stale"] is False
     assert cat["api"] == mp.API_BASE and cat["catalog_version"] == "cv1"
-    assert cat["index"] == "vasu2001/fused-apps-index"
+    assert cat["index"] == "fusedio/fused-apps-index"
     assert cat["generated_at"] == "2026-10-15T08:02:00Z"
     assert [a["slug"] for a in cat["apps"]] == ["local-chat", "sine-starter"]
     assert cat["categories"] == [{"id": "starters", "label": "Starters", "count": 1},

@@ -1,7 +1,7 @@
 """The fixed safety rules, one copy for two judges (contract §18.2 step 5).
 
 fused's proposal review (`contrib/ai.py`) and the Marketplace index's review
-check (`scripts/review/rules.py` in `vasu2001/fused-apps-index`) judge a
+check (`scripts/review/rules.py` in `fusedio/fused-apps-index`) judge a
 change by the same rules, so a proposal and a release are judged alike. The
 index's copy is THIS FILE, VERBATIM: the index's `run_fixtures.py` compares
 the two bytes-for-bytes when `FUSED_RENDER_SRC` points at a checkout. So:
