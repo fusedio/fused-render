@@ -952,17 +952,18 @@ export function ShareAppModal({
   const pollRef = useRef<number | null>(null);
   // Community → Where apps come from (contrib-flags.ts) makes the GitHub link
   // THE public way to share: its card shows whatever `github_link_enabled`
-  // says, comes first as the primary, and the Fused-storage link card is not
-  // offered (kept behind the flag until the owner confirms removing it).
-  // `null` until the prefs read settles (a failed read settles as all off).
-  // Meanwhile both link cards are one placeholder (see the render) and the
-  // Fused link card's reads wait, so a sheet about to hide that card never
-  // asks the account.
+  // says and comes first as the primary. The Fused-storage link card (the
+  // public link on the user's Fused account) stays on the sheet either way
+  // — owner 2026-10-27: "let's keep that around for a bit more" — second
+  // under Community, first without it. `null` until the prefs read settles
+  // (a failed read settles as all off); meanwhile the link slot is one
+  // placeholder (see the render) and the Fused link card's reads wait, so
+  // nothing reorders when the flags land.
   const contribFlags = useContribFlags();
   const githubFirst = contribFlags?.sources === true;
   const flagsKnown = contribFlags !== null;
-  const fusedLinkShown = !githubFirst;
-  const fusedLinkReads = flagsKnown && !githubFirst;
+  const fusedLinkShown = true;
+  const fusedLinkReads = flagsKnown;
   const githubEnabled = useGithubLinkFeature() || githubFirst;
   const [github, setGithub] = useState<GithubLinkState | null>(null);
   const [githubErr, setGithubErr] = useState("");
@@ -1619,7 +1620,7 @@ export function ShareAppModal({
             </div>
             <DialogDescription className="sr-only">
               {githubFirst
-                ? "Share this app as a GitHub link or as a .fused file."
+                ? "Share this app as a GitHub link, a public link, or a .fused file."
                 : githubEnabled || ladder !== null
                   ? "Share this app as a public link, a .fused file, or a GitHub link."
                   : "Share this app as a public link or as a .fused file."}
