@@ -361,6 +361,7 @@
    the Claude pane is shut. The global sidebar's collapsed column, mirrored:
    same 48px, same button and dot classes (sidebar.css). */
 .canvas-rail {
+  position: relative;
   flex: 0 0 48px;
   width: 48px;
   display: flex;
@@ -397,4 +398,46 @@
   font-variant-numeric: tabular-nums;
   background: var(--status-progress);
   color: var(--bg);
+}
+
+/* The rail's inner edge (ClaudeRail `.canvas-rail-seam`): pulled left, it opens
+   the pane. 6px of hit area straddling the rail's border, and the app's seam
+   hairline on hover — the explorer's reopen edge (.preview-side-reopen). */
+.canvas-rail-seam {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 3;
+}
+.canvas-rail-seam::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 1px;
+  background: transparent;
+  pointer-events: none;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+.canvas-rail-seam:hover::after {
+  background: var(--seam-hot);
+  box-shadow: 0 0 3px color-mix(in srgb, var(--seam-hot) 35%, transparent);
+}
+
+/* The rail's chats (ClaudeRail `.canvas-rail-chats`): one status ring per chat,
+   newest first, in the sidebar's scrolling middle (.sidebar-rail-scroll). The
+   ring is the Tasks page's own (schedule.css `.schedule-ring`), centred in the
+   28px seat; the seat's hover wash and `.active` are the sidebar's. */
+.canvas-rail-chats {
+  /* Scrolls before the New chat seat and the Tasks door are pushed off. */
+  flex: 0 1 auto;
+}
+.canvas-rail-chat {
+  position: relative;
 }

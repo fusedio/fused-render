@@ -168,7 +168,8 @@
 // frame on that node boots on it. In memory only: a reload starts over.
 import { isBackendOff, useAgentBackends } from "@platform/lib/agent-backends";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { SyntheticEvent } from "react";
+import type { PointerEvent as ReactPointerEvent, SyntheticEvent } from "react";
+import { reopenWidth } from "@platform/lib/panel-drag";
 import { createPortal } from "react-dom";
 import { addCurrentApp } from "@platform/lib/api";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
@@ -276,6 +277,9 @@ const FOCUS_CHECK_MIN_MS = 3000;
 // sits in both columns, and under 380px its header and composer clip.
 const PANE_MIN_W = 380;
 const CANVAS_MIN_W = 320;
+/** The Claude rail's width (canvases.css `.canvas-rail`): what the pane leaves
+ *  at the edge while shut, and where a pull to reopen it is measured from. */
+const RAIL_W = 48;
 
 /** This window's focus as the canvas should count it. */
 function hostFocused(): boolean {
@@ -2202,12 +2206,89 @@ export default function CanvasWorkspace({
   // once the clone exists and the registry says a chat serves it.
   const chatHere = !!(dir && chatTpl);
 
-  // The rail's doors (ClaudeRail `onOpen`): "node" opens the pane as it is
-  // (on the selected node's chat); "canvas" leaves the node first, on both
-  // sides, so the canvas chat is what shows; "new" also drops the session
-  // the URL names and remounts the canvas chat on its home.
+  // PULLING THE RAIL'S EDGE OPENS THE PANE (ClaudeRail `onPullStart`): the
+  // explorer's reopen edge, measured from the rail rather than the window
+  // (platform/lib/panel-drag `reopenWidth`). Nothing happens for the first
+  // OPEN_PULL px; past that the pane opens at its floor and then follows the
+  // pointer, clamped between the floor and the canvas's own floor.
+  //
+  // CAPTURE ON documentElement, as SideReopenEdge does: the rail unmounts the
+  // moment the pane opens, and capture on a detached element would end the
+  // drag exactly when it starts being about a width. `html.side-reopening`
+  // (preview.css) holds the cursor and makes every iframe inert meanwhile.
+  const onRailPull = useCallback((e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const row = rowRef.current;
+    if (!row) return;
+    const root = document.documentElement;
+    try {
+      root.setPointerCapture(e.pointerId);
+    } catch {
+      /* no capture; the listeners below still see the gesture */
+    }
+    root.classList.add("side-reopening");
+    let opened = false;
+    let prevFrac: number | null = null;
+    const onMove = (ev: PointerEvent) => {
+      if (ev.pointerId !== e.pointerId) return;
+      const rect = row.getBoundingClientRect();
+      if (rect.width <= 0) return;
+      const max = rect.width - CANVAS_MIN_W;
+      const min = Math.min(PANE_MIN_W, max);
+      if (max <= 0) return;
+      const implied = rect.right - ev.clientX;
+      let w: number;
+      if (!opened) {
+        const open = reopenWidth(implied, RAIL_W, min, max);
+        if (open === null) return;
+        w = open;
+      } else {
+        w = Math.min(max, Math.max(min, implied));
+      }
+      const frac = 1 - w / rect.width;
+      setLeftFrac(frac);
+      if (!opened) {
+        opened = true;
+        setSideOpen(true);
+      } else if (prevFrac !== null && frac !== prevFrac) {
+        // Half the pane's width change, to the canvas — as the seam's drag.
+        const frame = frameRef.current;
+        const origin = baseOriginRef.current;
+        if (frame?.contentWindow && origin) {
+          frame.contentWindow.postMessage(
+            { type: "fused-embed-pan", dx: (rect.width * (frac - prevFrac)) / 2, dy: 0 },
+            origin,
+          );
+        }
+      }
+      prevFrac = frac;
+    };
+    const onUp = (ev: PointerEvent) => {
+      if (ev.pointerId !== e.pointerId) return;
+      root.classList.remove("side-reopening");
+      try {
+        root.releasePointerCapture(e.pointerId);
+      } catch {
+        /* never captured */
+      }
+      root.removeEventListener("pointermove", onMove);
+      root.removeEventListener("pointerup", onUp);
+      root.removeEventListener("pointercancel", onUp);
+    };
+    root.addEventListener("pointermove", onMove);
+    root.addEventListener("pointerup", onUp);
+    root.addEventListener("pointercancel", onUp);
+  }, []);
+
+  // The rail's doors (ClaudeRail `onOpen`): "show" opens the pane as it is;
+  // "new" leaves the node (on both sides), drops the session the URL names
+  // and remounts the canvas chat on its home. A press on one of the rail's
+  // chats is a NAVIGATION to that chat's Tasks-page door (`onOpenChat`):
+  // the hop reader above already selects the node, seeds its session and
+  // opens the pane, exactly as for a hop from the Tasks page.
   const openFromRail = useCallback((target: RailTarget) => {
-    const leavingNode = target !== "node" && nodeRef.current !== null;
+    const leavingNode = target === "new" && nodeRef.current !== null;
     // The URL's `session_id` / `run` are dropped BEFORE the canvas chat
     // mounts: it reads them as it boots, and that is earlier than the node
     // effect's own cleanup (a child's effects run before its parent's). With
@@ -2645,11 +2726,12 @@ export default function CanvasWorkspace({
             env={env}
             name={name}
             dir={dir}
-            nodeName={node?.udfName ?? null}
-            nodeFile={node?.file ?? null}
+            activeSessionId={new URLSearchParams(window.location.search).get("session_id")}
+            onOpenChat={(href) => navigateUrl(href)}
             tasksHref={canvasProjectPath(env, name, { tab: "tasks" })}
             onTasks={() => navigateUrl(canvasProjectPath(env, name, { tab: "tasks" }))}
             onOpen={openFromRail}
+            onPullStart={onRailPull}
           />
         )}
       </div>

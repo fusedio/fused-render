@@ -1,152 +1,189 @@
 // THE CLAUDE RAIL: what stands at the canvas page's right edge while the Claude
 // pane is shut (owner, 2026-10-26: "a very min width column, like we have for
-// the fused render left sidebar, just a single width column with the button …
-// fill it in with something that is useful"; "rail stays on only when claude
-// panel is collapsed").
+// the fused render left sidebar, just a single width column with the button";
+// "rail stays on only when claude panel is collapsed").
 //
 // The same 48px column the global sidebar collapses to, in the same vocabulary
-// (sidebar.css: .sidebar-rail-btn, .sidebar-rail-items, .sidebar-rail-dot), so
-// the two edges of the window read as one idea. Top to bottom:
+// (sidebar.css: .sidebar-rail-btn, .sidebar-rail-items, .sidebar-rail-scroll),
+// so the two edges of the window read as one idea. Top to bottom:
 //   - the panel glyph (platform/ui/PanelIcon) — the way back IN. Its other
 //     half, the Hide, is the first seat of the chat's own top row while the
 //     pane is up (ClaudeChat `onHidePane`): exactly one of the two is on
 //     screen at any moment, the explorer sidebar's own rule (SideChrome.tsx).
-//   - the canvas chat, with the Tasks dot the sidebar's Tasks row wears: red
-//     for a run parked on a question, yellow for one in flight, green for one
-//     finished and not yet read. Reads this canvas's rows out of the shared
-//     tasks pulse (shell/tasksPulse) — the whole point of the rail: Claude's
-//     state stays visible with the pane shut.
-//   - the selected node's chat, same dot, only while a node is selected.
-//   - New chat.
-//   - at the bottom, this canvas's Tasks (the project page's Tasks tab) with
-//     a count of the rows that are in flight.
-import { useMemo } from "react";
-import { ListTodo, MessageSquare, Plus, SquareFunction } from "lucide-react";
+//   - EVERY CHAT ON THIS CANVAS, newest first (owner, 2026-10-27: "show all
+//     chats we have here, and when we hover we see recap, title — whatever we
+//     show in list view"). One status ring each — the Tasks page's own
+//     (`StatusIcon`: lane colour, unread fill, "!" when it is waiting on you) —
+//     and the hover is the list row's own caption: the same `data-hint-title`
+//     / `data-hint-reply` the row's title carries (platform/lib/hints), built
+//     from the same `cardTitleLine`. A press opens that chat where the Tasks
+//     page's door would (`taskHref`): the canvas chat on its session, or the
+//     node selected with its chat on its session. Scrolls on a short window.
+//   - New chat. Alone, under the Show, when the canvas has no chats yet.
+//   - at the bottom, this canvas's Tasks with a running count.
+import { useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { ListTodo, Plus } from "lucide-react";
 import PanelIcon from "@platform/ui/PanelIcon";
-import type { TaskPulseTask } from "@platform/lib/api";
-import { useTasksPulseRows } from "@shell/tasksPulse";
-import { inFlight, isDoneUnread, liveJobRow, taskColumn } from "@shell/tasks-lib";
+import { getTasks, type Task, type TaskPulseTask } from "@platform/lib/api";
+import { readListing, rememberListing, useTasksPulseRows } from "@shell/tasksPulse";
+import {
+  cardTitleLine,
+  inFlight,
+  liveJobRow,
+  recapTitlesOn,
+  taskColumn,
+  taskHref,
+} from "@shell/tasks-lib";
+import { StatusIcon } from "@shell/ScheduleTaskViews";
 import type { WorkbenchEnv } from "./api";
 
-/** One Tasks dot's worth of facts about a set of rows (the sidebar's Tasks
- *  row and the rail agree: red outranks yellow outranks green). */
-interface DotPulse {
-  attention: number;
-  running: number;
-  unread: number;
-}
+export type RailTarget = "show" | "new";
 
-function pulseOf(rows: readonly TaskPulseTask[]): DotPulse {
-  const p: DotPulse = { attention: 0, running: 0, unread: 0 };
-  for (const t of rows) {
-    if (liveJobRow(t)) {
-      p.running++;
-      continue;
-    }
-    const column = taskColumn(t);
-    if (inFlight(column)) {
-      p.running++;
-      if (column === "needs_attention") p.attention++;
-      continue;
-    }
-    if (isDoneUnread(t)) p.unread++;
-  }
-  return p;
+/** A row's time, newest first. Anything unparseable sorts last. */
+function when(t: Pick<TaskPulseTask, "last_active">): number {
+  const ms = Date.parse(String(t.last_active ?? ""));
+  return Number.isFinite(ms) ? ms : 0;
 }
-
-function Dot({ pulse, what }: { pulse: DotPulse; what: string }) {
-  if (pulse.attention > 0) {
-    return (
-      <span
-        className="sidebar-rail-dot is-attention"
-        title={`${pulse.attention} ${what} chat waiting for you`}
-      />
-    );
-  }
-  if (pulse.running > 0) {
-    return <span className="sidebar-rail-dot is-running" title={`${pulse.running} ${what} chat running`} />;
-  }
-  if (pulse.unread > 0) {
-    return <span className="sidebar-rail-dot is-unread" title={`${pulse.unread} ${what} chat finished, not read`} />;
-  }
-  return null;
-}
-
-export type RailTarget = "canvas" | "node" | "new";
 
 export function ClaudeRail({
   env,
   name,
   dir,
-  nodeName,
-  nodeFile,
+  activeSessionId,
   tasksHref,
   onOpen,
+  onOpenChat,
   onTasks,
+  onPullStart,
 }: {
   env: WorkbenchEnv;
   name: string;
   /** The clone dir (task rows that predate `task.canvas` name it as their
-   *  project). Null until the clone exists — the dots stay off. */
+   *  project). Null until the clone exists. */
   dir: string | null;
-  /** The selected node, if any: its row in the rail and its dot. */
-  nodeName: string | null;
-  nodeFile: string | null;
+  /** The session the page's URL names, drawn as the current row. */
+  activeSessionId: string | null;
   tasksHref: string;
-  /** Open the pane: on the canvas chat, on the node's chat, or on a fresh
-   *  canvas chat. */
+  /** Open the pane as it is ("show"), or on a fresh canvas chat ("new"). */
   onOpen: (target: RailTarget) => void;
+  /** Open one of the canvas's chats: its Tasks-page door (`taskHref`). */
+  onOpenChat: (href: string) => void;
   onTasks: () => void;
+  /** A pointer down on the rail's inner edge: the start of a pull that opens
+   *  the pane at the width the pointer drags it to (CanvasWorkspace
+   *  `onRailPull`). */
+  onPullStart: (e: ReactPointerEvent<HTMLDivElement>) => void;
 }) {
   const rows = useTasksPulseRows();
-  const { canvasPulse, nodePulse, inFlightCount } = useMemo(() => {
-    const mine = rows.filter(
-      (t) =>
-        (t.canvas && t.canvas.env === env && t.canvas.name === name) ||
-        (dir !== null && t.project === dir),
-    );
-    // A node's chat is filed under the node's FILE (the explorer files
-    // sessions per file); the canvas chat carries no file.
-    const onNode = mine.filter((t) => !!nodeFile && t.canvas?.file === nodeFile);
-    const onCanvas = mine.filter((t) => !t.canvas?.file);
-    const all = pulseOf(mine);
-    return { canvasPulse: pulseOf(onCanvas), nodePulse: pulseOf(onNode), inFlightCount: all.running };
-  }, [rows, env, name, dir, nodeFile]);
+  // This canvas's chats — the ones that have a conversation to open. A row
+  // that predates `task.canvas` is matched by its project (the clone dir).
+  const mine = useMemo(
+    () =>
+      rows
+        .filter(
+          (t) =>
+            !!t.session_id &&
+            ((t.canvas && t.canvas.env === env && t.canvas.name === name) ||
+              (dir !== null && t.project === dir)),
+        )
+        .sort((a, b) => when(b) - when(a)),
+    [rows, env, name, dir],
+  );
+
+  // THE CAPTION'S WORDS ARE THE LISTING'S, not the pulse's: the pulse carries
+  // status and a title, but the list row's caption is built from the full row
+  // (recap, last reply, last message). Seeded from the listing the Tasks page
+  // already holds, and re-read whenever one of THIS canvas's rows moves —
+  // keyed on what changes a caption, so an idle canvas never asks again.
+  const [listing, setListing] = useState<Task[] | null>(() => readListing());
+  const sig = mine.map((t) => `${t.key}:${t.status}:${t.last_active}:${t.unread}`).join("|");
+  useEffect(() => {
+    if (!sig) return;
+    let off = false;
+    const timer = window.setTimeout(() => {
+      void getTasks()
+        .then((r) => {
+          if (off) return;
+          rememberListing(r.tasks);
+          setListing(r.tasks);
+        })
+        .catch(() => undefined);
+    }, 600);
+    return () => {
+      off = true;
+      window.clearTimeout(timer);
+    };
+  }, [sig]);
+  const full = useMemo(() => new Map((listing ?? []).map((t) => [t.key, t])), [listing]);
+
+  const running = mine.filter((t) => liveJobRow(t) || inFlight(taskColumn(t))).length;
 
   return (
     <aside className="canvas-rail" aria-label="Claude">
+      {/* THE RAIL'S INNER EDGE IS A SEAM: pulled left it opens the pane at the
+          width the pointer takes it to — the explorer sidebar's reopen edge
+          (SideReopenEdge) and the global sidebar's rail, the same gesture on
+          the same kind of edge. The Show button stays the click. */}
+      <div
+        className="canvas-rail-seam"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Drag to show the Claude panel"
+        onPointerDown={onPullStart}
+      />
       <button
         type="button"
         className="sidebar-rail-btn"
         title="Show the Claude panel"
         aria-label="Show the Claude panel"
         aria-expanded={false}
-        onClick={() => onOpen(nodeName ? "node" : "canvas")}
+        onClick={() => onOpen("show")}
       >
         <PanelIcon side="right" />
       </button>
       <div className="sidebar-rail-items">
-        <button
-          type="button"
-          className="sidebar-rail-btn canvas-rail-item"
-          title={`Chat about the canvas (${name})`}
-          aria-label={`Chat about the canvas (${name})`}
-          onClick={() => onOpen("canvas")}
-        >
-          <MessageSquare size={16} aria-hidden="true" />
-          <Dot pulse={canvasPulse} what="canvas" />
-        </button>
-        {nodeName && (
-          <button
-            type="button"
-            className="sidebar-rail-btn canvas-rail-item"
-            title={`Chat about ${nodeName}`}
-            aria-label={`Chat about ${nodeName}`}
-            onClick={() => onOpen("node")}
-          >
-            <SquareFunction size={16} aria-hidden="true" />
-            <Dot pulse={nodePulse} what="node" />
-          </button>
+        {mine.length > 0 && (
+          <div className="sidebar-rail-scroll canvas-rail-chats" role="list" aria-label="Chats on this canvas">
+            {mine.map((t) => {
+              const row = full.get(t.key);
+              // The live status is the pulse's (fresher than the listing).
+              const merged = row ? { ...row, status: t.status } : t;
+              const line = cardTitleLine(merged);
+              const reply = row && !recapTitlesOn(row) ? row.last_reply || "" : "";
+              const label = line.text || t.title || "Chat";
+              const href = taskHref(merged);
+              if (!href) return null;
+              return (
+                <a
+                  key={t.key}
+                  role="listitem"
+                  href={href}
+                  className={
+                    "sidebar-rail-btn canvas-rail-chat" +
+                    (activeSessionId && t.session_id === activeSessionId ? " active" : "")
+                  }
+                  aria-label={label}
+                  // The list row's own caption (platform/lib/hints): the
+                  // title's line, then the reply's — what the row clamps.
+                  data-hint={line.hint || label}
+                  data-hint-title={line.hint || label}
+                  data-hint-reply={reply}
+                  onClick={(e) => {
+                    if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+                    e.preventDefault();
+                    onOpenChat(href);
+                  }}
+                >
+                  <StatusIcon
+                    status={taskColumn(t)}
+                    unread={t.unread > 0}
+                    background={liveJobRow(t)}
+                    {...(row?.failed ? { failed: true } : {})}
+                  />
+                </a>
+              );
+            })}
+          </div>
         )}
         <button
           type="button"
@@ -161,7 +198,7 @@ export function ClaudeRail({
         <a
           className="sidebar-rail-btn canvas-rail-item"
           href={tasksHref}
-          title={inFlightCount > 0 ? `Tasks on this canvas · ${inFlightCount} running` : "Tasks on this canvas"}
+          title={running > 0 ? `Tasks on this canvas · ${running} running` : "Tasks on this canvas"}
           aria-label="Tasks on this canvas"
           onClick={(e) => {
             if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
@@ -170,7 +207,7 @@ export function ClaudeRail({
           }}
         >
           <ListTodo size={16} aria-hidden="true" />
-          {inFlightCount > 0 && <span className="canvas-rail-count">{inFlightCount}</span>}
+          {running > 0 && <span className="canvas-rail-count">{running}</span>}
         </a>
       </div>
     </aside>
