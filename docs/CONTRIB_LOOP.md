@@ -1851,12 +1851,19 @@ the `switch-link` prompt, never a move.
 For `own` copies whose record has a `repo`, while `marketplace_enabled`:
 ```python
 def status(root, *, fresh=False) -> Listing   # cached in record.listing_own = {slug, row, pr, review, checked_at}
-def publish(root, details) -> dict            # list (first PR)  — details = {slug, name, description, category, tags, icon, preview}
-def publish_update(root) -> dict              # PR moving row.commit to the pushed tip
+def publish(root, details) -> dict            # list (first PR)  — details = {name, description, category, tags, icon, preview}; slug = the entry page's fused-app-id
+def publish_update(root) -> dict              # PR moving row.commit to the pushed tip (the row keeps its slug)
 def remove(root) -> dict                      # PR deleting the row
 def confirm_powers(root) -> dict              # comment "fused: confirm <sha>"
 def fix_prompt(root) -> str                   # the Claude prompt built from review.reasons
 ```
+A new listing's slug is never chosen: it is the entry page's
+`fused-app-id` (owner 2026-10-27; the row is written to `apps/<id>.json`, as
+the index check requires). Without a valid id, `publish` and
+`publish_update` refuse with reason `app-id` ("… Open App Doctor to add
+one."). The listing route answers that in the listing shape (200 `{ok:
+false, reason, message}`) before a job starts. App Doctor's `app-id` row is
+also a publish blocker, so the strip offers Open App Doctor instead.
 `Listing = {listed: bool, slug, approved: {commit, at}, pr: {number, url,
 head_sha, state} | None, review: {status: "in-review"|"live"|"needs-
 confirmation"|"failed"|None, reasons: [str], new_powers: [{kind, detail}],
