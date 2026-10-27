@@ -1864,6 +1864,15 @@ the index check requires). Without a valid id, `publish` and
 one."). The listing route answers that in the listing shape (200 `{ok:
 false, reason, message}`) before a job starts. App Doctor's `app-id` row is
 also a publish blocker, so the strip offers Open App Doctor instead.
+A listing made before (a name-based slug) carries `app_id`, `slug` and
+`slug_is_app_id: false` in the Listing. There is no rename path: the index
+check refuses any change to such a row, so the live strip offers no Publish
+update, only Remove (which works on the old slug) and the sentence "<name>
+is listed under the old id <slug>. Remove it from the Community, then
+publish it again under its app id <id>." `publish_update` refuses the same,
+reason `old-slug`. After the delist merges, Publish lists it under the id.
+A failed request sent under an old slug offers Publish (under the id)
+instead of Send again.
 `Listing = {listed: bool, slug, approved: {commit, at}, pr: {number, url,
 head_sha, state} | None, review: {status: "in-review"|"live"|"needs-
 confirmation"|"failed"|None, reasons: [str], new_powers: [{kind, detail}],

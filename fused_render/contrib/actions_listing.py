@@ -102,6 +102,10 @@ def decide(lst: dict, *, signed_in: bool = True, refreshing: bool = False) -> di
     status = review.get("status")
     pr = lst.get("pr") or {}
     listed = bool(lst.get("listed"))
+    # Listed (or sent) under a slug that is not the app's id: the index
+    # refuses any change to it, and there is no rename. Remove, then publish
+    # again under the id (`listing.old_slug_message`).
+    old_slug = L.old_slug_message(name, lst.get("slug"), lst.get("app_id"), listed=listed)
     removing = pr.get("kind") == "remove" and pr.get("state") == "open"
     if status == "needs-confirmation":
         state = "needs-confirmation"
@@ -126,7 +130,12 @@ def decide(lst: dict, *, signed_in: bool = True, refreshing: bool = False) -> di
                      and lst["pushed_tip"] != pr["commit"])
         if not closed:
             acts.append(_btn("fix-with-claude", "Fix with Claude", primary=not moved))
-        if pr.get("kind") != "remove" and (listed or pr.get("commit")):
+        if old_slug and pr.get("kind") != "remove":
+            extra.append(old_slug)
+            if not listed and gates_ok():
+                acts.append(_btn("publish-market", "Publish to Community", primary=True,
+                                 dialog="listing"))
+        elif pr.get("kind") != "remove" and (listed or pr.get("commit")):
             if gates_ok():
                 acts.append(_btn("publish-update",
                                  "Send the new version" if moved else "Send again",
@@ -155,8 +164,10 @@ def decide(lst: dict, *, signed_in: bool = True, refreshing: bool = False) -> di
                     else f"{name} is in the Community.")
         if lst.get("update_available"):
             sentence += " Your app has changed since."
-            if gates_ok():
+            if not old_slug and gates_ok():
                 acts.append(_btn("publish-update", "Publish update", primary=True))
+        if old_slug:
+            extra.append(old_slug)
         acts.append(_btn("remove-market", "Remove from Community", danger=True,
                          confirm=REMOVE_CONFIRM.format(name=name)))
         acts.append(_btn("check-listing", "Check again"))

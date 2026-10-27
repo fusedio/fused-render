@@ -159,8 +159,9 @@ def _publish(t: _Target, args) -> dict:
 
 
 def _publish_update(t: _Target, _args) -> dict:
-    return _no_app_id(t) or _job("listing-update", t.app_dir, _listing().publish_update,
-                                 t.app_dir)
+    old = _listing().old_slug_refusal(t.app_dir)
+    return (_no_app_id(t) or (_refuse("old-slug", old) if old else None)
+            or _job("listing-update", t.app_dir, _listing().publish_update, t.app_dir))
 
 
 def _check(t: _Target, _args) -> dict:

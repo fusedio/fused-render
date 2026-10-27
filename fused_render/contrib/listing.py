@@ -328,6 +328,33 @@ def _require_app_id(root: str) -> str:
     return aid
 
 
+def old_slug_message(name: str, slug: str | None, app_id: str | None, *,
+                     listed: bool) -> str | None:
+    """The sentence for a listing (or a request) made under a slug that is
+    not the app's id — a name-based slug from before 2026-10-27, which the
+    index's check now refuses for any change. No rename path: remove it,
+    then publish again under the id. None when the slug IS the id, or when
+    either is unknown (no id: App Doctor's `app-id` row says so)."""
+    if not slug or not app_id or slug == app_id:
+        return None
+    if listed:
+        return (f"{name} is listed under the old id {slug}. Remove it from the Community, "
+                f"then publish it again under its app id {app_id}.")
+    return (f"{name} was sent under the old id {slug}. Publish it again under its app id "
+            f"{app_id}.")
+
+
+def old_slug_refusal(root: str) -> str | None:
+    """`old_slug_message` for the cached read of `root` — what Publish
+    update refuses with (reason `old-slug`). Local only."""
+    lo = cached(root) or {}
+    pr = lo.get("pr") if isinstance(lo.get("pr"), dict) else {}
+    if not lo.get("row") and not (isinstance(pr.get("row"), dict) and pr.get("kind") != "remove"):
+        return None
+    return old_slug_message(lo.get("name") or _app_name(root), lo.get("slug"),
+                            _app_id_slug(root), listed=bool(lo.get("row")))
+
+
 # -- the catalog (cache only: never a network build from here) --------------------
 
 
@@ -792,6 +819,7 @@ def view(root: str, lo: dict | None = None) -> dict:
     and fetch) so a push since the last read counts at once."""
     lo = lo if isinstance(lo, dict) else (cached(root) or {})
     row = lo.get("row") if isinstance(lo.get("row"), dict) else None
+    aid = _app_id_slug(root)
     branch = lo.get("branch") or "main"
     head = _head(root)
     pushed = _local_ref(root, f"refs/remotes/origin/{branch}") or lo.get("tip")
@@ -825,6 +853,11 @@ def view(root: str, lo: dict | None = None) -> dict:
         "checked_at": lo.get("checked_at"),
         "error": lo.get("error"),
         "index": lo.get("index") or index_repo(),
+        # The entry page's id (None without one) beside the row's slug: a
+        # listing made under a name-based slug can't be updated (the index
+        # check wants slug == fused-app-id) — remove it, publish again.
+        "app_id": aid,
+        "slug_is_app_id": bool(aid and lo.get("slug") == aid),
     }
 
 
@@ -947,7 +980,7 @@ def draft(root: str) -> dict:
     app is listed (editing it), else from the app (metadata.json, the entry
     page, the icon/preview files)."""
     from fused_render import app_listing
-    rec = _record(root)
+    _record(root)  # an own app with a repo, else its refusal
     lo = cached(root) or {}
     row = lo.get("row") if isinstance(lo.get("row"), dict) else None
     pr_row = (lo.get("pr") or {}).get("row") if isinstance(lo.get("pr"), dict) else None
@@ -956,10 +989,14 @@ def draft(root: str) -> dict:
     if src:
         out = {k: src.get(k) for k in ("slug", "name", "description", "category", "tags",
                                          "icon", "preview")}
+        if row is None:
+            # A request not listed yet: publishing again is a NEW listing,
+            # under the app id whatever slug that request used.
+            out["slug"] = _app_id_slug(root)
     else:
         meta = _meta(root)
         icon = app_listing.app_icon(root)
-        out = {"slug": lo.get("slug") or _slug_for_repo(rec["repo"]) or _app_id_slug(root),
+        out = {"slug": _app_id_slug(root),
                "name": _app_name(root),
                "description": (_str(meta.get("description"))
                                or _entry_description(_entry(root)))[:DESCRIPTION_MAX],
@@ -1112,7 +1149,11 @@ def publish_update(root: str) -> dict:
     if not isinstance(base, dict):
         raise PlainError(f"{lo['name']} isn't in the Community yet. Publish it first.",
                          reason="not-listed")
-    _require_app_id(root)
+    aid = _require_app_id(root)
+    old = old_slug_message(lo.get("name") or _app_name(root), base.get("slug"), aid,
+                           listed=bool(lo.get("row")))
+    if old:
+        raise PlainError(old, reason="old-slug")
     repo, branch, tip = _gate_publish(root, rec)
     current = pr.get("commit") if pr.get("state") == "open" and pr.get("row") else base.get(
         "commit")

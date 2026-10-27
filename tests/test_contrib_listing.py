@@ -415,6 +415,70 @@ def _go_live(w):
     return listing.status(w.app, fresh=True)
 
 
+def test_a_listing_under_an_old_name_slug_is_removed_then_published_under_the_id(w):
+    """Owner 2026-10-27: a row listed before the Community went by app id
+    (slug `sine-starter`) can't be updated — the index check wants slug ==
+    fused-app-id — and there is no rename. Say so, offer Remove only, and
+    after the delist merges, Publish lists it under the id."""
+    from fused_render.contrib import actions_listing, listing
+    from fused_render.contrib.jobs import PlainError
+    from fused_render.server.routers import listing as r
+
+    tip = w.fake.tip(REPO)
+    row = {"slug": "sine-starter", "repo": REPO, "branch": "main", "commit": tip,
+           "name": "Sine Starter", "description": "A sine wave.", "category": "starters",
+           "tags": [], "icon": None, "preview": None, "remix_of": None, "version": "1.2.0"}
+    w.fake.commit(INDEX, "main", {"apps/sine-starter.json": json.dumps(row) + "\n"},
+                  "List sine-starter (before ids)", author="fusedio")
+    lst = listing.status(w.app, fresh=True)
+    assert lst["listed"] and lst["slug"] == "sine-starter"
+    assert lst["app_id"] == SLUG and lst["slug_is_app_id"] is False
+    old = (f"Sine Starter is listed under the old id sine-starter. Remove it from the "
+           f"Community, then publish it again under its app id {SLUG}.")
+    _commit_push(w.app, "app.py", "def f():\n    return 3\n", "Louder sine")
+    lst = listing.view(w.app)
+    assert lst["update_available"] is True
+    decided = actions_listing.decide(lst)
+    ids = [a["id"] for a in decided["actions"]]
+    assert decided["state"] == "live" and old in decided["sentence"]
+    assert "publish-update" not in ids and "remove-market" in ids
+    # Pressed anyway: the module refuses, and the route in the listing shape.
+    with pytest.raises(PlainError) as e:
+        listing.publish_update(w.app)
+    assert (e.value.reason, e.value.message) == ("old-slug", old)
+    assert r._publish_update(r._Target(w.app, {}), {}) == {
+        "ok": False, "reason": "old-slug", "message": old}
+    assert w.gh.list_open_prs(INDEX) == []
+    # Remove works on the old slug; once merged, Publish lists under the id.
+    out = listing.remove(w.app)
+    pr = w.gh.get_pr(INDEX, out["pr"]["number"])
+    assert pr["head_branch"] == "fused-sine-starter"
+    w.fake.merge(INDEX, out["pr"]["number"], "squash")
+    lst = listing.status(w.app, fresh=True)
+    assert lst["listed"] is False
+    assert listing.draft(w.app)["slug"] == SLUG
+    n = listing.publish(w.app, _details())["pr"]["number"]
+    pr, row = _row_at_head(w, n)
+    assert pr["head_branch"] == "fused-" + SLUG and row["slug"] == SLUG
+    assert listing.view(w.app)["slug_is_app_id"] is True
+
+
+def test_a_failed_request_under_an_old_slug_offers_a_fresh_publish():
+    """Not listed yet, but the request used a name slug: Send again would be
+    refused by the index, so Publish (under the id) is offered instead."""
+    from fused_render.contrib import actions_listing
+
+    lst = {"name": "Sine Starter", "checked_at": 1.0, "listed": False,
+           "slug": "sine-starter", "app_id": SLUG, "doctor_clear": True,
+           "pr": {"kind": "list", "state": "open", "commit": "a" * 40},
+           "review": {"status": "failed", "reasons": ["Reads saved passwords."]}}
+    decided = actions_listing.decide(lst)
+    ids = [a["id"] for a in decided["actions"]]
+    assert "publish-update" not in ids and "publish-market" in ids
+    assert f"was sent under the old id sine-starter. Publish it again under its app id {SLUG}." \
+        in decided["sentence"]
+
+
 def test_merged_listing_is_live_then_update(w):
     from fused_render.contrib import actions_listing, listing
 
