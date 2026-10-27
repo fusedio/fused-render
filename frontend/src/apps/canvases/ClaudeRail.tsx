@@ -168,6 +168,9 @@ export function ClaudeRail({
                   data-hint={line.hint || label}
                   data-hint-title={line.hint || label}
                   data-hint-reply={reply}
+                  // Beside the ring, not at the pointer (platform/lib/hints
+                  // `placeBeside`): a 48px column at the window's edge.
+                  data-hint-side="left"
                   onClick={(e) => {
                     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
                     e.preventDefault();
