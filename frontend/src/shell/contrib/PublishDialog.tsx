@@ -8,9 +8,12 @@
 //
 // THE LISTING ID IS NOT EDITABLE: the index row is named after the app's
 // own fused-app-id, which the server derives from the app. The draft's
-// `slug` is shown as a read-only "Listing id" line and never sent back. An
-// app with no id yet is refused with reason "app-id" (App Doctor adds one),
-// said like Doctor's own refusal: the sentence, and Open App Doctor.
+// `app_id` is shown as a read-only "Listing id" line and never sent back —
+// not its `slug`, which is the live row's and may be an older id (then a
+// one-line note says how to move it, `oldIdNote`). An app with no id yet
+// shows no line, and is refused with reason "app-id" (App Doctor adds one),
+// said like Doctor's own refusal: the sentence, and Open App Doctor. Any
+// other refusal ("old-slug" included) is the server's sentence.
 //
 // Same posture as RemixDialog: mounted per open, refuses to close while
 // sending, a refusal's sentence shown inside so the next move is to fix and
@@ -18,6 +21,7 @@
 import { useEffect, useState } from "react";
 import { Loader2 } from "lucide-react";
 import {
+  oldIdNote,
   opensDoctor,
   plainMessage,
   getListingDraft,
@@ -85,6 +89,7 @@ export function PublishDialog({
   const [doctorFix, setDoctorFix] = useState(false);
   const [categories, setCategories] = useState<ListingCategory[]>(FALLBACK_CATEGORIES);
   const [listingId, setListingId] = useState("");
+  const [movedNote, setMovedNote] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [category, setCategory] = useState("");
@@ -100,7 +105,8 @@ export function PublishDialog({
       if (d.ok === false) setError(plainMessage(d));
       const cats = categoriesOf(d.categories);
       setCategories(cats);
-      setListingId(d.slug ?? "");
+      setListingId(d.app_id ?? "");
+      setMovedNote(oldIdNote(d));
       setName(d.name ?? "");
       setDescription(d.description ?? "");
       setCategory(d.category && cats.some((c) => c.id === d.category) ? d.category : (cats[0]?.id ?? ""));
@@ -231,6 +237,7 @@ export function PublishDialog({
           </div>
           <FieldDescription>Icon and screenshot are files in your app. Leave them empty to go without.</FieldDescription>
         </FieldGroup>
+        {movedNote && <p className="m-0 text-[13px] leading-5 text-muted-foreground">{movedNote}</p>}
       </>
     );
   }

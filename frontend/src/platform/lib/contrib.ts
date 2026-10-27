@@ -515,6 +515,11 @@ export interface ListingPower {
 export interface Listing {
   listed: boolean;
   slug: string | null;
+  /** The app's own fused-app-id (its entry page's), which a listing is
+   *  named after; null when the app has none yet (App Doctor adds one). */
+  app_id?: string | null;
+  /** False: listed under an older id than `app_id` (see `oldIdNote`). */
+  slug_is_app_id?: boolean | null;
   /** The app's display name the sentences use. */
   name?: string | null;
   approved: { commit: string | null; at: string | null } | null;
@@ -557,7 +562,11 @@ export interface ListingCategory {
 
 /** GET /api/contrib/listing-draft: the Publish dialog's prefill. */
 export interface ListingDraft extends Partial<ContribAnswer> {
-  slug?: string;
+  /** The live row's slug when listed — NOT the listing id to show. */
+  slug?: string | null;
+  /** The listing id: the entry page's fused-app-id; null = none yet. */
+  app_id?: string | null;
+  slug_is_app_id?: boolean | null;
   name?: string;
   description?: string;
   category?: string;
@@ -589,6 +598,16 @@ export function getListingDraft(path: string): Promise<ListingDraft> {
   return getJson<ListingDraft>(`/api/contrib/listing-draft?path=${encodeURIComponent(path)}`).catch(
     () => ({ ok: false }) as ListingDraft,
   );
+}
+
+/** An app listed under an older id than its own fused-app-id: the one line
+ *  saying how to move it (a refusal "old-slug" says the same in the
+ *  server's words). Null when there is nothing to say. */
+export function oldIdNote(
+  v: { slug?: string | null; app_id?: string | null; slug_is_app_id?: boolean | null } | null | undefined,
+): string | null {
+  if (!v || v.slug_is_app_id !== false || !v.slug || !v.app_id) return null;
+  return `Listed under the old id ${v.slug}. Remove it, then publish again to move it to ${v.app_id}.`;
 }
 
 /** A publish refusal that App Doctor fixes: its checks are not clear

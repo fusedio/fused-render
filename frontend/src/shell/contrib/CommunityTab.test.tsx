@@ -151,6 +151,48 @@ test("own app on rung 2: the repo sentence, and List it in the Community waits o
   expect(list.every((b) => b.props.disabled === true)).toBe(true);
 });
 
+test("listed under an older id than the app's own: one line says how to move it", async () => {
+  listingAnswer = {
+    ok: true,
+    state: "live",
+    sentence: "sine is in the Community.",
+    listing: {
+      listed: true,
+      slug: "sine-starter",
+      app_id: "sine-0a1b2c3d",
+      slug_is_app_id: false,
+      approved: { commit: "abc", at: null },
+      pr: null,
+      review: null,
+      update_available: false,
+      doctor_clear: true,
+      unpushed: false,
+    },
+    actions: [],
+  };
+  const gh = {
+    installed: true,
+    signed_in: true,
+    login: "vasu",
+    repo: "vasu/sine",
+    visibility: "public" as const,
+    unpushed: 0,
+    link: "https://udf.ai/x",
+  };
+  const t = await mount(
+    <CommunityTab
+      dir="/apps/sine"
+      slug="sine"
+      contrib={contribOf(null)}
+      ladder={ladderOf({ rung: 3, kind: "own", github: gh })}
+      variant="page"
+    />,
+  );
+  expect(text(t)).toContain(
+    "Listed under the old id sine-starter. Remove it, then publish again to move it to sine-0a1b2c3d.",
+  );
+});
+
 test("own app with unpushed edits: one Publish now, List it waits on it", async () => {
   listingAnswer = {
     ok: true,

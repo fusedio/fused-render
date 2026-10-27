@@ -12,7 +12,7 @@ import { afterEach, expect, test } from "bun:test";
 import { installDomShim } from "./testDomShim";
 
 installDomShim();
-const { acceptProposal, contribReadEnabled, opensDoctor, tryProposal } = await import("./contrib");
+const { acceptProposal, contribReadEnabled, oldIdNote, opensDoctor, tryProposal } = await import("./contrib");
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -72,4 +72,16 @@ test("a publish refused for Doctor's checks or a missing app id offers App Docto
   expect(opensDoctor("app-id")).toBe(true);
   expect(opensDoctor("unpushed")).toBe(false);
   expect(opensDoctor(undefined)).toBe(false);
+});
+
+test("the old-id note: only when the listing's slug is not the app's own id", () => {
+  expect(oldIdNote({ slug: "sine-starter", app_id: "sine-0a1b2c3d", slug_is_app_id: false })).toBe(
+    "Listed under the old id sine-starter. Remove it, then publish again to move it to sine-0a1b2c3d.",
+  );
+  expect(oldIdNote({ slug: "sine-0a1b2c3d", app_id: "sine-0a1b2c3d", slug_is_app_id: true })).toBeNull();
+  // No app id yet: App Doctor's pointer says what to do instead.
+  expect(oldIdNote({ slug: "sine-starter", app_id: null, slug_is_app_id: false })).toBeNull();
+  // An older server that sends neither field.
+  expect(oldIdNote({ slug: "sine-starter" })).toBeNull();
+  expect(oldIdNote(null)).toBeNull();
 });

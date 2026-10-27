@@ -36,6 +36,7 @@ import { BadgeCheck, Clock, Loader2, ShieldAlert, Stethoscope, Store } from "luc
 import {
   getListing,
   okMessage,
+  oldIdNote,
   plainMessage,
   pollJob,
   runJob,
@@ -422,8 +423,11 @@ export function useListing({
  *  a running action's progress and the last error — everything the strip
  *  says under its sentence. */
 export function ListingNotes({ kit }: { kit: ListingKit }) {
+  // Listed under an older id than the app's own: say how to move it.
+  const moved = kit.listing?.listed ? oldIdNote(kit.listing) : null;
   return (
     <>
+      {moved && <p className="contrib-listing-moved">{moved}</p>}
       {kit.reasons.length > 0 && (
         <ul className="contrib-listing-reasons" aria-label="Why the review didn't pass">
           {kit.reasons.map((r, i) => (
