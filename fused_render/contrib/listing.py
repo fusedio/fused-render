@@ -458,6 +458,23 @@ def _fetch(scratch: str, index: str, *refspecs: str) -> None:
         raise gh.GitHubError(reason if reason in gh.REASONS else "failed")
 
 
+_FORK_REF = "refs/fused/fork"
+
+
+def _fork_base(scratch: str, fork: str, branch: str, base: str) -> str | None:
+    """The newest commit of the index's main (`base`) that the fork's
+    `branch` already holds — the merge-base of the two — or None when the
+    fork could not be read or shares no history."""
+    ok, _reason = gh.fetch_detail(scratch, fork, f"+refs/heads/{branch}:{_FORK_REF}")
+    if not ok:
+        return None
+    res = gh._git(scratch, "merge-base", base, _FORK_REF)
+    if res is None or res.returncode != 0:
+        return None
+    sha = res.stdout.strip()
+    return sha if gh._SHA_RE.match(sha) else None
+
+
 def _show(scratch: str, ref: str, path: str) -> str | None:
     res = gh._git(scratch, "show", f"{ref}:{path}")
     if res is None or res.returncode != 0 or len(res.stdout) > _MAX_FILE:
@@ -1073,6 +1090,12 @@ def _send(root: str, me: dict, slug: str, row: dict | None, *, kind: str, title:
     _step("fork")
     fork = gh.ensure_fork(index)
     fork_owner = gh.split_full(fork)[0]
+    if fork != index:
+        # Keep the fork's main at the index's, so the row branch (built on
+        # the index's main) brings the fork nothing but the row commit.
+        # Best effort: when GitHub will not (see the push below), the row
+        # is rebuilt on what the fork does have.
+        gh.sync_fork(fork, ibranch)
     with _scratch_lock:
         scratch = _scratch(index)
         _step("write")
@@ -1088,7 +1111,24 @@ def _send(root: str, me: dict, slug: str, row: dict | None, *, kind: str, title:
                              reason="not-listed")
         sha = _commit_row(scratch, base, slug, row, title, me)
         _step("push")
-        gh.push(scratch, sha, fork, branch, force=True)
+        try:
+            gh.push(scratch, sha, fork, branch, force=True)
+        except gh.GitHubError as exc:
+            # The index's main carries a workflow commit the fork has not
+            # got, and gh's token (no `workflow` scope) may not bring one
+            # in — by push or by `merge-upstream`. The row commit itself
+            # never touches `.github/`: rebuilt on the newest index commit
+            # the fork already holds, the push carries no workflow change
+            # and goes through. The pull request's diff is still the one
+            # row (GitHub diffs against the merge-base).
+            known = _fork_base(scratch, fork, ibranch, base) \
+                if fork != index and gh.is_workflow_scope_refusal(exc.detail) else None
+            if not known or known == base:
+                raise
+            logger.info("listing: push to %s refused (workflow scope); rebuilding the row on "
+                        "%s, the index commit the fork already has", fork, known[:12])
+            sha = _commit_row(scratch, known, slug, row, title, me)
+            gh.push(scratch, sha, fork, branch, force=True)
     _step("pr")
     pr = gh.find_open_pr(index, fork_owner, branch)
     if pr is not None:
