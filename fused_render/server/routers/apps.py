@@ -1424,9 +1424,21 @@ def _agent_models(backend: str) -> tuple[str, ...]:
     """What the composer's model picker may ask for on `backend`: that
     agent's catalog row plus `""` ("no flag"). Claude's row IS
     VALID_DEFAULT_MODELS (agent_backends/claude.py lists the same ids), so a
-    Claude create is checked against exactly the set it always was."""
+    Claude create is checked against exactly the set it always was.
+
+    The DISCOVERED ids too, where the cache has them (Copilot's plan list):
+    the catalog the composer's picker reads serves that list in place of the
+    static row, so a Copilot-only install whose plan carries a model the
+    static row does not (a reporter's `claude-opus-5.5`) was offered it by
+    the picker and then refused it here with a 400 naming the static ids —
+    the same mismatch registry.foreign_model_error already guards against."""
     from fused_render.agent_backends import registry
-    return ("",) + tuple(registry.get(backend).model_ids())
+    own = registry.get(backend)
+    ids = list(own.model_ids())
+    for m in own.model_ids(discovered=True):
+        if m not in ids:
+            ids.append(m)
+    return ("",) + tuple(ids)
 
 
 def _session_choice_error(field: str, value, allowed) -> str | None:
