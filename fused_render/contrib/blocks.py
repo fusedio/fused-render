@@ -488,6 +488,13 @@ def _hard(root, rec, hits, all_hard, *, slug) -> dict:
     if not engine._on_home(root) or gu._operation_in_flight(root) is not None:
         _set_block(root, block)
         return {"level": "hard", "action": "marked"}
+    if engine._unsafe_config(root):
+        # The repo's own config would run a command (a filter or merge
+        # driver, …) during the reset or the revert-as-a-merge below
+        # (`replay.config_hazards`, fails closed): the folder is not moved.
+        # The app stays stopped and the gate shut; the mirror is safe.
+        _set_block(root, block)
+        return {"level": "hard", "action": "marked", "why": engine.UNSAFE_CONFIG}
     ahead = replay.count(root, "--no-merges", f"{hit['commit']}..{head}") or 0
     tracked = replay.tracked_edits(root)
     if not ahead and not tracked:
@@ -700,6 +707,10 @@ def vet_approved(root, rec=None) -> str | None:
     hard = [e for e in for_slug(slug) if e["level"] == "hard"]
     if not commit or not hard:
         return commit
+    if not replay.rev(root, commit):
+        # Its objects are not here: the ancestry questions below would all
+        # answer False and read it as safe. Not vetted, so nothing to follow.
+        return None
     if not any(e["commit"] == commit or replay.is_ancestor(root, e["commit"], commit)
                for e in hard):
         return commit

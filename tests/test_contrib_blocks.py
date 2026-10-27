@@ -435,3 +435,41 @@ def test_the_backend_is_asked_only_when_the_list_can_act(m, monkeypatch):
     from _contrib_gh_world import write_prefs
     write_prefs(marketplace_enabled=True)   # switching the Community on is enough
     assert blocks.needed()
+
+
+def test_a_hard_block_never_moves_a_folder_whose_config_runs_commands(m):
+    """The rollback resets or merges the folder: a repo-local filter driver
+    would run during it (`replay.config_hazards`, fails closed). The folder
+    stays put, the app stopped and the gate shut, until the config is
+    clean."""
+    c2 = _release(m, {"index.html": RED}, "Red")
+    m.g("config", "--local", "filter.x.clean", "cat")
+    _block(m, c2)
+    out = blocks.enforce(m.app)
+    assert out["action"] == "marked" and out["why"] == engine.UNSAFE_CONFIG
+    assert m.head() == c2 and blocks.gate(m.app) is not None and m.stopped == [m.app]
+    m.g("config", "--local", "--unset", "filter.x.clean")
+    assert blocks.enforce(m.app)["action"] == "rolled-back"
+    assert m.head() == m.c1 and blocks.gate(m.app) is None
+
+
+def test_an_approved_commit_not_here_is_never_vetted_as_safe(m):
+    c2 = _release(m, {"index.html": RED}, "Red")
+    _block(m, c2)
+    rec = store.get(m.app)
+    rec["approved"] = {**rec["approved"], "commit": "f" * 40}
+    assert blocks.vet_approved(m.app, rec) is None
+
+
+def test_switching_to_a_release_built_on_a_blocked_one_says_blocked(m):
+    from fused_render.contrib import market
+
+    c2 = _release(m, {"index.html": RED}, "Red")
+    assert market.switch_to_link(m.app)["ok"]
+    c3 = _alice(m, {"NOTES.md": "n\n"}, "Built on red")
+    m.cat.release("sine", c3)
+    _block(m, c2)
+    head = m.head()
+    out = market.switch_to_reviewed(m.app, market.row_for("sine"))
+    assert out["ok"] is False and out["reason"] == "blocked", out
+    assert m.head() == head and store.get(m.app)["kind"] == "github"

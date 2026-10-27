@@ -123,22 +123,14 @@ def slug(name: str) -> str:
 
 
 def _flags() -> dict:
-    """`{sources, marketplace, github_link}`. `marketplace` is the switch the
-    listing routes gate on (`listing._enabled`, §18.8), so rung 3 is offered
-    exactly when its buttons work."""
+    """`{sources, marketplace}`. `marketplace` is the switch the listing
+    routes gate on (`listing._enabled`, §18.8), so rung 3 is offered exactly
+    when its buttons work. The install link follows `sources` (owner
+    2026-10-27: one switch for Community/GitHub sharing; the old
+    `github_link_enabled` pref is folded into it by `prefs.read_prefs`)."""
     from fused_render.contrib import flags, listing
 
-    try:
-        from fused_render.shell import prefs
-
-        # Owner 2026-10-27: one switch for Community/GitHub sharing — the
-        # install link is part of it (the old `github_link_enabled` pref is
-        # folded into this one by `prefs.read_prefs`, never read here).
-        link = bool(prefs.contrib_enabled())
-    except Exception:  # noqa: BLE001 — an unreadable pref reads as off
-        link = False
-    return {"sources": bool(flags.sources()), "marketplace": bool(listing._enabled()),
-            "github_link": link}
+    return {"sources": bool(flags.sources()), "marketplace": bool(listing._enabled())}
 
 
 def _gh_installed() -> bool:
@@ -369,7 +361,7 @@ def status(app_dir: str, *, fresh: bool = False) -> dict:
     # lookups need the loop or the Community on, the doctor verdict only
     # feeds the Marketplace listing gate, so it follows that switch as
     # `listing` does.
-    community = bool(fl["marketplace"] or fl["sources"] or fl["github_link"])
+    community = bool(fl["marketplace"] or fl["sources"])
     who = _who(app_dir, root, origin, login, ask=community)
     mine = who["mine"]
     github = {"installed": _gh_installed(), "signed_in": bool(ident.get("signed_in")),
@@ -386,7 +378,7 @@ def status(app_dir: str, *, fresh: bool = False) -> dict:
         github["repo"] = who["repo"] or origin
         github["visibility"] = visibility(github["repo"], fresh=fresh) if community else None
         github["unpushed"] = classify._unpublished(root)
-        if fl["github_link"]:
+        if fl["sources"]:
             from fused_render import share_app
 
             try:

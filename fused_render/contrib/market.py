@@ -390,6 +390,10 @@ def _home_ready(engine, root):
         return engine._refuse("in-progress", engine.ELSEWHERE_MESSAGE)
     if engine._claude_busy(root):
         return engine._refuse("claude", engine.CLAUDE_BUSY_MESSAGE)
+    if engine._unsafe_config(root):
+        # A switch resets or fast-forwards the folder: the repo's own config
+        # must not get to run a command during it (`replay.config_hazards`).
+        return engine._refuse(engine.UNSAFE_CONFIG, replay.UNSAFE_CONFIG_MESSAGE)
     return None
 
 
@@ -552,6 +556,9 @@ def switch_to_reviewed(root, row, *, backup=None) -> dict:
             if replay.rev(root, engine._mirror(pinned)) != ap.commit:
                 if m.get("reason") == follow.NOT_ON_BRANCH:
                     return engine._refuse(follow.NOT_ON_BRANCH, not_on_branch_words(who))
+                if m.get("reason") == follow.BLOCKED:
+                    return engine._refuse("blocked", "Fused blocked this release, so fused "
+                                                     "won't switch to it. Nothing was changed.")
                 return engine._refuse("failed", "Couldn't switch to the reviewed version; "
                                                 "nothing was changed.")
             target = ap.commit

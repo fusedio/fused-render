@@ -1092,11 +1092,6 @@ def _prefs_response() -> dict:
         # Whether the Marketplace (sidebar row + /marketplace pages) is offered
         # (opt-in, default off). Not an API guard; see `marketplace_enabled`.
         "marketplace": {"enabled": marketplace_enabled()},
-        # Whether the Share sheet offers the GitHub install-link card: part of
-        # Community apps since 2026-10-27, so it mirrors `contrib_enabled`
-        # (the old key is folded away, `_fold_legacy`). Kept for a page
-        # built before the fold; nothing should read it.
-        "github_link": {"enabled": contrib_enabled()},
         # The GitHub contribution loop + Remix (opt-in, default off), RAW as
         # stored; `contrib.flags` applies "remix needs the loop".
         "contrib": {"enabled": contrib_enabled(), "remix": contrib_remix_enabled()},

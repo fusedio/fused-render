@@ -2120,8 +2120,8 @@ the panel, actions and activity of §16.9/§18.7 are shown as they are.
 - `GET /api/contrib/ladder?dir=` → `{ok, rung: 1|2|3, kind, mine, github:
   {installed, signed_in, login, repo, visibility: "public"|"private"|null,
   unpushed: int, link: string|null}, listing: <§18.7 listing answer or
-  null>, doctor: {clear: bool, failing: int}, flags: {sources, marketplace,
-  github_link}}`. `rung` = 3 when the listing is live or in review, 2 when
+  null>, doctor: {clear: bool, failing: int}, flags: {sources,
+  marketplace}}`. `rung` = 3 when the listing is live or in review, 2 when
   the folder is an own repo with a GitHub origin, else 1. `visibility`
   comes from `gh.repo(full).private` (the existing `gh api repos/<full>` helper,
   cached; null while unknown — it fills on the next read). `link` = the
@@ -2184,8 +2184,8 @@ the panel, actions and activity of §16.9/§18.7 are shown as they are.
   = the Marketplace switch alone (`listing._enabled()`, what the listing
   routes gate on — not `marketplace_ui()`, or rung 3 would show buttons
   the POST refuses); off hides rung 3 (two rungs; rung 2's next action is
-  "Copy install link") and the Share sheet's Next strip. `github_link`
-  = `contrib_enabled` (owner 2026-10-27: the link is part of Community
+  "Copy install link") and the Share sheet's Next strip. The install
+  link follows `sources` (owner 2026-10-27: the link is part of Community
   apps); off hides the install link, Copy and Open the install page only.
   The old `github_link_enabled` pref is folded once by `prefs.read_prefs`
   (a stored `true` turns `contrib_enabled` on when that was never set) and
