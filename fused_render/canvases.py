@@ -1888,7 +1888,73 @@ def api_canvases_create(body: dict = Body(...), x_fused: str | None = Header(def
     if err is not None:
         return err
     _cli_cache_clear()
+    try:
+        _seed_default_udf(env, name)
+    except Exception as e:  # noqa: BLE001 — best effort, see _seed_default_udf
+        logger.warning("canvas %s: starter UDF not seeded — %s", _sync_key(env, name), e)
     return {"ok": True, "name": name}
+
+
+# The starter UDF a new canvas opens with — the workbench's own
+# `constants/default_udf.py`, under the same `udf` name it gives it.
+_DEFAULT_UDF_NAME = "udf"
+# Per seed CLI call. The canvas is one tiny file; the create request waits on
+# both calls, so a stalled Fused costs seconds, not PULL_TIMEOUT twice.
+SEED_TIMEOUT = 45.0
+_DEFAULT_UDF_CODE = '''@fused.udf(cache_max_age="0s")
+def udf(name: str = "world"):
+    import pandas as pd
+
+    return pd.DataFrame({"hello": [name]})
+'''
+
+
+def _seed_default_udf(env: str, name: str) -> None:
+    """Give a just-created canvas its starter UDF ON THE SERVER, before
+    anything clones it.
+
+    `fused workbench canvas create` makes an EMPTY collection. The workbench
+    seeds a default UDF into an empty canvas client-side only (unsaved,
+    waiting on autosave), and in the embed the host's full disk state
+    (`fused-embed-hello` → delta, `full=1`) arrives first and removes every
+    UDF it does not name — so the starter flashed up and vanished. Seeding it
+    in the clone would not help: a fresh watcher adopts seconds-old files as
+    its clean baseline and never pushes them. So the canvas is pulled into a
+    scratch folder, the file and its row added, and pushed; the clone that
+    follows pulls a canvas that already holds it.
+
+    Best effort: a failure leaves the canvas created and empty (what it was
+    before this existed), logged, never a failed create."""
+    key = _sync_key(env, name)
+    with tempfile.TemporaryDirectory(prefix="fused-canvas-seed-") as scratch:
+        target = os.path.join(scratch, name)
+        _, err = _run_cli(
+            ["workbench", "canvas", "pull", name, "-o", target, "--force"], SEED_TIMEOUT, env
+        )
+        if err is not None:
+            logger.warning("canvas %s: starter UDF not seeded — pull failed: %s",
+                           key, err.body.decode("utf-8", "replace"))
+            return
+        try:
+            doc = canvas_snapshot._load_toml(os.path.join(target, "canvas.toml"))
+            # Not empty after all (a row, or any source file even without
+            # one): nothing to seed, and nothing of the user's to overwrite.
+            if canvas_snapshot.rows_of_doc(doc)["nodes"] \
+                    or canvas_snapshot.orphan_sources(target, []):
+                return
+            with open(os.path.join(target, f"{_DEFAULT_UDF_NAME}.py"), "w",
+                      encoding="utf-8") as f:
+                f.write(_DEFAULT_UDF_CODE)
+            canvas_snapshot.persist_synthesized(target, [_DEFAULT_UDF_NAME])
+        except Exception as e:  # noqa: BLE001 — best effort, see docstring
+            logger.warning("canvas %s: starter UDF not seeded — %s", key, e)
+            return
+        _, err = _run_cli(
+            ["workbench", "canvas", "push", target, "--canvas", name], SEED_TIMEOUT, env
+        )
+        if err is not None:
+            logger.warning("canvas %s: starter UDF not seeded — push failed: %s",
+                           key, err.body.decode("utf-8", "replace"))
 
 
 @router.post("/api/canvases/logout")

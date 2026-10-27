@@ -19,6 +19,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import fused_render.canvas_sync_state as canvas_sync_state_mod
+from fused_render import canvas_snapshot
 import fused_render.canvases as canvases_mod
 import fused_render.fusedcli as fusedcli_mod
 from fused_render.server import create_app
@@ -62,6 +63,9 @@ def main():
         json.dump(scenario.get("canvases", ["alpha", "beta"]), sys.stdout)
         return
     if plain[:2] == ["canvas", "pull"]:
+        if scenario.get("pull_fail"):
+            sys.stderr.write("Error: pull failed\n")
+            sys.exit(1)
         delay = scenario.get("pull_delay")
         if delay:
             import time as _t
@@ -131,6 +135,11 @@ def main():
                 f.write(content)
         return
     if plain[:2] == ["canvas", "push"]:
+        capture = scenario.get("push_capture")
+        if capture:
+            # What the push would have shipped, for tests that check it.
+            import shutil
+            shutil.copytree(plain[2], capture)
         lines = scenario.get("push_fail_lines")
         if lines:
             for ln in lines:
@@ -564,6 +573,48 @@ def test_create_canvas_runs_cli(harness):
     assert res.status_code == 200
     assert res.json() == {"ok": True, "name": "gamma"}
     assert ["workbench", "canvas", "create", "gamma"] in harness.calls()
+
+
+def test_create_canvas_seeds_the_starter_udf_on_the_server(harness, tmp_path):
+    # The CLI creates an empty canvas; the starter UDF must reach the server
+    # before the clone, or the embed's full disk state wipes the workbench's
+    # client-only default.
+    harness.log_in()
+    shipped = tmp_path / "shipped"
+    harness.set_scenario({"push_capture": str(shipped)})
+    res = harness.client.post("/api/canvases/create", json={"env": ENV, "name": "gamma"}, headers=GUARD)
+    assert res.status_code == 200
+    pushes = [c for c in harness.calls() if c[1:3] == ["canvas", "push"]]
+    assert len(pushes) == 1 and pushes[0][-2:] == ["--canvas", "gamma"]
+    assert "@fused.udf" in (shipped / "udf.py").read_text(encoding="utf-8")
+    doc = canvas_snapshot._load_toml(str(shipped / "canvas.toml"))
+    assert list(canvas_snapshot.rows_of_doc(doc)["nodes"]) == ["udf"]
+
+
+def test_create_canvas_does_not_seed_a_canvas_that_has_nodes(harness):
+    harness.log_in()
+    for files in (
+        {"canvas.toml": 'type = "canvas"\n[[canvas.nodes]]\nudfName = "a"\n', "a.py": "x = 1\n"},
+        # A source file with no row is the user's too: never overwritten.
+        {"canvas.toml": 'type = "canvas"\n', "udf.py": "mine = 1\n"},
+    ):
+        harness.log.unlink(missing_ok=True)
+        harness.set_scenario({"pull_files": files})
+        res = harness.client.post("/api/canvases/create", json={"env": ENV, "name": "gamma"}, headers=GUARD)
+        assert res.status_code == 200
+        assert not [c for c in harness.calls() if c[1:3] == ["canvas", "push"]], files
+
+
+def test_create_canvas_succeeds_when_seeding_fails(harness):
+    harness.log_in()
+    for scenario, pushed in (({"pull_fail": True}, False),
+                             ({"push_fail_lines": ["Error: boom"]}, True)):
+        harness.log.unlink(missing_ok=True)
+        harness.set_scenario(scenario)
+        res = harness.client.post("/api/canvases/create", json={"env": ENV, "name": "gamma"}, headers=GUARD)
+        assert res.status_code == 200
+        assert res.json() == {"ok": True, "name": "gamma"}
+        assert bool([c for c in harness.calls() if c[1:3] == ["canvas", "push"]]) is pushed
 
 
 def test_create_canvas_rejects_bad_names(harness):
