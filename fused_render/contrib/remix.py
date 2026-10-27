@@ -171,7 +171,10 @@ def _source_record(app_dir) -> tuple[str, dict]:
         raise PlainError("This app can't be published as a remix.")
     if record.get("kind") == "own" and record.get("remix_of"):
         raise PlainError("This is already your remix.")
-    if record.get("kind") != "github" or not record.get("repo") or not record.get("branch"):
+    if record.get("kind") not in ("github", "marketplace") or not record.get("repo") \
+            or not record.get("branch"):
+        # A marketplace copy (§18.4) remixes like a GitHub-link one: its
+        # history is the author's, its publish the user's explicit act.
         raise PlainError("Only apps you installed from someone else can become a remix.")
     return root, record
 

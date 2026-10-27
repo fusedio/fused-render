@@ -24,6 +24,12 @@
 // Reload re-runs the download: the fetch is idempotent (one file per app),
 // so a reload mid-download is a retry, which is what a reader who reloads
 // a stuck page wants.
+//
+// A Marketplace listing link (`fused-render://open?marketplace=<slug>`,
+// CONTRIB_LOOP.md §18.5) arrives as `?_fetch_market=<slug>` and downloads
+// nothing: the page hands over at once to the app's own Marketplace page,
+// `/marketplace/app/<slug>?via=link`, which installs the reviewed release
+// (and renders bare while the store is off).
 import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, Download, GitBranch, Link2 } from "lucide-react";
 
@@ -35,9 +41,19 @@ import {
   editAppFileFromSearch,
   fetchAppFileFromSearch,
   fetchAppGitFromSearch,
+  fetchMarketFromSearch,
 } from "./edit-appfile-lib";
 
 type Source = { kind: "git"; link: string } | { kind: "url"; link: string };
+
+/** The index's rule for a slug (§18.2). */
+const SLUG_OK = /^[a-z0-9][a-z0-9-]{1,63}$/;
+
+/** Where a listing link lands: the app's Marketplace page, marked as
+ *  reached from a link. */
+export function marketLinkTarget(slug: string): string {
+  return `/marketplace/app/${encodeURIComponent(slug)}?via=link`;
+}
 
 type Phase =
   | { state: "idle"; error: string }
@@ -89,6 +105,42 @@ function clock(seconds: number): string {
 }
 
 export default function InstallLinkPage() {
+  const market = fetchMarketFromSearch(location.search);
+  if (market !== null) return <MarketLink slug={market} />;
+  return <FetchLinkPage />;
+}
+
+/** A listing link: hand over to the app's page, replacing this one in
+ *  history (Back must not land here and re-run the hand-off). */
+function MarketLink({ slug }: { slug: string }) {
+  const ok = SLUG_OK.test(slug);
+  useDocumentTitle("Install");
+  useEffect(() => {
+    if (ok) navigateUrl(marketLinkTarget(slug), { replace: true });
+  }, [ok, slug]);
+  return (
+    <div id="content" className="install-link">
+      <div className="install-link-card" role="status" aria-live="polite" data-state={ok ? "opening" : "idle"}>
+        <div className="install-link-mark" aria-hidden="true">
+          {ok ? <span className="mode-icon-spinner" /> : <AlertTriangle size={22} />}
+        </div>
+        <h1 className="install-link-title">{ok ? "Opening the Community page…" : "Could not open the link"}</h1>
+        <p className="install-link-detail">
+          {ok ? "The next page shows the app and its reviewed release." : `"${slug}" is not a Community app name.`}
+        </p>
+        {!ok && (
+          <div className="install-link-foot">
+            <button type="button" className="install-link-btn" onClick={() => navigateUrl("/")}>
+              Go to Home
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function FetchLinkPage() {
   const [{ source, error: badLink }] = useState(() => readSource(location.search));
   const [phase, setPhase] = useState<Phase>(() =>
     source ? { state: "running" } : { state: "idle", error: badLink || "" },

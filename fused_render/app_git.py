@@ -208,7 +208,7 @@ def _is_github_copy(repo_dir: str) -> bool:
     try:
         from fused_render.contrib import classify
 
-        return classify.kind_of(repo_dir) == "github"
+        return classify.is_github_like(classify.kind_of(repo_dir))
     except Exception:  # noqa: BLE001 — unknown reads as today's commit
         return False
 
@@ -223,7 +223,7 @@ def _identity_for(repo_dir: str) -> list[str]:
             return _IDENTITY
         from fused_render.contrib import classify
 
-        if classify.kind_of(repo_dir) != "github":
+        if not classify.is_github_like(classify.kind_of(repo_dir)):
             return _IDENTITY
         have = [_git(repo_dir, "config", "--local", "--get", k, identity=[]).stdout.strip()
                 for k in ("user.name", "user.email")]

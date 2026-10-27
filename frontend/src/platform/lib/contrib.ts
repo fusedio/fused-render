@@ -19,8 +19,10 @@
 // answer — which is why `useAppContrib` polls fast while one runs.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getJson, postJson } from "@platform/lib/api";
+import type { SetupRecord } from "@platform/lib/github-setup";
 import { pauseWhileHidden } from "@platform/lib/pause-while-hidden";
 import { useContribFlags, type ContribFlags } from "@platform/lib/contrib-flags";
+import { useMarketplaceFeature } from "@platform/lib/marketplace-flag";
 
 export type { ContribFlags };
 
@@ -79,10 +81,58 @@ export type CopyState =
   | "other-branch"
   | "merging"
   | "remix"
-  | "own";
+  | "own"
+  // stage B, marketplace copies (§18.4)
+  | "delisted"
+  | "blocked-release"
+  | "soft-blocked";
+
+/** A block-list entry on this copy (§18.4 `record.block`, or a GitHub-link
+ *  copy's `block_warn`). Names a release Fused found to be bad. */
+export interface CopyBlock {
+  level: "hard" | "soft";
+  reason: string;
+  what_to_do: string;
+  /** ISO, when Fused blocked it. */
+  at?: string | null;
+  commit?: string | null;
+  /** The release a hard block rolled the copy back to; null = none left. */
+  rolled_back_to?: string | null;
+  /** That release's date, already in words ("Oct 26") — `blocks.view`. */
+  rolled_back_date?: string | null;
+  /** …or as an ISO time, from a server that sends that instead. */
+  rolled_back_to_at?: string | null;
+  /** The roll-back met the user's own changes: Merge with Claude resolves it. */
+  conflict?: boolean;
+  /** Every release is blocked: nothing to roll back to. */
+  no_target?: boolean;
+  /** The user said "open anyway" to a soft block (`blocks.view`)… */
+  confirmed?: boolean;
+  /** …or when, as epoch seconds. */
+  confirmed_at?: number | null;
+}
+
+/** A soft block the user has not said yes to yet: opening asks first. */
+export function softBlockWaiting(b: CopyBlock | null | undefined): boolean {
+  return !!b && b.level === "soft" && !b.confirmed && !b.confirmed_at;
+}
+
+/** The reviewed release a marketplace copy runs (§18.4 `record.approved`). */
+export interface ApprovedRelease {
+  commit: string | null;
+  /** ISO date of the release. */
+  at: string | null;
+  version?: string | null;
+  whats_new?: string | null;
+}
 
 export interface CopyStatus {
-  kind: "own" | "github" | "scratch";
+  kind: "own" | "github" | "marketplace" | "scratch";
+  /** Marketplace copy: its row's slug and the reviewed release it runs. */
+  slug?: string | null;
+  approved?: ApprovedRelease | null;
+  /** Marketplace copy: "delisted" once the row left the index. */
+  listing_status?: "live" | "delisted" | null;
   state: CopyState;
   /** "alice/x": the repo this copy follows (github) or publishes to (own). */
   repo: string | null;
@@ -217,7 +267,12 @@ export interface Contributor {
 // sent and nothing more — no button is ever derived on this side.
 
 export interface SourcePanel {
-  kind: "github" | "own" | "remix" | "scratch" | "pending" | null;
+  kind: "github" | "marketplace" | "own" | "remix" | "scratch" | "pending" | null;
+  /** Marketplace copy: a release Fused blocked is (or was) in this copy. */
+  block?: CopyBlock | null;
+  /** GitHub-link copy: it runs a version Fused blocked for the Marketplace —
+   *  a warning only, nothing was changed (§18.4). */
+  block_warn?: CopyBlock | null;
   /** "alice/x". */
   repo: string | null;
   /** The name every sentence uses (the author's login, or the user's own). */
@@ -257,7 +312,9 @@ export interface ActivityLine {
   id: string;
   /** Epoch seconds. */
   at: number;
-  kind: string;
+  /** "update", "switch" (a trust-level switch, Undo = the opposite
+   *  switch), "rollback" (a block rolled the copy back; never Undo), … */
+  kind: "update" | "switch" | "rollback" | (string & {});
   text: string;
   /** Something moved away and can come back: offers Undo. */
   undo: boolean;
@@ -429,6 +486,119 @@ export const runAction = (
 /** Undo / Restore one activity line (§16.9). */
 export const restoreActivity = (path: string, id: string) => post<ContribAnswer>("restore", { path, id });
 
+// ---- stage B: the author's Marketplace listing (§18.6) -----------------------
+
+/** The Source panel's buttons that belong to the listing: rendered by the
+ *  ListingStrip, posted to `/api/contrib/listing-action`. */
+export const LISTING_ACTION_IDS: ReadonlySet<string> = new Set([
+  "publish-market",
+  "publish-update",
+  "confirm-powers",
+  "fix-with-claude",
+  "check-listing",
+  "remove-market",
+]);
+
+export type ListingReviewStatus = "in-review" | "live" | "needs-confirmation" | "failed";
+
+export interface ListingPower {
+  kind: string;
+  detail: string;
+}
+
+export interface Listing {
+  listed: boolean;
+  slug: string | null;
+  /** The app's display name the sentences use. */
+  name?: string | null;
+  approved: { commit: string | null; at: string | null } | null;
+  pr: { number: number; url: string; head_sha: string; state: string } | null;
+  review: {
+    status: ListingReviewStatus | null;
+    reasons: string[];
+    new_powers: ListingPower[];
+    whats_new: string | null;
+  } | null;
+  update_available: boolean;
+  /** App Doctor's sharing checks are clear — publishing needs it. */
+  doctor_clear: boolean;
+  /** The app has edits not on GitHub yet — publishing needs them pushed. */
+  unpushed: boolean;
+}
+
+/** GET /api/contrib/listing. `sentence` is the server's status line
+ *  (`actions_listing.sentence`); `actions` its buttons when it sends them
+ *  (else the page takes the listing ids from `/api/contrib/app`'s). */
+export interface ListingAnswer extends Partial<ContribAnswer> {
+  listing?: Listing | null;
+  /** `actions_listing.decide`'s state: "pending", "unknown", "signed-out",
+   *  "not-listed", "in-review", "needs-confirmation", "failed", "live". */
+  state?: string | null;
+  sentence?: string | null;
+  actions?: ContribAction[];
+  /** The listing is being re-read from GitHub: poll this job, then GET
+   *  again (§16.14's named wait). */
+  job?: string | null;
+  /** The live release's version, when the ladder's copy of this answer
+   *  carries one (§19.2). */
+  version?: string | null;
+}
+
+export interface ListingCategory {
+  id: string;
+  label: string;
+}
+
+/** GET /api/contrib/listing-draft: the Publish dialog's prefill. */
+export interface ListingDraft extends Partial<ContribAnswer> {
+  slug?: string;
+  name?: string;
+  description?: string;
+  category?: string;
+  categories?: (ListingCategory | string)[];
+  tags?: string[];
+  icon?: string | null;
+  preview?: string | null;
+}
+
+/** What `publish-market` sends as its `args`. */
+export interface ListingDetails {
+  slug: string;
+  name: string;
+  description: string;
+  category: string;
+  tags: string[];
+  icon: string | null;
+  preview: string | null;
+}
+
+export function getListing(path: string, opts: { fresh?: boolean; signal?: AbortSignal } = {}): Promise<ListingAnswer> {
+  return getJson<ListingAnswer>(
+    `/api/contrib/listing?path=${encodeURIComponent(path)}${opts.fresh ? "&fresh=1" : ""}`,
+    { signal: opts.signal },
+  ).catch(() => ({ ok: false }) as ListingAnswer);
+}
+
+export function getListingDraft(path: string): Promise<ListingDraft> {
+  return getJson<ListingDraft>(`/api/contrib/listing-draft?path=${encodeURIComponent(path)}`).catch(
+    () => ({ ok: false }) as ListingDraft,
+  );
+}
+
+/** The listing's one action route — same body and answer as `runAction`.
+ *  `fix-with-claude` answers `open`: where the new Claude session is. */
+export const runListingAction = (
+  path: string,
+  action: string,
+  opts: { confirm?: boolean; args?: Record<string, unknown> } = {},
+) =>
+  post<JobStarted & { open?: string }>("listing-action", {
+    path,
+    action,
+    ...(opts.confirm ? { confirm: true } : {}),
+    ...(opts.args ? { args: opts.args } : {}),
+  });
+
 /** A success toast's text: the server's own `message` when the answer (or a
  *  job's result) carries one, else the page's sentence. */
 export function okMessage(answer: unknown, fallback: string): string {
@@ -591,7 +761,11 @@ export interface AppContribState {
  *  so the page with the feature off makes exactly the requests it always did. */
 export function useAppContrib(dir: string | null): AppContribState {
   const flags = useContribFlags();
-  const enabled = !!dir && flags !== null && anyFlag(flags);
+  // Stage B (§18.8): a Marketplace copy's panel, buttons and block strips
+  // answer with the Marketplace switch on too, Community flags or not; the
+  // server answers `{ok:false}` for any other copy then, and nothing shows.
+  const market = useMarketplaceFeature();
+  const enabled = !!dir && ((flags !== null && anyFlag(flags)) || market === true);
   const [data, setData] = useState<AppContrib | null>(null);
   const [settled, setSettled] = useState(false);
   const [pending, setPending] = useState(false);
@@ -684,11 +858,171 @@ export function useAppContrib(dir: string | null): AppContribState {
   const refresh = useCallback(() => (enabled ? read() : Promise.resolve()), [enabled, read]);
   // Not settled while the flags themselves are still being read: a
   // `?_tab=proposals` link must keep its tab through that window too.
+  const known = flags !== null || market === true;
   return {
     data: enabled ? data : null,
-    settled: flags !== null && settled,
+    settled: known && settled,
     // Every flag off is a real answer too: there is no inbox to offer.
-    answered: flags !== null && (!enabled || answered),
+    answered: known && (!enabled || answered),
     refresh,
   };
+}
+
+// ---- the ladder (§19.1/§19.2) -------------------------------------------------
+
+/** GET /api/contrib/ladder: where an app the user owns stands — rung 1 on
+ *  this Mac, 2 on GitHub, 3 in the Marketplace. `mine:false` (not an app, or
+ *  a copy of someone else's) skips the ladder; the other-side view reads
+ *  `/api/contrib/app` instead. Answers whatever the Community switches say:
+ *  the switches ride in `flags`. */
+export interface LadderAnswer {
+  ok: boolean;
+  reason?: string;
+  message?: string;
+  /** Null when `mine` is false (no ladder for someone else's app). */
+  rung: 1 | 2 | 3 | null;
+  kind: string | null;
+  mine: boolean;
+  /** Who owns the repo is still being asked: read again shortly. */
+  pending?: boolean;
+  remix_of?: string | null;
+  github: {
+    installed: boolean;
+    signed_in: boolean;
+    /** This machine has not asked GitHub who is signed in yet. */
+    checking?: boolean;
+    login: string | null;
+    repo: string | null;
+    /** Null while unknown (asked in the background). */
+    visibility: "public" | "private" | null;
+    unpushed: number;
+    link: string | null;
+    /** Rung 1: the sentence Put it on GitHub would refuse with (nested in a
+     *  bigger project, a remote already there), else null. */
+    blocked?: string | null;
+  };
+  /** The §18.7 listing answer, or null. */
+  listing: ListingAnswer | null;
+  /** `clear` null: Doctor could not say (not on GitHub yet, or it failed). */
+  doctor: { clear: boolean | null; failing: number | null };
+  flags: { sources: boolean; marketplace: boolean; github_link: boolean };
+}
+
+export function getLadder(dir: string, opts?: { fresh?: boolean }): Promise<LadderAnswer> {
+  return getJson<LadderAnswer>(
+    `/api/contrib/ladder?dir=${encodeURIComponent(dir)}${opts?.fresh ? "&fresh=1" : ""}`,
+  ).catch(() => ({ ok: false, reason: "failed" }) as LadderAnswer);
+}
+
+const LADDER_PENDING_MS = 5_000;
+const LADDER_PENDING_TRIES = 12;
+
+export interface LadderState {
+  /** The last answer for THIS folder (`ok:false` included), or null while
+   *  the first read is out. */
+  data: LadderAnswer | null;
+  /** Re-read now (fresh). Resolves when the answer is painted. */
+  refresh: () => Promise<void>;
+}
+
+/** The ladder for `dir`: read on mount, on window focus and whenever a caller
+ *  says `refresh()` (after every action that can move a rung). Never cached
+ *  across folders — a folder switch starts over (§19.1: read live). */
+export function useLadder(dir: string | null): LadderState {
+  const [data, setData] = useState<LadderAnswer | null>(null);
+  const genRef = useRef(0);
+  const dirRef = useRef(dir);
+  dirRef.current = dir;
+
+  const read = useCallback(async (fresh = false) => {
+    const target = dirRef.current;
+    if (!target) return;
+    const gen = ++genRef.current;
+    const next = await getLadder(target, { fresh });
+    if (genRef.current !== gen || dirRef.current !== target) return;
+    setData(next);
+  }, []);
+
+  useEffect(() => {
+    genRef.current += 1;
+    setData(null);
+    if (dir) void read();
+  }, [dir, read]);
+
+  useEffect(() => {
+    if (!dir) return;
+    const onFocus = () => void read();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [dir, read]);
+
+  // Ownership still being asked (`pending`): read again shortly, a bounded
+  // number of times — the answer moves on by itself on the server.
+  const pending = !!data?.pending;
+  const triesRef = useRef(0);
+  useEffect(() => {
+    triesRef.current = 0;
+  }, [dir]);
+  useEffect(() => {
+    if (!pending || triesRef.current >= LADDER_PENDING_TRIES) return;
+    const t = window.setTimeout(() => {
+      triesRef.current += 1;
+      void read();
+    }, LADDER_PENDING_MS);
+    return () => window.clearTimeout(t);
+  }, [pending, data, read]);
+
+  // A fresh read may start the listing's GitHub check (`listing.job`) and
+  // answer before it ends: wait for that job, then read once more — its
+  // outcome can move the rung (§19.2: the server never waits on GitHub).
+  const listingJob = data?.listing?.job ?? null;
+  useEffect(() => {
+    if (!listingJob) return;
+    const ctl = new AbortController();
+    pollJob(listingJob, { signal: ctl.signal })
+      .then(() => {
+        if (!ctl.signal.aborted) void read();
+      })
+      .catch(() => {
+        /* unmounted, or the job could not be read: the next focus re-reads */
+      });
+    return () => ctl.abort();
+  }, [listingJob, read]);
+
+  const refresh = useCallback(() => read(true), [read]);
+  return { data, refresh };
+}
+
+/** The ladder's listing as a page reads it: the bare `Listing`, the server's
+ *  status sentence, and the version rung 3 names ("Live · v1.2.0") when the
+ *  answer carries one (`approved.version`, else a top-level `version`).
+ *  Tolerates a bare `Listing` in place of the §18.7 answer. */
+export function ladderListing(answer: LadderAnswer["listing"] | undefined): {
+  listing: Listing | null;
+  sentence: string | null;
+  version: string | null;
+} {
+  if (!answer || typeof answer !== "object") return { listing: null, sentence: null, version: null };
+  const wrapped = "listing" in answer || "sentence" in answer || "state" in answer;
+  const listing = (wrapped ? answer.listing : (answer as unknown as Listing)) ?? null;
+  const str = (v: unknown) => (typeof v === "string" && v.trim() ? v : null);
+  const version =
+    str((listing?.approved as { version?: unknown } | null | undefined)?.version) ??
+    str((listing as { version?: unknown } | null)?.version) ??
+    str((answer as { version?: unknown }).version);
+  return { listing, sentence: wrapped ? str(answer.sentence) : null, version };
+}
+
+/** POST /api/contrib/publish-github (§19.2): rung 1 → 2 in one call — `git
+ *  init`, identity and a first commit when needed, then github_setup's
+ *  publish. Answers the publish record; poll `GET /api/github/publish`
+ *  (github-setup.ts) until it settles. NOT through `post()` above: a refusal
+ *  is a 409 whose `error` sentence ("lives inside a bigger project", "already
+ *  has a remote") is shown as-is, so it must throw with that message rather
+ *  than be swallowed into the generic one. */
+export function publishGithub(
+  dir: string,
+  body: { name: string; visibility: "public" | "private" },
+): Promise<SetupRecord> {
+  return postJson<SetupRecord>("/api/contrib/publish-github", { dir, ...body });
 }

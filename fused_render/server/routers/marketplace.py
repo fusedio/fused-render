@@ -1,16 +1,41 @@
 """/api/marketplace/* — the Marketplace's routes (backend: fused_render/
-marketplace.py, which documents the udf.ai API, cache, install semantics).
+marketplace.py, which documents the API, cache, install semantics; the
+reviewed marketplace is docs/CONTRIB_LOOP.md §18).
 
-Every endpoint is a sync def on purpose: the catalog build, search and
-installs block on HTTP, and FastAPI runs sync endpoints on its threadpool,
-keeping those waits off the event loop.
+Every endpoint is a sync def on purpose: the catalog build, search, clones
+and the engine's moves block on HTTP and git, and FastAPI runs sync
+endpoints on its threadpool, keeping those waits off the event loop.
 
 NOT gated on the `marketplace_enabled` pref (shell/prefs.py): like every other
 feature flag here, the pref gates the shell's entry points, not the API.
 
-The two mutating routes, POST /install and POST /ack, carry the same X-Fused
-guard as every other write route (`X-Fused: 1`, else 403 — the D3 CSRF guard; duplicated here
-like appfile.py's because a router must not import the app factory).
+The mutating routes (POST /install, /ack, /adopt, /check) carry the same
+X-Fused guard as every other write route (`X-Fused: 1`, else 403 — the D3
+CSRF guard; duplicated here like appfile.py's because a router must not
+import the app factory).
+
+Answers the frontend reads (shapes in marketplace.py):
+
+- POST /install `{slug, switch?}` →
+  `{status: "ok", job}` — the job started (or the one already running):
+  `{slug, action: "install"|"update"|"switch", state: "queued"|
+  "downloading"|"installing"|"done"|"error", step: "download"|"place"|
+  "done", progress, bytes_done, bytes_total, message, path, error}`;
+  `{status: "confirm", switch: "reviewed", slug, path, who, message}` — a
+  GitHub-link copy of the same repo exists: nothing ran; post again with
+  `switch: true` to switch it to reviewed releases (D13);
+  `{status: "error", message}` (400) — the request cannot start: bad or
+  unknown slug, a legacy copy ("Switch to the reviewed version first"), the
+  user's own repo, an unrecorded clone, a row with no reviewed source.
+  A job that fails later carries `state: "error"` and `error` = the plain
+  sentence (the engine's own words for an update or a switch).
+- POST /adopt `{slug}` → `{status: "ok", path, message}` (the legacy copy is
+  a marketplace copy now) | `{status: "error", message}`.
+- POST /check `{slug?}` → `{status: "ok", catalog: {ok, stale, fetched_at,
+  message}, blocklist: {ok, checked_at, count}, enforced: [..], sync:
+  <the sync's answer>|null, app: AppEntry|null}`.
+- GET /blocklist → `{blocked: [{slug, commit, level, reason, what_to_do,
+  at}], checked_at, fetched_at, generated_at, stale, status, message}`.
 """
 from __future__ import annotations
 
@@ -93,17 +118,21 @@ def api_marketplace_asset(slug: str, path: str, v: str | None = None):
 
 @router.post("/api/marketplace/install")
 def api_marketplace_install(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    """Start installing `slug` — or updating it, when a Marketplace copy is
-    already in `<workspace>/app/` — in the background. Answers the job
-    immediately (the running one, if any: idempotent). X-Fused-guarded."""
+    """Start installing `slug` — or updating its marketplace copy, or (with
+    `switch: true`) switching the user's GitHub-link copy of the same repo to
+    reviewed releases — in the background. Answers the job immediately (the
+    running one, if any: idempotent), or the `confirm` question (module
+    docstring). X-Fused-guarded."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
     try:
-        job = marketplace.start_install(str(body.get("slug") or ""))
+        got = marketplace.start_install(str(body.get("slug") or ""), switch=body.get("switch") is True)
     except marketplace.InstallError as exc:
         return _error(str(exc))
-    return {"status": "ok", "job": job}
+    if got.get("status") == "confirm":
+        return got
+    return {"status": "ok", "job": got}
 
 
 @router.get("/api/marketplace/jobs")
@@ -140,3 +169,40 @@ def api_marketplace_installed():
     """Every Marketplace install in the workspace (catalog-backed where the
     catalog still lists it)."""
     return marketplace.installed_list()
+
+
+@router.post("/api/marketplace/adopt")
+def api_marketplace_adopt(body: dict = Body(default=None), x_fused: str | None = Header(default=None)):
+    """"Switch to the reviewed version" for a copy installed by the old
+    Marketplace (`market.adopt_legacy` in place; edits and data stay).
+    X-Fused-guarded."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    slug = body.get("slug") if isinstance(body, dict) else None
+    try:
+        got = marketplace.adopt(str(slug or ""))
+    except marketplace.InstallError as exc:
+        return _error(str(exc))
+    except ImportError:
+        return _error("Switching to the reviewed version isn't available in this build.", status=503)
+    return {"status": "ok", "path": got["path"], "message": got["message"]}
+
+
+@router.get("/api/marketplace/blocklist")
+def api_marketplace_blocklist():
+    """The block list fused enforces (cached; the 10-minute TTL like the
+    catalog's, the last list when offline) and when it was last checked."""
+    return marketplace.blocklist()
+
+
+@router.post("/api/marketplace/check")
+def api_marketplace_check(body: dict = Body(default=None), x_fused: str | None = Header(default=None)):
+    """"Check for a new release": the catalog rebuilt now, the block list
+    refreshed and enforced, then (with `slug`) a sync of that marketplace
+    copy. X-Fused-guarded."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    slug = body.get("slug") if isinstance(body, dict) else None
+    return marketplace.check(slug if isinstance(slug, str) and slug else None)

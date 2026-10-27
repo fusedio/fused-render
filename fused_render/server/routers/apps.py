@@ -238,10 +238,20 @@ def _with_contrib(rows: list[dict]) -> list[dict]:
     (CONTRIB_LOOP §12.2), in place on rows this request owns — never the discovery
     snapshot's shared ones. One store read for the whole list and no git
     (contrib/refresh.decorate); rows are untouched while the sources phase
-    is off."""
+    is off — EXCEPT `contrib.block` (docs/CONTRIB_LOOP.md §18.4 B4: `{level,
+    reason, what_to_do, confirmed, …}` of a Marketplace copy's block), which
+    every row carries whatever the flags: enforcement is flag-independent
+    (§18.8), so the card must be able to ask before a soft-blocked app opens."""
+    from fused_render import marketplace
     from fused_render.contrib import refresh as contrib_refresh
 
-    return contrib_refresh.decorate(rows)
+    rows = contrib_refresh.decorate(rows)
+    notices = marketplace.block_notices([r.get("path") for r in rows])
+    for row in rows:
+        b = notices.get(row.get("path"))
+        if b:
+            row["contrib"] = {**(row.get("contrib") or {}), "block": b}
+    return rows
 
 
 # Home renders one row, not the complete app catalog. Its common path follows
@@ -627,7 +637,7 @@ def api_app_entry(path: str, opened: bool = False):
             contrib_refresh.note_app_opened(os.path.dirname(entry))
         except Exception:  # noqa: BLE001 — housekeeping must not fail the probe
             logger.warning("contrib open note failed for %s", path, exc_info=True)
-    return {
+    out = {
         "entry": entry,
         # The fused page API version the entry declares (`<meta
         # name="fused-api-version">`, 0 when undeclared — every app authored
@@ -641,6 +651,28 @@ def api_app_entry(path: str, opened: bool = False):
         # reads "in progress" instead of offering a second one. Null when none.
         "migration_task": _live_migration_task(entry) if entry else None,
     }
+    if entry:
+        # The open gate (docs/CONTRIB_LOOP.md §18.4 B4): a copy whose running
+        # version Fused hard-blocked does not open — every caller, not only
+        # `opened=1`, since the app page probes without it. 423 with the
+        # notice payload (`{"blocked": {...}}`, contrib.blocks.gate's) the
+        # shell's BlockedNotice draws. Asked AFTER the open notes above: the
+        # enforcement they kick may already have rolled the copy back.
+        from fused_render import marketplace
+
+        app_dir = os.path.dirname(entry)
+        blocked = marketplace.open_gate(app_dir)
+        if blocked:
+            return JSONResponse(blocked, status_code=423)
+        # A soft block (or a hard one already rolled back) rides the answer
+        # whatever the Community flags say — the app page asks before it
+        # opens off this, since it reads /api/contrib/app only with the flags
+        # on (§18.8: enforcement is flag-independent). Same shape as the
+        # /api/apps rows' `contrib.block`.
+        block = marketplace.block_notice(app_dir)
+        if block:
+            out["contrib"] = {"block": block}
+    return out
 
 
 def _live_app_task(entry_html: str, is_ours) -> dict | None:

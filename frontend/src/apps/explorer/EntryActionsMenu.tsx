@@ -50,12 +50,11 @@
 //     Preview.tsx because Open With → MCP has to reach it too.
 import { canonFsPath } from "@platform/lib/path-url";
 import { useEffect, useState, type ReactNode } from "react";
-import { GitPullRequestArrow, Plug, Stethoscope } from "lucide-react";
+import { Plug, Stethoscope, Users } from "lucide-react";
 import { addCurrentApp, getAppEntry } from "@platform/lib/api";
 import { exportAppFileOnly, openShareApp } from "@platform/lib/share-app";
 import { useAppShareOffered } from "@platform/lib/share-app-flag";
 import { AppDoctorModal } from "@platform/ui/AppDoctorModal";
-import { useContribFlags } from "@platform/lib/contrib-flags";
 import { ContribModal } from "@shell/contrib/ContribModal";
 import { AppDoctorStatusDot } from "@platform/ui/AppDoctorStatusDot";
 import { useAppDoctorChecks } from "@platform/ui/useAppDoctorChecks";
@@ -162,13 +161,13 @@ export function useAppActionRows({
   const [isEntryProbed, setIsEntry] = useState(false);
   const isEntry = isEntryKnown ?? isEntryProbed;
   const [doctorOpen, setDoctorOpen] = useState(false);
-  // The contribution loop's dialog (shell/contrib/ContribModal): where this
-  // copy comes from, its changes and proposals, every button — so a person
-  // working in the explorer never has to leave for the app page. Offered
-  // only while the Community preview is on, like the panel itself.
+  // The Community sheet (shell/contrib/ContribModal, CONTRIB_LOOP.md §19.5):
+  // the app page's Community tab as a dialog — where this app stands, its
+  // changes and proposals, every button — so a person working in the
+  // explorer never has to leave for the app page. Offered on every app,
+  // whatever the Community switches say (§19.2): the sheet reads the ladder,
+  // which answers for any app of the user's own.
   const [contribOpen, setContribOpen] = useState(false);
-  const contribFlags = useContribFlags();
-  const contribOn = !!contribFlags && Object.values(contribFlags).some(Boolean);
   useEffect(() => {
     let alive = true;
     setIsEntry(false);
@@ -316,13 +315,13 @@ export function useAppActionRows({
   // Handed back on its own so callers close the app group with it — after
   // Set Current View as Preview where the file menu has one.
   const doctor: MenuEntry[] = [];
-  if (isEntry && contribOn) {
+  if (isEntry) {
     doctor.push({
-      label: "GitHub",
-      icon: <GitPullRequestArrow {...LUCIDE} />,
+      label: "Community",
+      icon: <Users {...LUCIDE} />,
       title:
-        "Where " + name + " comes from, your changes and proposals: bring in the latest, " +
-        "propose to the author, review what others sent",
+        "Where " + name + " stands: put it on GitHub, list it in the Community, " +
+        "bring in the latest, propose changes, review what others sent",
       onClick: () => setContribOpen(true),
     });
   }

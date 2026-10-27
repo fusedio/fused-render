@@ -51,7 +51,10 @@ def _raw() -> dict:
 
 def _switches(stored: dict) -> dict:
     return {"enabled": stored.get("contrib_enabled") is True,
-            "remix": stored.get("contrib_remix_enabled") is True}
+            "remix": stored.get("contrib_remix_enabled") is True,
+            # The Marketplace switch (`prefs.marketplace_enabled`), read in
+            # the same memo for `marketplace_ui` (§18.8).
+            "marketplace": stored.get("marketplace_enabled") is True}
 
 
 def effective(raw: dict) -> dict:
@@ -71,11 +74,23 @@ def snapshot() -> dict:
 def raw() -> dict:
     """The stored switches as set (what Preferences shows):
     `{"enabled": bool, "remix": bool}`, no prerequisite applied."""
-    return _raw()
+    got = _raw()
+    return {"enabled": got.get("enabled") is True, "remix": got.get("remix") is True}
 
 
 def sources() -> bool:
     return snapshot()["sources"]
+
+
+def marketplace_ui() -> bool:
+    """Whether a MARKETPLACE copy's UI is shown (docs/CONTRIB_LOOP.md §18.8,
+    owner 2026-10-26): its Source panel, its buttons (Check for a new
+    release, Bring in, Undo, the switches, the block fixes) and its card
+    label — with the Marketplace switch OR the contribution loop on. The
+    proposal and remix buttons on it still need their own phases, and a
+    GitHub-link copy's UI is the loop's alone (`sources`). One rule, every
+    site."""
+    return _raw().get("marketplace") is True or sources()
 
 
 def changes() -> bool:

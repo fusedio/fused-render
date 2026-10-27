@@ -25,6 +25,11 @@
 //   unknown    Overwrite → Confirm                         warn
 //   same       Open; ⋯ Reinstall → Confirm                 ok
 //   clash      Install, disabled                           warn
+//   switch-link  Follow (caution) · Keep reviewed releases  warn
+//              (stage B, CONTRIB_LOOP.md §18.4: a GitHub link opened for
+//              an app installed from the Marketplace. Following the author
+//              directly is the user's explicit switch — Follow posts the
+//              install with `switch: true`; Keep leaves the copy alone.)
 //
 // A WARN state (`needs_force`) takes two clicks: the first arms the pill
 // ("Confirm overwrite", filled caution), the second sends `force`. A copy
@@ -494,6 +499,21 @@ function describeGit(t: AppFileProbe, git: GitLink): StateView {
         status: "Name taken",
         statusCaption: "Another app",
       };
+    case "switch-link":
+      return {
+        callout: true,
+        tone: "warn",
+        title: git.switch || `Follow ${who} directly? You'll get every change, unreviewed.`,
+        body: (
+          <>
+            You installed this app from the Community, so {at} gets only releases Fused reviewed. Following {who}{" "}
+            directly brings every change {who} makes, as soon as it is made. You can switch back from the app&rsquo;s
+            Activity.
+          </>
+        ),
+        status: "Installed",
+        statusCaption: "Reviewed releases",
+      };
   }
   return { callout: true, tone: "warn", title: "Unknown state", body: String(t.state), status: "—", statusCaption: "" };
 }
@@ -512,6 +532,8 @@ function primaryLabel(t: AppFileProbe): string {
   switch (t.state) {
     case "replace":
       return "Replace";
+    case "switch-link":
+      return "Follow";
     case "update":
       // An installed GitHub-link copy brings the author's latest in.
       return t.git && "changes" in t.git ? "Get the latest" : "Update";
@@ -612,10 +634,10 @@ export function FusedFilePage({ path }: { path: string }) {
   const view = describe(t);
   const installedEntry = t.installed ? t.entry_path : null;
 
-  const install = async (force: boolean) => {
+  const install = async (force: boolean, switchTo = false) => {
     setPhase({ kind: "installing", force });
     try {
-      const r = await installAppFile(path, force);
+      const r = await installAppFile(path, force, { switch: switchTo });
       if ("needsConfirm" in r) {
         // The copy changed between the probe and the click: show the state it
         // is really in and let the reader decide again.
@@ -625,10 +647,16 @@ export function FusedFilePage({ path }: { path: string }) {
         return;
       }
       const res = r.ok;
-      const updated = res.action === "updated";
+      const updated = res.action === "updated" || res.action === "switched";
       setPhase({ kind: "done", entry: res.entry, updated });
       announceCurrentAppsChanged();
-      notify({ title: `${name} ${updated ? "updated" : "installed"}`, tone: "info" });
+      notify({
+        title:
+          res.action === "switched"
+            ? res.message || `${name} follows its author directly now`
+            : `${name} ${updated ? "updated" : "installed"}`,
+        tone: "info",
+      });
       // A beat for the pill's check, then the app — the template's go().
       setTimeout(() => openEntry(res.entry), 700);
     } catch (e) {
@@ -682,6 +710,21 @@ export function FusedFilePage({ path }: { path: string }) {
   } else if (t.state === "clash") {
     pill = { state: "disabled", label: "Install", title: "Another app is installed under this name" };
     note = <span className="is-warn">Name taken by another app</span>;
+  } else if (t.state === "switch-link") {
+    pill = { state: "caution", label, wide: true, onClick: () => install(true, true) };
+    note = (
+      <>
+        <span className="is-warn">Installed from the Community</span>
+        {" · "}
+        <button
+          type="button"
+          className="as-link-btn"
+          onClick={() => (installedEntry ? openEntry(installedEntry) : history.back())}
+        >
+          Keep reviewed releases
+        </button>
+      </>
+    );
   } else if (t.state === "local") {
     pill = installedEntry
       ? { state: "open", onClick: () => openEntry(installedEntry) }

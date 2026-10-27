@@ -3,7 +3,11 @@
 //
 //   /marketplace                 Discover  (?category=<id>, ?q=<text>)
 //   /marketplace/installed       Installed / Updates
-//   /marketplace/app/<slug>      App detail
+//   /marketplace/app/<slug>      App detail (`?via=link`: reached from a
+//                                listing link, fused-render://open?
+//                                marketplace=<slug> — shown bare, with no
+//                                store chrome, while the store is off;
+//                                CONTRIB_LOOP.md §18.5)
 //   /marketplace/file?path=<p>   A `.fused` app file's install page
 //                                (FusedFilePage) — also rendered in place
 //                                for `/explorer/view|embed/<p>.fused` by
@@ -16,7 +20,7 @@
 import { useEffect, useRef, useState } from "react";
 import { IS_EMBED, navigateUrl, pushHistory, replaceSearch } from "@platform/lib/router";
 import { useNavEpoch } from "@platform/lib/hooks";
-import { MARKETPLACE_HOME, useCatalog } from "@platform/lib/marketplace";
+import { MARKETPLACE_HOME, releaseWaiting, useCatalog } from "@platform/lib/marketplace";
 import { useMarketplaceFeature } from "@platform/lib/marketplace-flag";
 import { StoreHeader, type StoreTab } from "./StoreHeader";
 import { CatalogFooter, Discover } from "./Discover";
@@ -32,6 +36,12 @@ type Route =
   | { kind: "app"; slug: string }
   | { kind: "file"; path: string }
   | { kind: "unknown" };
+
+/** A listing link's landing (§18.5): the deep link opens the app's page with
+ *  this marker, and the page is shown bare when the store is off. */
+export function isListingLink(search: string): boolean {
+  return new URLSearchParams(search).get("via") === "link";
+}
 
 /** The `.fused` install page's own address. */
 export const MARKETPLACE_FILE = MARKETPLACE_HOME + "/file";
@@ -68,6 +78,9 @@ function searchFor(category: string, q: string): string {
   const sp = new URLSearchParams();
   if (category && category !== "all") sp.set("category", category);
   if (q.trim()) sp.set("q", q.trim());
+  // Discover's sort (?sort=) is its own control's to change: kept here.
+  const sort = new URLSearchParams(location.search).get("sort");
+  if (sort) sp.set("sort", sort);
   const s = sp.toString();
   return MARKETPLACE_HOME + (s ? "?" + s : "");
 }
@@ -86,7 +99,11 @@ export function MarketplacePage({ fusedFile }: { fusedFile?: string } = {}) {
   // tabs would land on the "Marketplace is off" notice, and no catalog read
   // — the store's API is not asked for on a file open the flag never offered.
   const storeOn = useMarketplaceFeature();
-  const bare = route.kind === "file" && (IS_EMBED || storeOn !== true);
+  // A listing link (`?via=link`) lands on the app's page whatever the flag
+  // says — the `.fused` rule extended to listings — and, with the store
+  // off, bare: no header whose tabs lead to the "Marketplace is off" notice.
+  const viaLink = route.kind === "app" && isListingLink(location.search);
+  const bare = (route.kind === "file" && (IS_EMBED || storeOn !== true)) || (viaLink && storeOn !== true);
   const snap = useCatalog(!bare);
   const initial = route.kind === "discover" ? readParams() : { category: "all", q: "" };
   const [category, setCategory] = useState(initial.category);
@@ -139,7 +156,7 @@ export function MarketplacePage({ fusedFile }: { fusedFile?: string } = {}) {
   }, [route.kind]);
 
   const apps = snap.catalog?.apps ?? [];
-  const updates = apps.filter((a) => a.installed && a.update_available && a.compatible).length;
+  const updates = apps.filter((a) => releaseWaiting(a) && a.compatible).length;
   const installedCount = apps.filter((a) => a.installed).length;
 
   const onQ = (next: string) => {
@@ -164,17 +181,17 @@ export function MarketplacePage({ fusedFile }: { fusedFile?: string } = {}) {
   } else if (route.kind === "installed") {
     body = <InstalledPage snap={snap} />;
   } else if (route.kind === "app") {
-    body = <AppDetailPage slug={route.slug} snap={snap} />;
+    body = <AppDetailPage slug={route.slug} snap={snap} bare={bare} />;
   } else if (route.kind === "file") {
     body = <FusedFilePage key={route.path} path={route.path} />;
   } else {
     body = (
       <EmptyState
         title="Page not found"
-        body="This Marketplace address doesn't lead anywhere."
+        body="This Community address doesn't lead anywhere."
         action={
           <button type="button" className="mp-btn" onClick={() => navigateUrl(MARKETPLACE_HOME)}>
-            Go to the Marketplace
+            Go to the Community
           </button>
         }
       />
@@ -197,7 +214,9 @@ export function MarketplacePage({ fusedFile }: { fusedFile?: string } = {}) {
       )}
       <main className="mp-inner">
         {body}
-        {route.kind !== "unknown" && route.kind !== "file" && <CatalogFooter catalog={snap.catalog} loading={snap.loading} />}
+        {route.kind !== "unknown" && route.kind !== "file" && !bare && (
+          <CatalogFooter catalog={snap.catalog} loading={snap.loading} />
+        )}
       </main>
       <InstallSheetHost />
     </div>

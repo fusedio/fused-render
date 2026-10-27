@@ -47,6 +47,7 @@ from fastapi import APIRouter, Body, File, Form, Header, UploadFile
 from fastapi.responses import JSONResponse
 
 from fused_render import app_id as app_identity
+from fused_render import backend_canvas
 from fused_render import app_listing, appfile
 from fused_render.fusedcli import (child_env, cli_error, fused_cli, set_fused_env,
                                    workbench_env)
@@ -543,7 +544,8 @@ def api_share_remove(body: dict = Body(...), x_fused: str | None = Header(defaul
 # `?repo=<owner>/<name>`. Nothing is uploaded — the link points at what is
 # already pushed, so it is only offered when the folder IS the repo and every
 # change in it is on the remote.
-GITHUB_LINK_BASE = "https://udf.ai/fc_1XxeHZKmYjTdzf14pLsSnY/fused_app_github.html"
+# The page is the backend canvas's `fused_app_github` (backend_canvas.py —
+# one canvas for everything; it used to be a canvas of its own on prod).
 
 _GITHUB_REMOTE = re.compile(
     r"^(?:git@github\.com:|(?:https?|ssh)://(?:[^@/]+@)?(?:www\.)?github\.com/)"
@@ -591,7 +593,7 @@ def _github_copy_repo(path: str, *, nested: bool = True) -> str | None:
         here = store.key(path)
         while True:
             record = records.get(here)
-            if (isinstance(record, dict) and record.get("kind") == "github"
+            if (isinstance(record, dict) and record.get("kind") in ("github", "marketplace")
                     and record.get("repo") and os.path.isdir(here)):
                 return record["repo"]
             parent = os.path.dirname(here)
@@ -628,7 +630,7 @@ def _contributor_link(path: str, copy_status: dict | None = None) -> dict | None
     except Exception:  # noqa: BLE001 — the count is a hint, the link stands
         logger.warning("contrib: change count failed for %s", path, exc_info=True)
         changes = 0
-    return {"ok": True, "url": f"{GITHUB_LINK_BASE}?repo={repo}", "repo": repo,
+    return {"ok": True, "url": backend_canvas.github_link_url(repo), "repo": repo,
             "reason": None, "code": "contributor", "changes": changes}
 
 
@@ -697,7 +699,7 @@ def github_link_state(path: str, *, copy_status: dict | None = None) -> dict:
         ahead = 1
     if ahead > 0:
         return no("unpushed", f"This app has commits not pushed to {default} yet.", repo)
-    return {"ok": True, "url": f"{GITHUB_LINK_BASE}?repo={repo}", "repo": repo,
+    return {"ok": True, "url": backend_canvas.github_link_url(repo), "repo": repo,
             "reason": None, "code": None}
 
 

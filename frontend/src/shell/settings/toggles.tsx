@@ -10,7 +10,6 @@ import {
   putCanvasesEmbedProxy,
   putCanvasesEnabled,
   putGitAutoSyncEnabled,
-  putGithubLinkEnabled,
   putLivePreviewsEnabled,
   putMarketplaceEnabled,
   putMonitorEnabled,
@@ -31,7 +30,6 @@ import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
 import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
 import { publishMarketplaceEnabled } from "@platform/lib/marketplace-flag";
-import { publishGithubLinkEnabled } from "@platform/lib/github-link-flag";
 import {
   publishDefaultPermission,
   publishProjectQueueEnabled,
@@ -160,8 +158,11 @@ export function GitSyncControl({ prefs, onChange }: PrefControlProps) {
   );
 }
 
-// The Share sheet (public link + .fused file) in place of the plain Export on
-// every app surface — and on the file preview's share action too.
+// Public link (owner 2026-10-27): the Share sheet's Fused-account link card.
+// One of the three switches that decide what Share offers (Public link,
+// Community apps, Remix); the Share button is there when any is on
+// (share-app-flag.ts `useAppShareOffered`), the .fused file always. The GitHub
+// install link rides on Community apps now — its own row is gone.
 export function ShareSheetControl({ prefs, onChange }: PrefControlProps) {
   return (
     <PrefToggleRow
@@ -169,26 +170,6 @@ export function ShareSheetControl({ prefs, onChange }: PrefControlProps) {
       checked={prefs.app_sharing.enabled}
       put={putAppSharingEnabled}
       after={(next) => publishAppSharingEnabled(next.app_sharing.enabled)}
-      onChange={onChange}
-    />
-  );
-}
-
-// The Share sheet's GitHub install-link card. Only the sheet ever shows it, so
-// it is a child of the row above and cannot be turned ON while that is off —
-// but a link already on can always be turned off.
-export function GithubLinkControl({ prefs, onChange }: PrefControlProps) {
-  const sheet = prefs.app_sharing.enabled;
-  const on = prefs.github_link?.enabled === true;
-  return (
-    <PrefToggleRow
-      id="github-link"
-      checked={on}
-      put={putGithubLinkEnabled}
-      after={(next) => publishGithubLinkEnabled(next.github_link?.enabled === true)}
-      disabled={!sheet && !on}
-      off={!sheet}
-      status={sheet ? undefined : "Needs the Share sheet."}
       onChange={onChange}
     />
   );

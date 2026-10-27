@@ -25,7 +25,6 @@ import {
 import {
   CanvasesControl,
   CanvasesEmbedProxyControl,
-  GithubLinkControl,
   GitSyncControl,
   LivePreviewsControl,
   MarketplaceControl,
@@ -84,7 +83,6 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "notify-terminal": NotifyTerminalControl,
   "git-sync": GitSyncControl,
   "share-sheet": ShareSheetControl,
-  "github-link": GithubLinkControl,
   "live-previews": LivePreviewsControl,
   contrib: ContribControl,
   "contrib-remix": ContribRemixControl,

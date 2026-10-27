@@ -589,12 +589,16 @@ def _guard(root):
     guarded = contrib_guard.guarded_who(root, _guard_run)
     if guarded is None:
         return {"push_blocked": None, "home_branch": None, "follows": None,
-                "bring_in_label": None}
-    who = guarded[0]
+                "bring_in_label": None, "guard": None}
+    who, _unknown, kind = guarded
+    # `guard.kind` (§18.4): on a marketplace copy the view's Get latest is
+    # ALWAYS the engine's get-latest — a plain pull would fetch the author's
+    # unreviewed tip.
     return {"push_blocked": contrib_guard.push_blocked(root, _guard_run),
             "home_branch": contrib_guard.HOME_BRANCH,
             "follows": contrib_guard.owner_of(who),
-            "bring_in_label": contrib_guard.bring_in_label(who)}
+            "bring_in_label": contrib_guard.bring_in_label(who, kind),
+            "guard": {"kind": kind}}
 
 
 def _status(root, rel, is_dir):

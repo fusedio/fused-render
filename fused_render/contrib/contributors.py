@@ -54,7 +54,7 @@ def _tip(root: str, record: dict | None) -> str | None:
         return gu._out(r) if gu._ok(r) else None
 
     kind = (record or {}).get("kind")
-    if kind == "github":
+    if kind in ("github", "marketplace"):
         try:
             from fused_render.contrib import follow as follow_mod
             f = follow_mod.for_record(record)

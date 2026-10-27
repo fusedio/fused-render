@@ -97,6 +97,14 @@ export const STEPS_FOR: Record<string, Step[]> = {
   match: [{ key: "run", label: "Switching to the author's version…" }],
   "keep-working": [{ key: "run", label: "Setting the proposal aside…" }],
   remix: [{ key: "run", label: "Publishing your remix…" }],
+  // stage B (§18.4/§18.6)
+  "switch-link": [{ key: "run", label: "Switching to follow the author directly…" }],
+  "switch-reviewed": [{ key: "run", label: "Switching to reviewed releases…" }],
+  "publish-market": [{ key: "run", label: "Sending your app for review…" }],
+  "publish-update": [{ key: "run", label: "Sending the update for review…" }],
+  "remove-market": [{ key: "run", label: "Asking to remove it from the Community…" }],
+  "confirm-powers": [{ key: "run", label: "Confirming…" }],
+  "check-listing": [{ key: "run", label: "Checking the review…" }],
 };
 
 /** Why the panel's "Checked …" line reads as it does: when checks happen,

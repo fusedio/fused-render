@@ -17,8 +17,14 @@ TLS/proxy pinned, the FakeGitHub's bare repo in tests), and only after
 `github_redirected` found no repo-local rule re-pointing or re-credentialing
 a GitHub transfer (fail closed).
 
-Only `github` copies: an `own` copy's `origin` is its author's to change,
-and git_upstream fetches it as it always has (§16.7).
+Only `github` and `marketplace` copies: an `own` copy's `origin` is its
+author's to change, and git_upstream fetches it as it always has (§16.7).
+
+PINNED (§18.4). A marketplace copy follows the same branch, by the same URL,
+but its mirror holds the APPROVED commit of its index row — the author's tip
+is fetched into `origin/<b>` for its objects and for one question only: is
+the approved commit on the author's branch (a commit only a fork has is
+never run, even though GitHub serves it by sha).
 """
 from __future__ import annotations
 
@@ -41,14 +47,31 @@ REDIRECTED_MESSAGE = ("This app's settings point GitHub somewhere else, "
 
 @dataclass(frozen=True)
 class Follow:
-    kind: str          # "branch" (stage A); stage B adds "pinned"
+    kind: str          # "branch" (a GitHub-link copy) | "pinned" (a marketplace copy, §18.4)
     url: str           # https://github.com/O/R — from the RECORD
     branch: str        # e.g. "main"
+    # "pinned" only: the approved commit of the copy's index row
+    # (`record.approved.commit`) — what the mirror holds (M1).
+    commit: str | None = None
 
     @property
     def ref(self) -> str:
-        """Where the tip lives: git's own tracking ref (P3)."""
+        """Where the tip lives: git's own tracking ref (P3). For a pinned
+        follow it is the author's tip, fetched for objects and the
+        ancestor check only — never what the copy runs."""
         return f"refs/remotes/origin/{self.branch}"
+
+    @property
+    def pinned(self) -> bool:
+        return self.kind == "pinned"
+
+
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+
+#: `update_mirror`'s refusal for a pinned follow whose approved commit is
+#: not on the author's branch (any more): fused never moves the mirror
+#: there (a commit only a fork has, or one the author rewound away).
+NOT_ON_BRANCH = "not-on-branch"
 
 
 def github_url(repo: str) -> str:
@@ -62,13 +85,21 @@ def _valid(repo, branch) -> bool:
 
 
 def for_record(record) -> Follow | None:
-    """A `github` record → the author's branch, by URL; anything else
-    (own, scratch, no repo, a malformed name) → None."""
-    if not isinstance(record, dict) or record.get("kind") != "github":
+    """A `github` record → the author's branch, by URL; a `marketplace`
+    record → the same branch PINNED at its approved commit (§18.4), None
+    while it has no readable approved commit (M3: nothing to follow, no
+    move); anything else (own, scratch, no repo, a malformed name) → None."""
+    if not isinstance(record, dict) or record.get("kind") not in ("github", "marketplace"):
         return None
     repo, branch = record.get("repo"), record.get("branch")
     if not _valid(repo, branch):
         return None
+    if record.get("kind") == "marketplace":
+        approved = record.get("approved") if isinstance(record.get("approved"), dict) else {}
+        commit = approved.get("commit")
+        if not isinstance(commit, str) or not _SHA_RE.match(commit):
+            return None
+        return Follow("pinned", github_url(repo), branch, commit=commit)
     return Follow("branch", github_url(repo), branch)
 
 
@@ -116,7 +147,20 @@ def fetch(root, fol: Follow) -> tuple[str | None, str | None]:
     gh = _gh_module()
     refspec = f"+refs/heads/{fol.branch}:{fol.ref}"
     detail = getattr(gh, "fetch_detail", None) if gh else None
-    if callable(detail):
+    if fol.pinned:
+        # §18.4: the author's branch (objects + the ancestor check) AND the
+        # approved commit by sha — GitHub serves any reachable sha; when the
+        # combined form is refused, the branch alone, then the bare sha.
+        if not callable(detail):
+            return None, "offline"
+        ok, reason = detail(root, fol.url, refspec, fol.commit)
+        if not ok:
+            ok, reason = detail(root, fol.url, refspec)
+            if ok and not replay.rev(root, fol.commit):
+                detail(root, fol.url, fol.commit)
+        if not ok:
+            return None, _REASONS.get(reason, "failed")
+    elif callable(detail):
         ok, reason = detail(root, fol.url, refspec)
         if not ok:
             return None, _REASONS.get(reason, "failed")
@@ -145,7 +189,7 @@ def tip(root, fol: Follow) -> str | None:
 tip_or_origin = tip
 
 
-def update_mirror(root, fol: Follow) -> dict:
+def update_mirror(root, fol: Follow, *, why: str = "rewound") -> dict:
     """The second half of §17.3's fetch row (I3): `refs/heads/<b>` follows
     `refs/remotes/origin/<b>` as a REF update — never a worktree move —
     with git's compare-and-set (`update-ref <ref> <new> <old>`). A non-fast-
@@ -160,17 +204,36 @@ def update_mirror(root, fol: Follow) -> dict:
     never offered as Undo: restoring it would put the author's old version
     over Bob's own). The caller holds the slot. Answers `{"moved",
     "backup", "ff", "old"}` — `ff` False for a pinned non-fast-forward, `old`
-    the ref's tip before."""
-    res = {"moved": False, "backup": None, "ff": True, "old": None}
-    new = tip(root, fol)
+    the ref's tip before.
+
+    PINNED (§18.4, a marketplace copy): `new` is the approved commit
+    (`fol.commit`), never origin's tip, and only when it is in the
+    author's branch's history (`merge-base --is-ancestor <commit>
+    origin/<b>`) — else nothing moves and `reason` is `NOT_ON_BRANCH`
+    (`missing` when the commit was never fetched). `why` names the pin of a
+    non-fast-forward move: `rewound` (the row went back: the one Activity
+    line, no Undo), or a caller's own (`rollback`, `switch` — the caller
+    writes its line)."""
+    res = {"moved": False, "backup": None, "ff": True, "old": None, "reason": None}
     ref = f"refs/heads/{fol.branch}"
     old = replay.rev(root, ref)
     res["old"] = old
+    if fol.pinned:
+        new = replay.rev(root, fol.commit)
+        if not new:
+            res["reason"] = "missing"
+            return res
+        author = tip(root, fol)
+        if not author or not replay.is_ancestor(root, new, author):
+            res["reason"] = NOT_ON_BRANCH
+            return res
+    else:
+        new = tip(root, fol)
     if not new or old == new or gu._current_branch(root) == fol.branch:
         return res
     if old and not replay.is_ancestor(root, old, new):
         res["ff"] = False
-        pin = replay._new_backup_ref(root, "rewound")
+        pin = replay._new_backup_ref(root, why)
         if not replay.ok(replay.git(root, "update-ref", pin, old)):
             return res
         res["backup"] = pin
@@ -178,22 +241,25 @@ def update_mirror(root, fol: Follow) -> dict:
     res["moved"] = replay.ok(r)
     if not res["moved"]:
         logger.info("contrib: mirror of %s in %s not moved: %s", ref, root, gu._text(r))
-    elif res["backup"]:
-        _rewound_line(root, res["backup"])
+    elif res["backup"] and why == "rewound":
+        _rewound_line(root, res["backup"], pinned=fol.pinned)
     return res
 
 
-def _rewound_line(root, pin) -> None:
-    """The author rewound their branch: one Activity line naming the pin."""
+def _rewound_line(root, pin, *, pinned=False) -> None:
+    """The author rewound their branch (or, pinned, the index row went back
+    to an earlier release): one Activity line naming the pin."""
     try:
         from fused_render.contrib import store
 
         rec = store.get(root) or {}
         repo = rec.get("repo") if isinstance(rec.get("repo"), str) else ""
         who = repo.split("/", 1)[0] if "/" in repo else "the author"
-        store.add_activity(root, "rewound", f"{who} went back to an earlier version of their "
-                                            "app. Your copy and your changes are untouched.",
-                           ref=pin)
+        text = (f"{who}'s reviewed version went back to an earlier release. Your copy and "
+                "your changes are untouched." if pinned else
+                f"{who} went back to an earlier version of their app. Your copy and your "
+                "changes are untouched.")
+        store.add_activity(root, "rewound", text, ref=pin)
     except Exception:  # noqa: BLE001 — the pin itself keeps the old version
         logger.exception("contrib: rewound line failed for %s", root)
 

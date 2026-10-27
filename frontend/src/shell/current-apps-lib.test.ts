@@ -165,6 +165,13 @@ describe("app page codec", () => {
     expect(APP_PAGE_TABS).not.toContain("git");
     expect(appPageTabFromSearch("?_tab=git")).toBe("overview");
   });
+
+  it("Community replaced Proposals: ?_tab=proposals names the community tab", () => {
+    expect(APP_PAGE_TABS).toContain("community");
+    expect(APP_PAGE_TABS).not.toContain("proposals");
+    expect(appPageTabFromSearch("?_tab=community")).toBe("community");
+    expect(appPageTabFromSearch("?_tab=proposals")).toBe("community");
+  });
 });
 
 // bugbot, PR #969: Current Apps read a project as live off `status ===

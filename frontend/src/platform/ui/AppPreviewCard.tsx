@@ -35,23 +35,27 @@
 import { useEffect, useRef, useState } from "react";
 import type { AppCardContrib, AppInfo } from "@platform/lib/api";
 import { useContribFlags } from "@platform/lib/contrib-flags";
+import { useMarketplaceFeature } from "@platform/lib/marketplace-flag";
 import { appIconUrl, appfilePreviewUrl, rawUrl } from "@platform/lib/api";
 import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { exportAppFileOnly, openShareApp } from "@platform/lib/share-app";
 import { useAppShareOffered } from "@platform/lib/share-app-flag";
 import { useLivePreviewsFeature } from "@platform/lib/live-previews-flag";
 import { AppStar } from "@platform/ui/AppStar";
+import { VerifiedMark } from "@platform/ui/appstore";
 import { ThumbPlaceholder } from "@platform/ui/ThumbPlaceholder";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { thumbFrame } from "@platform/lib/thumb-frame";
-import { embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
+import { embedUrlForFsPath, encodeFsPathSegments, navigateUrl } from "@platform/lib/router";
 import {
   appRecency,
   hrefFor,
   isBrowserHandledClick,
   onAppCardClick,
+  openApp,
   openTargetFor,
 } from "@platform/lib/appEntry";
+import { SoftBlockConfirm } from "@platform/ui/SoftBlockConfirm";
 import { useNearViewport, usePreviewStart } from "@platform/lib/preview-start";
 
 import { timeAgo } from "@platform/lib/format";
@@ -74,6 +78,8 @@ function entryRenderUrl(entryHtml: string): string {
 // narrow and already carries the folder path, so a GitHub-link copy drops the
 // sentence's leading "GitHub link · " and reads "follows alice/x"; the whole
 // sentence stays in the tooltip.
+// A Marketplace copy (stage B) reads the server's label as is: "Marketplace ·
+// reviewed" / "Marketplace · no longer listed".
 function cardSource(c: AppCardContrib | undefined): { text: string; title: string } | null {
   if (!c?.label) return null;
   if (c.kind ? c.kind === "own" : c.label === "Your app") return null;
@@ -205,8 +211,40 @@ export function AppPreviewCard({
   // the label earns its slot only when the app follows, or remixes, somebody
   // else's (the app page states "Your app" for the one that asks).
   const contribFlags = useContribFlags();
-  const source = contribFlags?.sources ? cardSource(app.contrib) : null;
+  // A Marketplace copy's label shows with the Marketplace switch too (§18.8).
+  const marketplaceOn = useMarketplaceFeature();
+  const source =
+    contribFlags?.sources || (marketplaceOn === true && app.contrib?.kind === "marketplace")
+      ? cardSource(app.contrib)
+      : null;
   const inbox = contribFlags?.inbox ? (app.contrib?.inbox ?? 0) : 0;
+  // Stage B's block list (CONTRIB_LOOP.md §18.4): shown whatever the flags
+  // say — the block is enforced whatever they say. A HARD block opens the
+  // app page (its notice says what happened; the app itself will not open);
+  // a SOFT one not yet confirmed asks first (SoftBlockConfirm), then opens.
+  const block = app.contrib?.block ?? null;
+  // Only a Marketplace copy is stopped or asks: a GitHub-link copy that runs
+  // a blocked version gets a warning and nothing else (§18.4 — its owner
+  // chose to trust the author directly).
+  const enforced = !!block && app.contrib?.kind === "marketplace";
+  const softWaiting = enforced && block!.level === "soft" && !block!.confirmed;
+  const [asking, setAsking] = useState(false);
+  const openPlain = () => (href ? navigateUrl(href, { isDir: false }) : openApp(app));
+  /** True when the block took the click. */
+  const blockGate = (e: React.MouseEvent): boolean => {
+    if (!block || !enforced || e.defaultPrevented || isBrowserHandledClick(e)) return false;
+    if (block.level === "hard") {
+      e.preventDefault();
+      navigateUrl("/apps/" + encodeFsPathSegments(app.path));
+      return true;
+    }
+    if (softWaiting) {
+      e.preventDefault();
+      setAsking(true);
+      return true;
+    }
+    return false;
+  };
   const { started: liveStarted, settled: liveSettled } = usePreviewStart(
     wantsLive,
     hoverPriority || onScreen,
@@ -224,10 +262,12 @@ export function AppPreviewCard({
   // An anchor, not a button — see AppCard. The href is what makes middle-click
   // and "Open in new tab" land on the same place a left click does.
   return (
+    <>
     <a
       className="app-pcard"
       href={href ?? hrefFor(app)}
       onClick={(e) => {
+        if (blockGate(e)) return;
         if (!href) return onAppCardClick(e, app);
         if (e.defaultPrevented || isBrowserHandledClick(e)) return;
         e.preventDefault();
@@ -285,7 +325,10 @@ export function AppPreviewCard({
             as the name. */}
         <span className="app-pcard-lines">
           <span className="app-pcard-titlerow">
-            <span className="app-pcard-title">{title}</span>
+            <span className="app-pcard-title">
+              {title}
+              {app.contrib?.kind === "marketplace" && !(enforced && block?.level === "hard") && <VerifiedMark />}
+            </span>
             {/* Proposals waiting on one of the reader's own apps (the
                 contribution loop's inbox, Community → Proposals inbox). In
                 the name's row so the card keeps its height; a count only,
@@ -293,6 +336,14 @@ export function AppPreviewCard({
             {inbox > 0 && (
               <span className="app-pcard-inbox">
                 {inbox} {inbox === 1 ? "proposal" : "proposals"}
+              </span>
+            )}
+            {block && (
+              <span
+                className={"app-pcard-block" + (enforced && block.level === "hard" ? " is-hard" : "")}
+                title={block.reason}
+              >
+                {!enforced ? "Flagged" : block.level === "hard" ? "Blocked" : "Paused"}
               </span>
             )}
           </span>
@@ -480,5 +531,16 @@ export function AppPreviewCard({
       </button>
       )}
     </a>
+    {block && enforced && block.level === "soft" && (
+      <SoftBlockConfirm
+        open={asking}
+        dir={app.path}
+        name={title}
+        block={block}
+        onClose={() => setAsking(false)}
+        onConfirmed={openPlain}
+      />
+    )}
+    </>
   );
 }

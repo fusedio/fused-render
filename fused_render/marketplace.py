@@ -1,90 +1,127 @@
-"""Backend for the Marketplace (the shell's /marketplace pages).
+"""Backend for the Marketplace (the shell's /marketplace pages) — the
+reviewed marketplace of docs/CONTRIB_LOOP.md §18 (stage B).
 
-A browsable catalog of community apps served by the udf.ai marketplace API,
-with one-click install into the user's workspace (``<workspace>/app/
-<slug>``, the same tag folder the `.fused` installer uses) and in-place update. Deliberately SELF-CONTAINED — this module plus
-the thin router in server/routers/marketplace.py, a pref
-(`shell/prefs.marketplace_enabled`) and the shell routes.
+A browsable catalog of community apps, each a POINTER into its author's
+GitHub repo: the Fused index repo (`index_repo()`, default
+``vasu2001/fused-apps-index``) holds one row per app — repo, branch and the
+**approved commit** an automated review passed — and a backend canvas reads
+the index and serves the catalog. Installing makes a real clone of the
+author's repo AT the approved commit (stage A's installer, appfile_git.py),
+recorded as a `marketplace` copy (contrib/store.py); from then on the
+contribution engine keeps it on the row's approved commit, never the
+author's tip (§18.0 M1). No app code comes from Fused storage any more
+(M2): the release-package path (`marketplace_release`, the tar.gz download,
+its extractor, the per-file stamp writer, the staging sweep) is deleted.
+Deliberately thin: this module plus routers/marketplace.py, a pref
+(`shell/prefs.marketplace_enabled`) and the shell routes; git behaviour is
+the engine's (contrib/market.py, contrib/blocks.py), never re-done here.
 
-It is NOT community.py (the /apps hub's Showcase tab). That one clones the
-repo INTO the workspace as the user's editable tree and never syncs it again;
-this one asks the API for a catalog and a signed release package, and stamps
-what it wrote so a later update can tell the author's files from the user's.
+It is NOT community.py (the /apps hub's old Showcase tab, retired while the
+Marketplace is on: routers/community.py answers `{status: "retired"}`).
 
 **The API** is a set of GET endpoints under `api_base()` (the constant
 `API_BASE`, overridable by `FUSED_RENDER_MARKETPLACE_API`, read per call).
-Every request carries `format=json` (the default is HTML) and every answer is
-a JSON list of rows; an error is HTTP 200 with ONE row `{error_code,
-error_message}`. `_udf_get` is the single seam: it adds `format=json`, goes
-through `_http_get` (never raises) and raises `SourceError` — `error_code`
-kept on the exception — for a transport failure, a non-list body or an error
-row. Endpoints used: `marketplace_catalog` (one row per app, carrying its
-`release_id`), `marketplace_categories`, `marketplace_collections` (the home
-shelves), `marketplace_search`, `marketplace_app_detail` (readme, files,
-releases) and `marketplace_release` (the file list with sha256 plus a
-presigned tar.gz `package_url`). `client_version` is `fused_render.__version__`.
+Every request carries `format=json` and every answer is a JSON list of rows;
+an error is HTTP 200 with ONE row `{error_code, error_message}`. `_udf_get`
+is the single seam: it adds `format=json`, goes through `_http_get` (never
+raises) and raises `SourceError` — `error_code` kept — for a transport
+failure, a non-list body or an error row. Endpoints (§18.3):
+`marketplace_catalog` (one row per app: the listing fields plus `repo,
+branch, commit, release_id (== commit), remix_of, remix_count,
+contributor_count, last_release_at, releases [{commit, at, whats_new,
+version, blocked}]` newest first), `marketplace_categories`,
+`marketplace_collections` (the home shelves; `featured` = the curated
+shelf), `marketplace_search`, `marketplace_app_detail` (readme, files,
+releases) and `marketplace_blocklist` (B4). `client_version` is
+`fused_render.__version__`.
 
-**State dir** is ``~/.fused-render/marketplace/`` (FUSED_RENDER_HOME honoured)
-— UNNESTED by branch ref, exactly like community.STATE_DIR: the catalog and
-asset cache describe a remote service, not this checkout, so parallel branches
-share one copy. What IS per-setup is the workspace the apps install into
-(`seed.fused_dir()`), read per call.
+**State dir** is ``~/.fused-render/marketplace/`` (FUSED_RENDER_HOME
+honoured) — UNNESTED by branch ref, exactly like community.STATE_DIR: the
+catalog, block list and asset cache describe a remote service, not this
+checkout, so parallel branches share one copy. What IS per-setup is the
+workspace the apps install into (`seed.fused_dir()`), read per call.
 
-  catalog.json                the last snapshot + fetched_at/checked_at/stale
+  catalog.json                 the last snapshot + fetched_at/checked_at/stale
+  blocklist.json               the last block list + checked_at/stale/status
   assets/<release_id>/<slug>/  bytes served by /api/marketplace/asset
+  acks.json                    the Python notices the user accepted
 
 **Snapshot** = {source: "udf-api", api, catalog_version, generated_at,
-apps: {slug: catalog row}, categories: [..], collections: [..]} — one build
-makes three API calls. A catalog.json written by the earlier GitHub-backed
-code (no `source == "udf-api"`) is treated as no cache.
+apps: {slug: catalog row}, categories: [..], collections: [..], status:
+"ok", stale, warning, fetched_at, checked_at} — one build makes three API
+calls. `status == "ok"` and not `stale` is what contrib/market reads as
+FRESH (only then may a missing slug mean "delisted", §18.4). A catalog.json written for another API (`api !=
+api_base()`) or by the GitHub-backed code before it (no `source ==
+"udf-api"`) is treated as no cache, so swapping `API_BASE` for the canvas's
+share URL drops the old backend's rows by itself.
 
-**Cache policy.** A catalog younger than 10 minutes (by `checked_at`, the last
-ATTEMPT — so an offline machine backs off too instead of re-trying the network
-on every page view, and a crashing build likewise) is served as-is unless
-`refresh=1`; a `refresh=1` within 60 s of the last attempt is served the cache
-too. A refresh that fails serves the old cache with `stale: true` and a
-warning; with no cache at all the answer is `{status: "error", message}`.
-Only GET /catalog (`get_snapshot`) rebuilds an OLD cache; assets, detail,
-install and installed (`cached_snapshot`) take any cache regardless of age,
-without the build lock, and build only when there is none — a rebuild never
-holds up an <img>.
+**Cache policy.** A catalog younger than 10 minutes (by `checked_at`, the
+last ATTEMPT — so an offline machine backs off too instead of re-trying the
+network on every page view, and a crashing build likewise) is served as-is
+unless `refresh=1`; a `refresh=1` within 60 s of the last attempt is served
+the cache too. A refresh that fails serves the old cache with `stale: true`
+and a warning; with no cache at all the answer is `{status: "error",
+message}`. Only GET /catalog (`get_snapshot`) — and the explicit Check
+(`get_snapshot(force=True)`, the Installed page's "Check for a new release"
+and the engine's check action) — rebuild an OLD cache; assets, detail,
+install, installed and the engine's `market.row_for` (`cached_snapshot`)
+take any cache regardless of age, without the build lock, and build only
+when there is none — a rebuild never holds up an <img>. The block list
+(`blocklist()`) has the same TTL and back-off in its own file, and offline
+the last list it saw applies (§18.4 B4).
 
-**Assets.** The catalog's icon/preview URLs are raw.githubusercontent.com
-URLs pinned to the app's commit; they are served through our own proxy
+**Assets.** A row's icon/preview URLs are raw.githubusercontent.com URLs at
+the app's approved commit; they are served through our own proxy
 (`/api/marketplace/asset/<slug>/<rel>?v=<release_id[:12]>`) so the browser
-never talks to GitHub and a readme's relative images resolve against the same
-base. The proxy fetches only under `https://raw.githubusercontent.com/<owner>/
-<repo>/<commit>/<slug>/` derived from the snapshot row, and only for a path
-that is the row's own icon or preview or one the app's detail lists (the
-detail row is memoised per (slug, release_id) in `_DETAIL_MEMO`, so the page
+never talks to GitHub and a readme's relative images resolve against the
+same base. The proxy fetches only under the row's own base, `_asset_base`:
+``https://raw.githubusercontent.com/<repo>/<commit>/`` (the app is the repo
+root — no slug directory), derived from `repo` + `commit`, else parsed off
+`source_url` (``https://github.com/<repo>``, or the old backend's
+``…/tree/<commit>/<slug>`` form, whose base keeps the slug directory). And
+only for a path that is the row's own icon or preview or one the app's
+detail lists (memoised per (slug, release_id) in `_DETAIL_MEMO`, so the page
 and the proxy share one API call).
 
-**Install / update** run as background jobs (one per slug, idempotent while
-running; finished jobs linger 60 s for the UI's success state). `_stage` asks
-`marketplace_release` for the snapshot's `release_id`, refuses a revoked or
-moved-on release, streams the presigned tar.gz to a temp file (size and
-sha256 verified), extracts it with a hand-rolled safe walk (regular files
-only; no absolute, `..`, link or device members) and checks the extracted set
-equals the release's `files` list path-for-path, byte-for-byte (sha256+size).
-Files are staged in a dot-dir inside `app/` (same filesystem, so a new
-install is one rename and never flashes half-written in the explorer), then:
-  new     → rename into `app/<slug>`
-  update  → merged over the copy (appfile._merge_tree — the hardened walk the
-            `.fused` installer uses): app files replace their counterparts;
-            `.venv`, `.fused`, `.git` and every file the app does not track
-            (the user's data) stay. Files the OLD stamp tracked that the new
-            version dropped are removed only when their bytes still match the
-            old stamp (the author's deletion, not the user's edit).
-The stamp `<app>/.fused/marketplace.json` = {slug, version, release_id,
-commit, api, installed_at, source, files{path: sha256}} is what "installed"
-means: the catalog finds installs by globbing `app/*/.fused/
-marketplace.json`, reports `modified` when a stamped file's bytes changed, and
-`update_available` when the catalog's release_id differs from the stamp's (a
-stamp from before releases, holding only a tree sha, therefore reads as
-updatable). A HUSK (a folder holding only `.fused/`, what a keep-data
-uninstall leaves) is not installed, but an install into it merges like an
-update, so its data is reused. An app whose paths differ only by case is
-refused (they would collide on macOS).
+**Installed copies** (`installed_copies()`) come from two places, keyed by
+slug: `marketplace` records in the contribution store (`store.all()`, kind
+`marketplace`, `record.slug`, folder present) — the clones this module
+installs — and LEGACY stamps, `app/*/.fused/marketplace.json`, which the old
+package installer wrote, for folders with no marketplace record AND no
+`.git`. A stamped folder that IS a clone is asked its kind (`classify`):
+`own` is the author's own copy ("Your app", `installed.kind == "own"`: no
+switch, no update), `github` is a link copy (install's confirm/switch); for
+both the stamp is dead bookkeeping and is removed. An `own` record whose
+repo a listed row names is "Your app" too, stamp or not. A legacy
+copy keeps working and never updates; once its slug is listed the Installed
+page offers "Switch to the reviewed version" (POST /adopt →
+`market.adopt_legacy`, which turns the folder into a marketplace clone in
+place and deletes the stamp). A HUSK (a folder holding only `.fused/`, what
+a keep-data uninstall leaves) is not installed.
+
+**Install / update / switch** run as background jobs (one per slug,
+idempotent while running; finished jobs linger 60 s for the UI's success
+state), each through `plan_install` — the ONE answer to "what would
+installing <slug> do here", which the router, the bots' card
+(bots/tools._market_target) and the job all read:
+  install  → `appfile_git.clone(url, repo, commit=row.commit)` into the
+             link installer's staging dir, packed into a `.fused` exactly
+             like a GitHub link (appfetch.download_github_app), then
+             `appfile_git.install(…, kind="marketplace", market={slug,
+             approved})`. The folder is the link installer's, so it is
+             named after the REPO (`app/<repo>`), not the slug: every
+             "where is <slug>" answer comes from records/stamps.
+  update   → a marketplace copy exists: `contrib.engine.bring_in(path)`,
+             which runs the engine's release move (the record's approved
+             commit moved; Activity line + Undo).
+  switch   → a `github` (link) copy of the same repo exists: the first
+             call answers `{status: "confirm", switch: "reviewed", path,
+             who}` and nothing runs; called again with `switch=True` the
+             job runs `contrib.market.switch_to_reviewed(path, row)`
+             (D13: changing the trust level is the user's explicit choice).
+  refuse   → a legacy copy ("Switch to the reviewed version first"), the
+             user's own repo, an unrecorded clone, a row without a
+             reviewed source (the old backend's rows have no `repo`).
 """
 from __future__ import annotations
 
@@ -96,11 +133,9 @@ import mimetypes
 import os
 import re
 import shutil
-import tarfile
 import tempfile
 import threading
 import time
-import zlib
 from concurrent.futures import ThreadPoolExecutor
 
 try:  # POSIX only; the acks lock below is advisory and degrades to the thread lock
@@ -112,43 +147,54 @@ from urllib.parse import quote, unquote, urlencode
 
 import httpx
 
+from fused_render import backend_canvas
+
 logger = logging.getLogger(__name__)
 
-API_BASE = "https://udf.ai/fc_1g1McHwVfq5S6gNL43FxBp"
+#: The backend's base URL: the `fused_app_marketplace` canvas (§18.3),
+#: shared from Fused's `unstable` environment for now (the owner moves it to
+#: prod with the index repo later). FUSED_RENDER_MARKETPLACE_API overrides
+#: it, read per call. Rows without a `repo` (an older backend) browse but do
+#: not install (`plan_install` refuses with a sentence).
+API_BASE = backend_canvas.API_BASE  # the one backend canvas (backend_canvas.py)
+#: The Fused index repo the backend reads (§18.1 "Index"); the catalog
+#: footer links it. One of the only two places that know the name (the
+#: backend canvas holds the other); FUSED_RENDER_MARKETPLACE_INDEX overrides.
+INDEX_REPO = "vasu2001/fused-apps-index"
 RAW_BASE = "https://raw.githubusercontent.com"
 SOURCE = "udf-api"
 #: How many "new and updated" apps the home shelf asks the API for.
 NEW_AND_UPDATED_LIMIT = 12
 
-#: A cached catalog younger than this (since the last attempt) is served as-is.
+#: A cached catalog (or block list) younger than this (since the last
+#: attempt) is served as-is.
 CACHE_TTL_S = 10 * 60
 #: A forced `refresh=1` within this long of the last attempt serves the cache
 #: (a reload-hammering user must not hammer the API).
 REFRESH_MIN_INTERVAL_S = 60
 #: Finished jobs stay in /jobs this long, so the UI can show "done"/"error".
 JOB_TTL_S = 60
-#: Install staging dirs older than this are swept (an interrupted install
-#: cannot clean up its own).
-STAGING_TTL_S = 24 * 3600
 
 HTTP_TIMEOUT_S = 20
 MAX_ASSET_BYTES = 64 * 1024 * 1024
 MAX_README_BYTES = 512 * 1024
-#: Hard ceiling on a release package, whatever the API claims it weighs.
-MAX_PACKAGE_BYTES = 1024 * 1024 * 1024
 
+#: The LEGACY install stamp (the old package installer's): read, never written.
 STAMP_NAME = "marketplace.json"
-#: Never written, never deleted by an install or update — the same set the
-#: `.fused` installer keeps (appfile._INSTALL_KEEP): the user's venv, the
-#: app's own data dir, the copy's repo.
-KEEP = frozenset({".venv", ".fused", ".git"})
+BLOCKLIST_NAME = "blocklist.json"
 
 _SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]{1,63}")
 _SHA_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+#: `<owner>/<repo>` as GitHub spells them (the shape appfile_git._URL_RE takes).
+_REPO_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/[A-Za-z0-9._-]+")
 #: A release id becomes a cache directory name: no separators, no dots-only.
 _ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}")
+#: The old backend's `source_url` (a folder of the community-apps repo).
 _SOURCE_URL_RE = re.compile(
     r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/tree/([0-9a-f]{40,64})/([a-z0-9-]+)/?")
+#: §18.3's `source_url`: the app's repo (the app at its root).
+_REPO_URL_RE = re.compile(r"https://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?")
+_BLOCK_LEVELS = ("hard", "soft")
 
 
 class SourceError(Exception):
@@ -161,7 +207,8 @@ class SourceError(Exception):
 
 
 class InstallError(Exception):
-    """An install/update failed; the message is shown on the job verbatim."""
+    """An install/update/switch failed or cannot start; the message is shown
+    on the job (or the bot's result) verbatim."""
 
 
 # ---------------------------------------------------------------------------
@@ -179,10 +226,14 @@ def catalog_path() -> str:
     return os.path.join(state_dir(), "catalog.json")
 
 
+def blocklist_path() -> str:
+    return os.path.join(state_dir(), BLOCKLIST_NAME)
+
+
 def install_root() -> str:
-    """``<workspace>/app`` — where Marketplace apps install: the same tag
-    folder a `.fused` file installs into (one place for every installed app,
-    the two stamps `appfile.json`/`marketplace.json` tell them apart)."""
+    """``<workspace>/app`` — the tag folder every installed app lands in (the
+    `.fused` installer's, the GitHub link installer's, and so the
+    Marketplace's: `plan_install`'s new copies are link-installer clones)."""
     from fused_render.appfile import install_dir
 
     return install_dir()
@@ -190,13 +241,21 @@ def install_root() -> str:
 
 def api_base() -> str:
     """The API's base URL (no trailing slash); `FUSED_RENDER_MARKETPLACE_API`
-    overrides the constant, read per call."""
-    return (os.environ.get("FUSED_RENDER_MARKETPLACE_API") or API_BASE).strip().rstrip("/")
+    overrides the constant, read per call (backend_canvas.api_base)."""
+    return backend_canvas.api_base()
+
+
+def index_repo() -> str:
+    """`<owner>/<repo>` of the Fused index (§18.1); `FUSED_RENDER_MARKETPLACE_
+    INDEX` overrides the constant, read per call. A malformed override reads
+    as the constant — it ends up in a link on the page."""
+    v = (os.environ.get("FUSED_RENDER_MARKETPLACE_INDEX") or "").strip().strip("/")
+    return v if _REPO_RE.fullmatch(v) else INDEX_REPO
 
 
 def is_slug(slug) -> bool:
-    # The shape the community repo's CI enforces; also what keeps a crafted
-    # slug from ever forming a path outside app/ or the cache.
+    # The index's row-file name rule (§18.2); also what keeps a crafted slug
+    # from ever forming a path outside the cache.
     return isinstance(slug, str) and bool(_SLUG_RE.fullmatch(slug))
 
 
@@ -205,9 +264,14 @@ def is_sha(v) -> bool:
     return isinstance(v, str) and bool(_SHA_RE.fullmatch(v))
 
 
+def is_repo(v) -> bool:
+    """`<owner>/<repo>` as GitHub spells them."""
+    return isinstance(v, str) and bool(_REPO_RE.fullmatch(v)) and not v.endswith((".", ".git"))
+
+
 def _safe_rel(path) -> bool:
-    """A file path we are willing to write or serve: relative, forward
-    slashes, no empty/`.`/`..` segment, no NUL or backslash."""
+    """A file path we are willing to serve: relative, forward slashes, no
+    empty/`.`/`..` segment, no NUL or backslash."""
     if not isinstance(path, str) or not path or path.startswith("/"):
         return False
     if "\\" in path or "\x00" in path:
@@ -250,23 +314,23 @@ def _http_get(url: str, *, headers: dict | None = None,
     try:
         r = httpx.get(url, headers=headers, timeout=timeout, follow_redirects=True)
     except httpx.HTTPError as e:
-        return None, f"could not reach the marketplace ({e.__class__.__name__})"
+        return None, f"could not reach the Community ({e.__class__.__name__})"
     if r.status_code == 429:
-        return None, "the marketplace is rate-limiting requests"
+        return None, "the Community is rate-limiting requests"
     if r.status_code == 404:
         return None, "not found (404)"
     if r.status_code >= 400:
-        return None, f"the marketplace answered {r.status_code}"
+        return None, f"the Community answered {r.status_code}"
     return r, None
 
 
 def _udf_get(endpoint: str, *, timeout: float = HTTP_TIMEOUT_S, **params) -> list[dict]:
     """GET `<api>/<endpoint>?format=json&...` → the list of row dicts.
     `timeout` (seconds) bounds the request; it is never sent as a parameter.
-    Params that are None are dropped (an empty string is kept: the release
-    endpoint reads ``release_id=`` as "latest"). Raises SourceError on a
-    transport failure, a body that is not a list of objects, or an error row
-    (HTTP 200, one row with `error_code`)."""
+    Params that are None are dropped (an empty string is kept). Raises
+    SourceError on a transport failure, a body that is not a list of objects,
+    or an error row (HTTP 200, one row with `error_code`). An empty list is
+    a valid answer (an empty block list)."""
     from fused_render import __version__
 
     query = {k: v for k, v in params.items() if v is not None}
@@ -280,9 +344,9 @@ def _udf_get(endpoint: str, *, timeout: float = HTTP_TIMEOUT_S, **params) -> lis
     try:
         rows = r.json()
     except ValueError:
-        raise SourceError("the marketplace answered something unexpected")
+        raise SourceError("the Community answered something unexpected")
     if not isinstance(rows, list) or not all(isinstance(x, dict) for x in rows):
-        raise SourceError("the marketplace answered something unexpected")
+        raise SourceError("the Community answered something unexpected")
     if len(rows) == 1 and rows[0].get("error_code"):
         code = str(rows[0]["error_code"])
         raise SourceError(str(rows[0].get("error_message") or code), code)
@@ -405,8 +469,8 @@ def _write_cache(snap: dict) -> None:
 
 
 def _release_ids(snap: dict) -> set[str]:
-    return {r["release_id"] for r in snap.get("apps", {}).values()
-            if isinstance(r.get("release_id"), str)}
+    return {k for k in (_release_key(r) for r in snap.get("apps", {}).values()
+                        if isinstance(r, dict)) if k}
 
 
 def _prune_asset_cache(keep: set[str]) -> None:
@@ -470,6 +534,10 @@ def _build_locked(cached: dict | None) -> tuple[dict | None, str | None]:
     snap["fetched_at"] = _utc_now()
     snap["checked_at"] = now
     snap["stale"] = False
+    # The backend's current answer (module docstring "Snapshot"); a failed
+    # refresh keeps it but `_mark_failed` sets `stale`, so a fallback never
+    # reads as fresh.
+    snap["status"] = "ok"
     snap["warning"] = None
     try:
         _write_cache(snap)
@@ -528,6 +596,7 @@ def cached_snapshot() -> tuple[dict | None, str | None]:
 # ---------------------------------------------------------------------------
 
 def stamp_path(app_dir: str) -> str:
+    """A LEGACY copy's stamp (module docstring): read, never written."""
     return os.path.join(app_dir, ".fused", STAMP_NAME)
 
 
@@ -540,8 +609,8 @@ def read_stamp(app_dir: str) -> dict | None:
     return stamp if isinstance(stamp, dict) else None
 
 
-#: (path, mtime_ns, size) → sha256, so `modified` on every catalog read only
-#: re-hashes files that actually changed.
+#: (path, mtime_ns, size) → sha256, so a legacy copy's `modified` on every
+#: catalog read only re-hashes files that actually changed.
 _HASH_MEMO: dict[tuple, str] = {}
 _HASH_MEMO_LOCK = threading.Lock()
 
@@ -582,13 +651,22 @@ def _modified(app_dir: str, stamp: dict) -> bool:
     return False
 
 
+def _is_husk(app_dir: str) -> bool:
+    """A folder holding nothing but `.fused/` (what a keep-data uninstall
+    leaves): the place the app's data waits for the next install."""
+    try:
+        names = [n for n in os.listdir(app_dir) if n != ".DS_Store"]
+    except OSError:
+        return False
+    return names == [".fused"]
+
+
 def installed_apps() -> dict[str, dict]:
-    """slug → {path, stamp} for every `app/*/.fused/marketplace.json`
-    whose folder still holds the app. A keep-data uninstall
-    (routers/app_uninstall._strip_app_files) removes the app's files but
-    keeps `.fused/` — and the stamp with it — so a husk is NOT installed;
-    it stays an install TARGET (install_app merges into it, reusing the
-    data)."""
+    """slug → {path, stamp} for every LEGACY stamp, `app/*/.fused/
+    marketplace.json`, whose folder still holds the app (a husk is not
+    installed). Raw: `installed_copies` drops the stamps of folders that are
+    marketplace clones now (a husk's stale stamp carried into a clone, an
+    adopt that crashed before deleting it)."""
     root = install_root()
     out: dict[str, dict] = {}
     try:
@@ -607,16 +685,190 @@ def installed_apps() -> dict[str, dict]:
     return out
 
 
-def _installed_info(rec: dict | None) -> dict | None:
-    if not rec:
+def _store_key(path: str) -> str | None:
+    try:
+        from fused_render.contrib import store
+
+        return store.key(path)
+    except Exception:  # noqa: BLE001 — no store: no record can name it
         return None
-    stamp = rec["stamp"]
+
+
+def marketplace_records() -> dict[str, dict]:
+    """slug → {path, record} for every `marketplace` record in the
+    contribution store whose folder is still there (store.all() keeps
+    orphans for adoption; a folder that is gone is not installed). Two
+    copies of one slug: the most recently classified wins. Records are raw
+    (`store.all()` does no `_view`): every new §18.4 key is `.get`."""
+    try:
+        from fused_render.contrib import store
+
+        rows = store.all()
+    except Exception:  # noqa: BLE001 — an unreadable store lists nothing
+        logger.debug("marketplace: contrib store unreadable", exc_info=True)
+        return {}
+    out: dict[str, tuple] = {}
+    for k, rec in rows.items():
+        if not isinstance(rec, dict) or rec.get("kind") != "marketplace":
+            continue
+        slug = rec.get("slug")
+        if not is_slug(slug) or not os.path.isdir(k):
+            continue
+        at = rec.get("classified_at") if isinstance(rec.get("classified_at"), (int, float)) else 0
+        if slug not in out or at > out[slug][0]:
+            out[slug] = (at, {"path": k, "record": rec})
+    return {slug: v for slug, (_at, v) in out.items()}
+
+
+def _clone_kind(path: str) -> str | None:
+    """The contribution loop's kind of the clone at `path`: the record's
+    (`classify.kind_of`, a store read), else a first classification
+    (`classify.ensure`, which may ask GitHub who the user is once — cached by
+    gh.py; it answers None while that cannot be told). None = unknown."""
+    try:
+        from fused_render.contrib import classify
+
+        kind = classify.kind_of(path)
+        if kind is None:
+            rec = classify.ensure(path)
+            kind = rec.get("kind") if rec else None
+        return kind
+    except Exception:  # noqa: BLE001 — unknown, never "legacy"
+        logger.debug("marketplace: could not classify %s", path, exc_info=True)
+        return None
+
+
+def _drop_dead_stamp(path: str) -> None:
+    """A legacy stamp in a folder that is a git clone of the app's repo (the
+    author's own clone, or a GitHub-link copy) is DEAD bookkeeping: the old
+    package installer merged its files into a folder that was already a
+    clone, and the clone — not the stamp — is what the copy is now. Left
+    there it reads as a legacy install and offers "Switch to the reviewed
+    version" (adopt) on a repo, so it goes. Best-effort."""
+    with contextlib.suppress(OSError):
+        os.remove(stamp_path(path))
+        logger.info("marketplace: removed a stale legacy stamp from the clone %s", path)
+
+
+def _own_records() -> dict[str, dict]:
+    """`repo (lowercased) → {path, record}` for every `own` record whose
+    folder is there — the author's own copies of listed apps."""
+    try:
+        from fused_render.contrib import store
+
+        rows = store.all()
+    except Exception:  # noqa: BLE001
+        return {}
+    out = {}
+    for k, rec in rows.items():
+        if (isinstance(rec, dict) and rec.get("kind") == "own" and isinstance(rec.get("repo"), str)
+                and os.path.isdir(k)):
+            out.setdefault(rec["repo"].lower(), {"path": k, "record": rec})
+    return out
+
+
+def installed_copies() -> dict[str, dict]:
+    """slug → the copy of that app in the workspace (module docstring
+    "Installed copies"):
+      {"path", "kind": "marketplace", "record"}  a marketplace clone;
+      {"path", "kind": "legacy", "stamp"}        an old package install —
+          the stamp AND no `.git` (a folder with a repo is never legacy);
+      {"path", "kind": "own", "record"}          the AUTHOR's own copy of a
+          listed app ("Your app": no switch, no update — it follows her own
+          pushes), found by a stamped clone that classifies `own` or by an
+          `own` record whose repo a cached catalog row names.
+    A stamped clone that classifies `github` is not listed here: installing
+    from the Marketplace reaches it through `plan_install`'s confirm/switch.
+    A record beats a stamp for the same slug or folder."""
+    out: dict[str, dict] = {s: {**v, "kind": "marketplace"} for s, v in marketplace_records().items()}
+    clones = {_store_key(v["path"]) for v in out.values()}
+    for slug, rec in installed_apps().items():
+        if slug in out or _store_key(rec["path"]) in clones:
+            continue
+        if not os.path.lexists(os.path.join(rec["path"], ".git")):
+            out[slug] = {**rec, "kind": "legacy"}
+            continue
+        kind = _clone_kind(rec["path"])
+        if kind in ("own", "github"):
+            _drop_dead_stamp(rec["path"])
+        if kind == "own":
+            out[slug] = {"path": rec["path"], "kind": "own", "record": None}
+        # marketplace: its record is listed above (or binds on the next read);
+        # github / unknown: not an installed Marketplace copy.
+    owned = _own_records()
+    if owned:
+        apps = (_read_cache() or {}).get("apps") or {}
+        for slug, row in apps.items():
+            repo = row_repo(row) if isinstance(row, dict) else None
+            hit = owned.get(repo.lower()) if repo else None
+            if hit and slug not in out:
+                out[slug] = {**hit, "kind": "own"}
+    return out
+
+
+def _dict(v) -> dict:
+    return v if isinstance(v, dict) else {}
+
+
+def _block_view(b) -> dict | None:
+    """A record's `block` (§18.4) for the page: the notice's words and state,
+    None when there is none."""
+    if not isinstance(b, dict) or b.get("level") not in _BLOCK_LEVELS:
+        return None
+    return {"level": b["level"], "commit": _opt_str(b.get("commit")),
+            "reason": _opt_str(b.get("reason")) or "", "what_to_do": _opt_str(b.get("what_to_do")) or "",
+            "at": _opt_str(b.get("at")), "rolled_back_to": _opt_str(b.get("rolled_back_to")),
+            # The rollback target's release date, for "Rolled back to the
+            # release of <date>" (the engine writes it when it rolls back).
+            "rolled_back_to_at": _opt_str(b.get("rolled_back_to_at")),
+            "conflict": b.get("conflict") is True,
+            "confirmed": isinstance(b.get("confirmed_at"), (int, float))}
+
+
+def _installed_info(copy: dict | None, row: dict | None, *, catalog_fresh: bool = False) -> dict | None:
+    """The AppEntry's `installed` (§18.5): `{path, kind, commit, version,
+    installed_at, update_available, modified, delisted, block}`. `row` is
+    the catalog row (None: the catalog does not list the slug)."""
+    if not copy:
+        return None
+    path = copy["path"].replace(os.sep, "/")
+    if copy["kind"] == "marketplace":
+        rec = copy["record"]
+        approved = _dict(rec.get("approved"))
+        commit = approved.get("commit") if is_sha(approved.get("commit")) else None
+        listed = _dict(rec.get("listing")).get("status")
+        return {
+            "path": path, "kind": "marketplace", "commit": commit,
+            "version": _opt_str(approved.get("version")),
+            "installed_at": None,
+            # The record's approved commit is what the copy runs; the row's
+            # is the newest release. They differ until the next check moves
+            # the copy (engine.refresh_approved + the release move).
+            "update_available": bool(row is not None and commit and is_sha(row.get("commit"))
+                                     and row["commit"] != commit),
+            "modified": None,
+            # A listed row is the truth; otherwise the engine's last reading,
+            # or the catalog's own (fresh and without the slug).
+            "delisted": row is None and (listed == "delisted" or catalog_fresh),
+            "block": _block_view(rec.get("block")),
+        }
+    if copy["kind"] == "own":
+        # The author's own copy ("Your app"): it follows her own pushes, so
+        # there is nothing to update to and nothing to switch.
+        return {"path": path, "kind": "own", "commit": None, "version": None, "installed_at": None,
+                "update_available": False, "modified": None, "delisted": row is None, "block": None}
+    stamp = copy["stamp"]
     return {
-        "path": rec["path"].replace(os.sep, "/"),
-        "version": stamp.get("version"),
-        "release_id": stamp.get("release_id"),
-        "installed_at": stamp.get("installed_at"),
-        "modified": _modified(rec["path"], stamp),
+        "path": path, "kind": "legacy",
+        "commit": stamp.get("commit") if is_sha(stamp.get("commit")) else None,
+        "version": _opt_str(stamp.get("version")),
+        "installed_at": _opt_str(stamp.get("installed_at")),
+        # A legacy copy never updates: it offers the switch (adopt) instead.
+        "update_available": False,
+        "modified": _modified(copy["path"], stamp),
+        # Unlisted → the Installed row says "No longer updated".
+        "delisted": row is None,
+        "block": None,
     }
 
 
@@ -644,16 +896,65 @@ def _int(v) -> int:
     return v if isinstance(v, int) and not isinstance(v, bool) and v >= 0 else 0
 
 
+def _release_key(row: dict) -> str | None:
+    """The row's release id (§18.3: == its approved commit), else its commit
+    — the asset cache's directory name and the `?v=` key, so shape-checked."""
+    for k in ("release_id", "commit"):
+        v = row.get(k)
+        if isinstance(v, str) and _ID_RE.fullmatch(v):
+            return v
+    return None
+
+
+def _releases(v) -> list[dict]:
+    """§18.3 `releases`, newest first: `[{commit, at, whats_new, version,
+    blocked: "hard"|"soft"|None}]`; entries without a commit are dropped."""
+    out = []
+    for r in v if isinstance(v, list) else []:
+        if not isinstance(r, dict) or not is_sha(r.get("commit")):
+            continue
+        out.append({"commit": r["commit"], "at": _opt_str(r.get("at")),
+                    "whats_new": _opt_str(r.get("whats_new")), "version": _opt_str(r.get("version")),
+                    "blocked": r.get("blocked") if r.get("blocked") in _BLOCK_LEVELS else None})
+    return out
+
+
+def _current(row: dict, releases: list[dict], key: str, *, top: bool = True, newest: bool = True):
+    """`key` of the row's CURRENT commit: the row's own top-level value
+    (`top`; the backend serves `whats_new`/`blocked` for it), else the release
+    entry of `row.commit`, else (`newest`) the newest release's."""
+    if top and _opt_str(row.get(key)):
+        return row[key]
+    rel = next((r for r in releases if r["commit"] == row.get("commit")), None)
+    if rel is not None:
+        return rel.get(key)
+    return releases[0].get(key) if newest and releases else None
+
+
+def row_repo(row: dict) -> str | None:
+    """`<owner>/<repo>` of a catalog row: its `repo`, else its `source_url`
+    (§18.3: ``https://github.com/<repo>``). None for the old backend's rows
+    (a folder of the community-apps repo is not an app's own repo)."""
+    if is_repo(row.get("repo")):
+        return row["repo"]
+    m = _REPO_URL_RE.fullmatch(row.get("source_url") or "")
+    return m.group(1) if m and is_repo(m.group(1)) else None
+
+
 def _asset_base(slug: str, row: dict) -> str | None:
-    """`https://raw.githubusercontent.com/<owner>/<repo>/<commit>/<slug>/` —
-    the only place the asset proxy ever fetches from — read off the row's
-    `source_url` (or, failing that, its icon/preview URL). None when the row
-    names no GitHub folder for this slug."""
+    """The only place the asset proxy ever fetches from (module docstring):
+    `https://raw.githubusercontent.com/<repo>/<commit>/` — off `repo` (or
+    `source_url`) + `commit`; the old backend's `…/tree/<commit>/<slug>`
+    source keeps its slug directory; failing both, the prefix of the row's
+    own icon/preview URL. None when the row names no GitHub commit."""
+    repo, commit = row_repo(row), row.get("commit")
+    if repo and is_sha(commit):
+        return f"{RAW_BASE}/{repo}/{commit}/"
     m = _SOURCE_URL_RE.fullmatch(row.get("source_url") or "")
     if m and m.group(3) == slug:
         return f"{RAW_BASE}/{m.group(1)}/{m.group(2)}/{slug}/"
     for key in ("icon_url", "preview_url"):
-        m = re.match(rf"({re.escape(RAW_BASE)}/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[0-9a-f]{{40,64}}/{re.escape(slug)}/)",
+        m = re.match(rf"({re.escape(RAW_BASE)}/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/[0-9a-f]{{40,64}}/)",
                      row.get(key) or "")
         if m:
             return m.group(1)
@@ -663,17 +964,24 @@ def _asset_base(slug: str, row: dict) -> str | None:
 def _asset_version(row: dict) -> str | None:
     """The `?v=` cache key catalog asset URLs carry: the release id,
     shortened (a new release is new content, so a new URL)."""
-    rid = row.get("release_id")
-    return rid[:12] if isinstance(rid, str) and _ID_RE.fullmatch(rid) else None
+    rid = _release_key(row)
+    return rid[:12] if rid else None
 
 
 def _asset_rel(slug: str, row: dict, url) -> str | None:
     """The path of a row's raw GitHub icon/preview `url` under the app's own
-    base; None when the row has none or it is not under that base."""
-    base = _asset_base(slug, row)
-    if not base or not isinstance(url, str) or not url.startswith(base):
+    base; None when the row has none or it is not under that base. A bare
+    relative path (§18.2's row `icon: "icon.png"`) is taken as-is."""
+    if not isinstance(url, str) or not url:
         return None
-    rel = unquote(url[len(base):].split("?", 1)[0].split("#", 1)[0])
+    if not url.startswith(("https://", "http://")):
+        rel = url
+    else:
+        base = _asset_base(slug, row)
+        if not base or not url.startswith(base):
+            return None
+        rel = url[len(base):]
+    rel = unquote(rel.split("?", 1)[0].split("#", 1)[0])
     return rel if _safe_rel(rel) else None
 
 
@@ -681,15 +989,19 @@ def _proxied(slug: str, row: dict, url) -> str | None:
     """Our /api/marketplace/asset URL for a row's raw GitHub icon/preview URL;
     None when the row has none or it is not under the app's own base."""
     rel = _asset_rel(slug, row, url)
-    if rel is None:
+    if rel is None or _asset_base(slug, row) is None:
         return None
     ver = _asset_version(row)
     return f"/api/marketplace/asset/{slug}/{quote(rel, safe='/')}" + (f"?v={ver}" if ver else "")
 
 
-def app_entry(slug: str, row: dict, installed: dict | None) -> dict:
-    """One AppEntry (the contract's shape) out of an API catalog row."""
-    inst = _installed_info(installed)
+def app_entry(slug: str, row: dict, installed: dict | None, *, catalog_fresh: bool = False,
+              listed: bool = True) -> dict:
+    """One AppEntry (the contract's shape, §18.5) out of an API catalog row.
+    `installed` is `installed_copies()`'s entry; `listed` False for a copy
+    the catalog does not hold (`_local_entry`)."""
+    inst = _installed_info(installed, row if listed else None, catalog_fresh=catalog_fresh)
+    releases = _releases(row.get("releases"))
     return {
         "slug": slug,
         "name": _opt_str(row.get("name")) or slug,
@@ -707,16 +1019,40 @@ def app_entry(slug: str, row: dict, installed: dict | None) -> dict:
         "preview_url": _proxied(slug, row, row.get("preview_url")),
         "size_bytes": _int(row.get("size_bytes")),
         "file_count": _int(row.get("file_count")),
-        "release_id": _opt_str(row.get("release_id")),
+        "release_id": _opt_str(row.get("release_id")) or _opt_str(row.get("commit")),
         "commit": _opt_str(row.get("commit")),
+        "repo": row_repo(row),
+        "branch": _opt_str(row.get("branch")),
         "published_at": _opt_str(row.get("published_at")),
         "updated_at": _opt_str(row.get("updated_at")),
+        "last_release_at": _opt_str(row.get("last_release_at")) or _opt_str(row.get("updated_at")),
         "source_url": _opt_str(row.get("source_url")),
         "featured": row.get("featured") is True,
+        "remix_of": row.get("remix_of") if is_slug(row.get("remix_of")) else None,
+        "remix_count": _int(row.get("remix_count")),
+        "contributor_count": _int(row.get("contributor_count")),
+        # §18.12: installs the marketplace counted (fused_app_install asks).
+        "install_count": _int(row.get("installs")),
+        "releases": releases,
+        # The CURRENT commit's (the backend's top-level keys; after a
+        # rollback releases[0] is not the current commit), else its release
+        # entry's, else the newest's.
+        "whats_new": _current(row, releases, "whats_new"),
+        "blocked": row.get("blocked") if row.get("blocked") in _BLOCK_LEVELS
+        else _current(row, releases, "blocked", top=False, newest=False),
+        # A row the backend could not pin to a repo + commit browses but
+        # does not install (`plan_install`).
+        "installable": bool(row_repo(row) and is_sha(row.get("commit"))),
         "installed": inst,
-        "update_available": bool(inst and inst.get("release_id") != row.get("release_id")),
+        "update_available": bool(inst and inst["update_available"]),
         "compatible": _compatible(row.get("min_fused_render")),
     }
+
+
+def _fresh(snap: dict | None) -> bool:
+    """A snapshot that is the backend's current answer (not a stale fallback):
+    only then does a slug's absence mean "delisted"."""
+    return bool(snap) and not snap.get("stale")
 
 
 def catalog(refresh: bool = False) -> dict:
@@ -724,8 +1060,8 @@ def catalog(refresh: bool = False) -> dict:
     snap, error = get_snapshot(refresh=refresh)
     if snap is None:
         return {"status": "error", "message": error, "apps": [], "categories": [],
-                "collections": []}
-    installed = installed_apps()
+                "collections": [], "index": index_repo()}
+    installed = installed_copies()
     apps = snap["apps"]
     entries = [app_entry(slug, row, installed.get(slug)) for slug, row in sorted(apps.items())]
     collections = [{"id": c.get("id"), "kind": c.get("kind"), "title": c.get("title") or "",
@@ -735,6 +1071,8 @@ def catalog(refresh: bool = False) -> dict:
         "status": "ok",
         "source": snap.get("source"),
         "api": snap.get("api"),
+        # The index repo the catalog is read from (§18.1), for the footer link.
+        "index": index_repo(),
         "catalog_version": snap.get("catalog_version"),
         "generated_at": snap.get("generated_at"),
         "fetched_at": snap.get("fetched_at"),
@@ -749,7 +1087,7 @@ def catalog(refresh: bool = False) -> dict:
 
 def search(q: str, category: str = "", cursor: str = "", limit: int = 24) -> dict:
     """GET /api/marketplace/search's payload: the server's ranked answer, each
-    AppEntry carrying its `score` and `highlights`. Installed stamps are
+    AppEntry carrying its `score` and `highlights`. Installed copies are
     merged in like the catalog's. SourceError → `{status: "error", message}`."""
     from fused_render import __version__
 
@@ -758,7 +1096,7 @@ def search(q: str, category: str = "", cursor: str = "", limit: int = 24) -> dic
                         cursor=cursor or None, limit=limit, client_version=__version__)
     except SourceError as exc:
         return {"status": "error", "message": str(exc)}
-    installed = installed_apps()
+    installed = installed_copies()
     snap, _err = cached_snapshot()
     catalog_apps = (snap or {}).get("apps") or {}
     apps = []
@@ -766,8 +1104,8 @@ def search(q: str, category: str = "", cursor: str = "", limit: int = 24) -> dic
         slug = row.get("slug")
         if not is_slug(slug):
             continue
-        # The catalog's row underneath: a search row without `release_id`
-        # must not read an installed current app as updatable.
+        # The catalog's row underneath: a search row without `commit` must
+        # not read an installed current copy as updatable.
         entry = app_entry(slug, {**(catalog_apps.get(slug) or {}), **row}, installed.get(slug))
         entry["score"] = row.get("score") if isinstance(row.get("score"), (int, float)) else 0
         entry["highlights"] = [{"field": str(h.get("field") or ""), "snippet": str(h.get("snippet") or "")}
@@ -777,46 +1115,54 @@ def search(q: str, category: str = "", cursor: str = "", limit: int = 24) -> dic
     return {"status": "ok", "apps": apps, "next_cursor": nxt if isinstance(nxt, str) else None}
 
 
-def _local_entry(slug: str, rec: dict) -> dict:
-    """An AppEntry for an install the catalog no longer lists, from what the
-    stamp and the copy's own metadata.json know."""
-    stamp = rec["stamp"]
+def _local_entry(slug: str, copy: dict, *, catalog_fresh: bool = False) -> dict:
+    """An AppEntry for a copy the catalog does not list (delisted, or the
+    catalog unavailable), from what its record/stamp and its own
+    metadata.json know. Never anything that points at the catalog: no
+    assets to serve, nothing to update to."""
     try:
-        with open(os.path.join(rec["path"], "metadata.json"), "rb") as f:
+        with open(os.path.join(copy["path"], "metadata.json"), "rb") as f:
             meta = _parse_metadata(f.read()) or {}
     except OSError:
         meta = {}
-    paths = [rel for rel in sorted(stamp.get("files") or {}) if _safe_rel(rel)]
-    size = 0
-    for rel in paths:
-        try:
-            size += os.path.getsize(os.path.join(rec["path"], *rel.split("/")))
-        except OSError:
-            pass
-    # Whatever the copy's metadata declares, minus anything that would point
-    # at the catalog: there is no catalog record to serve assets from, nothing
-    # to update to.
-    row = {**{k: v for k, v in meta.items() if k not in ("icon_url", "preview_url", "source_url",
-                                                         "featured", "release_id", "commit")},
-           "size_bytes": size, "file_count": len(paths)}
-    entry = app_entry(slug, row, rec)
-    entry.update(update_available=False, featured=False)
-    if not meta.get("version") and stamp.get("version"):
-        entry["version"] = stamp["version"]
+    size = count = 0
+    version = None
+    if copy["kind"] == "legacy":
+        paths = [rel for rel in sorted(copy["stamp"].get("files") or {}) if _safe_rel(rel)]
+        for rel in paths:
+            try:
+                size += os.path.getsize(os.path.join(copy["path"], *rel.split("/")))
+            except OSError:
+                pass
+        count = len(paths)
+        version = _opt_str(copy["stamp"].get("version"))
+    else:
+        version = _opt_str(_dict(_dict(copy.get("record")).get("approved")).get("version"))
+    row = {**{k: v for k, v in meta.items() if k not in (
+        "icon_url", "preview_url", "source_url", "featured", "release_id", "commit", "repo",
+        "releases", "remix_count", "contributor_count", "install_count")},
+        "size_bytes": size, "file_count": count}
+    entry = app_entry(slug, row, copy, catalog_fresh=catalog_fresh, listed=False)
+    entry.update(update_available=False, featured=False, installable=False)
+    if not meta.get("version") and version:
+        entry["version"] = version
     return entry
 
 
 def installed_list() -> dict:
-    """GET /api/marketplace/installed — every stamped install, catalog-backed
-    where the catalog (cached; never forces a network refresh) still has it."""
+    """GET /api/marketplace/installed — every Marketplace copy (marketplace
+    clones and legacy installs), catalog-backed where the catalog (cached;
+    never forces a network refresh) still lists it, from the copy itself
+    where it does not (the orphans stay: delisted copies keep working)."""
     snap, _error = cached_snapshot()
     apps = (snap or {}).get("apps") or {}
+    fresh = _fresh(snap)
     out = []
-    for slug, rec in sorted(installed_apps().items()):
+    for slug, copy in sorted(installed_copies().items()):
         if slug in apps:
-            out.append(app_entry(slug, apps[slug], rec))
+            out.append(app_entry(slug, apps[slug], copy))
         else:
-            out.append(_local_entry(slug, rec))
+            out.append(_local_entry(slug, copy, catalog_fresh=fresh))
     return {"apps": out}
 
 
@@ -857,7 +1203,7 @@ def ack_python(slug: str) -> list[str]:
     """Record that the user accepted `slug`'s Python notice; idempotent.
     Returns the acknowledged slugs. ValueError when `slug` is not a slug."""
     if not is_slug(slug):
-        raise ValueError("not a marketplace slug")
+        raise ValueError("not a Community slug")
     os.makedirs(state_dir(), exist_ok=True)
     # `_ACKS_LOCK` serialises this process's threads; the advisory flock on a
     # sidecar file serialises PROCESSES — other worktrees' servers share this
@@ -918,9 +1264,9 @@ def _memo_put(key: tuple, row: dict) -> None:
 
 def _detail_row(slug: str, snap_row: dict | None) -> dict | None:
     """The API's `marketplace_app_detail` row for `slug` (None when the API
-    does not list it). Memoised under the snapshot row's (slug, release_id),
+    does not list it). Memoised under the snapshot row's (slug, release id),
     and only while the answer is that very release. Raises SourceError."""
-    key = (slug, snap_row.get("release_id") if snap_row else None)
+    key = (slug, _release_key(snap_row) if snap_row else None)
     if snap_row is not None:
         hit = _memo_get(key)
         if hit is not None:
@@ -930,7 +1276,7 @@ def _detail_row(slug: str, snap_row: dict | None) -> dict | None:
     rows = _udf_get("marketplace_app_detail", timeout=DETAIL_TIMEOUT_S,
                     slug=slug, client_version=__version__)
     row = next((r for r in rows if r.get("slug") == slug), None)
-    if row is not None and snap_row is not None and row.get("release_id") == key[1]:
+    if row is not None and snap_row is not None and key[1] and _release_key(row) == key[1]:
         _memo_put(key, row)
     return row
 
@@ -964,7 +1310,7 @@ def _content_type(path: str) -> str:
 
 def _fetch_asset_bytes(base: str, rel: str) -> bytes | None:
     """The bytes of `<rel>` under the app's raw GitHub `base` (pinned to the
-    release's commit), or None."""
+    approved commit), or None."""
     r, err = _http_get(base + quote(rel, safe="/"))
     return r.content if not err and r is not None else None
 
@@ -995,9 +1341,9 @@ def get_asset_versioned(slug: str, rel: str) -> tuple[bytes, str, str | None] | 
         return None
     version = _asset_version(row)
     base = _asset_base(slug, row)
-    if version is None or base is None:
+    rid = _release_key(row)
+    if version is None or base is None or rid is None:
         return None  # the release id is a cache directory name; never trust it unshaped
-    rid = row["release_id"]
     cached = os.path.join(state_dir(), "assets", rid, slug, *rel.split("/"))
     try:
         with open(cached, "rb") as f:
@@ -1020,27 +1366,30 @@ def get_asset_versioned(slug: str, rel: str) -> tuple[bytes, str, str | None] | 
     return data, _content_type(rel), version
 
 
-def _installed_detail(slug: str, rec: dict) -> dict:
+def _installed_detail(slug: str, copy: dict, *, catalog_fresh: bool = False) -> dict:
     """Installed but gone from the catalog: describe the local copy."""
-    entry = _local_entry(slug, rec)
+    entry = _local_entry(slug, copy, catalog_fresh=catalog_fresh)
     readme = ""
     for name in ("readme.md", "README.md", "Readme.md"):
         try:
-            with open(os.path.join(rec["path"], name), "rb") as f:
+            with open(os.path.join(copy["path"], name), "rb") as f:
                 readme = f.read(MAX_README_BYTES).decode("utf-8", "replace")
             break
         except OSError:
             continue
-    files = [{"path": p, "size": 0} for p in sorted(rec["stamp"].get("files") or {})]
+    stamp_files = (copy.get("stamp") or {}).get("files") or {}
+    files = [{"path": p, "size": 0} for p in sorted(stamp_files) if _safe_rel(p)]
     return {"status": "ok", "app": entry, "readme": readme, "files": files,
             "readme_base": f"/api/marketplace/asset/{slug}/", "releases": []}
 
 
 def app_detail(slug: str) -> dict | None:
-    """GET /api/marketplace/app/{slug}'s payload, or None (→ 404)."""
+    """GET /api/marketplace/app/{slug}'s payload, or None (→ 404).
+    `releases` is §18.3's list (`{commit, at, whats_new, version, blocked}`,
+    newest first) — the AppEntry carries the same list."""
     if not is_slug(slug):
         return None
-    installed = installed_apps()
+    installed = installed_copies()
     snap, _error = cached_snapshot()
     snap_row = ((snap or {}).get("apps") or {}).get(slug)
     try:
@@ -1049,31 +1398,101 @@ def app_detail(slug: str) -> dict | None:
         if exc.error_code != "app_not_found" and snap_row is not None:
             # The API is unreachable, but the cached catalog knows the app:
             # the card still renders; only the readme and file list are lost.
-            return {"status": "ok", "app": app_entry(slug, snap_row, installed.get(slug)),
-                    "readme": "", "files": [], "readme_base": f"/api/marketplace/asset/{slug}/",
-                    "releases": []}
+            entry = app_entry(slug, snap_row, installed.get(slug))
+            return {"status": "ok", "app": entry, "readme": "", "files": [],
+                    "readme_base": f"/api/marketplace/asset/{slug}/", "releases": entry["releases"]}
         row = None
     if row is not None:
         files = [{"path": f["path"], "size": _int(f.get("size"))}
                  for f in row.get("files") or []
                  if isinstance(f, dict) and isinstance(f.get("path"), str)]
-        releases = [{"release_id": r.get("release_id"), "version": r.get("version"),
-                     "changelog": r.get("changelog") or "", "published_at": r.get("published_at"),
-                     "revoked": bool(r.get("revoked"))}
-                    for r in row.get("releases") or [] if isinstance(r, dict)]
         readme = row.get("readme_markdown")
-        return {"status": "ok", "app": app_entry(slug, {**(snap_row or {}), **row}, installed.get(slug)),
+        entry = app_entry(slug, {**(snap_row or {}), **row}, installed.get(slug))
+        return {"status": "ok", "app": entry,
                 "readme": readme[:MAX_README_BYTES] if isinstance(readme, str) else "",
                 "files": files, "readme_base": f"/api/marketplace/asset/{slug}/",
-                "releases": releases}
+                "releases": entry["releases"]}
     if slug in installed:
-        return _installed_detail(slug, installed[slug])
+        return _installed_detail(slug, installed[slug], catalog_fresh=_fresh(snap))
     return None
 
 
 # ---------------------------------------------------------------------------
-# install / update jobs
+# install / update / switch
 # ---------------------------------------------------------------------------
+
+def _who(row: dict) -> str:
+    """The author's login as the page says it: the row's author GitHub
+    login, else the repo's owner."""
+    gh = _author(row.get("author")).get("github")
+    if gh:
+        return gh
+    repo = row_repo(row)
+    return repo.split("/", 1)[0] if repo else "the author"
+
+
+def _approved(row: dict) -> dict:
+    """The `approved` block a marketplace record carries (§18.4) for `row`:
+    its commit, and the newest release's date / What's new / version."""
+    rel = next((r for r in _releases(row.get("releases")) if r["commit"] == row.get("commit")), None)
+    return {"commit": row.get("commit"),
+            "at": (rel or {}).get("at") or _opt_str(row.get("last_release_at")),
+            "whats_new": (rel or {}).get("whats_new") or _opt_str(row.get("whats_new")),
+            "version": (rel or {}).get("version") or _opt_str(row.get("version"))}
+
+
+def _record_kind(path: str) -> str | None:
+    try:
+        from fused_render.contrib import store
+
+        rec = store.get(path)
+    except Exception:  # noqa: BLE001 — unreadable reads as "no record"
+        return None
+    return rec.get("kind") if rec else None
+
+
+def plan_install(slug: str, row: dict) -> dict:
+    """What installing `slug` (catalog row `row`) would do HERE — the one
+    answer the router, the job and the bots' card read (module docstring):
+    `{"action": "install"|"update"|"switch"|"refuse", "path": str|None,
+    "who": str, "reason": str|None, "code": str|None}`. Read-only; the
+    GitHub-link copy lookup costs one git call per workspace clone."""
+    who = _who(row)
+    plan = {"action": "install", "path": None, "who": who, "reason": None, "code": None}
+    copy = installed_copies().get(slug)
+    if copy and copy["kind"] == "legacy":
+        # A legacy copy never updates in place (M2: no packages); the
+        # Installed row's "Switch to the reviewed version" (adopt) is the way.
+        return {**plan, "action": "refuse", "path": copy["path"], "code": "legacy",
+                "reason": "Switch to the reviewed version first: this app was installed from the "
+                          "old app store. Use “Switch to the reviewed version” on the Installed page."}
+    if copy and copy["kind"] == "own":
+        return {**plan, "action": "refuse", "path": copy["path"], "code": "own",
+                "reason": f"This is your own app; it's already at {copy['path']}."}
+    if copy:
+        return {**plan, "action": "update", "path": copy["path"]}
+    repo, commit = row_repo(row), row.get("commit")
+    if not repo or not is_sha(commit):
+        return {**plan, "action": "refuse", "code": "no-source",
+                "reason": "This app has no reviewed version to install yet."}
+    from fused_render import appfile_git
+
+    clone = appfile_git.installed_clone_of(f"https://github.com/{repo}")
+    if clone is None:
+        return plan
+    kind = _record_kind(clone)
+    if kind == "marketplace":
+        # A marketplace copy whose record names another slug (a relisting):
+        # still this repo's reviewed copy.
+        return {**plan, "action": "update", "path": clone}
+    if kind == "github":
+        return {**plan, "action": "switch", "path": clone}
+    if kind == "own":
+        return {**plan, "action": "refuse", "path": clone, "code": "own",
+                "reason": f"This is your own app; it's already at {clone}."}
+    return {**plan, "action": "refuse", "path": clone, "code": "exists",
+            "reason": f"You already have a copy of this app at {clone}."}
+
 
 _JOBS: dict[str, dict] = {}
 _JOB_FINISHED: dict[str, float] = {}
@@ -1105,10 +1524,16 @@ def _update_job(slug: str, **fields) -> None:
             _JOB_FINISHED[slug] = time.monotonic()
 
 
-def start_install(slug: str) -> dict:
-    """Start installing (or updating, when a stamped copy exists) `slug` in
-    the background; answers the job. Idempotent while one is running.
-    Raises InstallError for a request that cannot start (bad/unknown slug)."""
+def start_install(slug: str, *, update: bool = False, switch: bool = False) -> dict:
+    """Start installing, updating or switching `slug` in the background
+    (`plan_install` decides which; `update` is the bot tool's flag and
+    changes nothing here — what is installed decides). Answers the job —
+    the running one if any: idempotent — or, when a GitHub-link copy of the
+    same repo exists and `switch` is not set, the question `{"status":
+    "confirm", "switch": "reviewed", "path", "who", "slug", "message"}`
+    with nothing started. Raises InstallError for a request that cannot
+    start (bad/unknown slug, a refusing plan)."""
+    del update  # documented above: the plan, not the caller, decides
     if not is_slug(slug):
         raise InstallError("invalid app slug")
     with _JOBS_LOCK:
@@ -1119,386 +1544,569 @@ def start_install(slug: str) -> dict:
     snap, error = cached_snapshot()
     if snap is None:
         raise InstallError(error or "the catalog is unavailable")
-    if slug not in snap["apps"]:
+    row = snap["apps"].get(slug)
+    if row is None:
         raise InstallError(f"no app named {slug!r} in the catalog")
-    dest = os.path.join(install_root(), slug)
-    action = "update" if read_stamp(dest) and not _is_husk(dest) else "install"
-    # An estimate (the unpacked size); install_app swaps in the package's size.
-    total = _int(snap["apps"][slug].get("size_bytes"))
+    plan = plan_install(slug, row)
+    if plan["action"] == "refuse":
+        raise InstallError(plan["reason"])
+    if plan["action"] == "switch" and not switch:
+        return {"status": "confirm", "switch": "reviewed", "slug": slug,
+                "path": plan["path"].replace(os.sep, "/"), "who": plan["who"],
+                "message": "Switch to reviewed releases? You follow "
+                           f"{plan['who']} directly now and get every change, unreviewed."}
+    action = plan["action"]
     with _JOBS_LOCK:
         job = _JOBS.get(slug)
         if job and job["state"] in _ACTIVE:
             return dict(job)
-        job = {"slug": slug, "action": action, "state": "queued", "progress": 0.0,
-               "bytes_done": 0, "bytes_total": total, "message": "Waiting to start…",
-               "path": None, "error": None}
+        job = {"slug": slug, "action": action, "state": "queued", "step": "download",
+               "progress": 0.0, "bytes_done": 0, "bytes_total": _int(row.get("size_bytes")),
+               "message": "Waiting to start…", "path": None, "error": None}
         _JOBS[slug] = job
         _JOB_FINISHED.pop(slug, None)
         out = dict(job)
-    threading.Thread(target=_run_job, args=(slug, snap), daemon=True,
+    threading.Thread(target=_run_job, args=(slug, row, plan), daemon=True,
                      name=f"marketplace-{action}-{slug}").start()
     return out
 
 
-def _is_husk(app_dir: str) -> bool:
-    """A folder holding nothing but `.fused/` (what a keep-data uninstall
-    leaves): the place the app's data waits for the next install."""
+def resolve_install(slug: str, row: dict) -> dict:
+    """The row an install goes by: the marketplace's answer RIGHT NOW
+    (`fused_app_install`, §18.12), falling back to the cached catalog row
+    `row`. Why ask: the local catalog can be ten minutes behind the index,
+    so an install right after a release would pin the previous commit; and
+    the ask is what the marketplace counts as one install — the request
+    carries the slug and nothing else (no telemetry call exists: this is the
+    install's own lookup). Can't be asked, or answers nonsense → the cached
+    row, uncounted, logged. Answers a hard block → InstallError (the cached
+    row may predate the block)."""
     try:
-        names = [n for n in os.listdir(app_dir) if n != ".DS_Store"]
-    except OSError:
-        return False
-    return names == [".fused"]
-
-
-def _sweep_staging(root: str) -> None:
-    try:
-        names = os.listdir(root)
-    except OSError:
-        return
-    cutoff = time.time() - STAGING_TTL_S
-    for n in names:
-        if not n.startswith(".marketplace-"):
-            continue
-        p = os.path.join(root, n)
-        try:
-            if os.path.isdir(p) and not os.path.islink(p) and os.path.getmtime(p) < cutoff:
-                shutil.rmtree(p, ignore_errors=True)
-        except OSError:
-            continue
-
-
-def _kept(rel: str) -> bool:
-    """Whether `rel` lies under a KEEP name — case-insensitively, since on a
-    case-insensitive filesystem (macOS by default) `.FUSED/x` IS `.fused/x`."""
-    return rel.split("/", 1)[0].lower() in KEEP
-
-
-def _wanted(files: list[dict]) -> list[dict]:
-    """The files an install writes: safe paths, nothing under a KEEP name."""
-    return [f for f in files if _safe_rel(f["path"]) and not _kept(f["path"])]
-
-
-def _case_collisions(files: list[dict]) -> list[str]:
-    """Paths (or folder prefixes) of the list that differ only by case —
-    `README.md` + `readme.md`, `Lib/a.js` + `lib/b.js`. On a case-insensitive
-    filesystem they land on ONE file/folder, so one silently overwrites the
-    other and the stamp's hashes stop describing the disk."""
-    seen: dict[str, str] = {}
-    clashes: set[str] = set()
-    for f in files:
-        segs = f["path"].split("/")
-        for i in range(1, len(segs) + 1):
-            name = "/".join(segs[:i])
-            prev = seen.setdefault(name.casefold(), name)
-            if prev != name:
-                clashes.add(f"{prev} / {name}")
-    return sorted(clashes)
-
-
-def _refuse_case_collisions(files: list[dict]) -> None:
-    clashes = _case_collisions(files)
-    if clashes:
-        raise InstallError("this app has files whose names differ only by upper/lower case "
-                           f"({clashes[0]}), which cannot be installed safely")
-
-
-def _rebuild_after_drift() -> None:
-    """The release the user's page named is gone or moved on: rebuild the
-    catalog now, past the refresh throttle, so the "refresh" the error asks for
-    shows the new release. A failed rebuild changes nothing (the caller's
-    InstallError still raises)."""
-    try:
-        get_snapshot(force=True)
-    except Exception:  # noqa: BLE001
-        logger.debug("marketplace: catalog rebuild after a release change failed", exc_info=True)
-
-
-def _fetch_release(slug: str, release_id: str | None) -> dict:
-    """The `marketplace_release` row for `release_id` (the one the user chose
-    from the catalog), validated: not revoked, the release asked for, with a
-    well-formed file list and package. Raises InstallError."""
-    try:
-        rows = _udf_get("marketplace_release", slug=slug, release_id=release_id or "")
+        rows = _udf_get("fused_app_install", timeout=DETAIL_TIMEOUT_S, slug=slug)
     except SourceError as exc:
+        logger.warning("marketplace: installing %s by the cached row (%s)", slug, exc)
+        return row
+    live = rows[0] if len(rows) == 1 and isinstance(rows[0], dict) else None
+    if not live or live.get("slug") != slug or not row_repo(live) or not is_sha(live.get("commit")):
+        logger.warning("marketplace: installing %s by the cached row (unexpected answer)", slug)
+        return row
+    if live.get("blocked") == "hard":
+        raise InstallError("Fused withdrew this release, so it can't be installed right now.")
+    if (row_repo(live), live["commit"]) == (row_repo(row), row.get("commit")):
+        return row
+    logger.info("marketplace: %s moved to %s@%s since the catalog was read; installing that",
+                slug, row_repo(live), live["commit"][:7])
+    out = dict(row)
+    out["repo"] = row_repo(live)
+    out["source_url"] = f"https://github.com/{out['repo']}"
+    for k in ("commit", "release_id", "branch", "version", "name"):
+        if _opt_str(live.get(k)):
+            out[k] = live[k]
+    # The catalog's releases list does not know this commit: `_approved`
+    # then takes the version from the row and leaves What's new empty.
+    out["whats_new"] = None
+    return out
+
+
+def install_app(slug: str, row: dict, report=lambda **kw: None) -> dict:
+    """A NEW marketplace copy of `slug`, synchronously: the author's repo
+    cloned at the row's approved commit and installed through the GitHub
+    link installer as kind `marketplace` (module docstring). `report(**job
+    fields)` receives progress. Answers `{action, path}`. Raises
+    InstallError."""
+    from fused_render import app_listing, appfetch, appfile, appfile_git
+
+    row = resolve_install(slug, row)
+    repo, commit = row_repo(row), row.get("commit")
+    if not repo or not is_sha(commit):
+        raise InstallError("This app has no reviewed version to install yet.")
+    url = f"https://github.com/{repo}"
+    report(state="downloading", step="download", progress=0.05,
+           message=f"Downloading {repo} at its reviewed version…")
+    appfile_git.sweep_staging()
+    try:
+        clone_dir, commit, committed_at = appfile_git.clone(url, repo.split("/", 1)[1], commit=commit)
+    except appfile_git.GitInstallError as exc:
         raise InstallError(str(exc))
-    rel = rows[0] if rows else None
-    if not isinstance(rel, dict):
-        raise InstallError("the marketplace returned no release for this app")
-    if rel.get("revoked"):
-        _rebuild_after_drift()
-        raise InstallError("This release was withdrawn — refresh the Marketplace")
-    if release_id and rel.get("release_id") != release_id:
-        _rebuild_after_drift()
-        raise InstallError("the marketplace changed since this page loaded — "
-                           "refresh and try again")
-    files = rel.get("files")
-    if not isinstance(files, list) or not files or not all(
-            isinstance(f, dict) and _safe_rel(f.get("path")) and isinstance(f.get("sha256"), str)
-            and isinstance(f.get("size"), int) and f["size"] >= 0 for f in files):
-        raise InstallError("the marketplace returned an unusable file list for this release")
-    if len({f["path"] for f in files}) != len(files):
-        raise InstallError("the release lists the same file twice")
-    url, size, digest = rel.get("package_url"), rel.get("package_size"), rel.get("package_sha256")
-    if (not isinstance(url, str) or not url.startswith("https://") or not isinstance(digest, str)
-            or not isinstance(size, int) or isinstance(size, bool) or not 0 < size <= MAX_PACKAGE_BYTES):
-        raise InstallError("the marketplace returned an unusable package for this release")
-    return rel
-
-
-def _download_package(url: str, dest: str, progress, max_bytes: int) -> None:
-    """Stream the presigned package at `url` to `dest`, calling
-    `progress(n)` per chunk. Raises InstallError (also past `max_bytes`)."""
-    got = 0
+    report(progress=0.6)
+    built = None
     try:
-        with httpx.stream("GET", url, timeout=HTTP_TIMEOUT_S * 3, follow_redirects=True) as r:
-            if r.status_code >= 400:
-                raise InstallError(f"the package download failed ({r.status_code})")
-            with open(dest, "wb") as out:
-                for chunk in r.iter_bytes(256 * 1024):
-                    got += len(chunk)
-                    if got > max_bytes:
-                        raise InstallError("the downloaded package is larger than announced")
-                    out.write(chunk)
-                    progress(len(chunk))
-    except httpx.HTTPError as e:
-        raise InstallError(f"could not download the package ({e.__class__.__name__})")
-
-
-def _file_sha256(path: str) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1024 * 1024), b""):
-            h.update(chunk)
-    return h.hexdigest()
-
-
-def _extract_package(tar_path: str, payload: str, files: list[dict]) -> None:
-    """Unpack the release package into `payload`, refusing anything but plain
-    files and folders under safe relative paths (no absolute, `..`, symlink,
-    hardlink, device or duplicate member), then require the extracted set to
-    EQUAL the release's `files` — same paths, same size and sha256 each.
-    Only `_wanted` files are written (nothing under a KEEP name). Hand-rolled
-    rather than `extractall`: every member is vetted before a byte lands.
-    Raises InstallError."""
-    expected = {f["path"]: f for f in files}
-    wanted = {f["path"] for f in _wanted(files)}
-    seen: set[str] = set()
-    try:
-        with tarfile.open(tar_path, "r:gz") as tf:
-            for m in tf:
-                name = m.name[2:] if m.name.startswith("./") else m.name
-                if m.isdir():
-                    if name.rstrip("/") and not _safe_rel(name.rstrip("/")):
-                        raise InstallError(f"the package holds an unsafe path ({m.name!r})")
-                    continue
-                if not m.isreg():
-                    raise InstallError(f"the package holds something that is not a plain file ({m.name!r})")
-                if not _safe_rel(name):
-                    raise InstallError(f"the package holds an unsafe path ({m.name!r})")
-                if name not in expected:
-                    raise InstallError(f"the package holds a file the release does not list ({name})")
-                if name in seen:
-                    raise InstallError(f"the package holds {name} twice")
-                seen.add(name)
-                if m.size != expected[name]["size"]:
-                    raise InstallError(f"{name} does not match the release (size)")
-                src = tf.extractfile(m)
-                if src is None:
-                    raise InstallError(f"the package holds an unreadable member ({name})")
-                h = hashlib.sha256()
-                out = None
-                if name in wanted:
-                    dest = os.path.join(payload, *name.split("/"))
-                    os.makedirs(os.path.dirname(dest), exist_ok=True)
-                    out = open(dest, "wb")
-                try:
-                    for chunk in iter(lambda: src.read(1024 * 1024), b""):
-                        h.update(chunk)
-                        if out is not None:
-                            out.write(chunk)
-                finally:
-                    if out is not None:
-                        out.close()
-                if h.hexdigest() != expected[name]["sha256"]:
-                    raise InstallError(f"{name} does not match the release (checksum)")
-    except (tarfile.TarError, EOFError, zlib.error, UnicodeError):
-        raise InstallError("the downloaded package is not a valid archive")
-    except OSError as exc:
-        if exc.errno is None:  # gzip.BadGzipFile and friends; not the disk
-            raise InstallError("the downloaded package is not a valid archive")
-        raise  # a real disk error: install_app words it as a write failure
-    missing = sorted(set(expected) - seen)
-    if missing:
-        raise InstallError(f"the package is missing {missing[0]} ({len(missing)} file(s))")
-
-
-def _stage(release: dict, staging: str, payload: str, progress) -> list[dict]:
-    """Download the release package, verify it, and unpack it into `payload`.
-    Answers the `{path, sha256, size}` files actually staged."""
-    pkg = os.path.join(staging, "package.tar.gz")
-    _download_package(release["package_url"], pkg, progress, release["package_size"])
-    try:
-        if os.path.getsize(pkg) != release["package_size"]:
-            raise InstallError("the downloaded package has the wrong size")
-        if _file_sha256(pkg) != release["package_sha256"]:
-            raise InstallError("the downloaded package failed its integrity check")
-        _extract_package(pkg, payload, release["files"])
-    finally:
-        with contextlib.suppress(OSError):
-            os.remove(pkg)
-    return _wanted(release["files"])
-
-
-def _prune_dropped(dest: str, old_stamp: dict | None, new_paths: set[str]) -> list[str]:
-    """Files the OLD stamp tracked that the new version no longer ships,
-    removed only while their bytes still match that stamp (the author deleted
-    them; the user never touched them). Empty parent dirs go too."""
-    if not old_stamp or not isinstance(old_stamp.get("files"), dict):
-        return []
-    pruned = []
-    for rel, digest in sorted(old_stamp["files"].items()):
-        if rel in new_paths or not _safe_rel(rel) or _kept(rel):
-            continue
-        p = os.path.join(dest, *rel.split("/"))
         try:
-            if os.path.islink(p) or not os.path.isfile(p) or _sha256_file(p) != digest:
-                continue
-            os.remove(p)
-            pruned.append(rel)
-            d = os.path.dirname(p)
-            while os.path.normcase(os.path.abspath(d)) != os.path.normcase(os.path.abspath(dest)):
-                try:
-                    os.rmdir(d)
-                except OSError:
-                    break
-                d = os.path.dirname(d)
+            entry = app_listing.app_entry(clone_dir)
         except OSError:
-            continue
-    return pruned
-
-
-def _write_stamp(dest: str, stamp: dict) -> None:
-    os.makedirs(os.path.dirname(stamp_path(dest)), exist_ok=True)
-    tmp = stamp_path(dest) + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(stamp, f, indent=2)
-        f.write("\n")
-    os.replace(tmp, stamp_path(dest))
-
-
-def install_app(slug: str, snap: dict, report=lambda **kw: None) -> dict:
-    """Install or update `slug` from `snap` into `app/<slug>`,
-    synchronously. `report(**job_fields)` receives progress. Answers
-    {action, path, stamp, pruned}. Raises InstallError."""
-    from fused_render import appfile
-
-    root = install_root()
-    os.makedirs(root, exist_ok=True)
-    _sweep_staging(root)
-    dest = os.path.join(root, slug)
-    old_stamp = read_stamp(dest)
-    exists = os.path.lexists(dest)
-    if exists and (os.path.islink(dest) or not os.path.isdir(dest)):
-        raise InstallError(f"{dest} exists and is not a folder — move it aside and try again")
-    if exists and old_stamp is None and not _is_husk(dest):
-        raise InstallError(f"{dest} already exists and was not installed from the Marketplace "
-                           "— rename or move it, then try again")
-    if old_stamp is not None and old_stamp.get("slug") not in (None, slug):
-        raise InstallError(f"{dest} holds a different Marketplace app "
-                           f"({old_stamp.get('slug')})")
-    # A husk (keep-data uninstall) with our stamp is merged into like an
-    # update — its `.fused/` data is reused — but to the user it is an install.
-    action = "update" if old_stamp and not _is_husk(dest) else "install"
-    row = snap["apps"][slug]
-    report(state="downloading", action=action, progress=0.0, message="Downloading…")
-    release = _fetch_release(slug, row.get("release_id"))
-    _refuse_case_collisions(release["files"])
-    total = release["package_size"]
-    done = [0]
-    lock = threading.Lock()
-
-    def progress(n):
-        with lock:
-            done[0] += n
-            report(bytes_done=done[0], progress=round(0.9 * min(done[0] / total, 1.0), 4))
-
-    report(bytes_total=total, bytes_done=0)
-    staging = tempfile.mkdtemp(dir=root, prefix=f".marketplace-{slug}-")
-    payload = os.path.join(staging, "files")
-    os.makedirs(payload)
-    try:
-        staged = _stage(release, staging, payload, progress)
-        report(state="installing", progress=0.92,
-               message="Updating…" if action == "update" else "Installing…")
-        hashes = {f["path"]: f["sha256"] for f in staged}
-        version = release.get("version") if isinstance(release.get("version"), str) else row.get("version")
-        stamp = {
-            "slug": slug,
-            "version": version if isinstance(version, str) else None,
-            "release_id": release.get("release_id"),
-            "commit": release.get("commit") if isinstance(release.get("commit"), str) else row.get("commit"),
-            "api": snap.get("api") or api_base(),
-            "installed_at": _utc_now(),
-            "source": SOURCE,
-            "files": hashes,
-        }
-        if not exists:
-            # The stamp rides in with the payload, so the folder appears
-            # already owned: a crash after the rename can never leave app
-            # files the Marketplace refuses to touch as "not installed by us".
-            _write_stamp(payload, stamp)
-            try:
-                os.rename(payload, dest)
-            except OSError:
-                if not os.path.isdir(dest) or read_stamp(dest) is not None:
-                    raise InstallError(f"could not place the app at {dest}")
-                appfile._merge_tree(payload, dest, skip=KEEP)
-            pruned = []
-        else:
-            # The hardened merge the `.fused` installer uses: replaces the
-            # app's files, never enters a symlink, leaves everything it does
-            # not name (the user's files) and the KEEP set alone.
-            appfile._merge_tree(payload, dest, skip=KEEP)
-            pruned = _prune_dropped(dest, old_stamp, set(hashes))
+            entry = None
+        if entry is None:
+            raise InstallError(f'no page at the root of {repo} carries <meta name="fused-app">, '
+                               "so it cannot be installed")
+        # Packed exactly as a GitHub link packs it (appfetch.download_github_app):
+        # the `.fused` only drives install_target/install; the clone itself
+        # is what lands. The app id is the page's own, else the repo-derived
+        # one `install` re-derives and checks.
+        derived = appfile_git.expected_identity(clone_dir, url)[1]
+        fd, built = tempfile.mkstemp(dir=appfetch.downloads_dir(), prefix=".market-", suffix=".fused")
+        os.close(fd)
+        os.remove(built)
+        try:
+            manifest = appfile.export_app_file(
+                clone_dir, built, exported_at=committed_at, app_id=derived,
+                extra={"git": {"url": url, "commit": commit}})
+        except appfile.AppFileError as exc:
+            raise InstallError(str(exc))
+        report(state="installing", step="place", progress=0.8, message="Installing…")
+        target = appfile.install_target(built)
+        if target.get("found_by") == "git":
+            raise InstallError(f"You already have a copy of this app at {target['path']}.")
+        if target["state"] == appfile.STATE_REPLACE:
+            # Another copy of this app (installed from a file) holds its
+            # place; replacing it would send it to the Trash. Never on the
+            # user's behalf from here.
+            raise InstallError(f"{target['path']} already holds this app, installed another way. "
+                               "Uninstall it first, then install it from the Community.")
+        try:
+            # `approved` is a dict with the 40-hex commit (plan_install checked
+            # it): a bare sha would leave the copy with no approved commit.
+            market = {"slug": slug, "approved": _approved(row)}
+            if _opt_str(row.get("branch")):
+                market["branch"] = row["branch"]
+            appfile_git.install(built, target, manifest, force=False, kind="marketplace", market=market)
+        except (appfile_git.GitInstallError, appfile.AppFileError) as exc:
+            raise InstallError(str(exc))
+        dest = os.path.normpath(target["path"])
     except OSError as exc:
-        raise InstallError(f"could not write the app ({exc.strerror or exc})")
+        raise InstallError(f"could not install the app ({exc.strerror or exc})")
     finally:
-        shutil.rmtree(staging, ignore_errors=True)
+        if built:
+            with contextlib.suppress(OSError):
+                os.remove(built)
+        shutil.rmtree(os.path.dirname(clone_dir), ignore_errors=True)
+    # A husk's `.fused/` rides into the clone (appfile_git._place): a stale
+    # LEGACY stamp in it would list this folder twice. The record is the
+    # truth now (adopt_legacy deletes the stamp the same way).
+    with contextlib.suppress(OSError):
+        os.remove(stamp_path(dest))
+    _reset_apps_snapshot()
+    return {"action": "install", "path": dest}
 
-    try:
-        from fused_render import app_fused_dir
 
-        app_fused_dir.ensure(dest)
-    except Exception:  # noqa: BLE001 — scaffolding is a nicety, the stamp is not
-        logger.debug("marketplace: .fused scaffold failed for %s", dest, exc_info=True)
-    _write_stamp(dest, stamp)
-    # The /apps hub's snapshot lags the disk by up to 20 s; never on the one
-    # folder just installed (same reset the `.fused` installer does).
+def _reset_apps_snapshot() -> None:
+    """The /apps hub's snapshot lags the disk by up to 20 s; never on the one
+    folder just installed (same reset the `.fused` installer does)."""
     try:
         from fused_render.server.routers import apps as apps_router
 
         apps_router._reset_snapshot()
     except Exception:  # noqa: BLE001
         logger.debug("marketplace: apps snapshot reset failed", exc_info=True)
-    return {"action": action, "path": dest, "stamp": stamp, "pruned": pruned}
 
 
-def _run_job(slug: str, snap: dict) -> None:
+def _engine_answer(res, fallback: str) -> str:
+    """The engine's answer → its message, or InstallError with it."""
+    if not isinstance(res, dict) or res.get("ok") is False or res.get("needs_merge"):
+        msg = (res or {}).get("message") if isinstance(res, dict) else None
+        if isinstance(res, dict) and res.get("needs_merge"):
+            msg = (msg or "Your changes overlap this release.") + " Open the app to combine them."
+        raise InstallError(msg or fallback)
+    return res.get("message") or ""
+
+
+def update_app(slug: str, path: str, report=lambda **kw: None) -> dict:
+    """Bring the marketplace copy at `path` to its row's approved commit —
+    the engine's release move (`engine.bring_in`, which reads the record's
+    approved commit fresh through `market.refresh_approved`). Raises
+    InstallError with the engine's own sentence."""
+    from fused_render.contrib import engine
+
+    report(state="installing", step="place", progress=0.3, message="Updating…")
+    msg = _engine_answer(engine.bring_in(os.path.realpath(path)),
+                         "Couldn't update this app right now. Open it to see why.")
+    return {"action": "update", "path": path, "message": msg}
+
+
+def switch_app(slug: str, row: dict, path: str, report=lambda **kw: None) -> dict:
+    """The user said yes to "Switch to reviewed releases?" for the GitHub-link
+    copy at `path`: `market.switch_to_reviewed` (one Activity line + Undo)."""
+    from fused_render.contrib import market
+
+    report(state="installing", step="place", progress=0.3, message="Switching to reviewed releases…")
+    msg = _engine_answer(market.switch_to_reviewed(os.path.realpath(path), row),
+                         "Couldn't switch this app right now. Open it to see why.")
+    return {"action": "switch", "path": path, "message": msg}
+
+
+def _run_job(slug: str, row: dict, plan: dict) -> None:
     def report(**fields):
         _update_job(slug, **fields)
 
+    name = _opt_str(row.get("name")) or slug
     try:
-        result = install_app(slug, snap, report)
-        name = snap["apps"][slug].get("name") or slug
-        verb = "Updated" if result["action"] == "update" else "Installed"
+        if plan["action"] == "update":
+            result = update_app(slug, plan["path"], report)
+        elif plan["action"] == "switch":
+            result = switch_app(slug, row, plan["path"], report)
+        else:
+            result = install_app(slug, row, report)
+        message = result.get("message") or {
+            "install": f"Installed {name}", "update": f"Updated {name}",
+            "switch": f"{name} follows reviewed releases now"}[result["action"]]
         with _JOBS_LOCK:
             total = (_JOBS.get(slug) or {}).get("bytes_total") or 0
-        _update_job(slug, state="done", progress=1.0, bytes_done=total,
-                    path=result["path"].replace(os.sep, "/"),
-                    message=f"{verb} {name}")
+        _update_job(slug, state="done", step="done", progress=1.0, bytes_done=total,
+                    path=result["path"].replace(os.sep, "/"), message=message)
     except InstallError as exc:
         _update_job(slug, state="error", error=str(exc), message=str(exc))
     except Exception as exc:  # noqa: BLE001 — a job must always finish
-        logger.exception("marketplace: install of %s crashed", slug)
-        msg = f"install failed ({exc.__class__.__name__}: {exc})"
+        logger.exception("marketplace: %s of %s crashed", plan.get("action"), slug)
+        msg = f"{plan.get('action') or 'install'} failed ({exc.__class__.__name__}: {exc})"
         _update_job(slug, state="error", error=msg, message=msg)
+
+
+# ---------------------------------------------------------------------------
+# legacy adopt + check (the Installed page's buttons)
+# ---------------------------------------------------------------------------
+
+def adopt(slug: str) -> dict:
+    """POST /adopt: turn the LEGACY copy of `slug` into a marketplace copy in
+    place (`market.adopt_legacy`; the user's edits and data stay). Offered
+    only while the slug is listed. Raises InstallError."""
+    if not is_slug(slug):
+        raise InstallError("invalid app slug")
+    copy = installed_copies().get(slug)
+    if copy and os.path.lexists(os.path.join(copy["path"], ".git")):
+        # Never `git init` over a repo (the author's own clone, a link copy):
+        # only a plain-files folder is a legacy install.
+        raise InstallError("This is already a copy of the app's repo.")
+    if not copy or copy["kind"] != "legacy":
+        raise InstallError("There is no copy from the old app store to switch.")
+    snap, error = cached_snapshot()
+    row = ((snap or {}).get("apps") or {}).get(slug)
+    if row is None:
+        raise InstallError("This app is no longer in the Community, so there is no reviewed "
+                           "version to switch to.")
+    if not row_repo(row) or not is_sha(row.get("commit")):
+        raise InstallError("This app has no reviewed version to switch to yet.")
+    from fused_render.contrib import market
+
+    res = market.adopt_legacy(os.path.realpath(copy["path"]), row)
+    msg = _engine_answer(res, "Couldn't switch this app right now.")
+    _reset_apps_snapshot()
+    return {"path": copy["path"].replace(os.sep, "/"), "message": msg, "result": res}
+
+
+def check(slug: str | None = None) -> dict:
+    """POST /check — "Check for a new release": the catalog rebuilt past its
+    TTL, the block list refreshed and enforced on every copy, then (with a
+    slug) a sync of that marketplace copy, which the engine turns into the
+    release move. Each step is best-effort and reported, never raised: the
+    button always answers. A slug that names no marketplace copy is just
+    the first two steps."""
+    snap, error = get_snapshot(force=True)
+    out: dict = {"status": "ok",
+                 "catalog": {"ok": snap is not None and not snap.get("stale"),
+                             "stale": bool((snap or {}).get("stale")),
+                             "fetched_at": (snap or {}).get("fetched_at"),
+                             "message": error or (snap or {}).get("warning")},
+                 "blocklist": None, "enforced": [], "sync": None, "app": None}
+    try:
+        from fused_render.contrib import blocks
+
+        ok = blocks.refresh()
+        out["enforced"] = [e for e in (blocks.enforce_all() or []) if isinstance(e, dict)]
+    except ImportError:
+        ok = blocklist(force=True).get("status") == "ok"
+    except Exception:  # noqa: BLE001 — a crashing enforcement must not eat the answer
+        logger.exception("marketplace: block list check failed")
+        ok = False
+    bl = blocklist()
+    out["blocklist"] = {"ok": bool(ok), "checked_at": bl.get("checked_at"), "count": len(bl["blocked"])}
+    if is_slug(slug):
+        copy = installed_copies().get(slug)
+        if copy and copy["kind"] == "marketplace":
+            try:
+                from fused_render import git_upstream
+
+                out["sync"] = git_upstream.sync_repo(os.path.realpath(copy["path"]),
+                                                     action="Check for a new release", push=False)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("marketplace: check sync failed for %s", copy["path"])
+                out["sync"] = {"ok": False, "message": f"{exc.__class__.__name__}: {exc}"}
+        cur, _e = cached_snapshot()
+        row = ((cur or {}).get("apps") or {}).get(slug)
+        copy = installed_copies().get(slug)
+        if row is not None:
+            out["app"] = app_entry(slug, row, copy)
+        elif copy:
+            out["app"] = _local_entry(slug, copy, catalog_fresh=_fresh(cur))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# block list (B4)
+# ---------------------------------------------------------------------------
+#
+# `<state>/blocklist.json` = {"blocked": [{slug, commit, level, reason,
+# what_to_do, at}], "checked_at": <last attempt>, "fetched_at": <last
+# success, iso>, "generated_at", "stale": bool, "status": "ok"|"stale"|
+# "error", "message"}. Same TTL and back-off as the catalog (`checked_at` is
+# the last ATTEMPT); `force` skips the TTL (the Check button, the engine's
+# check action). A failed fetch keeps the last list (offline, the last list
+# applies — §18.4) flagged stale; with no list at all the answer is an
+# empty list with `status: "error"`, persisted too so the back-off holds.
+# Fail-closed where the data is ours to judge: an entry whose slug or commit
+# is malformed is dropped (it can name nothing), a `level` that is neither
+# hard nor soft reads as hard (M3).
+
+_BLOCKLIST_LOCK = threading.Lock()
+
+
+def _clean_block(r) -> dict | None:
+    if not isinstance(r, dict) or not is_slug(r.get("slug")) or not is_sha(r.get("commit")):
+        return None
+    return {"slug": r["slug"], "commit": r["commit"],
+            "level": r.get("level") if r.get("level") in _BLOCK_LEVELS else "hard",
+            "reason": _opt_str(r.get("reason")) or "",
+            "what_to_do": _opt_str(r.get("what_to_do")) or "",
+            "at": _opt_str(r.get("at"))}
+
+
+def _read_blocklist() -> dict | None:
+    try:
+        with open(blocklist_path(), encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("blocked"), list):
+        return None
+    data["blocked"] = [b for b in (_clean_block(r) for r in data["blocked"]) if b]
+    return data
+
+
+def _write_blocklist(data: dict) -> None:
+    os.makedirs(state_dir(), exist_ok=True)
+    tmp = f"{blocklist_path()}.{os.getpid()}.{threading.get_ident()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+        os.replace(tmp, blocklist_path())
+    finally:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+
+
+def _had_list(data: dict | None) -> bool:
+    """Whether `data` is a list the backend once answered (vs. the empty
+    stand-in written when it never did). contrib/blocks.refresh may rewrite
+    the file as just `{blocked, checked_at}`: that is a list too."""
+    return data is not None and data.get("status") != "error"
+
+
+def _blocklist_view(data: dict) -> dict:
+    status = data.get("status")
+    if status not in ("ok", "stale", "error"):
+        status = "stale" if data.get("stale") else "ok"  # the slim shape (see `_had_list`)
+    return {"blocked": list(data.get("blocked") or []), "checked_at": data.get("checked_at"),
+            "fetched_at": data.get("fetched_at"), "generated_at": data.get("generated_at"),
+            "stale": bool(data.get("stale")), "status": status, "message": data.get("message")}
+
+
+def blocklist(force: bool = False) -> dict:
+    """The block list (module comment above): cached for CACHE_TTL_S since
+    the last attempt unless `force`. Never raises."""
+    cached = _read_blocklist()
+    if not force and cached is not None and _age(cached, time.time()) < CACHE_TTL_S:
+        return _blocklist_view(cached)
+    if cached is not None and not force:
+        if not _BLOCKLIST_LOCK.acquire(blocking=False):
+            return _blocklist_view(cached)  # a fetch is in flight
+    else:
+        _BLOCKLIST_LOCK.acquire()
+    try:
+        now = time.time()
+        if not force:
+            cached = _read_blocklist()
+            if cached is not None and _age(cached, now) < CACHE_TTL_S:
+                return _blocklist_view(cached)
+        try:
+            rows = _udf_get("marketplace_blocklist")
+        except SourceError as exc:
+            logger.warning("marketplace: block list refresh failed: %s", exc)
+            base = dict(cached) if cached is not None else {"blocked": [], "fetched_at": None,
+                                                            "generated_at": None}
+            data = {**base, "checked_at": now, "stale": True, "message": str(exc),
+                    "status": "stale" if _had_list(cached) else "error"}
+        except Exception as exc:  # noqa: BLE001 — same as a failed fetch
+            logger.exception("marketplace: block list refresh crashed")
+            base = dict(cached) if cached is not None else {"blocked": [], "fetched_at": None,
+                                                            "generated_at": None}
+            data = {**base, "checked_at": now, "stale": True, "message": exc.__class__.__name__,
+                    "status": "stale" if _had_list(cached) else "error"}
+        else:
+            data = {"blocked": [b for b in (_clean_block(r) for r in rows) if b],
+                    "checked_at": now, "fetched_at": _utc_now(),
+                    "generated_at": next((_opt_text(r.get("generated_at")) for r in rows
+                                          if r.get("generated_at")), None),
+                    "stale": False, "status": "ok", "message": None}
+        try:
+            _write_blocklist(data)
+        except OSError:
+            logger.warning("marketplace: could not write %s", blocklist_path(), exc_info=True)
+        return _blocklist_view(data)
+    finally:
+        _BLOCKLIST_LOCK.release()
+
+
+def cached_blocklist() -> dict:
+    """The last block list on disk, whatever its age, without the network
+    (an empty `status: "error"` list when there is none)."""
+    cached = _read_blocklist()
+    if cached is None:
+        return {"blocked": [], "checked_at": None, "fetched_at": None, "generated_at": None,
+                "stale": True, "status": "error", "message": None}
+    return _blocklist_view(cached)
+
+
+# ---------------------------------------------------------------------------
+# the open gate (B4 hard block)
+# ---------------------------------------------------------------------------
+
+#: How far up from a page the gate looks for the copy's repo root: app
+#: pages sit at a clone's root or a few folders down, never deeper.
+_GATE_MAX_UP = 8
+
+
+def copy_root(path: str) -> str | None:
+    """The copy holding `path` (a page, or an app folder): the nearest
+    folder at or above it heading a `.git` — a marketplace copy is always a
+    repo root, and one stat per level keeps this cheap on the render path.
+    None when there is none within `_GATE_MAX_UP` levels."""
+    d = os.path.abspath(path)
+    if not os.path.isdir(d):
+        d = os.path.dirname(d)
+    for _ in range(_GATE_MAX_UP):
+        if os.path.exists(os.path.join(d, ".git")):
+            return d
+        up = os.path.dirname(d)
+        if up == d:
+            return None
+        d = up
+    return None
+
+
+def open_gate_at(path: str) -> tuple[str, dict] | None:
+    """`(copy root, {"blocked": {...}})` while a hard block stands on the
+    copy holding `path`, else None — what `render`'s app route and
+    `apps.api_app_entry` answer 423 with (§18.4: the app will not open).
+    The verdict is `contrib.blocks.gate`'s; without that module (an older
+    engine) nothing is gated. Never raises."""
+    try:
+        from fused_render.contrib import blocks
+    except ImportError:
+        return None
+    try:
+        root = copy_root(path)
+        if root is None:
+            return None
+        got = blocks.gate(root)
+        return (root, got) if isinstance(got, dict) and got.get("blocked") else None
+    except Exception:  # noqa: BLE001 — a broken gate must not take every page down
+        logger.exception("marketplace: open gate failed for %s", path)
+    return None
+
+
+def open_gate(path: str) -> dict | None:
+    """`open_gate_at`'s payload alone."""
+    got = open_gate_at(path)
+    return got[1] if got else None
+
+
+def _page_block(b) -> dict | None:
+    """A record's `block` as the page reads it: `contrib.blocks.view` (the
+    engine's one shape) when that module is there, else `_block_view`."""
+    try:
+        from fused_render.contrib import blocks
+
+        return blocks.view(b)
+    except ImportError:
+        return _block_view(b)
+
+
+def block_notices(paths) -> dict[str, dict]:
+    """`{path: block view}` for the app folders among `paths` that are
+    marketplace copies with a `block` on their record — ONE store read for a
+    whole listing. Independent of every Community flag: block enforcement
+    is (§18.8), so the page must be able to ask before a soft-blocked app
+    opens (`level`, `reason`, `what_to_do`, `confirmed`) whatever the flags
+    say. Never raises."""
+    try:
+        from fused_render.contrib import store
+
+        records = store.all() or {}
+        out = {}
+        for p in paths:
+            if not isinstance(p, str):
+                continue
+            rec = records.get(store.key(p))
+            if isinstance(rec, dict) and rec.get("kind") == "marketplace" and isinstance(rec.get("block"), dict):
+                view = _page_block(rec["block"])
+                if view:
+                    out[p] = view
+        return out
+    except Exception:  # noqa: BLE001 — a card line must never fail the listing
+        logger.exception("marketplace: block notices failed")
+        return {}
+
+
+def block_notice(path: str) -> dict | None:
+    """`block_notices` for the one copy holding `path`."""
+    root = copy_root(path)
+    return block_notices([root]).get(root) if root else None
+
+
+def blocked_page(root: str, notice: dict) -> str:
+    """The hard-block notice as a minimal HTML page — what `/render` answers
+    (423) to a browser or an iframe framing the app, instead of raw JSON:
+    the reason, what to do, what it was rolled back to, and a link to the
+    app's own page (`/apps/<folder>`, the shell's encoding), which holds the
+    BlockedNotice and its buttons. Self-contained (no runtime, no scripts),
+    every value escaped; follows the OS light/dark."""
+    import html as _html
+
+    b = notice.get("blocked") if isinstance(notice.get("blocked"), dict) else {}
+    esc = lambda v: _html.escape(str(v))  # noqa: E731
+    rolled = b.get("rolled_back_date") or b.get("rolled_back_to_at")
+    if not rolled and isinstance(b.get("rolled_back_to"), str):
+        rolled = b["rolled_back_to"][:7]
+    lines = [f"<p>{esc(b.get('reason') or 'Fused blocked the version of this app you were running.')}</p>"]
+    if b.get("what_to_do"):
+        lines.append(f"<p><strong>What to do:</strong> {esc(b['what_to_do'])}</p>")
+    if rolled:
+        lines.append(f"<p>Rolled back to the release of {esc(rolled)}.</p>")
+    href = "/apps/" + "/".join(quote(s, safe="") for s in root.replace(os.sep, "/").split("/") if s)
+    return ("<!doctype html><html><head><meta charset=utf-8>"
+            "<meta name=viewport content='width=device-width,initial-scale=1'>"
+            "<title>This app is blocked</title><style>"
+            ":root{color-scheme:light dark;--bg:#fff;--fg:#1c1c1e;--muted:#6b6b70;--line:#e3e3e6}"
+            "@media (prefers-color-scheme:dark){:root{--bg:#1c1c1e;--fg:#f2f2f4;--muted:#a1a1a6;--line:#3a3a3e}}"
+            "body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 -apple-system,system-ui,sans-serif}"
+            "main{max-width:520px;margin:12vh auto;padding:0 16px}"
+            "h1{font-size:20px;margin:0 0 12px}p{margin:0 0 10px}"
+            "a{display:inline-block;margin-top:8px;padding:6px 12px;border:1px solid var(--line);"
+            "border-radius:8px;color:inherit;text-decoration:none}"
+            "</style></head><body><main><h1>This app is blocked</h1>"
+            + "".join(lines)
+            + f"<a href='{esc(href)}' target='_top'>Open the app page</a></main></body></html>")
+
+
+def install_dest(slug: str, row: dict) -> str | None:
+    """Where installing `slug` lands (or the copy it updates): the existing
+    copy's folder, else ``app/<repo>`` as the link installer names it
+    (appfile._slug of the repo's name). For a sentence on a card (the bots'
+    approval), not a precondition: the installer decides for real."""
+    copy = installed_copies().get(slug)
+    if copy:
+        return copy["path"]
+    repo = row_repo(row)
+    if not repo:
+        return None
+    from fused_render import appfile
+
+    return os.path.join(install_root(), appfile._slug(repo.split("/", 1)[1]))

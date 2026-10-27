@@ -761,6 +761,61 @@ def create_repo(name: str, *, description: str, private: bool = False) -> str:
     return _backend().create_repo(name, description=description, private=private)
 
 
+# --------------------------------------------- the Marketplace index (§18.6)
+#
+# Publishing to the Marketplace (contrib/listing.py) writes its row file in a
+# scratch clone of the index and pushes it with `push`, then opens the pull
+# request with `open_pr` — so the index needs only these two calls beyond
+# what proposals already use: the review check's result on a head commit,
+# and retitling the one open pull request a later publish reuses.
+
+#: A check run's `status` while it has not finished, and the conclusions that
+#: count as passing. Everything else that finished is a fail (§18.0 M3: the
+#: review fails closed — "cancelled", "timed_out", "action_required" and
+#: "stale" are no better than "failure").
+CHECK_PENDING = ("queued", "in_progress", "waiting", "requested", "pending")
+CHECK_PASSING = ("success", "neutral", "skipped")
+
+
+def check_runs(full: str, sha: str, *, name: str | None = None) -> list[dict]:
+    """The check runs GitHub holds for commit `sha` of `full`, newest first:
+    `[{name, status, conclusion, url, completed_at}]` (`conclusion` None
+    while `status` is pending). With `name`, only the runs of that check (the
+    index's `review`). A pull request's head lives in the sender's fork, but
+    its checks are reported on the base repo — ask `full` = the index."""
+    if not _SHA_RE.match(sha or ""):
+        return []
+    rows = _backend().check_runs(_full(full), sha)
+    if name is not None:
+        rows = [r for r in rows if r.get("name") == name]
+    return sorted(rows, key=lambda r: r.get("completed_at") or "~", reverse=True)
+
+
+def commit_statuses(full: str, sha: str, *, context: str | None = None) -> list[dict]:
+    """The commit statuses GitHub holds for `sha` of `full`, newest first:
+    `[{context, state, creator, url, created_at}]`, `state` one of pending |
+    success | failure | error. The index's review reports here (context
+    `review`, on the PR HEAD sha): under `pull_request_target` a workflow's
+    own check run is attached to the BASE commit, so only a status set
+    explicitly on the head says which version was reviewed."""
+    if not _SHA_RE.match(sha or ""):
+        return []
+    rows = _backend().commit_statuses(_full(full), sha)
+    if context is not None:
+        rows = [r for r in rows if r.get("context") == context]
+    return sorted(rows, key=lambda r: r.get("created_at") or "", reverse=True)
+
+
+def update_pr(full: str, number: int, *, title: str | None = None,
+              body: str | None = None) -> None:
+    """Retitle / rewrite the body of a pull request the signed-in user
+    opened — a Marketplace publish that reuses its open request for a
+    different purpose ("List" -> "Remove") says so on GitHub too."""
+    if title is None and body is None:
+        return
+    _backend().patch_pull(_full(full), int(number), title=title, body=body)
+
+
 # ------------------------------------------------------------ the real backend
 
 
@@ -1007,6 +1062,33 @@ class _Real:
         if not data.get("full_name"):
             raise GitHubError("failed", detail="create answer had no full_name")
         return data["full_name"]
+
+
+    # ---- the Marketplace index (§18.6)
+
+    def check_runs(self, full: str, sha: str) -> list[dict]:
+        data = self._api("GET", f"repos/{full}/commits/{sha}/check-runs?per_page=100") or {}
+        out = []
+        for r in data.get("check_runs") or []:
+            if isinstance(r, dict):
+                out.append({"name": r.get("name"), "status": r.get("status"),
+                            "conclusion": r.get("conclusion"), "url": r.get("html_url") or "",
+                            "completed_at": r.get("completed_at")})
+        return out
+
+    def commit_statuses(self, full: str, sha: str) -> list[dict]:
+        out = []
+        for r in self._api("GET", f"repos/{full}/commits/{sha}/statuses?per_page=100") or []:
+            if isinstance(r, dict):
+                out.append({"context": r.get("context"), "state": r.get("state"),
+                            "creator": (r.get("creator") or {}).get("login"),
+                            "url": r.get("target_url") or "", "created_at": r.get("created_at")})
+        return out
+
+    def patch_pull(self, full: str, number: int, *, title: str | None,
+                   body: str | None) -> None:
+        patch = {k: v for k, v in (("title", title), ("body", body)) if v is not None}
+        self._api("PATCH", f"repos/{full}/pulls/{number}", patch)
 
 
 _REAL = _Real()
@@ -1660,6 +1742,58 @@ class FakeGitHub:
         if check and res.returncode != 0:
             raise subprocess.CalledProcessError(res.returncode, args, res.stdout, res.stderr)
         return res
+
+
+    # ---- the Marketplace index (§18.6)
+
+    def set_check_run(self, full: str, sha: str, name: str, *, status: str = "completed",
+                      conclusion: str | None = None) -> None:
+        """The index's review workflow reporting on head `sha` (mutator):
+        replaces an earlier run of the same check on that commit."""
+        with self._txn() as st:
+            runs = st.setdefault("checks", {}).setdefault(full.lower(), {}).setdefault(sha, [])
+            runs[:] = [r for r in runs if r["name"] != name]
+            runs.append({"name": name, "status": status,
+                         "conclusion": conclusion if status == "completed" else None,
+                         "url": f"https://github.com/{full}/runs/{len(runs) + 1}",
+                         "completed_at": _iso_now() if status == "completed" else None})
+
+    def check_runs(self, full: str, sha: str) -> list[dict]:
+        with self._txn() as st:
+            self._call(st, "check_runs")
+            self._visible(st, full)
+            return [dict(r) for r in st.get("checks", {}).get(full.lower(), {}).get(sha, [])]
+
+    def set_commit_status(self, full: str, sha: str, context: str, state: str, *,
+                          creator: str = "github-actions[bot]") -> None:
+        """A commit status on `sha` (mutator) — the index's review job
+        reporting on a PR head. Appended: GitHub keeps every status."""
+        with self._txn() as st:
+            rows = st.setdefault("statuses", {}).setdefault(full.lower(), {}).setdefault(sha, [])
+            rows.append({"context": context, "state": state, "creator": creator,
+                         "url": f"https://github.com/{full}/actions/{len(rows) + 1}",
+                         "created_at": _iso_now()})
+
+    def commit_statuses(self, full: str, sha: str) -> list[dict]:
+        with self._txn() as st:
+            self._call(st, "commit_statuses")
+            self._visible(st, full)
+            return [dict(r) for r in
+                    st.get("statuses", {}).get(full.lower(), {}).get(sha, [])][::-1]
+
+    def patch_pull(self, full: str, number: int, *, title: str | None,
+                   body: str | None) -> None:
+        with self._txn() as st:
+            self._call(st, "patch_pull")
+            me = self._me(st)
+            row = self._visible(st, full)
+            pr = self._pr_row(st, full, number)
+            if not same_login(pr["user"], me) and not self._can_push(st, row, me):
+                raise GitHubError("forbidden", status=403)
+            if title is not None:
+                pr["title"] = title
+            if body is not None:
+                pr["body"] = body
 
 
 def _iso_now() -> str:

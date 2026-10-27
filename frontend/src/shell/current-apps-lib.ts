@@ -148,14 +148,15 @@ export const APP_PAGE_PREFIX = "/apps/";
  *  default tab (appPageTabFromSearch's own silent-fallback rule below), the
  *  same as any other unknown tab.
  *
- *  ONE EXCEPTION to "every tab on every folder": `proposals`, the author's
- *  inbox for the GitHub contribution loop (shell/contrib/ProposalsTab.tsx),
- *  is offered only on an app the user owns that has a GitHub repo, with the
- *  inbox phase switched on — AppPage decides from `/api/contrib/app` and a
- *  `?_tab=proposals` link on any other folder falls back to the default the
- *  same silent way. It is LAST so its arrival after that read never shifts
- *  the tabs the page opened with. */
-export const APP_PAGE_TABS = ["overview", "tasks", "files", "api", "doctor", "proposals"] as const;
+ *  ONE EXCEPTION to "every tab on every folder": `community`, the
+ *  contribution loop's tab (shell/contrib/CommunityTab.tsx, CONTRIB_LOOP.md
+ *  §19.4), is offered only on an app the user owns or a classified copy of
+ *  someone else's — AppPage decides from `/api/contrib/ladder` and
+ *  `/api/contrib/app`, and a `?_tab=community` link on any other folder
+ *  falls back to the default the same silent way. It is LAST so its arrival
+ *  after those reads never shifts the tabs the page opened with. It replaced
+ *  the `proposals` tab: a `?_tab=proposals` link names it still. */
+export const APP_PAGE_TABS = ["overview", "tasks", "files", "api", "doctor", "community"] as const;
 export type AppPageTab = (typeof APP_PAGE_TABS)[number];
 export const DEFAULT_APP_PAGE_TAB: AppPageTab = APP_PAGE_TABS[0];
 
@@ -210,11 +211,15 @@ export function appPathFromPath(pathname: string): string | null {
 
 /** The tab a query names. Missing or unknown falls back to the default
  *  SILENTLY (the /ai-models posture): a stale link opens the page, not an
- *  error. */
+ *  error. The one alias: `proposals`, the tab Community replaced (§19.4). */
 export function appPageTabFromSearch(search: string): AppPageTab {
   const tab = new URLSearchParams(search).get(APP_PAGE_TAB_PARAM);
+  if (tab === LEGACY_PROPOSALS_TAB) return "community";
   return isTab(tab) ? tab : DEFAULT_APP_PAGE_TAB;
 }
+
+/** The old Proposals tab's name: read as `community`, rewritten in place. */
+export const LEGACY_PROPOSALS_TAB = "proposals";
 
 // ---- the displayed order: the server's array --------------------------------
 //

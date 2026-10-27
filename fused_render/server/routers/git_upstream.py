@@ -87,7 +87,10 @@ def api_git_upstream_action(body: dict = Body(...), x_fused: str | None = Header
             return {"ok": False, "reason": "not-an-app",
                     "message": "that path is not inside an app folder"}
         root = git_upstream.repo_root(app_dir) or app_dir
-        if classify.kind_of(root) != "github":
+        if not classify.is_github_like(classify.kind_of(root)):
+            # A GitHub-link copy, or a marketplace copy (§18.4): its Get
+            # latest is ALWAYS this route — the engine brings in the
+            # approved release, never the author's tip (M1).
             return {"ok": False, "reason": "not-a-copy",
                     "message": "This only works for a copy of someone else's app."}
         return engine.bring_in(root)

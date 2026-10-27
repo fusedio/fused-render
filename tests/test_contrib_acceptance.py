@@ -36,7 +36,8 @@ import pytest
 from fastapi import FastAPI
 from starlette.testclient import TestClient
 
-from _contrib_gh_world import APP_PY, PAGE, assert_home_invariants, claude_commit, git
+from _contrib_gh_world import (APP_PY, PAGE, assert_home_invariants,  # noqa: E402
+                               assert_market_invariants, claude_commit, git)
 
 H = {"X-Fused": "1"}
 URL = "https://github.com/alice/sine"
@@ -291,11 +292,16 @@ def wait_merge(job_id, timeout=90):
 
 
 def invariants(m: Machine):
-    """§17.1 I3 + I4 on a GitHub-link copy, after every step that touches it."""
+    """§17.1 I3 + I4 on a GitHub-link copy, after every step that touches it
+    — and §18.4's reading on a marketplace copy: the mirror holds the
+    approved commit, upstream is the mirror."""
     from fused_render.contrib import classify
 
-    if classify.kind_of(m.app) == "github":
+    kind = classify.kind_of(m.app)
+    if kind == "github":
         assert_home_invariants(m.app)
+    elif kind == "marketplace":
+        assert_market_invariants(m.app)
 
 
 def app_open(m: Machine):

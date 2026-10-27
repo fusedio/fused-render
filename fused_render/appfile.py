@@ -637,6 +637,10 @@ STATE_CLASH = "clash"          # app/<slug> holds a DIFFERENT app
 # Git-source files only (appfile_git.py, DL-9):
 STATE_LOCAL = "local"          # the copy has commits/edits of its own: update with git
 STATE_REPLACE = "replace"      # an unchanged file-installed copy the clone replaces
+# A GitHub link opened for a copy installed from the Marketplace
+# (docs/CONTRIB_LOOP.md §18.4): never a move — the page asks "Follow <who>
+# directly?" (`git.switch`), and `force` is the yes (`market.switch_to_link`).
+STATE_SWITCH_LINK = "switch-link"
 WARN_STATES = frozenset({STATE_DIVERGED, STATE_SAME, STATE_DOWNGRADE, STATE_UNKNOWN})
 
 #: Divergence hashes the stamped files on every probe; an app can be large.
@@ -1111,7 +1115,7 @@ def install_target(fused_path: str, *, light: bool = False) -> dict:
         "found_by": found_by,
         "husk": husk,
         "state": state,
-        "needs_force": state in WARN_STATES or state == STATE_REPLACE,
+        "needs_force": state in WARN_STATES or state in (STATE_REPLACE, STATE_SWITCH_LINK),
         "git": git,
         "downloaded": _is_download(fused_path),
         "exported_at": incoming_at,

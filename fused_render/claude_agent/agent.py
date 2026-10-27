@@ -5267,7 +5267,8 @@ def _commit_turn(file: str, message: str, backend: str = "") -> None:
         def local(key):
             r = git("config", "--local", "--get", key)
             return r.stdout.strip() if r.returncode == 0 else ""
-        if repo_dir == app_dir and local("fused.kind") == "github":
+        # `marketplace` (§18.4) is a copy of someone else's app the same way.
+        if repo_dir == app_dir and local("fused.kind") in ("github", "marketplace"):
             trailer = "\n\nCo-authored-by: Claude <noreply@anthropic.com>"
             # Someone else's app: its `.git/config` and hooks are the side the
             # app can write — no fsmonitor command, no hooks (§16.12). An own

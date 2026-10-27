@@ -13,8 +13,19 @@
 // replaceState (a typed query) / pushState (a chip) — no navigation, so
 // nothing remounts and the field keeps focus — and Back out of a chip lands
 // on the previous filter, which App.tsx remounts from the URL.
+//
+// SORT (stage B, handoff B6): Recommended · Newest release · Most remixed,
+// kept in `?sort=` (replaceState). It orders the filtered grid and the
+// per-category shelves; the server's collections (Featured, curated
+// shelves, New and updated) keep their curated order, and a typed query
+// under Recommended keeps its relevance order. Recommended = remixes × 3 +
+// contributors × 2 + recency, recency = 10 × ½^(days since the last
+// release / 30) — a release today is worth about three remixes, and that
+// halves every month. No install counts (the owner has not decided on
+// collecting them).
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
-import { RefreshCw, SearchX } from "lucide-react";
+import { ArrowDownWideNarrow, RefreshCw, SearchX } from "lucide-react";
+import { replaceSearch } from "@platform/lib/router";
 import { CardSkeleton, Delayed } from "@platform/ui/appstore";
 import {
   refreshCatalog,
@@ -80,6 +91,56 @@ function rank(apps: AppEntry[], q: string): AppEntry[] {
   return named.concat(apps.filter((a) => !named.includes(a)));
 }
 
+export type SortKey = "recommended" | "newest" | "remixed";
+
+export const SORTS: { key: SortKey; label: string }[] = [
+  { key: "recommended", label: "Recommended" },
+  { key: "newest", label: "Newest release" },
+  { key: "remixed", label: "Most remixed" },
+];
+
+const DAY_MS = 86_400_000;
+/** Days for the recency points to halve. */
+const RECENCY_HALF_LIFE_DAYS = 30;
+/** What a release made today is worth. */
+const RECENCY_POINTS = 10;
+
+function releasedAt(app: AppEntry): number {
+  const t = Date.parse(app.last_release_at ?? app.updated_at ?? app.published_at ?? "");
+  return Number.isNaN(t) ? 0 : t;
+}
+
+/** Recommended's score: remixes × 3 + contributors × 2 + recency. */
+export function recommendScore(app: AppEntry, now = Date.now()): number {
+  const at = releasedAt(app);
+  const days = at ? Math.max(0, (now - at) / DAY_MS) : Infinity;
+  const recency = Number.isFinite(days) ? RECENCY_POINTS * Math.pow(0.5, days / RECENCY_HALF_LIFE_DAYS) : 0;
+  return (app.remix_count ?? 0) * 3 + (app.contributor_count ?? 0) * 2 + recency;
+}
+
+/** `apps` in `key`'s order; ties keep their catalog order (a stable sort). */
+export function sortApps(apps: AppEntry[], key: SortKey, now = Date.now()): AppEntry[] {
+  const out = apps.slice();
+  if (key === "newest") out.sort((a, b) => releasedAt(b) - releasedAt(a));
+  else if (key === "remixed") out.sort((a, b) => (b.remix_count ?? 0) - (a.remix_count ?? 0) || releasedAt(b) - releasedAt(a));
+  else out.sort((a, b) => recommendScore(b, now) - recommendScore(a, now));
+  return out;
+}
+
+function readSort(): SortKey {
+  const v = new URLSearchParams(location.search).get("sort");
+  return v === "newest" || v === "remixed" ? v : "recommended";
+}
+
+/** The URL's `?sort=` follows the control, the rest of the query kept. */
+function writeSort(key: SortKey) {
+  const sp = new URLSearchParams(location.search);
+  if (key === "recommended") sp.delete("sort");
+  else sp.set("sort", key);
+  const s = sp.toString();
+  replaceSearch(location.pathname + (s ? "?" + s : ""));
+}
+
 export interface HomeSection {
   id: string;
   title: string;
@@ -128,17 +189,26 @@ export function Discover({
 }) {
   const { catalog, error, loading } = snap;
   const apps = catalog?.apps ?? [];
+  const [sort, setSort] = useState<SortKey>(readSort);
   const local = useMemo(() => {
     const byCat = category === "all" ? apps : apps.filter((a) => a.category === category);
-    return rank(byCat.filter((a) => matches(a, q)), q);
-  }, [apps, category, q]);
+    const hits = byCat.filter((a) => matches(a, q));
+    // A typed query under Recommended keeps its relevance order.
+    return q.trim() && sort === "recommended" ? rank(hits, q) : sortApps(hits, sort);
+  }, [apps, category, q, sort]);
   const search = useMarketplaceSearch(q, category);
   // Server results once they have answered; while loading the previous server
   // results stay (or the local filter before the first answer); an error is a
   // silent fall back to the local filter.
   const useServer = !!q.trim() && (search.status === "ok" || (search.status === "loading" && search.apps.length > 0));
-  const filtered: AppEntry[] = useServer ? search.apps : local;
-  const sections = useMemo(() => (catalog ? homeSections(catalog, apps) : []), [catalog, apps]);
+  const filtered: AppEntry[] = useServer ? (sort === "recommended" ? search.apps : sortApps(search.apps, sort)) : local;
+  const sections = useMemo(() => {
+    if (!catalog) return [];
+    // The server's collections are curated: their order stands. The
+    // per-category shelves follow the sort.
+    const curated = new Set((catalog.collections ?? []).map((c) => c.id));
+    return homeSections(catalog, apps).map((s) => (curated.has(s.id) ? s : { ...s, apps: sortApps(s.apps, sort) }));
+  }, [catalog, apps, sort]);
   const featured = useMemo(() => apps.filter((a) => a.featured), [apps]);
   const home = category === "all" && !q.trim();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -147,12 +217,22 @@ export function Discover({
   return (
     <div className="mp-discover" ref={rootRef}>
       <CatalogNotices snap={snap} />
-      <Chips catalog={catalog} total={apps.length} value={category} onChange={onCategory} />
+      <div className="mp-toolbar">
+        <Chips catalog={catalog} total={apps.length} value={category} onChange={onCategory} />
+        <SortControl
+          value={sort}
+          disabled={!catalog}
+          onChange={(k) => {
+            setSort(k);
+            writeSort(k);
+          }}
+        />
+      </div>
 
       {!catalog ? (
         error ? (
           <EmptyState
-            title="Couldn't load the Marketplace"
+            title="Couldn't load the Community"
             body={error}
             action={
               <button type="button" className="mp-btn" onClick={() => void refreshCatalog({ force: true })} disabled={loading}>
@@ -260,6 +340,28 @@ export function Discover({
   );
 }
 
+function SortControl({ value, onChange, disabled }: { value: SortKey; onChange: (k: SortKey) => void; disabled?: boolean }) {
+  return (
+    <label className="mp-sort">
+      <ArrowDownWideNarrow size={13} strokeWidth={2.2} aria-hidden="true" />
+      <span className="mp-sort-label">Sort</span>
+      <select
+        className="mp-sort-select"
+        value={value}
+        disabled={disabled}
+        aria-label="Sort apps"
+        onChange={(e) => onChange(e.target.value as SortKey)}
+      >
+        {SORTS.map((s) => (
+          <option key={s.key} value={s.key}>
+            {s.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 function labelOf(catalog: Catalog | null, id: string): string {
   return catalog?.categories.find((c) => c.id === id)?.label ?? id;
 }
@@ -301,7 +403,7 @@ export function CatalogNotices({ snap }: { snap: CatalogSnapshot }) {
   if (catalog.stale) {
     return (
       <Notice tone="warn" action={retry}>
-        You're offline or the Marketplace is unreachable. Showing apps cached {ago(catalog.fetched_at)}.
+        You're offline or the Community is unreachable. Showing apps cached {ago(catalog.fetched_at)}.
       </Notice>
     );
   }
@@ -317,15 +419,19 @@ export function CatalogNotices({ snap }: { snap: CatalogSnapshot }) {
 
 /** The quiet last line of the page: where the catalog came from and when,
  *  plus a refresh that drops the local cache and re-fetches the catalog
- *  from udf.ai (it does not re-ingest the repo). */
+ *  (it does not re-read the index). Stage B: the catalog names its index
+ *  repo (`index`, "owner/name") and the link goes there; an older server
+ *  without one still served the community repo. */
 export function CatalogFooter({ catalog, loading = false }: { catalog: Catalog | null; loading?: boolean }) {
   if (!catalog || catalog.source !== "udf-api") return null;
   const version = String(catalog.catalog_version ?? "").slice(0, 8);
+  const index = typeof catalog.index === "string" && /^[\w.-]+\/[\w.-]+$/.test(catalog.index) ? catalog.index : null;
+  const repo = index ?? "fusedio/fused-render-community-apps";
   return (
     <footer className="mp-footer" title={catalog.warning ?? undefined}>
-      Apps from{" "}
-      <a href="https://github.com/fusedio/fused-render-community-apps" target="_blank" rel="noopener noreferrer">
-        fused-render-community-apps
+      {index ? "Reviewed apps from " : "Apps from "}
+      <a href={`https://github.com/${repo}`} target="_blank" rel="noopener noreferrer">
+        {repo.split("/")[1]}
       </a>
       {version && <> · catalog {version}</>} · updated {ago(catalog.fetched_at)}
       <button
@@ -333,7 +439,7 @@ export function CatalogFooter({ catalog, loading = false }: { catalog: Catalog |
         className="mp-footer-refresh"
         onClick={() => void refreshCatalog({ force: true })}
         disabled={loading}
-        title="Re-fetch catalog from udf.ai"
+        title="Re-fetch the catalog"
         aria-label="Refresh catalog"
       >
         <RefreshCw size={12} strokeWidth={2.2} aria-hidden="true" className={loading ? "is-spinning" : ""} />

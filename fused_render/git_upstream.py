@@ -459,8 +459,9 @@ def _is_github(root):
     this module's to update, switch, fetch or push — the plain `--ff-only`
     pull would fail against the user's own commits on top, or move the
     branch behind the engine's back, and a plain push would send them to
-    the author."""
-    return _kind_of(root) == "github"
+    the author. A `marketplace` copy (§18.4) is the same: the engine keeps
+    it on its approved commit."""
+    return _kind_of(root) in ("github", "marketplace")
 
 
 _FOLLOWS_REFUSAL = ("Fused keeps this app up to date with its author's latest "
@@ -991,16 +992,19 @@ def _sync_locked(root, *, action, push):
         # plain-synced; if no record can be built, skipped (round 2, R4).
         try:
             if _cls.is_marked(root):
-                if _cls.claim_marked(root) is None:
+                claimed = _cls.claim_marked(root)
+                if claimed is None:
                     return _skipped("contrib-unrecorded")
-                kind = "github"
+                kind = claimed.get("kind") or "github"
         except Exception:  # noqa: BLE001 — a marked folder never gets a push
             logger.exception("contrib marker check failed for %s", root)
             return _skipped("contrib-error")
-    if kind == "github":
+    if _cls.is_github_like(kind):
+        # A GitHub-link copy, or a marketplace copy (§18.4): one engine,
+        # which keeps the second on its approved commit.
         try:
             with contrib_git():
-                _cls.settle_locked(root, "github")
+                _cls.settle_locked(root, kind)
                 from fused_render.contrib import engine as _contrib
                 return _with_off_default_state(root, _contrib.sync(root, action=action, push=push))
         except Exception:  # noqa: BLE001 — a broken engine must not break auto-sync
@@ -1383,6 +1387,25 @@ def _dispatch(path, runner=None):
     return True
 
 
+def _refresh_block_list(root):
+    """docs/CONTRIB_LOOP.md §18.4 B4: an opened copy of someone else's app
+    asks for the Marketplace block list (`contrib.blocks.refresh`, network,
+    bounded by the list's own TTL) — queued on the contrib background lane
+    (`refresh._submit`, deduped, never under this slot: §0.9), whatever the
+    switches say (§18.8). The engine's sync that follows enforces the list
+    on disk: a list newer than the last one this machine saw is enforced on
+    the NEXT open (or the 30-minute sweep, or Check). Never raises."""
+    if not _is_github(root):
+        return
+    try:
+        from fused_render.contrib import blocks, refresh
+
+        refresh._submit(refresh._P_OPEN, "blocklist", "",
+                        lambda: blocks.refresh(force=False))
+    except Exception:  # noqa: BLE001 — the last list applies
+        logger.exception("block list refresh failed for %s", root)
+
+
 def _background_check(path, runner=None):
     """Everything a note_app_opened dispatch does, entirely off the request
     thread: resolve `path` to a repo root (a `git rev-parse` subprocess),
@@ -1402,6 +1425,7 @@ def _background_check(path, runner=None):
     try:
         root = repo_root(path)
         if root is not None and _due(root, time.time()):
+            _refresh_block_list(root)
             if auto_sync_enabled():
                 # Auto-update on open: fast-forward the default branch
                 # ourselves. The slot is already held by note_app_opened.

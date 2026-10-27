@@ -1,17 +1,17 @@
-// The whole contribution loop in one dialog, for people who work from the
-// explorer and never open the app page (owner, 2026-10-22): the Source panel
-// (where this copy comes from, its state, every button, Activity with
-// Undo), the contributors line, and — for the author's own app — the
-// Proposals inbox. Opened from the explorer's three-dot menu
-// (apps/explorer/EntryActionsMenu.tsx, the "GitHub" row), which is why this
-// file is on the boundary script's shell-open-to-apps list: the app layer
-// may import this one shell module and nothing else of the loop.
+// The Community sheet (CONTRIB_LOOP.md §19.5): the app page's Community tab
+// as a dialog, for people who work from the explorer and never open the app
+// page. Opened from the explorer's three-dot menu
+// (apps/explorer/EntryActionsMenu.tsx, the "Community" row), which is why
+// this file is on the boundary script's shell-open-to-apps list: the app
+// layer may import this one shell module and nothing else of the loop.
 //
-// It reads the folder's state itself (`useAppContrib`), so the explorer
-// hands it only the folder. Everything it shows is what the app page shows;
-// nothing is decided here.
+// It reads the folder's state itself (`useAppContrib`, and the ladder inside
+// CommunityTab), so the explorer hands it only the folder. The body IS the
+// tab (`CommunityTab variant="sheet"`): same content, same server reads,
+// nothing decided here. "Open app page" goes to the tab itself.
 import { X } from "lucide-react";
 import { useAppContrib } from "@platform/lib/contrib";
+import { navigateUrl } from "@platform/lib/router";
 import { Button } from "@platform/shadcn/ui/button";
 import {
   Dialog,
@@ -21,26 +21,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@platform/shadcn/ui/dialog";
-import { Skeleton } from "@platform/shadcn/ui/skeleton";
-import { Contributors } from "./Contributors";
-import { ProposalsTab } from "./ProposalsTab";
-import { SourcePanel } from "./SourcePanel";
-import { authorOf, possessive } from "./words";
+import { appPageUrl } from "../current-apps-lib";
+import { CommunityTab } from "./CommunityTab";
 
 export function ContribModal({ dir, slug, onClose }: { dir: string; slug: string; onClose: () => void }) {
   const contrib = useAppContrib(dir);
-  const data = contrib.data;
-  const inboxOffered = !!data?.flags.inbox && !!data.inbox;
-  const kind = data?.panel?.kind ?? data?.copy.kind ?? null;
-  const who = data ? authorOf(data.copy) : null;
-  const what =
-    kind === "github" && who
-      ? `A copy of ${possessive(who)} app, installed from a GitHub link.`
-      : kind === "remix" && who
-        ? `Your remix of ${possessive(who)} app.`
-        : kind === "own"
-          ? "Your app on GitHub."
-          : "This app and GitHub.";
+  const href = appPageUrl(dir, "community");
 
   return (
     <Dialog
@@ -50,40 +36,42 @@ export function ContribModal({ dir, slug, onClose }: { dir: string; slug: string
       }}
     >
       <DialogContent
-        className="grid-rows-[auto_minmax(0,1fr)] gap-4 overflow-hidden p-6 sm:max-w-[680px] max-h-[85vh]"
+        className="grid-rows-[auto_minmax(0,1fr)] gap-4 overflow-hidden p-6 sm:max-w-[880px] max-h-[85vh]"
         showCloseButton={false}
       >
         <DialogHeader className="gap-2">
           <div className="flex items-start justify-between gap-2">
-            <DialogTitle className="font-semibold">{slug} on GitHub</DialogTitle>
-            <DialogClose render={<Button variant="ghost" size="icon-sm" className="-mt-1 -mr-1" />}>
-              <X aria-hidden />
-              <span className="sr-only">Close</span>
-            </DialogClose>
+            <DialogTitle className="font-semibold">{slug} · Community</DialogTitle>
+            <div className="-mt-1 -mr-1 flex items-center gap-2">
+              <Button
+                size="sm"
+                variant="outline"
+                render={
+                  <a
+                    href={href}
+                    className="contrib-modal-open"
+                    onClick={(e) => {
+                      if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+                      e.preventDefault();
+                      onClose();
+                      navigateUrl(href);
+                    }}
+                  />
+                }
+                nativeButton={false}
+              >
+                Open app page
+              </Button>
+              <DialogClose render={<Button variant="ghost" size="icon-sm" />}>
+                <X aria-hidden />
+                <span className="sr-only">Close</span>
+              </DialogClose>
+            </div>
           </div>
-          <DialogDescription>{what}</DialogDescription>
+          <DialogDescription>Where it stands, what changed, and who took part.</DialogDescription>
         </DialogHeader>
         <div className="contrib-modal-body">
-          {!contrib.settled && !data ? (
-            <Skeleton className="h-[120px] w-full rounded-[10px]" />
-          ) : !data ? (
-            <p className="contrib-modal-off">
-              The Community preview is off for this app. Turn on &ldquo;Where apps come from&rdquo; under
-              Preferences &rsaquo; Apps and sharing &rsaquo; Community to see where it comes from, send
-              changes, and review proposals.
-            </p>
-          ) : (
-            <>
-              <SourcePanel dir={dir} slug={slug} contrib={contrib} />
-              <Contributors contrib={data} />
-              {inboxOffered && (
-                <section className="contrib-modal-inbox" aria-label="Proposals">
-                  <h3 className="contrib-modal-h">Proposals</h3>
-                  <ProposalsTab dir={dir} slug={slug} contrib={contrib} />
-                </section>
-              )}
-            </>
-          )}
+          <CommunityTab dir={dir} slug={slug} contrib={contrib} variant="sheet" />
         </div>
       </DialogContent>
     </Dialog>

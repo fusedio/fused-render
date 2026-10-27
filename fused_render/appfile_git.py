@@ -141,16 +141,27 @@ def _staging_root(url: str) -> str:
     return os.path.join(appfetch.downloads_dir(), "git", key)
 
 
-def clone(url: str, repo: str) -> tuple[str, str, str | None]:
+def clone(url: str, repo: str, *, commit: str | None = None) -> tuple[str, str, str | None]:
     """Fresh clone of ``url`` into its staging dir; answers ``(dir, commit,
     commit time as an exported_at stamp)``. A previous staging clone for the
-    same URL is replaced (the link always shows the newest commit)."""
+    same URL is replaced (the link always shows the newest commit).
+
+    ``commit`` (a Marketplace install, docs/CONTRIB_LOOP.md §18.4): the
+    approved commit of the app's index row. The clone is made WITHOUT a
+    checkout (the author's tip is never written out, M1), the commit is
+    fetched by sha, it must be on the repo's default branch (a commit only
+    a fork has is refused — GitHub serves it under the repo's address
+    anyway), and HEAD is detached there; `_home_branch` then makes
+    `fused/mine` at it, with the mirror `refs/heads/<b>` = the commit."""
+    if commit is not None and not _SHA_RE.match(commit or ""):
+        raise GitInstallError("the Community named a version fused can't read")
     root = _staging_root(url)
     os.makedirs(os.path.dirname(root), exist_ok=True)
     work = tempfile.mkdtemp(dir=os.path.dirname(root), prefix=".clone-")
+    pinned = ("--no-checkout",) if commit else ()
     try:
         dest = os.path.join(work, repo)
-        r = _git("clone", "-q", "--filter=blob:none", "--", url, dest)
+        r = _git("clone", "-q", "--filter=blob:none", *pinned, "--", url, dest)
         if r.returncode != 0:
             https_msg = _err(r)
             if not any(m in https_msg.lower() for m in _AUTH_FAILURE_MARKERS):
@@ -159,12 +170,14 @@ def clone(url: str, repo: str) -> tuple[str, str, str | None]:
             # the ssh form, which normalize_url folds onto the same repo.
             shutil.rmtree(dest, ignore_errors=True)
             ssh_url = "git@github.com:" + url.split("github.com/", 1)[1] + ".git"
-            r = _git("clone", "-q", "--filter=blob:none", "--", ssh_url, dest)
+            r = _git("clone", "-q", "--filter=blob:none", *pinned, "--", ssh_url, dest)
             if r.returncode != 0:
                 raise GitInstallError(
                     f"could not clone {url}: it does not exist, or it is private and "
                     "your git has no access (sign in with `gh auth login`, or add an ssh "
                     f"key to GitHub). https: {https_msg} — ssh: {_err(r)}")
+        if commit:
+            _pin_clone(dest, url, commit)
         commit = _out(_git("rev-parse", "HEAD", cwd=dest))
         if not _SHA_RE.match(commit):
             raise GitInstallError(f"{url} has no commits to install")
@@ -185,6 +198,37 @@ def clone(url: str, repo: str) -> tuple[str, str, str | None]:
     finally:
         if work:
             shutil.rmtree(work, ignore_errors=True)
+
+
+def _default_branch_of(clone_dir: str) -> str | None:
+    """The cloned repo's default branch (`origin/HEAD`, which `git clone`
+    sets), else the local branch the clone created."""
+    short = _out(_git("symbolic-ref", "--short", "refs/remotes/origin/HEAD", cwd=clone_dir,
+                      timeout=20))
+    if "/" in short:
+        return short.split("/", 1)[1]
+    return _out(_git("symbolic-ref", "--short", "HEAD", cwd=clone_dir, timeout=20)) or None
+
+
+def _pin_clone(dest: str, url: str, commit: str) -> None:
+    """`clone(commit=)`'s second half: the approved commit fetched by sha,
+    checked to be on the default branch, checked out DETACHED (the first
+    and only checkout this clone gets)."""
+    branch = _default_branch_of(dest)
+    if not branch:
+        raise GitInstallError(f"{url} has no default branch to check the reviewed version against")
+    if _git("cat-file", "-e", commit + "^{commit}", cwd=dest, timeout=20).returncode != 0:
+        r = _git("fetch", "-q", "--no-tags", "origin", commit, cwd=dest)
+        if r.returncode != 0:
+            raise GitInstallError("couldn't download the reviewed version of this app; check "
+                                  "your connection and try again")
+    tip = f"refs/remotes/origin/{branch}"
+    if _git("merge-base", "--is-ancestor", commit, tip, cwd=dest, timeout=60).returncode != 0:
+        repo = url.split("github.com/", 1)[-1]
+        raise GitInstallError(f"The reviewed version isn't in {repo}'s {branch}")
+    r = _git("checkout", "-q", "--detach", commit, cwd=dest)
+    if r.returncode != 0:
+        raise GitInstallError(f"couldn't check out the reviewed version: {_err(r)}")
 
 
 def source_of(manifest: dict) -> dict | None:
@@ -303,7 +347,19 @@ def copy_view(app_dir: str, src: dict | None = None) -> dict | None:
     bool}``, merged into the probe's ``git``; None for any other folder.
     `collision` also counts the LINK's commit (`_link_collisions`), so the
     page never offers "Get the latest" that will refuse; `app_page` is
-    whether the app page has the panel to point at (A1, §16.12)."""
+    whether the app page has the panel to point at (A1, §16.12). A
+    marketplace copy (§18.4) answers `{who, kind: "marketplace", switch:
+    "Follow <who> directly? …"}` — the `switch-link` prompt's words."""
+    if _kind(app_dir) == "marketplace":
+        try:
+            from fused_render.contrib import store
+
+            repo = (store.get(os.path.realpath(app_dir)) or {}).get("repo") or ""
+        except Exception:  # noqa: BLE001
+            repo = ""
+        who = repo.split("/", 1)[0] if "/" in repo else "the author"
+        return {"who": who, "kind": "marketplace", "changes": False, "collision": [],
+                "app_page": _contrib_sources(), "switch": SWITCH_LINK_SENTENCE.format(who=who)}
     if _kind(app_dir) != "github":
         return None
     try:
@@ -347,6 +403,13 @@ def probe(app_dir: str, src: dict, *, light: bool = False) -> str:
     head = _head(app_dir)
     if head is None:
         return "local"
+    if _kind(app_dir) == "marketplace":
+        # §18.4: a GitHub link opened for a copy installed from the
+        # Marketplace never moves it — the page asks "Follow <who>
+        # directly?" (`install` → `market.switch_to_link` on yes).
+        from fused_render import appfile
+
+        return appfile.STATE_SWITCH_LINK
     if head == src["commit"]:
         return "same"
     if light:
@@ -421,7 +484,7 @@ def expected_identity(clone_dir: str, url: str) -> tuple[str, str | None]:
 _CARRY = (".fused", ".venv")
 
 
-def _place(staged: str, dest: str, *, park_existing: bool) -> None:
+def _place(staged: str, dest: str, *, park_existing: bool, kind: str = "github") -> None:
     root = os.path.dirname(dest)
     os.makedirs(root, exist_ok=True)
     work = tempfile.mkdtemp(dir=root, prefix=f".install-{os.path.basename(dest)}-")
@@ -431,7 +494,7 @@ def _place(staged: str, dest: str, *, park_existing: bool) -> None:
             shutil.move(staged, clone_in)                       # 1. STAGE
         except OSError as exc:
             raise GitInstallError(f"could not copy the clone into {root}: {exc}")
-        _home_branch(clone_in)
+        _home_branch(clone_in, kind=kind)
         parked = None
         undo: list[tuple[str, str]] = []
         try:
@@ -478,7 +541,30 @@ def _home_name() -> str:
     return classify.HOME_BRANCH
 
 
-def _home_branch(clone_dir: str) -> None:
+def _home_branch_pinned(clone_dir: str) -> None:
+    """`_home_branch` for a Marketplace clone (`clone(commit=)`, HEAD
+    detached at the approved commit): `fused/mine` created right there (no
+    file changes), its upstream the MIRROR (`remote = .`, §18.4), and the
+    mirror `refs/heads/<b>` moved from the author's tip the clone made to
+    the approved commit — so nothing ever reads the tip as "the author's
+    version" in this copy (M1)."""
+    _HOME_BRANCH = _home_name()
+    branch = _default_branch_of(clone_dir)
+    head = _out(_git("rev-parse", "HEAD", cwd=clone_dir, timeout=20))
+    if not branch or not _SHA_RE.match(head):
+        logger.warning("install: no default branch / HEAD in %s", clone_dir)
+        return
+    r = _git("switch", "-q", "-c", _HOME_BRANCH, cwd=clone_dir, timeout=20)
+    if r.returncode != 0:
+        logger.warning("install: could not create %s in %s: %s", _HOME_BRANCH, clone_dir, _err(r))
+        return
+    _git("update-ref", f"refs/heads/{branch}", head, cwd=clone_dir, timeout=20)
+    _git("config", "--local", f"branch.{_HOME_BRANCH}.remote", ".", cwd=clone_dir, timeout=20)
+    _git("config", "--local", f"branch.{_HOME_BRANCH}.merge", f"refs/heads/{branch}",
+         cwd=clone_dir, timeout=20)
+
+
+def _home_branch(clone_dir: str, *, kind: str = "github") -> None:
     """Right after the clone, before any hook or sync can see it (§17.6): HEAD
     on `fused/mine` at the clone's commit (no file changes), tracking the
     author's branch, which stays behind as the fetch-only mirror. Whose app
@@ -488,6 +574,9 @@ def _home_branch(clone_dir: str) -> None:
     _HOME_BRANCH = _home_name()
     try:
         branch = _out(_git("symbolic-ref", "--short", "HEAD", cwd=clone_dir, timeout=20))
+        if not branch and kind == "marketplace":
+            _home_branch_pinned(clone_dir)
+            return
         if not branch or branch == _HOME_BRANCH:
             return
         r = _git("switch", "-q", "-c", _HOME_BRANCH, cwd=clone_dir, timeout=20)
@@ -501,9 +590,18 @@ def _home_branch(clone_dir: str) -> None:
         logger.warning("install: could not set up %s in %s", _HOME_BRANCH, clone_dir, exc_info=True)
 
 
-def install(fused_path: str, target: dict, manifest: dict, *, force: bool) -> dict:
+def install(fused_path: str, target: dict, manifest: dict, *, force: bool,
+            kind: str = "github", market: dict | None = None) -> dict:
     """Install or update the clone ``target`` (appfile.install_target's
-    answer for a git-source file) describes. Answers the action taken."""
+    answer for a git-source file) describes. Answers the action taken.
+
+    ``kind="marketplace"`` (docs/CONTRIB_LOOP.md §18.4): a Marketplace
+    install of a clone made at the approved commit (`clone(commit=)`),
+    recorded as a marketplace copy with ``market = {slug, approved}``. An
+    existing copy of the repo is never moved from here: a marketplace copy
+    opened by GitHub link is the `switch-link` prompt (``force`` = the user
+    said yes → `market.switch_to_link`), and every other update of a
+    marketplace copy is the engine's (`engine.bring_in`)."""
     from fused_render import app_fused_dir, app_git, appfile
 
     # Only the link's own facts: `install_target` merges the copy's page
@@ -514,7 +612,16 @@ def install(fused_path: str, target: dict, manifest: dict, *, force: bool) -> di
     if state == appfile.STATE_CLASH:
         raise GitInstallError(f"{target['path']} already holds a different app "
                               f"({target['other_name']}); rename or uninstall it first")
+    installed_kind = kind
     kind = _kind(dest) if target.get("found_by") == "git" else None
+    if kind == "marketplace" or state == appfile.STATE_SWITCH_LINK:
+        return _install_on_market_copy(dest, target, manifest, force=force,
+                                       wanted=installed_kind)
+    if installed_kind == "marketplace" and kind == "github":
+        # D13: the trust level changes only by the user's explicit switch
+        # (`market.switch_to_reviewed`, marketplace.start_install's confirm).
+        raise GitInstallError("You follow this app by its GitHub link. Switch it to reviewed "
+                              "releases from its app page.")
     if state == appfile.STATE_LOCAL:
         if target.get("found_by") == "git":
             if kind == "github":
@@ -579,7 +686,8 @@ def install(fused_path: str, target: dict, manifest: dict, *, force: bool) -> di
         if (manifest.get("name"), appfile.app_id_of(manifest)) != expected_identity(staged, src["url"]):
             raise GitInstallError("this app file does not match the repository it names; "
                                   "open the GitHub link again")
-        _place(staged, dest, park_existing=state == appfile.STATE_REPLACE or bool(target.get("husk")))
+        _place(staged, dest, park_existing=state == appfile.STATE_REPLACE or bool(target.get("husk")),
+               kind=installed_kind)
         # A fresh clone at `dest`: whatever record the folder had (a copy
         # deleted in Finder and installed again, a husk's old app) names
         # another repo's history — its proposal, overlap and activity are
@@ -591,9 +699,46 @@ def install(fused_path: str, target: dict, manifest: dict, *, force: bool) -> di
     app_git._ensure_excludes(dest)
     app_fused_dir.ensure(dest)
     appfile.write_stamp(dest, manifest, fused_path, git=src)
-    _record_install(dest, src["url"])
+    if installed_kind == "marketplace" and action == "installed":
+        _record_install(dest, src["url"], kind="marketplace", market=market)
+    else:
+        _record_install(dest, src["url"])
     entry = os.path.join(dest, *manifest["entry"].split("/"))
     return {"action": action, "entry": entry.replace(os.sep, "/"), "pruned": [], "adopted_state": None}
+
+
+SWITCH_LINK_SENTENCE = "Follow {who} directly? You'll get every change, unreviewed."
+
+
+def _install_on_market_copy(dest: str, target: dict, manifest: dict, *, force: bool,
+                            wanted: str) -> dict:
+    """`install` onto an existing MARKETPLACE copy (§18.4) — never a move
+    from here (M1): a Marketplace install of it is the engine's Bring in
+    (the approved release); a GitHub link opened for it is the `switch-link`
+    prompt — refused without the user's yes (`InstallNeedsConfirm`, the
+    page asks "Follow <who> directly?"), and with it the explicit switch
+    (`market.switch_to_link`, one Activity line with Undo)."""
+    from fused_render import appfile
+
+    root = os.path.realpath(dest)
+    entry = os.path.join(dest, *manifest["entry"].split("/")).replace(os.sep, "/")
+    if wanted == "marketplace":
+        from fused_render.contrib import engine
+
+        res = engine.bring_in(root)
+        if not res.get("ok") or res.get("needs_merge"):
+            raise GitInstallError(res.get("message") or "Couldn't update this app right now. "
+                                  "Open it to see why.")
+        return {"action": "updated", "entry": entry, "pruned": [], "adopted_state": None}
+    if not force:
+        raise appfile.InstallNeedsConfirm(target)
+    from fused_render.contrib import market
+
+    res = market.switch_to_link(root)
+    if not res.get("ok"):
+        raise GitInstallError(res.get("message") or "Couldn't switch this app right now.")
+    return {"action": "switched", "entry": entry, "pruned": [], "adopted_state": None,
+            "message": res.get("message")}
 
 
 def _update_clone(dest: str, src: dict, *, aside) -> None:
@@ -605,6 +750,10 @@ def _update_clone(dest: str, src: dict, *, aside) -> None:
     does (§0.1). A copy on `fused/mine` (§17.6) lands the commit there and
     then moves the author's branch — its fetch-only mirror — to what was
     fetched, as a ref update (I3)."""
+    if _kind(dest) == "marketplace":
+        # M1 (§18.4): a marketplace copy is never fast-forwarded to a link's
+        # commit — `install` answers it with the switch-link prompt.
+        raise GitInstallError("This app updates from the Community's reviewed versions only.")
     fetch = ("fetch", "-q", "origin")
     branch = None
     if aside is not None:
@@ -653,15 +802,20 @@ def _drop_record(dest: str) -> None:
         logger.exception("could not drop the old install record of %s", dest)
 
 
-def _record_install(dest: str, url: str) -> None:
+def _record_install(dest: str, url: str, *, kind: str = "github",
+                    market: dict | None = None) -> None:
     """Record the install source OUTSIDE the folder (contrib/store.py,
     docs/CONTRIB_LOOP.md §4, §16.1) and settle the copy's guards — a
     committed `.fused/` marked skip-worktree so the stamp and `meta.json`
     just written never read as edits, and the push guard. Whatever the
-    flags; never fails the install that already landed."""
+    flags; never fails the install that already landed. `kind=
+    "marketplace"` + `market` (§18.4): a Marketplace install."""
     try:
         from fused_render.contrib import classify
 
+        if kind == "marketplace":
+            classify.record_install(dest, url, kind="marketplace", market=market)
+            return
         classify.record_install(dest, url)
     except Exception:  # noqa: BLE001
         logger.exception("could not record the install source of %s", dest)

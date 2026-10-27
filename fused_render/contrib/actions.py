@@ -46,11 +46,18 @@ logger = logging.getLogger(__name__)
 IDS = ("check", "bring-in", "merge-claude", "match", "keep-working", "move-aside",
        "go-back-main", "propose", "update-proposal", "withdraw", "remix", "discard",
        "push-main", "publish-now", "use-github", "put-on-top", "publish-over",
-       "save-edits", "sign-in", "retry", "choose-mine", "choose-theirs")
+       "save-edits", "sign-in", "retry", "choose-mine", "choose-theirs",
+       # §18.4: the marketplace kind's (and a github copy's switch back).
+       "switch-link", "switch-reviewed", "confirm-block", "remove-app")
 
 #: The merge purposes whose jobs land in the folder, per kind — what a
 #: "choice" job's per-file buttons (`merge_job.choose`) act on.
-CHOICE_PURPOSES = {"github": ("update", "proposal"), "own": ("own-sync", "original")}
+CHOICE_PURPOSES = {"github": ("update", "proposal"), "own": ("own-sync", "original"),
+                   "marketplace": ("update", "proposal")}
+
+SWITCH_LINK_CONFIRM = "Follow {who} directly? You'll get every change, unreviewed."
+SWITCH_REVIEWED_CONFIRM = ("Switch to reviewed releases? Your copy goes to the version Fused "
+                           "reviewed, and updates come only when {who} publishes a release.")
 
 _OPEN_JOB = ("running", "landing", "ready")
 
@@ -129,7 +136,8 @@ def facts(app_dir: str, *, copy=_UNSET, proposal=_UNSET, github=_UNSET) -> dict:
     from fused_render.contrib import refresh
 
     flags = _call("flags", "flags", "snapshot") or {}
-    out = {"kind": None, "repo": None, "remix_of": None, "owner_checked": True,
+    out = {"app_dir": app_dir, "market_ui": bool(_call("market ui", "flags", "marketplace_ui")),
+           "kind": None, "repo": None, "remix_of": None, "owner_checked": True,
            "original_update": False, "flags": flags,
            "github": (_safely("identity", refresh.github_identity) if github is _UNSET
                       else github) or {},
@@ -142,15 +150,24 @@ def facts(app_dir: str, *, copy=_UNSET, proposal=_UNSET, github=_UNSET) -> dict:
     out.update(kind=kind, repo=record.get("repo"), remix_of=_remix_of(record),
                owner_checked=record.get("owner_checked", True) is not False,
                original_update=bool(record.get("original_update")))
-    if kind not in ("github", "own"):
+    if kind not in ("github", "own", "marketplace"):
         return out
     out["copy"] = _call("status", "engine", "status", app_dir) if copy is _UNSET else copy
     out["proposal"] = (_call("proposal", "proposals", "view", app_dir)
                        if proposal is _UNSET else proposal)
-    if kind == "github":
+    if kind in ("github", "marketplace"):
         out["last_checked"] = (out["copy"] or {}).get("last_checked")
         if flags.get("changes"):
             out["untracked"] = _call("untracked", "proposals", "untracked", app_dir) or []
+        # §18.4: a github copy whose repo is in the Marketplace may switch
+        # to reviewed releases; a marketplace copy's B5 credit line reads the
+        # row's newest release. The catalog FILE only — never a build here.
+        out["row"] = _call("market row", "market", "row_for_repo", record.get("repo"),
+                           mode="local")
+        out["record_proposal"] = record.get("proposal") if isinstance(
+            record.get("proposal"), dict) else None
+        out["block_warn"] = record.get("block_warn") if isinstance(
+            record.get("block_warn"), dict) else None
     else:
         out["own"] = _call("own status", "ownsync", "status", app_dir)
         out["last_checked"] = _safely("checked", _own_checked, app_dir)
@@ -241,14 +258,28 @@ def decide(f: dict) -> dict:
     """`{panel, actions}` for the facts `facts()` gathered. Pure."""
     flags = f.get("flags") or {}
     kind = f.get("kind")
-    if not flags.get("sources"):
+    if not flags.get("sources") and not (kind == "marketplace" and f.get("market_ui")):
+        # A marketplace copy's panel shows with the Marketplace switch too
+        # (`flags.marketplace_ui`, §18.8); its proposal/remix buttons still
+        # need their own phases (`_github` reads them from `flags`).
         return {"panel": None, "actions": []}
     if kind is None:
         return {"panel": _panel(f, kind="pending", state="pending",
                                 sentence="Checking where this app came from…"),
                 "actions": []}
     if kind == "github":
-        return _github(f, flags)
+        out = _github(f, flags)
+        _switch_reviewed(f, out)
+        if isinstance(out.get("panel"), dict):
+            # §18.4 B4: the BlockedStrip's warning on a GitHub-link copy.
+            out["panel"]["block_warn"] = _block_view(f.get("block_warn"), warn=True)
+        return out
+    if kind == "marketplace":
+        out = _marketplace(f, flags)
+        if isinstance(out.get("panel"), dict):
+            copy = f.get("copy") if isinstance(f.get("copy"), dict) else {}
+            out["panel"]["block"] = copy.get("block")
+        return out
     if kind == "own":
         return _own(f, flags)
     if kind == "scratch":
@@ -482,6 +513,169 @@ def _github(f: dict, flags: dict) -> dict:
     return {"panel": panel, "actions": b.done()}
 
 
+def _replace(panel: dict, old: str, new: str) -> None:
+    panel["sentence"] = (panel.get("sentence") or "").replace(old, new, 1)
+
+
+def _block_sentence(block: dict) -> str:
+    reason = (block.get("reason") or "").strip().rstrip(".")
+    return "Fused blocked the version you were running" + (f": {reason}." if reason else ".")
+
+
+def _todo(block: dict) -> str:
+    todo = (block.get("what_to_do") or "").strip()
+    return f" {todo}" if todo else ""
+
+
+def _marketplace(f: dict, flags: dict) -> dict:
+    """A marketplace copy's panel (§18.4): `_github`'s — the same states,
+    moves and buttons, the mirror holding the approved commit — plus the
+    states it adds (`blocked-release`, `soft-blocked`, `delisted`), B5's
+    words, the Check label "Check for a new release" (the route forces the
+    catalog and the block list first, so it is never a no-op), and the
+    explicit switch to following the author (`switch-link`, confirm)."""
+    copy = f.get("copy") if isinstance(f.get("copy"), dict) else None
+    who = (copy or {}).get("who") or _owner(f.get("repo")) or "the author"
+    if copy is None or copy.get("pending"):
+        out = _github(f, flags)
+        if out["panel"]:
+            out["panel"]["kind"] = "marketplace"
+        return out
+    block = copy.get("block") if isinstance(copy.get("block"), dict) else {}
+    state = copy.get("state")
+    job = _merge(copy)
+    if state == "blocked-release":
+        b = _Buttons()
+        panel = _panel(f, kind="marketplace", who=who, state="blocked-release", merge=job)
+        if job is not None and job.get("status") in _OPEN_JOB:
+            panel.update(state="merging", sentence="Claude is rolling back the blocked version "
+                                                   "and keeping your changes…")
+            return {"panel": panel, "actions": b.done()}
+        if block.get("no_target"):
+            sentence = (_block_sentence(block) + " There's no earlier reviewed version to go back "
+                        "to, so the app is stopped." + _todo(block))
+            b.add("remove-app", "Remove this app", primary=True, danger=True,
+                  dialog="remove-app")
+        elif block.get("conflict"):
+            sentence = (_block_sentence(block) + " Your changes overlap it, so the app is "
+                        "stopped until Claude rolls it back with your changes kept."
+                        + _todo(block))
+            failed = job is not None and job.get("status") == "failed"
+            b.add("merge-claude", "Merge with Claude again" if failed else "Merge with Claude",
+                  primary=True)
+        else:
+            sentence = (_block_sentence(block) + " fused is rolling it back to the reviewed "
+                        "version." + _todo(block))
+        b.add("check", "Check for a new release")
+        panel["sentence"] = sentence
+        return {"panel": panel, "actions": b.done()}
+    if state == "soft-blocked":
+        b = _Buttons()
+        reason = (block.get("reason") or "").strip().rstrip(".")
+        sentence = ("Fused paused updates to this app" + (f": {reason}." if reason else ".")
+                    + _todo(block) + " Open it only if you trust this version.")
+        b.add("confirm-block", "Open it anyway", primary=True)
+        b.add("switch-link", "Follow the author directly",
+              confirm=SWITCH_LINK_CONFIRM.format(who=who))
+        b.add("check", "Check for a new release")
+        return {"panel": _panel(f, kind="marketplace", who=who, state="soft-blocked",
+                                sentence=sentence), "actions": b.done()}
+    out = _github(f, {**flags})
+    panel, acts = out["panel"], out["actions"]
+    if panel is None:
+        return out
+    panel["kind"] = "marketplace"
+    approved = copy.get("approved") if isinstance(copy.get("approved"), dict) else {}
+    when = _release_date(approved.get("at"))
+    p = f.get("record_proposal") or {}
+    following = f"Following {who}'s latest."
+    if state == "delisted" and panel["state"] == "following":
+        panel["state"] = "delisted"
+        _replace(panel, following, _delisted())
+    elif panel["state"] == "following":
+        _replace(panel, f"{who} has a newer version.", f"{who} has a new release.")
+        _replace(panel, following, f"On {who}'s release of {when}." if when
+                 else f"On {who}'s reviewed version.")
+    elif (copy.get("listing") or {}).get("status") == "delisted":
+        panel["sentence"] = f"{_delisted()} {panel['sentence']}"
+    if panel["state"] == "merged" and not copy.get("released"):
+        # B5: Alice merged Bob's change; it reaches him with her next release
+        # (nothing to bring in until then — `_github`'s merged sentences all
+        # assume the author's branch moved).
+        ships = f"{who} merged your change. It ships in {who}'s next release."
+        for said in (f"{who} merged your change. Bring it in when you're ready.",
+                     f"{who} merged your change. It comes into your copy the next time you "
+                     "open the app, or when you press Check now.",
+                     f"{who} merged your change. You're on {who}'s latest version."):
+            _replace(panel, said, ships)
+        acts = [a for a in acts if a["id"] != "bring-in"]
+    if copy.get("live") or p.get("live"):
+        login = ((f.get("github") or {}).get("login") or "").lower()
+        rels = (f.get("row") or {}).get("releases") if isinstance(f.get("row"), dict) else None
+        credits = [c.lower() for c in ((rels or [{}])[0].get("credits") or [])
+                   if isinstance(c, str)] if rels and isinstance(rels[0], dict) else []
+        panel["sentence"] += " Your change is live for everyone." + (
+            " The release notes credit you." if login and login in credits else "")
+    for a in acts:
+        if a["id"] == "check" and panel["state"] != "proposed":
+            a["label"] = "Check for a new release"
+        elif a["id"] == "bring-in":
+            a["label"] = f"Bring in {who}'s release"
+    if panel["state"] not in ("merging",):
+        acts.append({"id": "switch-link", "label": f"Follow {who} directly", "primary": False,
+                     "confirm": SWITCH_LINK_CONFIRM.format(who=who)})
+    return {"panel": panel, "actions": acts}
+
+
+def _delisted() -> str:
+    return ("No longer in the Community. Your copy keeps working on its last reviewed "
+            "version.")
+
+
+def _release_date(at) -> str:
+    try:
+        from fused_render.contrib import market
+
+        return market.release_date(at)
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _block_view(block, *, warn=False) -> dict | None:
+    if not isinstance(block, dict):
+        return None
+    try:
+        from fused_render.contrib import blocks
+
+        view = blocks.view(block)
+    except Exception:  # noqa: BLE001
+        return None
+    if view is not None and warn:
+        view["warn"] = True
+    return view
+
+
+def _switch_reviewed(f: dict, out: dict) -> None:
+    """A github copy whose repo has a Marketplace row may switch to reviewed
+    releases (§18.4 D13, confirm); and a block on a version it runs is a
+    warning only (B4: it follows the author directly)."""
+    panel = out.get("panel")
+    if not isinstance(panel, dict):
+        return
+    who = panel.get("who") or _owner(f.get("repo")) or "the author"
+    warn = (f.get("copy") or {}).get("block_warn") if isinstance(f.get("copy"), dict) else None
+    warn = warn if isinstance(warn, dict) else f.get("block_warn")
+    if isinstance(warn, dict):
+        reason = (warn.get("reason") or "").strip().rstrip(".")
+        panel["sentence"] = (f"{panel.get('sentence') or ''} Fused blocked a version of this app "
+                             "that you're running" + (f": {reason}." if reason else ".")
+                             + f" You follow {who} directly, so nothing was changed.").strip()
+    if isinstance(f.get("row"), dict) and panel.get("state") not in ("merging", "pending"):
+        out["actions"].append({"id": "switch-reviewed", "label": "Switch to reviewed releases",
+                               "primary": False,
+                               "confirm": SWITCH_REVIEWED_CONFIRM.format(who=who)})
+
+
 #: Labels for the fixes ownsync names per state (`ownsync.FIXES`).
 _OWN_FIXES = {
     "publish-now": dict(label="Publish now"),
@@ -575,6 +769,14 @@ def _own(f: dict, flags: dict) -> dict:
         # taken back, never updated (the remix carries its own credit line).
         extra.append(f"Your proposal to {who or 'the original'} is still open.")
         b.add("withdraw", "Withdraw")
+    try:  # §18.6: Publish to marketplace & co. (WS-PUBLISH's module; never raises)
+        from fused_render.contrib import actions_listing
+        actions_listing.buttons(f, b)
+        said = actions_listing.sentence(f)
+        if isinstance(said, str) and said:
+            extra.append(said)
+    except ImportError:
+        pass
     b.add("check", "Check now")
     panel.update(state=state, sentence=" ".join([s for s in (sentence, *extra) if s]).strip())
     return {"panel": panel, "actions": b.done()}
@@ -601,4 +803,33 @@ def activity(app_dir: str) -> list:
         return []
     if any(isinstance(x, dict) and x.get("undo") for x in lines) and merge_open(app_dir):
         return [{**x, "undo": False} if isinstance(x, dict) else x for x in lines]
+    blocked = _safely("blocked undo", _blocked_undo, app_dir, lines) or set()
+    if blocked:
+        return [{**x, "undo": False} if isinstance(x, dict) and x.get("id") in blocked else x
+                for x in lines]
     return lines
+
+
+def _blocked_undo(app_dir: str, lines: list) -> set:
+    """M1 (§18.4): the ids of a marketplace copy's lines whose Undo would land
+    on a blocked commit — not offered (`engine.restore` refuses them too).
+    Here, not in `store.activity`: it asks git, which the store never does.
+    Nothing to ask while the block list has nothing for this app."""
+    from fused_render.contrib import blocks, store
+
+    rec = store.get(app_dir)
+    if not isinstance(rec, dict) or rec.get("kind") != "marketplace" \
+            or not blocks.for_slug(blocks._slug(rec)):
+        return set()
+    out = set()
+    for x in lines:
+        if not isinstance(x, dict) or not x.get("undo") or x.get("kind") == store.SWITCH_KIND:
+            continue
+        entry = store.activity_entry(app_dir, x.get("id")) or {}
+        backup = entry.get("backup")
+        if isinstance(backup, list):
+            backup = next((b for b in backup if isinstance(b, str)
+                           and not b.endswith("-wip")), None)
+        if backup and blocks.backup_blocked(store.key(app_dir), rec, backup):
+            out.add(x.get("id"))
+    return out

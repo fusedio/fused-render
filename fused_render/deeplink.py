@@ -1,9 +1,10 @@
-"""Deep links (SPEC §26). Three `open` payloads, all ending on a `.fused`
-file's INSTALL PAGE (AF-14) — the one gate before anything runs:
+"""Deep links (SPEC §26). Four `open` payloads, all ending on an INSTALL
+PAGE (AF-14) — the one gate before anything runs:
 
   fused-render://open?file=<absolute .fused path>       (DL-7)
   fused-render://open?url=<http(s) link to a .fused>    (DL-8)
   fused-render://open?git=https://github.com/<owner>/<repo>  (DL-9, one app)
+  fused-render://open?marketplace=<slug>                 (a Marketplace listing)
 
 plus the payload-free `launch` / `relaunch` actions (D128) the server banner,
 the update dialog and the FDA relaunch button use.
@@ -23,6 +24,12 @@ writes (D3) and has no page of its own:
   `?_fetch_appfile=`.
 - `git=` (a public GitHub repo holding ONE app): a 303 to the shell's
   /install page with the repo link as `?_fetch_appgit=`.
+- `marketplace=` (the listing page's install button, docs/CONTRIB_LOOP.md
+  §18.5 B6): a 303 to the shell's /install page with the slug as
+  `?_fetch_market=`; the shell opens `/marketplace/app/<slug>?via=link`
+  (the app's Marketplace page — its install is the reviewed one, never a
+  GitHub link's). The slug is validated here (`marketplace.is_slug`): a
+  malformed one gets the "Unsupported link" page, never a hand-off.
 
 The shell's `FetchAppFileBoot` reads either hand-off once, downloads through
 the X-Fused `POST /api/appfile/fetch` (appfetch.py — `{url}` downloads the
@@ -56,6 +63,7 @@ _SCHEME = _flavor.scheme()
 _OPEN_GIT_PREFIXES = (f"{_SCHEME}://open?git=", f"{_SCHEME}://open/?git=")
 _OPEN_FILE_PREFIXES = (f"{_SCHEME}://open?file=", f"{_SCHEME}://open/?file=")
 _OPEN_URL_PREFIXES = (f"{_SCHEME}://open?url=", f"{_SCHEME}://open/?url=")
+_OPEN_MARKET_PREFIXES = (f"{_SCHEME}://open?marketplace=", f"{_SCHEME}://open/?marketplace=")
 
 # The launch action (D128) is payload-free by definition: any query or extra
 # path makes the link NOT a launch link (strictness keeps the grammar clean —
@@ -148,6 +156,13 @@ def git_payload_from(src: str) -> str | None:
     return raw.strip()
 
 
+def market_payload_from(src: str) -> str | None:
+    """The ``marketplace=`` value of a Marketplace link, percent-decoded once
+    and stripped (unvalidated), or None when ``src`` is not one."""
+    raw = _payload(src, _OPEN_MARKET_PREFIXES)
+    return None if raw is None else unquote(raw).strip()
+
+
 def app_file_path_from(src: str) -> str | None:
     """The absolute ``.fused`` path a ``fused-render://open?file=`` link
     carries, or None when ``src`` is not a file link at all.
@@ -178,6 +193,8 @@ EDIT_APPFILE_PARAM = "_edit_appfile"
 FETCH_APPFILE_PARAM = "_fetch_appfile"
 #: A git link's GitHub repo link, for the shell to build + download (DL-9).
 FETCH_APPGIT_PARAM = "_fetch_appgit"
+#: A Marketplace link's slug, for the shell to open the app's listing (§18.5).
+FETCH_MARKET_PARAM = "_fetch_market"
 
 
 def edit_appfile_redirect(path: str) -> str:
@@ -222,9 +239,16 @@ def open_link(src: str = ""):
     git = git_payload_from(src)
     if git is not None:
         return _install_with(FETCH_APPGIT_PARAM, git)
+    slug = market_payload_from(src)
+    if slug is not None:
+        from fused_render.marketplace import is_slug
+
+        if is_slug(slug):
+            return _install_with(FETCH_MARKET_PARAM, slug)
     return HTMLResponse(
         "<!doctype html><meta charset=utf-8><title>Unsupported link</title>"
         "<p>Unsupported link. fused-render opens <code>open?file=</code>, "
-        "<code>open?url=</code> and <code>open?git=</code> links.</p>",
+        "<code>open?url=</code>, <code>open?git=</code> and "
+        "<code>open?marketplace=</code> links.</p>",
         status_code=400,
     )
