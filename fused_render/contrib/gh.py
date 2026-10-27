@@ -684,6 +684,24 @@ def ensure_fork(full: str) -> str:
         time.sleep(_FORK_POLL_STEP_S)
 
 
+def sync_fork(fork: str, branch: str) -> bool:
+    """Fast-forward `branch` of the fork `fork` to its parent's (GitHub's
+    `merge-upstream`), so a branch built on the parent's tip pushes to the
+    fork with nothing new but its own commits. BEST EFFORT: False, with the
+    reason in the log, when GitHub would not (the fork diverged; or the gap
+    holds a workflow commit and gh's token has no `workflow` scope — see
+    `WORKFLOW_SCOPE_MESSAGE`)."""
+    fork = _full(fork)
+    if not _BRANCH_RE.match(branch or ""):
+        return False
+    try:
+        _backend().merge_upstream(fork, branch)
+    except GitHubError as exc:
+        logger.info("could not sync %s/%s from upstream: %r", fork, branch, exc)
+        return False
+    return True
+
+
 def branch_tip(full: str, branch: str) -> str | None:
     """The commit at `branch` of `full` on GitHub; None when the branch does
     not exist (an empty repo has none)."""
@@ -1029,6 +1047,9 @@ class _Real:
         if not name:
             raise GitHubError("failed", detail="fork answer had no full_name")
         return name
+
+    def merge_upstream(self, full: str, branch: str) -> None:
+        self._api("POST", f"repos/{full}/merge-upstream", {"branch": branch})
 
     def list_pulls(self, full: str, head: str | None = None) -> list[dict]:
         q = "state=open&per_page=100" + (f"&head={head}" if head else "")
@@ -1549,6 +1570,21 @@ class FakeGitHub:
         self._g(self.root, "clone", "-q", "--bare", "--single-branch", "--branch",
                 src["default_branch"], self.bare_path(full), dst)
         return fork_full
+
+    def merge_upstream(self, full: str, branch: str) -> None:
+        """GitHub's `merge-upstream`: fast-forward the fork's `branch` to its
+        parent's. 409 when the two diverged (GitHub's answer); 422 when the
+        fork is not one (GitHub's "not a fork")."""
+        with self._txn() as st:
+            self._call(st, "merge_upstream")
+            row = self._visible(st, full)
+            parent = row.get("fork_of")
+            if not parent or not self.has_branch(parent, branch):
+                raise GitHubError("conflict", status=422, detail="not a fork")
+        res = self._g(self.bare_path(full), "fetch", "-q", self.bare_path(parent),
+                      f"refs/heads/{branch}:refs/heads/{branch}", check=False)
+        if res.returncode != 0:
+            raise GitHubError("conflict", status=409, detail="branches diverged")
 
     def list_pulls(self, full: str, head: str | None = None) -> list[dict]:
         with self._txn() as st:

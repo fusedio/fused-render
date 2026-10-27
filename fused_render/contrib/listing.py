@@ -1090,6 +1090,12 @@ def _send(root: str, me: dict, slug: str, row: dict | None, *, kind: str, title:
     _step("fork")
     fork = gh.ensure_fork(index)
     fork_owner = gh.split_full(fork)[0]
+    if fork != index:
+        # Keep the fork's main at the index's, so the row branch (built on
+        # the index's main) brings the fork nothing but the row commit.
+        # Best effort: when GitHub will not (see the push below), the row
+        # is rebuilt on what the fork does have.
+        gh.sync_fork(fork, ibranch)
     with _scratch_lock:
         scratch = _scratch(index)
         _step("write")
