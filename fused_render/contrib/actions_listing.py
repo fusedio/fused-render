@@ -120,22 +120,26 @@ def decide(lst: dict, *, signed_in: bool = True, refreshing: bool = False) -> di
         sentence = (f"The request to {verb} {name} was closed "
                     "on GitHub before it went live." if closed
                     else f"The review turned down {name}: {reasons}.")
+        if listed and verb == "publish":
+            sentence += " The version listed before is still in the Community."
         moved = bool(lst.get("pushed_tip") and pr.get("commit")
                      and lst["pushed_tip"] != pr["commit"])
         if not closed:
             acts.append(_btn("fix-with-claude", "Fix with Claude", primary=not moved))
-        if pr.get("kind") == "remove":
-            if listed:
-                acts.append(_btn("remove-market", "Remove from Community", danger=True,
-                                 confirm=REMOVE_CONFIRM.format(name=name)))
-        elif listed or pr.get("commit"):
+        if pr.get("kind") != "remove" and (listed or pr.get("commit")):
             if gates_ok():
                 acts.append(_btn("publish-update",
                                  "Send the new version" if moved else "Send again",
                                  primary=moved or closed))
-        elif gates_ok():
+        elif pr.get("kind") != "remove" and gates_ok():
             acts.append(_btn("publish-market", "Publish to Community", primary=True,
                              dialog="listing"))
+        # A listed app can always be taken down, whatever request just failed
+        # or was closed — the person is never stuck with a live row and no
+        # way out (owner, 2026-10-27).
+        if listed:
+            acts.append(_btn("remove-market", "Remove from Community", danger=True,
+                             confirm=REMOVE_CONFIRM.format(name=name)))
         acts.append(_btn("check-listing", "Check again"))
     elif status == "in-review":
         state = "removing" if removing else "in-review"

@@ -604,3 +604,25 @@ def test_routes_refuse_a_github_copy(w):
     w.store.update(w.app, lambda rec: rec.update(kind="github"))
     got = r.api_contrib_listing(path=w.app)
     assert got["ok"] is False and got["reason"] == "not-allowed"
+
+
+def test_a_listed_app_whose_request_was_closed_can_still_be_removed():
+    # The owner closed the publish request on GitHub while an earlier
+    # listing is live: "Remove from Community" is still there (owner,
+    # 2026-10-27, stuck on this state), and the sentence says the old
+    # version stays up.
+    from fused_render.contrib import actions_listing
+
+    lst = {"name": "Sine Starter", "checked_at": "2026-10-27T00:00:00Z", "listed": True,
+           "doctor_clear": True,
+           "review": {"status": "failed", "reasons": ["closed"], "new_powers": []},
+           "pr": {"number": 9, "kind": "publish", "state": "closed", "commit": "a" * 40}}
+    decided = actions_listing.decide(lst)
+    assert decided["state"] == "failed"
+    ids = [a["id"] for a in decided["actions"]]
+    assert "remove-market" in ids and "publish-update" in ids
+    assert "still in the Community" in decided["sentence"]
+    # A closed REMOVE request on a listed app: Remove, no Send again.
+    lst["pr"]["kind"] = "remove"
+    ids = [a["id"] for a in actions_listing.decide(lst)["actions"]]
+    assert "remove-market" in ids and "publish-update" not in ids
