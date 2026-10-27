@@ -805,6 +805,18 @@
   flex-direction: column;
   container-type: inline-size;
 }
+/* No reply line on the Home tile (Akshil, 2026-10-27): the tile is a glance
+   at which tasks moved, and the italic first line of Claude's reply after
+   every title read as noise there. The row's spacer takes the width back
+   (tasks.css gives it up to the reply). The hover caption still carries the
+   reply whole. */
+.hw-task-rows .tasks-title-reply {
+  display: none;
+}
+.hw-task-rows .tasks-row:has(.tasks-title-reply) .tasks-grow {
+  flex-grow: 1;
+  margin-left: 0;
+}
 /* A narrow Tasks tile spends its width on the title: the message count goes. */
 @container (max-width: 360px) {
   .hw-task-rows .tasks-row-msgs {
