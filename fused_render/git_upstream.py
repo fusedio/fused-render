@@ -141,7 +141,11 @@ def _popen_kwargs():
 # difference), and (2) to every call inside `contrib_git()` — the sync of a
 # recorded copy (`_sync_locked`) and any contrib caller that wraps its work.
 # A repo with no record keeps today's plain sync, its own hooks included.
-SAFE_CONFIG = ("-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null")
+# The user's global attributes file is off too (it could select a filter or
+# merge driver for a stranger's files); the repo-local keys `-c` cannot
+# switch off are refused by the engine (`replay.config_hazards`).
+SAFE_CONFIG = ("-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null",
+               "-c", "core.attributesFile=/dev/null")
 _contrib_ctx = threading.local()
 
 
@@ -460,8 +464,23 @@ def _is_github(root):
     pull would fail against the user's own commits on top, or move the
     branch behind the engine's back, and a plain push would send them to
     the author. A `marketplace` copy (§18.4) is the same: the engine keeps
-    it on its approved commit."""
-    return _kind_of(root) in ("github", "marketplace")
+    it on its approved commit. So is a folder with NO record that carries
+    fused's copy marker (`fused.kind`, `classify.is_marked`) — a Finder
+    duplicate whose record `classify.claim_marked` refuses to build (M4): a
+    plain Switch or pull there would land the author's unreviewed tip."""
+    kind = _kind_of(root)
+    if kind in ("github", "marketplace"):
+        return True
+    return kind is None and _is_marked(root)
+
+
+def _is_marked(root):
+    """`classify.is_marked` (one repo-local config read); False on any error."""
+    try:
+        from fused_render.contrib import classify
+        return classify.is_marked(root)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 _FOLLOWS_REFUSAL = ("Fused keeps this app up to date with its author's latest "

@@ -48,7 +48,12 @@ THE GUARDS (`settle_locked`, every sync of a recorded copy, slot held):
 - the push guard (P2): `remote.origin.pushurl = no-push://fused` on a
   `github` copy, so nothing that pushes by remote name — a terminal, the git
   panel, a Claude session's `git push` — reaches the author. Removed when
-  the kind becomes `own`. Explicit sends push by URL (`gh.push`).
+  the kind becomes `own`. Explicit sends push by URL (`gh.push`). Once the
+  owner is known to be someone else (and always on a marketplace copy), a
+  pre-push hook refuses a push by URL too, and a repo-local
+  `core.hooksPath` that would skip it is removed — advisory all the same
+  (`--no-verify` skips it), against a terminal or a Claude session, not a
+  boundary.
 Identity (`apply_identity`) needs GitHub's answer, so it runs on `ensure` /
 `record_install` / sign-in, never under the slot.
 
@@ -749,13 +754,17 @@ def record_install(app_dir, url, *, kind="github", market=None) -> dict | None:
     {slug, approved}` its row. The kind is the INSTALL SOURCE, not the
     ownership rule: GitHub is never asked whose app it is (`owner_checked`
     True, never re-checked — M4: a marketplace copy never turns into
-    anything else on its own, not even into the author's own app)."""
+    anything else on its own, not even into the author's own app). It
+    REPLACES any other kind of record for the same repo: every caller is a
+    fresh placement or `market.adopt_legacy`, and a `github` record there
+    can only come from a classification that ran while the adopt was half
+    way (it would follow the author's unreviewed tip, M1/M4)."""
     repo = repo_of_url(url)
     existing = store.get(app_dir)
-    if existing is not None and repo and (existing.get("repo") or "").lower() == repo.lower():
+    if existing is not None and repo and (existing.get("repo") or "").lower() == repo.lower() \
+            and (kind != "marketplace" or existing.get("kind") == "marketplace"):
         _guard(app_dir, None, block=True, lookup=_sources_on())
         return store.get(app_dir) or existing
-    from fused_render.contrib import flags
 
     root = follow.is_repo_root(app_dir)
     if kind == "marketplace":
@@ -769,11 +778,13 @@ def record_install(app_dir, url, *, kind="github", market=None) -> dict | None:
         _forget_kind(app_dir)
         _guard(app_dir, None, block=True, lookup=_sources_on())
         return store.get(app_dir) or rec
-    # With the loop off the record is written (it is invisible) but GitHub
-    # is not asked anything during an install: ownership then stays
-    # unchecked (`github`: never pushes), and the first `ensure` with the
-    # loop on settles it.
-    ident = _identity() if flags.sources() else None
+    # Whatever the flags, GitHub is asked whose app this is when someone is
+    # signed in (`gh.identity`, cached; None when signed out): the user's own
+    # repo installed by link must classify as `own` and push as it always
+    # did. Unknown (signed out, offline) records `github` unchecked: the
+    # pushurl guard, but no pre-push hook (`settle_locked`), so a deliberate
+    # push by URL from a terminal still works; sign-in re-checks it.
+    ident = _identity()
     kind, checked = _classify(repo, ident)
     rec = store.new_record(kind, repo=repo, branch=_local_default_branch(root) if root else None,
                            classified_by="install", owner_checked=checked)
@@ -809,14 +820,17 @@ def protect_fused_dir(app_dir, *, block=True) -> int:
 # ----------------------------------------------------------------- guards
 
 
-def ensure_push_guard(root, kind) -> bool:
+def ensure_push_guard(root, kind, *, checked: bool = True) -> bool:
     """P2's second lock (§16.1): a `github` copy gets `remote.origin.pushurl
     = no-push://fused` (and the `fused.kind` marker); any other kind loses
     exactly that value (a pushurl the author set themselves stays). Only
     when an `origin` remote exists — a config section with a pushurl and no
-    url would read as a remote that is not there. The caller holds the slot
-    (or is the install/remix that owns the folder). Answers whether it
-    changed anything."""
+    url would read as a remote that is not there. The third lock, the
+    pre-push hook, only when whose app it is is known (`checked`): a copy
+    whose owner fused could not ask about yet may be the user's own, and a
+    deliberate push by URL from a terminal must still work there. The
+    caller holds the slot (or is the install/remix that owns the folder).
+    Answers whether it changed anything."""
     try:
         r = _g(root, "config", "--get-all", "remote.origin.pushurl")
         have = gu._out(r).split("\n") if gu._ok(r) and gu._out(r) else []
@@ -832,7 +846,7 @@ def ensure_push_guard(root, kind) -> bool:
             if marker != kind:
                 _g(root, "config", "--local", KIND_CONFIG, kind)
                 changed = True
-            return _set_hook(root, True) or changed
+            return _set_hook(root, bool(checked)) or changed
         if NO_PUSH_URL in have:
             _g(root, "config", "--unset-all", "remote.origin.pushurl",
                     "^" + re.escape(NO_PUSH_URL) + "$")
@@ -942,6 +956,16 @@ def _point_back(root, rec) -> bool:
     return True
 
 
+def _drop_hooks_path(root) -> None:
+    """A guarded copy's repo-local `core.hooksPath` goes: it would point git
+    away from the hooks dir that holds the pre-push hook, so a terminal
+    `git push <url>` would skip it. The hook is advisory all the same (a
+    `--no-verify` push skips it too); fused's own git calls never run hooks."""
+    if _local_config(root, "core.hooksPath") is not None:
+        _g(root, "config", "--local", "--unset-all", "core.hooksPath")
+        logger.info("contrib: removed %s's own core.hooksPath (a guarded copy)", root)
+
+
 def settle_locked(root, kind=None) -> dict | None:
     """Every guard a recorded copy needs before it syncs (module docstring
     "THE GUARDS"); the caller holds the slot. No network. Answers the record
@@ -963,9 +987,11 @@ def settle_locked(root, kind=None) -> dict | None:
         if is_github_like(kind):
             _point_back(root, rec)
             ensure_home_locked(root, rec.get("branch"), kind=kind)
+            _drop_hooks_path(root)
         elif kind == "own":
             _unhome_locked(root, rec)
-        ensure_push_guard(root, kind)
+        ensure_push_guard(root, kind, checked=kind == "marketplace"
+                          or bool(rec.get("owner_checked")))
         _mark_unchecked(root, is_github_like(kind) and not rec.get("owner_checked"))
         if is_github_like(kind) or kind == "own":
             _stamp_copy(root, rec)
@@ -1072,10 +1098,13 @@ def _migrate_v3_git_locked(root, rec, kind) -> bool:
     ahead = bool(main and origin and not replay.is_ancestor(root, main, origin))
     pin = None
     if cur == branch:
-        if ahead:
-            pin = (replay.backup_locked(root, main, why="v3-move") or [None])[0]
+        # The pin AFTER the home branch exists (it holds `main` then too): a
+        # move refused this time (an operation in flight) writes no pin, so
+        # retries never pile up unreferenced ones.
         if not ensure_home_locked(root, branch):
             return False
+        if ahead:
+            pin = (replay.backup_locked(root, main, why="v3-move") or [None])[0]
     elif not replay.rev(root, HOME_REF) and main:
         # HEAD on some other version (or detached): Bob's v2 work is on the
         # author's branch — it becomes his branch; HEAD stays put.

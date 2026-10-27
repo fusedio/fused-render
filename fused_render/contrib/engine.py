@@ -96,6 +96,8 @@ OTHER_VERSION_MESSAGE = ("You're on a different version of this app. Go back to 
 DELISTED_MESSAGE = ("No longer in the Community. Your copy keeps working on its last "
                     "reviewed version.")
 BLOCKED_MESSAGE = "Fused blocked the version of this app you were running."
+#: Discard / Use <who>'s version while Send or Update proposal runs.
+SENDING_MESSAGE = "Your proposal is still being sent — try again in a moment."
 
 #: A proposal's head after Update's fetch (proposals.PR_HEAD_REF).
 _PR_HEAD_REF = "refs/fused/pr-head"
@@ -241,6 +243,7 @@ def _sync_error_words(reason, who) -> str:
         return _market().not_on_branch_words(who)
     return {
         "redirected": follow.REDIRECTED_MESSAGE,
+        UNSAFE_CONFIG: replay.UNSAFE_CONFIG_MESSAGE,
         "auth": f"fused couldn't read {who}'s app on GitHub. Sign in to GitHub again.",
         "not-found": f"{who}'s app isn't on GitHub any more, or it's private now.",
         "forbidden": f"Your GitHub account can't read {who}'s app any more.",
@@ -334,6 +337,62 @@ def _blocks():
     from fused_render.contrib import blocks
 
     return blocks
+
+
+def _vetted(root, rec, fol):
+    """A marketplace copy's follow, its approved commit vetted against the
+    block list FIRST (`blocks.vet_approved`: a release that contains a
+    hard-blocked commit is replaced by the newest safe one) — every move
+    onto the mirror or the approved commit asks this, not only a sync: the
+    catalog read (`_market_gate`) can write an unvetted approved commit
+    while the fetch then fails. `(rec, fol, ok)`; `ok` False = nothing safe
+    to move to (or the check failed: fails closed). Slot held. Any other
+    copy: as given."""
+    if not _is_market(rec) or fol is None or not fol.pinned:
+        return rec, fol, True
+    try:
+        safe = _blocks().vet_approved(root)
+    except Exception:  # noqa: BLE001 — unknown reads as blocked (M1)
+        logger.exception("contrib: vetting the approved commit failed for %s", root)
+        return rec, fol, False
+    if safe is None:
+        return rec, fol, False
+    if safe != fol.commit:
+        rec2, fol2 = _record(root)
+        if rec2 is None or fol2 is None or fol2.commit != safe:
+            return rec, fol, False
+        return rec2, fol2, True
+    return rec, fol, True
+
+
+def _unsafe_config(root) -> bool:
+    """`replay.config_hazards`: the repo's own config would run a command
+    (a filter or merge driver, …) or move the work tree during a move. Slot
+    held; one config read per engine entry."""
+    try:
+        return bool(replay.config_hazards(root))
+    except Exception:  # noqa: BLE001 — fails closed
+        logger.exception("contrib: config check failed for %s", root)
+        return True
+
+
+#: A refusal's reason when `_unsafe_config` answers True.
+UNSAFE_CONFIG = "unsafe-config"
+
+
+def _sending(root) -> bool:
+    """A Send or Update proposal job is running for this copy: it already
+    committed the edits it sends, and a Discard or Match now would leave a
+    live proposal of changes the copy no longer has."""
+    try:
+        from fused_render.contrib import jobs
+
+        k = store.key(root)
+        return any((jobs.latest(kind, k) or {}).get("status") == "running"
+                   for kind in ("propose-send", "propose-update"))
+    except Exception:  # noqa: BLE001
+        logger.exception("contrib: job check failed for %s", root)
+        return False
 
 
 def _proposal(rec) -> dict | None:
@@ -537,13 +596,18 @@ def _run_inner(root, *, user, action) -> dict:
     with replay.slot() as held:
         if not held:
             return _out("deferred", "slot-busy")
+        if _unsafe_config(root):
+            _note_sync_error(root, UNSAFE_CONFIG)
+            return _out("skipped", UNSAFE_CONFIG)
         if rec.get("v") != store.RECORD_V:
             rec = classify.settle_locked(root, rec.get("kind")) or rec
         old_main = replay.rev(root, _mirror(fol))
         # Fetch first whatever is checked out, so the page can still say how
         # far behind the copy is; only a move needs fused/mine. The fetch
-        # moves the mirror (and names an author's rewind) on fused/mine;
-        # `update_mirror` again covers another version checked out.
+        # moves a GitHub-link copy's mirror (and names an author's rewind)
+        # on fused/mine; `update_mirror` again covers another version
+        # checked out. A marketplace copy's mirror moves only below, once,
+        # after the vet (the fetch never moves a pinned mirror).
         tip, reason = follow.fetch(root, fol)
         if tip and _is_market(rec):
             # §18.4: the mirror holds the approved commit — vetted first
@@ -560,6 +624,8 @@ def _run_inner(root, *, user, action) -> dict:
                 if fol is None:
                     return _out("skipped", "blocked")
             m = follow.update_mirror(root, fol)
+            if m.get("reason") == follow.BLOCKED:
+                return _out("skipped", "blocked")
             if replay.rev(root, _mirror(fol)) != replay.rev(root, fol.commit) \
                     and not gu._current_branch(root) == fol.branch:
                 reason = m.get("reason") or follow.NOT_ON_BRANCH
@@ -875,7 +941,7 @@ def _deferred_message(res, who) -> dict:
         return _refuse("offline", OFFLINE_MESSAGE)
     if why == "claude":
         return _refuse("claude", CLAUDE_BUSY_MESSAGE)
-    if why in ("redirected", "auth", "not-found", "forbidden", "failed"):
+    if why in ("redirected", "auth", "not-found", "forbidden", "failed", UNSAFE_CONFIG):
         return _refuse(why, _sync_error_words(why, who))
     if why == follow.NOT_ON_BRANCH:
         return _refuse(why, _sync_error_words(why, who))
@@ -961,7 +1027,9 @@ def _bring_in_answer(res, who) -> dict:
 def _hard_to_main(root, *, why, kind, text, message) -> dict:
     """Discard / Match: backup (incl. every uncommitted edit), then `reset
     --hard` the author's latest on fused/mine. Refused while a Claude turn
-    is open."""
+    is open, or while a Send / Update proposal job runs. A marketplace
+    copy's target is the approved commit VETTED against the block list
+    (`_vetted`), never one that contains a hard-blocked commit (M1)."""
     rec, fol = _record(root)
     if rec is None or fol is None:
         return _refuse("not-a-copy", "Only a copy of someone else's app can go back to "
@@ -969,11 +1037,16 @@ def _hard_to_main(root, *, why, kind, text, message) -> dict:
     who = _who(rec)
     if _claude_busy(root):
         return _refuse("claude", CLAUDE_BUSY_MESSAGE)
+    if _sending(root):
+        return _refuse("sending", SENDING_MESSAGE)
 
     def go():
+        nonlocal rec, fol
         with replay.slot() as held:
             if not held:
                 return _refuse("busy", BUSY_MESSAGE)
+            if _unsafe_config(root):
+                return _refuse(UNSAFE_CONFIG, replay.UNSAFE_CONFIG_MESSAGE)
             if not _on_home(root):
                 return _refuse("off-default", OTHER_VERSION_MESSAGE)
             if gu._operation_in_flight(root):
@@ -983,9 +1056,16 @@ def _hard_to_main(root, *, why, kind, text, message) -> dict:
             _discard_job(root)
             _clear_hold(root)
             tip, _reason = follow.fetch(root, fol)
+            rec, fol, safe = _vetted(root, rec, fol)
+            if not safe:
+                return _refuse("blocked", BLOCKED_MESSAGE)
             if tip:
                 follow.update_mirror(root, fol)
             main = _main(root, fol)
+            if fol.pinned and main and follow._hard_blocked(root, main):
+                # The mirror itself still holds a blocked release (the
+                # vetted move was refused): never reset onto it.
+                return _refuse("blocked", BLOCKED_MESSAGE)
             if not main:
                 return _refuse("offline", f"Can't reach {who}'s version right now; try again "
                                           "when you're online.")
@@ -1072,6 +1152,8 @@ def move_aside(root) -> dict:
         with replay.slot() as held:
             if not held:
                 return _refuse("busy", BUSY_MESSAGE), None
+            if _unsafe_config(root):
+                return _refuse(UNSAFE_CONFIG, replay.UNSAFE_CONFIG_MESSAGE), None
             if not _on_home(root):
                 return _refuse("off-default", OTHER_VERSION_MESSAGE), None
             if _claude_busy(root):
@@ -1085,6 +1167,11 @@ def move_aside(root) -> dict:
             dest = os.path.join(_aside_root(root), str(int(time.time() * 1000)))
             moved = []
             for rel in files:
+                if not replay.in_tree(root, rel):
+                    # A symlinked folder on the way: the file is outside the
+                    # copy (`replay.in_tree`), never moved.
+                    logger.warning("contrib: %s is behind a symlink; not moved aside", rel)
+                    continue
                 try:
                     os.makedirs(os.path.dirname(os.path.join(dest, rel)), exist_ok=True)
                     os.replace(os.path.join(root, rel), os.path.join(dest, rel))
@@ -1133,9 +1220,12 @@ def go_back_main(root) -> dict:
         return _refuse("claude", CLAUDE_BUSY_MESSAGE)
 
     def go():
+        nonlocal rec, fol
         with replay.slot() as held:
             if not held:
                 return _refuse("busy", BUSY_MESSAGE)
+            if _unsafe_config(root):
+                return _refuse(UNSAFE_CONFIG, replay.UNSAFE_CONFIG_MESSAGE)
             if gu._operation_in_flight(root) is not None:
                 return _refuse("in-progress", ELSEWHERE_MESSAGE)
             if _claude_busy(root):
@@ -1178,13 +1268,18 @@ def go_back_main(root) -> dict:
             old, tip = replay.rev(root, _mirror(fol)), follow.tip(root, fol)
             if fol.pinned:
                 # §18.4: a marketplace copy's mirror goes back to the
-                # APPROVED commit, never the author's tip (M1).
-                tip = replay.rev(root, fol.commit)
+                # APPROVED commit, never the author's tip (M1) — vetted
+                # first; nothing safe = the mirror stays where it is.
+                rec, fol, safe = _vetted(root, rec, fol)
+                tip = replay.rev(root, fol.commit) if safe else None
+                if tip and follow._hard_blocked(root, tip):
+                    tip = None
             if old and tip and old != tip and not replay.is_ancestor(root, old, tip) and (
                     replay.is_ancestor(root, old, replay.rev(root, "HEAD"))
                     or (backup and replay.is_ancestor(root, old, backup))):
                 replay.git(root, "update-ref", _mirror(fol), tip, old)
-            follow.update_mirror(root, fol)
+            if tip or not fol.pinned:
+                follow.update_mirror(root, fol)
         _note_head(root)
         _activity(root, "go-back", text, backup=backup)
         return {"ok": True, "message": text}
@@ -1242,6 +1337,8 @@ def restore(root, activity_id) -> dict:
         with replay.slot() as held:
             if not held:
                 return _refuse("busy", BUSY_MESSAGE)
+            if _unsafe_config(root):
+                return _refuse(UNSAFE_CONFIG, replay.UNSAFE_CONFIG_MESSAGE)
             if _claude_busy(root):
                 return _refuse("claude", CLAUDE_BUSY_MESSAGE)
             new_backup = None
@@ -1372,6 +1469,11 @@ def push_to_main(root) -> dict:
                                           "first.")
         return res
     _clear_hold(root)
+    # The bring-in may have vetted the approved commit (a marketplace copy):
+    # read the record again, never the follow from before it.
+    rec, fol = _record(root)
+    if rec is None or fol is None:
+        return _refuse("not-a-copy", "This isn't a copy of someone else's app.")
     main, head = _main(root, fol), replay.rev(root, "HEAD")
     if not _on_home(root) or not main or not head or not replay.is_ancestor(root, main, head):
         return _refuse("deferred", f"{who}'s latest isn't in your copy yet; try again in a "

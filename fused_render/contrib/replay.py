@@ -66,6 +66,7 @@ import contextlib
 import logging
 import os
 import shutil
+import stat
 import threading
 import time
 import uuid
@@ -111,8 +112,13 @@ _FORCE_SCRATCH_MERGE = False
 
 #: Before every git call fused makes on a contrib repo (§16.12): the repo's
 #: own `.git/config` is app-writable, and `core.fsmonitor` / `core.hooksPath`
-#: there would run its commands from fused's own reads and checkouts.
-SAFE_CONFIG = ("-c", "core.fsmonitor=", "-c", "core.hooksPath=" + os.devnull)
+#: there would run its commands from fused's own reads and checkouts. The
+#: user's global attributes file is off too: it could name a filter or
+#: merge driver for a stranger's files. The keys that cannot be switched off
+#: from the command line (a filter or merge driver, `core.worktree`, …) are
+#: refused instead (`config_hazards`).
+SAFE_CONFIG = ("-c", "core.fsmonitor=", "-c", "core.hooksPath=" + os.devnull,
+               "-c", "core.attributesFile=" + os.devnull)
 
 
 def git(root, *args, timeout=gu.TIMEOUT_S):
@@ -123,6 +129,80 @@ def git(root, *args, timeout=gu.TIMEOUT_S):
 
 def ok(result) -> bool:
     return gu._ok(result)
+
+
+#: `config_hazards`' refusal, in words (§0.1).
+UNSAFE_CONFIG_MESSAGE = ("This app's own git settings run commands of their own, so fused "
+                         "won't change its files.")
+
+
+def _hazard(key: str) -> bool:
+    """A repo-local config key that runs a command, or moves the work tree,
+    during fused's own status, merge, reset or checkout (lowercase `key`).
+    Plain preferences under the same sections (`merge.ff`,
+    `diff.renames`) are not hazards."""
+    if key in ("core.worktree", "core.sshcommand", "diff.external"):
+        return True
+    section, _, rest = key.partition(".")
+    sub, _, leaf = rest.rpartition(".")
+    if not sub:
+        return False
+    return ((section == "filter" and leaf in ("clean", "smudge", "process"))
+            or (section == "merge" and leaf == "driver")
+            or (section == "diff" and leaf in ("command", "textconv")))
+
+
+def config_hazards(root) -> list[str]:
+    """The repo's OWN config keys (`local` / `worktree` scope, includes
+    followed) that would run a command or point git at another work tree
+    during fused's moves — a filter or merge driver, an external diff,
+    `core.worktree`, `core.sshCommand`. `.git/config` is writable by the app
+    and by Claude sessions in the folder (§16.12), and these cannot be
+    neutralised with `-c` the way hooks and fsmonitor are. One config read;
+    FAILS CLOSED like `gh.url_rewrites`: a read that did not work answers a
+    hit. Every engine entry on a guarded copy asks it under the slot and
+    refuses with `UNSAFE_CONFIG_MESSAGE`."""
+    r = git(root, "config", "--list", "--show-scope", "--includes", "-z", timeout=10)
+    if not ok(r):
+        logger.warning("contrib: could not read %s's git config: %s", root, gu._text(r))
+        return ["unreadable"]
+    raw = r[1]
+    text = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw or "")
+    hits = []
+    # With -z, `--show-scope` output is `<scope>\0<key>\n<value>\0` per entry.
+    tokens = text.split("\0")
+    for scope, rest in zip(tokens[0::2], tokens[1::2]):
+        if scope not in ("local", "worktree") or not rest:
+            continue
+        key = rest.partition("\n")[0].strip().lower()
+        if _hazard(key):
+            hits.append(f"{scope}:{key}")
+    if hits:
+        logger.warning("contrib: %s's own git config runs commands: %s", root, hits)
+    return hits
+
+
+def in_tree(root, rel) -> bool:
+    """Whether `rel` (a repo path, `/`-separated) reaches its file without
+    going through a symlinked directory inside `root`. `os.path.lexists`
+    and `os.replace` follow a symlinked PARENT: a copy whose author's
+    commit tracked `docs -> ../../..` and whose next commit adds
+    `docs/.zshrc` would otherwise have fused move the user's own ~/.zshrc.
+    The last component may itself be a symlink (moving a link moves the
+    link). A parent that does not exist is fine: then nothing is there."""
+    parts = [p for p in str(rel).split("/")]
+    if not parts or any(p in ("", ".", "..") for p in parts):
+        return False
+    cur = root
+    for part in parts[:-1]:
+        cur = os.path.join(cur, part)
+        try:
+            st = os.lstat(cur)
+        except OSError:
+            return True
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+            return False
+    return True
 
 
 def out(result) -> str:
@@ -453,14 +533,17 @@ def clobber_paths(root, head, target) -> list[str]:
     """Paths `target` adds over `head` that exist in the working tree but
     are not tracked — ignored ones included (a `.env`, a data file): a
     `reset --keep`/`--hard` to `target` overwrites an ignored file without
-    asking. Row 5 of the engine's table; `.fused/` is left to `fused_aside`."""
+    asking. Row 5 of the engine's table; `.fused/` is left to `fused_aside`.
+    A path whose parent is a symlinked directory is not "in the way" (git
+    replaces the link, never writes through it) and is never answered: the
+    file it reaches is outside the copy (`in_tree`)."""
     if not head or not target:
         return []
     r = git(root, "diff", "--name-only", "-z", "--diff-filter=A", head, target, "--",
             ".", ":(exclude).fused")
     staged = set(names(git(root, "diff", "--cached", "--name-only", "-z")))
     return [p for p in names(r)
-            if p not in staged and os.path.lexists(os.path.join(root, p))]
+            if p not in staged and in_tree(root, p) and os.path.lexists(os.path.join(root, p))]
 
 
 def commit_edits_locked(root, paths, message="Your edits", *, identity=None) -> str | None:

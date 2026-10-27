@@ -845,6 +845,29 @@ def test_migration_from_a_v2_record_with_a_diverged_main(v2):
     assert [e["text"] for e in store.get(w.app)["activity"]].count(classify.MOVED_TEXT) == 1
 
 
+def test_a_refused_migration_pins_nothing_until_it_goes(v2, monkeypatch):
+    """Engine review: the v3 move pinned Bob's work BEFORE making the home
+    branch; while that was refused (an operation in flight) every sync wrote
+    one more unreferenced pin. The pin now follows the move."""
+    w = v2
+    mine = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    _alice(w, {"NOTES.md": "n\n"}, "notes")
+    real = classify.ensure_home_locked
+    monkeypatch.setattr(classify, "ensure_home_locked", lambda *a, **k: False)
+    w.sync()
+    w.sync()
+
+    def pins():
+        return [b for b in git(w.app, "for-each-ref", "--format=%(refname)",
+                               replay.BACKUP_PREFIX).split() if "v3-move" in b]
+    assert pins() == [] and store.get(w.app)["v"] == 2
+    monkeypatch.setattr(classify, "ensure_home_locked", real)
+    w.sync()
+    assert store.get(w.app)["v"] == 3
+    assert len(pins()) == 1 and replay.rev(w.app, pins()[0]) == mine
+    inv(w)
+
+
 def test_migration_of_the_2026_10_23_stuck_copy(v2):
     """The case that started v3 (sine-starter, PR #13): a v2 copy whose HEAD
     is Bob's bring-in merge M1 (parents: his sent commit B1, the author's
@@ -1221,6 +1244,132 @@ def test_move_aside_refuses_on_another_version(w):
     assert engine.move_aside(w.app)["reason"] == "off-default"
     assert read(w.app, "notes.md") == "mine\n"
     assert not [e for e in _activity(w) if e["kind"] == "aside"]
+
+
+def _alice_git(w, tmp_path, change, msg):
+    """Alice commits with real git (a symlink, which the fake's `commit`
+    cannot write) and pushes to her repo."""
+    work = str(tmp_path / "alice-work")
+    if not os.path.isdir(work):
+        git(str(tmp_path), "clone", "-q", w.fake.bare_path(REPO), work)
+    change(work)
+    git(work, "add", "-A")
+    git(work, "-c", "user.name=alice", "-c", "user.email=alice@x", "commit", "-qm", msg)
+    git(work, "push", "-q", "origin", "HEAD:refs/heads/main")
+    w.fake.after_push(REPO, "main")
+    return git(work, "rev-parse", "HEAD")
+
+
+def test_a_symlinked_folder_never_moves_a_file_from_outside_the_app(w, tmp_path):
+    """Security review: Alice's commit A tracks `docs -> <outside>`, B
+    deletes the link and adds `docs/.zshrc`. The path reaches a file OUTSIDE
+    the copy through the link: it is never "in the way" (git replaces the
+    link) and never moved aside — the user's own file stays put."""
+    outside = tmp_path / "home-of-bob"
+    outside.mkdir()
+    (outside / ".zshrc").write_text("bob's shell\n")
+    _alice_git(w, tmp_path, lambda d: os.symlink(str(outside), os.path.join(d, "docs")),
+               "docs link")
+    assert w.sync()["status"] == "synced"
+    assert os.path.islink(os.path.join(w.app, "docs"))
+    head = w.head()
+
+    def to_dir(d):
+        os.unlink(os.path.join(d, "docs"))
+        os.makedirs(os.path.join(d, "docs"))
+        with open(os.path.join(d, "docs", ".zshrc"), "w") as f:
+            f.write("alice's shell\n")
+    tip = _alice_git(w, tmp_path, to_dir, "docs folder")
+    git(w.app, "fetch", "-q", "origin", "+refs/heads/main:refs/remotes/origin/main")
+    assert replay.clobber_paths(w.app, head, tip) == []
+    assert not replay.in_tree(w.app, "docs/.zshrc") and replay.in_tree(w.app, "docs")
+    engine.move_aside(w.app)
+    assert (outside / ".zshrc").read_text() == "bob's shell\n"
+    assert not [e for e in _activity(w) if e["kind"] == "aside"]
+    assert w.head() == tip and read(w.app, "docs/.zshrc") == "alice's shell\n"
+    assert not os.path.islink(os.path.join(w.app, "docs"))
+    assert (outside / ".zshrc").read_text() == "bob's shell\n"
+    inv(w)
+
+
+def test_repo_config_that_runs_commands_stops_every_move(w, tmp_path):
+    """Security review: a repo-local filter / merge driver (or core.worktree,
+    core.sshCommand, an external diff) runs during fused's own status,
+    merge and reset; `-c` cannot switch them off, so every engine entry
+    refuses while one is set. A plain preference (`merge.ff`) is fine."""
+    marker = tmp_path / "filter-FIRED"
+    git(w.app, "config", "--local", "merge.ff", "false")
+    _alice(w, {"NOTES.md": "n\n"}, "notes")
+    assert w.sync()["status"] == "synced"          # a preference is no hazard
+    git(w.app, "config", "--local", "filter.x.clean", f"sh -c 'touch {marker}; cat'")
+    edit(w.app, ".gitattributes", "* filter=x\n")
+    head = w.head()
+    _alice(w, {"MORE.md": "m\n"}, "more")
+    res = w.sync()
+    assert res["status"] == "skipped" and res["why"] == engine.UNSAFE_CONFIG
+    assert w.head() == head
+    err = store.get(w.app)["sync_error"]
+    assert err["reason"] == engine.UNSAFE_CONFIG and err["message"] == replay.UNSAFE_CONFIG_MESSAGE
+    for button in (engine.bring_in, engine.discard, engine.match, engine.move_aside):
+        out = button(w.app)
+        assert not out["ok"] and out["reason"] == engine.UNSAFE_CONFIG, (button, out)
+    assert w.head() == head and not marker.exists()
+    assert replay.config_hazards(w.app) == ["local:filter.x.clean"]
+    for key in ("core.worktree", "core.sshCommand", "diff.external", "merge.x.driver",
+                "diff.x.textconv"):
+        assert replay._hazard(key.lower()), key
+    assert not replay._hazard("merge.conflictstyle") and not replay._hazard("diff.renames")
+
+
+def test_discard_and_match_wait_for_a_send(w, monkeypatch):
+    """Proposals review: Discard / Use <who>'s version while Send or Update
+    proposal runs would leave a live proposal of discarded changes."""
+    from fused_render.contrib import jobs
+
+    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
+    head = w.head()
+    key = store.key(w.app)
+    monkeypatch.setattr(jobs, "latest", lambda kind, app: (
+        {"status": "running"} if (kind, app) == ("propose-send", key) else None))
+    for button in (engine.discard, engine.match):
+        out = button(w.app)
+        assert not out["ok"] and out["reason"] == "sending"
+    assert w.head() == head
+
+
+def test_every_fetch_holds_the_slot(w, monkeypatch):
+    """Engine review: Send, Update proposal and remix publish fetch through
+    `proposals.tip_of(fetch=True)` with no slot of their own; the fetch
+    writes git's tracking ref and the mirror, so it takes the slot itself."""
+    from fused_render import git_upstream as gu
+    from fused_render.contrib import gh
+
+    held = []
+    real = gh.fetch_detail
+
+    def spy(*a, **kw):
+        held.append(gu._check_slot.locked() and replay._depth() > 0)
+        return real(*a, **kw)
+    monkeypatch.setattr(gh, "fetch_detail", spy)
+    _alice(w, {"NOTES.md": "n\n"}, "notes")
+    fol = follow.for_record(store.get(w.app))
+    tip, why = follow.fetch(w.app, fol)
+    assert tip == w.alice() and why is None and held == [True]
+    assert not gu._check_slot.locked()
+    # The slot taken elsewhere: the fetch waits, then answers "busy".
+    monkeypatch.setattr(gu, "TIMEOUT_S", 0.0)
+    monkeypatch.setattr(replay.gu, "TIMEOUT_S", 0.0)
+    gu._check_slot.acquire()
+    try:
+        import threading
+
+        out = []
+        t = threading.Thread(target=lambda: out.append(follow.fetch(w.app, fol)))
+        t.start()
+        t.join(30)
+    finally:
+        gu._check_slot.release()
+    assert out == [(None, "busy")]
 
 
 def test_buttons_end_an_undo_hold(w):

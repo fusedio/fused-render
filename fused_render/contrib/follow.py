@@ -38,7 +38,9 @@ from fused_render.contrib import replay
 
 logger = logging.getLogger(__name__)
 
-_REPO_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/[A-Za-z0-9._-]+$")
+#: `owner/name`; a name of `.` or `..` is refused (`marketplace.is_repo`
+#: does the same): it is spliced into `repos/{full}/…` API paths.
+_REPO_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?/(?!\.\.?$)[A-Za-z0-9._-]+$")
 _BRANCH_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 
 REDIRECTED_MESSAGE = ("This app's settings point GitHub somewhere else, "
@@ -73,15 +75,26 @@ _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 #: there (a commit only a fork has, or one the author rewound away).
 NOT_ON_BRANCH = "not-on-branch"
 
+#: `update_mirror`'s refusal for a pinned follow whose approved commit is,
+#: or is built on, a hard-blocked commit (§18.4 B4): the mirror never holds
+#: it.
+BLOCKED = "blocked"
+
 
 def github_url(repo: str) -> str:
     return f"https://github.com/{repo}"
 
 
 def _valid(repo, branch) -> bool:
+    """A repo and an author's branch fused can use in argv and refs. A
+    branch named `fused` or `fused/…` is refused: `fused/mine` is the copy's
+    own branch, and git cannot hold both `fused` and `fused/mine` (the same
+    rule as `classify._valid_branch`; `appfile_git.clone` refuses to install
+    such a repo)."""
     return (isinstance(repo, str) and bool(_REPO_RE.match(repo))
             and isinstance(branch, str) and bool(_BRANCH_RE.match(branch))
-            and ".." not in branch and not branch.startswith(("-", "/")))
+            and ".." not in branch and not branch.startswith(("-", "/"))
+            and branch != "fused" and not branch.startswith("fused/"))
 
 
 def for_record(record) -> Follow | None:
@@ -140,8 +153,21 @@ def fetch(root, fol: Follow) -> tuple[str | None, str | None]:
     """`(tip, reason)`: the author's tip, fetched by the record's URL into
     `refs/remotes/origin/<branch>`, or `(None, reason)` — `redirected`
     (`github_redirected`), `offline` (silent, retried), `auth`,
-    `not-found` (gone, or private now), `forbidden`, or `failed`. The ref is
-    shared with git's own fetches, so the CALLER holds the slot."""
+    `not-found` (gone, or private now), `forbidden`, or `failed` (`busy`:
+    the slot stayed taken). The ref is shared with git's own fetches, so
+    the fetch holds the slot — the caller's when it has it already (the
+    engine), else its own (Send, Update proposal, remix publish).
+
+    A PINNED follow's mirror is never moved here: the engine moves it once,
+    after `blocks.vet_approved` (§18.4 M1 — not even briefly onto a release
+    that contains a blocked commit)."""
+    with replay.slot() as held:
+        if not held:
+            return None, "busy"
+        return _fetch_locked(root, fol)
+
+
+def _fetch_locked(root, fol: Follow) -> tuple[str | None, str | None]:
     if github_redirected(root, fol.url):
         return None, "redirected"
     gh = _gh_module()
@@ -169,7 +195,7 @@ def fetch(root, fol: Follow) -> tuple[str | None, str | None]:
         if fetcher is None or not fetcher(root, fol.url, refspec):
             return None, "offline"
     t = tip(root, fol)
-    if t and gu._current_branch(root) == replay.HOME_BRANCH:
+    if t and not fol.pinned and gu._current_branch(root) == replay.HOME_BRANCH:
         # Every fetch keeps I3 (review P1 #4): the engine's, and the ones
         # Send/Update/remix make (`proposals.tip_of(fetch=True)`).
         update_mirror(root, fol)
@@ -210,7 +236,10 @@ def update_mirror(root, fol: Follow, *, why: str = "rewound") -> dict:
     (`fol.commit`), never origin's tip, and only when it is in the
     author's branch's history (`merge-base --is-ancestor <commit>
     origin/<b>`) — else nothing moves and `reason` is `NOT_ON_BRANCH`
-    (`missing` when the commit was never fetched). `why` names the pin of a
+    (`missing` when the commit was never fetched), and never onto a commit
+    that is or contains a HARD-blocked commit of the copy's listing
+    (`blocks.contains_blocked`) — `reason` `BLOCKED` then, also when the
+    block list cannot be read (M1, fail closed). `why` names the pin of a
     non-fast-forward move: `rewound` (the row went back: the one Activity
     line, no Undo), or a caller's own (`rollback`, `switch` — the caller
     writes its line)."""
@@ -226,6 +255,9 @@ def update_mirror(root, fol: Follow, *, why: str = "rewound") -> dict:
         author = tip(root, fol)
         if not author or not replay.is_ancestor(root, new, author):
             res["reason"] = NOT_ON_BRANCH
+            return res
+        if _hard_blocked(root, new):
+            res["reason"] = BLOCKED
             return res
     else:
         new = tip(root, fol)
@@ -244,6 +276,22 @@ def update_mirror(root, fol: Follow, *, why: str = "rewound") -> dict:
     elif res["backup"] and why == "rewound":
         _rewound_line(root, res["backup"], pinned=fol.pinned)
     return res
+
+
+def _hard_blocked(root, sha) -> bool:
+    """Whether `sha` is, or contains, a hard-blocked commit of the copy's
+    listing — every pinned mirror move asks it (Discard, Use <who>'s
+    version, Go back, a sync, a switch all land on the mirror). Unknown
+    reads as blocked."""
+    try:
+        from fused_render.contrib import blocks, store
+
+        rec = store.get(root) or {}
+        return blocks.contains_blocked(root, blocks._slug(rec), sha, None,
+                                       levels=("hard",)) is not None
+    except Exception:  # noqa: BLE001
+        logger.exception("contrib: block check failed for %s in %s", sha, root)
+        return True
 
 
 def _rewound_line(root, pin, *, pinned=False) -> None:

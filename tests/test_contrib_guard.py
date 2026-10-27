@@ -114,6 +114,16 @@ def test_pull_is_refused_only_with_commits_of_its_own(guard, ahead, blocked):
         assert "Bring in alice's latest" in got and "terminal" not in got
 
 
+@pytest.mark.parametrize("branch", ["main\n", "other\n", None])
+def test_pull_is_refused_off_the_home_branch_even_with_nothing_of_its_own(guard, branch):
+    """Engine review: with the author's mirror (or any other version)
+    checked out, a plain pull would move the mirror in the worktree and
+    fetch from whatever `origin` says — refused, `ahead == 0` or not."""
+    got = guard.pull_blocked("/r", fake({**COPY, BRANCH: branch}))
+    assert got == guard.off_home_pull_sentence("alice/x")
+    assert "different version" in got and "terminal" not in got
+
+
 @pytest.mark.parametrize("branch,blocked", [("fused/mine\n", False), ("main\n", True),
                                             ("other\n", True), (None, True)])
 def test_reset_is_refused_off_the_home_branch(guard, tmp_path, branch, blocked):

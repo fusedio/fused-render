@@ -176,6 +176,7 @@ def clone(url: str, repo: str, *, commit: str | None = None) -> tuple[str, str, 
                     f"could not clone {url}: it does not exist, or it is private and "
                     "your git has no access (sign in with `gh auth login`, or add an ssh "
                     f"key to GitHub). https: {https_msg} — ssh: {_err(r)}")
+        _refuse_fused_branch(dest, url)
         if commit:
             _pin_clone(dest, url, commit)
         commit = _out(_git("rev-parse", "HEAD", cwd=dest))
@@ -198,6 +199,19 @@ def clone(url: str, repo: str, *, commit: str | None = None) -> tuple[str, str, 
     finally:
         if work:
             shutil.rmtree(work, ignore_errors=True)
+
+
+def _refuse_fused_branch(dest: str, url: str) -> None:
+    """A repo whose default branch is `fused` or `fused/…` cannot be a copy:
+    the copy's own branch is `fused/mine` (docs/CONTRIB_LOOP.md §17.1 I4), and
+    git cannot hold both `fused` and `fused/mine` — the install would leave
+    the copy stuck on the author's branch with the user's work landing on
+    the mirror. Refused before anything is placed."""
+    branch = _default_branch_of(dest) or ""
+    if branch == "fused" or branch.startswith("fused/"):
+        repo = url.split("github.com/", 1)[-1]
+        raise GitInstallError(f"fused can't install {repo}: its main branch is named "
+                              f"“{branch}”, a name fused keeps for itself.")
 
 
 def _default_branch_of(clone_dir: str) -> str | None:

@@ -19,10 +19,13 @@ What a guarded copy is (§17.1): `origin` carries the pushurl `NO_PUSH_URL`
 (or the repo-local `fused.kind=github` marker), HEAD is `HOME_BRANCH`, and
 the author's branch is a fetch-only mirror of `origin/<b>`. So:
 - Push is always refused (the copy's changes leave as a proposal).
-- Pull (`--ff-only` onto the upstream) is refused only when the copy has
+- Pull (`--ff-only` onto the upstream) is refused when the copy has
   commits of its own the author's version lacks (`ahead > 0`): then fused's
-  Bring in combines the two instead; with `ahead == 0` it is a plain
-  fast-forward and runs.
+  Bring in combines the two instead; and whenever HEAD is not
+  `HOME_BRANCH` (the author's mirror checked out, or another version): a
+  plain pull there would move the mirror in the worktree and fetch by
+  remote NAME, from whatever `origin` says. On `HOME_BRANCH` with `ahead
+  == 0` it is a plain fast-forward and runs.
 - Reset-to-commit is allowed on `HOME_BRANCH` (it is the contributor's own
   branch) and refused anywhere else (the author's mirror, or another branch).
 
@@ -179,15 +182,23 @@ def pull_sentence(who):
             "fused combines their version with your changes.")
 
 
+def off_home_pull_sentence(who):
+    return (f"This app follows {who}, and you're on a different version of it. Go back "
+            "to your own version first; fused brings their latest in there.")
+
+
 def pull_blocked(root, run):
     """The sentence a plain fast-forward pull refuses with on a guarded copy
-    that has commits of its own (`ahead > 0`, or unreadable), else None. With
-    nothing of its own the copy is just behind, and the plain pull runs."""
+    that is not on `HOME_BRANCH`, or has commits of its own (`ahead > 0`, or
+    unreadable), else None. With nothing of its own the copy is just
+    behind, and the plain pull runs."""
     guarded = guarded_who(root, run)
     if guarded is None:
         return None
     if guarded[2] == "marketplace":
         return MARKET_PULL_SENTENCE
+    if current_branch(root, run) != HOME_BRANCH:
+        return off_home_pull_sentence(guarded[0])
     n = ahead(root, run)
     if n == 0:
         return None

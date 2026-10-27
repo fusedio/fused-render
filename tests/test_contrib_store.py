@@ -471,6 +471,23 @@ def test_sign_in_rechecks_unknown_owners_whatever_the_flags(world, monkeypatch):
     out (unknown owner → github, guarded) gets its auto-push back at
     sign-in, every flag off; someone else's copy gets the account's commit
     identity instead."""
+    # Whether bob owns `alice` is GitHub's answer (`gh.org_role`): a fake
+    # one, with empty caches. Left to the real `gh`, the answer depended on
+    # the machine (signed in locally → "not a member", rechecked; signed out
+    # in CI → unknown, not rechecked) and on what earlier tests cached.
+    from fused_render.contrib import gh as real_gh
+
+    class FakeGh:
+        @staticmethod
+        def org_role(org):
+            raise real_gh.GitHubError("not-found")
+
+        @staticmethod
+        def repo(full):
+            return {"permissions": {"push": False}}
+    monkeypatch.setattr(classify, "_gh", lambda: FakeGh)
+    monkeypatch.setattr(classify, "_role_cache", {})
+    monkeypatch.setattr(classify, "_push_cache", {})
     mine = _install(world, name="mine")  # alice/sine, owner unknown
     assert store.get(mine)["owner_checked"] is False and classify.is_push_guarded(mine)
     out = classify.after_sign_in({"login": "alice", "id": 1, "email": "1+alice@users.noreply.github.com"})
@@ -921,8 +938,20 @@ def test_push_by_url_is_refused_by_the_pre_push_hook(world):
     """Audit V6: the pushurl guard only covers pushes by remote NAME; a push
     by URL went straight to the author. Now a pre-push hook refuses every
     push; fused's own pushes skip hooks; the person's own hook comes back
-    when the copy becomes theirs."""
-    bob = _install(world)
+    when the copy becomes theirs. Only once the owner is known to be
+    someone else (upgrade review): while unknown it may be the user's own
+    app, and a deliberate push by URL from a terminal must still work. A
+    repo-local `core.hooksPath` that would skip the hook goes at settle."""
+    from fused_render.contrib import replay
+
+    bob = _install(world)  # signed out: owner unknown
+    hook = os.path.join(bob, ".git", "hooks", "pre-push")
+    assert classify.is_push_guarded(bob) and not os.path.exists(hook)
+    store.update(bob, lambda r: r.__setitem__("owner_checked", True))  # bob's, not alice's
+    git(bob, "config", "--local", "core.hooksPath", ".husky")
+    with replay.slot():
+        classify.settle_locked(bob)
+    assert git(bob, "config", "--local", "--get", "core.hooksPath", check=False).strip() == ""
     _commit(bob, "b.txt", "bob\n", "bob")
     before = _remote_main(world)
     by_url = subprocess.run(["git", "-C", bob, "push", "-q", URL, "HEAD:main"],
@@ -932,7 +961,6 @@ def test_push_by_url_is_refused_by_the_pre_push_hook(world):
     fused = subprocess.run(["git", "-C", bob, "-c", "core.hooksPath=/dev/null", "push", "-q",
                             URL, "HEAD:refs/heads/fused-test"], capture_output=True, text=True)
     assert fused.returncode == 0, fused.stderr
-    hook = os.path.join(bob, ".git", "hooks", "pre-push")
     # The person's own hook is kept aside and restored on `own`.
     assert classify.ensure_push_guard(bob, "own") and not os.path.exists(hook)
     with open(hook, "w") as f:
@@ -1274,7 +1302,8 @@ def test_an_orphan_from_before_copy_ids_needs_its_last_head(world):
 def test_link_install_place_drops_the_old_record_and_guards_the_clone(world, monkeypatch):
     """The real `_place` path of a link install: a deleted copy's stale
     record at the same folder is gone, the clone is recorded `github`,
-    push-guarded, hooked and stamped."""
+    push-guarded and stamped — no pre-push hook while the owner is unknown
+    (signed out here): it may be the user's own app."""
     from fused_render import app_fused_dir, appfile
 
     dest = os.path.join(str(world.ws), "app", "sine")
@@ -1296,7 +1325,8 @@ def test_link_install_place_drops_the_old_record_and_guards_the_clone(world, mon
     rec = store.get(dest)
     assert rec["kind"] == "github" and rec["proposal"] is None and rec["classified_by"] == "install"
     assert classify.is_push_guarded(dest)
-    assert classify.HOOK_MARK in open(os.path.join(dest, ".git", "hooks", "pre-push")).read()
+    assert rec["owner_checked"] is False
+    assert not os.path.exists(os.path.join(dest, ".git", "hooks", "pre-push"))
     assert git(dest, "config", "--local", "--get", classify.COPY_ID_CONFIG).strip() == rec["copy_id"]
     # §17.6: the clone came in on its own branch; main is the mirror.
     _invariants(dest)
@@ -1405,3 +1435,107 @@ def test_an_old_record_over_a_repointed_origin_is_kept_and_pointed_back(world):
     _sync(bob)
     assert git(bob, "config", "--get", "remote.origin.url").strip() == URL
     assert any(a["text"] == "an old line" for a in store.activity(bob))
+
+
+# ------------------------------------------------- fix round (engine review)
+
+
+def test_link_install_asks_github_whatever_the_flags(world, monkeypatch):
+    """Upgrade review: with the loop off, the user's own repo installed by
+    link was recorded `github` unchecked — guarded, its commits never
+    pushed. GitHub is asked at install whenever someone is signed in."""
+    assert not flags.sources()
+    monkeypatch.setattr(classify, "_identity", lambda: {"login": "alice", "id": 1,
+                                                        "email": "1+alice@users.noreply.github.com"})
+    mine = _install(world)
+    rec = store.get(mine)
+    assert rec["kind"] == "own" and rec["owner_checked"] is True
+    assert not classify.is_push_guarded(mine)
+    assert not os.path.exists(os.path.join(mine, ".git", "hooks", "pre-push"))
+
+
+def test_unknown_owner_keeps_the_pushurl_but_a_push_by_url_works(world):
+    """Upgrade review: owner unknown (signed out) = maybe the user's own
+    app. A push by NAME stays refused (pushurl); a deliberate push by URL
+    from a terminal is not stopped by a hook."""
+    bob = _install(world)
+    assert store.get(bob)["owner_checked"] is False and classify.is_push_guarded(bob)
+    _commit(bob, "b.txt", "bob\n", "bob")
+    by_url = subprocess.run(["git", "-C", bob, "push", "-q", URL, "HEAD:refs/heads/by-url"],
+                            capture_output=True, text=True)
+    assert by_url.returncode == 0, by_url.stderr
+
+
+def test_marketplace_install_replaces_a_github_record_made_mid_adopt(world):
+    """Store review HIGH: a classification racing `market.adopt_legacy`
+    recorded the half-made copy as `github` (following the author's tip).
+    The adopt's own `record_install(kind="marketplace")` replaces it; an
+    existing marketplace record is kept as ever."""
+    bob = _install(world)
+    assert store.get(bob)["kind"] == "github"
+    tip = git(bob, "rev-parse", "HEAD").strip()
+    market = {"slug": "sine", "approved": {"commit": tip, "at": "2026-10-01T00:00:00Z"},
+              "branch": "main"}
+    classify.record_install(bob, URL, kind="marketplace", market=market)
+    rec = store.get(bob)
+    assert rec["kind"] == "marketplace" and rec["approved"]["commit"] == tip
+    assert git(bob, "config", "--local", "--get", "fused.kind").strip() == "marketplace"
+    store.update(bob, lambda r: r.__setitem__("slug", "kept"))
+    classify.record_install(bob, URL, kind="marketplace", market=market)
+    assert store.get(bob)["slug"] == "kept"
+
+
+def test_a_marked_folder_with_no_record_is_never_plainly_updated(world):
+    """Engine review: a Finder duplicate of a marketplace copy carries the
+    marker, and `claim_marked` builds it no record (M4). git_upstream must
+    still treat it as a copy — no plain Update/Switch that would land the
+    author's unreviewed tip."""
+    dup = os.path.join(str(world.ws), "app", "dup")
+    os.makedirs(os.path.dirname(dup), exist_ok=True)
+    git(str(world.tmp), "clone", "-q", URL, dup)
+    git(dup, "config", "--local", "fused.kind", "marketplace")
+    assert store.get(dup) is None and classify.ensure(dup) is None
+    assert git_upstream._is_github(dup)
+    head = git(dup, "rev-parse", "HEAD").strip()
+    _alice_push(world, "x.txt", "unreviewed\n")
+    assert git_upstream.update_repo(dup)["ok"] is False
+    assert git(dup, "rev-parse", "HEAD").strip() == head
+    plain = os.path.join(str(world.ws), "app", "plain")
+    git(str(world.tmp), "clone", "-q", URL, plain)
+    assert not git_upstream._is_github(plain)
+
+
+def test_a_fused_branch_name_is_refused_at_install(world):
+    """Engine review: an author's default branch named `fused` (or
+    `fused/…`) makes `fused/mine` impossible — refused before anything is
+    placed; the branch never reads as valid either."""
+    from fused_render.contrib import follow
+
+    git(world.alice, "branch", "-m", "main", "fused")
+    git(world.alice, "push", "-q", "origin", "fused")
+    git(world.remote, "symbolic-ref", "HEAD", "refs/heads/fused")
+    with pytest.raises(appfile_git.GitInstallError, match="a name fused keeps for itself"):
+        appfile_git.clone(URL, "sine")
+    assert not follow._valid(REPO, "fused") and not follow._valid(REPO, "fused/mine")
+    assert not classify._valid_branch("fused/x") and follow._valid(REPO, "fusedish")
+    assert not follow._valid("alice/..", "main") and not follow._valid("alice/.", "main")
+    assert follow._valid("alice/.dotfiles", "main")
+
+
+def test_an_orphaned_try_copy_with_edits_is_kept(home, tmp_path):
+    """Engine review: the orphan sweep removed a Try copy with no backup,
+    edits and all. A copy someone changed stays; a clean one goes."""
+    from fused_render.contrib import trycopy
+
+    root = trycopy.try_root()
+    copy = os.path.join(root, "alice-x-3")
+    os.makedirs(copy)
+    git(copy, "init", "-q", "-b", "main")
+    write(copy, "index.html", "<p>x</p>\n")
+    git(copy, "add", "-A")
+    git(copy, "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-qm", "c1")
+    write(copy, "index.html", "<p>mine</p>\n")       # no record: orphaned
+    assert trycopy.sweep_orphans() == 0 and os.path.isdir(copy)
+    git(copy, "checkout", "-q", "--", "index.html")
+    write(copy, ".venv/pyvenv.cfg", "home = x\n")       # machine state is no edit
+    assert trycopy.sweep_orphans() == 1 and not os.path.exists(copy)
