@@ -320,7 +320,7 @@ export function useAppActionRows({
       label: "Community",
       icon: <Users {...LUCIDE} />,
       title:
-        "Where " + name + " stands: put it on GitHub, list it in the Marketplace, " +
+        "Where " + name + " stands: put it on GitHub, list it in the Community, " +
         "bring in the latest, propose changes, review what others sent",
       onClick: () => setContribOpen(true),
     });

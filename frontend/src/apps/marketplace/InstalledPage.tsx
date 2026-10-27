@@ -99,7 +99,7 @@ export function InstalledPage({ snap }: { snap: CatalogSnapshot }) {
         <h1>Installed</h1>
         {apps.length > 0 && (
           <span className="mp-page-sub">
-            {apps.length} {apps.length === 1 ? "app" : "apps"} from the Marketplace
+            {apps.length} {apps.length === 1 ? "app" : "apps"} from the Community
           </span>
         )}
       </div>
@@ -117,7 +117,7 @@ export function InstalledPage({ snap }: { snap: CatalogSnapshot }) {
           <EmptyState
             icon={<PackageOpen size={24} strokeWidth={1.7} />}
             title="Nothing installed yet"
-            body="Apps you get from the Marketplace show up here, with each new release once Fused has reviewed it."
+            body="Apps you get from the Community show up here, with each new release once Fused has reviewed it."
             action={
               <button type="button" className="mp-btn is-primary" onClick={() => navigateUrl(MARKETPLACE_HOME)}>
                 Browse apps
@@ -246,17 +246,17 @@ function InstalledRow({ app, snap }: { app: AppEntry; snap: CatalogSnapshot }) {
               ? "Blocked by Fused"
               : "Updates paused by Fused"
             : market && delisted
-              ? "No longer in the Marketplace"
+              ? "No longer in the Community"
               : market && action.kind === "update"
                 ? "A release is waiting. Update brings it in."
                 : legacy
                   ? inCatalog
-                    ? "Installed from the old Marketplace"
+                    ? "Installed from the old Community"
                     : "No longer updated"
                   : app.installed?.modified
                     ? "Edited locally"
                     : !inCatalog
-                      ? "No longer in the Marketplace"
+                      ? "No longer in the Community"
                       : null;
   const statusTone =
     action.kind === "retry" || block?.level === "hard"

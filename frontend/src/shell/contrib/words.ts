@@ -102,7 +102,7 @@ export const STEPS_FOR: Record<string, Step[]> = {
   "switch-reviewed": [{ key: "run", label: "Switching to reviewed releases…" }],
   "publish-market": [{ key: "run", label: "Sending your app for review…" }],
   "publish-update": [{ key: "run", label: "Sending the update for review…" }],
-  "remove-market": [{ key: "run", label: "Asking to remove it from the Marketplace…" }],
+  "remove-market": [{ key: "run", label: "Asking to remove it from the Community…" }],
   "confirm-powers": [{ key: "run", label: "Confirming…" }],
   "check-listing": [{ key: "run", label: "Checking the review…" }],
 };

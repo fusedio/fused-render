@@ -124,9 +124,9 @@ function MarketLink({ slug }: { slug: string }) {
         <div className="install-link-mark" aria-hidden="true">
           {ok ? <span className="mode-icon-spinner" /> : <AlertTriangle size={22} />}
         </div>
-        <h1 className="install-link-title">{ok ? "Opening the Marketplace page…" : "Could not open the link"}</h1>
+        <h1 className="install-link-title">{ok ? "Opening the Community page…" : "Could not open the link"}</h1>
         <p className="install-link-detail">
-          {ok ? "The next page shows the app and its reviewed release." : `"${slug}" is not a Marketplace app name.`}
+          {ok ? "The next page shows the app and its reviewed release." : `"${slug}" is not a Community app name.`}
         </p>
         {!ok && (
           <div className="install-link-foot">

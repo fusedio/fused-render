@@ -232,7 +232,7 @@ export function Discover({
       {!catalog ? (
         error ? (
           <EmptyState
-            title="Couldn't load the Marketplace"
+            title="Couldn't load the Community"
             body={error}
             action={
               <button type="button" className="mp-btn" onClick={() => void refreshCatalog({ force: true })} disabled={loading}>
@@ -403,7 +403,7 @@ export function CatalogNotices({ snap }: { snap: CatalogSnapshot }) {
   if (catalog.stale) {
     return (
       <Notice tone="warn" action={retry}>
-        You're offline or the Marketplace is unreachable. Showing apps cached {ago(catalog.fetched_at)}.
+        You're offline or the Community is unreachable. Showing apps cached {ago(catalog.fetched_at)}.
       </Notice>
     );
   }

@@ -952,7 +952,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       ? [
           {
             key: "marketplace",
-            label: "Marketplace",
+            label: "Community",
             icon: MARKETPLACE_ICON,
             href: "/marketplace",
             active: marketplaceActive,
@@ -1066,7 +1066,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             <NavItem
               href="/marketplace"
               id="marketplace-link"
-              label="Marketplace"
+              label="Community"
               icon={MARKETPLACE_ICON}
               active={marketplaceActive}
             />

@@ -34,10 +34,10 @@ export function SourceLine({ contrib }: { contrib: AppContrib | null }) {
     const delisted = contrib.copy.listing_status === "delisted" || contrib.panel?.state === "delisted";
     const when = releaseDate(contrib.copy.approved?.at);
     body = delisted
-      ? "Marketplace · no longer listed"
+      ? "Community · no longer listed"
       : when
-        ? `Marketplace · reviewed · release of ${when}`
-        : "Marketplace · reviewed";
+        ? `Community · reviewed · release of ${when}`
+        : "Community · reviewed";
   } else if (kind === "github" && repo) {
     body = (
       <>

@@ -357,9 +357,9 @@ function listingLine(ladder: LadderAnswer): { text: string; detail: string | nul
     ladder.listing?.state ?? listing?.review?.status ?? (listing?.listed ? "live" : null);
   switch (status) {
     case "removing":
-      return { text: "Leaving the Marketplace", detail: sentence };
+      return { text: "Leaving the Community", detail: sentence };
     case "live":
-      return { text: version ? `Live · v${version.replace(/^v/i, "")}` : "Live in the Marketplace", detail: null };
+      return { text: version ? `Live · v${version.replace(/^v/i, "")}` : "Live in the Community", detail: null };
     case "in-review":
       return { text: "In review", detail: sentence };
     case "needs-confirmation":
@@ -367,7 +367,7 @@ function listingLine(ladder: LadderAnswer): { text: string; detail: string | nul
     case "failed":
       return { text: "The review turned it down", detail: sentence };
     default:
-      return { text: listing?.listed ? "In the Marketplace" : "In review", detail: sentence };
+      return { text: listing?.listed ? "In the Community" : "In review", detail: sentence };
   }
 }
 
@@ -777,8 +777,8 @@ export function GithubLadderCard({
             </RadioGroup>
             <span className="text-xs leading-4 text-muted-foreground">
               {visibility === "public"
-                ? "Public is needed for the Marketplace."
-                : "The Marketplace needs a public repository. You can still share the install link."}
+                ? "Public is needed for the Community."
+                : "The Community needs a public repository. You can still share the install link."}
             </span>
           </CheckRow>
         </div>
@@ -820,12 +820,12 @@ export function GithubLadderCard({
     // `clear` null = Doctor could not say: no verdict, so no "fix first".
     const failing = ladder.doctor?.failing ?? 0;
     strip = {
-      text: "Next: list it in the Marketplace",
+      text: "Next: list it in the Community",
       detail:
         ladder.doctor?.clear === false
           ? `Doctor has ${failing || "some"} check${failing === 1 ? "" : "s"} to fix first.`
           : vis === "private"
-            ? "The Marketplace needs a public repository."
+            ? "The Community needs a public repository."
             : null,
     };
   }

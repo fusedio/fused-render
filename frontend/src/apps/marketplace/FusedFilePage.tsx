@@ -506,7 +506,7 @@ function describeGit(t: AppFileProbe, git: GitLink): StateView {
         title: git.switch || `Follow ${who} directly? You'll get every change, unreviewed.`,
         body: (
           <>
-            You installed this app from the Marketplace, so {at} gets only releases Fused reviewed. Following {who}{" "}
+            You installed this app from the Community, so {at} gets only releases Fused reviewed. Following {who}{" "}
             directly brings every change {who} makes, as soon as it is made. You can switch back from the app&rsquo;s
             Activity.
           </>
@@ -714,7 +714,7 @@ export function FusedFilePage({ path }: { path: string }) {
     pill = { state: "caution", label, wide: true, onClick: () => install(true, true) };
     note = (
       <>
-        <span className="is-warn">Installed from the Marketplace</span>
+        <span className="is-warn">Installed from the Community</span>
         {" · "}
         <button
           type="button"

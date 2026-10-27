@@ -127,7 +127,7 @@ test("rung 1, every check green: three ticked rows, the repo name slugged, Publi
   expect(text).toContain("Installed · 2.62.0");
   expect(text).toContain("Signed in as octocat");
   expect(text).toContain("github.com/octocat/");
-  expect(text).toContain("Public is needed for the Marketplace.");
+  expect(text).toContain("Public is needed for the Community.");
 
   const nameInput = r.root.find((n) => n.type === "input" && n.props["aria-label"] === "Repository name on GitHub");
   expect(nameInput.props.value).toBe("weather-board");
@@ -206,7 +206,7 @@ test("rung 2, not listed: the install link with Copy and Open, and the Next stri
   expect(r.root.findAll((n) => n.type === "a" && n.props.href === link).length).toBe(1);
 
   const strip = r.root.find((n) => n.type === "div" && n.props["data-strip"] === "next");
-  expect(textOf(strip)).toContain("Next: list it in the Marketplace");
+  expect(textOf(strip)).toContain("Next: list it in the Community");
   expect(textOf(strip)).toContain("Open Community");
   expect(textOf(strip)).not.toContain("Doctor has");
   expect(text).not.toContain("Put it on GitHub");
@@ -239,7 +239,7 @@ test("rung 3, live: the strip names the live version, with Open Community", asyn
       listing: {
         ok: true,
         state: "live",
-        sentence: "Weather Board is in the Marketplace.",
+        sentence: "Weather Board is in the Community.",
         listing: {
           listed: true,
           slug: "weather-board",
@@ -256,7 +256,7 @@ test("rung 3, live: the strip names the live version, with Open Community", asyn
   const strip = r.root.find((n) => n.type === "div" && n.props["data-strip"] === "listing");
   expect(textOf(strip)).toContain("Live · v1.2.0");
   expect(textOf(strip)).toContain("Open Community");
-  expect(textOf(r.root)).not.toContain("Next: list it in the Marketplace");
+  expect(textOf(r.root)).not.toContain("Next: list it in the Community");
   await act(async () => r.unmount());
 });
 
@@ -324,7 +324,7 @@ test("rung 2 with unpushed edits and no publish action offered: Show changes (th
   await act(async () => r.unmount());
 });
 
-test("with the Marketplace off, rung 2 has no Next strip", async () => {
+test("with the Community off, rung 2 has no Next strip", async () => {
   stubFetch(GITHUB_ROUTES);
   const r = await mount(
     ladder({

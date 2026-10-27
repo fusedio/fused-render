@@ -97,7 +97,7 @@ export function trustItemsForFile(file: {
       : {
           key: "source",
           icon: <FileArchive size={15} strokeWidth={2} />,
-          title: "App file, not from the Marketplace",
+          title: "App file, not from the Community",
           detail: "Nobody reviewed it. Install app files only from people you trust.",
         },
   );

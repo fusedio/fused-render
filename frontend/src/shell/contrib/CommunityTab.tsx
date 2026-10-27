@@ -333,7 +333,7 @@ function OwnView({
         <div className="contrib-rung-gate">
           <Button size="sm" disabled>
             <Store data-icon="inline-start" />
-            List it in the Marketplace
+            List it in the Community
           </Button>
           <span className="contrib-rung-hint">
             Turns on when Doctor is green
@@ -346,7 +346,7 @@ function OwnView({
       next = (
         <Button size="sm" onClick={() => listing.press(publish)} disabled={busy}>
           <Store data-icon="inline-start" />
-          List it in the Marketplace
+          List it in the Community
         </Button>
       );
     } else if (gate && listing && sourceIds.has(gate.id)) {
@@ -356,7 +356,7 @@ function OwnView({
         <div className="contrib-rung-gate">
           <Button size="sm" disabled>
             <Store data-icon="inline-start" />
-            List it in the Marketplace
+            List it in the Community
           </Button>
           <span className="contrib-rung-hint">{gateHint(gate)}</span>
         </div>
@@ -368,7 +368,7 @@ function OwnView({
       next = (
         <Button size="sm" disabled>
           <Store data-icon="inline-start" />
-          List it in the Marketplace
+          List it in the Community
         </Button>
       );
     }
@@ -449,7 +449,7 @@ function OwnView({
         {marketOn && (
           <Rung
             n={3}
-            eyebrow="In the Marketplace"
+            eyebrow="In the Community"
             Icon={Store}
             state={rungState(3, current)}
             done={listingState === "live"}

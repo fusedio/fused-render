@@ -73,7 +73,7 @@ export function AppDetailPage({ slug, snap, bare = false }: { slug: string; snap
   const back = bare
     ? undefined
     : {
-        label: "Marketplace",
+        label: "Community",
         href: MARKETPLACE_HOME,
         onClick: plainClick(() => navigateUrl(MARKETPLACE_HOME)),
       };
@@ -86,7 +86,7 @@ export function AppDetailPage({ slug, snap, bare = false }: { slug: string; snap
             title={error.includes("404") || /not found/i.test(error) ? "App not found" : "Couldn't load this app"}
             body={
               /not found|404/i.test(error)
-                ? `There is no app called “${slug}” in the Marketplace.`
+                ? `There is no app called “${slug}” in the Community.`
                 : error
             }
             action={
@@ -162,7 +162,7 @@ export function AppDetailPage({ slug, snap, bare = false }: { slug: string; snap
     );
   } else if (action.kind === "open" && market) {
     note = app.installed?.delisted ? (
-      <span className="is-warn">Installed · no longer in the Marketplace</span>
+      <span className="is-warn">Installed · no longer in the Community</span>
     ) : (
       <>Installed · reviewed release</>
     );

@@ -855,7 +855,7 @@ export default function App({ config }: { config: Config }) {
                 ? // The file page names itself (FusedFilePage) after its app.
                   pathname === "/marketplace/file"
                   ? undefined
-                  : "Marketplace"
+                  : "Community"
                 : isAiModels
                   ? "AI Models"
                   : isApps
@@ -1043,7 +1043,7 @@ export default function App({ config }: { config: Config }) {
           </Suspense>
         ) : (
           <div className="monitor-off deploy-muted">
-            The Marketplace is off. Turn it on under{" "}
+            The Community is off. Turn it on under{" "}
             <a
               href="/preferences?s=marketplace"
               onClick={(e) => {
@@ -1051,7 +1051,7 @@ export default function App({ config }: { config: Config }) {
                 navigateUrl("/preferences?s=marketplace");
               }}
             >
-              Preferences › Experimental flags
+              Preferences › Sharing & sync
             </a>
             .
           </div>

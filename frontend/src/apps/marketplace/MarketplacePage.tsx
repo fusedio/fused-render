@@ -188,10 +188,10 @@ export function MarketplacePage({ fusedFile }: { fusedFile?: string } = {}) {
     body = (
       <EmptyState
         title="Page not found"
-        body="This Marketplace address doesn't lead anywhere."
+        body="This Community address doesn't lead anywhere."
         action={
           <button type="button" className="mp-btn" onClick={() => navigateUrl(MARKETPLACE_HOME)}>
-            Go to the Marketplace
+            Go to the Community
           </button>
         }
       />

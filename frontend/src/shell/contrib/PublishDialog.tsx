@@ -233,7 +233,7 @@ export function PublishDialog({
       open
       onClose={onClose}
       locked={sending}
-      title="Publish to marketplace"
+      title="Publish to the Community"
       description="Fused reviews your app before it is listed, usually in about 30 minutes. Anyone can then find and install it."
       footer={
         <>

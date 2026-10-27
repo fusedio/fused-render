@@ -84,9 +84,9 @@ function fallbackSentence(l: Listing, name: string): string {
   if (status === "failed") return `The review of ${name} didn't pass.`;
   if (l.listed) {
     const when = releaseDate(l.approved?.at);
-    return when ? `${name} is in the Marketplace, release of ${when}.` : `${name} is in the Marketplace.`;
+    return when ? `${name} is in the Community, release of ${when}.` : `${name} is in the Community.`;
   }
-  return `${name} isn't in the Marketplace yet.`;
+  return `${name} isn't in the Community yet.`;
 }
 
 function toneOf(l: Listing | null, state: string | null | undefined): StripTone {
@@ -229,7 +229,7 @@ export function useListing({
     c?.copy.repo?.split("/")[1] ||
     dir.replace(/\/+$/, "").split("/").pop() ||
     "Your app";
-  const sentence = answer?.sentence || (listing ? fallbackSentence(listing, name) : `${name} isn't in the Marketplace yet.`);
+  const sentence = answer?.sentence || (listing ? fallbackSentence(listing, name) : `${name} isn't in the Community yet.`);
   const doctorOffered = actions.some((a) => a.id === "open-doctor" || a.dialog === "doctor");
   const doctorBlocks = !!listing && !listing.doctor_clear && !listing.listed;
 
@@ -285,7 +285,7 @@ export function useListing({
         confirm: a,
         sentence:
           a.confirm ||
-          "Your app leaves the Marketplace. People who installed it keep their copy on its last reviewed release.",
+          "Your app leaves the Community. People who installed it keep their copy on its last reviewed release.",
       });
     }
     void run(a);
@@ -333,7 +333,7 @@ export function useListing({
       )}
       {sheet === "sign-in" && (
         <SignInSheet
-          doing="publish to the Marketplace"
+          doing="publish to the Community"
           onClose={() => setSheet(null)}
           onSignedIn={() => {
             setSheet(null);
