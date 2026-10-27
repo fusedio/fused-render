@@ -1661,6 +1661,9 @@ export default function CanvasWorkspace({
         // Tasks door on a canvas-level task landed on the task's session and
         // then lost it to the first node's file (Akshil, 2026-10-27).
         if (type === "fused-embed-auth-ready") {
+          // A fresh document: down until its next hello (the selection gate
+          // below), whether or not the src changed.
+          frameUpRef.current = false;
           sendSelect(nodeRef.current?.udfName ?? null);
         }
       }
@@ -1758,6 +1761,11 @@ export default function CanvasWorkspace({
         sendCodePanelState();
         sendAiModels();
         setRepostSeq((n) => n + 1);
+        // Once more now that the canvas is there to select in: an older
+        // workbench picks its first UDF on hydration, and this puts it back
+        // on the page's own node (or none). A current one already settled on
+        // the replay it was holding, and a repeat is a no-op there.
+        sendSelect(nodeRef.current?.udfName ?? null);
       }
       if (type === "fused-embed-delta-applied" || type === "fused-embed-delta-rejected") {
         const rev = event.data?.rev;
@@ -1792,6 +1800,12 @@ export default function CanvasWorkspace({
         // The viewer has no pane to follow a selection into (see `embedded`);
         // ignoring it here also keeps `?node=` off the project page's URL.
         if (embedded) return;
+        // Before its first hello the frame has not hydrated: what it holds
+        // selected is the shell's boot default (`udf_1`), not a node of this
+        // canvas, and following it opened that file's pane over the chat the
+        // page opened on and dropped the task's `session_id` off the URL.
+        // The frame posts its settled selection once it has hydrated.
+        if (!frameUpRef.current) return;
         const udfName = event.data?.udfName;
         if (typeof udfName === "string" && udfName) {
           const kind = event.data?.kind === "widget" ? "widget" : "udf";
