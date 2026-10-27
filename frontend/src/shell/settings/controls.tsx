@@ -25,7 +25,6 @@ import {
 import {
   CanvasesControl,
   CanvasesEmbedProxyControl,
-  GithubLinkControl,
   GitSyncControl,
   LivePreviewsControl,
   MarketplaceControl,
@@ -37,6 +36,8 @@ import {
   TaskRecapsControl,
   TaskSummaryTitlesControl,
   ClaudeStrictMcpControl,
+  ContribControl,
+  ContribRemixControl,
   ClaudeDefaultPermissionControl,
 } from "./toggles";
 import {
@@ -82,8 +83,9 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "notify-terminal": NotifyTerminalControl,
   "git-sync": GitSyncControl,
   "share-sheet": ShareSheetControl,
-  "github-link": GithubLinkControl,
   "live-previews": LivePreviewsControl,
+  contrib: ContribControl,
+  "contrib-remix": ContribRemixControl,
   indexing: IndexingControl,
   "ranked-search": RankedSearchControl,
   "low-impact": LowImpactControl,

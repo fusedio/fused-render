@@ -2981,7 +2981,7 @@ def _collect() -> dict[str, dict]:
             task["key_filed_at"] = tasks_store.archived_at(archived, key)
     return {key: task for key, task in tasks.items()
             if _is_task(task) and not _deleted(task, deleted)
-            and not _bot_session(task)}
+            and not _bot_session(task) and not _merge_session(task)}
 
 
 def _bot_session(task: dict) -> bool:
@@ -3002,6 +3002,17 @@ def _bot_session(task: dict) -> bool:
     from fused_render.bots import paths as bot_paths  # noqa: PLC0415
     cwd = tasks_store.head(task["path"])[0]
     return bot_paths.is_bot_workdir(cwd)
+
+
+def _merge_session(task: dict) -> bool:
+    """A transcript a "Merge with Claude" round wrote: a headless helper
+    session in a scratch worktree that is deleted when the job ends, so its
+    row would open a folder that no longer exists. Same cwd test as
+    `_bot_session` (`contrib.merge_job.is_scratch_workdir`)."""
+    if not task["path"]:
+        return False
+    from fused_render.contrib import merge_job  # noqa: PLC0415
+    return merge_job.is_scratch_workdir(tasks_store.head(task["path"])[0])
 
 
 def _entries_for(keys) -> dict[str, list[dict]]:

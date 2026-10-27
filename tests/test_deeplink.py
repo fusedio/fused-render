@@ -76,19 +76,30 @@ def _route(tmp_path, src):
 
 def test_git_link_hands_repo_to_shell(tmp_path):
     path, query = _route(tmp_path, DEEPLINK)
-    assert path == "/"
+    assert path == "/install"
     assert query == "_fetch_appgit=" + quote(REPO_URL, safe="")
 
 
 def test_url_link_hands_link_to_shell(tmp_path):
     link = "https://example.com/a.fused?x=1&y=2"
     path, query = _route(tmp_path, "fused-render://open?url=" + quote(link, safe=""))
-    assert path == "/"
+    assert path == "/install"
     assert unquote(query.removeprefix("_fetch_appfile=")) == link
 
 
+def test_marketplace_link_hands_slug_to_shell(tmp_path):
+    path, query = _route(tmp_path, "fused-render://open?marketplace=sine-starter")
+    assert (path, query) == ("/install", "_fetch_market=sine-starter")
+    # The trailing-slash authority form, and a percent-encoded slug, too.
+    assert _route(tmp_path, "fused-render://open/?marketplace=sine%2Dstarter")[1] == \
+        "_fetch_market=sine-starter"
+
+
 @pytest.mark.parametrize(
-    "src", ["whatever", "fused-render://open?page=x", "fused-render://launch"],
+    "src", ["whatever", "fused-render://open?page=x", "fused-render://launch",
+            # A Marketplace link whose slug is not a slug is never handed on.
+            "fused-render://open?marketplace=", "fused-render://open?marketplace=../etc",
+            "fused-render://open?marketplace=Sine_Starter", "fused-render://open?marketplace=a"],
 )
 def test_unknown_link_is_a_400(tmp_path, src):
     resp = _client(tmp_path).get("/clone", params={"src": src}, follow_redirects=False)

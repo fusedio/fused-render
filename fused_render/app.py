@@ -512,12 +512,14 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
         from fused_render.server import engine_host
 
         from fused_render import canvases, warm_run
+        from fused_render.contrib import ai as contrib_ai
 
         engine_host.refuse_new_children()
         supervisor.refuse_new_workers()
         bots_browser.refuse_launches()
         canvases.refuse_new_managers()
         warm_run.refuse_new()
+        contrib_ai.refuse_children()
 
     def engines():
         from fused_render.server import engine_host
@@ -570,6 +572,15 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
 
         canvases.shutdown()
 
+    def contrib_claude():
+        # The contribution loop's `claude` children (a safety review, a draft,
+        # the Merge with Claude resolver): registered at spawn, killed here.
+        # They are plain children (no new session — that would force fork(),
+        # which dies with libproj resident), so nothing but this kills them.
+        from fused_render.contrib import ai as contrib_ai
+
+        contrib_ai.stop_children()
+
     def discovery():
         from fused_render.server.app import remove_server_json
 
@@ -583,6 +594,7 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
     for name, step in (("engines", engines), ("ai", ai_workers),
                        ("terminals", terminals), ("index", index_runs),
                        ("bots", bots), ("canvas-sync", canvas_sync),
+                       ("contrib-claude", contrib_claude),
                        ("discovery", discovery)):
         def _run(step=step, name=name):
             try:

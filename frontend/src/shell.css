@@ -35,6 +35,7 @@
 /* The /monitor process monitor (shell/monitor) — after fields/buttons so its
    compact toolbar controls override their 32px defaults by order. */
 @import "./styles/monitor.css";
+@import "./styles/install-link.css";
 /* After preferences.css:
    the scheduled-messages page is another settings-family surface that only adds
    its own row layout over the .prefs-* / .field-* / .btn vocabulary above. */
@@ -68,6 +69,10 @@
    from the explorer's entry-page topbar) and layers only its checklist over
    the shared modal chrome imported far above. */
 @import "./styles/app-doctor.css";
+/* After app-page.css: the GitHub contribution loop's surfaces on the app page
+   (shell/contrib/*) — the source line, the copy-status strip, the Proposals
+   tab. */
+@import "./styles/contrib.css";
 @import "./styles/templates.css";
 @import "./styles/home.css";
 /* After home.css: the canvases listing is another page-family surface that

@@ -21,8 +21,16 @@ import { installDomShim } from "./testDomShim";
 // this module's.
 installDomShim();
 
-const { entryOf, hrefFor, isBrowserHandledClick, onAppCardClick, openTargetFor, sortApps } =
-  await import("./appEntry");
+const {
+  blockedCardHref,
+  cardBlockGate,
+  entryOf,
+  hrefFor,
+  isBrowserHandledClick,
+  onAppCardClick,
+  openTargetFor,
+  sortApps,
+} = await import("./appEntry");
 
 function app(over: Partial<AppInfo> = {}): AppInfo {
   return {
@@ -193,4 +201,25 @@ test("sortApps breaks timestamp ties by display name, stably", () => {
   const b = app({ name: "b", title: "Beta", opened_at: 100 });
   const a = app({ name: "a", title: "Alpha", opened_at: 100 });
   expect(sortApps([b, a]).map((x) => x.name)).toEqual(["a", "b"]);
+});
+
+// ------------------------------------------------------------------ block list
+
+const SOFT = { level: "soft" as const, reason: "r", what_to_do: "w" };
+
+test("a Marketplace copy the block list gates: hard stops, an unconfirmed soft asks", () => {
+  const market = (block: NonNullable<AppInfo["contrib"]>["block"]) =>
+    app({ contrib: { label: "", inbox: 0, kind: "marketplace", block } });
+  expect(cardBlockGate(market({ ...SOFT, level: "hard" }))).toBe("stop");
+  expect(cardBlockGate(market(SOFT))).toBe("ask");
+  expect(cardBlockGate(market({ ...SOFT, confirmed: true }))).toBeNull();
+  expect(cardBlockGate(market(null))).toBeNull();
+  // A GitHub-link copy's block is a warning only.
+  expect(cardBlockGate(app({ contrib: { label: "", inbox: 0, kind: "github", block: SOFT } }))).toBeNull();
+});
+
+test("a gated card's own href is the app page, so a cmd-click or middle-click cannot run the release", () => {
+  const gated = app({ path: "/w/local/my app", contrib: { label: "", inbox: 0, kind: "marketplace", block: SOFT } });
+  expect(blockedCardHref(gated)).toBe("/apps/w/local/my%20app");
+  expect(blockedCardHref(app())).toBeNull();
 });

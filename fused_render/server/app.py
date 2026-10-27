@@ -1139,6 +1139,62 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # Its own endpoint, not a /api/config field: the facts behind it are
     # process spawns, and /api/config is read on every page load.
     app.include_router(github_router)
+    # The GitHub contribution loop (routers/contrib.py, docs/CONTRIB_LOOP.md
+    # §12): install sources, your changes + Propose, the author's inbox,
+    # remixes. Reads are cached and never wait on GitHub; every POST carries
+    # the D3 X-Fused guard, names a workspace app, and answers
+    # `{ok:false, reason:"disabled"}` while its phase flag is off.
+    from fused_render.server.routers.contrib import router as contrib_router
+
+    app.include_router(contrib_router)
+    # Publish to the Marketplace (routers/listing.py, §18.6): an own copy's
+    # listing status, draft and actions. Guarded: the module lands with its
+    # workstream, and a build without it simply has no listing routes.
+    try:
+        from fused_render.server.routers.listing import router as listing_router
+    except ImportError:
+        listing_router = None
+    if listing_router is not None:
+        app.include_router(listing_router)
+    # The Community tab's ladder read and its Put it on GitHub door
+    # (routers/ladder.py, §19.2). Guarded like the listing routes.
+    try:
+        from fused_render.server.routers.ladder import router as ladder_router
+    except ImportError:
+        ladder_router = None
+    if ladder_router is not None:
+        app.include_router(ladder_router)
+
+    # The contrib inbox-count sweep (contrib/refresh.py): one daemon thread
+    # that, only while the inbox phase is on, re-lists every own app's
+    # proposals every 10 min so Apps cards carry counts. A startup hook so a
+    # TestClient that never enters the lifespan never gets the thread; full
+    # only — the bot flavor has no Apps grid.
+    @on_startup_full
+    async def _startup_contrib_sweep():
+        from fused_render.contrib import refresh as contrib_refresh
+
+        contrib_refresh.start()
+
+    # The Marketplace block list at launch (docs/CONTRIB_LOOP.md §18.4 B4):
+    # fetch the list and enforce it on every copy (`contrib.blocks.startup`
+    # — refresh + enforce_all on its own daemon thread, the last list on
+    # disk when offline): it touches the network and git, and a hard block
+    # found here must not hold up the boot. `on_startup`, not `_full`: Fused
+    # Bot's bots install Marketplace apps too, and the block list is
+    # enforced whatever the Marketplace switch says (§18.8). A build
+    # without the module skips.
+    @on_startup
+    async def _startup_marketplace_blocks():
+        try:
+            from fused_render.contrib import blocks
+        except ImportError:
+            return
+        try:
+            blocks.startup()
+        except Exception:  # noqa: BLE001 — a background check never fails the server
+            logger.exception("marketplace block list check at startup failed")
+
     # Deep links (SPEC §26): GET /clone routes every OS-delivered open link
     # to an install page or the shell's fetch hand-off. deeplink.py never
     # imports server, so the include stays acyclic like shell/*.
@@ -1147,7 +1203,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     app.include_router(deeplink_router)
     # .fused single-file app export/install (SPEC §43, AF-14): GET
     # /api/appfile/export download + the GET/POST /api/appfile/install pair
-    # the fusedapp template (the install page) calls (no user-facing open route).
+    # the install page (frontend FusedFilePage) calls (no user-facing open route).
     from fused_render.server.routers.appfile import router as appfile_router
 
     app.include_router(appfile_router)

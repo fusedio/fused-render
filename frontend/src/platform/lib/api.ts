@@ -1494,6 +1494,13 @@ export interface EnginePrefs {
   fused_available: boolean;
 }
 
+/** The contribution loop's switches as stored (`Prefs.contrib`): the loop,
+ *  and Remix (effective only with the loop on). */
+export interface ContribPrefs {
+  enabled: boolean;
+  remix: boolean;
+}
+
 export interface Prefs {
   engine: EnginePrefs;
   // Whether the Reader (listen-to-files) accessibility mode is offered (opt-in,
@@ -1529,11 +1536,12 @@ export interface Prefs {
   // OPTIONAL: an older server answers without it, and the reader
   // (marketplace-flag.ts) treats absence as off.
   marketplace?: { enabled: boolean };
-  // Whether the Share sheet offers its GitHub install-link card (opt-in,
-  // default off — shell/prefs.py `github_link_enabled`). Gates the card, not
-  // /api/share/github. OPTIONAL: an older server answers without it, and the
-  // reader (github-link-flag.ts) treats absence as off.
-  github_link?: { enabled: boolean };
+  // The GitHub contribution loop's switches, RAW as set (shell/prefs.py
+  // `contrib_enabled` + `contrib_remix_enabled`, opt-in, default off —
+  // docs/CONTRIB_LOOP.md §1). Readers want the per-phase values with "remix
+  // needs the loop" applied: contrib-flags.ts. OPTIONAL: an older server
+  // answers without it, and absence means off.
+  contrib?: ContribPrefs;
   // ONE TASK IN PROGRESS PER FOLDER (`project_queue_enabled`, shell/prefs.py).
   // Everything that wants to run in a folder somebody else's task is already
   // running in waits its turn in the scheduler's pending list instead — chat
@@ -1974,8 +1982,14 @@ export function putMarketplaceEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { marketplace_enabled: enabled });
 }
 
-export function putGithubLinkEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { github_link_enabled: enabled });
+/** The contribution loop's switch (`contrib_enabled`). */
+export function putContribEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { contrib_enabled: enabled });
+}
+
+/** The Remix switch (`contrib_remix_enabled`; effective only with the loop on). */
+export function putContribRemixEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { contrib_remix_enabled: enabled });
 }
 
 /** Whether a finished-task notification fires for an interactive-terminal
@@ -2633,7 +2647,10 @@ export type AppFileState =
   | "unknown"
   | "clash"
   | "local"
-  | "replace";
+  | "replace"
+  // stage B (§18.4): a GitHub link opened for an app installed from the
+  // Marketplace — following it directly is the user's explicit switch.
+  | "switch-link";
 
 /** The payload's `metadata.json`, type-checked field by field (display only). */
 export interface AppFileMetadata {
@@ -2659,7 +2676,25 @@ export interface AppFileProbe {
   state: AppFileState;
   needs_force: boolean;
   /** A GitHub-link build (`open?git=`): installs as a clone of `url`. */
-  git?: { url: string; commit: string } | null;
+  git?: {
+    url: string;
+    commit: string;
+    /** Installed GitHub-link copy only (contrib §16.8): whose latest it gets. */
+    who?: string | null;
+    /** Installed GitHub-link copy only: the user has changes of their own.
+     *  Present (either way) exactly when this is such a copy. */
+    changes?: boolean;
+    /** Installed GitHub-link copy only: the user's own files the author's
+     *  latest would land on (up to 12). */
+    collision?: string[];
+    /** Installed GitHub-link copy only: its app page has the Source panel to
+     *  act on (the A1 switch) — only then does the page point at it. */
+    app_page?: boolean;
+    /** Stage B, state `switch-link`: the copy is a Marketplace copy (`kind`)
+     *  and `switch` is the server's question ("Follow alice directly? …"). */
+    kind?: string | null;
+    switch?: string | null;
+  } | null;
   /** The file sits in the deep-link downloads cache, not a folder of the user's. */
   downloaded?: boolean;
   exported_at: string | null;
@@ -2682,7 +2717,10 @@ export interface AppFileProbe {
 }
 
 export interface AppFileInstallResult extends AppFileProbe {
-  action: "installed" | "updated";
+  /** `switched`: a Marketplace copy now follows the author directly. */
+  action: "installed" | "updated" | "switched";
+  /** The engine's own sentence for a switch. */
+  message?: string | null;
   /** The installed entry page (absolute). */
   entry: string;
   entry_view: string;
@@ -2699,9 +2737,13 @@ export function getAppFileProbe(path: string, opts?: { signal?: AbortSignal }): 
 export async function installAppFile(
   file: string,
   force: boolean,
+  opts: { switch?: boolean } = {},
 ): Promise<{ ok: AppFileInstallResult } | { needsConfirm: AppFileProbe }> {
   try {
-    return { ok: await postJson<AppFileInstallResult>("/api/appfile/install", { file, force }) };
+    // `switch`: the `switch-link` state's yes — a Marketplace copy starts
+    // following the author directly (§18.4 `switch_to_link`).
+    const body = opts.switch ? { file, force, switch: true } : { file, force };
+    return { ok: await postJson<AppFileInstallResult>("/api/appfile/install", body) };
   } catch (e) {
     const err = e as HttpError;
     const target = (err.body as { target?: AppFileProbe } | undefined)?.target;
@@ -2927,6 +2969,28 @@ export interface AppInfo {
   // dock/menubar pin of a `.fused` and for older backends. Undefined for
   // every folder-shaped app.
   kind?: "appfile";
+  // Where this copy came from and how many proposals wait on it — the card's
+  // quiet source line and inbox pill (server/routers/apps.py, from the
+  // contribution loop's cached records — docs/CONTRIB_LOOP.md §12.2). `label`
+  // is the product sentence ("GitHub link · follows alice/x", "Remix of
+  // alice/x", "Your app"); `kind` says which, so a card can stay quiet for an
+  // app of the reader's own. Undefined while the loop is off, on rows it has
+  // no record for, and on older backends.
+  contrib?: AppCardContrib;
+}
+
+export interface AppCardContrib {
+  label: string;
+  inbox: number;
+  kind?: "own" | "github" | "remix" | "marketplace";
+  /** Stage B (§18.4): a release Fused blocked is in this copy. `soft` and
+   *  not yet `confirmed`: opening the app asks first. */
+  block?: {
+    level: "hard" | "soft";
+    reason: string;
+    what_to_do: string;
+    confirmed?: boolean;
+  } | null;
 }
 
 // The uninstall policy class the server assigned (routers/app_uninstall.kind_for).
@@ -3264,6 +3328,12 @@ export interface AppCheck {
    *  git repository this server can read. Used for "Open in git" — the
    *  in-app git mode opens scoped to this root, not the app subfolder. */
   gitRoot?: string | null;
+  /** `git` row only: written by the GitHub contribution engine for a copy it
+   *  syncs (app_doctor._contrib_git_row). Its one failure is a decision the
+   *  app page is waiting for (an overlap with the author's latest, or a
+   *  sign-in), so the row offers "Open app page" — never Fix with Claude,
+   *  never Open in git. */
+  contrib?: boolean;
 }
 
 export interface AppDoctorReport {

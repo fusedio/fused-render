@@ -310,6 +310,31 @@ def set_autostart(path: str, autostart: bool) -> None:
     storage.write_json(_store_path(), {"autostart": current})
 
 
+def stop_and_disable(folder: str) -> bool:
+    """Stop *folder*'s background process now AND take it off autostart —
+    the block list's hard block (contrib/blocks.py, docs/CONTRIB_LOOP.md
+    §18.4): the blocked code must not keep running, nor come back at the
+    next launch. Unlike the `stop` route this DOES touch autostart; turning
+    it back on is the user's (the app's own `fused.daemon` / the autostart
+    route) once the app opens again. Never raises; answers whether
+    autostart was on."""
+    was_on = False
+    try:
+        real = os.path.realpath(folder)
+        was_on = real in autostart_paths()
+        if was_on:
+            set_autostart(real, False)
+    except Exception:  # noqa: BLE001 — stopping the process matters more
+        logger.exception("background apps: could not turn autostart off for %s", folder)
+    try:
+        from fused_render.server import engine_host
+
+        engine_host.stop(engine_id_for(folder))
+    except Exception:  # noqa: BLE001
+        logger.exception("background apps: could not stop %s", folder)
+    return was_on
+
+
 # --------------------------------------------------------- bring-up helpers
 
 

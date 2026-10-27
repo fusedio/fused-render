@@ -81,7 +81,7 @@ import {
 import { useFavicon, useUrlVersion } from "@platform/lib/hooks";
 import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { isOverlayOpen } from "@platform/lib/ui-overlay";
-import { navigateUrl, spaLinkProps, urlForFsPath } from "@platform/lib/router";
+import { navigateUrl, replaceSearch, spaLinkProps, urlForFsPath } from "@platform/lib/router";
 import { snapshotFrameSrc } from "@platform/lib/snapshot-param";
 import {
   AppWindow,
@@ -92,11 +92,12 @@ import {
   Loader2,
   Share2,
   Stethoscope,
+  Users,
   Webhook,
   type LucideIcon,
 } from "lucide-react";
 import { exportAppFileOnly, openShareApp } from "@platform/lib/share-app";
-import { useAppSharingFeature } from "@platform/lib/share-app-flag";
+import { useAppShareOffered } from "@platform/lib/share-app-flag";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import { AppStar } from "@platform/ui/AppStar";
 import IconPicker, { type IconPick } from "@platform/ui/IconPicker";
@@ -112,7 +113,9 @@ import { SkeletonLines } from "@platform/ui/Skeleton";
 import { basename } from "@platform/lib/format";
 import { opensElsewhere, tildePath } from "./tasks-lib";
 import {
+  APP_PAGE_TAB_PARAM,
   APP_PAGE_TABS,
+  LEGACY_PROPOSALS_TAB,
   appPageTabFromSearch,
   appPageUrl,
   type AppPageTab,
@@ -131,6 +134,20 @@ import { useAppPageGitColumn } from "@shell/useAppPageGitColumn";
 import AppPageGitPeek from "./AppPageGitPeek";
 import { useAppPageGitPeekWidth } from "./useAppPageGitPeekWidth";
 import { peekSearch } from "./task-peek-store";
+import {
+  useAppContrib,
+  useLadder,
+  type AppContribState,
+  type CopyBlock,
+  type LadderState,
+} from "@platform/lib/contrib";
+import type { HttpError } from "@platform/lib/api";
+import { asksFirst, openRefusal, overviewGate } from "./contrib/open-gate";
+import { SourceLine } from "./contrib/SourceLine";
+import { SourcePanel } from "./contrib/SourcePanel";
+import { BlockedNotice, BlockedStrip } from "./contrib/BlockedStrip";
+import { CommunityLine, CommunityTab, communityBadge, communityLine } from "./contrib/CommunityTab";
+import { authorOf } from "./contrib/words";
 
 // ---- the tabs, as ONE registry -----------------------------------------------
 //
@@ -142,7 +159,8 @@ import { peekSearch } from "./task-peek-store";
 // `keepMounted`: the panel stays in the tree behind the other tabs (hidden, not
 // unmounted). The Overview needs it — the frame holds live app state and a tab
 // switch must not reload it. Nothing else should want it: a hidden panel still
-// polls and paints.
+// polls and paints. `keepAfterVisit` is the narrower form — kept only once the
+// user opened the tab — for the Community tab, whose actions watch a job.
 type TabCtx = {
   slug: string;
   dir: string;
@@ -162,14 +180,108 @@ type TabCtx = {
    *  Only the Doctor tab takes it — its "Open in git" row is the one and only
    *  way in. */
   openGit: () => void;
+  /** The folder's GitHub contribution-loop state (platform/lib/contrib.ts
+   *  `useAppContrib`) — read once by this page and handed to the Overview
+   *  (its block strip and one-line pointer) and the Community tab. */
+  contrib: AppContribState;
+  /** The folder's ladder (§19.2 `useLadder`): whether the Community tab is
+   *  offered for an own app, and its rungs. */
+  ladder: LadderState;
+  /** The folder is known to be a Marketplace copy (the ladder's `kind`, or
+   *  the copy status): the frame waits for the copy's first status read. */
+  marketplace: boolean;
+  /** This tab is the one on screen (false for a kept, hidden panel). */
+  active: boolean;
+  /** The Community tab's address, and the click that goes there in place. */
+  communityHref: string;
+  openCommunity: (e: MouseEvent<HTMLAnchorElement>) => void;
 };
 
 type TabDef = {
   label: string;
   Icon: LucideIcon;
   keepMounted?: boolean;
+  /** Mounted on the first visit, then kept (hidden) while the folder offers
+   *  the tab — for a tab whose work outlives a tab switch. */
+  keepAfterVisit?: boolean;
   render: (ctx: TabCtx) => ReactNode;
 };
+
+// The Overview's frame — the app itself, or the reason it cannot be shown.
+// Out of TAB_DEFS so the Overview's render can stack the contribution card
+// above it (see that entry's comment for the `snapshotFrameSrc` story).
+function renderOverviewFrame({ slug, dir, entry, snapshot }: TabCtx): ReactNode {
+  if (snapshot.pending) {
+    // `error` (finding 1, second round): a transient resolve failure
+    // stays `pending` forever — nothing re-runs the resolve on its own —
+    // so this must not be an indefinite skeleton. `SnapshotError` gives
+    // the user a real way out (retry, or back to Live) instead.
+    if (snapshot.error) {
+      return <SnapshotError onRetry={snapshot.retry} />;
+    }
+    return <SkeletonLines rows={2} label="Loading app" />;
+  }
+  const entryPath = snapshot.snap ? snapshot.snap.entry ?? null : entry;
+  // `snapshotFrameSrc` returns `null` exactly when `sha` is claimed but
+  // `snap` is not yet resolved — a case the `snapshot.pending` return
+  // above already rules out here. Checked explicitly rather than
+  // asserted away with `as string` (code review finding 5, second
+  // round): that cast was only ever correct BECAUSE of the early
+  // `pending` return above it, and gave up the null contract
+  // `snapshotFrameSrc` was extracted to enforce — a future edit that
+  // moves or loosens that gate would silently produce `src="null"` on
+  // the iframe instead of a type error surfacing the mistake.
+  const frameSrc = entryPath
+    ? snapshotFrameSrc({ snap: snapshot.snap, sha: snapshot.sha, path: entryPath })
+    : null;
+  return frameSrc ? (
+    <div className="app-page-frame-wrap">
+      <iframe
+        // Keyed on the src: a snapshot -> Live switch mounts a NEW
+        // element rather than navigating the old one in place.
+        key={frameSrc}
+        className="app-page-frame"
+        src={frameSrc}
+        title={`App: ${slug}`}
+      />
+    </div>
+  ) : entryPath ? (
+    // `entryPath` is set but `snapshotFrameSrc` still returned null — the
+    // pending gate above should make this unreachable; fall back to the
+    // loading state rather than an iframe with no src.
+    <SkeletonLines rows={2} label="Loading app" />
+  ) : (
+    <p className="app-page-empty">
+      This folder has no entry page yet.{" "}
+      <a {...spaLinkProps(dir, { isDir: true })}>Open the folder</a> to see what is there.
+    </p>
+  );
+}
+
+/** The Overview's share of the loop (§19.4): the block strip, then the one
+ *  line pointing at the Community tab. */
+function OverviewContrib({ ctx }: { ctx: TabCtx }) {
+  const c = ctx.contrib.data;
+  const panel = c?.panel;
+  const sentence = communityLine(ctx.contrib, ctx.ladder.data);
+  const blocked = !!panel && (!!panel.block || !!panel.block_warn);
+  if (!blocked && !sentence) return null;
+  return (
+    <div className="contrib-stack">
+      {blocked && c && panel && (
+        <BlockedStrip
+          dir={ctx.dir}
+          block={panel.block ?? null}
+          warn={panel.block_warn ?? null}
+          who={panel.who || authorOf(c.copy)}
+          actions={c.actions ?? []}
+          onChanged={() => void ctx.contrib.refresh()}
+        />
+      )}
+      {sentence && <CommunityLine sentence={sentence} href={ctx.communityHref} onOpen={ctx.openCommunity} />}
+    </div>
+  );
+}
 
 const TAB_DEFS: Record<AppPageTab, TabDef> = {
   overview: {
@@ -192,51 +304,35 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     // (finding 3) — not `entry` (the LIVE tree's) rewritten by directory
     // prefix alone, which gets the wrong FILENAME whenever the app's entry
     // was renamed since that commit.
-    render: ({ slug, dir, entry, snapshot }) => {
-      if (snapshot.pending) {
-        // `error` (finding 1, second round): a transient resolve failure
-        // stays `pending` forever — nothing re-runs the resolve on its own —
-        // so this must not be an indefinite skeleton. `SnapshotError` gives
-        // the user a real way out (retry, or back to Live) instead.
-        if (snapshot.error) {
-          return <SnapshotError onRetry={snapshot.retry} />;
-        }
-        return <SkeletonLines rows={2} label="Loading app" />;
-      }
-      const entryPath = snapshot.snap ? snapshot.snap.entry ?? null : entry;
-      // `snapshotFrameSrc` returns `null` exactly when `sha` is claimed but
-      // `snap` is not yet resolved — a case the `snapshot.pending` return
-      // above already rules out here. Checked explicitly rather than
-      // asserted away with `as string` (code review finding 5, second
-      // round): that cast was only ever correct BECAUSE of the early
-      // `pending` return above it, and gave up the null contract
-      // `snapshotFrameSrc` was extracted to enforce — a future edit that
-      // moves or loosens that gate would silently produce `src="null"` on
-      // the iframe instead of a type error surfacing the mistake.
-      const frameSrc = entryPath
-        ? snapshotFrameSrc({ snap: snapshot.snap, sha: snapshot.sha, path: entryPath })
-        : null;
-      return frameSrc ? (
-        <div className="app-page-frame-wrap">
-          <iframe
-            // Keyed on the src: a snapshot -> Live switch mounts a NEW
-            // element rather than navigating the old one in place.
-            key={frameSrc}
-            className="app-page-frame"
-            src={frameSrc}
-            title={`App: ${slug}`}
-          />
-        </div>
-      ) : entryPath ? (
-        // `entryPath` is set but `snapshotFrameSrc` still returned null — the
-        // pending gate above should make this unreachable; fall back to the
-        // loading state rather than an iframe with no src.
-        <SkeletonLines rows={2} label="Loading app" />
-      ) : (
-        <p className="app-page-empty">
-          This folder has no entry page yet.{" "}
-          <a {...spaLinkProps(dir, { isDir: true })}>Open the folder</a> to see what is there.
-        </p>
+    //
+    // THE CONTRIBUTION LOOP lives in the Community tab (§19.4). The Overview
+    // keeps two things of it above the frame, live only (a past version
+    // picked in the version picker is not the copy those sentences are
+    // about): the block strip — a copy whose release Fused soft-blocked does
+    // not run here until the user says "Open anyway" in it (§18.7) — and one
+    // line, "<sentence> · Community →", when there is something to say (a
+    // needs-merge, waiting proposals, unpushed edits).
+    //
+    // The server's open gate (the entry probe's 423, see the page below) is
+    // what keeps a soft-blocked release from running; this render adds the
+    // hold for a known Marketplace copy (shell/contrib/open-gate.ts), so the
+    // frame never mounts only to be torn down when the first status read
+    // says the copy waits.
+    render: (ctx) => {
+      const gate = overviewGate(ctx.contrib, ctx.marketplace);
+      return (
+        <>
+          {ctx.snapshot.sha === null && <OverviewContrib ctx={ctx} />}
+          {gate === "ask" ? (
+            <p className="app-page-empty">
+              This app waits for your OK before it runs. Choose Open anyway above to use it.
+            </p>
+          ) : gate === "hold" ? (
+            <SkeletonLines rows={2} label="Loading app" />
+          ) : (
+            renderOverviewFrame(ctx)
+          )}
+        </>
       );
     },
   },
@@ -273,12 +369,33 @@ const TAB_DEFS: Record<AppPageTab, TabDef> = {
     // Ignores the version picker on purpose — see AppDoctorPanel.
     render: ({ dir, openGit }) => <AppDoctorPanel dir={dir} onOpenGit={openGit} />,
   },
+  community: {
+    label: "Community",
+    Icon: Users,
+    // The contribution loop (shell/contrib/CommunityTab.tsx, §19.4): the
+    // ladder for an own app, the other side for a copy. Offered only for an
+    // own app or a classified copy — see `offered` in the page below. Kept
+    // mounted once visited: its actions (Publish, Accept, Propose…) watch a
+    // server job from inside the tab, and an unmounted tab stops watching —
+    // a switch away mid-action came back to no progress line and no outcome
+    // sentence, so a failed Publish read as nothing happening. Never mounted
+    // for a folder whose tab was not opened, so the page's reads stay as
+    // they were for everyone who never looks at it.
+    keepAfterVisit: true,
+    render: ({ dir, slug, contrib, ladder, active }) => (
+      <CommunityTab dir={dir} slug={slug} contrib={contrib} ladder={ladder} variant="page" hidden={!active} />
+    ),
+  },
 };
 
 // What the folder turned out to be. `undefined` = still asking.
 type Resolved =
   | { kind: "missing" }
   | { kind: "error"; message: string }
+  // Stage B (§18.5 open gate): the server answered the entry probe with 423
+  // and the block's facts — a hard block stands, or (`level: "soft"`) a soft
+  // block waits for the user's "Open anyway" before the app may run.
+  | { kind: "blocked"; block: CopyBlock }
   | {
       kind: "app";
       entry: string | null;
@@ -294,10 +411,75 @@ export default function AppPage({
 }) {
   const slug = useMemo(() => basename(dir) || dir, [dir]);
   const [resolved, setResolved] = useState<Resolved | undefined>(undefined);
+  // Bumped after the user said "Open anyway" to a soft block: the entry probe
+  // runs again, and this time the server lets the app through.
+  const [resolveGen, setResolveGen] = useState(0);
   // The tab is the `_tab` query param, re-read on every URL event so
   // back/forward between the two tabs lands on the right one.
   const urlVersion = useUrlVersion();
-  const tab = appPageTabFromSearch(location.search);
+  const urlTab = appPageTabFromSearch(location.search);
+
+  // The GitHub contribution loop (platform/lib/contrib.ts): one read of this
+  // folder's copy status, shared by the header's source line, the Overview's
+  // block strip and line, and the Community tab. Nothing is fetched while
+  // every contrib flag is off, so the page with the feature off is the page
+  // it always was — except the ladder (§19.2), which answers whatever the
+  // switches say: an app of the user's own always has its Community tab.
+  const ladder = useLadder(dir);
+  // A Marketplace copy (the ladder names its kind; the open gate's 423 says
+  // so too) is read whatever the switches say: its block is enforced
+  // whatever they say, and the page must know whether opening it asks first.
+  const knownMarketplace = ladder.data?.kind === "marketplace" || resolved?.kind === "blocked";
+  const contrib = useAppContrib(dir, { marketplace: knownMarketplace });
+  const marketplace = knownMarketplace || contrib.data?.copy.kind === "marketplace";
+  // The one conditional tab (§19.4): offered for an own app (the ladder says
+  // `mine`) or a classified copy (`/api/contrib/app` answered). While either
+  // first read is still out, a `?_tab=community` link keeps its tab (the
+  // panel shows its own skeleton) rather than flashing the Overview; once
+  // both answered, a folder with neither falls back to the default like any
+  // unknown tab.
+  const ladderAnswered = ladder.data !== null && ladder.data.reason !== "failed";
+  const communityOffered = (!!ladder.data?.ok && ladder.data.mine) || !!contrib.data;
+  const offered = (id: AppPageTab) =>
+    id !== "community" ||
+    communityOffered ||
+    ((!contrib.settled || ladder.data === null) && urlTab === "community");
+  const tab: AppPageTab = offered(urlTab) ? urlTab : APP_PAGE_TABS[0];
+  // The tabs shown for this folder so far, for `keepAfterVisit`: written
+  // during render (adding the tab on screen is idempotent), and started over
+  // on a folder switch so app A's Community tab never stays behind app B.
+  const visitedRef = useRef<{ dir: string; tabs: Set<AppPageTab> }>({ dir, tabs: new Set() });
+  if (visitedRef.current.dir !== dir) visitedRef.current = { dir, tabs: new Set() };
+  visitedRef.current.tabs.add(tab);
+  const visited = visitedRef.current.tabs;
+  const offeredRef = useRef(offered);
+  offeredRef.current = offered;
+  // The tab ACTUALLY shown (a `?_tab=community` this folder does not offer
+  // shows the Overview) — what the arrow keys step from.
+  const tabRef = useRef(tab);
+  tabRef.current = tab;
+  // Once answered, a `?_tab=community` this folder does not offer (a switch
+  // from an app that had one, a stale link) is rewritten to the default
+  // tab's address in place — so the URL, the strip and Back all agree on the
+  // tab that is on screen.
+  // REAL answers only (`answered`, a ladder read that reached the server): a
+  // read that merely failed says nothing, and must not rewrite the address
+  // the user typed.
+  const dropCommunityTab = contrib.answered && ladderAnswered && urlTab === "community" && !communityOffered;
+  useEffect(() => {
+    if (!dropCommunityTab) return;
+    replaceSearch(appPageUrl(dir, APP_PAGE_TABS[0], peekSearch(location.search, null)));
+  }, [dropCommunityTab, dir]);
+  // The old Proposals tab's address names the Community tab: rewritten in
+  // place so the URL says what is on screen — unless this folder drops the
+  // tab anyway (the rewrite above lands on the Overview instead).
+  const legacyTab =
+    !dropCommunityTab && new URLSearchParams(location.search).get(APP_PAGE_TAB_PARAM) === LEGACY_PROPOSALS_TAB;
+  useEffect(() => {
+    if (!legacyTab) return;
+    replaceSearch(appPageUrl(dir, "community", location.search));
+  }, [legacyTab, dir, urlVersion]);
+  const badge = communityBadge(contrib, ladder.data);
 
   // This page's OWN resolution of the URL's `_snapshot` sha — extracted into
   // useAppPageSnapshot.ts, which has its own header comment for why this is
@@ -417,13 +599,16 @@ export default function AppPage({
         // `ensureAppFor`, archived tasks excluded); the explorer's "Open in
         // project" button stays the explicit way on.
       } catch (e) {
-        if (live) setResolved({ kind: "error", message: (e as Error).message });
+        if (!live) return;
+        const blocked = openRefusal(e);
+        if (blocked) setResolved({ kind: "blocked", block: blocked });
+        else setResolved({ kind: "error", message: (e as HttpError).message });
       }
     })();
     return () => {
       live = false;
     };
-  }, [dir]);
+  }, [dir, resolveGen]);
 
   // Left/Right step the tabs (owner, 2026-08-26), the sibling of the sidebar's
   // Up/Down over its rows (sidebarArrowNav.ts): together the two axes make the
@@ -453,8 +638,12 @@ export default function AppPage({
       if (!onBody && !inSidebar) return;
       // Every tab is always offered now (no more conditional Git tab to
       // skip), so this steps over the route's own static list directly.
-      const cur = appPageTabFromSearch(location.search);
-      const i = APP_PAGE_TABS.indexOf(cur) + (e.key === "ArrowRight" ? 1 : -1);
+      const cur = tabRef.current;
+      const step = e.key === "ArrowRight" ? 1 : -1;
+      let i = APP_PAGE_TABS.indexOf(cur) + step;
+      // Skip a tab this folder does not offer (the Proposals tab, AppPage's
+      // `offered`), so an arrow never lands on a tab that is not drawn.
+      while (i >= 0 && i < APP_PAGE_TABS.length && !offeredRef.current(APP_PAGE_TABS[i])) i += step;
       e.preventDefault();
       if (i < 0 || i >= APP_PAGE_TABS.length) return;
       // The same address a click would take (`tabUrl`): `?peek=` stays behind
@@ -572,7 +761,7 @@ export default function AppPage({
   // the sheet existed — the same `.fused` saved straight to Downloads, with a
   // toast saying where — and shows its own busy state, since there is no sheet
   // to narrate the save. Same version computation either way.
-  const sharing = useAppSharingFeature();
+  const sharing = useAppShareOffered();
   const [exporting, setExporting] = useState(false);
   const shareDisabled = snapshot.pending || snapshot.error || exporting;
   const handleShare = async () => {
@@ -659,9 +848,15 @@ export default function AppPage({
                 {/* Reads as the folder and IS the folder: opens its listing in the
                     explorer. The app's entry page is the "Open in explorer"
                     button opposite. */}
-                <a className="app-page-folder" title={dir} {...spaLinkProps(dir, { isDir: true })}>
-                  {tildePath(dir, home)}
-                </a>
+                <div className="app-page-sub">
+                  <a className="app-page-folder" title={dir} {...spaLinkProps(dir, { isDir: true })}>
+                    {tildePath(dir, home)}
+                  </a>
+                  {/* Where this copy came from (shell/contrib/SourceLine.tsx):
+                      "GitHub link · follows alice/x", "Your app", "Remix of
+                      alice/x". Nothing while the contrib flags are off. */}
+                  <SourceLine contrib={contrib.data} />
+                </div>
               </div>
             </div>
             {entry && (
@@ -754,8 +949,16 @@ export default function AppPage({
                   aria-label="App page"
                   className="h-auto w-full justify-start rounded-none border-b-0 p-0 pb-1"
                 >
-                  {APP_PAGE_TABS.map((id) => {
+                  {APP_PAGE_TABS.filter(offered).map((id) => {
                     const { label, Icon } = TAB_DEFS[id];
+                    // The badge rides in the accessible name too: it is drawn
+                    // on the icon, and the fold hides the word.
+                    const name =
+                      id !== "community" || badge === null
+                        ? label
+                        : badge === "dot"
+                          ? `${label} (new)`
+                          : `${label} (${badge})`;
                     return (
                       <TabsTrigger
                         key={id}
@@ -770,8 +973,8 @@ export default function AppPage({
                             href={tabUrl(id)}
                             // The word is what the fold hides; the tooltip and the
                             // accessible name keep saying it (app-page-fit.ts).
-                            title={label}
-                            aria-label={label}
+                            title={name}
+                            aria-label={name}
                             onClick={(e) => pickTab(e, id)}
                           />
                         }
@@ -784,6 +987,20 @@ export default function AppPage({
                           <span className="app-page-doctor-mark">
                             <Icon data-icon="inline-start" />
                             <AppDoctorStatusDot checks={doctorChecks} />
+                          </span>
+                        ) : id === "community" ? (
+                          // Same corner-badge seat as the Doctor dot, so the
+                          // badge survives the strip folding to icons: waiting
+                          // proposals (own app), or a dot for a copy's unread
+                          // event.
+                          <span className="app-page-doctor-mark">
+                            <Icon data-icon="inline-start" />
+                            {typeof badge === "number" && (
+                              <span className="contrib-tab-count" aria-hidden="true">
+                                {badge > 99 ? "99+" : badge}
+                              </span>
+                            )}
+                            {badge === "dot" && <span className="contrib-tab-dot" aria-hidden="true" />}
                           </span>
                         ) : (
                           <Icon data-icon="inline-start" />
@@ -810,12 +1027,46 @@ export default function AppPage({
                 Could not open {slug}: {resolved.message}
               </ErrorBanner>
             )}
+            {resolved?.kind === "blocked" && asksFirst(resolved.block) && (
+              <section className="app-page-panel app-page-overview" role="tabpanel">
+                {/* A soft block waits for a yes: the strip asks ("Open
+                    anyway" posts `confirm-block`), then the entry probe runs
+                    again and the app opens. Nothing of the app ran before. */}
+                <div className="contrib-stack">
+                  <BlockedStrip
+                    dir={dir}
+                    block={resolved.block}
+                    warn={null}
+                    who={contrib.data?.panel?.who || ""}
+                    actions={contrib.data?.actions ?? []}
+                    onChanged={() => {
+                      void contrib.refresh();
+                      setResolveGen((g) => g + 1);
+                    }}
+                  />
+                </div>
+                <p className="app-page-empty">
+                  This app waits for your OK before it runs. Choose Open anyway above to use it.
+                </p>
+                <SourcePanel dir={dir} slug={slug} contrib={contrib} blockShown />
+              </section>
+            )}
+            {resolved?.kind === "blocked" && !asksFirst(resolved.block) && (
+              <section className="app-page-panel app-page-overview" role="tabpanel">
+                <BlockedNotice dir={dir} block={resolved.block} />
+                {/* The panel still offers its way out (Merge with Claude when
+                    the roll-back met the user's changes, Check for a new
+                    release); its own block strip would repeat the notice. */}
+                <SourcePanel dir={dir} slug={slug} contrib={contrib} blockShown />
+              </section>
+            )}
 
             {resolved?.kind === "app" &&
               APP_PAGE_TABS.map((id) => {
                 const def = TAB_DEFS[id];
                 const active = tab === id;
-                if (!active && !def.keepMounted) return null;
+                const kept = def.keepMounted || (def.keepAfterVisit && visited.has(id) && offered(id));
+                if (!active && !kept) return null;
                 return (
                   <section
                     key={id}
@@ -825,7 +1076,19 @@ export default function AppPage({
                     role="tabpanel"
                     aria-hidden={!active}
                   >
-                    {def.render({ slug, dir, entry, snapshot, openGit })}
+                    {def.render({
+                      slug,
+                      dir,
+                      entry,
+                      snapshot,
+                      openGit,
+                      contrib,
+                      ladder,
+                      marketplace,
+                      active,
+                      communityHref: tabUrl("community"),
+                      openCommunity: (e) => pickTab(e, "community"),
+                    })}
                   </section>
                 );
               })}

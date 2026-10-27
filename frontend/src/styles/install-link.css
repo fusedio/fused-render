@@ -1,0 +1,124 @@
+/* The /install page (shell/InstallLinkPage.tsx): one centred card that is
+   the whole window while a deep link's download runs. */
+.install-link {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+  padding: 32px 24px;
+}
+
+.install-link-card {
+  width: min(460px, 100%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 10px;
+  padding: 32px 28px 24px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--bg-panel);
+}
+
+.install-link-mark {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  background: var(--bg-alt);
+  color: var(--fg-muted);
+  margin-bottom: 4px;
+}
+
+.install-link-mark .mode-icon-spinner {
+  width: 22px;
+  height: 22px;
+}
+
+.install-link-card[data-state="failed"] .install-link-mark,
+.install-link-card[data-state="idle"] .install-link-mark {
+  color: var(--warning);
+}
+
+.install-link-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.install-link-detail {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+  overflow-wrap: anywhere;
+}
+
+.install-link-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  margin-top: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: var(--bg-alt);
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.install-link-source-kind::after {
+  content: "·";
+  margin-left: 8px;
+}
+
+.install-link-source-link {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.install-link-foot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.install-link-clock {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--fg-muted);
+  min-width: 2.5em;
+}
+
+.install-link-btn {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.install-link-btn:hover {
+  background: var(--bg-alt);
+}
+
+.install-link-btn.primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--on-accent);
+  font-weight: 600;
+}

@@ -47,6 +47,7 @@ from fastapi import APIRouter, Body, File, Form, Header, UploadFile
 from fastapi.responses import JSONResponse
 
 from fused_render import app_id as app_identity
+from fused_render import backend_canvas
 from fused_render import app_listing, appfile
 from fused_render.fusedcli import (child_env, cli_error, fused_cli, set_fused_env,
                                    workbench_env)
@@ -347,10 +348,15 @@ def api_share_status(path: str = ""):
     the local share record if there is one. No control-plane call — this runs
     when a dialog opens, and must answer instantly."""
     _entry, aid, refusal = _resolve_app(path)
+    github_copy = refusal is None and _github_copy_repo(path) is not None
+    if github_copy:
+        refusal = GITHUB_COPY_REFUSAL
     return {
         "app_id": aid,
         "can_share": refusal is None,
         "refusal": refusal,
+        # Which refusal, for a sheet that offers the GitHub link instead.
+        "refusal_code": "github_copy" if github_copy else None,
         "cli_found": fused_cli() is not None,
         "logged_in": _logged_in(),
         "creds_stamp": _creds_stamp(),
@@ -384,6 +390,11 @@ def api_share_publish(
     _entry, aid, refusal = _resolve_app(path)
     if refusal is not None:
         return _error(refusal)
+    if _github_copy_repo(path) is not None:
+        # Someone else's code never uploads to Fused (contribution loop):
+        # refused here, not only hidden in the sheet.
+        return JSONResponse({"error": GITHUB_COPY_REFUSAL, "code": "github_copy"},
+                            status_code=409)
     if not _logged_in():
         return _not_signed_in()
     preview_bytes: bytes | None = None
@@ -533,7 +544,8 @@ def api_share_remove(body: dict = Body(...), x_fused: str | None = Header(defaul
 # `?repo=<owner>/<name>`. Nothing is uploaded — the link points at what is
 # already pushed, so it is only offered when the folder IS the repo and every
 # change in it is on the remote.
-GITHUB_LINK_BASE = "https://udf.ai/fc_1XxeHZKmYjTdzf14pLsSnY/fused_app_github.html"
+# The page is the backend canvas's `fused_app_github` (backend_canvas.py —
+# one canvas for everything; it used to be a canvas of its own on prod).
 
 _GITHUB_REMOTE = re.compile(
     r"^(?:git@github\.com:|(?:https?|ssh)://(?:[^@/]+@)?(?:www\.)?github\.com/)"
@@ -563,7 +575,89 @@ def _origin_default_branch(gu, root: str) -> str | None:
     return None
 
 
-def github_link_state(path: str) -> dict:
+def _copy_record(path: str, *, nested: bool = True) -> dict | None:
+    """The contrib record of someone else's app holding the folder at `path`
+    — the folder itself or, with `nested`, any folder above it — when the
+    record says so: kind `marketplace` WHATEVER THE FLAGS SAY (a Community
+    copy is someone else's code with the loop off too; the kind decides,
+    P1), kind `github` only with the contribution loop on (off, today's
+    behaviour answers). None otherwise, or when the store is unreadable.
+    Nested matters for the upload refusal: an app folder inside Bob's copy
+    of Alice's repo is still Alice's code. One store read for the whole
+    walk. The record lives outside the folder, so no file in the repo can
+    make a copy look like the user's own."""
+    try:
+        from fused_render.contrib import flags, store
+
+        records = store.all() or {}
+        here = store.key(path)
+        loop = None
+        while True:
+            record = records.get(here)
+            kind = record.get("kind") if isinstance(record, dict) else None
+            if kind in ("github", "marketplace") and record.get("repo") and os.path.isdir(here):
+                if kind == "github":
+                    loop = flags.sources() if loop is None else loop
+                if kind == "marketplace" or loop:
+                    return record
+            parent = os.path.dirname(here)
+            if not nested or parent == here:
+                return None
+            here = parent
+    except Exception:  # noqa: BLE001 — never worse than today's checks
+        logger.warning("contrib: reading the install source failed for %s", path, exc_info=True)
+    return None
+
+
+def _github_copy_repo(path: str, *, nested: bool = True) -> str | None:
+    """The AUTHOR's `owner/name` when the folder at `path` is (or, with
+    `nested`, sits inside) someone else's app (`_copy_record`), else None."""
+    record = _copy_record(path, nested=nested)
+    return record["repo"] if record else None
+
+
+#: Why a GitHub-link copy is never uploaded to Fused storage: it is someone
+#: else's code, and its public way to be shared is the author's own link.
+GITHUB_COPY_REFUSAL = "This app came from someone else's GitHub — share its GitHub link instead."
+
+
+def _contributor_link(path: str, copy_status: dict | None = None) -> dict | None:
+    """The author's link for someone else's app — the copy itself, never a
+    folder nested in one (that link would install the whole repo) — or None
+    (`_copy_record`). A Community copy shares its LISTING page (the
+    reviewed install), never the author's GitHub link: handing that on
+    would give the recipient a copy that follows the author's unreviewed
+    tip. `changes` counts what the link does NOT carry: the engine's local
+    count of this copy's own edits, plus one for uncommitted edits (no
+    network) — from `copy_status` when the caller already has it (the app
+    page's read does), else one `engine.status`."""
+    record = _copy_record(path, nested=False)
+    if record is None:
+        return None
+    repo = record["repo"]
+    slug = record.get("slug") if isinstance(record.get("slug"), str) and record.get("slug") else None
+    if record.get("kind") == "marketplace" and slug is None:
+        # No listing to point at, and the author's GitHub link would hand
+        # on an unreviewed copy: no link at all (the upload stays refused).
+        return {"ok": False, "url": None, "repo": repo, "code": "contributor", "changes": 0,
+                "reason": "This app came from the Community; it has no link to share yet."}
+    try:
+        if copy_status is None:
+            from fused_render.contrib import engine
+
+            copy_status = engine.status(path)
+        changes = (int((copy_status or {}).get("changes") or 0)
+                   + (1 if (copy_status or {}).get("dirty") else 0))
+    except Exception:  # noqa: BLE001 — the count is a hint, the link stands
+        logger.warning("contrib: change count failed for %s", path, exc_info=True)
+        changes = 0
+    url = (backend_canvas.listing_page_url(slug) if record.get("kind") == "marketplace"
+           else backend_canvas.github_link_url(repo))
+    return {"ok": True, "url": url, "repo": repo,
+            "reason": None, "code": "contributor", "changes": changes}
+
+
+def github_link_state(path: str, *, copy_status: dict | None = None) -> dict:
     """Whether the folder at `path` can be shared as a GitHub link, and why not.
 
     Three conditions, checked in order, the first failure being the `reason`:
@@ -577,39 +671,59 @@ def github_link_state(path: str) -> dict:
 
     NO NETWORK CALL — "pushed" is as of the last fetch, the same local-refs
     trade `app_doctor._pushed_pending` makes; this runs when the dialog opens.
+
+    `code` names the failed condition in a word (`not_repo`, `nested`,
+    `no_remote`, `not_github`, `dirty`, `unpushed`, `no_default`; None when
+    ok) for a surface that must not show `reason`'s git words — the
+    contribution loop's share sheet maps it to its own sentence
+    (docs/CONTRIB_LOOP.md §13). `copy_status`: the engine's CopyStatus for
+    this folder when the caller already computed it, so a contributor's link
+    does not run `engine.status` a second time.
+
+    A CONTRIBUTOR'S COPY shares the AUTHOR'S app (`_contributor_link`): with
+    the contribution loop on, a copy recorded as installed from someone
+    else's GitHub link answers that repo's link, `code: "contributor"`, and
+    how many of its own edits the link does NOT carry — whatever its local
+    tree holds, since Bob's unpublished edits were never what he is sharing.
+    Own apps and remixes keep the checks below.
     """
     from fused_render import git_upstream as gu
 
-    def no(reason: str, repo: str | None = None) -> dict:
-        return {"ok": False, "url": None, "repo": repo, "reason": reason}
+    def no(code: str, reason: str, repo: str | None = None) -> dict:
+        return {"ok": False, "url": None, "repo": repo, "reason": reason, "code": code}
 
     if not path or not os.path.isabs(path) or not os.path.isdir(path):
-        return no("path must be an absolute app folder path")
+        return no("not_repo", "path must be an absolute app folder path")
+    contributor = _contributor_link(path, copy_status)
+    if contributor is not None:
+        return contributor
     root = gu.repo_root(path)
     if root is None:
-        return no("This app is not a git repository.")
+        return no("not_repo", "This app is not a git repository.")
     if os.path.realpath(path) != root:
-        return no("This app sits inside a larger git repository — "
+        return no("nested", "This app sits inside a larger git repository — "
                   "the link needs the app folder to be the repository root.")
     remote = gu._run(root, "remote", "get-url", "origin")
     if not gu._ok(remote):
-        return no("This app has no remote repository — push it to GitHub first.")
+        return no("no_remote", "This app has no remote repository — push it to GitHub first.")
     repo = _github_repo(gu._out(remote))
     if repo is None:
-        return no("The app's remote is not on GitHub.")
+        return no("not_github", "The app's remote is not on GitHub.")
     if not gu._is_clean(root):
-        return no("This app has changes that are not committed and pushed.", repo)
+        return no("dirty", "This app has changes that are not committed and pushed.", repo)
     default = _origin_default_branch(gu, root)
     if default is None:
-        return no("Can't tell the repository's default branch — push it to GitHub first.", repo)
+        return no("no_default",
+                  "Can't tell the repository's default branch — push it to GitHub first.", repo)
     count = gu._run(root, "rev-list", "--count", f"origin/{default}..HEAD")
     try:
         ahead = int(gu._out(count)) if gu._ok(count) else 1
     except ValueError:
         ahead = 1
     if ahead > 0:
-        return no(f"This app has commits not pushed to {default} yet.", repo)
-    return {"ok": True, "url": f"{GITHUB_LINK_BASE}?repo={repo}", "repo": repo, "reason": None}
+        return no("unpushed", f"This app has commits not pushed to {default} yet.", repo)
+    return {"ok": True, "url": backend_canvas.github_link_url(repo), "repo": repo,
+            "reason": None, "code": None}
 
 
 @router.get("/api/share/github")

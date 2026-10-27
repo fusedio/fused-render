@@ -5246,12 +5246,61 @@ def _commit_turn(file: str, message: str, backend: str = "") -> None:
     if not git_bin or not os.path.isabs(git_bin):
         return
 
+    identity = ["-c", "user.name=Fused", "-c", "user.email=apps@fused.io"]
+    safe = []
+
     def git(*args):
         return subprocess.run(
-            [git_bin, "-C", repo_dir, "-c", "user.name=Fused",
-             "-c", "user.email=apps@fused.io", *args],
+            [git_bin, "-C", repo_dir, *safe, *identity, *args],
             capture_output=True, text=True, timeout=30, close_fds=False,
             encoding="utf-8", errors="replace")
+
+    def local(key):
+        r = git("config", "--local", "--get", key)
+        return r.stdout.strip() if r.returncode == 0 else ""
+
+    # What the contribution loop recorded this copy as. Its RECORD decides
+    # (outside the folder, `classify.kind_of`), never the repo's own
+    # `.git/config`, which the app and Claude sessions can rewrite: a copy
+    # that deleted its `fused.kind` would otherwise get its hooks back.
+    # Looked up in sys.modules, not imported (this file never imports
+    # `fused_render`); the server process that runs this sweep has it loaded.
+    # Absent (a standalone load), the repo's own marker, as before.
+    kind = None
+    if repo_dir == app_dir:
+        _cls = sys.modules.get("fused_render.contrib.classify")
+        try:
+            kind = _cls.kind_of(repo_dir) if _cls is not None else (local("fused.kind") or None)
+        except Exception:
+            kind = local("fused.kind") or None
+    # `.fused/` kept out by PATHSPEC as well as by info/exclude below, for a
+    # RECORDED copy: an ignore rule never hides a TRACKED file's edits, and a
+    # repo that commits `.fused/` would otherwise carry this machine's state
+    # into the turn's commit (docs/CONTRIB_LOOP.md §16.1). Only a recorded
+    # copy also gets the matching skip-worktree protection; any other repo
+    # that tracks `.fused/` commits it as before, or its edits would sit
+    # uncommitted for good. `add` is unscoped-by-exclude and `.fused`
+    # unstaged after it (an exclude naming an ignored path makes `add` exit
+    # 1); diff/commit exclude it. Mirrors app_git._scope_specs/_is_recorded.
+    fused = ("" if spec == "." else spec.removeprefix(":(literal)") + "/") + ".fused"
+    specs = [spec, ":(exclude,literal)" + fused] if kind is not None else [spec]
+    # A GitHub-link copy (the contribution loop sets the user's GitHub
+    # identity in its repo-local config): the turn commits as the user,
+    # crediting Claude in a trailer, instead of as Fused. Mirrors
+    # app_git._identity_for.
+    trailer = ""
+    try:
+        # `marketplace` (§18.4) is a copy of someone else's app the same way.
+        if kind in ("github", "marketplace"):
+            trailer = "\n\nCo-authored-by: Claude <noreply@anthropic.com>"
+            # Someone else's app: its `.git/config` and hooks are the side the
+            # app can write — no fsmonitor command, no hooks (§16.12). An own
+            # app keeps its author's hooks. Mirrors app_git._SAFE.
+            safe = ["-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null"]
+            if local("user.name") and local("user.email"):
+                identity = []
+    except Exception:
+        pass
 
     try:
         # The two sidecar patterns are a LEGACY defense: nothing writes those
@@ -5280,9 +5329,11 @@ def _commit_turn(file: str, message: str, backend: str = "") -> None:
                     fh.write("\n".join(missing) + "\n")
         if git("add", "-A", "--", spec).returncode != 0:
             return
-        if git("diff", "--cached", "--quiet", "--", spec).returncode == 0:
+        if kind is not None:
+            git("reset", "-q", "--", ":(literal)" + fused)
+        if git("diff", "--cached", "--quiet", "--", *specs).returncode == 0:
             return  # nothing to commit (turn changed no files under this app)
-        git("commit", "-q", "-m", subject, "--", spec)
+        git("commit", "-q", "-m", subject + trailer, "--", *specs)
     except Exception:
         pass
     finally:

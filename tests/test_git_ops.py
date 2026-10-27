@@ -693,6 +693,38 @@ def test_push_publishes_local_commits(ops, wired):
     assert git(remote, "log", "-1", "--format=%s").strip() == "to push"
 
 
+def test_push_is_refused_in_plain_words_for_a_guarded_copy(ops, reader, wired, tmp_path,
+                                                           monkeypatch):
+    # A copy of someone else's GitHub app (docs/CONTRIB_LOOP.md §16.0 P2)
+    # carries `no-push://fused` on origin: the view says so instead of Push
+    # (`repo.push_blocked`), the op answers with the same plain sentence, not
+    # git's "remote helper" error, and nothing reaches the remote. The
+    # sentence points at the app page only while that page has the panel
+    # (A1 on, §16.12).
+    import json
+
+    root, remote, _ = wired
+    home = tmp_path / "apphome"
+    home.mkdir()
+    monkeypatch.setenv("FUSED_RENDER_HOME_DIR", str(home))
+    before = git(remote, "rev-parse", "HEAD").strip()
+    assert reader.main(root)["repo"]["push_blocked"] is None
+    git(root, "config", "remote.origin.url", "https://github.com/alice/x.git")
+    git(root, "config", "remote.origin.pushurl", "no-push://fused")
+    assert reader.main(root)["repo"]["push_blocked"] == (
+        "This copy of alice/x has changes of its own, and they stay on this computer.")
+    (home / "prefs.json").write_text(json.dumps({"contrib_enabled": True}))
+    blocked = reader.main(root)["repo"]["push_blocked"]
+    assert blocked == "This app follows alice/x. Send your changes from its app page."
+    write(root, "pkg/mod.py", "kept here\n")
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", "local only", when="2026-10-04T10:00:00+00:00")
+    got = ops.main(root, op="push")
+    assert got["ok"] is False and got["reason"] == "follows-author"
+    assert got["message"] == blocked
+    assert git(remote, "rev-parse", "HEAD").strip() == before
+
+
 def test_push_publishes_a_branch_that_has_no_upstream_yet(ops, wired):
     # The decision this pins: a push from a branch with no upstream SETS one
     # (`--set-upstream <remote> <branch>`) rather than failing with git's
@@ -2000,3 +2032,165 @@ def test_refusal_output_is_per_call_not_shared_across_threads(ops, repo):
     finally:
         may_finish.set()
         t.join()
+
+
+# ------------------------------------- the contribution loop's guard (§17.8)
+#
+# A copy of someone else's GitHub app (docs/CONTRIB_LOOP.md §17) carries
+# `no-push://fused` on origin and works on its own branch, `fused/mine`,
+# tracking the author's `origin/<b>`. The Git panel's writer refuses with
+# `templates/shared/contrib_guard.py`'s sentences: Push always; a plain pull
+# only once the copy has commits of its own (then the panel's button posts
+# the loop's Bring in instead); reset-to-commit anywhere but `fused/mine`.
+
+
+def _guarded(root, *, home_branch=True):
+    """Make `root` a guarded copy: the push guard on origin and, by default,
+    HEAD on `fused/mine` tracking the author's branch (§17.6)."""
+    git(root, "config", "remote.origin.pushurl", "no-push://fused")
+    if home_branch:
+        b = git(root, "symbolic-ref", "--short", "HEAD").strip()
+        git(root, "switch", "-q", "-c", "fused/mine")
+        git(root, "config", "branch.fused/mine.remote", "origin")
+        git(root, "config", "branch.fused/mine.merge", f"refs/heads/{b}")
+    return root
+
+
+def _author_publishes(other, text, when="2026-10-10T10:00:00+00:00"):
+    write(other, "pkg/mod.py", text)
+    git(other, "add", "-A")
+    git(other, "commit", "-q", "-m", text.strip(), when=when)
+    git(other, "push", "-q")
+
+
+def _mine(root, path, text, when="2026-10-11T10:00:00+00:00"):
+    write(root, path, text)
+    git(root, "add", "-A")
+    git(root, "commit", "-q", "-m", f"mine: {path}", when=when)
+
+
+def test_a_guarded_copy_with_nothing_of_its_own_pulls_plainly(ops, reader, wired):
+    root, _, other = wired
+    _guarded(root)
+    _author_publishes(other, "alice's latest\n")
+    git(root, "fetch", "-q", "origin")
+    repo = reader.main(root)["repo"]
+    assert repo["behind"] == 1 and repo["ahead"] == 0
+    got = ops.main(root, op="pull")
+    assert got["ok"] is True, got
+    assert git(root, "log", "-1", "--format=%s").strip() == "alice's latest"
+    assert git(root, "symbolic-ref", "--short", "HEAD").strip() == "fused/mine"
+
+
+def test_a_guarded_copy_with_changes_of_its_own_refuses_the_plain_pull(ops, reader, wired):
+    root, _, other = wired
+    _guarded(root)
+    _mine(root, "top.txt", "my edit\n")
+    _author_publishes(other, "alice's latest\n")
+    git(root, "fetch", "-q", "origin")
+    before = git(root, "rev-parse", "HEAD").strip()
+    repo = reader.main(root)["repo"]
+    assert repo["behind"] == 1 and repo["ahead"] == 1
+    # The view's button posts get-latest instead (template.html); a pull
+    # that still arrives answers in plain words, never "a terminal".
+    got = ops.main(root, op="pull")
+    assert got["ok"] is False and got["reason"] == "follows-author", got
+    assert "Bring in the latest" in got["message"]
+    assert "terminal" not in got["message"].lower()
+    assert git(root, "rev-parse", "HEAD").strip() == before
+
+
+def test_a_bring_in_merge_alone_still_answers_with_the_guard_sentence(ops, wired):
+    """`ahead` counts no merges (§17.2): a copy whose only commit the author
+    lacks is a bring-in merge passes the count, then can't fast-forward —
+    the refusal is still the loop's, not git's divergence advice."""
+    root, _, other = wired
+    _guarded(root)
+    _author_publishes(other, "first\n")
+    git(root, "fetch", "-q", "origin")
+    git(root, "merge", "-q", "--no-ff", "-m", "Bring in", "@{upstream}",
+        when="2026-10-10T11:00:00+00:00")
+    _author_publishes(other, "second\n", when="2026-10-10T12:00:00+00:00")
+    git(root, "fetch", "-q", "origin")
+    got = ops.main(root, op="pull")
+    assert got["ok"] is False and got["reason"] == "follows-author", got
+    assert "terminal" not in got["message"].lower()
+
+
+def test_a_guarded_copy_without_an_upstream_refuses_the_pull(ops, wired):
+    """Nothing to measure `ahead` against: refused, never a guess."""
+    root, _, _ = wired
+    _guarded(root)
+    git(root, "branch", "-q", "--unset-upstream")
+    got = ops.main(root, op="pull")
+    assert got["ok"] is False and got["reason"] == "follows-author", got
+
+
+def test_reset_is_the_users_own_on_fused_mine(ops, wired):
+    root, _, _ = wired
+    _guarded(root)
+    first = git(root, "rev-parse", "HEAD").strip()
+    _mine(root, "top.txt", "my edit\n")
+    got = ops.main(root, op="reset", sha=first)
+    assert got["ok"] is True, got
+    assert git(root, "rev-parse", "HEAD").strip() == first
+
+
+def test_reset_is_refused_off_fused_mine(ops, wired, tmp_path, monkeypatch):
+    """The author's branch is a mirror only the fetch writes (§17.1 I3), so
+    reset there is refused in plain words (no branch name) naming the app
+    page's real button (the author's login, as `actions.py` labels it)."""
+    import json
+
+    root, _, _ = wired
+    home = tmp_path / "apphome"
+    home.mkdir()
+    monkeypatch.setenv("FUSED_RENDER_HOME_DIR", str(home))
+    git(root, "config", "remote.origin.url", "https://github.com/alice/x.git")
+    _guarded(root, home_branch=False)
+    first = git(root, "rev-parse", "HEAD").strip()
+    _mine(root, "top.txt", "on the author's branch\n")
+    got = ops.main(root, op="reset", sha=first)
+    assert got["ok"] is False and got["reason"] == "follows-author", got
+    assert "fused/mine" not in got["message"]  # §0.1: no branch names
+    assert "turn on Community apps" in got["message"]
+    (home / "prefs.json").write_text(json.dumps({"contrib_enabled": True}))
+    got = ops.main(root, op="reset", sha=first)
+    assert got["message"] == (
+        "This app follows alice/x. Only your own version can be reset here: go back to it "
+        "first. To go back to their version exactly, use “Use alice's version” on "
+        "its app page.")
+    assert git(root, "rev-parse", "HEAD").strip() != first
+
+
+def test_push_stays_refused_on_fused_mine(ops, wired):
+    root, remote, _ = wired
+    _guarded(root)
+    before = git(remote, "rev-parse", "HEAD").strip()
+    _mine(root, "top.txt", "my edit\n")
+    got = ops.main(root, op="push")
+    assert got["ok"] is False and got["reason"] == "follows-author", got
+    assert git(remote, "rev-parse", "HEAD").strip() == before
+
+
+def test_the_reader_names_the_home_branch_and_the_bring_in_label(reader, wired):
+    root, _, _ = wired
+    plain = reader.main(root)["repo"]
+    assert (plain["home_branch"], plain["follows"], plain["bring_in_label"]) == (None,) * 3
+    git(root, "config", "remote.origin.url", "https://github.com/alice/x.git")
+    _guarded(root)
+    repo = reader.main(root)["repo"]
+    assert repo["home_branch"] == "fused/mine"
+    assert repo["follows"] == "alice"
+    assert repo["bring_in_label"] == "Bring in alice's latest"
+    assert repo["push_blocked"]
+
+
+def test_unguarded_repos_keep_every_op(ops, wired):
+    """No guard, no refusal: a plain repo pulls, resets and pushes as before."""
+    root, _, other = wired
+    first = git(root, "rev-parse", "HEAD").strip()
+    _mine(root, "top.txt", "x\n")
+    assert ops.main(root, op="reset", sha=first)["ok"] is True
+    _author_publishes(other, "theirs\n")
+    assert ops.main(root, op="pull")["ok"] is True

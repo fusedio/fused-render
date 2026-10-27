@@ -143,6 +143,12 @@ EXPECTED_STARTUP = [
     # TEMPORARY upgrade shim (legacy_mounts_cleanup.py); a startup hook so lean
     # and bare create_app() never run it.
     "_startup_legacy_mounts_cleanup",
+    # Added 2026-10-16: the contribution loop's inbox-count sweep
+    # (contrib/refresh.py), registered beside its router include.
+    "_startup_contrib_sweep",
+    # Added 2026-10-26: the Marketplace block list fetched + enforced at
+    # launch (docs/CONTRIB_LOOP.md §18.4 B4), a daemon thread.
+    "_startup_marketplace_blocks",
     # Added 2026-10-06: the Bots sub-app's scheduler + iMessage bridge
     # (fused_render/bots/registry.py), registered beside its router include.
     "_startup_bots",

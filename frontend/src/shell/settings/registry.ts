@@ -368,25 +368,19 @@ const ENTRIES = [
     keywords: "git push pull commit fast-forward sync github remote auto",
     renderOnly: true,
   },
+  // Owner 2026-10-27: three switches decide what Share offers — Public link
+  // (this row), Contributing (the GitHub card + install link) and Remix.
+  // The Share button itself is there when any of them is on
+  // (share-app-flag.ts `useAppShareOffered`); .fused file export always.
   {
     id: "share-sheet",
     needs: "fused",
     group: "apps",
     section: "Sharing",
-    label: "Share sheet",
-    description: "Replace Export with one Share button: a public link on your Fused account, or a .fused file.",
-    keywords: "share export link publish .fused file public download",
+    label: "Public link",
+    description: "Share an app as a public link on your Fused account. The Share button offers it next to the .fused file.",
+    keywords: "share export link publish .fused file public download canvas account",
     renderOnly: true,
-  },
-  {
-    id: "github-link",
-    group: "apps",
-    section: "Sharing",
-    label: "Offer a GitHub install link",
-    description: "For an app whose folder is its own GitHub repository, once everything is pushed.",
-    keywords: "github udf.ai repo install link share",
-    renderOnly: true,
-    child: true,
   },
   {
     id: "live-previews",
@@ -396,6 +390,42 @@ const ENTRIES = [
     description: "Cards without a preview.png show the running app, and hovering swaps it in. Each one boots a whole page in the background.",
     keywords: "thumbnail preview iframe cards live hover image",
     renderOnly: true,
+  },
+  // Community: the store of reviewed, open-source apps (one switch), the
+  // GitHub contribution loop (one switch), and Remix on its own
+  // (docs/CONTRIB_LOOP.md §1). Off by default.
+  {
+    id: "marketplace",
+    group: "apps",
+    section: "Community",
+    label: "Community",
+    description:
+      "The community store of reviewed, open-source apps: a Community row in the sidebar and its pages. Every release is reviewed by Fused before it reaches you, and you can list your own apps there.",
+    keywords: "marketplace store community apps gallery install reviewed releases publish open source",
+    renderOnly: true,
+    badge: "Beta",
+  },
+  {
+    id: "contrib",
+    group: "apps",
+    section: "Community",
+    label: "Contributing",
+    description:
+      "Cards say whether an app is yours or follows someone else's, and Share offers its GitHub install link. Your edits to someone else's app stay on top of theirs and you can propose them to the author; proposals to your apps show up on the app with a safety review to try, accept or decline. Once accepted, your copy goes back to following theirs and you're credited.",
+    keywords:
+      "community apps contribute follow author source origin propose proposals proposal edits pull request inbox review accept decline merged accepted credit contributors github install link",
+    renderOnly: true,
+    badge: "Beta",
+  },
+  {
+    id: "contrib-remix",
+    group: "apps",
+    section: "Community",
+    label: "Remix",
+    description: "Publish your changed version as an app of your own, credited to the original.",
+    keywords: "community contribute remix fork publish credit original",
+    renderOnly: true,
+    badge: "Beta",
   },
 
   // ── File index ───────────────────────────────────────────────────────────
@@ -473,15 +503,6 @@ const ENTRIES = [
     child: true,
     // Only means something while Canvases is offered at all.
     available: ({ prefs }) => prefs.canvases?.enabled === true,
-  },
-  {
-    id: "marketplace",
-    group: "features",
-    section: "Sidebar",
-    label: "Marketplace",
-    description: "Browse, install and update community apps from the sidebar.",
-    keywords: "store community apps gallery install",
-    renderOnly: true,
   },
   {
     id: "monitor",

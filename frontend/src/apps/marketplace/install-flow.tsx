@@ -17,18 +17,30 @@
 // The sheet is requested through a tiny module store and rendered by ONE
 // `<InstallSheetHost/>` (mounted by MarketplacePage), the same shape as
 // uninstall-app.ts — a pill deep in a card has no good place to hang a modal.
+//
+// STAGE B (CONTRIB_LOOP.md §18): a reviewed copy (`installed.kind ==
+// "marketplace"`) never runs the old package update. Its Update is "Check
+// for a new release" (POST /api/marketplace/check), which brings a waiting
+// release in under the user's own changes — nothing is overwritten, so no
+// sheet asks. An install whose answer is `confirm` (the user already follows
+// this author by GitHub link) asks "Switch to reviewed releases?" and posts
+// again with `switch: true` on the yes.
 import { useEffect, useRef, useState } from "react";
-import { Download, RefreshCw } from "lucide-react";
+import { BadgeCheck, Download, RefreshCw } from "lucide-react";
 import { Modal } from "@platform/ui/modal/Modal";
 import { AppIcon, StatusCallout, TrustList } from "@platform/ui/appstore";
 import {
   actionFor,
+  checkForRelease,
   installApp,
   isActive,
+  isMarketCopy,
   openInstalledApp,
+  releaseWaiting,
   type AppEntry,
   type InstallJob,
 } from "@platform/lib/marketplace";
+import { notify } from "@platform/lib/notifications";
 import { formatSize } from "@platform/lib/format";
 import { ackMarketplacePython, getMarketplaceAcks } from "@platform/lib/api";
 import { trustItemsFor } from "./trust";
@@ -85,9 +97,14 @@ function writeAck(slug: string) {
 
 // -- The sheet request store ---------------------------------------------------
 
-/** What the one sheet is asking about: a first install of a Python app, or
- *  an update (one app, or "Update all") that would replace local edits. */
-type SheetRequest = { kind: "install"; app: AppEntry } | { kind: "update"; apps: AppEntry[] };
+/** What the one sheet is asking about: a first install of a Python app, an
+ *  update (one app, or "Update all") that would replace local edits, or the
+ *  switch of a GitHub-link copy to reviewed releases (the install's
+ *  `confirm` answer). */
+type SheetRequest =
+  | { kind: "install"; app: AppEntry }
+  | { kind: "update"; apps: AppEntry[] }
+  | { kind: "switch"; app: AppEntry; who: string | null; path: string };
 
 let pending: SheetRequest | null = null;
 const listeners = new Set<(r: SheetRequest | null) => void>();
@@ -96,13 +113,43 @@ function setPending(req: SheetRequest | null) {
   for (const l of listeners) l(req);
 }
 
-function start(app: AppEntry) {
+function start(app: AppEntry, opts: { switch?: boolean } = {}) {
   // installApp records the failure on the job itself (the pill turns into
   // Retry with the reason), so nothing more to say here.
-  installApp({ slug: app.slug, name: app.name }).catch(() => {});
+  installApp({ slug: app.slug, name: app.name }, opts)
+    .then((r) => {
+      if ("status" in r && r.status === "confirm") {
+        setPending({ kind: "switch", app, who: r.who, path: r.path });
+      }
+    })
+    .catch(() => {});
 }
 
-const hasLocalEdits = (app: AppEntry) => !!app.installed?.modified;
+/** A reviewed copy: "Check for a new release", its outcome as a toast (the
+ *  server's sentence when it sends one). */
+export function checkRelease(app: AppEntry): void {
+  void checkForRelease(app).then((r) => {
+    if (r.status === "error") {
+      notify({ title: r.message || r.error || "Couldn't check for a new release", tone: "error" });
+      return;
+    }
+    // The sync's own text can carry a raw error: never shown (§0.1).
+    if (r.sync && r.sync.ok === false) {
+      notify({ title: `Couldn't bring in the new release of ${app.name}. Its app page says why.`, tone: "error" });
+      return;
+    }
+    const after = r.app ?? null;
+    if (after && releaseWaiting(after)) {
+      notify({ title: `A new release of ${app.name} is waiting. Its app page has the way to bring it in.`, tone: "info" });
+    } else if (after) {
+      notify({ title: `${app.name} has the newest reviewed release.`, tone: "info" });
+    }
+  });
+}
+
+/** Local edits an update would overwrite: only the old package update does
+ *  that — a reviewed copy brings a release in under the user's changes. */
+const hasLocalEdits = (app: AppEntry) => !isMarketCopy(app) && !!app.installed?.modified;
 
 /** "v1.0.0 → v1.1.0", or just the version when an update keeps it (the
  *  author changed files without bumping it). */
@@ -119,6 +166,10 @@ export function runPrimaryAction(app: AppEntry, job: InstallJob | null): void {
       if (action.path) openInstalledApp(action.path);
       return;
     case "update":
+      if (isMarketCopy(app)) return checkRelease(app);
+      if (hasLocalEdits(app)) setPending({ kind: "update", apps: [app] });
+      else start(app);
+      return;
     case "retry":
       if (hasLocalEdits(app)) setPending({ kind: "update", apps: [app] });
       else start(app);
@@ -135,10 +186,13 @@ export function runPrimaryAction(app: AppEntry, job: InstallJob | null): void {
 /** "Update all": straight through when nothing was edited locally, else one
  *  confirmation naming the edited apps (the others update either way). */
 export function runUpdateAll(apps: AppEntry[], jobs: Record<string, InstallJob>): void {
-  const todo = apps.filter((a) => !isActive(jobs[a.slug]));
+  const idle = apps.filter((a) => !isActive(jobs[a.slug]));
+  // Reviewed copies check for their release; only package installs update.
+  idle.filter(isMarketCopy).forEach(checkRelease);
+  const todo = idle.filter((a) => !isMarketCopy(a));
   if (todo.length === 0) return;
   if (todo.some(hasLocalEdits)) setPending({ kind: "update", apps: todo });
-  else todo.forEach(start);
+  else todo.forEach((a) => start(a));
 }
 
 export function InstallSheetHost() {
@@ -156,7 +210,55 @@ export function InstallSheetHost() {
   if (!req) return null;
   const close = () => setPending(null);
   if (req.kind === "update") return <UpdateSheet apps={req.apps} onClose={close} />;
+  if (req.kind === "switch") return <SwitchSheet app={req.app} who={req.who} onClose={close} />;
   return <InstallSheet app={req.app} onClose={close} />;
+}
+
+/** "Switch to reviewed releases?" — the install found a copy of this app the
+ *  user follows by GitHub link (§18.4 D13). Switching is one Activity line
+ *  with Undo on the app page; the user's own changes must be proposed or
+ *  discarded first (the server says so if they are not). */
+function SwitchSheet({ app, who, onClose }: { app: AppEntry; who: string | null; onClose: () => void }) {
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  const name = who || app.author?.github || app.author?.name || "the author";
+  const confirm = () => {
+    onClose();
+    start(app, { switch: true });
+  };
+  return (
+    <Modal
+      title="Switch to reviewed releases?"
+      onClose={onClose}
+      initialFocus={confirmRef}
+      width={440}
+      dialogClassName="mp-sheet"
+      footer={
+        <>
+          <button type="button" className="btn btn-secondary" onClick={onClose}>
+            Keep following {name}
+          </button>
+          <button ref={confirmRef} type="button" className="btn btn-primary mp-sheet-install" onClick={confirm}>
+            <BadgeCheck size={14} strokeWidth={2.2} aria-hidden="true" />
+            Switch
+          </button>
+        </>
+      }
+    >
+      <div className="mp-sheet-head">
+        <AppIcon src={app.icon_url} name={app.name} seed={app.slug} size={56} />
+        <div className="mp-sheet-id">
+          <div className="mp-sheet-name">{app.name}</div>
+          <div className="mp-sheet-meta">Already on this computer</div>
+        </div>
+      </div>
+      <p className="mp-sheet-lede">
+        You follow {name} directly today. Reviewed releases arrive only after Fused&rsquo;s check.
+      </p>
+      <p className="mp-sheet-lede is-quiet">
+        Your copy stays where it is, with its data. You can undo the switch from the app&rsquo;s Activity.
+      </p>
+    </Modal>
+  );
 }
 
 function UpdateSheet({ apps, onClose }: { apps: AppEntry[]; onClose: () => void }) {
@@ -165,7 +267,7 @@ function UpdateSheet({ apps, onClose }: { apps: AppEntry[]; onClose: () => void 
   const single = apps.length === 1 ? apps[0] : null;
   const confirm = () => {
     onClose();
-    apps.forEach(start);
+    apps.forEach((a) => start(a));
   };
   return (
     <Modal

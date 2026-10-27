@@ -10,7 +10,6 @@ import {
   putCanvasesEmbedProxy,
   putCanvasesEnabled,
   putGitAutoSyncEnabled,
-  putGithubLinkEnabled,
   putLivePreviewsEnabled,
   putMarketplaceEnabled,
   putMonitorEnabled,
@@ -21,13 +20,16 @@ import {
   putTaskSummaryTitlesEnabled,
   putClaudeDefaultPermission,
   putClaudeStrictMcpEnabled,
+  putContribEnabled,
+  putContribRemixEnabled,
 } from "@platform/lib/api";
+import { effectiveContribFlags, publishContribFlags } from "@platform/lib/contrib-flags";
+import { settingById } from "./registry";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
 import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
 import { publishMarketplaceEnabled } from "@platform/lib/marketplace-flag";
-import { publishGithubLinkEnabled } from "@platform/lib/github-link-flag";
 import {
   publishDefaultPermission,
   publishProjectQueueEnabled,
@@ -156,8 +158,11 @@ export function GitSyncControl({ prefs, onChange }: PrefControlProps) {
   );
 }
 
-// The Share sheet (public link + .fused file) in place of the plain Export on
-// every app surface — and on the file preview's share action too.
+// Public link (owner 2026-10-27): the Share sheet's Fused-account link card.
+// One of the three switches that decide what Share offers (Public link,
+// Community apps, Remix); the Share button is there when any is on
+// (share-app-flag.ts `useAppShareOffered`), the .fused file always. The GitHub
+// install link rides on Community apps now — its own row is gone.
 export function ShareSheetControl({ prefs, onChange }: PrefControlProps) {
   return (
     <PrefToggleRow
@@ -165,26 +170,6 @@ export function ShareSheetControl({ prefs, onChange }: PrefControlProps) {
       checked={prefs.app_sharing.enabled}
       put={putAppSharingEnabled}
       after={(next) => publishAppSharingEnabled(next.app_sharing.enabled)}
-      onChange={onChange}
-    />
-  );
-}
-
-// The Share sheet's GitHub install-link card. Only the sheet ever shows it, so
-// it is a child of the row above and cannot be turned ON while that is off —
-// but a link already on can always be turned off.
-export function GithubLinkControl({ prefs, onChange }: PrefControlProps) {
-  const sheet = prefs.app_sharing.enabled;
-  const on = prefs.github_link?.enabled === true;
-  return (
-    <PrefToggleRow
-      id="github-link"
-      checked={on}
-      put={putGithubLinkEnabled}
-      after={(next) => publishGithubLinkEnabled(next.github_link?.enabled === true)}
-      disabled={!sheet && !on}
-      off={!sheet}
-      status={sheet ? undefined : "Needs the Share sheet."}
       onChange={onChange}
     />
   );
@@ -200,6 +185,41 @@ export function LivePreviewsControl({ prefs, onChange }: PrefControlProps) {
       checked={prefs.live_previews?.enabled === true}
       put={putLivePreviewsEnabled}
       after={(next) => publishLivePreviewsEnabled(next.live_previews?.enabled === true)}
+      onChange={onChange}
+    />
+  );
+}
+
+// ── Community (preview) ────────────────────────────────────────────────────
+// The GitHub contribution loop's switch (it was four phase switches with a
+// prerequisite chain until 2026-10-22) and Remix on its own. Remix is shown
+// AS SET, never disabled: with the loop off its row says what it waits for
+// instead — a disabled switch would hide that the click would have counted.
+// Same publish-after-PUT as the rows above (contrib-flags.ts), so the cards
+// and the share sheet already mounted follow.
+
+export function ContribControl({ prefs, onChange }: PrefControlProps) {
+  return (
+    <PrefToggleRow
+      id="contrib"
+      checked={prefs.contrib?.enabled === true}
+      put={(next) => putContribEnabled(next)}
+      after={(next) => publishContribFlags(next.contrib)}
+      onChange={onChange}
+    />
+  );
+}
+
+export function ContribRemixControl({ prefs, onChange }: PrefControlProps) {
+  const on = prefs.contrib?.remix === true;
+  const held = on && !effectiveContribFlags(prefs.contrib).remix;
+  return (
+    <PrefToggleRow
+      id="contrib-remix"
+      checked={on}
+      put={(next) => putContribRemixEnabled(next)}
+      after={(next) => publishContribFlags(next.contrib)}
+      status={held ? `Needs ${settingById("contrib")?.label ?? "Community apps"} to be on.` : undefined}
       onChange={onChange}
     />
   );

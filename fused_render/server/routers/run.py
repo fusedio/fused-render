@@ -60,6 +60,17 @@ async def run_request(body: dict, call: dict | None) -> tuple[int, str]:
     if resolve_error is not None:
         return resolve_error.status_code, resolve_error.body.decode("utf-8")
 
+    # The open gate (docs/CONTRIB_LOOP.md §18.4 B4) on the run door too: a
+    # window already open on a Community copy Fused blocked (hard, or soft
+    # and not confirmed yet) must not keep running its `.py` — `render` and
+    # `/api/apps/entry` only stop the NEXT open. Same 423 payload; one store
+    # read, and nothing for a file outside any repository.
+    from fused_render import marketplace
+
+    gated = await asyncio.to_thread(marketplace.open_gate, resolved)
+    if gated:
+        return 423, json.dumps(gated)
+
     # Engine dispatch (D69/§20): both paths return the same wire shape
     # ({ok, result, error:{type,message,traceback}, stdout} — the fused
     # engine adds stderr/duration_ms), so pages never see which ran.

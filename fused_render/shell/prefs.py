@@ -31,9 +31,16 @@ and /monitor page — is offered; opt-in, default off; see ``monitor_enabled``),
 **marketplace_enabled** (whether the Marketplace — sidebar row and the
 /marketplace pages — is offered; opt-in, default off; see
 ``marketplace_enabled``),
-**github_link_enabled** (whether the Share sheet offers a GitHub install link
-for an app whose folder is its own pushed GitHub repo — opt-in, default off;
-see ``github_link_enabled``),
+**github_link_enabled** (legacy, never kept: the Share sheet's GitHub
+install link used to have its own switch; since 2026-10-27 the link is part
+of Community apps (``contrib_enabled``). ``read_prefs`` folds a stored key
+once — ``true`` turns ``contrib_enabled`` on when that was never set — and
+deletes it, so there is no switch left that the UI cannot turn off; see
+``_fold_legacy``),
+**contrib_enabled** (the GitHub contribution loop — sources, your changes,
+the proposals inbox, merged proposals — one switch, opt-in, default off) and
+**contrib_remix_enabled** (remix, needs the loop on; see ``CONTRIB_PREF_KEYS``
+and ``fused_render.contrib.flags``),
 **indexing_enabled** (whether
 background file-index scanning may run — default ON only inside the native
 desktop app, OFF for browser/CLI installs and dev runs; see
@@ -72,6 +79,7 @@ No import of server.py (server includes this router — keep it acyclic); the
 X-Fused guard and the small env-var effective-engine mirror are duplicated
 locally like shell/bookmarks.py's guard is.
 """
+import logging
 import os
 import re
 import threading
@@ -81,6 +89,8 @@ from fastapi.responses import JSONResponse
 
 from fused_render import _flavor
 from fused_render.shell import storage
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -133,7 +143,37 @@ def _path() -> str:
 
 def read_prefs() -> dict:
     data = storage.read_json(_path())
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+    if LEGACY_GITHUB_LINK_KEY in data:
+        data = _fold_legacy()
+    return data
+
+
+#: The old Share-sheet GitHub-link switch (module docstring), folded away.
+LEGACY_GITHUB_LINK_KEY = "github_link_enabled"
+
+
+def _fold_legacy() -> dict:
+    """Fold `github_link_enabled` into `contrib_enabled` ONCE: a stored
+    `true` turns the loop on when `contrib_enabled` was never set (that
+    user had the link and kept it); the key is deleted either way — no
+    Preferences row writes it any more, so a value left behind could never
+    be switched off. Written back at once, so this runs one time per
+    machine. Answers the prefs as written."""
+    with _PREFS_LOCK:
+        data = storage.read_json(_path())
+        data = data if isinstance(data, dict) else {}
+        if LEGACY_GITHUB_LINK_KEY not in data:
+            return data
+        legacy = data.pop(LEGACY_GITHUB_LINK_KEY)
+        if legacy is True and "contrib_enabled" not in data:
+            data["contrib_enabled"] = True
+        try:
+            storage.write_json(_path(), data)
+        except OSError:
+            logger.warning("prefs: could not fold %s", LEGACY_GITHUB_LINK_KEY, exc_info=True)
+        return data
 
 
 # Serialises every read-modify-write of prefs.json in this process (`put_prefs`
@@ -338,16 +378,26 @@ def marketplace_enabled() -> bool:
     return read_prefs().get("marketplace_enabled") is True
 
 
-def github_link_enabled() -> bool:
-    """Whether the Share sheet offers its GitHub link card (default off — opt-in).
+# The GitHub contribution loop (docs/CONTRIB_LOOP.md §1): ONE switch for the
+# loop (opt-in, default off) plus Remix on its own switch, which needs the loop
+# on. Until 2026-10-22 the loop was four phase switches with a prerequisite
+# chain. These are the RAW stored values, which Preferences shows as set;
+# every server branch asks `fused_render.contrib.flags` (whose phase getters
+# answer the loop switch, and `remix()` both).
+CONTRIB_PREF_KEYS = ("contrib_enabled", "contrib_remix_enabled")
 
-    ON, the sheet shows a third card: a udf.ai link that installs the app from
-    its GitHub repo, copyable once the folder is the repo root, has a GitHub
-    remote, and has nothing unpushed (share_app.github_link_state). OFF, the
-    card is not rendered. A switch over the entry point only: GET
-    /api/share/github keeps answering. Any non-`true` stored value reads as off.
-    """
-    return read_prefs().get("github_link_enabled") is True
+
+def contrib_enabled() -> bool:
+    """The contribution loop (default off): install sources + share by link,
+    your changes + Propose, the author's inbox, merged proposals returning a
+    copy to following."""
+    return read_prefs().get("contrib_enabled") is True
+
+
+def contrib_remix_enabled() -> bool:
+    """Remix (default off): publish your changed copy as a remix. Effective
+    only with the loop on — `contrib.flags.remix()` applies that."""
+    return read_prefs().get("contrib_remix_enabled") is True
 
 
 def task_peek_enabled() -> bool:
@@ -1042,9 +1092,9 @@ def _prefs_response() -> dict:
         # Whether the Marketplace (sidebar row + /marketplace pages) is offered
         # (opt-in, default off). Not an API guard; see `marketplace_enabled`.
         "marketplace": {"enabled": marketplace_enabled()},
-        # Whether the Share sheet offers the GitHub install-link card (opt-in,
-        # default off). Not an API guard; see `github_link_enabled`.
-        "github_link": {"enabled": github_link_enabled()},
+        # The GitHub contribution loop + Remix (opt-in, default off), RAW as
+        # stored; `contrib.flags` applies "remix needs the loop".
+        "contrib": {"enabled": contrib_enabled(), "remix": contrib_remix_enabled()},
         # The DEFAULT Fused environment (fusedcli.workbench_env): the canvas
         # catalog's initial pick, the `fused` wrapper outside a clone, share
         # uploads. Canvases carry their own env, so writing it (PUT below)
@@ -1347,12 +1397,14 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                 return JSONResponse({"error": "'marketplace_enabled' must be a boolean"}, status_code=400)
             prefs["marketplace_enabled"] = value
             changed = True
-        if "github_link_enabled" in body:
-            value = body.get("github_link_enabled")
-            if not isinstance(value, bool):
-                return JSONResponse({"error": "'github_link_enabled' must be a boolean"}, status_code=400)
-            prefs["github_link_enabled"] = value
-            changed = True
+        for contrib_key in CONTRIB_PREF_KEYS:
+            if contrib_key in body:
+                value = body.get(contrib_key)
+                if not isinstance(value, bool):
+                    return JSONResponse({"error": f"'{contrib_key}' must be a boolean"},
+                                        status_code=400)
+                prefs[contrib_key] = value
+                changed = True
         if "native_windows_enabled" in body:
             value = body.get("native_windows_enabled")
             if not isinstance(value, bool):
@@ -1702,7 +1754,8 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         if not changed:
             return JSONResponse(
                 {"error": "no known preference in request (expected 'engine', "
-                          "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'monitor_enabled', 'marketplace_enabled', 'github_link_enabled', "
+                          "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'monitor_enabled', 'marketplace_enabled', "
+                          "'contrib_enabled', 'contrib_remix_enabled', "
                           "'native_windows_enabled', 'chromium_windows_enabled', "
                           "'task_notify_terminal_sessions', "
                           "'project_queue_enabled', "

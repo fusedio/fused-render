@@ -38,6 +38,12 @@ Real: live-looking key shape, long random string, or a PEM block, in a file the 
 
 **Fix.** Add that tag to the `<head>` of the page meant to open. Multiple candidates: first non-hidden one in name order wins, so pick accordingly.
 
+## `app-id` — has an app id
+
+**fact**, severity **warning** — the entry page has no well-formed `<meta name="fused-app-id" content="…">`. The Community lists and catalogs apps by this id (it is the listing's slug), so Publish to the Community refuses without one.
+
+**Fix.** Add ONE tag to the entry page's `<head>`, next to `<meta name="fused-app">`: `<meta name="fused-app-id" content="<name>-<8 hex>">` — `<name>` the app's name kebab-cased (lowercase letters, digits and dashes, starting with a letter or digit, at most 48 characters), then a dash and exactly 8 random lowercase hex digits, e.g. `sine-starter-0a1b2c3d`. Generate the hex freshly (never copy another app's id: a copy with the same id reads as the same app). Change nothing else, then commit the page. If the app already had an id that was lost, and you can find it (git history, `metadata.json`), restore that one instead of minting a new one.
+
 ## `api-version` — declares the current fused API version
 
 **fact** — the row names both numbers.
@@ -108,7 +114,15 @@ Real: a line the skill's trap table names, in a view this app ships, with no fal
 - **Unpushed commits** — push the branch. The findings are the unpushed subject lines — if any read as work-in-progress, say so instead of pushing blindly. The row knows the commits exist, not that they're ready.
 - **Behind origin** — this is exactly what the row's own "Pull" action (in the App Doctor panel, not this skill) is for; a fix session should pull (fast-forward only) rather than force anything, and stop and say so if a pull cannot fast-forward.
 
+- **"The author's latest overlaps your changes"** or **"couldn't be sent to GitHub"** — a copy fused keeps in step by itself (an app installed from someone's GitHub link, or your own app while the contribution loop is on). Do NOT run git in it — no pull, rebase, merge, reset or push: fused moves this folder only through its own safe path. Tell the user to open the app's page and use **Merge with Claude** there (overlap), or to sign in to GitHub again (couldn't send), and stop.
+
 So what you share is what you tested, matches what you pushed, and matches what origin has.
+
+## `fused-dir-committed` — the repo leaves out the .fused folder
+
+**fact** — the app's own repository tracks paths under `.fused/` (`git ls-files -- .fused`; the findings are those paths). `.fused/` holds this machine's data for the app — the install stamp, `meta.json` with this machine's absolute path, data and caches — so committing it ships the author's machine state to everyone who installs the app. Skip means the app is not its own repository.
+
+**Fix.** Untrack the folder without deleting it: `git rm -r --cached --sparse -- .fused` (fused marks these paths skip-worktree so its own writes never read as edits, and git then refuses a plain `rm` with a "sparse-checkout definition" message — `--sparse` is what lets it through; drop the flag only on a git too old to know it), add `.fused/` to the repo's `.gitignore`, and commit both (the `.gitignore` edit too, or it is itself an uncommitted change). Never delete the folder's files on disk — the app's data lives there.
 
 ## `generated` — no generated files outside .fused/
 

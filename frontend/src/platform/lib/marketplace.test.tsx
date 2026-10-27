@@ -9,7 +9,7 @@ import { installDomShim } from "./testDomShim";
 
 installDomShim();
 
-const { actionFor, isActive, installedAppHref, categoryLabel, refreshCatalog, peekCatalog, installApp, peekJobs, searchApps, useMarketplaceSearch, SEARCH_DEBOUNCE_MS } = await import("./marketplace");
+const { actionFor, isActive, installedAppHref, sourceUrlOf, categoryLabel, refreshCatalog, peekCatalog, installApp, peekJobs, searchApps, useMarketplaceSearch, SEARCH_DEBOUNCE_MS } = await import("./marketplace");
 type AppEntry = import("./marketplace").AppEntry;
 type InstallJob = import("./marketplace").InstallJob;
 
@@ -94,6 +94,14 @@ describe("helpers", () => {
 
   test("category label falls back to a title-cased id", () => {
     expect(categoryLabel(null, "local-ai")).toBe("Local AI");
+  });
+
+  test("Source links only a github.com address — the row's string is the catalog's", () => {
+    expect(sourceUrlOf({ source_url: "https://github.com/alice/sine" })).toBe("https://github.com/alice/sine");
+    expect(sourceUrlOf({ source_url: "javascript:alert(1)" })).toBeNull();
+    expect(sourceUrlOf({ source_url: "http://github.com/alice/sine" })).toBeNull();
+    expect(sourceUrlOf({ source_url: "https://github.com.evil.example/x" })).toBeNull();
+    expect(sourceUrlOf({ source_url: null })).toBeNull();
   });
 });
 
