@@ -1502,6 +1502,11 @@ a.bookmark-name::after {
 .current-apps-compose .deploy-head h2 {
   flex: 1;
   min-width: 0;
+  /* The h2's own `overflow: hidden` (deploy.css) clipped the input's bottom
+     edge, which hangs 2px past it (negative margin) — an underscore, which
+     sits below the baseline, was typed but never seen. The input clips its
+     own text, so the heading need not. */
+  overflow: visible;
 }
 
 .current-apps-compose .current-apps-compose-name {
