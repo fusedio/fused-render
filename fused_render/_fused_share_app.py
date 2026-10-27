@@ -60,6 +60,10 @@ _env_name = os.environ.get("FUSED_ENV")
 if _env_name:
     fused._env(_env_name)
 
+from fused_render._fused_options import raise_request_timeout
+
+raise_request_timeout()
+
 from fused._global_api import get_api
 from fused._options import options as OPTIONS
 
