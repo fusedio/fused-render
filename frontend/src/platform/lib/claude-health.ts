@@ -13,7 +13,8 @@
 // `helpKind` below is one of the download page's four tabs, so a heads-up and a
 // failure card send the user to the same place.
 import type { ClaudeHealth } from "./api";
-import { CLAUDE_INSTALL_COMMAND, CODEX_INSTALL_COMMAND, GEMINI_INSTALL_COMMAND, troubleHelpUrl, type TroubleKind } from "./trouble";
+import { isWindows } from "./platform";
+import { CLAUDE_INSTALL_COMMAND, CLAUDE_INSTALL_COMMAND_WINDOWS, CODEX_INSTALL_COMMAND, GEMINI_INSTALL_COMMAND, troubleHelpUrl, type TroubleKind } from "./trouble";
 
 /** One thing worth telling the user, already in their terms. */
 export interface ClaudeIssue {
@@ -93,7 +94,7 @@ const SETUP_WORDS: Record<string, AgentSetupWords> = {
     name: "Claude Code",
     cli: "claude",
     binEnv: CLAUDE_BIN_ENV,
-    install: CLAUDE_INSTALL_COMMAND,
+    install: isWindows ? CLAUDE_INSTALL_COMMAND_WINDOWS : CLAUDE_INSTALL_COMMAND,
     update: CLAUDE_UPDATE_COMMAND,
     doctor: true,
     linkPath: true,

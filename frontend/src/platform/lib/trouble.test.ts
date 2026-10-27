@@ -4,6 +4,7 @@ import { expect, test } from "bun:test";
 
 import {
   CLAUDE_INSTALL_COMMAND,
+  CLAUDE_INSTALL_COMMAND_WINDOWS,
   CODEX_INSTALL_COMMAND,
   GEMINI_INSTALL_COMMAND,
   troubleInstructions,
@@ -130,6 +131,7 @@ test("the install command is the one the download page tells people to run", () 
   // Pinned because it is shown as a thing to copy and paste into a terminal:
   // a wrong command here is worse than no command.
   expect(CLAUDE_INSTALL_COMMAND).toBe("curl -fsSL https://claude.ai/install.sh | bash");
+  expect(CLAUDE_INSTALL_COMMAND_WINDOWS).toBe("irm https://claude.ai/install.ps1 | iex");
 });
 
 

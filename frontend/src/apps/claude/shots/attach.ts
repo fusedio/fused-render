@@ -768,7 +768,13 @@ export function pathsFromDrop(dt: DataTransfer | null | undefined): string[] {
 export function filesFromPaste(e: { clipboardData?: DataTransfer | null }): File[] {
   const data = e.clipboardData;
   if (!data) return [];
-  return Array.from(data.files || []);
+  const files = Array.from(data.files || []);
+  if (files.length) return files;
+  // Some Chromium builds expose a bitmap clipboard only through `items`.
+  return Array.from(data.items || [])
+    .filter((i) => i.kind === "file")
+    .map((i) => i.getAsFile())
+    .filter((f): f is File => !!f);
 }
 
 /** Files a drop carried, when it carried no real path (T:11775). */

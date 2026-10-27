@@ -801,9 +801,9 @@ export interface UpdateStatus {
   // "installing" from the mount to the swap; null outside state "installing".
   phase?: "downloading" | "installing" | null;
   error: string | null;
-  // Always null since D767; kept for wire compatibility. There is one install
-  // path for every install type and no terminal command to hand the user, so
-  // no surface reads this field any more.
+  // Null for every packaged install (D767: one install path, no terminal
+  // command). Set only by the CLI/PyPI check-only manager, whose update IS a
+  // terminal command; the Updates dock shows it copyable.
   manual_command: string | null;
   // True only for the dev-run manager (mac.DEV_MANAGER_ENV): it looks but never
   // swaps, so the badge draws "Update available" without its Update button.
@@ -1565,8 +1565,8 @@ export interface Prefs {
   // Stable AI titles: Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
   // shell/prefs.py; off by default). Optional: absent reads as off.
   task_summary_titles?: { enabled: boolean };
-  // Lean Claude sessions (`claude_strict_mcp_enabled`, shell/prefs.py; ON by
-  // default). Optional: absent (older server) reads as on.
+  // Lean Claude sessions (`claude_strict_mcp_enabled`, shell/prefs.py; OFF by
+  // default). Optional: absent (older server) reads as off.
   claude_strict_mcp?: { enabled: boolean };
   // The Approvals mode a new Claude chat starts in (`claude_default_permission`,
   // shell/prefs.py): plan | prompt | acceptEdits | auto, "auto" when unset.

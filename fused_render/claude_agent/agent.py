@@ -816,17 +816,17 @@ def _backend_enabled(backend: str) -> bool:
 def _strict_mcp_pref() -> bool:
     """Whether chat and Tasks-page sessions start "lean" — with
     `--strict-mcp-config`, so the user's own MCP servers and claude.ai
-    connectors are not launched (about 220 MB less per session). On unless
-    `claude_strict_mcp_enabled` is stored False in `<home>/prefs.json`;
+    connectors are not launched (about 220 MB less per session). Off unless
+    `claude_strict_mcp_enabled` is stored True in `<home>/prefs.json`;
     a stdlib read for the same reason as `_backend_enabled`. A missing or
     unreadable file reads as the default."""
     try:
         with open(os.path.join(_home_dir(), "prefs.json"), encoding="utf-8") as fh:
             prefs = json.load(fh)
     except (OSError, ValueError):
-        return True
-    return not (isinstance(prefs, dict)
-                and prefs.get("claude_strict_mcp_enabled") is False)
+        return False
+    return (isinstance(prefs, dict)
+            and prefs.get("claude_strict_mcp_enabled") is True)
 
 
 def _default_permission_pref() -> str:
@@ -1800,24 +1800,28 @@ def _shots_dir() -> dict:
         # (that is what _require_private just established) and it holds nothing
         # but our own crops — the argument that stops us chmod'ing the temp root
         # does not apply to our own directory.
-        try:
-            mode = stat.S_IMODE(os.lstat(SHOTS).st_mode)
-            if mode & ~0o700:
-                os.chmod(SHOTS, 0o700)
-                # Re-read rather than trust the call: an ACL, or a filesystem
-                # that does not carry unix modes, can accept a chmod and keep
-                # the bits exactly where they were.
+        # Windows has no mode bits: lstat reports every directory as 0o777
+        # there and chmod cannot clear them. The directory lives under the
+        # user's own per-user %TEMP%, so there is nothing to tighten.
+        if hasattr(os, "geteuid"):
+            try:
                 mode = stat.S_IMODE(os.lstat(SHOTS).st_mode)
-        except OSError as e:
-            return {"error": "could not secure the screenshot directory: %s" % e}
-        if mode & ~0o700:
-            # REFUSE, rather than write crops into a directory we have just
-            # proved others can read. This is the asymmetry stated two
-            # paragraphs up, applied to the case where the fix fails: denial
-            # costs the user their screenshots, adopting costs them pictures
-            # of their screen.
-            return {"error": "the screenshot directory is readable by others "
-                             "(mode %04o) and could not be tightened" % mode}
+                if mode & ~0o700:
+                    os.chmod(SHOTS, 0o700)
+                    # Re-read rather than trust the call: an ACL, or a filesystem
+                    # that does not carry unix modes, can accept a chmod and keep
+                    # the bits exactly where they were.
+                    mode = stat.S_IMODE(os.lstat(SHOTS).st_mode)
+            except OSError as e:
+                return {"error": "could not secure the screenshot directory: %s" % e}
+            if mode & ~0o700:
+                # REFUSE, rather than write crops into a directory we have just
+                # proved others can read. This is the asymmetry stated two
+                # paragraphs up, applied to the case where the fix fails: denial
+                # costs the user their screenshots, adopting costs them pictures
+                # of their screen.
+                return {"error": "the screenshot directory is readable by others "
+                                 "(mode %04o) and could not be tightened" % mode}
     else:
         try:
             _private_dir(SHOTS)
@@ -4504,7 +4508,9 @@ def _spawn_env(chat_id: str = "", backend: str = "") -> dict:
     # reads (D1327). The CLI runs EVERYTHING it spawns (hooks, MCP servers, the
     # statusline) through the prefix; the wrapper is transparent for all but
     # Bash-tool commands. A prefix the user exported themselves is left alone.
-    if (chat_id and not _bad_id(chat_id)
+    # The wrapper is a POSIX sh script, so Windows gets no prefix (and no
+    # drawer "Claude" command-log tab).
+    if (chat_id and not _bad_id(chat_id) and not _platform.IS_WINDOWS
             and not env.get("CLAUDE_CODE_SHELL_PREFIX")):
         prefix = _shell_prefix_path()
         if prefix:

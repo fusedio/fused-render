@@ -36,3 +36,12 @@ def test_the_install_command_matches_the_server_s_own_constant():
     assert claude_health.INSTALL_COMMAND_POSIX == command
     assert command in _shell()
 
+
+def test_the_windows_install_command_matches_the_server_s_own_constant():
+    """Same pin for the PowerShell line the Windows app shows and runs."""
+    from fused_render import claude_health
+
+    command = "irm https://claude.ai/install.ps1 | iex"
+    assert claude_health.INSTALL_COMMAND_WINDOWS == command
+    assert command in _shell()
+

@@ -16,6 +16,7 @@ import { useState } from "react";
 
 import {
   CLAUDE_INSTALL_COMMAND,
+  CLAUDE_INSTALL_COMMAND_WINDOWS,
   CODEX_INSTALL_COMMAND,
   GEMINI_INSTALL_COMMAND,
   isClaudeTrouble,
@@ -26,6 +27,7 @@ import {
   troubleReport,
   type TroubleFacts,
 } from "@platform/lib/trouble";
+import { isWindows } from "@platform/lib/platform";
 import { CommandLine } from "./CommandLine";
 
 // Plain-language headings and explanations, following the download page's
@@ -227,7 +229,7 @@ export function TroubleCard({
       ? { name: "Gemini CLI", command: GEMINI_INSTALL_COMMAND }
       : backend === "copilot"
         ? null
-        : { name: "Claude Code", command: CLAUDE_INSTALL_COMMAND };
+        : { name: "Claude Code", command: isWindows ? CLAUDE_INSTALL_COMMAND_WINDOWS : CLAUDE_INSTALL_COMMAND };
   // The brief behind the second copy button is written for THIS agent
   // (`troubleInstructions`), so the button names that agent — a Codex card
   // labelling its brief "Claude Code instructions" hands the wrong agent's

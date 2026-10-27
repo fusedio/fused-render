@@ -559,9 +559,14 @@ def compact_state(body: dict) -> dict:
             ids[slug] = server_id
         # Canvas visibility lives on the UDF row (`canvasVisible` →
         # `is_visible`); `data.config.visible` is its serialization-only
-        # mirror. Take the mirror when the node carries it, the row otherwise.
+        # mirror, which the workbench does NOT refresh when a node is hidden
+        # or shown (`use-udf-node-sync`: the mirror is written only by the
+        # TOML export path, never by the live canvas). A snapshot taken after
+        # a hide therefore carries `is_visible: false` beside a node whose
+        # mirror still says `true`. The row wins whenever it is present; the
+        # mirror only stands in for a UDF the snapshot lists without one.
         row = nodes.get(slug)
-        if row is not None and "visible" not in row and isinstance(udf.get("is_visible"), bool):
+        if row is not None and isinstance(udf.get("is_visible"), bool):
             row["visible"] = udf["is_visible"]
         # `file_body` is the exact file text as `fused canvas pull` would
         # write it (a note's README-shaped markdown, not its raw text);

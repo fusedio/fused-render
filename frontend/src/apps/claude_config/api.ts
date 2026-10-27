@@ -311,7 +311,62 @@ const ident = (r: SkillRef) => ({
   location: r.source === "user" ? r.location : "",
 });
 
+/** One skills.sh search hit. The service also reports an install count; it is
+ *  deliberately not part of this type, so no row can show or rank by it. */
+export interface RemoteSkill {
+  id: string;
+  /** `owner/repo` on GitHub. */
+  source: string;
+  skillId: string;
+  name: string;
+  /** A skill with this slug is already in one of the user's skills dirs. */
+  added: boolean;
+}
+
+export type DraftPlacement = "all" | "claude";
+
+export interface DraftStatus {
+  files: string[];
+  /** The raw SKILL.md, null until Claude has written one. */
+  text: string | null;
+  name: string;
+  description: string;
+  problems: string[];
+}
+
 export const skills = {
+  /** A folder with SKILL.md, or the SKILL.md itself, to start a draft from. */
+  draftCheck: (path: string) =>
+    callModule<OkResult & { root?: string; name?: string; files?: string[] }>("skills", {
+      action: "draft_check",
+      path,
+    }),
+  draftStart: (path = "") =>
+    callModule<OkResult & { staging?: string }>("skills", { action: "draft_start", path }),
+  draftStatus: (staging: string) =>
+    callModule<OkResult & Partial<DraftStatus>>("skills", { action: "draft_status", staging }),
+  draftSave: (staging: string, placement: DraftPlacement) =>
+    callModule<OkResult & { slug?: string; key?: string; problems?: string[] }>("skills", {
+      action: "draft_save",
+      staging,
+      placement,
+    }),
+  draftWrite: (staging: string, path: string, text: string) =>
+    callModule<OkResult>("skills", { action: "draft_write", staging, path, text }),
+  draftDiscard: (staging: string) => callModule<OkResult>("skills", { action: "draft_discard", staging }),
+  draftPrompt: (text: string, adapting: boolean) =>
+    callModule<OkResult & { prompt?: string }>("skills", { action: "draft_prompt", text, adapting }),
+  /** skills.sh, 2+ letters. `ok: false` when the service can't be reached. */
+  search: (query: string) =>
+    callModule<OkResult & { skills?: RemoteSkill[] }>("skills", { action: "search", query }),
+  remotePreview: (source: string, skillId: string) =>
+    callModule<OkResult & { text: string; files: string[] }>("skills", {
+      action: "remote_preview",
+      source,
+      skill_id: skillId,
+    }),
+  remoteAdd: (source: string, skillId: string) =>
+    callModule<OkResult & { slug?: string }>("skills", { action: "remote_add", source, skill_id: skillId }),
   list: () => callModule<{ skills: Skill[] }>("skills", { action: "list" }),
   available: () => callModule<AvailableSkills>("skills", { action: "available" }),
   add: (s: Pick<AvailableSkill, "marketplace" | "plugin" | "slug">) =>

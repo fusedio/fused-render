@@ -206,41 +206,53 @@
   color: var(--fg-muted);
 }
 
-/* New-canvas inline form (replaces the head actions while open). */
+/* New-canvas inline form (replaces the head actions while open). The error
+   line hangs BELOW the row out of flow: it comes and goes per keystroke, and
+   in-flow it would grow the head and nudge the title and search box on every
+   character. The head instead opens a gap under itself ONCE, while the form
+   is up, so the line never lands on the subtitle paragraph. */
+.canvases-head.is-creating {
+  margin-bottom: 28px;
+}
+
 .canvases-new-form {
+  position: relative;
+}
+
+.canvases-new-row {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
+.canvases-new-name {
+  width: 220px;
+}
+
+.canvases-new-name[aria-invalid="true"],
+.canvases-new-name[aria-invalid="true"]:focus {
+  border-color: var(--error);
+}
+
+/* Anchored to the form's right edge and growing LEFT, one line: rule text
+   fits in the form's width, a long create-call message stretches toward the
+   title and is clipped at the end (full text in the title tooltip). */
+.canvases-new-error {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  max-width: min(640px, 70vw);
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--error);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .canvases-empty {
   color: var(--fg-muted);
   padding: 32px 0;
-}
-
-/* The canvas workspace's NODE PANE strip (CanvasWorkspace.tsx): the node's
-   name and the Claude / Code tabs over the explorer engine. Shares the
-   explorer sidebar's header rule (.preview-side-header, preview.css). */
-.canvas-node-side-name {
-  font-size: 12px;
-  font-weight: 600;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--fg);
-}
-
-/* The peek's close: the ✕ after the Claude / Code strip (CanvasWorkspace). */
-.canvas-node-close {
-  flex: none;
-  margin-left: 6px;
-  font-size: 12px;
-  line-height: 1;
-  color: var(--fg-muted);
-}
-.canvas-node-close:hover {
-  color: var(--fg);
 }
 
 /* ---- The canvas project page (/canvases-project/<env>/<name>, CanvasPage.tsx) */

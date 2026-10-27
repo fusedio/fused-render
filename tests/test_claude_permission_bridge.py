@@ -2568,15 +2568,19 @@ def test_start_decides_strict_from_pref_or_isolate(agent, tmp_path, monkeypatch,
     assert launch["strict_mcp"] is expected
 
 
-def test_strict_mcp_pref_reads_prefs_json_and_defaults_on(agent, tmp_path, monkeypatch):
+def test_strict_mcp_pref_reads_prefs_json_and_defaults_off(agent, tmp_path, monkeypatch):
     monkeypatch.setattr(agent, "_home_dir", lambda: str(tmp_path))
-    assert agent._strict_mcp_pref() is True  # no file
+    assert agent._strict_mcp_pref() is False  # no file
     (tmp_path / "prefs.json").write_text("{not json")
+    assert agent._strict_mcp_pref() is False
+    (tmp_path / "prefs.json").write_text("{}")
+    assert agent._strict_mcp_pref() is False
+    (tmp_path / "prefs.json").write_text(json.dumps({"claude_strict_mcp_enabled": True}))
     assert agent._strict_mcp_pref() is True
     (tmp_path / "prefs.json").write_text(json.dumps({"claude_strict_mcp_enabled": False}))
     assert agent._strict_mcp_pref() is False
-    (tmp_path / "prefs.json").write_text(json.dumps({"claude_strict_mcp_enabled": 0}))
-    assert agent._strict_mcp_pref() is True  # only a stored False turns it off
+    (tmp_path / "prefs.json").write_text(json.dumps({"claude_strict_mcp_enabled": 1}))
+    assert agent._strict_mcp_pref() is False  # only a stored True turns it on
 
 
 def test_default_permission_pref_reads_prefs_json_and_defaults_auto(agent, tmp_path, monkeypatch):
