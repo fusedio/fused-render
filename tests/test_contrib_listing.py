@@ -18,6 +18,8 @@ from tests._contrib_gh_world import git, write_prefs
 
 INDEX = "fusedio/apps-index"
 REPO = "alice/sine-starter"
+#: The listing slug IS the entry page's fused-app-id (PAGE below).
+SLUG = "sine-starter-0a1b2c3d"
 BOT = "github-actions[bot]"
 
 PAGE = """<!doctype html>
@@ -99,12 +101,12 @@ def _commit_push(app, rel, text, msg="Change"):
 
 def _row_at_head(w, number):
     pr = w.gh.get_pr(INDEX, number)
-    text = w.fake.read(pr["head_repo"], "apps/sine-starter.json", ref=pr["head_sha"])
+    text = w.fake.read(pr["head_repo"], f"apps/{SLUG}.json", ref=pr["head_sha"])
     return pr, (json.loads(text) if text is not None else None)
 
 
 def _details(**kw):
-    d = {"slug": "sine-starter", "name": "Sine Starter", "description": "A sine wave.",
+    d = {"slug": "ignored-by-publish", "name": "Sine Starter", "description": "A sine wave.",
          "category": "starters", "tags": ["starter", "Demo"], "icon": "icon.svg",
          "preview": "preview.png"}
     d.update(kw)
@@ -135,11 +137,11 @@ def test_publish_opens_the_index_pr_with_the_exact_row(w):
     assert out["ok"]
     pr, row = _row_at_head(w, out["pr"]["number"])
     assert pr["title"] == "List Sine Starter"
-    assert pr["state"] == "open" and pr["head_branch"] == "fused-sine-starter"
+    assert pr["state"] == "open" and pr["head_branch"] == "fused-" + SLUG
     assert pr["head_repo"].lower().startswith("alice/")  # her fork, in her name
     assert "Opened from fused" in pr["body"]
     assert list(row) == ROW_KEYS
-    assert row == {"slug": "sine-starter", "repo": REPO, "branch": "main", "commit": tip,
+    assert row == {"slug": SLUG, "repo": REPO, "branch": "main", "commit": tip,
                    "name": "Sine Starter", "description": "A sine wave.",
                    "category": "starters", "tags": ["starter", "demo"], "icon": "icon.svg",
                    "preview": "preview.png", "remix_of": None, "version": "1.2.0"}
@@ -170,16 +172,59 @@ def test_slug_taken_by_another_repo_is_refused(w):
     from fused_render.contrib import listing
     from fused_render.contrib.jobs import PlainError
 
+    # Someone copied the folder (same fused-app-id) and listed it first.
+    w.fake.commit(INDEX, "main", {f"apps/{SLUG}.json": json.dumps(
+        {**OTHER_ROW, "slug": SLUG}) + "\n"}, "List the copy", author="fusedio")
     with pytest.raises(PlainError) as e:
-        listing.publish(w.app, _details(slug="other"))
-    assert e.value.reason == "slug-taken"
+        listing.publish(w.app, _details())
+    assert e.value.reason == "slug-taken" and "remix" in e.value.message
     assert w.gh.list_open_prs(INDEX) == []
+
+
+def test_the_slug_is_the_app_id_and_publish_refuses_without_one(w):
+    """Owner 2026-10-27: the Community indexes apps by `fused-app-id`, never
+    a name-based slug. The dialog's slug is ignored; a page with no valid id
+    is refused (409 reason `app-id`) before anything is sent, pointing at
+    App Doctor, whose `app-id` row then blocks the listing too."""
+    from fused_render.contrib import listing
+    from fused_render.contrib.jobs import PlainError
+
+    assert listing.draft(w.app)["app_id"] == SLUG
+    page = os.path.join(w.app, "index.html")
+    with open(page, encoding="utf-8") as fh:
+        text = fh.read()
+    with open(page, "w", encoding="utf-8") as fh:
+        fh.write(text.replace(f'<meta name="fused-app-id" content="{SLUG}" />\n', ""))
+    d = listing.draft(w.app)
+    assert d["slug"] is None and d["app_id"] is None
+    with pytest.raises(PlainError) as e:
+        listing.publish(w.app, _details(slug="sine-starter"))
+    assert e.value.reason == "app-id"
+    assert e.value.message.endswith("Open App Doctor to add one.")
+    # Through the route: the listing shape (200, ok false), before any job.
+    from fused_render.server.routers import listing as r
+
+    got = r.api_contrib_listing(path=w.app)
+    if got.get("job"):
+        from fused_render.contrib import jobs
+        jobs.wait(got["job"], 30)
+    got = r.api_contrib_listing(path=w.app)
+    # The Doctor gate already takes Publish off the strip (App Doctor's
+    # `app-id` row); a button pressed anyway gets the listing shape, 200.
+    assert "publish-market" not in [a["id"] for a in got["actions"]]
+    out = r.api_contrib_listing_action({"path": w.app, "action": "publish-market",
+                                        "args": _details()}, x_fused="1")
+    assert isinstance(out, dict) and out["ok"] is False
+    assert r._no_app_id(r._Target(w.app, {})) == {"ok": False, "reason": "app-id",
+                                              "message": listing.APP_ID_MISSING}
+    assert w.gh.list_open_prs(INDEX) == []
+    assert any(b["id"] == "app-id" for b in listing.doctor_blockers(w.app))
 
 
 @pytest.mark.parametrize("bad", [
     {"name": "x" * 61}, {"description": ""}, {"description": "y" * 401},
     {"icon": "app.py"}, {"preview": "../preview.png"}, {"category": "games"},
-    {"version": "v1"}, {"slug": "Sine_Starter"},
+    {"version": "v1"},
 ])
 def test_rows_the_review_check_would_refuse_are_refused_here(w, bad):
     """WS-IDX's shape rules (scripts/review/check.py `shape_problems`), in
@@ -419,14 +464,14 @@ def test_listing_made_elsewhere_is_found_by_repo(w):
     _go_live(w)
     w.store.update(w.app, lambda r: r.pop("listing_own", None))
     lst = listing.status(w.app, fresh=True)
-    assert lst["listed"] and lst["slug"] == "sine-starter"
+    assert lst["listed"] and lst["slug"] == SLUG
 
 
 def test_draft_prefills_from_the_app(w):
     from fused_render.contrib import listing
 
     d = listing.draft(w.app)
-    assert d["slug"] == "sine-starter" and d["name"] == "Sine Starter"
+    assert d["slug"] == SLUG and d["name"] == "Sine Starter"
     assert d["description"] == "A sine wave to start from."
     assert d["category"] == "productivity" and d["tags"] == ["starter"]
     assert d["icon"] == "icon.svg" and d["preview"] == "preview.png"
@@ -479,7 +524,7 @@ def test_routes_gate_offer_and_run_jobs(w):
     assert refused == {"ok": False, "reason": "not-offered",
                        "message": "That isn't available right now."}
     draft = r.api_contrib_listing_draft(path=w.app)
-    assert draft["ok"] and draft["slug"] == "sine-starter"
+    assert draft["ok"] and draft["slug"] == SLUG
 
     started = r.api_contrib_listing_action(
         dict(body, action="publish-market", args=_details()), x_fused="1")

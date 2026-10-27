@@ -719,13 +719,23 @@ def installed_apps() -> dict[str, dict]:
     marketplace.json`, whose folder still holds the app (a husk is not
     installed). Raw: `installed_copies` drops the stamps of folders that are
     marketplace clones now (a husk's stale stamp carried into a clone, an
-    adopt that crashed before deleting it)."""
+    adopt that crashed before deleting it).
+
+    Keyed by the row it belongs to, never by a name: the index lists apps by
+    their `fused-app-id` (owner 2026-10-27), while an old package's stamp
+    carries the old store's name slug. The copy's own entry-page id wins
+    when the cached catalog lists it; else the stamp's slug; the folder
+    name only as a last resort for a stamp that names nothing (it then
+    matches no row: "no longer in the Community")."""
+    from fused_render import app_id as app_ids
+
     root = install_root()
     out: dict[str, dict] = {}
     try:
         names = sorted(os.listdir(root))
     except OSError:
         return out
+    listed = set(((_read_cache() or {}).get("apps") or {}))
     for name in names:
         if name.startswith("."):
             continue
@@ -733,9 +743,25 @@ def installed_apps() -> dict[str, dict]:
         stamp = read_stamp(app_dir)
         if stamp is None or _is_husk(app_dir):
             continue
-        slug = stamp.get("slug") if is_slug(stamp.get("slug")) else name
+        try:
+            entry = _entry_of(app_dir)
+        except OSError:
+            entry = None
+        aid = app_ids.app_id(entry) if entry else None
+        stamped = stamp.get("slug") if is_slug(stamp.get("slug")) else None
+        if aid and is_slug(aid) and (aid in listed or not stamped):
+            slug = aid
+        else:
+            slug = stamped or name
         out.setdefault(slug, {"path": app_dir, "stamp": stamp})
     return out
+
+
+def _entry_of(app_dir: str) -> str | None:
+    """The app's entry page (`app_listing.app_entry`), a seam for tests."""
+    from fused_render import app_listing
+
+    return app_listing.app_entry(app_dir)
 
 
 def _store_key(path: str) -> str | None:

@@ -41,8 +41,14 @@ asks GitHub. Every write path (`publish`, `publish_update`, `remove`,
 `confirm_powers`) refreshes first and records the pull request it opened at
 once, so the page changes without waiting for the next check.
 
+SLUG = APP ID (owner 2026-10-27). A new listing's slug is the entry page's
+`fused-app-id` (`_app_id_slug`), never derived from the name, not editable:
+two apps with one name never collide, and a remix (a new id) is a new slug.
+No valid id → refused, reason `app-id`, pointing at App Doctor. A listing
+made before keeps its row's slug for updates and removal.
+
 GATES (B3): App Doctor's sharing section must be clear (plus `secrets`,
-the one essentials row that leaks something when shared), and the local tip
+the one essentials row that leaks something when shared, and `app-id`), and the local tip
 must be the pushed one — the row names the author's PUSHED default-branch
 tip (`gh.branch_tip`), so a local commit nobody can fetch is refused with
 reason `unpushed` rather than listed by a sha GitHub does not have.
@@ -110,9 +116,12 @@ TAGS_MAX = 8
 #: already running on this app by them (one live fix per app, like Doctor).
 FIX_PROMPT_HEAD = "Fix what the Fused Community review found in this app."
 #: The App Doctor rows outside the sharing section that still gate a
-#: publish: a leaked key is the one essentials finding the review would
-#: ship to everyone.
-_DOCTOR_EXTRA = ("secrets",)
+#: publish: a leaked key (the one essentials finding the review would ship
+#: to everyone) and a missing app id (the row's slug IS the id).
+_DOCTOR_EXTRA = ("secrets", "app-id")
+#: Publish's refusal when the entry page has no app id (the slug IS the id).
+APP_ID_MISSING = ("This app has no app id (the fused-app-id tag on its page), which the "
+                  "Community lists apps by. Open App Doctor to add one.")
 #: The index's own review-file/row reads are tiny; this caps a hostile one.
 _MAX_FILE = 256 * 1024
 _IDX_REF = "refs/fused/index"
@@ -299,20 +308,24 @@ def _app_version(root: str) -> str | None:
     return v[:32] or None
 
 
-def _default_slug(root: str) -> str:
-    """The app id minus its 8-hex suffix (`sine-starter-0a1b2c3d` →
-    `sine-starter`), else the folder name, kebab-cased."""
+def _app_id_slug(root: str) -> str | None:
+    """The slug a NEW listing gets: the entry page's `fused-app-id`
+    (app_id.py, `<kebab>-<8 hex>`), never one derived from the name — two
+    apps called the same no longer collide, and a remix (a new id) is a new
+    slug by construction. Not editable. None when the page has no valid id
+    (Publish then refuses with `APP_ID_MISSING`). A listing made before
+    this keeps its slug: updates and removal go by the row's own."""
     from fused_render import app_id
     entry = _entry(root)
     aid = app_id.app_id(entry) if entry else None
-    if aid and app_id.ID_RE.match(aid):
-        base = aid.rsplit("-", 1)[0]
-    else:
-        base = app_id.kebab(os.path.basename(os.path.normpath(root)))
-    base = re.sub(r"[^a-z0-9-]+", "-", base.lower()).strip("-")[:64]
-    if len(base) < 2:
-        base = (base + "-app")[:64]
-    return base if SLUG_RE.match(base) else "app"
+    return aid if aid and app_id.is_valid(aid) and SLUG_RE.match(aid) else None
+
+
+def _require_app_id(root: str) -> str:
+    aid = _app_id_slug(root)
+    if aid is None:
+        raise PlainError(APP_ID_MISSING, reason="app-id")
+    return aid
 
 
 # -- the catalog (cache only: never a network build from here) --------------------
@@ -894,10 +907,11 @@ def build_row(root: str, rec: dict, details: dict, *, repo: str, branch: str, co
     `base` (an update) supplies what `details` leaves out."""
     details = details if isinstance(details, dict) else {}
     base = base or {}
-    slug = _str(details.get("slug") or base.get("slug")).lower()
+    # The slug is the app id for a new listing (`_app_id_slug`; whatever the
+    # dialog sends is ignored), the row's own for an update.
+    slug = _str(base.get("slug")).lower() if base else _require_app_id(root)
     if not SLUG_RE.match(slug):
-        raise PlainError("The Community name must be 2 to 64 lowercase letters, numbers or "
-                         "dashes, starting with a letter or number.", reason="invalid")
+        raise PlainError(APP_ID_MISSING, reason="app-id")
     name = " ".join(_str(details.get("name") or base.get("name")).split())
     if not name or len(name) > NAME_MAX:
         raise PlainError(f"Give your app a name (up to {NAME_MAX} characters).", reason="invalid")
@@ -945,7 +959,7 @@ def draft(root: str) -> dict:
     else:
         meta = _meta(root)
         icon = app_listing.app_icon(root)
-        out = {"slug": lo.get("slug") or _slug_for_repo(rec["repo"]) or _default_slug(root),
+        out = {"slug": lo.get("slug") or _slug_for_repo(rec["repo"]) or _app_id_slug(root),
                "name": _app_name(root),
                "description": (_str(meta.get("description"))
                                or _entry_description(_entry(root)))[:DESCRIPTION_MAX],
@@ -960,6 +974,9 @@ def draft(root: str) -> dict:
     out["tags"] = out.get("tags") if isinstance(out.get("tags"), list) else []
     out["categories"] = cats
     out["listed"] = row is not None
+    # The slug is not the user's to pick (`_app_id_slug`); without an app id
+    # there is none, and the dialog points at App Doctor instead.
+    out["app_id"] = _app_id_slug(root)
     return out
 
 
@@ -1026,7 +1043,8 @@ def _send(root: str, me: dict, slug: str, row: dict | None, *, kind: str, title:
         base = _sg(scratch, "rev-parse", f"{_IDX_REF}^{{commit}}")
         on_main = _row_at(scratch, _IDX_REF, slug)
         if row is not None and on_main and _str(on_main.get("repo")).lower() != row["repo"].lower():
-            raise PlainError("That Community name is taken by another app. Pick another one.",
+            raise PlainError("Another app in the Community already has this app's id. If you "
+                             "copied it from that app, publish it as a remix instead.",
                              reason="slug-taken")
         if row is None and on_main is None:
             raise PlainError(f"{lo.get('name') or 'This app'} isn't in the Community.",
@@ -1071,6 +1089,7 @@ def publish(root: str, details: dict) -> dict:
     if lo.get("row"):
         raise PlainError(f"{lo['name']} is already in the Community. Use Publish update to "
                          "send a new version.", reason="listed")
+    _require_app_id(root)
     repo, branch, tip = _gate_publish(root, rec)
     row = build_row(root, rec, details, repo=repo, branch=branch, commit=tip)
     title = f"List {row['name']}"
@@ -1093,6 +1112,7 @@ def publish_update(root: str) -> dict:
     if not isinstance(base, dict):
         raise PlainError(f"{lo['name']} isn't in the Community yet. Publish it first.",
                          reason="not-listed")
+    _require_app_id(root)
     repo, branch, tip = _gate_publish(root, rec)
     current = pr.get("commit") if pr.get("state") == "open" and pr.get("row") else base.get(
         "commit")

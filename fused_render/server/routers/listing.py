@@ -144,8 +144,23 @@ def _details(args: dict) -> dict:
     return {k: args[k] for k in keys if k in args}
 
 
+def _no_app_id(t: _Target) -> dict | None:
+    """The listing shape's refusal (200 `{ok: false, reason: "app-id"}`),
+    answered before any job starts, when the entry page has no
+    `fused-app-id` — the Community lists apps by it (the job would refuse
+    the same, later)."""
+    L = _listing()
+    return None if L._app_id_slug(t.app_dir) else _refuse("app-id", L.APP_ID_MISSING)
+
+
 def _publish(t: _Target, args) -> dict:
-    return _job("listing-publish", t.app_dir, _listing().publish, t.app_dir, _details(args))
+    return _no_app_id(t) or _job("listing-publish", t.app_dir, _listing().publish, t.app_dir,
+                                 _details(args))
+
+
+def _publish_update(t: _Target, _args) -> dict:
+    return _no_app_id(t) or _job("listing-update", t.app_dir, _listing().publish_update,
+                                 t.app_dir)
 
 
 def _check(t: _Target, _args) -> dict:
@@ -167,8 +182,7 @@ def _publish_now(t: _Target, _args) -> dict:
 
 _DISPATCH = {
     "publish-market": _publish,
-    "publish-update": lambda t, a: _job("listing-update", t.app_dir,
-                                        _listing().publish_update, t.app_dir),
+    "publish-update": _publish_update,
     "remove-market": lambda t, a: _job("listing-remove", t.app_dir,
                                        _listing().remove, t.app_dir),
     "confirm-powers": _confirm,

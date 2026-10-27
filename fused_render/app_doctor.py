@@ -68,7 +68,7 @@ import importlib.util
 import os
 import re
 
-from fused_render import app_listing, fused_api_version
+from fused_render import app_id, app_listing, fused_api_version
 from fused_render.skill_sources import skill_sources
 
 SKILL = "fused-render-app-doctor"
@@ -102,6 +102,12 @@ UNRUN = "unrun"
 _CHECK_META: dict[str, tuple[str, str, str]] = {
     "secrets": ("essentials", "critical", "candidate"),
     "entry": ("essentials", "critical", "fact"),
+    # The app's own identity (`<meta name="fused-app-id">`, app_id.py): the
+    # Community lists and catalogs an app by it (its index slug IS this id,
+    # docs/CONTRIB_LOOP.md §18.2), and every export and share keys off it.
+    # A warning, not critical: the app runs without one; Publish to the
+    # Community refuses until it has one (`contrib/listing.py`).
+    "app-id": ("essentials", "warning", "fact"),
     "api-version": ("essentials", "critical", "fact"),
     "pyproject": ("essentials", "warning", "fact"),
     "readme": ("essentials", "info", "fact"),
@@ -508,6 +514,29 @@ def _entry_check(entry: str | None) -> dict:
         f"{os.path.basename(entry)} carries the fused-app marker" if entry
         else 'no page in this folder carries <meta name="fused-app"> — '
              "without one there is nothing for whoever you share it with to open",
+    )
+
+
+def _app_id_check(entry: str | None) -> dict:
+    """The entry page declares a well-formed `fused-app-id`. Skipped with no
+    entry page (the `entry` row already says that). The fix is a session's
+    (Fix with Claude, SKILL.md's `app-id` section): the detail names the
+    exact tag, so the session adds just that and commits it."""
+    label = "Has an app id"
+    if entry is None:
+        return _check("app-id", label, SKIP, "no entry page to read the app id off")
+    aid = app_id.app_id(entry)
+    name = os.path.basename(entry)
+    if aid is not None:
+        return _check("app-id", label, PASS, f"{name} declares {aid}")
+    return _check(
+        "app-id", label, FAIL,
+        f'{name} has no valid <meta name="{app_id.META_NAME}" content="…"> in its <head>. '
+        "The Community lists and catalogs apps by this id, so it can't be published "
+        f'without one. Add <meta name="{app_id.META_NAME}" content="<app-name>-<8 hex '
+        'digits>"> (for example "sine-starter-0a1b2c3d", lowercase) and commit it.',
+        [{"rule": "app-id:missing", "path": name, "line": 0,
+          "excerpt": f'<meta name="{app_id.META_NAME}"> missing or malformed'}],
     )
 
 
@@ -1064,7 +1093,7 @@ def _cross_browser_check(app_dir: str) -> dict:
 
 # One computation per check id, dispatched by `report` (which needs every row)
 # and `report_one` (which needs exactly one, without paying for the rest).
-_ENTRY_DEPENDENT = ("entry", "api-version")
+_ENTRY_DEPENDENT = ("entry", "app-id", "api-version")
 
 
 def _compute_entry(app_dir: str) -> str | None:
@@ -1094,6 +1123,7 @@ def report(app_dir: str) -> dict:
 
     by_id: dict[str, dict] = {
         "entry": _entry_check(entry),
+        "app-id": _app_id_check(entry),
         "api-version": _api_version_check(entry),
         **_content_family_checks(app_dir),
         "generated": _generated_check(app_dir),
@@ -1133,6 +1163,8 @@ def report_one(app_dir: str, check_id: str) -> dict | None:
 
     if check_id in _ENTRY_DEPENDENT:
         entry = _compute_entry(app_dir)
+        if check_id == "app-id":
+            return _app_id_check(entry)
         return _entry_check(entry) if check_id == "entry" else _api_version_check(entry)
     if check_id in ("secrets", "device-paths"):
         return _content_family_checks(app_dir)[check_id]

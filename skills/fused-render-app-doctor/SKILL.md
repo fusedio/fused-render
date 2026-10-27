@@ -38,6 +38,12 @@ Real: live-looking key shape, long random string, or a PEM block, in a file the 
 
 **Fix.** Add that tag to the `<head>` of the page meant to open. Multiple candidates: first non-hidden one in name order wins, so pick accordingly.
 
+## `app-id` — has an app id
+
+**fact**, severity **warning** — the entry page has no well-formed `<meta name="fused-app-id" content="…">`. The Community lists and catalogs apps by this id (it is the listing's slug), so Publish to the Community refuses without one.
+
+**Fix.** Add ONE tag to the entry page's `<head>`, next to `<meta name="fused-app">`: `<meta name="fused-app-id" content="<name>-<8 hex>">` — `<name>` the app's name kebab-cased (lowercase letters, digits and dashes, starting with a letter or digit, at most 48 characters), then a dash and exactly 8 random lowercase hex digits, e.g. `sine-starter-0a1b2c3d`. Generate the hex freshly (never copy another app's id: a copy with the same id reads as the same app). Change nothing else, then commit the page. If the app already had an id that was lost, and you can find it (git history, `metadata.json`), restore that one instead of minting a new one.
+
 ## `api-version` — declares the current fused API version
 
 **fact** — the row names both numbers.

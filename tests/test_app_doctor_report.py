@@ -82,6 +82,7 @@ def _clean_git_upstream_state(monkeypatch):
     monkeypatch.setattr(git_upstream, "auto_sync_enabled", lambda: False)
 
 PAGE = ('<html><head><meta name="fused-app" />'
+        '<meta name="fused-app-id" content="demo-0a1b2c3d" />'
         '<meta name="fused-api-version" content="{v}" /></head><body>hi</body></html>')
 
 
@@ -134,6 +135,7 @@ def _state(report, cid):
 _EXPECTED_META = {
     "secrets": ("essentials", "critical", "candidate"),
     "entry": ("essentials", "critical", "fact"),
+    "app-id": ("essentials", "warning", "fact"),
     "api-version": ("essentials", "critical", "fact"),
     "pyproject": ("essentials", "warning", "fact"),
     "readme": ("essentials", "info", "fact"),
@@ -188,6 +190,35 @@ def test_ok_is_false_on_a_failing_warning_row(workspace):
     report = app_doctor.report(str(d))
     assert _state(report, "preview") == "fail"
     assert report["ok"] is False
+
+
+def test_a_missing_app_id_is_a_warning_naming_the_entry_and_the_tag(workspace):
+    """The Community lists apps by their fused-app-id: a page without one
+    (or with a malformed one) is a warning row; the fix names the tag."""
+    d = _app(workspace)
+    page = d / "index.html"
+    page.write_text(page.read_text().replace(
+        '<meta name="fused-app-id" content="demo-0a1b2c3d" />', ""))
+    report = app_doctor.report(str(d))
+    row = _rows(report)["app-id"]
+    assert (row["state"], row["severity"], row["section"]) == ("fail", "warning", "essentials")
+    assert "index.html" in row["detail"] and '<meta name="fused-app-id"' in row["detail"]
+    assert row["findings"][0]["path"] == "index.html"
+    assert report["ok"] is False
+    assert app_doctor.report_one(str(d), "app-id")["state"] == "fail"
+    page.write_text(page.read_text().replace(
+        '<meta name="fused-app" />',
+        '<meta name="fused-app" /><meta name="fused-app-id" content="Not An Id" />'))
+    assert app_doctor.report_one(str(d), "app-id")["state"] == "fail"
+    from fused_render import app_id
+
+    page.write_text(page.read_text().replace(
+        '<meta name="fused-app-id" content="Not An Id" />', ""))
+    assert app_id.ensure(str(page), "Demo")
+    row = app_doctor.report_one(str(d), "app-id")
+    assert row["state"] == "pass" and app_id.app_id(str(page)) in row["detail"]
+    prompt = app_doctor.doctor_prompt(str(page), "app-id", [], "x")
+    assert "`app-id`" in prompt and "commit" in prompt
 
 
 def test_a_missing_readme_is_info_and_does_not_make_the_app_not_ok(workspace):

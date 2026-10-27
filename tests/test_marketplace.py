@@ -595,6 +595,23 @@ def test_legacy_copy_is_installed_modified_and_never_updates(env):
     assert app["version"] == "0.9.0" and app["file_count"] == 2
 
 
+def test_a_legacy_copy_is_found_by_its_app_id_not_its_old_name_slug(env):
+    """Owner 2026-10-27: the index lists apps by `fused-app-id`. An old
+    package's stamp carries the old store's NAME slug; the copy's own page
+    id is what names its row now."""
+    aid = "sine-starter-0a1b2c3d"
+    page = ('<html><head><meta name="fused-app" />'
+            f'<meta name="fused-app-id" content="{aid}" /></head></html>')
+    _legacy_copy(env, "sine-starter", files={"index.html": page, "sine.py": "print(0)\n"})
+    row = env["api"].apps.pop("sine-starter")["row"]
+    env["api"].add_app(aid, {"index.html": page, "sine.py": "print(0)\n"},
+                       repo=row["repo"], name="Sine Starter")
+    mp.catalog(refresh=True)
+    copies = mp.installed_copies()
+    assert set(copies) == {aid} and copies[aid]["kind"] == "legacy"
+    assert _entry(aid)["installed"]["kind"] == "legacy"
+
+
 def test_a_husk_is_not_installed(env):
     d = _legacy_copy(env, "sine-starter")
     for n in os.listdir(d):
@@ -1187,6 +1204,21 @@ def test_a_hard_block_shuts_the_run_doors_too(env, tmp_path):
     for door in ("start", "restart"):
         r = client.post(f"/api/apps/background/{door}", json={"html": html}, headers=FUSED)
         assert r.status_code == 423 and r.json()["blocked"]["conflict"] is True, (door, r.text)
+    # A daemon already running before the block: `fused.daemon.call()` /
+    # `.run()` reach it through the engine proxy, refused the same way.
+    from fused_render import background_apps
+    from fused_render.server import engine_host
+
+    eid = background_apps.engine_id_for(str(app_dir))
+    child = engine_host.Child(engine_id=eid, python="python", daemon="d.py", cache="c",
+                              version="v", folder=os.path.realpath(str(app_dir)))
+    engine_host._children[eid] = child
+    try:
+        for method in ("get", "post"):
+            r = getattr(client, method)(f"/api/engines/{eid}/proxy/call", headers=FUSED)
+            assert r.status_code == 423 and r.json()["blocked"]["level"] == "hard", r.text
+    finally:
+        engine_host._children.pop(eid, None)
 
 
 def test_blocklist_offline_keeps_the_last_list(env, monkeypatch):

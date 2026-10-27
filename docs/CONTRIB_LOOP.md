@@ -1345,13 +1345,21 @@ README.md
 
 Row (`apps/<slug>.json`, every key required, nothing else allowed):
 ```json
-{"slug": "sine-starter", "repo": "vasu2001/sine-starter", "branch": "main",
+{"slug": "sine-starter-82de2580", "repo": "vasu2001/sine-starter", "branch": "main",
  "commit": "<40-hex>", "name": "Sine Starter", "description": "…",
  "category": "starters", "tags": ["starter"], "icon": "icon.png" | null,
  "preview": "preview.png" | null, "remix_of": "<slug>" | null, "version": "1.0.1"}
 ```
-`slug` = file name = `[a-z0-9][a-z0-9-]{1,63}`; `icon`/`preview` are paths
-inside the repo at `commit`; `category` ∈ categories.json ids.
+`slug` = the app's `fused-app-id` = file name (owner 2026-10-27: the index
+and the catalog are keyed by the app's identity, not a name): the
+`<meta name="fused-app-id" content="<kebab>-<8hex>">` its entry page
+declares (`fused_render/app_id.py` `ID_RE`, minted once at creation or first
+export, never changed), so one slug names one app for its whole life; the
+check verifies it at `commit` (step 3). The two rows listed before
+(`simple-calc`, `sine-starter`) predate ids and stay until the owner
+publishes them again from fused (delist the old row first: a repo is
+listed once). `icon`/`preview` are paths inside the repo at `commit`;
+`category` ∈ categories.json ids.
 
 Review file (`reviews/<slug>.json`): `[{"commit", "at", "whats_new",
 "new_powers": [str], "credits": ["<login>"], "pr": int, "first": bool,
@@ -1398,7 +1406,16 @@ hard fail with a one-line plain reason posted on the PR:
    check fails. Private org membership cannot be checked with the index's
    token: documented limit.
 3. **Shape.** Row schema above; `slug` unique; `repo` not listed under another
-   slug; `remix_of` names an existing row; `branch` == the repo's default branch.
+   slug; `remix_of` names an existing row; `branch` == the repo's default
+   branch; and, once the app's files at `commit` are read, `slug` == the
+   `fused-app-id` declared by the app's entry page (the first top-level
+   `.html`, name order, carrying `<meta name="fused-app">` in its first 4 KiB
+   — `app_listing.app_entry`'s rule). Absent, malformed or different → "The
+   listing's slug must be the app's fused-app-id (<id>); this row says
+   <slug>." A delist needs no check. The index's `scripts/review/app_id.py`
+   copies the two regexes and the entry rule (`rules.py` stays a verbatim
+   copy of `review_rules.py`); `run_fixtures.py` with `FUSED_RENDER_SRC` checks
+   the copy against fused-render.
 4. **Which commit.** `GET /repos/{repo}/compare/{branch}...{commit}` status
    `identical` or `behind` (the commit is ON the author's branch). A commit
    reachable only from a fork fails here even though GitHub serves it.
@@ -1501,7 +1518,7 @@ GitHub unreadable or main's block list broken; a reader treats the answer as
 
 | UDF | params | row |
 |---|---|---|
-| `marketplace_catalog` | `client_version` | one per app: `slug, name, description, author{name, github}, tags, category, version, requires_python, min_fused_render, ai_capabilities, ai_models, ai_model_param, icon_url, preview_url, size_bytes, file_count, release_id (= commit), commit, repo, branch, source_url (https://github.com/<repo>), published_at (first release), updated_at (last release), featured, remix_of, remix_count, contributor_count, last_release_at, whats_new, blocked, claude_review ("skipped"|null: the current release's step-6 marker, null = not recorded), releases: [{commit, at, whats_new, version, blocked: "hard"|"soft"|null, claude}] newest first, catalog_version, generated_at, stale` |
+| `marketplace_catalog` | `client_version` | one per app: `slug, app_id (= slug: the app's fused-app-id since 2026-10-27; older rows carry their name-based slug), name, description, author{name, github}, tags, category, version, requires_python, min_fused_render, ai_capabilities, ai_models, ai_model_param, icon_url, preview_url, size_bytes, file_count, release_id (= commit), commit, repo, branch, source_url (https://github.com/<repo>), published_at (first release), updated_at (last release), featured, remix_of, remix_count, contributor_count, last_release_at, whats_new, blocked, claude_review ("skipped"|null: the current release's step-6 marker, null = not recorded), releases: [{commit, at, whats_new, version, blocked: "hard"|"soft"|null, claude}] newest first, catalog_version, generated_at, stale` |
 | `marketplace_categories` | — | `{id, label, order, count, catalog_version, generated_at, stale}` |
 | `marketplace_collections` | `new_and_updated_limit` | `{collection: "featured"|"shelf"|"new_and_updated", shelf_id, title, position, slug, catalog_version, generated_at, stale}` |
 | `marketplace_search` | `q, category, cursor, limit, client_version` | catalog rows + `rank`, `next_cursor` |
@@ -1882,7 +1899,12 @@ with Claude + Check again).
   confirm sheet; the `switch` lines' Undo.
 - `ListingStrip` (own copies): status sentence + buttons; `PublishDialog`
   (details form prefilled from `/api/contrib/listing-draft`, which returns
-  `{slug, name, description, category, categories, tags, icon, preview}`).
+  `{slug, app_id, name, description, category, categories, tags, icon,
+  preview, listed}`). The slug is not a field: a new listing's slug is the
+  entry page's `fused-app-id` (`app_id`; null without one, and the dialog
+  points at App Doctor instead), an update keeps the row's own; a `slug`
+  sent with Publish is ignored. Publish / Publish update refuse 409 reason
+  `app-id` ("… Open App Doctor to add one.") when the page has no valid id.
 - Marketplace pages: `AppEntry` gains the §18.5 fields; cards/detail show
   "Remix of <name>", remix count, contributor count, last release; detail
   shows releases with What's new and "Blocked" where blocked; trust card
@@ -1926,7 +1948,12 @@ cached-row fallback never installs a blocked release; both block list
 shapes and every "unknown" answer; an implausible catalog; the run doors'
 423),
 `tests/test_contrib_listing.py` (publish/update/remove/confirm with
-FakeGitHub). `invariants(m)` gains the marketplace reading of I3. Frontend:
+FakeGitHub; the slug is the page's `fused-app-id`, a dialog slug is ignored,
+no id → refused `app-id` and an App Doctor blocker; an id already listed by
+another repo → `slug-taken`), `tests/test_app_doctor_report.py` (the
+`app-id` row: warning, names the entry page and the tag, passes once
+`app_id.ensure` stamps one), `tests/test_marketplace.py` (a legacy copy is
+found by its page's app id, not its stamp's old name slug). `invariants(m)` gains the marketplace reading of I3. Frontend:
 `tsc --noEmit` + `check-boundaries`.
 
 ### 18.10 Decisions (the handoff's defaults, as built)
@@ -2132,7 +2159,9 @@ the panel, actions and activity of §16.9/§18.7 are shown as they are.
   Extra fields: `remix_of`, `github.checking`, `github.blocked` (the
   rung-1 preflight sentence when publish-github would refuse: nested
   elsewhere, or a remote already present). `doctor` = the listing's
-  publish gate (`doctor_blockers`), not the whole Doctor report — computed
+  publish gate (`doctor_blockers`: failing sharing rows, plus `secrets`
+  and `app-id` — the Community indexes an app by its `fused-app-id`, owner
+  2026-10-27), not the whole Doctor report — computed
   only with the Marketplace switch on (the one gate it feeds; else
   `{clear: null, failing: null}`). With every Community switch off the read
   asks GitHub nothing: `visibility` stays null and the org-role lookup is
