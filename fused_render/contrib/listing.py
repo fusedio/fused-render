@@ -461,10 +461,19 @@ def _fetch(scratch: str, index: str, *refspecs: str) -> None:
 _FORK_REF = "refs/fused/fork"
 
 
-def _fork_base(scratch: str, fork: str, branch: str, base: str) -> str | None:
-    """The newest commit of the index's main (`base`) that the fork's
-    `branch` already holds — the merge-base of the two — or None when the
-    fork could not be read or shares no history."""
+def _fork_base(scratch: str, fork: str, base: str, slug: str) -> str | None:
+    """The newest commit of the index's main (`base`) that the fork's default
+    branch already holds — the merge-base of the two — AND whose
+    `apps/<slug>.json` is byte-identical to `base`'s (absent at both counts).
+    None otherwise: a row main changed since (or added) would make the
+    pull request's merge conflict, and a removal built where the row is
+    not yet would delete nothing."""
+    try:
+        branch = gh.repo(fork).get("default_branch") or ""
+    except gh.GitHubError:
+        return None
+    if not gh._BRANCH_RE.match(branch):
+        return None
     ok, _reason = gh.fetch_detail(scratch, fork, f"+refs/heads/{branch}:{_FORK_REF}")
     if not ok:
         return None
@@ -472,7 +481,12 @@ def _fork_base(scratch: str, fork: str, branch: str, base: str) -> str | None:
     if res is None or res.returncode != 0:
         return None
     sha = res.stdout.strip()
-    return sha if gh._SHA_RE.match(sha) else None
+    if not gh._SHA_RE.match(sha) or sha == base:
+        return None
+    path = _row_path(slug)
+    if _show(scratch, sha, path) != _show(scratch, base, path):
+        return None
+    return sha
 
 
 def _show(scratch: str, ref: str, path: str) -> str | None:
@@ -1121,9 +1135,9 @@ def _send(root: str, me: dict, slug: str, row: dict | None, *, kind: str, title:
             # the fork already holds, the push carries no workflow change
             # and goes through. The pull request's diff is still the one
             # row (GitHub diffs against the merge-base).
-            known = _fork_base(scratch, fork, ibranch, base) \
+            known = _fork_base(scratch, fork, base, slug) \
                 if fork != index and gh.is_workflow_scope_refusal(exc.detail) else None
-            if not known or known == base:
+            if not known:
                 raise
             logger.info("listing: push to %s refused (workflow scope); rebuilding the row on "
                         "%s, the index commit the fork already has", fork, known[:12])
