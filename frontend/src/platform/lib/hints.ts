@@ -154,8 +154,37 @@ function sizeOnce(p: HTMLDivElement): void {
   shownH = p.offsetHeight;
 }
 
+/** ANCHORED BESIDE ITS ELEMENT, NOT AT THE POINTER: `data-hint-side="left"`.
+ *  For a hint on a control that sits at the window's edge in a column of its
+ *  own — the canvas page's Claude rail (apps/canvases/ClaudeRail), a ring per
+ *  chat 48px from the right edge. Pointer placement put the panel below the
+ *  cursor and, for the task form, clamped it into the middle band, so it hung
+ *  hundreds of pixels left of the ring it described. Here it stands just left
+ *  of the element, centred on it vertically and kept inside the viewport, and
+ *  it does not follow the pointer within the element. */
+function anchoredSide(el: Element | null): "left" | null {
+  return el?.getAttribute("data-hint-side") === "left" ? "left" : null;
+}
+function placeBeside(el: Element): void {
+  const p = ensurePanel();
+  const r = el.getBoundingClientRect();
+  const w = shownW;
+  const h = shownH;
+  const left = Math.max(EDGE, r.left - 8 - w);
+  const top = Math.min(
+    window.innerHeight - EDGE - h,
+    Math.max(EDGE, r.top + r.height / 2 - h / 2),
+  );
+  p.style.left = `${Math.round(left)}px`;
+  p.style.top = `${Math.round(top)}px`;
+}
+
 function place(x: number, y: number): void {
   const p = ensurePanel();
+  if (host && anchoredSide(host)) {
+    placeBeside(host);
+    return;
+  }
   // The band is for the ROW's two-line form, whose 90ch panel used to swing
   // on a flip. The Board card's reply-only form is a short caption and starts
   // at the cursor like every other hint (Akshil, 2026-09-20: "let's not apply
@@ -279,6 +308,10 @@ function show(el: Element, x: number, y: number): void {
   if (!task) p.classList.remove("is-reply");
   p.classList.add("is-on");
   sizeOnce(p);
+  if (anchoredSide(el)) {
+    placeBeside(el);
+    return;
+  }
   place(x, y);
 }
 
