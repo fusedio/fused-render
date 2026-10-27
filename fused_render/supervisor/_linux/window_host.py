@@ -301,8 +301,17 @@ def pick_unix_signal_add(glib, glib_unix_loader):
     return glib_unix.signal_add
 
 
+def configure_webkit_env() -> None:
+    """Turn WebKitGTK's DMABUF renderer off: with it on, every page
+    navigation flickers. A value the user already set wins. WebKit's web and
+    network processes inherit this process's environment, so setting it here,
+    before WebKit loads, covers them."""
+    os.environ.setdefault("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
+
+
 def load_toolkit() -> SimpleNamespace:
     """Import GTK3 + WebKit2 4.1 through PyGObject or say exactly why not."""
+    configure_webkit_env()
     try:
         import gi
     except ImportError as error:
