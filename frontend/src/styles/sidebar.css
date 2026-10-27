@@ -1497,8 +1497,8 @@ a.bookmark-name::after {
 /* The modal's heading is an input (CurrentAppsSection.tsx NewAppModal): it
    wears the h2's own type with no border or fill, and its muted
    "Untitled (optional)" placeholder is what says it is a field. A faint wash
-   on hover/focus; red words on a red underline when the composer asks for a
-   name (`aria-invalid`, see onNameNeeded). */
+   on hover/focus; red words when the composer asks for a name
+   (`aria-invalid`, see onNameNeeded). */
 .current-apps-compose .deploy-head h2 {
   flex: 1;
   min-width: 0;
@@ -1533,12 +1533,10 @@ a.bookmark-name::after {
   background: var(--bg-alt);
 }
 
-/* The name is wanted: red words on a red underline. Not a ring — the input
-   runs edge to edge in the head, where a box reads as a stray bracket. */
+/* The name is wanted: red words, nothing else. Not a ring or a rule — the
+   input runs edge to edge in the head, where any box reads as a stray mark. */
 .current-apps-compose .current-apps-compose-name[aria-invalid="true"] {
   color: var(--error);
-  box-shadow: inset 0 -1.5px 0 var(--error);
-  border-radius: 6px 6px 0 0;
 }
 
 .current-apps-compose .current-apps-compose-name[aria-invalid="true"]::placeholder {
