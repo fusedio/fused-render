@@ -14,6 +14,7 @@ import { optionLabel, storedOptionLabel } from "@apps/claude_config/pref-option-
 import { Button } from "@platform/shadcn/ui/button";
 import { Input } from "@platform/shadcn/ui/input";
 import { Switch } from "@platform/shadcn/ui/switch";
+import { refreshClaudeDefaults } from "@platform/lib/claude-defaults";
 import { cn } from "@platform/lib/utils";
 import type { SettingEntry } from "./registry";
 import { labelId, SettingRow, SettingSelect } from "./SettingRow";
@@ -64,7 +65,13 @@ export function ClaudeConfigProvider({ available, children }: { available: boole
     try {
       const res = await cc.preferences.patch({ [key]: value });
       if (!res.ok) toastErr(res.error || "Save failed");
-      else toastOk("Saved");
+      else {
+        toastOk("Saved");
+        // This page is the ONE editor of the global model / thinking pair:
+        // the New task card and New app composers that are open and have not
+        // picked follow it, in this tab and every other.
+        if (key === "model" || key === "effortLevel") void refreshClaudeDefaults();
+      }
     } catch (e) {
       toastErr((e as Error).message);
     }

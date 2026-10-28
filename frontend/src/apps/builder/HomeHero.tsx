@@ -19,7 +19,6 @@ import {
 import {
   getClaudeDefaults,
   readClaudeDefaults,
-  setClaudeDefaults,
   subscribeClaudeDefaults,
   type ClaudeDefaults,
 } from "@platform/lib/claude-defaults";
@@ -413,6 +412,9 @@ export function HeroComposer({
   );
   // A field the user picked HERE stops following the global pair's updates.
   const picked = useRef({ model: false, effort: false });
+  // The model on screen, for the global-pair listener below (subscribed once).
+  const modelNow = useRef(model);
+  modelNow.current = model;
   // The agent the pair currently belongs to. When the agent changes — a pick,
   // or the catalog landing on another default — the pair was the OTHER
   // agent's and cannot ride along (a Claude model on a Copilot create is the
@@ -445,7 +447,13 @@ export function HeroComposer({
       if (agentRef.current !== "claude") return;
       const r = resolveComposerDefaults(d, "claude");
       if (!picked.current.model) setModel(r.model);
-      if (!picked.current.effort) setEffort(r.effort);
+      // A model picked HERE keeps its own levels: the global effort is taken
+      // only if that model takes it, else the effort already fitted to it
+      // stays (a model that FOLLOWS is re-fitted by the effect above).
+      if (!picked.current.effort) {
+        const m = picked.current.model ? modelNow.current : r.model;
+        setEffort((e) => (isUnlistedEffort(r.effort, "claude", m) ? e : r.effort));
+      }
     };
     const off = subscribeClaudeDefaults(follow);
     void readClaudeDefaults().then((d) => {
@@ -453,13 +461,15 @@ export function HeroComposer({
     });
     return off;
   }, []);
-  // A pick on Claude moves the global pair (the settings page's value);
-  // another agent's pick is this composer's alone — writing "auto" into
-  // Claude's default would hand every Claude surface a model it cannot run.
+  // A PICK HERE IS THIS APP'S PICK, NOT THE GLOBAL'S — the same rule as the
+  // New task card (shell/NewJobModal): the global pair in
+  // `~/.claude/settings.json` is edited from the Claude config page and
+  // nowhere else. The composer opens on the global and follows it while a
+  // field is untouched; the first pick makes that field this composer's own,
+  // rides on `createApp` into the new app's task, and is never written back.
   const pickModel = (next: ComposerPicks["model"]) => {
     picked.current.model = true;
     setModel(next);
-    if (agentRef.current === "claude") void setClaudeDefaults({ model: next });
     // THE EFFORT FOLLOWS THE MODEL: a level the new model does not take
     // (or a model that takes none) becomes that model's own default — and
     // so does an EMPTY effort, left by a model that took none (`auto`),
@@ -473,7 +483,6 @@ export function HeroComposer({
   const pickEffort = (next: ComposerPicks["effort"]) => {
     picked.current.effort = true;
     setEffort(next);
-    if (agentRef.current === "claude") void setClaudeDefaults({ effort: next });
   };
   // The agent picker (drawn only with two or more agents on, like the New
   // task card's): the pair re-resolves in the effect above.
