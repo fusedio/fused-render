@@ -1633,6 +1633,26 @@ SUGGESTIONS: dict[str, list[dict]] = {
             "note": "Clones a voice with the highest likeness.",
         },
     ],
+    # Kokoro on sherpa-onnx — the cross-platform speech row, and a different
+    # FORMAT from the list above (ONNX, not MLX), so it is its own list and not
+    # an alias in `_SHARED_SUGGESTIONS`. `instructable: False` is the curated
+    # copy of `formats.kokoro_traits()`'s flag, for a model that is not yet
+    # downloaded and so has no snapshot to read traits from.
+    "sherpa-tts": [
+        {
+            "id": "csukuangfj/kokoro-multi-lang-v1_1",
+            "recommended": True,
+            "params": "82M",
+            "quantization": "ONNX fp32",
+            "label": "Kokoro-82M v1.1 (sherpa-onnx)",
+            "nickname": "Kokoro",
+            "size_gb": 0.39,
+            "voiceMode": "preset",
+            "instructable": False,
+            "note": "103 preset English and Chinese voices; runs on any CPU in well "
+                    "under real time. Apache-2.0.",
+        },
+    ],
 }
 
 #: Hardware variant -> the runner whose list it SHARES. Resolved by `for_runner`

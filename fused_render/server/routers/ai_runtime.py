@@ -1256,6 +1256,8 @@ def _catalog_with_downloads() -> list[dict]:
             if traits:
                 entry.update(voiceMode=traits["mode"], voices=traits["voices"],
                              languages=traits["languages"])
+                if traits.get("instructable") is False:
+                    entry["instructable"] = False
     return rows
 
 
@@ -2585,8 +2587,14 @@ def api_ai_speech(body: dict = Body(...), x_fused: str | None = Header(default=N
         return _error(registry.unavailable_reason(registry.TEXT_TO_SPEECH)
                       or "no speech model is configured", status=409)
     curated = catalog.entry_for(registry.TEXT_TO_SPEECH, model) or {}
-    traits = speech_traits(model) or (
-        {"mode": curated["voiceMode"]} if curated.get("voiceMode") else None)
+    # Not downloaded yet: the curated row stands in for the snapshot. Kokoro's
+    # voice table is static, so its row gets the full traits (voices included)
+    # and a wrong voice is a 400 here, not a failure after the download.
+    curated_traits = (
+        formats.kokoro_traits() if "sherpa-tts" in catalog.runners_offering(model)
+        else {"mode": curated["voiceMode"], "instructable": curated.get("instructable", True)}
+        if curated.get("voiceMode") else None)
+    traits = speech_traits(model) or curated_traits
     if traits is not None:
         try:
             fields = formats.speech_options(model, traits, fields)

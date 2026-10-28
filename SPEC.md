@@ -10133,6 +10133,17 @@ an AI Models page that could say what was on disk but not what was *running*.
   default is `Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16` (2.50 GB); each row has
   `voiceMode`, and a downloaded row adds `voices`/`languages`. Onboarding and
   the benchmark leave it out.
+  **A second runner, `sherpa-tts`, registered below it**: Kokoro-82M v1.1
+  (`csukuangfj/kokoro-multi-lang-v1_1`, ONNX, 0.39 GB) on sherpa-onnx's CPU
+  provider, on every platform, so the capability exists off Apple Silicon.
+  Preset voices only (103: three English, then Chinese `zf_*`/`zm_*`; the
+  default is the first), no clone and no design, and no `instruct`: a model whose
+  traits carry `instructable: False` is refused one (`has no style line`).
+  A snapshot is claimed by its layout (`model.onnx`, `voices.bin`, `tokens.txt`,
+  `espeak-ng-data/`), not by a `config.json`. The language follows the voice;
+  `language` is accepted and echoed. A Mac keeps Qwen3-TTS unless its speech
+  engine preference is Kokoro, since one runner serves a capability at a time.
+  The chunking and WAV writer both workers use are `runners/speech_common.py`.
 - **AI-33** **`image-to-text` ("Vision") and `fused.ai.vision({image, task,
   prompt, ...})` (D1354).** Tasks: `caption` (`length`), `query` (`prompt`,
   `reasoning`), `detect` and `point` (`prompt`, `maxObjects`). A model answers

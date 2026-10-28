@@ -639,6 +639,8 @@ def _format_task(repo_id: str, names, dirnames, config: dict) -> tuple[str, str]
         return _ai_registry.DECISIONS, "its Laya decision-head config"
     if formats.is_qwen3_tts_snapshot(config, dirnames):
         return _ai_registry.TEXT_TO_SPEECH, "its Qwen3-TTS speech tokenizer"
+    if formats.is_kokoro_snapshot(names, dirnames):
+        return _ai_registry.TEXT_TO_SPEECH, "its Kokoro sherpa-onnx files"
     if formats.vision_torch_recipe(repo_id):
         return _ai_registry.VISION, "its vision-torch recipe"
     return None
@@ -1554,7 +1556,20 @@ def speech_traits(repo_id: str) -> dict | None:
     snapshot_dir = _embed_snapshot_dir(repo_id)
     if snapshot_dir is None:
         return None
-    return formats.speech_traits(_read_json(os.path.join(snapshot_dir, "config.json")) or {})
+    config = _read_json(os.path.join(snapshot_dir, "config.json"))
+    traits = formats.speech_traits(config or {})
+    if traits is not None:
+        return traits
+    # Kokoro's sherpa export has no config.json of its own — the layout is the
+    # evidence, and `formats.loaders` claims it whatever config sits beside it,
+    # so this asks the same question of the same snapshot. Only reached when the
+    # config did NOT read as speech, so a Qwen3 snapshot never pays the listing.
+    try:
+        entries = os.listdir(snapshot_dir)
+    except OSError:
+        entries = []
+    dirnames = {name for name in entries if os.path.isdir(os.path.join(snapshot_dir, name))}
+    return formats.kokoro_traits_from_names(set(entries), dirnames)
 
 
 def is_sherpa_transducer(repo_id: str) -> bool | None:
@@ -1593,6 +1608,20 @@ def has_cached_snapshot(repo_id: str) -> bool:
     so a hostile repo id answers False here exactly as it does there.
     """
     return _embed_snapshot_dir(repo_id) is not None
+
+
+def cached_loaders(repo_id: str) -> tuple[str, ...] | None:
+    """The runner codes whose `load()` accepts the cached snapshot of `repo_id`
+    by format, or None when nothing usable is cached (so the format has not
+    been seen and has no say). Local only, with `cached_capability`'s
+    path-segment guard."""
+    dirname = "models--" + repo_id.replace("/", "--")
+    if dirname != os.path.basename(dirname) or ".." in dirname or "\\" in dirname:
+        return None
+    repo_dir = os.path.join(hub_cache_dir(), dirname)
+    if not os.path.isdir(repo_dir) or _default_snapshot(repo_dir) is None:
+        return None
+    return tuple(_repo_meta(repo_dir).loaders or ())
 
 
 def cached_capability(repo_id: str) -> CacheReading:

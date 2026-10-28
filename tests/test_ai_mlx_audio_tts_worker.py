@@ -139,11 +139,11 @@ def test_load_refuses_a_checkpoint_that_is_not_qwen3_tts(monkeypatch, tmp_path):
 def test_speech_chunks_keep_paragraphs_and_pack_sentences_under_the_limit(monkeypatch):
     worker, *_ = load_worker(monkeypatch, FakeBase())
     text = "One. Two!  Three?\n\n\n Four\nfive.\n\n   \n"
-    assert worker.speech_chunks(text) == [["One. Two! Three?"], ["Four five."]]
-    assert worker.speech_chunks("Aa aa. Bb bb. Cc cc.", limit=13) == [["Aa aa. Bb bb.", "Cc cc."]]
-    assert worker.speech_chunks("一二三。四五六。", limit=4) == [["一二三。", "四五六。"]]
-    assert worker.speech_chunks("aaaa bbbb cccc", limit=6) == [["aaaa", "bbbb", "cccc"]]
-    assert worker.speech_chunks("x" * 10, limit=4) == [["xxxx", "xxxx", "xx"]]
+    assert worker.speech_common.speech_chunks(text) == [["One. Two! Three?"], ["Four five."]]
+    assert worker.speech_common.speech_chunks("Aa aa. Bb bb. Cc cc.", limit=13) == [["Aa aa. Bb bb.", "Cc cc."]]
+    assert worker.speech_common.speech_chunks("一二三。四五六。", limit=4) == [["一二三。", "四五六。"]]
+    assert worker.speech_common.speech_chunks("aaaa bbbb cccc", limit=6) == [["aaaa", "bbbb", "cccc"]]
+    assert worker.speech_common.speech_chunks("x" * 10, limit=4) == [["xxxx", "xxxx", "xx"]]
 
 
 def test_long_text_is_made_in_parts_with_a_pause_between_paragraphs(monkeypatch, tmp_path):
