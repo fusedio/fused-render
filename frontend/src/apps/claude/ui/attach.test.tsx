@@ -39,6 +39,7 @@ function fakeApi(over: Partial<AttachApi> = {}): { api: AttachApi; spy: Spy } {
     attachPane: async () => att({ kind: "pane", seat: "pane", thumb: "blob:pane" }),
     attachPaneFromBlob: async () => att({ kind: "pane", seat: "pane", thumb: "blob:pane" }),
     attachOverview: async () => att({ kind: "overview", view: "/shots/overview.png" }),
+    attachCrops: async () => [],
     attachFiles: async function* (files) {
       for (const f of files) yield att({ kind: "file", name: f.name, view: "/shots/" + f.name });
     },

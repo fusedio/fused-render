@@ -2590,6 +2590,7 @@ function ChatBody(props: ChatBodyProps) {
    *      picture and the `label` on the wire have to be the same string, and an
    *      index can shift between now and any later read;
    *   2. ONE picture of the whole pane with every letter burned in at its spot,
+   *      plus a close-up of each note's target cut from that same bitmap,
    *      bounded and swallowing, because no screenshot is worth losing the
    *      user's message over;
    *   3. the picture folded back into the notes — which of them got a badge, and
@@ -2601,22 +2602,28 @@ function ChatBody(props: ChatBodyProps) {
   const takeAnnotations = useCallback(async (): Promise<{
     block: string | null;
     notes: Annotation[];
-    overview: Attachment | null;
+    pictures: Attachment[];
   }> => {
     const a = annRef.current;
-    if (!a) return { block: null, notes: [], overview: null };
+    if (!a) return { block: null, notes: [], pictures: [] };
     const { notes, overview } = await a.overviewForSend();
-    if (!notes.length) return { block: null, notes: [], overview: null };
-    let shot: Attachment | null = null;
+    if (!notes.length) return { block: null, notes: [], pictures: [] };
+    const pictures: Attachment[] = [];
     if (overview) {
       // A failed upload is a chip that says so, not a lost message: the same
-      // degradation the capture itself already has (`attachOverview`).
-      shot = await ATTACH_API.attachOverview(overview.capture).catch(() => null);
+      // degradation the capture itself already has (`attachOverview`). The
+      // overview leads; each note's crop follows.
+      const [shot, crops] = await Promise.all([
+        ATTACH_API.attachOverview(overview.capture).catch(() => null),
+        ATTACH_API.attachCrops(overview.capture).catch(() => [] as Attachment[]),
+      ]);
+      if (shot) pictures.push(shot);
+      pictures.push(...crops);
     }
     return {
       block: formatAnnotations(notes as AnnotationWire[], pane.noun),
       notes,
-      overview: shot,
+      pictures,
     };
   }, [pane.noun]);
 
@@ -2652,9 +2659,9 @@ function ChatBody(props: ChatBodyProps) {
       // block the tray's own do, first in the list, so it has to be in hand
       // before the tray is emptied (T:16549).
       const notes = pretaken
-        ? { block: null, notes: [] as Annotation[], overview: null }
+        ? { block: null, notes: [] as Annotation[], pictures: [] }
         : await takeAnnotations();
-      const mine = pretaken ?? takeAttachments(notes.overview ? [notes.overview] : []);
+      const mine = pretaken ?? takeAttachments(notes.pictures);
       // From here the tray is the NEXT line's: a line parked after this point
       // may snapshot it for itself (`dispatchSend`).
       trayTakenRef.current = true;
@@ -2698,7 +2705,7 @@ function ChatBody(props: ChatBodyProps) {
           // (T:16698-16708).
           if (!ok) {
             if (notes.notes.length) annRef.current?.unmarkSent(notes.notes);
-            if (notes.overview) ATTACH_API.revoke(notes.overview);
+            for (const pic of notes.pictures) ATTACH_API.revoke(pic);
           }
           // …then the tray's side, which judges landing by the ledger and not by
           // `ok`: a send handed back to the tray was already removed by
@@ -3079,13 +3086,13 @@ function ChatBody(props: ChatBodyProps) {
             // own pictures) reads the tray here, as `beginSend` would for it.
             const parkedOwn = parked && !parked.takeLater;
             const notes = parkedOwn
-              ? { block: null, notes: [] as Annotation[], overview: null }
+              ? { block: null, notes: [] as Annotation[], pictures: [] }
               : await takeAnnotations();
             const carried = parkedOwn
               ? parked.taken.items.some((a: Attachment) => !a.pending && !!a.view)
                 ? await copyToTaskShots(parked.taken.items).catch(() => [])
                 : []
-              : await carryForQueue(notes.overview ? [notes.overview] : []);
+              : await carryForQueue(notes.pictures);
             /**
              * THE BADGED PICTURE, PUT DOWN — on every road out of here, and it
              * is only ever the picture.
@@ -3103,7 +3110,7 @@ function ChatBody(props: ChatBodyProps) {
              * other road their chips stand.
              */
             const putDownQueuedShot = () => {
-              if (notes.overview) ATTACH_API.revoke(notes.overview);
+              for (const pic of notes.pictures) ATTACH_API.revoke(pic);
             };
             let verdict: Awaited<ReturnType<typeof admitQueueSend>> | null = null;
             try {

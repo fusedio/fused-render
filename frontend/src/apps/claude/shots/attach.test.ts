@@ -29,6 +29,7 @@ afterAll(() => {
 });
 
 const {
+  attachCrops,
   attachFile,
   attachPaths,
   dragHasAttachment,
@@ -252,6 +253,16 @@ describe("toWire", () => {
     expect(wire.map((w) => w.kind)).toEqual(["overview", "image"]);
     expect(wire[0]).toEqual({ kind: "overview", view: "/shots/o-overview.webp", viewNote: "…" });
   });
+
+  test("a crop follows the overview, tagged to its note by name", () => {
+    const wire = toWire([
+      { id: "1", kind: "crop", view: "/shots/n-note-a.png", name: "crop around note A" },
+      { id: "2", kind: "image", view: "/shots/a.png", name: "a.png" },
+      { id: "3", kind: "overview", view: "/shots/o-overview.webp" },
+    ]);
+    expect(wire.map((w) => w.kind)).toEqual(["overview", "crop", "image"]);
+    expect(wire[1]).toEqual({ kind: "crop", view: "/shots/n-note-a.png", name: "crop around note A" });
+  });
 });
 
 // ── receipts ────────────────────────────────────────────────────────────────
@@ -262,6 +273,7 @@ describe("receiptFor / failLabel", () => {
       receiptFor({ id: "1", kind: "pane", view: "/shots/a", ...att } as Attachment).label;
     expect(r({})).toBe("screenshot attached");
     expect(r({ kind: "overview" })).toBe("annotated overview attached");
+    expect(r({ kind: "crop", name: "crop around note A" })).toBe("crop around note A");
     expect(r({ kind: "image", name: "a.png" })).toBe("image attached: a.png");
     expect(r({ kind: "image" })).toBe("image attached");
     expect(r({ kind: "file", name: "a.csv" })).toBe("file attached: a.csv");
@@ -426,6 +438,39 @@ describe("revoke", () => {
     const brought: Attachment = { id: "2", kind: "image", view: "/w/a.png", thumb: "/api/fs/raw?path=x" };
     revoke(brought);
     expect(revoked).toEqual(["blob:one"]);
+  });
+});
+
+describe("attachCrops", () => {
+  const png = () => new Blob([new Uint8Array(64)], { type: "image/png" });
+  const capture = (labels: string[]) => ({
+    blob: png(),
+    width: 800,
+    height: 600,
+    notes: [],
+    via: "dom" as const,
+    crops: labels.map((label) => ({
+      label,
+      blob: png(),
+      width: 200,
+      height: 120,
+      thumb: "blob:crop/" + label,
+    })),
+  });
+
+  test("one upload per crop, named for its note, tied to it on the wire", async () => {
+    const atts = await attachCrops(capture(["A", "B"]));
+    expect(atts.map((a) => a.kind)).toEqual(["crop", "crop"]);
+    expect(atts.map((a) => a.name)).toEqual(["crop around note A", "crop around note B"]);
+    expect(uploads.map((u) => u.path.replace(/^.*-(note-\w)\.png$/, "$1")).sort()).toEqual([
+      "note-a",
+      "note-b",
+    ]);
+    expect(toWire(atts).map((w) => w.name)).toEqual(["crop around note A", "crop around note B"]);
+  });
+
+  test("a capture with no crops attaches nothing", async () => {
+    expect(await attachCrops({ ...capture([]), crops: undefined })).toEqual([]);
   });
 });
 
