@@ -73,3 +73,42 @@ test("a refresh does not share a read that departed before the save", async () =
   await fresh;
   expect(mod.getClaudeDefaults()).toEqual({ model: "opus", effort: "max" });
 });
+
+test("an older refresh that completes last does not overwrite a newer one", async () => {
+  const s = stub();
+  const stored = new Map<string, string>();
+  const g = globalThis as { localStorage?: unknown };
+  const realStorage = g.localStorage;
+  g.localStorage = { setItem: (k: string, v: string) => stored.set(k, v) };
+  const older = mod.refreshClaudeDefaults(); // GET #0, after the model save
+  const newer = mod.refreshClaudeDefaults(); // GET #1, after the effort save
+  s.answer(1, { model: "opus", effort: "max" });
+  await newer;
+  s.answer(0, { model: "opus", effort: "low" });
+  await older;
+  g.localStorage = realStorage;
+  expect(mod.getClaudeDefaults()).toEqual({ model: "opus", effort: "max" });
+  const sent = JSON.parse(stored.get(mod.CLAUDE_DEFAULTS_BROADCAST_KEY) ?? "{}");
+  expect([sent.model, sent.effort]).toEqual(["opus", "max"]);
+});
+
+test("a failed newer refresh does not discard an older refresh's answer", async () => {
+  const s = stub();
+  const older = mod.refreshClaudeDefaults(); // GET #0
+  const newer = mod.refreshClaudeDefaults(); // GET #1
+  s.answer(1, { model: "", effort: "" }, 500);
+  await newer;
+  s.answer(0, { model: "sonnet", effort: "high" });
+  expect(await older).toEqual({ model: "sonnet", effort: "high" });
+});
+
+test("a read that departed before a refresh does not overwrite it when it completes last", async () => {
+  const s = stub();
+  const stale = mod.readClaudeDefaults();    // GET #0, the file before the save
+  const fresh = mod.refreshClaudeDefaults(); // GET #1, after the save
+  s.answer(1, { model: "opus", effort: "max" });
+  await fresh;
+  s.answer(0, { model: "fable", effort: "low" });
+  expect(await stale).toEqual({ model: "opus", effort: "max" });
+  expect(mod.getClaudeDefaults()).toEqual({ model: "opus", effort: "max" });
+});

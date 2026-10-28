@@ -46,6 +46,11 @@ const EMPTY: ClaudeDefaults = { model: "", effort: "" };
  *  different, and a pill must not paint the second while it is in the first. */
 let current: ClaudeDefaults | null = null;
 let reading: Promise<ClaudeDefaults> | null = null;
+/** Sequence of the last GET sent, and of the newest answer applied. Answers can
+ *  land in any order; one that was SENT before an answer already applied is
+ *  older than it and must not overwrite it. */
+let issued = 0;
+let applied = 0;
 function fromServer(d: { model?: unknown; effort?: unknown } | null | undefined): ClaudeDefaults {
   return {
     model: typeof d?.model === "string" ? d.model : "",
@@ -107,8 +112,9 @@ function announce(next: ClaudeDefaults, broadcast: boolean): ClaudeDefaults {
  *  unhandled rejection in a mount effect is a worse bug than a stale pill. */
 export function readClaudeDefaults(): Promise<ClaudeDefaults> {
   if (reading) return reading;
+  const seq = ++issued;
   reading = getTaskDefaults()
-    .then((d) => announce(fromServer(d), false))
+    .then((d) => applyIfNewest(seq, fromServer(d), false))
     .catch(() => current ?? EMPTY)
     .finally(() => {
       reading = null;
@@ -122,9 +128,18 @@ export function readClaudeDefaults(): Promise<ClaudeDefaults> {
  *  already out: a read that departed before the save would answer with the
  *  file as it was. A failed read keeps what was known. */
 export function refreshClaudeDefaults(): Promise<ClaudeDefaults> {
+  const seq = ++issued;
   return getTaskDefaults()
-    .then((d) => announce(fromServer(d), true))
+    .then((d) => applyIfNewest(seq, fromServer(d), true))
     .catch(() => current ?? EMPTY);
+}
+
+/** Apply an answer only when no later-sent request has already been applied;
+ *  an older one resolves to what is current, announcing and broadcasting nothing. */
+function applyIfNewest(seq: number, next: ClaudeDefaults, broadcast: boolean): ClaudeDefaults {
+  if (seq <= applied) return current ?? EMPTY;
+  applied = seq;
+  return announce(next, broadcast);
 }
 
 /** One `storage` event, as the listener below sees it. Exported so the rule can
@@ -152,5 +167,7 @@ if (typeof window !== "undefined") {
 export function resetClaudeDefaultsForTests(): void {
   current = null;
   reading = null;
+  issued = 0;
+  applied = 0;
   listeners.clear();
 }
