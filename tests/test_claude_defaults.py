@@ -213,6 +213,7 @@ def test_short_model_collapses_every_spelling(tmp_path, monkeypatch):
 
 
 def test_the_defaults_route_is_read_only():
+    """GET answers the global pair; no method on the route can write it."""
     from fused_render.server.routers import claude_sessions
 
     methods = set()
@@ -235,6 +236,8 @@ _SETTINGS_WRITERS_ALLOWED = {
 
 
 def test_only_the_settings_page_writes_the_global_settings_file():
+    """Every `fused_render` module that writes `settings.json` is on the
+    allowlist above, and every allowlisted module still does."""
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     pkg = os.path.join(root, "fused_render")
     writers = set()
