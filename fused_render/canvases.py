@@ -2756,6 +2756,33 @@ class _SyncManager:
             return False
         return True
 
+    def _fold_clone_duplicates(self) -> bool:
+        """Two non-folder rows of one name in the clone's canvas.toml become
+        one (`canvas_snapshot.merge_same_named_rows`) — the push's freeze
+        phase, under _op_lock, so the row this host synthesized for a new
+        file and the row its author then wrote never ship together (the
+        server would keep the first, the default). Only that: the wider
+        folder grammar is the pull's and the snapshot's business. True when
+        the file was rewritten."""
+        path = os.path.join(self.dir, "canvas.toml")
+        try:
+            import rtoml
+            with open(path, "rb") as fh:
+                data = fh.read()
+            doc = rtoml.loads(data.decode("utf-8", "replace"))
+            canvas = doc.get("canvas")
+            rows = canvas.get("nodes") if isinstance(canvas, dict) else None
+            if not isinstance(rows, list):
+                return False
+            fixes = canvas_snapshot.merge_same_named_rows(rows)
+            if not fixes:
+                return False
+            self._log_folder_fixes("disk_to_server", fixes)
+            canvas_snapshot._write_atomic(path, canvas_snapshot._dump_toml(doc))
+            return True
+        except Exception:  # noqa: BLE001 — unreadable toml: the push's validation says so
+            return False
+
     def _normalised_toml(self, data: bytes) -> bytes:
         """A canvas.toml the pull is about to write wholesale, with its
         folder grammar normalised (`canvas_snapshot.normalise_folders`) —
@@ -4281,7 +4308,15 @@ class _SyncManager:
         `[[canvas.nodes]]` row gets its synthesized row written into
         canvas.toml before the push freezes the clone — whether or not any
         frame ever cut a delta — so a node is never published without its
-        file's row. Under _op_lock (the push's freeze phase)."""
+        file's row. Under _op_lock (the push's freeze phase).
+
+        First the rows two writers left are made one document again
+        (`canvas_snapshot.normalise_folders`): the row this host synthesized
+        for a new file and the row its author then wrote for the same file
+        would otherwise both ship, and the server keeps the first — the
+        default sticky, not the author's."""
+        if self._fold_clone_duplicates():
+            self._note_disk()
         rows = self._toml_rows()
         if rows is None:
             return  # no or unparsable canvas.toml: the push's validation says so

@@ -1069,3 +1069,61 @@ def test_synthesis_and_placement_resolve_a_child_through_its_own_same_named_fold
     # And an orphan after a child of the second folder is placed through it.
     after = cs.synthesize_row(rows[:4] + [udf("c", 40.0, 700.0)], "zz", "zz.py")
     assert (after["x"], after["y"]) == (5040.0, 3000.0 + 700.0 + 500 + 40)
+
+
+# -- two non-folder rows of one name: one node twice ---------------------------
+
+def test_normalise_folds_two_rows_of_one_name_later_fields_win():
+    # The sync synthesized a sticky for run_order.md (first), then the author
+    # wrote their own row for it (later, richer). Folders of one name stay.
+    rows = [udf("run_order", 2365.0, 4481.0), udf("b", 0.0, 0.0),
+            folder("Folder_2", ["b"]), folder("Folder_2", []),
+            {"udfName": "run_order", "x": 2400, "y": 0, "title": "Run order",
+             "visible": True}]
+    fixes = cs.normalise_folders(rows)
+    assert "two rows share the name 'run_order': merged into the first" in fixes, fixes
+    assert [cs.row_name(r) for r in rows] == ["run_order", "b", "Folder_2", "Folder_2"]
+    assert rows[0]["title"] == "Run order" and rows[0]["x"] == 2400
+    assert rows[0]["zIndex"] == 1 and rows[0]["width"] == 700       # kept from the first
+    assert any("'Folder_2' (not fixed)" in f for f in fixes), fixes
+    assert cs.normalise_folders(rows) == [f for f in fixes if f.endswith("(not fixed)")]
+
+
+def test_merge_toml_drops_the_row_folded_into_its_namesake():
+    base = cs.rows_of_doc(doc([udf("a", 1.0, 1.0)]))
+    local = doc([udf("a", 1.0, 1.0), udf("n", 10.0, 10.0),
+                 udf("n", 20.0, 20.0, title="Note")])
+    remote = doc([udf("a", 1.0, 1.0)])
+    merged, info = cs.merge_toml(base, local, remote)
+    rows = merged["canvas"]["nodes"]
+    assert [(cs.row_name(r), r["x"], r["title"]) for r in rows] == [("a", 1.0, "a"), ("n", 20.0, "Note")]
+    assert any("'n'" in f for f in info["folder_fixes"]), info
+
+
+def test_push_freeze_folds_duplicate_rows_before_the_clone_ships(tmp_path, monkeypatch):
+    two = rtoml.dumps(doc([udf("a", 40.0, 60.0), udf("note", 0.0, 0.0),
+                           udf("note", 2400.0, 0.0, title="Run order")])).encode()
+    manager = _manager(tmp_path, monkeypatch, two, {"a.py": b"A", "note.md": b"# n"})
+    manager._synthesize_orphans()
+    names = [cs.row_name(r) for r in _disk_rows(manager.dir)]
+    assert names == ["a", "note"], names
+    rows = {cs.row_name(r): r for r in _disk_rows(manager.dir)}
+    assert rows["note"]["title"] == "Run order" and rows["note"]["x"] == 2400.0
+    (event,) = _events(manager, "folder fixes")
+    assert event["leg"] == "disk_to_server" and "'note'" in event["detail"], event
+
+
+def test_merge_toml_folds_each_side_first_so_a_remote_retitle_survives():
+    # Local still carries the sticky AND the author's row; remote retitled
+    # the (single) node meanwhile. Folding before keying keeps both edits.
+    base = cs.rows_of_doc(doc([udf("a", 1.0, 1.0), udf("n", 10.0, 10.0)]))
+    local = doc([udf("a", 1.0, 1.0), udf("n", 10.0, 10.0), udf("n", 20.0, 20.0, title="Note")])
+    remote = doc([udf("a", 1.0, 1.0), udf("n", 10.0, 10.0, title="Remote title", visible=False)])
+    merged, info = cs.merge_toml(base, local, remote)
+    rows = {cs.row_name(r): r for r in merged["canvas"]["nodes"]}
+    assert len(merged["canvas"]["nodes"]) == 2
+    # Local's fold changed title and position (local wins the tie); remote's
+    # untouched-on-local field `visible` comes through.
+    assert rows["n"]["x"] == 20.0 and rows["n"]["title"] == "Note"
+    assert rows["n"]["visible"] is False
+    assert any("'n'" in f for f in info["folder_fixes"]), info
