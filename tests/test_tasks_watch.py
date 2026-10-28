@@ -850,10 +850,17 @@ def test_a_late_reopen_from_a_pid_forgotten_in_the_respawn_gap_stays_scoped(
     tasks_watch.tick()
     old.unlink()
     tasks_watch.tick()
-    _registry(claude_home, SID, status="busy", name="new")
+    new = _registry(claude_home, SID, status="busy", name="new")
     tasks_watch.tick()
     tasks_watch.mark_turn_ended(SID, "run-new", at=_later(5), pid=os.getpid())
     tasks_watch.mark_turn_started(SID, "run-old", at=_later(6), pid=os.getppid())
+    assert tasks_watch.is_turn_ended(SID)
+    # …nor when the new process departs in turn: only ITS stamps fold into
+    # the session's own, so the dead process's late start cannot reopen a
+    # session nothing holds any more (CodeRabbit, PR #1829).
+    new.unlink()
+    tasks_watch.tick()
+    assert tasks_watch.registry_row(SID) is None
     assert tasks_watch.is_turn_ended(SID)
 
 

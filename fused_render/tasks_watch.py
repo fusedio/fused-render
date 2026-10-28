@@ -1147,12 +1147,26 @@ def _settle(sid: str) -> dict | None:
         # No process left to tell apart: the newest per-pid end becomes the
         # session's own, unscoped — the departed session's turn stays ended
         # for `_running_now`'s transcript-tail read, as it always did.
-        newest = max((_ended_by_pid.pop(sid, None) or {}).values(), default=None)
+        #
+        # ONLY THE DEPARTING RUN'S OWN PIDS FOLD (CodeRabbit, PR #1829). A
+        # former pid's late stamp sits in the same dicts (`_pid_known`), and
+        # a dead process's late `turn_started` folded here would outrank the
+        # end the run that just departed reported for itself — `is_turn_ended`
+        # reading a departed session as reopened, by a process that was gone
+        # before the run began. With no pids of its own to go by (a late
+        # event on a session already departed), everything folds, as before.
+        def own(stamps: dict | None) -> dict:
+            stamps = stamps or {}
+            if not former:
+                return stamps
+            return {pid: at for pid, at in stamps.items() if pid in former}
+
+        newest = max(own(_ended_by_pid.pop(sid, None)).values(), default=None)
         if newest is not None:
             _ended[sid] = max(newest, _ended.get(sid, newest))
         # …and the newest per-pid start the same way, so the two keep their
         # order for `is_turn_ended`'s row-less read.
-        restart = max((_reopened_by_pid.pop(sid, None) or {}).values(), default=None)
+        restart = max(own(_reopened_by_pid.pop(sid, None)).values(), default=None)
         if restart is not None:
             _reopened[sid] = max(restart, _reopened.get(sid, restart))
         _departed[sid] = time.time()
