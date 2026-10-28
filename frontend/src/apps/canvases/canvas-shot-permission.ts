@@ -38,15 +38,19 @@ export function slowFallbackEnabled(
   );
 }
 
-/** Whether the slow embed road may run after native said no. */
-export function slowRoadAllowed(g: { mac: boolean; fallbackOn: boolean }): boolean {
-  return !g.mac || g.fallbackOn;
+/** Whether the slow embed road may run after native said no. A Mac WITHOUT
+ *  a native still at all (macOS 11–12, `GET /api/capture` → `screenshot.
+ *  available: false`) has no grant to point at, so it falls back like any
+ *  other platform. */
+export function slowRoadAllowed(g: { mac: boolean; fallbackOn: boolean; nativeAvailable?: boolean }): boolean {
+  return !g.mac || g.fallbackOn || g.nativeAvailable === false;
 }
 
-export async function slowRoadAllowedHere(): Promise<boolean> {
+export async function slowRoadAllowedHere(nativeAvailable?: boolean): Promise<boolean> {
   // Off a Mac the answer needs no round trip.
   if (!detectedMac) return true;
-  return slowRoadAllowed({ mac: true, fallbackOn: await slowFallbackEnabled() });
+  if (nativeAvailable === false) return true;
+  return slowRoadAllowed({ mac: true, fallbackOn: await slowFallbackEnabled(), nativeAvailable });
 }
 
 /** The error a Mac gets when native could not and the slow road is off. One

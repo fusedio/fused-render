@@ -219,6 +219,7 @@ import {
 import { CANVAS_SHOT_SCRIM_HINT, canvasShotScrimLabel, type CanvasShotPhase } from "./canvas-shot-scrim";
 import { SHOT_UDF_CROP_MIN_WIDTH, nativeCanvasShot, type ShotRect } from "./canvas-shot-native";
 import { nativeShotRefusal, screenRecordingNeeded, slowRoadAllowedHere } from "./canvas-shot-permission";
+import type { ScreenshotSource } from "@platform/lib/screen-permission";
 import { watchTopOrigin } from "@apps/claude/shots";
 import { captureSources } from "@platform/lib/capture-audio";
 import { bundleName } from "@platform/lib/flavor";
@@ -762,15 +763,19 @@ export default function CanvasWorkspace({
   // `nativeShotRefusal`). Read from `GET /api/capture` once per page: the
   // grant applies on relaunch, so the answer cannot change under this
   // document.
-  const permAskedRef = useRef<Promise<boolean> | null>(null);
-  const screenRecordingMissing = useCallback((): Promise<boolean> => {
-    if (!permAskedRef.current) {
-      permAskedRef.current = captureSources()
-        .then((src) => screenRecordingNeeded(src.screenshot))
-        .catch(() => false);
+  const sourcesRef = useRef<Promise<ScreenshotSource | null> | null>(null);
+  const screenshotSource = useCallback((): Promise<ScreenshotSource | null> => {
+    if (!sourcesRef.current) {
+      sourcesRef.current = captureSources()
+        .then((src) => src.screenshot ?? null)
+        .catch(() => null);
     }
-    return permAskedRef.current;
+    return sourcesRef.current;
   }, []);
+  const screenRecordingMissing = useCallback(
+    (): Promise<boolean> => screenshotSource().then((src) => screenRecordingNeeded(src)),
+    [screenshotSource],
+  );
   // Where this window's viewport sits on the screen, learned from clicks
   // (`shots/native-capture` `watchTopOrigin`): the chat registers the same
   // watcher on ITS window, which is a frame of ours when a node is shown —
@@ -827,7 +832,10 @@ export default function CanvasWorkspace({
       // NATIVE COULD NOT. Off a Mac the slow embed road below draws it; on a
       // Mac that road is off unless Settings turned it on, and the answer is
       // the sentence that names the fix (canvas-shot-permission.ts).
-      if (!(await slowRoadAllowedHere())) {
+      // A Mac with no native still at all (macOS 11–12) falls back like any
+      // other platform: there is no grant to point at.
+      const nativeAvailable = (await screenshotSource())?.available !== false;
+      if (!(await slowRoadAllowedHere(nativeAvailable))) {
         // A node the zoom draws too small for a crop (under
         // SHOT_UDF_CROP_MIN_WIDTH) is declined above so the embed road can
         // draw it at full size — a road this Mac does not take. The whole
@@ -874,7 +882,7 @@ export default function CanvasWorkspace({
     });
     setShotPhase(null);
     return answer;
-  }, [settleShot, awaitFrameUp, requestEmbedRects, screenRecordingMissing]);
+  }, [settleShot, awaitFrameUp, requestEmbedRects, screenRecordingMissing, screenshotSource]);
   // The in-page canvas chat's contract: the canvas view only (no node is
   // selected while that chat shows).
   const canvasShot = useMemo<CanvasShot>(
@@ -1990,6 +1998,9 @@ export default function CanvasWorkspace({
         }
       }
       if (type === "fused-embed-hello") {
+        // From THE workbench frame only: a same-origin window's hello must
+        // not mark the frame up, nor say what it can capture.
+        if (event.source !== frameRef.current?.contentWindow) return;
         frameUpRef.current = true;
         // What this build can capture (`capture: ["canvas","udf","rects"]`
         // from the workbench's `postEmbedHello`); a hello without the list is

@@ -851,17 +851,16 @@ def screenshot(out: str, spec: dict) -> dict:
         raise Unsupported("screenshots " + old)
 
     display = _display(spec.get("display"))
-    if _too_old(SCSHOT_MIN):
-        return _cg_shot(out, display, spec)
+    shot = _cg_shot if _too_old(SCSHOT_MIN) else _sck_shot
     try:
-        return _sck_shot(out, display, spec)
+        return shot(out, display, spec)
     except Exception:                                    # noqa: BLE001
         # A cached display may be stale (unplugged, mode changed, woke from
         # sleep): once more on a fresh enumeration before giving up.
         if _display_cache.get(int(display.displayID()), (None,))[0] is not display:
             raise
         _forget_display(display)
-        return _sck_shot(out, _display(spec.get("display")), spec)
+        return shot(out, _display(spec.get("display")), spec)
 
 
 def _sck_shot(out: str, display, spec: dict) -> str:

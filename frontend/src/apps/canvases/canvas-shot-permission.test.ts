@@ -24,6 +24,9 @@ test("the slow road is automatic off a Mac, and on a Mac only behind the switch"
   expect(slowRoadAllowed({ mac: false, fallbackOn: true })).toBe(true);
   expect(slowRoadAllowed({ mac: true, fallbackOn: false })).toBe(false);
   expect(slowRoadAllowed({ mac: true, fallbackOn: true })).toBe(true);
+  // A Mac with no native still at all (macOS 11–12): nothing to grant.
+  expect(slowRoadAllowed({ mac: true, fallbackOn: false, nativeAvailable: false })).toBe(true);
+  expect(slowRoadAllowed({ mac: true, fallbackOn: false, nativeAvailable: true })).toBe(false);
 });
 
 test("the switch is the preference, only a stored true is on, and a failed read is off", async () => {

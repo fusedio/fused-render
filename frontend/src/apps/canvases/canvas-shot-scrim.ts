@@ -31,16 +31,20 @@ export interface CanvasShotPhase {
 }
 
 /** The one line on the scrim. The USER's own capture is a plain progress
- *  sentence; the AGENT's names Claude, because nobody pressed anything and a
- *  canvas that locks itself unprompted has to say who asked. */
+ *  sentence; the AGENT's names the asker, because nobody pressed anything
+ *  and a canvas that locks itself unprompted has to say who asked. The
+ *  asker is "your agent", not a model's name: the `canvas_screenshot` tool
+ *  is every backend's (Claude, Gemini, Codex…), and the host cannot tell
+ *  whose session parked the request. */
+export const CANVAS_SHOT_AGENT = "Your agent";
 export function canvasShotScrimLabel(phase: CanvasShotPhase): string {
   if (phase.waitingForFrame) return "Waiting for the workbench…";
   const agent = phase.by === "agent";
   if (phase.what === "udf") {
     const node = phase.udf ? phase.udf + "'s output" : "this UDF's output";
-    return agent ? "Claude is looking at " + node + "…" : "Capturing " + node + "…";
+    return agent ? CANVAS_SHOT_AGENT + " is looking at " + node + "…" : "Capturing " + node + "…";
   }
-  return agent ? "Claude is looking at the canvas…" : "Capturing the canvas…";
+  return agent ? CANVAS_SHOT_AGENT + " is looking at the canvas…" : "Capturing the canvas…";
 }
 
 /** The second line: why the canvas is not answering clicks right now. */

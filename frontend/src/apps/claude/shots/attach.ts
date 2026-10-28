@@ -14,7 +14,7 @@
 // an attachment carrying its own `why`, so nothing the user gestured at
 // disappears without an answer — and since D615 exactly ONE thing still refuses:
 // an upload that failed.
-import { rawUrl, uploadFile } from "@platform/lib/api";
+import { rawUrl, uploadFile, deleteEntry } from "@platform/lib/api";
 import { runAgent } from "../protocol/agent";
 import type { PaneShotWire } from "../protocol/wire";
 import { capturePane, captureOverview, type CaptureOptions } from "./capture";
@@ -382,7 +382,16 @@ async function uploadCapture(
     // Its own full budget, not the lookup's remainder: a slow lookup must
     // not turn a healthy upload into "could not be saved" with the file
     // landing on disk anyway.
-    await within(uploadFile(path, shot.blob, shotBase(path)), shotSaveTimeoutMs, "the upload");
+    const upload = uploadFile(path, shot.blob, shotBase(path));
+    try {
+      await within(upload, shotSaveTimeoutMs, "the upload");
+    } catch (err) {
+      // The chip now says "could not be saved"; an upload that lands AFTER
+      // that would leave an orphan the user never sees, and a retry a
+      // second copy. Take it back off disk when it does.
+      void upload.then(() => deleteEntry(path).catch(() => {}), () => {});
+      throw err;
+    }
     att.view = path;
     if (shot.thumb) att.thumb = shot.thumb;
     // Never suppressed for a blank canvas, only annotated: the caveat rides

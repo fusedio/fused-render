@@ -156,6 +156,11 @@ export async function nativeCanvasShot(
   if (!nativeShotAllowed(gate)) return null;
   const pane = await (opts.capture || captureNative)(frame);
   if (!pane) return null;
+  // The still took a round trip; a page hidden meanwhile — or, for the
+  // agent's gesture-less capture, a window sent behind another — makes it a
+  // picture of something else. Narrows the window, does not close it.
+  const after = (opts.gate || shotGateOf)(frame, "agent");
+  if (!after.visible || (by === "agent" && !after.focused)) return null;
   const box = cropToPane(opts.crop, pane, opts.minWidth);
   if (!box) return null;
   return encode(pane, box, { maxEdge: SHOT_VIEW_EDGE, maxBytes: SHOT_VIEW_BYTES });

@@ -1046,8 +1046,11 @@ def open_settings() -> None:
         raise Unsupported("this platform has no Screen Recording settings pane to open")
     import subprocess
 
-    subprocess.run(["open", url()], stdout=subprocess.DEVNULL,
-                   stderr=subprocess.DEVNULL, check=False, timeout=10)
+    done = subprocess.run(["open", url()], stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL, check=False, timeout=10)
+    code = getattr(done, "returncode", 0)
+    if code:
+        raise RuntimeError(f"`open` could not open the Screen Recording pane (exit {code})")
 
 
 # ------------------------------------------------------------------ teardown

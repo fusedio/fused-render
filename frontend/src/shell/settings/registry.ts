@@ -337,7 +337,7 @@ const ENTRIES = [
     group: "tasks",
     section: "Canvas screenshots",
     label: "Screen permission",
-    description: "Canvas screenshots — yours and Claude's — are taken natively, in under a second. On macOS that needs screen permission; the app only photographs the canvas, and nothing is stored or sent anywhere.",
+    description: "Canvas screenshots — yours and your agent's — are taken natively, in under a second. On macOS that needs screen permission. The app photographs only its own workbench frame, only when a screenshot is asked for; the picture is saved to the app's screenshots folder and attached to that chat, nowhere else.",
     keywords: "screenshot screen recording permission canvas capture native fast claude",
     renderOnly: true,
     macOnly: true,

@@ -14,13 +14,13 @@ test("the user's own capture is a plain progress line, per target", () => {
   ).toBe("Capturing nyc311_hex's output…");
 });
 
-test("the agent's capture names Claude — nobody pressed anything", () => {
+test("the agent's capture names the agent — nobody pressed anything", () => {
   expect(
     canvasShotScrimLabel({ what: "canvas", by: "agent", udf: null, waitingForFrame: false }),
-  ).toBe("Claude is looking at the canvas…");
+  ).toBe("Your agent is looking at the canvas…");
   expect(
     canvasShotScrimLabel({ what: "udf", by: "agent", udf: "ports_dashboard", waitingForFrame: false }),
-  ).toBe("Claude is looking at ports_dashboard's output…");
+  ).toBe("Your agent is looking at ports_dashboard's output…");
 });
 
 test("before the workbench's first hello the line says it is waiting, not capturing", () => {
