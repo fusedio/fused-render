@@ -821,11 +821,16 @@ export default function CanvasWorkspace({
     // QA: `?_pushfail=1` dresses every state as a failed push (like
     // `?_shotnudge=1` for the capture nudge) — a real failing deployment is
     // not on hand to look at the banner.
-    if (new URLSearchParams(window.location.search).get("_pushfail")) {
+    const pushfail = new URLSearchParams(window.location.search).get("_pushfail");
+    if (pushfail) {
       s = {
         ...s,
         legs: {
           ...s.legs,
+          // `_pushfail=2`: the server changed as well, so Pull is up too.
+          ...(pushfail === "2"
+            ? { server_to_disk: { state: "stale" as const, since_ms: 5000, changed: [{ slug: "udf_1", kind: "udf" }], reason: null } }
+            : {}),
           disk_to_server: {
             ...s.legs.disk_to_server,
             state: "error",

@@ -224,7 +224,10 @@ export function SyncStrip({
         <span
           onClick={(e) => e.stopPropagation()}
           onKeyDown={(e) => e.stopPropagation()}
-          style={{ display: "flex", alignItems: "center", gap: 8, flex: "0 1 auto", minWidth: 0, cursor: "default" }}
+          // `none`: the reason span is the strip's only shrinking item — a
+          // shrinkable wrapper lost width in proportion to its basis and
+          // the Pull button read "P" beside the errors pill.
+          style={{ display: "flex", alignItems: "center", gap: 8, flex: "none", cursor: "default" }}
           title={
             serverChangesText(s2d) +
             ". Nothing here is published until you pull. Pull merges them with your local edits " +
@@ -238,7 +241,7 @@ export function SyncStrip({
                 overflow: "hidden",
                 textOverflow: "ellipsis",
                 whiteSpace: "nowrap",
-                minWidth: 0,
+                maxWidth: 240,
               }}
               title={pullErrorText}
             >
