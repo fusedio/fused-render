@@ -627,11 +627,10 @@ export default function CanvasWorkspace({
   );
   const [fixBusy, setFixBusy] = useState(false);
   const [fixError, setFixError] = useState<string | null>(null);
-  // The failed-push banner below the strip: its traceback starts folded (the
-  // strip already says why in one line) and × puts the whole banner away for
-  // THIS failure — a different reason or detail brings it back.
+  // The failed-push detail panel under the strip: shut by default (the strip
+  // already says why in one line and wears an "N errors" pill); the pill
+  // folds it open and shut.
   const [pushDetailOpen, setPushDetailOpen] = useState(false);
-  const [dismissedPushKey, setDismissedPushKey] = useState<string | null>(null);
   // "Server changes · Pull": the hosted workbench's chip, for this tab. The
   // watcher holds its push while the server_to_disk leg is stale; this button
   // is the user's pull. The result reaches the embed as a delta like any other
@@ -2162,10 +2161,16 @@ export default function CanvasWorkspace({
   // never guessed from transcript activity. It rides sync/state; the local
   // copy only bridges the click → next state gap (`onFix` sets it at once).
   const pushError = sync?.legs.disk_to_server.state === "error";
-  const pushErrorKey = pushError
-    ? `${sync?.legs.disk_to_server.reason ?? ""}\n${(sync?.error_detail ?? []).join("\n")}`
-    : null;
-  const pushBannerShown = pushError && pushErrorKey !== dismissedPushKey;
+  // One per "✗" line of the CLI's detail (its validation errors); a push that
+  // died some other way (a traceback) counts as one.
+  const pushErrorCount = pushError
+    ? Math.max(1, (sync?.error_detail ?? []).filter((l) => /^\s*✗/.test(l)).length)
+    : 0;
+  const pushBannerShown = pushError && pushDetailOpen;
+  // Shut again once a push lands, so the next failure starts folded.
+  useEffect(() => {
+    if (!pushError) setPushDetailOpen(false);
+  }, [pushError]);
   const stateFixActive = sync?.fix_active;
   useEffect(() => {
     if (stateFixActive !== undefined) setFixActive(stateFixActive);
@@ -2448,6 +2453,11 @@ export default function CanvasWorkspace({
         onBack={() => navigateUrl(catalogPath(env))}
         workbenchUrl={workbenchUrl}
         embedded={embedded}
+        pushErrors={
+          pushError
+            ? { count: pushErrorCount, open: pushDetailOpen, onToggle: () => setPushDetailOpen((o) => !o) }
+            : null
+        }
         pull={{
           busy: pullBusy,
           error: pullError,
@@ -2494,18 +2504,7 @@ export default function CanvasWorkspace({
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
-            <strong
-              title={pushLeg.reason ?? undefined}
-              style={{
-                minWidth: 0,
-                overflowWrap: "anywhere",
-                // A requests traceback's reason runs to several lines; two
-                // say enough, Details shows the rest.
-                ...(pushDetailOpen
-                  ? {}
-                  : { display: "-webkit-box", WebkitBoxOrient: "vertical", WebkitLineClamp: 2, overflow: "hidden" }),
-              }}
-            >
+            <strong style={{ minWidth: 0, overflowWrap: "anywhere" }}>
               {pushLeg.reason ?? "Publishing failed"}
             </strong>
             {/* Claude's feature (D17): no door while Claude is switched off. */}
@@ -2525,28 +2524,16 @@ export default function CanvasWorkspace({
             </button>}
             {fixError && <span style={{ color: "rgb(200,60,60)" }}>{fixError}</span>}
             <span style={{ flex: 1 }} />
-            {sync.error_detail?.length > 0 && (
-              <button
-                className="btn"
-                aria-expanded={pushDetailOpen}
-                onClick={() => setPushDetailOpen((o) => !o)}
-              >
-                {pushDetailOpen ? "Hide details" : "Details"}
-              </button>
-            )}
             <button
               className="btn"
-              aria-label="Dismiss"
-              title="Hide until the next failure — the strip above keeps the reason"
-              onClick={() => {
-                setDismissedPushKey(pushErrorKey);
-                setPushDetailOpen(false);
-              }}
+              aria-label="Hide the push errors"
+              title="Hide — the strip's error pill brings this back"
+              onClick={() => setPushDetailOpen(false)}
             >
               ×
             </button>
           </div>
-          {pushDetailOpen && sync.error_detail?.length > 0 && (
+          {sync.error_detail?.length > 0 && (
             <pre
               style={{
                 margin: "6px 0 0",
