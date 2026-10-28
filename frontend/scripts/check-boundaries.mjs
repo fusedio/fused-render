@@ -139,6 +139,14 @@ const SHELL_OPEN_TO_APPS = new Set([
   "shell/tasksPulse",
   "shell/TaskPeekWho",
   "shell/archive-confirm",
+  // The New task card itself, for the canvas editor's Claude rail
+  // (apps/canvases/ClaudeRail): its + opens a task on the canvas's clone over
+  // the canvas, and the card it opens must BE the Tasks page's — the same
+  // fields, pills, autosave and folder lock the project page's Tasks tab
+  // shows for the same clone — not a second composer kept looking alike. The
+  // card's own imports are shell's business (shell may import anything);
+  // nothing it reaches imports apps/canvases, so no cycle.
+  "shell/NewJobModal",
 ]);
 
 const violations = [];

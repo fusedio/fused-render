@@ -468,11 +468,12 @@
 }
 
 /* The rail's chats (ClaudeRail `.canvas-rail-chats`): one status ring per chat,
-   newest first, in the sidebar's scrolling middle (.sidebar-rail-scroll). The
-   ring is the Tasks page's own (schedule.css `.schedule-ring`), centred in the
-   28px seat; the seat's hover wash and `.active` are the sidebar's. */
+   in the List view's order, under the New task seat, in the sidebar's
+   scrolling middle (.sidebar-rail-scroll). The ring is the Tasks page's own
+   (schedule.css `.schedule-ring`), centred in the 28px seat; the seat's hover
+   wash and `.active` are the sidebar's. */
 .canvas-rail-chats {
-  /* Scrolls before the New chat seat and the Tasks door are pushed off. */
+  /* Scrolls before the Tasks door is pushed off. */
   flex: 0 1 auto;
 }
 .canvas-rail-chat {
