@@ -54,7 +54,7 @@ describe("badge points (T:10145-10171)", () => {
       stage,
       resolve: () => elAt(100, 50, 40, 20),
     });
-    expect(badges).toEqual([{ x: 120, y: 60, label: "A" }]);
+    expect(badges).toEqual([{ x: 120, y: 60, label: "A", target: { left: 40, top: 0, width: 160, height: 120 } }]);
     expect(marks.n).toBe(true);
   });
 
@@ -66,7 +66,7 @@ describe("badge points (T:10145-10171)", () => {
       stage,
       resolve: () => imgAt(100, 50, 40, 20),
     });
-    expect(badges).toEqual([{ x: 100, y: 70, label: "A" }]);
+    expect(badges).toEqual([{ x: 100, y: 70, label: "A", target: { left: 40, top: 0, width: 160, height: 120 } }]);
   });
 
   test("…and are IGNORED on a plain element, where a fraction moves with the reflow", () => {
@@ -77,26 +77,55 @@ describe("badge points (T:10145-10171)", () => {
       stage,
       resolve: () => elAt(100, 50, 40, 20),
     });
-    expect(badges).toEqual([{ x: 120, y: 60, label: "A" }]);
+    expect(badges).toEqual([{ x: 120, y: 60, label: "A", target: { left: 40, top: 0, width: 160, height: 120 } }]);
   });
 
   test("a point note is converted back through the CURRENT scroll", () => {
     const scrolled = { defaultView: { scrollX: 10, scrollY: 20 } } as unknown as Document;
     const c = note({ kind: "point", x: 60, y: 90 });
     const { badges } = badgesFor([c], { doc: scrolled, xo: false, stage, resolve: () => null });
-    expect(badges).toEqual([{ x: 50, y: 70, label: "A" }]);
+    expect(badges).toEqual([
+      { x: 50, y: 70, label: "A", target: { left: -110, top: -50, width: 320, height: 240 } },
+    ]);
   });
 
   test("the cross-origin overlay uses the zero-scroll stand-in", () => {
     const c = note({ kind: "point", x: 60, y: 90 });
     const { badges } = badgesFor([c], { doc: null, xo: true, stage, resolve: () => null });
-    expect(badges).toEqual([{ x: 60, y: 90, label: "A" }]);
+    expect(badges).toEqual([
+      { x: 60, y: 90, label: "A", target: { left: -100, top: -30, width: 320, height: 240 } },
+    ]);
   });
 
   test("a missing label is still a badge — `?` beats a blank disc", () => {
     const c = note({ kind: "point", x: 1, y: 1, label: undefined });
     const { badges } = badgesFor([c], { doc, xo: false, stage, resolve: () => null });
     expect(badges[0].label).toBe("?");
+  });
+});
+
+describe("each badge carries its target box", () => {
+  const target = (el: Element) =>
+    badgesFor([note({ anchorId: "x" })], { doc, xo: false, stage, resolve: () => el }).badges[0]
+      .target;
+
+  test("an element's rect is padded 16px on every side", () => {
+    expect(target(elAt(100, 100, 200, 150))).toEqual({
+      left: 84,
+      top: 84,
+      width: 232,
+      height: 182,
+    });
+  });
+
+  test("a small element grows around its centre to the minimum box", () => {
+    expect(target(elAt(100, 50, 40, 20))).toEqual({ left: 40, top: 0, width: 160, height: 120 });
+  });
+
+  test("a point gets a 320x240 box centred on it", () => {
+    const c = note({ kind: "point", x: 200, y: 150 });
+    const { badges } = badgesFor([c], { doc, xo: false, stage, resolve: () => null });
+    expect(badges[0].target).toEqual({ left: 40, top: 30, width: 320, height: 240 });
   });
 });
 

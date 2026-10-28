@@ -279,6 +279,100 @@ describe("captureOverview", () => {
     expect(over.why).toBe("no overview screenshot: it did not fit the 921600-byte budget");
   });
 
+  test("a badge with a target also gets its own crop, from the same bitmap", async () => {
+    let captures = 0;
+    const out = await captureOverview(
+      frame,
+      [
+        { x: 100, y: 100, label: "A", target: { left: 50, top: 60, width: 200, height: 120 } },
+        { x: 5, y: 5, label: "B" },
+      ],
+      {
+        strategies: {
+          native: () => {
+            captures++;
+            return Promise.resolve(bitmap());
+          },
+        },
+      },
+    );
+    expect(captures).toBe(1);
+    expect(out.crops?.map((c) => c.label)).toEqual(["A"]);
+    expect(out.crops?.[0].width).toBe(200);
+    expect(out.crops?.[0].height).toBe(120);
+    expect(out.crops?.[0].thumb).toStartWith("blob:cap/");
+    expect(out.thumb).not.toBe(out.crops?.[0].thumb);
+  });
+
+  test("a crop that covers the pane is dropped — the overview is that picture", async () => {
+    const out = await captureOverview(
+      frame,
+      [{ x: 400, y: 300, label: "A", target: { left: -10, top: -10, width: 820, height: 620 } }],
+      { strategies: { native: () => Promise.resolve(bitmap()) } },
+    );
+    expect(out.crops).toEqual([]);
+  });
+
+  test("at most 8 crops, and a target outside the pane makes none", async () => {
+    const badges = Array.from({ length: 10 }, (_, i) => ({
+      x: 10,
+      y: 10,
+      label: String.fromCharCode(65 + i),
+      target: { left: 0, top: 0, width: 100, height: 100 },
+    }));
+    badges.push({ x: 0, y: 0, label: "Z", target: { left: 900, top: 700, width: 50, height: 50 } });
+    const out = await captureOverview(frame, badges, {
+      strategies: { native: () => Promise.resolve(bitmap()) },
+    });
+    expect(out.crops).toHaveLength(8);
+  });
+
+  test("a crop that will not encode is dropped, the overview stays", async () => {
+    let made = 0;
+    setCanvasFactory(() => {
+      // the overview's canvas is the first; every later one encodes to nothing
+      const first = made++ === 0;
+      return {
+          width: 0,
+          height: 0,
+          getContext: () => ({
+            drawImage: () => {},
+            save: () => {},
+            restore: () => {},
+            beginPath: () => {},
+            arc: () => {},
+            fill: () => {},
+            stroke: () => {},
+            fillText: () => {},
+          }),
+          toBlob: (cb: (b: Blob | null) => void) => cb(first ? encoded : null),
+      } as unknown as HTMLCanvasElement;
+    });
+    const out = await captureOverview(
+      frame,
+      [{ x: 100, y: 100, label: "A", target: { left: 50, top: 60, width: 200, height: 120 } }],
+      { strategies: { native: () => Promise.resolve(bitmap()) } },
+    );
+    expect(out.blob).not.toBeNull();
+    expect(out.crops).toEqual([]);
+  });
+
+  test("an abandoned capture's late crop thumbs are revoked with the overview's", async () => {
+    const out = await captureOverview(
+      frame,
+      [{ x: 100, y: 100, label: "A", target: { left: 50, top: 60, width: 200, height: 120 } }],
+      {
+        timeoutMs: 5,
+        strategies: {
+          native: () => new Promise((res) => setTimeout(() => res(bitmap()), 40)),
+        },
+      },
+    );
+    expect(out.blob).toBeNull();
+    await new Promise((r) => setTimeout(r, 120));
+    expect(revoked.sort()).toEqual(["blob:cap/1", "blob:cap/2"]);
+  });
+
   test("A THROW IS A CONSOLE LINE HERE, and the wire gets the abandoned sentence", async () => {
     // `warnAs` is the overview road's and only its (T:10240-10248): the picture
     // is an aid, the message is what matters, so a strategy that throws is not

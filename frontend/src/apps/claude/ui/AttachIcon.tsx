@@ -31,6 +31,7 @@ import type { ShotKind } from "../shots/types";
 const ICONS = {
   pane: Camera,
   overview: Camera,
+  crop: Camera,
   image: ImageIcon,
   file: FileText,
 } as const satisfies Record<ShotKind, unknown>;
