@@ -24,6 +24,7 @@ stays is the backend half.
 import importlib.util
 import json
 import os
+import re
 
 import pytest
 
@@ -250,6 +251,6 @@ def test_only_the_settings_page_writes_the_global_settings_file():
             path = os.path.join(dirpath, name)
             with open(path, encoding="utf-8") as f:
                 src = f.read()
-            if "write_json(lib.SETTINGS_PATH" in src or "write_json(SETTINGS_PATH" in src:
+            if re.search(r"write_json\(\s*(?:lib\.)?SETTINGS_PATH\b", src):
                 writers.add(os.path.relpath(path, root))
     assert writers == _SETTINGS_WRITERS_ALLOWED

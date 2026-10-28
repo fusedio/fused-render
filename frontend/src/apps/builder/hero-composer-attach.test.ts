@@ -45,5 +45,12 @@ describe("HeroComposer model / effort", () => {
     expect(HERO).not.toContain("setClaudeDefaults");
     expect(HERO).toContain("picked.current.model = true");
     expect(HERO).toContain("picked.current.effort = true");
+    // The picks reach the create calls: the pick lands in state, and both the
+    // direct and the free-name create carry model + effort.
+    expect(HERO).toContain("setModel(next)");
+    expect(HERO).toContain("await createApp(name, fullPrompt(), model, effort, images, agent)");
+    expect(HERO).toMatch(
+      /createAppUnderFreeName\(\s*name,\s*fullPrompt\(\),\s*model,\s*effort,\s*images,\s*agent,?\s*\)/,
+    );
   });
 });
