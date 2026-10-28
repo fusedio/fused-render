@@ -473,7 +473,7 @@ export function FilesSearch({
 
   // -- a query that is really an address --------------------------------------
   //
-  // `pathShortcut` (lib/home-search) detects the SHAPE — `/…`, `~/…` —
+  // `pathShortcut` (lib/home-search) detects the SHAPE — `/…`, `~/…`, `C:\…` —
   // on every render, not just at submit: a pasted `/tmp/report.csv` has to
   // read as a path candidate on the very first render, before Enter, since
   // `showOpenRow` and the AI row below both key off it.
@@ -1479,6 +1479,8 @@ function ShowMoreButton({ expanded, onClick }: { expanded: boolean; onClick: () 
 }
 
 export default function FilesHome({ config }: { config: Config }) {
+  // getConfig already folded `home` to the forward-slash form the search hits
+  // and path helpers (basename, the "home + /" strip below) expect.
   const home = config.home;
   useRecentsVersion();
   // The active tab lives entirely in the URL (?tab=recents) — read fresh on

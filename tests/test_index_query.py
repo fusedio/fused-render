@@ -665,12 +665,17 @@ def test_resolve_captures_the_blocked_candidate_even_though_base_stops_short(
     so a caller (`routers/index.py`'s `_rank_body`/`_rank_reason`) can still
     answer "mount" correctly even though `base` alone would miss it.
 
-    D882 (index-search-wedge FIX round): this exercises the same
-    base-shortfall/blocked_out contract as `tests/test_index_api.py::
+    D882 (index-search-wedge FIX round): the regression test for this exact
+    contract, `tests/test_index_api.py::
     test_rank_reason_is_mount_for_a_typed_path_the_guarded_walk_stopped_short_of`,
-    directly against an explicit `guard` (no HOME monkeypatching of any kind,
-    beyond what `_home` already does for the literal `"~"` `resolve_query`
-    itself calls)."""
+    failed on Windows CI — but the cause traced to that test's OWN
+    HOME-mocking shim (`_point_home_at`), which never redirected Windows'
+    `ntpath.expanduser` for a compound `"~/..."` path, not to any defect in
+    this logic. This test exercises the same base-shortfall/blocked_out
+    contract directly against an explicit `guard` (no HOME monkeypatching
+    of any kind, beyond what `_home` already does for the literal `"~"`
+    `resolve_query` itself calls) so a REAL regression here would still fail
+    on any platform, including this one."""
     from fused_render.index.ignore import MountGuard
 
     guard = MountGuard(home_dirs=[_home + "/guarded"])
@@ -753,6 +758,87 @@ def test_resolve_absolute_path_walks_the_filesystem(tmp_path):
     assert out == {"base": norm(str(etc)), "pattern": "*/**x.conf*", "mode": "glob"}
 
 
+def test_resolve_windows_drive_letter_path_walks_the_filesystem(monkeypatch):
+    """A raw typed string can start with a drive letter instead of `/` (a
+    pasted or typed Windows absolute path) — unambiguously absolute, unlike a
+    bare leading `/`, so there is no depth-1-anchor fallback to consider.
+
+    Exercised against a faked directory tree (`os.path.isdir` monkeypatched)
+    rather than a real one: a Windows drive letter has no counterpart on the
+    POSIX filesystem this suite otherwise runs against, real or via tmp_path,
+    so this is the only way to run `_walk_from`'s directory-existence walk
+    over one on any platform."""
+    real_dirs = {"C:/Users", "C:/Users/example"}
+    monkeypatch.setattr(os.path, "isdir", lambda p: p in real_dirs)
+    out = resolve_query("/box", "C:\\Users\\example\\*.conf")
+    # A backslash is this path's separator, so it limits depth exactly like
+    # `C:/Users/example/*.conf` does: direct children only, no implicit `**/`.
+    assert out == {"base": "C:/Users/example", "pattern": "*.conf",
+                   "mode": "glob"}
+
+
+def test_resolve_windows_drive_letter_path_with_forward_slashes(monkeypatch):
+    """The same absolute-path recognition fires whichever separator the
+    drive-letter string uses past the colon — `C:/` is as legitimate a
+    Windows spelling as `C:\\`."""
+    real_dirs = {"C:/Users", "C:/Users/example"}
+    monkeypatch.setattr(os.path, "isdir", lambda p: p in real_dirs)
+    out = resolve_query("/box", "C:/Users/example/*.conf")
+    assert out == {"base": "C:/Users/example", "pattern": "*.conf",
+                   "mode": "glob"}
+
+
+def test_resolve_windows_drive_letter_path_with_a_space_still_recognized(monkeypatch):
+    """Code review finding: `expand_whitespace_query` used to run BEFORE
+    `_DRIVE_ABS`'s check, so a drive path with a space in one of its
+    segments (`C:\\My Files\\rep`) got whitespace-collapsed while its
+    backslashes were still backslashes — the collapse treated the whole
+    string as one opaque segment (no `/` in it yet), wrapped a leading `*`
+    onto the front, and destroyed the `C:` prefix `_DRIVE_ABS` looks for —
+    the path silently stopped resolving as absolute at all (it would fall
+    through to being treated as a bare relative query instead). `_DRIVE_ABS`
+    must be checked, and backslashes folded to `/`, before
+    `expand_whitespace_query` ever runs, so the drive prefix survives and
+    this still resolves as a Windows absolute path — even though the walk
+    itself cannot advance PAST a segment the whitespace collapse turned into
+    a glob (`My Files` -> `My*Files`; `_walk_from` only walks literal,
+    `*`-free segments), so `base` stays at the drive root and the glob-ified
+    rest becomes the pattern instead."""
+    real_dirs = {"C:/My Files", "C:/My Files/rep"}
+    monkeypatch.setattr(os.path, "isdir", lambda p: p in real_dirs)
+    out = resolve_query("/box", "C:\\My Files\\rep")
+    # Backslashes are separators, so this limits depth like `C:/My Files/rep`.
+    assert out == {"base": "C:/", "pattern": "My**Files/**rep*", "mode": "glob"}
+
+
+def test_resolve_windows_drive_letter_path_with_a_space_only_in_the_pattern(monkeypatch):
+    """When the space is confined to the segment PAST the real directories
+    (the ones `_walk_from` can still walk literally), the walk advances all
+    the way to `example`, and the space-as-wildcard grammar applies only to
+    what's left over as the pattern."""
+    real_dirs = {"C:/Users", "C:/Users/example"}
+    monkeypatch.setattr(os.path, "isdir", lambda p: p in real_dirs)
+    out = resolve_query("/box", "C:\\Users\\example\\hello world")
+    assert out == {"base": "C:/Users/example", "pattern": "**hello**world*",
+                   "mode": "glob"}
+
+
+def test_resolve_bare_windows_drive_root_backslash_normalizes_to_slash_form():
+    """A drive letter with nothing after the separator (`C:\\`, the whole
+    drive) walks no segments at all — `_walk_from`'s own bare-root collapse
+    (`rest` empty) leaves `base` as the bare `"C:"` `_BARE_DRIVE` matches,
+    which has to come back out as `"C:/"`: canonical_root() (index/runner.py)
+    stores this drive under `"C:/"`, never the bare `"C:"` spelling."""
+    out = resolve_query("/box", "C:\\")
+    assert out == {"base": "C:/", "pattern": "", "mode": "substring"}
+
+
+def test_resolve_bare_windows_drive_root_forward_slash_normalizes_to_slash_form():
+    """The forward-slash spelling of the same bare drive root."""
+    out = resolve_query("/box", "C:/")
+    assert out == {"base": "C:/", "pattern": "", "mode": "substring"}
+
+
 def test_resolve_relative_dotdot_walks_up_the_filesystem(_home):
     """A bare relative query with a `..` segment escapes the box's own root
     the same way `~` and a leading `/` already do — it does not stay
@@ -784,8 +870,10 @@ def test_resolve_relative_dotdot_clamps_at_the_filesystem_root(monkeypatch):
     real_dirs = {"/", "/etc"}
     monkeypatch.setattr(
         os.path, "isdir",
-        # The fake filesystem is described in POSIX terms, so it is
-        # collapsed with POSIX rules too.
+        # The fake filesystem is described in POSIX terms, so it has to be
+        # collapsed with POSIX rules too — `os.path.normpath` follows the
+        # host platform's separator conventions and would fold "/.." into
+        # "\\etc"-shaped strings on Windows, matching nothing in `real_dirs`.
         lambda p: posixpath.normpath(p) in real_dirs)
     out = resolve_query("/", "../../../etc/*.conf")
     assert out == {"base": "/etc", "pattern": "*.conf", "mode": "glob"}
@@ -836,6 +924,18 @@ def test_resolve_a_leading_space_does_not_break_dotdot_escape(_home):
                            "mode": "substring"}
 
 
+def test_resolve_a_leading_space_does_not_break_a_windows_drive_path(monkeypatch):
+    """Same bug, Windows-drive form: a leading space used to swallow the
+    `C:` prefix into the whitespace-collapse's own `**` token before
+    `_DRIVE_ABS.match(raw)` ever ran, so the path fell through to being
+    treated as a bare relative query instead of an absolute drive path."""
+    real_dirs = {"C:/My Files", "C:/My Files/rep"}
+    monkeypatch.setattr(os.path, "isdir", lambda p: p in real_dirs)
+    with_space = resolve_query("/box", " C:/My Files/rep")
+    without_space = resolve_query("/box", "C:/My Files/rep")
+    assert with_space == without_space
+
+
 def test_resolve_a_trailing_space_still_counts_alongside_a_leading_one():
     """The fix for the leading-space bug must not resurrect the OLD bug
     (trailing space silently trimmed): a leading space is meaningless, a
@@ -846,7 +946,7 @@ def test_resolve_a_trailing_space_still_counts_alongside_a_leading_one():
 
 def test_resolve_a_leading_space_on_a_plain_query_still_flips_to_glob():
     """A leading space on a query with no path-escape shape (no `~`, no
-    leading `/`, no `..` segment) is NOT a path bug — it is
+    leading `/`, no drive letter, no `..` segment) is NOT a path bug — it is
     ordinary whitespace, and `expand_whitespace_query`'s own grammar (a
     leading space widens a plain word into a glob, same as a trailing one)
     must still apply unchanged."""

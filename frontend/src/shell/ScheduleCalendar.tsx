@@ -92,6 +92,7 @@
 //
 // The layout maths is all in schedule-lib.ts and tested there; this file adds
 // pixels and nothing else.
+import { useArchiveConfirm } from "@shell/archive-confirm";
 import {
   useCallback,
   useEffect,
@@ -223,6 +224,12 @@ const icon = (paths: React.ReactNode) => (
 export const ICON_CLOCK = icon(<><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 3" /></>);
 export const ICON_FOLDER = icon(<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />);
 export const ICON_PLUS = icon(<><path d="M12 5v14" /><path d="M5 12h14" /></>);
+// A chip — lucide `cpu` — the MODEL pill's badge now that the pills carry
+// icons instead of words (owner, 2026-10-23).
+export const ICON_CPU = icon(
+  <><rect x="4" y="4" width="16" height="16" rx="2" /><rect x="9" y="9" width="6" height="6" />
+    <path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3" /></>,
+);
 export const ICON_SHIELD = icon(<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />);
 export const ICON_EDIT = icon(<><path d="M12 20h9" /><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z" /></>);
 // Filing away — lucide `archive`, the same lidded box the List rows and the
@@ -582,7 +589,9 @@ function ChipPopover({
   const canDelete =
     !liveNow && !canArchive && (col === "upcoming" || col === "archived");
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const archive = async () => {
+  const archiveAsk = useArchiveConfirm();
+  const archive = (): void => archiveAsk.guard(task, () => void doArchive());
+  const doArchive = async () => {
     setRunning(true);
     setError("");
     try {
@@ -808,7 +817,7 @@ function ChipPopover({
               title="Archive"
               aria-label="Archive"
               disabled={running}
-              onClick={() => void archive()}
+              onClick={archive}
             >
               {ICON_ARCHIVE}
             </button>
@@ -923,6 +932,7 @@ function ChipPopover({
           </button>
         )}
       </div>
+      {archiveAsk.node}
     </div>
   );
 }

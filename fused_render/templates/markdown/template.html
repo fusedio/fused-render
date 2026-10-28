@@ -1199,6 +1199,11 @@
 
     // Join an absolute POSIX dir with a relative path and collapse "." / ".."
     // segments — pure string work (no fs access; paths are absolute POSIX).
+    // A leading "/" is right for a POSIX path and WRONG for a Windows one: the
+    // shell's canonical form there is the drive path `C:/Users/…` with no
+    // leading slash, so prefixing one produced `/C:/…` — which then failed the
+    // scan-root boundary check in createGhost and refused every create on
+    // Windows. Same guard the docs, excel and slides templates carry.
     function resolvePath(dir, rel) {
       const out = [];
       for (const p of dir.split("/").concat(rel.split("/"))) {
@@ -1206,7 +1211,8 @@
         if (p === "..") out.pop();
         else out.push(p);
       }
-      return "/" + out.join("/");
+      const joined = out.join("/");
+      return /^[A-Za-z]:$/.test(out[0] || "") ? joined : "/" + joined;
     }
 
     // A malformed escape ("%zz") throws rather than decoding; the authored text
@@ -1237,7 +1243,8 @@
       return "/explorer/view/";
     }
     function urlForFsPath(fsPath, search) {
-      const encoded = fsPath.replace(/^\/+/, "").split("/").filter(Boolean)
+      const norm = /^[A-Za-z]:[\\/]/.test(fsPath) ? fsPath.replace(/\\/g, "/") : fsPath;
+      const encoded = norm.replace(/^\/+/, "").split("/").filter(Boolean)
         .map(encodeURIComponent).join("/");
       return shellPrefix() + encoded + (search ? "?" + search : "");
     }
@@ -3549,7 +3556,9 @@
     // under the root, both root-relative POSIX, so path completion needs no new
     // Python action — only the string work below. `resolvePath` goes the other
     // way (join to an fs-absolute path) and so has nothing reusable here; this
-    // stays pure string manipulation for the same reason it does.
+    // stays pure string manipulation for the same reason it does, and it never
+    // rebuilds a path from segments, so the Windows drive form `C:/…` (which
+    // must NOT gain a leading slash) passes through untouched.
 
     // The open note's own folder, root-relative, "" when it sits at the root —
     // and null when the note is not under the root at all, which is a thing to

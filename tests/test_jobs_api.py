@@ -376,7 +376,7 @@ def test_origin_is_text_capped():
 
 def test_a_page_owned_report_cannot_set_origin(client):
     """A page could otherwise attribute its own row to a trusted system
-    feature ("Claude setup") by typing it into the body — the same argument
+    feature ("Claude Code") by typing it into the body — the same argument
     `Job.waiting_for`'s and `Job.tier`'s own comments make, with more force
     here since attribution is the whole job of this field. Silently
     dropped, same treatment as those two: the report carries no

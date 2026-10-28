@@ -132,9 +132,43 @@ def _popen_kwargs():
     }
 
 
+# The contribution loop's rule for every fused git call on a contrib repo
+# (docs/CONTRIB_LOOP.md §16.12, replay.SAFE_CONFIG's twin): no repo-configured
+# fsmonitor command, no hooks — `.git/config` and `.git/hooks` are writable by
+# the app and by Claude sessions in the folder. Applied (1) always by the
+# read-only plumbing helpers the engine shares (`_run_safe`: no hook runs and
+# no fsmonitor is asked for those commands, so a record-less repo sees no
+# difference), and (2) to every call inside `contrib_git()` — the sync of a
+# recorded copy (`_sync_locked`) and any contrib caller that wraps its work.
+# A repo with no record keeps today's plain sync, its own hooks included.
+# The user's global attributes file is off too (it could select a filter or
+# merge driver for a stranger's files); the repo-local keys `-c` cannot
+# switch off are refused by the engine (`replay.config_hazards`).
+SAFE_CONFIG = ("-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null",
+               "-c", "core.attributesFile=/dev/null")
+_contrib_ctx = threading.local()
+
+
+@contextlib.contextmanager
+def contrib_git():
+    """Every `_run` on this thread inside the block carries SAFE_CONFIG."""
+    prev = getattr(_contrib_ctx, "on", False)
+    _contrib_ctx.on = True
+    try:
+        yield
+    finally:
+        _contrib_ctx.on = prev
+
+
+def _run_safe(root, *args, timeout=TIMEOUT_S):
+    return _run(root, *SAFE_CONFIG, *args, timeout=timeout)
+
+
 def _run(root, *args, timeout=TIMEOUT_S):
     """One bounded git call; `(returncode, stdout, stderr)`, or None when git
     could not even be run (missing, timed out, OS-level spawn failure)."""
+    if getattr(_contrib_ctx, "on", False) and args[:2] != SAFE_CONFIG[:2]:
+        args = (*SAFE_CONFIG, *args)
     try:
         proc = subprocess.run(
             [_git_bin(), "-C", root, *args],
@@ -178,12 +212,12 @@ def _default_branch(root):
     fallback for a clone (or a hand-init'd repo) missing that symref. None
     when there is no `origin` remote, or git cannot resolve it — either way,
     nothing to compare HEAD against."""
-    result = _run(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+    result = _run_safe(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
     if not _ok(result):
-        fixed = _run(root, "remote", "set-head", "origin", "--auto")
+        fixed = _run_safe(root, "remote", "set-head", "origin", "--auto")
         if not _ok(fixed):
             return None
-        result = _run(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+        result = _run_safe(root, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
         if not _ok(result):
             return None
     short = _out(result)
@@ -191,7 +225,7 @@ def _default_branch(root):
 
 
 def _current_branch(root):
-    result = _run(root, "symbolic-ref", "--quiet", "--short", "HEAD")
+    result = _run_safe(root, "symbolic-ref", "--quiet", "--short", "HEAD")
     return _out(result) or None if _ok(result) else None
 
 
@@ -211,7 +245,7 @@ def _ahead_behind_counts(root, default_branch):
     narrower call this replaced): `ahead` is what the "Fix with Claude"
     prompt (repo-updates-lib.ts's `repoFixPrompt`) needs to describe a
     refusal honestly, whatever mutation triggered it."""
-    result = _run(root, "rev-list", "--left-right", "--count",
+    result = _run_safe(root, "rev-list", "--left-right", "--count",
                   f"HEAD...origin/{default_branch}")
     if not _ok(result):
         return None, None
@@ -231,6 +265,7 @@ def check_repo(root):
         return None
     if not _fetch_one_ref(root, default_branch):
         return None
+    _last_fetch_ok(root)
     ahead, behind = _ahead_behind_counts(root, default_branch)
     if behind is None:
         return None
@@ -317,7 +352,7 @@ def _real_gitdir(root):
     nothing here has to special-case `.git`-as-file by hand. None on any
     failure (git missing, `root` not a repo) — the same silent-on-uncertainty
     posture the rest of this preflight uses, never a raise."""
-    result = _run(root, "rev-parse", "--absolute-git-dir")
+    result = _run_safe(root, "rev-parse", "--absolute-git-dir")
     if not _ok(result):
         return None
     return _out(result) or None
@@ -411,8 +446,54 @@ def _mutation_preflight(root, *, include_untracked=True, allow_detached=False):
     return branch, default_branch, None
 
 
+def _kind_of(root):
+    """The contribution loop's recorded kind of `root` (`classify.kind_of`:
+    a store read, no network, whatever the flags) — `"github"`, `"own"`,
+    `"scratch"` or None. None on any error (no record: today's behaviour)."""
+    try:
+        from fused_render.contrib import classify
+        return classify.kind_of(root)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _is_github(root):
+    """Whether `root` is a GitHub-link copy (docs/CONTRIB_LOOP.md §16.0 P1):
+    the contribution engine keeps it on its author's latest, so it is never
+    this module's to update, switch, fetch or push — the plain `--ff-only`
+    pull would fail against the user's own commits on top, or move the
+    branch behind the engine's back, and a plain push would send them to
+    the author. A `marketplace` copy (§18.4) is the same: the engine keeps
+    it on its approved commit. So is a folder with NO record that carries
+    fused's copy marker (`fused.kind`, `classify.is_marked`) — a Finder
+    duplicate whose record `classify.claim_marked` refuses to build (M4): a
+    plain Switch or pull there would land the author's unreviewed tip."""
+    kind = _kind_of(root)
+    if kind in ("github", "marketplace"):
+        return True
+    return kind is None and _is_marked(root)
+
+
+def _is_marked(root):
+    """`classify.is_marked` (one repo-local config read); False on any error."""
+    try:
+        from fused_render.contrib import classify
+        return classify.is_marked(root)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+_FOLLOWS_REFUSAL = ("Fused keeps this app up to date with its author's latest "
+                    "version by itself — there is nothing to do here.")
+
+
 def _record(result):
     if result is not None:
+        if _card_hidden(result["root"], result):
+            # No Update/Switch card (known_repos) for a copy the engine keeps.
+            with _state_lock:
+                _state.pop(result["root"], None)
+            return
         with _state_lock:
             _state[result["root"]] = result
 
@@ -492,8 +573,28 @@ def _mutation_slot():
         yield acquired
     finally:
         if acquired:
-            _check_slot.release()
+            _release_check_slot()
             _drain_pending()
+
+
+# The contrib engine gives a held slot up mid-sync and takes it back with a
+# bound (contrib/replay.py `slot_released`). When that re-acquire times out,
+# this thread no longer holds the lock — someone else does — so its holder's
+# `finally` must not release it. Per thread, set only by that path.
+_slot_lost = threading.local()
+
+
+def _mark_slot_lost():
+    _slot_lost.lost = True
+
+
+def _release_check_slot():
+    """Release the slot this thread took — unless the engine already lost
+    it while this thread held it (`_mark_slot_lost`)."""
+    if getattr(_slot_lost, "lost", False):
+        _slot_lost.lost = False
+        return
+    _check_slot.release()
 
 
 _BUSY_REFUSAL = (
@@ -507,6 +608,8 @@ def update_repo(root):
     (should not happen for the default branch under normal use, but the tree
     may have moved between the check and the click) is reported in git's own
     words, exactly like ops.py's `_pull`."""
+    if _is_github(root):
+        return _refuse("contrib", _FOLLOWS_REFUSAL)
     with _mutation_slot() as slot:
         if not slot:
             return _refuse("busy", _BUSY_REFUSAL)
@@ -619,6 +722,18 @@ def switch_repo(root):
     raw git text, and refused (never silently taking some other action on
     the user's behalf; the fix is a terminal, the same as every other
     refusal this module surfaces)."""
+    if _is_github(root):
+        if _sources_on():
+            return _refuse("contrib", _FOLLOWS_REFUSAL)
+        # A GitHub-link copy's usual version is its own branch, never the
+        # author's (a fetch-only mirror, §17.1 I3/I4): the engine's Go back.
+        from fused_render.contrib import engine as _contrib
+        out = _contrib.go_back_main(root)
+        if not out.get("ok"):
+            return _refuse(out.get("reason") or "failed", out.get("message") or "")
+        with _state_lock:
+            _state.pop(root, None)
+        return {"ok": True, "op": "switch", "root": root, "message": out.get("message")}
     with _mutation_slot() as slot:
         if not slot:
             return _refuse("busy", _BUSY_REFUSAL)
@@ -711,10 +826,21 @@ _FAILURE_TITLES = {
     "git-failed": "git reported an error",
 }
 
+# A GitHub-link copy's rows (the engine records today's `dirty`/`diverged`/
+# `git-failed` rows for it with A1 off — §16.12) must not invite a push: a
+# plain title, no git command, and a Fix-with-Claude `prompt` that says what
+# the copy is (`_follow_row`).
+_FOLLOW_TITLES = {
+    "dirty": "edits you haven't saved are in the way of the author's latest",
+    "diverged": "your changes and the author's latest both changed this app",
+}
+_FOLLOW_TITLE = "the author's latest couldn't be brought in"
+
 _sync_lock = threading.Lock()
 _sync_failures: dict = {}  # (root, reason) -> failure record
 _pulled_events: list = []  # newest last, capped
 _PULLED_KEEP_S = 600.0
+_last_fetch: dict = {}  # root -> epoch of the last successful origin fetch
 
 
 def auto_sync_enabled():
@@ -774,11 +900,43 @@ def _record_failure(root, reason, *, action, command, output, push):
         "push": bool(push),
         "at": time.time(),
     }
+    _follow_row(root, record)
     with _sync_lock:
         for key in [k for k in _sync_failures if k[0] == root]:
             del _sync_failures[key]
         _sync_failures[(root, reason)] = record
     return record
+
+
+def _follow_row(root, record):
+    """A GitHub-link copy's row, rewritten so nothing on it invites a push
+    (round 2, R6): plain title, no git command, `push` False, `follows`
+    naming the repo, and the Fix-with-Claude `prompt` the shell sends
+    instead of building one from the command."""
+    try:
+        if not _is_github(root):
+            return
+        from fused_render.contrib import store
+        rec = store.get(root) or {}
+    except Exception:  # noqa: BLE001 — today's row
+        return
+    repo = rec.get("repo") or "its author's repository"
+    branch = rec.get("branch") or "main"
+    record.update({
+        "title": _FOLLOW_TITLES.get(record["reason"], _FOLLOW_TITLE),
+        "command": "",
+        "push": False,
+        "follows": repo,
+        "prompt": (
+            f"This app folder ({root}) is a copy of {repo} on GitHub that follows its "
+            f"author's version. It must NEVER be pushed anywhere — not to origin, not "
+            f"by URL, not to a fork — and its remote settings must not be changed. "
+            f"Bring the author's latest version (the {branch} branch of "
+            f"https://github.com/{repo}) into this copy while keeping my local changes: "
+            f"fetch it, merge it into the current branch, resolve any conflicts so both "
+            f"sides' intent survives, and commit. Then tell me in plain words what "
+            f"changed. What fused saw: {record.get('output') or record['title']}"),
+    })
 
 
 def _clear_failures(root):
@@ -826,9 +984,163 @@ def _sync_locked(root, *, action, push):
     recorded failure. A `state` key (a `check_repo`-shaped dict) is included
     whenever the fetch succeeded, so the caller can refresh `_state`.
 
-    Never raises for a git problem; the background callers wrap it anyway."""
+    Never raises for a git problem; the background callers wrap it anyway.
+
+    THE CONTRIB INTERCEPT (docs/CONTRIB_LOOP.md §16.0 P1/P2, §16.8). The
+    recorded KIND decides, whatever the feature flags (`classify.kind_of`, a
+    store read): a `github` copy (a GitHub-link install, or a clone whose
+    owner is unknown) is synced by `contrib.engine.sync` and NEVER by the
+    plain body below — an engine error is a silent `skipped`, never a fall
+    through to a plain push of someone else's repo; an `own` copy gets the
+    plain body, whose diverged case goes to `contrib.ownsync.resolve`; a
+    `scratch` copy (a Try) is never synced. Before either, the recorded
+    copy's guards are settled (`classify.settle_locked`: the v1→v2 record
+    conversion, `.fused/` skip-worktree, a `github` copy's origin pointed
+    back at its record and its push guard). A root with no record — every
+    app made here, a developer's own checkout — gets the plain body exactly
+    as before."""
+    try:
+        from fused_render.contrib import classify as _cls
+        kind = _cls.kind_of(root, kick=True, strict=True)
+    except Exception:  # noqa: BLE001 — unknown kind is never "no record" (a push)
+        logger.exception("contrib kind check failed for %s", root)
+        return _skipped("contrib-error")
+    if kind is None:
+        # A folder fused marked as a GitHub-link copy but with no record (a
+        # Finder duplicate, a lost record): recorded as one now, never
+        # plain-synced; if no record can be built, skipped (round 2, R4).
+        try:
+            if _cls.is_marked(root):
+                claimed = _cls.claim_marked(root)
+                if claimed is None:
+                    return _skipped("contrib-unrecorded")
+                kind = claimed.get("kind") or "github"
+        except Exception:  # noqa: BLE001 — a marked folder never gets a push
+            logger.exception("contrib marker check failed for %s", root)
+            return _skipped("contrib-error")
+    if _cls.is_github_like(kind):
+        # A GitHub-link copy, or a marketplace copy (§18.4): one engine,
+        # which keeps the second on its approved commit.
+        try:
+            with contrib_git():
+                _cls.settle_locked(root, kind)
+                from fused_render.contrib import engine as _contrib
+                return _with_off_default_state(root, _contrib.sync(root, action=action, push=push))
+        except Exception:  # noqa: BLE001 — a broken engine must not break auto-sync
+            logger.exception("contrib sync failed for %s", root)
+            return _skipped("contrib-error")
+    if kind == "scratch":
+        return _skipped("scratch")
+    if kind == "own":
+        # The author's own repo: fused's private reads are hook-free
+        # (`settle_locked`), but the plain fetch/pull/push below are today's,
+        # running the author's own hooks (a secret scanner) — §16.0 P5.
+        try:
+            with contrib_git():
+                _cls.settle_locked(root, "own")
+        except Exception:  # noqa: BLE001 — a guard failure never costs a sync
+            logger.exception("contrib settle failed for %s", root)
+        return _sync_plain(root, action=action, push=push, kind=kind)
+    return _sync_plain(root, action=action, push=push, kind=kind)
+
+
+def _sources_on():
+    try:
+        from fused_render.contrib import flags
+        return flags.sources()
+    except Exception:  # noqa: BLE001 — unreadable reads as off (today)
+        return False
+
+
+def _with_off_default_state(root, result):
+    """A GitHub-link copy on another version with A1 OFF keeps today's
+    Switch card (round 2, R5: the app page's Go back exists only with A1
+    on): the engine's result gets a `check_repo`-shaped state saying so,
+    from the tracking ref its fetch refreshed. "Default" for such a copy is
+    its own branch `fused/mine` (§17.6); `default_branch` names the
+    author's."""
+    if _sources_on() or result.get("why") != "not-default":
+        return result
+    from fused_render.contrib import classify as _cls
+    default_branch = _default_branch(root)
+    branch = _current_branch(root)
+    if not default_branch or branch == _cls.HOME_BRANCH:
+        return result
+    ahead, behind = _ahead_behind_counts(root, default_branch)
+    if behind is None:
+        return result
+    return {**result, "state": {
+        "root": root, "branch": branch, "default_branch": default_branch,
+        "on_default": False, "ahead": ahead or 0, "behind": behind,
+        "checked_at": time.time()}}
+
+
+def _card_hidden(root, row):
+    """The old Update/Switch card is never shown for a GitHub-link copy —
+    except its Switch row while A1 is off (R5)."""
+    if not _is_github(root):
+        return False
+    return _sources_on() or bool(row.get("on_default"))
+
+
+def _last_fetch_ok(root):
+    with _sync_lock:
+        _last_fetch[root] = time.time()
+
+
+def last_checked(root):
+    """When this module last fetched `root`'s origin successfully (epoch
+    seconds), or None — the Source panel's "checked 3 min ago" for an own
+    copy (docs/CONTRIB_LOOP.md §16.9; the engine records its own for a
+    GitHub-link copy)."""
+    with _sync_lock:
+        return _last_fetch.get(root)
+
+
+def _own_resolve(root, *, action, push):
+    """An own copy's diverged default branch (§16.7): `contrib.ownsync`
+    settles it (slot held). None = not handled (its flag off, the module
+    missing, an error) — the caller records today's failure row."""
+    try:
+        from fused_render.contrib import ownsync
+        res = ownsync.resolve(root, action=action, push=push)
+    except Exception:  # noqa: BLE001 — never worse than today's failure row
+        logger.exception("contrib own-copy resolve failed for %s", root)
+        return None
+    if not isinstance(res, dict):
+        return None
+    if res.get("status") != "failed":
+        _clear_failures(root)
+    return res
+
+
+def _sync_plain(root, *, action, push, kind=None):
+    """`_sync_locked`'s body for every root that is not a GitHub-link copy —
+    the auto-sync rules of the section comment above, unchanged except one
+    case: an own copy (`kind == "own"`) whose branch has diverged from
+    origin goes to `_own_resolve` before a failure is recorded, and one HELD
+    after a sign-in upgrade (§16.12) never pushes until Publish now."""
     if not os.path.isdir(root):
         return _skipped("unavailable")
+    # A held copy's automatic syncs never push (§16.12). `_own_resolve` gets
+    # the push asked for and applies the hold itself; this module's own
+    # plain push (the loop off: resolve answers None) checks `held`.
+    held = False
+    if kind == "own" and push:
+        try:
+            from fused_render.contrib import classify
+            if classify.is_held(root):
+                if action == PUBLISH_NOW:
+                    classify.release_hold(root)
+                else:
+                    held = True
+            else:
+                # A1 off since the hold was set: the push below publishes
+                # the held edits — one activity line says so first.
+                classify.settle_stale_hold(root)
+        except Exception:  # noqa: BLE001 — unknown hold reads as held
+            logger.exception("contrib hold check failed for %s", root)
+            held = True
     if not _ok(_run(root, "remote", "get-url", "origin")):
         return _skipped("no-remote")
     default_branch = _default_branch(root)
@@ -849,10 +1161,16 @@ def _sync_locked(root, *, action, push):
         failure = _record_failure(root, reason, action=action, command=fetch_cmd,
                                   output=_text(fetched), push=push)
         return {"ok": False, "status": "failed", "failure": failure}
+    _last_fetch_ok(root)
 
     ahead, behind = _ahead_behind_counts(root, default_branch)
     if behind is None:
         return _skipped("unreadable")
+    if kind == "own" and ahead and behind:
+        # Diverged: no fast-forward can land, dirty tree or not (§16.7).
+        res = _own_resolve(root, action=action, push=push)
+        if res is not None:
+            return res
 
     def state():
         a, b = _ahead_behind_counts(root, default_branch)
@@ -864,6 +1182,15 @@ def _sync_locked(root, *, action, push):
     pull_cmd = f"git pull --ff-only -- origin {default_branch}"
     if behind > 0:
         if not _is_clean(root, include_untracked=False):
+            if kind == "own":
+                # The author's own copy with unsaved edits (§16.7): edits
+                # beside the newer version ride along (`reset --keep`);
+                # one on a file it changes is the `edits` state with "Save
+                # my edits and continue" — not today's dirty row, which
+                # left her copy behind after she accepted a proposal.
+                res = _own_resolve(root, action=action, push=push)
+                if res is not None:
+                    return res
             failure = _record_failure(
                 root, "dirty", action=action, command=pull_cmd,
                 output=("Not run: the working tree has uncommitted changes to "
@@ -890,7 +1217,17 @@ def _sync_locked(root, *, action, push):
         _record_pull(root, pulled)
 
     pushed = False
-    if push and (ahead or 0) > 0:
+    if kind == "own" and ahead and not behind:
+        # Only ahead: a plain push would re-publish commits GitHub may have
+        # had removed (a rewind) — ownsync checks, then pushes as today
+        # (§16.7). Without `push` (an app open) it only checks, so a rewind
+        # is named on the page at once, with its fixes, instead of "edits
+        # ready to publish" that Publish now would then refuse. Ahead AND
+        # behind went to the diverged call above.
+        res = _own_resolve(root, action=action, push=push)
+        if res is not None:
+            return res
+    if push and not held and (ahead or 0) > 0:
         push_cmd = f"git push -- origin {default_branch}"
         result = _run(root, "push", "--", "origin", default_branch)
         if not _ok(result):
@@ -905,8 +1242,49 @@ def _sync_locked(root, *, action, push):
         pushed = True
 
     _clear_failures(root)
-    return {"ok": True, "status": "synced", "pulled": pulled, "pushed": pushed,
-            "state": state()}
+    if kind == "own":
+        _note_seen(root)
+    out = {"ok": True, "status": "synced", "pulled": pulled, "pushed": pushed,
+           "state": state()}
+    if held:
+        out["held"] = True
+    return out
+
+
+def _check_noting(root):
+    """`check_repo` (a fetch of origin), and for an own copy the tip it saw
+    noted (`_note_seen`)."""
+    result = check_repo(root)
+    if result is not None and _kind_of(root) == "own":
+        _note_seen(root)
+    return result
+
+
+def _note_seen(root):
+    """An own copy's successful fetch NOT through `_own_resolve` (which
+    notes its own): ownsync remembers the GitHub tip it saw (§16.12, R)."""
+    try:
+        from fused_render.contrib import ownsync
+        ownsync.note_seen(root)
+    except Exception:  # noqa: BLE001 — memory only; never costs a sync
+        logger.exception("contrib note_seen failed for %s", root)
+
+
+#: The `action` of the own copy's Publish now button (contrib/ownsync.py):
+#: the one sync that releases a held copy (§16.12).
+PUBLISH_NOW = "Publish now"
+
+
+def record_sync_failure(root, reason, *, action, push, message, command=""):
+    """Today's standing failure row, for the contribution engine's flag-off
+    path (§16.12 gating: rows 5, 6 and an overlapping update with
+    `sources` off are recorded exactly as a plain sync would). `reason` is
+    one of git_upstream's: `dirty` | `diverged` | `git-failed` | …;
+    `message` is the plain sentence the row carries as its output. Answers
+    `_sync_locked`'s failed shape."""
+    failure = _record_failure(root, reason, action=action, command=command,
+                              output=message, push=push)
+    return {"ok": False, "status": "failed", "failure": failure}
 
 
 def sync_repo(root, *, action, push):
@@ -1028,6 +1406,25 @@ def _dispatch(path, runner=None):
     return True
 
 
+def _refresh_block_list(root):
+    """docs/CONTRIB_LOOP.md §18.4 B4: an opened copy of someone else's app
+    asks for the Marketplace block list (`contrib.blocks.refresh`, network,
+    bounded by the list's own TTL) — queued on the contrib background lane
+    (`refresh._submit`, deduped, never under this slot: §0.9), whatever the
+    switches say (§18.8). The engine's sync that follows enforces the list
+    on disk: a list newer than the last one this machine saw is enforced on
+    the NEXT open (or the 30-minute sweep, or Check). Never raises."""
+    if not _is_github(root):
+        return
+    try:
+        from fused_render.contrib import blocks, refresh
+
+        refresh._submit(refresh._P_OPEN, "blocklist", "",
+                        lambda: blocks.refresh(force=False))
+    except Exception:  # noqa: BLE001 — the last list applies
+        logger.exception("block list refresh failed for %s", root)
+
+
 def _background_check(path, runner=None):
     """Everything a note_app_opened dispatch does, entirely off the request
     thread: resolve `path` to a repo root (a `git rev-parse` subprocess),
@@ -1047,6 +1444,7 @@ def _background_check(path, runner=None):
     try:
         root = repo_root(path)
         if root is not None and _due(root, time.time()):
+            _refresh_block_list(root)
             if auto_sync_enabled():
                 # Auto-update on open: fast-forward the default branch
                 # ourselves. The slot is already held by note_app_opened.
@@ -1054,16 +1452,30 @@ def _background_check(path, runner=None):
                                       push=False)
                 if result.get("state"):
                     _record(result["state"])
-                elif result["status"] == "skipped":
+                elif result["status"] == "skipped" and not _is_github(root):
                     # No remote / other branch / unreadable: the plain check
-                    # still feeds the Switch card and App Doctor.
-                    _record(check_repo(root))
+                    # still feeds the Switch card and App Doctor. Never for
+                    # a GitHub-link copy, whatever the engine skipped for
+                    # (busy, Claude working, mid-operation): it is fetched
+                    # by its record's URL only (§16.0 P3).
+                    _record(_check_noting(root))
+            elif _is_github(root):
+                # Auto-sync off: the engine only fetches (the author's latest,
+                # by the record's URL) for the page's status — no tree move,
+                # and no Update card for a GitHub-link copy (`_record`; its
+                # Switch row stays while A1 is off — R5).
+                result = _sync_locked(root, action="Check on app open", push=False)
+                if result.get("state"):
+                    _record(result["state"])
+                else:
+                    with _state_lock:
+                        _state.pop(root, None)  # one recorded before it was recorded
             else:
-                _record(check_repo(root))
+                _record(_check_noting(root))
     except Exception:  # noqa: BLE001 — best-effort housekeeping
         logger.exception("git-upstream check failed for %s", path)
     finally:
-        _check_slot.release()
+        _release_check_slot()
         _drain_pending(runner)
 
 
@@ -1152,7 +1564,10 @@ def force_check(path, *, _runner=None):
         try:
             with _checked_lock:
                 _checked[root] = time.time()
-            _record(check_repo(root))
+            if not _is_github(root):
+                # A GitHub-link copy is fetched by the engine only (its
+                # Doctor row reads the engine's state, not this cache).
+                _record(_check_noting(root))
         except Exception:  # noqa: BLE001 — best-effort, exactly like note_app_opened
             logger.exception("git-upstream forced check failed for %s", path)
         finally:
@@ -1180,8 +1595,11 @@ def known_repos():
         # With auto-sync on, the "Update" card is replaced by the automatic
         # fast-forward (a failure of it is a sync failure notification), so
         # only the off-default Switch rows remain.
-        return [dict(v) for v in _state.values()
+        rows = [dict(v) for v in _state.values()
                 if v.get("behind", 0) > 0 and not (auto and v.get("on_default"))]
+    # A state recorded before the contribution loop took the copy over:
+    # still never a card (`_record` stops new ones).
+    return [r for r in rows if not _card_hidden(r["root"], r)]
 
 
 def repo_state_for(root):

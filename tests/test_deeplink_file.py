@@ -119,9 +119,11 @@ def test_a_missing_file_still_lands_on_its_page_which_reports_it(tmp_path):
     assert path == _embed(gone)
 
 
-def test_a_malformed_payload_is_ferried_verbatim_to_home(tmp_path):
+def test_a_malformed_payload_is_ferried_verbatim_to_the_install_page(tmp_path):
+    """The shell's /install page reports it (InstallLinkPage), not a toast
+    over Home."""
     path, q = _redirect(tmp_path, "fused-render://open?file=relative.zip")
-    assert path == "/"
+    assert path == "/install"
     assert q == {EDIT_APPFILE_PARAM: "relative.zip"}
 
 

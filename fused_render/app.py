@@ -304,7 +304,7 @@ def _start_server_thread(port: int) -> "tuple[uvicorn.Server, threading.Thread]"
     # the first-run strip's GET is a disk read. Mirrors cli._run_serve — an entry
     # point, never create_app.
     # Each agent's probe follows its Preferences switch (D17), as in cli.py.
-    from fused_render import claude_health, codex_health, copilot_health
+    from fused_render import claude_health, codex_health, copilot_health, gemini_health
     from fused_render.agent_backends import registry as _agent_registry
 
     if _agent_registry.is_enabled("claude"):
@@ -313,6 +313,8 @@ def _start_server_thread(port: int) -> "tuple[uvicorn.Server, threading.Thread]"
         copilot_health.warm_in_background()
     if _agent_registry.is_enabled("codex"):
         codex_health.warm_in_background()
+    if _agent_registry.is_enabled("gemini"):
+        gemini_health.warm_in_background()
     app = create_app(start_dir=start_dir)
     # Publish the real bound origin so runPython children (e.g. the zarr_aoi
     # tile daemon) read store bytes from THIS port, not the branch default.
@@ -510,12 +512,14 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
         from fused_render.server import engine_host
 
         from fused_render import canvases, warm_run
+        from fused_render.contrib import ai as contrib_ai
 
         engine_host.refuse_new_children()
         supervisor.refuse_new_workers()
         bots_browser.refuse_launches()
         canvases.refuse_new_managers()
         warm_run.refuse_new()
+        contrib_ai.refuse_children()
 
     def engines():
         from fused_render.server import engine_host
@@ -568,6 +572,15 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
 
         canvases.shutdown()
 
+    def contrib_claude():
+        # The contribution loop's `claude` children (a safety review, a draft,
+        # the Merge with Claude resolver): registered at spawn, killed here.
+        # They are plain children (no new session — that would force fork(),
+        # which dies with libproj resident), so nothing but this kills them.
+        from fused_render.contrib import ai as contrib_ai
+
+        contrib_ai.stop_children()
+
     def discovery():
         from fused_render.server.app import remove_server_json
 
@@ -581,6 +594,7 @@ def _stop_children(budget_s: float = QUIT_CHILDREN_BUDGET_S) -> None:
     for name, step in (("engines", engines), ("ai", ai_workers),
                        ("terminals", terminals), ("index", index_runs),
                        ("bots", bots), ("canvas-sync", canvas_sync),
+                       ("contrib-claude", contrib_claude),
                        ("discovery", discovery)):
         def _run(step=step, name=name):
             try:

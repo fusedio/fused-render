@@ -128,6 +128,9 @@ def _clean(doc) -> dict:
         _check(isinstance(rp, list) and len(rp) <= MAX_RECENT_PATHS)
         _check(all(_is_key(p) for p in rp))
         out["recentPaths"] = list(rp)
+    if "rememberLastFolder" in doc:
+        _check(isinstance(doc["rememberLastFolder"], bool))
+        out["rememberLastFolder"] = doc["rememberLastFolder"]
     return out
 
 

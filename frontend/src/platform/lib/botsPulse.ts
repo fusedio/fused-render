@@ -205,9 +205,11 @@ export function botsPulseFeeders(): number {
 
 /** Subscribe to the summary. Polling starts with the first reader and stops
  *  with the last — nothing polls for a sidebar nobody has mounted. */
-export function useBotsPulse(): BotsPulse {
+export function useBotsPulse(enabled: boolean = true): BotsPulse {
   const [current, setCurrent] = useState<BotsPulse>(pulse);
   useEffect(() => {
+    // Bots unavailable on this server (Windows): no reader, so no poll.
+    if (!enabled) return;
     listeners.add(setCurrent);
     setCurrent(pulse);
     if (feeders === 0) void poll();
@@ -216,7 +218,7 @@ export function useBotsPulse(): BotsPulse {
       listeners.delete(setCurrent);
       schedule();
     };
-  }, []);
+  }, [enabled]);
   return current;
 }
 

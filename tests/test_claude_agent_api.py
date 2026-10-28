@@ -102,6 +102,15 @@ def test_task_stop_is_routable_not_a_400(client, stub):
     assert stub["main"] == [{"action": "task_stop", "run_id": "r", "task_id": "b1"}]
 
 
+def test_task_background_is_routable_not_a_400(client, stub):
+    stub["install"](lambda action="", run_id="", tool_use_id="": {"ok": True})
+    r = _post(client, {"action": "task_background", "run_id": "r",
+                       "tool_use_id": "toolu_1"})
+    assert r.status_code == 200
+    assert stub["main"] == [{"action": "task_background", "run_id": "r",
+                             "tool_use_id": "toolu_1"}]
+
+
 def test_the_allowlist_names_only_handlers_the_real_module_has():
     agent = claude_agent.agent_module()
     for action, handler in router.ACTIONS.items():

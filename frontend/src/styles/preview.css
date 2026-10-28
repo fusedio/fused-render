@@ -184,6 +184,17 @@
   flex: 1 1 auto;
   position: relative;
   min-width: 0;
+  /* A flex COLUMN with min-height 0, not a block: the mode iframes are
+     absolute (inset 0) and never size this box, but the chat mount
+     (`.chat-mount.preview-frame`, ChatMount in content-pane claude) is in
+     flow — as a block child of the content stack this box took the chat's
+     full height (min-height auto) and the document grew past the viewport,
+     so the chat's header and composer scrolled out of a framed embed (the
+     canvas node pane, 2026-10-26). As a flex column it is pinned to the
+     stack's height and the chat's own list scrolls. */
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 /* Preview.tsx's content-pane counterpart to Listing.tsx's own
@@ -249,12 +260,12 @@
   cursor: col-resize;
   background: transparent;
   margin: 0 -2px;
-  /* 3, NOT 2 (review, 2026-09-10): the chat's pinned tail card
-     (`.chat-tailpin.is-pinned`, apps/claude/styles/transcript.css) is sticky at
-     z-index 2 with an opaque ground, and nothing between it and the root is a
-     stacking context — so at 2 the two tie and tree order hands the pixel to the
-     column, which is DOM-later. The seam lost its bottom segment whenever a
-     permission ask was pinned. 3 clears that and stays under the chat's
+  /* 3, NOT 2 (review, 2026-09-10): the chat's open tail card was
+     once sticky at z-index 2 with an opaque ground (it is plain flow now), and
+     nothing between it and the root is a stacking context — so at 2 the two
+     tie and tree order hands the pixel to the column, which is DOM-later. The
+     seam lost its bottom segment whenever a permission ask was pinned. 3 clears
+     any box at 2 and stays under the chat's
      transient popovers (`.annbar .tip` at 4, `#annpop` at 5), which are the
      things that SHOULD pass over a 1px line. */
   z-index: 3;

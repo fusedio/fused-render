@@ -1,4 +1,5 @@
 // Server API wrappers. Non-ok responses throw with the server's error message.
+import { canonFsPath } from "./path-url";
 import { noteFsMutation, noteIndexLifecycle } from "@platform/lib/index-freshness";
 import { outcomeFrom } from "@platform/lib/index-query";
 import type { IndexQueryOutcome } from "@platform/lib/index-query";
@@ -33,6 +34,14 @@ export interface Config {
   // session, where `pickFile`/pick-folder answer 501 and a caller needs its own
   // fallback. One backend set raises both dialogs, hence the one flag.
   native_dir_picker: boolean;
+  // Whether this server runs bots at all (server/routers/config.py) — false on
+  // Windows, where the bot process manager is POSIX-only and every /api/bots
+  // call answers 503. Absent from an older server: treated as available.
+  bots_available?: boolean;
+  // Whether the status-bar terminal can start here (server/routers/config.py):
+  // always true off Windows, and on Windows only with pywinpty installed (the
+  // `[cli]` extra). Absent from an older server: treated as available.
+  terminal_available?: boolean;
   // Self-update state (fused_render/update/mac.py) — present only when the
   // packaged mac app started the update manager; absent on dev servers and
   // the Linux package (it updates through its supervisor).
@@ -287,8 +296,15 @@ export const postJson = <T>(
   opts?: { signal?: AbortSignal; headers?: Record<string, string> },
 ) => mutateJson<T>("POST", url, body, opts);
 
+// `home` / `fused_dir` are raw expanduser values and arrive with backslashes on
+// Windows. Folded to the shell's canonical forward-slash form HERE, once, so no
+// consumer has to remember to (drive-letter paths only: see canonFsPath).
 export function getConfig(opts?: { signal?: AbortSignal }): Promise<Config> {
-  return getJson<Config>("/api/config", opts);
+  return getJson<Config>("/api/config", opts).then((c) => ({
+    ...c,
+    home: typeof c.home === "string" ? canonFsPath(c.home) : c.home,
+    fused_dir: typeof c.fused_dir === "string" ? canonFsPath(c.fused_dir) : c.fused_dir,
+  }));
 }
 
 // -- Diagnostics bundle (SPEC §50; Preferences → Diagnostics) ----------------
@@ -479,7 +495,10 @@ export interface ClaudeHealth {
       by `agentAccountLine` in platform/lib/claude-health. The CODEX snapshot
       (`/api/codex/health`, docs/CODEX_BACKEND.md D10) says "chatgpt" or
       "api_key", with the ChatGPT plan in `plan` (or `planType`, Codex's own
-      key, from a server that passes it through). */
+      key, from a server that passes it through). The GEMINI snapshot
+      (`/api/gemini/health`, docs/GEMINI_BACKEND.md D10) says "google",
+      "api_key", "vertex" or "gateway", with the Google account's email when
+      the CLI cached one. */
   account: {
     method: string | null;
     email: string | null;
@@ -628,7 +647,8 @@ export function cancelClaudeLogin(): Promise<ClaudeLoginStatus & { canceled: boo
 
 // -- The same doors, PER AGENT (docs/COPILOT_BACKEND.md D10) ----------------
 //
-// `/api/copilot/*` and `/api/codex/*` (docs/CODEX_BACKEND.md D10) — `health,
+// `/api/copilot/*`, `/api/codex/*` (docs/CODEX_BACKEND.md D10) and
+// `/api/gemini/*` (docs/GEMINI_BACKEND.md D10) — `health,
 // health/refresh, install, login, login/cancel, link-path` — answer the same
 // bodies as the Claude ones above, so one set of functions keyed on the
 // backend id serves every agent — `useAgentSetup(backend)` in claude-setup.ts
@@ -637,7 +657,7 @@ export function cancelClaudeLogin(): Promise<ClaudeLoginStatus & { canceled: boo
 // contract) and is not generalised.
 
 /** Each agent's route segment; an id not here (or none) is Claude's. */
-const AGENT_ROUTES: Record<string, string> = { claude: "claude", copilot: "copilot", codex: "codex" };
+const AGENT_ROUTES: Record<string, string> = { claude: "claude", copilot: "copilot", codex: "codex", gemini: "gemini" };
 
 function agentRoute(backend: string, tail: string): string {
   return `/api/${AGENT_ROUTES[backend] ?? "claude"}/${tail}`;
@@ -709,7 +729,7 @@ export interface AgentCaps {
 
 export interface AgentBackendRow {
   id: string;
-  /** "Claude" / "Copilot" / "Codex" — the word every surface names the agent by. */
+  /** "Claude" / "Copilot" / "Codex" / "Gemini" — the word every surface names the agent by. */
   label: string;
   enabled: boolean;
   /** `reasoning: false` marks a model its CLI takes no effort for (the spawn
@@ -781,9 +801,9 @@ export interface UpdateStatus {
   // "installing" from the mount to the swap; null outside state "installing".
   phase?: "downloading" | "installing" | null;
   error: string | null;
-  // Always null since D767; kept for wire compatibility. There is one install
-  // path for every install type and no terminal command to hand the user, so
-  // no surface reads this field any more.
+  // Null for every packaged install (D767: one install path, no terminal
+  // command). Set only by the CLI/PyPI check-only manager, whose update IS a
+  // terminal command; the Updates dock shows it copyable.
   manual_command: string | null;
   // True only for the dev-run manager (mac.DEV_MANAGER_ENV): it looks but never
   // swaps, so the badge draws "Update available" without its Update button.
@@ -1474,6 +1494,13 @@ export interface EnginePrefs {
   fused_available: boolean;
 }
 
+/** The contribution loop's switches as stored (`Prefs.contrib`): the loop,
+ *  and Remix (effective only with the loop on). */
+export interface ContribPrefs {
+  enabled: boolean;
+  remix: boolean;
+}
+
 export interface Prefs {
   engine: EnginePrefs;
   // Whether the Reader (listen-to-files) accessibility mode is offered (opt-in,
@@ -1509,11 +1536,12 @@ export interface Prefs {
   // OPTIONAL: an older server answers without it, and the reader
   // (marketplace-flag.ts) treats absence as off.
   marketplace?: { enabled: boolean };
-  // Whether the Share sheet offers its GitHub install-link card (opt-in,
-  // default off — shell/prefs.py `github_link_enabled`). Gates the card, not
-  // /api/share/github. OPTIONAL: an older server answers without it, and the
-  // reader (github-link-flag.ts) treats absence as off.
-  github_link?: { enabled: boolean };
+  // The GitHub contribution loop's switches, RAW as set (shell/prefs.py
+  // `contrib_enabled` + `contrib_remix_enabled`, opt-in, default off —
+  // docs/CONTRIB_LOOP.md §1). Readers want the per-phase values with "remix
+  // needs the loop" applied: contrib-flags.ts. OPTIONAL: an older server
+  // answers without it, and absence means off.
+  contrib?: ContribPrefs;
   // ONE TASK IN PROGRESS PER FOLDER (`project_queue_enabled`, shell/prefs.py).
   // Everything that wants to run in a folder somebody else's task is already
   // running in waits its turn in the scheduler's pending list instead — chat
@@ -1529,11 +1557,11 @@ export interface Prefs {
   // (`task_recap_titles_enabled`, shell/prefs.py; opt-in, off by default).
   // Optional like `queue`: absent reads as off.
   task_recap?: { enabled: boolean };
-  // Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
+  // Stable AI titles: Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
   // shell/prefs.py; off by default). Optional: absent reads as off.
   task_summary_titles?: { enabled: boolean };
-  // Lean Claude sessions (`claude_strict_mcp_enabled`, shell/prefs.py; ON by
-  // default). Optional: absent (older server) reads as on.
+  // Lean Claude sessions (`claude_strict_mcp_enabled`, shell/prefs.py; OFF by
+  // default). Optional: absent (older server) reads as off.
   claude_strict_mcp?: { enabled: boolean };
   // The Approvals mode a new Claude chat starts in (`claude_default_permission`,
   // shell/prefs.py): plan | prompt | acceptEdits | auto, "auto" when unset.
@@ -1552,6 +1580,9 @@ export interface Prefs {
    *  server-side as short identifiers only — the client still filters against
    *  tasks-lib.TASK_VIEWS, the one place a view NAME is decided. */
   tasks_view_tabs?: string[];
+  /** Task keys pinned to the top of the Tasks page's Detailed view
+   *  (shell/prefs.py `pinned_tasks`). */
+  pinned_tasks?: string[];
   /** Whether a task on the Tasks page opens in a side panel beside the list
    *  instead of navigating away (shell/prefs.py `task_peek_enabled`) — always
    *  `true` since 2026-09-20; the Preferences switch is gone. Optional because
@@ -1604,8 +1635,9 @@ export interface Prefs {
   // How long an idle resident local model stays loaded before the reaper
   // unloads it (SPEC AI-13). Same stored/effective/forced_by shape as `calls`.
   ai_idle: AiIdlePrefs;
-  // Whether background file-index scanning may run at all (default ON — an
-  // opt-OUT, the opposite polarity from `reader`). Turning it off does not
+  // Whether background file-index scanning may run at all (default ON only in
+  // the native desktop app, OFF for browser/CLI installs and dev runs; a
+  // stored choice wins either way). Turning it off does not
   // delete the on-disk index or stop search from answering it; only new
   // scans are refused (fused_render/shell/prefs.py's `indexing_enabled`).
   // `ranked` (D720, also default ON) is a separate, sibling preference:
@@ -1633,6 +1665,10 @@ export interface Prefs {
   // `available` is false off macOS and under `fused-render serve`, where the
   // section is not rendered. OPTIONAL like `launcher`.
   native_windows?: { enabled: boolean; available: boolean };
+  // Device features this machine lacks, each with the one-line reason
+  // (fused_render/shell/prefs.py `_unavailable_features`). Absent key =
+  // available. The Preferences rows tagged `needs` stay visible but disabled.
+  unavailable?: Record<string, string>;
   // Chromium (CEF) engine for app windows (fused_render/shell/prefs.py's
   // `chromium_windows_enabled`): on by default, the app ships the engine
   // (D1415). `available` is false unless this is the macOS app with native
@@ -1647,12 +1683,13 @@ export interface Prefs {
   // OPTIONAL: an older server answers without it.
   workbench?: { env: string; locked: boolean; choices: string[] };
   // WHICH AGENTS MAY RUN CHATS AND TASKS (docs/COPILOT_BACKEND.md D17):
-  // `claude_enabled` (default on) / `copilot_enabled` / `codex_enabled`
-  // (default off, docs/CODEX_BACKEND.md D17), and the one new chats and tasks
+  // `claude_enabled` (default on) / `copilot_enabled` / `codex_enabled` /
+  // `gemini_enabled` (default off, docs/CODEX_BACKEND.md D17,
+  // docs/GEMINI_BACKEND.md D17), and the one new chats and tasks
   // open on. The server refuses a PUT that would turn the last one off (400
   // "turn on another agent first"). OPTIONAL: an older server answers without
   // it, and the reader treats absence as Claude only.
-  agents?: { claude: boolean; copilot: boolean; codex: boolean; default: string };
+  agents?: { claude: boolean; copilot: boolean; codex: boolean; gemini?: boolean; default: string };
 }
 
 export type ChromiumEngineState = "unsupported" | "missing" | "ready";
@@ -1945,8 +1982,14 @@ export function putMarketplaceEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { marketplace_enabled: enabled });
 }
 
-export function putGithubLinkEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { github_link_enabled: enabled });
+/** The contribution loop's switch (`contrib_enabled`). */
+export function putContribEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { contrib_enabled: enabled });
+}
+
+/** The Remix switch (`contrib_remix_enabled`; effective only with the loop on). */
+export function putContribRemixEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { contrib_remix_enabled: enabled });
 }
 
 /** Whether a finished-task notification fires for an interactive-terminal
@@ -1993,6 +2036,11 @@ export function putTasksViewTabs(tabs: string[]): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { tasks_view_tabs: tabs });
 }
 
+/** The Detailed view's pinned task keys (`Prefs.pinned_tasks`). */
+export function putPinnedTasks(keys: string[]): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { pinned_tasks: keys });
+}
+
 // ---- UI layout (shell/ui_layout.py, ~/.fused-render/ui_layout.json) ---------
 // The per-machine layout the shell used to keep in a dozen localStorage keys
 // (D1386): sidebar width and fold, the two sidebar section folds, the explorer
@@ -2016,6 +2064,8 @@ export interface UiLayoutDoc {
     calRange?: string;
   };
   recentPaths?: string[];
+  /** New task opens on the last folder used instead of the workspace. */
+  rememberLastFolder?: boolean;
 }
 
 export function getUiLayout(): Promise<{ exists: boolean; layout: UiLayoutDoc | null }> {
@@ -2597,7 +2647,10 @@ export type AppFileState =
   | "unknown"
   | "clash"
   | "local"
-  | "replace";
+  | "replace"
+  // stage B (§18.4): a GitHub link opened for an app installed from the
+  // Marketplace — following it directly is the user's explicit switch.
+  | "switch-link";
 
 /** The payload's `metadata.json`, type-checked field by field (display only). */
 export interface AppFileMetadata {
@@ -2623,7 +2676,25 @@ export interface AppFileProbe {
   state: AppFileState;
   needs_force: boolean;
   /** A GitHub-link build (`open?git=`): installs as a clone of `url`. */
-  git?: { url: string; commit: string } | null;
+  git?: {
+    url: string;
+    commit: string;
+    /** Installed GitHub-link copy only (contrib §16.8): whose latest it gets. */
+    who?: string | null;
+    /** Installed GitHub-link copy only: the user has changes of their own.
+     *  Present (either way) exactly when this is such a copy. */
+    changes?: boolean;
+    /** Installed GitHub-link copy only: the user's own files the author's
+     *  latest would land on (up to 12). */
+    collision?: string[];
+    /** Installed GitHub-link copy only: its app page has the Source panel to
+     *  act on (the A1 switch) — only then does the page point at it. */
+    app_page?: boolean;
+    /** Stage B, state `switch-link`: the copy is a Marketplace copy (`kind`)
+     *  and `switch` is the server's question ("Follow alice directly? …"). */
+    kind?: string | null;
+    switch?: string | null;
+  } | null;
   /** The file sits in the deep-link downloads cache, not a folder of the user's. */
   downloaded?: boolean;
   exported_at: string | null;
@@ -2646,7 +2717,10 @@ export interface AppFileProbe {
 }
 
 export interface AppFileInstallResult extends AppFileProbe {
-  action: "installed" | "updated";
+  /** `switched`: a Marketplace copy now follows the author directly. */
+  action: "installed" | "updated" | "switched";
+  /** The engine's own sentence for a switch. */
+  message?: string | null;
   /** The installed entry page (absolute). */
   entry: string;
   entry_view: string;
@@ -2663,9 +2737,13 @@ export function getAppFileProbe(path: string, opts?: { signal?: AbortSignal }): 
 export async function installAppFile(
   file: string,
   force: boolean,
+  opts: { switch?: boolean } = {},
 ): Promise<{ ok: AppFileInstallResult } | { needsConfirm: AppFileProbe }> {
   try {
-    return { ok: await postJson<AppFileInstallResult>("/api/appfile/install", { file, force }) };
+    // `switch`: the `switch-link` state's yes — a Marketplace copy starts
+    // following the author directly (§18.4 `switch_to_link`).
+    const body = opts.switch ? { file, force, switch: true } : { file, force };
+    return { ok: await postJson<AppFileInstallResult>("/api/appfile/install", body) };
   } catch (e) {
     const err = e as HttpError;
     const target = (err.body as { target?: AppFileProbe } | undefined)?.target;
@@ -2891,6 +2969,28 @@ export interface AppInfo {
   // dock/menubar pin of a `.fused` and for older backends. Undefined for
   // every folder-shaped app.
   kind?: "appfile";
+  // Where this copy came from and how many proposals wait on it — the card's
+  // quiet source line and inbox pill (server/routers/apps.py, from the
+  // contribution loop's cached records — docs/CONTRIB_LOOP.md §12.2). `label`
+  // is the product sentence ("GitHub link · follows alice/x", "Remix of
+  // alice/x", "Your app"); `kind` says which, so a card can stay quiet for an
+  // app of the reader's own. Undefined while the loop is off, on rows it has
+  // no record for, and on older backends.
+  contrib?: AppCardContrib;
+}
+
+export interface AppCardContrib {
+  label: string;
+  inbox: number;
+  kind?: "own" | "github" | "remix" | "marketplace";
+  /** Stage B (§18.4): a release Fused blocked is in this copy. `soft` and
+   *  not yet `confirmed`: opening the app asks first. */
+  block?: {
+    level: "hard" | "soft";
+    reason: string;
+    what_to_do: string;
+    confirmed?: boolean;
+  } | null;
 }
 
 // The uninstall policy class the server assigned (routers/app_uninstall.kind_for).
@@ -3228,6 +3328,12 @@ export interface AppCheck {
    *  git repository this server can read. Used for "Open in git" — the
    *  in-app git mode opens scoped to this root, not the app subfolder. */
   gitRoot?: string | null;
+  /** `git` row only: written by the GitHub contribution engine for a copy it
+   *  syncs (app_doctor._contrib_git_row). Its one failure is a decision the
+   *  app page is waiting for (an overlap with the author's latest, or a
+   *  sign-in), so the row offers "Open app page" — never Fix with Claude,
+   *  never Open in git. */
+  contrib?: boolean;
 }
 
 export interface AppDoctorReport {
@@ -3346,6 +3452,9 @@ export interface CurrentAppEntry {
   /** Epoch (server clock) of the last `openCurrentApp`; 0 for a row a task
    *  put on the desk that has never been opened. */
   opened_at?: number | null;
+  /** Epoch of the newest task activity under the app (0 for none) — what the
+   *  server lists by; the client draws the array as it arrives. */
+  active_at?: number;
   /** A task under the app finished since `opened_at` — the sidebar's green
    *  dot. The server's flag (current_apps.observe), cleared by `openCurrentApp`
    *  and by nothing done to the tasks. */
@@ -3372,18 +3481,6 @@ export interface OpenCurrentAppResult {
 
 export function openCurrentApp(path: string): Promise<OpenCurrentAppResult> {
   return postJson<OpenCurrentAppResult>("/api/current-apps/open", { path });
-}
-
-/** The user dragged a Projects row: `paths` is the whole visible list, top
- *  first, and the SERVER's `apps` array becomes that order (D1386 — the order
- *  lives in current_apps.json, not in this browser). Unknown paths are ignored;
- *  live apps the list does not name keep their place ABOVE the named ones (the
- *  tab that dragged did not have them, so its arrangement says nothing about
- *  where they go). Answers with the table as it now stands. */
-export function setCurrentAppsOrder(
-  paths: string[],
-): Promise<{ ok: boolean; apps: CurrentAppEntry[] }> {
-  return postJson<{ ok: boolean; apps: CurrentAppEntry[] }>("/api/current-apps/order", { paths });
 }
 
 /** The optional `icon.svg` of the app that owns `fsPath` (the folder itself
@@ -3549,7 +3646,7 @@ export function createApp(
   effort: SessionEffort = "",
   // Paths from uploadTaskShot — the composer's pasted/dropped attachments.
   images: string[] = [],
-  // Which agent runs the scaffolding task: "claude" | "copilot" | "codex" | "" for the
+  // Which agent runs the scaffolding task: "claude" | "copilot" | "codex" | "gemini" | "" for the
   // catalog's default (docs/COPILOT_BACKEND.md D17).
   backend: string = "",
 ): Promise<NewAppResult> {
@@ -3802,7 +3899,7 @@ export interface Task {
    */
   model: string;
   effort: string;
-  /** WHICH AGENT RUNS THIS TASK — "claude" | "copilot" | "codex"
+  /** WHICH AGENT RUNS THIS TASK — "claude" | "copilot" | "codex" | "gemini"
    *  (docs/COPILOT_BACKEND.md D2), chosen at the first turn and immutable. Optional: an older server
    *  sends nothing, and nothing reads as Claude everywhere a mark is drawn. */
   backend?: string;
@@ -4135,7 +4232,7 @@ export type TaskPulseTask = Pick<
   | "canvas"
   | "background_jobs"
   // What the notice titles a task by (tasks-lib `taskNoticeTitle`: the newest
-  // user message, unless renamed / summary-only) — optional, each absent with
+  // user message, unless renamed / stable AI titles) — optional, each absent with
   // its flag off or on an older server. Recap titles are deliberately NOT
   // here: the notice ignores them, the Tasks cards do not.
   | "title_mode"
@@ -4149,23 +4246,6 @@ export type TaskPulseTask = Pick<
  *  settings page writes). "" for a field the file leaves unset. */
 export function getTaskDefaults(): Promise<{ model: string; effort: string }> {
   return getJson<{ model: string; effort: string }>("/api/claude-sessions/defaults");
-}
-
-/** WRITE that same global pair — the New task card's dropdowns and the
- *  composer's pills for a chat with no session yet are both EDITORS of it, not
- *  just readers (Akshil, 2026-09-21). A field left out is left alone, so moving
- *  one of the two cannot restate the other. Answers with what the file says
- *  AFTER the write, which is not always what was asked for: the settings page's
- *  vocabulary has spellings (`opus[1m]`) the pills read back as the family name.
- *
- *  Callers should go through `platform/lib/claude-defaults`, which is what tells
- *  the other open surfaces about the change; this is the bare wire call. */
-export function putTaskDefaults(
-  patch: { model?: string; effort?: string },
-): Promise<{ model: string; effort: string }> {
-  return putJson<{ model: string; effort: string }>(
-    "/api/claude-sessions/defaults", patch,
-  );
 }
 
 export function getTasks(): Promise<{ tasks: Task[]; generation?: number }> {
@@ -4665,13 +4745,89 @@ export function recordChatSettings(
 //
 // The way back is `unarchiveTask` below — a drag, not a button. Nothing is
 // destroyed either way: the conversation and its transcript are kept (D306).
-export function archiveTask(
+export interface TeardownKept {
+  path: string;
+  /** "dirty" | "unpushed" | "unknown" | "not-managed" | "remove-failed". */
+  reasons: string[];
+  /** null: git did not answer. */
+  dirty_files: number | null;
+  unpushed: number | null;
+  error?: string;
+}
+
+/** What archiving tore down: the runs it ended, the worktrees it removed, and
+ *  the ones it KEPT (with why). Absent on an older server. */
+export interface TeardownReport {
+  stopped: number;
+  killed: number[];
+  removed: string[];
+  kept: TeardownKept[];
+  gone: string[];
+}
+
+export interface ArchiveResult {
+  ok: boolean;
+  key: string;
+  cancelled: number;
+  filed: boolean;
+  teardown?: TeardownReport;
+}
+
+type ArchiveListener = (key: string, result: ArchiveResult) => void;
+const archiveListeners = new Set<ArchiveListener>();
+
+/** Hear every archive, whichever of the eight call sites made it. A registry
+ *  here (not an import of notifications) because notifications -> jobs -> api:
+ *  this file cannot import it back. Returns the way to stop listening. */
+export function onTaskArchived(fn: ArchiveListener): () => void {
+  archiveListeners.add(fn);
+  return () => {
+    archiveListeners.delete(fn);
+  };
+}
+
+export async function archiveTask(key: string): Promise<ArchiveResult> {
+  const res = await postJson<ArchiveResult>("/api/tasks/archive", { key });
+  for (const fn of [...archiveListeners]) {
+    try {
+      fn(key, res);
+    } catch {
+      // A listener's bug is never the archive's failure: it has happened.
+    }
+  }
+  return res;
+}
+
+/** Live listening ports of each task's process tree, by task key. */
+export async function fetchTaskPorts(ids: string[]): Promise<Record<string, number[]>> {
+  const res = await postJson<{ ports: Record<string, number[]> }>("/api/tasks/ports", { ids });
+  return res.ports ?? {};
+}
+
+export interface TaskHold {
+  path: string;
+  dirty_files: number | null;
+  /** `dirty_files` minus untracked paths: what the card counts. Absent from an older backend. */
+  tracked_dirty?: number | null;
+  unpushed: number | null;
+  /** The checked-out branch; null on a git error or a detached HEAD. */
+  branch?: string | null;
+  reasons: string[];
+}
+
+/** What each task's recorded worktrees hold open, by task key. Tasks with no
+ *  recorded worktree are absent. */
+export async function fetchTaskHolds(ids: string[]): Promise<Record<string, TaskHold[]>> {
+  const res = await postJson<{ holds: Record<string, TaskHold[]> }>("/api/tasks/holds", { ids });
+  return res.holds ?? {};
+}
+
+/** "Remove anyway": force-remove a task's recorded worktrees (all, or `paths`). */
+export function removeTaskWorktrees(
   key: string,
-): Promise<{ ok: boolean; key: string; cancelled: number; filed: boolean }> {
-  return postJson<{ ok: boolean; key: string; cancelled: number; filed: boolean }>(
-    "/api/tasks/archive",
-    { key },
-  );
+  paths?: string[],
+): Promise<{ ok: boolean; key: string; removed: string[]; kept: TeardownKept[]; gone: string[] }> {
+  return postJson("/api/tasks/worktrees/remove", paths ? { key, paths } : { key });
 }
 
 /** Give a started task a title of the reader's own; "" takes it back and the
@@ -6777,4 +6933,18 @@ export function getScheduleEvents(): Promise<{ events: ScheduleEvent[] }> {
 // silently consume the user's notifications with a no-cors fetch.
 export function ackScheduleEvents(id: number): Promise<{ delivered: number }> {
   return postJson<{ delivered: number }>("/api/schedule/events/ack", { id });
+}
+
+/** Does this server offer Bots? Only an explicit `false` hides them, so a server
+ *  that predates the flag keeps its Bots page. */
+export function botsAvailable(config: Pick<Config, "bots_available"> | null | undefined): boolean {
+  return config?.bots_available !== false;
+}
+
+/** Can this machine run the status-bar terminal? Only an explicit `false`
+ *  removes it, so a server that predates the flag keeps its terminal. */
+export function terminalAvailable(
+  config: Pick<Config, "terminal_available"> | null | undefined,
+): boolean {
+  return config?.terminal_available !== false;
 }

@@ -5,18 +5,25 @@ import type { ReactNode } from "react";
 import {
   AlertTriangle,
   Globe2,
+  Download,
   LayoutGrid,
   MessageSquareText,
+  Repeat2,
   Rocket,
   Sparkles,
+  Users,
   Wrench,
 } from "lucide-react";
+import { releaseDate } from "@platform/lib/format";
 import { navigateUrl } from "@platform/lib/router";
-import { ActionPill, AppIcon, StoreCard, type ActionPillSize } from "@platform/ui/appstore";
+import { ActionPill, AppIcon, StoreCard, VerifiedMark, type ActionPillSize } from "@platform/ui/appstore";
 import {
   actionFor,
   appDetailHref,
   categoryLabel,
+  isMarketCopy,
+  isOwnCopy,
+  useChecking,
   useJob,
   type AppAction,
   type AppEntry,
@@ -51,6 +58,71 @@ export function metaLine(app: AppEntry, catalog: Catalog | null, opts: { categor
   return parts.join(" · ");
 }
 
+/** The listed app `app` remixes, by its slug: its name when the catalog
+ *  has it, else the slug. Null for an app that is not a remix. */
+export function remixOf(app: AppEntry, catalog: Catalog | null): { slug: string; name: string } | null {
+  const slug = app.remix_of;
+  if (!slug) return null;
+  return { slug, name: catalog?.apps.find((a) => a.slug === slug)?.name ?? slug };
+}
+
+/** 1234 → "1.2k": a count that fits a card. */
+export function compactCount(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 10_000) return `${(n / 1000).toFixed(1).replace(/\.0$/, "")}k`;
+  if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
+  return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+}
+
+/** The card's proof line (handoff B6): installs, lineage, remixes,
+ *  contributors and the last release, each only when there is something to
+ *  say. */
+export function ProofLine({ app, catalog }: { app: AppEntry; catalog: Catalog | null }) {
+  const remix = remixOf(app, catalog);
+  const remixes = app.remix_count ?? 0;
+  const people = app.contributor_count ?? 0;
+  const installs = app.install_count ?? 0;
+  const when = releaseDate(app.last_release_at ?? app.updated_at);
+  const bits: ReactNode[] = [];
+  if (remix) bits.push(<span key="of">Remix of {remix.name}</span>);
+  if (installs > 0) {
+    bits.push(
+      <span key="in" className="mp-proof-count" title={`${installs} ${installs === 1 ? "install" : "installs"}`}>
+        <Download size={12} strokeWidth={2.2} aria-hidden="true" />
+        {compactCount(installs)}
+      </span>,
+    );
+  }
+  if (remixes > 0) {
+    bits.push(
+      <span key="rx" className="mp-proof-count" title={`${remixes} ${remixes === 1 ? "remix" : "remixes"}`}>
+        <Repeat2 size={12} strokeWidth={2.2} aria-hidden="true" />
+        {remixes}
+      </span>,
+    );
+  }
+  if (people > 1) {
+    bits.push(
+      <span key="pp" className="mp-proof-count" title={`${people} contributors`}>
+        <Users size={12} strokeWidth={2.2} aria-hidden="true" />
+        {people}
+      </span>,
+    );
+  }
+  if (when) bits.push(<span key="at">{when}</span>);
+  if (bits.length === 0) return null;
+  return (
+    <span className="mp-proof">
+      {bits.map((b, i) => (
+        <span key={i} className="mp-proof-bit">
+          {i > 0 && <span aria-hidden="true"> · </span>}
+          {b}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 export function pillPropsFor(app: AppEntry, action: AppAction) {
   switch (action.kind) {
     case "progress":
@@ -58,7 +130,11 @@ export function pillPropsFor(app: AppEntry, action: AppAction) {
     case "open":
       return { state: "open" as const };
     case "update":
-      return { state: "update" as const };
+      // A reviewed copy: a release is waiting and Update is the check that
+      // brings it in (never the old package update).
+      return isMarketCopy(app)
+        ? { state: "update" as const, title: "A new reviewed release is waiting. Update brings it in." }
+        : { state: "update" as const };
     case "retry":
       return { state: "retry" as const, title: action.error ?? undefined };
     case "incompatible":
@@ -74,7 +150,11 @@ export function pillPropsFor(app: AppEntry, action: AppAction) {
 /** The AppEntry-bound pill: reads the job, derives the state, runs the action. */
 export function AppActionPill({ app, size = "sm", emphasis }: { app: AppEntry; size?: ActionPillSize; emphasis?: "tinted" | "filled" }) {
   const job = useJob(app.slug);
+  const checking = useChecking(app.slug);
   const action = actionFor(app, job);
+  if (checking) {
+    return <ActionPill state="progress" progress={null} size={size} label="Checking" ariaLabel={`Checking ${app.name} for a new release`} />;
+  }
   return (
     <ActionPill
       {...pillPropsFor(app, action)}
@@ -93,7 +173,7 @@ function actionAria(app: AppEntry, action: AppAction): string | undefined {
     case "open":
       return `Open ${app.name}`;
     case "update":
-      return `Update ${app.name}`;
+      return isMarketCopy(app) ? `Bring in the new release of ${app.name}` : `Update ${app.name}`;
     case "retry":
       return `Retry installing ${app.name}`;
     default:
@@ -108,16 +188,54 @@ export function openDetail(slug: string) {
 export function MarketCard({ app, catalog, variant = "default" }: { app: AppEntry; catalog: Catalog | null; variant?: "default" | "compact" }) {
   const job = useJob(app.slug);
   const action = actionFor(app, job);
+  const block = app.installed?.block ?? null;
+  // The card's meta: the author, then the proof line (lineage, remixes,
+  // contributors, last release) when the row has any — else the old
+  // category · version line.
+  const proof = <ProofLine app={app} catalog={catalog} />;
+  const hasProof = !!(
+    app.install_count ||
+    app.remix_of ||
+    app.remix_count ||
+    (app.contributor_count ?? 0) > 1 ||
+    app.last_release_at
+  );
+  const meta = hasProof ? (
+    <>
+      {app.author?.name || "Unknown"}
+      <span aria-hidden="true"> · </span>
+      {proof}
+    </>
+  ) : (
+    metaLine(app, catalog, { category: variant !== "compact" })
+  );
   return (
     <StoreCard
       href={appDetailHref(app.slug)}
       onOpen={() => openDetail(app.slug)}
       icon={<AppIcon src={app.icon_url} name={app.name} seed={app.slug} size={variant === "compact" ? 40 : 44} />}
-      name={app.name}
+      name={
+        <>
+          {app.name}
+          {block?.level !== "hard" && <VerifiedMark />}
+        </>
+      }
       description={app.description}
-      meta={metaLine(app, catalog, { category: variant !== "compact" })}
+      meta={meta}
       thumb={app.preview_url}
-      badge={action.kind === "update" ? "Update" : action.kind === "open" && app.installed ? "Installed" : undefined}
+      badge={
+        block
+          ? block.level === "hard"
+            ? "Blocked"
+            : "Paused"
+          : action.kind === "update"
+            ? "Update"
+            : action.kind === "open" && app.installed
+              ? isOwnCopy(app)
+                ? "Your app"
+                : "Installed"
+              : undefined
+      }
       variant={variant}
       action={<AppActionPill app={app} />}
     />

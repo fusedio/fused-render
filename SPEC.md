@@ -253,7 +253,21 @@ const { text, usage, response, provider } = await fused.ai.text({
   the same; `"local"` → the catalog's default text model for this machine
   (`catalog.default_for`, a 409 `ai_unavailable` where no text runner resolves).
   `provider: "claude"` with a repo id is a `bad_request` naming the tier that would
-  take it. **The same `provider` option is on `.image`, `.video`, `.transcribe`,
+  take it. **Three more tiers are the agent CLIs** (D1433): `provider: "copilot" |
+  "codex" | "gemini"` runs the same tool-less, session-free one-shot the session
+  recaps use (`agent_oneshot.py`: prompt on stdin, no tools, nothing from the
+  server's cwd, no session left behind) — text only, `history`/`raw`/`images`
+  refused like the Claude tier, sampling knobs and `thinking` dropped into
+  `warnings[]`, `effort` passed where the CLI takes it (Copilot per model, Codex
+  as `model_reasoning_effort`, never Gemini), `model` passed through as Tasks pass
+  it (omitted = the agent's catalog default), **no streaming** (the whole text
+  arrives as one chunk then `done`), `usage` null. Gated on the agent's
+  Preferences switch: off → 409 `ai_unavailable` with `reason: "backend_disabled"`;
+  `"claude"` stays ungated (D17). These tiers are never inferred from a model's
+  shape — only an explicit `provider` reaches them. They are also the AI gateway
+  the canvas host runs for the embedded workbench (CanvasWorkspace.tsx module
+  doc, host-ai.ts): the host posts the enabled agents' models to the frame and
+  relays its inline AI requests to this route. **The same `provider` option is on `.image`, `.video`, `.transcribe`,
   `.embed` and `.decide`** (their D413 envelopes grow that one key), and every reply of the six
   carries `provider`; those five have only a local tier today, so omitted means
   `"local"` and `"claude"` answers `unavailable` on a 409 — a well-formed request
@@ -2071,20 +2085,22 @@ one gate before anything runs. Three payloads on the one `open` action:
   Finder double-click lands — where the user installs or updates the app.
   Nothing is written on the GET (D3); the page says whether a copy is
   installed, newer, older or diverged, and the install is its X-Fused POST.
-  A malformed payload (relative, not `.fused`) goes to Home carrying it under
-  `?_edit_appfile=`, which the shell's `FetchAppFileBoot` reads once, strips,
-  and reports as a toast — one error surface. *(Supersedes D889's clone-unasked +
+  A malformed payload (relative, not `.fused`) goes to the shell's `/install`
+  page carrying it under `?_edit_appfile=`, which reports it on the page —
+  one error surface. *(Supersedes D889's clone-unasked +
   overwrite-modal shape, 2026-10-13.)*
 - **DL-8** Hosted app file payload: `fused-render://open?url=<http(s) link to
   a .fused>`, the link percent-encoded once by the sender and decoded once
   here, verbatim to end-of-string like `git=`/`file=`. Render App's
   `render-app://open?url=` ported (fused-render-lite PRs #27/#30): a web
   page's "Open in fused-render" link. Same no-page shape as DL-7: `GET
-  /clone` answers a 303 to Home with the link as `?_fetch_appfile=` (nothing
-  is on disk yet, and nothing is written on the GET, D3; a non-http(s)
-  payload rides along verbatim so the shell reports it). The shell's
-  `FetchAppFileBoot` (top document, `!IS_EMBED`) reads the param once, strips
-  it before any async work, then **downloads without a confirm step** (the
+  /clone` answers a 303 to the shell's `/install` page with the link as
+  `?_fetch_appfile=` (nothing is on disk yet, and nothing is written on the
+  GET, D3; a non-http(s) payload rides along verbatim so the page reports
+  it). The page (`shell/InstallLinkPage.tsx`: the source, the running clock
+  and the one state are the whole window — not a toast over Home, which
+  read as "nothing is happening" while a clone ran; a failure shows on the
+  page with Try again) **downloads without a confirm step** (the
   link click is the gesture) through the X-Fused `POST /api/appfile/fetch
   {url} → {file}` (`appfetch.py`: http(s) only, every redirect hop
   re-checked, 1 GB cap by `Content-Length` and while streaming, temp file
@@ -2094,13 +2110,15 @@ one gate before anything runs. Three payloads on the one `open` action:
   `<name>-<url sha 8>.fused` for files that predate the id — and opens the
   saved file's **install page** (AF-14): the top document hard-loads the
   file's embed URL (a full load, since the embed/view prefix is read once at
-  module init), where the `fusedapp` template shows what installing would do
-  and installs on one click; nothing in the file runs before that. A re-click
+  module init), where the install page (`apps/marketplace FusedFilePage`,
+  rendered in place of the `fusedapp` template for every `.fused` open,
+  whatever `marketplace_enabled` says; the template draws card peeks only)
+  shows what installing would do and installs on one click; nothing in the file runs before that. A re-click
   on a link to a NEW version of an installed app lands on the same page
   reading "Update": one click replaces the copy's files and keeps everything
   in `.fused` — the page warns first when the copy was edited since install.
   Inside a native window the same load: a deep link always arrives in a
-  fresh native window parked on Home by the 303, and loading the page there
+  fresh native window parked on `/install` by the 303, and loading the page there
   makes that window the file's own, and the install's navigation the app's
   (the URL observer re-keys it, the title-bar Edit button is the way into the
   explorer) instead of leaving it orphaned beside a second one. In a browser
@@ -2113,8 +2131,8 @@ one gate before anything runs. Three payloads on the one `open` action:
   {owner}/{repo}` — that shape only (`.git` / trailing slash tolerated, the
   embedded URL may be percent-encoded), a repo holding ONE app at its ROOT
   (anything else → error). The app installs as a real GIT CLONE so the user
-  can push and open PRs (`appfile_git.py`). `GET /clone` 303s to Home with
-  the link as `?_fetch_appgit=`; `FetchAppFileBoot` posts it as `{git}` to
+  can push and open PRs (`appfile_git.py`). `GET /clone` 303s to `/install`
+  with the link as `?_fetch_appgit=`; the page posts it as `{git}` to
   the same `POST /api/appfile/fetch`, where `appfetch.download_github_app`
   runs `git clone --filter=blob:none` (the user's own git and credentials,
   PATH widened for a Finder-launched app's credential helpers, ssh in
@@ -12372,8 +12390,9 @@ and not a sync nicety.
   exists. `tests/test_browser_storage_allowlist.py` lists the files allowed to
   touch storage in code, each with its category; a new storage use anywhere
   else fails the suite.
-- **BS-2 Stores.** Projects order = the `apps` array of `current_apps.json`
-  (`POST /api/current-apps/order`). Notifications seen/dismissed =
+- **BS-2 Stores.** Projects order = the `apps` array of `current_apps.json`,
+  listed by recency (newest task activity, else added; no drag since
+  2026-10-23). Notifications seen/dismissed =
   `notifications.json` (`GET`/merge-`POST /api/notifications/state`). Tasks
   done-and-seen = `__seen_done__` in tasks `read.json`, carried by
   `/api/tasks/pulse`, replaced by `POST /api/tasks/seen`. Bot unread baseline =

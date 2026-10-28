@@ -55,6 +55,7 @@ let pastNoteFor: typeof import("./NewJobModal").pastNoteFor;
 let PAST_NOTE_ONE_OFF: typeof import("./NewJobModal").PAST_NOTE_ONE_OFF;
 let PAST_NOTE_CATCH_UP: typeof import("./NewJobModal").PAST_NOTE_CATCH_UP;
 let defaultTargetOf: typeof import("./NewJobModal").defaultTargetOf;
+let openingTargetOf: typeof import("./NewJobModal").openingTargetOf;
 let targetVerdict: typeof import("./NewJobModal").targetVerdict;
 let folderFieldRows: typeof import("./NewJobModal").folderFieldRows;
 let splitTargetPath: typeof import("./NewJobModal").splitTargetPath;
@@ -97,6 +98,7 @@ beforeAll(async () => {
   PAST_NOTE_ONE_OFF = mod.PAST_NOTE_ONE_OFF;
   PAST_NOTE_CATCH_UP = mod.PAST_NOTE_CATCH_UP;
   defaultTargetOf = mod.defaultTargetOf;
+  openingTargetOf = mod.openingTargetOf;
   targetVerdict = mod.targetVerdict;
   splitTargetPath = mod.splitTargetPath;
   PATH_MISSING = mod.PATH_MISSING;
@@ -1560,6 +1562,28 @@ describe("defaultTargetOf", () => {
       "/data/work",
     );
   });
+
+  test("normalizes a Windows workspace path", () => {
+    expect(
+      defaultTargetOf({ home: "C:\\Users\\v", fused_dir: "C:\\Users\\v\\Fused" }),
+    ).toBe("C:/Users/v/Fused");
+  });
+});
+
+describe("openingTargetOf (Remember last folder)", () => {
+  const cfg = { home: "/Users/x", fused_dir: "/data/work" };
+
+  test("flag off: the Fused workspace, whatever the recents say", () => {
+    expect(openingTargetOf(cfg, false, ["/a/b"])).toBe("/data/work");
+  });
+
+  test("flag on with recents: the most recent folder", () => {
+    expect(openingTargetOf(cfg, true, ["/a/b", "/c"])).toBe("/a/b");
+  });
+
+  test("flag on with no recents: the workspace", () => {
+    expect(openingTargetOf(cfg, true, [])).toBe("/data/work");
+  });
 });
 
 // ---- the when-row opens on now -------------------------------------------------
@@ -1654,6 +1678,11 @@ describe("the path field's verdict on a folder that isn't there yet", () => {
       .toEqual({ kind: "new-folder", name: "ABC1", parent: "/Users/a/fused" });
   });
 
+  test("a backslash path is normalised before it is split", () => {
+    expect(targetVerdict("C:\\Users\\a\\ABC1", ["Desktop"]))
+      .toEqual({ kind: "new-folder", name: "ABC1", parent: "C:/Users/a" });
+  });
+
   test("two missing levels is refused, and says which one is missing", () => {
     // null = the PARENT could not be listed either, so this is not "name me a
     // folder", it is "build me a tree" — the ask a typo makes by accident.
@@ -1674,7 +1703,9 @@ describe("the path field's verdict on a folder that isn't there yet", () => {
       .toEqual({ kind: "bad", text: PATH_MISSING });
   });
 
-  test("splitTargetPath keeps the root's slash", () => {
+  test("splitTargetPath keeps a drive root's slash", () => {
+    // Bare "C:" reads as cwd-relative everywhere else in the shell.
+    expect(splitTargetPath("C:/ABC1")).toEqual({ parent: "C:/", base: "ABC1" });
     expect(splitTargetPath("/ABC1")).toEqual({ parent: "/", base: "ABC1" });
     expect(splitTargetPath("/Users/a/fused/ABC1"))
       .toEqual({ parent: "/Users/a/fused", base: "ABC1" });
@@ -1881,7 +1912,7 @@ describe("where the when-row lives", () => {
   test("it is the WHEN property pill; the More options fold is gone", () => {
     const s = src();
     expect(s).toContain('<div className="nt-pills">');
-    expect(s).toContain('k="When"');
+    expect(s).toContain('ariaLabel="When"');
     expect(s).not.toContain("schedule-form-more");
     expect(s).not.toContain("<details");
     // No disclosure state either: a planning card or a draft with a saved time
@@ -2616,7 +2647,7 @@ describe("the path locks to the app the card was opened in", () => {
     // hide the path field". It used to sit disabled with a line saying why; the
     // whole row goes now, and the target is still what the scope seeded.
     const src = card();
-    expect(src).toMatch(/\{!lockTarget && \(\s*<PropPill\s+k="Where"/);
+    expect(src).toMatch(/\{!lockTarget && \(\s*<PropPill\s+k=""\s+icon=\{ICON_FOLDER\}\s+ariaLabel="Folder"/);
     expect(src).not.toContain("Tasks here run against this project.");
   });
 });
@@ -2768,11 +2799,11 @@ describe("the folder field's two lists", () => {
   });
 
   test("text that NAMES A PLACE is an address, and leaves the recents alone", () => {
-    // A leading `/`, `~` or a `..` is the Explorer's own test for "this
+    // A leading `/`, `~` or a drive letter is the Explorer's own test for "this
     // is an address" (`isPathShapedQuery`). The field opens pre-filled with one,
     // so this is the common case: typing edits an address, and the drop goes on
     // offering what the card remembers.
-    for (const typed of ["/Users/me/Desk", "~/Desktop/fu", "../up"]) {
+    for (const typed of ["/Users/me/Desk", "~/Desktop/fu", "C:/proj", "../up"]) {
       const { rows, searching } = ask(typed);
       expect(searching).toBe(false);
       expect(rows.map((r) => r.path)).toEqual(RECENTS);
@@ -2874,7 +2905,7 @@ describe("property pills", () => {
 
   test("the pill row starts with Model, then Access, Where, When", () => {
     const s = src();
-    const order = ["Model", "Access", "Where", "When"].map((k) => s.indexOf(`k="${k}"`));
+    const order = ["Model", "Permissions", "Folder", "When"].map((k) => s.indexOf(`ariaLabel="${k}"`));
     expect(order[0]).toBeGreaterThan(-1);
     expect(order[0]).toBeLessThan(order[1]);
     expect(order[1]).toBeLessThan(order[2]);
@@ -2885,9 +2916,9 @@ describe("property pills", () => {
     expect(src()).toMatch(/pastNoteFor\(timePicked && pickedOk \? picked : null,/);
   });
 
-  test("the MODEL pill shows the model alone; Thinking stays in the popover", () => {
+  test("the MODEL pill shows the model and its thinking level, never with a ·", () => {
     const s = src();
-    expect(s).toContain('const modelText = taskRunLabel(runModels, model) || "Default";');
+    expect(s).toContain('const modelText = (taskRunLabel(runModels, model) || "Default")');
     expect(s).not.toMatch(/modelText[^;]*·/);
   });
 
@@ -2920,7 +2951,7 @@ describe("property pills", () => {
 
   test("four pills, in source order: Model, Access, Where, When", () => {
     const s = src();
-    const at = ["Model", "Access", "Where", "When"].map((k) => s.indexOf(`k="${k}"`));
+    const at = ["Model", "Permissions", "Folder", "When"].map((k) => s.indexOf(`ariaLabel="${k}"`));
     expect(at.every((i) => i > -1)).toBe(true);
     expect([...at].sort((a, b) => a - b)).toEqual(at);
     // …and they sit in the row that replaced the folder row.

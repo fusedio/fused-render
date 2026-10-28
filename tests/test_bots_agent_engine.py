@@ -9,6 +9,7 @@ import contextlib
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -403,6 +404,26 @@ def run_task(bot, script, monkeypatch, task="say hi"):
 
 
 # ----------------------------------------------------------------- tests ---
+def test_terminate_without_sigkill_attr(monkeypatch):
+    """Windows has no `signal.SIGKILL`: stopping a turn must not raise
+    AttributeError evaluating it at the `_terminate` call site."""
+    monkeypatch.delattr(signal, "SIGKILL")
+    sent = []
+
+    class FakeProc:
+        pid = 2 ** 22 + 12345  # no such process group: _signal falls back
+        stdin = None
+
+        def send_signal(self, sig):
+            sent.append(sig)
+
+        def wait(self, timeout=None):
+            raise subprocess.TimeoutExpired("fake", timeout)
+
+    agent_engine._terminate(FakeProc(), grace=0.01)
+    assert len(sent) == 2 and sent[0] == signal.SIGTERM
+
+
 def test_text_then_done(server, fake_cli, monkeypatch):
     bot = FakeBot()
     run_task(bot, [{"text": "Hi! How can I help?"}, {"result": "Hi! How can I help?"}], monkeypatch)
@@ -1497,6 +1518,18 @@ def test_super_ask_user_question_typed_answer_joins_the_options(server, fake_cli
     opts = ans["questions"][0]["options"]
     assert [o["label"] for o in opts] == ["Small", "Large", "medium, please"]
     assert opts[-1]["description"] == agent_engine.TYPED_OPTION_NOTE
+
+
+def test_super_ask_user_question_typed_answer_stays_within_the_cli_option_cap(server, fake_cli, monkeypatch):
+    # The CLI rejects updatedInput whose options exceed 4, losing the answer entirely.
+    bot = super_bot()
+    t = start(bot, [_ask_q(_q("Which size?", "S", "M", "L", "XL")), {"result": "ok"}], monkeypatch)
+    bot.wait_event("question")
+    bot.say("medium, please")
+    finish(t)
+    ans = _answer(fake_cli)["updatedInput"]
+    assert ans["answers"] == {"Which size?": "medium, please"}
+    assert [o["label"] for o in ans["questions"][0]["options"]] == ["S", "M", "L", "XL"]
 
 
 def test_super_ask_user_question_multi_select_keeps_commas_in_labels(server, fake_cli, monkeypatch):

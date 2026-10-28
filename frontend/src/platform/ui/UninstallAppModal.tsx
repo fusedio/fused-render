@@ -90,7 +90,8 @@ export function UninstallAppModal({ request }: { request: UninstallRequest }) {
         tone: "info",
       });
       // Standing on THIS app's page (/apps/<folder segments>, the same
-      // encoding the app page uses): it no longer exists, go to the hub. Another app's page is
+      // encoding the app page uses — a Windows drive letter stays a
+      // segment): it no longer exists, go to the hub. Another app's page is
       // left alone.
       const here = location.pathname.replace(/\/+$/, "");
       const mine = "/apps/" + encodeFsPathSegments(pre.path).replace(/\/+$/, "");

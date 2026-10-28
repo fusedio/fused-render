@@ -16,14 +16,16 @@ streams in. Stdlib only (plus ../shared/procutil).
 `claude` is looked up on PATH and then in its known install locations
 (_claude_bin).
 
-THREE AGENT BACKENDS (docs/COPILOT_BACKEND.md, docs/CODEX_BACKEND.md):
-Claude Code (`claude`, the default, `session_host.py`), GitHub Copilot CLI
-(`copilot`, `copilot_host.py`, driven over ACP) and OpenAI Codex CLI
-(`codex`, `codex_host.py`, driven over `codex app-server`). `backend` is
+FOUR AGENT BACKENDS (docs/COPILOT_BACKEND.md, docs/CODEX_BACKEND.md,
+docs/GEMINI_BACKEND.md): Claude Code (`claude`, the default,
+`session_host.py`), GitHub Copilot CLI (`copilot`, `copilot_host.py`, driven
+over ACP), OpenAI Codex CLI (`codex`, `codex_host.py`, driven over `codex
+app-server`) and Google Gemini CLI (`gemini`, `gemini_host.py`, driven over
+ACP too). `backend` is
 chosen at a chat's first turn and never changes (`_backend_for_session`);
 every host writes the same run-dir files and stream rows, so everything
 below the spawn reads one shape. Where they differ it is named: the argv
-builders (`_copilot_argv`, `_codex_argv`), `_backend_enabled` (the prefs
+builders (`_copilot_argv`, `_codex_argv`, `_gemini_argv`), `_backend_enabled` (the prefs
 gate), `_send` (what a live session of each can and cannot take), the
 self-minted session id (`_SELF_MINTED_ID_BACKENDS`), and the caps gating on
 snapshots / background tasks / plan mode, which is "Claude only" — every
@@ -54,6 +56,7 @@ Actions:
           "permissions": [{"id", "tool", "input", "decision", "scope",
                            "answers"}, ...],
           "app_state": [{"id", "reason", "created_at"}, ...]  (unanswered only),
+          "canvas_shot": [{"id", "what", "udf", "reason", "created_at"}, ...]  (unanswered only),
           "mode": <the mode this run is RUNNING in, not the picker's>}
   main(action="decide", run_id=..., request_id=..., decision="allow"|"deny",
        scope="once"|"session"|"exact", answers=<json string, AskUserQuestion only>,
@@ -62,6 +65,8 @@ Actions:
                                       -> {"decided": ..., "decision": ...}
   main(action="app_state", run_id=..., request_id=..., state=<json string>)
                                       -> {"answered": ...}
+  main(action="canvas_shot", run_id=..., request_id=..., state=<json string>)
+                                      -> {"answered": ...}   ({"image", "mime", "udf"} | {"error"})
   main(action="sessions", file=...)   -> {"sessions": [...]}
       every session about this target, newest first: the transcripts in this
       cwd's project dir (see _sessions)
@@ -230,7 +235,7 @@ def _transcript_backend(path: str) -> str:
     real = os.path.realpath(path)
     for backend, root in _transcript_roots():
         r = os.path.realpath(root)
-        if real == r or real.startswith(r + os.sep):
+        if _platform.is_within(real, r):
             return backend
     return DEFAULT_BACKEND
 
@@ -253,6 +258,12 @@ _COPILOT_CANDIDATES = ("~/.local/bin/copilot", "/opt/homebrew/bin/copilot",
 _CODEX_CANDIDATES = ("~/.npm-global/bin/codex", "/opt/homebrew/bin/codex",
                      "/usr/local/bin/codex", "~/.local/bin/codex",
                      "~/.bun/bin/codex", "~/Library/pnpm/codex")
+# ...and where Google Gemini CLI installs `gemini`: the same prefixes, the
+# same order. A COPY of `gemini_health.POSIX_CANDIDATES`
+# (docs/GEMINI_BACKEND.md D10), pinned equal by a test as the others are.
+_GEMINI_CANDIDATES = ("~/.npm-global/bin/gemini", "/opt/homebrew/bin/gemini",
+                      "/usr/local/bin/gemini", "~/.local/bin/gemini",
+                      "~/.bun/bin/gemini", "~/Library/pnpm/gemini")
 
 # Where `gh` gets installed, for the D10 login substitute — a COPY of
 # `github_setup.candidates()`: the app's own install dir first (derived at
@@ -269,20 +280,25 @@ _COPILOT_HEALTH_FILE = "copilot-health.json"
 # The user-facing name of each backend, for refusals this module words itself
 # (`_backend_disabled_error`). `agent_backends.<id>.label` is the app-side
 # copy; a test pins the two equal.
-_BACKEND_LABELS = {"claude": "Claude", "copilot": "Copilot", "codex": "Codex"}
+_BACKEND_LABELS = {"claude": "Claude", "copilot": "Copilot", "codex": "Codex",
+                   "gemini": "Gemini"}
 
 # The backends whose session id is the CLI's OWN, minted after the spawn and
-# announced on the host's init row — never fused's `--session-id` (D2 of both
-# contracts: `copilot --acp` refuses the flag, and Codex's thread id comes
-# out of `thread/start`). A fresh chat on one of these has no id in `_start`;
-# `_poll` learns it, and `_record_minted_session` writes the record `_start`
-# could not.
-_SELF_MINTED_ID_BACKENDS = ("copilot", "codex")
+# announced on the host's init row — never fused's `--session-id` (D2 of the
+# three contracts: `copilot --acp` refuses the flag, Codex's thread id comes
+# out of `thread/start`, Gemini's `session/new` mints a uuid4 of its own). A
+# fresh chat on one of these has no id in `_start`; `_poll` learns it, and
+# `_record_minted_session` writes the record `_start` could not.
+_SELF_MINTED_ID_BACKENDS = ("copilot", "codex", "gemini")
+# The backends whose shell command has no allow-list flag (CODEX D9, GEMINI
+# D9): a bare `fused` asks like any other command under the ask mode, so the
+# prompt's "pre-approved" clause is dropped for them (`_fused_cli_note`).
+_NO_PREAPPROVE_BACKENDS = ("codex", "gemini")
 
 # What a NEW chat's model pill opens on, per non-Claude backend (Claude's
 # comes from ~/.claude/settings.json, `_global_defaults`). A COPY of each
 # `agent_backends/<id>.py` `default_model`, pinned equal by a test.
-_NEW_CHAT_MODELS = {"copilot": "auto", "codex": "gpt-6-luna"}
+_NEW_CHAT_MODELS = {"copilot": "auto", "codex": "gpt-6-luna", "gemini": "auto"}
 
 # Copilot models the CLI refuses `--reasoning-effort` for (1.0.102 fails
 # `session/new`: "Reasoning effort is not supported when using the "auto"
@@ -298,7 +314,7 @@ _COPILOT_NO_EFFORT_MODELS = ("auto", "claude-sonnet-4.5", "claude-opus-4.5")
 
 # Error-text markers per backend — substrings (lower-cased) of a `result` row
 # or stderr that mean "signed out / no access" and "usage or credit limit".
-# COPIED from `agent_backends/claude.py`, `copilot.py` and `codex.py`
+# COPIED from `agent_backends/claude.py`, `copilot.py`, `codex.py` and `gemini.py`
 # (`account_error_markers` / `limit_error_markers`): this module may not import
 # the package, and a test pins the tuples equal so the two cannot drift.
 _ACCOUNT_ERROR_MARKERS = {
@@ -308,6 +324,9 @@ _ACCOUNT_ERROR_MARKERS = {
                 "copilot login", "no copilot access", "not authorized"),
     "codex": ("not logged in", "requiresopenaiauth", "codex login",
               "unauthorized", "authentication", "login required", "sign in"),
+    "gemini": ("api key is missing", "authentication required", "not logged in",
+               "not signed in", "unauthenticated", "invalid_grant", "login required",
+               "sign in", "unauthorized"),
 }
 _LIMIT_ERROR_MARKERS = {
     # Claude's are the two this function matched before a second backend
@@ -317,6 +336,8 @@ _LIMIT_ERROR_MARKERS = {
     "copilot": ("ai credits", "premium request", "rate limit", "quota"),
     "codex": ("rate limit", "usage limit", "quota", "insufficient_quota",
               "spend control", "too many requests", "429"),
+    "gemini": ("resource_exhausted", "rate limit", "quota", "too many requests",
+               "429"),
 }
 
 # The MCP server + tool that `--permission-prompt-tool` names. The CLI addresses
@@ -328,6 +349,17 @@ PERMISSION_TOOL = "approve"
 # carding a read of the page the user is already looking at would be a prompt
 # with no decision in it, once per edit.
 APP_STATE_TOOL = "app_state"
+# The canvas-screenshot tool (permission_server.CANVAS_SHOT_TOOL): offered to a
+# session whose target sits inside a canvas clone (`_in_workbench_root`), the
+# one kind of target whose page frames a workbench it can photograph.
+CANVAS_SHOT_TOOL = "canvas_screenshot"
+# How long the tool waits for the canvas page (permission_server
+# CANVAS_SHOT_TIMEOUT): the env var is read here AND forwarded into the
+# server's environment by `_write_mcp_config`, which also sets the MCP
+# client's per-call ceiling above it for a canvas session, so the tool's own
+# "no page answered" sentence reaches the model instead of the CLI's
+# MCP-timeout error.
+CANVAS_SHOT_WAIT = float(os.environ.get("FUSED_RENDER_CANVAS_SHOT_TIMEOUT", "100"))
 # The delimiters the PAGE wraps its send-time snapshot in. Stripped from every
 # user-facing copy of a message (the run's `meta.json`, hence the commit
 # subject and a re-attach match — plus the restored
@@ -436,8 +468,9 @@ DEFAULT_PERMISSION_MODE = "prompt"
 
 def _backend_mode(backend: str, cli_mode: str | None) -> str | None:
     """Copilot keeps its historic None for the ask mode (no `default` there).
-    Copilot only: Codex's host maps the CLI-wire names (`default`,
-    `acceptEdits`, `auto`) onto its policy pairs itself (CODEX D5)."""
+    Copilot only: the Codex and Gemini hosts map the CLI-wire names
+    (`default`, `acceptEdits`, `auto`) onto their own vocabularies themselves
+    (CODEX D5, GEMINI D5)."""
     return None if backend == "copilot" and cli_mode == "default" else cli_mode
 
 
@@ -719,21 +752,45 @@ def _codex_bin() -> str:
     )
 
 
+def _gemini_bin() -> str:
+    """Path to the `gemini` executable — `_codex_bin`'s twin, same ladder:
+    FUSED_RENDER_GEMINI_BIN (where `gemini_health` publishes a binary only
+    the user's login shell could find), then PATH, then the known install
+    prefixes (`_GEMINI_CANDIDATES`). A stale override is ignored."""
+    override = os.environ.get("FUSED_RENDER_GEMINI_BIN")
+    if override and os.path.isfile(override):
+        return override
+    found = shutil.which("gemini")
+    if found:
+        return found
+    for candidate in _GEMINI_CANDIDATES:
+        resolved = os.path.expanduser(os.path.expandvars(candidate))
+        if os.path.isfile(resolved):
+            return resolved
+    raise FileNotFoundError(
+        "gemini CLI not found — install with `npm install -g @google/gemini-cli`, "
+        "put `gemini` on the PATH of the environment that launched "
+        "fused-render, or set FUSED_RENDER_GEMINI_BIN to its full path. Also "
+        "looked in: " + ", ".join(_GEMINI_CANDIDATES)
+    )
+
+
 # ------------------------------------------------------------ agent backends
 
 def _backend_enabled(backend: str) -> bool:
     """Whether `backend` may be SPAWNED — the one check in `_start` that keeps
     a disabled agent from ever starting (docs/COPILOT_BACKEND.md invariant 10).
 
-    A stdlib read of `<home>/prefs.json`, the same file and the same three
+    A stdlib read of `<home>/prefs.json`, the same file and the same four
     keys `shell/prefs.py` keeps (`claude_enabled` is on unless stored False,
-    `copilot_enabled` and `codex_enabled` are off unless stored True),
+    `copilot_enabled`, `codex_enabled` and `gemini_enabled` are off unless
+    stored True),
     because this module cannot import the package. The home is
     `appenv.home_dir()` — the BRANCH-RESOLVED one the server exports, which
     is where prefs.json actually lives — not the unnested `_state_file` root
     the session store uses. Mirrors `registry.enabled_ids`' never-empty rule
-    too: a hand-edited file that clears all three reads as Claude on, so this
-    and the router's 400 agree."""
+    too: a hand-edited file that clears every switch reads as Claude on, so
+    this and the router's 400 agree."""
     try:
         with open(os.path.join(_home_dir(), "prefs.json"), encoding="utf-8") as fh:
             prefs = json.load(fh)
@@ -744,29 +801,32 @@ def _backend_enabled(backend: str) -> bool:
     claude_on = prefs.get("claude_enabled") is not False
     copilot_on = prefs.get("copilot_enabled") is True
     codex_on = prefs.get("codex_enabled") is True
+    gemini_on = prefs.get("gemini_enabled") is True
     if backend == "copilot":
         return copilot_on
     if backend == "codex":
         return codex_on
+    if backend == "gemini":
+        return gemini_on
     if backend == "claude":
-        return claude_on or not (copilot_on or codex_on)
+        return claude_on or not (copilot_on or codex_on or gemini_on)
     return False
 
 
 def _strict_mcp_pref() -> bool:
     """Whether chat and Tasks-page sessions start "lean" — with
     `--strict-mcp-config`, so the user's own MCP servers and claude.ai
-    connectors are not launched (about 220 MB less per session). On unless
-    `claude_strict_mcp_enabled` is stored False in `<home>/prefs.json`;
+    connectors are not launched (about 220 MB less per session). Off unless
+    `claude_strict_mcp_enabled` is stored True in `<home>/prefs.json`;
     a stdlib read for the same reason as `_backend_enabled`. A missing or
     unreadable file reads as the default."""
     try:
         with open(os.path.join(_home_dir(), "prefs.json"), encoding="utf-8") as fh:
             prefs = json.load(fh)
     except (OSError, ValueError):
-        return True
-    return not (isinstance(prefs, dict)
-                and prefs.get("claude_strict_mcp_enabled") is False)
+        return False
+    return (isinstance(prefs, dict)
+            and prefs.get("claude_strict_mcp_enabled") is True)
 
 
 def _default_permission_pref() -> str:
@@ -1039,17 +1099,18 @@ def _fused_cli_note(backend: str = "") -> str:
     server-side push. Telling a session not to push now means telling it to
     finish blind.
 
-    A non-Claude `backend` (Copilot, Codex) drops the closing pointer to the
-    clone's CLAUDE.md: that file is Claude Code's project memory, and naming
-    it to another agent sends it to instructions written for a different one
-    (D18). Codex also loses the "pre-approved" clause: it has no allow-list
-    flag (CODEX D9), so a bare `fused` asks like any other command under the
-    ask mode, and a prompt promising otherwise would be wrong."""
+    A non-Claude `backend` (Copilot, Codex, Gemini) drops the closing pointer
+    to the clone's CLAUDE.md: that file is Claude Code's project memory, and
+    naming it to another agent sends it to instructions written for a
+    different one (D18). Codex and Gemini also lose the "pre-approved"
+    clause (`_NO_PREAPPROVE_BACKENDS`): neither has an allow-list flag
+    (CODEX D9, GEMINI D9), so a bare `fused` asks like any other command
+    under the ask mode, and a prompt promising otherwise would be wrong."""
     if not _fused_cli_dir():
         return ""
     if _non_claude(backend):
         note = _fused_cli_note().replace(_CANVAS_CLAUDE_MD, "")
-        if backend == "codex":
+        if backend in _NO_PREAPPROVE_BACKENDS:
             note = note.replace(_FUSED_PREAPPROVED, ",")
         return note
     return (
@@ -1075,7 +1136,7 @@ def _fused_cli_note(backend: str = "") -> str:
 
 # The `_fused_cli_note` sentence only Claude gets (see its docstring).
 _CANVAS_CLAUDE_MD = " See that folder's CLAUDE.md for the details."
-# ...and the clause Codex does not get: nothing pre-approves `fused` there.
+# ...and the clause Codex and Gemini do not get: nothing pre-approves `fused` there.
 _FUSED_PREAPPROVED = (" — that exact form is pre-approved, while compound "
                       "commands (`cd x && fused ...`) ask the user first —")
 
@@ -1120,7 +1181,7 @@ def _blocked_note(backend: str = "") -> str:
 
     Appended to EVERY target's prompt, like `_origin_note`: this is a fact
     about how the app reads the run, not about the target. A non-Claude
-    `backend` drops the tool name — neither Copilot nor Codex has
+    `backend` drops the tool name — no non-Claude agent has
     `AskUserQuestion` — and keeps the rule that a text question is never the
     way to end a blocked turn."""
     if _non_claude(backend):
@@ -1415,9 +1476,8 @@ def _split_system_prompt(file: str, pane: bool) -> str:
 def _munge(path: str) -> str:
     """A cwd's project-dir name under ~/.claude/projects: every
     non-alphanumeric char becomes '-' (claude-code's own rule, verified
-    against real project dirs — '/', '.', '_' all map to '-'). The Copilot
-    and Codex roots copy the rule (`agent_roots.munge` is the one
-    definition)."""
+    against real project dirs — '/', '.', '_' all map to '-'). The other
+    roots copy the rule (`agent_roots.munge` is the one definition)."""
     return _agent_roots.munge(path)
 
 
@@ -1431,7 +1491,7 @@ def _session_transcript_path(workdir: str, session_id: str) -> str:
     The original wins when it exists; else the newest `<sid>.jsonl` under a
     worktrees sibling of the workdir OR OF ANY ANCESTOR (the worktree lives
     under the repo root, and the chat may be in a subfolder or on a file) —
-    Claude's root only, neither the Copilot nor the Codex host ever
+    Claude's root only, no other host ever
     relocates (EnterWorktree is Claude Code's tool); else the original
     (missing) Claude path, so a caller's not-found handling is unchanged.
     `session_id` is `_bad_id`-checked by callers."""
@@ -1479,7 +1539,8 @@ def _terminal_command(file: str, session_id: str = "", backend: str = "") -> dic
     with no plugin dirs: the fused skills ride the spawn's generated plugin,
     which has no equivalent in a terminal session. Codex's is `codex resume
     <sid>` (CODEX D12), with nothing else: its system prompt and pane tools
-    are spawn-only too. The `fused` PATH prefix below is for every agent, for
+    are spawn-only too; Gemini's is `gemini --resume <sid>` (GEMINI D12),
+    likewise bare. The `fused` PATH prefix below is for every agent, for
     the same reason each time.
 
     Same session, same ground: the cwd is `_workdir` (the key everything else
@@ -1525,6 +1586,10 @@ def _terminal_command(file: str, session_id: str = "", backend: str = "") -> dic
         argv = ["codex"]
         if session_id:
             argv += ["resume", session_id]
+    elif backend == "gemini":
+        argv = ["gemini"]
+        if session_id:
+            argv += ["--resume", session_id]
     else:
         if shutil.which("claude"):
             binary = "claude"
@@ -1561,6 +1626,14 @@ def _state_dir(run_dir: str) -> str:
     and a snapshot read is not something to click: sharing the directory would
     put a card with no decision in it on screen once per edit."""
     return os.path.join(run_dir, "appstate")
+
+
+def _canvas_shot_dir(run_dir: str) -> str:
+    """Where `canvas_screenshot` requests park — a third sibling next to
+    `perm/` and `appstate/`, for the same reason the second is not the first:
+    the page reads each directory as one kind of thing, and a picture request
+    is neither a card to click nor a state read to answer with a DOM."""
+    return os.path.join(run_dir, "canvasshot")
 
 
 def _private_dir(path: str) -> None:
@@ -1727,24 +1800,28 @@ def _shots_dir() -> dict:
         # (that is what _require_private just established) and it holds nothing
         # but our own crops — the argument that stops us chmod'ing the temp root
         # does not apply to our own directory.
-        try:
-            mode = stat.S_IMODE(os.lstat(SHOTS).st_mode)
-            if mode & ~0o700:
-                os.chmod(SHOTS, 0o700)
-                # Re-read rather than trust the call: an ACL, or a filesystem
-                # that does not carry unix modes, can accept a chmod and keep
-                # the bits exactly where they were.
+        # Windows has no mode bits: lstat reports every directory as 0o777
+        # there and chmod cannot clear them. The directory lives under the
+        # user's own per-user %TEMP%, so there is nothing to tighten.
+        if hasattr(os, "geteuid"):
+            try:
                 mode = stat.S_IMODE(os.lstat(SHOTS).st_mode)
-        except OSError as e:
-            return {"error": "could not secure the screenshot directory: %s" % e}
-        if mode & ~0o700:
-            # REFUSE, rather than write crops into a directory we have just
-            # proved others can read. This is the asymmetry stated two
-            # paragraphs up, applied to the case where the fix fails: denial
-            # costs the user their screenshots, adopting costs them pictures
-            # of their screen.
-            return {"error": "the screenshot directory is readable by others "
-                             "(mode %04o) and could not be tightened" % mode}
+                if mode & ~0o700:
+                    os.chmod(SHOTS, 0o700)
+                    # Re-read rather than trust the call: an ACL, or a filesystem
+                    # that does not carry unix modes, can accept a chmod and keep
+                    # the bits exactly where they were.
+                    mode = stat.S_IMODE(os.lstat(SHOTS).st_mode)
+            except OSError as e:
+                return {"error": "could not secure the screenshot directory: %s" % e}
+            if mode & ~0o700:
+                # REFUSE, rather than write crops into a directory we have just
+                # proved others can read. This is the asymmetry stated two
+                # paragraphs up, applied to the case where the fix fails: denial
+                # costs the user their screenshots, adopting costs them pictures
+                # of their screen.
+                return {"error": "the screenshot directory is readable by others "
+                                 "(mode %04o) and could not be tightened" % mode}
     else:
         try:
             _private_dir(SHOTS)
@@ -2028,7 +2105,8 @@ def _terminal_tools_supported() -> bool:
 
 
 def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True,
-                      strict: bool = False, chat_id: str = "") -> str:
+                      strict: bool = False, chat_id: str = "",
+                      canvas: bool = False) -> str:
     """The one-server MCP config that makes the chat window the permission
     prompt AND — when the target has a left pane — the app's own eyes
     (`app_state`), written into the run dir. Returns its path (for --mcp-config).
@@ -2036,10 +2114,11 @@ def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True,
     not one.
 
     `approve=False` adds `--no-approve`, which drops the `approve` tool from
-    the server's roster: a Copilot session's permissions arrive over ACP, a
-    Codex session's as app-server requests, and each host answers them
-    through the same `perm/` files itself (D4 of both contracts), so the
-    server is kept for the pane tools only (`app_state`, `terminal_*`).
+    the server's roster: a Copilot or Gemini session's permissions arrive
+    over ACP, a Codex session's as app-server requests, and each host
+    answers them through the same `perm/` files itself (D4 of the three
+    contracts), so the server is kept for the pane tools only (`app_state`,
+    `terminal_*`).
 
     `pane=False` omits the app-state directory from argv entirely, which is what
     takes the tool out of the server's roster (permission_server keys both its
@@ -2063,6 +2142,11 @@ def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True,
     args = [server, _perm_dir(run_dir)]
     if pane:
         args.append(_state_dir(run_dir))
+    if canvas:
+        # The canvas-screenshot channel, same switch shape as the app-state
+        # one: the directory in argv IS the roster entry. A flag, not a third
+        # positional, so the two positionals keep their places.
+        args.append("--canvas-shots=" + _canvas_shot_dir(run_dir))
     if not approve:
         args.append("--no-approve")
     server_env = {
@@ -2077,6 +2161,9 @@ def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True,
         # an allowlist of env vars plus exactly this dict, so an ambient
         # PYTHONUTF8 would not survive the spawn.
         "PYTHONUTF8": "1",
+        # The screenshot wait, so an override reaches the server (its default
+        # matches ours; the MCP ceiling below is computed from the same value).
+        "FUSED_RENDER_CANVAS_SHOT_TIMEOUT": str(CANVAS_SHOT_WAIT),
     }
     allow_path = _chat_allow_path(chat_id)
     if allow_path and approve:
@@ -2102,7 +2189,10 @@ def _write_mcp_config(run_dir: str, pane: bool = True, approve: bool = True,
             # tool call that lasts as long as the user takes to look at it. Set
             # above the server's own wait so an unanswered card returns OUR
             # "nobody answered" deny instead of the CLI's MCP-timeout error.
-            "timeout": (PERMISSION_WAIT + 60) * 1000,
+            # A canvas session's screenshot waits longer than a card may
+            # (CANVAS_SHOT_WAIT, and a canvas-less page answers just under it),
+            # so its ceiling is the larger of the two (CodeRabbit, #1924).
+            "timeout": (max(PERMISSION_WAIT, CANVAS_SHOT_WAIT if canvas else 0) + 60) * 1000,
         }}}, fh)
     return path
 
@@ -2257,7 +2347,7 @@ def _record_settings(session_id: str, model: str = "", effort: str = "",
     model". Same invariant `tasks_store.record_settings` keeps on the server
     side — the two writers share one file, so they have to share one rule.
     `backend` is written for the self-minted-id agents only
-    (`_SELF_MINTED_ID_BACKENDS`: Copilot, Codex), once, by `_start` — or, for
+    (`_SELF_MINTED_ID_BACKENDS`: Copilot, Codex, Gemini), once, by `_start` — or, for
     a fresh chat of theirs whose id `_start` cannot know, by
     `_record_minted_session` (immutable per session, D2). A Claude session's
     record carries none: absent reads as Claude. An unknown value is not
@@ -2306,13 +2396,14 @@ def _record_settings(session_id: str, model: str = "", effort: str = "",
 
 
 def _record_minted_session(run_dir: str, meta: dict, session_id: str) -> None:
-    """A FRESH self-minted-id chat's settings record (Copilot, Codex —
-    `_SELF_MINTED_ID_BACKENDS`), written the first time this module names
+    """A FRESH self-minted-id chat's settings record (Copilot, Codex, Gemini
+    — `_SELF_MINTED_ID_BACKENDS`), written the first time this module names
     its id to a caller (`_poll`'s answer, `cancel`'s).
 
     `_start` cannot write it: the id is the CLI's own, minted after the spawn
-    (`copilot --acp` refuses `--session-id` and mints in `session/new`; Codex
-    mints its thread id in `thread/start` — D2 of both contracts). The
+    (`copilot --acp` refuses `--session-id` and mints in `session/new`, as
+    Gemini's `session/new` does; Codex mints its thread id in `thread/start`
+    — D2 of the three contracts). The
     server resolves an id's agent off this record first and falls back to
     Claude, so it has to exist before the id is out. The values are the ones
     `_start` would have recorded, kept on meta for this (`model`/`effort`),
@@ -2736,7 +2827,103 @@ def _write_decision(perm_dir: str, request_id: str, payload: dict) -> bool:
         except OSError:
             pass
         return False
+    if payload.get("decision") != "expired":
+        _record_wait(perm_dir, request_id)
     return True
+
+
+WAITS_CAP = 500
+
+
+def _chat_waits_path(chat_id: str) -> str:
+    """The per-chat "how long each card sat on the user" store (`{tool_use_id:
+    [from, to]}`, epoch seconds), or "" for a chat with no usable id. Same key and home as
+    `_chat_allow_path`; separate file because resolved permission rows are gone
+    from the history payload once a run ends, so a reload could not rebuild it."""
+    chat_id = (chat_id or "").strip()
+    if not chat_id or _bad_id(chat_id):
+        return ""
+    return _state_file("claude-sessions", "perm-waits", chat_id + ".json")
+
+
+def _chat_waits_load(chat_id: str) -> dict:
+    path = _chat_waits_path(chat_id)
+    if not path:
+        return {}
+    try:
+        with open(path, encoding="utf-8") as fh:
+            store = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(store, dict):
+        return {}
+    out = {}
+    for k, v in store.items():
+        # A bare number is the pre-interval shape (this branch only): unusable.
+        if (isinstance(k, str) and isinstance(v, list) and len(v) == 2
+                and all(isinstance(x, (int, float)) and not isinstance(x, bool)
+                        for x in v) and float(v[0]) < float(v[1])):
+            out[k] = (float(v[0]), float(v[1]))
+    return out
+
+
+def _chat_waits_add(run_dir: str, tool_use_id: str, start: float,
+                    end: float) -> None:
+    """Best effort (atomic, under a flock, newest `WAITS_CAP` kept): a store
+    that will not write costs the chat a number, never the decision."""
+    path = _chat_waits_path(_run_chat_id(run_dir))
+    if not path:
+        return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path + ".lock", "w") as lock:
+            _platform.flock(lock)
+            store = _chat_waits_load(_run_chat_id(run_dir))
+            store.pop(tool_use_id, None)
+            store[tool_use_id] = [float(start), float(end)]
+            while len(store) > WAITS_CAP:
+                del store[next(iter(store))]
+            tmp = "%s.%d.tmp" % (path, os.getpid())
+            with _private_open(tmp) as fh:
+                json.dump(store, fh)
+            os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def _record_wait(perm_dir: str, request_id: str) -> None:
+    """Called by the writer that created the decision: how long the request
+    sat (now - the request's `created_at`), keyed by its tool_use_id. The run
+    dir is always `dirname(perm_dir)` (`_perm_dir`)."""
+    try:
+        with open(os.path.join(perm_dir, request_id + ".req.json"),
+                  encoding="utf-8") as fh:
+            req = json.load(fh)
+        tuid = req.get("tool_use_id")
+        created = req.get("created_at")
+        if (not isinstance(tuid, str) or not tuid or isinstance(created, bool)
+                or not isinstance(created, (int, float))):
+            return
+        _chat_waits_add(os.path.dirname(perm_dir), tuid, float(created),
+                        time.time())
+    except Exception:
+        pass
+
+
+def _annotate_waits(segments: list, waits: dict) -> None:
+    """Stamp `waited` (`[from, to]` epoch seconds the call sat on the user) on every tool segment,
+    children included, whose id has a recorded wait."""
+    if not waits:
+        return
+    for seg in segments:
+        if not isinstance(seg, dict):
+            continue
+        sid = seg.get("id")
+        if seg.get("kind") == "tool" and isinstance(sid, str) and sid in waits:
+            seg["waited"] = [round(waits[sid][0], 3), round(waits[sid][1], 3)]
+        kids = seg.get("children")
+        if isinstance(kids, list):
+            _annotate_waits(kids, waits)
 
 
 def _chat_allow_path(chat_id: str) -> str:
@@ -2958,6 +3145,7 @@ def _deny_pending(run_dir: str, reason: str) -> None:
             _write_decision(_perm_dir(run_dir), perm["id"],
                             {"decision": "deny", "reason": reason})
     _expire_app_state(run_dir, reason)
+    _expire_canvas_shot(run_dir, reason)
 
 
 # --------------------------------------------------------- live app state
@@ -3461,6 +3649,82 @@ def _answer_app_state(run_id: str, request_id: str, state: str) -> dict:
     return {"answered": request_id}
 
 
+def _canvas_shot_requests(run_dir: str) -> list:
+    """The canvas-screenshot requests still waiting for an answer — unanswered
+    only, exactly as `_app_state_requests`, and for the same reason."""
+    shot_dir = _canvas_shot_dir(run_dir)
+    try:
+        names = sorted(n for n in os.listdir(shot_dir) if n.endswith(".req.json"))
+    except OSError:
+        return []
+    out = []
+    for name in names:
+        try:
+            with open(os.path.join(shot_dir, name), encoding="utf-8") as fh:
+                req = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(req, dict) or _bad_id(str(req.get("id") or "")):
+            continue
+        if _read_decision(shot_dir, req["id"]):
+            continue
+        out.append({"id": req["id"],
+                    "what": "udf" if req.get("what") == "udf" else "canvas",
+                    "udf": str(req.get("udf") or ""),
+                    "reason": str(req.get("reason") or ""),
+                    "created_at": req.get("created_at") or 0})
+    return out
+
+
+def _answer_canvas_shot(run_id: str, request_id: str, state: str) -> dict:
+    """Hand the page's picture to the waiting `canvas_screenshot` call.
+
+    `state` is a JSON string (params cross into python string-shaped): either
+    `{"image": <absolute path the page uploaded>, "mime": ..., "udf": ...}` or
+    `{"error": <sentence>}`. The path must sit inside the shots dir — the one
+    directory the page writes pictures to and the tool reads from — so an
+    answer can never point the tool at an arbitrary file. Same first-writer
+    latch and `retry` flag as `_answer_app_state`."""
+    run_dir = os.path.join(RUNS, run_id)
+    if _bad_id(run_id) or not os.path.isdir(run_dir):
+        return {"error": "unknown run_id", "retry": False}
+    if _bad_id(request_id):
+        return {"error": "unknown canvas-screenshot request", "retry": False}
+    shot_dir = _canvas_shot_dir(run_dir)
+    if not os.path.isfile(os.path.join(shot_dir, request_id + ".req.json")):
+        return {"error": "unknown canvas-screenshot request", "retry": False}
+    try:
+        answer = json.loads(state) if state else None
+    except (TypeError, ValueError):
+        answer = None
+    if not isinstance(answer, dict):
+        answer = {}
+    image = answer.get("image")
+    if isinstance(image, str) and image:
+        real = os.path.realpath(image)
+        if not _path_is_inside(os.path.realpath(SHOTS), real) or not os.path.isfile(real):
+            return {"error": "the picture must be a file in the shots directory",
+                    "retry": False}
+        payload = {"image": real,
+                   "mime": answer.get("mime") if isinstance(answer.get("mime"), str) else "",
+                   "udf": answer.get("udf") if isinstance(answer.get("udf"), str) else ""}
+    else:
+        payload = {"error": str(answer.get("error")
+                                or "the canvas page could not take the picture")}
+    if not _write_decision(shot_dir, request_id, payload):
+        return {"error": "could not record the page's answer", "retry": True}
+    return {"answered": request_id}
+
+
+def _expire_canvas_shot(run_dir: str, reason: str) -> None:
+    """Release every unanswered canvas-screenshot request (run cancelled or
+    finished): nothing will answer one after the page's poll loop stops."""
+    for req in _canvas_shot_requests(run_dir):
+        _write_decision(_canvas_shot_dir(run_dir), req["id"],
+                        {"error": "the reply ended before the canvas page "
+                                  "answered (%s)" % reason})
+
+
 def _expire_app_state(run_dir: str, reason: str) -> None:
     """Release every unanswered app-state request. Called when the run is
     cancelled and when a poll first sees it finished: the page's poll loop stops
@@ -3515,7 +3779,7 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
            # rather than landing on a pipe nobody was reading from anymore.
            "--replay-user-messages",
            "--mcp-config", _write_mcp_config(
-               run_dir, pane, strict=strict_mcp,
+               run_dir, pane, strict=strict_mcp, canvas=_in_workbench_root(file),
                # The chat's stable id: a resume's own session, or the id a
                # fresh chat / fork was minted (the same key `_decide` writes).
                chat_id=new_session_id or session_id),
@@ -3572,6 +3836,12 @@ def _claude_argv(run_dir: str, pane: bool, cli_mode: str | None,
            #     user's shell, so it keeps its permission card.
            ",".join(([f"mcp__{PERMISSION_SERVER}__{APP_STATE_TOOL}"] if pane
                      else [])
+                    #   canvas_screenshot — the same kind of thing once more: a
+                    #     picture of the canvas the user is looking at, for the
+                    #     agent they are talking to, read-only. Offered (and so
+                    #     pre-allowed) only for a target inside a canvas clone.
+                    + ([f"mcp__{PERMISSION_SERVER}__{CANVAS_SHOT_TOOL}"]
+                       if _in_workbench_root(file) else [])
                     + ([f"mcp__{PERMISSION_SERVER}__{t}"
                         for t in ("terminal_list", "terminal_read")]
                        if _terminal_tools_supported() else [])
@@ -3639,18 +3909,41 @@ def _appended_prompt(file: str, pane: bool, backend: str = "") -> str:
     """The prompt EVERY backend gets appended for this target — the shape
     `_claude_argv`'s comment above picks (file / app folder / ordinary
     folder) plus the machine-wide notes. One function so Claude's
-    `--append-system-prompt`, Copilot's generated agent file (D8) and
-    Codex's `developerInstructions` (CODEX D8, built by its host) can never
-    say different things about the same target — except where a sentence is
-    about Claude Code itself (`_fused_cli_note`'s / `_blocked_note`'s
-    `backend`)."""
+    `--append-system-prompt`, Copilot's generated agent file (D8), Codex's
+    `developerInstructions` (CODEX D8, built by its host) and Gemini's
+    generated `GEMINI.md` (GEMINI D8) can never say different things about
+    the same target — except where a sentence is about Claude Code itself
+    (`_fused_cli_note`'s / `_blocked_note`'s `backend`)."""
     if os.path.isdir(file):
         shape = _split_system_prompt(file, pane)
     elif _in_workbench_root(file) and _is_canvas_node_file(file):
         shape = _canvas_node_prompt(file)
     else:
         shape = _system_prompt(file)
-    return shape + _fused_cli_note(backend) + _origin_note() + _blocked_note(backend)
+    return (shape + _canvas_shot_note(file) + _fused_cli_note(backend)
+            + _origin_note() + _blocked_note(backend))
+
+
+def _canvas_shot_note(file: str) -> str:
+    """The canvas-screenshot disclosure, for a target inside a canvas clone
+    (where the tool is in the roster — an un-announced tool does not get
+    called, D235). Spelled in Claude's MCP name; `_copilot_plugin_dir`
+    rewrites the prefix for Copilot exactly as it does for `app_state`."""
+    if not _in_workbench_root(file):
+        return ""
+    tool = "mcp__%s__%s" % (PERMISSION_SERVER, CANVAS_SHOT_TOOL)
+    return (
+        f" You can SEE this canvas: `{tool}` returns a screenshot — "
+        "`what: \"canvas\"` for the whole graph as the user's viewport shows "
+        "it, `what: \"udf\"` for one UDF node's rendered output (table, "
+        "chart, text; `udf` names the node — required from the canvas chat, "
+        "optional on a node's own chat). After you change a UDF, call it once "
+        "to check the output looks right before you say it does; call it too "
+        "when the user asks about what they see. It needs the canvas open in "
+        "Fused Render: if the result says no page answered, do not call it "
+        "again this turn — ask the user to open the canvas. Map nodes (WebGL) "
+        "may come out blank or fail to capture; say so rather than guess."
+    )
 
 
 # The plugin root a Copilot session is handed (D8): its manifest, the one
@@ -3673,6 +3966,19 @@ def _skill_plugin_roots(target: str | None = None) -> list:
     return [r for r in roots if r]
 
 
+def _link_or_copy(src: str, dst: str) -> None:
+    """Symlink `dst` -> `src`, or copy when the OS refuses the link.
+
+    Windows without Developer Mode / admin raises WinError 1314 on
+    `os.symlink`; the skills are small and the run dir is junk after the
+    session, so a copy is an equal stand-in there.
+    """
+    try:
+        os.symlink(src, dst, target_is_directory=True)
+    except OSError:
+        shutil.copytree(src, dst)
+
+
 def _copilot_plugin_dir(run_dir: str, file: str, pane: bool) -> str:
     """Write `<run_dir>/plugin` and return it.
 
@@ -3685,7 +3991,8 @@ def _copilot_plugin_dir(run_dir: str, file: str, pane: bool) -> str:
       when the workbench plugin's canvas skills ride along too (two roots, one
       `skills/` name), so a canvas session sees both sets side by side exactly
       as two `--plugin-dir`s give Claude. Nothing is copied: the roots are the
-      app's own export dirs and the run dir is junk once the session ends.
+      app's own export dirs and the run dir is junk once the session ends (where the OS refuses
+      symlinks, Windows w/o privilege, `_link_or_copy` copies instead).
     """
     plugin = os.path.join(run_dir, "plugin")
     agents = os.path.join(plugin, "agents")
@@ -3706,7 +4013,7 @@ def _copilot_plugin_dir(run_dir: str, file: str, pane: bool) -> str:
     skill_dirs = [d for d in skill_dirs if os.path.isdir(d)]
     link = os.path.join(plugin, "skills")
     if len(skill_dirs) == 1:
-        os.symlink(skill_dirs[0], link)
+        _link_or_copy(skill_dirs[0], link)
     elif skill_dirs:
         os.makedirs(link, exist_ok=True)
         for d in skill_dirs:
@@ -3714,7 +4021,7 @@ def _copilot_plugin_dir(run_dir: str, file: str, pane: bool) -> str:
                 src = os.path.join(d, name)
                 dst = os.path.join(link, name)
                 if os.path.isdir(src) and not os.path.lexists(dst):
-                    os.symlink(src, dst)
+                    _link_or_copy(src, dst)
     return plugin
 
 
@@ -3772,9 +4079,10 @@ def _copilot_argv(run_dir: str, pane: bool, cli_mode: str | None,
             cmd += ["--reasoning-effort", effort]
     cmd += ["--plugin-dir", _copilot_plugin_dir(run_dir, file, pane),
             "--agent", "fused:fused"]
-    if pane or _terminal_tools_supported():
+    if pane or _terminal_tools_supported() or _in_workbench_root(file):
         cmd += ["--additional-mcp-config",
-                "@" + _write_mcp_config(run_dir, pane, approve=False)]
+                "@" + _write_mcp_config(run_dir, pane, approve=False,
+                                        canvas=_in_workbench_root(file))]
     # SHOTS is made HERE, not left to the first screenshot: `--add-dir` is the
     # session's only read grant on it, the CLI exits at startup on a directory
     # that does not exist, and there is no post-start grant over ACP. A refusal
@@ -3845,13 +4153,117 @@ def _codex_argv(run_dir: str, pane: bool, cli_mode: str | None,
     very `mcp.json` `_write_mcp_config` writes for it (`--no-approve`), so
     the two agents can never be handed different servers."""
     cmd = [_codex_bin(), "app-server"]
-    if pane or _terminal_tools_supported():
-        with open(_write_mcp_config(run_dir, pane, approve=False),
+    if pane or _terminal_tools_supported() or _in_workbench_root(file):
+        with open(_write_mcp_config(run_dir, pane, approve=False,
+                                    canvas=_in_workbench_root(file)),
                   encoding="utf-8") as fh:
             server = json.load(fh)["mcpServers"][PERMISSION_SERVER]
         prefix = f"mcp_servers.{PERMISSION_SERVER}."
         for key in ("command", "args", "env"):
             cmd += ["-c", prefix + key + "=" + _toml_inline(server[key])]
+    return cmd
+
+
+#: Gemini's own approval-mode ids (`session/set_mode`, `--approval-mode`),
+#: by the CLI-wire mode `_start` records (GEMINI D5). `prompt` is Gemini's
+#: `default`; `plan` is never sent (refused before the spawn).
+_GEMINI_MODES = {"default": "default", "acceptEdits": "autoEdit", "auto": "yolo"}
+#: The SAME modes as the `--approval-mode` FLAG spells them: the CLI's yargs
+#: choices are `default|auto_edit|yolo|plan` (snake case, `--help` 0.65.0,
+#: and "Invalid values: Given autoEdit" when fed the enum id), while
+#: `session/set_mode` takes the `ApprovalMode` enum id `autoEdit`. Two
+#: spellings for one mode; keyed by the enum id `_GEMINI_MODES` yields.
+_GEMINI_ARGV_MODES = {"default": "default", "autoEdit": "auto_edit", "yolo": "yolo"}
+
+
+def _gemini_context_dir(run_dir: str, file: str, pane: bool) -> str:
+    """Write `<run_dir>/gemini/GEMINI.md` and return the dir.
+
+    The body IS the appended prompt (`_appended_prompt`): Gemini has no
+    `--append-system-prompt` and ACP's `session/new` takes no instructions,
+    but the CLI reads a `GEMINI.md` from every workspace directory into its
+    system prompt (its "hierarchical memory"), and `--include-directories`
+    adds a directory to the workspace — so the run dir's own folder, named
+    on the spawn line, is how the prompt reaches the model (GEMINI D8). The
+    prompt names the pane tool in Claude's MCP spelling
+    (`mcp__<server>__<tool>`); Gemini declares an MCP tool to the model as
+    `mcp_<server>_<tool>` (`DiscoveredMCPTool`: `generateValidName` of
+    `<server>_<tool>`, which prefixes `mcp_` — verified in the 0.65.0
+    source), so the double underscores become single ones. The card's
+    display title is another thing again (`<tool> (<server> MCP Server)`,
+    or `<tool>(key: value, …)` with arguments — `gemini_host._map_tool`)."""
+    ctx = os.path.join(run_dir, "gemini")
+    os.makedirs(ctx, exist_ok=True)
+    body = _appended_prompt(file, pane, "gemini").replace(
+        f"mcp__{PERMISSION_SERVER}__", f"mcp_{PERMISSION_SERVER}_")
+    with _private_open(os.path.join(ctx, "GEMINI.md")) as fh:
+        fh.write(body + "\n")
+    return ctx
+
+
+def _gemini_argv(run_dir: str, pane: bool, cli_mode: str | None,
+                 session_id: str, model: str, effort: str,
+                 extra_read_dirs: list | None, file: str) -> list:
+    """The GEMINI CLI's argv — `_copilot_argv`'s twin, same parameters in
+    the same order so `_start` builds any of them from one call site, per
+    docs/GEMINI_BACKEND.md §3. Driven over ACP (`--acp`, JSON-RPC on stdio)
+    by `gemini_host.py`, never `-p` (D16). `session_id` names no flag: a
+    resume is the host's `session/load`, and a fresh chat's id is Gemini's
+    own (D2).
+
+    What maps, and to what:
+      * the system prompt → `GEMINI.md` in an included directory (D8), not
+        a flag;
+      * `--model` → `-m <id>`; the host switches it live later
+        (`session/set_model`, D7). No effort: Gemini has none;
+      * the mode → `--approval-mode <auto_edit|yolo>` (D5; the flag's
+        snake-case spelling, `_GEMINI_ARGV_MODES`, not the enum id the wire
+        takes), so the first prompt already runs under it; the host
+        re-sends it as `session/set_mode autoEdit|yolo` after the handshake
+        and on every live switch;
+      * `--allowed-tools Read(<dir>)` → `--include-directories` for SHOTS
+        and every `extra_read_dirs` entry (D9): Gemini's file tools read
+        the workspace only, and this is how a directory joins it. Only
+        directories that exist, since a missing one is a startup error —
+        and none whose path holds a comma: the CLI splits the flag's value
+        on commas (`coerceCommaSeparated`), so such a path would reach it
+        as two fragments that do not exist, and the spawn would die;
+      * the permission bridge → NOTHING here: ACP carries permission
+        requests to the host itself (D4). `mcp.json` is written when the
+        pane or terminal tools exist, or the target sits in a canvas clone
+        (the `canvas_screenshot` channel, D235 — the GEMINI.md names that
+        tool, so the server must offer it), with `--no-approve`, and the
+        HOST hands it to `session/new` as the request's `mcpServers` —
+        ACP's own way to add a stdio server, so no flag;
+      * `--skip-trust`: fused is the client that chose this folder, as it
+        is for Claude's spawn; without it a user who turned folder trust on
+        gets a CLI that dies at startup in an untrusted cwd."""
+    cmd = [_gemini_bin(), "--acp", "--skip-trust"]
+    if model:
+        cmd += ["-m", model]
+    gemini_mode = _GEMINI_MODES.get(cli_mode or "default")
+    if gemini_mode and gemini_mode != "default":
+        cmd += ["--approval-mode", _GEMINI_ARGV_MODES[gemini_mode]]
+    dirs = [_gemini_context_dir(run_dir, file, pane)]
+    try:
+        shots = _shots_dir()
+    except Exception as exc:  # noqa: BLE001
+        shots = {"error": str(exc)}
+    if shots.get("error"):
+        sys.stderr.write("gemini: no screenshot grant: %s\n" % shots["error"])
+    else:
+        dirs.append(SHOTS)
+    for d in [*dirs, *(extra_read_dirs or [])]:
+        if not os.path.isdir(d):
+            continue
+        if "," in d:
+            sys.stderr.write("gemini: not including %r: the CLI splits "
+                             "--include-directories on commas\n" % d)
+            continue
+        cmd += ["--include-directories", d]
+    canvas = _in_workbench_root(file)
+    if pane or _terminal_tools_supported() or canvas:
+        _write_mcp_config(run_dir, pane, approve=False, canvas=canvas)
     return cmd
 
 
@@ -4007,6 +4419,10 @@ def _spawn_env(chat_id: str = "", backend: str = "") -> dict:
     (`fusedcli.export_fused_cli_env`), put back in front here because the
     login-shell PATH merged in meanwhile may have pushed it down, and Codex
     has no allow-list flag that would name the wrapper outright (D9).
+    `backend="gemini"` is the same branch (GEMINI §3): `GEMINI_CLI_HOME` and
+    the Google credential variables left as found, plus `NO_BROWSER=1`
+    (setdefault) so a session whose login lapsed fails at the handshake
+    instead of opening a browser window from a background task.
 
     The session must not inherit an ambient FUSED_ENV from the server's own
     process: the `fused` wrapper (fusedcli._wrapper_text) only picks FUSED_ENV
@@ -4061,13 +4477,20 @@ def _spawn_env(chat_id: str = "", backend: str = "") -> dict:
     # PYTHONHOME ("No module named 'encodings'") and fails every Bash command.
     for name in _STRIPPED_PYTHON_ENV:
         env.pop(name, None)
-    if backend == "codex":
+    if backend in ("codex", "gemini"):
         for name in [k for k in env if k.startswith("CLAUDE_CODE_")]:
             env.pop(name, None)
         cli_dir = _fused_cli_dir()
         if cli_dir:
             parts = [p for p in env["PATH"].split(os.pathsep) if p != cli_dir]
             env["PATH"] = os.pathsep.join([cli_dir] + parts)
+        if backend == "gemini":
+            env.setdefault("NO_BROWSER", "1")
+            # Not setdefault: the `gemini` entry point is a launcher that
+            # otherwise re-spawns the CLI as a grandchild and swallows
+            # SIGTERM, so the host's stop/kill would orphan the real
+            # process (gemini_health._child_env has the account, D19).
+            env["GEMINI_CLI_NO_RELAUNCH"] = "1"
         return env
     if backend == "copilot":
         for name in [k for k in env if k.startswith("CLAUDE_CODE_")]:
@@ -4085,7 +4508,9 @@ def _spawn_env(chat_id: str = "", backend: str = "") -> dict:
     # reads (D1327). The CLI runs EVERYTHING it spawns (hooks, MCP servers, the
     # statusline) through the prefix; the wrapper is transparent for all but
     # Bash-tool commands. A prefix the user exported themselves is left alone.
-    if (chat_id and not _bad_id(chat_id)
+    # The wrapper is a POSIX sh script, so Windows gets no prefix (and no
+    # drawer "Claude" command-log tab).
+    if (chat_id and not _bad_id(chat_id) and not _platform.IS_WINDOWS
             and not env.get("CLAUDE_CODE_SHELL_PREFIX")):
         prefix = _shell_prefix_path()
         if prefix:
@@ -4097,7 +4522,8 @@ def _spawn_env(chat_id: str = "", backend: str = "") -> dict:
                 if os.path.isdir(log_dir):
                     _require_private(log_dir)
                     # It refuses group/other WRITE only; the log is readable.
-                    if os.lstat(log_dir).st_mode & 0o077:
+                    # (POSIX only: Windows lstat reports every dir as 0o777.)
+                    if hasattr(os, "geteuid") and os.lstat(log_dir).st_mode & 0o077:
                         return env
                 else:
                     try:
@@ -4358,8 +4784,10 @@ _COPILOT_HOST = os.path.join(HERE, "copilot_host.py")
 # ...and Codex's: speaks `codex app-server`'s JSON-RPC, same files and rows
 # (docs/CODEX_BACKEND.md §0).
 _CODEX_HOST = os.path.join(HERE, "codex_host.py")
+# ...and Gemini's: ACP again, the Copilot host's twin (docs/GEMINI_BACKEND.md §0).
+_GEMINI_HOST = os.path.join(HERE, "gemini_host.py")
 _HOST_FILES = {"claude": _SESSION_HOST, "copilot": _COPILOT_HOST,
-               "codex": _CODEX_HOST}
+               "codex": _CODEX_HOST, "gemini": _GEMINI_HOST}
 
 
 def _fork_point(transcript_path: str, prompt_uuid: str):
@@ -4479,6 +4907,8 @@ def _start(file: str, message: str, session_id: str, model: str,
     # (_write_mcp_config).
     if pane:
         _private_dir(_state_dir(run_dir))
+    if _in_workbench_root(file):
+        _private_dir(_canvas_shot_dir(run_dir))
 
     # An unknown mode falls back to the strictest of the three rather than
     # erroring: a mangled param must not quietly buy more auto-approval than
@@ -4511,16 +4941,17 @@ def _start(file: str, message: str, session_id: str, model: str,
     # `_entry_session`. The minted id rides beside it, under its own name.
     #
     # CLAUDE ONLY. The self-minted-id agents (`_SELF_MINTED_ID_BACKENDS`)
-    # name their own: `copilot --acp` refuses `--session-id` and exits, and
-    # Codex's thread id comes out of `thread/start`. So a fresh chat on
-    # either is nameless here exactly as every chat was before the flag: the
+    # name their own: `copilot --acp` refuses `--session-id` and exits,
+    # Codex's thread id comes out of `thread/start`, Gemini's `session/new`
+    # mints one. So a fresh chat on any of them is nameless here exactly as
+    # every chat was before the flag: the
     # CLI mints the id, the host announces it on the init row, and `_poll`
     # records it (the `session` file, the `recorded` marker, and — for this
     # case — the settings record below).
     new_session_id = "" if (session_id and not fork_parent) \
         or backend in _SELF_MINTED_ID_BACKENDS else str(uuid.uuid4())
 
-    # COPILOT'S AND CODEX'S ARGV, READY-MADE, before anything else is
+    # THE NON-CLAUDE AGENTS' ARGV, READY-MADE, before anything else is
     # written. Claude's host builds its own from the request (`_claude_argv`,
     # so the two stay one function); the other hosts spawn this list as
     # given: the plugin dir and mcp.json it names are written here, before
@@ -4528,7 +4959,8 @@ def _start(file: str, message: str, session_id: str, model: str,
     # so a missing binary refuses the start with a bare run dir — no meta,
     # no inbox — that nothing lists as a chat.
     argv = None
-    build_argv = {"copilot": _copilot_argv, "codex": _codex_argv}.get(backend)
+    build_argv = {"copilot": _copilot_argv, "codex": _codex_argv,
+                  "gemini": _gemini_argv}.get(backend)
     if build_argv is not None:
         try:
             argv = build_argv(run_dir, pane, cli_mode, session_id, model,
@@ -4620,15 +5052,15 @@ def _start(file: str, message: str, session_id: str, model: str,
            "file": file, "cwd": _workdir(file), "pane": pane,
            "cli_mode": cli_mode, "session_id": session_id, "model": model,
            "effort": effort, "extra_read_dirs": list(extra_read_dirs or []),
-           # The id minted above, "" for a resume and for every Copilot or
-           # Codex chat (each mints its own). Its own key beside
+           # The id minted above, "" for a resume and for every Copilot,
+           # Codex or Gemini chat (each mints its own). Its own key beside
            # `session_id` rather than folded into it: the host builds the CLI's
            # argv from this dict (`_claude_argv`), and the two produce
            # DIFFERENT flags — `--resume` continues a conversation, and
            # `--session-id` names a new one.
            "new_session_id": new_session_id,
            # WHICH host this is (D2); `argv` beside it for the self-minted-id
-           # agents (Copilot, Codex) only — see the build above.
+           # agents (Copilot, Codex, Gemini) only — see the build above.
            "backend": backend,
            # Lean session (`--strict-mcp-config`): asked for by the caller
            # (scheduled runs, canvas agents, App Doctor) or the Preferences
@@ -4747,7 +5179,7 @@ def _app_dir_for(path: str) -> str:
     keep the two in step (templates must not import fused_render, D166)."""
     root = _workspace_dir()
     ap = os.path.abspath(path)
-    if not ap.startswith(root + os.sep):
+    if not _platform.is_within(ap, root, strict=True):
         return ""
     parts = os.path.relpath(ap, root).split(os.sep)
     if len(parts) < 2 or parts[0].startswith(".") or parts[1].startswith("."):
@@ -4814,12 +5246,61 @@ def _commit_turn(file: str, message: str, backend: str = "") -> None:
     if not git_bin or not os.path.isabs(git_bin):
         return
 
+    identity = ["-c", "user.name=Fused", "-c", "user.email=apps@fused.io"]
+    safe = []
+
     def git(*args):
         return subprocess.run(
-            [git_bin, "-C", repo_dir, "-c", "user.name=Fused",
-             "-c", "user.email=apps@fused.io", *args],
+            [git_bin, "-C", repo_dir, *safe, *identity, *args],
             capture_output=True, text=True, timeout=30, close_fds=False,
             encoding="utf-8", errors="replace")
+
+    def local(key):
+        r = git("config", "--local", "--get", key)
+        return r.stdout.strip() if r.returncode == 0 else ""
+
+    # What the contribution loop recorded this copy as. Its RECORD decides
+    # (outside the folder, `classify.kind_of`), never the repo's own
+    # `.git/config`, which the app and Claude sessions can rewrite: a copy
+    # that deleted its `fused.kind` would otherwise get its hooks back.
+    # Looked up in sys.modules, not imported (this file never imports
+    # `fused_render`); the server process that runs this sweep has it loaded.
+    # Absent (a standalone load), the repo's own marker, as before.
+    kind = None
+    if repo_dir == app_dir:
+        _cls = sys.modules.get("fused_render.contrib.classify")
+        try:
+            kind = _cls.kind_of(repo_dir) if _cls is not None else (local("fused.kind") or None)
+        except Exception:
+            kind = local("fused.kind") or None
+    # `.fused/` kept out by PATHSPEC as well as by info/exclude below, for a
+    # RECORDED copy: an ignore rule never hides a TRACKED file's edits, and a
+    # repo that commits `.fused/` would otherwise carry this machine's state
+    # into the turn's commit (docs/CONTRIB_LOOP.md §16.1). Only a recorded
+    # copy also gets the matching skip-worktree protection; any other repo
+    # that tracks `.fused/` commits it as before, or its edits would sit
+    # uncommitted for good. `add` is unscoped-by-exclude and `.fused`
+    # unstaged after it (an exclude naming an ignored path makes `add` exit
+    # 1); diff/commit exclude it. Mirrors app_git._scope_specs/_is_recorded.
+    fused = ("" if spec == "." else spec.removeprefix(":(literal)") + "/") + ".fused"
+    specs = [spec, ":(exclude,literal)" + fused] if kind is not None else [spec]
+    # A GitHub-link copy (the contribution loop sets the user's GitHub
+    # identity in its repo-local config): the turn commits as the user,
+    # crediting Claude in a trailer, instead of as Fused. Mirrors
+    # app_git._identity_for.
+    trailer = ""
+    try:
+        # `marketplace` (§18.4) is a copy of someone else's app the same way.
+        if kind in ("github", "marketplace"):
+            trailer = "\n\nCo-authored-by: Claude <noreply@anthropic.com>"
+            # Someone else's app: its `.git/config` and hooks are the side the
+            # app can write — no fsmonitor command, no hooks (§16.12). An own
+            # app keeps its author's hooks. Mirrors app_git._SAFE.
+            safe = ["-c", "core.fsmonitor=", "-c", "core.hooksPath=/dev/null"]
+            if local("user.name") and local("user.email"):
+                identity = []
+    except Exception:
+        pass
 
     try:
         # The two sidecar patterns are a LEGACY defense: nothing writes those
@@ -4848,9 +5329,11 @@ def _commit_turn(file: str, message: str, backend: str = "") -> None:
                     fh.write("\n".join(missing) + "\n")
         if git("add", "-A", "--", spec).returncode != 0:
             return
-        if git("diff", "--cached", "--quiet", "--", spec).returncode == 0:
+        if kind is not None:
+            git("reset", "-q", "--", ":(literal)" + fused)
+        if git("diff", "--cached", "--quiet", "--", *specs).returncode == 0:
             return  # nothing to commit (turn changed no files under this app)
-        git("commit", "-q", "-m", subject, "--", spec)
+        git("commit", "-q", "-m", subject + trailer, "--", *specs)
     except Exception:
         pass
     finally:
@@ -5608,9 +6091,13 @@ def _send(run_id: str, message: str, read_dirs: str = "", model: str = "",
     # Model and effort ride every `turn/start` (D7), and an attached
     # directory needs no grant: both of its sandboxes read the whole
     # filesystem (D9), so there is nothing a new spawn line could add.
+    # Gemini respawns for a NEW DIRECTORY only: `--include-directories` is
+    # the workspace grant and spawn-time (GEMINI D9); its model is a live
+    # `session/set_model` (D7) and it has no effort to differ on.
+    effort_respawn = bool(effort) and effort != host.get("effort", "") \
+        and backend != "gemini"
     if backend != "codex" and (
-            not wanted <= granted or (effort and effort != host.get("effort", ""))
-            or model_respawn):
+            not wanted <= granted or effort_respawn or model_respawn):
         # interrupt_first=False: unlike the stop button, this call means the
         # session can no longer serve this caller as it stands — leaving the
         # host up (an `interrupt` would) is not an option here, so it skips
@@ -6492,9 +6979,9 @@ def _account_error(error: str, backend: str = "") -> str:
     login words.
 
     The markers are PER BACKEND (`_ACCOUNT_ERROR_MARKERS` /
-    `_LIMIT_ERROR_MARKERS`, D13): Copilot and Codex word a signed-out
-    session and an exhausted plan budget in their own terms, and so does the
-    fix. Neither carries a guide link: the troubleshooting page has panels
+    `_LIMIT_ERROR_MARKERS`, D13): Copilot, Codex and Gemini word a
+    signed-out session and an exhausted plan budget in their own terms, and
+    so does the fix. Neither carries a guide link: the troubleshooting page has panels
     for Claude only."""
     if not error:
         return error
@@ -6511,6 +6998,10 @@ def _account_error(error: str, backend: str = "") -> str:
             return ("OpenAI Codex isn't signed in. Sign in from Preferences "
                     "→ Agents (or run `codex login` in a terminal), then "
                     "start a new chat here. (%s)" % error)
+        if backend == "gemini":
+            return ("Gemini CLI isn't signed in. Sign in from Preferences "
+                    "→ Agents (or run `gemini` in a terminal and finish the "
+                    "sign-in), then start a new chat here. (%s)" % error)
         return ("Claude Code isn't logged in. Open a terminal, run `claude`, "
                 "type /login and finish the sign-in, then start a new chat "
                 "here. Help: %s-login (%s)" % (GUIDE_URL, error))
@@ -6522,6 +7013,10 @@ def _account_error(error: str, backend: str = "") -> str:
         if backend == "codex":
             return ("Your ChatGPT plan's Codex usage limit was reached. Wait "
                     "for it to reset, or upgrade the plan, then try again. "
+                    "(%s)" % error)
+        if backend == "gemini":
+            return ("Your Gemini quota was reached. Wait for it to reset, or "
+                    "switch to a plan or key with more, then try again. "
                     "(%s)" % error)
         return ("Your Claude plan's usage limit was reached. Wait for it to "
                 "reset, or upgrade the plan, then try again. Help: %s-limit (%s)"
@@ -8221,6 +8716,41 @@ def _task_stop(run_id: str, task_id: str) -> dict:
     return {"ok": True}
 
 
+def _task_background(run_id: str, tool_use_id: str) -> dict:
+    """Send the running foreground Bash call `tool_use_id` to the background:
+    a `background_tasks` control request to the live session host (10 s).
+    `{"ok": True, "backgrounded": bool}`, or `{"error"}` (no live host, the
+    CLI's refusal for an unknown id, or no answer)."""
+    if _bad_id(run_id):
+        return {"error": "unknown run_id"}
+    tool_use_id = str(tool_use_id or "")
+    if (not tool_use_id or len(tool_use_id) > 200
+            or not re.fullmatch(r"[A-Za-z0-9_-]+", tool_use_id)):
+        return {"error": "missing tool_use_id"}
+    run_dir = os.path.join(RUNS, run_id)
+    if not os.path.isdir(run_dir):
+        return {"error": "unknown run_id"}
+    if _non_claude(_run_backend(run_dir)):
+        return {"error": "unsupported"}   # no background tasks (§7 bg_tasks)
+    if not _host_alive(run_dir):
+        return {"error": "no live session"}
+    try:
+        start_offset = os.path.getsize(os.path.join(run_dir, "out.jsonl"))
+    except OSError:
+        start_offset = 0
+    try:
+        request_id = _write_control_request(run_dir, "background_tasks",
+                                            tool_use_id=tool_use_id)
+    except OSError as exc:
+        return {"error": f"could not reach the session: {exc}"}
+    refused = []
+    resp = _await_control_response(run_dir, request_id, timeout=10.0,
+                                   start_offset=start_offset, errors=refused)
+    if resp is None:
+        return {"error": refused[0] if refused else "the session did not answer"}
+    return {"ok": True, "backgrounded": bool(resp.get("backgrounded", True))}
+
+
 #: The most `out.jsonl` bytes one `_catch_up_registry` reads. A longer
 #: backlog (hours of a background Agent streaming with nobody polling) is
 #: folded this much per call, so the registry still converges.
@@ -8780,7 +9310,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     run_dir = os.path.join(RUNS, run_id)
     if _bad_id(run_id) or not os.path.isdir(run_dir):
         return {"text": "", "done": True, "session_id": "", "error": "unknown run_id",
-                "permissions": [], "app_state": [], "skills": [], "retry": None,
+                "permissions": [], "app_state": [], "canvas_shot": [], "skills": [], "retry": None,
                 "retry_total": 0, "retry_status": 0, "segments": [], "inbox": []}
 
     # A page may only attach to a run about ITS OWN target. Run ids are global
@@ -8813,7 +9343,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
                 and not _folder_and_member(run_file, file):
             return {"text": "", "done": True, "session_id": "",
                     "error": "run is for another target",
-                    "permissions": [], "app_state": [], "skills": [], "retry": None,
+                    "permissions": [], "app_state": [], "canvas_shot": [], "skills": [], "retry": None,
                     "retry_total": 0, "retry_status": 0, "segments": [],
                     "inbox": []}
 
@@ -9349,6 +9879,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
     # (if it somehow outlives us) would wait out the full app-state timeout.
     if done:
         _expire_app_state(run_dir, "the run finished")
+        _expire_canvas_shot(run_dir, "the run finished")
         app_state = []
     else:
         app_state = _app_state_requests(run_dir)
@@ -9490,6 +10021,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             "tokens": tokens_done + tokens_current, "phase": phase,
             "message": meta.get("message", ""), "permissions": permissions,
             "app_state": app_state, "mode": _live_mode(meta, permissions),
+            "canvas_shot": _canvas_shot_requests(run_dir),
             "skills": skills, "retry": retry, "retry_total": retry_total,
             "retry_status": retry_status,
             # The plan window as of the last API response (`_quota_info`).
@@ -9543,8 +10075,7 @@ def _poll(run_id: str, file: str = "", app_reads: bool = False,
             # (see `_inbox_waiting`). Empty on every poll of an idle chat.
             "inbox": _inbox_waiting(run_dir) if inbox else [],
             "segments": [] if echo_pending
-            else _segments_from_rows(parsed, app_reads=app_reads,
-                                     task_links=_task_links(bg_tasks)),
+            else _poll_segments(parsed, run_dir, app_reads, bg_tasks),
             # THE TASK REGISTRY (SPEC T-1): every record this run has seen,
             # running first then by `started_at`. `activity.tasks` above is
             # the running subset in its old `{id, description}` shape.
@@ -9895,7 +10426,7 @@ def _cli_preview(path: str, workdir: str) -> tuple[str, str]:
     return "", ""
 
 
-def _cli_sessions(file: str) -> list:
+def _cli_sessions(file: str, limit: int | None = _CLI_SESSION_LIMIT) -> list:
     """Claude sessions about this target — every transcript in this cwd's
     project dir when the target is a FOLDER, and only the ones opened on this
     very file when it is a FILE.
@@ -9919,6 +10450,11 @@ def _cli_sessions(file: str) -> list:
     the folder itself — belongs to the FOLDER, and is offered there. It is not
     offered on a file, because it is not about one; showing it under every file
     in the folder is the pile we are dismantling.
+
+    `limit` caps the list at the newest rows (the chat's Recent menu); None
+    lists every transcript on the target — what the canvas sync needs to
+    erase a deleted node's chats whole (canvases.forget_file_sessions). Each
+    row carries its transcript `path` for that caller.
     """
     workdir = os.path.abspath(_workdir(file))
     # "" for a folder target: the filter below is what a file target adds, and
@@ -9957,7 +10493,7 @@ def _cli_sessions(file: str) -> list:
     found.sort(reverse=True)
     out = []
     for mtime, sid, backend, path in found:
-        if len(out) >= _CLI_SESSION_LIMIT:
+        if limit is not None and len(out) >= limit:
             break
         preview, pane = _cli_preview(path, workdir)
         if not preview:
@@ -9972,7 +10508,7 @@ def _cli_sessions(file: str) -> list:
         out.append({"id": sid, "preview": preview,
                     "created_at": mtime, "last_used": mtime,
                     "cwd": workdir, "pane": pane, "running": sid in live,
-                    "backend": backend})
+                    "backend": backend, "path": path})
     return out
 
 
@@ -10657,6 +11193,13 @@ def _steered_prompt(row: dict) -> tuple | None:
     return text, str(att.get("source_uuid") or row.get("uuid") or "")
 
 
+def _poll_segments(parsed: list, run_dir: str, app_reads: bool, bg_tasks) -> list:
+    segments = _segments_from_rows(parsed, app_reads=app_reads,
+                                   task_links=_task_links(bg_tasks))
+    _annotate_waits(segments, _chat_waits_load(_run_chat_id(run_dir)))
+    return segments
+
+
 def _history(file: str, session_id: str, app_reads: bool = False,
              inbox: bool = True, transcript: str = "") -> dict:
     """Rebuild the conversation from the Claude Code session transcript.
@@ -10759,6 +11302,10 @@ def _history(file: str, session_id: str, app_reads: bool = False,
     # `isCompactSummary` user row that follows it turns into the divider turn.
     pending_compact = None
 
+    # One chat = one session id here and in `_run_chat_id` (resumed_from or the
+    # run's own id), so the waits store is read by `session_id`, once.
+    waits = _chat_waits_load(session_id)
+
     def close_stretch():
         """Attach the stretch's segments to the assistant turn they belong to.
 
@@ -10777,6 +11324,7 @@ def _history(file: str, session_id: str, app_reads: bool = False,
                                        task_links=_task_links(task_registry))
         _attach_subagent_children(segments, subagents, app_reads,
                                   _task_links(task_registry))
+        _annotate_waits(segments, waits)
         # The stretch's own first record id, for a reply that opens NO text turn
         # — see the `uuid` note below. Read before the list is emptied.
         opener = ""
@@ -11920,7 +12468,7 @@ def main(action: str = "start", file: str = "", message: str = "",
          read_dirs: str = "", path: str = "", queued: str = "",
          native: str = "", draft_key: str = "", queue: str = "",
          terminal_hint: str = "", task_id: str = "", backend: str = "",
-         fork_at: str = "") -> dict:
+         fork_at: str = "", tool_use_id: str = "") -> dict:
     # `backend` (D2/§8): which agent a NEW chat starts on; ignored where a
     # session already names one (`_start` resumes, `send`, `history`), which
     # answer with the session's own under the same key.
@@ -11965,6 +12513,9 @@ def main(action: str = "start", file: str = "", message: str = "",
         # main() through the URL/param binder (str-shaped), and the snapshot is
         # the page's own structure — nothing here reads inside it.
         return _answer_app_state(run_id, request_id, state)
+    if action == "canvas_shot":
+        # Same string-shaped `state`: `{"image", "mime", "udf"}` or `{"error"}`.
+        return _answer_canvas_shot(run_id, request_id, state)
     if action == "sessions":
         if not file:
             return {"error": "missing target file (no _file param?)"}
@@ -12096,6 +12647,9 @@ def main(action: str = "start", file: str = "", message: str = "",
     if action == "task_stop":
         # Stop a running task: `stop_task` control request.
         return _task_stop(run_id, task_id)
+    if action == "task_background":
+        # Ctrl+B: a running foreground Bash call -> background_tasks request.
+        return _task_background(run_id, tool_use_id)
     if action == "tasks":
         # A finished turn's tasks panel while its host runs on (`_run_tasks`).
         return _run_tasks(run_id)

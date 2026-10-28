@@ -39,7 +39,7 @@ import threading
 from typing import Optional
 
 # claude_health imports nothing from here, so no cycle.
-from fused_render.claude_health import SUBPROCESS_KWARGS, executable
+from fused_render.claude_health import SUBPROCESS_KWARGS, detached_argv, executable
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +113,7 @@ def probe(shell: Optional[str] = None, timeout: float = 8.0) -> Optional[list]:
     for flags in _FLAG_SETS:
         try:
             out = subprocess.run(
-                [shell, *flags, _COMMAND],
+                detached_argv([shell, *flags, _COMMAND]),
                 stdin=subprocess.DEVNULL, capture_output=True,
                 timeout=timeout, env=env, **SUBPROCESS_KWARGS,
             ).stdout

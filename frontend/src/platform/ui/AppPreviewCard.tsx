@@ -33,24 +33,31 @@
 // empty thumb in between — an offloaded card reads the same as an app with no
 // live preview (D365).
 import { useEffect, useRef, useState } from "react";
-import type { AppInfo } from "@platform/lib/api";
+import type { AppCardContrib, AppInfo } from "@platform/lib/api";
+import { useContribFlags } from "@platform/lib/contrib-flags";
+import { useMarketplaceFeature } from "@platform/lib/marketplace-flag";
 import { appIconUrl, appfilePreviewUrl, rawUrl } from "@platform/lib/api";
 import { isRasterIconUrl, useThemedIconSrc } from "@platform/lib/app-icon-src";
 import { exportAppFileOnly, openShareApp } from "@platform/lib/share-app";
-import { useAppSharingFeature } from "@platform/lib/share-app-flag";
+import { useAppShareOffered } from "@platform/lib/share-app-flag";
 import { useLivePreviewsFeature } from "@platform/lib/live-previews-flag";
 import { AppStar } from "@platform/ui/AppStar";
+import { VerifiedMark } from "@platform/ui/appstore";
 import { ThumbPlaceholder } from "@platform/ui/ThumbPlaceholder";
 import { MenuIcons } from "@platform/ui/MenuIcons";
 import { thumbFrame } from "@platform/lib/thumb-frame";
-import { embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
+import { embedUrlForFsPath, encodeFsPathSegments, navigateUrl } from "@platform/lib/router";
 import {
   appRecency,
+  blockedCardHref,
+  cardBlockGate,
   hrefFor,
   isBrowserHandledClick,
   onAppCardClick,
+  openApp,
   openTargetFor,
 } from "@platform/lib/appEntry";
+import { SoftBlockConfirm } from "@platform/ui/SoftBlockConfirm";
 import { useNearViewport, usePreviewStart } from "@platform/lib/preview-start";
 
 import { timeAgo } from "@platform/lib/format";
@@ -66,6 +73,20 @@ const PREVIEW_SCALE = 0.25;
 // place that description lives (platform/lib/thumb-frame.ts).
 function entryRenderUrl(entryHtml: string): string {
   return `/render?path=${encodeURIComponent(entryHtml)}`;
+}
+
+// The card's source line, from the server's sentence (docs/CONTRIB_LOOP.md
+// §13). Null for the reader's own app (see the call site). The card is
+// narrow and already carries the folder path, so a GitHub-link copy drops the
+// sentence's leading "GitHub link · " and reads "follows alice/x"; the whole
+// sentence stays in the tooltip.
+// A Marketplace copy (stage B) reads the server's label as is: "Marketplace ·
+// reviewed" / "Marketplace · no longer listed".
+function cardSource(c: AppCardContrib | undefined): { text: string; title: string } | null {
+  if (!c?.label) return null;
+  if (c.kind ? c.kind === "own" : c.label === "Your app") return null;
+  const text = c.kind === "github" ? c.label.replace(/^GitHub link\s*·\s*/, "") : c.label;
+  return { text, title: c.label };
 }
 
 export function AppPreviewCard({
@@ -152,7 +173,13 @@ export function AppPreviewCard({
   // user has OPENED before (`opened_at`): one they never ran stays the empty
   // thumb rather than a placeholder-in-a-frame, and a peek must not be the
   // first run of a stranger's pages anyway.
-  const liveSrc = app.entry_html
+  // A Marketplace copy the block list stops, or asks about, has no live
+  // look: the frame would run the very release the block holds back (the
+  // server's open gate refuses it with 423 anyway — this keeps an error page
+  // out of the thumbnail). Its still, if any, stays.
+  const liveSrc = cardBlockGate(app)
+    ? null
+    : app.entry_html
     ? entryRenderUrl(app.entry_html)
     : app.kind === "appfile" && app.opened_at != null
       ? embedUrlForFsPath(app.path)
@@ -184,7 +211,49 @@ export function AppPreviewCard({
   // would tear down a running one.
   // Whether the hover chip is Share (the sheet) or plain Export — see
   // share-app-flag.ts; default off.
-  const sharing = useAppSharingFeature();
+  const sharing = useAppShareOffered();
+  // Where the copy came from, and proposals waiting on it — the contribution
+  // loop's card fields (AppInfo.contrib), each behind its own phase
+  // (contrib-flags.ts). An app of the reader's own says nothing: nearly every
+  // card is one, and a line that reads "Your app" on all of them is noise —
+  // the label earns its slot only when the app follows, or remixes, somebody
+  // else's (the app page states "Your app" for the one that asks).
+  const contribFlags = useContribFlags();
+  // A Marketplace copy's label shows with the Marketplace switch too (§18.8).
+  const marketplaceOn = useMarketplaceFeature();
+  const source =
+    contribFlags?.sources || (marketplaceOn === true && app.contrib?.kind === "marketplace")
+      ? cardSource(app.contrib)
+      : null;
+  const inbox = contribFlags?.inbox ? (app.contrib?.inbox ?? 0) : 0;
+  // Stage B's block list (CONTRIB_LOOP.md §18.4): shown whatever the flags
+  // say — the block is enforced whatever they say. A HARD block opens the
+  // app page (its notice says what happened; the app itself will not open);
+  // a SOFT one not yet confirmed asks first (SoftBlockConfirm), then opens.
+  const block = app.contrib?.block ?? null;
+  // Only a Marketplace copy is stopped or asks: a GitHub-link copy that runs
+  // a blocked version gets a warning and nothing else (§18.4 — its owner
+  // chose to trust the author directly).
+  const gate = cardBlockGate(app);
+  const enforced = !!block && app.contrib?.kind === "marketplace";
+  const softWaiting = gate === "ask";
+  const [asking, setAsking] = useState(false);
+  const openPlain = () => (href ? navigateUrl(href, { isDir: false }) : openApp(app));
+  /** True when the block took the click. */
+  const blockGate = (e: React.MouseEvent): boolean => {
+    if (!block || !enforced || e.defaultPrevented || isBrowserHandledClick(e)) return false;
+    if (gate === "stop") {
+      e.preventDefault();
+      navigateUrl("/apps/" + encodeFsPathSegments(app.path));
+      return true;
+    }
+    if (softWaiting) {
+      e.preventDefault();
+      setAsking(true);
+      return true;
+    }
+    return false;
+  };
   const { started: liveStarted, settled: liveSettled } = usePreviewStart(
     wantsLive,
     hoverPriority || onScreen,
@@ -200,12 +269,17 @@ export function AppPreviewCard({
     setBodyPainted(false);
   }, [liveStarted, liveSrc]);
   // An anchor, not a button — see AppCard. The href is what makes middle-click
-  // and "Open in new tab" land on the same place a left click does.
+  // and "Open in new tab" land on the same place a left click does. A copy
+  // the block list gates names its app page instead (appEntry.ts
+  // `blockedCardHref`): those gestures never reach `blockGate`, and the page
+  // asks before the app runs.
   return (
+    <>
     <a
       className="app-pcard"
-      href={href ?? hrefFor(app)}
+      href={blockedCardHref(app) ?? href ?? hrefFor(app)}
       onClick={(e) => {
+        if (blockGate(e)) return;
         if (!href) return onAppCardClick(e, app);
         if (e.defaultPrevented || isBrowserHandledClick(e)) return;
         e.preventDefault();
@@ -262,16 +336,43 @@ export function AppPreviewCard({
             with the icon inside the first line it could only ever be as tall
             as the name. */}
         <span className="app-pcard-lines">
-          <span className="app-pcard-title">{title}</span>
+          <span className="app-pcard-titlerow">
+            <span className="app-pcard-title">
+              {title}
+              {app.contrib?.kind === "marketplace" && !(enforced && block?.level === "hard") && <VerifiedMark />}
+            </span>
+            {/* Proposals waiting on one of the reader's own apps (the
+                contribution loop's inbox, Community → Proposals inbox). In
+                the name's row so the card keeps its height; a count only,
+                the list itself is on the app page. */}
+            {inbox > 0 && (
+              <span className="app-pcard-inbox">
+                {inbox} {inbox === 1 ? "proposal" : "proposals"}
+              </span>
+            )}
+            {block && (
+              <span
+                className={"app-pcard-block" + (enforced && block.level === "hard" ? " is-hard" : "")}
+                title={block.reason}
+              >
+                {!enforced ? "Flagged" : block.level === "hard" ? "Blocked" : "Paused"}
+              </span>
+            )}
+          </span>
           <span className="app-pcard-meta">
             {/* Where the app lives, as one path — `local/short-builder` — in
                 place of a bordered tag chip beside the folder name (owner:
                 the chip was visual noise). Always the full path, even when the
                 title is the folder name: the tag alone is only half an
                 address. */}
-            <span className="app-pcard-name">
+            <span className={"app-pcard-name" + (source ? " is-yielding" : "")}>
               {app.tag}/{app.name}
             </span>
+            {source && (
+              <span className="app-pcard-source" title={source.title}>
+                {source.text}
+              </span>
+            )}
             {badge && <span className="app-pcard-name">{badge}</span>}
             {ago && <span className="app-pcard-ago">{ago}</span>}
           </span>
@@ -442,5 +543,16 @@ export function AppPreviewCard({
       </button>
       )}
     </a>
+    {block && enforced && block.level === "soft" && (
+      <SoftBlockConfirm
+        open={asking}
+        dir={app.path}
+        name={title}
+        block={block}
+        onClose={() => setAsking(false)}
+        onConfirmed={openPlain}
+      />
+    )}
+    </>
   );
 }

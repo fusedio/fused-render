@@ -14,14 +14,17 @@ import { signedInHint } from "../onboarding/ToolsStep";
 import type { SettingId } from "./registry";
 import { RowSwitch, SettingRow, SettingSelect, SettingsViewContext, usePrefWrite, type PrefControlProps } from "./SettingRow";
 
-type AgentId = "claude" | "copilot" | "codex";
+type AgentId = "claude" | "copilot" | "codex" | "gemini";
 
-/** Every switch, in the registry's ORDER (docs/CODEX_BACKEND.md §1). */
-const AGENT_IDS: readonly AgentId[] = ["claude", "copilot", "codex"];
+/** Every switch, in the registry's ORDER (docs/CODEX_BACKEND.md §1,
+ *  docs/GEMINI_BACKEND.md §1). */
+const AGENT_IDS: readonly AgentId[] = ["claude", "copilot", "codex", "gemini"];
 
 /** The name the health line uses — the product's, where the label is the
  *  short word the pills use. */
-const HEALTH_NAME: Record<AgentId, string> = { claude: "Claude Code", copilot: "Copilot", codex: "Codex" };
+const HEALTH_NAME: Record<AgentId, string> = {
+  claude: "Claude Code", copilot: "Copilot", codex: "Codex", gemini: "Gemini CLI",
+};
 
 // ONE busy flag for every agent write on the page. The three switches and the
 // default picker are separate rows, but each decides what it allows from
@@ -61,8 +64,11 @@ function useAgentWrite(onChange: PrefControlProps["onChange"]) {
 /** Absent (an older server) reads as the only answer it could give: Claude. */
 function agentsOf(prefs: Prefs) {
   const a = prefs.agents;
-  // A server from before Codex answers without its key: off, its default.
-  return a ? { ...a, codex: a.codex ?? false } : { claude: true, copilot: false, codex: false, default: "claude" };
+  // A server from before Codex or Gemini answers without their keys: off,
+  // their default.
+  return a
+    ? { ...a, codex: a.codex ?? false, gemini: a.gemini ?? false }
+    : { claude: true, copilot: false, codex: false, gemini: false, default: "claude" };
 }
 
 /** One switched-on agent's health: a line when all is well, the strip's own
@@ -146,6 +152,7 @@ function AgentSwitch({ id, backend, prefs, onChange }: PrefControlProps & { id: 
 export const ClaudeAgentControl = (p: PrefControlProps) => <AgentSwitch {...p} id="agent-claude" backend="claude" />;
 export const CopilotAgentControl = (p: PrefControlProps) => <AgentSwitch {...p} id="agent-copilot" backend="copilot" />;
 export const CodexAgentControl = (p: PrefControlProps) => <AgentSwitch {...p} id="agent-codex" backend="codex" />;
+export const GeminiAgentControl = (p: PrefControlProps) => <AgentSwitch {...p} id="agent-gemini" backend="gemini" />;
 
 export function DefaultAgentControl({ prefs, onChange }: PrefControlProps) {
   useAgentBackends();

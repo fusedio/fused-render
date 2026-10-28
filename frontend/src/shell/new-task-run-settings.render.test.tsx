@@ -187,7 +187,8 @@ function label(b: ReactTestRenderer, aria: string): string {
   const trigger = pillOf(b, aria);
   const said = trigger.findAll((n) => String(n.props?.className ?? "").startsWith("pp-v"))[0];
   const text = textOf(said);
-  if (aria === "Model") return text;
+  // The pill says "Fable (low)": the model is the part before the brackets.
+  if (aria === "Model") return text.replace(/\s*\(.*\)$/, "");
   if (aria === "Thinking") {
     // Thinking is not in the pill (the row must stay on one line): read the
     // checked row of the popover's Thinking group.

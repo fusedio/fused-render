@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import os
 
+from fused_render._platform import is_within
 from fused_render import workspace_migration
 from fused_render._view_url_codec import canonical_fs_path
 from fused_render.shell import storage
@@ -44,7 +45,8 @@ def prune_stores(root: str) -> dict:
             ("registered_apps", _prune_registered),
             ("app_recents", _prune_app_recents),
             ("background_apps", _prune_background),
-            ("bot_builds", _prune_bot_builds)):
+            ("bot_builds", _prune_bot_builds),
+            ("contrib", _prune_contrib)):
         try:
             out[label] = fn(root)
         except Exception:  # noqa: BLE001 — the delete path is behind this
@@ -56,9 +58,7 @@ def prune_stores(root: str) -> dict:
 def _is_under(path: object, root: str) -> bool:
     if not isinstance(path, str) or not path:
         return False
-    p = os.path.normcase(os.path.abspath(path))
-    r = os.path.normcase(root)
-    return p == r or p.startswith(r.rstrip(os.sep) + os.sep)
+    return is_within(os.path.abspath(path), root)
 
 
 def _url_is_under(url: object, root: str) -> bool:
@@ -210,6 +210,17 @@ def _prune_bot_builds(root: str) -> int:
     if changed:
         bots_store.builds_write(builds)
     return changed
+
+
+def _prune_contrib(root: str) -> int:
+    """The contribution loop's records (contrib/store.py) for the folder:
+    what it followed and its proposal go with it. A proposal still open on
+    GitHub stays open there — GitHub is the truth for proposals. The Try
+    copies made from it (an author's inbox) go too."""
+    from fused_render.contrib import store, trycopy
+
+    trycopy.remove_all_for(root)
+    return store.prune(root)
 
 
 def canonical(path: str) -> str:

@@ -8,8 +8,8 @@ import type { CurrentApp } from "@shell/current-apps-lib";
 // Apps + canvases sum to the ten the apps group had alone (owner,
 // 2026-10-22: "reduce the number of apps being shown, and use the freed up
 // space to show canvases") — the rail's height does not grow.
-export const RAIL_APPS_MAX = 6;
-export const RAIL_CANVASES_MAX = 4;
+export const RAIL_APPS_MAX = 5;
+export const RAIL_CANVASES_MAX = 5;
 export const RAIL_PINS_MAX = 3;
 
 /** The three groups in the order their sections show them, capped. `desk` is

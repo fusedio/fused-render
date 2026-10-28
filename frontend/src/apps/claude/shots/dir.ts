@@ -55,7 +55,7 @@ export function resetShotsDirForTests(): void {
  *  matches as TEXT — so a backslash join would sit outside its own
  *  pre-approval and card every shot (T:9039). */
 export function shotJoin(dir: string, name: string): string {
-  return dir.replace(/\/+$/, "") + "/" + name;
+  return dir.replace(/[\\/]+$/, "") + "/" + name;
 }
 
 /** The filename prefix every file one capture writes shares: a 14-digit UTC
@@ -96,16 +96,19 @@ export function shotFileExt(type: string | undefined, name: string | undefined):
   return dot > 0 ? n.slice(dot).toLowerCase() : ".png";
 }
 
-/** The last segment of a path (T:11651). */
+/** The last segment of a path, either separator (T:11651). */
 export function shotBase(path: string): string {
-  const parts = String(path || "").split("/").filter(Boolean);
+  const parts = String(path || "").split(/[\\/]/).filter(Boolean);
   return parts.length ? parts[parts.length - 1] : String(path || "");
 }
 
-/** The directory part, in the spelling `_wire_path` hands the page — the Read
- *  rule is matched as TEXT, so the two have to agree (T:11658). */
+/** The directory part, in the forward-slash spelling `_wire_path` hands the page
+ *  — the Read rule is matched as TEXT, so the two have to agree (T:11658). */
 export function shotDirOf(path: string): string {
-  const norm = String(path || "");
+  const norm = String(path || "").replace(/\\/g, "/");
   const cut = norm.lastIndexOf("/");
-  return cut > 0 ? norm.slice(0, cut) : norm;
+  if (cut <= 0) return norm;
+  const parent = norm.slice(0, cut);
+  // A drive root keeps its slash: bare "C:" is cwd-relative.
+  return /^[A-Za-z]:$/.test(parent) ? parent + "/" : parent;
 }

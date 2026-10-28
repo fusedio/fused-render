@@ -45,6 +45,7 @@ from typing import Optional
 from fused_render import claude_health
 from fused_render.claude_health import (
     SUBPROCESS_KWARGS,
+    detached_argv,
     _too_old,
     executable,
     parse_version,
@@ -73,9 +74,18 @@ POSIX_CANDIDATES = (
 )
 
 
+# Windows installs: npm, bun and pnpm global bins. Expanded by the same
+# expanduser(expandvars()) the resolvers already apply.
+WINDOWS_CANDIDATES = (
+    r"%APPDATA%\npm\codex.cmd",
+    "~/.bun/bin/codex.exe",
+    r"%LOCALAPPDATA%\pnpm\codex.cmd",
+)
+
+
 def candidates() -> tuple:
     """The known install locations, unexpanded."""
-    return POSIX_CANDIDATES
+    return WINDOWS_CANDIDATES if sys.platform == "win32" else POSIX_CANDIDATES
 
 
 # The lowest `codex` the host's protocol is known to work with.
@@ -156,6 +166,8 @@ def _shell_probe() -> Optional[str]:
     guess), why PYTHONHOME/PYTHONPATH are scrubbed, and why three flag
     spellings are tried. Last resort, and cached like everything else here.
     """
+    if sys.platform == "win32":
+        return None  # no login shell to ask; the plain PATH was already searched
     shell = os.environ.get("SHELL") or "/bin/bash"
     if not executable(shell):
         return None
@@ -164,7 +176,7 @@ def _shell_probe() -> Optional[str]:
     for flags in (["-lic"], ["-l", "-c"], ["-ic"]):
         try:
             out = subprocess.run(
-                [shell, *flags, "command -v codex"],
+                detached_argv([shell, *flags, "command -v codex"]),
                 capture_output=True, timeout=_SHELL_TIMEOUT_S, env=env,
                 **SUBPROCESS_KWARGS,
             ).stdout

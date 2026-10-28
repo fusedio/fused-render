@@ -7,7 +7,7 @@
 // altogether — a slide that changes on its own is motion too.
 import { useEffect, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import { AppIcon, tintIndex } from "@platform/ui/appstore";
+import { AppIcon, VerifiedMark, tintIndex } from "@platform/ui/appstore";
 import { appDetailHref, type AppEntry, type Catalog } from "@platform/lib/marketplace";
 import { AppActionPill, metaLine, openDetail } from "./shared";
 
@@ -95,6 +95,7 @@ export function HeroCarousel({ apps, catalog }: { apps: AppEntry[]; catalog: Cat
                 }}
               >
                 {app.name}
+                <VerifiedMark />
               </a>
             </h2>
             <p className="mp-hero-desc">{app.description}</p>

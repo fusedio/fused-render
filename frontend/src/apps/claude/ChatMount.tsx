@@ -4,6 +4,7 @@
 // with a per-mount memory params store for the hosts that are not the page's
 // own URL.
 import { Component, lazy, Suspense, useEffect, useState, type MutableRefObject, type ReactNode } from "react";
+import type { CanvasShot } from "./shots/canvas-shot";
 import { TroubleCard } from "@platform/ui/TroubleCard";
 import { ChatFramePlaceholder } from "./ChatPlaceholder";
 import type { ClaudeAsk } from "./ClaudeChat";
@@ -214,6 +215,11 @@ export interface ChatMountProps {
   preview?: boolean;
   /** `_noann=1` — no annotate seats, no narrow-view toggle (ClaudeChat). */
   noAnnTools?: boolean;
+  /** The host can photograph its canvas on request (`shots/canvas-shot`):
+   *  the Screenshot seat takes that picture (ClaudeChat). */
+  canvasShot?: CanvasShot;
+  /** The host pane's close button at the top row's left end (ClaudeChat). */
+  onHidePane?: () => void;
   /** `_noopen=1` — do not record an app open (the listing pane). */
   noOpen?: boolean;
   /** "url" for sidebar / content / canvas; "memory" for cards / peek / panel /
@@ -303,6 +309,8 @@ export function ChatMount(props: ChatMountProps) {
         autoFocus={!props.preview && !props.noFocus}
         {...(props.preview ? { preview: true } : {})}
         {...(props.noAnnTools ? { noAnnTools: true } : {})}
+        {...(props.canvasShot ? { canvasShot: props.canvasShot } : {})}
+        {...(props.onHidePane ? { onHidePane: props.onHidePane } : {})}
         {...(props.noOpen ? { noOpen: true } : {})}
         {...(props.onReady ? { onReady: props.onReady } : {})}
         {...(props.onEscape ? { onEscape: props.onEscape } : {})}

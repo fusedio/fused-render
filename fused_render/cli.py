@@ -250,7 +250,7 @@ def _run_serve(args: argparse.Namespace) -> None:
     # create_app, so importing the server in a test probes nothing.
     # Each agent's probe follows its Preferences switch (D17): a disabled
     # agent is never probed, so a machine with no Copilot never spawns one.
-    from fused_render import claude_health, codex_health, copilot_health
+    from fused_render import claude_health, codex_health, copilot_health, gemini_health
     from fused_render.agent_backends import registry as _agent_registry
 
     if _agent_registry.is_enabled("claude"):
@@ -259,7 +259,14 @@ def _run_serve(args: argparse.Namespace) -> None:
         copilot_health.warm_in_background()
     if _agent_registry.is_enabled("codex"):
         codex_health.warm_in_background()
+    if _agent_registry.is_enabled("gemini"):
+        gemini_health.warm_in_background()
     start_dir = os.path.abspath(os.path.expanduser(args.start_dir))
+    # CLI install: no packaged updater applies, so tell the user about a newer
+    # PyPI release (check-only; update/pypi.py).
+    from fused_render import update
+
+    update.enable_cli_check()
     app = create_app(start_dir=start_dir)
 
     port = args.port if args.port is not None else DEFAULT_PORT
@@ -354,8 +361,8 @@ def _open_target(path: str) -> str:
       link's shell hand-off runs — and then treated as that `.fused` file
       (below), so it opens on its install page. Errors exit non-zero.
     - A `.fused` file: used exactly as given. It is not installed here —
-      `/explorer/embed/<path>.fused` renders through the `fusedapp` template,
-      the file's install page (AF-14), and the user installs from there via
+      `/explorer/embed/<path>.fused` renders the shell's install page
+      (AF-14), and the user installs from there via
       the guarded `/api/appfile/install` route (D390).
     - An app folder, or a file inside one: a folder resolves to its app
       entry page (`app_listing.app_entry` — the same rule the Home grid's

@@ -111,8 +111,10 @@ import {
 } from "@platform/lib/api";
 import {
   findingWhere,
+  appOverviewUrl,
   gitRowFetchPending,
   groupBySection,
+  isContribRow,
   rowActionLabel,
   fixButtonLabel,
   readinessCount,
@@ -197,8 +199,11 @@ function CheckRow({
   onPull,
   onDone,
   onOpenGit,
+  appDir,
 }: {
   check: AppCheck;
+  /** The report's app folder — where a contrib row's "Open app page" goes. */
+  appDir: string;
   busy: boolean;
   /** Open the running check task (its Claude pane, or the Tasks tab). */
   onFollowCheck: (check: AppCheck) => void;
@@ -246,6 +251,7 @@ function CheckRow({
   // flight, then the server's own word that a check task is live on it.
   const checking = creating || !!check.check_task;
   const openInGit = showsOpenInGitAction(check);
+  const contribRow = isContribRow(check);
   // An on-demand row always has something to press — Check when it has not
   // been run on this content, Re-check once it has — so it takes the fuller
   // box a row with an action wears, even when it passed. So does the `git`
@@ -423,7 +429,24 @@ function CheckRow({
                   Open in git
                 </Button>
               )}
+              {/* A contrib `git` row (appdoctor-lib `isContribRow`): its
+                  failure is a decision the app page offers — Merge with
+                  Claude, or signing in — so the row's one action goes there,
+                  in place of Fix. */}
+              {failing && contribRow && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => {
+                    navigateUrl(appOverviewUrl(appDir));
+                    onDone?.();
+                  }}
+                >
+                  Open app page
+                </Button>
+              )}
               {failing &&
+                !contribRow &&
                 (check.task ? (
                   <Button
                     variant="secondary"
@@ -855,6 +878,7 @@ function AppDoctorChecklist({
                 <CheckRow
                   key={c.id}
                   check={c}
+                  appDir={report.path}
                   busy={busy}
                   otherTaskLive={(!!liveTask && !c.task) || (anyCheckLive && !c.check_task)}
                   creating={creating === c.id}
@@ -912,7 +936,8 @@ function AppDoctorFixAllButton({ report, busy, liveTask, checkLive, fixAll, foll
         busy ||
         report === null ||
         !report.entry ||
-        !report.checks.some((c) => c.state === "fail")
+        // A contrib row's failure is the app page's to settle, never Fix all's.
+        !report.checks.some((c) => c.state === "fail" && !isContribRow(c))
       }
       title={
         report && !report.entry

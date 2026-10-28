@@ -8,7 +8,7 @@
 // on, else the one that is on — so Claude switched off in Preferences with
 // Copilot on still builds apps (owner, 2026-10-19; this reverses the earlier
 // "building an app is Claude's" line that closed the composer).
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import {
   aiComplete,
   createApp,
@@ -19,7 +19,6 @@ import {
 import {
   getClaudeDefaults,
   readClaudeDefaults,
-  setClaudeDefaults,
   subscribeClaudeDefaults,
   type ClaudeDefaults,
 } from "@platform/lib/claude-defaults";
@@ -69,17 +68,34 @@ function kebabName(text: string): string {
     .slice(0, 48);
 }
 
-// What a user-typed app name must look like: lowercase kebab-case, letters and
-// digits only, no leading/trailing/double hyphens. The server's
-// _app_name_error (routers/apps.py) is looser and stays authoritative; this is
-// the composer holding its own names to the standard the model is asked for.
+// What HAIKU's answer must look like: lowercase kebab-case, letters and digits
+// only, no leading/trailing/double hyphens — the standard the model is asked
+// for, so prose ("sure, call it...") is caught. A name the USER types is not
+// held to this: any folder name the server takes is fine (spaces, capitals,
+// underscores); see userNameError.
 const KEBAB_RE = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+
+// Why a user-typed name cannot be a folder, or null. Mirrors the server's
+// _app_name_error (server/routers/apps.py), which stays authoritative — this
+// only keeps the send button honest before the round trip.
+function userNameError(name: string): string | null {
+  const t = name.trim();
+  if (!t) return "name is empty";
+  if (t.includes("/") || t.includes("\\")) return "no '/' or '\\' in a name";
+  if (t.startsWith(".")) return "no leading '.'";
+  return null;
+}
 
 // The refusal token. Asked for explicitly so a request that is not an app
 // description gets a deterministic answer the code can act on (ask the user)
 // instead of an invented brand — Haiku, given nothing concrete, will happily
 // produce "flux-name-bot" and that passes every syntactic check.
 const NAME_NONE = "none";
+
+// The banner a hosted composer shows when it hands naming to the host's field
+// (onNameNeeded). A constant so the clear-on-edit effect can tell it apart
+// from every other message `error` carries.
+const NAME_ABOVE_MSG = "Couldn't name it automatically — type a name above.";
 
 // The ask is a folder name, so it reads like one: the subject first, 2-3
 // words, no filler. Examples carry more of the standard than the rules do —
@@ -230,7 +246,7 @@ const DRAWABLE_MIMES = new Set(["image/png", "image/jpeg", "image/gif",
                                 "image/svg+xml"]);
 function drawablePath(path: string): boolean {
   const dot = path.lastIndexOf(".");
-  const slash = path.lastIndexOf("/");
+  const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
   return dot > slash && DRAWABLE_EXTS.has(path.slice(dot).toLowerCase());
 }
 
@@ -338,6 +354,8 @@ export function HeroComposer({
   onCreated,
   autoFocus = false,
   givenName,
+  onNameNeeded,
+  submitRef,
 }: {
   onCreated: () => void;
   /** Focus the prompt on mount (onboarding: the focus ring IS the step's cue). */
@@ -352,6 +370,21 @@ export function HeroComposer({
    * field: naming is the AI's job there.
    */
   givenName?: string;
+  /**
+   * The host OWNS A NAME FIELD (the New-app modal's heading input). Called
+   * when the app needs a name from the user — haiku could not name it, or the
+   * exact name the host gave is already taken — instead of unfolding the
+   * composer's own ask row: the host marks its field and focuses it, and the
+   * next Build goes through `givenName`. Absent on the hostless composers
+   * (hero, Build widget, onboarding), which keep the ask row.
+   */
+  onNameNeeded?: () => void;
+  /**
+   * Filled with the composer's own Build action, so the host's name field can
+   * submit on Enter — the ask row it replaces confirmed on Enter, and a
+   * keyboard left on a focused name with nowhere to go is a dead end.
+   */
+  submitRef?: MutableRefObject<(() => void) | null>;
 }) {
   const [prompt, setPrompt] = useState("");
   // The chip above the box — set by the Playground's "Build an app with this
@@ -379,6 +412,9 @@ export function HeroComposer({
   );
   // A field the user picked HERE stops following the global pair's updates.
   const picked = useRef({ model: false, effort: false });
+  // The model on screen, for the global-pair listener below (subscribed once).
+  const modelNow = useRef(model);
+  modelNow.current = model;
   // The agent the pair currently belongs to. When the agent changes — a pick,
   // or the catalog landing on another default — the pair was the OTHER
   // agent's and cannot ride along (a Claude model on a Copilot create is the
@@ -411,7 +447,13 @@ export function HeroComposer({
       if (agentRef.current !== "claude") return;
       const r = resolveComposerDefaults(d, "claude");
       if (!picked.current.model) setModel(r.model);
-      if (!picked.current.effort) setEffort(r.effort);
+      // A model picked HERE keeps its own levels: the global effort is taken
+      // only if that model takes it, else the effort already fitted to it
+      // stays (a model that FOLLOWS is re-fitted by the effect above).
+      if (!picked.current.effort) {
+        const m = picked.current.model ? modelNow.current : r.model;
+        setEffort((e) => (isUnlistedEffort(r.effort, "claude", m) ? e : r.effort));
+      }
     };
     const off = subscribeClaudeDefaults(follow);
     void readClaudeDefaults().then((d) => {
@@ -419,13 +461,15 @@ export function HeroComposer({
     });
     return off;
   }, []);
-  // A pick on Claude moves the global pair (the settings page's value);
-  // another agent's pick is this composer's alone — writing "auto" into
-  // Claude's default would hand every Claude surface a model it cannot run.
+  // A PICK HERE IS THIS APP'S PICK, NOT THE GLOBAL'S — the same rule as the
+  // New task card (shell/NewJobModal): the global pair in
+  // `~/.claude/settings.json` is edited from the Claude config page and
+  // nowhere else. The composer opens on the global and follows it while a
+  // field is untouched; the first pick makes that field this composer's own,
+  // rides on `createApp` into the new app's task, and is never written back.
   const pickModel = (next: ComposerPicks["model"]) => {
     picked.current.model = true;
     setModel(next);
-    if (agentRef.current === "claude") void setClaudeDefaults({ model: next });
     // THE EFFORT FOLLOWS THE MODEL: a level the new model does not take
     // (or a model that takes none) becomes that model's own default — and
     // so does an EMPTY effort, left by a model that took none (`auto`),
@@ -439,7 +483,6 @@ export function HeroComposer({
   const pickEffort = (next: ComposerPicks["effort"]) => {
     picked.current.effort = true;
     setEffort(next);
-    if (agentRef.current === "claude") void setClaudeDefaults({ effort: next });
   };
   // The agent picker (drawn only with two or more agents on, like the New
   // task card's): the pair re-resolves in the effect above.
@@ -600,10 +643,10 @@ export function HeroComposer({
   // user did), so both end up in exactly the same place. `back` is where a
   // failure returns to: the ask row keeps the name the user typed (a retry
   // from idle would re-run naming and overwrite it with a fresh my-app-N),
-  // the automatic path goes back to the prompt. `exact` is the host-given
-  // name: a 409 there is an error to show ("'reports' already exists"),
-  // not a cue to ship reports-2 — the user chose that word; a model's or
-  // my-app-N's name is nobody's choice, so those take the suffix.
+  // the automatic path goes back to the prompt. `exact` is a name the USER
+  // typed (the host's field, or the ask row): a 409 there is an error to show
+  // ("'reports' already exists"), not a cue to ship reports-2 — the user chose
+  // that word; a model's name is nobody's choice, so it takes the suffix.
   const createNamed = async (
     name: string,
     back: "idle" | "askName",
@@ -673,6 +716,12 @@ export function HeroComposer({
         // Escape / a corrected name work without a click first.
         if (back === "askName")
           requestAnimationFrame(() => nameRef.current?.select());
+        // A host-given name the server refused as TAKEN ("'reports' already
+        // exists", 409): the fix is in the host's field, so send the user
+        // there. Any other failure (a 500, the network) is not the name's
+        // fault, and a red field would say it was.
+        else if (exact && (e as { status?: number }).status === 409)
+          onNameNeeded?.();
       }
     }
   };
@@ -697,6 +746,15 @@ export function HeroComposer({
       await createNamed(name, "idle");
       return;
     }
+    // A host with a name field takes it from here: its field goes red and
+    // takes focus, the prompt stays put, and the next Build arrives with
+    // `givenName` set. No ask row — the modal would then have two name inputs.
+    if (onNameNeeded) {
+      setError(NAME_ABOVE_MSG);
+      setPhase("idle");
+      onNameNeeded();
+      return;
+    }
     const generic = await genericAppName();
     if (!alive.current) return;
     setNameDraft(generic);
@@ -704,10 +762,22 @@ export function HeroComposer({
     requestAnimationFrame(() => nameRef.current?.select());
   };
 
-  const nameOk = KEBAB_RE.test(nameDraft);
+  // The host's Enter key reaches Build through this (see submitRef). Kept
+  // current every render: `submit` closes over this render's state.
+  if (submitRef) submitRef.current = submit;
+  // The "type a name above" banner is answered by typing a name above: clear
+  // THAT message when the host's name changes, and only that one — an
+  // attachment failure in `error` is still news.
+  useEffect(() => {
+    setError((e) => (e === NAME_ABOVE_MSG ? null : e));
+  }, [givenName]);
+
+  const nameOk = userNameError(nameDraft) === null;
   const confirmName = () => {
     if (phase !== "askName" || !nameOk) return;
-    void createNamed(nameDraft, "askName");
+    // The user typed this one, so it is exact: a 409 is an error to fix here,
+    // not a cue to ship "reports-2" (see createNamed).
+    void createNamed(nameDraft.trim(), "askName", true);
   };
   const cancelName = () => {
     setPhase("idle");
@@ -850,15 +920,10 @@ export function HeroComposer({
                 value={nameDraft}
                 spellCheck={false}
                 autoComplete="off"
-                // Space types a hyphen: the field wants kebab-case, so the key
-                // a user reaches for between words produces the separator the
-                // name needs. Done on the value (not keydown) so a pasted
-                // "My App" lands as "my-app" too.
-                onChange={(e) =>
-                  setNameDraft(
-                    e.target.value.toLowerCase().replace(/\s+/g, "-"),
-                  )
-                }
+                // Taken verbatim: any folder name the server accepts is a
+                // name ("My App", "reports_2024"); kebab-case is haiku's
+                // standard, not the user's.
+                onChange={(e) => setNameDraft(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
                     e.preventDefault();

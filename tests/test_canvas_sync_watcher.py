@@ -867,7 +867,11 @@ def test_the_grace_ends_on_the_watcher_tick_without_any_cut(
     rev = m.disk_rev
     assert "fresh" in m._rowless
     assert _wait_for(lambda: "fresh" not in m._rowless, timeout=3)
-    assert m.disk_rev > rev, "the grace ended without waking the delta leg"
+    # Wait for the bump itself, not just the expiry: `_rowless_in_grace`
+    # drops the entry under its lock, then logs and `_force_rev`s (which
+    # fingerprints the clone) — a loaded runner read disk_rev in that gap.
+    assert _wait_for(lambda: m.disk_rev > rev, timeout=3), (
+        "the grace ended without waking the delta leg")
     assert "row grace elapsed" in _actions(harness)
 
 
@@ -989,7 +993,9 @@ def test_a_wholesale_pull_waits_for_a_live_claude_session(
     shims = _cloned_shim_harness(harness, tmp_path, monkeypatch)
     _start(harness)
     assert _wait_for(lambda: (_manager()._remote or {}).get("last_updated") == "t1")
-    harness.set_scenario({"pull_files": {**_BASE_FILES, "remote_udf.py": "print('x')\n"}})
+    remote = {**_BASE_FILES, "remote_udf.py": "print('x')\n"}
+    harness.set_scenario({"pull_files": remote})
+    shims.set_remote_files(remote)  # a stamp move over unchanged files is adopted
     shims.set_manifest("t2")
     fake_agent.live = "run-abc"
 
@@ -1083,3 +1089,201 @@ def test_the_watcher_tick_keeps_the_live_run_cache_sync_state_reads(
     assert len(agent.calls) - before <= 1, (
         "sync/state paid for the RUNS scan instead of reading the watcher's cache",
         agent.calls)
+
+
+# -- hand-over: sync/release + sync/takeover -----------------------------------
+
+def test_release_stops_this_processes_watcher_and_drops_the_lock(harness, tmp_path, monkeypatch):
+    """A peer's sync/takeover asks us to release: the watcher stops, the lock
+    file goes, and the page here reads "no watcher" on its next state."""
+    _quiet_watcher(monkeypatch)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    m = _start(harness)
+    lock = harness.root / ".sync" / "alpha.lock"
+    assert lock.exists()
+    res = harness.client.post("/api/canvases/sync/release", json={"env": ENV, "name": "alpha"},
+                              headers=GUARD)
+    assert res.status_code == 200, res.text
+    assert res.json()["released"] is True
+    assert m.stop_event.is_set() and not m.thread.is_alive()
+    assert not lock.exists()
+    assert (ENV, "alpha") not in canvases_mod._syncs
+    assert (ENV, "alpha") not in canvases_mod._HANDING_OVER
+    state = harness.client.get("/api/canvases/sync/state?env=unstable&name=alpha").json()
+    assert state["watching"] is False and state["owner"] is None
+    # Nothing to give: no watcher ran here.
+    again = harness.client.post("/api/canvases/sync/release", json={"env": ENV, "name": "alpha"},
+                                headers=GUARD)
+    assert again.status_code == 200 and again.json()["released"] is False
+    # Guarded like every write.
+    assert harness.client.post("/api/canvases/sync/release",
+                               json={"env": ENV, "name": "alpha"}).status_code == 403
+
+
+class _Running:
+    def poll(self):
+        return None
+
+
+def test_release_waits_for_a_publish_then_refuses_if_it_outlasts_the_wait(
+        harness, tmp_path, monkeypatch):
+    """Dropping the lock under a running push CLI would let the taker push
+    over it — the two-writer race the lock prevents. The release waits for
+    the push (a dirty clone pushes seconds after it opens, right when a
+    second page asks); past RELEASE_PUSH_WAIT_S it is `busy`, lock kept."""
+    _quiet_watcher(monkeypatch)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    monkeypatch.setattr(canvases_mod, "RELEASE_PUSH_WAIT_S", 0.6)
+    m = _start(harness)
+    lock = harness.root / ".sync" / "alpha.lock"
+    m._push_proc = _Running()
+    try:
+        t0 = time.monotonic()
+        res = harness.client.post("/api/canvases/sync/release", json={"env": ENV, "name": "alpha"},
+                                  headers=GUARD)
+        assert res.status_code == 409 and res.json()["code"] == "busy", res.text
+        assert time.monotonic() - t0 >= 0.5, "did not wait for the push"
+        assert lock.exists() and (ENV, "alpha") in canvases_mod._syncs
+    finally:
+        m._push_proc = None
+        _stop_sync("alpha")
+
+
+def test_release_waits_for_a_pull_too(harness, tmp_path, monkeypatch):
+    """A pull writes the clone as much as a push: not a lock to drop under."""
+    _quiet_watcher(monkeypatch)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    monkeypatch.setattr(canvases_mod, "RELEASE_PUSH_WAIT_S", 0.5)
+    m = _start(harness)
+    lock = harness.root / ".sync" / "alpha.lock"
+    m._pull_in_flight = True
+    try:
+        res = harness.client.post("/api/canvases/sync/release", json={"env": ENV, "name": "alpha"},
+                                  headers=GUARD)
+        assert res.status_code == 409 and res.json()["code"] == "busy", res.text
+        assert lock.exists() and (ENV, "alpha") in canvases_mod._syncs
+        assert (ENV, "alpha") not in canvases_mod._HANDING_OVER
+    finally:
+        m._pull_in_flight = False
+        _stop_sync("alpha")
+
+
+def test_own_sync_start_is_held_off_while_handing_over(harness, tmp_path, monkeypatch):
+    """The owner's page self-heals through sync/start the moment its watcher
+    goes; under the gate it gets `busy` (it retries), never a new watcher on
+    the still-held flock."""
+    _quiet_watcher(monkeypatch)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    key = (ENV, "alpha")
+    with canvases_mod._SYNC_LOCK:
+        canvases_mod._HANDING_OVER.add(key)
+    try:
+        res = harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"},
+                                  headers=GUARD)
+        assert res.status_code == 409 and res.json()["code"] == "busy", res.text
+        assert "handed over" in res.json()["error"]
+        assert key not in canvases_mod._syncs
+    finally:
+        with canvases_mod._SYNC_LOCK:
+            canvases_mod._HANDING_OVER.discard(key)
+    res = harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"},
+                              headers=GUARD)
+    assert res.status_code == 200, res.text
+    _stop_sync("alpha")
+
+
+def test_release_goes_through_once_the_publish_ends(harness, tmp_path, monkeypatch):
+    _quiet_watcher(monkeypatch)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    monkeypatch.setattr(canvases_mod, "RELEASE_PUSH_WAIT_S", 5.0)
+    m = _start(harness)
+    lock = harness.root / ".sync" / "alpha.lock"
+    m._push_proc = _Running()
+    threading.Timer(0.5, lambda: setattr(m, "_push_proc", None)).start()
+    t0 = time.monotonic()
+    res = harness.client.post("/api/canvases/sync/release", json={"env": ENV, "name": "alpha"},
+                              headers=GUARD)
+    assert res.status_code == 200 and res.json()["released"] is True, res.text
+    assert 0.4 <= time.monotonic() - t0 < 4.0
+    assert not lock.exists() and (ENV, "alpha") not in canvases_mod._syncs
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="flock is POSIX")
+def test_takeover_asks_the_owner_to_release_then_starts_here(harness, tmp_path, monkeypatch):
+    _quiet_watcher(monkeypatch)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    lock = harness.root / ".sync" / "alpha.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    other = subprocess.Popen([sys.executable, "-c", _HOLDER, str(lock)],
+                             stdout=subprocess.PIPE, text=True)
+    asked: list[tuple[int, str, str]] = []
+
+    def fake_release(port, env, name):
+        asked.append((port, env, name))
+        # The owner honours the request: its watcher stops and its lock goes
+        # (here: the holder process ends, which drops its flock).
+        other.kill()
+        other.wait()
+        return 200, {"released": True, "name": name, "env": env}
+
+    monkeypatch.setattr(canvases_mod, "_ask_peer_release", fake_release)
+    try:
+        assert other.stdout.readline().strip() == "ready"
+        res = harness.client.post("/api/canvases/sync/takeover", json={"env": ENV, "name": "alpha"},
+                                  headers=GUARD)
+        assert res.status_code == 200, res.text
+        assert res.json()["name"] == "alpha" and res.json()["dir"]
+        assert asked == [(4242, ENV, "alpha")]
+        assert json.loads(lock.read_text())["pid"] == os.getpid()
+        assert (ENV, "alpha") in canvases_mod._syncs
+    finally:
+        if other.poll() is None:
+            other.kill()
+            other.wait()
+        _stop_sync("alpha")
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="flock is POSIX")
+def test_takeover_from_an_owner_that_cannot_hand_over_keeps_its_lock(harness, tmp_path, monkeypatch):
+    """An owner without the release route (an older build) answers 404; one
+    mid-publish answers busy. Both come back as the page's `owned` 409 with
+    the reason, and the owner's lock is untouched."""
+    _quiet_watcher(monkeypatch)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    lock = harness.root / ".sync" / "alpha.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    other = subprocess.Popen([sys.executable, "-c", _HOLDER, str(lock)],
+                             stdout=subprocess.PIPE, text=True)
+    answers = {}
+    monkeypatch.setattr(canvases_mod, "_ask_peer_release", lambda port, env, name: answers["next"])
+    try:
+        assert other.stdout.readline().strip() == "ready"
+        for answer, code, needle in (
+                ((404, {}), "owner_too_old", "older Fused"),
+                ((409, {"code": "busy", "error": "canvas is publishing"}), "busy", "publishing"),
+                ((None, {}), "owned", "did not answer"),
+        ):
+            answers["next"] = answer
+            res = harness.client.post("/api/canvases/sync/takeover",
+                                      json={"env": ENV, "name": "alpha"}, headers=GUARD)
+            assert res.status_code == 409, res.text
+            body = res.json()
+            assert body["code"] == code and needle in body["error"], body
+            assert body["owner"]["pid"] == other.pid and body["owner"]["port"] == 4242
+            assert (ENV, "alpha") not in canvases_mod._syncs
+            assert json.loads(lock.read_text())["pid"] == other.pid
+    finally:
+        other.kill()
+        other.wait()
+
+
+def test_takeover_of_a_free_clone_is_a_plain_start(harness, tmp_path, monkeypatch):
+    _quiet_watcher(monkeypatch)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    monkeypatch.setattr(canvases_mod, "_ask_peer_release",
+                        lambda *a: pytest.fail("nobody to ask"))
+    res = harness.client.post("/api/canvases/sync/takeover", json={"env": ENV, "name": "alpha"},
+                              headers=GUARD)
+    assert res.status_code == 200, res.text
+    assert (ENV, "alpha") in canvases_mod._syncs
+    _stop_sync("alpha")

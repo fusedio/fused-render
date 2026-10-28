@@ -1981,10 +1981,11 @@ class _Host:
 
 def main() -> None:
     _enable_faulthandler()
-    try:
-        os.setsid()
-    except OSError:
-        pass
+    if hasattr(os, "setsid"):
+        try:
+            os.setsid()
+        except OSError:
+            pass
     # A SIGTERM (a tree-kill's first signal) unwinds as SystemExit, so
     # `_Host.run`'s finally still runs `close()`: the open turn gets its
     # result, every card its answer, the registry row its removal.

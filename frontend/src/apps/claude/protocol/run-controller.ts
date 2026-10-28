@@ -71,6 +71,7 @@ import type {
   Activity,
   AppStateResponse,
   AppStateRow,
+  CanvasShotRow,
   CancelResponse,
   Decision,
   DecideResponse,
@@ -295,6 +296,7 @@ function emptyState(file: string | null): ChatState {
     fork: null,
     permissions: [],
     appState: [],
+    canvasShot: [],
     skills: [],
     working: null,
     trouble: null,
@@ -484,6 +486,9 @@ export function createChatController(deps: ControllerDeps): ChatController {
 
   // ---- per-transcript memos (T:15721-15756) -------------------------------
   const answeredStates = new Set<string>();
+  /** `canvas_screenshot` requests this page has claimed (`answerCanvasShot`). */
+  const answeredShots = new Set<string>();
+  const shotPolls = new Map<string, number>();
   const notedStates = new Set<string>();
   const nullStatePolls = new Map<string, number>();
   const notedSkills = new Set<string>();
@@ -1356,6 +1361,22 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (rows.length || state.appState.length) emit({ appState: rows });
   };
 
+  /** The `canvas_screenshot` rows a canvas page still has to answer. Replayed
+   *  every poll like `surfaceAppState`, with `pollsSeen` advancing so a page
+   *  WITHOUT a canvas (the Tasks peek) can answer "open the canvas" only after
+   *  the canvas page has had its chance (`useCanvasShotResponder`). */
+  const surfaceCanvasShot = (list: CanvasShotRow[] | null | undefined, runId: string) => {
+    const rows: CanvasShotRow[] = [];
+    for (const req of list || []) {
+      if (!req || !req.id || answeredShots.has(req.id)) continue;
+      const seen = (shotPolls.get(req.id) || 0) + 1;
+      shotPolls.set(req.id, seen);
+      trim(shotPolls);
+      rows.push({ ...req, runId, pollsSeen: seen });
+    }
+    if (rows.length || state.canvasShot.length) emit({ canvasShot: rows });
+  };
+
   // ---- permissions (T:14750-14775) ---------------------------------------
 
   /**
@@ -1829,12 +1850,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
        *  and `ToolChip`'s `memo` hits (T:15549-15554). Per slot, because the
        *  carry-over is keyed by `cardKey`, which is per container. */
       view: SegmentView | null;
+      /** When a seam closed this reply off, epoch seconds; null while it is the growing span. */
+      endedAt: number | null;
     }
     const chunks = new Map<number, Chunk>();
     const chunkAt = (slot: number): Chunk => {
       let c = chunks.get(slot);
       if (!c) {
-        c = { key: null, seq: 0, segMode: false, tailText: null, flatText: "", view: null };
+        c = { key: null, seq: 0, segMode: false, tailText: null, flatText: "", view: null, endedAt: null };
         chunks.set(slot, c);
       }
       return c;
@@ -1990,6 +2013,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
         if (poll.worktree_hint) landWorktreeHint(poll.worktree_hint);
         noteSkills(poll.skills);
         surfaceAppState(poll.app_state, runId);
+        surfaceCanvasShot(poll.canvas_shot, runId);
         // THE LIVE HOST'S UNDRAINED FOLLOW-UPS, republished verbatim — see
         // `publishInbox`. An older agent.py sends none, which reads as an empty
         // inbox, which is what it was before this field existed.
@@ -2086,6 +2110,14 @@ export function createChatController(deps: ControllerDeps): ChatController {
             // reason must not lend the next follow-up a step it did not make.
             const stepped = lost > 0 ? lost : 1;
             chunkOffset += stepped;
+            // A reply the cursor carried out of the payload is over, seam seen
+            // or not: stamp it now so settle does not date it at the run's end.
+            for (const [slot, c] of chunks) {
+              if (slot < chunkOffset && c.key && c.endedAt === null) {
+                c.endedAt = wallClock() / 1000;
+                replaceTurn(c.key, { endedAt: c.endedAt });
+              }
+            }
             pendingSeams = Math.max(0, pendingSeams - stepped);
           }
           // A seam APPEARING is not the answer: it is handled by the loop below
@@ -2193,6 +2225,10 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // still growing (the seam is the `result` that ended the one before
           // it), so every earlier one settles as soon as it is placed.
           const spanLive = j === breaks.length;
+          // Stamped ONCE, by the first poll that sees the seam, so a later
+          // settle never dates this reply at the follow-up's end.
+          if (!spanLive && chunk.endedAt === null) chunk.endedAt = wallClock() / 1000;
+          const sealed = chunk.endedAt === null ? {} : { endedAt: chunk.endedAt };
           if (body.mode === "segments") {
             if (!chunk.segMode) {
               // A first poll with text but no segments yet started this reply on
@@ -2205,10 +2241,11 @@ export function createChatController(deps: ControllerDeps): ChatController {
               segments: body.view.rows.map((r) => r.seg),
               text: chunk.tailText || "",
               streaming: spanLive,
+              ...sealed,
             });
           } else {
             chunk.flatText = pollFlat;
-            if (!poll.done) replaceTurn(chunk.key, { text: chunk.flatText, streaming: spanLive });
+            if (!poll.done) replaceTurn(chunk.key, { text: chunk.flatText, streaming: spanLive, ...sealed });
           }
           // THE NEWEST reply's bubble is where a resolved card parks — a card
           // answered now belongs in the turn now streaming, never in one the
@@ -2270,19 +2307,23 @@ export function createChatController(deps: ControllerDeps): ChatController {
           // `streaming: true` parks the caret on a reply that finished minutes
           // ago.
           const live = [...chunks.values()].filter((c) => !!c.key);
+          // WHEN IT ENDED, off the wall clock, for the "Worked for" line: live
+          // delta rows carry no clock, so a reply that settled here has nothing
+          // else to be measured to (types.ts `AssistantTurn.endedAt`).
+          const endedAt = wallClock() / 1000;
           if (!end.keepText) {
             for (const c of live) dropTurn(c.key as string);
           } else if (live.length) {
             for (const c of live) {
               if (c.segMode) {
-                replaceTurn(c.key as string, { streaming: false, text: c.tailText || "" });
+                replaceTurn(c.key as string, { streaming: false, text: c.tailText || "", endedAt: c.endedAt ?? endedAt });
               } else {
                 // The DONE poll's own text (T:16288/16360), so a poll that
                 // legitimately shortened the body can shrink the bubble and the
                 // typer's clamp fires (T:15075). An empty done poll is the one
                 // case that must not wipe a bubble it already filled, so it
                 // keeps what the last non-empty poll left.
-                replaceTurn(c.key as string, { streaming: false, text: c.flatText });
+                replaceTurn(c.key as string, { streaming: false, text: c.flatText, endedAt: c.endedAt ?? endedAt });
               }
             }
           } else if (poll.text || (poll.segments || []).length) {
@@ -2310,6 +2351,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
                 text: view.mode === "segments" ? view.view.tailText || "" : view.text,
                 ...(view.mode === "segments" ? { segments: view.view.rows.map((r) => r.seg) } : {}),
                 followup: chunkOffset + j,
+                endedAt,
               });
             }
           }
@@ -3410,6 +3452,38 @@ export function createChatController(deps: ControllerDeps): ChatController {
     if (res && "error" in res && res.error && res.retry) answeredStates.delete(id);
   }
 
+  async function answerCanvasShot(
+    id: string,
+    answer: { image: string; mime: string; udf?: string } | { error: string },
+    askedBy?: string,
+  ): Promise<boolean> {
+    if (disposed) return false;
+    // The run that asked, as the responder remembers it; the row's own, else
+    // the current run — never a later run for a request a former one made.
+    const runId = askedBy || state.canvasShot.find((r) => r.id === id)?.runId || activeRun;
+    if (!runId) return false;
+    if (answeredShots.has(id)) return true;
+    answeredShots.add(id); // claimed before the await: polls overlap
+    trim(answeredShots);
+    emit({ canvasShot: state.canvasShot.filter((r) => r.id !== id) });
+    let res: AppStateResponse | null = null;
+    try {
+      res = (await run("canvas_shot", {
+        run_id: runId,
+        request_id: id,
+        state: JSON.stringify(answer),
+      })) as AppStateResponse;
+    } catch {
+      answeredShots.delete(id); // the tool call is still blocked: retry next poll
+      return false;
+    }
+    if (res && "error" in res && res.error && res.retry) {
+      answeredShots.delete(id);
+      return false;
+    }
+    return true;
+  }
+
   // ---- history / sessions -------------------------------------------------
 
   /**
@@ -3568,6 +3642,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
       context: null,
       permissions: [],
       appState: [],
+      canvasShot: [],
       skills: [],
       trouble: null,
       // A restored conversation has no live run, so the picker's param is the
@@ -4613,6 +4688,7 @@ export function createChatController(deps: ControllerDeps): ChatController {
     decidePlan,
     dismissCard,
     answerAppState,
+    answerCanvasShot,
     openSession,
     resumeRun,
     adoptLiveRun,

@@ -146,6 +146,7 @@ import {
   type Viewable,
   AgentProvider,
 } from "./ui";
+import { ComposerGate, waitingKind } from "./ui/WaitingBar";
 import { AGENT_PREFS_URL, agentLabel, capsOf, isBackendEnabled, useAgentBackends } from "@platform/lib/agent-backends";
 import { debugSentEnabled } from "./ui/debug-sent";
 import { sessionSeed } from "./ui/useRecentTasks";
@@ -155,6 +156,10 @@ import { useSlashCommands } from "./ui/useSlashCommands";
 import { planLocalCommand } from "./ui/local-commands";
 import { REMOTE_CONTROL_CONNECTING, RemoteControlConfirm, RemoteControlNote, useRemoteControl } from "./ui/RemoteControl";
 import { notify } from "@platform/lib/notifications";
+import { ScreenshotSeat } from "./ui/AnnStrip";
+import { useCanvasShotResponder } from "./pane/useCanvasShotResponder";
+import type { CanvasShot, CanvasShotWhat } from "./shots/canvas-shot";
+import { CanvasShotSeat } from "./ui/CanvasShotSeat";
 import { WorktreeMenu, paneChatUrl, type WorktreeRequest } from "./ui";
 import { WorktreeHintChip, visibleWorktreeHint } from "./ui/WorktreeHintChip";
 import { TasksContext, TasksPanel, tasksPanelScope, useTasksOpen } from "./ui";
@@ -206,6 +211,7 @@ import {
   type Task,
 } from "@platform/lib/api";
 import { GATE_FALLBACK_MS, useFallbackAfter } from "@platform/lib/clock";
+import PanelIcon from "@platform/ui/PanelIcon";
 import "./styles/ann.css";
 import "./styles/chat.css";
 import "./styles/hljs.css";
@@ -287,6 +293,18 @@ export interface ClaudeChatProps {
    *  `chatViewOnly`). The pane itself stays mounted — it is what files the
    *  chat under its file — but is never on screen. */
   noAnnTools?: boolean;
+  /** The host is a canvas page that can photograph its workbench on request
+   *  (`shots/canvas-shot`): the Screenshot seat takes THAT picture instead of
+   *  a capture of the pane frame, which is cross-origin and blank to us. On a
+   *  mount without the ann strip (`noAnnTools`, the node pane) the seat is
+   *  drawn beside the ⋮ instead, so the camera is where it always is. */
+  canvasShot?: CanvasShot;
+  /** The host's "hide this panel": the chat sits in a collapsible side pane
+   *  the host owns (the canvas page's Claude pane), and the pane's close
+   *  control rides the FIRST seat of this chat's top row — the explorer
+   *  sidebar's SideCloseButton, same glyph, same place (the header's left
+   *  end, on the seam the pane collapses toward). Absent: no button. */
+  onHidePane?: () => void;
   /** `_noopen=1` — this mount must not record the app it frames as OPENED
    *  (D622, the listing pane). Unlike `preview` it is not display-only: the
    *  pane is fully interactive, so it carries the no-open stamp WITHOUT the
@@ -354,8 +372,11 @@ export { localEffortArg, localModelArg } from "./ui/local-commands";
 export function chatWorkdir(file: string | null, noun: TargetNoun): string | null {
   if (!file || !noun) return null;
   if (noun !== "file") return file;
-  const cut = file.replace(/\/+$/, "").search(/\/[^/]*$/);
-  return cut > 0 ? file.slice(0, cut) : cut === 0 ? file.slice(0, 1) : file;
+  const cut = file.replace(/[\\/]+$/, "").search(/[\\/][^\\/]*$/);
+  if (cut <= 0) return cut === 0 ? file.slice(0, 1) : file;
+  const parent = file.slice(0, cut);
+  // A drive root keeps its separator: bare "C:" is cwd-relative.
+  return /^[A-Za-z]:$/.test(parent) ? parent + file[cut] : parent;
 }
 
 /** T:16435 `noteChatActivity` — best-effort: a blocked store (private mode, a
@@ -1409,9 +1430,53 @@ function ChatBody(props: ChatBodyProps) {
     // parent is a real box to flash over.
     flashHost: () => appFrame()?.parentElement ?? null,
     paneNoun: pane.paneNoun,
+      // The canvas page's picture of its workbench, when there is one: the seat
+    // asks the host rather than photographing a cross-origin frame.
+    ...(props.canvasShot
+      ? {
+          paneShot: async (what?: string) => {
+            const shot = props.canvasShot!;
+            const target: CanvasShotWhat =
+              what === "udf" || what === "canvas" ? what : shot.targets[0] ?? "canvas";
+            const a = await shot.capture(target);
+            return a.ok
+              ? {
+                  blob: a.blob,
+                  note:
+                    target === "udf"
+                      ? "a picture of one UDF node's output as the workbench drew it, not of this chat's pane"
+                      : "a picture of the canvas graph as the workbench drew it, not of this chat's pane",
+                }
+              : { blob: null, why: a.error };
+          },
+        }
+      : {}),
   });
   /** The picture the viewer is showing, pending or sent (T:10681 `shotViewing`). */
   const [viewing, setViewing] = useState<Viewable | null>(null);
+  // A FRAMED canvas chat (the node pane, `canvasShot` + a parent window) opens
+  // its pictures in the HOST's viewer: a modal portaled to this document's
+  // body is boxed into the pane's iframe — a third of the window, under the
+  // host's own chrome — while the canvas chat next door (an in-page mount)
+  // gets the whole window. One door, one size: the host draws it
+  // (CanvasWorkspace `fused-shot-view`). A blob URL is origin-scoped, so the
+  // host can show this document's picture by the same URL while this
+  // document lives — nothing is copied. Discard stays on the chip's ✕.
+  const hoistViewer = !!props.canvasShot && typeof window !== "undefined" && window.parent !== window;
+  const openShot = useCallback(
+    (shot: Viewable | null) => {
+      if (!shot || !hoistViewer) {
+        setViewing(shot);
+        return;
+      }
+      const { id: _id, pending: _pending, ...rest } = shot;
+      window.parent.postMessage(
+        { type: "fused-shot-view", shot: { ...rest, src: shot.src || shot.thumb || undefined } },
+        window.location.origin,
+      );
+    },
+    [hoistViewer],
+  );
   // The tray's hand-back, reachable from the controller's callback above. In an
   // EFFECT and not the render body: a render React throws away (a StrictMode
   // double-invoke, a concurrent attempt that loses) must not leave its handle
@@ -1839,6 +1904,16 @@ function ChatBody(props: ChatBodyProps) {
     //
     // Both paths are pinned: `run-controller.test.ts` for the live one,
     // `useAppStateResponder.test.tsx` for the seam.
+  });
+
+  // ── the canvas-screenshot pull channel (`canvas_screenshot` tool) ──────────
+  // Every chat polls its run, so every chat sees the rows; only a canvas page
+  // (`canvasShot`) can take the picture, the rest answer "open the canvas"
+  // after giving it its chance (`useCanvasShotResponder`).
+  useCanvasShotResponder({
+    rows: state.canvasShot,
+    shot: props.canvasShot ?? null,
+    answer: controller.answerCanvasShot,
   });
 
   // ── the ask, LATCHED PER MOUNT ─────────────────────────────────────────────
@@ -2290,6 +2365,11 @@ function ChatBody(props: ChatBodyProps) {
   // NO-PANE target: there is no second view to be in, so T makes no write at
   // all (T:14661) and a bookmarked `paneview=preview` must not be rewritten.
   const openCards = openCardIds(state.permissions);
+  // The waiting bar replaces the composer while a card is open; it offers a jump
+  // only when the card is outside the transcript's scrollport.
+  const waitKind = waitingKind(state.permissions);
+  const [openCardVisible, setOpenCardVisible] = useState(true);
+  const jumpToCard = useRef<(() => void) | null>(null);
   useEffect(() => {
     if (openCards && !pane.noPane && narrowView.narrow && narrowView.view === "preview") {
       params.set({ paneview: "chat" });
@@ -3910,11 +3990,12 @@ function ChatBody(props: ChatBodyProps) {
       decidePlan: controller.decidePlan,
       dismissCard: controller.dismissCard,
       stopRun: controller.stopRun,
+      addNote: controller.addNote,
     }),
     [controller],
   );
 
-  const name = file ? file.split("/").filter(Boolean).pop() || file : agentLabel(chatBackend);
+  const name = file ? file.split(/[\\/]/).filter(Boolean).pop() || file : agentLabel(chatBackend);
   const running =
     state.status === "running" || state.status === "starting" || state.status === "stopping";
   // Worktrees are Claude's (§7 `worktrees`): no menu for an agent without them.
@@ -4686,7 +4767,7 @@ function ChatBody(props: ChatBodyProps) {
         <AttachTray
           items={attach.items}
           paneNoun={pane.paneNoun}
-          onOpen={setViewing}
+          onOpen={openShot}
           onRemove={attach.remove}
         >
           {/* The SAME pill a screenshot's chip is, in the same row: both are
@@ -5028,7 +5109,36 @@ function ChatBody(props: ChatBodyProps) {
           ← Chats
         </button>
   );
+  // A canvas chat whose strip draws no seats — the node pane (`noAnnTools`),
+  // or the canvas chat itself, whose target is the cross-origin workbench
+  // frame and so not annotatable (`ann.capable`) — still has a picture to
+  // take, so the camera sits beside the ⋮: the strip's own seat markup, in
+  // the strip's own `.c-anncta` face, exactly where the strip would put it.
+  const stripSeatsShown = !!annTarget && !props.noAnnTools && ann.capable;
+  const canvasShotSeat = props.canvasShot && !stripSeatsShown ? (
+    <div className="c-anncta">
+      {props.canvasShot.targets.length > 1 ? (
+        <CanvasShotSeat
+          targets={props.canvasShot.targets}
+          inert={sched.blocked}
+          disabled={attach.capturing || sched.blocked}
+          capturing={attach.capturing}
+          onPick={(what) => void attach.capture(what)}
+        />
+      ) : (
+        <ScreenshotSeat
+          label="Screenshot the canvas and attach it to this message"
+          inert={sched.blocked}
+          disabled={attach.capturing || sched.blocked}
+          capturing={attach.capturing}
+          onClick={() => void attach.capture(props.canvasShot!.targets[0])}
+        />
+      )}
+    </div>
+  ) : null;
   const kebabEl = (
+    <>
+      {canvasShotSeat}
       <Kebab
         file={file}
         sessionId={inChat ? (state.sessionId ?? "") : ""}
@@ -5070,6 +5180,7 @@ function ChatBody(props: ChatBodyProps) {
             : undefined
         }
       />
+    </>
   );
   return (
    <AgentProvider backend={chatBackend}>
@@ -5157,6 +5268,20 @@ function ChatBody(props: ChatBodyProps) {
           // state). `AnnStrip` returns null for itself when there is nothing to
           // photograph.
           <div className="c-anntools" ref={stripRef}>
+            {/* The host pane's close, the row's very first seat (`onHidePane`).
+                In BOTH views, landing and transcript: the pane is the host's,
+                not the conversation's. */}
+            {props.onHidePane ? (
+              <button
+                type="button"
+                className="bar-ctl bar-ctl-icon c-hide-pane"
+                title="Hide the Claude panel"
+                aria-label="Hide the Claude panel"
+                onClick={props.onHidePane}
+              >
+                <PanelIcon side="right" />
+              </button>
+            ) : null}
             {/* The way back, at the strip's left end (T:3941). Absent on the
                 landing: there is no chat to leave. */}
             {inChat && !mergedHeadRow ? backBtn : null}
@@ -5306,6 +5431,8 @@ function ChatBody(props: ChatBodyProps) {
             <TasksContext.Provider value={tasksById}>
             <Transcript
               followRef={transcriptFollow}
+              onOpenCardVisible={setOpenCardVisible}
+              jumpRef={jumpToCard}
               cwd={chatWorkdir(file, pane.noun)}
               state={state}
               comebackPending={sched.blocked}
@@ -5318,7 +5445,7 @@ function ChatBody(props: ChatBodyProps) {
               {...(debugSent ? { onShowSent: setSent } : {})}
               onPullPending={onPullPending}
               {...(chatBackend === "claude" && !running ? { onFork } : {})}
-              onOpenShot={setViewing}
+              onOpenShot={openShot}
               paneNoun={pane.paneNoun}
               what={file ? "using the chat on " + file : "using the chat"}
               recap={
@@ -5462,10 +5589,17 @@ function ChatBody(props: ChatBodyProps) {
                 and stands alone in the compact tile that has none. */}
             {/* The artifacts strip is Claude's (§7 `artifacts`). */}
             {!compact ? (
-              <Composer
-                {...card}
-                artStrip={agentCaps.artifacts ? <ArtStrip items={art.items} /> : null}
-              />
+              <ComposerGate
+                kind={waitKind}
+                agentName={agentLabel(chatBackend)}
+                showJump={!openCardVisible}
+                onJump={() => jumpToCard.current?.()}
+              >
+                <Composer
+                  {...card}
+                  artStrip={agentCaps.artifacts ? <ArtStrip items={art.items} /> : null}
+                />
+              </ComposerGate>
             ) : agentCaps.artifacts ? (
               <ArtStrip items={art.items} />
             ) : null}
@@ -5498,7 +5632,7 @@ function ChatBody(props: ChatBodyProps) {
         onClose={() => setSent(null)}
         outgoing={sent?.raw ?? ""}
         paneNoun={pane.paneNoun}
-        onOpenShot={setViewing}
+        onOpenShot={openShot}
       />
       {/* ABOVE the popup (z 90 against 80): a picture opened from inside it must
           land ON TOP or the click looks dead (T:1147-1148). */}

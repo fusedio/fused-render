@@ -835,6 +835,29 @@ def test_the_marker_is_only_read_from_the_head_bytes(tmp_path):
     assert app_listing.has_fused_meta(str(q))
 
 
+@pytest.mark.parametrize("tag,is_marker", [
+    ('<meta name="fused-app">', True),
+    ("<meta name='fused-app' />", True),
+    ("<meta name=fused-app>", True),
+    ("<meta name=fused-app />", True),
+    ('<meta charset="utf-8" name="FUSED-APP">', True),
+    # The app id tag is not the entry marker, quoted or not.
+    ('<meta name="fused-app-id" content="sine-0a1b2c3d">', False),
+    ("<meta name=fused-app-id content=sine-0a1b2c3d>", False),
+    ("<meta name='fused-apps'>", False),
+])
+def test_the_app_id_tag_alone_never_makes_a_page_an_entry(tmp_path, tag, is_marker):
+    """`name="fused-app-id"` used to match the marker's optional-quote
+    pattern, so a page carrying only the id read as an app's entry."""
+    p = tmp_path / "page.html"
+    p.write_text(f"<html><head>{tag}</head></html>", encoding="utf-8")
+    assert app_listing.has_fused_meta(str(p)) is is_marker
+    assert app_listing.text_has_fused_meta(p.read_text(encoding="utf-8")) is is_marker
+    from fused_render.templates.shared import app_entry as shared_entry
+
+    assert bool(shared_entry._FUSED_META_RE.search(p.read_bytes())) is is_marker
+
+
 # ----------------------------------------------- listed "path" is realpath'd
 
 

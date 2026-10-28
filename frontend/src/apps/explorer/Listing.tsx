@@ -120,6 +120,7 @@ import {
 } from "@platform/lib/pending-claude-ask";
 import { SideToggleButton } from "@apps/explorer/SideChrome";
 import { useAppActionRows } from "@apps/explorer/EntryActionsMenu";
+import { canonFsPath } from "@platform/lib/path-url";
 import { McpDialog } from "@apps/explorer/McpDialog";
 import { withNoFocus } from "@platform/lib/frame-focus";
 import { unavailableReason } from "@platform/lib/mode-visibility";
@@ -973,13 +974,16 @@ export default function Listing({
   // — MCP config, gated on the folder publishing a manifest, and Open in embed.
   // The entry page is what the rows act on (export's `entry_html`), with
   // `<folder>/index.html` as a stand-in when there is none so the folder is
-  // still what the rows resolve.
+  // still what the rows resolve. The server's answer is os.path.abspath —
+  // backslashes on Windows — and the hook derives the folder with a "/"
+  // split, so it goes through the same drive-letter-only normalisation the
+  // file surface applies before comparing.
   //
   // Not on a snapshot or a panel pane (`paneEnabled`), where the companions are
   // off too: `isEntry` is answered false up front and MCP is left unasked, so
   // the hook contributes nothing there and the menu is the folder ops alone.
   const appRows = useAppActionRows({
-    fsPath: appEntryPath || fsPath + "/index.html",
+    fsPath: appEntryPath ? canonFsPath(appEntryPath) : fsPath + "/index.html",
     isEntry: paneEnabled && appEntryPath !== null,
     mcp: paneEnabled
       ? {
