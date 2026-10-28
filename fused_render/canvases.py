@@ -4472,6 +4472,12 @@ class _SyncManager:
         # them.
         held = list(new["nodes"]) + [n for n in result.get("deferred_deletes") or []
                                      if n not in new["nodes"]]
+        # A name two rows carried folded into one on disk: the embed holds the
+        # first row's fields, not the folded row's. Out of the view, so the
+        # next delta carries the folded row to the frame.
+        folded = set(result.get("folded") or ())
+        if folded:
+            held = [n for n in held if n not in folded]
         # A file this snapshot created with no node: grace before any row is
         # invented for it; a node it names settles an earlier one.
         self._note_rowless(new["nodes"], result.get("rowless_files"),

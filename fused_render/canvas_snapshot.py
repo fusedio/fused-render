@@ -1248,6 +1248,13 @@ def apply_snapshot(
     # Folder grammar: normalised, never rejected (see "folders" above). A
     # row the normalisation put back as it was is not reported upserted,
     # and a doc that ends where it began is not written.
+    # Non-folder names two rows carry are about to fold into one row whose
+    # fields the embed has never seen (it holds the first row's): reported
+    # as `folded`, so the host drops them from the embed's view and the next
+    # delta carries the folded row to the frame instead of the frame's next
+    # snapshot writing its stale first-row fields back.
+    folder_names = {row_name(r) for r in rows if is_folder(r)}
+    folded = [n for n in shared_names(rows, same_kind=True) if n not in folder_names]
     folder_fixes = normalise_folders(rows)
     if folder_fixes:
         changed = True
@@ -1265,7 +1272,7 @@ def apply_snapshot(
             "renamed": renamed,
             "created": created, "written": written, "synthesized": synthesized,
             "rowless_files": rowless_files, "deferred_deletes": deferred_deletes,
-            "folder_fixes": folder_fixes, "at": time.time()}
+            "folded": folded, "folder_fixes": folder_fixes, "at": time.time()}
 
 
 def held_view(disk: dict, names: Iterable[str], *, edges: list, ids: dict,
@@ -2109,11 +2116,18 @@ def merge_toml(base: dict | None, local_doc: dict, remote_doc: dict) -> tuple[di
     # fold them BEFORE keying, so the three-way merge sees one row per
     # name and a remote edit to that node is not undone by local's second
     # copy afterwards.
+    # On COPIES: the caller compares the merged rows with its own local_doc
+    # to tell a no-op merge from one that changed something, and a fold is
+    # a change it must write.
     side_fixes: list[str] = []
+    folded_sides = []
     for side_doc in (local_doc, remote_doc):
         side_rows = side_doc.get("canvas", {}).get("nodes") if isinstance(side_doc.get("canvas"), dict) else None
-        if isinstance(side_rows, list):
-            side_fixes += merge_same_named_rows(side_rows)
+        if isinstance(side_rows, list) and shared_names(side_rows, same_kind=True):
+            side_doc = copy.deepcopy(side_doc)
+            side_fixes += merge_same_named_rows(side_doc["canvas"]["nodes"])
+        folded_sides.append(side_doc)
+    local_doc, remote_doc = folded_sides
     b_keyed = _keyed(base) if base else ([], {})
     l_keyed, r_keyed = _align_folders(b_keyed, _keyed(local_doc), _keyed(remote_doc))
     B, L, R = _Side(*b_keyed), _Side(*l_keyed), _Side(*r_keyed)

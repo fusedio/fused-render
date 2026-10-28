@@ -1127,3 +1127,47 @@ def test_merge_toml_folds_each_side_first_so_a_remote_retitle_survives():
     assert rows["n"]["x"] == 20.0 and rows["n"]["title"] == "Note"
     assert rows["n"]["visible"] is False
     assert any("'n'" in f for f in info["folder_fixes"]), info
+
+
+def test_merge_bytes_write_a_fold_that_is_the_only_change(tmp_path, monkeypatch):
+    # Bugbot: the fold used to mutate local_doc in place, so the no-op
+    # identity check saw "nothing changed" and kept the two-row file.
+    one = rtoml.dumps(doc([udf("a", 1.0, 1.0), udf("n", 10.0, 10.0)])).encode()
+    two = rtoml.dumps(doc([udf("a", 1.0, 1.0), udf("n", 10.0, 10.0),
+                           udf("n", 20.0, 20.0, title="Note")])).encode()
+    manager = _manager(tmp_path, monkeypatch, one, {"a.py": b"A", "n.md": b"# n"})
+    out = manager._merge_toml_bytes(two, one)
+    assert out is not None and out != two
+    rows = rtoml.loads(out.decode())["canvas"]["nodes"]
+    assert [(cs.row_name(r), r["x"], r["title"]) for r in rows] == [("a", 1.0, "a"), ("n", 20.0, "Note")]
+    (event,) = _events(manager, "folder fixes")
+    assert "'n'" in event["detail"], event
+
+
+def test_snapshot_fold_reaches_the_embed_by_delta_instead_of_being_undone(tmp_path, monkeypatch):
+    # Bugbot: after the snapshot's fold the view said the embed held disk,
+    # so no delta went out and the embed's next snapshot wrote its stale
+    # first-row fields back over the author's.
+    two = rtoml.dumps(doc([udf("a", 1.0, 1.0), udf("n", 10.0, 10.0),
+                           udf("n", 20.0, 20.0, title="Note")])).encode()
+    manager = _manager(tmp_path, monkeypatch, two, {"a.py": b"A", "n.md": b"# n"})
+    body = {"dashboard_body": {"studioState": {"nodes": [
+        {"id": "ida", "type": "simple-udf", "position": {"x": 1.0, "y": 1.0}, "zIndex": 1,
+         "width": 700, "height": 500, "data": {"udfName": "a", "config": {}}},
+        {"id": "idn", "type": "simple-udf", "position": {"x": 10.0, "y": 10.0}, "zIndex": 1,
+         "width": 700, "height": 500, "data": {"udfName": "n", "config": {}}}],
+        "edges": []}},
+        "udfs": [{"slug": "a", "file": "a.py", "id": "ida", "file_body": "A"},
+                 {"slug": "n", "file": "n.md", "id": "idn", "file_body": "# n"}]}
+    ack = manager.apply_snapshot(1, 1, body)
+    assert ack["ok"], ack
+    rows = {cs.row_name(r): r for r in _disk_rows(manager.dir)}
+    assert len(_disk_rows(manager.dir)) == 2 and rows["n"]["title"] == "Note" and rows["n"]["x"] == 20.0
+    delta = manager.cut_delta(False)
+    ops = json.dumps(delta.get("ops") or [])
+    assert '"n"' in ops and "Note" in ops, delta
+    # Once the frame has applied that delta the view holds the folded row:
+    # nothing more to send, and the frame's next snapshot carries "Note".
+    manager.ack_delta(delta["rev"], True)
+    again = manager.cut_delta(False)
+    assert not again.get("ops"), again
