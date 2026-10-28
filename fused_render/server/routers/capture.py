@@ -191,6 +191,25 @@ def api_capture_shot_region(body: dict = Body(...),
                     headers={"Cache-Control": "no-store"})
 
 
+@router.post("/api/capture/settings")
+def api_capture_settings(x_fused: str | None = Header(default=None)):
+    """Open the OS pane where Screen Recording is granted (`capture.open_settings`).
+
+    For the canvas page's one-time nudge after a slow screenshot: the fast
+    road needs the permission, the page explains why, and this is its "Open
+    System Settings" button. Guarded like every mutating route; 409 on a
+    platform with no such pane.
+    """
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    try:
+        capture.open_settings()
+    except capture.Unsupported as e:
+        return _error(str(e), status=409)
+    return {"ok": True}
+
+
 @router.websocket("/api/capture/{cid}/stream")
 @netlog.tracked_ws("capture")
 async def api_capture_stream(cid: str, ws: WebSocket):

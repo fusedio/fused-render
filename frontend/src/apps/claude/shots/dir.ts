@@ -39,6 +39,14 @@ export function shotsDir(): Promise<string> {
 /** What `shotsDir` has already answered, without awaiting. `""` until then,
  *  which is a safe default: the worst it costs is one redundant Read rule
  *  (T:9018). */
+/** A lookup the caller gave up waiting on (attach.ts `SHOT_SAVE_TIMEOUT_MS`)
+ *  must not be the answer every later capture waits on too: forget it, so
+ *  the next capture asks again. Only the UNANSWERED one — a dir already
+ *  learned stays learned. */
+export function forgetPendingShotsDir(): void {
+  if (!seen) pending = null;
+}
+
 export function shotsDirSeen(): string {
   return seen;
 }

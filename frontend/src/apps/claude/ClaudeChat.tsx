@@ -4769,6 +4769,7 @@ function ChatBody(props: ChatBodyProps) {
           paneNoun={pane.paneNoun}
           onOpen={openShot}
           onRemove={attach.remove}
+          notice={attach.refusal}
         >
           {/* The SAME pill a screenshot's chip is, in the same row: both are
               things this message is about to carry and both come off with the
@@ -5123,6 +5124,7 @@ function ChatBody(props: ChatBodyProps) {
           inert={sched.blocked}
           disabled={attach.capturing || sched.blocked}
           capturing={attach.capturing}
+          saving={attach.saving}
           onPick={(what) => void attach.capture(what)}
         />
       ) : (
@@ -5131,6 +5133,7 @@ function ChatBody(props: ChatBodyProps) {
           inert={sched.blocked}
           disabled={attach.capturing || sched.blocked}
           capturing={attach.capturing}
+          saving={attach.saving}
           onClick={() => void attach.capture(props.canvasShot!.targets[0])}
         />
       )}

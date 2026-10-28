@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { agentSocketCall, resetAgentSocketForTests } from "./agentSocket";
+import { agentSocketCall, resetAgentSocketForTests, setAgentSocketConnectTimeoutForTests } from "./agentSocket";
 import { isNetworkFailure } from "./trouble";
 
 // location / WebSocket are process-wide globals: save and restore them.
@@ -10,6 +10,8 @@ class FakeWS {
   static OPEN = 1;
   static instances: FakeWS[] = [];
   static autoOpen = true;
+  /** Neither opens nor closes: a proxy that swallowed the upgrade. */
+  static hang = false;
   readyState = 0;
   sent: Record<string, unknown>[] = [];
   onopen: (() => void) | null = null;
@@ -19,6 +21,7 @@ class FakeWS {
   constructor(public url: string) {
     FakeWS.instances.push(this);
     queueMicrotask(() => {
+      if (FakeWS.hang) return;
       if (FakeWS.autoOpen) this.open();
       else this.drop();
     });
@@ -52,6 +55,8 @@ const tick = () => new Promise((r) => setTimeout(r, 0));
 beforeEach(() => {
   FakeWS.instances = [];
   FakeWS.autoOpen = true;
+  FakeWS.hang = false;
+  setAgentSocketConnectTimeoutForTests(8000);
   resetAgentSocketForTests();
   setEnv("127.0.0.1:1777");
 });
@@ -99,6 +104,20 @@ describe("agentSocketCall", () => {
     }
     expect(String((err as Error).message)).toMatch(/failed to fetch/i);
     expect(isNetworkFailure(err)).toBe(true);
+  });
+
+  test("a handshake that HANGS is given up after the connect timeout: null, and the fallback latches", async () => {
+    // A proxy that accepts the upgrade and never answers it fires neither
+    // `open` nor `close`; the chat's first call used to wait for ever here.
+    FakeWS.hang = true;
+    setAgentSocketConnectTimeoutForTests(30);
+    const t0 = Date.now();
+    const r = await agentSocketCall("agent", {}, { action: "shots_dir" });
+    expect(r).toBeNull();
+    expect(Date.now() - t0).toBeLessThan(2000);
+    // Latched: the next call does not even try the socket.
+    expect(agentSocketCall("agent", {}, { action: "poll" })).toBeNull();
+    expect(FakeWS.instances.length).toBe(1);
   });
 
   test("a socket that never opens latches the fallback: resolves null, later calls return null", async () => {

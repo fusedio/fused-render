@@ -1030,6 +1030,26 @@ def shot_region(body: dict) -> bytes:
             pass
 
 
+def open_settings() -> None:
+    """Open the OS pane where Screen Recording is granted (SPEC §45).
+
+    The fast canvas screenshot (`shot_region`) needs it; without it every
+    picture is the embed's own slow draw, and the page that just paid for
+    one wants to send the user to the right pane with one click rather than
+    a paragraph of directions. The backend owns the door (`settings_url`): a
+    deep link is a macOS thing, and a platform without one answers
+    `Unsupported` rather than guessing.
+    """
+    backend = _backend()
+    url = getattr(backend, "settings_url", None)
+    if url is None:
+        raise Unsupported("this platform has no Screen Recording settings pane to open")
+    import subprocess
+
+    subprocess.Popen(["open", url()], stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL)
+
+
 # ------------------------------------------------------------------ teardown
 
 

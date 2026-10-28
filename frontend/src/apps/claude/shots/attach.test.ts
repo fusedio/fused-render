@@ -603,3 +603,43 @@ describe("filesFromPaste", () => {
     expect(filesFromPaste({ clipboardData })).toEqual([]);
   });
 });
+
+
+test("a save that stalls is given up within the save budget, says so on the chip, and the next capture asks again", async () => {
+  // The picture is taken; the shots-dir lookup never answers (a transport
+  // that swallowed the request). Unbounded, the chip stayed "attaching…"
+  // for ever with the scrim long gone.
+  const { attachPaneFromBlob, setShotSaveTimeoutForTests } = await import("./attach");
+  const { forgetPendingShotsDir } = await import("./dir");
+  resetShotsDirForTests();
+  let asks = 0;
+  const realFetch = globalThis.fetch;
+  Object.assign(globalThis, {
+    fetch: (url: string | URL | Request) => {
+      if (String(url) === "/api/claude/agent") {
+        asks += 1;
+        return new Promise<Response>(() => {}); // never
+      }
+      return realFetch(url as string);
+    },
+  });
+  setShotSaveTimeoutForTests(40);
+  try {
+    const t0 = Date.now();
+    const att = await attachPaneFromBlob({ blob: new Blob([new Uint8Array(16)], { type: "image/webp" }) });
+    expect(Date.now() - t0).toBeLessThan(2000);
+    expect(att.view).toBeNull();
+    expect(att.why).toBe("could not be saved");
+    expect(att.viewNote).toContain("did not answer within");
+    expect(asks).toBe(1);
+    // The stalled lookup is forgotten: a second capture asks the server again
+    // instead of waiting on the same dead promise.
+    await attachPaneFromBlob({ blob: new Blob([new Uint8Array(16)], { type: "image/webp" }) });
+    expect(asks).toBe(2);
+    forgetPendingShotsDir();
+  } finally {
+    setShotSaveTimeoutForTests(20_000);
+    Object.assign(globalThis, { fetch: realFetch });
+    resetShotsDirForTests();
+  }
+});

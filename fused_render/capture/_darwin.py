@@ -123,6 +123,17 @@ def _too_old(minimum: tuple[int, int]) -> str:
             f"{platform.mac_ver()[0] or 'an unknown version'}")
 
 
+#: System Settings › Privacy & Security › Screen & System Audio Recording.
+#: The legacy `com.apple.preference.security` anchor still routes on 13+.
+SHOT_SETTINGS_URL = (
+    "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")
+
+
+def settings_url() -> str:
+    """`capture.open_settings`'s hook: where Screen Recording is granted."""
+    return SHOT_SETTINGS_URL
+
+
 def _screen_granted() -> bool:
     """Screen Recording, asked WITHOUT prompting.
 
@@ -294,15 +305,29 @@ def _require_record() -> None:
         raise Unsupported("screen recording " + old)
 
 
-def _display(display_id) -> object:
-    """The `SCDisplay` for a display id — and the call that may PROMPT.
+#: How long a looked-up `SCDisplay` is reused before the shareable content is
+#: enumerated again. Enumerating is THE cost of a still: `SCShareableContent`
+#: walks every window of every app, and on a busy Mac that took 1–7 s per
+#: screenshot (server log, 2026-10-28) against ~100 ms for the shot itself —
+#: the canvas chat's "instant" native picture was timing out on it. A display
+#: object stays valid while the panel is plugged in, so a short cache costs
+#: nothing but a few seconds of staleness after a display is (un)plugged,
+#: which the miss path below recovers from.
+DISPLAY_CACHE_S = 30.0
+_display_cache: dict = {}   # display id -> (SCDisplay, time.monotonic())
 
-    `SCShareableContent` is the only way to a content filter, and it is also
-    what raises the TCC dialog on a machine that has not granted Screen
-    Recording. That is deliberate and it is why `probe()` uses
+
+def _shareable_displays() -> list:
+    """Every `SCDisplay` ScreenCaptureKit will share — and the call that may
+    PROMPT. `SCShareableContent` is the only way to a content filter, and it
+    is also what raises the TCC dialog on a machine that has not granted
+    Screen Recording. That is deliberate and it is why `probe()` uses
     `CGPreflightScreenCaptureAccess` instead: the prompt rides the first real
     capture, where the user has just asked for one.
-    """
+
+    On-screen windows only, desktop windows excluded: the DISPLAYS are the
+    same either way, and the full walk (every window of every app, hidden
+    ones included) is what made this slow."""
     box: dict = {}
     wait = _Wait("listing displays")
 
@@ -310,13 +335,15 @@ def _display(display_id) -> object:
         box["content"] = content
         wait.done(error)
 
-    SCK.SCShareableContent.getShareableContentWithCompletionHandler_(handler)
+    SCK.SCShareableContent.getShareableContentExcludingDesktopWindows_onScreenWindowsOnly_completionHandler_(
+        True, True, handler)
     wait.result()
-    displays = list(box.get("content").displays()) if box.get("content") else []
-    if not displays:
-        raise RuntimeError(
-            "no capturable display — Screen Recording permission is most "
-            "likely denied (System Settings › Privacy & Security)")
+    return list(box.get("content").displays()) if box.get("content") else []
+
+
+def _display(display_id) -> object:
+    """The `SCDisplay` for a display id, from the cache when it is fresh
+    (`DISPLAY_CACHE_S`), else from a new enumeration."""
     if display_id in (None, "", 0):
         wanted = Quartz.CGMainDisplayID()
     else:
@@ -327,6 +354,18 @@ def _display(display_id) -> object:
 
             raise CaptureError(f"'display' must be a display id, not "
                                f"{display_id!r}")
+    hit = _display_cache.get(int(wanted))
+    if hit and time.monotonic() - hit[1] < DISPLAY_CACHE_S:
+        return hit[0]
+    displays = _shareable_displays()
+    if not displays:
+        raise RuntimeError(
+            "no capturable display — Screen Recording permission is most "
+            "likely denied (System Settings › Privacy & Security)")
+    now = time.monotonic()
+    _display_cache.clear()
+    for display in displays:
+        _display_cache[int(display.displayID())] = (display, now)
     for display in displays:
         if int(display.displayID()) == int(wanted):
             return display

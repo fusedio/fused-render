@@ -255,7 +255,10 @@ export async function captureNative(
       let why = "";
       try {
         const body: unknown = await res.json();
-        why = (body as { _error?: string } | null)?._error || "";
+        // `_error` was never the server's key (common.py `_error` answers
+        // `{"error": …}`), so the warning below named no reason at all.
+        const b = body as { error?: string; _error?: string } | null;
+        why = b?.error || b?._error || "";
       } catch {
         /* not JSON */
       }

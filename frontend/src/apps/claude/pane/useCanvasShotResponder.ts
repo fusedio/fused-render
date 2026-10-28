@@ -64,7 +64,10 @@ export async function takeCanvasShot(shot: CanvasShot, row: CanvasShotRow): Prom
     what = "udf";
   }
   const began = Date.now();
-  let a = await shot.capture(what, row.udf || undefined);
+  // "agent": the host's scrim over the workbench names the asker — the user
+  // did not press anything, and a canvas that suddenly says "Capturing…"
+  // with no gesture behind it needs to say who is looking.
+  let a = await shot.capture(what, row.udf || undefined, "agent");
   // The workbench's html-to-image draws nothing once in a while — seen right
   // after another capture restored the DOM — and the host refuses while the
   // user's own Screenshot seat has a capture out. One more try, a beat later,
@@ -73,7 +76,7 @@ export async function takeCanvasShot(shot: CanvasShot, row: CanvasShotRow): Prom
   // the latch to a refusal anyway.
   if (!a.ok && /could not be captured|already being taken/.test(a.error) && Date.now() - began < CAPTURE_RETRY_BUDGET_MS) {
     await new Promise((res) => setTimeout(res, CAPTURE_RETRY_MS));
-    a = await shot.capture(what, row.udf || undefined);
+    a = await shot.capture(what, row.udf || undefined, "agent");
   }
   if (!a.ok) return { error: a.error };
   try {

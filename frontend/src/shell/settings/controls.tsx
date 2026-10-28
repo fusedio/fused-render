@@ -58,6 +58,7 @@ import {
   DiagnosticsControl,
   IndexQueryControl,
 } from "./advanced";
+import { CanvasScreenshotsControl, CanvasScreenshotsFallbackControl } from "./screenshots";
 
 export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   appearance: AppearanceControl,
@@ -79,6 +80,8 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "task-summary-titles": TaskSummaryTitlesControl,
   "claude-strict-mcp": ClaudeStrictMcpControl,
   "claude-default-permission": ClaudeDefaultPermissionControl,
+  "canvas-screenshots": CanvasScreenshotsControl,
+  "canvas-screenshots-fallback": CanvasScreenshotsFallbackControl,
   "claude-max-sessions": ClaudeMaxSessionsControl,
   "notify-terminal": NotifyTerminalControl,
   "git-sync": GitSyncControl,

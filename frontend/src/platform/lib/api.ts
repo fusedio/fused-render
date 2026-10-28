@@ -368,6 +368,12 @@ export function dismissFdaNudge(): Promise<{ ok: boolean }> {
   return postJson<{ ok: boolean }>("/api/fda/dismiss", {});
 }
 
+// -- Screen Recording (fused_render/capture, the canvas page's fast shot) ----
+/** Open System Settings on the Screen Recording pane (409 off macOS). */
+export function openScreenRecordingSettings(): Promise<{ ok: boolean }> {
+  return postJson<{ ok: boolean }>("/api/capture/settings", {});
+}
+
 // -- First-run wizard flag (fused_render/shell/onboarding.py) ----------------
 export interface OnboardingState {
   completed_at: number | null;

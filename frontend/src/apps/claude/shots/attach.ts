@@ -29,6 +29,7 @@ import {
   shotFileExt,
   shotJoin,
   shotStamp,
+  forgetPendingShotsDir,
   shotsDir,
   shotsDirSeen,
 } from "./dir";
@@ -285,6 +286,38 @@ export async function captureAndAttachOverview(
   return attachOverview(await captureOverview(frame, badges, opts));
 }
 
+/** THE SAVE HAS A BUDGET. The picture is taken; what is left is a shots-dir
+ *  lookup and one upload, each a round trip to the local server. Unbounded,
+ *  a stalled transport (a socket that never answers, a proxy that swallows
+ *  the upload) left the chip on "attaching…" and the seat on "Capturing…"
+ *  for ever, with the scrim long gone — a capture that looked alive and was
+ *  not. Past this the chip says it could not be saved, like any other
+ *  failed upload, and the seat comes back. */
+export const SHOT_SAVE_TIMEOUT_MS = 20_000;
+let shotSaveTimeoutMs = SHOT_SAVE_TIMEOUT_MS;
+export function setShotSaveTimeoutForTests(ms: number): void {
+  shotSaveTimeoutMs = ms;
+}
+
+function within<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(what + " did not answer within " + Math.round(ms / 1000) + " s")),
+      ms,
+    );
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
+
 async function uploadCapture(
   shot: Awaited<ReturnType<typeof capturePane>>,
   kind: ShotKind,
@@ -301,9 +334,19 @@ async function uploadCapture(
     return att;
   }
   try {
-    const dir = await (dirp ?? shotsDir());
+    const started = Date.now();
+    let dir: string;
+    try {
+      dir = await within(dirp ?? shotsDir(), shotSaveTimeoutMs, "the screenshot folder lookup");
+    } catch (err) {
+      // The lookup that stalled must not be the one every later capture
+      // waits on too (`shotsDir` keeps one in flight).
+      forgetPendingShotsDir();
+      throw err;
+    }
     const path = shotJoin(dir, shotStamp() + suffix + shotExt(shot.blob));
-    await uploadFile(path, shot.blob, shotBase(path));
+    const left = Math.max(Math.min(2000, shotSaveTimeoutMs), shotSaveTimeoutMs - (Date.now() - started));
+    await within(uploadFile(path, shot.blob, shotBase(path)), left, "the upload");
     att.view = path;
     if (shot.thumb) att.thumb = shot.thumb;
     // Never suppressed for a blank canvas, only annotated: the caveat rides

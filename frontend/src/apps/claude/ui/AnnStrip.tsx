@@ -142,6 +142,7 @@ export function ScreenshotSeat({
   inert = false,
   disabled = false,
   capturing = false,
+  saving = false,
   onClick,
 }: {
   label: string;
@@ -151,6 +152,8 @@ export function ScreenshotSeat({
   /** The shutter is open: the word turns to "Capturing…" so a shot that takes
    *  seconds (a host's picture of its workbench) is seen to be under way. */
   capturing?: boolean;
+  /** …and then "Saving…" while the picture goes to the shots dir. */
+  saving?: boolean;
   onClick?: () => void;
 }) {
   return (
@@ -164,13 +167,20 @@ export function ScreenshotSeat({
       disabled={disabled}
       onClick={onClick}
     >
-      <ScreenshotGlyph capturing={capturing} />
+      <ScreenshotGlyph capturing={capturing} saving={saving} />
     </button>
   );
 }
 
 /** The seat's face — glyph and word — for a trigger that is not this button. */
-export function ScreenshotGlyph({ capturing = false }: { capturing?: boolean }) {
+export function ScreenshotGlyph({
+  capturing = false,
+  saving = false,
+}: {
+  capturing?: boolean;
+  /** The second half of a host shot: taken, now being saved. */
+  saving?: boolean;
+}) {
   return (
     <>
       <svg viewBox="0 0 16 16" aria-hidden="true">
@@ -180,7 +190,7 @@ export function ScreenshotGlyph({ capturing = false }: { capturing?: boolean }) 
         />
         <circle cx="8" cy="9" r="2.4" />
       </svg>
-      <span className="c-lbl">{capturing ? "Capturing…" : "Screenshot"}</span>
+      <span className="c-lbl">{saving ? "Saving…" : capturing ? "Capturing…" : "Screenshot"}</span>
     </>
   );
 }
