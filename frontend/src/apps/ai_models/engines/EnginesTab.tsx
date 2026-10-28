@@ -210,7 +210,7 @@ function CapabilityEngineRow({
   );
 }
 
-// One DOWNLOADED model's own engine pin (D1448), under its capability's row.
+// One DOWNLOADED model's own engine pin (D1451), under its capability's row.
 // The same listbox as the capability row, because the choices and the "ignored:
 // reason" sentence are the same facts one level down; a pin outranks the
 // capability's choice when its runner can run here, and is ignored with the

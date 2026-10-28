@@ -93,7 +93,7 @@ export function servingLine(row: CapabilityEngine, auto: string): string | null 
 export function ignoredWarning(row: CapabilityEngine, auto: string): string | null {
   if (!row.ignoredReason) return null;
   // A model row whose capability preference was overruled ships its reason with
-  // `selected: "auto"` (D1448): there is no chosen engine to name, so the
+  // `selected: "auto"` (D1451): there is no chosen engine to name, so the
   // reason is a plain informational note.
   if (row.selected === auto) return `${row.ignoredReason}.`;
   const chosen = row.choices.find((c) => c.code === row.selected);

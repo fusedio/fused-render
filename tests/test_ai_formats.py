@@ -137,6 +137,11 @@ def test_every_registered_runner_appears_in_loaders():
         repo_id="x/y", names={"config.json", "model.safetensors"},
         dirnames={formats.QWEN3_TTS_TOKENIZER_DIR},
         config={"model_type": formats.QWEN3_TTS_MODEL_TYPE}, torch_weights=True))
+    # Kokoro on sherpa-onnx: three root files plus the espeak-ng data folder.
+    seen |= set(formats.loaders(
+        repo_id="x/y", names=set(formats.KOKORO_FILES) | {"lexicon-us-en.txt"},
+        dirnames={formats.KOKORO_DATA_DIR, formats.KOKORO_DICT_DIR}, config={},
+        torch_weights=False, onnx_weights=True))
     missing = _codes() - seen
     assert not missing, (
         f"{sorted(missing)} are registered runners that `loaders()` never "
@@ -413,6 +418,31 @@ def test_mflux_needs_the_variant_table_as_well_as_the_layout():
         repo_id=fill, names=set(), dirnames=components, config={}, torch_weights=False)
 
 
+def test_the_z_image_and_qwen_image_rows_name_a_variant_class_and_a_config():
+    """Shape of the two rows added in the October 2026 refresh. Both are
+    distilled no-CFG checkpoints with no `vae` key: Z-Image's 16-channel VAE
+    would be projected through SD1.5's 4-channel `AutoencoderKL` fit, and
+    Qwen-Image's `AutoencoderKLQwenImage` has no row at all. Qwen-Image 2.1
+    Turbo pins `guidance` to 1 because mflux raises on anything else."""
+    from fused_render.ai.runners import preview
+
+    z = formats.MFLUX_VARIANTS["mflux-community/z-image-turbo-mflux-q4"]
+    assert (z["variant"], z["module"], z["config"]) == (
+        "ZImage", "mflux.models.z_image.variants", "z_image_turbo")
+    q = formats.MFLUX_VARIANTS["OsaurusAI/Qwen-Image-2.1-Turbo-mflux-4bit"]
+    assert (q["variant"], q["module"], q["config"]) == (
+        "QwenImage21", "mflux.models.qwen21.variants.txt2img.qwen_image_21",
+        "qwen_image_21_turbo")
+    assert q["guidance"] == 1.0
+    for row in (z, q):
+        assert "vae" not in row
+    assert "AutoencoderKLQwenImage" not in preview.PROJECTIONS
+    for repo_id in ("mflux-community/z-image-turbo-mflux-q4",
+                    "OsaurusAI/Qwen-Image-2.1-Turbo-mflux-4bit"):
+        assert formats.mflux_native_mode(repo_id) == "generate"
+        assert formats.mflux_edit_recipe(repo_id) is None
+
+
 def test_mflux_edit_recipe_DERIVES_config_and_vae_rather_than_duplicating():
     """`MFLUX_EDIT_VARIANTS` carries only `variant`/`module` — the two facts
     that actually differ between editing and plain generation. `config` and
@@ -431,6 +461,29 @@ def test_mflux_edit_recipe_DERIVES_config_and_vae_rather_than_duplicating():
     # between two copies that happen to still agree.
     assert "config" not in formats.MFLUX_EDIT_VARIANTS[known]
     assert "vae" not in formats.MFLUX_EDIT_VARIANTS[known]
+
+
+def test_mflux_edit_recipe_DERIVES_a_pinned_guidance_only_when_present(monkeypatch):
+    """A no-CFG checkpoint's edit row must carry the same `guidance` pin as
+    its generate row; a row without one gets no key at all."""
+    known = next(iter(formats.MFLUX_VARIANTS))
+    assert "guidance" not in formats.mflux_edit_recipe(known)
+    pinned = dict(formats.MFLUX_VARIANTS[known], guidance=1.0)
+    monkeypatch.setitem(formats.MFLUX_VARIANTS, known, pinned)
+    assert formats.mflux_edit_recipe(known)["guidance"] == 1.0
+
+
+def test_every_pinned_guidance_variant_has_a_catalog_row_seeding_it():
+    """The worker REFUSES a request whose guidance differs from the pin, so
+    the suggested row's `defaults` must seed the pinned value."""
+    from fused_render.ai import catalog
+
+    rows = {r["id"]: r for r in catalog.SUGGESTIONS["mflux-image"]}
+    pinned = {k: v["guidance"] for k, v in formats.MFLUX_VARIANTS.items()
+              if "guidance" in v}
+    assert pinned
+    for repo_id, guidance in pinned.items():
+        assert rows[repo_id]["defaults"]["guidance"] == guidance
 
 
 def test_mflux_edit_recipe_TRACKS_a_change_to_the_plain_rows_config(monkeypatch):
@@ -1426,7 +1479,7 @@ def test_a_flat_index_snapshot_has_the_diffusers_loaders():
     ({"modular_model_index.json"}, {"library_name": "diffusers"}),
 ])
 def test_modular_only_and_library_name_snapshots_have_no_diffusers_loader(names, config):
-    """The worker has no ModularPipeline path (D1447) and `library_name` is
+    """The worker has no ModularPipeline path (D1450) and `library_name` is
     on every LoRA repo."""
     assert formats.loaders(
         repo_id="org/m", names=names, dirnames=set(), config=config,
@@ -1574,3 +1627,70 @@ def test_in_process_registry_is_parsed_once_per_file_version(tmp_path, monkeypat
         assert formats.mflux_native_mode(rid) == "generate"
         assert formats.mflux_edit_recipe(rid)
     assert len(opens) == 1
+
+
+# -- Kokoro on sherpa-onnx (`sherpa-tts`) ---------------------------------------
+
+KOKORO_NAMES = {"model.onnx", "voices.bin", "tokens.txt", "lexicon-us-en.txt", "LICENSE"}
+
+
+def test_kokoro_voice_table_has_one_name_per_voices_bin_row():
+    # voices.bin is 103 voices x 510 style rows x 256 float32 = 53,790,720 bytes
+    # (the repo file is 53.8 MB); the count rests on that arithmetic, not on a call.
+    assert 53790720 == 103 * 510 * 256 * 4
+    assert len(formats.KOKORO_VOICES) == 103
+    assert len(set(formats.KOKORO_VOICES)) == 103
+    # sid order, from the sherpa-onnx v1.1 table: 3 English, then Chinese.
+    assert formats.KOKORO_VOICES[:3] == ("af_maple", "af_sol", "bf_vale")
+    assert formats.KOKORO_VOICES[3] == "zf_001" and formats.KOKORO_VOICES[-1] == "zm_100"
+
+
+def test_a_kokoro_snapshot_needs_its_three_files_and_espeak_data():
+    assert formats.is_kokoro_snapshot(KOKORO_NAMES, {"espeak-ng-data", "dict"})
+    assert not formats.is_kokoro_snapshot(KOKORO_NAMES, {"dict"})
+    # `load` hands sherpa-onnx `dict/`; a claim without it would die in the engine.
+    assert not formats.is_kokoro_snapshot(KOKORO_NAMES, {"espeak-ng-data"})
+    assert not formats.is_kokoro_snapshot(KOKORO_NAMES - {"voices.bin"}, {"espeak-ng-data"})
+    assert not formats.is_kokoro_snapshot({"model.onnx"}, {"espeak-ng-data"})
+    # `load` passes the lexicons to sherpa-onnx; an export with none is not Kokoro's.
+    assert not formats.is_kokoro_snapshot(
+        KOKORO_NAMES - {"lexicon-us-en.txt"}, {"espeak-ng-data", "dict"})
+    assert formats.is_kokoro_snapshot(
+        (KOKORO_NAMES - {"lexicon-us-en.txt"}) | {"lexicon-zh.txt"}, {"espeak-ng-data", "dict"})
+
+
+def test_kokoro_claims_only_the_sherpa_tts_runner():
+    kwargs = dict(repo_id="csukuangfj/kokoro-multi-lang-v1_1", names=KOKORO_NAMES,
+                  dirnames={"espeak-ng-data", "dict"}, config={}, torch_weights=False,
+                  onnx_weights=True)
+    assert formats.loaders(**kwargs) == ("sherpa-tts",)
+    assert formats.loaders(**{**kwargs, "dirnames": {"dict"}}) != ("sherpa-tts",)
+    assert "sherpa-tts" in formats.DECISIVE
+
+
+def test_kokoro_traits_are_preset_voices_without_a_style_line():
+    traits = formats.kokoro_traits()
+    assert traits["mode"] == "preset"
+    assert traits["voices"] == list(formats.KOKORO_VOICES)
+    # No language input on the engine: an empty list hides the selector.
+    assert traits["languages"] == []
+    assert traits["instructable"] is False
+    assert formats.kokoro_traits_from_names(KOKORO_NAMES, {"espeak-ng-data", "dict"}) == traits
+    assert formats.kokoro_traits_from_names({"model.onnx"}, set()) is None
+
+
+def test_speech_options_refuse_a_style_line_the_model_has_no_use_for():
+    traits = formats.kokoro_traits()
+    with pytest.raises(ValueError) as error:
+        formats.speech_options("org/kokoro", traits, {"instruct": "calm"})
+    assert str(error.value) == "org/kokoro has no style line; it takes 'voice', not 'instruct'"
+    # Qwen3 preset traits carry no `instructable` key and keep their style line.
+    assert formats.speech_options("org/q", PRESET, {"instruct": "calm"})["instruct"] == "calm"
+
+
+def test_speech_options_default_a_kokoro_voice_and_accept_either_language():
+    resolved = formats.speech_options("org/kokoro", formats.kokoro_traits(), {})
+    assert resolved == {"voice": "af_maple", "language": "auto"}
+    chosen = formats.speech_options("org/kokoro", formats.kokoro_traits(),
+                                    {"voice": "ZF_001", "language": "Chinese"})
+    assert chosen == {"voice": "zf_001", "language": "chinese"}

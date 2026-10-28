@@ -1740,7 +1740,7 @@ export interface EnginesPrefs {
   // One row per capability the registry knows, servable here or not — a
   // preference the user cannot see is one they cannot fix.
   capabilities: CapabilityEngine[];
-  // One row per DOWNLOADED model with a known capability (D1448): its own pin
+  // One row per DOWNLOADED model with a known capability (D1451): its own pin
   // and what actually serves it. Optional so an older server's payload, which
   // has no such block, still reads as "no model rows".
   models?: ModelEngine[];
@@ -5980,6 +5980,10 @@ export interface AiCatalogModel {
    *  non-text capability. Optional for an older payload. */
   useCases?: string[];
   voiceMode?: "preset" | "clone" | "design";
+  /** False for a preset model with no style line (Kokoro): the server refuses an
+   *  `instruct` for it, so the speech stage must not offer or send one. Absent
+   *  means true. */
+  instructable?: boolean;
   voices?: string[];
   languages?: string[];
 }

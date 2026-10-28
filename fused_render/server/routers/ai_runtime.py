@@ -1256,6 +1256,8 @@ def _catalog_with_downloads() -> list[dict]:
             if traits:
                 entry.update(voiceMode=traits["mode"], voices=traits["voices"],
                              languages=traits["languages"])
+                if traits.get("instructable") is False:
+                    entry["instructable"] = False
     return rows
 
 
@@ -2022,7 +2024,7 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
             "'mask' needs 'image' — a mask says which region of a base image "
             "to repaint (white = repaint, black = keep), so fused.ai.image("
             "{image, mask}) needs both", status=400)
-    # The runner for THIS model (D1448): a pin, then the engines that read it,
+    # The runner for THIS model (D1451): a pin, then the engines that read it,
     # then the capability's preference — the same resolution the load makes.
     active_runner = registry.resolve_for_model(registry.IMAGE_GENERATION, model).runner
     # A FLUX.1 Fill checkpoint asked for a plain render or a whole-image
@@ -2399,7 +2401,7 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
                       or "no video model is configured", status=409)
 
     # The runner that will actually SERVE this request, for THIS model
-    # (D1448): a pin, then the engines whose format check reads it, then the
+    # (D1451): a pin, then the engines whose format check reads it, then the
     # capability's preference — the same call `start_video`'s
     # `_runner_or_raise` makes a few lines down, made here too because the
     # request SHAPE (frame grid, canvas/step defaults) is that runner's fact,
@@ -2555,8 +2557,14 @@ def api_ai_speech(body: dict = Body(...), x_fused: str | None = Header(default=N
         return _error(registry.unavailable_reason(registry.TEXT_TO_SPEECH)
                       or "no speech model is configured", status=409)
     curated = catalog.entry_for(registry.TEXT_TO_SPEECH, model) or {}
-    traits = speech_traits(model) or (
-        {"mode": curated["voiceMode"]} if curated.get("voiceMode") else None)
+    # Not downloaded yet: the curated row stands in for the snapshot. Kokoro's
+    # voice table is static, so its row gets the full traits (voices included)
+    # and a wrong voice is a 400 here, not a failure after the download.
+    curated_traits = (
+        formats.kokoro_traits() if "sherpa-tts" in catalog.runners_offering(model)
+        else {"mode": curated["voiceMode"], "instructable": curated.get("instructable", True)}
+        if curated.get("voiceMode") else None)
+    traits = speech_traits(model) or curated_traits
     if traits is not None:
         try:
             fields = formats.speech_options(model, traits, fields)
