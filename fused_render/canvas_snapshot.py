@@ -627,9 +627,16 @@ def _find_source(clone_dir: str, name: str) -> str | None:
     """The clone's source file for a node named `name`, when nothing else
     names it (a deletion in the first snapshot of a generation, where there
     is no previous file map and the node is no longer in the snapshot)."""
+    # Matched against the listing, not `isfile`: on a case-insensitive disk
+    # (macOS) `isfile("India_H3_coverage.py")` is true for india_h3_coverage.py,
+    # and a folder row of that name took the UDF's file as its body.
+    try:
+        present = set(os.listdir(clone_dir))
+    except OSError:
+        return None
     for suffix in _SOURCE_SUFFIXES:
         candidate = name + suffix
-        if os.path.isfile(os.path.join(clone_dir, candidate)):
+        if candidate in present and os.path.isfile(os.path.join(clone_dir, candidate)):
             return candidate
     return None
 
@@ -1388,11 +1395,12 @@ def compact_state_from_disk(clone_dir: str, remote_ids: dict[str, str] | None = 
     bodies: dict[str, str] = {}
     missing: list[str] = []
     for name, row in nodes.items():
+        # A folder is a row with no source file of its own: never look one
+        # up for it, whatever happens to sit in the clone under its name.
+        if row.get("type") == "udf-folder":
+            continue
         file = _find_source(clone_dir, name)
         if file is None:
-            # A folder is a row with no source file of its own.
-            if row.get("type") == "udf-folder":
-                continue
             missing.append(name)
             continue
         files[name] = file
