@@ -493,7 +493,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.35);
+  background: var(--scrim);
   pointer-events: auto;
   cursor: wait;
   animation: canvas-shot-scrim-in var(--dur-fast, 120ms) ease-out;
@@ -509,7 +509,7 @@
   background: var(--bg-panel, var(--bg));
   color: var(--fg);
   border: 1px solid var(--border);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  box-shadow: 0 8px 32px var(--shadow-ink-deep);
   text-align: center;
 }
 .canvas-shot-scrim-spinner {

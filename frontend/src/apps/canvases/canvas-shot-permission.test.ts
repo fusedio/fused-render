@@ -3,10 +3,8 @@ import { expect, test } from "bun:test";
 import { SCREEN_RECORDING_SETTINGS_URL, openScreenRecordingPane } from "@platform/lib/screen-permission";
 
 import {
-  SLOW_FALLBACK_KEY,
   nativeShotRefusal,
   screenRecordingNeeded,
-  setSlowFallbackEnabled,
   slowFallbackEnabled,
   slowRoadAllowed,
 } from "./canvas-shot-permission";
@@ -28,32 +26,16 @@ test("the slow road is automatic off a Mac, and on a Mac only behind the switch"
   expect(slowRoadAllowed({ mac: true, fallbackOn: true })).toBe(true);
 });
 
-test("the switch is remembered on this machine, and a broken storage reads off", () => {
-  const store = new Map<string, string>();
-  const storage = {
-    getItem: (k: string) => store.get(k) ?? null,
-    setItem: (k: string, v: string) => void store.set(k, v),
-    removeItem: (k: string) => void store.delete(k),
-  };
-  expect(slowFallbackEnabled(storage)).toBe(false);
-  setSlowFallbackEnabled(true, storage);
-  expect(store.get(SLOW_FALLBACK_KEY)).toBe("1");
-  expect(slowFallbackEnabled(storage)).toBe(true);
-  setSlowFallbackEnabled(false, storage);
-  expect(store.has(SLOW_FALLBACK_KEY)).toBe(false);
-  const broken = {
-    getItem: () => {
-      throw new Error("private mode");
-    },
-    setItem: () => {
-      throw new Error("quota");
-    },
-    removeItem: () => {
-      throw new Error("quota");
-    },
-  };
-  expect(slowFallbackEnabled(broken)).toBe(false);
-  expect(() => setSlowFallbackEnabled(true, broken)).not.toThrow();
+test("the switch is the preference, only a stored true is on, and a failed read is off", async () => {
+  expect(await slowFallbackEnabled(async () => ({ canvas_shot: { slow_fallback: true } }))).toBe(true);
+  expect(await slowFallbackEnabled(async () => ({ canvas_shot: { slow_fallback: false } }))).toBe(false);
+  // An older server without the key.
+  expect(await slowFallbackEnabled(async () => ({}))).toBe(false);
+  expect(
+    await slowFallbackEnabled(async () => {
+      throw new Error("HTTP 500");
+    }),
+  ).toBe(false);
 });
 
 test("the refusal names the grant when the OS says it is missing, the situation otherwise — and the switch both times", () => {

@@ -2,17 +2,17 @@
 // Two rows: the screen permission the native still needs — live status, one
 // button to the pane — and the switch for the slow in-canvas fallback, which
 // on a Mac is off until turned on here (apps/canvases/canvas-shot-permission.ts
-// has the rule; a failed screenshot's refusal line points at both rows).
+// has the rule; a failed screenshot's refusal line points at both rows). The
+// switch is the `canvas_shot_slow_fallback_enabled` preference: the canvas
+// page reads it on every capture, so no publish.
 import { useEffect, useState } from "react";
 
-import { openScreenRecordingSettings } from "@platform/lib/api";
+import { openScreenRecordingSettings, putCanvasShotSlowFallbackEnabled } from "@platform/lib/api";
 import { captureSources } from "@platform/lib/capture-audio";
 import { bundleName } from "@platform/lib/flavor";
 import { openScreenRecordingPane, type ScreenshotSource } from "@platform/lib/screen-permission";
 import { Button } from "@platform/shadcn/ui/button";
-import { setSlowFallbackEnabled, slowFallbackEnabled } from "@apps/canvases/canvas-shot-permission";
-
-import { RowSwitch, SettingRow } from "./SettingRow";
+import { PrefToggleRow, SettingRow, type PrefControlProps } from "./SettingRow";
 
 export function CanvasScreenshotsControl() {
   // undefined: checking; null: the server has no screenshot source at all;
@@ -70,19 +70,15 @@ export function CanvasScreenshotsControl() {
   );
 }
 
-/** Local to this machine (localStorage), read by the canvas page on every
- *  capture — so no publish, and no server round trip. */
-export function CanvasScreenshotsFallbackControl() {
-  const [on, setOn] = useState(() => slowFallbackEnabled());
-  const flip = (next: boolean) => {
-    setSlowFallbackEnabled(next);
-    setOn(next);
-  };
+export function CanvasScreenshotsFallbackControl({ prefs, onChange }: PrefControlProps) {
+  const on = prefs.canvas_shot?.slow_fallback === true;
   return (
-    <SettingRow
+    <PrefToggleRow
       id="canvas-screenshots-fallback"
+      checked={on}
+      put={putCanvasShotSlowFallbackEnabled}
       status={on ? "On — a failed native screenshot is redrawn by the workbench, slowly." : "Off — a failed native screenshot says why instead."}
-      control={<RowSwitch id="canvas-screenshots-fallback" checked={on} onChange={flip} />}
+      onChange={onChange}
     />
   );
 }

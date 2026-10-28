@@ -827,7 +827,7 @@ export default function CanvasWorkspace({
       // NATIVE COULD NOT. Off a Mac the slow embed road below draws it; on a
       // Mac that road is off unless Settings turned it on, and the answer is
       // the sentence that names the fix (canvas-shot-permission.ts).
-      if (!slowRoadAllowedHere()) {
+      if (!(await slowRoadAllowedHere())) {
         // A node the zoom draws too small for a crop (under
         // SHOT_UDF_CROP_MIN_WIDTH) is declined above so the embed road can
         // draw it at full size — a road this Mac does not take. The whole

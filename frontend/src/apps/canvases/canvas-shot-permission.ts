@@ -10,47 +10,32 @@
 //     thing that stops it is the Screen Recording grant, which is the user's
 //     to give once. So a failed native shot is an ERROR that names the grant
 //     — not a silent 20-second fallback. The slow road exists on a Mac only
-//     behind a switch in Settings (`SLOW_FALLBACK_KEY`), off by default.
+//     behind a switch in Settings (`slowFallbackEnabled`), off by default.
 //   - Windows / Linux: native when the backend has a still, else the slow
 //     road, automatically — there is no grant to point at.
 //
 // Pure helpers here so the decision and the sentences are testable without
 // the page.
 
+import { getPrefsShared } from "@platform/lib/api";
 import { isMac as detectedMac } from "@platform/lib/platform";
 import { screenRecordingNeeded } from "@platform/lib/screen-permission";
 
 export { screenRecordingNeeded };
 
 /** Settings › Chats & tasks › Canvas screenshots › "Fall back to in-canvas
- *  capture". Read on every capture, so a flip in Settings applies to the
- *  next screenshot without a reload. Local to this machine: it describes
- *  this machine's grant. */
-export const SLOW_FALLBACK_KEY = "fused-render:canvas-shot:slow-fallback";
-
-export function slowFallbackEnabled(storage: Pick<Storage, "getItem"> | null = safeStorage()): boolean {
-  try {
-    return storage?.getItem(SLOW_FALLBACK_KEY) === "1";
-  } catch {
-    return false;
-  }
-}
-
-export function setSlowFallbackEnabled(on: boolean, storage: Pick<Storage, "setItem" | "removeItem"> | null = safeStorage()): void {
-  try {
-    if (on) storage?.setItem(SLOW_FALLBACK_KEY, "1");
-    else storage?.removeItem(SLOW_FALLBACK_KEY);
-  } catch {
-    /* private mode, quota: the switch just reads off next time */
-  }
-}
-
-function safeStorage(): Storage | null {
-  try {
-    return typeof localStorage === "undefined" ? null : localStorage;
-  } catch {
-    return null;
-  }
+ *  capture" — the `canvas_shot_slow_fallback_enabled` preference
+ *  (shell/prefs.py), read on every capture so a flip in Settings applies to
+ *  the next screenshot. A preference, not localStorage: a fact the user
+ *  would miss across a relaunch belongs behind the API (D1386). A read that
+ *  fails is "off" — the default, and the refusal names the switch. */
+export function slowFallbackEnabled(
+  read: () => Promise<{ canvas_shot?: { slow_fallback?: boolean } }> = getPrefsShared,
+): Promise<boolean> {
+  return read().then(
+    (p) => p.canvas_shot?.slow_fallback === true,
+    () => false,
+  );
 }
 
 /** Whether the slow embed road may run after native said no. */
@@ -58,8 +43,10 @@ export function slowRoadAllowed(g: { mac: boolean; fallbackOn: boolean }): boole
   return !g.mac || g.fallbackOn;
 }
 
-export function slowRoadAllowedHere(): boolean {
-  return slowRoadAllowed({ mac: detectedMac, fallbackOn: slowFallbackEnabled() });
+export async function slowRoadAllowedHere(): Promise<boolean> {
+  // Off a Mac the answer needs no round trip.
+  if (!detectedMac) return true;
+  return slowRoadAllowed({ mac: true, fallbackOn: await slowFallbackEnabled() });
 }
 
 /** The error a Mac gets when native could not and the slow road is off. One

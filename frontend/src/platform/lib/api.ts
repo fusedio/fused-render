@@ -1563,6 +1563,10 @@ export interface Prefs {
   // (`task_recap_titles_enabled`, shell/prefs.py; opt-in, off by default).
   // Optional like `queue`: absent reads as off.
   task_recap?: { enabled: boolean };
+  // The slow in-canvas screenshot fallback on a Mac
+  // (`canvas_shot_slow_fallback_enabled`, shell/prefs.py; off by default).
+  // Optional: absent (older server) reads as off.
+  canvas_shot?: { slow_fallback: boolean };
   // Stable AI titles: Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
   // shell/prefs.py; off by default). Optional: absent reads as off.
   task_summary_titles?: { enabled: boolean };
@@ -2027,6 +2031,10 @@ export function putClaudeMaxConcurrentSessions(max: number): Promise<Prefs> {
 
 export function putTaskRecapTitlesEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { task_recap_titles_enabled: enabled });
+}
+
+export function putCanvasShotSlowFallbackEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { canvas_shot_slow_fallback_enabled: enabled });
 }
 
 /** One PUT per Bots page-wide switch (`Prefs.bots`). */
