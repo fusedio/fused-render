@@ -143,6 +143,17 @@ function connect(): Promise<WebSocket | null> {
       return;
     }
     let opened = false;
+    // The never-opened bookkeeping (latch or backoff) runs ONCE per attempt:
+    // the timer's `close()` fires `onclose` in a browser, and both would
+    // otherwise double the retry delay.
+    let settled = false;
+    const neverOpened = () => {
+      if (settled) return;
+      settled = true;
+      if (!proven) latched = true;
+      else backoff();
+      resolve(null);
+    };
     const handshake = setTimeout(() => {
       if (opened) return;
       try {
@@ -151,11 +162,8 @@ function connect(): Promise<WebSocket | null> {
         /* already closing */
       }
       // A socket closed from CONNECTING fires `close` in a browser; a shim
-      // may not, so the never-opened road is walked here as well. Idempotent
-      // with `onclose` below: `resolve` is single-shot.
-      if (!proven) latched = true;
-      else backoff();
-      resolve(null);
+      // may not, so the never-opened road is walked here as well.
+      neverOpened();
     }, connectTimeoutMs);
     s.onopen = () => {
       opened = true;
@@ -188,9 +196,7 @@ function connect(): Promise<WebSocket | null> {
       clearTimeout(handshake);
       if (sock === s) sock = null;
       if (!opened) {
-        if (!proven) latched = true;
-        else backoff();
-        resolve(null);
+        neverOpened();
         return;
       }
       if (!proven) latched = true;

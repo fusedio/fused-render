@@ -19,8 +19,10 @@
 //
 // `by` says WHO is asking — the user at the Screenshot seat, or the agent's
 // `canvas_screenshot` tool — so the host's scrim over the workbench can name
-// the asker ("Capturing canvas…" against "Claude is looking at the canvas…").
-// It never changes what is captured.
+// the asker ("Capturing canvas…" against "Claude is looking at the canvas…"),
+// and so the native still can trust a user's click as proof the window is in
+// front where `document.hasFocus()` would lie (canvas-shot-native.ts). It
+// never changes WHAT is captured.
 //
 // HOW THE BYTES COME BACK: `postMessage` structured-clones a Blob — the
 // receiving window gets its own copy of the bytes, origin notwithstanding —

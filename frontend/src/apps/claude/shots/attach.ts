@@ -334,7 +334,6 @@ async function uploadCapture(
     return att;
   }
   try {
-    const started = Date.now();
     let dir: string;
     try {
       dir = await within(dirp ?? shotsDir(), shotSaveTimeoutMs, "the screenshot folder lookup");
@@ -345,8 +344,10 @@ async function uploadCapture(
       throw err;
     }
     const path = shotJoin(dir, shotStamp() + suffix + shotExt(shot.blob));
-    const left = Math.max(Math.min(2000, shotSaveTimeoutMs), shotSaveTimeoutMs - (Date.now() - started));
-    await within(uploadFile(path, shot.blob, shotBase(path)), left, "the upload");
+    // Its own full budget, not the lookup's remainder: a slow lookup must
+    // not turn a healthy upload into "could not be saved" with the file
+    // landing on disk anyway.
+    await within(uploadFile(path, shot.blob, shotBase(path)), shotSaveTimeoutMs, "the upload");
     att.view = path;
     if (shot.thumb) att.thumb = shot.thumb;
     // Never suppressed for a blank canvas, only annotated: the caveat rides

@@ -542,14 +542,3 @@
     opacity: 0;
   }
 }
-@media (prefers-reduced-motion: reduce) {
-  .canvas-shot-scrim {
-    animation: none;
-  }
-  .canvas-shot-scrim-spinner {
-    animation-duration: 2s;
-  }
-}
-
-/* The scrim's reminder link (CanvasWorkspace, after "Continue without"):
-   a word in the hint's own type, underlined — a door, not a button. */

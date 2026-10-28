@@ -18,14 +18,9 @@
 // the page.
 
 import { isMac as detectedMac } from "@platform/lib/platform";
-import {
-  SCREEN_RECORDING_SETTINGS_URL,
-  openScreenRecordingPane,
-  screenRecordingNeeded,
-  type ScreenshotSource,
-} from "@platform/lib/screen-permission";
+import { screenRecordingNeeded } from "@platform/lib/screen-permission";
 
-export { SCREEN_RECORDING_SETTINGS_URL, openScreenRecordingPane, screenRecordingNeeded, type ScreenshotSource };
+export { screenRecordingNeeded };
 
 /** Settings › Chats & tasks › Canvas screenshots › "Fall back to in-canvas
  *  capture". Read on every capture, so a flip in Settings applies to the

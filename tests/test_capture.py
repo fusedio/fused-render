@@ -1760,12 +1760,11 @@ def test_the_screen_recording_settings_door_opens_the_backends_pane(backend, cli
     route runs `open` on it and answers ok. Guarded like every mutating route."""
     opened = []
 
-    class Popen:
-        def __init__(self, argv, **kw):
-            opened.append(argv)
+    def run(argv, **kw):
+        opened.append(argv)
 
     import subprocess
-    monkeypatch.setattr(subprocess, "Popen", Popen)
+    monkeypatch.setattr(subprocess, "run", run)
     backend.settings_url = lambda: "x-apple.systempreferences:test?Privacy_ScreenCapture"
     assert client.post("/api/capture/settings").status_code == 403
     r = client.post("/api/capture/settings", headers={"X-Fused": "1"})

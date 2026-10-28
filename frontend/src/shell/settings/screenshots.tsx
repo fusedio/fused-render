@@ -15,7 +15,10 @@ import { setSlowFallbackEnabled, slowFallbackEnabled } from "@apps/canvases/canv
 import { RowSwitch, SettingRow } from "./SettingRow";
 
 export function CanvasScreenshotsControl() {
-  const [source, setSource] = useState<ScreenshotSource | null | undefined>(undefined);
+  // undefined: checking; null: the server has no screenshot source at all;
+  // "unknown": the check itself failed (a transient error is not "not
+  // available on this machine").
+  const [source, setSource] = useState<ScreenshotSource | null | "unknown" | undefined>(undefined);
   const [opened, setOpened] = useState(false);
   useEffect(() => {
     let alive = true;
@@ -24,15 +27,16 @@ export function CanvasScreenshotsControl() {
         if (alive) setSource(s.screenshot ?? null);
       })
       .catch(() => {
-        if (alive) setSource(null);
+        if (alive) setSource("unknown");
       });
     return () => {
       alive = false;
     };
   }, []);
   const app = bundleName();
-  const granted = source?.granted === true;
-  const unavailable = source === null || source?.available === false;
+  const checked = source !== undefined && source !== "unknown" ? source : null;
+  const granted = checked?.granted === true;
+  const unavailable = source === null || checked?.available === false;
   const open = () => {
     setOpened(true);
     void openScreenRecordingPane(openScreenRecordingSettings);
@@ -43,6 +47,8 @@ export function CanvasScreenshotsControl() {
       status={
         source === undefined ? (
           "Checking…"
+        ) : source === "unknown" ? (
+          "Could not check — is the app running?"
         ) : unavailable ? (
           "Not available on this machine."
         ) : granted ? (
@@ -54,7 +60,7 @@ export function CanvasScreenshotsControl() {
         )
       }
       control={
-        source === undefined || unavailable ? undefined : (
+        source === undefined || source === "unknown" || unavailable ? undefined : (
           <Button variant={granted ? "outline" : "default"} size="sm" onClick={open}>
             {granted ? "Open System Settings" : opened ? "Open System Settings again" : "Allow in System Settings"}
           </Button>

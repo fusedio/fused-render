@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
 
+import { SCREEN_RECORDING_SETTINGS_URL, openScreenRecordingPane } from "@platform/lib/screen-permission";
+
 import {
-  SCREEN_RECORDING_SETTINGS_URL,
   SLOW_FALLBACK_KEY,
   nativeShotRefusal,
-  openScreenRecordingPane,
   screenRecordingNeeded,
   setSlowFallbackEnabled,
   slowFallbackEnabled,

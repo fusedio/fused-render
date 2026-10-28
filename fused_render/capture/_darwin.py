@@ -311,8 +311,9 @@ def _require_record() -> None:
 #: screenshot (server log, 2026-10-28) against ~100 ms for the shot itself —
 #: the canvas chat's "instant" native picture was timing out on it. A display
 #: object stays valid while the panel is plugged in, so a short cache costs
-#: nothing but a few seconds of staleness after a display is (un)plugged,
-#: which the miss path below recovers from.
+#: nothing but up to DISPLAY_CACHE_S of staleness after a display is
+#: (un)plugged or changes mode — and a shot that FAILS on a cached display
+#: evicts it and retries once on a fresh enumeration (`_forget_display`).
 DISPLAY_CACHE_S = 30.0
 _display_cache: dict = {}   # display id -> (SCDisplay, time.monotonic())
 
@@ -339,6 +340,15 @@ def _shareable_displays() -> list:
         True, True, handler)
     wait.result()
     return list(box.get("content").displays()) if box.get("content") else []
+
+
+def _forget_display(display) -> None:
+    """Drop one cached `SCDisplay` (after a capture on it failed), so the
+    next lookup enumerates again."""
+    try:
+        _display_cache.pop(int(display.displayID()), None)
+    except Exception:                                    # noqa: BLE001
+        _display_cache.clear()
 
 
 def _display(display_id) -> object:
@@ -843,7 +853,20 @@ def screenshot(out: str, spec: dict) -> dict:
     display = _display(spec.get("display"))
     if _too_old(SCSHOT_MIN):
         return _cg_shot(out, display, spec)
+    try:
+        return _sck_shot(out, display, spec)
+    except Exception:                                    # noqa: BLE001
+        # A cached display may be stale (unplugged, mode changed, woke from
+        # sleep): once more on a fresh enumeration before giving up.
+        if _display_cache.get(int(display.displayID()), (None,))[0] is not display:
+            raise
+        _forget_display(display)
+        return _sck_shot(out, _display(spec.get("display")), spec)
 
+
+def _sck_shot(out: str, display, spec: dict) -> str:
+    """One ScreenCaptureKit still of `display`, cropped to `spec["rect"]`
+    when given."""
     content_filter = SCK.SCContentFilter.alloc().initWithDisplay_excludingWindows_(
         display, [])
     config = _configure(display, {"rect": spec.get("rect"),

@@ -12,9 +12,9 @@
 // own `appFrame()` disowns a frame whose document it cannot read; the HOST
 // holds the frame element, and a screen shot needs only its box.
 //
-// Tried FIRST, for `what: "canvas"`. Every "cannot" answers null and the
-// caller falls back to the embed road (`fused-embed-capture`), exactly as the
-// pane road falls back to its DOM clone:
+// Tried FIRST, for the graph and for a node. Every "cannot" answers null;
+// what the caller does then is the platform's call (canvas-shot-permission.ts:
+// the embed road off a Mac, a refusal naming the fix on one):
 //   - the native still is off on this platform (409, remembered), or the
 //     window straddles displays / the frame is partly off screen
 //     (`captureNative` itself answers null then);
@@ -22,8 +22,8 @@
 //     is not the focused one (the agent's `canvas_screenshot` fires with no
 //     gesture, and the user may have another app in front — a screen shot
 //     then photographs THAT), or something of ours covers the frame (a viewer
-//     modal over it, a dialog). `shotGate` is that decision, pure, so it can
-//     be tested without a screen.
+//     modal over it, a dialog). `shotGateOf` / `nativeShotAllowed` are that
+//     decision, pure, so it can be tested without a screen.
 //
 // THE STILL IS CROPPED to what was asked for. The frame holds more than the
 // graph — the workbench's own right pane (code, widget config, logs) sits

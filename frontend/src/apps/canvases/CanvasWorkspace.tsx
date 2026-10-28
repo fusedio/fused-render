@@ -233,11 +233,11 @@ const THUMBNAIL_TIMEOUT_MS = 45_000;
 const FRAME_UP_WAIT_MS = 40_000;
 // How long the fast road waits for the workbench to say WHERE the graph and
 // the node are (`fused-embed-capture` `what: "rects"`, canvas-shot-native.ts):
-// a measurement, answered in a frame or two (1–300 ms measured); a workbench
-// build that does not know the question never answers, and after ONE such
-// silence the page stops asking (`rectsSilentRef`) — a fixed wait on every
-// screenshot was the difference between "instant" and "about two seconds"
-// (owner, 2026-10-28). A fresh hello from the frame asks again.
+// a measurement, answered in a frame or two (1–300 ms measured). Only asked
+// of a workbench whose hello SAYS it knows the question (`capture` includes
+// "rects", `rectsSilentRef`): an older build takes any `what` it does not
+// know for a node capture and starts drawing. A late answer is simply
+// dropped — the whole frame is the picture meanwhile.
 const RECTS_WAIT_MS = 800;
 
 // Fallback cadence for GET sync/state while the events socket is down.
@@ -702,9 +702,12 @@ export default function CanvasWorkspace({
   // `Date.now()` can never equal.
   type EmbedRects = { canvas: ShotRect | null; udf: ShotRect | null; udfReason?: string };
   const rectsPendingRef = useRef<{ req: number; resolve: (r: EmbedRects | null) => void } | null>(null);
-  // This frame's workbench did not answer the question once: do not wait on
-  // it again until the frame says hello anew (a reload, a newer build).
-  const rectsSilentRef = useRef(false);
+  // Whether this frame's workbench knows the question. True until a hello
+  // lists "rects" among its `capture` abilities: the deployed build before
+  // that treats an unknown `what` as a node capture (html-to-image of the
+  // selected node), so asking it would start the slow draw the fast road
+  // exists to avoid. Re-read on every hello (a reload, a newer build).
+  const rectsSilentRef = useRef(true);
   const requestEmbedRects = useCallback((udfName: string | null): Promise<EmbedRects | null> => {
     const frame = frameRef.current;
     const origin = baseOriginRef.current;
@@ -716,7 +719,6 @@ export default function CanvasWorkspace({
       const timer = setTimeout(() => {
         if (rectsPendingRef.current?.req === req) {
           rectsPendingRef.current = null;
-          rectsSilentRef.current = true;
           resolve(null);
         }
       }, RECTS_WAIT_MS);
@@ -819,12 +821,19 @@ export default function CanvasWorkspace({
     const answer = await new Promise<ShotAnswer>((resolve) => {
       const req = Date.now();
       shotPendingRef.current = { req, resolve };
-      win.postMessage(
-        // The named node when the asker names one (the agent's tool may ask
-        // for any UDF on the canvas); else the node this page shows.
-        { type: "fused-embed-capture", req, what, udfName: udf || nodeRef.current?.udfName || null },
-        origin,
-      );
+      try {
+        win.postMessage(
+          // The named node when the asker names one (the agent's tool may ask
+          // for any UDF on the canvas); else the node this page shows.
+          { type: "fused-embed-capture", req, what, udfName: udf || nodeRef.current?.udfName || null },
+          origin,
+        );
+      } catch (err) {
+        // A frame mid-navigation: answer now, so the slot and the scrim are
+        // not held for a message that never went.
+        settleShot({ ok: false, error: `the workbench could not be reached (${String(err)})` });
+        return;
+      }
       shotTimerRef.current = setTimeout(() => {
         if (shotPendingRef.current?.req === req) {
           settleShot({ ok: false, error: "the workbench did not answer — it may still be drawing a slow capture (map nodes); wait a minute before asking again" });
@@ -916,12 +925,14 @@ export default function CanvasWorkspace({
       const by: CanvasShotBy = event.data.by === "agent" ? "agent" : "user";
       if (!source) return;
       if (what !== "canvas" && what !== "udf") return;
-      void requestCanvasShot(what, udf, by).then((answer) => {
-        source.postMessage(
-          { type: "fused-canvas-shot-done", req, ...answer },
-          window.location.origin,
-        );
-      });
+      void requestCanvasShot(what, udf, by)
+        .catch((err: unknown): CanvasShotAnswer => ({ ok: false, error: `the canvas screenshot failed: ${String(err)}` }))
+        .then((answer) => {
+          source.postMessage(
+            { type: "fused-canvas-shot-done", req, ...answer },
+            window.location.origin,
+          );
+        });
     };
     window.addEventListener("message", onShotAsk);
     return () => window.removeEventListener("message", onShotAsk);
@@ -1948,7 +1959,11 @@ export default function CanvasWorkspace({
       }
       if (type === "fused-embed-hello") {
         frameUpRef.current = true;
-        rectsSilentRef.current = false; // a new document may know the question
+        // What this build can capture (`capture: ["canvas","udf","rects"]`
+        // from the workbench's `postEmbedHello`); a hello without the list is
+        // a build from before the question existed.
+        const abilities = (event.data as { capture?: unknown }).capture;
+        rectsSilentRef.current = !(Array.isArray(abilities) && abilities.includes("rects"));
         const waiters = frameUpWaitersRef.current;
         frameUpWaitersRef.current = [];
         for (const wake of waiters) wake();
