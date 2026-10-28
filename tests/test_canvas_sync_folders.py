@@ -486,6 +486,28 @@ def test_snapshot_deleting_a_folder_never_trashes_a_same_named_file(tmp_path):
     assert os.path.isfile(os.path.join(d, "F.py"))
 
 
+def test_folder_never_takes_a_udf_file_that_matches_its_name_by_case(tmp_path):
+    # India_H3_coverage (folder) over india_h3_coverage.py (a UDF inside it):
+    # on macOS's case-insensitive disk `isfile` said the folder had a source
+    # file, and the folder's body became the UDF's code.
+    d = _clone(tmp_path, [folder("India_H3_coverage", ["india_h3_coverage"]),
+                          udf("india_h3_coverage", 40.0, 60.0)],
+               {"india_h3_coverage.py": "A"})
+    disk = cs.compact_state_from_disk(d)
+    assert "India_H3_coverage" not in disk["files"]
+    assert "India_H3_coverage" not in disk["bodies"]
+    assert disk["files"] == {"india_h3_coverage": "india_h3_coverage.py"}
+    assert disk["missing"] == [] and disk["synthesized"] == []
+    # A plain row (no type) whose name differs from a file only by case is
+    # missing, not that file's node.
+    (tmp_path / "two").mkdir()
+    d2 = _clone(tmp_path / "two", [udf("Other_Node", 40.0, 60.0)], {"other_node.py": "B"})
+    disk2 = cs.compact_state_from_disk(d2)
+    assert disk2["missing"] == ["Other_Node"]
+    assert cs._find_source(d2, "Other_Node") is None
+    assert cs._find_source(d2, "other_node") == "other_node.py"
+
+
 # -- 3. synthesized placement ------------------------------------------------
 
 def test_synthesize_after_a_folder_child_is_placed_in_absolute_coords():
