@@ -627,6 +627,11 @@ export default function CanvasWorkspace({
   );
   const [fixBusy, setFixBusy] = useState(false);
   const [fixError, setFixError] = useState<string | null>(null);
+  // The failed-push detail panel under the strip: shut by default in the
+  // editor (the strip already says why in one line and wears an "N errors"
+  // pill; the pill folds it open and shut), open on the project page's Sync
+  // tab, which exists to show exactly this.
+  const [pushDetailOpen, setPushDetailOpen] = useState(embedded);
   // "Server changes · Pull": the hosted workbench's chip, for this tab. The
   // watcher holds its push while the server_to_disk leg is stale; this button
   // is the user's pull. The result reaches the embed as a delta like any other
@@ -814,6 +819,29 @@ export default function CanvasWorkspace({
   // (same watcher, lower disk_rev: a slow poll answer overtaken by the
   // socket) is dropped, so the delta effect never reads it as a new watcher.
   const applyState = useCallback((s: SyncState) => {
+    // QA, dev builds only: `?_pushfail=1` dresses every state as a failed
+    // push — a real failing deployment is not on hand to look at the panel.
+    // (Pull and Fix with Claude stay live against the real clone.)
+    const pushfail = import.meta.env.DEV ? new URLSearchParams(window.location.search).get("_pushfail") : null;
+    if (pushfail) {
+      s = {
+        ...s,
+        legs: {
+          ...s.legs,
+          // `_pushfail=2`: the server changed as well, so Pull is up too.
+          ...(pushfail === "2"
+            ? { server_to_disk: { state: "stale" as const, since_ms: 5000, changed: [{ slug: "udf_1", kind: "udf" }], reason: null } }
+            : {}),
+          disk_to_server: {
+            ...s.legs.disk_to_server,
+            state: "error",
+            reason:
+              "requests.exceptions.ConnectionError: HTTPSConnectionPool(host='deere.fused.io', port=443): Max retries exceeded with url: /server/v1/collection/by-id/52e05ec7-b4e1-42bb-a71d-6f34235c4434/import-toml (Caused by ReadTimeoutError(\"HTTPSConnectionPool(host='deere.fused.io', port=443): Read timed out. (read timeout=5)\"))",
+          },
+        },
+        error_detail: Array.from({ length: 24 }, (_, i) => `  File "/Applications/FusedRender.app/Contents/Resources/lib/python3.12/urllib3/connection.py", line ${600 + i}, in getresponse`),
+      };
+    }
     setSync((prev) =>
       prev && prev.watcher_epoch === s.watcher_epoch && s.disk_rev < prev.disk_rev ? prev : s,
     );
@@ -2139,6 +2167,18 @@ export default function CanvasWorkspace({
   // never guessed from transcript activity. It rides sync/state; the local
   // copy only bridges the click → next state gap (`onFix` sets it at once).
   const pushError = sync?.legs.disk_to_server.state === "error";
+  // One per "✗" line of the CLI's detail (its validation errors); a push that
+  // died some other way (a traceback) counts as one.
+  const pushErrorCount = pushError
+    ? Math.max(1, (sync?.error_detail ?? []).filter((l) => /^\s*✗/.test(l)).length)
+    : 0;
+  const pushBannerShown = pushError && pushDetailOpen;
+  // Back to the default once a push lands, so the next failure starts the
+  // same way; open while Claude works on it, so its state stays in view.
+  useEffect(() => {
+    if (!pushError) setPushDetailOpen(embedded);
+    else if (fixActive || fixBusy) setPushDetailOpen(true);
+  }, [pushError, fixActive, fixBusy, embedded]);
   const stateFixActive = sync?.fix_active;
   useEffect(() => {
     if (stateFixActive !== undefined) setFixActive(stateFixActive);
@@ -2421,6 +2461,11 @@ export default function CanvasWorkspace({
         onBack={() => navigateUrl(catalogPath(env))}
         workbenchUrl={workbenchUrl}
         embedded={embedded}
+        pushErrors={
+          pushError
+            ? { count: pushErrorCount, open: pushDetailOpen, onToggle: () => setPushDetailOpen((o) => !o) }
+            : null
+        }
         pull={{
           busy: pullBusy,
           error: pullError,
@@ -2454,7 +2499,7 @@ export default function CanvasWorkspace({
           {...(pinned ? {} : { onClose: () => setDrawerOpen(false) })}
         />
       )}
-      {pushError && pushLeg && sync && (
+      {pushBannerShown && pushLeg && sync && (
         // The disk_to_server leg's error, in full: the strip above carries
         // the one-line reason; this is the CLI's per-line detail and the
         // Fix with Claude door.
@@ -2486,6 +2531,15 @@ export default function CanvasWorkspace({
                   : "Fix with Claude"}
             </button>}
             {fixError && <span style={{ color: "rgb(200,60,60)" }}>{fixError}</span>}
+            <span style={{ flex: 1 }} />
+            <button
+              className="btn"
+              aria-label="Hide the push errors"
+              title="Hide — the strip's error pill brings this back"
+              onClick={() => setPushDetailOpen(false)}
+            >
+              ×
+            </button>
           </div>
           {sync.error_detail?.length > 0 && (
             <pre
