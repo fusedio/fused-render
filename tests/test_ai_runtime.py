@@ -2215,8 +2215,9 @@ def test_llamacpp_and_whisper_suggestions_show_snapshot_size_estimates():
         "LFM2.5-1.2B-Instruct-Q4_K_M.gguf": 0.7,
         "Qwen3.5-4B-Q4_K_M.gguf": 2.7,
         "gemma-4-E4B-it-Q4_K_M.gguf": 5.0,
-        "LFM2.5-8B-A1B-Q4_K_M.gguf": 5.2,
         "Qwen3.8-27B-UD-Q3_K_XL.gguf": 13.1,
+        "LFM2.5-24B-A2B-Q4_K_M.gguf": 14.5,
+        "gemma-4-26B-A4B-it-UD-Q4_K_M.gguf": 17.0,
         "Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf": 18.6,
         "deepdml/faster-whisper-large-v3-turbo-ct2": 1.6,
         "Systran/faster-whisper-tiny.en": 0.08,
@@ -2284,10 +2285,21 @@ def test_every_suggestion_list_offers_between_two_and_five_models():
     """
     # SIX, not five, for the two TEXT lists only (SPEC AI-28b): the use-case
     # sections need a code-tuned row (Qwen3-Coder-30B-A3B) and no existing row
-    # was worth cutting for it.
+    # was worth cutting for it. SEVEN since the October 2026 refresh, which
+    # added the two mixture-of-experts rows (Gemma 4 26B-A4B, LFM2.5 24B-A2B)
+    # and retired only one row per list (DECISIONS.md, "Catalog refresh,
+    # October 2026" — a deliberate loosening the owner can revert by cutting
+    # a row and putting this back to 6).
+    #
+    # ONE row, for `sherpa-tts` only: its worker maps a voice NAME to a speaker
+    # id through `formats.KOKORO_VOICES`, which is the v1.1 table
+    # (`kokoro-multi-lang-v1_1`). The other sherpa Kokoro exports (v1.0 has 53
+    # voices in another order; the int8 file is not `model.onnx`) would speak
+    # the wrong voice or fail the layout claim, so there is no honest second row.
     for code, entries in catalog.SUGGESTIONS.items():
-        cap = 6 if code in ("mlx-text", "llamacpp-text") else 5
-        assert 2 <= len(entries) <= cap, (
+        cap = 7 if code in ("mlx-text", "llamacpp-text") else 5
+        floor = 1 if code == "sherpa-tts" else 2
+        assert floor <= len(entries) <= cap, (
             f"{code} suggests {len(entries)} models "
             f"({[e['id'] for e in entries]}); every engine's list carries two "
             f"to {cap} — one row leaves a reader nowhere to go, more stops "
@@ -2378,10 +2390,11 @@ def test_the_catalog_follows_the_runner_that_would_actually_load(monkeypatch, tm
     assert text["runner"] == "mlx-text"
     # The namespace set is a PROXY for "these are MLX conversions", and it
     # grows: `prism-ml/` is here for the Bonsai row, because no
-    # `mlx-community/` conversion of it exists. What the assertion is really
+    # `mlx-community/` conversion of it exists, and `LiquidAI/` for the LFM2.5
+    # 24B-A2B row, which Liquid publishes itself. What the assertion is really
     # pinning is the Linux half above — that the two lists are disjoint — so
     # a new publisher belongs here rather than being a reason to weaken it.
-    assert all(m["id"].startswith(("mlx-community/", "prism-ml/"))
+    assert all(m["id"].startswith(("mlx-community/", "prism-ml/", "LiquidAI/"))
                for m in text["models"])
 
 
@@ -6110,7 +6123,7 @@ def test_the_runtime_endpoint_reports_runners_and_nothing_loaded(client):
         "faster-whisper", "mlx-whisper",
         "mlx-embed",
         "onnx-embed", "onnx-embed-cuda",
-        "onnx-embed-rocm", "ltx-video", "laya-mlx", "mlx-audio-tts", "vision-torch",
+        "onnx-embed-rocm", "ltx-video", "laya-mlx", "mlx-audio-tts", "sherpa-tts", "vision-torch",
         "vision-torch-cuda"}
     assert body["loaded"] == []
     # Exactly one runner per capability is ACTIVE — the distinction D302 needed,
@@ -13634,6 +13647,178 @@ def test_the_catalog_carries_each_speech_models_voice_mode(client, fake_speech_r
     assert models["org/fake-preset"]["languages"] == ["english"]
     assert models["org/fake-clone"]["voiceMode"] == "clone"
     assert "voices" not in models["org/fake-clone"]
+
+
+KOKORO_ID = "csukuangfj/kokoro-multi-lang-v1_1"
+KOKORO_FILES = ("model.onnx", "voices.bin", "tokens.txt", "lexicon-us-en.txt")
+KOKORO_DIRS = ("espeak-ng-data", "dict")
+
+
+def test_a_kokoro_snapshot_reads_as_speech_for_the_sherpa_tts_runner(hub):
+    """No `config.json` at all: the layout is the evidence, and the root
+    `model.onnx` must not be offered to the ONNX embedders."""
+    _cached_repo(hub, KOKORO_ID, files=KOKORO_FILES, dirs=KOKORO_DIRS)
+    reading = ai_models.cached_capability(KOKORO_ID)
+    assert reading.cached and reading.capability == registry.TEXT_TO_SPEECH
+    assert [m for m in ai_models.cached_models() if m.repo_id == KOKORO_ID][0].loaders == (
+        "sherpa-tts",)
+
+
+def test_speech_takes_kokoros_voices_and_refuses_a_style_line(client, fake_speech_runner, hub):
+    _cached_repo(hub, "org/fake-preset", files=KOKORO_FILES, dirs=KOKORO_DIRS)
+    style = _speech(client, {"text": "x", "instruct": "calm"})
+    assert style.status_code == 400
+    assert style.json()["error"] == (
+        "org/fake-preset has no style line; it takes 'voice', not 'instruct'")
+    unknown = _speech(client, {"text": "x", "voice": "af_heart"})
+    assert unknown.status_code == 400 and "af_maple, af_sol, bf_vale" in unknown.json()["error"]
+    named = _speech(client, {"text": "x", "voice": "ZF_001", "language": "Chinese"}).json()
+    assert (named["voice"], named["language"]) == ("zf_001", "chinese")
+    default = _speech(client, {"text": "x"}).json()
+    assert default["voice"] == "af_maple"
+    _wait_job(named["jobId"])
+    _wait_job(default["jobId"])
+
+
+def test_a_snapshot_with_a_config_is_not_listed_for_the_kokoro_layout(hub, monkeypatch):
+    """`speech_traits` runs for every speech row on every catalog request; a
+    Qwen3-style snapshot has a `config.json` and must not pay a directory walk."""
+    config = {"model_type": "qwen3_tts", "tts_model_type": "custom_voice",
+              "talker_config": {"spk_id": {"ryan": 1}, "codec_language_id": {"english": 1}}}
+    _cached_repo(hub, "org/qwen-like", files=("model.safetensors",),
+                 dirs=("speech_tokenizer",), config=config)
+    real = os.listdir
+
+    def guarded(path="."):
+        if "qwen-like" in str(path):
+            raise AssertionError(f"listed {path}")
+        return real(path)
+
+    monkeypatch.setattr(os, "listdir", guarded)
+    assert ai_models.speech_traits("org/qwen-like")["voices"] == ["ryan"]
+
+
+def test_a_kokoro_layout_beside_a_non_qwen_config_still_reads_as_kokoro(hub):
+    """`cached_loaders` claims the layout whatever config sits beside it, so
+    `speech_traits` must too, or the row lists as speech with no voices."""
+    _cached_repo(hub, "org/repackaged-kokoro", files=KOKORO_FILES, dirs=KOKORO_DIRS,
+                 config={"model_type": "kokoro"})
+    assert ai_models.cached_loaders("org/repackaged-kokoro") == ("sherpa-tts",)
+    traits = ai_models.speech_traits("org/repackaged-kokoro")
+    assert traits is not None and traits["instructable"] is False
+    assert traits["voices"][:3] == ["af_maple", "af_sol", "bf_vale"]
+
+
+def test_the_catalog_says_a_kokoro_entry_has_no_style_line(client, fake_speech_runner, hub):
+    _cached_repo(hub, "org/fake-preset", files=KOKORO_FILES, dirs=KOKORO_DIRS)
+    rows = client.get("/api/ai/catalog").json()["capabilities"]
+    row = next(r for r in rows if r["capability"] == registry.TEXT_TO_SPEECH)
+    models = {m["id"]: m for m in row["models"]}
+    assert models["org/fake-preset"]["instructable"] is False
+    assert models["org/fake-preset"]["voices"][:3] == ["af_maple", "af_sol", "bf_vale"]
+    assert "instructable" not in models["org/fake-clone"]
+
+
+def test_a_curated_kokoro_row_refuses_a_style_line_before_it_is_downloaded(
+        client, fake_speech_runner, monkeypatch):
+    monkeypatch.setitem(catalog.SUGGESTIONS, "fake-speech", [
+        {"id": "org/fake-kokoro", "label": "K", "size_gb": None, "note": "",
+         "voiceMode": "preset", "instructable": False}])
+    refused = _speech(client, {"text": "x", "instruct": "calm"})
+    assert refused.status_code == 400 and "has no style line" in refused.json()["error"]
+
+
+def test_the_kokoro_suggestion_is_the_one_row_of_its_own_list():
+    rows = catalog.for_runner("sherpa-tts")
+    assert [r["id"] for r in rows] == [KOKORO_ID]
+    assert rows[0]["voiceMode"] == "preset" and rows[0]["instructable"] is False
+    assert rows[0]["recommended"] is True and rows[0]["size_gb"] == 0.39
+    assert catalog.for_runner("mlx-audio-tts") != rows
+    assert catalog.capability_of(KOKORO_ID) == registry.TEXT_TO_SPEECH
+    # A repo id, not a GGUF filename: the mirror is named it unchanged.
+    assert catalog.mirror_id(KOKORO_ID) == KOKORO_ID
+
+
+def test_a_mac_resolves_speech_to_qwen_unless_it_chooses_kokoro(monkeypatch):
+    """The supervisor resolves ONE runner per capability (`_runner_or_raise`),
+    so the loaders claim says which runner CAN open a repo, and the engine
+    preference says which one a Mac uses. A Kokoro id is claimed by
+    `sherpa-tts` alone; it runs on a Mac whose engine for speech is Kokoro."""
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(registry, "preferred_code", lambda capability: registry.AUTO)
+    assert supervisor._runner_or_raise(registry.TEXT_TO_SPEECH).code == "mlx-audio-tts"
+    monkeypatch.setattr(registry, "preferred_code", lambda capability: "sherpa-tts")
+    assert supervisor._runner_or_raise(registry.TEXT_TO_SPEECH).code == "sherpa-tts"
+    claimed = formats.loaders(repo_id=KOKORO_ID, names=set(KOKORO_FILES),
+                              dirnames=set(KOKORO_DIRS), config={}, torch_weights=False,
+                              onnx_weights=True)
+    assert claimed == ("sherpa-tts",)
+
+
+def _real_speech_registry(monkeypatch, system, machine, preference):
+    """The shipped TTS rows, on a pretend `system`/`machine`, with the job
+    start replaced by a recorder so an accepted request opens nothing."""
+    monkeypatch.setattr(registry.platform, "system", lambda: system)
+    monkeypatch.setattr(registry.platform, "machine", lambda: machine)
+    monkeypatch.setattr(registry, "preferred_code", lambda capability: preference)
+    started = []
+    monkeypatch.setattr(supervisor, "_start_render",
+                        lambda capability, model, *a, **kw: started.append((capability, model)))
+    return started
+
+
+def test_a_kokoro_id_on_a_mac_with_the_qwen_engine_is_a_409_before_any_download(
+        client, monkeypatch):
+    started = _real_speech_registry(monkeypatch, "Darwin", "arm64", registry.AUTO)
+    refused = _speech(client, {"text": "x", "model": KOKORO_ID})
+    assert refused.status_code == 409, refused.json()
+    assert "Kokoro (sherpa-onnx)" in refused.json()["error"]
+    assert KOKORO_ID in refused.json()["error"]
+    assert started == []
+
+
+def test_a_cached_kokoro_snapshot_on_a_mac_with_the_qwen_engine_is_a_409(
+        client, hub, monkeypatch):
+    started = _real_speech_registry(monkeypatch, "Darwin", "arm64", registry.AUTO)
+    _cached_repo(hub, "org/some-kokoro-export", files=KOKORO_FILES, dirs=KOKORO_DIRS)
+    refused = _speech(client, {"text": "x", "model": "org/some-kokoro-export"})
+    assert refused.status_code == 409 and "Kokoro (sherpa-onnx)" in refused.json()["error"]
+    assert started == []
+
+
+def test_a_kokoro_id_is_accepted_where_the_kokoro_engine_serves_speech(client, monkeypatch):
+    mac = _real_speech_registry(monkeypatch, "Darwin", "arm64", "sherpa-tts")
+    assert _speech(client, {"text": "x", "model": KOKORO_ID}).status_code == 200
+    linux = _real_speech_registry(monkeypatch, "Linux", "x86_64", registry.AUTO)
+    assert _speech(client, {"text": "x", "model": KOKORO_ID}).status_code == 200
+    assert [m for _c, m in mac] == [KOKORO_ID] and [m for _c, m in linux] == [KOKORO_ID]
+
+
+QWEN_TTS_ID = "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-bf16"
+
+
+def test_a_qwen_id_where_only_kokoro_serves_speech_is_a_409_naming_apple_silicon(
+        client, monkeypatch):
+    """Linux has no Qwen3-TTS engine, but the id is still Qwen's: refuse it up
+    front with the claimer's own unavailable reason, not after a 2.5 GB pull."""
+    started = _real_speech_registry(monkeypatch, "Linux", "x86_64", registry.AUTO)
+    refused = _speech(client, {"text": "x",
+                               "model": QWEN_TTS_ID})
+    assert refused.status_code == 409, refused.json()
+    error = refused.json()["error"]
+    assert "Apple Silicon" in error and QWEN_TTS_ID in error
+    assert started == []
+
+
+def test_an_undownloaded_kokoro_id_refuses_a_voice_it_does_not_have_before_the_download(
+        client, monkeypatch):
+    started = _real_speech_registry(monkeypatch, "Linux", "x86_64", registry.AUTO)
+    unknown = _speech(client, {"text": "x", "model": KOKORO_ID, "voice": "af_heart"})
+    assert unknown.status_code == 400 and "af_heart" in unknown.json()["error"]
+    assert started == []
+    known = _speech(client, {"text": "x", "model": KOKORO_ID, "voice": "af_maple"})
+    assert known.status_code == 200 and known.json()["voice"] == "af_maple"
 
 
 def test_the_SKILL_names_every_field_speech_resolves_with(client, fake_speech_runner,

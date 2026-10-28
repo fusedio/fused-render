@@ -689,6 +689,16 @@ def test_pool_formats_include_mlx_on_a_mac_with_only_mlx_text(monkeypatch):
     assert builder._formats_for_capability("text-generation") == ("mlx",)
 
 
+def test_speech_pool_pages_onnx_for_kokoro_and_unions_qwen_on_a_mac(monkeypatch):
+    """`sherpa-tts` takes no live-search tag, so without `hub_pool_tags` the
+    Linux pool would be unfiltered (the whole text-to-speech pipeline tag) and a
+    Mac's would silently exclude Kokoro's repo."""
+    _real_text_runners(monkeypatch, "sherpa-tts")
+    assert builder._formats_for_capability("text-to-speech") == ("onnx",)
+    _real_text_runners(monkeypatch, "mlx-audio-tts", "sherpa-tts")
+    assert builder._formats_for_capability("text-to-speech") == ("qwen3_tts", "onnx")
+
+
 def test_a_pool_built_with_only_gguf_is_stale_once_mlx_text_contributes_mlx(monkeypatch):
     """An existing pool recorded `formats: ['gguf']`; the next search must see
     it as a strict subset of the new union and rebuild exactly once."""
