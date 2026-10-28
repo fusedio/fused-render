@@ -22,6 +22,7 @@ import { viewNoteFrom } from "./dom-capture";
 import { shotExt, shotPixels } from "./encode";
 import {
   SHOT_MIME_EXT,
+  SHOT_SUFFIX_CROP,
   SHOT_SUFFIX_OVERVIEW,
   SHOT_SUFFIX_VIEW,
   shotBase,
@@ -119,6 +120,7 @@ export function shotNoun(att: Pick<Attachment, "kind" | "name"> | null, paneNoun
   if (att.kind === "image") return att.name || "pasted image";
   if (att.kind === "file") return att.name || "attached file";
   if (att.kind === "overview") return "annotated overview";
+  if (att.kind === "crop") return att.name || "crop around a note";
   return paneNoun + " screenshot";
 }
 
@@ -132,6 +134,9 @@ export function shotAlt(att: Pick<Attachment, "kind" | "name"> | null, paneNoun 
   }
   if (att && att.kind === "overview") {
     return "overview of the " + paneNoun + " pane with a badge at each comment";
+  }
+  if (att && att.kind === "crop") {
+    return "close-up of the area a comment points at" + (att.name ? ": " + att.name : "");
   }
   return "screenshot of the whole " + paneNoun + " pane";
 }
@@ -161,7 +166,9 @@ export function failLabel(att: Pick<Attachment, "kind" | "why">): string {
         ? "no file"
         : att.kind === "overview"
           ? "no overview screenshot"
-          : "no pane screenshot";
+          : att.kind === "crop"
+            ? "no crop"
+            : "no pane screenshot";
   return att.why ? what + " — " + att.why : what;
 }
 
@@ -283,6 +290,34 @@ export async function captureAndAttachOverview(
   opts: CaptureOptions = {},
 ): Promise<Attachment> {
   return attachOverview(await captureOverview(frame, badges, opts));
+}
+
+/** The overview's per-note crops, UPLOADED: one close-up of each note's target,
+ *  cut from the same bitmap as the overview. A crop that could not be saved is
+ *  left out rather than shown as a failed chip — the overview already carries
+ *  every note, and the crop is the extra look. */
+export async function attachCrops(capture: CaptureResult): Promise<Attachment[]> {
+  const dir = beginShotsDir();
+  const rows = await Promise.all(
+    (capture.crops ?? []).map(async (c) => {
+      const att = await uploadCapture(
+        {
+          blob: c.blob,
+          width: c.width,
+          height: c.height,
+          notes: [],
+          via: capture.via,
+          thumb: c.thumb,
+        },
+        "crop",
+        SHOT_SUFFIX_CROP + (c.label.toLowerCase().replace(/[^a-z0-9]+/g, "") || "x"),
+        dir,
+      );
+      att.name = "crop around note " + c.label;
+      return att;
+    }),
+  );
+  return rows.filter((att) => att.view);
 }
 
 async function uploadCapture(
@@ -604,7 +639,8 @@ export function settleReceipts(
  *  everywhere else and unreadable to the agent (T:16519).
  *
  *  The overview rides the same block, FIRST — it is the picture the annotations
- *  block tells the model to read (T:16545). */
+ *  block tells the model to read (T:16545); each note's crop follows, named for
+ *  its note. */
 export function toWire(attachments: Attachment[] | null | undefined): PaneShotEntry[] {
   const out: PaneShotEntry[] = [];
   for (const s of attachments || []) {
@@ -627,7 +663,10 @@ export function toWire(attachments: Attachment[] | null | undefined): PaneShotEn
     if (s.why) wire.why = s.why;
     // `name` rides for both kinds the user BROUGHT IN, and the block's own text
     // leans on it — a capture of this pane has no such name (T:16532).
-    if (s.name && (s.kind === "image" || s.kind === "file")) wire.name = s.name;
+    // A crop's name is the sentence tying it to its note.
+    if (s.name && (s.kind === "image" || s.kind === "file" || s.kind === "crop")) {
+      wire.name = s.name;
+    }
     // And how big, for a file only — plus an image the browser could not decode,
     // for the same reason: there is no small picture of it to look at, so this is
     // the only measurement of it there is. Absent when unknown (a real-path
@@ -654,7 +693,9 @@ export function receiptFor(att: Attachment): Receipt {
         ? "file attached" + (att.name ? ": " + att.name : "")
         : att.kind === "overview"
           ? "annotated overview attached"
-          : "screenshot attached"
+          : att.kind === "crop"
+            ? att.name || "crop attached"
+            : "screenshot attached"
     : failLabel(att);
   const r: Receipt = { id: att.id, kind: att.kind, label, view: att.view };
   // Never `src` for a file: an <img> pointed at a .csv is a broken-image glyph,

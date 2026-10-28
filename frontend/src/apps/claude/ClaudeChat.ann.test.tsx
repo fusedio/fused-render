@@ -189,6 +189,8 @@ function restoreApi(): void {
 let asFound: Record<string, unknown> = {};
 /** Every overview the send path uploaded, so a test can see it took ONE. */
 let overviews = 0;
+/** What `attachCrops` answers with: the per-note crops of the overview. */
+let crops: Attachment[] = [];
 /** Everything `revoke` was handed — the overview's own road on a failed send. */
 let revoked: Attachment[] = [];
 
@@ -249,6 +251,7 @@ beforeEach(() => {
   appEntry = "/w/p/index.html";
   audioSource = { audio: { available: true, reason: null } };
   overviews = 0;
+  crops = [];
   revoked = [];
   holdStart = null;
   holdSend = null;
@@ -308,6 +311,7 @@ beforeEach(() => {
       overviews += 1;
       return { id: "ov1", kind: "overview", view: "/shots/overview.png" } satisfies Attachment;
     },
+    attachCrops: async () => crops,
     readDirs: () => ["/shots"],
     readDirsFor: () => ["/shots"],
     revoke: (a) => {
@@ -924,6 +928,44 @@ test("a send that never launched gives the notes back and revokes the overview",
   expect(annChips(r)).toHaveLength(1);
   expect(annotationsForTests()!.annotations[0]!.sent).toBe(0);
   expect(revoked.map((a) => a.kind)).toContain("overview");
+});
+
+test("each note's crop rides right after the overview, named for its note", async () => {
+  crops = [
+    { id: "c1", kind: "crop", view: "/shots/note-a.png", name: "crop around note A" },
+  ];
+  const { r } = await mountChat();
+  await act(async () => commentSeat(r).props.onClick());
+  await settle();
+  await act(async () => makeNote("this button is too small"));
+  await settle();
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle(30);
+
+  const message = started()[0]!.params.message;
+  const overviewAt = message.indexOf("/shots/overview.png");
+  const cropAt = message.indexOf("/shots/note-a.png");
+  expect(overviewAt).toBeGreaterThan(-1);
+  expect(cropAt).toBeGreaterThan(overviewAt);
+  expect(message).toContain('"name":"crop around note A"');
+});
+
+test("a send that never launched revokes the crops with the overview", async () => {
+  startError = "no session";
+  crops = [{ id: "c1", kind: "crop", view: "/shots/note-a.png", name: "crop around note A" }];
+  const { r } = await mountChat();
+  await act(async () => commentSeat(r).props.onClick());
+  await settle();
+  await act(async () => makeNote("this one came back"));
+  await settle();
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle(30);
+
+  expect(revoked.map((a) => a.kind)).toEqual(expect.arrayContaining(["overview", "crop"]));
 });
 
 // ---- Escape ---------------------------------------------------------------

@@ -3,7 +3,7 @@
 // receipts). Extend, never rename. Source: inventory 03 §D/§E (T:9019-11750).
 
 /** T:11366 shotKindFor — what the agent is told it is looking at. */
-export type ShotKind = "pane" | "overview" | "image" | "file";
+export type ShotKind = "pane" | "overview" | "crop" | "image" | "file";
 
 /** A pending or sent attachment. Exactly one of `thumb`/`size` is set when
  *  drawable vs not (T:11603). */
@@ -17,7 +17,8 @@ export interface Attachment {
   thumb?: string;
   /** Bytes when not drawable (file / undecodable image). */
   size?: number;
-  /** Display name for image/file kinds (T:16519 `name`). */
+  /** Display name for image/file kinds (T:16519 `name`); for a crop, the
+   *  sentence naming its note ("crop around note A"). */
   name?: string;
   /** What the picture does NOT show (T: viewNote = caveats + trust line). */
   viewNote?: string;
@@ -85,6 +86,9 @@ export interface CaptureResult {
    *  it goes out is one nobody can check (T:10101). Owned by the caller: pass it
    *  to `revoke` when the attachment goes. */
   thumb?: string;
+  /** One cropped picture per badge that carried a `target` (overview captures
+   *  only), in badge order. */
+  crops?: CropResult[];
   /** Set when nothing could be captured or encoded, as the sentence the chip and
    *  the wire's `viewNote` carry (T:10093, 10098). */
   why?: string;
@@ -101,6 +105,11 @@ export const SHOT_VIEW_EDGE = 1600; // T:4755
 export const SHOT_VIEW_BYTES = 900 * 1024; // T:4756
 export const SHOT_MAX_EDGE = 640; // T:4702 crops
 export const SHOT_MAX_BYTES = 300 * 1024; // T:4706
+/** Crops per overview, so a long walkthrough cannot bury the turn in pictures. */
+export const SHOT_CROP_MAX = 8;
+/** A crop covering this share of the pane is the overview again, so it is not
+ *  cut. */
+export const SHOT_CROP_WHOLE = 0.85;
 export const SHOT_TIMEOUT_MS = 6000; // T:10225
 export const SHOT_FLASH_MS = 340; // T:11232
 export const FUSED_PATH_MIME = "application/x-fused-path"; // T:11644
@@ -160,4 +169,19 @@ export interface ShotBadge {
   x: number;
   y: number;
   label: string;
+  /** The note's target in pane-bitmap space: the element's padded box, or a
+   *  fixed box around a point. A badge with one also gets its own cropped
+   *  picture, cut from the same bitmap as the overview. */
+  target?: { left: number; top: number; width: number; height: number };
+}
+
+/** One note's cropped picture: its target cut out of the overview's bitmap, the
+ *  note's own badge letter burned in. */
+export interface CropResult {
+  label: string;
+  blob: Blob;
+  width: number;
+  height: number;
+  /** Object URL for the bytes; owned like `CaptureResult.thumb`. */
+  thumb: string;
 }
