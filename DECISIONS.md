@@ -7719,3 +7719,9 @@ Cursor Bugbot found that the IMAGE_GENERATION workload's fixed `guidance: 4.0` m
 - `_measure_image` now sends the pin from `formats.MFLUX_VARIANTS[model]["guidance"]` when the recipe has one, else the workload's 4.0, and records the value sent as `metrics.guidance`. The workload `revision` is unchanged: no other model's measurement moves.
 - The pin comes from the recipe, not catalog `defaults`, because other rows carry guidance 7.5 / 30.0 and reading those would break the workload's fixed-guidance comparability.
 - The mflux worker now uses the pin when a request omits `guidance` (also CodeRabbit's comment on worker.py:717); an explicit different value is still refused.
+
+## D1450: raise_request_timeout is a no-op when fused has no `options` (2026-10-28, fix/fused-options-guard)
+
+#1994 made every child script call `raise_request_timeout()` at import, which did `fused.options` unguarded. The test fakes of `fused` (and older SDKs) have no `options`, so the share shim, canvas push children and their tests died with `AttributeError`; every test-python lane and fused-engine went red on main.
+- `raise_request_timeout` now returns early when `fused` has no `options`, or `options` has no `request_timeout`. No other #1994 site touches `fused.options` directly (all call this function).
+- `_fused_cli.py` imports and calls it inside a try/except, so an unimportable `fused_render` still falls through to the real CLI (the shim's own promise).
