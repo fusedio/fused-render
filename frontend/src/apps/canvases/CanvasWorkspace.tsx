@@ -627,6 +627,11 @@ export default function CanvasWorkspace({
   );
   const [fixBusy, setFixBusy] = useState(false);
   const [fixError, setFixError] = useState<string | null>(null);
+  // The failed-push banner below the strip: its traceback starts folded (the
+  // strip already says why in one line) and × puts the whole banner away for
+  // THIS failure — a different reason or detail brings it back.
+  const [pushDetailOpen, setPushDetailOpen] = useState(false);
+  const [dismissedPushKey, setDismissedPushKey] = useState<string | null>(null);
   // "Server changes · Pull": the hosted workbench's chip, for this tab. The
   // watcher holds its push while the server_to_disk leg is stale; this button
   // is the user's pull. The result reaches the embed as a delta like any other
@@ -814,6 +819,24 @@ export default function CanvasWorkspace({
   // (same watcher, lower disk_rev: a slow poll answer overtaken by the
   // socket) is dropped, so the delta effect never reads it as a new watcher.
   const applyState = useCallback((s: SyncState) => {
+    // QA: `?_pushfail=1` dresses every state as a failed push (like
+    // `?_shotnudge=1` for the capture nudge) — a real failing deployment is
+    // not on hand to look at the banner.
+    if (new URLSearchParams(window.location.search).get("_pushfail")) {
+      s = {
+        ...s,
+        legs: {
+          ...s.legs,
+          disk_to_server: {
+            ...s.legs.disk_to_server,
+            state: "error",
+            reason:
+              "requests.exceptions.ConnectionError: HTTPSConnectionPool(host='deere.fused.io', port=443): Max retries exceeded with url: /server/v1/collection/by-id/52e05ec7-b4e1-42bb-a71d-6f34235c4434/import-toml (Caused by ReadTimeoutError(\"HTTPSConnectionPool(host='deere.fused.io', port=443): Read timed out. (read timeout=5)\"))",
+          },
+        },
+        error_detail: Array.from({ length: 24 }, (_, i) => `  File "/Applications/FusedRender.app/Contents/Resources/lib/python3.12/urllib3/connection.py", line ${600 + i}, in getresponse`),
+      };
+    }
     setSync((prev) =>
       prev && prev.watcher_epoch === s.watcher_epoch && s.disk_rev < prev.disk_rev ? prev : s,
     );
@@ -2139,6 +2162,10 @@ export default function CanvasWorkspace({
   // never guessed from transcript activity. It rides sync/state; the local
   // copy only bridges the click → next state gap (`onFix` sets it at once).
   const pushError = sync?.legs.disk_to_server.state === "error";
+  const pushErrorKey = pushError
+    ? `${sync?.legs.disk_to_server.reason ?? ""}\n${(sync?.error_detail ?? []).join("\n")}`
+    : null;
+  const pushBannerShown = pushError && pushErrorKey !== dismissedPushKey;
   const stateFixActive = sync?.fix_active;
   useEffect(() => {
     if (stateFixActive !== undefined) setFixActive(stateFixActive);
@@ -2454,7 +2481,7 @@ export default function CanvasWorkspace({
           {...(pinned ? {} : { onClose: () => setDrawerOpen(false) })}
         />
       )}
-      {pushError && pushLeg && sync && (
+      {pushBannerShown && pushLeg && sync && (
         // The disk_to_server leg's error, in full: the strip above carries
         // the one-line reason; this is the CLI's per-line detail and the
         // Fix with Claude door.
@@ -2467,7 +2494,18 @@ export default function CanvasWorkspace({
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0 }}>
-            <strong style={{ minWidth: 0, overflowWrap: "anywhere" }}>
+            <strong
+              title={pushLeg.reason ?? undefined}
+              style={{
+                minWidth: 0,
+                overflowWrap: "anywhere",
+                // A requests traceback's reason runs to several lines; two
+                // say enough, Details shows the rest.
+                ...(pushDetailOpen
+                  ? {}
+                  : { display: "-webkit-box", WebkitBoxOrient: "vertical", WebkitLineClamp: 2, overflow: "hidden" }),
+              }}
+            >
               {pushLeg.reason ?? "Publishing failed"}
             </strong>
             {/* Claude's feature (D17): no door while Claude is switched off. */}
@@ -2486,8 +2524,29 @@ export default function CanvasWorkspace({
                   : "Fix with Claude"}
             </button>}
             {fixError && <span style={{ color: "rgb(200,60,60)" }}>{fixError}</span>}
+            <span style={{ flex: 1 }} />
+            {sync.error_detail?.length > 0 && (
+              <button
+                className="btn"
+                aria-expanded={pushDetailOpen}
+                onClick={() => setPushDetailOpen((o) => !o)}
+              >
+                {pushDetailOpen ? "Hide details" : "Details"}
+              </button>
+            )}
+            <button
+              className="btn"
+              aria-label="Dismiss"
+              title="Hide until the next failure — the strip above keeps the reason"
+              onClick={() => {
+                setDismissedPushKey(pushErrorKey);
+                setPushDetailOpen(false);
+              }}
+            >
+              ×
+            </button>
           </div>
-          {sync.error_detail?.length > 0 && (
+          {pushDetailOpen && sync.error_detail?.length > 0 && (
             <pre
               style={{
                 margin: "6px 0 0",
