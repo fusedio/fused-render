@@ -169,6 +169,73 @@ test("a REFUSED recapture keeps the picture already in the seat (Bugbot #1064)",
   expect(panes[0]!.viewNote).toBe("the map tiles were still loading");
 });
 
+test("a REFUSED recapture SAYS SO beside the chips, and the line goes on its own", async () => {
+  // The picture survives (above) — and until now the click left no other
+  // trace: the seat pulsed, the tray came back unchanged, nothing said why.
+  // The refusal's sentence is exposed as `refusal`, drawn under the chips by
+  // AttachTray, cleared after REFUSAL_SHOWN_MS and at the next capture.
+  const { REFUSAL_SHOWN_MS } = await import("./useAttachments");
+  let shots = 0;
+  const { api } = fakeApi({
+    attachPane: async () => {
+      shots += 1;
+      return shots === 1
+        ? att({ kind: "pane", seat: "pane", thumb: "blob:pane" })
+        : att({ kind: "pane", seat: "pane", view: null, why: "the UDF node could not be captured" });
+    },
+  });
+  const tray = mountTray(api);
+  await act(async () => {
+    await tray.get().capture();
+  });
+  expect(tray.get().refusal).toBeNull();
+  const warn = console.warn;
+  const warned: string[] = [];
+  console.warn = (...a: unknown[]) => {
+    warned.push(a.map(String).join(" "));
+  };
+  try {
+    await act(async () => {
+      await tray.get().capture();
+    });
+  } finally {
+    console.warn = warn;
+  }
+  expect(tray.get().refusal).toBe(
+    "Couldn't retake the screenshot: the UDF node could not be captured",
+  );
+  expect(warned.join("\n")).toContain("the UDF node could not be captured");
+  // The good picture is still the seat's, untouched.
+  expect(tray.get().items.filter((s) => s.kind === "pane").length).toBe(1);
+  expect(tray.get().items[0]!.view).toBeTruthy();
+  // Drawn under the chips, as a status line, not as a chip.
+  const r = create(
+    <AttachTray items={tray.get().items} paneNoun="preview" onOpen={() => {}} onRemove={() => {}} notice={tray.get().refusal} />,
+  );
+  const notice = r.root.findAll((n) => n.props.className === "c-attach-notice");
+  expect(notice.length).toBe(1);
+  expect(notice[0]!.props.role).toBe("status");
+  // A FIRST capture that fails is still a chip of its own (T:11305), and no
+  // notice: there the chip is the whole news.
+  const fresh = mountTray(
+    fakeApi({
+      attachPane: async () => att({ kind: "pane", seat: "pane", view: null, why: "no pane" }),
+    }).api,
+  );
+  await act(async () => {
+    await fresh.get().capture();
+  });
+  expect(fresh.get().refusal).toBeNull();
+  expect(fresh.get().items.length).toBe(1);
+  // …and the next capture clears the line at once; the timer clears it too.
+  shots = 0;
+  await act(async () => {
+    await tray.get().capture();
+  });
+  expect(tray.get().refusal).toBeNull();
+  expect(REFUSAL_SHOWN_MS).toBeGreaterThan(3000);
+});
+
 test("the camera is inert while a capture is in flight (T:11203 shotBusy)", async () => {
   let release: ((a: Attachment) => void) | null = null;
   const { api } = fakeApi({

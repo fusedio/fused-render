@@ -173,7 +173,7 @@ import { reopenWidth } from "@platform/lib/panel-drag";
 import { createPortal } from "react-dom";
 import { addCurrentApp } from "@platform/lib/api";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
-import { ChatMount, ShotViewer, type CanvasShot, type CanvasShotAnswer, type CanvasShotWhat, type Viewable } from "@apps/claude";
+import { ChatMount, ShotViewer, type CanvasShot, type CanvasShotAnswer, type CanvasShotBy, type CanvasShotWhat, type Viewable } from "@apps/claude";
 import { statPath } from "@platform/lib/api";
 import { EMBED_PREFIX, NAV_EVENT, VIEW_PREFIX, embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -216,6 +216,13 @@ import {
   type SyncOwner,
   type SyncState,
 } from "./sync-state";
+import { CANVAS_SHOT_SCRIM_HINT, canvasShotScrimLabel, type CanvasShotPhase } from "./canvas-shot-scrim";
+import { SHOT_UDF_CROP_MIN_WIDTH, nativeCanvasShot, type ShotRect } from "./canvas-shot-native";
+import { nativeShotRefusal, screenRecordingNeeded, slowRoadAllowedHere } from "./canvas-shot-permission";
+import type { ScreenshotSource } from "@platform/lib/screen-permission";
+import { watchTopOrigin } from "@apps/claude/shots";
+import { captureSources } from "@platform/lib/capture-audio";
+import { bundleName } from "@platform/lib/flavor";
 
 // How long a canvas screenshot waits for the frame's answer. html-to-image
 // over a big graph takes seconds; a frame without the handler never answers,
@@ -225,6 +232,33 @@ const THUMBNAIL_TIMEOUT_MS = 45_000;
 // before giving up: a page still framing the workbench (a fresh open, a
 // slow `fused whoami`) answers within this on an ordinary day.
 const FRAME_UP_WAIT_MS = 40_000;
+// How long the fast road waits for the workbench to say WHERE the graph and
+// the node are (`fused-embed-capture` `what: "rects"`, canvas-shot-native.ts):
+// a measurement, answered in a frame or two (1–300 ms measured). Only asked
+// of a workbench whose hello SAYS it knows the question (`capture` includes
+// "rects", `rectsSilentRef`): an older build takes any `what` it does not
+// know for a node capture and starts drawing. A late answer is simply
+// dropped — the whole frame is the picture meanwhile.
+const RECTS_WAIT_MS = 800;
+
+/** Resolves after the next frame has been painted: two animation frames —
+ *  the first runs before the pending commit's paint, the second after. A
+ *  document that gets no frames (a background tab, a driven browser) would
+ *  hold the capture for ever, so a short timer settles it instead; the
+ *  native road's own gate then decides what a hidden page deserves. */
+const NEXT_PAINT_MAX_MS = 150;
+function nextPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, NEXT_PAINT_MAX_MS);
+    if (typeof requestAnimationFrame !== "function") return;
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        clearTimeout(timer);
+        resolve();
+      }),
+    );
+  });
+}
 
 // Fallback cadence for GET sync/state while the events socket is down.
 const SYNC_POLL_MS = 2000;
@@ -681,14 +715,137 @@ export default function CanvasWorkspace({
   // during that wait would otherwise both pass the check, and the second's
   // `shotPendingRef` would bury the first, whose promise then never settled.
   const shotBusyRef = useRef(false);
-  const requestCanvasShot = useCallback(async (what: CanvasShotWhat, udf?: string): Promise<ShotAnswer> => {
+  // THE FAST ROAD'S QUESTION (canvas-shot-native.ts): where, in the frame's
+  // CSS px, the flow graph is and — when a node is named — that node's
+  // output. Answered by a workbench that knows the question; null after
+  // RECTS_WAIT_MS otherwise. Its own pending slot, with a req the shot's
+  // `Date.now()` can never equal.
+  type EmbedRects = { canvas: ShotRect | null; udf: ShotRect | null; udfReason?: string };
+  const rectsPendingRef = useRef<{ req: number; resolve: (r: EmbedRects | null) => void } | null>(null);
+  // Whether this frame's workbench knows the question. True until a hello
+  // lists "rects" among its `capture` abilities: the deployed build before
+  // that treats an unknown `what` as a node capture (html-to-image of the
+  // selected node), so asking it would start the slow draw the fast road
+  // exists to avoid. Re-read on every hello (a reload, a newer build).
+  const rectsSilentRef = useRef(true);
+  const requestEmbedRects = useCallback((udfName: string | null): Promise<EmbedRects | null> => {
+    const frame = frameRef.current;
+    const origin = baseOriginRef.current;
+    if (!frame?.contentWindow || !origin) return Promise.resolve(null);
+    if (rectsSilentRef.current) return Promise.resolve(null);
+    const win = frame.contentWindow;
+    return new Promise<EmbedRects | null>((resolve) => {
+      const req = -Date.now();
+      const timer = setTimeout(() => {
+        if (rectsPendingRef.current?.req === req) {
+          rectsPendingRef.current = null;
+          resolve(null);
+        }
+      }, RECTS_WAIT_MS);
+      rectsPendingRef.current = {
+        req,
+        resolve: (r) => {
+          clearTimeout(timer);
+          rectsPendingRef.current = null;
+          resolve(r);
+        },
+      };
+      win.postMessage({ type: "fused-embed-capture", req, what: "rects", udfName }, origin);
+    });
+  }, []);
+  // WHAT THE SCRIM SAYS, for as long as a request is out (canvas-shot-scrim.ts):
+  // set before the frame wait, cleared with the answer — the timer's, the
+  // frame's or the page's own on unmount — so the workbench is never left
+  // under a wash with nothing behind it.
+  const [shotPhase, setShotPhase] = useState<CanvasShotPhase | null>(null);
+  // WHETHER THE OS SAYS SCREEN RECORDING IS NOT GRANTED, for the sentence a
+  // Mac gets when the native still cannot (canvas-shot-permission.ts
+  // `nativeShotRefusal`). Read from `GET /api/capture` once per page: the
+  // grant applies on relaunch, so the answer cannot change under this
+  // document.
+  const sourcesRef = useRef<Promise<ScreenshotSource | null> | null>(null);
+  const screenshotSource = useCallback((): Promise<ScreenshotSource | null> => {
+    if (!sourcesRef.current) {
+      sourcesRef.current = captureSources()
+        .then((src) => src.screenshot ?? null)
+        .catch(() => null);
+    }
+    return sourcesRef.current;
+  }, []);
+  const screenRecordingMissing = useCallback(
+    (): Promise<boolean> => screenshotSource().then((src) => screenRecordingNeeded(src)),
+    [screenshotSource],
+  );
+  // Where this window's viewport sits on the screen, learned from clicks
+  // (`shots/native-capture` `watchTopOrigin`): the chat registers the same
+  // watcher on ITS window, which is a frame of ours when a node is shown —
+  // the still is taken from this document, so this document learns it too.
+  useEffect(() => watchTopOrigin(window), []);
+  const requestCanvasShot = useCallback(async (what: CanvasShotWhat, udf?: string, by: CanvasShotBy = "user"): Promise<ShotAnswer> => {
     if (shotBusyRef.current || shotPendingRef.current) {
       return { ok: false, error: "a canvas screenshot is already being taken" };
     }
     shotBusyRef.current = true;
+    const udfName = udf || (what === "udf" ? nodeRef.current?.udfName ?? null : null);
     try {
-      if (!(await awaitFrameUp(FRAME_UP_WAIT_MS))) {
-        return { ok: false, error: "the workbench has not loaded in this canvas page yet — reload the canvas page and try again" };
+      // THE FRAME FIRST. A request that lands before the workbench's first
+      // hello (the agent's tool fires as its turn starts) waits for it under
+      // the scrim rather than failing at a moment that fixes itself.
+      if (!frameUpRef.current) {
+        setShotPhase({ what, by, udf: udfName, waitingForFrame: true });
+        const up = await awaitFrameUp(FRAME_UP_WAIT_MS);
+        setShotPhase(null);
+        if (!up) {
+          return { ok: false, error: "the workbench has not loaded in this canvas page yet — reload the canvas page and try again" };
+        }
+        // The scrim is still in the DOM until React commits and the browser
+        // paints; the native road's gate (`frameCovered`) would find it over
+        // the frame and photograph nothing. Wait for that paint.
+        await nextPaint();
+      }
+      // THE NATIVE ROAD, always first (canvas-shot-native.ts): the frame's
+      // live pixels off the screen, ~100 ms, nothing mutated, so no scrim
+      // either — the still would photograph it. Cropped to the box the
+      // workbench names; without an answer (a workbench build that does not
+      // know the question) the WHOLE frame — graph plus the workbench's own
+      // side panes — in a third of a second beats the exact picture in
+      // twenty under a scrim (owner, 2026-10-28: "if you don't find the
+      // rect, just take the screenshot").
+      const rects = await requestEmbedRects(what === "udf" ? udfName : null);
+      const frameEl = frameRef.current;
+      const whole: ShotRect | null = frameEl
+        ? { x: 0, y: 0, w: frameEl.clientWidth, h: frameEl.clientHeight }
+        : null;
+      const crop: ShotRect | null = rects ? (what === "canvas" ? rects.canvas : rects.udf) : whole;
+      // The workbench said this node has nothing to photograph (not run,
+      // still loading): that sentence is the answer, on every platform.
+      if (what === "udf" && rects && !rects.udf && rects.udfReason) {
+        return { ok: false, error: rects.udfReason };
+      }
+      if (crop) {
+        const blob = await nativeCanvasShot(frameRef.current, by, {
+          crop,
+          ...(what === "udf" ? { minWidth: SHOT_UDF_CROP_MIN_WIDTH } : {}),
+        });
+        if (blob) return { ok: true, blob };
+      }
+      // NATIVE COULD NOT. Off a Mac the slow embed road below draws it; on a
+      // Mac that road is off unless Settings turned it on, and the answer is
+      // the sentence that names the fix (canvas-shot-permission.ts).
+      // A Mac with no native still at all (macOS 11–12) falls back like any
+      // other platform: there is no grant to point at.
+      const nativeAvailable = (await screenshotSource())?.available !== false;
+      if (!(await slowRoadAllowedHere(nativeAvailable))) {
+        // A node the zoom draws too small for a crop (under
+        // SHOT_UDF_CROP_MIN_WIDTH) is declined above so the embed road can
+        // draw it at full size — a road this Mac does not take. The whole
+        // frame, the node somewhere in it, is still a picture; "bring the
+        // window to the front" would be the wrong sentence for it.
+        if (whole && crop && crop !== whole) {
+          const blob = await nativeCanvasShot(frameRef.current, by, { crop: whole });
+          if (blob) return { ok: true, blob };
+        }
+        return { ok: false, error: nativeShotRefusal({ permissionMissing: await screenRecordingMissing(), app: bundleName() }) };
       }
     } finally {
       shotBusyRef.current = false;
@@ -696,25 +853,36 @@ export default function CanvasWorkspace({
     const frame = frameRef.current;
     const origin = baseOriginRef.current;
     if (!frame?.contentWindow || !origin) {
+      setShotPhase(null);
       return { ok: false, error: "the workbench is not loaded yet" };
     }
     const win = frame.contentWindow;
-    return new Promise<ShotAnswer>((resolve) => {
+    setShotPhase({ what, by, udf: udfName, waitingForFrame: false });
+    const answer = await new Promise<ShotAnswer>((resolve) => {
       const req = Date.now();
       shotPendingRef.current = { req, resolve };
-      win.postMessage(
-        // The named node when the asker names one (the agent's tool may ask
-        // for any UDF on the canvas); else the node this page shows.
-        { type: "fused-embed-capture", req, what, udfName: udf || nodeRef.current?.udfName || null },
-        origin,
-      );
+      try {
+        win.postMessage(
+          // The named node when the asker names one (the agent's tool may ask
+          // for any UDF on the canvas); else the node this page shows.
+          { type: "fused-embed-capture", req, what, udfName: udf || nodeRef.current?.udfName || null },
+          origin,
+        );
+      } catch (err) {
+        // A frame mid-navigation: answer now, so the slot and the scrim are
+        // not held for a message that never went.
+        settleShot({ ok: false, error: `the workbench could not be reached (${String(err)})` });
+        return;
+      }
       shotTimerRef.current = setTimeout(() => {
         if (shotPendingRef.current?.req === req) {
           settleShot({ ok: false, error: "the workbench did not answer — it may still be drawing a slow capture (map nodes); wait a minute before asking again" });
         }
       }, THUMBNAIL_TIMEOUT_MS);
     });
-  }, [settleShot, awaitFrameUp]);
+    setShotPhase(null);
+    return answer;
+  }, [settleShot, awaitFrameUp, requestEmbedRects, screenRecordingMissing, screenshotSource]);
   // The in-page canvas chat's contract: the canvas view only (no node is
   // selected while that chat shows).
   const canvasShot = useMemo<CanvasShot>(
@@ -793,14 +961,18 @@ export default function CanvasWorkspace({
       const req = event.data.req;
       const what = event.data.what;
       const udf = typeof event.data.udf === "string" ? event.data.udf : undefined;
+      // The asker, for the scrim's line; anything but "agent" is the user.
+      const by: CanvasShotBy = event.data.by === "agent" ? "agent" : "user";
       if (!source) return;
       if (what !== "canvas" && what !== "udf") return;
-      void requestCanvasShot(what, udf).then((answer) => {
-        source.postMessage(
-          { type: "fused-canvas-shot-done", req, ...answer },
-          window.location.origin,
-        );
-      });
+      void requestCanvasShot(what, udf, by)
+        .catch((err: unknown): CanvasShotAnswer => ({ ok: false, error: `the canvas screenshot failed: ${String(err)}` }))
+        .then((answer) => {
+          source.postMessage(
+            { type: "fused-canvas-shot-done", req, ...answer },
+            window.location.origin,
+          );
+        });
     };
     window.addEventListener("message", onShotAsk);
     return () => window.removeEventListener("message", onShotAsk);
@@ -1791,9 +1963,29 @@ export default function CanvasWorkspace({
         // From THE workbench frame only: a same-origin window that guessed
         // the pending `req` must not settle it with its own picture.
         if (event.source !== frameRef.current?.contentWindow) return;
-        const { req, ok, error, blob } = (event.data ?? {}) as {
-          req?: unknown; ok?: unknown; error?: unknown; blob?: unknown;
+        const { req, ok, error, blob, rects } = (event.data ?? {}) as {
+          req?: unknown; ok?: unknown; error?: unknown; blob?: unknown; rects?: unknown;
         };
+        // The fast road's measurement, matched to its own req (negative).
+        if (rectsPendingRef.current && req === rectsPendingRef.current.req) {
+          const r = rects as { canvas?: unknown; udf?: unknown; udfReason?: unknown } | null | undefined;
+          const box = (v: unknown): ShotRect | null => {
+            const o = v as { x?: unknown; y?: unknown; w?: unknown; h?: unknown } | null;
+            return o && [o.x, o.y, o.w, o.h].every((n) => typeof n === "number" && Number.isFinite(n))
+              ? { x: o.x as number, y: o.y as number, w: o.w as number, h: o.h as number }
+              : null;
+          };
+          rectsPendingRef.current.resolve(
+            ok === true && r && typeof r === "object"
+              ? {
+                  canvas: box(r.canvas),
+                  udf: box(r.udf),
+                  ...(typeof r.udfReason === "string" ? { udfReason: r.udfReason } : {}),
+                }
+              : null,
+          );
+          return;
+        }
         // Only the answer to OUR request: a stale one (after the timer gave
         // up) must not settle a later request.
         if (!shotPendingRef.current || req !== shotPendingRef.current.req) return;
@@ -1806,7 +1998,15 @@ export default function CanvasWorkspace({
         }
       }
       if (type === "fused-embed-hello") {
+        // From THE workbench frame only: a same-origin window's hello must
+        // not mark the frame up, nor say what it can capture.
+        if (event.source !== frameRef.current?.contentWindow) return;
         frameUpRef.current = true;
+        // What this build can capture (`capture: ["canvas","udf","rects"]`
+        // from the workbench's `postEmbedHello`); a hello without the list is
+        // a build from before the question existed.
+        const abilities = (event.data as { capture?: unknown }).capture;
+        rectsSilentRef.current = !(Array.isArray(abilities) && abilities.includes("rects"));
         const waiters = frameUpWaitersRef.current;
         frameUpWaitersRef.current = [];
         for (const wake of waiters) wake();
@@ -2644,6 +2844,19 @@ export default function CanvasWorkspace({
             ) : (
               <p style={{ padding: 16 }}>Loading workbench…</p>
             ))
+          )}
+          {shotPhase && (
+            // Over the frame, taking the pointer: see canvas-shot-scrim.ts.
+            // `aria-busy` on the region the chat's seat also reports busy.
+            <div className="canvas-shot-scrim" role="status" aria-live="polite" aria-busy="true">
+              <div className="canvas-shot-scrim-card">
+                <span className="canvas-shot-scrim-spinner" aria-hidden="true" />
+                <p className="canvas-shot-scrim-label">{canvasShotScrimLabel(shotPhase)}</p>
+                {!shotPhase.waitingForFrame && (
+                  <p className="canvas-shot-scrim-hint">{CANVAS_SHOT_SCRIM_HINT}</p>
+                )}
+              </div>
+            </div>
           )}
         </div>
         {!embedded && sideOpen && (

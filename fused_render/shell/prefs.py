@@ -478,6 +478,18 @@ def task_recap_titles_enabled() -> bool:
     return read_prefs().get("task_recap_titles_enabled") is True
 
 
+def canvas_shot_slow_fallback_enabled() -> bool:
+    """Whether a canvas screenshot that the native still could not take
+    (Screen Recording denied, the window behind another) may fall back to
+    the workbench's own in-canvas capture — html-to-image over the graph,
+    5–30 s with the canvas locked. Default off on macOS, where the fix is the
+    grant (the canvas page refuses with that sentence instead); Windows and
+    Linux fall back regardless of this flag, having no grant to point at.
+    Same idiom as `task_recap_titles_enabled`: only a stored `true` is on.
+    """
+    return read_prefs().get("canvas_shot_slow_fallback_enabled") is True
+
+
 def task_summary_titles_enabled() -> bool:
     """Whether Tasks rows are titled ONLY by the server's stable `title` (a
     name the reader chose, else the app's own haiku AI title refreshed every
@@ -1133,6 +1145,9 @@ def _prefs_response() -> dict:
         # Whether finished turns are recapped by haiku and the Tasks rows
         # titled by it (opt-in beta, `task_recap_titles_enabled`).
         "task_recap": {"enabled": task_recap_titles_enabled()},
+        # The slow in-canvas screenshot fallback on a Mac
+        # (`canvas_shot_slow_fallback_enabled`; off by default).
+        "canvas_shot": {"slow_fallback": canvas_shot_slow_fallback_enabled()},
         # Stable AI Tasks titles (`task_summary_titles_enabled`).
         "task_summary_titles": {"enabled": task_summary_titles_enabled()},
         # Lean Claude sessions (`claude_strict_mcp_enabled`, default off).
@@ -1468,6 +1483,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["task_recap_titles_enabled"] = value
             changed = True
+        if "canvas_shot_slow_fallback_enabled" in body:
+            value = body.get("canvas_shot_slow_fallback_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'canvas_shot_slow_fallback_enabled' must be a boolean"},
+                                    status_code=400)
+            prefs["canvas_shot_slow_fallback_enabled"] = value
+            changed = True
         if "task_summary_titles_enabled" in body:
             value = body.get("task_summary_titles_enabled")
             if not isinstance(value, bool):
@@ -1760,6 +1782,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'task_notify_terminal_sessions', "
                           "'project_queue_enabled', "
                           "'task_recap_titles_enabled', "
+                          "'canvas_shot_slow_fallback_enabled', "
                           "'task_summary_titles_enabled', "
                           "'claude_strict_mcp_enabled', 'claude_default_permission', "
                           "'bots_autostage', 'bots_sounds', 'bots_clear_enabled', "

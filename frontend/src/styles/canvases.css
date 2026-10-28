@@ -479,3 +479,66 @@
 .canvas-rail-chat {
   position: relative;
 }
+
+/* THE SCRIM OVER THE WORKBENCH WHILE A PICTURE IS TAKEN (CanvasWorkspace,
+   canvas-shot-scrim.ts). The capture runs inside the cross-origin frame and
+   mutates its DOM for seconds; the frame itself shows nothing, so the host
+   draws the sign and takes the pointer. The same shape the workbench's own
+   "Update thumbnail" overlay has (wash, card, spinner, one line), so a user
+   who has seen one recognises the other. */
+.canvas-shot-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--scrim);
+  pointer-events: auto;
+  cursor: wait;
+  animation: canvas-shot-scrim-in var(--dur-fast, 120ms) ease-out;
+}
+.canvas-shot-scrim-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  max-width: 320px;
+  padding: 20px 28px;
+  border-radius: 14px;
+  background: var(--bg-panel, var(--bg));
+  color: var(--fg);
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 32px var(--shadow-ink-deep);
+  text-align: center;
+}
+.canvas-shot-scrim-spinner {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  opacity: 0.7;
+  animation: canvas-shot-scrim-spin 0.8s linear infinite;
+}
+.canvas-shot-scrim-label {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+}
+.canvas-shot-scrim-hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+@keyframes canvas-shot-scrim-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes canvas-shot-scrim-in {
+  from {
+    opacity: 0;
+  }
+}

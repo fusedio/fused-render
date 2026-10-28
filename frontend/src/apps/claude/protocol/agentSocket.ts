@@ -55,6 +55,17 @@ const RETRY_MIN_MS = 1000;
 const RETRY_MAX_MS = 30_000;
 /** The server's longest budget is 60 s (`pool.DEFAULT_BUDGET_S`) plus grace. */
 const REPLY_TIMEOUT_MS = 75_000;
+/** HOW LONG A HANDSHAKE MAY HANG. A proxy that accepts the upgrade and never
+ *  answers it (a dev server without `ws: true`, a middlebox) leaves the socket
+ *  CONNECTING for ever — no `open`, no `close` — and `connect()` used to wait
+ *  for ever with it, so the chat's first call (a `shots_dir`, a poll) never
+ *  returned and never fell back. Past this the attempt is closed by hand,
+ *  which runs the never-opened bookkeeping below: latch POST, resolve null,
+ *  the caller fetches. */
+let connectTimeoutMs = 8000;
+export function setAgentSocketConnectTimeoutForTests(ms: number): void {
+  connectTimeoutMs = ms;
+}
 
 /** Test hook: forget every latch and pending request. */
 export function resetAgentSocketForTests(): void {
@@ -132,8 +143,31 @@ function connect(): Promise<WebSocket | null> {
       return;
     }
     let opened = false;
+    // The never-opened bookkeeping (latch or backoff) runs ONCE per attempt:
+    // the timer's `close()` fires `onclose` in a browser, and both would
+    // otherwise double the retry delay.
+    let settled = false;
+    const neverOpened = () => {
+      if (settled) return;
+      settled = true;
+      if (!proven) latched = true;
+      else backoff();
+      resolve(null);
+    };
+    const handshake = setTimeout(() => {
+      if (opened) return;
+      try {
+        s.close();
+      } catch {
+        /* already closing */
+      }
+      // A socket closed from CONNECTING fires `close` in a browser; a shim
+      // may not, so the never-opened road is walked here as well.
+      neverOpened();
+    }, connectTimeoutMs);
     s.onopen = () => {
       opened = true;
+      clearTimeout(handshake);
       sock = s;
       resolve(s);
     };
@@ -159,11 +193,10 @@ function connect(): Promise<WebSocket | null> {
     // `error` is always followed by `close`, which does the bookkeeping.
     s.onerror = () => {};
     s.onclose = () => {
+      clearTimeout(handshake);
       if (sock === s) sock = null;
       if (!opened) {
-        if (!proven) latched = true;
-        else backoff();
-        resolve(null);
+        neverOpened();
         return;
       }
       if (!proven) latched = true;

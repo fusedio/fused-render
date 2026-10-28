@@ -29,11 +29,21 @@ export function shotsDir(): Promise<string> {
       return dir;
     })
     .catch((err: unknown) => {
-      pending = null;
+      // Only our own slot: a lookup forgotten and re-asked while this one
+      // was still failing must keep its newer promise.
+      if (pending === p) pending = null;
       throw err;
     });
   pending = p;
   return p;
+}
+
+/** A lookup the caller gave up waiting on (attach.ts `SHOT_SAVE_TIMEOUT_MS`)
+ *  must not be the answer every later capture waits on too: forget it, so
+ *  the next capture asks again. Only the UNANSWERED one — a dir already
+ *  learned stays learned. */
+export function forgetPendingShotsDir(): void {
+  if (!seen) pending = null;
 }
 
 /** What `shotsDir` has already answered, without awaiting. `""` until then,

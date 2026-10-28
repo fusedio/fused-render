@@ -17,12 +17,14 @@ export function CanvasShotSeat({
   disabled = false,
   inert = false,
   capturing = false,
+  saving = false,
   onPick,
 }: {
   targets: readonly CanvasShotWhat[];
   disabled?: boolean;
   inert?: boolean;
   capturing?: boolean;
+  saving?: boolean;
   onPick: (what: CanvasShotWhat) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -39,7 +41,7 @@ export function CanvasShotSeat({
             aria-busy={capturing ? "true" : "false"}
             disabled={disabled}
           >
-            <ScreenshotGlyph capturing={capturing} />
+            <ScreenshotGlyph capturing={capturing} saving={saving} />
           </button>
         }
       />

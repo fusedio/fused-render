@@ -61,6 +61,14 @@ export interface Attachments {
   items: Attachment[];
   /** A capture is in flight: the camera goes inert (T:11203 `shotBusy`). */
   capturing: boolean;
+  /** Why the LAST capture changed nothing, while the seat kept the picture it
+   *  already held (`capture`, the "refusal never evicts" branch) — or null.
+   *  Cleared on its own after `REFUSAL_SHOWN_MS`, and at the next capture. */
+  refusal: string | null;
+  /** The picture is taken and on its way to the shots dir (a host shot's
+   *  second half): the seat reads "Saving…" so the phase the scrim no longer
+   *  covers is still seen to be under way. */
+  saving: boolean;
   /** The camera (T:11258 `shotAttachPane`). */
   /** `what` goes to a host-supplied `paneShot` (the canvas page's targets). */
   capture(what?: string): Promise<void>;
@@ -117,12 +125,16 @@ function errText(err: unknown): string {
  *  so the answer can tell it from a picture the seat already held. */
 const PENDING_PANE_ID = "pending:pane";
 
+/** How long a refused retake's sentence stays under the chips. */
+export const REFUSAL_SHOWN_MS = 8000;
+
 export function useAttachments(opts: UseAttachmentsOptions): Attachments {
   const { api = ATTACH_API, frame, flashHost, paneNoun, shotsDir, paneShot } = opts;
   const paneShotRef = useRef(paneShot);
   paneShotRef.current = paneShot;
   const [items, setItems] = useState<Attachment[]>([]);
   const [capturing, setCapturing] = useState(false);
+  const [saving, setSaving] = useState(false);
   /**
    * THE TRAY, AS OF NOW. Read by `take()`, which must see what the tray holds at
    * THAT moment rather than what the render it was created in closed over — and
@@ -188,10 +200,38 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
   // the epoch has moved (Bugbot, PR #1140, twice).
   const epoch = useRef(0);
 
+  // A REFUSED RETAKE SAYS WHY. The seat keeps the picture it holds when a
+  // second capture fails (below, Bugbot #1064) — right, and until now silent:
+  // the user pressed Screenshot, the seat pulsed, and the tray came back
+  // exactly as it was. A refusal the user cannot see is a dead button. The
+  // sentence lives here, not on the chip's `viewNote` (that caveat rides the
+  // wire under the receipt and must stay the GOOD picture's), and goes on its
+  // own after a few seconds or when the next capture starts.
+  const [refusal, setRefusal] = useState<string | null>(null);
+  const refusalTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showRefusal = useCallback((why: string | null) => {
+    if (refusalTimer.current) clearTimeout(refusalTimer.current);
+    refusalTimer.current = null;
+    setRefusal(why);
+    if (why) {
+      refusalTimer.current = setTimeout(() => {
+        refusalTimer.current = null;
+        if (alive.current) setRefusal(null);
+      }, REFUSAL_SHOWN_MS);
+    }
+  }, []);
+  useEffect(
+    () => () => {
+      if (refusalTimer.current) clearTimeout(refusalTimer.current);
+    },
+    [],
+  );
+
   const capture = useCallback(async (what?: string) => {
     if (busy.current) return;
     busy.current = true;
     setCapturing(true);
+    showRefusal(null);
     // BEFORE the capture, not after: the whole point is that the click is
     // answered immediately, and the capture can take a second on a large page.
     // It is also honest about the moment — the flash marks when the shutter
@@ -228,7 +268,9 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
         // A rejection here would strand the placeholder above as a chip that
         // never settles; a host that threw is a refusal like any other.
         try {
-          shot = await api.attachPaneFromBlob(await hostShot(what));
+          const taken = await hostShot(what);
+          if (alive.current) setSaving(true);
+          shot = await api.attachPaneFromBlob(taken);
         } catch (err) {
           shot = await api.attachPaneFromBlob({
             blob: null,
@@ -280,6 +322,16 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
           // is the held picture again, door open.
           const next = prev.slice();
           if (held.pending) next[seat] = { ...held, pending: false };
+          // …and the refusal is SAID, beside the chips rather than on one.
+          // `why` is the capture's own sentence (`attachPaneFromBlob` /
+          // `attachPane`); without one, the fact alone.
+          const why = shot.why || shot.viewNote || "";
+          showRefusal(
+            why
+              ? "Couldn't retake the screenshot: " + why
+              : "Couldn't retake the screenshot — the one attached is kept.",
+          );
+          console.warn("screenshot retake refused: " + (why || "no reason given"));
           return next;
         }
         // The replaced picture's blob URL is the only handle to it.
@@ -290,9 +342,12 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
       });
     } finally {
       busy.current = false;
-      if (alive.current) setCapturing(false);
+      if (alive.current) {
+        setCapturing(false);
+        setSaving(false);
+      }
     }
-  }, [api, flashHost, frame, commit]);
+  }, [api, flashHost, frame, commit, showRefusal]);
 
   /**
    * A PLACEHOLDER PER FILE, replaced as its bytes land. The pipeline yields
@@ -460,5 +515,5 @@ export function useAttachments(opts: UseAttachmentsOptions): Attachments {
     [commit],
   );
 
-  return { items, capturing, capture, addFiles, addPaths, remove, take, giveBack, discard };
+  return { items, capturing, saving, refusal, capture, addFiles, addPaths, remove, take, giveBack, discard };
 }

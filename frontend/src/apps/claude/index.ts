@@ -23,6 +23,7 @@ export {
   requestCanvasShotFromParent,
   type CanvasShot,
   type CanvasShotAnswer,
+  type CanvasShotBy,
   type CanvasShotWhat,
 } from "./shots/canvas-shot";
 
