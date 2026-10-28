@@ -7673,7 +7673,7 @@ Skills were `~/.claude/skills` plus enabled plugins, so a skill Copilot or Codex
 - **Why v1.1-zh.** One repo covers English and Chinese: 103 voices (3 English, 55 `zf_*`, 45 `zm_*`), the count fixed by `voices.bin` (103 x 510 x 256 float32 = 53,790,720 bytes). v1.0's 53-voice table (`af_heart`, ...) sits higher on the same sherpa docs page and is NOT this model's; the id to name table was taken from the v1.1 page.
 - **Why no `instruct`.** Kokoro has no style prompt. Traits carry `instructable: False` (curated catalog rows too, for a model not yet downloaded), `speech_options` refuses `instruct` for them, and the speech stage hides the Delivery field. Qwen3 traits are unchanged.
 - **Shared code.** The chunker and WAV writer moved to `runners/speech_common.py`, imported by both workers; `mlx_audio_tts` behaves as before.
-## D1411: Catalog refresh, October 2026 (2026-10-22, catalog-refresh-2026-10)
+## D1447: Catalog refresh, October 2026 (2026-10-22, catalog-refresh-2026-10)
 
 Refreshed the curated suggestions for `mlx-text`, `llamacpp-text` and `mflux-image`. Every new row was downloaded and loaded by the runner's own library before it was listed; nothing was uploaded to the mirror (no S3 credentials here), so the PR body carries the publish commands.
 
@@ -7701,9 +7701,9 @@ Refreshed the curated suggestions for `mlx-text`, `llamacpp-text` and `mflux-ima
 
 **Not done**: Kokoro-82M on mlx-audio-tts needs the worker's Qwen3-TTS-only `speech_traits` gate loosened and is a separate PR.
 
-## D1412: PR #1843 review round (2026-10-22, catalog-refresh-2026-10)
+## D1448: PR #1843 review round (2026-10-22, catalog-refresh-2026-10)
 
-Seven fixes from code review of D1411's PR.
+Seven fixes from code review of D1447's PR.
 
 1. Qwen-Image 2.1 Turbo's catalog row `defaults` now carry `"guidance": 1.0`, so the route, `fused_ai` and the benchmark report the guidance actually used.
 2. **A pinned-guidance mismatch is refused, not overridden.** The mflux worker raises `ValueError("<model> runs without CFG; guidance must be 1.0")` when a recipe pins `guidance` and the request differs (what mflux itself does), instead of swapping in the pinned value. The `MFLUX_VARIANTS` key stays as the fact the refusal reads; a catalog test asserts every pinned variant has a row whose `defaults["guidance"]` equals it.
