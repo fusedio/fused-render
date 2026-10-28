@@ -887,6 +887,26 @@ def test_a_late_exit_landing_before_the_new_row_is_read_keeps_the_send_mark(
     assert tasks_watch.live_from_registry(SID)[0] is True
 
 
+def test_each_forgotten_pid_keeps_its_own_clock(claude_home):
+    """CodeRabbit, PR #1829: a session that respawns again inside the window
+    adds its newest pid without renewing the oldest one."""
+    tasks_watch.reset()
+    tasks_watch.tick()
+    old = _registry(claude_home, SID, pid=os.getppid(), status="busy", name="old")
+    tasks_watch.tick()
+    old.unlink()
+    tasks_watch.tick()
+    with tasks_watch._cond:
+        tasks_watch._former_pids[SID][str(os.getppid())] -= tasks_watch._FORMER_PIDS_TTL_SEC / 2
+    newer = _registry(claude_home, SID, status="busy", name="new")
+    tasks_watch.tick()
+    newer.unlink()
+    tasks_watch.tick()
+    assert set(tasks_watch._former_pids[SID]) == {str(os.getppid()), str(os.getpid())}
+    tasks_watch._expire_marks(time.time() + tasks_watch._FORMER_PIDS_TTL_SEC / 2 + 1.0)
+    assert set(tasks_watch._former_pids[SID]) == {str(os.getpid())}
+
+
 def test_forgotten_pids_are_let_go_once_no_late_event_can_arrive(claude_home):
     tasks_watch.reset()
     tasks_watch.tick()

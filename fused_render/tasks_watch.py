@@ -161,8 +161,8 @@ _sess_rows: dict[str, tuple] = {}
 # registers (a launcher shim), and a pid no registry file has shown on the
 # session cannot be told apart from that — so it stays unscoped.
 _session_pids: dict[str, set] = {}
-# session_id -> (the pids `_session_pids` held when the session DEPARTED, when
-# it departed). THE PIDS A DEPARTED SESSION USED TO HOLD, kept for a while
+# session_id -> {pid: when it was forgotten}. THE PIDS A DEPARTED SESSION
+# USED TO HOLD, each kept for a while
 # (`_LAST_IDLE_TURN_TTL_SEC`) so a host's late event about one of them can
 # still be scoped to it. A follow-up that RESPAWNS the CLI (`agent._send`, a
 # changed effort or an unattached folder) kills the old process and starts a
@@ -173,10 +173,12 @@ _session_pids: dict[str, set] = {}
 # knew, stamped the SESSION ended and popped the send mark, and the new turn
 # read Done for its whole length (Akshil's recording, 2026-10-21; hit in 4 of
 # 9 runs, every run with the tick at 50 ms).
-_former_pids: dict[str, tuple[set, float]] = {}
+_former_pids: dict[str, dict[str, float]] = {}
 # How long those are kept. The host posts an event once and retries once a
 # second later (`session_host._EVENT_RETRY_SECONDS`); minutes is a margin of
-# two orders, and the entry is a set of pid strings.
+# two orders, and an entry is one pid string and a float. PER PID (CodeRabbit,
+# PR #1829): a session that respawns again and again inside the window must
+# not keep renewing its oldest pids along with the newest.
 _FORMER_PIDS_TTL_SEC = 300.0
 _tr_paths: dict[str, str] = {}        # session_id -> transcript path
 _tr_sizes: dict[str, int] = {}        # session_id -> size
@@ -841,8 +843,7 @@ def _pid_known(session_id: str, pid_s: str) -> bool:
         return False
     if pid_s in _session_pids.get(session_id, ()):
         return True
-    former = _former_pids.get(session_id)
-    return bool(former and pid_s in former[0])
+    return pid_s in _former_pids.get(session_id, ())
 
 
 def mark_turn_ended(session_id: str, run_id: str = "",
@@ -1035,7 +1036,11 @@ def _expire_marks(now: float) -> set[str]:
         # The pids a departed session held are only needed for as long as a
         # late event about one of them can still plausibly arrive.
         former_cutoff = now - _FORMER_PIDS_TTL_SEC
-        for sid in [sid for sid, (_pids, at) in _former_pids.items() if at < former_cutoff]:
+        for sid, pids in list(_former_pids.items()):
+            for pid in [pid for pid, at in pids.items() if at < former_cutoff]:
+                del pids[pid]
+            if pids:
+                continue
             del _former_pids[sid]
             # A late event about one of them stamped a per-pid dict on a
             # session that had already departed (`_settle` collapses those
@@ -1142,8 +1147,8 @@ def _settle(sid: str) -> dict | None:
         _registry.pop(sid, None)
         former = _session_pids.pop(sid, None)
         if former:
-            kept, _at = _former_pids.get(sid, (set(), 0.0))
-            _former_pids[sid] = (kept | former, time.time())
+            now = time.time()
+            _former_pids.setdefault(sid, {}).update({pid: now for pid in former})
         # No process left to tell apart: the newest per-pid end becomes the
         # session's own, unscoped — the departed session's turn stays ended
         # for `_running_now`'s transcript-tail read, as it always did.
