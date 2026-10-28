@@ -46,6 +46,30 @@ export interface OverviewContext {
   resolve(c: Annotation, doc: Document | null): Element | null;
 }
 
+/** Room kept around an element in its note's crop, and the smallest crop worth
+ *  looking at: a lone icon would otherwise come back as a few dozen pixels with
+ *  nothing around it to place it. A point note gets a fixed box. */
+const CROP_PAD = 16;
+const CROP_MIN = { width: 160, height: 120 };
+const CROP_POINT = { width: 320, height: 240 };
+
+/** A box of at least `min`, centred on `rect`'s own centre when it has to grow.
+ *  Not clamped to the pane: `shots/encode.cropRect` does that against the real
+ *  bitmap. */
+function targetOf(
+  rect: { left: number; top: number; width: number; height: number },
+  min: { width: number; height: number },
+): NonNullable<ShotBadge["target"]> {
+  const width = Math.max(rect.width, min.width);
+  const height = Math.max(rect.height, min.height);
+  return {
+    left: rect.left + rect.width / 2 - width / 2,
+    top: rect.top + rect.height / 2 - height / 2,
+    width,
+    height,
+  };
+}
+
 /**
  * T:10145's loop, on its own so the reasons are testable without a canvas.
  *
@@ -66,15 +90,27 @@ export function badgesFor(
   const win = (ctx.doc && ctx.doc.defaultView) || (ctx.xo ? ANN_XO_SCROLL : null);
   for (const c of pending) {
     let pt: { x: number; y: number } | null = null;
+    let target: ShotBadge["target"];
     if (c.kind === "point") {
       pt = pointXY(c, win);
+      if (pt) target = targetOf({ left: pt.x, top: pt.y, width: 0, height: 0 }, CROP_POINT);
     } else {
       const el = ctx.doc ? ctx.resolve(c, ctx.doc) : null;
       if (!el) {
         marks[c.id] = ANN_OFFSCREEN_DETACHED;
         continue;
       }
-      pt = badgeXY(c, contentBox(el), rectOf(el), !!intrinsicOf(el));
+      const r = rectOf(el);
+      pt = badgeXY(c, contentBox(el), r, !!intrinsicOf(el));
+      target = targetOf(
+        {
+          left: r.left - CROP_PAD,
+          top: r.top - CROP_PAD,
+          width: r.width + 2 * CROP_PAD,
+          height: r.height + 2 * CROP_PAD,
+        },
+        CROP_MIN,
+      );
     }
     const w = ctx.stage ? ctx.stage.clientWidth : 0;
     const h = ctx.stage ? ctx.stage.clientHeight : 0;
@@ -82,7 +118,7 @@ export function badgesFor(
       marks[c.id] = ANN_OFFSCREEN_SCROLLED;
       continue;
     }
-    badges.push({ x: pt.x, y: pt.y, label: c.label || "?" });
+    badges.push({ x: pt.x, y: pt.y, label: c.label || "?", ...(target ? { target } : {}) });
     marks[c.id] = true;
   }
   return { badges, marks };
@@ -94,7 +130,8 @@ export interface OverviewResult {
 }
 
 /**
- * The whole send-time step: badge points, then ONE bounded capture.
+ * The whole send-time step: badge points, then ONE bounded capture that yields
+ * the overview and each note's crop of it.
  *
  * Never throws and never fails a send (T:10202): both failure shapes collapse to
  * "no shot this turn", the annotations still go out with their anchors — which

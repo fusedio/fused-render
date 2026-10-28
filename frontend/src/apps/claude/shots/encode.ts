@@ -156,23 +156,39 @@ export async function encode(
 /** `encode`'s ladder plus the badges: drawn AFTER the pane is scaled into the
  *  output canvas and BEFORE encoding, at each badge's `x,y` scaled the same way
  *  the pane was, so every badge lands on its exact spot at every size the loop
- *  tries rather than needing its own retry (T:8033). */
+ *  tries rather than needing its own retry (T:8033).
+ *
+ *  `rect` cuts the picture down to one region of the pane (the whole pane when
+ *  absent); the badges keep pane coordinates and are shifted into the region. */
 export async function encodeBadged(
   pane: PaneBitmap,
   badges: ShotBadge[],
   limits?: EncodeLimits,
+  rect: ShotRect = { left: 0, top: 0, width: pane.width, height: pane.height },
 ): Promise<Blob | null> {
   const maxEdge = limits?.maxEdge || SHOT_MAX_EDGE;
   const maxBytes = limits?.maxBytes || SHOT_MAX_BYTES;
-  let box = fit(pane.width, pane.height, maxEdge);
+  let box = fit(rect.width, rect.height, maxEdge);
   for (let attempt = 0; attempt < 3; attempt++) {
     const c = makeCanvas();
     c.width = box.width;
     c.height = box.height;
     const ctx = c.getContext("2d");
-    ctx?.drawImage(pane.canvas, 0, 0, pane.width, pane.height, 0, 0, box.width, box.height);
+    ctx?.drawImage(
+      pane.canvas,
+      rect.left,
+      rect.top,
+      rect.width,
+      rect.height,
+      0,
+      0,
+      box.width,
+      box.height,
+    );
     if (ctx) {
-      for (const b of badges) drawBadge(ctx, b.x * box.scale, b.y * box.scale, b.label);
+      for (const b of badges) {
+        drawBadge(ctx, (b.x - rect.left) * box.scale, (b.y - rect.top) * box.scale, b.label);
+      }
     }
     const fitted = await ladder(c, maxBytes);
     if (fitted.blob) return fitted.blob;

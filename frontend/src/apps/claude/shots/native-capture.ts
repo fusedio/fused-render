@@ -14,12 +14,19 @@
 // server, 409 unsupported, 400 off-display, a hidden pane, an origin we cannot
 // compute — answers null, never a throw, and the caller falls through to the
 // paths that were there before.
+import { isLinux } from "@platform/lib/platform";
 import { SHOT_NATIVE_MIN, SHOT_TIMEOUT_MS, type PaneBitmap } from "./types";
 
 /** Set by a 409, or by the boot probe below: "this platform has no still".
  *  Remembered, so a page over an unsupported backend pays the round trip once
- *  (T:9790, 9924) — or, with the probe, not even once. */
-let nativeOff = false;
+ *  (T:9790, 9924) — or, with the probe, not even once.
+ *
+ *  Off from the start on Linux: the desktop portal's still is the whole
+ *  desktop, and under Wayland a browser cannot learn where its own window sits
+ *  on it, so the crop lands on whatever other app is at that spot. The pane is
+ *  photographed from its own document instead (the DOM clone, or the tab share
+ *  for a cross-origin one). */
+let nativeOff = isLinux;
 
 export function isNativeOff(): boolean {
   return nativeOff;
