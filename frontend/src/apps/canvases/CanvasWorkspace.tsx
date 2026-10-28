@@ -240,6 +240,25 @@ const FRAME_UP_WAIT_MS = 40_000;
 // dropped — the whole frame is the picture meanwhile.
 const RECTS_WAIT_MS = 800;
 
+/** Resolves after the next frame has been painted: two animation frames —
+ *  the first runs before the pending commit's paint, the second after. A
+ *  document that gets no frames (a background tab, a driven browser) would
+ *  hold the capture for ever, so a short timer settles it instead; the
+ *  native road's own gate then decides what a hidden page deserves. */
+const NEXT_PAINT_MAX_MS = 150;
+function nextPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, NEXT_PAINT_MAX_MS);
+    if (typeof requestAnimationFrame !== "function") return;
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        clearTimeout(timer);
+        resolve();
+      }),
+    );
+  });
+}
+
 // Fallback cadence for GET sync/state while the events socket is down.
 const SYNC_POLL_MS = 2000;
 
@@ -774,6 +793,10 @@ export default function CanvasWorkspace({
         if (!up) {
           return { ok: false, error: "the workbench has not loaded in this canvas page yet — reload the canvas page and try again" };
         }
+        // The scrim is still in the DOM until React commits and the browser
+        // paints; the native road's gate (`frameCovered`) would find it over
+        // the frame and photograph nothing. Wait for that paint.
+        await nextPaint();
       }
       // THE NATIVE ROAD, always first (canvas-shot-native.ts): the frame's
       // live pixels off the screen, ~100 ms, nothing mutated, so no scrim
