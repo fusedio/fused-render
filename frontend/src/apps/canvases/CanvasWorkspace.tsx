@@ -805,6 +805,15 @@ export default function CanvasWorkspace({
       // Mac that road is off unless Settings turned it on, and the answer is
       // the sentence that names the fix (canvas-shot-permission.ts).
       if (!slowRoadAllowedHere()) {
+        // A node the zoom draws too small for a crop (under
+        // SHOT_UDF_CROP_MIN_WIDTH) is declined above so the embed road can
+        // draw it at full size — a road this Mac does not take. The whole
+        // frame, the node somewhere in it, is still a picture; "bring the
+        // window to the front" would be the wrong sentence for it.
+        if (whole && crop && crop !== whole) {
+          const blob = await nativeCanvasShot(frameRef.current, by, { crop: whole });
+          if (blob) return { ok: true, blob };
+        }
         return { ok: false, error: nativeShotRefusal({ permissionMissing: await screenRecordingMissing(), app: bundleName() }) };
       }
     } finally {
