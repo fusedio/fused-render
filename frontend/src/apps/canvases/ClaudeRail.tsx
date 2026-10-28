@@ -10,21 +10,36 @@
 //     half, the Hide, is the first seat of the chat's own top row while the
 //     pane is up (ClaudeChat `onHidePane`): exactly one of the two is on
 //     screen at any moment, the explorer sidebar's own rule (SideChrome.tsx).
-//   - EVERY CHAT ON THIS CANVAS, newest first (owner, 2026-10-27: "show all
-//     chats we have here, and when we hover we see recap, title — whatever we
-//     show in list view"). One status ring each — the Tasks page's own
-//     (`StatusIcon`: lane colour, unread fill, "!" when it is waiting on you) —
-//     and the hover is the list row's own caption: the same `data-hint-title`
-//     / `data-hint-reply` the row's title carries (platform/lib/hints), built
-//     from the same `cardTitleLine`. A press opens that chat where the Tasks
-//     page's door would (`taskHref`): the canvas chat on its session, or the
-//     node selected with its chat on its session. Scrolls on a short window.
-//   - New chat. Alone, under the Show, when the canvas has no chats yet.
+//   - NEW TASK, at the head of the list (owner, 2026-10-28: "the + icon
+//     should be at the top of the list and it should show a new task modal
+//     when we click it, instead of opening the sidebar"). It opens the Tasks
+//     page's own card (shell/NewJobModal) over the canvas, prefilled and
+//     locked on the clone the way the project page's Tasks tab opens it —
+//     the pane stays shut, and the task lands on the rail through the pulse
+//     like any other.
+//   - EVERY LIVE CHAT ON THIS CANVAS, in the List view's order (owner,
+//     2026-10-27: "show all chats we have here, and when we hover we see
+//     recap, title — whatever we show in list view"; 2026-10-28: no archived
+//     rows, the List's sort — claude-rail-lib.ts). One status ring each — the
+//     Tasks page's own (`StatusIcon`: lane colour, unread fill, "!" when it is
+//     waiting on you) — and the hover is the list row's own caption: the same
+//     `data-hint-title` / `data-hint-reply` the row's title carries
+//     (platform/lib/hints), built from the same `cardTitleLine`. A press opens
+//     that chat where the Tasks page's door would (`taskHref`): the canvas
+//     chat on its session, or the node selected with its chat on its session.
+//     Scrolls on a short window.
 //   - at the bottom, this canvas's Tasks with a running count.
-import { useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { ListTodo, Plus } from "lucide-react";
 import PanelIcon from "@platform/ui/PanelIcon";
-import { getTasks, type Task, type TaskPulseTask } from "@platform/lib/api";
+import { getSchedule, getTasks, type Task, type TaskPulseTask } from "@platform/lib/api";
 import { readListing, rememberListing, useTasksPulseRows } from "@shell/tasksPulse";
 import {
   cardTitleLine,
@@ -35,15 +50,9 @@ import {
   taskHref,
 } from "@shell/tasks-lib";
 import { StatusIcon } from "@shell/ScheduleTaskViews";
+import NewJobModal from "@shell/NewJobModal";
+import { onRail, railRows } from "./claude-rail-lib";
 import type { WorkbenchEnv } from "./api";
-
-export type RailTarget = "show" | "new";
-
-/** A row's time, newest first. Anything unparseable sorts last. */
-function when(t: Pick<TaskPulseTask, "last_active">): number {
-  const ms = Date.parse(String(t.last_active ?? ""));
-  return Number.isFinite(ms) ? ms : 0;
-}
 
 /** A chat ring's state IN WORDS, for its accessible name (CodeRabbit on
  *  #1971): the ring says it in colour and fill only, and the link's
@@ -60,6 +69,17 @@ function statusWords(t: TaskPulseTask, failed: boolean): string {
   return t.unread > 0 ? `${base}, unread` : base;
 }
 
+/** What the New task card needs from the schedule before it can open: the
+ *  permission modes the server offers and the folders existing tasks point at
+ *  (NewJobModal `permissionModes`, `recentTargets` — what Scheduled.tsx hands
+ *  it off the schedule it already holds; the rail has no schedule, so it asks
+ *  on the press). `seq` keys the mount: every press is a fresh card. */
+interface Card {
+  seq: number;
+  modes: string[];
+  recents: string[];
+}
+
 export function ClaudeRail({
   env,
   name,
@@ -74,13 +94,14 @@ export function ClaudeRail({
   env: WorkbenchEnv;
   name: string;
   /** The clone dir (task rows that predate `task.canvas` name it as their
-   *  project). Null until the clone exists. */
+   *  project; the New task card's locked target). Null until the clone
+   *  exists. */
   dir: string | null;
   /** The session the page's URL names, drawn as the current row. */
   activeSessionId: string | null;
   tasksHref: string;
-  /** Open the pane as it is ("show"), or on a fresh canvas chat ("new"). */
-  onOpen: (target: RailTarget) => void;
+  /** Open the pane as it is. */
+  onOpen: () => void;
   /** Open one of the canvas's chats: its Tasks-page door (`taskHref`). */
   onOpenChat: (href: string) => void;
   onTasks: () => void;
@@ -90,48 +111,81 @@ export function ClaudeRail({
   onPullStart: (e: ReactPointerEvent<HTMLDivElement>) => void;
 }) {
   const rows = useTasksPulseRows();
-  // This canvas's chats — the ones that have a conversation to open. A row
-  // that predates `task.canvas` is matched by its project (the clone dir).
-  const mine = useMemo(
-    () =>
-      rows
-        .filter(
-          (t) =>
-            !!t.session_id &&
-            ((t.canvas && t.canvas.env === env && t.canvas.name === name) ||
-              (dir !== null && t.project === dir)),
-        )
-        .sort((a, b) => when(b) - when(a)),
-    [rows, env, name, dir],
-  );
+  const place = useMemo(() => ({ env, name, dir }), [env, name, dir]);
+  // This canvas's live chats, unordered — the signature below is what decides
+  // when the listing is re-read; the order is `railRows`'s, once it is held.
+  const mine = useMemo(() => rows.filter((t) => onRail(t, place)), [rows, place]);
 
   // THE CAPTION'S WORDS ARE THE LISTING'S, not the pulse's: the pulse carries
   // status and a title, but the list row's caption is built from the full row
-  // (recap, last reply, last message). Seeded from the listing the Tasks page
+  // (recap, last reply, last message) — and so is the List's ORDER
+  // (sortForList reads the full row). Seeded from the listing the Tasks page
   // already holds, and re-read whenever one of THIS canvas's rows moves —
-  // keyed on what changes a caption, so an idle canvas never asks again.
+  // keyed on what changes a caption or a rank, so an idle canvas never asks
+  // again.
   const [listing, setListing] = useState<Task[] | null>(() => readListing());
   const sig = mine.map((t) => `${t.key}:${t.status}:${t.last_active}:${t.unread}`).join("|");
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+  const refreshListing = useCallback(
+    () =>
+      getTasks()
+        .then((r) => {
+          if (!alive.current) return;
+          rememberListing(r.tasks);
+          setListing(r.tasks);
+        })
+        .catch(() => undefined),
+    [],
+  );
   useEffect(() => {
     if (!sig) return;
     let off = false;
     const timer = window.setTimeout(() => {
-      void getTasks()
-        .then((r) => {
-          if (off) return;
-          rememberListing(r.tasks);
-          setListing(r.tasks);
-        })
-        .catch(() => undefined);
+      if (!off) void refreshListing();
     }, 600);
     return () => {
       off = true;
       window.clearTimeout(timer);
     };
-  }, [sig]);
+  }, [sig, refreshListing]);
   const full = useMemo(() => new Map((listing ?? []).map((t) => [t.key, t])), [listing]);
 
+  // THE RAIL'S SEATS, in the List's order (claude-rail-lib). `now` is read
+  // once per derivation, as `sortForList` asks; the derivation re-runs when a
+  // row moves (the pulse) or the listing re-reads, which is when a rank can
+  // change.
+  const seats = useMemo(() => railRows(rows, full, place), [rows, full, place]);
+
   const running = mine.filter((t) => liveJobRow(t) || inFlight(taskColumn(t))).length;
+
+  // THE NEW TASK CARD. Opened on the press, once the schedule has answered
+  // what the card needs (`Card`); the press is inert while that read is out,
+  // so a double-click cannot stack two cards. A schedule read that fails
+  // still opens the card — the modal falls back to "auto" on an empty modes
+  // list, and an empty recents list only means fewer suggestions — because a
+  // + that does nothing is worse than a card with one fewer dropdown option.
+  const [card, setCard] = useState<Card | null>(null);
+  const [opening, setOpening] = useState(false);
+  const openNewTask = () => {
+    if (opening || card) return;
+    setOpening(true);
+    void getSchedule()
+      .then(
+        (s) => ({ modes: s.permission_modes, recents: s.entries.map((e) => e.target) }),
+        () => ({ modes: [] as string[], recents: [] as string[] }),
+      )
+      .then((got) => {
+        if (!alive.current) return;
+        setOpening(false);
+        setCard({ seq: Date.now(), ...got });
+      });
+  };
 
   return (
     <aside className="canvas-rail" aria-label="Claude">
@@ -152,15 +206,26 @@ export function ClaudeRail({
         title="Show the Claude panel"
         aria-label="Show the Claude panel"
         aria-expanded={false}
-        onClick={() => onOpen("show")}
+        onClick={onOpen}
       >
         <PanelIcon side="right" />
       </button>
       <div className="sidebar-rail-items">
-        {mine.length > 0 && (
+        <button
+          type="button"
+          className="sidebar-rail-btn canvas-rail-item"
+          title="New task"
+          aria-label="New task"
+          aria-haspopup="dialog"
+          aria-busy={opening || undefined}
+          disabled={opening}
+          onClick={openNewTask}
+        >
+          <Plus size={16} aria-hidden="true" />
+        </button>
+        {seats.length > 0 && (
           <div className="sidebar-rail-scroll canvas-rail-chats" role="list" aria-label="Chats on this canvas">
-            {mine.map((t) => {
-              const row = full.get(t.key);
+            {seats.map(({ pulse: t, row }) => {
               // The live status is the pulse's (fresher than the listing).
               const merged = row ? { ...row, status: t.status } : t;
               const line = cardTitleLine(merged);
@@ -203,15 +268,6 @@ export function ClaudeRail({
             })}
           </div>
         )}
-        <button
-          type="button"
-          className="sidebar-rail-btn canvas-rail-item"
-          title="New chat"
-          aria-label="New chat"
-          onClick={() => onOpen("new")}
-        >
-          <Plus size={16} aria-hidden="true" />
-        </button>
         <span className="canvas-rail-spacer" />
         <a
           className="sidebar-rail-btn canvas-rail-item"
@@ -228,6 +284,31 @@ export function ClaudeRail({
           {running > 0 && <span className="canvas-rail-count">{running}</span>}
         </a>
       </div>
+      {card && (
+        <NewJobModal
+          // Keyed on the press: the card reads its props in `useState`
+          // initialisers, so every opening must be a fresh mount
+          // (Scheduled.tsx `openSeq`).
+          key={card.seq}
+          initialTime={null}
+          // SCOPED TO THE CLONE, the project page's Tasks tab's way
+          // (CanvasPage.tsx `scope.project`, Scheduled.tsx `lockTarget`): a
+          // task made from the canvas is a task about the canvas, so the path
+          // is stated, not asked. Until the clone exists the card asks.
+          initialTarget={dir}
+          lockTarget={dir !== null}
+          // From the List, not the calendar: a task typed here is one to run
+          // now, and the when-row folds into More options.
+          planning={false}
+          permissionModes={card.modes}
+          recentTargets={card.recents}
+          onClose={() => setCard(null)}
+          // "Something changed, re-read": the pulse will move the new row
+          // onto the rail; the listing is re-read now so its caption and
+          // rank are not 600ms behind its ring.
+          onCreated={() => void refreshListing()}
+        />
+      )}
     </aside>
   );
 }

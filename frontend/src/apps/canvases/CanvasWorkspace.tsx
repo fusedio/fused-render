@@ -205,7 +205,7 @@ import {
 import { findHostAiModel, hostAiModels } from "./host-ai";
 import { SyncDrawer } from "./SyncDrawer";
 import { SyncFramePoster, SyncStrip } from "./SyncStrip";
-import { ClaudeRail, type RailTarget } from "./ClaudeRail";
+import { ClaudeRail } from "./ClaudeRail";
 import {
   mergeLogEvents,
   noWatcher,
@@ -2300,42 +2300,13 @@ export default function CanvasWorkspace({
     root.addEventListener("pointercancel", onUp);
   }, []);
 
-  // The rail's doors (ClaudeRail `onOpen`): "show" opens the pane as it is;
-  // "new" leaves the node (on both sides), drops the session the URL names
-  // and remounts the canvas chat on its home. A press on one of the rail's
-  // chats is a NAVIGATION to that chat's Tasks-page door (`onOpenChat`):
-  // the hop reader above already selects the node, seeds its session and
-  // opens the pane, exactly as for a hop from the Tasks page.
-  const openFromRail = useCallback((target: RailTarget) => {
-    const leavingNode = target === "new" && nodeRef.current !== null;
-    // The URL's `session_id` / `run` are dropped BEFORE the canvas chat
-    // mounts: it reads them as it boots, and that is earlier than the node
-    // effect's own cleanup (a child's effects run before its parent's). With
-    // a node selected, a `session_id` on the URL is the NODE's (a Tasks hop
-    // onto it) — booting the canvas chat on it would show the node's
-    // conversation as the canvas's.
-    if (leavingNode || target === "new") {
-      const url = new URL(window.location.href);
-      url.searchParams.delete("session_id");
-      url.searchParams.delete("run");
-      if (url.href !== window.location.href) {
-        window.history.replaceState(window.history.state, "", url);
-      }
-      canvasChatSidRef.current = null;
-    }
-    if (leavingNode) {
-      sendSelect(null);
-      setNode(null);
-    }
-    if (target === "new") {
-      // A Fix with Claude run is kept after it lands (`fixRunId`), and the
-      // chat is keyed on it and handed it as `runId` — so a New chat that
-      // left it set would re-adopt the fix session instead of its home.
-      setFixRunId(null);
-      setCanvasChatSeq((n) => n + 1);
-    }
-    setSideOpen(true);
-  }, [sendSelect]);
+  // The rail's door (ClaudeRail `onOpen`) opens the pane as it is. A press
+  // on one of the rail's chats is a NAVIGATION to that chat's Tasks-page door
+  // (`onOpenChat`): the hop reader above already selects the node, seeds its
+  // session and opens the pane, exactly as for a hop from the Tasks page. The
+  // rail's + is not a door into the pane at all: it opens the New task card
+  // over the canvas (ClaudeRail, 2026-10-28).
+  const openFromRail = useCallback(() => setSideOpen(true), []);
 
   // Hand a fresh fix run to the chat: `run` goes on this page's own URL (the
   // chat's "url" params store reads it — the chat adopts the session and then
