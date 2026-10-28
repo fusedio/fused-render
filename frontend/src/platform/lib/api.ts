@@ -1740,6 +1740,10 @@ export interface EnginesPrefs {
   // One row per capability the registry knows, servable here or not — a
   // preference the user cannot see is one they cannot fix.
   capabilities: CapabilityEngine[];
+  // One row per DOWNLOADED model with a known capability (D1451): its own pin
+  // and what actually serves it. Optional so an older server's payload, which
+  // has no such block, still reads as "no model rows".
+  models?: ModelEngine[];
   // The literal the server means by "let the registry decide". Shipped with
   // the value rather than hardcoded here, for the same reason `model.choices`
   // is: the page must not be able to send a value a PUT would reject.
@@ -1786,6 +1790,12 @@ export interface CapabilityEngine {
    *  raw stored code, which never matches. */
   strandedLabel: string | null;
   choices: EngineChoice[];
+}
+
+// A capability row keyed by repo id — `selected` is the model's own pin
+// (`auto` when none), so the capability row's helpers read it unchanged.
+export interface ModelEngine extends CapabilityEngine {
+  id: string;
 }
 
 export interface EngineChoice {
@@ -2194,6 +2204,11 @@ export function putDefaultBackend(backend: string): Promise<Prefs> {
 // other's choice.
 export function putEngineForCapability(capability: string, code: string): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { engines: { [capability]: code } });
+}
+
+// One model's pin; `auto` removes it. Same key-by-key server rule as above.
+export function putEngineForModel(modelId: string, code: string): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { model_engines: { [modelId]: code } });
 }
 
 export function putCallsEnabled(enabled: boolean): Promise<Prefs> {

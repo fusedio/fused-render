@@ -90,8 +90,12 @@ export function servingLine(row: CapabilityEngine, auto: string): string | null 
  *  Null for "auto", which is honoured by definition — a page that warned on
  *  every fresh machine would teach the user to ignore the warning.
  */
-export function ignoredWarning(row: CapabilityEngine): string | null {
+export function ignoredWarning(row: CapabilityEngine, auto: string): string | null {
   if (!row.ignoredReason) return null;
+  // A model row whose capability preference was overruled ships its reason with
+  // `selected: "auto"` (D1451): there is no chosen engine to name, so the
+  // reason is a plain informational note.
+  if (row.selected === auto) return `${row.ignoredReason}.`;
   const chosen = row.choices.find((c) => c.code === row.selected);
   // A STRANDED selection (`strandedSelection` fires) has no `chosen` option to
   // find, so `name` falls back to `row.strandedLabel` — the registry's own

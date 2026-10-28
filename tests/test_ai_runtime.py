@@ -11,6 +11,7 @@ The one thing these tests must never do is depend on the machine they run on:
 CI is Linux, MLX is Apple-only, and a suite that only passes on a Mac is a suite
 that does not run.
 """
+import dataclasses
 import json
 import os
 import re
@@ -866,6 +867,159 @@ def test_a_preference_naming_something_that_is_not_a_runner_is_ignored(monkeypat
     assert "not a runner this build knows" in resolution.ignored_reason
 
 
+# -- model-derived resolution and per-model pins (D1451) -------------------------
+#
+# FLUX.2 on an Apple Silicon Mac is the case that has two readers: `mflux-image`
+# and `diffusers-image` are both available there, so what decides is the model.
+
+
+def _mac(monkeypatch):
+    monkeypatch.setattr(registry.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "arm64")
+
+
+def _cached_as(monkeypatch, repo_id, loaders, capability=None):
+    """Make `repo_id` the only cached model, read by exactly `loaders`."""
+    capability = capability or registry.IMAGE_GENERATION
+    monkeypatch.setattr(
+        ai_models, "cached_capability",
+        lambda asked: ai_models.CacheReading(
+            cached=True, capability=capability, looks_like=None,
+            loaders=tuple(loaders)) if asked == repo_id
+        else ai_models.CacheReading(False, None, None))
+
+
+def _pin(monkeypatch, model_id, code):
+    monkeypatch.setattr(registry, "model_pin",
+                        lambda asked: code if asked == model_id else registry.AUTO)
+
+
+def test_a_model_only_one_runner_reads_is_served_by_it_despite_the_preference(monkeypatch):
+    _mac(monkeypatch)
+    _prefer(monkeypatch, registry.IMAGE_GENERATION, "mflux-image")
+    _cached_as(monkeypatch, "org/diffusers-only", ["diffusers-image"])
+
+    resolution = registry.resolve_for_model(registry.IMAGE_GENERATION, "org/diffusers-only")
+    assert resolution.runner.code == "diffusers-image"
+    assert resolution.requested == "mflux-image", "the stored choice is not rewritten"
+    assert "does not read" in resolution.ignored_reason
+    # The capability-level answer is unchanged: the pref still decides there.
+    assert registry.resolve(registry.IMAGE_GENERATION).runner.code == "mflux-image"
+
+
+def test_the_preference_breaks_the_tie_among_runners_that_all_read_the_model(monkeypatch):
+    _mac(monkeypatch)
+    _cached_as(monkeypatch, "org/flux2", ["diffusers-image", "mflux-image"])
+    auto = registry.resolve_for_model(registry.IMAGE_GENERATION, "org/flux2")
+    assert auto.runner.code == "mflux-image" and auto.honoured
+
+    _prefer(monkeypatch, registry.IMAGE_GENERATION, "diffusers-image")
+    chosen = registry.resolve_for_model(registry.IMAGE_GENERATION, "org/flux2")
+    assert chosen.runner.code == "diffusers-image" and chosen.honoured
+
+
+def test_a_per_model_pin_wins_over_the_preference_and_the_loader_set(monkeypatch):
+    _mac(monkeypatch)
+    _prefer(monkeypatch, registry.IMAGE_GENERATION, "mflux-image")
+    # The classifier says only mflux reads it; the pin is the escape hatch.
+    _cached_as(monkeypatch, "org/odd", ["mflux-image"])
+    _pin(monkeypatch, "org/odd", "diffusers-image")
+
+    resolution = registry.resolve_for_model(registry.IMAGE_GENERATION, "org/odd")
+    assert resolution.runner.code == "diffusers-image"
+    assert resolution.requested == "diffusers-image" and resolution.honoured
+
+
+def test_a_pin_naming_an_unavailable_runner_is_ignored_and_the_model_still_runs(monkeypatch):
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    _cached_as(monkeypatch, "org/flux2", ["diffusers-image"])
+    _pin(monkeypatch, "org/flux2", "mflux-image")
+
+    resolution = registry.resolve_for_model(registry.IMAGE_GENERATION, "org/flux2")
+    assert resolution.runner.code == "diffusers-image"
+    assert resolution.requested == "mflux-image"
+    assert "Apple Silicon" in resolution.ignored_reason
+
+
+def test_a_pin_for_the_wrong_capability_or_an_unknown_runner_is_ignored(monkeypatch):
+    _mac(monkeypatch)
+    _cached_as(monkeypatch, "org/flux2", ["diffusers-image", "mflux-image"])
+    for code, fragment in (("whisper-9000", "not a runner this build knows"),
+                           ("mlx-whisper", "does not do text-to-image")):
+        _pin(monkeypatch, "org/flux2", code)
+        resolution = registry.resolve_for_model(registry.IMAGE_GENERATION, "org/flux2")
+        assert resolution.runner is not None
+        assert fragment in resolution.ignored_reason
+
+
+def test_describe_model_engines_builds_the_choices_once_per_capability(monkeypatch):
+    _mac(monkeypatch)
+    models = [CachedModel(f"org/flux-{i}", registry.IMAGE_GENERATION, 1,
+                          ("diffusers-image", "mflux-image")) for i in range(5)]
+    monkeypatch.setattr(ai_models, "cached_models", lambda: models)
+    probed = []
+    real = registry._choice
+    monkeypatch.setattr(registry, "_choice",
+                        lambda runner: (probed.append(runner.code), real(runner))[1])
+    resolved = []
+    real_resolve = registry.resolve
+    monkeypatch.setattr(registry, "resolve",
+                        lambda cap: (resolved.append(cap), real_resolve(cap))[1])
+    rows = registry.describe_model_engines()
+    assert len(rows) == 5
+    # `resolve(capability)` is the capability's answer: once, not per model.
+    assert resolved == [registry.IMAGE_GENERATION]
+    image = [r.code for r in registry.all_runners()
+             if r.capability == registry.IMAGE_GENERATION]
+    # `_choice` probes `available()`: once per runner for the capability, not
+    # once per runner per model.
+    assert sorted(probed) == sorted(image)
+
+
+def test_model_rows_do_not_repeat_the_capability_preferences_ignored_reason(
+        monkeypatch):
+    _mac(monkeypatch)
+    # The capability preference names a runner that cannot run here (platform).
+    _prefer(monkeypatch, registry.IMAGE_GENERATION, "mflux-image")
+    monkeypatch.setattr(registry.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(registry.platform, "machine", lambda: "x86_64")
+    assert registry.resolve(registry.IMAGE_GENERATION).ignored_reason
+    models = [CachedModel("org/a", registry.IMAGE_GENERATION, 1,
+                          ("diffusers-image",)),
+              CachedModel("org/b", registry.IMAGE_GENERATION, 1,
+                          ("diffusers-image",))]
+    monkeypatch.setattr(ai_models, "cached_models", lambda: models)
+    rows = registry.describe_model_engines()
+    assert [r["ignoredReason"] for r in rows] == [None, None]
+
+
+def test_a_model_the_capability_runner_does_not_read_keeps_its_own_reason(
+        monkeypatch):
+    _mac(monkeypatch)
+    _prefer(monkeypatch, registry.IMAGE_GENERATION, "mflux-image")
+    base = registry.resolve(registry.IMAGE_GENERATION)
+    assert base.runner is not None and base.runner.code == "mflux-image"
+    models = [CachedModel("org/d", registry.IMAGE_GENERATION, 1,
+                          ("diffusers-image",))]
+    monkeypatch.setattr(ai_models, "cached_models", lambda: models)
+    (row,) = registry.describe_model_engines()
+    assert row["effective"] == "diffusers-image"
+    assert "does not read this model" in row["ignoredReason"]
+
+
+def test_an_uncached_model_resolves_exactly_as_the_capability_does(monkeypatch):
+    _mac(monkeypatch)
+    _cached_as(monkeypatch, "org/other", ["diffusers-image"])
+    _prefer(monkeypatch, registry.IMAGE_GENERATION, "diffusers-image")
+    assert (registry.resolve_for_model(registry.IMAGE_GENERATION, "org/uncached")
+            == registry.resolve(registry.IMAGE_GENERATION))
+    # A cached model no runner reads (empty loaders) is the same fall-through.
+    _cached_as(monkeypatch, "org/unreadable", [])
+    assert (registry.resolve_for_model(registry.IMAGE_GENERATION, "org/unreadable")
+            == registry.resolve(registry.IMAGE_GENERATION))
+
+
 def test_a_removed_engine_code_in_prefs_degrades_to_the_ordering(monkeypatch, tmp_path):
     """The three codes D416 deleted, arriving in a prefs.json that outlived them.
 
@@ -988,7 +1142,7 @@ def test_auto_is_honoured_by_definition(monkeypatch):
     assert resolution.honoured and resolution.ignored_reason == ""
 
 
-def test_a_resident_worker_of_the_WRONG_ENGINE_is_not_served(monkeypatch):
+def test_a_resident_worker_of_the_WRONG_ENGINE_is_not_served(monkeypatch, tmp_path):
     """Resolution moves under models that are already loaded, and until now the
     only thing that noticed was `evict_stale_engines` — which has exactly ONE
     caller, the prefs PUT handler.
@@ -1008,9 +1162,16 @@ def test_a_resident_worker_of_the_WRONG_ENGINE_is_not_served(monkeypatch):
                                runner_code="mlx-whisper", token="t", state="ready")
     monkeypatch.setitem(supervisor._workers, registry.SPEECH_TO_TEXT, worker)
 
+    # The resolution is memoised on prefs.json's stat, so the "edit" has to
+    # touch a real file, as a hand edit or a sync would.
+    prefs_file = tmp_path / "prefs.json"
+    prefs_file.write_text("{}")
+    monkeypatch.setattr("fused_render.shell.prefs._path", lambda: str(prefs_file))
+
     assert supervisor.ready_worker(registry.SPEECH_TO_TEXT) is worker
 
     _prefer(monkeypatch, registry.SPEECH_TO_TEXT, "faster-whisper")
+    prefs_file.write_text('{"inference_engines": {"x": "faster-whisper"}}')
 
     assert supervisor.ready_worker(registry.SPEECH_TO_TEXT) is None
     # …and it is GONE, not merely refused. A worker nothing will ever route to
@@ -4655,7 +4816,8 @@ def test_a_ready_worker_with_a_live_process_is_still_served(monkeypatch):
     """The other half: `poll()` returning None is alive, and the worker is
     handed out exactly as before. The engine-match check below it is untouched,
     so a fake runner code must resolve to nothing rather than to a mismatch."""
-    monkeypatch.setattr(registry, "for_capability", lambda capability: None)
+    monkeypatch.setattr(registry, "resolve_for_model",
+                        lambda capability, model: registry.Resolution(None))
     worker = _idle_worker(monkeypatch, last_activity=time.monotonic())
     worker.proc = _ExitedProc(None)
     assert supervisor.ready_worker(registry.TEXT_GENERATION, "org/idle") is worker
@@ -4665,7 +4827,8 @@ def test_a_ready_worker_with_no_process_handle_is_not_judged(monkeypatch):
     """A worker planted without a Popen (every fixture in this file, an adopted
     process) cannot be polled, and "cannot tell" must not read as "gone" on
     the request path — the reaper's poll keeps its own stricter rule."""
-    monkeypatch.setattr(registry, "for_capability", lambda capability: None)
+    monkeypatch.setattr(registry, "resolve_for_model",
+                        lambda capability, model: registry.Resolution(None))
     worker = _idle_worker(monkeypatch, last_activity=time.monotonic())
     assert worker.proc is None
     assert supervisor.ready_worker(registry.TEXT_GENERATION, "org/idle") is worker
@@ -8234,28 +8397,24 @@ def test_ltx_video_request_shape_follows_its_own_traits(client, fake_ltx_video_r
     _wait_job(reply["jobId"])
 
 
-def test_naming_the_OTHER_video_engines_cached_model_is_refused_not_started(
+def test_naming_the_OTHER_video_engines_cached_model_is_served_by_that_engine(
         client, monkeypatch, tmp_path):
-    """Naming a model explicitly does NOT pick its runner — resolution is by
-    CAPABILITY plus stored preference (`registry.py`'s own module docstring),
-    and `start_video`'s `_runner_or_raise` never reads `model` either. So when
-    the caller names a repo whose cached format evidence points at a DIFFERENT
-    video runner, the route would otherwise build and start the resolved
-    worker against it — raising deep inside `load()` after a Hub listing round
-    trip, a confusing failure for someone who deliberately named a model they
-    already have on disk. The route catches it itself, off the same
-    `hub_cache.cached_capability` evidence the AI Models page's card reads,
-    before any job opens.
+    """Naming a model PICKS its runner (D1451, replacing the refusal this test
+    used to pin).
 
-    **The route's guard is unreachable through REAL evidence since D468**:
-    dropping `h3-video` left one video runner, and `formats.loaders` no longer
-    names any other, so no snapshot on disk can produce a mismatching
-    `runner_code`. The guard is kept anyway — it is generic over runners, and
-    it is what a second video engine's arrival would otherwise have to
-    remember to add back — so this test drives it through the READING rather
-    than through a staged snapshot, which is the only honest way left to
-    exercise it. Two fake runners, because what is under test is the ROUTE's
-    refusal and not either runner's own format check.
+    The route used to refuse with a 409 when the named repo's cached format
+    evidence pointed at a video runner other than the one the capability
+    preference resolved to, because resolution was by capability alone and
+    `start_video` would otherwise have built the wrong worker against it.
+    Resolution now follows the model: the runner whose format check reads the
+    snapshot serves it, whatever the preference says. So the assertion is not
+    "no error" — it is that the OTHER runner's worker is the one that ran.
+
+    Two fake runners, because what is under test is the routing and not either
+    runner's own format check. The evidence is a cached reading naming only
+    `other-video` as a loader, driven through `hub_cache.cached_capability`
+    (what `registry.resolve_for_model` reads) as well as the route's own
+    imported binding.
     """
     def fake_runner(code):
         folder = tmp_path / f"fake_{code.replace('-', '_')}"
@@ -8268,36 +8427,32 @@ def test_naming_the_OTHER_video_engines_cached_model_is_refused_not_started(
 
     serving = fake_runner("ltx-video")
     other = fake_runner("other-video")
-    # `serving` FIRST, matching production ordering — the whole point is that
-    # it is the one that WOULD resolve here.
+    # `serving` FIRST, matching production ordering: it is the one the
+    # capability-level resolution picks, so a model it does not read is the
+    # case where the model has to override the order.
     monkeypatch.setattr(registry, "_RUNNERS", (serving, other))
     monkeypatch.setitem(catalog.SUGGESTIONS, "ltx-video", [
         {"id": "org/ltx", "label": "Fake ltx", "size_gb": None, "note": ""}])
     monkeypatch.setattr(supervisor, "_ensure_venv", lambda r, w, j: sys.executable)
     monkeypatch.setattr(supervisor, "_require_build_tools", lambda: None)
+    assert registry.for_capability(registry.VIDEO_GENERATION).code == "ltx-video"
 
-    # The evidence the ROUTE reads, naming the runner that is NOT serving.
-    monkeypatch.setattr(
-        ai_runtime, "cached_capability",
-        lambda repo_id: ai_models.CacheReading(
-            cached=True, capability=registry.VIDEO_GENERATION,
-            looks_like="a fake other-video checkpoint",
-            runner_code="other-video"))
+    reading = ai_models.CacheReading(
+        cached=True, capability=registry.VIDEO_GENERATION,
+        looks_like="a fake other-video checkpoint",
+        runner_code="other-video", loaders=("other-video",))
+    monkeypatch.setattr(ai_runtime, "cached_capability", lambda repo_id: reading)
+    monkeypatch.setattr(ai_models, "cached_capability", lambda repo_id: reading)
 
     response = client.post(
         "/api/ai/video", json={"prompt": "x", "model": "org/other-video-weights"},
         headers={"X-Fused": "1"})
 
-    assert response.status_code == 409
-    message = response.json()["error"]
-    assert "org/other-video-weights" in message
-    assert "other-video" in message
-    assert "Engines tab" in message
-    # No job opened for work that was never going to start — the same
-    # invariant `test_a_video_on_a_machine_with_no_video_runner_says_why`
-    # checks for the "nothing can serve this at all" 409.
-    assert not [j for j in jobs.list_jobs()
-               if j["id"].startswith(supervisor.VIDEO_JOB_PREFIX)]
+    assert response.status_code == 200, response.text
+    _wait_job(response.json()["jobId"])
+    worker = supervisor._workers.get(registry.VIDEO_GENERATION)
+    assert worker is not None and worker.model == "org/other-video-weights"
+    assert worker.runner_code == "other-video", "served by the engine that reads it"
 
 
 def test_naming_an_UNCACHED_model_is_not_refused_by_the_route(

@@ -1333,12 +1333,6 @@ def _engine(meta: _RepoMeta, reading: _tasks.Classification,
     if capability is None:
         return None, None
     candidates = [r for r in runners if r.capability == capability]
-    if not candidates:
-        # The trap this whole field exists for: the task is one this app serves
-        # and the FORMAT is one no runner of that capability reads. That is
-        # `openai/whisper-large-v3` — a speech model, and unloadable by both
-        # speech runners that ship.
-        return None, capability
     # **The engine that would SERVE, not merely one that could read it.** A
     # capability holds one resident model and the registry picks which backend
     # loads it, so a repo readable by the OTHER backend is not loadable today
@@ -1346,9 +1340,42 @@ def _engine(meta: _RepoMeta, reading: _tasks.Classification,
     # a Diffusers repo on a Mac whose image engine is MLX FLUX, and a Load there
     # reaches a runner that refuses it by name. That is the exact promise this
     # field exists to stop the page making.
-    serving = _ai_registry.for_capability(capability)
-    if serving is not None and any(r.code == serving.code for r in candidates):
+    # Resolved FOR THIS REPO (D1451): a pin, then the engines that read it, then
+    # the capability's preference. `resolve_for_loaders`, not `resolve_for_model`,
+    # because `meta.loaders` is the evidence being handed in — asking the cache
+    # for it again from here would recurse.
+    pin = _ai_registry.model_pin(repo_id) if repo_id else _ai_registry.AUTO
+    if pin == _ai_registry.AUTO and not candidates:
+        # The trap this whole field exists for: the task is one this app serves
+        # and the FORMAT is one no runner of that capability reads. That is
+        # `openai/whisper-large-v3` — a speech model, and unloadable by both
+        # speech runners that ship. Answered BEFORE resolving: with no pin
+        # there is nothing a resolution could add.
+        return None, capability
+    pin_serves = False
+    if repo_id:
+        resolution = _ai_registry.resolve_for_loaders(
+            capability, repo_id, tuple(meta.loaders), pin)
+        serving = resolution.runner
+        # A HONOURED pin is the documented escape hatch for classifier gaps: the
+        # load path serves it whatever `meta.loaders` says, so the card must
+        # offer it too, even when no candidate reads the format.
+        pin_serves = (serving is not None and pin != _ai_registry.AUTO
+                      and serving.code == pin and resolution.honoured)
+    else:
+        serving = _ai_registry.for_capability(capability)
+    if not candidates and not pin_serves:
+        # The trap this whole field exists for: the task is one this app serves
+        # and the FORMAT is one no runner of that capability reads. That is
+        # `openai/whisper-large-v3` — a speech model, and unloadable by both
+        # speech runners that ship.
+        return None, capability
+    if serving is not None and (
+            pin_serves or any(r.code == serving.code for r in candidates)):
         status = serving.available()
+        reason = status.reason or None
+        if pin_serves and not any(r.code == serving.code for r in candidates):
+            reason = f"pinned to {serving.short} on the Engines tab"
         return {
             "code": serving.code,
             # All three, named so a reader cannot pick the wrong one by
@@ -1361,7 +1388,7 @@ def _engine(meta: _RepoMeta, reading: _tasks.Classification,
             "shortLabel": serving.short,
             "familyLabel": serving.family,
             "available": status.ok,
-            "reason": status.reason or None,
+            "reason": reason,
         }, capability
     # Otherwise: name the backend that DOES read it, and say what stands in the
     # way. Both reasons are actionable and they are different actions — one is
@@ -1432,6 +1459,11 @@ class CacheReading(NamedTuple):
     tag: str | None = None
     runner_code: str | None = None
     runner_reason: str | None = None
+    #: EVERY runner code whose format check accepts this snapshot
+    #: (`_RepoMeta.loaders`), not only the one `_engine` named: two runners of
+    #: one capability can both read a repo (mflux and diffusers on FLUX.2), and
+    #: `registry.resolve_for_model` picks among them (D1451).
+    loaders: tuple[str, ...] = ()
 
 
 def embed_family(repo_id: str) -> str | None:
@@ -1504,6 +1536,25 @@ def embed_media(repo_id: str) -> tuple[str, ...] | None:
     return tuple(embed_common.EMBED_MEDIA.get(family, ()))
 
 
+def repo_dir_for(repo_id: str) -> str | None:
+    """`repo_id`'s cache folder, or None when the id is not one path segment.
+
+    The one derivation of `models--<owner>--<name>` and its path-segment guard: a
+    repo id reaches here out of a request body and is not a place to go looking
+    for `..` or a path separator.
+    """
+    dirname = "models--" + repo_id.replace("/", "--")
+    if dirname != os.path.basename(dirname) or ".." in dirname or "\\" in dirname:
+        return None
+    return os.path.join(hub_cache_dir(), dirname)
+
+
+def repo_signature(repo_id: str) -> tuple | None:
+    """Public `_repo_signature` for a repo id (None for an unusable id)."""
+    repo_dir = repo_dir_for(repo_id)
+    return None if repo_dir is None else _repo_signature(repo_dir)
+
+
 def _embed_snapshot_dir(repo_id: str) -> str | None:
     """`repo_id`'s default cached snapshot directory, or None.
 
@@ -1512,10 +1563,10 @@ def _embed_snapshot_dir(repo_id: str) -> str | None:
     a repo id reaches both of these out of a request body and is not a place to
     go looking for `..` or a path separator.
     """
-    dirname = "models--" + repo_id.replace("/", "--")
-    if dirname != os.path.basename(dirname) or ".." in dirname or "\\" in dirname:
+    repo_dir = repo_dir_for(repo_id)
+    if repo_dir is None:
         return None
-    return _default_snapshot(os.path.join(hub_cache_dir(), dirname))
+    return _default_snapshot(repo_dir)
 
 
 def has_vision_tower(repo_id: str) -> bool:
@@ -1651,13 +1702,11 @@ def cached_capability(repo_id: str) -> CacheReading:
     on disk is `cached=False` — an interrupted download leaves a folder behind,
     and a folder is not evidence.
     """
-    dirname = "models--" + repo_id.replace("/", "--")
-    # Built from a request body, so it is checked to be one path segment, the
-    # same way `_segment` checks a delete target. Anything else reads as "not
-    # cached" rather than as a path to go looking at.
-    if dirname != os.path.basename(dirname) or ".." in dirname or "\\" in dirname:
+    # Built from a request body: `repo_dir_for` checks it is one path segment.
+    # Anything else reads as "not cached" rather than as a path to look at.
+    repo_dir = repo_dir_for(repo_id)
+    if repo_dir is None:
         return CacheReading(False, None, None)
-    repo_dir = os.path.join(hub_cache_dir(), dirname)
     if not os.path.isdir(repo_dir) or _default_snapshot(repo_dir) is None:
         return CacheReading(False, None, None)
 
@@ -1709,7 +1758,8 @@ def cached_capability(repo_id: str) -> CacheReading:
     return CacheReading(True, capability, looks_like,
                         reading.support, reading.reason, reading.tag,
                         _row.get("code") if _row else None,
-                        _row.get("reason") if _row else None)
+                        _row.get("reason") if _row else None,
+                        tuple(meta.loaders))
 
 
 def _article(word: str) -> str:
@@ -2207,10 +2257,9 @@ def discard_empty_shell(repo_id: str) -> bool:
     thread's way out, and a cache folder it could not tidy is not a reason to
     turn a cancelled download into an error.
     """
-    dirname = "models--" + repo_id.replace("/", "--")
-    if dirname != os.path.basename(dirname) or ".." in dirname or "\\" in dirname:
+    repo_dir = repo_dir_for(repo_id)
+    if repo_dir is None:
         return False
-    repo_dir = os.path.join(hub_cache_dir(), dirname)
     try:
         if not os.path.isdir(repo_dir) or os.path.islink(repo_dir):
             return False
