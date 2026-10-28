@@ -12,34 +12,14 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  /* THE 8px GUTTER IS RESERVED IN EVERY STATE, which is what legacy gets for
-     free and what makes the single-scroller lock below invisible (visual pass
-     3, FIX-20).
-
-     `#logwrap` is `overflow-y: auto` in T and never anything else, so its
-     scrollbar gutter is always there: `clientWidth` reads 372 whatever is on
-     screen. Here `.is-locked` swaps to `overflow-y: hidden` while a tall card
-     is pinned, and THAT DROPS THE GUTTER — the content box went 372 → 380 and
-     every block in the column widened with it, so a card open or close reflowed
-     the whole transcript 8px: the plan and question cards measured 340 against
-     the Bash card's 332, option rows 310 against 302, and a right-aligned
-     receipt jumped from x 205.8 to 213.8. Native disagreed with itself as well
-     as with legacy (FIX-26 is this arithmetic, not a second bug).
-     `scrollbar-gutter: stable` reserves the space whether or not a scrollbar is
-     drawn, and it applies to `overflow: hidden` too — a hidden scroll container
-     is still a scroll container — so the lock costs the column nothing. */
+  /* The 8px gutter is reserved in every state so the column never changes
+     width when a scrollbar appears or goes (it once did, when a tall open card
+     locked this box to overflow hidden; that lock is gone, the reservation
+     stays so the content box is stable). */
   scrollbar-gutter: stable;
-  /* NOT A SIZE CONTAINER (Akshil 2026-10-19, "the scroll inside claude chat is
-     completely broken"). This box used to carry `container-type: size` so the
-     pinned card's ceiling below could be written as `100cqh`, and in WebKit —
-     the desktop app — a scroll container that is also a size container LOSES
-     ITS SCROLL OFFSET when its content is rewritten: the streaming reply
-     replaces its own markup every frame, and a reader parked in the middle of
-     the conversation was thrown to the very top of it mid-reply, with no
-     script writing `scrollTop` at all. Chromium is unaffected, which is why
-     the bug never showed in a browser. The ceiling is now measured instead:
-     `Transcript` writes the port's height to `--c-port-h` from the same
-     ResizeObserver that keeps a pinned log pinned. */
+  /* NOT A SIZE CONTAINER: in WebKit a scroll container that is also a size
+     container loses its scroll offset when its content is rewritten (the
+     streaming reply replaces its markup every frame). Nothing here needs one. */
 }
 .chat-root .chat-logwrap::-webkit-scrollbar {
   width: 8px;
@@ -526,6 +506,18 @@
   word-break: break-word;
   padding-top: 2px;
 }
+/* "Worked for 2m 10s" at the foot of a finished reply: the lane stamp's quiet
+   type (11px, faint, tabular) in the text column. Margins are spelled out — no
+   preflight, and `.body > :last-child` would zero the bottom one. */
+.chat-root .turn.assistant .body > .turn-worked {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--c-faint);
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+  user-select: none;
+}
 /* NOT pre-wrap: everything in here is marked's BLOCK html, and marked
    separates blocks with a literal newline — under pre-wrap every one of those
    is a visible blank line, inside lists included (T:1866-1876). */
@@ -859,117 +851,23 @@
   color: var(--c-fg);
   border-color: var(--c-faint);
 }
+.chat-root .turn.working .stop + .stop {
+  margin-left: 6px;
+}
 .chat-root .turn.working .stop:disabled {
   opacity: 0.55;
   cursor: default;
 }
 
-/* ── the tail pin: an OPEN card is always on screen (#17) ───────────────────
-   A card the run is blocked on is not a thing to scroll to. T's rule was
-   "mounted last, above the status line" plus one scroll-to-bottom per card, and
-   that is enough right up until the reader scrolls up to re-read the reply —
-   then the status line under the composer says "Waiting for your approval" and
-   the control it means is off screen with no way to find it but the scrollbar.
-
-   So the open block STICKS to the bottom of the scrollport, and it sticks only
-   while it is open: `.is-pinned` is on the wrapper exactly when there is an
-   unanswered card in it. The moment it is answered the card is parked back in
-   its turn at the point it came from (Transcript's `parkedAfter`) and this
-   wrapper goes back to being a plain block holding the working line — a receipt
-   pinned over the transcript for the rest of the session would be worse than
-   the bug.
-
-   Sticky on the WRAPPER and not on the card: the card is one of several open
-   ones, and a per-card sticky box stacks them on top of each other at the same
-   `bottom: 0`. */
-.chat-root .chat-tailpin.is-pinned {
-  position: sticky;
-  bottom: 0;
-  z-index: 2;
-  /* An opaque ground, or the turns scrolling under it read through the card's
-     own translucent tints. The negative side margins let the ground reach the
-     column's padding so nothing shows down the sides; the padding puts it back
-     for the content. */
-  margin: 0 -20px;
-  padding: 10px 20px 0;
-  /* `--c-panel` AND NOT `--c-bg` (visual pass 3, FIX-21): the ground has to be
-     the colour of the column it interrupts, and the column is `--c-panel` —
-     legacy's `#chat` (T:1254-1284), and this sheet's `.c-chat` since FIX-12b.
-     At `--c-bg` this painted `rgb(25,26,30)` over a `rgb(30,32,37)` column in
-     dark, and in LIGHT a pure-white ~280px band across an off-white column,
-     which was the most visible single defect in the pass. The rule's own
-     argument above — an opaque ground, or the turns scrolling under it read
-     through the card's translucent tints — is right; only the token was wrong.
-     It is also half of FIX-22: the card's surface was raised to compensate for
-     a ground that was too dark, and with the ground fixed T's own value fits. */
-  background: var(--c-panel);
-  /* AT MOST THE WHOLE SCROLLPORT, and the 70% ceiling that used to be here is
-     GONE (R3-4, owner: "remove the 70% cap — it causes double scroll").
-     R2-4 asked for the reply to stay readable beside the card and got it by
-     capping the pin, which put a SECOND scrollbar next to the transcript's on
-     every card taller than that — and two scrollers on one axis mean the wheel
-     is answered by whichever box the pointer is over. So the pin may fill the
-     port, and the two states are now told apart by MEASUREMENT rather than by a
-     fraction (`Transcript`'s `pinFull`): a card that fits leaves the transcript
-     scrollable behind it, and a card that does not fit becomes the only
-     scroller there is (`.chat-logwrap.is-locked` below).
-     `overscroll-behavior: contain` so reaching the end of the card does not
-     hand the wheel on to the transcript behind it — the reader would lose the
-     card they were reading.
-     `--c-port-h` is the scrollport's own height, measured (see the note at
-     `.chat-logwrap` above for why it is not `100cqh`). `vh` is the wrong unit
-     here — this box is 380px tall in a cards-wall tile and a third of a screen
-     in Peek — so the fallback is only for a port that has never been measured. */
-  max-height: var(--c-port-h, 100vh);
-  overflow-y: auto;
-  overscroll-behavior: contain;
-}
-/* THE SECOND HALF OF "ONE SCROLLER" (R3-4): while a pinned card is taller than
-   the port it covers the transcript completely, so the transcript's own
-   scrolling is not something the reader can see the effect of — only its
-   scrollbar, sitting beside the card's. It is locked for exactly as long as
-   that is true, and `Transcript` parks and restores `scrollTop` across the
-   lock because `overflow: hidden` clamps it to 0. */
-.chat-root .chat-logwrap.is-locked {
-  overflow-y: hidden;
-}
-/* THE PIN IS NOW THE SCROLLER, so the card inside it must not be a second one:
-   two nested scrollers on the same axis mean the reader's wheel is answered by
-   whichever box the pointer happens to be over. Same rule the open "Other" row
-   already applies inside the card (`.qscroll:has(.qopt.qother.typing)`). */
-.chat-root .chat-tailpin.is-pinned .perm.ask .qscroll,
-.chat-root .chat-tailpin.is-pinned .perm.ask .qscroll.is-tabbed {
-  max-height: none;
-  overflow: visible;
-}
-/* A hairline of fade above the pin, so a reply scrolling under it ENDS rather
-   than being cut. `::before` on the sticky box itself: it travels with it. */
-.chat-root .chat-tailpin.is-pinned::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 100%;
-  height: 18px;
-  pointer-events: none;
-  /* The far stop is the PIN'S ground, not the page's: at `--c-bg` the gradient
-     dissolved into a colour the column never paints and the fade read as a
-     grey smear (FIX-21). The two move together, always. */
-  background: linear-gradient(to top, var(--c-panel), transparent);
-}
-/* The last turn needs somewhere to go: without this the bottom of the reply
-   sits permanently behind the pin and can never be scrolled into view.
-   T'S OWN 12px and not the 8px this shipped with (FIX-20): `#log` is
-   `padding: 24px 20px 12px` in EVERY state in T, and there was no argument
-   anywhere for the pin needing 4px less tail room than the container gives —
-   the pin already has its own 10px of top padding for the gap it wanted. */
-.chat-root .chat-log:has(.chat-tailpin.is-pinned) {
-  padding-bottom: 12px;
-}
-@media (prefers-reduced-motion: reduce) {
-  .chat-root .chat-tailpin.is-pinned {
-    animation: none;
-  }
+/* ── the tail wrapper: an OPEN card is a normal block at the end of the log ──
+   User request 2026-10-23: the question must be part of the conversation and
+   must not block reading the chat. The open card is ordinary flow content after
+   the last turn: nothing sticks, covers or scrolls on its own, and the
+   transcript is the only scroller. `Transcript` scrolls a newly opened card
+   into view when it appears. `.has-open` is on the wrapper exactly when there
+   is an unanswered card in it; it only supplies the gap above the card. */
+.chat-root .chat-tailpin.has-open {
+  padding-top: 10px;
 }
 
 /* ── permission / question / plan cards (T:2033-2380) ───────────────────── */
@@ -1127,26 +1025,6 @@
   flex-wrap: wrap;
   gap: 8px;
   margin-top: 10px;
-}
-/* THE BUTTONS NEVER SCROLL AWAY (2026-10-12). A fully expanded command can be
-   taller than the pane; the pinned tail then becomes the single scroller
-   (above), and this row sticks to its bottom edge so Allow/Deny stay in view
-   while the reader scrolls the payload past them. Scoped to the pin: in the
-   transcript proper a card is a receipt or an unanswered card the reader is
-   scrolling past, and a row stuck to the log's bottom would cover the reply.
-   The negative inline margins carry the card's own ground (opaque
-   `--c-card-bg`, both themes) to the card's border so the payload does not
-   show down the sides; the padding puts the buttons back where they were. */
-.chat-root .chat-tailpin.is-pinned .perm .perm-actions,
-.chat-root .chat-tailpin.is-pinned .perm .gate-actions {
-  position: sticky;
-  bottom: 0;
-  z-index: 1;
-  background: var(--c-card-bg);
-  /* Net spacing above the row stays 10px (2 + 8), but the 8 is PAINTED, so a
-     stuck row keeps a gap of card ground between the payload and the buttons. */
-  margin: 2px -14px -6px;
-  padding: 8px 14px 6px;
 }
 .chat-root .perm .perm-btn {
   font: inherit;

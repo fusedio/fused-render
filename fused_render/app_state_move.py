@@ -50,18 +50,30 @@ def rewrite_stores(old_root: str, new_root: str) -> None:
              workspace_migration.rewrite_absolute_paths),
             ("current_apps.json", _rewrite_current_apps),
             ("registered_apps.json", _rewrite_registered),
-            ("app_recents.json", _rewrite_app_recents)):
+            ("app_recents.json", _rewrite_app_recents),
+            ("contrib/apps.json", _rewrite_contrib)):
         try:
             fn(old_root, new_root)
         except Exception:  # noqa: BLE001 — the render path is behind this
             logger.exception("could not re-root %s after the app moved", label)
 
 
+def _rewrite_contrib(old_root: str, new_root: str) -> None:
+    """The contribution loop's install-source records (contrib/store.py),
+    keyed by folder: a moved copy keeps what it follows, its proposal and
+    its backups list. The store's own `move` refuses to overwrite a record
+    the new folder already has."""
+    from fused_render.contrib import store
+
+    if store.move(old_root, new_root):
+        logger.info("re-rooted moved app in %s", store.path())
+
+
 def _rewrite_current_apps(old_root: str, new_root: str) -> None:
     """The desk stores canonical absolute paths. If the new path is already a
     row (a task ran there before this open), the stale row just drops."""
-    # Under current_apps' own lock (D1386): the desk is now read-modify-written
-    # by a drag (`set_order`) and by `observe` on every listing, so an unlocked
+    # Under current_apps' own lock (D1386): the desk is read-modify-written by
+    # `observe` on every listing and by the one-off gestures, so an unlocked
     # rewrite here could hand back a snapshot taken before either and erase it.
     from fused_render import current_apps
 

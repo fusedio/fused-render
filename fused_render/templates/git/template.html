@@ -350,6 +350,16 @@
     flex: none;
     margin-left: auto;
   }
+  /* A copy that follows someone else's app: the sentence that replaces Send,
+     quiet and clipped so the block keeps its width. */
+  .bar .remote .push-blocked {
+    max-width: 30ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+    color: var(--ink-3);
+  }
   /* The branch chip is the one element that absorbs a narrow pane. `0 1 auto`,
      not `1 1 auto`: it must SHRINK but never GROW, because growing would make
      it eat the bar's whole free width on a wide pane and leave a mostly-empty
@@ -2001,7 +2011,16 @@ function toolbar(data) {
      because they are the one thing left to do; "Check for updates" and
      "Publish to GitHub" stay outlined, as offers rather than the next step. An
      outlined Send after a commit read as one more grey button and was missed. */
-  const canPush = remote && !repo.detached;
+  /* `push_blocked` (a plain sentence): this copy follows someone else's app
+     on GitHub (contrib §16.8) and never sends from here — its edits go out
+     as a proposal from the app's page — so Send and Publish branch are not
+     offered at all; ops.py refuses a push with the same sentence. Where Send
+     would have been, the sentence says so (clipped to the bar, whole in its
+     tooltip). */
+  const canPush = remote && !repo.detached && !repo.push_blocked;
+  if (remote && ahead && !behind && repo.push_blocked) {
+    group.append(el("span", { className: "push-blocked", title: repo.push_blocked }, repo.push_blocked));
+  }
   if (!remote) {
     /* No remote used to be a dead end — a greyed-out button with nothing
        behind it. `gh repo create --source --push` does the whole job in one
@@ -2015,6 +2034,29 @@ function toolbar(data) {
       title: "Create a repository on GitHub from this folder and push to it",
       expanded: panel === "publish",
       onClick: () => setParams({ panel: panel === "publish" ? null : "publish" }),
+    }));
+  } else if (behind && repo.push_blocked
+             && (ahead || (repo.guard && repo.guard.kind === "marketplace"))) {
+    /* A marketplace copy (contrib §18.4) takes this branch even with
+       nothing of its own: its plain pull would fetch the author's
+       unreviewed tip, so Get latest is always the engine's (which brings in
+       the reviewed release); `behind` here counts against the mirror, which
+       holds the approved commit. */
+    /* A copy of someone else's app (contrib §17.8) with commits of its own the
+       author's version lacks can't fast-forward onto it: `git pull --ff-only`
+       would only ever say "diverged — do it in a terminal". The server's
+       get-latest runs the loop's own Bring in instead (the same move
+       auto-sync makes on app open, with its backup and Activity line), and
+       answers in plain words. With nothing of its own (`ahead` 0) such a copy
+       is just behind, and the plain pull below runs. */
+    const bringIn = repo.bring_in_label || "Bring in the latest";
+    group.append(action("pull", [icon(PULL_GLYPH, 14), btnLabel(bringIn)], {
+      className: "primary",
+      label: bringIn + " — " + plural(behind, "commit") + " to bring in",
+      count: behind,
+      title: "Combine the author's latest with your changes; your changes are kept",
+      onClick: () => run("pull", { server: "/api/git-upstream",
+                                   body: { action: "get-latest", path: file } }),
     }));
   } else if (behind) {
     group.append(action("pull", [icon(PULL_GLYPH, 14), btnLabel("Get latest")], {
@@ -4607,7 +4649,15 @@ async function run(key, args, then, context) {
   draw(true);                       // repaint with the control disabled
   let payload;
   try {
-    payload = await fused.runPython(OPS, Object.assign({ file }, args));
+    if (args && args.server) {
+      /* A move the server owns (a guarded copy's Get latest): the answer is
+         already `{ok, message}` in plain words — the receipt below reads
+         `detail` on success, so the message is copied there. */
+      payload = await ghFetch(args.server, { method: "POST", body: args.body });
+      if (payload && payload.ok && !payload.detail) payload.detail = payload.message;
+    } else {
+      payload = await fused.runPython(OPS, Object.assign({ file }, args));
+    }
   } catch (err) {
     /* A crash in ops.py is still a message in this view, not the red traceback
        overlay: the overlay is a debugging affordance for a view's own bug. */

@@ -38,9 +38,19 @@ describe("HeroComposer attachments", () => {
 });
 
 describe("HeroComposer model / effort", () => {
-  it("offers no Auto option and a pick writes the global pair", () => {
+  it("offers no Auto option and a pick stays this composer's own", () => {
     expect(HERO).not.toMatch(/label: "Auto"/);
-    expect(HERO).toContain("setClaudeDefaults({ model: next })");
-    expect(HERO).toContain("setClaudeDefaults({ effort: next })");
+    // The Claude settings page is the ONE editor of the global pair: a pick
+    // here rides on createApp into the new app's task and is never written back.
+    expect(HERO).not.toContain("setClaudeDefaults");
+    expect(HERO).toContain("picked.current.model = true");
+    expect(HERO).toContain("picked.current.effort = true");
+    // The picks reach the create calls: the pick lands in state, and both the
+    // direct and the free-name create carry model + effort.
+    expect(HERO).toContain("setModel(next)");
+    expect(HERO).toContain("await createApp(name, fullPrompt(), model, effort, images, agent)");
+    expect(HERO).toMatch(
+      /createAppUnderFreeName\(\s*name,\s*fullPrompt\(\),\s*model,\s*effort,\s*images,\s*agent,?\s*\)/,
+    );
   });
 });

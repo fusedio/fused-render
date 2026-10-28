@@ -2448,7 +2448,12 @@
   }
 
   async function saveAs(firstSave) {
-    const fileDir = FILE.slice(0, FILE.lastIndexOf("/"));
+    // A backslash separates only a Windows-form path; a drive root keeps its
+    // slash (bare "C:" is cwd-relative).
+    const winForm = /^([A-Za-z]:[\\/]|\\\\)/.test(FILE);
+    const cut = winForm ? Math.max(FILE.lastIndexOf("/"), FILE.lastIndexOf("\\")) : FILE.lastIndexOf("/");
+    let fileDir = FILE.slice(0, Math.max(0, cut));
+    if (/^[A-Za-z]:$/.test(fileDir)) fileDir += FILE[cut];
     const start = await py({ action: "listdir", path: firstSave ? "~/Documents" : fileDir }).catch(() => null);
     let dir = start ? start.path : firstSave ? "" : fileDir;
     const homeDir = start ? start.home : "";

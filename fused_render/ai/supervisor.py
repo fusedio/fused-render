@@ -1719,7 +1719,7 @@ def _runner_or_raise(capability: str, model: str | None = None) -> registry.Runn
     three wrong answers the moment text generation had two — all three named the
     Apple Silicon runner on machines that were never going to use it.
     """
-    # With a MODEL in hand the runner follows the model (D1431): a pin, then
+    # With a MODEL in hand the runner follows the model (D1448): a pin, then
     # the runners that read it, with the capability's preference as the
     # tie-breaker. Without one it is the capability-level answer as before.
     runner = (registry.resolve_for_model(capability, model).runner if model
@@ -2765,7 +2765,7 @@ def evict_stale_engines() -> list[str]:
         workers = list(_workers.values())
     stale = []
     for worker in workers:
-        # The resolution FOR THE RESIDENT MODEL (D1431): the capability-level
+        # The resolution FOR THE RESIDENT MODEL (D1448): the capability-level
         # answer would call a model stale whenever its serving runner is
         # not the one the preference names, and restart it forever. Resolved
         # OUTSIDE `_lock`: it reads prefs.json and the cache folder.
@@ -3166,6 +3166,9 @@ def _hub_catalog_refresh_tick() -> None:
             logger.exception("hub-catalog refresh failed for %s", capability)
 
 
+_hub_catalog_refresh_lock = threading.Lock()
+
+
 def start_hub_catalog_refresh() -> None:
     """Start the daily hub-catalog delta-refresh thread, once per process —
     modeled directly on `start_hardware_refresh`/`start_hub_metadata_refresh`
@@ -3174,6 +3177,9 @@ def start_hub_catalog_refresh() -> None:
     thread sleeps and re-sweeps forever). A failed sweep is logged and never
     kills the loop, same as its two siblings."""
     global _hub_catalog_refresh_thread
+    # Called on every AI catalog read (lazy start, no boot hook): the
+    # unlocked is_alive check is the cheap path; the lock makes two racing
+    # first calls start one thread.
     if _hub_catalog_refresh_thread is not None and _hub_catalog_refresh_thread.is_alive():
         return
 
@@ -3185,9 +3191,22 @@ def start_hub_catalog_refresh() -> None:
                 logger.exception("hub-catalog refresh tick failed")
             time.sleep(_HUB_CATALOG_REFRESH_INTERVAL_S)
 
-    _hub_catalog_refresh_thread = threading.Thread(
-        target=run, name="ai-hub-catalog-refresh", daemon=True)
-    _hub_catalog_refresh_thread.start()
+    with _hub_catalog_refresh_lock:
+        if (_hub_catalog_refresh_thread is not None
+                and _hub_catalog_refresh_thread.is_alive()):
+            return
+        _hub_catalog_refresh_thread = threading.Thread(
+            target=run, name="ai-hub-catalog-refresh", daemon=True)
+        _hub_catalog_refresh_thread.start()
+
+
+def start_hub_refreshers() -> None:
+    """Lazy start of the two Hub refresh threads (metadata sweep, daily catalog
+    delta). Neither runs at boot: the first AI catalog read starts them,
+    idempotently and cheaply on every later call. The one place both are
+    listed; add any further Hub refresher here."""
+    start_hub_metadata_refresh()
+    start_hub_catalog_refresh()
 
 
 #: How long `unload_all` waits for an in-progress eviction's `_terminate` to

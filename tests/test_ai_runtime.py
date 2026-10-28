@@ -867,7 +867,7 @@ def test_a_preference_naming_something_that_is_not_a_runner_is_ignored(monkeypat
     assert "not a runner this build knows" in resolution.ignored_reason
 
 
-# -- model-derived resolution and per-model pins (D1431) -------------------------
+# -- model-derived resolution and per-model pins (D1448) -------------------------
 #
 # FLUX.2 on an Apple Silicon Mac is the case that has two readers: `mflux-image`
 # and `diffusers-image` are both available there, so what decides is the model.
@@ -8386,7 +8386,7 @@ def test_ltx_video_request_shape_follows_its_own_traits(client, fake_ltx_video_r
 
 def test_naming_the_OTHER_video_engines_cached_model_is_served_by_that_engine(
         client, monkeypatch, tmp_path):
-    """Naming a model PICKS its runner (D1431, replacing the refusal this test
+    """Naming a model PICKS its runner (D1448, replacing the refusal this test
     used to pin).
 
     The route used to refuse with a 409 when the named repo's cached format

@@ -73,7 +73,7 @@ export const GROUPS: readonly SettingsGroup[] = [
   {
     id: "features",
     nav: "app",
-    label: "Labs",
+    label: "Experimental flags",
     badge: "Beta",
     blurb: "Off by default and still settling. Each one adds a sidebar row or a page when you turn it on.",
   },
@@ -130,7 +130,15 @@ export interface SettingEntry {
   /** Whether the running app can honour this at all (a server-reported
    *  capability). Absent = always. */
   available?: (ctx: SettingsContext) => boolean;
+  /** A device capability the row depends on. When the server lists it under
+   *  `prefs.unavailable`, the row stays visible but disabled, with the reason
+   *  in place of its status line (see `unavailableReason`). Unlike `available`,
+   *  which hides a row for logic, this is for "this machine lacks it". */
+  needs?: DeviceFeature;
 }
+
+/** The keys of `prefs.unavailable` (fused_render/shell/prefs.py). */
+export type DeviceFeature = "index" | "hf" | "fused" | "update" | "native_windows" | "terminal";
 
 export interface SettingsContext {
   prefs: Prefs;
@@ -164,12 +172,12 @@ const ENTRIES = [
   },
   {
     id: "native-windows",
+    needs: "native_windows",
     group: "general",
     section: "Windows",
     label: "Open in native windows",
     description: "Use the app's own windows instead of browser tabs. Turning this off closes them and opens everything in your default browser.",
     keywords: "browser tabs window desktop safari chrome",
-    available: ({ prefs }) => !!prefs.native_windows?.available,
   },
   {
     id: "launcher-hotkey",
@@ -200,6 +208,7 @@ const ENTRIES = [
   },
   {
     id: "auto-update",
+    needs: "update",
     group: "general",
     section: "Updates",
     label: "Download updates automatically",
@@ -233,6 +242,14 @@ const ENTRIES = [
     keywords: "openai codex chatgpt gpt agent backend cli sign in login",
   },
   {
+    id: "agent-gemini",
+    group: "ai",
+    section: "Agents",
+    label: "Google Gemini CLI",
+    description: "Runs chats and tasks with your Google account or a Gemini API key. Bots keep using Claude.",
+    keywords: "google gemini agent backend cli sign in login api key",
+  },
+  {
     id: "agent-default",
     group: "ai",
     section: "Agents",
@@ -240,10 +257,11 @@ const ENTRIES = [
     description: "With more than one agent on, new chats and tasks start here. A conversation keeps the agent it started with.",
     keywords: "default agent backend",
     child: true,
-    // Two or more of the three on: a default only means something when there
+    // Two or more of the four on: a default only means something when there
     // is a choice to make.
     available: ({ prefs }) =>
-      [prefs.agents?.claude, prefs.agents?.copilot, prefs.agents?.codex].filter(Boolean).length >= 2,
+      [prefs.agents?.claude, prefs.agents?.copilot, prefs.agents?.codex, prefs.agents?.gemini]
+        .filter(Boolean).length >= 2,
   },
   {
     id: "claude-model",
@@ -302,9 +320,9 @@ const ENTRIES = [
     id: "task-summary-titles",
     group: "tasks",
     section: "Titles",
-    label: "Summary-only titles",
-    description: "Keep each task's title fixed to Claude's one-line summary of the session (or its first message). Titles no longer change with your latest message or Claude's latest reply. Overrides AI recap titles.",
-    keywords: "summary title name fixed stable rename",
+    label: "Stable AI titles",
+    description: "Name each task with a short AI title for what the conversation is about. The title is refreshed every few turns as the work moves on, never with each new message or reply. Uses Haiku. Overrides AI recap titles.",
+    keywords: "summary title name fixed stable rename ai stable haiku",
   },
   {
     id: "claude-strict-mcp",
@@ -332,6 +350,7 @@ const ENTRIES = [
   },
   {
     id: "notify-terminal",
+    needs: "terminal",
     group: "tasks",
     section: "Notifications",
     label: "Notify for terminal sessions",
@@ -349,24 +368,19 @@ const ENTRIES = [
     keywords: "git push pull commit fast-forward sync github remote auto",
     renderOnly: true,
   },
+  // Owner 2026-10-27: three switches decide what Share offers — Public link
+  // (this row), Contributing (the GitHub card + install link) and Remix.
+  // The Share button itself is there when any of them is on
+  // (share-app-flag.ts `useAppShareOffered`); .fused file export always.
   {
     id: "share-sheet",
+    needs: "fused",
     group: "apps",
     section: "Sharing",
-    label: "Share sheet",
-    description: "Replace Export with one Share button: a public link on your Fused account, or a .fused file.",
-    keywords: "share export link publish .fused file public download",
+    label: "Public link",
+    description: "Share an app as a public link on your Fused account. The Share button offers it next to the .fused file.",
+    keywords: "share export link publish .fused file public download canvas account",
     renderOnly: true,
-  },
-  {
-    id: "github-link",
-    group: "apps",
-    section: "Sharing",
-    label: "Offer a GitHub install link",
-    description: "For an app whose folder is its own GitHub repository, once everything is pushed.",
-    keywords: "github udf.ai repo install link share",
-    renderOnly: true,
-    child: true,
   },
   {
     id: "live-previews",
@@ -377,10 +391,47 @@ const ENTRIES = [
     keywords: "thumbnail preview iframe cards live hover image",
     renderOnly: true,
   },
+  // Community: the store of reviewed, open-source apps (one switch), the
+  // GitHub contribution loop (one switch), and Remix on its own
+  // (docs/CONTRIB_LOOP.md §1). Off by default.
+  {
+    id: "marketplace",
+    group: "apps",
+    section: "Community",
+    label: "Community",
+    description:
+      "The community store of reviewed, open-source apps: a Community row in the sidebar and its pages. Every release is reviewed by Fused before it reaches you, and you can list your own apps there.",
+    keywords: "marketplace store community apps gallery install reviewed releases publish open source",
+    renderOnly: true,
+    badge: "Beta",
+  },
+  {
+    id: "contrib",
+    group: "apps",
+    section: "Community",
+    label: "Contributing",
+    description:
+      "Cards say whether an app is yours or follows someone else's, and Share offers its GitHub install link. Your edits to someone else's app stay on top of theirs and you can propose them to the author; proposals to your apps show up on the app with a safety review to try, accept or decline. Once accepted, your copy goes back to following theirs and you're credited.",
+    keywords:
+      "community apps contribute follow author source origin propose proposals proposal edits pull request inbox review accept decline merged accepted credit contributors github install link",
+    renderOnly: true,
+    badge: "Beta",
+  },
+  {
+    id: "contrib-remix",
+    group: "apps",
+    section: "Community",
+    label: "Remix",
+    description: "Publish your changed version as an app of your own, credited to the original.",
+    keywords: "community contribute remix fork publish credit original",
+    renderOnly: true,
+    badge: "Beta",
+  },
 
   // ── File index ───────────────────────────────────────────────────────────
   {
     id: "indexing",
+    needs: "index",
     group: "indexing",
     section: "Index",
     label: "File indexing",
@@ -390,6 +441,7 @@ const ENTRIES = [
   },
   {
     id: "ranked-search",
+    needs: "index",
     group: "indexing",
     section: "Index",
     label: "Rank results by relevance",
@@ -399,6 +451,7 @@ const ENTRIES = [
   },
   {
     id: "low-impact",
+    needs: "index",
     group: "indexing",
     section: "Index",
     label: "Low-impact indexing",
@@ -408,6 +461,7 @@ const ENTRIES = [
   },
   {
     id: "skipped-folders",
+    needs: "index",
     group: "indexing",
     section: "Scope",
     label: "Skipped folders",
@@ -417,6 +471,7 @@ const ENTRIES = [
   },
   {
     id: "rebuild-index",
+    needs: "index",
     group: "indexing",
     section: "Maintenance",
     label: "Rebuild the index",
@@ -425,9 +480,10 @@ const ENTRIES = [
     renderOnly: true,
   },
 
-  // ── Labs ─────────────────────────────────────────────────────────────
+  // ── Experimental flags ─────────────────────────────────────────────────────────────
   {
     id: "canvases",
+    needs: "fused",
     group: "features",
     section: "Sidebar",
     label: "Canvases",
@@ -437,6 +493,7 @@ const ENTRIES = [
   },
   {
     id: "canvases-embed-proxy",
+    needs: "fused",
     group: "features",
     section: "Sidebar",
     label: "Load a custom deployment's workbench through a local proxy",
@@ -446,15 +503,6 @@ const ENTRIES = [
     child: true,
     // Only means something while Canvases is offered at all.
     available: ({ prefs }) => prefs.canvases?.enabled === true,
-  },
-  {
-    id: "marketplace",
-    group: "features",
-    section: "Sidebar",
-    label: "Marketplace",
-    description: "Browse, install and update community apps from the sidebar.",
-    keywords: "store community apps gallery install",
-    renderOnly: true,
   },
   {
     id: "monitor",
@@ -499,6 +547,7 @@ const ENTRIES = [
   // ── Accounts ─────────────────────────────────────────────────────────────
   {
     id: "fused-account",
+    needs: "fused",
     group: "integrations",
     section: "Sign-ins",
     label: "Fused account",
@@ -508,6 +557,7 @@ const ENTRIES = [
   },
   {
     id: "workbench-env",
+    needs: "fused",
     group: "integrations",
     section: "Sign-ins",
     label: "Default environment",
@@ -518,6 +568,7 @@ const ENTRIES = [
   },
   {
     id: "huggingface",
+    needs: "hf",
     group: "integrations",
     section: "Sign-ins",
     label: "Hugging Face",
@@ -528,9 +579,9 @@ const ENTRIES = [
     id: "agent-signin",
     group: "integrations",
     section: ELSEWHERE,
-    label: "Claude Code, Copilot and Codex sign-in",
+    label: "Claude Code, Copilot, Codex and Gemini sign-in",
     description: "Shown with each agent's health under Coding agents.",
-    keywords: "claude login anthropic copilot github codex openai chatgpt sign in",
+    keywords: "claude login anthropic copilot github codex openai chatgpt gemini google sign in",
     elsewhere: true,
   },
 
@@ -563,6 +614,7 @@ const ENTRIES = [
   },
   {
     id: "index-query",
+    needs: "index",
     group: "advanced",
     section: "Index query",
     label: "Query the file index",
@@ -600,6 +652,15 @@ export function isVisible(entry: SettingEntry, ctx: SettingsContext): boolean {
   if (entry.macOnly && !entry.available && !ctx.mac) return false;
   if (entry.available && !entry.available(ctx)) return false;
   return true;
+}
+
+/** Why this row is disabled on this device, or null when it is usable. */
+export function unavailableReason(
+  entry: Pick<SettingEntry, "needs">,
+  ctx: Pick<SettingsContext, "prefs"> | null | undefined,
+): string | null {
+  if (!entry.needs) return null;
+  return ctx?.prefs?.unavailable?.[entry.needs] ?? null;
 }
 
 /** The entry in this flavor's words: Fused Bot's `bot` overrides applied. */

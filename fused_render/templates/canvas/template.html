@@ -241,7 +241,12 @@
   var emptyEl = document.getElementById("cv-empty");
 
   var file = fused.params.get("_file") || "";
-  var fileDir = file.slice(0, Math.max(0, file.lastIndexOf("/")));
+  // Windows drive paths arrive with backslashes; normalize before slicing so
+  // fileDir/folderName (and the sibling links built from them) stay correct.
+  var normFile = /^[A-Za-z]:[\\/]/.test(file) ? file.replace(/\\/g, "/") : file;
+  var fileDir = normFile.slice(0, Math.max(0, normFile.lastIndexOf("/")));
+  // A drive root keeps its slash: bare "C:" is cwd-relative.
+  if (/^[A-Za-z]:$/.test(fileDir)) fileDir += "/";
   var folderName = (fileDir.split("/").pop() || "canvas");
 
   // Header renders immediately from the path, BEFORE the reader runs — so a
@@ -333,7 +338,8 @@
   // ---- shell /view/ URL codec (mirrors router.ts urlForFsPath) -----------
   // Sibling files open in a NEW TAB (SPEC §28 out-of-scope: no in-shell nav).
   function urlForFsPath(fsPath) {
-    var rest = fsPath.replace(/^\/+/, "");
+    var norm = /^[A-Za-z]:[\\/]/.test(fsPath) ? fsPath.replace(/\\/g, "/") : fsPath;
+    var rest = norm.replace(/^\/+/, "");
     var encoded = rest.split("/").filter(Boolean).map(encodeURIComponent).join("/");
     return "/explorer/view/" + encoded;
   }
@@ -757,7 +763,7 @@
     clearPanel();
     var exts = siblings[n.udfName] || [];
     var files = exts.map(function (ext) {
-      var abs = fileDir + "/" + n.udfName + ext;
+      var abs = fileDir.replace(/\/$/, "") + "/" + n.udfName + ext;
       return '<a href="' + esc(urlForFsPath(abs)) + '" target="_blank" rel="noopener">'
         + esc(n.udfName + ext) + "</a>";
     }).join("");

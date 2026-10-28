@@ -27,4 +27,5 @@ export {
   type SegmentedTab,
 } from "./DetailLayout";
 export { StoreCard, type StoreCardProps } from "./StoreCard";
+export { VerifiedMark, type VerifiedMarkProps } from "./VerifiedMark";
 export { Delayed, Skel, CardSkeleton, RowSkeleton, DetailSkeleton } from "./Skeletons";

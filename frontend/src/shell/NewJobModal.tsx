@@ -10,6 +10,7 @@
 // Google's: the REPEAT choices are derived from the picked date-time ("Weekly
 // on Monday" because the date IS a Monday), so recurrence needs no fields of
 // its own — only "Custom (cron)…" reveals one extra input.
+import { canonFsPath } from "@platform/lib/path-url";
 import {
   useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState,
   type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject,
@@ -65,11 +66,11 @@ import { completionKeyAction, moveHighlight }
 // name a place" is exactly the divergence one shared rule prevents.
 //
 //   `isPathShapedQuery` — does the text NAME A PLACE at all: true for anything
-//     that escapes its base (leading `/`, `~`, `~/`, or a `..`
+//     that escapes its base (leading `/`, `~`, `~/`, a drive, or a `..`
 //     segment) and names no glob. A bare word is never an address, and the path
 //     check below has nothing to say about one.
 import { isPathShapedQuery } from "@apps/explorer/listing/path-shaped-query";
-//   `listingAddress`   — the Explorer's own `~`/relative expander: the
+//   `listingAddress`   — the Explorer's own `~`/drive/relative expander: the
 //     absolute path a typed address MEANS. The field goes on showing what the
 //     reader typed; everything that touches the disk asks this first.
 import { listingAddress } from "@apps/explorer/listing/listing-address";
@@ -111,7 +112,7 @@ import {
   taskRunLabel,
   taskRunOptions,
 } from "./schedule-lib";
-import { ICON_CLOCK, ICON_FOLDER, ICON_PLUS } from "./ScheduleCalendar";
+import { ICON_CLOCK, ICON_CPU, ICON_FOLDER, ICON_PLUS, ICON_SHIELD } from "./ScheduleCalendar";
 // `~/…` for a path under home — the one way this app shortens a folder, shared
 // with the Tasks page rather than written a second time here.
 // …and `projectMatches`, which is the Tasks toolbar's Project filter's OWN
@@ -139,7 +140,15 @@ import { onDraftChange } from "./tasksPulse";
 // not one that may not exist (whose only symptom is the server's 400 naming
 // the path). The picker makes changing it a click.
 export const defaultTargetOf = (c: Pick<Config, "home" | "fused_dir">) =>
-  c.fused_dir || c.home;
+  canonFsPath(c.fused_dir || c.home);
+
+// What a fresh form opens on: the last folder used when the user turned
+// "Remember last folder" on and there is one, else the workspace default.
+export const openingTargetOf = (
+  c: Pick<Config, "home" | "fused_dir">,
+  remember: boolean,
+  recents: string[],
+) => (remember && recents[0] ? recents[0] : defaultTargetOf(c));
 
 // ---- Recent paths --------------------------------------------------------
 // The path field's dropdown offers the last folders the user actually used,
@@ -219,8 +228,8 @@ function leafOf(p: string): string {
  *     a search for its own default would be the card searching for itself. It
  *     is the text that decides, not a "has been edited" flag, so leaving the
  *     field and coming back answers the same way it did before;
- *   · and it must NOT NAME A PLACE (`isPathShapedQuery`): a leading `/`, `~`
- *     or a `..` segment is an address, and an address is the case
+ *   · and it must NOT NAME A PLACE (`isPathShapedQuery`): a leading `/`, `~`, a
+ *     drive letter or a `..` segment is an address, and an address is the case
  *     above — recents, unchanged.
  *
  * Pure, and exported, because that decision is the whole feature and it is
@@ -339,12 +348,19 @@ const SESSION_FOLDERS_SHOWN = 5;
 // IS the pick (a task can target a file); "Use this folder" picks where you
 // stand.
 
-// A path split into the folder it lives in and its last segment.
+// Paths here are forward-slash throughout, including Windows drive paths
+// (`canonFsPath`): the server accepts either separator, but the PICKER's own
+// string surgery (up(), joins) only understands one.
+
+// A path split into the folder it lives in and its last segment. Drive roots
+// keep their slash — bare "C:" reads as cwd-relative elsewhere in the shell,
+// not as the root (the same trap the picker's climb fixed in PR #548).
 export function splitTargetPath(path: string): { parent: string; base: string } {
-  const norm = path.trim().replace(/\/+$/, "");
+  const norm = canonFsPath(path).trim().replace(/\/+$/, "");
   const cut = norm.lastIndexOf("/");
+  const parent = cut > 0 ? norm.slice(0, cut) : "/";
   return {
-    parent: cut > 0 ? norm.slice(0, cut) : "/",
+    parent: /^[A-Za-z]:$/.test(parent) ? parent + "/" : parent,
     base: norm.slice(cut + 1),
   };
 }
@@ -402,11 +418,16 @@ interface Crumb {
 
 // The path as clickable crumbs: every ancestor is one tap away, which is what
 // the old single "up" chevron made people hunt for (Akshil, 2026-08-15 — "not
-// intuitive"). Root renders as "/", each segment jumps there.
+// intuitive"). Root renders as "/" (or "C:/"), each segment jumps there.
 function crumbsOf(path: string): Crumb[] {
-  const rest = path.replace(/\/+$/, "").split("/").filter(Boolean);
-  const out = [{ name: "/", path: "/" }];
-  let acc = "";
+  const trimmed = path.replace(/\/+$/, "");
+  const drive = trimmed.match(/^[A-Za-z]:/)?.[0];
+  const rootPath = drive ? drive + "/" : "/";
+  const rest = (drive ? trimmed.slice(drive.length) : trimmed)
+    .split("/")
+    .filter(Boolean);
+  const out = [{ name: drive ?? "/", path: rootPath }];
+  let acc = drive ?? "";
   for (const seg of rest) {
     acc += "/" + seg;
     out.push({ name: seg, path: acc });
@@ -672,8 +693,9 @@ function ExplorerPanel({
   // A file target starts the panel in its PARENT — listing a file's "children"
   // is a guaranteed error banner.
   const [path, setPath] = useState(() => {
-    const p = start.replace(/\/+$/, "");
-    return p || "/";
+    const p = canonFsPath(start).replace(/\/+$/, "");
+    // A drive root keeps its slash: bare "C:" is cwd-relative.
+    return /^[A-Za-z]:$/.test(p) ? p + "/" : p || "/";
   });
   const [rows, setRows] = useState<{ name: string; dir: boolean }[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -715,7 +737,10 @@ function ExplorerPanel({
         if (!climbed.current && cut >= 0) {
           climbed.current = true;
           const parent = path.replace(/\/+$/, "").slice(0, cut);
-          setPath(parent || "/");
+          // A drive root keeps its slash — bare "C:" reads as cwd-relative
+          // elsewhere in the shell, not as the root (Bugbot, PR #548; the
+          // same trap the old picker's up() fixed in PR #541).
+          setPath(/^[A-Za-z]:$/.test(parent) ? parent + "/" : parent || "/");
           return;
         }
         setError(e.message);
@@ -824,7 +849,8 @@ function ExplorerPanel({
           ) : (
             <span key={c.path} className="schedule-picker-crumb-seg">
               {/* The root crumb IS "/", so a separator in front of the first
-                  real segment prints it twice — "//Users" (audit 2026-08-16). */}
+                  real segment prints it twice — "//Users" (audit 2026-08-16).
+                  A drive root ("C:") still takes one. */}
               {i > 0 && !(i === 1 && crumbs[0]?.name === "/") && (
                 <span className="schedule-picker-crumb-sep">/</span>
               )}
@@ -2123,7 +2149,7 @@ const DRAWABLE_MIMES = new Set(["image/png", "image/jpeg", "image/gif",
 
 export function attachmentKindOf(path: string): "image" | "file" {
   const dot = path.lastIndexOf(".");
-  const slash = path.lastIndexOf("/");
+  const slash = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
   const ext = dot > slash ? path.slice(dot).toLowerCase() : "";
   return DRAWABLE_EXTS.has(ext) ? "image" : "file";
 }
@@ -3305,6 +3331,9 @@ export default function NewJobModal({
   // through a bunch of folders but recents didn't update" (Akshil, 2026-08-16).
   // It is a single in-memory read on a user gesture, so per-open costs nothing.
   const [recentsOpen, setRecentsOpen] = useState(false);
+  const [rememberLast, setRememberLast] = useState(
+    () => getUiLayout().rememberLastFolder === true,
+  );
   const [recents, setRecents] = useState<string[]>([]);
   // Tier 1 is a fetch, so it is asked for once on mount and held. Exactly as
   // Home.tsx asks for it, and fire-and-forget for the same reason: a suggestion
@@ -3317,7 +3346,7 @@ export default function NewJobModal({
       (r) => {
         if (!alive) return;
         setSessionFolders(
-          r.folders.slice(0, SESSION_FOLDERS_SHOWN).map((f) => f.path),
+          r.folders.slice(0, SESSION_FOLDERS_SHOWN).map((f) => canonFsPath(f.path)),
         );
       },
       () => {},
@@ -3424,7 +3453,8 @@ export default function NewJobModal({
     // segment under it as a folder to be created.
     //
     // Expanded with the EXPLORER'S OWN expander (`listingAddress`), which is
-    // what its address bar resolves `~` and a relative path with. The field keeps showing `~/…`: what the reader typed is what they
+    // what its address bar resolves `~`, a drive letter and a relative path
+    // with. The field keeps showing `~/…`: what the reader typed is what they
     // read back, and the server expands it again on the way in
     // (`schedule.create`: `abspath(expanduser(target))`), so the stored target
     // is the real path either way.
@@ -3646,7 +3676,11 @@ export default function NewJobModal({
       (c) => {
         setHome(c.home);
         if (!editing) {
-          const fallback = defaultTargetOf(c);
+          const fallback = openingTargetOf(
+            c,
+            getUiLayout().rememberLastFolder === true,
+            readRecents(),
+          );
           setTarget((prev) => (prev === "" ? fallback : prev));
           setInitial((prev) =>
             prev.target === "" ? { ...prev, target: fallback } : prev,
@@ -4730,9 +4764,13 @@ export default function NewJobModal({
     // No plan mode for an agent without one (§7 `plan_mode`).
     .filter((m) => m !== "plan" || capsOf(agent).plan_mode)
     .sort((a, b) => permissionRank(a) - permissionRank(b));
-  // MODEL's value: the model alone — Thinking lives in the popover, so the four
-  // pills keep to one line.
-  const modelText = taskRunLabel(runModels, model) || "Default";
+  // MODEL's value: the model, then how hard it thinks in brackets — "Fable
+  // (med)" (owner, 2026-10-23: the effort was invisible outside the popover).
+  // Short and lowercase so the four pills keep to one line; nothing for a
+  // model that takes no effort.
+  const effortText = runEfforts.length ? taskRunLabel(runEfforts, effort) : "";
+  const modelText = (taskRunLabel(runModels, model) || "Default")
+    + (effortText ? ` (${effortText.toLowerCase().replace(/^medium$/, "med")})` : "");
 
   // THE WHERE POPOVER'S KEYS (arrows, Tab, Enter). On the pill's wrapper, not the
   // input: a row reached by Tab is focusable too. Escape is PropPill's — it
@@ -5253,7 +5291,8 @@ export default function NewJobModal({
               task row or the calendar chip (design: the card asks, the list
               stays quiet). */}
           <PropPill
-            k="Model"
+            k=""
+            icon={ICON_CPU}
             ariaLabel="Model"
             value={modelText}
             open={modelOpen}
@@ -5312,7 +5351,8 @@ export default function NewJobModal({
             ) : null}
           </PropPill>
           <PropPill
-            k="Access"
+            k=""
+            icon={ICON_SHIELD}
             ariaLabel="Permissions"
             value={permissionLabel(permission)}
             open={accessOpen}
@@ -5357,7 +5397,7 @@ export default function NewJobModal({
               last row (Akshil, 2026-08-15). */}
           {!lockTarget && (
             <PropPill
-              k="Where"
+              k=""
               icon={ICON_FOLDER}
               ariaLabel="Folder"
               value={target.trim() ? leafOf(target.trim()) : "Choose folder"}
@@ -5642,6 +5682,31 @@ export default function NewJobModal({
                     {ICON_PLUS}
                     New folder
                   </button>
+                  {/* "Open on the last folder" switch. A checkable row, not a
+                      navigation verb: it flips the flag and leaves the popover
+                      open and the current target alone — it only changes what
+                      the NEXT New task opens on. Like Browse and New folder it
+                      sits outside the option ring, so no arrow-key stop. */}
+                  <button
+                    type="button"
+                    role="menuitemcheckbox"
+                    aria-checked={rememberLast}
+                    className="schedule-picker-row schedule-recents-remember"
+                    onClick={() => {
+                      const next = !rememberLast;
+                      setRememberLast(next);
+                      patchUiLayout((d) => ({ ...d, rememberLastFolder: next }));
+                    }}
+                  >
+                    {rememberLast ? (
+                      <span className="schedule-picker-gutter" aria-hidden="true">
+                        {ICON_CHECK}
+                      </span>
+                    ) : (
+                      <span className="schedule-picker-gutter" aria-hidden="true" />
+                    )}
+                    Remember last folder
+                  </button>
                   </div>
                   {/* THE HOVER TOOLTIP, portalled to `<body>` from here —
                       rendered inside the panel so the list closing takes it with
@@ -5653,7 +5718,7 @@ export default function NewJobModal({
             </PropPill>
           )}
           <PropPill
-            k="When"
+            k=""
             icon={ICON_CLOCK}
             ariaLabel="When"
             value={timePicked

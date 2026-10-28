@@ -832,7 +832,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
         warmPolling = false;
         // A genuine fetch failure leaves the cache unwarmed (no .warmed marker).
         // If the marker IS set, packages are cached — treat a stray progress
-        // error as success.
+        // error (e.g. a Windows os.replace race on the final write) as success.
         if (p.error && !st.warm) {
           if ($("warmErr")) { $("warmErr").textContent = p.error; $("warmErr").classList.remove("hidden"); }
           setStatus("err", "package fetch failed");
@@ -1013,7 +1013,7 @@ pdfjs.GlobalWorkerOptions.workerSrc = "/template-assets/pdfjs.worker.bundle.mjs"
       while ((m = re.exec(txt))) {
         let ref = m[1].trim();
         if (!/\.[A-Za-z0-9]+$/.test(ref)) ref += ".tex";          // \input{chap} -> chap.tex
-        const child = ref.startsWith("/") ? ref : (S.root + "/" + ref);
+        const child = /^([A-Za-z]:[\\/]|\/)/.test(ref) ? ref : (S.root + "/" + ref);
         const childKey = norm(child);
         if (childKey === targetKey) return true;
         if (!seen.has(childKey)) queue.push(child);   // don't re-queue a file already processed

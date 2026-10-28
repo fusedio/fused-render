@@ -37,6 +37,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import sys
 import threading
 import time
 from typing import Optional
@@ -79,6 +80,9 @@ def install_argv() -> tuple:
     is told will run and what runs are the same sentence.
     """
     display = claude_health.install_command()
+    if sys.platform == "win32":
+        return (["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                 "-Command", display], display)
     return (["bash", "-c", "curl -fsSL https://claude.ai/install.sh | bash"], display)
 
 
@@ -119,7 +123,7 @@ def _report(snapshot: dict) -> None:
                       else "error" if state == "error" else "done"),
             "detail": snapshot["detail"],
             "message": snapshot["error"] or "",
-            "origin": "Claude setup",
+            "origin": "Claude Code",
         }, page="/claude-config", server=True)
     except Exception:  # noqa: BLE001 - reporting must never break the work
         logger.debug("could not report the Claude Code %s job", snapshot["action"])

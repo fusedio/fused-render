@@ -2,6 +2,7 @@
 // shell registered a route() handler here; the React shell instead listens for
 // the "fused:navigate" event (useNavEpoch in lib/hooks.ts) — navigate/
 // navigateUrl dispatch it after pushState, popstate is subscribed alongside it.
+import { encodeFsPathSegments, rootedFsPath } from "./path-url";
 import { carries as snapshotCarries, getSnapshotAppDir } from
   "@platform/lib/snapshot-param";
 import { ORIGIN_BY_ROUTE } from "@platform/lib/originRoutes";
@@ -48,7 +49,8 @@ export function rewriteLegacyUrl(url: string): string {
   if (mapped) return mapped + q;
   if (p.startsWith("/view/") || p.startsWith("/embed/")) return "/explorer" + p + q;
   // `/claude-code` was this page's earlier path; the query rides along.
-  if (p === "/claude-code") return "/claude-config" + q;
+  // It goes through claudeConfigUrl so `?tab=skills` still reaches /skills.
+  if (p === "/claude-code") return claudeConfigUrl(new URLSearchParams(q.startsWith("?") ? q.slice(1) : q));
   // The retired /claude-md page folded into /claude-config, and the panel's
   // `?cctab=<section>` becomes
   // `?tab=<tab>`. Kept for good: the server's jobs and notifications
@@ -100,7 +102,14 @@ export function rewriteLegacyUrl(url: string): string {
   return url;
 }
 
+// Skills left the Claude Code page for `/skills`; `?skill=` and the rest of
+// the query ride along, `?tab=` has no meaning there.
 function claudeConfigUrl(params: URLSearchParams): string {
+  if (params.get("tab") === "skills") {
+    params.delete("tab");
+    const sq = params.toString();
+    return "/skills" + (sq ? "?" + sq : "");
+  }
   const q = params.toString();
   return "/claude-config" + (q ? "?" + q : "");
 }
@@ -547,11 +556,9 @@ export function pushHistory(state: unknown, url: string): void {
   else history.pushState(state, "", url);
 }
 
-// The URL codec drops the leading slash; the shell's canonical fs path is
-// rooted at "/".
-export function rootedFsPath(joined: string): string {
-  return "/" + joined;
-}
+// rootedFsPath / encodeFsPathSegments live in ./path-url (DOM-free, so the
+// shell libs share them); re-exported for existing importers.
+export { rootedFsPath, encodeFsPathSegments };
 
 export function fsPathFromLocation(): string | null {
   const p = location.pathname;
@@ -565,23 +572,9 @@ export function fsPathFromLocation(): string | null {
   return rootedFsPath(decoded);
 }
 
-// Shared by urlForFsPath/embedUrlForFsPath below: split into encoded segments
-// — a backslash is a legal filename character and must round-trip untouched.
-// Restated (not imported) by shell/current-apps-lib for the app page's
-// `/apps/<folder>` address: that lib must stay DOM-free for bun, and this
-// module touches `location` at import. Keep the two in step. Exported for the
-// explorer topbar's Migrate button, which builds the same `/apps/<folder>`
-// address and may not import the shell.
-export function encodeFsPathSegments(fsPath: string): string {
-  return fsPath
-    .replace(/^\/+/, "")
-    .split("/")
-    .filter((s) => s.length > 0)
-    .map(encodeURIComponent)
-    .join("/");
-}
-
 export function urlForFsPath(fsPath: string, search?: string): string {
+  // Windows callers (server stat/list results, bookmarks) may carry
+  // backslashes; the URL codec speaks forward slashes only.
   return PREFIX + encodeFsPathSegments(fsPath) + (search || "");
 }
 

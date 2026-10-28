@@ -55,6 +55,31 @@ SUBPROCESS_KWARGS = {
     "errors": "replace",
 }
 
+# Run a login-shell probe with NO controlling terminal. An interactive shell
+# (-i) opens /dev/tty even with stdin=DEVNULL, enables job control and
+# tcsetpgrp()s itself foreground; probes running in parallel threads restore the
+# foreground group out of order, leaving the terminal owned by a dead group
+# (the server gets SIGTTOU, the launching shell "error on TTY read"). A child in
+# its own session has no controlling terminal, so none of that can happen.
+# The setsid is done by a python wrapper rather than start_new_session= /
+# preexec_fn= / cwd=, any of which forces fork()+exec and a fork with libproj
+# resident dies SIGSEGV (same pattern as claude_agent/headsup._spawn_argv).
+_SETSID_EXEC = "import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])"
+
+
+def detached_argv(argv: list) -> list:
+    """`argv`, prefixed so the child runs in its own session (no controlling tty).
+
+    After the wrapper's execvp the target IS the direct child, so
+    `subprocess.run(timeout=)` still kills the right process. Windows has no
+    setsid, and a non-absolute `sys.executable` cannot be trusted to spawn
+    (`-B -I`: the bundled app's python must never write .pyc), so both return
+    `argv` unchanged."""
+    if os.name == "nt" or not os.path.isabs(sys.executable or ""):
+        return list(argv)
+    return [sys.executable, "-B", "-I", "-c", _SETSID_EXEC, *argv]
+
+
 # An explicit override beats every probe below. It is what both the `notfound` error text and the
 # troubleshooting guide tell users to set — so it has to be honoured by
 # everything that resolves the CLI, not merely by most things.
@@ -80,9 +105,18 @@ POSIX_CANDIDATES = (
 )
 
 
+# Windows installs: the native installer, npm and bun. Expanded by the same
+# expanduser(expandvars()) the resolvers already apply.
+WINDOWS_CANDIDATES = (
+    "~/.local/bin/claude.exe",
+    r"%APPDATA%\npm\claude.cmd",
+    "~/.bun/bin/claude.exe",
+)
+
+
 def candidates() -> tuple:
     """The known install locations, unexpanded."""
-    return POSIX_CANDIDATES
+    return WINDOWS_CANDIDATES if sys.platform == "win32" else POSIX_CANDIDATES
 
 
 # The lowest `claude` this app's spawn line is known to work with.
@@ -161,6 +195,36 @@ def is_outdated(found: Optional[str], floor: str = MIN_VERSION) -> bool:
     return got + (0,) * (width - len(got)) < want + (0,) * (width - len(want))
 
 
+def _windows_registry_path() -> list:
+    """The CURRENT user and machine PATH dirs, read from the registry (Windows).
+
+    A server started from a terminal opened before Node/npm was installed has
+    a stale PATH with neither `%APPDATA%\\npm` nor `node`. The registry holds
+    the live value. `winreg` is imported here, never at module top. Anything
+    unreadable yields nothing: an unreadable key must not break resolution."""
+    if sys.platform != "win32":
+        return []
+    try:
+        import winreg
+        keys = (
+            (winreg.HKEY_CURRENT_USER, "Environment"),
+            (winreg.HKEY_LOCAL_MACHINE,
+             r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+        )
+        out = []
+        for root, sub in keys:
+            try:
+                with winreg.OpenKey(root, sub) as key:
+                    value, _kind = winreg.QueryValueEx(key, "Path")
+            except OSError:
+                continue
+            out.extend(p for p in os.path.expandvars(value).split(os.pathsep)
+                       if p)
+        return out
+    except (OSError, ImportError):
+        return []
+
+
 def augmented_path() -> str:
     """PATH with the known install dirs appended (deduped, order preserved).
 
@@ -170,9 +234,11 @@ def augmented_path() -> str:
     seen, parts = set(), []
     dirs = [os.path.dirname(os.path.expanduser(os.path.expandvars(c)))
             for c in candidates()]
-    for part in (os.environ.get("PATH", "") or "").split(os.pathsep) + dirs:
-        if part and part not in seen:
-            seen.add(part)
+    inherited = (os.environ.get("PATH", "") or "").split(os.pathsep)
+    for part in inherited + _windows_registry_path() + dirs:
+        key = os.path.normcase(part) if sys.platform == "win32" else part
+        if part and key not in seen:
+            seen.add(key)
             parts.append(part)
     return os.pathsep.join(parts)
 
@@ -229,7 +295,7 @@ def _shell_probe() -> Optional[str]:
     for flags in (["-lic"], ["-l", "-c"], ["-ic"]):
         try:
             out = subprocess.run(
-                [shell, *flags, "command -v claude"],
+                detached_argv([shell, *flags, "command -v claude"]),
                 capture_output=True, timeout=_SHELL_TIMEOUT_S, env=env,
                 **SUBPROCESS_KWARGS,
             ).stdout
@@ -460,9 +526,17 @@ def signed_in(path: Optional[str] = None) -> Optional[bool]:
 #: the download page and the chat template already carry.
 INSTALL_COMMAND_POSIX = "curl -fsSL https://claude.ai/install.sh | bash"
 
+#: The Windows spelling: Anthropic's documented PowerShell installer. The
+#: in-app Windows terminal is PowerShell (`terminal_profiles.py`), so this
+#: line runs there as shown. Pinned against the frontend by
+#: `test_trouble_parity.py`.
+INSTALL_COMMAND_WINDOWS = "irm https://claude.ai/install.ps1 | iex"
+
 
 def install_command() -> str:
     """The native install line, as a user would type it."""
+    if sys.platform == "win32":
+        return INSTALL_COMMAND_WINDOWS
     return INSTALL_COMMAND_POSIX
 
 

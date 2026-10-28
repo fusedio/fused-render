@@ -74,7 +74,16 @@ def _run_install(monkeypatch, lines, code=0, health=None):
 # -- what actually runs -------------------------------------------------------
 
 
-def test_the_install_argv_matches_the_line_we_show():
+def test_the_install_argv_on_windows_is_powershell(monkeypatch):
+    monkeypatch.setattr(claude_health.sys, "platform", "win32")
+    argv, display = claude_install.install_argv()
+    assert display == claude_health.INSTALL_COMMAND_WINDOWS
+    assert argv == ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                    "-Command", claude_health.INSTALL_COMMAND_WINDOWS]
+
+
+def test_the_install_argv_matches_the_line_we_show(monkeypatch):
+    monkeypatch.setattr(claude_health.sys, "platform", "darwin")
     """What the user is told will run and what runs have to be the same
     sentence, or the disclosure beside the button is decoration."""
     argv, display = claude_install.install_argv()
@@ -156,7 +165,7 @@ def test_update_runs_on_a_native_install(monkeypatch):
 
 
 def test_the_job_report_carries_an_explicit_origin(monkeypatch):
-    """`_report` (claude_install.py) states `origin="Claude setup"` on every
+    """`_report` (claude_install.py) states `origin="Claude Code"` on every
     mirrored tick — the fixture's own `_clean` stubs `jobs.upsert` to a no-op,
     so this reads the call the real registry would have received instead of
     the row it would have produced."""
@@ -168,7 +177,7 @@ def test_the_job_report_carries_an_explicit_origin(monkeypatch):
     monkeypatch.setattr(claude_health, "executable", lambda p: True)
     monkeypatch.setattr(claude_install.threading, "Thread", _FakeThread)
     claude_install.start("update")
-    assert captured.get("origin") == "Claude setup"
+    assert captured.get("origin") == "Claude Code"
 
 
 def test_update_never_sources_the_login_shell(monkeypatch):

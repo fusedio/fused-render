@@ -56,6 +56,8 @@ import struct
 import tempfile
 import zlib
 
+from fused_render._platform import is_within
+
 MAGIC = b"FUSEDAPP"
 VERSION = 2
 _HEADER = struct.Struct("<8sHHII")
@@ -313,7 +315,7 @@ def extract(path: str, index: dict, dest: str) -> int:
                 # Redundant with path_problem on purpose (zip_import keeps the
                 # same belt-and-braces): normalization catches shapes a
                 # per-segment scan does not on some platform.
-                if not target.startswith(root + os.sep):
+                if not is_within(target, root, strict=True, fs_root_ok=False):
                     raise ContainerError(
                         f"rejected .fused: entry {entry['path']!r} escapes the extract dir")
                 os.makedirs(os.path.dirname(target), exist_ok=True)

@@ -1,7 +1,7 @@
 # The Chromium engine for macOS app windows
 
 The desktop app's windows are drawn by Chromium (the Chromium Embedded
-Framework, CEF) by default: **Preferences → Labs → Chromium
+Framework, CEF) by default: **Preferences → Experimental flags → Chromium
 engine for windows** is on unless turned off, and the DMG ships the engine
 (D1415). Every *new* app window is Chromium once the engine is on disk and
 loaded into the process; anything short of that (off, a build that carries no

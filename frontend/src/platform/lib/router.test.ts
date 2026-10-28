@@ -22,6 +22,9 @@ const {
   spaLinkProps,
   confirmLeave,
   registerLeaveGuard,
+  rootedFsPath,
+  encodeFsPathSegments,
+  urlForFsPath,
 } = await import("./router");
 const { setResolvedSnapshot } = await import("./snapshot-param");
 const setSnapshotAppDir = (appDir: string | null) =>
@@ -259,13 +262,19 @@ test("the Claude Config panel path and the old /claude-code path land on the Cla
   expect(rewriteLegacyUrl("/claude-config")).toBe("/claude-config");
   expect(rewriteLegacyUrl("/claude-code?tab=memory&embed=1")).toBe("/claude-config?tab=memory&embed=1");
   expect(rewriteLegacyUrl("/claude-code")).toBe("/claude-config");
+  expect(rewriteLegacyUrl("/claude-code?tab=skills&skill=user%2Fdemo")).toBe("/skills?skill=user%2Fdemo");
+  expect(rewriteLegacyUrl("/claude-code?tab=skills")).toBe("/skills");
   expect(rewriteLegacyUrl("/claude-md")).toBe("/claude-config");
 
   const row = (tab: string) => rewriteLegacyUrl(`/claude-config?cctab=${tab}`);
   expect(row("plugins")).toBe("/claude-config?tab=plugins");
   expect(row("marketplaces")).toBe("/claude-config?tab=plugins");
   expect(row("memory")).toBe("/claude-config?tab=memory");
-  expect(row("skills")).toBe("/claude-config?tab=skills");
+  expect(row("skills")).toBe("/skills");
+  expect(rewriteLegacyUrl("/claude-config?tab=skills&skill=user%2Fdemo")).toBe("/skills?skill=user%2Fdemo");
+  expect(rewriteLegacyUrl("/claude-md?cctab=skills&embed=1")).toBe("/skills?embed=1");
+  expect(rewriteLegacyUrl("/preferences?tab=claude-skills")).toBe("/skills");
+  expect(rewriteLegacyUrl("/skills?skill=user%2Fdemo")).toBe("/skills?skill=user%2Fdemo");
   expect(row("statusline")).toBe("/preferences?tab=claude-cli");
   expect(row("mcp")).toBe("/claude-config?tab=mcp");
   expect(row("preferences")).toBe("/preferences?tab=claude-cli");
@@ -682,5 +691,33 @@ describe("navigateUrl replace option", () => {
       hist.pushState = prevPush;
       hist.replaceState = prevReplace;
     }
+  });
+});
+
+describe("fs path <-> url codec", () => {
+  test("a drive path folds backslashes and decodes back without a leading slash", () => {
+    const url = urlForFsPath("C:\\Users\\x\\Fused\\app\\foo");
+    expect(url.endsWith("/C%3A/Users/x/Fused/app/foo")).toBe(true);
+    const joined = url
+      .split("/")
+      .filter((s) => s)
+      .slice(-6)
+      .map(decodeURIComponent)
+      .join("/");
+    expect(rootedFsPath(joined)).toBe("C:/Users/x/Fused/app/foo");
+  });
+
+  test("a bare drive re-roots to C:/", () => {
+    expect(rootedFsPath("C:")).toBe("C:/");
+    expect(encodeFsPathSegments("C:\\")).toBe("C%3A");
+  });
+
+  test("a POSIX path keeps its leading slash and a literal backslash", () => {
+    expect(rootedFsPath("Users/me/a")).toBe("/Users/me/a");
+    expect(encodeFsPathSegments("/home/u/we\\ird")).toBe("home/u/we%5Cird");
+  });
+
+  test("a UNC path stays one segment", () => {
+    expect(encodeFsPathSegments("\\\\server\\share\\f")).toBe("%5C%5Cserver%5Cshare%5Cf");
   });
 });

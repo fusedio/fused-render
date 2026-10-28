@@ -2775,6 +2775,14 @@ def test_a_pid_this_module_did_not_spawn_is_never_reaped():
     )
 
 
+def test_pid_alive_without_wnohang_falls_through_to_probe(monkeypatch):
+    """Windows has no `os.WNOHANG`, yet `_spawn` records installer pids in
+    `_SPAWNED` there too: `_pid_alive` must not raise AttributeError."""
+    monkeypatch.delattr(os, "WNOHANG")
+    monkeypatch.setattr(envinstall, "_SPAWNED", {os.getpid()})
+    assert envinstall._pid_alive(os.getpid()) is True
+
+
 @requires_fused
 def test_a_dead_worker_is_reported_as_finished_not_pending(tmp_path, monkeypatch):
     """A killed installer must not leave the page polling forever.

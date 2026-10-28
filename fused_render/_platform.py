@@ -24,3 +24,4 @@ probe_pid = _mod.probe_pid
 euid = _mod.euid
 venv_python = _mod.venv_python
 relpath_within = _mod.relpath_within
+is_within = _mod.is_within

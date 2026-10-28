@@ -1,3 +1,5 @@
+import { DRIVE_ABS } from "@platform/lib/path-url";
+
 // Decision 2: what the field's completion dropdown asks about. A path-shaped
 // query names a directory to list and a partial name to narrow it by — this
 // function is the pure split, the same address resolution `listing-address.ts`
@@ -21,7 +23,7 @@ export function completionTarget(
 ): CompletionTarget | null {
   const raw = query;
   if (!raw || raw.includes("*")) return null;
-  if (!raw.includes("/") && raw !== "~") return null;
+  if (!raw.includes("/") && raw !== "~" && !DRIVE_ABS.test(raw)) return null;
 
   // "~" alone has nothing after it to split on — the segment being completed
   // is everything home has to offer, not home's own last path component.
@@ -34,6 +36,10 @@ export function completionTarget(
   if (raw.startsWith("~/")) {
     if (home === undefined) return null;
     abs = home + raw.slice(1);
+  } else if (DRIVE_ABS.test(raw)) {
+    // Backslashes are only separators here — on POSIX "\" is a legal
+    // filename char, but a drive-letter path is never POSIX.
+    abs = raw.replace(/\\/g, "/");
   } else if (raw.startsWith("/")) {
     abs = raw;
   } else {
@@ -43,7 +49,11 @@ export function completionTarget(
   }
 
   const slash = abs.lastIndexOf("/");
-  const dir = slash <= 0 ? "/" : abs.slice(0, slash);
+  // A drive letter's own root slash (index 2, "C:/") has to stay IN the
+  // dir — unlike POSIX, "C:" alone is not a valid directory to list (it
+  // reads as cwd-relative, the same rule `listing-address.ts` and
+  // home-search.ts's `pathShortcut` apply to a bare drive letter).
+  const dir = slash <= 0 ? "/" : slash === 2 && DRIVE_ABS.test(abs) ? abs.slice(0, 3) : abs.slice(0, slash);
   const partial = abs.slice(slash + 1);
   return { dir, partial };
 }

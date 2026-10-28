@@ -195,6 +195,7 @@ def _paged_apps(offset: int, limit: int, tag: str | None, category: str | None,
     # Copy, then hydrate: the snapshot's rows are shared between requests and
     # `hydrate_app` fills its row in place.
     page = [app_listing.hydrate_app(dict(r)) for r in shown[offset:offset + limit]]
+    _with_contrib(page)
     return {
         "apps": page,
         "offset": offset,
@@ -229,7 +230,28 @@ def api_apps(offset: int = 0, limit: int | None = None, tag: str | None = None,
     apps.extend(registered_apps.registered_apps())
     apps = app_hidden.drop_hidden(apps)
     apps.sort(key=lambda a: (a["tag"].lower(), a["name"].lower()))
-    return {"apps": apps}
+    return {"apps": _with_contrib(apps)}
+
+
+def _with_contrib(rows: list[dict]) -> list[dict]:
+    """Each row's optional `contrib: {label, inbox, kind}` card line
+    (CONTRIB_LOOP §12.2), in place on rows this request owns — never the discovery
+    snapshot's shared ones. One store read for the whole list and no git
+    (contrib/refresh.decorate); rows are untouched while the sources phase
+    is off — EXCEPT `contrib.block` (docs/CONTRIB_LOOP.md §18.4 B4: `{level,
+    reason, what_to_do, confirmed, …}` of a Marketplace copy's block), which
+    every row carries whatever the flags: enforcement is flag-independent
+    (§18.8), so the card must be able to ask before a soft-blocked app opens."""
+    from fused_render import marketplace
+    from fused_render.contrib import refresh as contrib_refresh
+
+    rows = contrib_refresh.decorate(rows)
+    notices = marketplace.block_notices([r.get("path") for r in rows])
+    for row in rows:
+        b = notices.get(row.get("path"))
+        if b:
+            row["contrib"] = {**(row.get("contrib") or {}), "block": b}
+    return rows
 
 
 # Home renders one row, not the complete app catalog. Its common path follows
@@ -246,11 +268,11 @@ def _workspace_path_for_recent(root: str, rel: str) -> str | None:
     The store is user-writable. Keep this pure string work: the caller performs
     the targeted filesystem probes only after the path has passed this gate.
     """
-    parts = rel.split("/")
+    parts = rel.replace(os.sep, "/").split("/")
     if (os.path.isabs(rel) or rel.startswith(".") or ".." in parts
             or not 1 <= len(parts) <= app_listing.MAX_APP_DEPTH):
         return None
-    if any(not p for p in parts):
+    if any(not p or os.path.isabs(p) or os.path.splitdrive(p)[0] for p in parts):
         return None
     path = os.path.abspath(os.path.join(root, *parts))
     try:
@@ -352,10 +374,10 @@ def api_home_apps(limit: int = HOME_APPS_LIMIT, sort: HomeSort = "opened"):
         else:
             rows.sort(key=lambda a: (a["name"].casefold(), a["tag"].casefold()))
         # Hydrate only the slice, on copies: the snapshot's rows are shared.
-        return {"apps": [app_listing.hydrate_app(dict(r)) for r in rows[:limit]]}
+        return {"apps": _with_contrib([app_listing.hydrate_app(dict(r)) for r in rows[:limit]])}
     recent = recent_apps(limit)
     if len(recent) >= limit:
-        return {"apps": recent}
+        return {"apps": _with_contrib(recent)}
 
     seen = {os.path.normcase(os.path.abspath(a["path"])) for a in recent}
     discovered = sorted(
@@ -370,19 +392,20 @@ def api_home_apps(limit: int = HOME_APPS_LIMIT, sort: HomeSort = "opened"):
         seen.add(identity)
         if len(recent) >= limit:
             break
-    return {"apps": recent}
+    return {"apps": _with_contrib(recent)}
 
 
 def _workspace_rel(root: str, path: str) -> str | None:
     """`path` as a workspace-relative, forward-slash key, or None when it isn't
     inside the workspace. The store's identity: unique at every depth the walk
     lists (1-3), where (tag, name) is not — two depth-3 apps under different
-    shelves of one tag share both. A backslash is a legal filename character
-    and is kept as-is."""
+    shelves of one tag share both. Normalized to "/" so a key written on
+    Windows matches the split in _app_folder_exists; the replace is os.sep-
+    conditional because on POSIX a backslash is a legal filename character."""
     rel = _platform.relpath_within(os.path.abspath(path), os.path.abspath(root))
     if rel == "." or rel.startswith(".."):
         return None
-    return rel
+    return rel.replace(os.sep, "/") if os.sep != "/" else rel
 
 
 def _opened_at_by_app() -> dict[str, float]:
@@ -454,12 +477,17 @@ def _app_folder_exists(rel: str) -> bool:
     """Does the workspace-relative app path currently resolve to a folder on
     disk? Rejects a key that would escape the workspace — the store is
     user-writable, so `rel` cannot be trusted to stay under it."""
-    # Segments are vetted individually, and the join happens as ONE
-    # "/"-joined string so no segment can ever reset the base.
-    parts = rel.split("/")
+    # Split on the OS separator too: a user-edited backslash key on Windows
+    # must not smuggle `..` past a "/"-only split. Segments are then vetted
+    # individually — a drive-relative segment like "C:foo" would make a
+    # starred os.path.join discard the workspace base entirely, so anything
+    # carrying a drive or absolute form is rejected, and the join happens as
+    # ONE "/"-joined string (a legal separator on Windows as well) so no
+    # segment can ever reset the base.
+    parts = rel.replace(os.sep, "/").split("/")
     if os.path.isabs(rel) or rel.startswith(".") or ".." in parts:
         return False
-    if any(not p for p in parts):
+    if any(not p or os.path.isabs(p) or os.path.splitdrive(p)[0] for p in parts):
         return False
     return os.path.isdir(os.path.join(fused_dir(), "/".join(parts)))
 
@@ -603,7 +631,13 @@ def api_app_entry(path: str, opened: bool = False):
             git_upstream.note_app_opened(os.path.dirname(entry))
         except Exception:  # noqa: BLE001 — housekeeping must not fail the probe
             logger.warning("git auto-sync note failed for %s", path, exc_info=True)
-    return {
+        try:
+            from fused_render.contrib import refresh as contrib_refresh
+
+            contrib_refresh.note_app_opened(os.path.dirname(entry))
+        except Exception:  # noqa: BLE001 — housekeeping must not fail the probe
+            logger.warning("contrib open note failed for %s", path, exc_info=True)
+    out = {
         "entry": entry,
         # The fused page API version the entry declares (`<meta
         # name="fused-api-version">`, 0 when undeclared — every app authored
@@ -617,6 +651,28 @@ def api_app_entry(path: str, opened: bool = False):
         # reads "in progress" instead of offering a second one. Null when none.
         "migration_task": _live_migration_task(entry) if entry else None,
     }
+    if entry:
+        # The open gate (docs/CONTRIB_LOOP.md §18.4 B4): a copy whose running
+        # version Fused hard-blocked does not open — every caller, not only
+        # `opened=1`, since the app page probes without it. 423 with the
+        # notice payload (`{"blocked": {...}}`, contrib.blocks.gate's) the
+        # shell's BlockedNotice draws. Asked AFTER the open notes above: the
+        # enforcement they kick may already have rolled the copy back.
+        from fused_render import marketplace
+
+        app_dir = os.path.dirname(entry)
+        blocked = marketplace.open_gate(app_dir)
+        if blocked:
+            return JSONResponse(blocked, status_code=423)
+        # A soft block (or a hard one already rolled back) rides the answer
+        # whatever the Community flags say — the app page asks before it
+        # opens off this, since it reads /api/contrib/app only with the flags
+        # on (§18.8: enforcement is flag-independent). Same shape as the
+        # /api/apps rows' `contrib.block`.
+        block = marketplace.block_notice(app_dir)
+        if block:
+            out["contrib"] = {"block": block}
+    return out
 
 
 def _live_app_task(entry_html: str, is_ours) -> dict | None:
@@ -1368,9 +1424,21 @@ def _agent_models(backend: str) -> tuple[str, ...]:
     """What the composer's model picker may ask for on `backend`: that
     agent's catalog row plus `""` ("no flag"). Claude's row IS
     VALID_DEFAULT_MODELS (agent_backends/claude.py lists the same ids), so a
-    Claude create is checked against exactly the set it always was."""
+    Claude create is checked against exactly the set it always was.
+
+    The DISCOVERED ids too, where the cache has them (Copilot's plan list):
+    the catalog the composer's picker reads serves that list in place of the
+    static row, so a Copilot-only install whose plan carries a model the
+    static row does not (a reporter's `claude-opus-5.5`) was offered it by
+    the picker and then refused it here with a 400 naming the static ids —
+    the same mismatch registry.foreign_model_error already guards against."""
     from fused_render.agent_backends import registry
-    return ("",) + tuple(registry.get(backend).model_ids())
+    own = registry.get(backend)
+    ids = list(own.model_ids())
+    for m in own.model_ids(discovered=True):
+        if m not in ids:
+            ids.append(m)
+    return ("",) + tuple(ids)
 
 
 def _session_choice_error(field: str, value, allowed) -> str | None:

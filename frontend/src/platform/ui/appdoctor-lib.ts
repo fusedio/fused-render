@@ -310,7 +310,9 @@ export function failingCount(checks: AppCheck[]): number {
  *  header dot and `severityDotLabel` agree): the count excludes them, and a
  *  report whose only failing rows are info reads "Fix N suggestion(s)". */
 export function fixButtonLabel(checks: AppCheck[]): string {
-  const failing = checks.filter((c) => c.state === "fail");
+  // A contrib `git` row is not Claude's to fix (`isContribRow`): it never
+  // counts toward "Fix N issues".
+  const failing = checks.filter((c) => c.state === "fail" && !isContribRow(c));
   if (failing.length === 0) return "Nothing to fix";
   const issues = failing.filter((c) => effectiveSeverity(c) !== "info").length;
   if (issues > 0) return `Fix ${issues} ${issues === 1 ? "issue" : "issues"}`;
@@ -363,7 +365,23 @@ export function showsPullAction(check: AppCheck): boolean {
  *  is wrong with it, so this is available on a passing row too. False when
  *  the folder isn't in a repo this server can read (`gitRoot: null`). */
 export function showsOpenInGitAction(check: AppCheck): boolean {
-  return check.id === "git" && !!check.gitRoot;
+  return check.id === "git" && !!check.gitRoot && !isContribRow(check);
+}
+
+/** The `git` row the GitHub contribution engine writes for a copy it syncs
+ *  (`contrib: true`, app_doctor._contrib_git_row). Its failure is never
+ *  Claude's to fix from here: it is an overlap with the author's latest, or
+ *  a sign-in, and the app page is where that one decision is offered — so
+ *  the row's action is "Open app page" instead of Fix, and no "Open in git"
+ *  (no git words for these copies). */
+export function isContribRow(check: AppCheck): boolean {
+  return check.id === "git" && check.contrib === true;
+}
+
+/** The app page's Overview — where a contrib row's decision waits. Spelled
+ *  here for the same reason as `tasksTabUrl` above. */
+export function appOverviewUrl(dir: string): string {
+  return "/apps/" + encodeFsPathSegments(dir);
 }
 
 /** The `git` row's own remote check has not landed yet: local state is

@@ -2,8 +2,8 @@
 //
 // WHY NOT `max-height` + `overflow: auto` ANY MORE (2026-10-12). Every card
 // payload used to be capped at 190px and scrolled inside itself. The card
-// already sits in the pinned tail, which is the ONE scroller allowed there
-// (`.chat-tailpin.is-pinned`, transcript.css), so a long Bash command made a box
+// already sits at the end of the transcript, which is the one scroller there
+// (the open card is a plain block in the log, transcript.css), so a long Bash command made a box
 // inside a box on the same axis — and a trackpad swipe latches on whichever box
 // the pointer starts over. The swipe got stuck in the `<pre>`, the card never
 // moved, and Allow/Deny stayed out of reach below it.

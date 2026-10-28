@@ -86,7 +86,8 @@ def _fingerprint() -> str:
             parts.append(getattr(mod, "__name__", repr(mod)))
     for fn in (router._new_scan, router._absorb, router._condense_reply,
                router._reply_fate, router._mark_fate, router._prompt,
-               router._command, router._interrupt_at):
+               router._command, router._interrupt_at, router._note_worktrees,
+               router._add_worktree):
         try:
             parts.append(inspect.getsource(fn))
         except (OSError, TypeError):

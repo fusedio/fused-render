@@ -10,6 +10,7 @@
 // behind GET /api/git-upstream): it already reports only repos with a
 // non-zero behind count. What this file decides is presentation only: the
 // row's label, and — the one real decision here — which action is PRIMARY.
+import { canonFsPath, isDriveAbs } from "@platform/lib/path-url";
 import { urlForFsPath } from "@platform/lib/router";
 
 export interface RepoStatus {
@@ -43,9 +44,9 @@ export interface RepoRow {
   primaryAction: RepoAction;
 }
 
-/** The repo's own last path segment. */
+/** The repo's own last path segment, forward-slash or backslash either way. */
 export function repoName(root: string): string {
-  const norm = (root || "").replace(/\/+$/, "");
+  const norm = canonFsPath(root || "").replace(/\/+$/, "");
   const i = norm.lastIndexOf("/");
   return i === -1 ? norm : norm.slice(i + 1);
 }
@@ -242,6 +243,12 @@ export interface SyncFailure {
   output: string;
   push: boolean;
   at: number;
+  /** A GitHub-link copy's row (contrib §16.8): the server's own Fix with
+   *  Claude prompt (never push; bring in the author's latest keeping local
+   *  changes), used verbatim. Its `command` is "" and `push` false. */
+  prompt?: string;
+  /** "owner/repo" the copy follows, on those rows. */
+  follows?: string;
 }
 
 /** A recent auto-pull that brought commits in (the transient popup). */
@@ -255,6 +262,7 @@ export interface SyncPull {
 
 /** The Fix with Claude prompt for an auto-sync failure row. */
 export function syncFixPrompt(f: SyncFailure): string {
+  if (f.prompt) return f.prompt;
   return buildFixPrompt({
     action: f.action,
     command: f.command,
@@ -316,7 +324,11 @@ export function syncFailureActions(reason: string): SyncFailureAction[] {
 /** Is `appPath` (the window's entry file or app folder) the repo root or below it? */
 export function appPathInRepo(appPath: string | null, root: string): boolean {
   if (!appPath) return false;
-  const norm = (p: string) => p.replace(/\/+$/, "");
+  // Drive paths are case-insensitive (NTFS); POSIX stays exact.
+  const norm = (p: string) => {
+    const c = canonFsPath(p);
+    return (isDriveAbs(c) ? c.toLowerCase() : c).replace(/\/+$/, "");
+  };
   const a = norm(appPath);
   const r = norm(root);
   return a === r || a.startsWith(r + "/");

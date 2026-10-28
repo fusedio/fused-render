@@ -155,8 +155,8 @@ describe("the side column's left border survives what the column frames", () => 
   it("outranks the column's own grounds AND its pinned card, without isolating the column", () => {
     // z-index 3: above every z-index:auto positioned box the column paints
     // (`.chat-root`, `.c-chat`, whose opaque ground was the bug) and above the
-    // chat's sticky `.chat-tailpin.is-pinned` at 2, which at a tie would win on
-    // tree order and eat the seam's bottom segment behind a permission ask.
+    // z-index 2 boxes inside the chat (the open card used to be a sticky pin at
+    // 2; it is plain flow now), which at a tie would win on tree order.
     // Still under the chat's transient popovers (4, 5), which should pass over.
     expect(block(PREVIEW_CSS, ".preview-side-divider")).toContain("z-index: 3");
     // And `isolation: isolate` on the column is deliberately NOT the fix: it

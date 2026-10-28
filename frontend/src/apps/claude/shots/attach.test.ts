@@ -584,3 +584,22 @@ describe("attachFile", () => {
     expect(att.viewNote).toBe("not attached: it could not be saved (readonly)");
   });
 });
+
+describe("filesFromPaste", () => {
+  test("falls back to clipboardData.items when files is empty", () => {
+    const f = new File(["x"], "shot.png", { type: "image/png" });
+    const clipboardData = {
+      files: [],
+      items: [{ kind: "file", getAsFile: () => f }],
+    } as unknown as DataTransfer;
+    expect(filesFromPaste({ clipboardData })).toEqual([f]);
+  });
+
+  test("a text-only paste returns []", () => {
+    const clipboardData = {
+      files: [],
+      items: [{ kind: "string", getAsFile: () => null }],
+    } as unknown as DataTransfer;
+    expect(filesFromPaste({ clipboardData })).toEqual([]);
+  });
+});

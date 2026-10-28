@@ -4,7 +4,8 @@
 //   "/explorer"              -> file-explorer homepage (FilesHome)
 //   "/explorer/view/<path>"  -> stat it: directory -> listing, file -> preview
 //   "/explorer/embed/<path>" -> chrome-free embed variant
-//   "/claude-config"         -> legacy; the Claude Code group of Preferences
+//   "/claude-config"         -> Claude Code: plugins, MCP servers, memory
+//   "/skills"                -> Skills: yours + skills.sh, Draft with Claude
 //   "/claude-md"             -> legacy; same (platform/lib/router rewrites both)
 //   "/ai-models/<tab>"       -> AI Models (playground/local/engines/usage);
 //                             bare "/ai-models" redirects to the default tab
@@ -16,6 +17,7 @@
 // The active view is keyed by the nav epoch: every navigation remounts it,
 // which is the React equivalent of the vanilla shell rebuilding the view DOM
 // on each route() call (fresh iframes, fresh fetches, dropped local state).
+import { canonFsPath } from "@platform/lib/path-url";
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { subscribeJobDismissed, type Job } from "@platform/lib/jobs";
 import { useThemedIconSrc } from "@platform/lib/app-icon-src";
@@ -37,6 +39,8 @@ import { ENV_NAMES, canvasNameFromPath, canvasProjectFromPath } from "@apps/canv
 import {
   appIconUrl,
   getAppIcon,
+  botsAvailable,
+  terminalAvailable,
   statPath,
   type Config,
   type HttpError,
@@ -62,7 +66,7 @@ import RestartOverlay from "@platform/ui/RestartOverlay";
 import UpdateNotifier from "@platform/ui/UpdateNotifier";
 import { ShareAppHost } from "@platform/ui/ShareAppModal";
 import { UninstallAppHost } from "@platform/ui/UninstallAppModal";
-import FetchAppFileBoot from "@shell/FetchAppFileBoot";
+import InstallLinkPage from "@shell/InstallLinkPage";
 import { ShareFileHost } from "@platform/ui/ShareFileModal";
 import OnboardingWizard from "@shell/onboarding/OnboardingWizard";
 import { ONBOARDING_PATH, shouldAutoShow } from "@shell/onboarding/state";
@@ -84,6 +88,7 @@ import type { TasksScope } from "@shell/Scheduled";
 import { useTaskPeekEnabled } from "@shell/task-peek-flag";
 import { TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { TaskStatusNotifier } from "@shell/useTaskStatusNotify";
+import { TeardownNotifier } from "@shell/teardown-notice";
 import { ModelConflictNotifier } from "@shell/useModelConflictNotify";
 import ShortcutsOverlay from "@platform/ui/ShortcutsOverlay";
 import { isMod } from "@platform/lib/platform";
@@ -124,6 +129,7 @@ const AiModels = lazy(() =>
 );
 const Scheduled = lazy(() => import("@shell/Scheduled"));
 const ClaudeConfig = lazy(() => import("@shell/ClaudeConfig"));
+const SkillsPage = lazy(() => import("@shell/Skills"));
 const MonitorPage = lazy(() => import("@shell/monitor/MonitorPage"));
 const MarketplacePage = lazy(() =>
   import("@apps/marketplace").then((m) => ({ default: m.MarketplacePage })),
@@ -147,7 +153,7 @@ const NO_PAGE_PARAMS: readonly string[] = [];
 let urlScope: TasksScope | undefined;
 function tasksScopeFromUrl(): TasksScope | undefined {
   const raw = new URLSearchParams(location.search).get("project");
-  const project = raw ? raw.replace(/(.)\/+$/, "$1") : "";
+  const project = raw ? canonFsPath(raw).replace(/(.)\/+$/, "$1") : "";
   if (!project) return undefined;
   if (urlScope?.project !== project) urlScope = { project, ownFrame: true };
   return urlScope;
@@ -457,10 +463,10 @@ function StatView({
 }
 
 // A `.fused` app file opened anywhere — a click in a listing, the explorer
-// view or embed URL a Finder double-click / deeplink / CLI / FetchAppFileBoot
-// lands on — with the Marketplace ON: the React install page
-// (apps/marketplace FusedFilePage) renders IN PLACE of the fusedapp template,
-// at the same URL. One interception for every entry point, no redirect, so
+// view or embed URL a Finder double-click / deeplink / CLI / InstallLinkPage
+// lands on: the React install page (apps/marketplace FusedFilePage) renders
+// IN PLACE of the fusedapp template, at the same URL, whatever the
+// Marketplace flag says — it is the one install page. One interception for every entry point, no redirect, so
 // nothing flashes and the embed window stays an embed. NOT for a thumbnail
 // (`_preview=1` — card peeks keep the template's small mark-and-name view) or
 // a frozen snapshot, and not when the URL asks for another mode by name
@@ -680,6 +686,13 @@ export default function App({ config }: { config: Config }) {
   if (location.pathname === "/") {
     history.replaceState(null, "", frontDoor);
   }
+  // The server runs no bots on Windows: a bookmarked /bots URL goes Home rather
+  // than to a page whose every call answers 503.
+  const botsOn = botsAvailable(config);
+  const terminalOn = terminalAvailable(config);
+  if (!botsOn && isBotsPath(location.pathname)) {
+    history.replaceState(null, "", "/home");
+  }
   // A fresh install's first load lands on the setup wizard instead (its own
   // route, shell/onboarding). Once per page load and only from the front
   // door: a deep link (a bookmark, an app URL from the CLI) is honoured, and
@@ -720,12 +733,20 @@ export default function App({ config }: { config: Config }) {
     pathname === "/explorer/view/_tab" || pathname === "/explorer/embed/_tab";
   const isPrefs = pathname === "/preferences";
   const isTemplates = pathname === "/templates";
+  // Where a `fused-render://open?url=` / `open?git=` deep link lands
+  // (shell/InstallLinkPage.tsx): the download is the whole window, then the
+  // page hard-loads the saved file's install page. Chrome-free settings
+  // pattern; the link's payload is a query param of its own.
+  const isInstallLink = pathname === "/install";
   // Scheduled Claude messages (shell/Scheduled.tsx) — chrome-free settings
   // pattern.
   const isTasks = pathname === "/tasks";
   // Claude Code's own configuration (shell/ClaudeConfig.tsx) — chrome-free
   // settings pattern; the tab is a query param of its own.
   const isClaudeConfig = pathname === "/claude-config";
+  // Skills (shell/Skills.tsx) — what the coding CLIs read; same chrome-free
+  // settings pattern. `?skill=` / `?new=1` are the page's own params.
+  const isSkills = pathname === "/skills";
   // Every process on the machine, live (shell/monitor/MonitorPage.tsx) —
   // the System chip's "Open Monitor". BEHIND THE FLAG (monitor-flag.ts,
   // `monitor_enabled`, default off): off, the chip is not rendered and the
@@ -768,7 +789,7 @@ export default function App({ config }: { config: Config }) {
   // Preferences pages are sub-paths (apps/bots/routes.ts), asked through the
   // app's own predicate so the route is spelled once. test_shell_routes.py
   // derives this page's paths from that module, as it does for AI Models.
-  const isBots = isBotsPath(pathname);
+  const isBots = isBotsPath(pathname) && botsOn;
   // `/canvases/<env>/<name>` (see canvasNameFromPath): the old one-segment
   // `/canvases/<name>` matches nothing and falls to the "Unrecognized URL"
   // branch below, deliberately unredirected.
@@ -797,8 +818,10 @@ export default function App({ config }: { config: Config }) {
     isTabs ||
     isPrefs ||
     isTemplates ||
+    isInstallLink ||
     isTasks ||
     isClaudeConfig ||
+    isSkills ||
     isMonitor ||
     isMarketplace ||
     isAiModels ||
@@ -811,10 +834,10 @@ export default function App({ config }: { config: Config }) {
     canvasWorkspace !== null ||
     canvasProject !== null;
   const fsPath = isSentinel ? null : fsPathFromLocation();
-  // Behind the Marketplace flag (see isFusedInstallView). While the flag is
-  // still unknown (`null`, one prefs read) the route HOLDS rather than paint
-  // the template it might replace a moment later; off, StatView as ever.
-  const fusedFile = fsPath && marketplaceOn !== false && isFusedInstallView(fsPath) ? fsPath : null;
+  // Not behind the Marketplace flag: the install page is the one `.fused`
+  // view there is (see isFusedInstallView); the flag gates the store's entry
+  // points only.
+  const fusedFile = fsPath && isFusedInstallView(fsPath) ? fsPath : null;
   // A resolved fsPath mounts StatView below, which owns the title itself.
   useDocumentTitle(
     isPanel
@@ -825,17 +848,22 @@ export default function App({ config }: { config: Config }) {
           ? "Preferences"
           : isTemplates
             ? "Templates"
+            : isInstallLink
+              ? // The page names itself after the link once it has read it.
+                undefined
             : isTasks
                 ? "Tasks"
                 : isClaudeConfig
                 ? "Claude Code"
+                : isSkills
+                ? "Skills"
                 : isMonitor
                 ? "Monitor"
                 : isMarketplace
                 ? // The file page names itself (FusedFilePage) after its app.
                   pathname === "/marketplace/file"
                   ? undefined
-                  : "Marketplace"
+                  : "Community"
                 : isAiModels
                   ? "AI Models"
                   : isApps
@@ -968,6 +996,17 @@ export default function App({ config }: { config: Config }) {
         </Suspense>
       </div>
     );
+  } else if (isSkills) {
+    // Skills: list, skills.sh search, the editor and the Draft-with-Claude
+    // flow, no topbar. All state lives in the page's own query params
+    // (written with replaceState), so only a navigation remounts it.
+    main = (
+      <div id="content" key={epoch}>
+        <Suspense fallback={<RouteFallback />}>
+          <SkillsPage key={epoch} />
+        </Suspense>
+      </div>
+    );
   } else if (isMonitor) {
     // Whole-machine process monitor — chrome-free like Mounts; keyed on epoch
     // so a re-navigation is a fresh read (its poll stops on unmount). Off
@@ -990,7 +1029,7 @@ export default function App({ config }: { config: Config }) {
                 navigateUrl("/preferences?s=monitor");
               }}
             >
-              Preferences › Labs
+              Preferences › Experimental flags
             </a>
             .
           </div>
@@ -1003,17 +1042,27 @@ export default function App({ config }: { config: Config }) {
     // app's page are paths, and a hop between them must keep the header and
     // scroll container mounted. The page reads the path itself. Off, nothing is
     // fetched: the notice is the whole page.
+    // `/marketplace/file` (a `.fused`'s install page by path) is NOT behind
+    // the flag: it is the install page, which every `.fused` open renders
+    // whatever the flag says (isFusedInstallView), reached by address here.
+    // Nor is an app's page reached from a listing link (`?via=link`, the
+    // `fused-render://open?marketplace=<slug>` deep link via InstallLinkPage,
+    // CONTRIB_LOOP.md §18.5): the `.fused` rule extended to listings — the
+    // page renders bare while the store is off.
+    const fileRoute =
+      pathname === "/marketplace/file" ||
+      (pathname.startsWith("/marketplace/app/") && new URLSearchParams(location.search).get("via") === "link");
     main = (
       <div id="content">
-        {marketplaceOn === null ? (
+        {marketplaceOn === null && !fileRoute ? (
           <RouteFallback />
-        ) : marketplaceOn ? (
+        ) : marketplaceOn || fileRoute ? (
           <Suspense fallback={<RouteFallback />}>
             <MarketplacePage />
           </Suspense>
         ) : (
           <div className="monitor-off deploy-muted">
-            The Marketplace is off. Turn it on under{" "}
+            The Community is off. Turn it on under{" "}
             <a
               href="/preferences?s=marketplace"
               onClick={(e) => {
@@ -1021,7 +1070,7 @@ export default function App({ config }: { config: Config }) {
                 navigateUrl("/preferences?s=marketplace");
               }}
             >
-              Preferences › Labs
+              Preferences › Sharing & sync
             </a>
             .
           </div>
@@ -1157,6 +1206,11 @@ export default function App({ config }: { config: Config }) {
         <FilesHome key={epoch} config={config} />
       </div>
     );
+  } else if (isInstallLink) {
+    // A deep link's download page — keyed on epoch so a re-navigation with
+    // another link is a fresh page (the link is read once on mount). Before
+    // the `!fsPath` branch: `/install` is a sentinel, so its fsPath is null.
+    main = <InstallLinkPage key={epoch} />;
   } else if (!fsPath) {
     main = (
       <>
@@ -1169,14 +1223,7 @@ export default function App({ config }: { config: Config }) {
       </>
     );
   } else if (fusedFile) {
-    main =
-      marketplaceOn === true ? (
-        <FusedFileView key={epoch + ":" + fusedFile} fsPath={fusedFile} />
-      ) : (
-        <div id="content" key={epoch}>
-          <RouteFallback />
-        </div>
-      );
+    main = <FusedFileView key={epoch + ":" + fusedFile} fsPath={fusedFile} />;
   } else {
     main = (
       <StatView
@@ -1219,12 +1266,6 @@ export default function App({ config }: { config: Config }) {
             this branch's own condition might change later. */}
         {!IS_EMBED && <UpdateNotifier />}
         {!IS_EMBED && <RestartOverlay />}
-        {/* A fresh install routes Home to this wizard, and a deep link's
-            `?_fetch_appfile=` / malformed `?_edit_appfile=` hand-off must
-            not die here unread: the boot handler downloads and moves to the
-            file's install page (the wizard re-offers itself next launch,
-            `shouldAutoShow`). */}
-        {!IS_EMBED && <FetchAppFileBoot />}
         {/* Mod+K is App-wide (the listener above runs here too), so the sheet
             must be renderable here — or the flag flips with nothing shown and
             the sheet pops open on whatever page the wizard lets go to. */}
@@ -1238,6 +1279,7 @@ export default function App({ config }: { config: Config }) {
   return (
     <div id="app">
       <TaskStatusNotifier />
+      <TeardownNotifier />
       <ModelConflictNotifier />
       {!IS_EMBED && sidebar}
       <div id="main">
@@ -1267,10 +1309,14 @@ export default function App({ config }: { config: Config }) {
             `fsPathFromLocation()`) is the terminal's cwd — the folder
             currently shown in the explorer, per PLAN's "How we'll know it
             works". */}
-        {!IS_EMBED && <TerminalDrawer cwd={fsPath} />}
+        {/* Not mounted where the server cannot run a terminal (Windows without
+            pywinpty): `canRunInTerminal()` and `window._fusedOpenTerminal`
+            both ride this mount, so every Run affordance and
+            `fused.terminal.open/run` go away with it instead of failing. */}
+        {!IS_EMBED && terminalOn && <TerminalDrawer cwd={fsPath} />}
         {!IS_EMBED && (
           <StatusBar
-            terminalDock={<TerminalDock />}
+            terminalDock={terminalOn && <TerminalDock />}
             updates={<UpdatesDock version={config.version} hasUpdater={config.update != null} />}
             system={monitorOn === true && <SystemDock />}
             models={<ModelsDock />}
@@ -1319,11 +1365,6 @@ export default function App({ config }: { config: Config }) {
           duplicate work, never add coverage. */}
       {!IS_EMBED && <UpdateNotifier />}
       {!IS_EMBED && <RestartOverlay />}
-      {/* `fused-render://open?url=` hand-off (`?_fetch_appfile=`, DL-8):
-          downloads the hosted .fused into ~/.fused-render/downloads and opens
-          its install page (AF-14). Also reports a malformed `?file=` link
-          (DL-7). Once, top document, same guard as UpdateNotifier. */}
-      {!IS_EMBED && <FetchAppFileBoot />}
       {/* One dialog for every "Share" entry (card chip, card menu, app page,
           explorer kebab): the menu entries cannot own a dialog, so they post
           a request to platform/lib/share-app and this host renders it. */}

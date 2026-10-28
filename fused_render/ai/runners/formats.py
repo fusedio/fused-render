@@ -2332,7 +2332,7 @@ def is_diffusers_snapshot(names) -> bool:
     loader until a `ModularPipeline` adapter exists, and `library_name:
     diffusers` is set on every LoRA repo, none of which load standalone. So
     such rows are admitted but not loadable; the gap is deliberate and
-    recorded in D1430."""
+    recorded in D1447."""
     return DIFFUSERS_INDEX in names
 
 

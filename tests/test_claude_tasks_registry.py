@@ -614,6 +614,35 @@ def test_task_stop_has_its_own_lane():
     assert pool.budget("task_stop") == 15.0
 
 
+# ---------------------------------------------------------- task_background
+
+def test_task_background_rejects_bad_ids_and_a_dead_host(agent, run_dir):
+    assert "error" in agent._task_background("run", "toolu_1")  # no live host
+    assert "error" in agent._task_background("../x", "toolu_1")
+    for bad in ("a b", "", "x" * 201):
+        assert agent._task_background("run", bad) == {"error": "missing tool_use_id"}
+
+
+def test_task_background_writes_a_background_tasks_request(agent, run_dir, monkeypatch):
+    seen = _fake_host(agent, monkeypatch, run_dir, {"backgrounded": True})
+    res = agent.main("task_background", run_id="run", tool_use_id="toolu_1")
+    assert res == {"ok": True, "backgrounded": True}
+    assert seen == {"subtype": "background_tasks", "tool_use_id": "toolu_1",
+                    "timeout": 10.0}
+
+
+def test_task_background_passes_the_clis_refusal_through(agent, run_dir, monkeypatch):
+    _fake_host(agent, monkeypatch, run_dir, RuntimeError("No tool call: toolu_9"))
+    assert agent._task_background("run", "toolu_9") == {"error": "No tool call: toolu_9"}
+
+
+def test_task_background_shares_the_stop_lane():
+    import importlib
+    pool = importlib.import_module("fused_render.claude_agent.pool")
+    assert pool.pool_for("task_background") is pool.TASK_STOP_POOL
+    assert pool.budget("task_background") == 15.0
+
+
 def test_await_control_response_reports_an_error_answer(agent, run_dir):
     _append(run_dir, [{"type": "control_response", "response": {
         "request_id": "r1", "subtype": "error", "error": "No task found"}}])

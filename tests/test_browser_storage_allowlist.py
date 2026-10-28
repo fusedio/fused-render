@@ -40,10 +40,11 @@ ALLOWED = {
     "platform/ui/ServerStatusBanner.tsx": "dev",
     "platform/ui/UpdateNotifier.tsx": "tab",
     # ---- shell ------------------------------------------------------------
-    "shell/CurrentAppsSection.tsx": "signal",       # desk-changed nudge (+ order import)
+    "shell/CurrentAppsSection.tsx": "signal",       # desk-changed nudge
     "shell/ScheduleTaskViews.tsx": "tab",           # list memory, board lanes, group folds
     "shell/Scheduled.tsx": "import",
     "shell/TaskCards.tsx": "tab",
+    "shell/TaskWorkspace.tsx": "display",           # group collapse state (per viewer)
     "shell/TerminalDrawer.tsx": "cache",            # pty ids re-checked against GET /api/terminal
     "shell/UpdateCard.tsx": "tab",
     "shell/notifications-seen-store.ts": "import",
@@ -54,6 +55,7 @@ ALLOWED = {
     "apps/ai_models/local/HubSearchScreen.tsx": "cache",
     "apps/bots/lib/layout.ts": "display",           # bots column layout (per viewer)
     "apps/bots/state/store.ts": "import",
+    "apps/canvases/CanvasWorkspace.tsx": "cache",   # last fused whoami handle per env
     "apps/claude/ClaudeChat.tsx": "signal",
     "apps/claude/feature-flag.ts": "signal",
     "apps/claude/protocol/run-controller.ts": "tab",

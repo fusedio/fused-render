@@ -11,10 +11,11 @@
 // (SidebarFrame) and explorer-owned sections (Bookmarks), which only
 // the shell is allowed to import together (scripts/check-boundaries.mjs).
 import { useEffect, useRef, useState } from "react";
-import { ListTodo, Store, Terminal } from "lucide-react";
+import { ListTodo, Sparkles, Store } from "lucide-react";
+import { ClaudeMark } from "@platform/ui/ClaudeMark";
 import { SidebarFrame, NavItem } from "@platform/ui/sidebar/SidebarFrame";
 import type { SidebarRailItem } from "@platform/ui/sidebar/SidebarFrame";
-import type { Config } from "@platform/lib/api";
+import { botsAvailable, type Config } from "@platform/lib/api";
 import { navigateUrl } from "@platform/lib/router";
 import { isBrowserHandledClick } from "@platform/lib/appEntry";
 import { availableTours, startTour } from "@platform/lib/tours";
@@ -113,9 +114,15 @@ const TEMPLATES_ICON = (
 // page was "Scheduled".
 const SCHEDULED_ICON = <ListTodo size={16} strokeWidth={2} aria-hidden="true" />;
 
-// A terminal prompt (lucide Terminal): the Claude Config page, where the CLI's
-// skills, memory, plugins, MCP servers and settings are edited.
-const CLAUDE_CODE_ICON = <Terminal size={16} strokeWidth={2} aria-hidden="true" />;
+// The Claude mark, as Preferences' Claude Code group draws it (scale 0.85: the
+// mark fills its 512 box edge to edge, lucide's icons carry ~2px of padding):
+// the Claude Code page, where plugins, MCP servers and memory are edited.
+const CLAUDE_CODE_ICON = (
+  <ClaudeMark className="scale-[0.85]" style={{ width: 16, height: 16 }} />
+);
+
+// Skills have their own page: what the coding CLIs on this machine read.
+const SKILLS_ICON = <Sparkles size={16} strokeWidth={2} aria-hidden="true" />;
 
 // A shop front (lucide Store) for the Marketplace: where community apps are
 // browsed and installed, sized like the lucide Tasks glyph above.
@@ -668,7 +675,9 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   // news in the list beside it is still unread. The dot therefore says exactly
   // what the chip says, and both clear when the bot is opened (markSeen), not
   // when the page is.
-  const botsPulse = useBotsPulse();
+  // No Bots row, and no poll behind it, where the server runs no bots (Windows).
+  const botsOn = botsAvailable(config);
+  const botsPulse = useBotsPulse(botsOn);
   const botsTip = botsPulseTitle(botsPulse);
   const botsDot = botsPulse.waiting > 0 ? (
     <span className="sidebar-rail-dot is-attention" title={botsTip} />
@@ -727,10 +736,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     // No /ai-models entry either, and unlike Canvases it is dropped outright:
     // its primary row is ungated, so a menu copy would only ever be the
     // double-selection the Tasks note rejects.
-    // Claude Config is a settings-weight page, so it lives here and not in the
-    // primary nav; listing it in both would light the row and the trigger at
-    // once, as the Tasks note above says.
-    { href: "/claude-config", label: "Claude Config", icon: CLAUDE_CODE_ICON },
+    // Skills and Claude Code are settings-weight pages, so they live here and
+    // not in the primary nav; listing them in both would light the row and
+    // the trigger at once, as the Tasks note above says.
+    { href: "/skills", label: "Skills", icon: SKILLS_ICON },
+    { href: "/claude-config", label: "Claude Code", icon: CLAUDE_CODE_ICON },
     { href: "/preferences", label: "Preferences", icon: PREFERENCES_ICON }
   );
   // The tour replays, at the menu's tail, behind ONE row: four sibling entries
@@ -911,14 +921,18 @@ export default function GlobalSidebar({ config }: { config: Config }) {
     ...(bot
       ? []
       : [{ key: "home", label: "Home", icon: HOME_ICON, href: "/home", active: homeActive }]),
-    {
-      key: "bots",
-      label: botsTip ? `Bots — ${botsTip}` : "Bots",
-      icon: BOTS_ICON,
-      href: "/bots",
-      active: botsActive,
-      badge: botsDot,
-    },
+    ...(botsOn
+      ? [
+          {
+            key: "bots",
+            label: botsTip ? `Bots — ${botsTip}` : "Bots",
+            icon: BOTS_ICON,
+            href: "/bots",
+            active: botsActive,
+            badge: botsDot,
+          },
+        ]
+      : []),
     {
       key: "tasks",
       label: tasksTip ? `Tasks — ${tasksTip}` : "Tasks",
@@ -946,7 +960,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
       ? [
           {
             key: "marketplace",
-            label: "Marketplace",
+            label: "Community",
             icon: MARKETPLACE_ICON,
             href: "/marketplace",
             active: marketplaceActive,
@@ -1013,18 +1027,20 @@ export default function GlobalSidebar({ config }: { config: Config }) {
               active={homeActive}
             />
           )}
-          <NavItem
-            href="/bots"
-            id="bots-link"
-            label="Bots"
-            icon={BOTS_ICON}
-            active={botsActive}
-            extra={botsDot}
-            trailing={botsTrailing}
-            // Errors have no dot and no words, so the row itself carries the
-            // sentence; the rail says it through its label either way.
-            title={botsTip}
-          />
+          {botsOn && (
+            <NavItem
+              href="/bots"
+              id="bots-link"
+              label="Bots"
+              icon={BOTS_ICON}
+              active={botsActive}
+              extra={botsDot}
+              trailing={botsTrailing}
+              // Errors have no dot and no words, so the row itself carries the
+              // sentence; the rail says it through its label either way.
+              title={botsTip}
+            />
+          )}
           {/* Tasks took Inbox's place as well as its job: the two pages showed
               the same pile of work from two ends, and the one that survives is
               the one that can say when the work runs. Inbox is deleted. */}
@@ -1058,7 +1074,7 @@ export default function GlobalSidebar({ config }: { config: Config }) {
             <NavItem
               href="/marketplace"
               id="marketplace-link"
-              label="Marketplace"
+              label="Community"
               icon={MARKETPLACE_ICON}
               active={marketplaceActive}
             />

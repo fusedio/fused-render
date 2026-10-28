@@ -95,7 +95,7 @@ class Session:
 
     def __init__(self, agent, tmp_path, resume=False, fake_args=(), env=None,
                  transcript_seed=None, cli_mode=None, messages=(),
-                 seed_bucket=None):
+                 seed_bucket=None, host_cmd=None):
         import agent_roots  # importable once agent.py seeded the shared dir
         self.agent = agent
         # A resume names its thread; a fresh one learns it off the init row,
@@ -121,6 +121,7 @@ class Session:
             with open(self.transcript, "w") as fh:
                 for row in transcript_seed:
                     fh.write(json.dumps(row) + "\n")
+        self.host_cmd = host_cmd
         self.log = os.path.join(self.run_dir, "fake.log")
         self.gate = os.path.join(self.run_dir, "gate")
         self.env_dump = os.path.join(self.run_dir, "fake.env.json")
@@ -142,7 +143,8 @@ class Session:
                          "FUSED_CLAUDE_HOST_DRAIN_INTERVAL_SECONDS": "0.05"})
         host_env.update(env or {})
         self.err = open(os.path.join(self.run_dir, "host.err.log"), "ab")
-        self.proc = subprocess.Popen([sys.executable, HOST], stdin=subprocess.PIPE,
+        self.proc = subprocess.Popen(self.host_cmd or [sys.executable, HOST],
+                                     stdin=subprocess.PIPE,
                                      stderr=self.err, env=host_env)
         self.proc.stdin.write(json.dumps(req).encode("utf-8"))
         self.proc.stdin.close()
@@ -275,6 +277,16 @@ def start(agent, tmp_path):
     yield _start
     for s in started:
         s.stop()
+
+
+def test_host_survives_a_platform_without_os_setsid(start):
+    """Windows has no `os.setsid`: the host's `main()` must not die on the
+    AttributeError before it reads its request (every Codex task failed)."""
+    code = ("import os, runpy, sys; del os.setsid; sys.argv=[%r]; "
+            "runpy.run_path(%r, run_name='__main__')" % (HOST, HOST))
+    s = start(host_cmd=[sys.executable, "-c", code])
+    assert _wait_for(lambda: any(r.get("subtype") == "init" for r in s.out())), \
+        "no init row\nhost.err: %s" % s.host_err()
 
 
 def _assert_v2_only(s):

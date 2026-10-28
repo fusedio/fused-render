@@ -17,7 +17,7 @@ import { useCurrentAppsChanged, TASKS_CHANGED_EVENT } from "@platform/lib/tasksC
 import { api as botsApi, type Bot } from "@apps/bots/lib/api";
 import type { AppsSort } from "./layout";
 import { MAX_ROW } from "./strip";
-import { isDraftTask } from "../tasks-lib";
+import { isDraftTask, sortForList } from "../tasks-lib";
 
 export const APPS_PAGE = 48;
 
@@ -105,6 +105,12 @@ export function useHomeApps(limit: number | null, rows: number, sort: AppsSort =
         try {
           const local = await runCommunity<{ status?: string }>({ action: "catalog" });
           if (!alive) return;
+          // Retired with the reviewed Marketplace (§18.5): no showcase
+          // clone is coming, so the empty row is the answer.
+          if (local.status === "retired") {
+            setApps([]);
+            return;
+          }
           // A "no-cache" status means the clone is still missing — wait for
           // it. But the clone can just as easily land in the gap between the
           // first empty getHomeApps and this very check, which reports it
@@ -225,14 +231,16 @@ export interface HomeTasks {
 }
 
 /** Split the task list for the Home Tasks widget: what it shows (everything but
-    archived and drafts, done included, newest activity first) plus the counts
-    of what it left out, so an empty widget can say why. */
+    archived and drafts, done included) plus the counts of what it left out, so
+    an empty widget can say why. In the TASKS PAGE'S LIST ORDER (tasks-lib
+    .sortForList: lane by lane — upcoming, queued, in progress, needs you,
+    done — each lane by its own clock, drafts and waiting cards hoisted), not
+    a plain last-active sort: a widget that ordered the same rows differently
+    from the page its "See all" opens read as shuffled (Akshil, 2026-10-27). */
 export function splitHomeTasks(all: Task[]): HomeTasks {
   const archived = all.filter((t) => t.status === "archived").length;
   const drafts = all.filter((t) => t.status !== "archived" && isDraftTask(t)).length;
-  const tasks = all
-    .filter((t) => t.status !== "archived" && !isDraftTask(t))
-    .sort((a, b) => (b.last_active || 0) - (a.last_active || 0));
+  const tasks = sortForList(all.filter((t) => t.status !== "archived" && !isDraftTask(t)));
   return { tasks, drafts, archived };
 }
 

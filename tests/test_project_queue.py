@@ -33,6 +33,12 @@ def folder_key(path) -> str:
     """`path` spelled the way this module spells a folder — the canonical
     forward-slash form (`canonical_fs_path`), which is what `queue_key` answers
     and therefore what a scanned run is filed under (`run_key`).
+
+    On POSIX it is `str(path)` and this helper is invisible. On Windows
+    `str(WindowsPath(...))` is backslashed and `queue_key` never produces that
+    spelling, so a test that asserted against it would be asserting the wrong
+    contract — and one that keyed a fake holder on it would file the folder
+    under a name no production caller will ever look up.
     """
     return canonical_fs_path(str(path))
 
@@ -46,6 +52,7 @@ def home(tmp_path, monkeypatch):
     house = tmp_path / "home"
     (house / ".fused-render").mkdir(parents=True)
     monkeypatch.setenv("HOME", str(house))
+    monkeypatch.setenv("USERPROFILE", str(house))
     monkeypatch.setenv("FUSED_RENDER_HOME", str(house / ".fused-render"))
     monkeypatch.setenv("FUSED_RENDER_DIR", str(house / "Fused"))
 
@@ -194,8 +201,10 @@ def test_a_plain_folder_is_its_own_key(home):
 
 def test_the_key_is_the_canonical_forward_slash_spelling(home):
     """THE CONTRACT EVERY OTHER READER LEANS ON. A key is `canonical_fs_path`'s
-    spelling of the folder: a holder filed under another spelling, or a
-    `is_free` asked about it, silently misses.
+    spelling of the folder — forward slashes — and never the OS's own. On
+    Windows `str(Path)` is backslashed, so the two spellings of one folder are
+    visibly different there and only this one is ever a key: a holder filed
+    under the other, or a `is_free` asked about it, silently misses.
 
     Pinned here rather than left implicit in thirty assertions, because it is
     the single fact `holders`, `is_free`, `reserve`, `holder_for`, the
@@ -206,12 +215,18 @@ def test_the_key_is_the_canonical_forward_slash_spelling(home):
     key = pq.queue_key(str(work))
     assert key == canonical_fs_path(os.path.abspath(str(work)))
     assert key == canonical_fs_path(key)  # idempotent: a key is already canonical
+    # …and that spelling is forward slashes wherever a drive letter appears,
+    # which is the half of the rule this suite cannot otherwise reach on POSIX.
+    assert canonical_fs_path("C:\\Users\\a\\proj") == "C:/Users/a/proj"
 
 
 def test_every_reader_speaks_the_spelling_queue_key_answers(home, agent,
                                                             monkeypatch):
-    """Everything that files or looks up a folder must speak
-    `canonical_fs_path`'s spelling. Simulated by making the canonical
+    """WINDOWS IN MINIATURE, on any OS.
+
+    There a folder has two spellings — `str(Path)`'s backslashes and
+    `canonical_fs_path`'s forward slashes — and everything that files or looks
+    up a folder must speak the second. Simulated by making the canonical
     spelling visibly different from the path on disk (through the one branch
     that returns without stat'ing what it answers, a wedged mount), so the
     invariant is tested rather than hidden behind a POSIX identity: whatever

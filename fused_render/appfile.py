@@ -24,9 +24,10 @@ payload-relative path, resolved at *export* time by the one shared entry rule
 page an app opens on.
 
 Opening is INSTALLING, never running from the file (owner, 2026-10-13): a
-``.fused`` renders at its own ``/explorer/view|embed/<path>`` URL through the
-``fusedapp`` template, which is an install page — the file's icon, name,
-export date, README and member list, and one button. Install unpacks the
+``.fused`` renders at its own ``/explorer/view|embed/<path>`` URL as the
+shell's install page (frontend apps/marketplace FusedFilePage; the ``fusedapp``
+template draws only card peeks) — the file's icon, name, export date, README
+and member list, and one button. Install unpacks the
 payload through the hardened extractor into ``<workspace>/app/<slug>`` as an
 ordinary editable app folder heading its own git repo: the ONE working copy
 of the app. A later file for the same app (its ``app_id``, D884) UPDATES
@@ -56,6 +57,7 @@ import time
 import zipfile
 from datetime import datetime, timezone
 
+from fused_render._platform import is_within
 from fused_render import app_id as app_identity
 from fused_render import app_listing
 from fused_render import appfile_container as container
@@ -602,7 +604,7 @@ def _lift_read_only(root: str) -> None:
 # ------------------------------------------------------------------ install
 #
 # A `.fused` is an INSTALLER, not an app: nothing runs from the file or from a
-# cache of it. Opening one shows the install page (templates/fusedapp), and
+# cache of it. Opening one shows the install page (the shell's FusedFilePage), and
 # the one working copy of the app lives at `<workspace>/app/<slug>` — where
 # new apps are created and where the `local/` ones were moved (#1592). The
 # copy is an ordinary app folder: editable, heading its own git repo, with
@@ -635,6 +637,10 @@ STATE_CLASH = "clash"          # app/<slug> holds a DIFFERENT app
 # Git-source files only (appfile_git.py, DL-9):
 STATE_LOCAL = "local"          # the copy has commits/edits of its own: update with git
 STATE_REPLACE = "replace"      # an unchanged file-installed copy the clone replaces
+# A GitHub link opened for a copy installed from the Marketplace
+# (docs/CONTRIB_LOOP.md §18.4): never a move — the page asks "Follow <who>
+# directly?" (`git.switch`), and `force` is the yes (`market.switch_to_link`).
+STATE_SWITCH_LINK = "switch-link"
 WARN_STATES = frozenset({STATE_DIVERGED, STATE_SAME, STATE_DOWNGRADE, STATE_UNKNOWN})
 
 #: Divergence hashes the stamped files on every probe; an app can be large.
@@ -788,7 +794,7 @@ def _workspace_spelling(path: str) -> str:
     rp = os.path.realpath(path)
     if rp == real_root:
         return root
-    if rp.startswith(real_root.rstrip(os.sep) + os.sep):
+    if is_within(rp, real_root, strict=True):
         return os.path.join(root, os.path.relpath(rp, real_root))
     return path
 
@@ -1082,6 +1088,14 @@ def install_target(fused_path: str, *, light: bool = False) -> dict:
         dest, found_by, husk, state, changed, other_name = _git_state(
             git, dest, found_by, husk, state, stamp, other_name, light)
         installed = found_by is not None
+        if found_by == "git" and not light:
+            # A GitHub-link copy's page words come from the contribution
+            # engine (docs/CONTRIB_LOOP.md §16.8): `who` (whose latest),
+            # `changes` (the user has their own), `collision` (their files
+            # the update would land on). Absent for any other clone.
+            from fused_render import appfile_git
+
+            git = {**git, **(appfile_git.copy_view(dest, git) or {})}
 
     files = []
     total = 0
@@ -1101,7 +1115,7 @@ def install_target(fused_path: str, *, light: bool = False) -> dict:
         "found_by": found_by,
         "husk": husk,
         "state": state,
-        "needs_force": state in WARN_STATES or state == STATE_REPLACE,
+        "needs_force": state in WARN_STATES or state in (STATE_REPLACE, STATE_SWITCH_LINK),
         "git": git,
         "downloaded": _is_download(fused_path),
         "exported_at": incoming_at,
@@ -1132,7 +1146,7 @@ def _is_download(fused_path: str) -> bool:
 
     try:
         root = os.path.realpath(os.path.join(storage.home_dir(), "downloads"))
-        return os.path.realpath(fused_path).startswith(root + os.sep)
+        return is_within(os.path.realpath(fused_path), root, strict=True)
     except Exception:  # noqa: BLE001 — a display hint never fails the probe
         return False
 

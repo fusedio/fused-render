@@ -139,11 +139,49 @@ export const CODEX_FALLBACK: AgentBackendRow = {
   health: null,
 };
 
+/** The Gemini row (docs/GEMINI_BACKEND.md §8), the third twin: a Gemini chat
+ *  answers with Gemini's caps from the first frame. Off until the server
+ *  says otherwise (D17). Model and mode are live ACP requests on Gemini's
+ *  wire (`session/set_model`, `session/set_mode`), so both live switches are
+ *  on (§7). NO EFFORT CONTROL AT ALL (D7): an empty `efforts` and every model
+ *  `reasoning: false`, so the effort pill never shows for Gemini.
+ *  KEEP IN SYNC BY HAND with fused_render/agent_backends/gemini.py — pinned
+ *  field for field by tests/test_agent_backend_pins.py. */
+export const GEMINI_FALLBACK: AgentBackendRow = {
+  id: "gemini",
+  label: "Gemini",
+  enabled: false,
+  models: [
+    { id: "auto", label: "Auto (Gemini picks)", reasoning: false },
+    { id: "gemini-3-pro-preview", label: "Gemini 3 Pro (preview)", reasoning: false },
+    { id: "gemini-3-flash-preview", label: "Gemini 3 Flash (preview)", reasoning: false },
+    { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro", reasoning: false },
+    { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash", reasoning: false },
+    { id: "gemini-2.5-flash-lite", label: "Gemini 2.5 Flash-Lite", reasoning: false },
+  ],
+  default_model: "auto",
+  efforts: [],
+  modes: ["prompt", "acceptEdits", "auto"],
+  caps: {
+    plan_mode: false,
+    live_model_switch: true,
+    live_mode_switch: true,
+    snapshots: false,
+    artifacts: false,
+    worktrees: false,
+    bg_tasks: false,
+    ask_user: false,
+    terminal_mirror: false,
+    mid_turn_messages: false,
+  },
+  health: null,
+};
+
 const FALLBACK: AgentCatalog = {
   // ENABLED: Claude alone, the defaults of every switch (D17).
   backends: [CLAUDE_FALLBACK],
   default: "claude",
-  all: [CLAUDE_FALLBACK, COPILOT_FALLBACK, CODEX_FALLBACK],
+  all: [CLAUDE_FALLBACK, COPILOT_FALLBACK, CODEX_FALLBACK, GEMINI_FALLBACK],
 };
 
 export interface AgentCatalogState extends AgentCatalog {
@@ -316,7 +354,7 @@ export function backendOf(id: string | null | undefined): AgentBackendRow {
   return current.all.find((b) => b.id === want) ?? current.backends.find((b) => b.id === want) ?? CLAUDE_FALLBACK;
 }
 
-/** "Claude" / "Copilot" / "Codex" — the word every surface names the agent by. */
+/** "Claude" / "Copilot" / "Codex" / "Gemini" — the word every surface names the agent by. */
 export function agentLabel(id: string | null | undefined): string {
   return backendOf(id).label;
 }

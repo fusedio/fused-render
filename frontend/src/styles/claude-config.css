@@ -1090,6 +1090,15 @@
   outline-offset: -2px;
 }
 
+/* The long one-line description must not squeeze the location column: keep
+   it on one line at its natural width, capped. overflow, ellipsis and
+   text-align come from .cc-lrow-meta. */
+.cc-skill-row .cc-lrow-meta {
+  flex: 0 0 auto;
+  max-width: 40%;
+  white-space: nowrap;
+}
+
 .cc-skill-title {
   display: flex;
   align-items: center;
@@ -1499,6 +1508,20 @@
   color: var(--fg-muted);
 }
 
+/* A dashed hint row under a list: "type to search more", with its button. */
+.cc-findmore {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px 0;
+  padding: 10px 14px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  font-size: 12.5px;
+  color: var(--fg-muted);
+}
+
 .cc-link {
   padding: 0;
   border: none;
@@ -1594,4 +1617,268 @@
   color: var(--fg-muted);
   border: 1px solid var(--border);
   border-radius: 9px;
+}
+
+/* -- Skills page (/skills) ------------------------------------------------------ */
+
+.cc-skills-blurb {
+  margin-bottom: 16px;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+/* A skills.sh row: the pick button is the row's body, Add sits at its edge. */
+.cc-srow-pick {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 6px 0;
+  border: none;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.cc-srow-pick:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.cc-srow.is-active {
+  background: rgba(var(--accent-rgb), 0.08);
+}
+
+.cc-skills-none {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 13px;
+  color: var(--fg-muted);
+}
+
+.cc-skills-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cc-chip {
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: none;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.cc-chip:hover,
+.cc-chip.is-on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* The preview column beside the list: a skills.sh skill, or the draft. */
+.cc-skill-aside {
+  display: flex;
+  flex: 0 0 360px;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  max-height: calc(100vh - 140px);
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow-y: auto;
+  position: sticky;
+  top: 0;
+}
+
+.cc-aside-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.cc-aside-src,
+.cc-aside-label {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.cc-aside-actions,
+.cc-aside-readers {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.cc-aside-body {
+  max-height: 340px;
+  overflow-y: auto;
+}
+
+.cc-aside-files {
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+}
+
+@container (max-width: 900px) {
+  .cc-skills-page .settings-body {
+    flex-direction: column;
+  }
+
+  .cc-skill-aside {
+    position: static;
+    flex-basis: auto;
+    width: 100%;
+    max-height: none;
+  }
+}
+
+/* -- New skill (Draft with Claude) ---------------------------------------------- */
+
+.cc-new {
+  display: flex;
+  align-items: flex-start;
+  gap: 24px;
+}
+
+.cc-new-form {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+  max-width: 640px;
+}
+
+.cc-new-title {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.cc-new-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+.cc-new-label {
+  padding: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.cc-new-opt {
+  font-weight: 400;
+  color: var(--fg-muted);
+}
+
+.cc-new-lint {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.cc-new-lint.is-ok {
+  color: var(--accent);
+}
+
+.cc-new-lint.is-err,
+.cc-new-problems {
+  color: var(--error);
+}
+
+.cc-new-radio {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 0;
+  cursor: pointer;
+}
+
+.cc-new-radio input {
+  margin-top: 3px;
+}
+
+.cc-new-sub {
+  display: block;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.cc-new-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.cc-new-note {
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+
+.cc-new-btns,
+.cc-new-ask,
+.cc-new-rename {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.cc-new-ask > :first-child,
+.cc-new-rename > :first-child {
+  flex: 1 1 200px;
+}
+
+.cc-new-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px;
+}
+
+.cc-new-problems {
+  padding-left: 18px;
+  font-size: 12.5px;
+}
+
+.cc-new-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cc-aside-raw {
+  max-height: 420px;
+  overflow: auto;
+  font: 12px/1.5 var(--font-mono, ui-monospace, monospace);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.cc-aside-fm {
+  color: var(--accent);
+}
+
+@container (max-width: 900px) {
+  .cc-new {
+    flex-direction: column;
+  }
 }

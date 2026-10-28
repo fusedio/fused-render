@@ -49,6 +49,9 @@ export interface SharedFileRecord {
   /** Computed at read time by share_file.py's `is_expired` — a `temporary`
    *  share whose session has lapsed. Always false for `public`. */
   expired: boolean;
+  /** "Anyone with the link" was asked for but the deployment forbids public
+   *  canvases, so the shim fell back to `temporary` on its own. */
+  public_refused?: boolean;
 }
 
 export interface ShareFileStatus {

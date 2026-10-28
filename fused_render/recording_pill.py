@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import os
 
+from fused_render._platform import is_within
 from fused_render import _flavor
 
 logger = logging.getLogger(__name__)
@@ -35,19 +36,15 @@ def _nearest_app(page: str, root: str) -> tuple[str, dict | None]:
     an icon; `(root, None)` when none does. A page outside `root` checks `root`."""
     from fused_render import app_listing
 
-    def norm(p: str) -> str:
-        return os.path.normcase(os.path.abspath(p))
-
-    nroot = norm(root)
+    aroot = os.path.abspath(root)
     d = os.path.dirname(page)
-    nd = norm(d)
-    if nd != nroot and not nd.startswith(nroot.rstrip(os.sep) + os.sep):
+    if not is_within(os.path.abspath(d), aroot):
         return root, app_listing.app_icon(root)
     while True:
         found = app_listing.app_icon(d)
         if found:
             return d, found
-        if norm(d) == nroot:
+        if not is_within(os.path.abspath(d), aroot, strict=True):
             return root, None
         parent = os.path.dirname(d)
         if parent == d:

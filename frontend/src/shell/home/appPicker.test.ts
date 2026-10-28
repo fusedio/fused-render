@@ -27,3 +27,10 @@ test("filter matches title, name and folder", () => {
   expect(filterPickerApps(list, "a1", "/Users/me").length).toBe(1);
   expect(filterPickerApps(list, "~/misc", "/Users/me")[0].name).toBe("b");
 });
+
+test("appFolderLine keeps a literal backslash in a POSIX path", () => {
+  const app = { path: "/Users/me/weird\\dir/app", name: "app" } as AppInfo;
+  expect(appFolderLine(app, "/Users/me")).toBe("~/weird\\dir");
+  const win = { path: "C:\\Users\\me\\apps\\app", name: "app" } as AppInfo;
+  expect(appFolderLine(win, "C:\\Users\\me")).toBe("~/apps");
+});

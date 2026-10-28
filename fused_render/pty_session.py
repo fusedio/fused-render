@@ -30,6 +30,7 @@ this code.
 from __future__ import annotations
 
 import asyncio
+import codecs
 import collections
 import dataclasses
 import os
@@ -144,6 +145,18 @@ def _process_name(pid: int) -> Optional[str]:
     return os.path.basename(name) if name else None
 
 
+def terminal_available() -> bool:
+    """Whether this machine can run the terminal: always on POSIX; on Windows
+    only when pywinpty (ConPTY) is installed. Cheap: no import of winpty."""
+    if not _platform.IS_WINDOWS:
+        return True
+    import importlib.util
+    try:
+        return importlib.util.find_spec("winpty") is not None
+    except (ImportError, ValueError):
+        return False
+
+
 class SessionLimitError(RuntimeError):
     """Raised by `PtySessionRegistry.create` at the live-session cap."""
 
@@ -218,6 +231,17 @@ class PtySession:
         #: offset of the ring's first byte (matches ShellEventParser offsets).
         self._total = 0
 
+        self._start(profile, size)
+
+        self._reader = threading.Thread(target=self._read_loop, daemon=True)
+        self._reader.start()
+
+    # -- platform primitives -------------------------------------------------
+    # The POSIX implementations live here; `WinPtySession` overrides each one.
+    # Everything above them (the ring, subscribers, flow control, the shell
+    # event parser) is platform-neutral.
+
+    def _start(self, profile: TerminalProfile, size: Optional[tuple]) -> None:
         master_fd, slave_fd = os.openpty()
         self.master_fd = master_fd
         try:
@@ -253,8 +277,32 @@ class PtySession:
             os.close(master_fd)
             raise
 
-        self._reader = threading.Thread(target=self._read_loop, daemon=True)
-        self._reader.start()
+    def _read_chunk(self) -> bytes:
+        """Next output bytes; b"" at EOF."""
+        try:
+            return os.read(self.master_fd, _READ_CHUNK)
+        except OSError:
+            # EIO is the ordinary "slave side fully closed" signal for a
+            # pty master, not an error worth surfacing.
+            return b""
+
+    def _write_raw(self, data: bytes) -> None:
+        try:
+            os.write(self.master_fd, data)
+        except OSError:
+            pass
+
+    def _resize_raw(self, rows: int, cols: int) -> None:
+        _set_winsize(self.master_fd, rows, cols)
+
+    def _wait_exit(self) -> int:
+        return self.proc.wait()
+
+    def _close(self) -> None:
+        try:
+            os.close(self.master_fd)
+        except OSError:
+            pass
 
     # -- I/O ---------------------------------------------------------------
 
@@ -308,12 +356,7 @@ class PtySession:
     def _read_loop(self) -> None:
         while True:
             self._wait_flowing()
-            try:
-                data = os.read(self.master_fd, _READ_CHUNK)
-            except OSError:
-                # EIO is the ordinary "slave side fully closed" signal for a
-                # pty master, not an error worth surfacing.
-                data = b""
+            data = self._read_chunk()
             if not data:
                 break
             with self._lock:
@@ -324,17 +367,14 @@ class PtySession:
             for q in subs:
                 self._put(q, ("data", data))
 
-        code = self.proc.wait()
+        code = self._wait_exit()
         with self._lock:
             self.alive = False
             self.exit_code = code
             subs = list(self._subscribers)
         for q in subs:
             self._put(q, ("exit", code))
-        try:
-            os.close(self.master_fd)
-        except OSError:
-            pass
+        self._close()
 
     def _append_scrollback(self, data: bytes) -> None:
         """Append to the ring and drop the oldest bytes past SCROLLBACK_CAP.
@@ -378,10 +418,7 @@ class PtySession:
     def write(self, data: bytes) -> None:
         if not self.alive:
             return
-        try:
-            os.write(self.master_fd, data)
-        except OSError:
-            pass
+        self._write_raw(data)
 
     def shell_is_foreground(self) -> bool:
         """True if the shell itself (its own process group, per the
@@ -495,7 +532,7 @@ class PtySession:
     def resize(self, rows: int, cols: int) -> None:
         if not self.alive:
             return
-        _set_winsize(self.master_fd, rows, cols)
+        self._resize_raw(rows, cols)
         size = valid_winsize(rows, cols)
         if size is not None:
             self.rows, self.cols = size
@@ -569,7 +606,7 @@ class PtySession:
         `killpg` once that equals its own pid; otherwise it signals the pid
         alone, which is always safe."""
         if not self.alive:
-            # The reader thread has already called `self.proc.wait()` and
+            # The reader thread has already called `self._wait_exit()` and
             # reaped the child by the time `alive` goes False — the pid is
             # therefore free for the OS to hand to an unrelated process.
             # Without this check, `shutdown_all()`/`registry.kill()` calling
@@ -578,6 +615,9 @@ class PtySession:
             # SIGHUP/SIGKILL it (or its whole group, if it happens to be a
             # group leader) — a process this code has nothing to do with.
             return
+        self._kill_tree()
+
+    def _kill_tree(self) -> None:
         pid = self.proc.pid
         if self._reaped():
             return
@@ -616,6 +656,110 @@ class PtySession:
         self._reader.join(timeout=timeout)
 
 
+class WinPtySession(PtySession):
+    """The Windows session: a ConPTY pseudo-console driven by pywinpty.
+
+    Only the platform primitives differ from `PtySession`; the ring, the
+    subscribers, flow control and the OSC parser are shared. The posix_spawn
+    rules in the module docstring are about fork() under libproj and do not
+    apply here: there is no fork on Windows.
+
+    `winpty` is imported lazily (in `_start`) and nothing at module level may
+    import it: it exists only on Windows, and an eager import would take the
+    whole server down everywhere else.
+
+    No process groups exist, so "is the shell in front" is answered from the
+    shell integration instead: the PowerShell shim's OSC 133;C / 133;D bracket
+    every command, and `shell_state.running` is true between them.
+    """
+
+    def _start(self, profile: TerminalProfile, size: Optional[tuple]) -> None:
+        import winpty  # pywinpty; lazy, see the class docstring
+
+        self._write_decoder = codecs.getincrementaldecoder("utf-8")(
+            errors="replace")
+        rows, cols = size if size is not None else (DEFAULT_ROWS, DEFAULT_COLS)
+        self._pty = winpty.PtyProcess.spawn(
+            list(profile.argv), cwd=profile.cwd, env=dict(profile.env),
+            dimensions=(rows, cols))
+        # Same attribute the POSIX class exposes; `.pid` is all callers use.
+        self.proc = self._pty
+
+    def _read_chunk(self) -> bytes:
+        # pywinpty decodes for us (`read` returns str) and signals the end
+        # with EOFError. An empty str is a no-data tick, not EOF.
+        while True:
+            try:
+                text = self._pty.read(_READ_CHUNK)
+            except Exception:  # EOFError, OSError, winpty.WinptyError
+                return b""
+            if text:
+                return text.encode("utf-8")
+            if not self._pty.isalive():
+                return b""
+
+    def _write_raw(self, data: bytes) -> None:
+        try:
+            # Incremental: a character split across two writes stays whole.
+            text = self._write_decoder.decode(data)
+            if text:
+                self._pty.write(text)
+        except Exception:  # EOFError once the console is gone
+            pass
+
+    def _resize_raw(self, rows: int, cols: int) -> None:
+        size = valid_winsize(rows, cols)
+        if size is None:
+            return
+        try:
+            self._pty.setwinsize(*size)
+        except Exception:
+            pass
+
+    def _wait_exit(self) -> int:
+        try:
+            self._pty.wait()
+            code = self._pty.exitstatus
+        except Exception:
+            code = None
+        return code if isinstance(code, int) else -1
+
+    def _close(self) -> None:
+        try:
+            self._pty.close(force=True)
+        except Exception:
+            pass
+
+    def _child_exited(self) -> bool:
+        try:
+            return not self._pty.isalive()
+        except Exception:
+            return True
+
+    def _reaped(self) -> bool:
+        return self._child_exited()
+
+    def _kill_tree(self) -> None:
+        _platform.kill_tree(self._pty.pid)
+        deadline = time.time() + _KILL_GRACE_S
+        while time.time() < deadline and self.alive:
+            time.sleep(0.05)
+        if self.alive:
+            try:
+                self._pty.terminate(force=True)
+            except Exception:
+                pass
+
+    def shell_is_foreground(self) -> bool:
+        return self.alive and not self.shell_state.running
+
+    def foreground_name(self) -> Optional[str]:
+        if not self.alive or not self.shell_state.running:
+            return None
+        command = (self.shell_state.last_command or "").split(None, 1)
+        return command[0] if command else "unknown"
+
+
 class PtySessionRegistry:
     """Per-app-instance registry of live pty sessions, capped at
     MAX_SESSIONS."""
@@ -644,8 +788,14 @@ class PtySessionRegistry:
               rows: Optional[int] = None,
               cols: Optional[int] = None,
               owner: Optional[str] = None) -> PtySession:
+        session_cls = PtySession
         if _platform.IS_WINDOWS:
-            raise RuntimeError("the terminal is not supported on Windows")
+            try:
+                import winpty  # noqa: F401  (probe only; the class imports it)
+            except ImportError:
+                raise RuntimeError("the terminal needs pywinpty on Windows "
+                                   "(pip install 'fused-render[cli]')") from None
+            session_cls = WinPtySession
         with self._lock:
             self._reap_dead_locked()
             is_bot = bool(owner) and owner.startswith(BOT_OWNER_PREFIX)
@@ -656,7 +806,7 @@ class PtySessionRegistry:
                 raise SessionLimitError(
                     f"terminal session cap ({cap}) reached")
             sid = uuid.uuid4().hex
-            session = PtySession(sid, profile, rows=rows, cols=cols, owner=owner)
+            session = session_cls(sid, profile, rows=rows, cols=cols, owner=owner)
             self._sessions[sid] = session
             return session
 

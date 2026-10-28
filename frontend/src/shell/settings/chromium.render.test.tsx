@@ -1,4 +1,4 @@
-// The "Chromium engine for windows" row (Labs): the switch
+// The "Chromium engine for windows" row (Experimental flags): the switch
 // writes chromium_windows_enabled via a real PUT /api/prefs; the status line
 // names the shipped engine, or says the build has none (switch off, disabled).
 //

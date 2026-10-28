@@ -14,6 +14,7 @@ interrupts a C-blocked time.sleep).
 """
 import ast
 import base64
+import _thread
 import io
 import json
 import queue
@@ -208,8 +209,13 @@ def read_requests(q):
             # raise_signal from this thread sets the flag but cannot wake
             # a main thread C-blocked in e.g. time.sleep — the signal must
             # be delivered to the main thread itself
-            signal.pthread_kill(
-                threading.main_thread().ident, signal.SIGINT)
+            if hasattr(signal, "pthread_kill"):
+                signal.pthread_kill(
+                    threading.main_thread().ident, signal.SIGINT)
+            else:
+                # Windows: no pthread_kill. interrupt_main cannot wake a
+                # C-blocked main thread (time.sleep), but it is the only option.
+                _thread.interrupt_main()
         else:
             q.put(req)
     q.put(None)  # stdin closed — the daemon is gone

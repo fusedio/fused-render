@@ -6,6 +6,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { contractHome, useHome } from "../../apps/explorer/listing/home-path";
 import { listDir, statPath, type FsEntry } from "@platform/lib/api";
+import { parentFsPath } from "@platform/lib/path-url";
 import { appFolderLine, filterPickerApps, normalizeWebUrl, pickerApps } from "./appPicker";
 import {
   AppWindow,
@@ -70,8 +71,7 @@ export function allFolders(items: BookmarkItem[], out: BookmarkFolder[] = []): B
   return out;
 }
 
-const joinPath = (dir: string, name: string) => dir.replace(/\/+$/, "") + "/" + name;
-const parentDir = (dir: string) => dir.replace(/\/+$/, "").replace(/[^/]*$/, "").replace(/(.)\/+$/, "$1") || "/";
+const joinPath = (dir: string, name: string) => dir.replace(/[\\/]+$/, "") + "/" + name;
 
 
 export function AddWidgetPanel({
@@ -390,7 +390,7 @@ export function AddWidgetPanel({
                       {dir ? (
                         <div className="hw-filepick-crumb">
                           {dir !== "/" ? (
-                            <button type="button" className="hw-filepick-up" aria-label="Up one folder" onClick={() => setBrowseDir(parentDir(dir))}>
+                            <button type="button" className="hw-filepick-up" aria-label="Up one folder" onClick={() => setBrowseDir(parentFsPath(dir))}>
                               ..
                             </button>
                           ) : null}

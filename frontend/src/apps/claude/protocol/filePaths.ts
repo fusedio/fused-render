@@ -1,6 +1,7 @@
 // Pure helpers behind the in-chat file preview overlay: which files this
 // session wrote, whether a piece of inline code looks like a path, and how a
 // relative path resolves against the chat's working folder.
+import { isDriveAbs } from "@platform/lib/path-url";
 import type { Segment } from "./types";
 
 const EDIT_TOOLS = new Set(["Write", "Edit", "MultiEdit", "NotebookEdit"]);
@@ -34,7 +35,7 @@ export function touchedFiles(turns: ReadonlyArray<HasSegments>): string[] {
 
 /** POSIX `/x`, a Windows drive path (`C:\x`, `C:/x`) or a UNC path (`\\host\x`). */
 export function isAbsolutePath(path: string): boolean {
-  return path.startsWith("/") || /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("\\\\");
+  return path.startsWith("/") || isDriveAbs(path) || path.startsWith("\\\\");
 }
 
 /** Absolute paths pass through; a relative one joins `cwd`, with `.`/`..`

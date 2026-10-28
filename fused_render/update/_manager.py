@@ -204,10 +204,10 @@ class UpdateManager:
                 "progress": self._progress,
                 "progress_total": self._progress_total,
                 "error": self._error,
-                # Always None since D767 — kept on the wire so the client's
-                # UpdateStatus shape is unchanged. There is no terminal
-                # command to offer for any method.
-                "manual_command": None,
+                # None for every packaged method (D767: no terminal command
+                # to offer there). Only the CLI/PyPI manager sets one: its
+                # update IS a terminal command (see update/pypi.py).
+                "manual_command": self._manual_command(),
                 # Which half of an install is running — "downloading" while the
                 # artifact streams, "installing" from there to the swap — so the
                 # badge can say the one word that matters (Akshil, 2026-09-08:
@@ -340,8 +340,8 @@ class UpdateManager:
             during = "checking" if self._state == "idle" else self._state
             self._state = during
         try:
-            manifest = common.fetch_manifest(self._manifest_url)
-            newer = common.is_newer(manifest["version"], self._running_version())
+            manifest = self._fetch_latest()
+            newer = self._is_newer(manifest["version"])
         except Exception as error:  # noqa: BLE001 - network/manifest failures are routine
             logger.info("update check failed: %s", error)
             with self._lock:
@@ -375,6 +375,11 @@ class UpdateManager:
         # this process) this process still runs the old code, and comparing
         # against __version__ alone would flip a completed install back to
         # "available" — offering a second swap against an already-new artifact.
+        if newer:
+            try:
+                self._on_update_found(manifest)
+            except Exception:  # noqa: BLE001 - a notice must never fail a check
+                logger.exception("update notice failed")
         disk = self._disk_version()
         with self._lock:
             self._check_error = None
@@ -394,6 +399,25 @@ class UpdateManager:
                     self._latest = None
                     self._state = "idle"
         return self.status()
+
+    def _fetch_latest(self) -> dict:
+        """The newest release's descriptor (at least `{"version": ...}`).
+        Default: the signed manifest. The CLI/PyPI manager overrides it."""
+        return common.fetch_manifest(self._manifest_url)
+
+    def _is_newer(self, version: str) -> bool:
+        """Is `version` newer than the running process. Overridable so a
+        manager can answer for versions `common.is_newer` cannot parse."""
+        return common.is_newer(version, self._running_version())
+
+    def _manual_command(self) -> str | None:
+        """A terminal command that performs the update by hand, shown by a
+        check-only manager. None for every packaged manager."""
+        return None
+
+    def _on_update_found(self, manifest: dict) -> None:
+        """Called (outside the lock) when a check finds a newer version.
+        No-op by default."""
 
     def _running_version(self) -> str:
         """The version of THIS process, for the check's "is a fetched manifest
