@@ -1,0 +1,10 @@
+[project]
+name = "react-vite-example"
+version = "0.1.0"
+# Stdlib only: an empty list keeps main.py on the app's own interpreter, no
+# install on first render. Add third-party imports here and fused-render
+# builds the folder a venv the first time the page runs.
+dependencies = []
+
+[tool.uv]
+package = false

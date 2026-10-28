@@ -34,16 +34,17 @@ its [release](https://github.com/fusedio/fused-render/releases), if you want an
 older version or a checksum.
 
 **Python package** — for running fused-render inside a Python environment you
-already have, rather than as a desktop app. Each release attaches a wheel (see
-the release notes for its URL). The base install runs one app:
+already have, rather than as a desktop app. Every release is published to PyPI
+as [`fused-render`](https://pypi.org/project/fused-render/) (each GitHub
+release also attaches the same wheel). The base install runs one app:
 
 ```
-pip install <wheel-url>
+pip install fused-render
 fused-render open https://github.com/<owner>/<repo>/tree/main/<app>
 ```
 
 There are three tiers. The base install runs `fused-render open`. The file
-explorer (`fused-render serve`) needs `pip install '<wheel-url>[cli]'`: search,
+explorer (`fused-render serve`) needs `pip install 'fused-render[cli]'`: search,
 the index, Repos, previews, the Hugging Face login, plus deploy, share and MCP,
 about 230 MB on top of the base. `[all]` adds the native desktop integrations
 (LAN discovery, screen capture, pasteboard); `serve` runs without them and says
@@ -90,7 +91,9 @@ fused-render --start-dir ~/data --port 9000 --no-browser
 ```
 
 `--start-dir` is where the explorer starts (default `~/Fused`); the whole
-filesystem stays browsable from there.
+filesystem stays browsable from there. `fused-render --version` prints the
+installed version, and `fused-render diagnose` writes a diagnostics zip to
+attach to a bug report, with or without a server running.
 
 ## Authoring
 
@@ -162,7 +165,28 @@ hosted (`"hosted"`). The complete list, with every option, is the header of
 [`fused_render/static/runtime.js`](https://github.com/fusedio/fused-render/blob/main/fused_render/static/runtime.js).
 
 Every built-in preview template is an HTML file on these same primitives —
-`fused_render/templates/` has 140 of them to copy from.
+`fused_render/templates/` has 48 of them, covering 140 file extensions, to copy
+from.
+
+## For web developers
+
+A fused-render app is a folder with an `index.html`; the runtime is injected,
+so there is no SDK to install and no build step unless you want one.
+
+- **TypeScript types for `fused`** — a running fused-render serves
+  [`fused.d.ts`](https://github.com/fusedio/fused-render/blob/main/fused_render/static/fused.d.ts)
+  at `http://127.0.0.1:1777/static/fused.d.ts`. Copy it beside your sources
+  (or add it to your tsconfig `include`) and `fused.runPython`, `fused.params`,
+  `fused.ai.*` and the rest autocomplete in VS Code, in plain JavaScript too.
+- **React, Vite, TypeScript** — bring your framework. Build to one file and
+  load it through `fused.rawUrl()`; the URL stays your router and
+  `fused.params` your state. The recipe, with the reasons behind each line, is
+  [docs/FRAMEWORKS.md](https://github.com/fusedio/fused-render/blob/main/docs/FRAMEWORKS.md),
+  and [examples/react-vite](https://github.com/fusedio/fused-render/tree/main/examples/react-vite)
+  is a complete app to copy.
+- **No `localhost:3000` dance** — `fused-render open <folder>` serves one app
+  on an ephemeral port and opens it; `npm run watch` beside it keeps the bundle
+  fresh, and a refresh picks it up.
 
 ## Configuration
 

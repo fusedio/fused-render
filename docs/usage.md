@@ -58,7 +58,7 @@ otherwise the outermost folder above it holding a `pyproject.toml`. A
 `pyproject.toml` in a *subfolder* of a project is ignored — the inspector shows
 when that happens.
 
-> **Breaking change (unreleased).** Per-file PEP 723 `# /// script` headers are
+> **Breaking change (shipped).** Per-file PEP 723 `# /// script` headers are
 > no longer read — a leftover block is an ordinary comment, ignored like any
 > other. Move its `dependencies` into the project root's `pyproject.toml`.
 > Nothing warns you: a file whose packages only ever came from a header will
@@ -272,7 +272,7 @@ engines in AI Models) are in the list too, as a row that takes you there.
 |---|---|---|
 | **App** | **General** | Appearance and colour theme · native windows · the launcher's shortcuts (macOS) · automatic update downloads · the process Monitor · Reader |
 | | **Accounts** | Fused account · default environment · Hugging Face |
-| | **Experimental flags** (beta) | Canvases (and, under it, loading a custom deployment's workbench through a local proxy; `canvases_embed_proxy_enabled` under `[render]` in `~/.fused/settings.toml` overrides that switch) · Marketplace · Chromium engine for windows. All off by default |
+| | **Experimental flags** (beta) | Canvases (and, under it, loading a custom deployment's workbench through a local proxy; `canvases_embed_proxy_enabled` under `[render]` in `~/.fused/settings.toml` overrides that switch) · Marketplace — both off by default · Chromium engine for windows — on by default on Apple silicon builds that ship the engine; switch it off to open new windows in WebKit |
 | **Agents** | **Coding agents** | Which coding agents (Claude Code, GitHub Copilot CLI, OpenAI Codex CLI, Google Gemini CLI) run chats and tasks, each with its health, and the default for new ones |
 | | **Chats & tasks** | One task at a time per folder (beta) · AI recap titles · stable AI titles · lean Claude sessions · default approvals for new chats · concurrent Claude sessions · notifications for terminal sessions |
 | | **Claude Code** | The `settings.json` keys that shape the Claude sessions this app runs |

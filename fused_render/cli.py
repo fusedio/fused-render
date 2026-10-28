@@ -1,6 +1,6 @@
 """Command-line entry point.
 
-Three subcommands:
+Four subcommands:
   * ``fused-render serve`` (the default when no subcommand is given, preserving the
     original ``fused-render [--start-dir DIR] [--port N]`` invocation) — the local
     127.0.0.1 file explorer, with every background subsystem running.
@@ -29,7 +29,7 @@ import urllib.error
 import urllib.request
 import webbrowser
 
-from fused_render import _flavor
+from fused_render import __version__, _flavor
 from fused_render._branch import branch_port, branch_ref
 from fused_render.logs import log_dir, setup_logging, uvicorn_fast_kwargs, uvicorn_log_config
 from fused_render.shell.seed import ensure_fused_dir, fused_dir
@@ -44,7 +44,12 @@ _SUBCOMMANDS = ("serve", "open", "calls", "diagnose")
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="fused-render", description=__doc__)
+    parser = argparse.ArgumentParser(
+        prog="fused-render", description=__doc__,
+        # The docstring is a bulleted list; the default formatter reflows it
+        # into one paragraph.
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("-V", "--version", action="version", version=f"fused-render {__version__}")
     sub = parser.add_subparsers(dest="command")
 
     serve = sub.add_parser("serve", help="run the local file explorer (default)")
@@ -782,7 +787,7 @@ def main() -> None:
     # etc. default to `serve`. Only inject the default when the first token is not a
     # subcommand and not the top-level -h/--help.
     argv = sys.argv[1:]
-    if not argv or (argv[0] not in _SUBCOMMANDS and argv[0] not in ("-h", "--help")):
+    if not argv or (argv[0] not in _SUBCOMMANDS and argv[0] not in ("-h", "--help", "-V", "--version")):
         argv = ["serve", *argv]
 
     args = parser.parse_args(argv)
