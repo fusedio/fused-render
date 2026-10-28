@@ -811,6 +811,141 @@ def test_an_ended_event_from_a_pid_whose_file_the_watcher_has_not_read_is_scoped
     assert tasks_watch.live_from_registry(SID)[0] is True
 
 
+def test_a_late_exit_from_a_pid_forgotten_in_the_respawn_gap_stays_scoped(
+        claude_home):
+    """Akshil's recording, 2026-10-21: a follow-up that RESPAWNS the CLI
+    (`agent._send`, changed effort) kills the old process, and for a few
+    hundred ms the session holds no registry file at all. A tick in that gap
+    settles it departed and forgets its pids; the new process then writes
+    `busy`; and only THEN does the old host's `exited` arrive, naming a pid
+    nobody knows any more. Unscoped, it stamped the session ended past the
+    new row's write and popped the send mark — Done for the whole turn, in
+    4 of 9 runs. The departed pids are kept a while for exactly this event."""
+    tasks_watch.reset()
+    tasks_watch.tick()
+    old = _registry(claude_home, SID, pid=os.getppid(), status="busy", name="old")
+    tasks_watch.tick()
+    old.unlink()
+    tasks_watch.tick()                      # the gap: departed, pids forgotten
+    assert tasks_watch.registry_row(SID) is None
+    _registry(claude_home, SID, status="busy", name="new")
+    tasks_watch.tick()
+    tasks_watch.mark_running(SID, ttl_sec=60)
+    tasks_watch.mark_turn_ended(SID, "run-old", at=_later(5), pid=os.getppid())
+    assert not tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.is_marked_running(SID)
+    assert tasks_watch.live_from_registry(SID)[0] is True
+    # The new process's own end still ends it.
+    tasks_watch.mark_turn_ended(SID, "run-new", at=_later(6), pid=os.getpid())
+    assert tasks_watch.is_turn_ended(SID)
+
+
+def test_a_late_reopen_from_a_pid_forgotten_in_the_respawn_gap_stays_scoped(
+        claude_home):
+    """The same gap, the other event: a `turn_started` the old host posts
+    late must not count as the session reopening either."""
+    tasks_watch.reset()
+    tasks_watch.tick()
+    old = _registry(claude_home, SID, pid=os.getppid(), status="busy", name="old")
+    tasks_watch.tick()
+    old.unlink()
+    tasks_watch.tick()
+    new = _registry(claude_home, SID, status="busy", name="new")
+    tasks_watch.tick()
+    tasks_watch.mark_turn_ended(SID, "run-new", at=_later(5), pid=os.getpid())
+    tasks_watch.mark_turn_started(SID, "run-old", at=_later(6), pid=os.getppid())
+    assert tasks_watch.is_turn_ended(SID)
+    # …nor when the new process departs in turn: only ITS stamps fold into
+    # the session's own, so the dead process's late start cannot reopen a
+    # session nothing holds any more (CodeRabbit, PR #1829).
+    new.unlink()
+    tasks_watch.tick()
+    assert tasks_watch.registry_row(SID) is None
+    assert tasks_watch.is_turn_ended(SID)
+
+
+def test_a_late_exit_landing_before_the_new_row_is_read_keeps_the_send_mark(
+        claude_home):
+    """The same gap, one tick earlier: the old host's `exited` arrives while
+    the session still holds NO row (the new process's file is written but
+    not yet ticked). The send mark is the new turn's only floor then, and a
+    dead process's end must not pop it."""
+    tasks_watch.reset()
+    tasks_watch.tick()
+    old = _registry(claude_home, SID, pid=os.getppid(), status="busy", name="old")
+    tasks_watch.tick()
+    old.unlink()
+    tasks_watch.tick()
+    assert tasks_watch.registry_row(SID) is None
+    tasks_watch.mark_running(SID, ttl_sec=60)
+    tasks_watch.mark_turn_ended(SID, "run-old", at=_later(5), pid=os.getppid())
+    assert tasks_watch.is_marked_running(SID)
+    assert not tasks_watch.is_turn_ended(SID)
+    _registry(claude_home, SID, status="busy", name="new")
+    tasks_watch.tick()
+    assert not tasks_watch.is_turn_ended(SID)
+    assert tasks_watch.live_from_registry(SID)[0] is True
+
+
+def test_a_former_pids_late_end_still_ends_a_run_whose_host_never_reported(
+        claude_home):
+    """The other half of the fold rule: ENDS fold from every pid. A respawned
+    run whose host died without posting its own end departs, and the end the
+    process before it reported late is what says the session is over —
+    both while the session holds no row and after the fold."""
+    tasks_watch.reset()
+    tasks_watch.tick()
+    old = _registry(claude_home, SID, pid=os.getppid(), status="busy", name="old")
+    tasks_watch.tick()
+    old.unlink()
+    tasks_watch.tick()
+    new = _registry(claude_home, SID, status="busy", name="new")
+    tasks_watch.tick()
+    tasks_watch.mark_turn_ended(SID, "run-old", at=_later(5), pid=os.getppid())
+    assert not tasks_watch.is_turn_ended(SID)
+    new.unlink()
+    tasks_watch.tick()
+    assert tasks_watch.registry_row(SID) is None
+    assert tasks_watch.is_turn_ended(SID)
+
+
+def test_each_forgotten_pid_keeps_its_own_clock(claude_home):
+    """CodeRabbit, PR #1829: a session that respawns again inside the window
+    adds its newest pid without renewing the oldest one."""
+    tasks_watch.reset()
+    tasks_watch.tick()
+    old = _registry(claude_home, SID, pid=os.getppid(), status="busy", name="old")
+    tasks_watch.tick()
+    old.unlink()
+    tasks_watch.tick()
+    with tasks_watch._cond:
+        tasks_watch._former_pids[SID][str(os.getppid())] -= tasks_watch._FORMER_PIDS_TTL_SEC / 2
+    newer = _registry(claude_home, SID, status="busy", name="new")
+    tasks_watch.tick()
+    newer.unlink()
+    tasks_watch.tick()
+    assert set(tasks_watch._former_pids[SID]) == {str(os.getppid()), str(os.getpid())}
+    tasks_watch._expire_marks(time.time() + tasks_watch._FORMER_PIDS_TTL_SEC / 2 + 1.0)
+    assert set(tasks_watch._former_pids[SID]) == {str(os.getpid())}
+
+
+def test_forgotten_pids_are_let_go_once_no_late_event_can_arrive(claude_home):
+    tasks_watch.reset()
+    tasks_watch.tick()
+    old = _registry(claude_home, SID, pid=os.getppid(), status="busy", name="old")
+    tasks_watch.tick()
+    old.unlink()
+    tasks_watch.tick()
+    assert SID in tasks_watch._former_pids
+    # A late event filed a per-pid stamp on the departed session…
+    tasks_watch.mark_turn_ended(SID, "run-old", at=_later(5), pid=os.getppid())
+    assert SID in tasks_watch._ended_by_pid
+    tasks_watch._expire_marks(time.time() + tasks_watch._FORMER_PIDS_TTL_SEC + 1.0)
+    assert SID not in tasks_watch._former_pids
+    # …and it goes with the pids, so nothing grows per late exit.
+    assert SID not in tasks_watch._ended_by_pid
+
+
 def test_an_ended_event_from_a_pid_the_registry_never_showed_stays_unscoped(
         claude_home):
     """A launcher shim: the host's `cli.pid` is not the pid Claude Code

@@ -67,7 +67,19 @@ SESSIONS_DIR = os.path.join(CLAUDE_DIR, "sessions")
 def _sessions_roots() -> list[str]:
     return [root for _b, root in roots.sessions_roots(SESSIONS_DIR)]
 
-TICK_SEC = 1.0
+def _tick_sec() -> float:
+    """The watcher's tick, overridable for a repro (`FUSED_RENDER_TASKS_TICK_SEC`
+    — the respawn-gap race below hits every time at 50 ms, one run in two at
+    the default). Unparseable or absurd values fall back to the default
+    rather than failing the import or spinning."""
+    try:
+        value = float(os.environ.get("FUSED_RENDER_TASKS_TICK_SEC") or 1.0)
+    except ValueError:
+        return 1.0
+    return value if 0.02 <= value <= 60.0 else 1.0
+
+
+TICK_SEC = _tick_sec()
 # How long a long-poll may block. Below the 30s most proxies and the
 # TestClient's default patience, above the page's own 20s full pass so the two
 # do not line up.
@@ -149,6 +161,25 @@ _sess_rows: dict[str, tuple] = {}
 # registers (a launcher shim), and a pid no registry file has shown on the
 # session cannot be told apart from that — so it stays unscoped.
 _session_pids: dict[str, set] = {}
+# session_id -> {pid: when it was forgotten}. THE PIDS A DEPARTED SESSION
+# USED TO HOLD, each kept for a while
+# (`_FORMER_PIDS_TTL_SEC`) so a host's late event about one of them can
+# still be scoped to it. A follow-up that RESPAWNS the CLI (`agent._send`, a
+# changed effort or an unattached folder) kills the old process and starts a
+# new one on the same session, and for the few hundred ms between the old
+# registry file going and the new one landing the session holds no file at
+# all. A tick in that gap settled it departed and forgot its pids — so the old
+# host's `exited`, arriving after the new row was written, named a pid nobody
+# knew, stamped the SESSION ended and popped the send mark, and the new turn
+# read Done for its whole length (Akshil's recording, 2026-10-21; hit in 4 of
+# 9 runs, every run with the tick at 50 ms).
+_former_pids: dict[str, dict[str, float]] = {}
+# How long those are kept. The host posts an event once and retries once a
+# second later (`session_host._EVENT_RETRY_SECONDS`); minutes is a margin of
+# two orders, and an entry is one pid string and a float. PER PID (CodeRabbit,
+# PR #1829): a session that respawns again and again inside the window must
+# not keep renewing its oldest pids along with the newest.
+_FORMER_PIDS_TTL_SEC = 300.0
 _tr_paths: dict[str, str] = {}        # session_id -> transcript path
 _tr_sizes: dict[str, int] = {}        # session_id -> size
 # session_id -> the live "a turn just started here" MARK, a record:
@@ -473,8 +504,14 @@ def is_turn_ended(session_id: str) -> bool:
                 return False
             if running_row and mtime is not None and mtime > covering(r):
                 return False
-        if not rows and restarted({}):
-            return False   # departed: the collapsed, unscoped stamps decide
+        if not rows and started_at > max(ended_at or 0.0, *by_pid.values(), 0.0):
+            # Departed: the collapsed, unscoped start against EVERY end on
+            # file — a late scoped end on a session nothing holds any more
+            # is still an end (CodeRabbit/reviewer, PR #1829). The mark check
+            # above stays against the unscoped end alone: in the respawn gap
+            # the mark is the new turn's and the scoped end is the old
+            # process's, and that end must not outrank it there.
+            return False
     return True
 
 
@@ -802,6 +839,19 @@ def mark_idle(session_id: str, turn: float | None = None) -> None:
     _bump({session_id})
 
 
+def _pid_known(session_id: str, pid_s: str) -> bool:
+    """Has a registry file shown `pid_s` holding `session_id` — now, or before
+    the session departed (`_former_pids`)? Caller holds `_cond`. The one
+    question `mark_turn_ended`/`mark_turn_started` scope a host's `pid` by:
+    a departed process is still THAT process, and its late event must not
+    speak for whichever process holds the session now."""
+    if not pid_s:
+        return False
+    if pid_s in _session_pids.get(session_id, ()):
+        return True
+    return pid_s in _former_pids.get(session_id, ())
+
+
 def mark_turn_ended(session_id: str, run_id: str = "",
                     at: float | None = None, pid: int | None = None) -> None:
     """The queue manager's own word that this session's TURN just ended —
@@ -876,7 +926,7 @@ def mark_turn_ended(session_id: str, run_id: str = "",
     ended_at = time.time() if at is None else float(at)
     pid_s = "" if pid is None else str(pid)
     with _cond:
-        known = pid_s in _session_pids.get(session_id, ())
+        known = _pid_known(session_id, pid_s)
     # A process can have written its registry file before the watcher's next
     # tick has read it (CodeRabbit, PR #1642): ask the file itself before
     # calling the pid unknown. Outside the lock — it can read a file.
@@ -884,7 +934,7 @@ def mark_turn_ended(session_id: str, run_id: str = "",
         with _cond:
             _session_pids.setdefault(session_id, set()).add(pid_s)
     with _cond:
-        scoped = pid_s in _session_pids.get(session_id, ())
+        scoped = _pid_known(session_id, pid_s)
         stamps = _ended_by_pid.setdefault(session_id, {}) if scoped else _ended
         key = pid_s if scoped else session_id
         prev_ended = stamps.get(key)
@@ -892,7 +942,12 @@ def mark_turn_ended(session_id: str, run_id: str = "",
             return  # older or duplicate delivery: a stamp never moves back
         stamps[key] = ended_at
         row = _registry.get(session_id)
-        standing = not scoped or row is None or str(row.get("pid") or "") == pid_s
+        # A SCOPED end retires the mark only when its pid is the standing
+        # row's. No row at all is the respawn gap as often as a departure: the
+        # mark is the new turn's floor until the new row lands, and a dead
+        # process's end is not that turn's (the mark's own TTL still bounds a
+        # session that truly died).
+        standing = not scoped or (row is not None and str(row.get("pid") or "") == pid_s)
         mark = _marks.get(session_id)
         if standing and mark is not None and mark["at"] <= ended_at:
             # The mark describes this turn (or one before it) — it is over.
@@ -944,12 +999,12 @@ def mark_turn_started(session_id: str, run_id: str = "",
     started_at = time.time() if at is None else float(at)
     pid_s = "" if pid is None else str(pid)
     with _cond:
-        known = pid_s in _session_pids.get(session_id, ())
+        known = _pid_known(session_id, pid_s)
     if pid_s and not known and session_for_pid(pid_s) == session_id:
         with _cond:
             _session_pids.setdefault(session_id, set()).add(pid_s)
     with _cond:
-        scoped = pid_s in _session_pids.get(session_id, ())
+        scoped = _pid_known(session_id, pid_s)
         stamps = _reopened_by_pid.setdefault(session_id, {}) if scoped else _reopened
         key = pid_s if scoped else session_id
         prev = stamps.get(key)
@@ -984,6 +1039,22 @@ def _expire_marks(now: float) -> set[str]:
         stale = [sid for sid, turn in _last_idle_turn.items() if turn < stale_cutoff]
         for sid in stale:
             del _last_idle_turn[sid]
+        # The pids a departed session held are only needed for as long as a
+        # late event about one of them can still plausibly arrive.
+        former_cutoff = now - _FORMER_PIDS_TTL_SEC
+        for sid, pids in list(_former_pids.items()):
+            for pid in [pid for pid, at in pids.items() if at < former_cutoff]:
+                del pids[pid]
+            if pids:
+                continue
+            del _former_pids[sid]
+            # A late event about one of them stamped a per-pid dict on a
+            # session that had already departed (`_settle` collapses those
+            # only AT departure) — let it go with the pids, unless the
+            # session has since come back and the dicts are live again.
+            if sid not in _registry:
+                _ended_by_pid.pop(sid, None)
+                _reopened_by_pid.pop(sid, None)
     return gone
 
 
@@ -1080,16 +1151,33 @@ def _settle(sid: str) -> dict | None:
             best = (rank, row, mtime)
     if best is None:
         _registry.pop(sid, None)
-        _session_pids.pop(sid, None)
+        former = _session_pids.pop(sid, None)
+        if former:
+            now = time.time()
+            _former_pids.setdefault(sid, {}).update({pid: now for pid in former})
         # No process left to tell apart: the newest per-pid end becomes the
         # session's own, unscoped — the departed session's turn stays ended
         # for `_running_now`'s transcript-tail read, as it always did.
+        #
+        # EVERY pid's end folds — a former pid's late end included: nothing
+        # holds the session now, so "ended" is the right answer whichever
+        # process said it, and a run whose host died without reporting its
+        # own end still reads ended off the one that came before it.
         newest = max((_ended_by_pid.pop(sid, None) or {}).values(), default=None)
         if newest is not None:
             _ended[sid] = max(newest, _ended.get(sid, newest))
-        # …and the newest per-pid start the same way, so the two keep their
-        # order for `is_turn_ended`'s row-less read.
-        restart = max((_reopened_by_pid.pop(sid, None) or {}).values(), default=None)
+        # …but ONLY THE DEPARTING RUN'S OWN STARTS do (CodeRabbit, PR #1829):
+        # a former pid's late `turn_started` sits in the same dict
+        # (`_pid_known`), and folded here it would outrank the end the run
+        # that just departed reported for itself — `is_turn_ended` reading a
+        # departed session as reopened, by a process that was gone before the
+        # run began. With no pids of its own to go by (a late event on a
+        # session already departed), everything folds, as before. The two
+        # keep their order for `is_turn_ended`'s row-less read.
+        starts = _reopened_by_pid.pop(sid, None) or {}
+        if former:
+            starts = {pid: at for pid, at in starts.items() if pid in former}
+        restart = max(starts.values(), default=None)
         if restart is not None:
             _reopened[sid] = max(restart, _reopened.get(sid, restart))
         _departed[sid] = time.time()
@@ -1617,6 +1705,7 @@ def reset() -> None:
     _sess_sids.clear()
     _sess_rows.clear()
     _session_pids.clear()
+    _former_pids.clear()
     _tr_paths.clear()
     _tr_sizes.clear()
     _perm_stamps.clear()
