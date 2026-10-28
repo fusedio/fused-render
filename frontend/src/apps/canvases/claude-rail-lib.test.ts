@@ -91,14 +91,20 @@ describe("railRows", () => {
     expect(seats.map((s) => s.pulse.key)).toEqual(["a"]);
   });
 
-  it("leads with rows the listing does not hold yet, newest first", () => {
-    const held = task({ key: "held", status: "in_progress" });
+  it("ranks rows the listing does not hold yet in their lane, not at the head", () => {
+    const held = task({ key: "held", status: "in_progress", last_active: 1_000 });
     const listing = new Map([[held.key, held]]);
     const newer = pulse(task({ key: "new2", status: "in_progress", last_active: 4_000 }));
     const older = pulse(task({ key: "new1", status: "in_progress", last_active: 3_000 }));
-    const seats = railRows([pulse(held), older, newer], listing, PLACE, now);
-    expect(seats.map((s) => s.pulse.key)).toEqual(["new2", "new1", "held"]);
-    expect(seats[0]?.row).toBeNull();
-    expect(seats[2]?.row?.key).toBe("held");
+    // A chat that finished inside the listing's refresh window: Done, so
+    // under every running row, listed or not. In Progress itself keeps the
+    // server's order (tasks-lib LANE_SORTS), so the running rows read as the
+    // pulse sent them.
+    const justDone = pulse(task({ key: "fin", status: "done", last_active: 9_000 }));
+    const seats = railRows([pulse(held), older, justDone, newer], listing, PLACE, now);
+    expect(seats.map((s) => s.pulse.key)).toEqual(["held", "new1", "new2", "fin"]);
+    expect(seats[0]?.row?.key).toBe("held");
+    expect(seats[1]?.row).toBeNull();
+    expect(seats[3]?.row).toBeNull();
   });
 });

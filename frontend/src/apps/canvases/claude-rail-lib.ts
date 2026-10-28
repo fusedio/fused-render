@@ -16,10 +16,11 @@
 //     the exact drift that single function exists to end.
 //
 // A pulse row the listing does not hold yet (a chat made seconds ago, the
-// listing's re-read still 600ms out) has no full row to rank: it leads the
-// rail, newest first, which is where the List would put it too — a fresh In
-// Progress row heads its lane, and In Progress is the first lane a session
-// can be in.
+// listing's re-read still 600ms out, or a re-read that failed) is ranked
+// IN ITS LANE like every other: the pulse row carries every field the order
+// reads (status, the background jobs, the run's times), so it sorts beside
+// the listed rows rather than above them — a chat that just finished takes
+// its place under the running ones, not the rail's head.
 import type { Task, TaskPulseTask } from "@platform/lib/api";
 import { sortForList, taskColumn } from "@shell/tasks-lib";
 import type { WorkbenchEnv } from "./api";
@@ -36,14 +37,6 @@ export interface RailPlace {
   env: WorkbenchEnv;
   name: string;
   dir: string | null;
-}
-
-/** A row's time (`last_active`, a number that climbs every time a run says
- *  anything), newest first. A row without one sorts last. (The rail's old
- *  sort parsed this as a date string, which a number never is, so every row
- *  read as 0 and "newest first" was the server's order wearing a label.) */
-export function when(t: Pick<TaskPulseTask, "last_active">): number {
-  return typeof t.last_active === "number" && Number.isFinite(t.last_active) ? t.last_active : 0;
 }
 
 /** Is this pulse row one of the rail's: a chat (it has a session) on THIS
@@ -68,24 +61,26 @@ export function railRows(
   now: number = Date.now(),
 ): RailRow[] {
   const mine = rows.filter((t) => onRail(t, place));
-  const known: Task[] = [];
-  const fresh: TaskPulseTask[] = [];
-  for (const t of mine) {
-    const row = listing.get(t.key);
-    // The live status is the pulse's (fresher than the listing).
-    if (row) known.push({ ...row, status: t.status });
-    else fresh.push(t);
-  }
   const byKey = new Map(mine.map((t) => [t.key, t]));
-  const ordered = sortForList(known, now)
+  const held = new Map<string, Task>();
+  const ranked: Task[] = mine.map((t) => {
+    const row = listing.get(t.key);
+    if (row) {
+      held.set(t.key, row);
+      // The live status is the pulse's (fresher than the listing).
+      return { ...row, status: t.status };
+    }
+    // Not in the listing yet: the pulse row stands in. It is a `Pick` of the
+    // Task — every field `sortForList` ranks by is in the pick (status, kind,
+    // background_jobs, last_active, happened_at, next_run) and the fields it
+    // lacks (draft, form, entry) read as absent, which is what a row with no
+    // unsent words and no app page is.
+    return t as Task;
+  });
+  return sortForList(ranked, now)
     .map((row): RailRow | null => {
       const pulse = byKey.get(row.key);
-      return pulse ? { pulse, row } : null;
+      return pulse ? { pulse, row: held.get(row.key) ?? null } : null;
     })
     .filter((r): r is RailRow => r !== null);
-  const head = fresh
-    .slice()
-    .sort((a, b) => when(b) - when(a))
-    .map((pulse): RailRow => ({ pulse, row: null }));
-  return [...head, ...ordered];
 }

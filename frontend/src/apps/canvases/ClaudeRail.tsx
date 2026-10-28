@@ -80,6 +80,35 @@ interface Card {
   recents: string[];
 }
 
+/** The listing re-read's retries after a failed `getTasks`: this many more
+ *  tries, this many ms apart (times the attempt number). */
+const LISTING_RETRIES = 2;
+const LISTING_RETRY_MS = 3000;
+
+/** How long the + waits on the schedule before opening the card without it
+ *  (CodeRabbit on #1998): a read that hangs — not fails — would otherwise
+ *  hold the button disabled until the browser gave up on the request. */
+const SCHEDULE_WAIT_MS = 8000;
+
+/** The schedule's answer for the card, or empty if the read fails or outlasts
+ *  `SCHEDULE_WAIT_MS` — either way the card opens (see `openNewTask`). */
+function cardSeed(): Promise<{ modes: string[]; recents: string[] }> {
+  const empty = { modes: [] as string[], recents: [] as string[] };
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(() => resolve(empty), SCHEDULE_WAIT_MS);
+    getSchedule().then(
+      (s) => {
+        window.clearTimeout(timer);
+        resolve({ modes: s.permission_modes, recents: s.entries.map((e) => e.target) });
+      },
+      () => {
+        window.clearTimeout(timer);
+        resolve(empty);
+      },
+    );
+  });
+}
+
 export function ClaudeRail({
   env,
   name,
@@ -134,21 +163,30 @@ export function ClaudeRail({
   }, []);
   const refreshListing = useCallback(
     () =>
-      getTasks()
-        .then((r) => {
-          if (!alive.current) return;
-          rememberListing(r.tasks);
-          setListing(r.tasks);
-        })
-        .catch(() => undefined),
+      getTasks().then((r) => {
+        if (!alive.current) return;
+        rememberListing(r.tasks);
+        setListing(r.tasks);
+      }),
     [],
   );
   useEffect(() => {
     if (!sig) return;
     let off = false;
-    const timer = window.setTimeout(() => {
-      if (!off) void refreshListing();
-    }, 600);
+    let timer = 0;
+    // A read that fails is tried again, a bounded number of times and later
+    // each time (CodeRabbit on #1998): the effect only re-runs when a row
+    // moves, so a swallowed failure would leave the captions and the order
+    // on the old listing for as long as the canvas sits still.
+    const read = (attempt: number) => {
+      timer = window.setTimeout(() => {
+        if (off) return;
+        refreshListing().catch(() => {
+          if (!off && attempt < LISTING_RETRIES) read(attempt + 1);
+        });
+      }, attempt === 0 ? 600 : LISTING_RETRY_MS * attempt);
+    };
+    read(0);
     return () => {
       off = true;
       window.clearTimeout(timer);
@@ -165,9 +203,9 @@ export function ClaudeRail({
   const running = mine.filter((t) => liveJobRow(t) || inFlight(taskColumn(t))).length;
 
   // THE NEW TASK CARD. Opened on the press, once the schedule has answered
-  // what the card needs (`Card`); the press is inert while that read is out,
-  // so a double-click cannot stack two cards. A schedule read that fails
-  // still opens the card — the modal falls back to "auto" on an empty modes
+  // what the card needs (`Card`, `cardSeed`); the press is inert while that
+  // read is out, so a double-click cannot stack two cards. A schedule read
+  // that fails or hangs still opens the card — the modal falls back to "auto" on an empty modes
   // list, and an empty recents list only means fewer suggestions — because a
   // + that does nothing is worse than a card with one fewer dropdown option.
   const [card, setCard] = useState<Card | null>(null);
@@ -175,16 +213,11 @@ export function ClaudeRail({
   const openNewTask = () => {
     if (opening || card) return;
     setOpening(true);
-    void getSchedule()
-      .then(
-        (s) => ({ modes: s.permission_modes, recents: s.entries.map((e) => e.target) }),
-        () => ({ modes: [] as string[], recents: [] as string[] }),
-      )
-      .then((got) => {
+    void cardSeed().then((got) => {
         if (!alive.current) return;
-        setOpening(false);
-        setCard({ seq: Date.now(), ...got });
-      });
+      setOpening(false);
+      setCard({ seq: Date.now(), ...got });
+    });
   };
 
   return (
@@ -306,7 +339,7 @@ export function ClaudeRail({
           // "Something changed, re-read": the pulse will move the new row
           // onto the rail; the listing is re-read now so its caption and
           // rank are not 600ms behind its ring.
-          onCreated={() => void refreshListing()}
+          onCreated={() => void refreshListing().catch(() => undefined)}
         />
       )}
     </aside>
