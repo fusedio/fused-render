@@ -712,7 +712,19 @@ def generate(body):
     width = int(body.get("width") or 1024)
     height = int(body.get("height") or 1024)
     steps = int(body.get("steps") or 28)
-    guidance = float(body.get("guidance") or 4.0)
+    # A recipe that PINS guidance (Qwen-Image 2.1 Turbo: mflux raises on
+    # anything but 1) supplies it when the request omits it, and REFUSES an
+    # explicit mismatch rather than silently overriding it.
+    pinned = (_recipe_for(_loaded["model_id"], mode) or {}).get("guidance")
+    # `is None`, not `or`: 0.0 is a legal guidance (the route allows it).
+    raw_guidance = body.get("guidance")
+    if raw_guidance is None:
+        guidance = float(pinned) if pinned is not None else 4.0
+    else:
+        guidance = float(raw_guidance)
+    if pinned is not None and guidance != float(pinned):
+        raise ValueError(f"{_loaded['model_id']} runs without CFG; "
+                         f"guidance must be {pinned}")
     seed = int(body.get("seed") or 0)
     out = str(body.get("out") or "")
     job = body.get("job") or None
