@@ -242,6 +242,185 @@ MFLUX_VARIANTS = {
     },
 }
 
+#: **Derived variants: the installed mflux's own `AVAILABLE_MODELS`, not a
+#: table we maintain.** Shape of that registry (read off mflux 0.23's
+#: `mflux/models/common/config/model_config.py`): a module-level dict
+#: literal `AVAILABLE_MODELS = {"<key>": ModelConfig(priority=..,
+#: aliases=[..], model_name="<hf repo id>", base_model=None, ...), ...}`.
+#: The KEY (`"flux3-image-klein"`) names the `ModelConfig.<key with - as _>()`
+#: staticmethod that returns the entry; the VALUE is a `ModelConfig(...)` call
+#: whose `model_name` keyword is the Hub repo id. It names NO variant class —
+#: which class denoises a checkpoint lives in the per-family packages
+#: (`mflux.models.flux2.variants`, `...flux3.variants`) — so the one thing
+#: that stays a hand table is `MFLUX_FAMILIES` below: registry-key prefix ->
+#: variant classes, one row per model FAMILY (not per repo), which is what
+#: made the old per-repo `MFLUX_VARIANTS` rot (a new klein or FLUX 3 repo was
+#: refused until somebody typed its id). `MFLUX_VARIANTS` /
+#: `MFLUX_EDIT_VARIANTS` / `MFLUX_FILL_VARIANTS` are now OVERRIDES layered
+#: over the derived map: they keep the ids mflux does not list (the
+#: mlx-community quantised conversions) and win for any id they name.
+#:
+#: Longest prefix wins. `vae` is the autoencoder class name the live
+#: preview's projection table is keyed by; a family whose latent space has
+#: not been fitted names none and simply gets no thumbnail.
+MFLUX_FAMILIES = (
+    ("flux3-image-klein", {
+        "variant": "Flux3Klein",
+        "module": "mflux.models.flux3.variants",
+        "edit": {"variant": "Flux3KleinEdit", "module": "mflux.models.flux3.variants"},
+    }),
+    ("flux2-klein", {
+        "variant": "Flux2Klein",
+        "module": "mflux.models.flux2.variants",
+        "vae": "AutoencoderKLFlux2",
+        "edit": {"variant": "Flux2KleinEdit",
+                 "module": "mflux.models.flux2.variants.edit.flux2_klein_edit"},
+    }),
+)
+
+
+def parse_mflux_available_models(source: str) -> dict[str, str]:
+    """`{repo id: registry key}` read statically (`ast`, never imported —
+    importing mflux pulls in `mlx.core`) out of mflux's `model_config.py`
+    source: each `AVAILABLE_MODELS` entry's `model_name`, plus any repo-shaped
+    (`/`-containing) alias. Several entries can share a repo id (the FLUX.1-dev
+    ControlNets); the FIRST in source order wins, which is the plain
+    text-to-image entry. `{}` on a syntax error or no registry found.
+
+    **Parsed with `ast`, never imported.** Importing
+    `mflux.models.common.config.model_config` pulls in `mlx.core` (Metal
+    init), a runner-venv dependency the server process must not carry
+    (`hub_loadable.mlx_vlm_model_types` likewise reads the filesystem rather
+    than importing `mlx_vlm`). Admission wants the key set (a repo id shared
+    by several entries is matched by object identity in mflux's
+    `resolve_key`, which a flat dict cannot represent, but admission only asks
+    whether ANY entry has the id), the worker wants the key."""
+    import ast
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return {}
+    found: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(t, ast.Name) and t.id == "AVAILABLE_MODELS"
+                   for t in node.targets):
+            continue
+        if not isinstance(node.value, ast.Dict):
+            continue
+        for key_node, value_node in zip(node.value.keys, node.value.values):
+            if not (isinstance(key_node, ast.Constant) and isinstance(key_node.value, str)):
+                continue
+            if not isinstance(value_node, ast.Call):
+                continue
+            for kw in value_node.keywords:
+                if kw.arg == "model_name":
+                    if isinstance(kw.value, ast.Constant) and isinstance(kw.value.value, str):
+                        found.setdefault(kw.value.value, key_node.value)
+                elif kw.arg == "aliases" and isinstance(kw.value, ast.List):
+                    for elt in kw.value.elts:
+                        if (isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                                and "/" in elt.value):
+                            found.setdefault(elt.value, key_node.value)
+    return found
+
+
+#: `(model_config.py path, st_mtime_ns)` -> parsed registry. One parse per
+#: file version, however many recipes are asked for; cleared by
+#: `set_mflux_registry_reader`.
+_MFLUX_PARSE_CACHE: dict[tuple[str, int], dict[str, str]] = {}
+
+
+def _in_process_mflux_registry() -> dict[str, str]:
+    """The registry of the mflux importable in THIS process (the mflux
+    runner's own venv, where the worker runs). `{}` when mflux is not
+    importable here."""
+    import importlib.util
+    import os
+    try:
+        spec = importlib.util.find_spec("mflux")
+    except (ImportError, ValueError):
+        return {}
+    if spec is None or not spec.submodule_search_locations:
+        return {}
+    path = os.path.join(list(spec.submodule_search_locations)[0],
+                        "models", "common", "config", "model_config.py")
+    try:
+        key = (path, os.stat(path).st_mtime_ns)
+        parsed = _MFLUX_PARSE_CACHE.get(key)
+        if parsed is None:
+            with open(path, encoding="utf-8") as fh:
+                parsed = parse_mflux_available_models(fh.read())
+            _MFLUX_PARSE_CACHE[key] = parsed
+        return parsed
+    except OSError:
+        return {}
+
+
+def _installed_mflux_registry() -> dict[str, str]:
+    """The default registry reader. In the server process the
+    `fused_render` package imports, and the mflux venv's registry is read by
+    `hub_loadable.mflux_available_models` (the server has no mflux of its own).
+    In the mflux worker venv there is no `fused_render` package, the import
+    fails, and the mflux importable in this process is read instead. Lazy on
+    purpose: nothing has to have imported `hub_loadable` first."""
+    try:
+        from fused_render.ai import hub_loadable
+    except ModuleNotFoundError as exc:
+        # Only "the fused_render package is not here" (the mflux worker venv)
+        # falls back; any other import failure is a real bug and surfaces.
+        if exc.name != "fused_render" and not (exc.name or "").startswith("fused_render."):
+            raise
+        return _in_process_mflux_registry()
+    return hub_loadable.mflux_available_models() or {}
+
+
+_mflux_registry_reader = _installed_mflux_registry
+
+
+def set_mflux_registry_reader(reader) -> None:
+    """Install the `{repo id: registry key}` reader (a zero-arg callable);
+    `None` restores the default. Tests use it. Also drops the parse memo."""
+    global _mflux_registry_reader
+    _mflux_registry_reader = reader or _installed_mflux_registry
+    _MFLUX_PARSE_CACHE.clear()
+
+
+def _derived_mflux_family(model_id: str) -> tuple[str, dict] | None:
+    key = _mflux_registry_reader().get(model_id)
+    if not key:
+        return None
+    best = None
+    for prefix, family in MFLUX_FAMILIES:
+        if key == prefix or key.startswith(prefix + "-"):
+            if best is None or len(prefix) > len(best[0]):
+                best = (prefix, family)
+    if best is None:
+        return None
+    return key, best[1]
+
+
+def _derived_recipe(derived: tuple[str, dict]) -> dict:
+    key, family = derived
+    recipe = {"variant": family["variant"], "module": family["module"],
+              "config": key.replace("-", "_")}
+    if family.get("vae"):
+        recipe["vae"] = family["vae"]
+    return recipe
+
+
+def mflux_variant_recipe(model_id: str) -> dict | None:
+    """The plain text-to-image recipe for `model_id`: the `MFLUX_VARIANTS`
+    override row when there is one, else one derived from the installed
+    mflux's registry key plus its family (`MFLUX_FAMILIES`), else None."""
+    row = MFLUX_VARIANTS.get(model_id)
+    if row is not None:
+        return dict(row)
+    derived = _derived_mflux_family(model_id)
+    return None if derived is None else _derived_recipe(derived)
+
+
 #: The EDIT counterpart of `MFLUX_VARIANTS` — one entry per model that also
 #: supports base-image editing, keyed by the same repo id.
 #:
@@ -300,7 +479,14 @@ def mflux_edit_recipe(model_id: str) -> dict | None:
     silent drift rather than a loud one.
     """
     edit = MFLUX_EDIT_VARIANTS.get(model_id)
-    plain = MFLUX_VARIANTS.get(model_id)
+    if model_id in MFLUX_VARIANTS:
+        plain = mflux_variant_recipe(model_id)
+    else:
+        # One derivation serves both the plain recipe and the edit row.
+        derived = _derived_mflux_family(model_id)
+        plain = None if derived is None else _derived_recipe(derived)
+        if edit is None and derived is not None:
+            edit = derived[1].get("edit")
     if edit is None or plain is None:
         return None
     # `.get("vae")`, not a hard index: `MFLUX_VARIANTS`'s own docstring
@@ -382,7 +568,7 @@ def mflux_native_mode(model_id: str) -> str | None:
     (one checkpoint cannot both need and refuse a mask); `generate` wins
     there only so the answer is deterministic.
     """
-    if model_id in MFLUX_VARIANTS:
+    if mflux_variant_recipe(model_id) is not None:
         return "generate"
     if model_id in MFLUX_FILL_VARIANTS:
         return "fill"
@@ -2236,6 +2422,21 @@ LLAMACPP_RUNNERS = ("llamacpp-text", "llamacpp-text-vulkan")
 ONNX_EMBED_RUNNERS = ("onnx-embed", "onnx-embed-cuda", "onnx-embed-rocm")
 
 
+def is_diffusers_snapshot(names) -> bool:
+    """LOADING predicate: a flat `model_index.json` is present. `loaders()`
+    uses it. Admission (`hub_architecture.is_diffusers_repo`) is a wider
+    Hub-metadata net (flat index, modular index or `library_name`), because
+    the search path has only metadata, no filenames.
+
+    Deliberately narrow. The worker only knows `AutoPipelineForText2Image.
+    from_pretrained`, which needs the flat index; a modular-only repo has no
+    loader until a `ModularPipeline` adapter exists, and `library_name:
+    diffusers` is set on every LoRA repo, none of which load standalone. So
+    such rows are admitted but not loadable; the gap is deliberate and
+    recorded in D1450."""
+    return DIFFUSERS_INDEX in names
+
+
 def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
            onnx_weights: bool = False,
            gguf_architecture: str | None = None) -> tuple[str, ...]:
@@ -2338,7 +2539,7 @@ def loaders(*, repo_id: str, names, dirnames, config: dict, torch_weights: bool,
     # the two must not disagree about which repos are mflux's.
     if mflux_native_mode(repo_id) and has_mflux_components(dirnames):
         found.append("mflux-image")
-    if DIFFUSERS_INDEX in names:
+    if is_diffusers_snapshot(names):
         found.extend(DIFFUSERS_RUNNERS)
     if is_parakeet_checkpoint(config) and PARAKEET_WEIGHTS in names:
         # D406 withdrew the `parakeet-mlx` runner (maintenance cost not
