@@ -1071,7 +1071,7 @@ def test_load_parks_the_experts_on_the_cpu_when_no_dense_split_fits(
     ]))
     fake = _fake_llama_cpp(monkeypatch, gpu_offload=True, fail_for={24, 16, 8})
 
-    worker.load("LFM2.5-8B-A1B-Q4_K_M.gguf", str(gguf_path))
+    worker.load("LFM2.5-24B-A2B-Q4_K_M.gguf", str(gguf_path))
 
     assert fake.calls == [24, 16, 8, -1]
     assert worker.worker_base.recorded == {"device": "gpu (experts on cpu)"}
@@ -1093,7 +1093,7 @@ def test_load_restores_the_params_factory_it_patched(worker, monkeypatch, tmp_pa
     fake = _fake_llama_cpp(monkeypatch, gpu_offload=True, fail_for={24, 16, 8})
     before = fake.llama_cpp.llama_model_default_params
 
-    worker.load("LFM2.5-8B-A1B-Q4_K_M.gguf", str(gguf_path))
+    worker.load("LFM2.5-24B-A2B-Q4_K_M.gguf", str(gguf_path))
 
     assert fake.llama_cpp.llama_model_default_params is before
 
@@ -1130,7 +1130,7 @@ def test_expert_offload_the_binding_cannot_supply_still_loads_the_model(
     fake = _fake_llama_cpp(monkeypatch, gpu_offload=True, fail_for={24, 16, 8},
                            expert_offload=False)
 
-    worker.load("LFM2.5-8B-A1B-Q4_K_M.gguf", str(gguf_path))
+    worker.load("LFM2.5-24B-A2B-Q4_K_M.gguf", str(gguf_path))
 
     assert fake.calls == [24, 16, 8, -1]
     assert worker._loaded["llm"].overrides is None
