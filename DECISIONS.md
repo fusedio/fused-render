@@ -7712,3 +7712,10 @@ Seven fixes from code review of D1447's PR.
 5. The two 24B-A2B rows (GGUF 14.5GB, MLX 13.6GB): notes and comment no longer imply a small-machine row; the whole file is resident, a 16GB laptop is not enough.
 6. Gate comments on the mlx-text rows say "mlx-vlm 0.7.9, the floor of the runner's `>=0.7.9,<0.8` range" rather than "the runner's pin".
 7. SPEC.md's size-estimate paragraph now cites `prism-ml/Ternary-Bonsai-2-27B-mlx-2bit`, 8.6GB, ~1.82x (no other retired ids appear in SPEC.md).
+
+## D1449: The image benchmark measures a guidance-pinned model at its pin (2026-10-28, catalog-refresh-2026-10)
+
+Cursor Bugbot found that the IMAGE_GENERATION workload's fixed `guidance: 4.0` made every Qwen-Image 2.1 Turbo benchmark raise: its worker refuses any guidance but 1.0. D1448 item 1's claim that the benchmark reports the guidance actually used was untrue until this change.
+- `_measure_image` now sends the pin from `formats.MFLUX_VARIANTS[model]["guidance"]` when the recipe has one, else the workload's 4.0, and records the value sent as `metrics.guidance`. The workload `revision` is unchanged: no other model's measurement moves.
+- The pin comes from the recipe, not catalog `defaults`, because other rows carry guidance 7.5 / 30.0 and reading those would break the workload's fixed-guidance comparability.
+- The mflux worker now uses the pin when a request omits `guidance` (also CodeRabbit's comment on worker.py:717); an explicit different value is still refused.

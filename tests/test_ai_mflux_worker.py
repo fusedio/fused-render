@@ -395,6 +395,20 @@ def test_a_recipe_that_PINS_guidance_refuses_a_different_request(
     assert model.calls == []
 
 
+def test_a_recipe_that_PINS_guidance_supplies_it_when_the_request_omits_it(
+        monkeypatch, base, tmp_path):
+    worker, model = load_worker(monkeypatch, base)
+    recipe = dict(worker.formats.MFLUX_VARIANTS[MODEL], guidance=1.0)
+    monkeypatch.setitem(worker.formats.MFLUX_VARIANTS, MODEL, recipe)
+    worker.load(MODEL, snapshot(tmp_path))
+
+    worker.generate(_request(tmp_path))
+    assert [c["guidance"] for c in model.calls] == [1.0]
+
+    with pytest.raises(ValueError, match="runs without CFG"):
+        worker.generate(_request(tmp_path, guidance=4.0))
+
+
 def test_a_guidance_of_ZERO_reaches_the_model_as_zero(monkeypatch, base, tmp_path):
     """`float(x or 4.0)` turned a legal 0.0 into 4.0."""
     worker, model = load_worker(monkeypatch, base)
