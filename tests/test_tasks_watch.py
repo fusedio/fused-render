@@ -887,6 +887,28 @@ def test_a_late_exit_landing_before_the_new_row_is_read_keeps_the_send_mark(
     assert tasks_watch.live_from_registry(SID)[0] is True
 
 
+def test_a_former_pids_late_end_still_ends_a_run_whose_host_never_reported(
+        claude_home):
+    """The other half of the fold rule: ENDS fold from every pid. A respawned
+    run whose host died without posting its own end departs, and the end the
+    process before it reported late is what says the session is over —
+    both while the session holds no row and after the fold."""
+    tasks_watch.reset()
+    tasks_watch.tick()
+    old = _registry(claude_home, SID, pid=os.getppid(), status="busy", name="old")
+    tasks_watch.tick()
+    old.unlink()
+    tasks_watch.tick()
+    new = _registry(claude_home, SID, status="busy", name="new")
+    tasks_watch.tick()
+    tasks_watch.mark_turn_ended(SID, "run-old", at=_later(5), pid=os.getppid())
+    assert not tasks_watch.is_turn_ended(SID)
+    new.unlink()
+    tasks_watch.tick()
+    assert tasks_watch.registry_row(SID) is None
+    assert tasks_watch.is_turn_ended(SID)
+
+
 def test_each_forgotten_pid_keeps_its_own_clock(claude_home):
     """CodeRabbit, PR #1829: a session that respawns again inside the window
     adds its newest pid without renewing the oldest one."""

@@ -163,7 +163,7 @@ _sess_rows: dict[str, tuple] = {}
 _session_pids: dict[str, set] = {}
 # session_id -> {pid: when it was forgotten}. THE PIDS A DEPARTED SESSION
 # USED TO HOLD, each kept for a while
-# (`_LAST_IDLE_TURN_TTL_SEC`) so a host's late event about one of them can
+# (`_FORMER_PIDS_TTL_SEC`) so a host's late event about one of them can
 # still be scoped to it. A follow-up that RESPAWNS the CLI (`agent._send`, a
 # changed effort or an unattached folder) kills the old process and starts a
 # new one on the same session, and for the few hundred ms between the old
@@ -504,8 +504,14 @@ def is_turn_ended(session_id: str) -> bool:
                 return False
             if running_row and mtime is not None and mtime > covering(r):
                 return False
-        if not rows and restarted({}):
-            return False   # departed: the collapsed, unscoped stamps decide
+        if not rows and started_at > max(ended_at or 0.0, *by_pid.values(), 0.0):
+            # Departed: the collapsed, unscoped start against EVERY end on
+            # file — a late scoped end on a session nothing holds any more
+            # is still an end (CodeRabbit/reviewer, PR #1829). The mark check
+            # above stays against the unscoped end alone: in the respawn gap
+            # the mark is the new turn's and the scoped end is the old
+            # process's, and that end must not outrank it there.
+            return False
     return True
 
 
@@ -1153,25 +1159,25 @@ def _settle(sid: str) -> dict | None:
         # session's own, unscoped — the departed session's turn stays ended
         # for `_running_now`'s transcript-tail read, as it always did.
         #
-        # ONLY THE DEPARTING RUN'S OWN PIDS FOLD (CodeRabbit, PR #1829). A
-        # former pid's late stamp sits in the same dicts (`_pid_known`), and
-        # a dead process's late `turn_started` folded here would outrank the
-        # end the run that just departed reported for itself — `is_turn_ended`
-        # reading a departed session as reopened, by a process that was gone
-        # before the run began. With no pids of its own to go by (a late
-        # event on a session already departed), everything folds, as before.
-        def own(stamps: dict | None) -> dict:
-            stamps = stamps or {}
-            if not former:
-                return stamps
-            return {pid: at for pid, at in stamps.items() if pid in former}
-
-        newest = max(own(_ended_by_pid.pop(sid, None)).values(), default=None)
+        # EVERY pid's end folds — a former pid's late end included: nothing
+        # holds the session now, so "ended" is the right answer whichever
+        # process said it, and a run whose host died without reporting its
+        # own end still reads ended off the one that came before it.
+        newest = max((_ended_by_pid.pop(sid, None) or {}).values(), default=None)
         if newest is not None:
             _ended[sid] = max(newest, _ended.get(sid, newest))
-        # …and the newest per-pid start the same way, so the two keep their
-        # order for `is_turn_ended`'s row-less read.
-        restart = max(own(_reopened_by_pid.pop(sid, None)).values(), default=None)
+        # …but ONLY THE DEPARTING RUN'S OWN STARTS do (CodeRabbit, PR #1829):
+        # a former pid's late `turn_started` sits in the same dict
+        # (`_pid_known`), and folded here it would outrank the end the run
+        # that just departed reported for itself — `is_turn_ended` reading a
+        # departed session as reopened, by a process that was gone before the
+        # run began. With no pids of its own to go by (a late event on a
+        # session already departed), everything folds, as before. The two
+        # keep their order for `is_turn_ended`'s row-less read.
+        starts = _reopened_by_pid.pop(sid, None) or {}
+        if former:
+            starts = {pid: at for pid, at in starts.items() if pid in former}
+        restart = max(starts.values(), default=None)
         if restart is not None:
             _reopened[sid] = max(restart, _reopened.get(sid, restart))
         _departed[sid] = time.time()
