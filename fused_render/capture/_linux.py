@@ -265,13 +265,25 @@ def warning(handle) -> str | None:
 
 
 def locate(rect, dpr: float):
-    """`capture.shot_region`'s hook: the portal shoots the whole screen in
-    physical pixels, so a browser rect (DIPs from the screen origin) is scaled
-    by the page's `devicePixelRatio` and nothing else. No display to choose
-    (`refuse` says why), and no bounds to check against — `displays` is empty
-    here by design, so an off-screen rect surfaces later as Pillow's crop of
-    nothing rather than as a refusal."""
-    return None, tuple(float(n) * dpr for n in rect)
+    """`capture.shot_region`'s hook, and on Linux it always refuses.
+
+    A region shot crops the portal's whole-desktop still at the rect the
+    browser measured from `window.screenX/Y`. Wayland does not tell a client
+    where its window is, so those read 0 (or a stale guess) and the crop lands
+    on whatever window happens to sit at that spot on the desktop: a picture
+    of a different app, which nothing downstream can tell from the right one.
+    The portal also chooses which outputs go into its still, so even under X11
+    the screen origin and the image origin need not agree.
+
+    `Unsupported` is a 409, so callers drop the native road for the session
+    and use their own fallbacks: the DOM clone, the tab share, or an export
+    with no preview."""
+    from fused_render.capture import Unsupported
+
+    raise Unsupported(
+        "region shots are not available on Linux: the desktop portal's still "
+        "covers the whole desktop and a browser cannot learn where its own "
+        "window sits on it")
 
 
 # --------------------------------------------------------------------- still
