@@ -627,10 +627,11 @@ export default function CanvasWorkspace({
   );
   const [fixBusy, setFixBusy] = useState(false);
   const [fixError, setFixError] = useState<string | null>(null);
-  // The failed-push detail panel under the strip: shut by default (the strip
-  // already says why in one line and wears an "N errors" pill); the pill
-  // folds it open and shut.
-  const [pushDetailOpen, setPushDetailOpen] = useState(false);
+  // The failed-push detail panel under the strip: shut by default in the
+  // editor (the strip already says why in one line and wears an "N errors"
+  // pill; the pill folds it open and shut), open on the project page's Sync
+  // tab, which exists to show exactly this.
+  const [pushDetailOpen, setPushDetailOpen] = useState(embedded);
   // "Server changes · Pull": the hosted workbench's chip, for this tab. The
   // watcher holds its push while the server_to_disk leg is stale; this button
   // is the user's pull. The result reaches the embed as a delta like any other
@@ -818,10 +819,10 @@ export default function CanvasWorkspace({
   // (same watcher, lower disk_rev: a slow poll answer overtaken by the
   // socket) is dropped, so the delta effect never reads it as a new watcher.
   const applyState = useCallback((s: SyncState) => {
-    // QA: `?_pushfail=1` dresses every state as a failed push (like
-    // `?_shotnudge=1` for the capture nudge) — a real failing deployment is
-    // not on hand to look at the banner.
-    const pushfail = new URLSearchParams(window.location.search).get("_pushfail");
+    // QA, dev builds only: `?_pushfail=1` dresses every state as a failed
+    // push — a real failing deployment is not on hand to look at the panel.
+    // (Pull and Fix with Claude stay live against the real clone.)
+    const pushfail = import.meta.env.DEV ? new URLSearchParams(window.location.search).get("_pushfail") : null;
     if (pushfail) {
       s = {
         ...s,
@@ -2172,10 +2173,12 @@ export default function CanvasWorkspace({
     ? Math.max(1, (sync?.error_detail ?? []).filter((l) => /^\s*✗/.test(l)).length)
     : 0;
   const pushBannerShown = pushError && pushDetailOpen;
-  // Shut again once a push lands, so the next failure starts folded.
+  // Back to the default once a push lands, so the next failure starts the
+  // same way; open while Claude works on it, so its state stays in view.
   useEffect(() => {
-    if (!pushError) setPushDetailOpen(false);
-  }, [pushError]);
+    if (!pushError) setPushDetailOpen(embedded);
+    else if (fixActive || fixBusy) setPushDetailOpen(true);
+  }, [pushError, fixActive, fixBusy, embedded]);
   const stateFixActive = sync?.fix_active;
   useEffect(() => {
     if (stateFixActive !== undefined) setFixActive(stateFixActive);

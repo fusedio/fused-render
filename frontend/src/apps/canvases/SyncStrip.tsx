@@ -224,7 +224,7 @@ export function SyncStrip({
         <span
           onClick={(e) => e.stopPropagation()}
           onKeyDown={(e) => e.stopPropagation()}
-          // `none`: the reason span is the strip's only shrinking item — a
+          // `none`: the status text is the strip's only shrinking item — a
           // shrinkable wrapper lost width in proportion to its basis and
           // the Pull button read "P" beside the errors pill.
           style={{ display: "flex", alignItems: "center", gap: 8, flex: "none", cursor: "default" }}
@@ -282,6 +282,7 @@ export function SyncStrip({
           type="button"
           className="btn"
           aria-expanded={pushErrors.open}
+          aria-label={`Push failed: ${pushErrors.count} ${pushErrors.count === 1 ? "error" : "errors"}`}
           style={{
             padding: "1px 8px",
             fontSize: 12,
