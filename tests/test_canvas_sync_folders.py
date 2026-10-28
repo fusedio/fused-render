@@ -486,6 +486,17 @@ def test_snapshot_deleting_a_folder_never_trashes_a_same_named_file(tmp_path):
     assert os.path.isfile(os.path.join(d, "F.py"))
 
 
+def test_folder_row_never_has_a_source_file_even_when_one_bears_its_exact_name(tmp_path):
+    # Every file system: a folder is a row with no source file of its own,
+    # whatever sits in the clone under its name.
+    d = _clone(tmp_path, [folder("F", ["a"]), udf("a", 40.0, 60.0)],
+               {"a.py": "A", "F.py": "someone else's file"})
+    disk = cs.compact_state_from_disk(d)
+    assert "F" not in disk["files"] and "F" not in disk["bodies"]
+    assert disk["files"] == {"a": "a.py"}
+    assert disk["missing"] == []
+
+
 def test_folder_never_takes_a_udf_file_that_matches_its_name_by_case(tmp_path):
     # India_H3_coverage (folder) over india_h3_coverage.py (a UDF inside it):
     # on macOS's case-insensitive disk `isfile` said the folder had a source
@@ -504,6 +515,9 @@ def test_folder_never_takes_a_udf_file_that_matches_its_name_by_case(tmp_path):
     d2 = _clone(tmp_path / "two", [udf("Other_Node", 40.0, 60.0)], {"other_node.py": "B"})
     disk2 = cs.compact_state_from_disk(d2)
     assert disk2["missing"] == ["Other_Node"]
+    # ...and the file, which no row names exactly, is an orphan: the same
+    # second node macOS always showed, now beside a held `missing` row.
+    assert disk2["synthesized"] == ["other_node"]
     assert cs._find_source(d2, "Other_Node") is None
     assert cs._find_source(d2, "other_node") == "other_node.py"
 
