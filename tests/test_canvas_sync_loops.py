@@ -558,3 +558,28 @@ def test_snapshot_hidden_udf_lands_on_disk(tmp_path):
     result = cs.apply_snapshot(d, new, view)
     assert result["changed"] is True
     assert _rows(d)[0]["visible"] is False
+
+
+PROBE_NOTE = ("# Sync probe\n\n| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\n"
+              "About ~10 s, a <name> tag, a [lon, lat] pair, **bold `code` inside**.\n")
+PROBE_NOTE_TIPTAP = ("# Sync probe\n\nab1234\n\nAbout \\~10 s, a &lt;name&gt; tag, "
+                     "a \\[lon, lat\\] pair, **bold** `code` **inside**.")
+BROAD_NOTE = ("Setext\n======\n\n* star\n+ plus\n\n> quote\nlazy\n\n***\n\n"
+              "Footnote[^1], a_b_c, _f_ and __g__, 5 < 6 &amp; ~7.\n\nline one  \nline two\n\n"
+              "    indented\n\n- [ ] task\n\n| k | v |\n|:--|--:|\n| `x_y` | **z** |\n")
+BROAD_NOTE_TIPTAP = ("# Setext\n\n- star\n\n\n- plus\n\n> quote lazy\n\n---\n\n"
+                     "Footnote\\[^1\\], a_b_c, *f* and **g**, 5 &lt; 6 & \\~7.\n\nline one\\\n"
+                     "line two\n\n```\nindented\n```\n\n- [ ] task\n\nkv`x_y`**z**")
+
+
+def test_compact_note_text_ignores_what_the_workbench_editor_reserializes():
+    assert cs.note_text(PROBE_NOTE) == cs.note_text(PROBE_NOTE_TIPTAP)
+    assert cs.note_text(BROAD_NOTE) == cs.note_text(BROAD_NOTE_TIPTAP)
+    assert cs.note_text(PROBE_NOTE) != cs.note_text(PROBE_NOTE_TIPTAP.replace("About", "About."))
+
+
+def test_compact_duplicate_node_rows_ignore_folders_sharing_a_name():
+    rows = [{"udfName": "a"}, {"udfName": "b"}, {"udfName": "a", "x": 1},
+            {"type": "udf-folder", "folderName": "b"}, {"type": "udf-folder", "folderName": "F"},
+            {"type": "udf-folder", "folderName": "F"}]
+    assert cs.duplicate_node_rows({"canvas": {"nodes": rows}}) == ["a"]

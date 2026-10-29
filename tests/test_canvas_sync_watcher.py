@@ -20,6 +20,7 @@ from fastapi.testclient import TestClient
 
 import fused_render.canvases as canvases_mod
 from fused_render import canvas_snapshot
+from test_canvas_sync_loops import PROBE_NOTE, PROBE_NOTE_TIPTAP, _rows
 from test_canvases import (  # noqa: F401 — fixtures are used by name
     ENV,
     GUARD,
@@ -119,14 +120,10 @@ def test_a_snapshot_applies_while_a_slow_push_runs(harness, tmp_path, monkeypatc
     assert "push start" in actions and "push end" in actions and "snapshot applied" in actions
 
 
+@pytest.mark.parametrize("write_while_waiting, pushes", [(False, 1), (True, 2)])
 def test_the_manual_push_waits_its_turn_behind_a_running_push(
-        harness, tmp_path, monkeypatch, fake_agent):
-    """Pushes stay serialized per canvas without _op_lock spanning them: the
-    flight lock answers a concurrent manual push with busy."""
-    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
-    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 0.1)
-    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 30.0)
-    monkeypatch.setattr(canvases_mod, "MANUAL_PUSH_LOCK_WAIT_S", 0.2)
+        harness, tmp_path, monkeypatch, fake_agent, write_while_waiting, pushes):
+    _quiet_watcher(monkeypatch)
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
     started, release = threading.Event(), threading.Event()
     real = canvases_mod._SyncManager._run_push_cli
@@ -139,15 +136,27 @@ def test_the_manual_push_waits_its_turn_behind_a_running_push(
     monkeypatch.setattr(canvases_mod._SyncManager, "_run_push_cli", slow_push)
     _start(harness)
     (harness.root / "alpha" / "a.py").write_text("a2\n")
+    answers: list = []
+
+    def push():
+        answers.append(harness.client.post("/api/canvases/sync/push",
+                                           json={"env": ENV, "name": "alpha"}, headers=GUARD))
+
+    first = threading.Thread(target=push)
+    first.start()
     assert started.wait(5)
-    try:
-        res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"},
-                                  headers=GUARD)
-        assert res.status_code == 409, res.text
-        assert res.json()["code"] == "busy"
-    finally:
-        release.set()
-    assert _wait_sync(lambda s: s["push_seq"] >= 1)["push_seq"] >= 1
+    if write_while_waiting:
+        (harness.root / "alpha" / "b.py").write_text("b2\n")
+    second = threading.Thread(target=push)
+    second.start()
+    second.join(0.3)
+    assert second.is_alive(), [a.json() for a in answers]
+    release.set()
+    first.join(10)
+    second.join(10)
+    assert [(a.status_code, a.json()["ok"]) for a in answers] == [(200, True), (200, True)], \
+        [a.text for a in answers]
+    assert len([c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]]) == pushes
 
 
 # -- pid lock ------------------------------------------------------------------
@@ -1287,3 +1296,88 @@ def test_takeover_of_a_free_clone_is_a_plain_start(harness, tmp_path, monkeypatc
     assert res.status_code == 200, res.text
     assert (ENV, "alpha") in canvases_mod._syncs
     _stop_sync("alpha")
+
+
+def _post_note_body(harness, text, base):
+    return harness.client.post("/api/canvases/body", json={
+        "env": ENV, "name": "alpha", "node": "probe", "file": "probe.md",
+        "base_hash": canvas_snapshot.body_hash(base), "text": text}, headers=GUARD)
+
+
+def _trashed(harness):
+    root = harness.root / ".sync" / "trash" / "alpha"
+    return sorted(p.read_text() for p in root.rglob("*") if p.is_file()) if root.exists() else []
+
+
+def test_a_note_body_is_written_only_when_its_text_changed(harness, tmp_path, monkeypatch):
+    _quiet_watcher(monkeypatch)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    _start(harness)
+    note = harness.root / "alpha" / "probe.md"
+    note.write_text(PROBE_NOTE)
+    res = _post_note_body(harness, PROBE_NOTE_TIPTAP, PROBE_NOTE)
+    assert res.status_code == 200, res.text
+    assert res.json() == {"ok": True, "node": "probe", "file": "probe.md", "changed": False,
+                          "created": False, "hash": canvas_snapshot.body_hash(PROBE_NOTE)}
+    assert note.read_text() == PROBE_NOTE and _trashed(harness) == []
+    edited = PROBE_NOTE_TIPTAP.replace("About", "Roughly")
+    res = _post_note_body(harness, edited, PROBE_NOTE)
+    assert res.status_code == 200 and res.json()["changed"] is True, res.text
+    assert note.read_text() == edited and _trashed(harness) == [PROBE_NOTE]
+
+
+def test_a_new_file_gets_no_row_while_a_session_holds_the_push(
+        harness, tmp_path, monkeypatch, fake_agent):
+    _quiet_watcher(monkeypatch)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    fake_agent.live = "run-held"
+    _start(harness).agent_run_id()
+    before = _toml(harness)
+    (harness.root / "alpha" / "foo.md").write_text("# foo\n")
+    cut = harness.client.get("/api/canvases/delta?env=unstable&name=alpha&full=1").json()
+    assert "ops" in cut, cut
+    assert not [op for op in cut["ops"] if op.get("name") in ("a", "b", "foo")], cut["ops"]
+    assert _toml(harness) == before
+    res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"},
+                              headers=GUARD)
+    assert res.status_code == 200 and res.json()["ok"] is True, res.text
+    assert sorted(r["udfName"] for r in _rows(harness.root / "alpha")) == ["a", "b", "foo"]
+
+
+def test_a_row_the_session_adds_inside_a_folder_is_the_only_row_the_push_ships(
+        harness, tmp_path, monkeypatch, fake_agent):
+    _quiet_watcher(monkeypatch)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    seen: dict = {}
+    _capture_push(monkeypatch, seen)
+    fake_agent.live = "run-held"
+    _start(harness).agent_run_id()
+    (harness.root / "alpha" / "foo.md").write_text("# foo\n")
+    harness.client.get("/api/canvases/delta?env=unstable&name=alpha&full=1")
+    with open(harness.root / "alpha" / "canvas.toml", "a") as fh:
+        fh.write('\n[[canvas.nodes]]\nudfName = "Docs"\nfolderName = "Docs"\ntype = "udf-folder"\n'
+                 'x = 0\ny = 0\nchildUdfOrder = ["foo"]\n\n'
+                 '[[canvas.nodes]]\nudfName = "foo"\nx = 12\ny = 34\n')
+    res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"},
+                              headers=GUARD)
+    assert res.status_code == 200 and res.json()["ok"] is True, res.text
+    foo = [r for r in _rows(harness.root / "alpha") if r["udfName"] == "foo"]
+    assert len(foo) == 1 and (foo[0]["x"], foo[0]["y"]) == (12, 34), foo
+    assert seen["tomls"][0].count('udfName = "foo"') == 1, seen["tomls"][0]
+
+
+def test_two_rows_for_one_node_fail_the_push_before_the_cli_runs(harness, tmp_path, monkeypatch):
+    _quiet_watcher(monkeypatch)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    _start(harness)
+    (harness.root / "alpha" / "canvas.toml").write_text(
+        'type = "canvas"\n\n[[canvas.nodes]]\nudfName = "a"\n\n[[canvas.nodes]]\nudfName = "b"\n\n'
+        '[[canvas.nodes]]\nudfName = "a"\nx = 5\n')
+    res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"},
+                              headers=GUARD)
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["ok"] is False and body["push_state"] == "error", body
+    assert any("'a'" in line for line in body["error_detail"]), body
+    assert not any("'b'" in line for line in body["error_detail"]), body
+    assert not [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]]

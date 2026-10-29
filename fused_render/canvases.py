@@ -196,11 +196,9 @@ _FRESH_WINDOW_S = 10.0
 # here also keeps the name safe as a path segment and an argv element.
 _NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,128}$")
 
-# How long the manual push/pull endpoints wait for the manager's _flight_lock
+# How long the manual pull endpoint waits for the manager's _flight_lock
 # (and a push or pull for each short _op_lock phase) before giving up with a
-# 409. Short on purpose: the caller is a Claude session that just asked to
-# publish, and "a sync operation is in flight, try again" is a better answer
-# than a request that hangs for the whole PUSH_TIMEOUT.
+# 409.
 MANUAL_PUSH_LOCK_WAIT_S = 5.0
 # How long /api/canvases/snapshot waits on _op_lock before answering 409.
 SNAPSHOT_LOCK_WAIT_S = 1.0
@@ -3545,6 +3543,12 @@ class _SyncManager:
                            detail=f"could not freeze the clone for the push: {copy_error}")
             return "done"
         try:
+            dupes = canvas_snapshot.duplicate_node_rows(base_toml_snapshot)
+            if dupes:
+                return self._push_failed(
+                    "canvas.toml has more than one row for " + ", ".join(dupes),
+                    [f"Node '{n}' has more than one [[canvas.nodes]] row in canvas.toml"
+                     for n in dupes], started, frozen)
             try:
                 proc = self._run_push_cli(cli, copy_dir)
             except subprocess.TimeoutExpired:
@@ -4150,11 +4154,6 @@ class _SyncManager:
         carry the pre-write content under the post-write rev and the scan
         would see nothing left to report.
 
-        A source file with no row (Claude wrote `foo.py` and no
-        `[[canvas.nodes]]` entry) arrives in `disk` as a SYNTHESIZED row
-        (canvas_snapshot, invariant 2); it is written into canvas.toml here,
-        under the same lock, so the next push ships the node with its file.
-
         A cut does NOT mark a frame as seen: the page cuts on every disk_rev
         move and drops the answer when it has no frame (boot, a reload), so
         only a frame's own ack or snapshot is evidence that one is there —
@@ -4274,7 +4273,8 @@ class _SyncManager:
         """compact_state_from_disk, leaving `exclude` (rowless files in their
         grace) out: no synthesized row, no delta op, no persist."""
         return canvas_snapshot.compact_state_from_disk(
-            self.dir, self._remote_ids(), exclude_orphans=exclude)
+            self.dir, self._remote_ids(), exclude_orphans=exclude,
+            synthesize=not self._agent_run_id)
 
     def _synthesize_orphans(self) -> None:
         """Invariant 2 on the PUSH path: a root-level source file with no
@@ -4531,6 +4531,12 @@ class _SyncManager:
         if current == text:
             self._body_written[node] = new_hash
             return {"ok": True, "node": node, "file": file, "hash": new_hash,
+                    "changed": False, "created": False}
+        if current is not None and file.endswith(canvas_snapshot.EMBED_BODY_SUFFIXES) \
+                and canvas_snapshot.note_text(current) == canvas_snapshot.note_text(text):
+            self.log_event("embed_to_disk", "body kept",
+                           detail=f"{file}: the workbench changed only its markdown syntax")
+            return {"ok": True, "node": node, "file": file, "hash": current_hash,
                     "changed": False, "created": False}
         if current is not None and self._body_written.get(node) != base_hash:
             # Not the frame's own previous text: keep a copy, as a note body
@@ -5538,8 +5544,7 @@ def api_canvases_sync_push(body: dict = Body(...), x_fused: str | None = Header(
     "pushes are serialized per canvas" invariant true and makes the sync point
     move WITH the push, so the poll that follows has nothing to react to.
 
-    Refuses rather than queues (409) when the watcher is paused, when a push is
-    already running, or when another sync leg holds the lock: the caller is an
+    Refuses rather than queues (409) when the watcher is paused: the caller is an
     agent that can read the answer and retry, and a silent no-op would leave it
     believing it had published.
 
@@ -5602,50 +5607,50 @@ def api_canvases_sync_push(body: dict = Body(...), x_fused: str | None = Header(
     # error_detail, so the clone stays dirty, the watcher's backstop still
     # publishes it, and the Fix-with-Claude button (gated on
     # push_state == "error") never lights up for a race there is nothing to fix.
-    if manager.push_state == "pushing":
-        return _busy("a push is already running for this canvas")
-    if manager.server_stale is not None:
-        # What a hosted tab's save does while the server moved: refuse until
-        # the user pulls. Carries the list so a session can say what changed.
-        changed = ", ".join(
-            f"{u['slug']} ({u['kind']})" for u in manager.server_stale.get("udfs", [])
-        ) or "the canvas layout"
-        # Promise "kept" only where pull() merges: a manifest shim AND a sync
-        # point. The external-CLI leg and a dirty clone with no sync point pull
-        # wholesale (see pull()), and a session told its edits survive would
-        # pull and lose them — so name the trash copy instead.
-        cli = fused_cli()
-        trash = os.path.join(manager.root, ".sync", "trash", name)
-        if cli is None or _shim_manifest_command(cli) is None:
-            kept = ("this fused CLI cannot merge, so the pull REPLACES your local "
-                    f"edits with the server's files; a copy is kept under {trash}")
-        elif manager._base_files is None:
-            kept = ("there is no sync point to merge against, so the pull REPLACES "
-                    f"your local edits with the server's files; a copy is kept under {trash}")
-        else:
-            kept = "your edits are merged with them and kept"
-        return JSONResponse(
-            {"error": "the canvas changed on the server since the last sync "
-                      f"({changed}); pull first — the Pull button in the canvas view "
-                      f"brings those changes into this folder ({kept}), "
-                      "then push again",
-             "code": "server_changed", "server_stale": manager.server_stale},
-            status_code=409)
     # The flight lock, not _op_lock: _push takes _op_lock itself, only for its
     # short freeze and fold phases, and never across the CLI.
-    if not manager._flight_lock.acquire(timeout=MANUAL_PUSH_LOCK_WAIT_S):
+    before = manager.push_seq
+    if not manager._flight_lock.acquire(timeout=PUSH_TIMEOUT):
         return _busy(
             "a sync operation is in flight for this canvas; try again in a moment")
     try:
         # Re-checked under the lock: pause() sets the count and then waits on
         # this same lock, so holding it is what makes the answer stable.
         with manager.pause_lock:
-            if manager.pause_count > 0:
+            if manager.pause_count > 0 or manager.stop_event.is_set():
                 return _busy(f"syncing for {_sync_key(env, name)!r} is paused; try again in a moment")
-        before = manager.push_seq
-        if manager._push() == "busy":
-            return _busy(
-                "a sync operation is in flight for this canvas; try again in a moment")
+        if manager.server_stale is not None:
+            # What a hosted tab's save does while the server moved: refuse until
+            # the user pulls. Carries the list so a session can say what changed.
+            changed = ", ".join(
+                f"{u['slug']} ({u['kind']})" for u in manager.server_stale.get("udfs", [])
+            ) or "the canvas layout"
+            # Promise "kept" only where pull() merges: a manifest shim AND a sync
+            # point. The external-CLI leg and a dirty clone with no sync point pull
+            # wholesale (see pull()), and a session told its edits survive would
+            # pull and lose them — so name the trash copy instead.
+            cli = fused_cli()
+            trash = os.path.join(manager.root, ".sync", "trash", name)
+            if cli is None or _shim_manifest_command(cli) is None:
+                kept = ("this fused CLI cannot merge, so the pull REPLACES your local "
+                        f"edits with the server's files; a copy is kept under {trash}")
+            elif manager._base_files is None:
+                kept = ("there is no sync point to merge against, so the pull REPLACES "
+                        f"your local edits with the server's files; a copy is kept under {trash}")
+            else:
+                kept = "your edits are merged with them and kept"
+            return JSONResponse(
+                {"error": "the canvas changed on the server since the last sync "
+                          f"({changed}); pull first — the Pull button in the canvas view "
+                          f"brings those changes into this folder ({kept}), "
+                          "then push again",
+                 "code": "server_changed", "server_stale": manager.server_stale},
+                status_code=409)
+        if manager.push_seq == before or manager._dirty_since is not None:
+            before = manager.push_seq
+            if manager._push() == "busy":
+                return _busy(
+                    "a sync operation is in flight for this canvas; try again in a moment")
     finally:
         manager._flight_lock.release()
     status = manager.status()

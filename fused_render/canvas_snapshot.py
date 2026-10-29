@@ -86,8 +86,10 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import html
 import json
 import os
+import re
 import time
 from typing import Any, Callable, Iterable
 
@@ -126,6 +128,13 @@ CANVAS_KEYS = ("viewport", "viewportBounds", "comments")
 
 # The one file kind whose body the embed can change without its code editor.
 EMBED_BODY_SUFFIXES = (".md",)
+
+_NOTE_SYNTAX = re.compile(r"[\s\\`*~\[\]_#\-+>|:=]+")
+
+
+def note_text(markdown: str) -> str:
+    return _NOTE_SYNTAX.sub("", html.unescape(markdown))
+
 
 _SYNTHETIC_DESCRIPTION = "Exported from Fused UDF Workbench"
 
@@ -278,6 +287,10 @@ def shared_names(doc_or_rows: Any, *, same_kind: bool = False) -> list[str]:
             out.append(name)
         seen.add(key)
     return out
+
+
+def duplicate_node_rows(doc_or_rows: Any) -> list[str]:
+    return shared_names([r for r in _rows_list(doc_or_rows) if not is_folder(r)])
 
 
 def _clash_lines(rows: Any, suffix: str = "") -> list[str]:
@@ -1344,7 +1357,7 @@ def read_body(path: str) -> str | None:
 
 
 def compact_state_from_disk(clone_dir: str, remote_ids: dict[str, str] | None = None,
-                            exclude_orphans: Iterable[str] = ()) -> dict:
+                            exclude_orphans: Iterable[str] = (), synthesize: bool = True) -> dict:
     """The clone as the embed should hold it::
 
         {nodes: {name: row}, order: [name], edges: [[a, b]],
@@ -1379,7 +1392,7 @@ def compact_state_from_disk(clone_dir: str, remote_ids: dict[str, str] | None = 
     # left out entirely: no row, no entry anywhere in the reading.
     synthesized: list[str] = []
     placed = [r for r in rows if isinstance(r, dict)]
-    for slug, file in orphan_sources(clone_dir, nodes, exclude_orphans):
+    for slug, file in orphan_sources(clone_dir, nodes, exclude_orphans) if synthesize else ():
         row = synthesize_row(placed, slug, file)
         placed.append(row)
         nodes[slug] = dict(row)
