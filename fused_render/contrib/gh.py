@@ -739,8 +739,9 @@ def open_pr(full: str, *, title: str, body: str, head: str, base: str) -> dict:
 def get_pr(full: str, number: int) -> dict:
     """`{number, url, state, merged, merge_commit_sha, head_sha, head_repo,
     head_branch, base_branch, user, title, body, created_at, closed_at,
-    maintainer_can_modify, mergeable}`. `state` is "open" | "closed"; `merged`
-    says which kind of closed. `mergeable` is GitHub's own answer to "does it
+    merged_at, merged_by, maintainer_can_modify, mergeable}`. `state` is
+    "open" | "closed"; `merged` says which kind of closed (`merged_by`, the
+    login that merged it, is only on this read — never on a listing). `mergeable` is GitHub's own answer to "does it
     still fit the base": True | False | None (not computed yet — GitHub starts
     computing on this very read; listings never carry it). `merge_commit_sha` is None unless merged (GitHub fills it
     with a throwaway test-merge commit while a PR is open — never trust that)."""
@@ -951,6 +952,9 @@ def _pr_out(raw: dict) -> dict:
         "body": raw.get("body") or "",
         "created_at": raw.get("created_at"),
         "closed_at": raw.get("closed_at"),
+        "merged_at": raw.get("merged_at") if merged else None,
+        # Only the single-PR read carries it (listings never do).
+        "merged_by": (raw.get("merged_by") or {}).get("login") if merged else None,
         "maintainer_can_modify": bool(raw.get("maintainer_can_modify")),
         "mergeable": raw.get("mergeable") if isinstance(raw.get("mergeable"), bool) else None,
     }
@@ -1468,7 +1472,7 @@ class FakeGitHub:
             row_pr = self._pr_row(st, full, number)
             self._freeze(row_pr)
             row_pr.update(state="closed", merged=True, merge_commit_sha=new,
-                          closed_at=_iso_now())
+                          closed_at=_iso_now(), merged_by=merger)
         return new
 
     # ---- backend surface (what the module-level functions call)
@@ -1777,6 +1781,8 @@ class FakeGitHub:
             "head_branch": pr["head_branch"], "base_branch": pr["base"],
             "user": pr["user"], "title": pr["title"], "body": pr["body"],
             "created_at": pr["created_at"], "closed_at": pr["closed_at"],
+            "merged_at": pr["closed_at"] if pr["merged"] else None,
+            "merged_by": pr.get("merged_by") if pr["merged"] else None,
             "maintainer_can_modify": pr["maintainer_can_modify"],
         }
 

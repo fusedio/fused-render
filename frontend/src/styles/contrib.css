@@ -439,6 +439,20 @@
   overflow-wrap: anywhere;
 }
 
+/* §16.16: what kind of step a line is; someone else's step reads brighter
+   than fused's own bookkeeping. */
+.contrib-activity-icon {
+  flex: 0 0 auto;
+  width: 13px;
+  height: 13px;
+  align-self: center;
+  color: var(--fg-faint);
+}
+
+.contrib-activity-line.is-someone .contrib-activity-icon {
+  color: var(--fg);
+}
+
 .contrib-activity-line .contrib-quiet {
   flex: 0 0 auto;
 }

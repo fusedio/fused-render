@@ -532,7 +532,12 @@ def _push_failure(root, result) -> str:
     return why
 
 
-def _after_push(root, f: _Facts, *, pulled, pushed, why) -> dict:
+def _after_push(root, f: _Facts, *, pulled, pushed, why, sent=None) -> dict:
+    """`sent`: the commit the push published (GitHub had `f.tip` before) —
+    named in one Activity line (§16.16; one `git log`, only on a push)."""
+    if pushed and sent:
+        from fused_render.contrib import timeline
+        timeline.published(root, f.tip, sent)
     if pushed or why is None:
         _set_state(root, None)
         return _result(root, f.branch, "synced", pulled=pulled, pushed=pushed)
@@ -678,7 +683,7 @@ def _resolve_locked(root, branch, *, push) -> dict:
             _settle(root)
             return _result(root, branch, "skipped", "held")
         pushed, why = _push(root, branch)
-        return _after_push(root, f, pulled=0, pushed=pushed, why=why)
+        return _after_push(root, f, pulled=0, pushed=pushed, why=why, sent=f.head)
     if _job_open(root):
         return _result(root, branch, "skipped", "merge-job")
     rec = store.get(root) or {}
@@ -703,6 +708,8 @@ def _resolve_locked(root, branch, *, push) -> dict:
     if refused is not None:
         return refused
     gu._record_pull(root, behind)
+    from fused_render.contrib import timeline
+    timeline.pulled(root, f.head, f.tip)
     if f.u:
         text = (f"Brought in the newer version from GitHub and kept your "
                 f"{_edits_word(len(f.u))}.")
@@ -713,7 +720,7 @@ def _resolve_locked(root, branch, *, push) -> dict:
         _settle(root)
         return _result(root, branch, "synced", pulled=behind)
     pushed, why = _push(root, branch)
-    return _after_push(root, f, pulled=behind, pushed=pushed, why=why)
+    return _after_push(root, f, pulled=behind, pushed=pushed, why=why, sent=new)
 
 
 # ------------------------------------------------------------ manual buttons
@@ -891,7 +898,7 @@ def put_on_top(root) -> dict:
             return _answer(root, True, "Your edits are on top of the version on GitHub.")
         release_hold(root)  # the button publishes, on the person's say-so
         pushed, why = _push(root, f.branch)
-        _after_push(root, f, pulled=0, pushed=pushed, why=why)
+        _after_push(root, f, pulled=0, pushed=pushed, why=why, sent=new)
         note_seen(root, replay.rev(root, _tracking(f.branch)) or "")
     if not pushed:
         return _answer(root, False, OFFLINE if why == "offline"

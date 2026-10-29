@@ -68,9 +68,11 @@ _V2 = 2
 #: Newest last; the page says each once. Ten is far more than one copy
 #: accumulates between two visits.
 EVENTS_KEEP = 10
-#: Activity lines kept (§16.9) — newest last on disk, newest first served.
-#: A backup ref only a dropped line named is the engine's to prune later.
-ACTIVITY_KEEP = 50
+#: Activity lines kept (§16.9) — oldest first on disk (by `at`), newest
+#: first served. A backup ref only a dropped line named is the engine's to
+#: prune later. 100: the collaboration timeline (`timeline.py`, §16.16)
+#: writes what other people did too, not only fused's own moves.
+ACTIVITY_KEEP = 100
 
 EVENT_KINDS = frozenset({
     "updated", "updated-kept", "merged-back", "declined", "merge-accepted",
@@ -682,37 +684,78 @@ def note_head(app_dir: str, head: str | None) -> None:
 
 
 def add_activity(app_dir: str, kind: str, text: str, *, backup=None, aside=None,
-                 ref=None) -> str | None:
+                 ref=None, at=None, key=None, actor=None, link=None) -> str | None:
     """Append one Activity line (§16.9) — a plain-words sentence (§0.1) for
-    something fused did to this copy — and answer its id (None when there is
-    no record, or the write failed). `backup` (a backup ref, or a list of
+    something fused did to this copy, or (§16.16) something someone did
+    that reached it — and answer its id (None when there is no record, the
+    write failed, or a line with the same `key` is already there).
+    `backup` (a backup ref, or a list of
     them: a tip and its `-wip`) and/or `aside` (where moved-aside files
     went) make the line undoable, and a ref a line names is never pruned
     (`referenced_backups`). `ref`: a pinned ref the line names WITHOUT
     offering Undo (the mirror's old tip after an author rewind — restoring
     it would put the author's old version over Bob's own; review P1 #3);
-    never pruned either. Capped at ACTIVITY_KEEP."""
-    entry = new_activity(kind, text, backup=backup, aside=aside, ref=ref)
-    return entry["id"] if update(app_dir, lambda rec: append_activity(rec, entry)) is not None \
-        else None
+    never pruned either. Capped at ACTIVITY_KEEP.
+
+    §16.16: `at` (epoch seconds) dates the line when it happened rather
+    than when fused noticed (a pull request merged an hour before the app
+    was opened); `key` makes it once-only (`timeline.py`'s event keys);
+    `actor` is the GitHub login it is about; `link` a github.com page."""
+    entry = new_activity(kind, text, backup=backup, aside=aside, ref=ref, at=at, key=key,
+                         actor=actor, link=link)
+    added = []
+
+    def fn(rec):
+        added.append(append_activity(rec, entry))
+
+    return entry["id"] if update(app_dir, fn) is not None and added and added[0] else None
 
 
-def new_activity(kind: str, text: str, *, backup=None, aside=None, ref=None) -> dict:
+#: The only pages an Activity line links to (§16.16): GitHub's own.
+LINK_PREFIX = "https://github.com/"
+
+
+def new_activity(kind: str, text: str, *, backup=None, aside=None, ref=None, at=None,
+                 key=None, actor=None, link=None) -> dict:
     """One Activity line, not stored yet — for a caller that must write it
     in the SAME `update` as another field (the engine's `landed_at`
     once-stamp, §17.2): `update(app_dir, fn)` with `append_activity(rec,
     line)` inside `fn`."""
-    return {"id": f"{int(time.time() * 1000)}-{secrets.token_hex(3)}",
-            "at": time.time(), "kind": str(kind), "text": str(text),
-            "backup": backup, "aside": aside, "ref": ref, "restored_at": None}
+    entry = {"id": f"{int(time.time() * 1000)}-{secrets.token_hex(3)}",
+             "at": float(at) if isinstance(at, (int, float)) and not isinstance(at, bool)
+             and at > 0 else time.time(),
+             "kind": str(kind), "text": str(text),
+             "backup": backup, "aside": aside, "ref": ref, "restored_at": None}
+    if key:
+        entry["key"] = str(key)
+    if isinstance(actor, str) and actor:
+        entry["actor"] = actor
+    if isinstance(link, str) and link.startswith(LINK_PREFIX):
+        entry["link"] = link
+    return entry
 
 
-def append_activity(rec: dict, entry: dict) -> None:
-    """Append `entry` (`new_activity`) to `rec` in place, capped at
-    ACTIVITY_KEEP. For use inside an `update` function."""
+def has_activity(rec: dict | None, key: str) -> bool:
+    """`rec` already carries the line keyed `key` (§16.16)."""
+    return any(isinstance(e, dict) and e.get("key") == key
+               for e in ((rec or {}).get("activity") or []))
+
+
+def append_activity(rec: dict, entry: dict) -> bool:
+    """Put `entry` (`new_activity`) into `rec` in place, in time order (a
+    line dated in the past lands where it happened), capped at
+    ACTIVITY_KEEP. False — nothing written — when a line with the same
+    `key` is already there. For use inside an `update` function."""
     lines = rec.get("activity") if isinstance(rec.get("activity"), list) else []
-    lines.append(entry)
+    if entry.get("key") and has_activity(rec, entry["key"]):
+        return False
+    at = entry.get("at") or 0
+    i = len(lines)
+    while i > 0 and isinstance(lines[i - 1], dict) and (lines[i - 1].get("at") or 0) > at:
+        i -= 1
+    lines.insert(i, entry)
     rec["activity"] = lines[-ACTIVITY_KEEP:]
+    return True
 
 
 #: An explicit switch between kinds (§18.4 D13): its Undo is the opposite
@@ -727,13 +770,24 @@ def _undoable(e: dict) -> bool:
 
 
 def activity(app_dir: str) -> list:
-    """`[{id, at, kind, text, undo}]`, newest first (§16.9). `undo`: the line
-    names a backup or set-aside files and was not restored already."""
+    """`[{id, at, kind, text, undo, actor?, link?}]`, newest first (§16.9).
+    `undo`: the line names a backup or set-aside files and was not restored
+    already. `actor`/`link` only on a line that has them (§16.16)."""
     rec = get(app_dir)
     lines = rec.get("activity") if rec and isinstance(rec.get("activity"), list) else []
-    return [{"id": e.get("id"), "at": e.get("at"), "kind": e.get("kind"),
-             "text": e.get("text"), "undo": _undoable(e)}
-            for e in reversed(lines) if isinstance(e, dict)]
+    out = []
+    for e in reversed(lines):
+        if not isinstance(e, dict):
+            continue
+        line = {"id": e.get("id"), "at": e.get("at"), "kind": e.get("kind"),
+                "text": e.get("text"), "undo": _undoable(e)}
+        for extra in ("actor", "link"):
+            if e.get(extra):
+                line[extra] = e[extra]
+        out.append(line)
+    # Stable: lines written in the same second keep their written order.
+    out.sort(key=lambda x: x["at"] if isinstance(x["at"], (int, float)) else 0, reverse=True)
+    return out
 
 
 def activity_entry(app_dir: str, activity_id: str) -> dict | None:

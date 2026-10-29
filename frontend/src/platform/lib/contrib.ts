@@ -318,6 +318,10 @@ export interface ActivityLine {
   text: string;
   /** Something moved away and can come back: offers Undo. */
   undo: boolean;
+  /** §16.16: the GitHub login the line is about (someone else's step). */
+  actor?: string;
+  /** §16.16: the github.com page it happened on (a pull request, the repo). */
+  link?: string;
 }
 
 export interface AppContrib {

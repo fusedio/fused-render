@@ -557,6 +557,7 @@ def _review_job(app_dir: str, number: int) -> dict:
     if result.get("model"):
         storage.write_json(_review_path(repo, number, head, base), result)
         _prune_reviews(repo)
+        _timeline().reviewed(app_dir, number, pr, result)
     return result
 
 
@@ -822,6 +823,7 @@ def try_open(app_dir: str, number: int, *, confirm: bool = False,
         made = _mod("trycopy").create(app_dir, number, head_sha=review_obj["head_sha"])
     except PlainError as exc:
         return {"ok": False, "reason": "failed", "message": exc.message}
+    _timeline().inbox_event(app_dir, number, "tried", head=review_obj["head_sha"])
     return {"ok": True, **made}
 
 
@@ -966,16 +968,14 @@ def _merged_now(repo: str, number: int) -> bool:
         return False
 
 
-def _activity(app_dir: str, kind: str, text: str) -> None:
-    try:
-        _mod("store").add_activity(app_dir, kind, text)
-    except Exception:  # noqa: BLE001 — the line is decoration of a move that happened
-        logger.exception("inbox: activity line failed for %s", app_dir)
+def _timeline():
+    """The Activity lines (§16.16); `timeline` never raises."""
+    return _mod("timeline")
 
 
 def _after_accept(app_dir: str, number: int, message: str, author: str | None = None) -> dict:
     if author:
-        _activity(app_dir, "inbox-accepted", f"Accepted {author}'s proposal")
+        _timeline().inbox_event(app_dir, number, "accepted", author=author)
     _cleanup(app_dir, number)
     synced = False
     jobs.set_step(jobs.current_id(), "sync")
@@ -1004,6 +1004,8 @@ def decline(app_dir: str, number: int, note: str = "") -> dict:
             raise
         return {"ok": False, "reason": getattr(exc, "reason", "failed"),
                 "message": _plain_gh(exc)}
+    _timeline().inbox_event(app_dir, number, "declined",
+                            extra=_timeline().quoted(note, 160) if note else "")
     _cleanup(app_dir, number)
     return {"ok": True, "message": "Declined."}
 
@@ -1055,7 +1057,7 @@ def ask_update(app_dir: str, number: int, note: str = "") -> dict:
             raise
         return {"ok": False, "reason": getattr(exc, "reason", "failed"),
                 "message": _plain_gh(exc)}
-    _activity(app_dir, "inbox-asked", f"Asked {author} to update their proposal")
+    _timeline().inbox_event(app_dir, number, "asked", author=author)
     return {"ok": True, "message": f"Asked {author} to update it."}
 
 
@@ -1227,8 +1229,7 @@ def merge_accepted(app_dir: str, job: dict) -> dict:
     with _lock:
         _merges.pop(job.get("id"), None)
         _fits.pop((info["repo"], info["number"]), None)
-    _activity(app_dir, "inbox-merged",
-              f"Combined {author}'s proposal with your latest version")
+    _timeline().inbox_event(app_dir, info["number"], "combined", author=author, head=tip)
     invalidate(app_dir)
     try:
         review(app_dir, info["number"])

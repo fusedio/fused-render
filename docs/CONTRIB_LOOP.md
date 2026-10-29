@@ -547,7 +547,8 @@ failure row is recorded unchanged.
 
 - `store.add_activity(app_dir, kind, text, *, backup=None, aside=None) -> id`;
   `store.activity(app_dir) -> [{id, at, kind, text, undo: bool}]` newest
-  first, 50 kept. Every engine/ownsync/proposal move writes one.
+  first, 50 kept. Every engine/ownsync/proposal move writes one. (§16.16
+  adds `at`/`key`/`actor`/`link` and keeps 100.)
 - `actions.for_app(app_dir) -> {panel, actions}` is the ONE place that decides
   which buttons exist: `panel = {kind, repo, who, last_checked, state,
   sentence, files, unproposed, unpublished, github_new}`, `actions = [{id,
@@ -720,6 +721,49 @@ Proposals inbox — the same components the app page mounts, reading the
 folder's state with `useAppContrib` themselves. It is the one shell module
 the app layer may import (`scripts/check-boundaries.mjs`,
 `SHELL_OPEN_TO_APPS`). With the preview off it says where to turn it on.
+
+
+### 16.16 The collaboration timeline (2026-10-29)
+
+Why: Activity listed only the moves fused made in this folder, so the
+author, a contributor and a Community user each saw a different, thin list
+and nobody saw the other people's steps — a proposal accepted on GitHub
+showed nothing on Bob's side until the change landed (for a Community copy,
+until the next release), and the author never saw who proposed what, when.
+Activity stays one machine's history (the record is this copy's, §3; Undo
+needs this copy's refs), but every side now names who did what, from reads
+fused already makes. `contrib/timeline.py` owns the words; no new polling.
+
+| Step | Who sees it | Written by |
+|---|---|---|
+| Installed (GitHub link / Community, with version) | the installer | `classify.record_install` |
+| Proposed "X" (dated when opened) · sent newer edits | author | `refresh._list_inbox` → `timeline.inbox_listed` |
+| Claude read the proposal (verdict + summary) | author | `inbox._review_job` |
+| Tried · Asked to update · Combined · Accepted · Declined (+ note) | author | `inbox.py` → `timeline.inbox_event` |
+| Merged on GitHub (by whom) · withdrew · closed — a proposal that left the list without fused closing it | author | `timeline._left` (one `get_pr`, + comments for "withdrew") |
+| commented · asked you to update · no longer fits · new edits on GitHub · **accepted** (at `merged_at`, by `merged_by`; a Community copy: "reaches you with the next release") · closed without taking it · open again | contributor | `proposals._ingest` → `timeline.proposal_lines` |
+| Published N edits (one line per working session, `PUBLISH_MERGE_S`) · Got N changes from GitHub (authors + subjects) | author | `ownsync._after_push`, `ownsync._resolve_locked`, `git_upstream._sync_plain` |
+| Sent for review · turned down (reason) · needs your OK (powers) · confirmed · live (at the release time, what's new) · out of the Community | author | `listing._save` → `timeline.listing_lines` (same store update) |
+| Taken out of the Community · back in it | Community copy | `market.refresh_approved` |
+
+Store (§16.9 additions): `add_activity(…, at=, key=, actor=, link=)`. `at`
+dates a line when it happened, and lines are kept in time order (a line
+dated in the past lands where it happened); a `key` is written once (a
+second refresh, or an Accept here that the next listing sees again, never
+repeats it); `actor` is the GitHub login a line is about (the page marks
+someone else's step); `link` only ever a `https://github.com/` page (the
+page offers Open). `activity()` serves `actor`/`link` only on lines that
+have them. ACTIVITY_KEEP is 100. Timeline lines never offer Undo and never
+fail the read or move they describe. The author's last listing is kept on
+the record as `inbox_seen` (`{number: {head, title, author, url, ours}}`;
+`ours` = the head her own Merge with Claude pushed, not credited to the
+sender).
+
+Limits, by design: a contributor's lines arrive when the app is opened (the
+proposal refresh runs with the open bundle), dated when they happened; the
+author's inbox lines arrive with the background sweep (every 10 min while
+the inbox is on). The author does not see contributors' comments (one more
+GitHub call per proposal per sweep); nobody sees who installed an app.
 
 
 ## 17. v3 git model for `github` copies (2026-10-23) — AUTHORITATIVE

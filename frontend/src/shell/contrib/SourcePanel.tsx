@@ -54,7 +54,23 @@
 // (CommunityTab.tsx) places the same pieces in its cards. Either renders
 // `kit.sheets` exactly once, outside every card, so the rule above holds.
 import { useEffect, useState, type ReactNode } from "react";
-import { Check, ChevronRight, Clock, Loader2, RotateCcw, TriangleAlert } from "lucide-react";
+import {
+  Check,
+  ChevronRight,
+  Clock,
+  Download,
+  ExternalLink,
+  GitPullRequest,
+  Loader2,
+  MessageSquare,
+  RotateCcw,
+  Sparkles,
+  Store,
+  TriangleAlert,
+  Upload,
+  X,
+  type LucideIcon,
+} from "lucide-react";
 import {
   LISTING_ACTION_IDS,
   ackContrib,
@@ -615,23 +631,79 @@ export function KitProgress({ kit }: { kit: SourcePanelKit }) {
   );
 }
 
-/** What moved and when, each line with Undo when something moved away. */
+/** The icon of an Activity line's kind (§16.16) — what sort of step it was,
+ *  so the list reads at a glance. Anything unlisted is one of fused's own
+ *  moves (the clock). */
+const ACTIVITY_ICON: Record<string, LucideIcon> = {
+  "proposal-sent": GitPullRequest,
+  "proposal-updated": GitPullRequest,
+  "proposal-edited": GitPullRequest,
+  "proposal-reopened": GitPullRequest,
+  "inbox-opened": GitPullRequest,
+  "inbox-updated": GitPullRequest,
+  "inbox-tried": GitPullRequest,
+  "proposal-comment": MessageSquare,
+  "proposal-asked": MessageSquare,
+  "inbox-asked": MessageSquare,
+  "proposal-accepted": Check,
+  "inbox-accepted": Check,
+  "inbox-merged": Check,
+  merged: Check,
+  "listing-live": Check,
+  "listing-confirmed": Check,
+  "proposal-declined": X,
+  "proposal-withdrawn": X,
+  "inbox-declined": X,
+  "inbox-closed": X,
+  "inbox-withdrawn": X,
+  "proposal-no-fit": TriangleAlert,
+  "listing-failed": TriangleAlert,
+  "listing-confirm": TriangleAlert,
+  "inbox-reviewed": Sparkles,
+  published: Upload,
+  pulled: Download,
+  installed: Download,
+  update: Download,
+  "listing-sent": Store,
+  "listing-out": Store,
+  delisted: Store,
+  relisted: Store,
+};
+
+/** What happened and when — fused's own moves and (§16.16) the other
+ *  people's steps — each line with Undo when something moved away, and a
+ *  link to the GitHub page it happened on. */
 export function ActivityList({ kit }: { kit: SourcePanelKit }) {
   if (kit.activity.length === 0) return null;
   return (
     <ol className="contrib-activity" aria-label="Activity">
-      {kit.activity.map((line) => (
-        <li key={line.id} className="contrib-activity-line">
-          <span className="contrib-activity-at">{timeAgo(line.at) ?? ""}</span>
-          <span className="contrib-activity-text">{line.text}</span>
-          {line.undo && (
-            <QuietAction onClick={() => kit.askUndo(line)} disabled={!!kit.busy || kit.mergeOpen}>
-              <RotateCcw aria-hidden="true" />
-              {kit.busy === `undo:${line.id}` ? "Putting it back…" : "Undo"}
-            </QuietAction>
-          )}
-        </li>
-      ))}
+      {kit.activity.map((line) => {
+        const Icon = ACTIVITY_ICON[line.kind] ?? Clock;
+        return (
+          <li key={line.id} className={cn("contrib-activity-line", line.actor && "is-someone")}>
+            <span
+              className="contrib-activity-at"
+              title={line.at ? new Date(line.at * 1000).toLocaleString() : undefined}
+            >
+              {timeAgo(line.at) ?? ""}
+            </span>
+            <Icon className="contrib-activity-icon" aria-hidden="true" />
+            <span className="contrib-activity-text">{line.text}</span>
+            {line.link && (
+              <QuietAction href={line.link}>
+                Open
+                <ExternalLink aria-hidden="true" />
+              </QuietAction>
+            )}
+            {line.undo && (
+              <QuietAction onClick={() => kit.askUndo(line)} disabled={!!kit.busy || kit.mergeOpen}>
+                <RotateCcw aria-hidden="true" />
+                {kit.busy === `undo:${line.id}` ? "Putting it back…" : "Undo"}
+              </QuietAction>
+            )}
+          </li>
+        );
+      })}
     </ol>
   );
 }

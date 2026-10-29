@@ -193,7 +193,13 @@ def test_diverged_puts_edits_on_top_and_publishes(env):
     assert "other Mac" in _read(env.lap, "index.html")
     assert git_upstream.sync_failures() == []
     lines = _activity(env.lap)
-    assert len(lines) == 1 and lines[0]["undo"] is True and _plain(lines[0]["text"])
+    moves = [a for a in lines if a["kind"] == "own-sync"]
+    assert len(moves) == 1 and moves[0]["undo"] is True and _plain(moves[0]["text"])
+    # The timeline (§16.16): what came in from the other Mac, then what went out.
+    assert [a["kind"] for a in lines] == ["published", "own-sync", "pulled"]
+    assert "“other mac”" in lines[2]["text"] and lines[2]["undo"] is False
+    assert lines[0]["text"] == "Published 1 edit to GitHub: “my edit”."
+    assert all(_plain(a["text"]) for a in lines)
     assert ownsync.status(env.lap)["state"] == "published"
     assert len(git(env.lap, "worktree", "list").splitlines()) == 1
     # The re-made edit keeps its author; the one re-making it is her account.
@@ -367,7 +373,10 @@ def test_B1_rewrite_then_local_edits_has_a_way_out(env):
     assert git(env.lap, "log", "-1", "--format=%s", gh_tip).strip() == \
         "published edit (reworded)"
     assert ownsync.status(env.lap)["state"] == "published"
-    assert _activity(env.lap)[0]["undo"] is True
+    lines = _activity(env.lap)
+    assert next(a for a in lines if a["kind"] == "put-on-top")["undo"] is True
+    assert lines[0]["kind"] == "published" and lines[0]["text"].startswith(
+        "Published 3 edits to GitHub")
 
 
 def test_B2_overlapping_edit_after_rewrite_carries_on(env):
@@ -814,7 +823,8 @@ def test_plain_ahead_publishes_in_few_processes(env, monkeypatch):
         monkeypatch.setattr(git_upstream, "_run", counting)
         res = ownsync.resolve(env.lap, action="test", push=True)
     assert res["status"] == "synced" and res["pushed"] is True and _remote(env) == mine
-    assert calls.count("push") == 1 and len(calls) - 1 <= 6, calls
+    # 6 + the one `log` naming what was published (§16.16 timeline line).
+    assert calls.count("push") == 1 and len(calls) - 1 <= 7, calls
     # The publish runs as the author's own push would — her hooks, her
     # fsmonitor (P5); fused's private reads run with them off (§16.12).
     # (`symbolic-ref`/`rev-list` here are git_upstream's own helpers.)
@@ -936,3 +946,19 @@ def test_accept_keeps_and_publishes_the_authors_unpublished_edit(world, method):
     assert "green" in read(w.alice, "index.html")
     assert "# mine" in wgit(w.alice, "show", f"{tip}:app.py")
     assert ownsync.status(w.alice)["state"] == "published"
+
+
+def test_back_to_back_publishes_read_as_one_line(env):
+    """§16.16: a working session's automatic publishes fold into one line,
+    naming what went out; a later one (or one after another line) starts anew."""
+    _commit(env.lap, "c.txt", "c\n", "first edit")
+    assert _sync(env.lap)["pushed"] is True
+    _commit(env.lap, "d.txt", "d\n", "second edit")
+    assert _sync(env.lap)["pushed"] is True
+    lines = [a for a in _activity(env.lap) if a["kind"] == "published"]
+    assert [a["text"] for a in lines] == [
+        "Published 2 edits to GitHub: “first edit”, “second edit”."]
+    store.add_activity(env.lap, "note", "something else")
+    _commit(env.lap, "e.txt", "e\n", "third edit")
+    assert _sync(env.lap)["pushed"] is True
+    assert _activity(env.lap)[0]["text"] == "Published 1 edit to GitHub: “third edit”."

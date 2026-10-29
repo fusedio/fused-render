@@ -47,7 +47,7 @@ import time
 from dataclasses import dataclass, field
 
 from fused_render import git_upstream as gu
-from fused_render.contrib import classify, follow, replay, store
+from fused_render.contrib import classify, follow, replay, store, timeline
 
 logger = logging.getLogger(__name__)
 
@@ -311,6 +311,8 @@ def refresh_approved(root, *, fresh=False, mode=None) -> Approved | None:
 
         def live(r):
             old = r.get("approved") if isinstance(r.get("approved"), dict) else {}
+            if (r.get("listing") or {}).get("status") == "delisted":
+                store.append_activity(r, timeline.relisted_line(r))
             new = dict(entry)
             if old.get("commit") and old.get("commit") != new["commit"]:
                 # The releases this copy ran before, newest first: where a
@@ -334,6 +336,7 @@ def refresh_approved(root, *, fresh=False, mode=None) -> Approved | None:
 
         def gone(r):
             r["listing"] = {"status": "delisted", "checked_at": now, "delisted_at": now}
+            store.append_activity(r, timeline.delisted_line(r))
         store.update(root, gone)
     return ap
 

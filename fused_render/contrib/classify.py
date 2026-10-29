@@ -774,6 +774,7 @@ def record_install(app_dir, url, *, kind="github", market=None) -> dict | None:
                                (_local_default_branch(root) if root else None),
                                classified_by="marketplace", owner_checked=True)
         rec.update(store.market_fields(market))
+        _first_line(rec)
         store.put(app_dir, rec)
         _forget_kind(app_dir)
         _guard(app_dir, None, block=True, lookup=_sources_on())
@@ -789,10 +790,22 @@ def record_install(app_dir, url, *, kind="github", market=None) -> dict | None:
     rec = store.new_record(kind, repo=repo, branch=_local_default_branch(root) if root else None,
                            classified_by="install", owner_checked=checked)
     _with_push_rights(rec, ident)
+    _first_line(rec)
     store.put(app_dir, rec)
     _forget_kind(app_dir)
     _guard(app_dir, ident, block=True, lookup=False)
     return store.get(app_dir) or rec
+
+
+def _first_line(rec: dict) -> None:
+    """The install's Activity line (§16.16), on the record before it is put."""
+    try:
+        from fused_render.contrib import timeline
+        x = timeline.install_line(rec)
+        if x is not None:
+            store.append_activity(rec, x)
+    except Exception:  # noqa: BLE001
+        logger.exception("contrib: install line failed")
 
 
 def protect_fused_dir(app_dir, *, block=True) -> int:

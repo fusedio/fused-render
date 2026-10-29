@@ -187,6 +187,14 @@ def _list_inbox(app_dir: str, **kwargs) -> None:
         with _lock:
             _remember(_inbox_reached, key, isinstance(items, list))
     note_inbox(app_dir, items)
+    if isinstance(items, list):
+        # The timeline's lines (§16.16): who proposed what, and what became
+        # of a proposal that left the list. A worker thread: network is fine.
+        try:
+            repo = ((_mod("store").get(app_dir) or {}).get("repo"))
+            _mod("timeline").inbox_listed(app_dir, items, repo=repo)
+        except Exception:  # noqa: BLE001
+            logger.exception("contrib refresh: inbox timeline failed for %s", app_dir)
 
 
 def inbox_snapshot(app_dir: str) -> dict:

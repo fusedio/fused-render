@@ -1140,7 +1140,9 @@ def test_a1_off_while_held_says_so_before_publishing(world, monkeypatch):
     _prefs(world.home)  # A1 off
     r = _sync(bob, push=True)
     assert r["pushed"] is True and store.get(bob)["hold"] is None
-    assert store.activity(bob)[0]["text"] == classify.PUBLISHED_AS_USUAL
+    # The hold's line, then the publish it allowed (§16.16).
+    assert [a["text"] for a in store.activity(bob)][:2] == [
+        "Published 1 edit to GitHub: “l1”.", classify.PUBLISHED_AS_USUAL]
 
 
 def test_a_finder_duplicate_of_a_github_copy_is_a_github_copy(world):
