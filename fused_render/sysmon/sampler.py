@@ -10,7 +10,10 @@ Each sample walks the process tree under this server (`os.getpid()`; on macOS
 that is the app process itself) plus every live Claude run (detached, so
 outside that tree), reads CPU time and memory per pid, and names each pid from
 the registries (`labels.py`). A pid nobody claims inherits the kind of its
-nearest claimed ancestor, so a tool a Claude run spawned reads as Claude.
+nearest claimed ancestor, so a tool a Claude run spawned reads as Claude —
+under a Claude run, as its task (`TASK-075 › MCP accesslint`). `claude.tasks`
+rolls each Claude tree up to one entry (task, status, background jobs, memory
+and CPU over the whole tree) for the Monitor's "Claude tasks" strip.
 
 WHOLE MACHINE, ON REQUEST (`?scope=all`, the shell's /monitor page): while
 that scope has been polled in the last `IDLE_AFTER_S`, each sample also lists
@@ -279,11 +282,20 @@ class Sampler:
                 s = samples.get(pid)
                 args = self._cmd(pid, s.start if s else 0)
                 owner = labels.classify(pid, args)
+                if owner is not None and owner.ref.get("helper"):
+                    # A one-shot CLI a run's own tools started belongs to that
+                    # run's tree, not to the app's helper.
+                    parent = tree.get(pid, 0)
+                    up = resolve(parent, depth + 1) if parent in tree and depth < 64 else None
+                    if up is not None and up.kind == "claude":
+                        owner = labels.claude_child(up, args)
                 if owner is None:
                     name = labels.command_name(args)
                     parent = tree.get(pid, 0)
                     up = resolve(parent, depth + 1) if parent in tree and depth < 64 else None
-                    if up is not None and up.kind not in ("app", "other"):
+                    if up is not None and up.kind == "claude":
+                        owner = labels.claude_child(up, args)
+                    elif up is not None and up.kind not in ("app", "other"):
                         owner = labels.Owner(up.kind, f"{up.label} › {name}", {})
                     else:
                         owner = labels.Owner("other", name, {})
@@ -334,6 +346,12 @@ class Sampler:
             claude = labels.claude_summary(clis, [
                 {"pid": r["pid"], "ppid": r["ppid"], "label": r["label"], "cpu": r["cpuPct"],
                  "mem": r["memBytes"]} for r in rows])
+        try:
+            helpers = [pid for pid, o in resolved.items() if o.ref.get("helper")]
+            claude = {**claude, "tasks": labels.claude_tasks(extra, helpers, rows)}
+        except Exception:  # noqa: BLE001 — the strip is extra; the sample stands
+            logger.debug("sysmon: claude task rollup failed", exc_info=True)
+            claude = {**claude, "tasks": []}
 
         with self._lock:
             readings = samples

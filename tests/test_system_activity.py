@@ -666,3 +666,65 @@ def test_claude_base_prefers_readable_title_else_folder():
     assert cb("x" * 41, "/w/proj") == "proj"
     assert cb("deploy 71684eee9a7545aa8e5acb2b12444bb6", "/w/proj") == "deploy"
     assert cb("<pane-shot>", "") == ""
+
+
+# ---- Claude trees by task ----------------------------------------------------------
+
+def test_claude_tree_is_labelled_by_task_and_rolled_up(client, fake):
+    """A run's host and CLI carry the task's label, their tools `task › part`,
+    and `claude.tasks` sums the whole tree, in either scope."""
+    backend, clock, s = fake
+    task = {"task_id": "TASK-075", "title": "Fix it", "key": "k", "session_id": "k",
+            "state": "done", "status": "done", "bg_jobs": [{"id": "b", "description": "poll CI"}]}
+    owner = labels.Owner("claude", "TASK-075 · Fix it", {"run_id": "r1", "task": task},
+                         base="TASK-075 · Fix it")
+    _add_proc(backend, 900, 1, ["/py", "/lib/claude_agent/session_host.py"], mem=10)
+    _add_proc(backend, 901, 900, ["/u/claude", "-p"], mem=300)
+    _add_proc(backend, 902, 901, ["npm exec @accesslint/mcp@latest"], mem=40)
+    _add_proc(backend, 903, 902, ["node", "/u/.npm/_npx/a/node_modules/.bin/accesslint-mcp"], mem=60)
+    backend.tree.update({900: 1, 901: 900, 902: 901, 903: 902})
+    backend.descendants = lambda root: (
+        {p: q for p, q in backend.tree.items() if p in (201, 202, 203, 204)} if root == ROOT
+        else {901: 900, 902: 901, 903: 902} if root == 900 else {})
+    s._roots = lambda: {900: owner, 901: owner}
+    for scope in ("fused", "all"):
+        body = client.get("/api/system/activity" + ("?scope=all" if scope == "all" else "")).json()
+        rows = {r["pid"]: r for r in body["procs"]}
+        assert rows[900]["label"] == rows[901]["label"] == "TASK-075 · Fix it"
+        assert rows[902]["label"] == rows[903]["label"] == "TASK-075 · Fix it › MCP accesslint"
+        (t,) = body["claude"]["tasks"]
+        assert (t["root_pid"], t["task_id"], t["done_alive"]) == (900, "TASK-075", True)
+        assert t["mem_bytes"] == 10 + 300 + 40 + 60 and t["pids"] == [900, 901, 902, 903]
+        assert t["bg_jobs"] == [{"id": "b", "description": "poll CI"}]
+
+
+def test_a_shell_label_is_redacted_like_args(client, fake):
+    backend, clock, s = fake
+    owner = labels.Owner("claude", "TASK-1 · a", {"run_id": "r"}, base="TASK-1 · a")
+    _add_proc(backend, 901, 1, ["/u/claude", "-p"])
+    _add_proc(backend, 905, 901, ["/usr/bin/curl", "--token", "hunter2"])
+    backend.descendants = lambda root: (
+        {p: q for p, q in backend.tree.items() if p in (201, 202, 203, 204)} if root == ROOT
+        else {905: 901} if root == 901 else {})
+    owner_shell = labels.Owner("claude", "x", {}, base="TASK-1 · a", part="shell")
+    s._roots = lambda: {901: owner}
+    s._owners = lambda: {905: labels.claude_child(owner_shell, ["/usr/bin/curl", "--token", "hunter2"])}
+    rows = {r["pid"]: r for r in client.get("/api/system/activity").json()["procs"]}
+    assert "hunter2" not in rows[905]["label"] and rows[905]["label"].startswith("TASK-1 · a › shell: curl")
+
+
+def test_a_one_shot_claude_under_a_run_belongs_to_the_run(client, fake):
+    backend, clock, s = fake
+    owner = labels.Owner("claude", "TASK-1 · a", {"run_id": "r", "task": {"task_id": "TASK-1",
+                         "state": "running", "bg_jobs": []}}, base="TASK-1 · a")
+    _add_proc(backend, 901, 1, ["/u/claude", "-p"], mem=100)
+    _add_proc(backend, 906, 901, ["/u/claude", "-p", "--no-session-persistence"], mem=30)
+    backend.descendants = lambda root: (
+        {p: q for p, q in backend.tree.items() if p in (201, 202, 203, 204)} if root == ROOT
+        else {906: 901} if root == 901 else {})
+    s._roots = lambda: {901: owner}
+    body = client.get("/api/system/activity").json()
+    rows = {r["pid"]: r for r in body["procs"]}
+    assert rows[906]["label"] == "TASK-1 · a › claude"
+    (t,) = body["claude"]["tasks"]
+    assert (t["root_pid"], t["mem_bytes"]) == (901, 130)

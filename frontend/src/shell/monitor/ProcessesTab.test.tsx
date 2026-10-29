@@ -6,7 +6,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
-import type { MachineSnapshot, MachineProc } from "@platform/lib/sysmon";
+import type { ClaudeTaskTree, MachineSnapshot, MachineProc } from "@platform/lib/sysmon";
 import MonitorPage from "@shell/monitor/ProcessesTab";
 
 const GB = 1024 ** 3;
@@ -453,4 +453,140 @@ test("a Claude CLI summary line sits above the table when any are open", async (
   await flush();
   const line = renderer!.root.findAll((n) => n.props.className === "monitor-claudeline");
   expect(text(line[0])).toBe("Claude CLIs: 3 (fused-render 2 · other 1) · 1.5 GB");
+});
+
+// ---- Claude tasks strip --------------------------------------------------------------
+
+function tree(over: Partial<ClaudeTaskTree> & { root_pid: number }): ClaudeTaskTree {
+  return {
+    label: "TASK-075 · Fix the bug",
+    helper: false,
+    run_id: "r1",
+    task_id: "TASK-075",
+    title: "Fix the bug",
+    key: "s-75",
+    session_id: "s-75",
+    project: "/w/fused-render",
+    target: "/w/fused-render",
+    entry: "",
+    entry_origin: "",
+    canvas: null,
+    folder: "fused-render",
+    model: "sonnet",
+    status: "done",
+    state: "done",
+    bg_jobs: [{ id: "b1", description: "Poll PR 2020 checks" }],
+    started_at: 1201,
+    pids: [201, 202, 203],
+    mem_bytes: 400 * MB,
+    cpu_pct: 1.5,
+    done_alive: true,
+    ...over,
+  };
+}
+
+const TREES: ClaudeTaskTree[] = [
+  tree({ root_pid: 201 }),
+  tree({
+    root_pid: 300,
+    label: "Claude: titles & recaps helper",
+    helper: true,
+    task_id: "",
+    title: "",
+    key: "",
+    session_id: "",
+    status: "",
+    state: "",
+    bg_jobs: [],
+    pids: [300],
+    mem_bytes: 120 * MB,
+    done_alive: false,
+  }),
+];
+
+async function mountTrees(trees: ClaudeTaskTree[] = TREES): Promise<ReactTestRenderer> {
+  const claude = { total: 2, fused: 2, other: 0, mem_bytes: 520 * MB, cpu_pct: 2, top: [], tasks: trees };
+  await act(async () => {
+    renderer = create(<MonitorPage load={async () => ({ ...PAYLOAD, claude })} pollMs={1e9} confirmMs={60_000} />);
+  });
+  await flush();
+  return renderer!;
+}
+
+const treeRow = (r: ReactTestRenderer, pid: number) =>
+  r.root.find((n) => n.type === "li" && n.props["data-pid"] === pid);
+
+test("the Claude tasks strip names each tree by its task, flags done-but-alive, replaces the summary line", async () => {
+  const r = await mountTrees();
+  expect(r.root.findAll((n) => n.props.className === "monitor-claudeline")).toHaveLength(0);
+  const head = r.root.find((n) => n.props.className === "monitor-claude-head");
+  expect(text(head)).toBe("1 Claude task · 520.0 MB · 1 not working – still alive");
+  const task = treeRow(r, 201);
+  expect(task.props.className).toContain("is-stale");
+  expect(text(task)).toContain("TASK-075 · Fix the bug");
+  expect(text(task)).toContain("fused-render · sonnet · 1 background job · Poll PR 2020 checks");
+  expect(text(task)).toContain("Done – still alive");
+  expect(text(task)).toContain("400.0 MB · 1.5% CPU · 3 processes");
+  expect(task.findAll((n) => n.type === "button" && text(n) === "Open task")).toHaveLength(1);
+  const helper = treeRow(r, 300);
+  expect(text(helper)).toContain("Claude: titles & recaps helper");
+  expect(helper.findAll((n) => n.type === "button" && text(n) === "Open task")).toHaveLength(0);
+});
+
+test("a tree's Stop confirms inline, then ends it through the owner-aware /stop on its top process", async () => {
+  const calls = captureFetch({ ok: true, via: "claude" });
+  const r = await mountTrees();
+  const stop = () => treeRow(r, 201).find((n) => n.type === "button" && text(n) === "Stop");
+  click(stop());
+  expect(text(treeRow(r, 201))).toContain("Stop TASK-075?");
+  expect(calls).toHaveLength(0);
+  await act(async () => stop().props.onClick());
+  await flush();
+  expect(calls.map((c) => c.url)).toEqual(["/api/system/activity/stop"]);
+  expect(JSON.parse(String(calls[0].init.body))).toEqual({ pid: 201, startedAt: 1201 });
+  expect(text(treeRow(r, 201))).toContain("Stopping…");
+});
+
+test("a tree's Stop is aborted when its top process changed since the confirm opened", async () => {
+  const calls = captureFetch({ ok: true, via: "claude" });
+  let procs = PROCS;
+  const claude = { total: 1, fused: 1, other: 0, mem_bytes: 400 * MB, cpu_pct: 1, top: [], tasks: [tree({ root_pid: 201 })] };
+  await act(async () => {
+    renderer = create(
+      <MonitorPage load={async () => ({ ...PAYLOAD, procs, claude })} pollMs={20} confirmMs={60_000} />,
+    );
+  });
+  await flush();
+  const r = renderer!;
+  const stop = () => treeRow(r, 201).find((n) => n.type === "button" && text(n) === "Stop");
+  click(stop());
+  // pid 201 is now a different process (recycled): a new start stamp.
+  procs = PROCS.map((p) => (p.pid === 201 ? { ...p, startedAt: 9999 } : p));
+  await act(async () => {
+    await new Promise((res) => setTimeout(res, 60));
+  });
+  await flush();
+  expect(text(treeRow(r, 201))).toContain("Stop TASK-075?"); // still armed
+  await act(async () => stop().props.onClick());
+  await flush();
+  expect(calls).toHaveLength(0);
+  expect(text(treeRow(r, 201))).not.toContain("Stopping…");
+});
+
+test("the helper's confirm says it ends one CLI, not a tree", async () => {
+  captureFetch();
+  const r = await mountTrees();
+  click(treeRow(r, 300).find((n) => n.type === "button" && text(n) === "Stop"));
+  expect(text(treeRow(r, 300))).toContain("Stop the helper CLI?");
+  expect(text(treeRow(r, 300))).not.toContain("everything it runs");
+});
+
+test("Cancel disarms a tree's Stop; nothing is sent", async () => {
+  const calls = captureFetch();
+  const r = await mountTrees();
+  const btn = (label: string) => treeRow(r, 201).find((n) => n.type === "button" && text(n) === label);
+  click(btn("Stop"));
+  click(btn("Cancel"));
+  expect(text(treeRow(r, 201))).not.toContain("Stop TASK-075?");
+  expect(calls).toHaveLength(0);
 });

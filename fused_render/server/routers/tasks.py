@@ -5755,6 +5755,14 @@ def _rebuild_snapshot() -> _Snapshot:
             _SNAP_COND.notify_all()
 
 
+def snapshot_rows() -> list[dict] | None:
+    """The last published snapshot's rows, or None before the first build.
+    NEVER builds: for a reader outside the listing (the Monitor's process
+    labels, sysmon/labels.py) that may not pay for one, once a second."""
+    with _SNAP_COND:
+        return _snapshot.rows if _snapshot is not None else None
+
+
 def _await_snapshot(at_least: int, timeout: float) -> _Snapshot | None:
     """The snapshot once its generation reaches `at_least`, or whatever is held
     when `timeout` runs out. None only when no build has ever finished."""

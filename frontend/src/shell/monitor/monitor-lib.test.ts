@@ -1,8 +1,15 @@
 // The /monitor page's pure rules (monitor-lib.ts).
 import { expect, test } from "bun:test";
 
-import type { MachineProc } from "@platform/lib/sysmon";
+import type { ClaudeTaskTree, MachineProc } from "@platform/lib/sysmon";
 import {
+  claudeTreeCost,
+  claudeTreeJobs,
+  claudeTreeName,
+  claudeTrees,
+  claudeTreesHeading,
+  claudeTreeState,
+  claudeTreeWhere,
   clickSelect,
   cpuTone,
   EMPTY_SELECTION,
@@ -113,4 +120,85 @@ test("the confirm names up to three processes, then counts and warns", () => {
   expect(confirmQuestion(ps, "Force kill")).toBe(
     "Force kill 12 processes? This includes app0 (100), app1 (101)… This may close apps you are using.",
   );
+});
+
+// ---- Claude tasks strip ----------------------------------------------------------
+
+function tree(over: Partial<ClaudeTaskTree> = {}): ClaudeTaskTree {
+  return {
+    label: "TASK-1 · a",
+    helper: false,
+    run_id: "r",
+    task_id: "TASK-1",
+    title: "a",
+    key: "k",
+    session_id: "k",
+    project: "/w/p",
+    target: "/w/p",
+    entry: "",
+    entry_origin: "",
+    canvas: null,
+    folder: "p",
+    model: "opus",
+    status: "in_progress",
+    state: "running",
+    bg_jobs: [],
+    root_pid: 10,
+    started_at: 1,
+    pids: [10, 11],
+    mem_bytes: 100,
+    cpu_pct: 2,
+    done_alive: false,
+    ...over,
+  };
+}
+
+test("claudeTreeState: running, waiting, done/idle-but-alive in amber, helper; No task only without a task id", () => {
+  expect(claudeTreeState(tree())).toEqual({ text: "Running", tone: "running" });
+  expect(claudeTreeState(tree({ state: "waiting" }))).toEqual({ text: "Waiting on you", tone: "waiting" });
+  expect(claudeTreeState(tree({ state: "done", done_alive: true }))).toEqual({
+    text: "Done – still alive",
+    tone: "stale",
+  });
+  expect(claudeTreeState(tree({ helper: true, state: "" })).text).toBe("App helper");
+  expect(claudeTreeState(tree({ state: "", task_id: "" }))).toEqual({ text: "No task", tone: "idle" });
+  expect(claudeTreeState(tree({ state: "idle", status: "upcoming", done_alive: true }))).toEqual({
+    text: "Upcoming – still alive",
+    tone: "stale",
+  });
+  expect(claudeTreeState(tree({ state: "idle", status: "" })).text).toBe("Idle – still alive");
+});
+
+test("claudeTreeName / Where / Jobs / Cost read a tree in words", () => {
+  expect(claudeTreeName(tree())).toBe("TASK-1 · a");
+  expect(claudeTreeName(tree({ task_id: "", label: "Claude: repo" }))).toBe("Claude: repo");
+  expect(claudeTreeWhere(tree())).toBe("p · opus");
+  expect(claudeTreeWhere(tree({ folder: "", model: "" }))).toBe("");
+  expect(claudeTreeJobs(tree())).toBe("");
+  expect(
+    claudeTreeJobs(tree({ bg_jobs: [{ id: "1", description: "" }, { id: "2", description: "Poll CI" }] })),
+  ).toBe("2 background jobs · Poll CI");
+  expect(claudeTreeCost(tree({ mem_bytes: 1.5 * 1024 ** 3, cpu_pct: null, pids: [1] }))).toBe(
+    "1.50 GB · – CPU · 1 process",
+  );
+});
+
+test("claudeTrees sorts largest first; the heading counts tasks, not the helper", () => {
+  const trees = claudeTrees({
+    total: 2,
+    fused: 2,
+    other: 0,
+    mem_bytes: 0,
+    cpu_pct: 0,
+    top: [],
+    tasks: [
+      tree({ root_pid: 1, mem_bytes: 5 }),
+      tree({ root_pid: 2, mem_bytes: 50, state: "done", done_alive: true }),
+      tree({ root_pid: 3, mem_bytes: 5, helper: true }),
+    ],
+  });
+  expect(trees.map((t) => t.root_pid)).toEqual([2, 1, 3]);
+  expect(claudeTreesHeading(trees)).toBe("2 Claude tasks · 0 KB · 1 not working – still alive");
+  expect(claudeTrees(null)).toEqual([]);
+  expect(claudeTrees({ total: 0, fused: 0, other: 0, mem_bytes: 0, cpu_pct: 0, top: [] })).toEqual([]);
 });
