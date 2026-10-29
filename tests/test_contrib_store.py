@@ -402,13 +402,11 @@ def test_install_records_v3_home_branch_and_push_guard(world):
     assert classify.kind_of(bob) == "github"
 
 
-@pytest.mark.parametrize("flags_on", [{}, {"contrib_enabled": True}])
-def test_flags_off_github_copy_never_pushes_to_the_author(world, flags_on):
-    """P0-1/P0-2 (audit F1, F1d, L1): a GitHub-link copy's Claude turn with
-    the loop off (or only A1 on) used to `git push origin main` straight to
-    the author. v2: the kind alone routes it to the engine, which never
-    pushes; and no standing failure row quoting git."""
-    _prefs(world.home, **flags_on)
+def test_github_copy_never_pushes_to_the_author(world):
+    """P0-1/P0-2 (audit F1, F1d, L1): a GitHub-link copy's Claude turn used
+    to `git push origin main` straight to the author. v2: the kind alone
+    routes it to the engine, which never pushes; and no standing failure
+    row quoting git."""
     bob = _install(world)
     before = _remote_main(world)
     _commit(bob, "b.txt", "bob\n", "Claude: tweak")

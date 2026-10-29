@@ -16,9 +16,6 @@ Deliberately thin: this module plus routers/marketplace.py and the shell
 routes; git behaviour is
 the engine's (contrib/market.py, contrib/blocks.py), never re-done here.
 
-It is NOT community.py (the /apps hub's old Showcase tab, retired while the
-Marketplace is on: routers/community.py answers `{status: "retired"}`).
-
 **The API** is a set of GET endpoints under `api_base()` (the constant
 `API_BASE`, overridable by `FUSED_RENDER_MARKETPLACE_API`, read per call).
 Every request asks for `<endpoint>.json` (the public canvas path needs the

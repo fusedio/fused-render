@@ -1305,11 +1305,9 @@ def test_open_gate_answers_423_on_render_and_app_entry(env, tmp_path, monkeypatc
     assert client.get("/render", params={"path": str(app_dir / "index.html")}).status_code == 200
 
 
-def test_soft_block_rides_app_entry_and_apps_rows_with_every_flag_off(env, tmp_path):
+def test_soft_block_rides_app_entry_and_apps_rows(env, tmp_path):
     from fused_render.server import create_app
-    from fused_render.shell import prefs
 
-    assert not prefs.read_prefs().get("contrib_enabled")  # the Community flags are off
     app_dir = tmp_path / "ws" / "app" / "sine-starter"
     app_dir.mkdir(parents=True)
     _git(app_dir, "init", "-q")
@@ -1614,15 +1612,12 @@ def test_bot_market_target_installed_and_legacy(env):
 
 
 def test_a_community_copy_is_never_uploaded_and_shares_its_listing(env, tmp_path):
-    """P1, the kind decides: a `marketplace` copy is someone else's code
-    whatever the switches say — the Fused upload is refused with the loop
-    off too — and the link it hands on is its LISTING page (the reviewed
-    install), never the author's GitHub link (that one follows the author's
-    unreviewed tip)."""
+    """P1, the kind decides: a `marketplace` copy is someone else's code —
+    the Fused upload is refused — and the link it hands on is its LISTING
+    page (the reviewed install), never the author's GitHub link (that one
+    follows the author's unreviewed tip)."""
     from fused_render import backend_canvas, share_app
-    from fused_render.shell import prefs
 
-    assert not prefs.read_prefs().get("contrib_enabled")      # the loop is off
     app_dir = tmp_path / "ws" / "app" / "sine-starter"
     app_dir.mkdir(parents=True)
     _git(app_dir, "init", "-q")

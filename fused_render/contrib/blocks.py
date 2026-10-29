@@ -743,23 +743,13 @@ SWEEP_EVERY_S = 30 * 60.0
 
 
 def needed() -> bool:
-    """Whether asking the backend for the list buys anything here: the
-    Community is switched on, or the store holds a copy the list can act on
-    (a `marketplace` copy, or a `github` one that gets `block_warn`). A
-    machine with neither never calls the backend for it — on main, with
-    the store off, fused never did. One prefs read and one store read."""
-    try:
-        from fused_render.shell import prefs
-
-        if prefs.marketplace_enabled():
-            return True
-    except Exception:  # noqa: BLE001 — fall through to the store
-        pass
-    try:
-        return any(isinstance(r, dict) and r.get("kind") in ("marketplace", "github")
-                   for r in (store.all() or {}).values())
-    except Exception:  # noqa: BLE001 — unknown: ask (enforcement is the safe side)
-        return True
+    """Whether asking the backend for the list buys anything here: always,
+    since the Community is always on (2026-10-29) — a reviewed copy can be
+    installed on any machine, and the list is what stops a blocked one. It
+    used to be the Community switch OR a copy in the store the list could
+    act on; the gate stays as the one question `startup` and `sweep_tick`
+    ask."""
+    return True
 
 
 def startup() -> bool:
