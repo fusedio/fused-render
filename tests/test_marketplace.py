@@ -1662,3 +1662,107 @@ def test_a_community_copy_is_never_uploaded_and_shares_its_listing(env, tmp_path
     store.update(str(app_dir), lambda rec: rec.update(slug=None) or rec)
     link = share_app.github_link_state(str(app_dir), copy_status={"changes": 0})
     assert link["ok"] is False and link["url"] is None
+
+
+# ---------------------------------------------------------------------------
+# a showcase copy of the app: the install asks to overwrite it
+# ---------------------------------------------------------------------------
+
+def _showcase_copy(env, slug, page=PAGE, data="mine"):
+    """The user's `~/Fused/showcase/<slug>`: the community clone (one git
+    repo for every app) holding the same page as the reviewed repo, with the
+    app's own `.fused/` data beside it."""
+    sc = os.path.join(str(env["ws"]), "showcase")
+    d = os.path.join(sc, slug)
+    os.makedirs(os.path.join(d, ".fused"), exist_ok=True)
+    if not os.path.isdir(os.path.join(sc, ".git")):
+        _git(str(env["ws"]), "init", "-q", sc)
+    _write(d, "index.html", page)
+    _write(d, ".fused/data.txt", data)
+    _git(sc, "add", "-A")
+    _git(sc, "-c", "user.email=a@b", "-c", "user.name=a", "commit", "-q", "-m", "showcase")
+    return d
+
+
+def test_a_showcase_copy_asks_to_overwrite_before_anything_runs(env, gh_world):
+    d = _showcase_copy(env, "sine-starter")
+    assert mp.showcase_copy("sine-starter") == d
+    assert mp.plan_install("sine-starter", _entry("sine-starter"))["showcase"] == d
+    client = _client()
+    r = client.post("/api/marketplace/install", json={"slug": "sine-starter"}, headers=FUSED)
+    body = r.json()
+    assert r.status_code == 200 and body["status"] == "confirm" and body["overwrite"] == "showcase"
+    assert body["path"] == d and body["slug"] == "sine-starter" and "showcase" in body["message"]
+    assert client.get("/api/marketplace/jobs").json()["jobs"] == {}
+    assert not os.path.exists(_app_dir(env, "sine-starter"))
+    # The bots' card reads the same plan: not a bot's call.
+    from fused_render.bots import tools as bot_tools
+
+    _slug, _update, err = bot_tools._market_target({"slug": "sine-starter"})
+    assert "showcase" in err and "overwriting" in err
+
+
+def test_overwrite_installs_under_app_moves_the_data_and_retires_the_showcase_copy(env, gh_world):
+    from fused_render import app_hidden, current_apps
+    from fused_render.contrib import store
+
+    d = _showcase_copy(env, "sine-starter")
+    _write(d, ".venv/pyvenv.cfg", "home = x\n")
+    current_apps.add(d)
+    assert [a["path"] for a in current_apps.list_apps()] == [d]
+    client = _client()
+    r = client.post("/api/marketplace/install", json={"slug": "sine-starter", "overwrite": True}, headers=FUSED)
+    assert r.status_code == 200 and r.json()["status"] == "ok", r.json()
+    job = _wait_job(client, "sine-starter")
+    assert job["state"] == "done" and job["action"] == "install", job
+    dest = _app_dir(env, "sine-starter")
+    assert job["path"] == dest and job["message"] == "Installed Sine Starter"
+    # The reviewed clone, recorded as a marketplace copy, under app/.
+    assert _git(dest, "rev-parse", "HEAD") == gh_world.approved
+    assert store.get(dest)["kind"] == "marketplace"
+    # The showcase copy's data (and venv) moved along; its files stayed.
+    with open(os.path.join(dest, ".fused", "data.txt")) as f:
+        assert f.read() == "mine"
+    assert os.path.isfile(os.path.join(dest, ".venv", "pyvenv.cfg"))
+    assert not os.path.exists(os.path.join(d, ".fused")) and not os.path.exists(os.path.join(d, ".venv"))
+    assert os.path.isfile(os.path.join(d, "index.html"))
+    # Retired: hidden from the hub, off the desk, gone from the plan.
+    assert app_hidden._canon(d) in app_hidden.hidden_paths()
+    assert current_apps.list_apps() == []
+    assert mp.showcase_copy("sine-starter") is None
+    plan = mp.plan_install("sine-starter", _entry("sine-starter"))
+    assert plan["action"] == "update" and plan["path"] == dest and plan["showcase"] is None
+    [app] = client.get("/api/marketplace/installed").json()["apps"]
+    assert app["installed"]["kind"] == "marketplace" and app["installed"]["path"] == dest
+
+
+def test_a_hidden_showcase_copy_no_longer_holds_the_apps_place(env, gh_world):
+    """Uninstalling a showcase app hides it (its files stay): the next
+    install must not find that folder by the page's id and refuse."""
+    from fused_render import app_hidden, appfile
+
+    d = _showcase_copy(env, "sine-starter")
+    assert appfile.workspace_app_with_id("sine-starter-0a1b2c3d") == d
+    app_hidden.hide(d)
+    assert appfile.workspace_app_with_id("sine-starter-0a1b2c3d") is None
+    assert mp.plan_install("sine-starter", _entry("sine-starter"))["showcase"] is None
+    client = _client()
+    r = client.post("/api/marketplace/install", json={"slug": "sine-starter"}, headers=FUSED)
+    assert r.status_code == 200 and r.json()["status"] == "ok"
+    job = _wait_job(client, "sine-starter")
+    assert job["state"] == "done" and job["path"] == _app_dir(env, "sine-starter"), job
+    # The hidden copy's data stays its own: nothing carried it over.
+    assert os.path.isfile(os.path.join(d, ".fused", "data.txt"))
+
+
+def test_a_showcase_copy_under_another_name_is_refused_with_the_way_through(env, gh_world):
+    """The community repo names folders by slug; a renamed one is still found
+    by the page's id at install time, and the sentence names the overwrite."""
+    d = _showcase_copy(env, "sine-renamed")
+    assert mp.plan_install("sine-starter", _entry("sine-starter"))["showcase"] is None
+    client = _client()
+    r = client.post("/api/marketplace/install", json={"slug": "sine-starter"}, headers=FUSED)
+    assert r.status_code == 200 and r.json()["status"] == "ok"
+    job = _wait_job(client, "sine-starter")
+    assert job["state"] == "error" and job["error"].startswith(f"You have this app in your showcase folder at {d}")
+    assert "Overwrite" in job["error"]

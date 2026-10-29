@@ -498,7 +498,13 @@ def expected_identity(clone_dir: str, url: str) -> tuple[str, str | None]:
 _CARRY = (".fused", ".venv")
 
 
-def _place(staged: str, dest: str, *, park_existing: bool, kind: str = "github") -> None:
+def _place(staged: str, dest: str, *, park_existing: bool, kind: str = "github",
+           carry_from: str | None = None) -> None:
+    """Land the staged clone at ``dest`` (the model above). ``carry_from``:
+    another folder of this app that stays where it is (a Community install
+    overwriting the user's showcase copy, `marketplace.install_app`) whose
+    `_CARRY` dirs — its `.fused/` data and `.venv` — move into the new copy
+    exactly as a parked copy's do; mutually exclusive with ``park_existing``."""
     root = os.path.dirname(dest)
     os.makedirs(root, exist_ok=True)
     work = tempfile.mkdtemp(dir=root, prefix=f".install-{os.path.basename(dest)}-")
@@ -520,8 +526,9 @@ def _place(staged: str, dest: str, *, park_existing: bool, kind: str = "github")
                 raise GitInstallError(f"{dest} appeared during the install; open the link again")
             os.rename(clone_in, dest)
             undo.append((dest, clone_in))
-            for name in _CARRY if parked else ():
-                src = os.path.join(parked, name)
+            carry = parked or carry_from
+            for name in _CARRY if carry else ():
+                src = os.path.join(carry, name)
                 if os.path.isdir(src) and not os.path.lexists(os.path.join(dest, name)):
                     os.rename(src, os.path.join(dest, name))
                     undo.append((os.path.join(dest, name), src))
@@ -605,9 +612,12 @@ def _home_branch(clone_dir: str, *, kind: str = "github") -> None:
 
 
 def install(fused_path: str, target: dict, manifest: dict, *, force: bool,
-            kind: str = "github", market: dict | None = None) -> dict:
+            kind: str = "github", market: dict | None = None,
+            carry_from: str | None = None) -> dict:
     """Install or update the clone ``target`` (appfile.install_target's
     answer for a git-source file) describes. Answers the action taken.
+    ``carry_from``: a folder whose `.fused/` and `.venv` move into a NEW
+    clone (`_place`); only a fresh install reads it.
 
     ``kind="marketplace"`` (docs/CONTRIB_LOOP.md §18.4): a Marketplace
     install of a clone made at the approved commit (`clone(commit=)`),
@@ -701,7 +711,7 @@ def install(fused_path: str, target: dict, manifest: dict, *, force: bool,
             raise GitInstallError("this app file does not match the repository it names; "
                                   "open the GitHub link again")
         _place(staged, dest, park_existing=state == appfile.STATE_REPLACE or bool(target.get("husk")),
-               kind=installed_kind)
+               kind=installed_kind, carry_from=carry_from)
         # A fresh clone at `dest`: whatever record the folder had (a copy
         # deleted in Finder and installed again, a husk's old app) names
         # another repo's history — its proposal, overlap and activity are

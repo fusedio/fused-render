@@ -123,6 +123,23 @@ installing <slug> do here", which the router, the bots' card
   refuse   → a legacy copy ("Switch to the reviewed version first"), the
              user's own repo, an unrecorded clone, a row without a
              reviewed source (the old backend's rows have no `repo`).
+  install, with `showcase` set → the user has this app as a subfolder of
+             the showcase clone (`community.SHOWCASE_DIR/<slug>`, the
+             community repo's folders are named by slug) and no other copy.
+             A plain install would find that folder by the page's app id
+             and refuse ("already holds this app, installed another way"),
+             and uninstalling it only hides it, so the folder kept the
+             app's place for good. The first call answers `{status:
+             "confirm", overwrite: "showcase", path, slug, message}` and
+             nothing runs; called again with `overwrite=True` the job
+             installs the reviewed clone under `app/` with
+             `install_target(ignore=<showcase copy>)`, moves the showcase
+             copy's `.fused/` (its data) and `.venv` into the new copy
+             (`appfile_git.install(carry_from=)`), then retires the
+             showcase copy the way its uninstall does (`app_hidden.hide`,
+             its desk tasks archived, every store that remembers it
+             pruned) — its files stay on disk, since deleting a showcase
+             subfolder dirties the clone.
 """
 from __future__ import annotations
 
@@ -1532,14 +1549,55 @@ def _record_kind(path: str) -> str | None:
     return rec.get("kind") if rec else None
 
 
+def _showcase_dir() -> str:
+    """`community.SHOWCASE_DIR`, read against the workspace as configured
+    NOW (that constant is fixed at import time)."""
+    from fused_render import community
+    from fused_render.shell.seed import fused_dir
+
+    return os.path.join(fused_dir(), community.SHOWCASE_NAME)
+
+
+def in_showcase(path: str) -> bool:
+    """Whether `path` sits inside the showcase clone (`community.SHOWCASE_DIR`)."""
+    from fused_render._platform import is_within
+
+    return is_within(os.path.realpath(path), os.path.realpath(_showcase_dir()), strict=True)
+
+
+def showcase_copy(slug: str) -> str | None:
+    """The user's showcase copy of `slug` — `<showcase>/<slug>` when it is an
+    app folder (the community repo names its folders by slug) and the user
+    has not uninstalled (hidden) it — or None. Read-only, no git."""
+    from fused_render import app_hidden, app_listing, appfile
+
+    if not is_slug(slug):
+        return None
+    d = os.path.join(_showcase_dir(), slug)
+    if not os.path.isdir(d) or os.path.islink(d):
+        return None
+    try:
+        if app_listing.app_entry(d) is None:
+            return None
+    except OSError:
+        return None
+    if not app_hidden.drop_hidden([{"path": d}]):
+        return None
+    return appfile._workspace_spelling(d)
+
+
 def plan_install(slug: str, row: dict) -> dict:
     """What installing `slug` (catalog row `row`) would do HERE — the one
     answer the router, the job and the bots' card read (module docstring):
     `{"action": "install"|"update"|"switch"|"refuse", "path": str|None,
-    "who": str, "reason": str|None, "code": str|None}`. Read-only; the
-    GitHub-link copy lookup costs one git call per workspace clone."""
+    "who": str, "reason": str|None, "code": str|None, "showcase":
+    str|None}`. `showcase` rides an `install` whose slug the user has as a
+    showcase subfolder (`showcase_copy`): the install asks to overwrite it
+    first. Read-only; the GitHub-link copy lookup costs one git call per
+    workspace clone."""
     who = _who(row)
-    plan = {"action": "install", "path": None, "who": who, "reason": None, "code": None}
+    plan = {"action": "install", "path": None, "who": who, "reason": None, "code": None,
+            "showcase": None}
     copy = installed_copies().get(slug)
     if copy and copy["kind"] == "legacy":
         # A legacy copy never updates in place (M2: no packages); the
@@ -1560,7 +1618,7 @@ def plan_install(slug: str, row: dict) -> dict:
 
     clone = appfile_git.installed_clone_of(f"https://github.com/{repo}")
     if clone is None:
-        return plan
+        return {**plan, "showcase": showcase_copy(slug)}
     kind = _record_kind(clone)
     if kind == "marketplace":
         # A marketplace copy whose record names another slug (a relisting):
@@ -1605,14 +1663,18 @@ def _update_job(slug: str, **fields) -> None:
             _JOB_FINISHED[slug] = time.monotonic()
 
 
-def start_install(slug: str, *, update: bool = False, switch: bool = False) -> dict:
+def start_install(slug: str, *, update: bool = False, switch: bool = False,
+                  overwrite: bool = False) -> dict:
     """Start installing, updating or switching `slug` in the background
     (`plan_install` decides which; `update` is the bot tool's flag and
     changes nothing here — what is installed decides). Answers the job —
     the running one if any: idempotent — or, when a GitHub-link copy of the
     same repo exists and `switch` is not set, the question `{"status":
     "confirm", "switch": "reviewed", "path", "who", "slug", "message"}`
-    with nothing started. Raises InstallError for a request that cannot
+    with nothing started; likewise `{"status": "confirm", "overwrite":
+    "showcase", "path", "slug", "message"}` when the user's showcase copy
+    of the slug would hold the install's place and `overwrite` is not set
+    (module docstring). Raises InstallError for a request that cannot
     start (bad/unknown slug, a refusing plan)."""
     del update  # documented above: the plan, not the caller, decides
     if not is_slug(slug):
@@ -1636,6 +1698,14 @@ def start_install(slug: str, *, update: bool = False, switch: bool = False) -> d
                 "path": plan["path"].replace(os.sep, "/"), "who": plan["who"],
                 "message": "Switch to reviewed releases? You follow "
                            f"{plan['who']} directly now and get every change, unreviewed."}
+    if plan["action"] == "install" and plan.get("showcase"):
+        if not overwrite:
+            return {"status": "confirm", "overwrite": "showcase", "slug": slug,
+                    "path": plan["showcase"].replace(os.sep, "/"),
+                    "message": "Overwrite your showcase copy? The Community version is installed "
+                               "in your apps folder, its data moves along, and the showcase copy "
+                               "is hidden."}
+        plan = {**plan, "overwrite": plan["showcase"]}
     action = plan["action"]
     with _JOBS_LOCK:
         job = _JOBS.get(slug)
@@ -1692,12 +1762,15 @@ def resolve_install(slug: str, row: dict) -> dict:
     return out
 
 
-def install_app(slug: str, row: dict, report=lambda **kw: None) -> dict:
+def install_app(slug: str, row: dict, report=lambda **kw: None, *,
+                overwrite: str | None = None) -> dict:
     """A NEW marketplace copy of `slug`, synchronously: the author's repo
     cloned at the row's approved commit and installed through the GitHub
     link installer as kind `marketplace` (module docstring). `report(**job
-    fields)` receives progress. Answers `{action, path}`. Raises
-    InstallError."""
+    fields)` receives progress. `overwrite`: the user's showcase copy the
+    install replaces (the confirm's yes) — never the install's target, its
+    `.fused/` and `.venv` carried into the new copy, retired once the copy
+    is in place. Answers `{action, path}`. Raises InstallError."""
     from fused_render import app_listing, appfetch, appfile, appfile_git
 
     from fused_render.contrib import market as contrib_market
@@ -1748,9 +1821,16 @@ def install_app(slug: str, row: dict, report=lambda **kw: None) -> dict:
         except appfile.AppFileError as exc:
             raise InstallError(str(exc))
         report(state="installing", step="place", progress=0.8, message="Installing…")
-        target = appfile.install_target(built)
+        target = appfile.install_target(built, ignore=overwrite)
         if target.get("found_by") == "git":
             raise InstallError(f"You already have a copy of this app at {target['path']}.")
+        if target.get("found_by") and in_showcase(target["path"]):
+            # A showcase subfolder (found by the page's id, under a name the
+            # slug lookup in `plan_install` did not predict) can only be
+            # hidden, never removed: the overwrite is the way through.
+            raise InstallError(f"You have this app in your showcase folder at {target['path']}. "
+                               "Overwrite it to install the Community version in your apps "
+                               "folder, with its data.")
         if target["state"] == appfile.STATE_REPLACE:
             # Another copy of this app (installed from a file) holds its
             # place; replacing it would send it to the Trash. Never on the
@@ -1764,7 +1844,8 @@ def install_app(slug: str, row: dict, report=lambda **kw: None) -> dict:
             market = {"slug": slug, "approved": ap.entry()}
             if _opt_str(row.get("branch")):
                 market["branch"] = row["branch"]
-            appfile_git.install(built, target, manifest, force=False, kind="marketplace", market=market)
+            appfile_git.install(built, target, manifest, force=False, kind="marketplace", market=market,
+                                carry_from=overwrite)
         except (appfile_git.GitInstallError, appfile.AppFileError) as exc:
             raise InstallError(str(exc))
         dest = os.path.normpath(target["path"])
@@ -1788,8 +1869,32 @@ def install_app(slug: str, row: dict, report=lambda **kw: None) -> dict:
         contrib_store.note_head(dest, commit)
     except Exception:  # noqa: BLE001 — the engine's first sync notes it too
         logger.warning("marketplace: could not note the head of %s", dest, exc_info=True)
+    if overwrite:
+        _retire_showcase_copy(overwrite)
     _reset_apps_snapshot()
     return {"action": "install", "path": dest}
+
+
+def _retire_showcase_copy(path: str) -> None:
+    """The showcase copy an install overwrote leaves every surface — the
+    three steps its uninstall runs (routers/app_uninstall.api_uninstall,
+    kind `showcase`): hidden from the hub, its desk tasks archived, every
+    store that remembers it (recents, bookmarks, the desk, …) pruned. Its
+    files stay: deleting a showcase subfolder dirties the clone. Best-effort
+    — the new copy is already in place, so nothing here fails the install."""
+    from fused_render import app_hidden, app_state_remove
+
+    try:
+        app_hidden.hide(path)
+    except Exception:  # noqa: BLE001
+        logger.warning("marketplace: could not hide the showcase copy %s", path, exc_info=True)
+    try:
+        from fused_render.server.routers import current_apps as desk_router
+
+        desk_router._archive_folder(app_state_remove.canonical(path))
+    except Exception:  # noqa: BLE001
+        logger.warning("marketplace: could not archive the desk tasks of %s", path, exc_info=True)
+    app_state_remove.prune_stores(path)
 
 
 def _reset_apps_snapshot() -> None:
@@ -1848,7 +1953,7 @@ def _run_job(slug: str, row: dict, plan: dict) -> None:
         elif plan["action"] == "switch":
             result = switch_app(slug, row, plan["path"], report)
         else:
-            result = install_app(slug, row, report)
+            result = install_app(slug, row, report, overwrite=plan.get("overwrite"))
         message = result.get("message") or {
             "install": f"Installed {name}", "update": f"Updated {name}",
             "switch": f"{name} follows reviewed releases now"}[result["action"]]

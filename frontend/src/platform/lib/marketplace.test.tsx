@@ -282,3 +282,33 @@ describe("useMarketplaceSearch", () => {
     expect(h.get().loadingMore).toBe(false);
   });
 });
+
+describe("installApp confirm answers", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  test("a showcase copy's overwrite question starts no job and the yes posts overwrite: true", async () => {
+    const bodies: Record<string, unknown>[] = [];
+    const queued = { slug: "sine-starter", action: "install", state: "queued", progress: 0, bytes_done: 0, bytes_total: 0, message: "" };
+    globalThis.fetch = ((url: string, init?: RequestInit) => {
+      const u = String(url);
+      if (u.includes("/install") && init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        bodies.push(body);
+        const answer = body.overwrite
+          ? { status: "ok", job: queued }
+          : { status: "confirm", overwrite: "showcase", path: "/Users/me/Fused/showcase/sine-starter", message: "Overwrite?" };
+        return Promise.resolve(new Response(JSON.stringify(answer), { status: 200 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify({ jobs: {} }), { status: 200 }));
+    }) as typeof fetch;
+    const first = await installApp({ slug: "sine-starter", name: "Sine Starter" });
+    expect("status" in first && first.status === "confirm" && "overwrite" in first && first.overwrite).toBe("showcase");
+    expect(peekJobs()["sine-starter"]).toBeUndefined();
+    const second = await installApp({ slug: "sine-starter", name: "Sine Starter" }, { overwrite: true });
+    expect("state" in second && second.state).toBe("queued");
+    expect(bodies).toEqual([{ slug: "sine-starter" }, { slug: "sine-starter", overwrite: true }]);
+  });
+});

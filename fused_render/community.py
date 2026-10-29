@@ -82,7 +82,8 @@ LOCK_PATH = os.path.join(STATE_DIR, ".lock")
 WORKSPACE = fused_dir()
 # The clone of the community repo, inside the user's workspace so the
 # explorer lists it like any other folder and apps are editable in place.
-SHOWCASE_DIR = os.path.join(WORKSPACE, "showcase")
+SHOWCASE_NAME = "showcase"
+SHOWCASE_DIR = os.path.join(WORKSPACE, SHOWCASE_NAME)
 
 GIT_TIMEOUT = 45  # bounded so a bad network surfaces as an error
 # The clone (every app, with its preview still and assets) is the long call —
