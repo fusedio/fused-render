@@ -1020,9 +1020,15 @@ export default function CanvasWorkspace({
   }, []);
 
   const [nodeFileReady, setNodeFileReady] = useState<string | null>(null);
+  // The node's file CONFIRMED on disk — not the give-up below. The pane opens
+  // its frame on either (the frame says what is wrong); the rail's New task
+  // waits for this one, since a task locked on a missing file has nothing to
+  // be filed under (CodeRabbit on #2015). After a give-up the probe stops, and
+  // the next `disk_rev` (the file landing) asks again.
+  const [nodeFileOnDisk, setNodeFileOnDisk] = useState<string | null>(null);
   const nodePath = node && dir ? nodeFile(dir, node) : null;
   useEffect(() => {
-    if (!nodePath || nodeFileReady === nodePath) return;
+    if (!nodePath || nodeFileOnDisk === nodePath) return;
     let cancelled = false;
     let timer: number | null = null;
     const started = Date.now();
@@ -1031,6 +1037,7 @@ export default function CanvasWorkspace({
         await statPath(nodePath);
         if (cancelled) return;
         setNodeFileReady(nodePath);
+        setNodeFileOnDisk(nodePath);
       } catch {
         if (cancelled) return;
         if (Date.now() - started > NODE_FILE_WAIT_MS) {
@@ -1045,7 +1052,7 @@ export default function CanvasWorkspace({
       cancelled = true;
       if (timer !== null) window.clearTimeout(timer);
     };
-  }, [nodePath, nodeFileReady, sync?.disk_rev]);
+  }, [nodePath, nodeFileOnDisk, sync?.disk_rev]);
   const onPull = useCallback(async (hard = false) => {
     setPullBusy(true);
     setPullError(null);
@@ -2984,7 +2991,7 @@ export default function CanvasWorkspace({
             name={name}
             dir={dir}
             node={node}
-            nodeReady={!node || !dir || nodeFileReady === nodeFile(dir, node)}
+            nodeReady={!node || !dir || nodeFileOnDisk === nodeFile(dir, node)}
             // The chat the pane would open on: a node's is the one its frame
             // last sat on (`nodeSessions`, the node pane's boot source — the
             // page URL's `session_id` is cleared on every node switch); the
