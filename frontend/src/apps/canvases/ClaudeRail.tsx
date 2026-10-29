@@ -28,7 +28,20 @@
 //     that chat where the Tasks page's door would (`taskHref`): the canvas
 //     chat on its session, or the node selected with its chat on its session.
 //     Scrolls on a short window.
-//   - at the bottom, this canvas's Tasks with a running count.
+//
+// A SELECTED NODE NARROWS THE RAIL the way it narrows the open pane (owner,
+// 2026-10-29: "collapsed sidebar should behave exact same way as expanded
+// sidebar but in a collapsed view"): the chats are that node's alone
+// (claude-rail-lib `onRail`), and the + makes a task ON the node — the card
+// locked on the node's file, the target the node pane's own chats carry, so
+// the new task is filed under the node (`task.canvas.file`) and shows in the
+// node's Recent list once the pane opens.
+//
+// THE + WAITS WHERE THE PANE WAITS: the open pane has no chat to start one
+// from until the clone exists ("Loading editor…") or while the selected
+// node's file is still being written ("Saving <file>…"), so the + is held
+// for the same two waits. A task made before the node's file is on disk
+// would carry no pane record and miss the node's Recent list.
 import {
   useCallback,
   useEffect,
@@ -37,7 +50,7 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { ListTodo, Plus } from "lucide-react";
+import { Plus } from "lucide-react";
 import PanelIcon from "@platform/ui/PanelIcon";
 import { getSchedule, getTasks, type Task, type TaskPulseTask } from "@platform/lib/api";
 import { readListing, rememberListing, useTasksPulseRows } from "@shell/tasksPulse";
@@ -76,6 +89,9 @@ function statusWords(t: TaskPulseTask, failed: boolean): string {
  *  on the press). `seq` keys the mount: every press is a fresh card. */
 interface Card {
   seq: number;
+  /** The locked target as it was at the press: a node switched while the
+   *  schedule read is out must not move the task (Bugbot on #2015). */
+  target: string | null;
   modes: string[];
   recents: string[];
 }
@@ -113,11 +129,11 @@ export function ClaudeRail({
   env,
   name,
   dir,
+  node,
+  nodeReady,
   activeSessionId,
-  tasksHref,
   onOpen,
   onOpenChat,
-  onTasks,
   onPullStart,
 }: {
   env: WorkbenchEnv;
@@ -126,21 +142,31 @@ export function ClaudeRail({
    *  project; the New task card's locked target). Null until the clone
    *  exists. */
   dir: string | null;
+  /** The selected node (null = the canvas as a whole): its name for the
+   *  rail's words, its file (basename in the clone) for which chats show and
+   *  where a new task points. */
+  node: { udfName: string; file: string } | null;
+  /** The selected node's file is on disk (the pane's own "Saving…" gate);
+   *  true with no node selected. */
+  nodeReady: boolean;
   /** The session the page's URL names, drawn as the current row. */
   activeSessionId: string | null;
-  tasksHref: string;
   /** Open the pane as it is. */
   onOpen: () => void;
   /** Open one of the canvas's chats: its Tasks-page door (`taskHref`). */
   onOpenChat: (href: string) => void;
-  onTasks: () => void;
   /** A pointer down on the rail's inner edge: the start of a pull that opens
    *  the pane at the width the pointer drags it to (CanvasWorkspace
    *  `onRailPull`). */
   onPullStart: (e: ReactPointerEvent<HTMLDivElement>) => void;
 }) {
   const rows = useTasksPulseRows();
-  const place = useMemo(() => ({ env, name, dir }), [env, name, dir]);
+  const nodeFile = node?.file ?? null;
+  const place = useMemo(() => ({ env, name, dir, file: nodeFile }), [env, name, dir, nodeFile]);
+  // A new task's locked target: the node's file under the clone while a node
+  // is selected, else the clone. Null until the clone exists.
+  const target = dir && nodeFile ? `${dir.replace(/\/+$/, "")}/${nodeFile}` : dir;
+  const scope = node ? node.udfName : "this canvas";
   // This canvas's live chats, unordered — the signature below is what decides
   // when the listing is re-read; the order is `railRows`'s, once it is held.
   const mine = useMemo(() => rows.filter((t) => onRail(t, place)), [rows, place]);
@@ -200,8 +226,6 @@ export function ClaudeRail({
   // change.
   const seats = useMemo(() => railRows(rows, full, place), [rows, full, place]);
 
-  const running = mine.filter((t) => liveJobRow(t) || inFlight(taskColumn(t))).length;
-
   // THE NEW TASK CARD. Opened on the press, once the schedule has answered
   // what the card needs (`Card`, `cardSeed`); the press is inert while that
   // read is out, so a double-click cannot stack two cards. A schedule read
@@ -210,13 +234,15 @@ export function ClaudeRail({
   // + that does nothing is worse than a card with one fewer dropdown option.
   const [card, setCard] = useState<Card | null>(null);
   const [opening, setOpening] = useState(false);
+  const waiting = dir === null ? "Loading the canvas…" : !nodeReady && node ? `Saving ${node.file}…` : null;
   const openNewTask = () => {
-    if (opening || card) return;
+    if (opening || card || waiting) return;
     setOpening(true);
+    const at = target;
     void cardSeed().then((got) => {
-        if (!alive.current) return;
+      if (!alive.current) return;
       setOpening(false);
-      setCard({ seq: Date.now(), ...got });
+      setCard({ seq: Date.now(), target: at, ...got });
     });
   };
 
@@ -247,17 +273,17 @@ export function ClaudeRail({
         <button
           type="button"
           className="sidebar-rail-btn canvas-rail-item"
-          title="New task"
-          aria-label="New task"
+          title={waiting ?? (node ? `New task on ${node.udfName}` : "New task")}
+          aria-label={waiting ?? (node ? `New task on ${node.udfName}` : "New task")}
           aria-haspopup="dialog"
-          aria-busy={opening || undefined}
-          disabled={opening}
+          aria-busy={opening || waiting !== null || undefined}
+          disabled={opening || waiting !== null}
           onClick={openNewTask}
         >
           <Plus size={16} aria-hidden="true" />
         </button>
         {seats.length > 0 && (
-          <div className="sidebar-rail-scroll canvas-rail-chats" role="list" aria-label="Chats on this canvas">
+          <div className="sidebar-rail-scroll canvas-rail-chats" role="list" aria-label={`Chats on ${scope}`}>
             {seats.map(({ pulse: t, row }) => {
               // The live status is the pulse's (fresher than the listing).
               const merged = row ? { ...row, status: t.status } : t;
@@ -301,21 +327,6 @@ export function ClaudeRail({
             })}
           </div>
         )}
-        <span className="canvas-rail-spacer" />
-        <a
-          className="sidebar-rail-btn canvas-rail-item"
-          href={tasksHref}
-          title={running > 0 ? `Tasks on this canvas · ${running} running` : "Tasks on this canvas"}
-          aria-label={running > 0 ? `Tasks on this canvas, ${running} running` : "Tasks on this canvas"}
-          onClick={(e) => {
-            if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
-            e.preventDefault();
-            onTasks();
-          }}
-        >
-          <ListTodo size={16} aria-hidden="true" />
-          {running > 0 && <span className="canvas-rail-count">{running}</span>}
-        </a>
       </div>
       {card && (
         <NewJobModal
@@ -324,12 +335,13 @@ export function ClaudeRail({
           // (Scheduled.tsx `openSeq`).
           key={card.seq}
           initialTime={null}
-          // SCOPED TO THE CLONE, the project page's Tasks tab's way
+          // SCOPED TO THE CLONE — or to the selected node's file in it — the
+          // project page's Tasks tab's way
           // (CanvasPage.tsx `scope.project`, Scheduled.tsx `lockTarget`): a
           // task made from the canvas is a task about the canvas, so the path
-          // is stated, not asked. Until the clone exists the card asks.
-          initialTarget={dir}
-          lockTarget={dir !== null}
+          // is stated, not asked (the + is held until the clone exists).
+          initialTarget={card.target}
+          lockTarget={card.target !== null}
           // From the List, not the calendar: a task typed here is one to run
           // now, and the when-row folds into More options.
           planning={false}

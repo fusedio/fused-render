@@ -54,6 +54,28 @@ describe("onRail", () => {
     expect(onRail(named, PLACE)).toBe(true);
     expect(onRail(named, { ...PLACE, name: "other" })).toBe(false);
   });
+
+  it("holds only the selected node's chats while a node is selected", () => {
+    const stamp = (key: string, file: string) =>
+      pulse(task({ key, canvas: { env: "unstable", name: "demo", file } }));
+    const onNode = stamp("a", "udf_1.py");
+    const onOther = stamp("b", "udf_2.py");
+    const onCanvas = stamp("c", "");
+    const NODE = { ...PLACE, file: "udf_1.py" };
+    expect(onRail(onNode, NODE)).toBe(true);
+    expect(onRail(onOther, NODE)).toBe(false);
+    expect(onRail(onCanvas, NODE)).toBe(false);
+    // No node selected: every chat on the canvas.
+    for (const t of [onNode, onOther, onCanvas]) expect(onRail(t, PLACE)).toBe(true);
+  });
+
+  it("matches an unstamped row to the selected node by its target", () => {
+    const onNode = pulse(task({ key: "a", target: `${PLACE.dir}/udf_1.py` }));
+    const onFolder = pulse(task({ key: "b" }));
+    const NODE = { ...PLACE, file: "udf_1.py" };
+    expect(onRail(onNode, NODE)).toBe(true);
+    expect(onRail(onFolder, NODE)).toBe(false);
+  });
 });
 
 describe("railRows", () => {
