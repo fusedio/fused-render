@@ -1385,6 +1385,11 @@ def _market_target(d: dict) -> tuple[str, bool, str]:
                               "that in the app (its Community page)")
     if plan["action"] == "update" and not update:
         return slug, update, f"already installed at {where} (in APPS; pass update: true only to update it)"
+    if plan["action"] == "install" and plan.get("showcase"):
+        # Overwriting the user's showcase copy (its data moves, the copy is hidden) is the user's call.
+        return slug, update, (f"the user already has this app in their showcase folder at {plan['showcase']}; "
+                              "installing the Community version means overwriting that copy, which is the "
+                              "user's choice: the user decides that in the app (its Community page)")
     if plan["action"] == "install" and update:
         update = False  # nothing to update: a plain install
     return slug, update, ""
@@ -1486,7 +1491,12 @@ def _market_install(bot, d: dict) -> str:
     except _mkt.InstallError as e:
         return f"error: {e}"
     if job.get("status") == "confirm":
-        # The plan changed between the card and the call (the user installed by link meanwhile).
+        # The plan changed between the card and the call (the user installed by link, or cloned the
+        # showcase, meanwhile).
+        if job.get("overwrite") == "showcase":
+            return (f"error: the user already has this app in their showcase folder at {job.get('path')}; "
+                    "installing the Community version means overwriting that copy, which is the user's "
+                    "choice: the user decides that in the app (its Community page)")
         return ("error: the user follows this app by GitHub link; switching it to reviewed releases is the user's "
                 "choice: the user decides that in the app (its Community page)")
     deadline = time.monotonic() + MARKET_INSTALL_WAIT_S
