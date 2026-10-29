@@ -1399,6 +1399,10 @@ _DETAIL_MEMO_LOCK = threading.Lock()
 _DETAIL_MEMO_MAX = 256
 #: The detail page and the asset proxy must not hang on a slow API.
 DETAIL_TIMEOUT_S = 8
+#: The §18.12 counts on a row — the one part of a release's detail that
+#: changes between reads; `app_detail` takes them from the catalog snapshot,
+#: never from the memoised detail row.
+_STAT_KEYS = ("installs", "installs_30d", "views", "views_30d")
 
 
 def _memo_get(key: tuple) -> dict | None:
@@ -1562,7 +1566,15 @@ def app_detail(slug: str) -> dict | None:
                  for f in row.get("files") or []
                  if isinstance(f, dict) and isinstance(f.get("path"), str)]
         readme = row.get("readme_markdown")
-        entry = app_entry(slug, {**(snap_row or {}), **row}, installed.get(slug))
+        # The detail row is memoised per release (`_detail_row`) because its
+        # readme and file list cannot change without a new commit — but the
+        # §18.12 counts can, and the catalog re-reads them every TTL. The
+        # snapshot's counts win, so the page agrees with the cards instead of
+        # answering the number from whenever this release was first opened
+        # (and `patchCatalogApp` then pushing that stale number into the
+        # cards).
+        counts = {k: snap_row[k] for k in _STAT_KEYS if snap_row and k in snap_row}
+        entry = app_entry(slug, {**(snap_row or {}), **row, **counts}, installed.get(slug))
         return {"status": "ok", "app": entry,
                 "readme": readme[:MAX_README_BYTES] if isinstance(readme, str) else "",
                 "files": files, "readme_base": f"/api/marketplace/asset/{slug}/",
