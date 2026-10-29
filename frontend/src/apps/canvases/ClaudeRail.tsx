@@ -89,6 +89,9 @@ function statusWords(t: TaskPulseTask, failed: boolean): string {
  *  on the press). `seq` keys the mount: every press is a fresh card. */
 interface Card {
   seq: number;
+  /** The locked target as it was at the press: a node switched while the
+   *  schedule read is out must not move the task (Bugbot on #2015). */
+  target: string | null;
   modes: string[];
   recents: string[];
 }
@@ -235,10 +238,11 @@ export function ClaudeRail({
   const openNewTask = () => {
     if (opening || card || waiting) return;
     setOpening(true);
+    const at = target;
     void cardSeed().then((got) => {
-        if (!alive.current) return;
+      if (!alive.current) return;
       setOpening(false);
-      setCard({ seq: Date.now(), ...got });
+      setCard({ seq: Date.now(), target: at, ...got });
     });
   };
 
@@ -336,8 +340,8 @@ export function ClaudeRail({
           // (CanvasPage.tsx `scope.project`, Scheduled.tsx `lockTarget`): a
           // task made from the canvas is a task about the canvas, so the path
           // is stated, not asked (the + is held until the clone exists).
-          initialTarget={target}
-          lockTarget={target !== null}
+          initialTarget={card.target}
+          lockTarget={card.target !== null}
           // From the List, not the calendar: a task typed here is one to run
           // now, and the when-row folds into More options.
           planning={false}
