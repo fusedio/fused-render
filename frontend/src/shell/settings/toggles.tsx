@@ -11,7 +11,6 @@ import {
   putCanvasesEnabled,
   putGitAutoSyncEnabled,
   putLivePreviewsEnabled,
-  putMarketplaceEnabled,
   putMonitorEnabled,
   putProjectQueueEnabled,
   putReaderEnabled,
@@ -20,16 +19,13 @@ import {
   putTaskSummaryTitlesEnabled,
   putClaudeDefaultPermission,
   putClaudeStrictMcpEnabled,
-  putContribEnabled,
   putContribRemixEnabled,
 } from "@platform/lib/api";
-import { effectiveContribFlags, publishContribFlags } from "@platform/lib/contrib-flags";
-import { settingById } from "./registry";
+import { publishContribFlags } from "@platform/lib/contrib-flags";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
 import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
-import { publishMarketplaceEnabled } from "@platform/lib/marketplace-flag";
 import {
   publishDefaultPermission,
   publishProjectQueueEnabled,
@@ -159,10 +155,9 @@ export function GitSyncControl({ prefs, onChange }: PrefControlProps) {
 }
 
 // Public link (owner 2026-10-27): the Share sheet's Fused-account link card.
-// One of the three switches that decide what Share offers (Public link,
-// Community apps, Remix); the Share button is there when any is on
-// (share-app-flag.ts `useAppShareOffered`), the .fused file always. The GitHub
-// install link rides on Community apps now — its own row is gone.
+// The Share button is always there (share-app-flag.ts `useAppShareOffered`:
+// the contribution loop is always on), the .fused file always. The GitHub
+// install link rides on the loop — its own row is gone.
 export function ShareSheetControl({ prefs, onChange }: PrefControlProps) {
   return (
     <PrefToggleRow
@@ -191,35 +186,18 @@ export function LivePreviewsControl({ prefs, onChange }: PrefControlProps) {
 }
 
 // ── Community (preview) ────────────────────────────────────────────────────
-// The GitHub contribution loop's switch (it was four phase switches with a
-// prerequisite chain until 2026-10-22) and Remix on its own. Remix is shown
-// AS SET, never disabled: with the loop off its row says what it waits for
-// instead — a disabled switch would hide that the click would have counted.
-// Same publish-after-PUT as the rows above (contrib-flags.ts), so the cards
-// and the share sheet already mounted follow.
-
-export function ContribControl({ prefs, onChange }: PrefControlProps) {
-  return (
-    <PrefToggleRow
-      id="contrib"
-      checked={prefs.contrib?.enabled === true}
-      put={(next) => putContribEnabled(next)}
-      after={(next) => publishContribFlags(next.contrib)}
-      onChange={onChange}
-    />
-  );
-}
+// Remix's switch. The contribution loop it rides on is always on since
+// 2026-10-29 (its own switch — four phase switches until 2026-10-22 — is
+// gone). Same publish-after-PUT as the rows above (contrib-flags.ts), so the
+// cards and the share sheet already mounted follow.
 
 export function ContribRemixControl({ prefs, onChange }: PrefControlProps) {
-  const on = prefs.contrib?.remix === true;
-  const held = on && !effectiveContribFlags(prefs.contrib).remix;
   return (
     <PrefToggleRow
       id="contrib-remix"
-      checked={on}
+      checked={prefs.contrib?.remix === true}
       put={(next) => putContribRemixEnabled(next)}
       after={(next) => publishContribFlags(next.contrib)}
-      status={held ? `Needs ${settingById("contrib")?.label ?? "Community apps"} to be on.` : undefined}
       onChange={onChange}
     />
   );
@@ -265,18 +243,6 @@ export function CanvasesEmbedProxyControl({ prefs, onChange }: PrefControlProps)
           </>
         ) : undefined
       }
-      onChange={onChange}
-    />
-  );
-}
-
-export function MarketplaceControl({ prefs, onChange }: PrefControlProps) {
-  return (
-    <PrefToggleRow
-      id="marketplace"
-      checked={prefs.marketplace?.enabled === true}
-      put={putMarketplaceEnabled}
-      after={(next) => publishMarketplaceEnabled(next.marketplace?.enabled === true)}
       onChange={onChange}
     />
   );

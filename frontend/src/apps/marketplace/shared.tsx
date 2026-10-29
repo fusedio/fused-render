@@ -147,8 +147,20 @@ export function pillPropsFor(app: AppEntry, action: AppAction) {
   }
 }
 
-/** The AppEntry-bound pill: reads the job, derives the state, runs the action. */
-export function AppActionPill({ app, size = "sm", emphasis }: { app: AppEntry; size?: ActionPillSize; emphasis?: "tinted" | "filled" }) {
+/** The AppEntry-bound pill: reads the job, derives the state, runs the action.
+ *  `onAct` hears every click with the action it ran (the app page uses it to
+ *  know an install was asked for from there). */
+export function AppActionPill({
+  app,
+  size = "sm",
+  emphasis,
+  onAct,
+}: {
+  app: AppEntry;
+  size?: ActionPillSize;
+  emphasis?: "tinted" | "filled";
+  onAct?: (action: AppAction) => void;
+}) {
   const job = useJob(app.slug);
   const checking = useChecking(app.slug);
   const action = actionFor(app, job);
@@ -160,7 +172,10 @@ export function AppActionPill({ app, size = "sm", emphasis }: { app: AppEntry; s
       {...pillPropsFor(app, action)}
       size={size}
       emphasis={emphasis}
-      onClick={() => runPrimaryAction(app, job)}
+      onClick={() => {
+        onAct?.(action);
+        runPrimaryAction(app, job);
+      }}
       ariaLabel={actionAria(app, action)}
     />
   );

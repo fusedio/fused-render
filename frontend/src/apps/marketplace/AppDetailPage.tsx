@@ -13,7 +13,7 @@
 // ("Remix of <name>", a link to its page), the strip shows the last release,
 // remixes and contributors, and a Releases section lists every release with
 // its What's new — "Blocked" where Fused blocked it since.
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { ArrowUpRight, ExternalLink, FolderOpen, LayoutPanelTop, Trash2 } from "lucide-react";
 import {
   AppIcon,
@@ -45,6 +45,8 @@ import {
   isMarketCopy,
   isOwnCopy,
   categoryLabel,
+  isActive,
+  openInstalledApp,
   showInstalledFolder,
   sourceUrlOf,
   useAppDetail,
@@ -69,6 +71,30 @@ export function AppDetailPage({ slug, snap, bare = false }: { slug: string; snap
   const fromCatalog = snap.catalog?.apps.find((a) => a.slug === slug) ?? null;
   const app: AppEntry | null = detail?.app ?? fromCatalog;
   const job = useJob(slug);
+
+  // AN INSTALL ASKED FOR HERE OPENS THE APP WHEN IT LANDS (owner, 2026-10-29).
+  // The pill stays on this page while the job runs; a reader who clicked Get
+  // (or Retry) and is still here when the job reaches `done` is taken to the
+  // app — in this window (openInstalledApp is a navigateUrl, never a new
+  // window). Two things keep it from firing when it should not:
+  //  * `asked` is set by THIS page's pill alone, and only by a Get or Retry
+  //    click — so an install started from a Discover card and then watched
+  //    from here does not open on its own, and a done job the page merely
+  //    finds (an earlier install, still listed) cannot be one it asked for:
+  //    the pill read Open then, not Get;
+  //  * it is a ref on this mount: leaving the page before the install
+  //    finishes drops it, and coming back starts clean — the reader who
+  //    moved away is not yanked back to the app.
+  const asked = useRef<string | null>(null);
+  useEffect(() => {
+    if (!job || job.slug !== slug || asked.current !== slug || isActive(job)) return;
+    asked.current = null;
+    // On `error` the reader is back at Retry: another click arms it again.
+    if (job.state === "done" && job.path) openInstalledApp(job.path);
+  }, [job, slug]);
+  const onAct = (action: { kind: string }) => {
+    if (action.kind === "get" || action.kind === "retry") asked.current = slug;
+  };
 
   // Bare (a listing link with the store off): nothing leads into the store.
   const back = bare
@@ -257,7 +283,7 @@ export function AppDetailPage({ slug, snap, bare = false }: { slug: string; snap
           </>
         }
         tags={app.tags.filter((t) => t !== app.category)}
-        actions={<AppActionPill app={app} size="lg" emphasis="filled" />}
+        actions={<AppActionPill app={app} size="lg" emphasis="filled" onAct={onAct} />}
         actionsNote={note}
         menu={menu}
         menuLabel={`More actions for ${app.name}`}

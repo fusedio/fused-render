@@ -96,14 +96,14 @@ describe("visibility", () => {
     expect(bot.map((s) => s.id)).toContain("monitor");
   });
 
-  test("Community is the store row, the loop row then Remix under Apps & sharing, absent on Fused Bot", () => {
+  test("Community is the Remix row alone under Apps & sharing (the store and the loop are always on), absent on Fused Bot", () => {
     const ids = sectionsOf(visibleSettings(ctx()), "apps")
       .find((s) => s.section === "Community")
       ?.entries.map((e) => e.id);
-    expect(ids).toEqual(["marketplace", "contrib", "contrib-remix"]);
-    expect(visibleSettings(ctx({ bot: true })).some((s) => s.id === "marketplace")).toBe(false);
+    expect(ids).toEqual(["contrib-remix"]);
+    expect(visibleSettings(ctx()).map((s) => s.id as string)).not.toContain("marketplace");
+    expect(visibleSettings(ctx()).map((s) => s.id as string)).not.toContain("contrib");
     expect(visibleSettings(ctx({ bot: true })).some((s) => s.id.startsWith("contrib"))).toBe(false);
-    expect(searchSettings(visibleSettings(ctx()), "proposals inbox").map((s) => s.id)).toEqual(["contrib"]);
   });
 
   test("Fused Bot's launcher rows speak of bots, in the row and in search", () => {
@@ -221,8 +221,8 @@ describe("search", () => {
   });
 
   test("every word must match", () => {
-    // "sync" also matches the page name (Sharing & sync); "git" matches Contributing (its GitHub install link).
-    expect(searchSettings(all, "git sync").map((h) => h.id)).toEqual(["git-sync", "contrib"]);
+    // "sync" also matches the page name (Sharing & sync).
+    expect(searchSettings(all, "git sync").map((h) => h.id)).toEqual(["git-sync"]);
     expect(searchSettings(all, "git nonsenseword")).toEqual([]);
   });
 

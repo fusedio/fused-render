@@ -48,28 +48,24 @@ def _clone(tmp_path, name, url):
 # ------------------------------------------------------------------ flags
 
 
-def test_flags_default_off_and_one_switch(home):
-    assert flags.snapshot() == {"sources": False, "changes": False, "inbox": False,
-                                "loop": False, "remix": False}
-    # The old four loop keys are not read any more (folded 2026-10-22), and
-    # remix needs the loop on.
-    _prefs(home, contrib_sources_enabled=True, contrib_changes_enabled=True,
-           contrib_inbox_enabled=True, contrib_loop_enabled=True, contrib_remix_enabled=True)
-    assert not any(flags.snapshot().values())
-    _prefs(home, contrib_enabled=True)
-    assert flags.snapshot() == {"sources": True, "changes": True, "inbox": True,
-                                "loop": True, "remix": False}
-    _prefs(home, contrib_enabled=True, contrib_remix_enabled=True)
+def test_flags_loop_always_on_and_remix_its_own_switch(home):
+    on = {"sources": True, "changes": True, "inbox": True, "loop": True}
+    assert flags.snapshot() == {**on, "remix": False}
+    # The loop's own switch (and the four phase keys before it) are not
+    # read any more (always on, 2026-10-29); only Remix is a switch.
+    _prefs(home, contrib_enabled=False, contrib_loop_enabled=False)
+    assert flags.snapshot() == {**on, "remix": False}
+    _prefs(home, contrib_remix_enabled=True)
     assert all(flags.snapshot().values())
-    _prefs(home, contrib_enabled="yes", contrib_remix_enabled=True)  # opt-in: only a literal true
-    assert not any(flags.snapshot().values())
+    _prefs(home, contrib_remix_enabled="yes")  # opt-in: only a literal true
+    assert flags.snapshot() == {**on, "remix": False}
 
 
 def test_prefs_response_reports_raw_switch(home):
     from fused_render.shell import prefs
 
     _prefs(home, contrib_remix_enabled=True)
-    assert prefs._prefs_response()["contrib"] == {"enabled": False, "remix": True}
+    assert prefs._prefs_response()["contrib"] == {"enabled": True, "remix": True}
 
 
 # ------------------------------------------------------------------ store
@@ -223,9 +219,6 @@ def test_fused_dir_row_is_gated_and_reports_tracked_paths(home, tmp_path):
     write(d, ".fused/meta.json", "{}\n")
     git(d, "add", "-f", "-A")
     git(d, "commit", "-q", "-m", "fused")
-    ids = [c["id"] for c in app_doctor.report(d)["checks"]]
-    assert "fused-dir-committed" not in ids
-    _prefs(home, contrib_enabled=True)
     row = next(c for c in app_doctor.report(d)["checks"] if c["id"] == "fused-dir-committed")
     assert row["state"] == "fail" and row["severity"] == "warning"
     assert [f["path"] for f in row["findings"]] == [".fused/meta.json"]
@@ -260,13 +253,13 @@ def test_orphan_rows_drop_after_thirty_days(home, tmp_path):
 
 
 def test_flags_memo_follows_the_file(home):
-    assert flags.sources() is False
-    _prefs(home, contrib_enabled=True)
-    assert flags.sources() is True
+    assert flags.remix() is False
+    _prefs(home, contrib_remix_enabled=True)
+    assert flags.remix() is True
     from fused_render.shell import prefs
 
-    prefs.write_pref("contrib_enabled", False)
-    assert flags.sources() is False
+    prefs.write_pref("contrib_remix_enabled", False)
+    assert flags.remix() is False
 
 
 def test_org_role_is_asked_once_per_owner(home, tmp_path, monkeypatch):
@@ -865,14 +858,8 @@ def test_install_page_for_a_github_copy_with_changes_is_plain(world):
     tip = _alice_push(world, "c.txt", "alice\n")
     src = {"url": URL, "commit": tip}
     assert appfile_git.probe(bob, src) == "local"
-    assert appfile_git.copy_view(bob) == {"who": "alice", "changes": True, "collision": [], "app_page": False}
+    assert appfile_git.copy_view(bob) == {"who": "alice", "changes": True, "collision": [], "app_page": True}
     target = {"git": src, "state": "local", "path": bob, "found_by": "git"}
-    with pytest.raises(appfile_git.GitInstallError) as exc:
-        appfile_git.install("x.fused", target, {}, force=False)
-    # Audit V1/V13 (§16.12): with A1 off the app page has no panel — plain
-    # words, no pointer there.
-    assert str(exc.value) == "This app has changes of its own, so it isn't updated from here."
-    _prefs(world.home, contrib_enabled=True)
     with pytest.raises(appfile_git.GitInstallError) as exc:
         appfile_git.install("x.fused", target, {}, force=False)
     msg = str(exc.value)
@@ -1038,24 +1025,6 @@ def test_record_sync_failure_helper_writes_todays_row(world):
     assert git_upstream.sync_failures()[0]["output"] == "Your copy and the author's both changed."
 
 
-def test_an_own_copys_auto_push_still_runs_its_authors_hooks(world):
-    """Round 2 (author R3, §16.0 P5): an own copy's plain fetch/pull/push is
-    today's — the author's pre-push hook (a secret scanner) still runs on
-    auto-push; only fused's private reads are hook-free."""
-    a = _install(world)
-    store.update(a, lambda r: r.__setitem__("kind", "own"))
-    classify.ensure_push_guard(a, "own")
-    hook = os.path.join(a, ".git", "hooks", "pre-push")
-    with open(hook, "w") as f:
-        f.write("#!/bin/sh\necho secret-scanner-said-no >&2\nexit 1\n")
-    os.chmod(hook, 0o755)
-    _commit(a, "b.txt", "mine\n", "mine")
-    before = _remote_main(world)
-    r = _sync(a, push=True)
-    assert r["status"] == "failed" and "secret-scanner-said-no" in r["failure"]["output"]
-    assert _remote_main(world) == before
-
-
 def test_commits_in_a_github_copy_never_run_its_fsmonitor_or_hooks(world, monkeypatch):
     """rev-sec r2: a GitHub-link copy's `.git/config` is the side its app
     (or a Claude session in it) can write. A planted `core.fsmonitor`
@@ -1090,20 +1059,6 @@ def test_commits_in_a_github_copy_never_run_its_fsmonitor_or_hooks(world, monkey
     assert not os.path.exists(marker)
 
 
-def test_sign_in_upgrade_with_flags_off_is_their_repo_auto_pushing(world, monkeypatch):
-    """Round 2 R7: with A1 off there is no Publish now anywhere — the
-    upgrade holds nothing; it is their repo and auto-pushes as today."""
-    bob = _install(world)
-    _commit(bob, "b1.txt", "x\n", "l1")
-    monkeypatch.setattr(classify, "_owns", lambda owner, ident: True)
-    classify.after_sign_in({"login": "alice", "id": 1})
-    assert classify.kind_of(bob) == "own" and not classify.is_held(bob)
-    assert store.get(bob)["hold"] is None
-    assert store.activity(bob)[0]["text"] == classify.PUBLISHED_AS_USUAL
-    r = _sync(bob, push=True)
-    assert r["pushed"] is True and _remote_main(world) == git(bob, "rev-parse", "HEAD").strip()
-
-
 def test_unknown_owner_wording_never_promises_the_edits_stay(world):
     """Final gate (R7): a GitHub-link copy whose owner fused couldn't ask
     about may turn out to be yours (then it publishes) — Doctor and the git
@@ -1121,26 +1076,11 @@ def test_unknown_owner_wording_never_promises_the_edits_stay(world):
     spec = importlib.util.spec_from_file_location("ops_for_contrib_test", ops_path)
     ops = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(ops)
-    assert ops._push_blocked(bob).endswith("until fused knows whether this app is yours.")
+    assert "until fused knows whether this app is yours" in ops._push_blocked(bob)
     store.update(bob, lambda r: r.__setitem__("owner_checked", True))
     _sync(bob)
     assert "until fused knows" not in ops._push_blocked(bob)
     assert "until you propose them" in app_doctor._contrib_git_row(bob)["detail"]
-
-
-def test_a1_off_while_held_says_so_before_publishing(world, monkeypatch):
-    """Final gate: A1 switched off while held — the next push publishes the
-    held edits; one activity line says so and the hold is dropped."""
-    _prefs(world.home, contrib_enabled=True)
-    bob = _install(world)
-    _commit(bob, "b1.txt", "x\n", "l1")
-    monkeypatch.setattr(classify, "_owns", lambda owner, ident: True)
-    classify.after_sign_in({"login": "alice", "id": 1})
-    assert classify.is_held(bob)
-    _prefs(world.home)  # A1 off
-    r = _sync(bob, push=True)
-    assert r["pushed"] is True and store.get(bob)["hold"] is None
-    assert store.activity(bob)[0]["text"] == classify.PUBLISHED_AS_USUAL
 
 
 def test_a_finder_duplicate_of_a_github_copy_is_a_github_copy(world):
@@ -1173,17 +1113,13 @@ def test_a_finder_duplicate_of_a_github_copy_is_a_github_copy(world):
     assert _remote_main(world) == before
 
 
-def test_flags_off_switch_card_stays_for_a_github_copy_on_another_branch(world):
-    """Round 2 R5: with A1 off (no app-page Go back) a GitHub-link copy on
-    another branch keeps today's Switch card; with A1 on it is hidden."""
+def test_switch_card_is_hidden_for_a_github_copy_on_another_branch(world):
+    """Round 2 R5: the app page's Go back is the way (A1 is always on), so a
+    GitHub-link copy on another branch gets no Switch card."""
     bob = _install(world)
     git(bob, "checkout", "-q", "-b", "feature")
     _alice_push(world, "c.txt", "alice\n")
     git_upstream.note_app_opened(bob, _runner=lambda fn: fn())
-    rows = git_upstream.known_repos()
-    assert [(r["branch"], r["on_default"], r["behind"]) for r in rows] == [("feature", False, 1)]
-    assert git_upstream.switch_repo(bob)["ok"] is True
-    _prefs(world.home, contrib_enabled=True)
     assert git_upstream.known_repos() == []
 
 
@@ -1441,10 +1377,9 @@ def test_an_old_record_over_a_repointed_origin_is_kept_and_pointed_back(world):
 
 
 def test_link_install_asks_github_whatever_the_flags(world, monkeypatch):
-    """Upgrade review: with the loop off, the user's own repo installed by
-    link was recorded `github` unchecked — guarded, its commits never
-    pushed. GitHub is asked at install whenever someone is signed in."""
-    assert not flags.sources()
+    """Upgrade review: the user's own repo installed by link used to be
+    recorded `github` unchecked — guarded, its commits never pushed.
+    GitHub is asked at install whenever someone is signed in."""
     monkeypatch.setattr(classify, "_identity", lambda: {"login": "alice", "id": 1,
                                                         "email": "1+alice@users.noreply.github.com"})
     mine = _install(world)

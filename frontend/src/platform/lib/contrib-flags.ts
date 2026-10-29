@@ -1,17 +1,18 @@
-// The five phase switches of the GitHub contribution loop (docs/CONTRIB_LOOP.md
-// §1) — `contrib_<phase>_enabled` in shell/prefs.py, all opt-in, default off.
+// The five phases of the GitHub contribution loop (docs/CONTRIB_LOOP.md §1).
+// The loop itself (sources, changes, inbox, loop) is ALWAYS ON since
+// 2026-10-29 — it was one opt-in switch, `contrib_enabled`; only Remix keeps
+// a switch (`contrib_remix_enabled` in shell/prefs.py, opt-in, default off).
 // The server answers the RAW values under `prefs.contrib` (Preferences shows
-// the switches as set); everything else reads the EFFECTIVE values this module
-// derives, with the prerequisites applied exactly as fused_render/contrib/
-// flags.py applies them server-side:
+// the Remix switch as set); everything else reads the EFFECTIVE values this
+// module derives, exactly as fused_render/contrib/flags.py does server-side:
 //
-//   sources  itself                      (A1 sources + share by link)
-//   changes  sources && itself           (A2 your changes + Propose)
-//   inbox    sources && itself           (A3 author inbox)
-//   loop     changes && inbox && itself  (A4 merge closes the loop)
-//   remix    changes && itself           (A5 remix)
+//   sources  on                          (A1 sources + share by link)
+//   changes  on                          (A2 your changes + Propose)
+//   inbox    on                          (A3 author inbox)
+//   loop     on                          (A4 merge closes the loop)
+//   remix    itself                      (A5 remix)
 //
-// Same shape as marketplace-flag.ts — ONE FETCH, NOT A POLL: the prefs can
+// Same shape as share-app-flag.ts — ONE FETCH, NOT A POLL: the prefs can
 // only change on this app's Preferences page, and that page PUBLISHES the new
 // values (and another window's flip is picked up when this one comes back —
 // prefs-reread.ts). The `generation` counter keeps a pre-toggle GET landing after the
@@ -31,18 +32,19 @@ export interface ContribFlags {
   remix: boolean;
 }
 
-const OFF: ContribFlags = { sources: false, changes: false, inbox: false, loop: false, remix: false };
+/** The defaults: the loop on, Remix (opt-in) off. */
+const OFF: ContribFlags = { sources: true, changes: true, inbox: true, loop: true, remix: false };
 
-/** Raw switches → per-phase flags. Exported so Preferences can say that
- *  Remix waits for the loop without restating the rule. */
+/** Raw switches → per-phase flags. The loop's four phases are always on;
+ *  Remix is its own switch (`=== true`: opt-in, so a server that predates
+ *  the key reads it as off). */
 export function effectiveContribFlags(raw: Partial<ContribPrefs> | null | undefined): ContribFlags {
-  // `=== true`: opt-in, so a server that predates a key reads it as off.
-  const on = raw?.enabled === true;
-  return { sources: on, changes: on, inbox: on, loop: on, remix: on && raw?.remix === true };
+  return { sources: true, changes: true, inbox: true, loop: true, remix: raw?.remix === true };
 }
 
-/** The last answer, or `null` while nobody has asked yet. Null reads as all
- *  OFF (the defaults), so nothing flashes in before the answer lands. */
+/** The last answer, or `null` while nobody has asked yet. Null reads as the
+ *  defaults (loop on, Remix off), so nothing flashes in before the answer
+ *  lands. */
 let flags: ContribFlags | null = null;
 let reading: Promise<void> | null = null;
 let generation = 0;
@@ -86,9 +88,9 @@ function read(): Promise<void> {
       if (generation === departed) set(effectiveContribFlags(p.contrib));
     })
     .catch(() => {
-      // A failed read settles as ALL OFF when nothing better is known — the
-      // defaults, so every surface behaves exactly as with the loop off
-      // rather than waiting on `null` (the share sheet's Fused link card
+      // A failed read settles as the DEFAULTS when nothing better is known,
+      // so every surface behaves as with Remix off rather than waiting on
+      // `null` (the share sheet's Fused link card
       // holds its reads until this answers). `reading` is cleared so the
       // next mount still asks again and can upgrade it.
       reading = null;
@@ -108,7 +110,7 @@ export function publishContribFlags(raw: Partial<ContribPrefs> | null | undefine
 }
 
 /** The last answer, synchronously — for callers that are not components.
- *  All off until a read has landed. */
+ *  The defaults until a read has landed. */
 export function contribFlagsSync(): ContribFlags {
   void read();
   return flags ?? OFF;

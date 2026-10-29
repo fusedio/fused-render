@@ -9,7 +9,7 @@ window. prefs.json (shell/storage) is the same file every other durable shell
 preference lives in.
 
 Two writes, kept distinct: `complete` (the user reached the end — created an
-app or opened a showcase one) and `dismiss` ("Skip for now" / ✕). Both stop
+app) and `dismiss` ("Skip for now" / ✕). Both stop
 the auto-show; only `complete` says onboarding happened. The distinction is
 what lets a later "Setup" entry in the sidebar's Help menu reopen the wizard
 without either write being touched, and what a future version bump could key
@@ -87,9 +87,9 @@ _KEY = "onboarding"
 #: step (it does not build apps), so there the set is four — `_observe`
 #: keys off the same tuple, so neither stage ever enters the meter's count.
 #: `chrome` (a Google Chrome for bots to drive) is in both: Render runs the
-#: same bots from its Bots page. `git` (a usable git — the
-#: showcase clone and Claude Code's own worktrees need one) is Render's only:
-#: Fused Bot clones nothing.
+#: same bots from its Bots page. `git` (a usable git — Community installs
+#: and Claude Code's own worktrees need one) is Render's only: Fused Bot
+#: clones nothing.
 STEPS = (("about", "claude", "chrome", "fda") if _flavor.is_bot()
          else ("about", "claude", "git", "chrome", "fda", "models", "app"))
 
@@ -243,7 +243,7 @@ def _observe(stages: dict) -> None:
     # and never the /usr/bin/git shim, which would pop Apple's "install the
     # developer tools?" dialog on every read (module docstring there). Found =
     # complete, with path + version for the step's row. Not found = pending:
-    # the showcase clone needs one, so it counts. Off macOS the step is `n/a`
+    # Community installs need one, so it counts. Off macOS the step is `n/a`
     # — the owner's call, macOS is the only platform the step is built for.
     if "git" in STEPS:
         try:

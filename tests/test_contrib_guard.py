@@ -138,23 +138,19 @@ def test_nothing_is_refused_on_an_unguarded_repo(guard, tmp_path):
     assert guard.reset_blocked("/r", run, home_dir=str(tmp_path)) is None
 
 
-def test_app_page_on_reads_the_switch(guard, tmp_path, monkeypatch):
-    assert guard.app_page_on(str(tmp_path)) is False  # no prefs.json
+def test_app_page_on_always(guard, tmp_path, monkeypatch):
+    """The loop is no longer a switch (2026-10-29): the panel is always
+    there, whatever prefs.json says or whether it exists."""
+    assert guard.app_page_on(str(tmp_path)) is True  # no prefs.json
     (tmp_path / "prefs.json").write_text("{not json")
-    assert guard.app_page_on(str(tmp_path)) is False
-    (tmp_path / "prefs.json").write_text(json.dumps({"contrib_enabled": "yes"}))
-    assert guard.app_page_on(str(tmp_path)) is False  # opt-in: literal true only
-    (tmp_path / "prefs.json").write_text(json.dumps({"contrib_enabled": True}))
     assert guard.app_page_on(str(tmp_path)) is True
-    # No home given: appenv's, loaded beside the module (env vars only).
+    (tmp_path / "prefs.json").write_text(json.dumps({"contrib_enabled": False}))
+    assert guard.app_page_on(str(tmp_path)) is True  # a stored legacy key is ignored
     monkeypatch.setenv("FUSED_RENDER_HOME_DIR", str(tmp_path))
     assert guard.app_page_on() is True
 
 
-def test_push_sentence_follows_the_switch(guard, tmp_path):
+def test_push_sentence_points_at_the_app_page(guard, tmp_path):
     run = fake(COPY)
-    assert guard.push_blocked("/r", run, home_dir=str(tmp_path)) == (
-        "This copy of alice/x has changes of its own, and they stay on this computer.")
-    (tmp_path / "prefs.json").write_text(json.dumps({"contrib_enabled": True}))
     assert guard.push_blocked("/r", run, home_dir=str(tmp_path)) == (
         "This app follows alice/x. Send your changes from its app page.")

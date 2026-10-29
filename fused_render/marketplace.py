@@ -12,8 +12,8 @@ contribution engine keeps it on the row's approved commit, never the
 author's tip (§18.0 M1). No app code comes from Fused storage any more
 (M2): the release-package path (`marketplace_release`, the tar.gz download,
 its extractor, the per-file stamp writer, the staging sweep) is deleted.
-Deliberately thin: this module plus routers/marketplace.py, a pref
-(`shell/prefs.marketplace_enabled`) and the shell routes; git behaviour is
+Deliberately thin: this module plus routers/marketplace.py and the shell
+routes; git behaviour is
 the engine's (contrib/market.py, contrib/blocks.py), never re-done here.
 
 It is NOT community.py (the /apps hub's old Showcase tab, retired while the

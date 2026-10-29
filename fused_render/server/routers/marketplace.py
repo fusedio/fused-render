@@ -6,8 +6,8 @@ Every endpoint is a sync def on purpose: the catalog build, search, clones
 and the engine's moves block on HTTP and git, and FastAPI runs sync
 endpoints on its threadpool, keeping those waits off the event loop.
 
-NOT gated on the `marketplace_enabled` pref (shell/prefs.py): like every other
-feature flag here, the pref gates the shell's entry points, not the API.
+Never gated: the Community is always offered (2026-10-29; before that its
+pref gated the shell's entry points, not the API).
 
 The mutating routes (POST /install, /ack, /adopt, /check) carry the same
 X-Fused guard as every other write route (`X-Fused: 1`, else 403 — the D3

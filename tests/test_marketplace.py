@@ -1613,23 +1613,6 @@ def test_bot_market_target_installed_and_legacy(env):
     assert err.startswith("Switch to the reviewed version first")
 
 
-# --- the Showcase retires while the Marketplace is on ---------------------------------
-
-def test_community_route_is_retired_while_the_marketplace_is_on(env, monkeypatch):
-    from fused_render import community
-    from fused_render.server.routers import community as community_router
-    from fused_render.shell import prefs
-
-    app = FastAPI()
-    app.include_router(community_router.router)
-    client = TestClient(app)
-    monkeypatch.setattr(community, "main", lambda action="catalog": {"status": "ok", "apps": []})
-    monkeypatch.setattr(prefs, "marketplace_enabled", lambda: False)
-    assert client.post("/api/community", json={"action": "catalog"}).json() == {"status": "ok", "apps": []}
-    monkeypatch.setattr(prefs, "marketplace_enabled", lambda: True)
-    assert client.post("/api/community", json={"action": "catalog"}).json()["status"] == "retired"
-
-
 def test_a_community_copy_is_never_uploaded_and_shares_its_listing(env, tmp_path):
     """P1, the kind decides: a `marketplace` copy is someone else's code
     whatever the switches say — the Fused upload is refused with the loop
