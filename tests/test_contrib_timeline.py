@@ -85,7 +85,7 @@ def test_contributor_sees_comments_asks_and_acceptance_when_it_happens(w):
     assert acc["text"] == ("alice accepted your proposal “Make the wave red”. "
                            "It comes into your copy with the next update.")
     assert acc["at"] == pytest.approx(_tl().iso(pr["merged_at"]))
-    assert acc["undo"] is False and acc["actor"] == "alice"
+    assert "undo" not in acc and acc["actor"] == "alice"
     _p().refresh(w.app, force=True)
     assert _kinds(w).count("proposal-accepted") == 1
 
@@ -201,6 +201,56 @@ def test_unreachable_github_asks_again_next_listing(w, own, monkeypatch):
     monkeypatch.setattr(gh, "get_pr", offline)
     assert tl.inbox_listed(own, [], repo="alice/sine") == 0
     assert "1" in w.store.get(own)["inbox_seen"]
+
+
+def test_a_listing_racing_merge_with_claude_keeps_ours(w, own, monkeypatch):
+    """Bugbot: a listing that read the record before Merge with Claude
+    recorded `ours` must neither drop it nor credit the sender with that
+    head."""
+    tl = _tl()
+    tl.inbox_listed(own, [_item(1, "a")], repo="alice/sine")
+    stale = w.store.get(own)                       # what the in-flight listing read
+    tl.inbox_event(own, 1, "combined", author="bob", head="c")
+    assert w.store.get(own)["inbox_seen"]["1"]["ours"] == "c"
+    real = w.store.get
+    with monkeypatch.context() as m:
+        m.setattr(w.store, "get", lambda d: stale if d == own else real(d))
+        assert tl.inbox_listed(own, [_item(1, "c")], repo="alice/sine") == 0
+    assert w.store.get(own)["inbox_seen"]["1"]["ours"] == "c"
+    assert "inbox-updated" not in _kinds(w, own)
+
+
+def test_the_authors_own_steps_carry_no_actor(w, own, monkeypatch):
+    """Bugbot: only someone else's step has an `actor` (the page marks it)."""
+    from fused_render.contrib import gh
+    tl = _tl()
+    tl.inbox_listed(own, [_item(1, "a"), _item(3, "x", title="Blue")], repo="alice/sine")
+    monkeypatch.setattr(gh, "identity", lambda *a, **k: {"login": "alice"})
+    monkeypatch.setattr(gh, "get_pr", lambda repo, n: {
+        "state": "closed", "merged": True, "merged_by": "alice", "user": "bob",
+        "title": "Blue", "merged_at": "2026-10-21T08:00:00Z"})
+    tl.inbox_listed(own, [_item(1, "a")], repo="alice/sine")
+    mine = next(a for a in _lines(w, own) if a["text"].startswith("You merged"))
+    assert "actor" not in mine
+    for what in ("tried", "asked", "combined", "declined", "accepted"):
+        tl.inbox_event(own, 1, what, author="bob", head="h")
+    tl.reviewed(own, 1, {"user": "bob", "title": "Make it red",
+                         "url": "https://github.com/alice/sine/pull/1"},
+                {"verdict": "fine", "summary": "Fine.", "head_sha": "h"})
+    own_kinds = {"inbox-tried", "inbox-asked", "inbox-merged", "inbox-declined",
+                 "inbox-accepted", "inbox-reviewed"}
+    steps = [a for a in _lines(w, own) if a["kind"] in own_kinds]
+    assert {a["kind"] for a in steps} == own_kinds
+    assert not [a for a in steps if "actor" in a], steps
+    # Someone else's step still names them.
+    opened = next(a for a in _lines(w, own) if a["kind"] == "inbox-opened")
+    assert opened["actor"] == "bob"
+    # The contributor's side: "You merged your proposal" is theirs too.
+    out = tl.proposal_lines({"kind": "github", "repo": "alice/x"},
+                            {"number": 5, "cache": {"state": "open"}},
+                            {"number": 5, "title": "T", "cache": {"state": "merged"}},
+                            {"merged_by": "bob"}, None, me="bob", local_head=None)
+    assert out[0]["text"].startswith("You merged") and "actor" not in out[0]
 
 
 def test_review_line(w, own):

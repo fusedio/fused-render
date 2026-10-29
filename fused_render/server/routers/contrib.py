@@ -40,7 +40,7 @@ there, P1). `POST /api/contrib/action {path, action, confirm?, args?}`
 re-derives that list and refuses an id it does not offer right now, so a
 stale page or a hand-made POST can never run a button the state, kind or
 flags hide; a button with a `confirm` sentence needs `confirm: true`.
-`POST /api/contrib/restore {path, id}` undoes one Activity line. The v1
+Activity is read-only (§16.16): there is no restore route. The v1
 routes that ran a panel button by another door (send, update and withdraw
 a proposal, discard, update-copy, push-main, merge/start, remix publish and
 bring-in) are gone: they skipped that check and the button's confirm. What
@@ -201,7 +201,7 @@ def _gate(body, x_fused, phase, kinds=None):
 
 def _market_ui_for(app_dir: str) -> bool:
     """A MARKETPLACE copy's panel routes (the app read, the action route,
-    Undo, Merge with Claude's review) answer with the Marketplace switch OR
+    Merge with Claude's review) answer with the Marketplace switch OR
     the loop on (`flags.marketplace_ui`, §18.8) — and for a BLOCKED copy
     whatever the switches say: the block list is enforced with every switch
     off, so its way through (a soft block's confirm-block, contract 1; a
@@ -755,14 +755,10 @@ def _remix(t: _Target, args) -> dict:
 
 
 def _bring_in(t: _Target) -> dict:
-    """Bring in: a GitHub-link copy's author's latest (engine); an own app's
-    GitHub version after an undone combine (ownsync's `kept` state names
-    it as a fix); else a remix's original (remix)."""
+    """Bring in: a GitHub-link copy's author's latest (engine); else a
+    remix's original (remix)."""
     if t.record.get("kind") != "own":
         return _job("action-bring-in", t.app_dir, _mod("engine").bring_in, t.app_dir)
-    own = _mod("ownsync")
-    if "bring-in" in ((own.status(t.app_dir) or {}).get("fixes") or []):
-        return _job("action-bring-in", t.app_dir, own.bring_in, t.app_dir)
     # A merge job's id (purpose "original"): the review shows it, not /job.
     out = _call("bring in", _mod("remix").start_bring_in, t.app_dir)
     return {**out, "merge": True} if out.get("ok") and out.get("job") else out
@@ -902,22 +898,3 @@ def api_contrib_action(body: dict = Body(...), x_fused: str | None = Header(defa
     except Exception as e:  # noqa: BLE001
         return _failure(e, f"action {action}")
 
-
-@router.post("/api/contrib/restore")
-def api_contrib_restore(body: dict = Body(...), x_fused: str | None = Header(default=None)):
-    """Undo / Restore on one Activity line — `engine.restore` for a
-    GitHub-link copy, `ownsync.restore` for an own app (each backs up the
-    current state first and knows only its own lines). Only a line this
-    app's Activity offers Undo for is accepted."""
-    t = _gate(body, x_fused, "sources")
-    if not isinstance(t, _Target):
-        return t
-    line_id = _text(body, "id")
-    if _actions().merge_open(t.app_dir):
-        return _refuse("merging", "Keep or discard Claude's merge first.")
-    lines = _safely("activity", _actions().activity, t.app_dir) or []
-    line = next((x for x in lines if isinstance(x, dict) and x.get("id") == line_id), None)
-    if not line_id or line is None or not line.get("undo"):
-        return _refuse("not-offered", "That can't be undone any more.")
-    owner = "ownsync" if t.record.get("kind") == "own" else "engine"
-    return _call("restore", _mod(owner).restore, t.app_dir, line_id)

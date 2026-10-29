@@ -219,18 +219,15 @@ def update_mirror(root, fol: Follow, *, why: str = "rewound") -> dict:
     """The second half of §17.3's fetch row (I3): `refs/heads/<b>` follows
     `refs/remotes/origin/<b>` as a REF update — never a worktree move —
     with git's compare-and-set (`update-ref <ref> <new> <old>`). A non-fast-
-    forward (the author rewound, or commits made on the mirror while it was
-    checked out) pins the old tip under `refs/fused/backup/<ms>-rewound`
-    first and moves the ref anyway. While HEAD IS `<b>` (the `other-branch`
-    state) the local ref is left alone: a checked-out branch is never moved
-    under its worktree. A non-fast-forward here IS the author rewinding (a
-    mirror fused moved off its own commits elsewhere — Go back, a new home
-    branch — is reset there, not here), so it writes the one Activity line
-    "<who> went back to an earlier version…", naming the pin as `ref` (kept,
-    never offered as Undo: restoring it would put the author's old version
-    over Bob's own). The caller holds the slot. Answers `{"moved",
-    "backup", "ff", "old"}` — `ff` False for a pinned non-fast-forward, `old`
-    the ref's tip before.
+    forward (the author rewound) moves the ref too; nothing is pinned
+    (§16.16). While HEAD IS `<b>` (the `other-branch` state) the local ref
+    is left alone: a checked-out branch is never moved under its worktree.
+    A non-fast-forward here IS the author rewinding (a mirror fused moved
+    off its own commits elsewhere — Go back, a new home branch — is reset
+    there, not here), so it writes the one Activity line "<who> went back to
+    an earlier version…". The caller holds the slot. Answers `{"moved",
+    "ff", "old", "reason"}` — `ff` False for a non-fast-forward, `old` the
+    ref's tip before.
 
     PINNED (§18.4, a marketplace copy): `new` is the approved commit
     (`fol.commit`), never origin's tip, and only when it is in the
@@ -239,11 +236,11 @@ def update_mirror(root, fol: Follow, *, why: str = "rewound") -> dict:
     (`missing` when the commit was never fetched), and never onto a commit
     that is or contains a HARD-blocked commit of the copy's listing
     (`blocks.contains_blocked`) — `reason` `BLOCKED` then, also when the
-    block list cannot be read (M1, fail closed). `why` names the pin of a
-    non-fast-forward move: `rewound` (the row went back: the one Activity
-    line, no Undo), or a caller's own (`rollback`, `switch` — the caller
-    writes its line)."""
-    res = {"moved": False, "backup": None, "ff": True, "old": None, "reason": None}
+    block list cannot be read (M1, fail closed). `why` says whose line a
+    non-fast-forward move gets: `rewound` (the author or the row went back:
+    the one Activity line, written here), or a caller's own (`blocked`,
+    `switch` — the caller writes its line)."""
+    res = {"moved": False, "ff": True, "old": None, "reason": None}
     ref = f"refs/heads/{fol.branch}"
     old = replay.rev(root, ref)
     res["old"] = old
@@ -265,16 +262,12 @@ def update_mirror(root, fol: Follow, *, why: str = "rewound") -> dict:
         return res
     if old and not replay.is_ancestor(root, old, new):
         res["ff"] = False
-        pin = replay._new_backup_ref(root, why)
-        if not replay.ok(replay.git(root, "update-ref", pin, old)):
-            return res
-        res["backup"] = pin
     r = replay.git(root, "update-ref", "-m", "fused: mirror", ref, new, old or "")
     res["moved"] = replay.ok(r)
     if not res["moved"]:
         logger.info("contrib: mirror of %s in %s not moved: %s", ref, root, gu._text(r))
-    elif res["backup"] and why == "rewound":
-        _rewound_line(root, res["backup"], pinned=fol.pinned)
+    elif not res["ff"] and why == "rewound":
+        _rewound_line(root, pinned=fol.pinned)
     return res
 
 
@@ -294,9 +287,9 @@ def _hard_blocked(root, sha) -> bool:
         return True
 
 
-def _rewound_line(root, pin, *, pinned=False) -> None:
+def _rewound_line(root, *, pinned=False) -> None:
     """The author rewound their branch (or, pinned, the index row went back
-    to an earlier release): one Activity line naming the pin."""
+    to an earlier release): one Activity line."""
     try:
         from fused_render.contrib import store
 
@@ -307,8 +300,8 @@ def _rewound_line(root, pin, *, pinned=False) -> None:
                 "your changes are untouched." if pinned else
                 f"{who} went back to an earlier version of their app. Your copy and your "
                 "changes are untouched.")
-        store.add_activity(root, "rewound", text, ref=pin)
-    except Exception:  # noqa: BLE001 — the pin itself keeps the old version
+        store.add_activity(root, "rewound", text)
+    except Exception:  # noqa: BLE001 — a line never fails the fetch
         logger.exception("contrib: rewound line failed for %s", root)
 
 

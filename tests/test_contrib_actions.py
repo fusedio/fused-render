@@ -36,7 +36,7 @@ def gh(state="following", *, flags=ALL, github=IN, proposal=None, owner_checked=
          "author": "alice", "changes_files": [], "changes": 0, "dirty": False,
          "unproposed": 0, "behind": 0, "needs_merge": False, "needs_merge_purpose": None,
          "needs_merge_files": [], "merge_job": None, "blocked_files": [],
-         "kept_mine": False, "off_default": False, "claude_busy": False,
+         "off_default": False, "claude_busy": False,
          "last_checked": 1000.0, "auto_sync": True, "can_push": None, "owner_checked": True,
          "sync_error": None, "sync_error_code": None, "pending": False}
     c.update(copy)
@@ -87,10 +87,6 @@ TABLE = [
      ["propose", "remix", "push-main", "discard", "check"]),
     ("changes, behind", gh("changes", behind=1, **CH),
      ["propose", "remix", "discard", "bring-in", "check"]),
-    # §17.2 undo hold: the user undid an automatic bring-in; Bring in is the
-    # way forward (no Keep mine any more).
-    ("changes, undone bring-in", gh("changes", behind=1, kept_mine=True, **CH),
-     ["propose", "remix", "discard", "bring-in", "check"]),
     ("dirty only", gh("changes", dirty=True, changes_files=["a.py"], changes=1),
      ["propose", "remix", "discard", "check"]),
     # §17.2: Merge with Claude · Use <who>'s version — no Keep mine.
@@ -122,8 +118,6 @@ TABLE = [
     ("merged", gh("merged"), ["check"]),
     ("merged, not in yet", gh("merged", behind=2), ["bring-in", "check"]),
     ("merged, not in yet, automatic updates off", gh("merged", behind=2, auto_sync=False),
-     ["bring-in", "check"]),
-    ("merged, not in yet, undo hold", gh("merged", behind=2, kept_mine=True),
      ["bring-in", "check"]),
     # §16.12: edits kept after a merge can go in a new proposal.
     ("merged, kept edits", gh("merged", **CH), ["propose", "remix", "discard", "check"]),
@@ -227,9 +221,6 @@ TABLE = [
     ("own no tracking yet", own("no-github"), ["check"]),
     # §16.12: held after a github→own upgrade; unknown rewind state.
     ("own held", own("held", unpublished=2), ["publish-now", "check"]),
-    ("own kept (undone combine)", own("kept", github_new=1), ["bring-in", "check"]),
-    ("remix kept, original moved too", own("kept", remix_of="alice/x", original_update=True),
-     ["bring-in", "check"]),
     ("own unknown", own("unknown", unpublished=1), ["publish-now", "use-github", "check"]),
     ("own A1 still fixes", own("github-changed", unpublished=1, flags=A1),
      ["put-on-top", "use-github", "publish-over", "check"]),
@@ -274,7 +265,6 @@ def test_buttons(name, f, want):
     ("own needs-merge", own("needs-merge", unpublished=1), "merge-claude"),
     ("github-changed", own("github-changed", unpublished=1), "put-on-top"),
     ("held", own("held", unpublished=2), "publish-now"),
-    ("kept", own("kept", github_new=1), "bring-in"),
     ("publish-hook", own("publish-hook", unpublished=1), "publish-now"),
     ("choice", gh("needs-merge", merge_job={"id": "m", "status": "choice"}), "choose-mine"),
     ("own choice", own("needs-merge", merge_job={"id": "m", "status": "choice",
@@ -335,8 +325,7 @@ def test_confirm_and_danger():
     nm = gh("needs-merge")
     assert _button(nm, "match")["danger"]
     assert _button(nm, "match")["confirm"] == (
-        "Your copy becomes alice's version. Your changes are kept in Activity so you can "
-        "bring them back.")
+        "Your copy becomes alice's version. Your changes are lost — this can't be undone.")
     kw = _button(gh("declined", **CH), "keep-working")
     assert "confirm" not in kw and "danger" not in kw and not kw["primary"]
     ch = gh("changes", can_push=True, **CH)
@@ -409,11 +398,9 @@ def test_nothing_to_show_is_null():
     (gh("merged"), "merged", "alice merged your change. You're on alice's latest version."),
     (gh("merged", behind=1), "merged",
      "alice merged your change. It comes into your copy the next time you open the app, or when you press Check now."),
-    # Review #8: with automatic updates off or an undo hold, neither opening
-    # nor Check now brings it in — only Bring in does.
+    # Review #8: with automatic updates off, neither opening nor Check now
+    # brings it in — only Bring in does.
     (gh("merged", behind=1, auto_sync=False), "merged",
-     "alice merged your change. Bring it in when you're ready."),
-    (gh("merged", behind=1, kept_mine=True), "merged",
      "alice merged your change. Bring it in when you're ready."),
     (gh("needs-merge", merge_job={"id": "m", "status": "choice",
                                   "error": "logo.png isn't text, so it can't be combined."}),
@@ -449,10 +436,6 @@ def test_nothing_to_show_is_null():
     (gh("changes", github=OUT, **CH), "changes", "Sign in to GitHub to send your proposal."),
     (gh(claude_busy=True), "following", "Claude is still working on this app."),
     (gh("changes", flags=A1, **CH), "changes", "You have your own changes in this app."),
-    (gh("changes", behind=1, kept_mine=True, **CH), "changes",
-     "Your changes: 1 file. You undid that; alice's latest is waiting."),
-    (gh(behind=2, kept_mine=True), "following",
-     "alice has a newer version. You undid that; alice's latest is waiting."),
     (gh("needs-merge", needs_merge_files=["a.py"], merge_job=MOVED_JOB), "needs-merge",
      "alice changed the same parts you did: a.py. Your copy changed meanwhile; run it again."),
     (own("needs-merge", files=["a.py"]), "needs-merge", "both change a.py"),
@@ -496,11 +479,11 @@ CALLED = [
     ("engine", "status", ()), ("engine", "bring_in", ()), ("engine", "match", ()),
     ("engine", "keep_working", ()), ("engine", "move_aside", ()),
     ("engine", "go_back_main", ()), ("engine", "discard", ("withdraw",)),
-    ("engine", "restore", ()), ("engine", "push_to_main", ()), ("engine", "merge_plan", ()),
+    ("engine", "push_to_main", ()), ("engine", "merge_plan", ()),
     ("ownsync", "status", ()), ("ownsync", "check_now", ()), ("ownsync", "publish_now", ()),
     ("ownsync", "use_github", ()), ("ownsync", "put_on_top", ()),
     ("ownsync", "publish_over", ()), ("ownsync", "save_edits", ()),
-    ("ownsync", "start_merge", ()), ("ownsync", "restore", ()), ("ownsync", "bring_in", ()),
+    ("ownsync", "start_merge", ()),
     ("merge_job", "start", ("purpose", "ours", "theirs")), ("merge_job", "get", ()),
     ("merge_job", "accept", ()), ("merge_job", "discard", ()),
     ("merge_job", "current", ("purpose",)), ("merge_job", "for_app", ()),
@@ -552,7 +535,7 @@ def test_round2_new_files():
 def test_v2_ids_and_facts_are_gone():
     """§17: Keep mine / Use theirs and the `return` purpose are deleted;
     `taken_back` (kept False for one release) no longer changes a word or a
-    button. (`kept_mine` is the v3 undo hold: a sentence, never a button.)"""
+    button."""
     assert not {"keep-mine", "use-theirs"} & set(actions.IDS)
     assert {"match", "keep-working"} <= set(actions.IDS)
     assert actions.CHOICE_PURPOSES["github"] == ("update", "proposal")
@@ -560,17 +543,9 @@ def test_v2_ids_and_facts_are_gone():
         plain = actions.decide(f)
         stale = actions.decide({**f, "copy": {**f["copy"], "taken_back": True}})
         assert stale == plain
-    held = gh("changes", behind=1, kept_mine=True, **CH)
-    assert ids(held) == ids(gh("changes", behind=1, **CH))
-    assert actions.decide({**held, "copy": {**held["copy"], "behind": 0}})["panel"]["sentence"] \
-        == "Your changes: 1 file."  # nothing waiting: nothing to say
 
 
-def test_merged_with_an_undo_hold_says_it_once():
-    """The held `merged` sentence already says Bring in is theirs to press;
-    the undo-hold line is not repeated after it."""
-    p = actions.decide(gh("merged", behind=1, kept_mine=True))["panel"]
-    assert p["sentence"] == "alice merged your change. Bring it in when you're ready."
+def test_merged_and_in_with_automatic_updates_off():
     assert actions.decide(gh("merged", behind=0, auto_sync=False))["panel"]["sentence"] \
         == "alice merged your change. You're on alice's latest version."
 
@@ -592,7 +567,7 @@ def test_own_merge_reaches_the_panel_through_the_real_registry(tmp_path, monkeyp
     """rev-fe 1: engine.status carries a GitHub-link copy's merges only, so an
     own app's Merge with Claude must come from merge_job itself — through
     `facts`, the REAL registry (`merge_job.current`), not literal facts.
-    Ready → the review (no other buttons, Undo off); failed → named, with
+    Ready → the review (no other buttons); failed → named, with
     Merge with Claude again; an inbox proposal's merge in the same folder
     stays out of the panel."""
     import time
@@ -612,7 +587,7 @@ def test_own_merge_reaches_the_panel_through_the_real_registry(tmp_path, monkeyp
     monkeypatch.setattr(refresh, "github_identity", lambda: IN)
     monkeypatch.setattr(actions, "_own_checked", lambda d: None)
     monkeypatch.setattr(store, "activity", lambda d: [
-        {"id": "a1", "at": 1, "kind": "own-sync", "text": "Combined.", "undo": True}])
+        {"id": "a1", "at": 1, "kind": "own-sync", "text": "Combined."}])
     now = time.time()
 
     def job(jid, purpose, status, land=True):
@@ -629,19 +604,16 @@ def test_own_merge_reaches_the_panel_through_the_real_registry(tmp_path, monkeyp
     job("inbox", "proposal", "ready", land=False)
     out = actions.for_app(str(app), copy=copy, proposal=None)
     assert out["panel"]["merge"] is None and out["panel"]["state"] == "needs-merge"
-    assert actions.activity(str(app))[0]["undo"] is True
     mine = job("own", "own-sync", "ready")
     out = actions.for_app(str(app), copy=copy, proposal=None)
     assert out["panel"]["state"] == "merging" and out["panel"]["merge"]["id"] == "own"
     assert out["panel"]["sentence"] == "Claude combined both versions. Kept both."
     assert out["actions"] == []
-    assert actions.activity(str(app))[0]["undo"] is False  # rev-fe 13
     mine.update(status="failed", error="Both sides rewrote the same lines.", ended_at=now)
     out = actions.for_app(str(app), copy=copy, proposal=None)
     assert out["actions"][0]["id"] == "merge-claude"
     assert out["actions"][0]["label"] == "Merge with Claude again"
     assert "Claude couldn't combine them. Both sides rewrote" in out["panel"]["sentence"]
-    assert actions.activity(str(app))[0]["undo"] is True
 
 
 def test_choice_buttons_name_the_files():

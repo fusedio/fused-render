@@ -1105,7 +1105,7 @@ def test_lifecycle_propose_update_merge_land(sw, method):
 def test_a_merged_proposal_settles_onto_the_authors_latest(sw, method):
     """§17.3 settle: nothing of Bob's beyond what she merged — once her
     merge is brought in the trees match, so fused/mine is moved onto her
-    latest (old tip pinned), no file changes."""
+    latest, no file changes — and nothing is pinned (§16.16: no backups)."""
     w = sw
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     _send(w)
@@ -1114,7 +1114,7 @@ def test_a_merged_proposal_settles_onto_the_authors_latest(sw, method):
     assert_home_invariants(w.app)
     assert _head(w) == _tip(w) == w.fake.tip("alice/sine", "main")
     assert _proposal(w)["landed_at"]
-    assert git(w.app, "for-each-ref", "refs/fused/backup/") != ""
+    assert git(w.app, "for-each-ref", "refs/fused/backup/") == ""
     assert "red" in read(w.app, "index.html")
 
 

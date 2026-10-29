@@ -393,7 +393,7 @@ def test_install_records_v3_home_branch_and_push_guard(world):
     rec = store.get(bob)
     assert rec["v"] == 3 and rec["kind"] == "github"
     raw = store.get_raw(store.key(bob))
-    assert "root_commit" not in raw and raw["skip_tip"] is None
+    assert not {"root_commit", "skip_tip"} & set(raw)
     _invariants(bob)
     assert git(bob, "config", f"branch.{classify.HOME_BRANCH}.merge").strip() == "refs/heads/main"
     assert git(bob, "config", f"branch.{classify.HOME_BRANCH}.remote").strip() == "origin"
@@ -707,8 +707,8 @@ def test_first_v3_sync_migrates_a_v1_record_and_deletes_v1_refs(world):
 def test_v2_proposal_reads_landed_at_and_migrates(home, tmp_path):
     """§17.5: `returned_at` reads as `landed_at`; `migrate_v3` drops what v3
     no longer keeps (the sent version, the tip check, root commit, the
-    overlap, a github row's v2 Keep mine — not an undo hold) and stamps v3 —
-    record only. An own row's `skip_tip` is ownsync's and stays."""
+    overlap, any row's `skip_tip` — the undo hold Activity no longer has,
+    §16.16) and stamps v3 — record only."""
     d = tmp_path / "a"
     d.mkdir()
     store.put(str(d), {"v": 2, "kind": "github", "repo": "alice/x", "root_commit": "r" * 40,
@@ -719,14 +719,14 @@ def test_v2_proposal_reads_landed_at_and_migrates(home, tmp_path):
     rec, migrated = store.migrate_v3(str(d))
     assert migrated and rec["v"] == 3
     raw = store.get_raw(store.key(str(d)))
-    assert not {"root_commit", "needs_merge"} & set(raw) and raw["skip_tip"] is None
+    assert not {"root_commit", "needs_merge", "skip_tip"} & set(raw)
     assert raw["proposal"] == {"number": 1, "landed_at": 5.0}
     assert store.migrate_v3(str(d))[1] is False
     own = tmp_path / "own"
     own.mkdir()
     store.put(str(own), {"v": 2, "kind": "own", "skip_tip": "s" * 40})
     store.migrate_v3(str(own))
-    assert store.get(str(own))["skip_tip"] == "s" * 40  # ownsync's, kept
+    assert "skip_tip" not in store.get_raw(store.key(str(own)))
 
 
 def test_activity_api(home, tmp_path):
@@ -734,16 +734,14 @@ def test_activity_api(home, tmp_path):
     d.mkdir()
     store.put(str(d), store.new_record("github", repo="alice/x", branch="main"))
     first = store.add_activity(str(d), "update", "Got alice's latest")
-    undo = store.add_activity(str(d), "moved", "Got alice's latest",
-                              backup=["refs/fused/backup/9-x", "refs/fused/backup/9-x-wip"])
+    saved = store.add_activity(str(d), "moved", "Got alice's latest",
+                               backup=["refs/fused/backup/9-x", "refs/fused/backup/9-x-wip"])
     lines = store.activity(str(d))
-    assert [(a["id"], a["undo"]) for a in lines] == [(undo, True), (first, False)]
-    assert set(lines[0]) == {"id", "at", "kind", "text", "undo"}
-    assert store.activity_entry(str(d), undo)["backup"][1] == "refs/fused/backup/9-x-wip"
+    assert [a["id"] for a in lines] == [saved, first]
+    # Read-only (§16.16): no `undo`, and the backup is not served.
+    assert set(lines[0]) == {"id", "at", "kind", "text"}
     assert store.referenced_backups(str(d)) == {"refs/fused/backup/9-x",
                                                 "refs/fused/backup/9-x-wip"}
-    assert store.mark_restored(str(d), undo)
-    assert store.activity(str(d))[0]["undo"] is False
     for i in range(store.ACTIVITY_KEEP + 5):
         store.add_activity(str(d), "update", f"line {i}")
     lines = store.activity(str(d))
@@ -1336,7 +1334,8 @@ def test_own_copy_leaves_fused_mine_without_moving_a_file(world, monkeypatch):
 
 def test_own_move_pins_commits_found_nowhere_else(world):
     """Review P2 #20: commits only the default branch had are pinned, with
-    an Activity line (Undo)."""
+    an Activity line (guard 3 of §16.16: never lost, though nothing offers
+    it back)."""
     bob = _install(world)
     git(bob, "checkout", "-q", "main")
     lone = _commit(bob, "lone.txt", "x\n", "lone")
@@ -1347,8 +1346,8 @@ def test_own_move_pins_commits_found_nowhere_else(world):
         classify.settle_locked(bob, "own")
     assert git(bob, "symbolic-ref", "--short", "HEAD").strip() == "main"
     line = next(a for a in store.activity(bob) if a["kind"] == "own-move")
-    assert line["undo"] and line["text"] == classify.OWN_MOVE_TEXT
-    entry = store.activity_entry(bob, line["id"])
+    assert line["text"] == classify.OWN_MOVE_TEXT
+    entry = next(e for e in store.get(bob)["activity"] if e["id"] == line["id"])
     assert replay.rev(bob, entry["backup"]) == lone
 
 

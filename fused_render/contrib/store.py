@@ -97,8 +97,7 @@ KINDS = ("github", "own", "scratch", "marketplace")
 #: credits} (the last row seen — the commit the mirror holds), `listing`
 #: {status live|delisted, checked_at, delisted_at}, `block` (a block-list
 #: entry this copy ran into, `contrib/blocks.py`), `switched` (one entry per
-#: explicit switch between kinds, for the record; Undo lives on the Activity
-#: line). A `github` record carries `block_warn` (B4's warning).
+#: explicit switch between kinds, for the record). A `github` record carries `block_warn` (B4's warning).
 MARKET_FIELDS = ("slug", "approved", "listing", "block", "switched")
 
 #: The record fields `adopt` carries to a new folder. A Finder-moved
@@ -152,8 +151,7 @@ def new_record(kind: str, *, repo: str | None = None, branch: str | None = None,
     """A fresh Record with every §3/§17.6 field present (callers never have
     to `.get` a field into existence). v2's `root_commit` (v3 binds by
     origin or copy id, §17.6) and `needs_merge` are not written
-    (`_view` still shows it as None for one release). `skip_tip` is the
-    undo hold (engine: an Undo of an automatic move holds that tip)."""
+    (`_view` still shows it as None for one release)."""
     return {
         "v": RECORD_V,
         "kind": kind,
@@ -167,7 +165,6 @@ def new_record(kind: str, *, repo: str | None = None, branch: str | None = None,
         "events": [],
         "original_update": None,
         "activity": [],
-        "skip_tip": None,
         "own_state": None,
         # A `github` copy whose account may publish straight to the author's
         # branch (a collaborator, §16.6): True/False once GitHub said, else None.
@@ -217,12 +214,12 @@ def market_fields(market) -> dict:
 def _view(rec: dict) -> dict:
     """What a reader sees: `rec` (a copy) with every field present — v2's
     `root_commit` and `needs_merge` as None when the row has none (old
-    readers, one release), `skip_tip` (the undo hold) as None — and an
+    readers, one release) — and an
     older proposal's `returned_at` read as `landed_at`
     (§17.5): no reader has to know which schema wrote the row. Nothing
     persists here; `migrate_v3` does that."""
     for name, default in (("root_commit", None), ("needs_merge", None), ("activity", []),
-                          ("skip_tip", None), ("own_state", None), ("hold", None), ("seen_tips", []),
+                          ("own_state", None), ("hold", None), ("seen_tips", []),
                           ("last_head", None), ("copy_id", None),
                           # §18.4: the marketplace fields and a github
                           # record's block warning, None until written.
@@ -683,25 +680,24 @@ def note_head(app_dir: str, head: str | None) -> None:
     update(app_dir, lambda r: r.__setitem__("last_head", head))
 
 
-def add_activity(app_dir: str, kind: str, text: str, *, backup=None, aside=None,
-                 ref=None, at=None, key=None, actor=None, link=None) -> str | None:
+def add_activity(app_dir: str, kind: str, text: str, *, backup=None, at=None, key=None,
+                 actor=None, link=None) -> str | None:
     """Append one Activity line (§16.9) — a plain-words sentence (§0.1) for
     something fused did to this copy, or (§16.16) something someone did
     that reached it — and answer its id (None when there is no record, the
     write failed, or a line with the same `key` is already there).
-    `backup` (a backup ref, or a list of
-    them: a tip and its `-wip`) and/or `aside` (where moved-aside files
-    went) make the line undoable, and a ref a line names is never pruned
-    (`referenced_backups`). `ref`: a pinned ref the line names WITHOUT
-    offering Undo (the mirror's old tip after an author rewind — restoring
-    it would put the author's old version over Bob's own; review P1 #3);
-    never pruned either. Capped at ACTIVITY_KEEP.
+    `backup` (a backup ref, or a list of them: a tip and its `-wip`) names
+    what a move saved — a local file it would have overwritten, a commit
+    that raced it (§16.16's guards) — and a ref a line names is never
+    pruned (`referenced_backups`). Activity is read-only: nothing offers to
+    put it back. Capped at ACTIVITY_KEEP.
 
     §16.16: `at` (epoch seconds) dates the line when it happened rather
     than when fused noticed (a pull request merged an hour before the app
     was opened); `key` makes it once-only (`timeline.py`'s event keys);
-    `actor` is the GitHub login it is about; `link` a github.com page."""
-    entry = new_activity(kind, text, backup=backup, aside=aside, ref=ref, at=at, key=key,
+    `actor` is the GitHub login of whoever took the step when it is someone
+    else (the page marks those); `link` a github.com page."""
+    entry = new_activity(kind, text, backup=backup, at=at, key=key,
                          actor=actor, link=link)
     added = []
 
@@ -715,7 +711,7 @@ def add_activity(app_dir: str, kind: str, text: str, *, backup=None, aside=None,
 LINK_PREFIX = "https://github.com/"
 
 
-def new_activity(kind: str, text: str, *, backup=None, aside=None, ref=None, at=None,
+def new_activity(kind: str, text: str, *, backup=None, at=None,
                  key=None, actor=None, link=None) -> dict:
     """One Activity line, not stored yet — for a caller that must write it
     in the SAME `update` as another field (the engine's `landed_at`
@@ -725,7 +721,7 @@ def new_activity(kind: str, text: str, *, backup=None, aside=None, ref=None, at=
              "at": float(at) if isinstance(at, (int, float)) and not isinstance(at, bool)
              and at > 0 else time.time(),
              "kind": str(kind), "text": str(text),
-             "backup": backup, "aside": aside, "ref": ref, "restored_at": None}
+             "backup": backup}
     if key:
         entry["key"] = str(key)
     if isinstance(actor, str) and actor:
@@ -758,21 +754,14 @@ def append_activity(rec: dict, entry: dict) -> bool:
     return True
 
 
-#: An explicit switch between kinds (§18.4 D13): its Undo is the opposite
-#: switch (`engine.restore`), backup or not.
+#: An explicit switch between kinds (§18.4 D13); switching back is the
+#: opposite switch, a button of its own.
 SWITCH_KIND = "switch"
 
 
-def _undoable(e: dict) -> bool:
-    if e.get("kind") == SWITCH_KIND:
-        return not e.get("restored_at")
-    return bool(e.get("backup") or e.get("aside")) and not e.get("restored_at")
-
-
 def activity(app_dir: str) -> list:
-    """`[{id, at, kind, text, undo, actor?, link?}]`, newest first (§16.9).
-    `undo`: the line names a backup or set-aside files and was not restored
-    already. `actor`/`link` only on a line that has them (§16.16)."""
+    """`[{id, at, kind, text, actor?, link?}]`, newest first (§16.9) —
+    read-only (§16.16). `actor`/`link` only on a line that has them."""
     rec = get(app_dir)
     lines = rec.get("activity") if rec and isinstance(rec.get("activity"), list) else []
     out = []
@@ -780,7 +769,7 @@ def activity(app_dir: str) -> list:
         if not isinstance(e, dict):
             continue
         line = {"id": e.get("id"), "at": e.get("at"), "kind": e.get("kind"),
-                "text": e.get("text"), "undo": _undoable(e)}
+                "text": e.get("text")}
         for extra in ("actor", "link"):
             if e.get(extra):
                 line[extra] = e[extra]
@@ -788,29 +777,6 @@ def activity(app_dir: str) -> list:
     # Stable: lines written in the same second keep their written order.
     out.sort(key=lambda x: x["at"] if isinstance(x["at"], (int, float)) else 0, reverse=True)
     return out
-
-
-def activity_entry(app_dir: str, activity_id: str) -> dict | None:
-    """The whole stored line `activity_id` (`backup`, `aside`,
-    `restored_at` included) — what `engine.restore` acts on. A copy."""
-    rec = get(app_dir)
-    for e in (rec or {}).get("activity") or []:
-        if isinstance(e, dict) and e.get("id") == activity_id:
-            return copy.deepcopy(e)
-    return None
-
-
-def mark_restored(app_dir: str, activity_id: str) -> bool:
-    """Line `activity_id` was undone: it stays (it is history), without Undo."""
-    hit = []
-
-    def fn(rec):
-        for e in rec.get("activity") or []:
-            if isinstance(e, dict) and e.get("id") == activity_id:
-                e["restored_at"] = time.time()
-                hit.append(True)
-
-    return update(app_dir, fn) is not None and bool(hit)
 
 
 def referenced_backups(app_dir: str) -> set:
@@ -821,10 +787,10 @@ def referenced_backups(app_dir: str) -> set:
     for e in (rec or {}).get("activity") or []:
         if not isinstance(e, dict):
             continue
-        for b in (e.get("backup"), e.get("ref")):
-            for r in (b if isinstance(b, list) else [b]):
-                if isinstance(r, str) and r:
-                    refs.add(r)
+        b = e.get("backup")
+        for r in (b if isinstance(b, list) else [b]):
+            if isinstance(r, str) and r:
+                refs.add(r)
     return refs
 
 
@@ -862,7 +828,7 @@ def migrate_v2(app_dir: str) -> tuple[dict | None, bool]:
                 lines.append({"id": f"{int(at * 1000)}-{secrets.token_hex(3)}",
                               "at": at, "kind": "backup",
                               "text": "Saved a copy of your work before an update.",
-                              "backup": b["ref"], "aside": None, "restored_at": None})
+                              "backup": b["ref"]})
         lines.sort(key=lambda e: e.get("at") or 0)
         rec["activity"] = lines[-ACTIVITY_KEEP:]
         p = rec.get("proposal")
@@ -873,7 +839,7 @@ def migrate_v2(app_dir: str) -> tuple[dict | None, bool]:
             p.pop("pushed_head", None)
             p.pop("proposed_head", None)
         rec.pop("protected", None)
-        for name, default in (("root_commit", None), ("skip_tip", None), ("own_state", None)):
+        for name, default in (("root_commit", None), ("own_state", None)):
             rec.setdefault(name, default)
         rec["v"] = _V2
 
@@ -901,8 +867,8 @@ def migrate_v3(app_dir: str) -> tuple[dict | None, bool]:
     git side of the move (`fused/mine`, the mirror, the v1 refs) is
     `classify.settle_locked`'s, which calls this LAST so a git step that
     failed is retried on the next sync. v1 first goes through `migrate_v2`.
-    Drops `root_commit`, `needs_merge` and a `github` row's `skip_tip` (v2's
-    Keep mine is not an undo hold; an own row's is ownsync's and stays), the proposal's
+    Drops `root_commit`, `needs_merge` and `skip_tip` (an undo hold, gone
+    with Activity's Undo, §16.16), the proposal's
     `sent`/`pushed_head`/`proposed_head`/`checked_tip`/credit (its
     `returned_at` becomes `landed_at`), stamps `v: 3`. Answers `(record,
     migrated)`; `migrated` is False for a record already v3 (or none) — one
@@ -922,10 +888,7 @@ def migrate_v3(app_dir: str) -> tuple[dict | None, bool]:
         did.append(True)
         rec.pop("root_commit", None)
         rec.pop("needs_merge", None)
-        if rec.get("kind") != "own":
-            # v2's Keep mine is not v3's undo hold (review P2 #9); an own
-            # copy's `skip_tip` is ownsync's and stays.
-            rec["skip_tip"] = None
+        rec.pop("skip_tip", None)
         if isinstance(rec.get("proposal"), dict):
             _v3_proposal(rec["proposal"])
         rec["v"] = RECORD_V

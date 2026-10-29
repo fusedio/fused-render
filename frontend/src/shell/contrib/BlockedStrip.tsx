@@ -108,7 +108,7 @@ export function BlockedStrip({
         sentence={<>Fused blocked the version of this app you were running: {block.reason}</>}
         detail={
           <>
-            {back && <p className="contrib-block-note">{back} There is no Undo, because Undo would run the blocked version again.</p>}
+            {back && <p className="contrib-block-note">{back}</p>}
             {block.conflict && (
               <p className="contrib-block-note">
                 Your changes overlap the roll-back, so the app stays stopped until Merge with Claude finishes it.

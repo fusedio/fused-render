@@ -134,6 +134,11 @@ def _activity(root):
     return store.activity(root)
 
 
+def _backups(root):
+    """Every backup ref in the copy — none but §16.16's guards ever write one."""
+    return git(root, "for-each-ref", "--format=%(refname)", replay.BACKUP_PREFIX).split()
+
+
 def _verb(args):
     """A git argv with fused's `-c key=value` prefix (§16.12) stripped."""
     args = list(args)
@@ -176,10 +181,12 @@ def test_diverged_puts_edits_on_top_and_publishes(env):
     assert git_upstream.sync_failures() == []
     lines = _activity(env.lap)
     moves = [a for a in lines if a["kind"] == "own-sync"]
-    assert len(moves) == 1 and moves[0]["undo"] is True and _plain(moves[0]["text"])
+    assert len(moves) == 1 and _plain(moves[0]["text"])
+    assert not _backups(env.lap)                         # read-only: nothing backed up
     # The timeline (§16.16): what came in from the other Mac, then what went out.
     assert [a["kind"] for a in lines] == ["published", "own-sync", "pulled"]
-    assert "“other mac”" in lines[2]["text"] and lines[2]["undo"] is False
+    assert "“other mac”" in lines[2]["text"]
+    assert not any("undo" in a for a in lines)           # read-only (§16.16)
     assert lines[0]["text"] == "Published 1 edit to GitHub: “my edit”."
     assert all(_plain(a["text"]) for a in lines)
     assert ownsync.status(env.lap)["state"] == "published"
@@ -356,7 +363,8 @@ def test_B1_rewrite_then_local_edits_has_a_way_out(env):
         "published edit (reworded)"
     assert ownsync.status(env.lap)["state"] == "published"
     lines = _activity(env.lap)
-    assert next(a for a in lines if a["kind"] == "put-on-top")["undo"] is True
+    assert any(a["kind"] == "put-on-top" for a in lines)
+    assert not [b for b in _backups(env.lap) if "put-on-top" in b]   # nothing backed up
     assert lines[0]["kind"] == "published" and lines[0]["text"].startswith(
         "Published 3 edits to GitHub")
 
@@ -414,9 +422,7 @@ def test_B3_origin_pointed_at_a_new_repo_never_replaces_the_folder(env):
     out = ownsync.publish_over(env.lap)
     assert out["ok"], out
     assert git(newrepo, "rev-parse", "main").strip() == head
-    pins = git(env.lap, "for-each-ref", "--format=%(objectname)",
-               replay.BACKUP_PREFIX).split()
-    assert readme in pins                                   # GitHub's old version kept
+    assert readme and not git(env.lap, "for-each-ref", replay.BACKUP_PREFIX).strip()  # §16.16
 
 
 def test_B3b_repo_recreated_with_readme(env):
@@ -605,91 +611,25 @@ def test_put_on_top_refuses_when_edits_hold_a_combined_version(env):
     assert out["ok"] is False and _plain(out["message"]) and _head(env.lap) == head
 
 
-def test_use_github_backs_up_everything(env):
+def test_use_github_drops_edits_without_a_backup(env):
     _commit(env.lap, "x.txt", "x\n", "published")
     assert _sync(env.lap)["pushed"] is True
     gh_tip = _rewrite_elsewhere(env)
     mine = _commit(env.lap, "n.txt", "n\n", "edit")
-    write(env.lap, "x.txt", "unsaved\n")          # overlaps: forces the hard move
+    write(env.lap, "x.txt", "unsaved\n")          # a file the move leaves alone
     assert _sync(env.lap)["why"] == "github-changed"
     out = ownsync.use_github(env.lap)
     assert out["ok"], out
     assert _head(env.lap) == gh_tip and out["state"] == "published"
     line = _activity(env.lap)[0]
-    assert line["undo"] is True and _plain(line["text"])
-    entry = store.activity_entry(env.lap, line["id"])
-    refs = entry["backup"]
-    assert any(git(env.lap, "rev-parse", r).strip() == mine for r in refs)
-    wip = [r for r in refs if r.endswith("-wip")]
-    assert wip and git(env.lap, "show", f"{wip[0]}:x.txt") == "unsaved\n"
-
-
-def test_undo_use_github_brings_back_edits_saved_and_not(env):
-    _commit(env.lap, "x.txt", "x\n", "published")
-    assert _sync(env.lap)["pushed"] is True
-    gh_tip = _rewrite_elsewhere(env)
-    mine = _commit(env.lap, "n.txt", "n\n", "edit")
-    write(env.lap, "x.txt", "unsaved\n")
-    write(env.lap, "new.txt", "brand new\n")       # untracked: stays where it is
-    assert _sync(env.lap)["why"] == "github-changed"
-    assert ownsync.use_github(env.lap)["ok"] and _head(env.lap) == gh_tip
-    line = _activity(env.lap)[0]
-    _transcript(env, env.lap, last="user")
-    assert ownsync.restore(env.lap, line["id"])["ok"] is False   # Claude is working
-    _transcript(env, env.lap, last="assistant")                 # the turn ended
-    out =ownsync.restore(env.lap, line["id"])
-    assert out["ok"], out
-    assert _head(env.lap) == mine
-    assert _read(env.lap, "x.txt") == "unsaved\n" and _read(env.lap, "new.txt") == "brand new\n"
-    lines = _activity(env.lap)
-    assert lines[0]["undo"] is True and _plain(lines[0]["text"])      # undo of the undo
-    assert [ln["undo"] for ln in lines if ln["id"] == line["id"]] == [False]
-    assert ownsync.restore(env.lap, line["id"])["ok"] is False        # only once
-    assert _sync(env.lap)["why"] == "github-changed" and _head(env.lap) == mine
-
-
-def test_V2_undo_of_an_automatic_combine_sticks_until_github_moves(env):
-    """Audit V2: the next sync used to redo the combine the person undid."""
-    head = _diverge(env)
-    assert _sync(env.lap, push=False)["status"] == "synced"
-    line = _activity(env.lap)[0]
-    assert ownsync.restore(env.lap, line["id"])["ok"]
-    assert _head(env.lap) == head
-    for push in (False, True):                       # app open, turn end
-        res = _sync(env.lap, push=push)
-        assert res["status"] == "skipped" and res["why"] == "kept"
-        assert _head(env.lap) == head
-    assert ownsync.status(env.lap)["state"] == "kept"
-    _elsewhere(env, "z.txt", "z\n", "GitHub moved again")
-    assert _sync(env.lap)["status"] == "synced" and _head(env.lap) == _remote(env)
-    assert _read(env.lap, "b.txt") == "mine\n" and _read(env.lap, "z.txt") == "z\n"
-
-
-def test_R4_after_undo_the_panel_says_why_edits_wait(env):
-    """Audit R4: after Undo new edits piled up unpublished under a vague
-    "GitHub has a newer version". Now the sentence says why, and Bring in
-    and publish ends it."""
-    _diverge(env)
-    assert _sync(env.lap, push=False)["status"] == "synced"
-    assert ownsync.restore(env.lap, _activity(env.lap)[0]["id"])["ok"]
-    later = _commit(env.lap, "later.txt", "l\n", "Claude: later")
-    assert _sync(env.lap)["why"] == "kept" and _remote(env) != later
-    st = ownsync.status(env.lap)
-    assert st["state"] == "kept" and st["fixes"] == ["bring-in"]
-    assert st["message"] == ("You undid bringing in GitHub's version. New edits wait "
-                             "here until you bring it in again.")
-    out = ownsync.bring_in(env.lap)
-    assert out["ok"], out
-    assert _remote(env) == _head(env.lap) and _read(env.lap, "later.txt") == "l\n"
-
-
-def test_V2_check_now_brings_in_what_undo_set_aside(env):
-    head = _diverge(env)
-    assert _sync(env.lap, push=False)["status"] == "synced"
-    assert ownsync.restore(env.lap, _activity(env.lap)[0]["id"])["ok"]
-    assert _sync(env.lap, push=False)["why"] == "kept" and _head(env.lap) == head
-    assert ownsync.check_now(env.lap)["ok"] and _head(env.lap) != head
-    assert _read(env.lap, "b.txt") == "mine\n"
+    assert "undo" not in line and line["text"] == "Switched to the version on GitHub."
+    # The person confirmed it (§16.16): the never-published edit is gone,
+    # with no backup; an unsaved edit to a file GitHub's version does not
+    # change rides along (`reset --keep`).
+    assert not [b for b in _backups(env.lap) if "use-github" in b]
+    assert not replay.is_ancestor(env.lap, mine, _head(env.lap))
+    assert not os.path.exists(os.path.join(env.lap, "n.txt"))
+    assert _read(env.lap, "x.txt") == "unsaved\n"
 
 
 def _fake_job(monkeypatch, purpose):

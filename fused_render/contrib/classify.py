@@ -1153,7 +1153,7 @@ def _migrate_pr_head(root, rec) -> None:
 
 
 #: The Activity line when an own copy's default branch had work of its own
-#: that fused/mine lacked (pinned, Undo). No git words (§0.1).
+#: that fused/mine lacked (pinned). No git words (§0.1).
 OWN_MOVE_TEXT = ("This is your app: your changes are back on its usual version. A version "
                  "that was there before is saved.")
 
@@ -1168,8 +1168,8 @@ def _unhome_locked(root, rec) -> None:
     When the default branch was AHEAD, those commits are the author's
     (`origin/<b>`'s): nothing is lost, and `_sync_plain` fast-forwards to
     them later under its own gates. Only commits found nowhere else (not in
-    `fused/mine`, not in `origin/<b>`) are pinned, with an Activity line
-    (Undo). Waits while a Claude turn is open. Slot held."""
+    `fused/mine`, not in `origin/<b>`) are pinned, with an Activity line.
+    Waits while a Claude turn is open. Slot held."""
     branch = rec.get("branch")
     if gu._current_branch(root) != HOME_BRANCH or not _valid_branch(branch):
         return

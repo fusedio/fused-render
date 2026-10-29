@@ -349,7 +349,7 @@ def test_confirm_is_required_for_a_confirm_button(env):
     env.engine.discard = lambda app_dir, withdraw=False: seen.append(withdraw) or {"ok": True}
     out = _act(env, d, "discard")
     assert out["ok"] is False and out["reason"] == "confirm"
-    assert "Activity" in out["message"] and seen == []
+    assert "can't be undone" in out["message"] and seen == []
     assert _act(env, d, "discard", confirm=True) == {"ok": True}
     assert seen == [False]
     job = _act(env, d, "discard", confirm=True, args={"withdraw": True})["job"]
@@ -502,17 +502,11 @@ def test_choose_decides_only_the_choice_files(env):
     assert _act(env, d, "choose-mine")["reason"] == "not-offered"
 
 
-def test_own_bring_in_is_ownsyncs_when_it_names_it(env):
-    """`kept` (an undone combine) → ownsync.bring_in; a remix whose original
-    moved → remix.start_bring_in."""
-    d = env.app("m", kind="own", repo="bob/m")
+def test_own_bring_in_is_the_remixs_original(env):
+    """An own app's Bring in is a remix's original (remix.start_bring_in);
+    ownsync has no Bring in of its own (§16.16 removed the undo hold)."""
     ran = []
-    env.ownsync.status = lambda app_dir: {"state": "kept", "unpublished": 0, "github_new": 1,
-                                          "files": [], "message": "You undid it.",
-                                          "fixes": ["bring-in"]}
-    env.ownsync.bring_in = lambda app_dir: ran.append("own") or {"ok": True}
     env.remix.start_bring_in = lambda app_dir: ran.append("remix") or {"ok": True, "job": "r"}
-    assert _job(env, _act(env, d, "bring-in")["job"])["status"] == "done"
     r = env.app("r", kind="own", repo="bob/r", remix_of={"repo": "alice/x"},
                 original_update=True)
     env.ownsync.status = lambda app_dir: {"state": "published", "unpublished": 0,
@@ -520,7 +514,7 @@ def test_own_bring_in_is_ownsyncs_when_it_names_it(env):
                                           "fixes": []}
     # A merge job id: the page reads the review, never polls /job (rev-fe 4).
     assert _act(env, r, "bring-in") == {"ok": True, "job": "r", "merge": True}
-    assert ran == ["own", "remix"]
+    assert ran == ["remix"]
 
 
 def test_own_app_fixes_dispatch_to_ownsync(env):
@@ -593,35 +587,17 @@ def test_sign_in_is_the_pages_own_flow(env, monkeypatch):
     assert _act(env, d, "propose", args={"title": "T"})["reason"] == "not-offered"
 
 
-def test_restore_only_an_offered_undo(env, monkeypatch):
+def test_activity_has_no_restore_route(env):
+    """Activity is read-only (§16.16): nothing undoes a line."""
     d = env.app("a")
-    lines = [{"id": "a1", "at": 1, "kind": "update", "text": "Got alice's latest",
-              "undo": True},
-             {"id": "a2", "at": 0, "kind": "saved", "text": "Saved your edit", "undo": False}]
-    monkeypatch.setattr(store, "activity", lambda app_dir: list(lines), raising=False)
-    restored = []
-    env.engine.restore = lambda app_dir, line: restored.append(line) or {"ok": True}
-    for bad in ("a2", "zz", ""):
-        assert _post(env, "restore", path=d, id=bad)["reason"] == "not-offered"
-    assert _post(env, "restore", path=d, id="a1") == {"ok": True}
-    assert restored == ["a1"]
-    # rev-fe 13: no Undo while a merge that lands here is running or ready.
-    env.merge_job.for_app = lambda app_dir, purpose=None: {"id": "mj", "status": "ready",
-                                                          "land": True}
-    assert _post(env, "restore", path=d, id="a1") == {
-        "ok": False, "reason": "merging", "message": "Keep or discard Claude's merge first."}
-    env.merge_job.for_app = lambda app_dir, purpose=None: None
-    # An own app's lines are ownsync's to undo, never the engine's.
-    mine = env.app("m", kind="own", repo="bob/m")
-    env.ownsync.restore = lambda app_dir, line: restored.append(("own", line)) or {"ok": True}
-    assert _post(env, "restore", path=mine, id="a1") == {"ok": True}
-    assert restored == ["a1", ("own", "a1")]
+    r = env.client.post("/api/contrib/restore", json={"path": d, "id": "a1"}, headers=H)
+    assert r.status_code in (404, 405)
 
 
 def test_app_read_carries_panel_actions_activity(env, monkeypatch):
     d = env.app("a")
     env.engine.status = lambda app_dir: _v2("changes", behind=1)
-    line = {"id": "a1", "at": 1, "kind": "update", "text": "Got alice's latest", "undo": True}
+    line = {"id": "a1", "at": 1, "kind": "update", "text": "Got alice's latest"}
     monkeypatch.setattr(store, "activity", lambda app_dir: [line], raising=False)
     out = env.client.get("/api/contrib/app", params={"path": d}).json()
     assert out["panel"]["state"] == "changes" and out["panel"]["who"] == "alice"

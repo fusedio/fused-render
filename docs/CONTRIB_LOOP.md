@@ -30,6 +30,11 @@ contributor by default.
    `refs/fused/backup/<unix_ms>` at the old tip (and, if the tree is dirty, a
    `git stash create` commit at `refs/fused/backup/<unix_ms>-wip`). Never
    `reset --hard` a real app folder except Discard (which backs up first).
+   *Amended 2026-10-29 (§16.16 Read-only):* only three guards back up now —
+   a local file a move would overwrite, a commit that lands mid-move, and
+   commits the v3 migration finds nowhere else. A move the person confirms
+   (Discard, Use <who>'s version, …) keeps no backup: losing that work is
+   what they chose.
    Moving the tree to a new tip uses `git reset --keep <new>` (refuses rather
    than clobber an overlapping uncommitted edit; a refusal = "defer, try next
    time", never an error banner).
@@ -376,13 +381,13 @@ calls, review, Try, inbox, remix UI mostly stay.
   plus one fix for the `diverged` case (§16.7). The engine never owns an own
   copy.
 - **P6 Automatic is fine; magic is not (owner).** Every automatic move writes
-  one Activity line (§16.9) — with Undo when it moved something away. Every
-  automatic move also exists as a button. Every stuck or failed state names
+  one Activity line (§16.9) — read-only since 2026-10-29 (§16.16: no Undo).
+  Every automatic move also exists as a button. Every stuck or failed state names
   the problem in plain words and offers at least one fix button; no state
   ever needs a terminal.
-- **P7** §0.1 (no git words), §0.2 (backup before any move that drops a
-  commit or edit; `reset --keep`), §0.3 (scratch worktrees), §0.7, §0.8, §0.9
-  still hold. §0.6 is REPLACED by P1.
+- **P7** §0.1 (no git words), §0.2 (as amended: §16.16's three guards;
+  `reset --keep`), §0.3 (scratch worktrees), §0.7, §0.8, §0.9 still hold.
+  §0.6 is REPLACED by P1.
 - **P8 Claude busy gates tree moves only**, never a push. "Busy" =
   `session_liveness.transcript_turn_open(path, now, interrupt_closes=True)`
   (reads the last message; correct for headless runs), not
@@ -518,7 +523,8 @@ failure row is recorded unchanged.
   (`own-sync`).
 - not ok (rewound, rewritten, unrelated history) or X empty (no reflog) →
   `own_state = github-changed`: nothing moves; fixes **Use the version on
-  GitHub** (backup incl. wip, `reset --keep`/`--hard` tip), **Put my edits on
+  GitHub** (`reset --keep`/`--hard` tip; backup incl. wip until 2026-10-29 —
+  none since §16.16), **Put my edits on
   top** (pick exactly U onto tip — never re-publishes a removed commit — then
   push; REFUSED with a sentence when U contains a merge, since a merge would
   carry the removed commits back), **Publish mine over it** (confirm;
@@ -558,10 +564,11 @@ failure row is recorded unchanged.
 
 ### 16.9 Activity + actions API (WS-A, router + new `contrib/actions.py`)
 
-- `store.add_activity(app_dir, kind, text, *, backup=None, aside=None) -> id`;
-  `store.activity(app_dir) -> [{id, at, kind, text, undo: bool}]` newest
-  first, 50 kept. Every engine/ownsync/proposal move writes one. (§16.16
-  adds `at`/`key`/`actor`/`link` and keeps 100.)
+- `store.add_activity(app_dir, kind, text, *, backup=None) -> id`;
+  `store.activity(app_dir) -> [{id, at, kind, text}]` newest first, 50
+  kept. Every engine/ownsync/proposal move writes one. (§16.16 adds
+  `at`/`key`/`actor`/`link`, keeps 100, and drops `undo`/`aside`/`ref` —
+  Activity is read-only.)
 - `actions.for_app(app_dir) -> {panel, actions}` is the ONE place that decides
   which buttons exist: `panel = {kind, repo, who, last_checked, state,
   sentence, files, unproposed, unpublished, github_new}`, `actions = [{id,
@@ -572,8 +579,9 @@ failure row is recorded unchanged.
   `sign-in`, `retry`. Buttons are filtered by flags (P1) here and only here.
 - `GET /api/contrib/app` gains `panel`, `actions`, `activity`. New
   `POST /api/contrib/action {path, action, confirm?, args?}` dispatches every
-  id (long ones → `{ok, job}`), `POST /api/contrib/restore {path, id}`.
-  Existing routes stay as thin aliases until the frontend moves.
+  id (long ones → `{ok, job}`). (`POST /api/contrib/restore {path, id}` —
+  Undo — was removed 2026-10-29, §16.16.) Existing routes stay as thin
+  aliases until the frontend moves.
 - `last_checked` = time of the last successful fetch (engine/git_upstream).
 
 ### 16.10 Frontend (WS-F)
@@ -581,7 +589,8 @@ failure row is recorded unchanged.
 One **Source panel** at the top of Overview replacing CopyStatusCard's state
 strip: sentence + files + the server's `actions` (primary first, confirm
 sheet when `confirm`), "checked 3 min ago · Check now", and an **Activity**
-disclosure listing the activity lines with Undo/Restore. Propose dialog lists
+disclosure listing the activity lines (read-only since §16.16 — no
+Undo/Restore). Propose dialog lists
 untracked files as unticked checkboxes (`include`). Inbox items show "No
 longer fits" + Ask to update / Merge with Claude. Install page wording per
 §16.8. Never invent a button the server did not send.
@@ -590,7 +599,7 @@ longer fits" + Ask to update / Merge with Claude. Install page wording per
 
 - **Gating (replaces the P1 row split).** A state is recorded in the form
   whose UI is visible. `github` copy: rows 8–11 with a CLEAN merge run
-  whatever the flags (an automatic, local, undoable move is not a stuck
+  whatever the flags (an automatic, local move is not a stuck
   state). Rows 5, 6, 11-conflict: with `flags.sources()` on → v2 states
   (blocked / commit-edits / needs_merge) whose fix buttons (Merge with
   Claude, Keep mine, Use <who>'s version, Move my file aside) are gated by
@@ -640,8 +649,8 @@ longer fits" + Ask to update / Merge with Claude. Install page wording per
   waits on a job. Published points R also include the last 20 GitHub tips
   fused saw (store), so a repo without a reflog is not blind; R = [tip] only →
   "unknown": no Put my edits on top, ahead-only push with an unknown rewind
-  state is held with a button. Undo of an automatic combine holds until
-  GitHub's tip moves (own `skip_tip`).
+  state is held with a button. (The undo hold — own `skip_tip`, the `kept`
+  state — was removed with Undo, 2026-10-29, §16.16.)
 - **Proposals**: Update offered when the proposal no longer fits or HEAD's
   tree differs from the PR head's (not only when `unproposed > 0`); Update
   accepts `include`; the credit line has no Undo; Remix and Discard stay
@@ -729,7 +738,7 @@ People work from the explorer, not the app page. The three-dot menu of an
 app's entry (`apps/explorer/EntryActionsMenu.tsx`) gains a **GitHub** row,
 offered while any Community switch is on, which opens
 `shell/contrib/ContribModal.tsx`: the Source panel (state, every button,
-Activity with Undo), the contributors line and, for the author's own app, the
+Activity — read-only, §16.16), the contributors line and, for the author's own app, the
 Proposals inbox — the same components the app page mounts, reading the
 folder's state with `useAppContrib` themselves. It is the one shell module
 the app layer may import (`scripts/check-boundaries.mjs`,
@@ -743,9 +752,8 @@ author, a contributor and a Community user each saw a different, thin list
 and nobody saw the other people's steps — a proposal accepted on GitHub
 showed nothing on Bob's side until the change landed (for a Community copy,
 until the next release), and the author never saw who proposed what, when.
-Activity stays one machine's history (the record is this copy's, §3; Undo
-needs this copy's refs), but every side now names who did what, from reads
-fused already makes. `contrib/timeline.py` owns the words; no new polling.
+Activity stays one machine's history (the record is this copy's, §3), but
+every side now names who did what, from reads fused already makes. `contrib/timeline.py` owns the words; no new polling.
 
 | Step | Who sees it | Written by |
 |---|---|---|
@@ -763,11 +771,13 @@ Store (§16.9 additions): `add_activity(…, at=, key=, actor=, link=)`. `at`
 dates a line when it happened, and lines are kept in time order (a line
 dated in the past lands where it happened); a `key` is written once (a
 second refresh, or an Accept here that the next listing sees again, never
-repeats it); `actor` is the GitHub login a line is about (the page marks
-someone else's step); `link` only ever a `https://github.com/` page (the
-page offers Open). `activity()` serves `actor`/`link` only on lines that
-have them. ACTIVITY_KEEP is 100. Timeline lines never offer Undo and never
-fail the read or move they describe. The author's last listing is kept on
+repeats it); `actor` is the GitHub login of whoever took the step, set only
+when that is someone else (the page marks those); `link` only ever a
+`https://github.com/` page (the page offers Open). `activity()` serves
+`{id, at, kind, text}` plus `actor`/`link` on lines that have them; a
+stored line is `{id, at, kind, text, backup?, key?, actor?, link?}`.
+ACTIVITY_KEEP is 100. Timeline lines never fail the read or move they
+describe. The author's last listing is kept on
 the record as `inbox_seen` (`{number: {head, title, author, url, ours}}`;
 `ours` = the head her own Merge with Claude pushed, not credited to the
 sender).
@@ -777,6 +787,40 @@ proposal refresh runs with the open bundle), dated when they happened; the
 author's inbox lines arrive with the background sweep (every 10 min while
 the inbox is on). The author does not see contributors' comments (one more
 GitHub call per proposal per sweep); nobody sees who installed an app.
+
+#### Read-only (2026-10-29, owner)
+
+Activity is a record, not a control: no line carries a button except Open
+(its GitHub page). Removed, with every test of them: Undo / Restore
+(`POST /api/contrib/restore`, `engine.restore`, `ownsync.restore`,
+`market.undo_switch`, `store.mark_restored`/`activity_entry`, the `undo`
+field), the undo hold (`skip_tip`, the engine's `kept-mine` and ownsync's
+`kept` state with its Bring in and publish button — `migrate_v3` drops any
+`skip_tip` left), and the line fields `ref`, `aside`, `restored_at`.
+Switching back is the opposite switch's own button.
+
+Backups went with Undo. A move the person confirms — Discard, Use <who>'s
+version, Use the version on GitHub, the two switches, Go back — and every
+automatic move (bring-in, ff, settle, a block's rollback, the author-rewind
+mirror move) keeps nothing of what it drops; the confirms say "this can't be
+undone". The rewind still writes its "<who> went back to an earlier
+version…" line; Move my file aside's line names the folder the files went
+to. Three guards stay, because each stops fused from destroying data no one
+chose to lose — they offer nothing, and a line names their ref only so
+pruning keeps it:
+
+1. **A local file in the way.** Any move — automatic or a button — that
+   would overwrite a file git does not track (an ignored `.env` or token
+   included, `replay.clobber_paths`) saves it first
+   (`replay.clobber_backup_locked`: a `-wip` commit under
+   `refs/fused/backup/<ms>-<why>`), or does not move. Discard promises to
+   drop *your changes*, not a file that merely sits where the author's
+   version now has one.
+2. **A commit that lands mid-move** (a Claude turn committing while fused
+   moves the branch): pinned as `…-race` (never pruned) and put back
+   (`replay.undo_race_locked`).
+3. **Commits found nowhere else during the v3 / own-copy migration**
+   (`classify`, `v3-move` / `own-move`): pinned so git never collects them.
 
 
 ## 17. v3 git model for `github` copies (2026-10-23) — AUTHORITATIVE
@@ -801,6 +845,9 @@ every step it touches)
 - **I1** Nothing of the contributor's is lost silently. Only two moves drop a
   commit (settle, discard); both pin the old tip under
   `refs/fused/backup/<ms>-<why>` first and write an Activity line with Undo.
+  *Amended 2026-10-29 (§16.16 Read-only):* neither pins any more — settle
+  drops only commits whose tree the author's version already holds, and
+  discard is confirmed; only §16.16's three guards back up.
 - **I2** The author's history is written only by the author's explicit act.
   The pushurl guard stays; fused pushes a `github` copy only to the fork, and
   the author's branch only from `push_to_main` (collaborator, by URL).
@@ -808,8 +855,8 @@ every step it touches)
   `refs/remotes/origin/<branch>` after every fetch, whoever fetched
   (`follow.fetch` updates the mirror itself). It is never checked out and
   is written only by that ref update, never a worktree move. A rewind is
-  detected there (`ff: False`), pinned, and its Activity line has no Undo
-  (Bob's branch never moved).
+  detected there (`ff: False`) and gets its Activity line (Bob's branch
+  never moved); since 2026-10-29 nothing is pinned (§16.16).
 - **I4** HEAD on a `github` copy is `refs/heads/fused/mine` (`HOME_BRANCH`).
   Anything else is the `other-branch` state ("a different version").
 - **I5** Every state is recoverable from git and GitHub alone. The record
@@ -831,7 +878,7 @@ status time, cached on `(head, main, pr)`: `conflict` =
 | `following` | HEAD ⊇ main or (not ahead, not dirty), pr None | `merge --ff-only main` when main ⊄ HEAD | Bring in (when behind), Check |
 | `changes` | ahead or dirty, pr None/closed-seen | bring-in merge when clean (17.3) | Propose · Bring in (when behind) · Discard · Remix · Update <who>'s app directly (collaborator) |
 | `proposed` | pr open | as `changes` | Update proposal · Withdraw · Bring in · Discard(+withdraw) |
-| `merged` | pr merged, not `settled_seen` | ff or bring-in merge, then settle when tree(HEAD)==tree(main) (17.3). A merge-commit accept is NOT a fast-forward of Bob's own bring-in merge (same parents, different commit): settle is the normal path on almost every accept. `proposal.landed_at` is set ONCE, in the same store update that writes the Activity line "<who> merged your change. You're on <who>'s latest version." · Undo; the state stays `merged` until `settled_seen` | Propose (if ahead after settle) · Check |
+| `merged` | pr merged, not `settled_seen` | ff or bring-in merge, then settle when tree(HEAD)==tree(main) (17.3). A merge-commit accept is NOT a fast-forward of Bob's own bring-in merge (same parents, different commit): settle is the normal path on almost every accept. `proposal.landed_at` is set ONCE, in the same store update that writes the Activity line "<who> merged your change. You're on <who>'s latest version."; the state stays `merged` until `settled_seen` | Propose (if ahead after settle) · Check |
 | `declined` | pr closed, not `settled_seen` | nothing | Keep working · Discard · Propose again |
 | `needs-merge` | `conflict` (derived with the merged-proposal base, 17.3; `engine.conflict` is the one source proposals and the merge plan read) | nothing | Merge with Claude · Use <who>'s version (id `match`, danger, confirm) |
 | `blocked` | `blocked` non-empty | nothing | Move my file aside and update |
@@ -839,11 +886,9 @@ status time, cached on `(head, main, pr)`: `conflict` =
 | `merging` | merge job running/ready | nothing (job holds syncs) | the merge review |
 
 Deleted states/fields: the Keep mine button, the `needs_merge` record,
-`merged_in_tip`, `taken_back`. `skip_tip` STAYS as the **undo hold**: Undo of
-an automatic ff / bring-in / settle sets it to the mirror tip; automatic moves
-skip while the mirror still equals it (`kept_mine` True, panel: "You undid
-that; <who>'s latest is waiting." + Bring in); any button clears it, and a new
-author tip clears it by itself. `status()` keeps `merged_in_tip` (= pr
+`merged_in_tip`, `taken_back`. (`skip_tip`, the **undo hold** — `kept_mine`,
+"You undid that; <who>'s latest is waiting." — was removed with Undo on
+2026-10-29, §16.16.) `status()` keeps `merged_in_tip` (= pr
 merged), `taken_back` (False), `needs_merge`/`needs_merge_purpose`/
 `needs_merge_files` (from `conflict`) for one release so `contrib.ts` and
 `actions.py` need no coordinated cut.
@@ -859,16 +904,16 @@ a pinned target that is or contains a hard-blocked commit (§18.4 M1).
 
 | move | command | guard |
 |---|---|---|
-| fetch | `fetch --no-tags <url> +refs/heads/<b>:refs/remotes/origin/<b>` (follow.fetch, unchanged) then `update-ref refs/heads/<b> origin/<b> <old>` only when `old` ⊆ `origin/<b>`; a non-ff (author rewound) pins `old` under `refs/fused/backup/<ms>-rewound`, sets the ref anyway, Activity "alice rewound her app". When HEAD IS `<b>` (other-branch): only `origin/<b>` is updated, the local ref is left alone (a checked-out branch is never moved under its worktree); Go back = `switch fused/mine`, creating it from `<b>`'s CURRENT tip when absent so commits made on main are carried | ref CAS; no worktree move |
+| fetch | `fetch --no-tags <url> +refs/heads/<b>:refs/remotes/origin/<b>` (follow.fetch, unchanged) then `update-ref refs/heads/<b> origin/<b> <old>` only when `old` ⊆ `origin/<b>`; a non-ff (author rewound) sets the ref anyway, Activity "alice went back to an earlier version…" (since 2026-10-29 nothing is pinned, §16.16). When HEAD IS `<b>` (other-branch): only `origin/<b>` is updated, the local ref is left alone (a checked-out branch is never moved under its worktree); Go back = `switch fused/mine`, creating it from `<b>`'s CURRENT tip when absent so commits made on main are carried | ref CAS; no worktree move |
 | ff | `merge --ff-only main` (HEAD == fused/mine, main ⊄ HEAD, HEAD ⊆ main) | git refuses on dirty overlap / untracked collision → `blocked` (clobber) or deferred |
 | bring in | `replay.merge_tree(HEAD, main)` — with the PR head as the merge base (`base=`) when the proposal is merged and the PR head ⊆ HEAD, so a squash/rebase accept's content counts as common ground and Bob's sent commit never conflicts with the author's later edits of the same lines; result tree == tree(main) → settle instead — clean → `commit-tree <tree> -p HEAD -p main` ("Bring in <who>'s latest", Bob's identity) → `replay.land_ff_locked(root, new)` = `merge --ff-only <new>` | ff needs HEAD == new^1 (CAS); dirty overlap → commit "Your edits" first (row 6 kept, on the branch) |
-| settle | after a bring-in with pr merged: when tree(HEAD) == tree(main) and clean: `replay.settle_locked(root)` = pin HEAD, `update-ref refs/heads/fused/mine main HEAD` (CAS), `reset --hard` (same tree: no file changes) | CAS; requires clean; skipped otherwise (cosmetic) |
-| discard | pin HEAD (+wip), `reset --hard main`, remove backed-up untracked files; `withdraw` closes the PR. Refused while a Send / Update proposal job runs. A marketplace copy's `main` is the approved commit VETTED against the block list first (`blocks.vet_approved`), never one that contains a hard-blocked commit | button + confirm |
-| match ("Use <who>'s version") | same as discard with text "Switched to <who>'s version. Your version is saved." (replaces use_theirs) | button + confirm |
+| settle | after a bring-in with pr merged: when tree(HEAD) == tree(main) and clean: `replay.settle_locked(root)` = `update-ref refs/heads/fused/mine main HEAD` (CAS; no pin since §16.16), `reset --hard` (same tree: no file changes) | CAS; requires clean; skipped otherwise (cosmetic) |
+| discard | `reset --hard main`, remove the untracked files `edits()` named — no backup since §16.16 (a local file the move would overwrite is still saved first); `withdraw` closes the PR. Refused while a Send / Update proposal job runs. A marketplace copy's `main` is the approved commit VETTED against the block list first (`blocks.vet_approved`), never one that contains a hard-blocked commit | button + confirm |
+| match ("Use <who>'s version") | same as discard with text "Switched to <who>'s version." (replaces use_theirs) | button + confirm |
 | keep working | `proposal = None` after a declined/withdrawn PR; nothing moves | button |
 | move aside | as v2 `move_aside`, then ff/bring-in. A path reached through a symlinked folder is never "in the way" nor moved (`replay.in_tree`): it is outside the copy | button |
 | go back | `switch fused/mine` when clean (create from main if missing). A marketplace copy's mirror then goes to the vetted approved commit, and only when that commit is on this computer and safe; else it stays where it is until the next sync's vet | button |
-| restore | pin current, `reset --hard <backup>` (same branch) / re-place aside files | button |
+| ~~restore~~ | removed 2026-10-29 (§16.16: Activity is read-only) | — |
 | push_to_main | bring-in must be clean and HEAD ⊇ main; `gh.push` HEAD → author's `<b>` by URL, no force; sync then ff's main and settles | button + confirm |
 
 Every automatic worktree move (ff, bring-in, settle) runs only when Claude
@@ -879,7 +924,8 @@ commit, as v2 row 6), merge-tree clean. A conflict records nothing: the
 next status derives `needs-merge` from the same merge-tree.
 
 `replay.py` keeps `land_locked`, `undo_race_locked`, `reset_hard_locked`,
-`fused_aside`, `pick`, `backup_locked` — ownsync still uses them. Adds
+`fused_aside`, `pick`, `backup_locked` (+ `clobber_backup_locked`, §16.16)
+— ownsync still uses them. Adds
 `land_ff_locked(root, new_tip) -> (why|None, None)` and
 `settle_locked(root, *, why) -> (ok, backup)`. `fused_aside` wraps the ff /
 settle / discard worktree moves as it wraps v2's (Q4: refuse-on-install is a
@@ -932,8 +978,8 @@ writes the Activity line and notes the head.
   `skip_tip`; `_view` fills them as None for old readers for one release.
   Binding: a record is bound to `(origin url == repo url)`; `root_commit`
   checks deleted (`_bind` by URL only).
-- With auto-sync off or an undo hold standing, the `merged` sentence says
-  "Bring it in when you're ready." (nothing automatic will run).
+- With auto-sync off, the `merged` sentence says "Bring it in when you're
+  ready." (nothing automatic will run). (The undo hold is gone, §16.16.)
 - `classify.HOME_BRANCH = "fused/mine"`. `settle_locked` (every sync, slot
   held) runs `migrate_v3` once per record without `v: 3`: if HEAD is a
   branch other than HOME_BRANCH and HOME_BRANCH is absent → `branch
@@ -997,7 +1043,7 @@ helper asserting I3 and I4, called at every step. No test monkeypatches
 
 Q1 `fused/mine`, fork branch minted at Propose. Q2 Switch card / Doctor / ↑N
 learn `HOME_BRANCH` for github copies. Q3 automatic bring-in when clean and
-Claude idle, Activity + Undo. Q4 keep `fused_aside` in this PR. Q5 silent
+Claude idle, Activity + Undo (Undo removed 2026-10-29, §16.16). Q4 keep `fused_aside` in this PR. Q5 silent
 migration with one Activity line. Q6 stacked PR on #1698's branch. Q7 accept
 the squash commit-list noise; no replay anywhere.
 
@@ -1019,7 +1065,8 @@ only thing agents share, so a shape named here is the shape, not a sketch.
   (`refs/heads/<b>`, §17 I3) of a marketplace copy holds the **approved
   commit** of its row, never the author's tip, after every fetch. Nothing
   in fused — engine, Git panel, explorer dialog, reinstall, deep link —
-  moves it to an unreviewed commit. Undo never lands on a blocked commit.
+  moves it to an unreviewed commit. (Undo, which once had to avoid blocked
+  commits, is gone — §16.16.)
 - **M2** The index holds pointers, not code. Installs and updates clone the
   author's repo at the approved commit; no app code comes from Fused
   storage. `marketplace_release` and the tar package path are deleted.
@@ -1031,7 +1078,7 @@ only thing agents share, so a shape named here is the shape, not a sketch.
 - **M5** `github` copies behave exactly as §17. Every change here is a new
   branch of an `if`, never a changed line of the github branch.
 - **M6** Automatic is fine, magic is not: a release move, a switch and a
-  rollback each write an Activity line (Undo where allowed), each exists as
+  rollback each write an Activity line (read-only, §16.16), each exists as
   a button, and every stuck state has a fix button.
 
 ### 18.1 Words
@@ -1305,7 +1352,7 @@ record is a github record plus:
 "listing": {"status": "live"|"delisted", "checked_at": float, "delisted_at": float|None},
 "block": {"level": "hard"|"soft", "commit": sha, "reason": str, "what_to_do": str,
           "at": str, "rolled_back_to": sha|None, "conflict": bool, "confirmed_at": float|None} | None,
-"switched": [{"from": "github"|"marketplace", "at": float, "backup": ref|None}],   # for Undo of a switch
+"switched": [{"from": "github"|"marketplace", "at": float}],   # for the record (no Undo, §16.16)
 ```
 A `github` record gains `"block_warn": {...same keys...} | None` (B4's
 warning for link copies). `store.RECORD_V` stays 3; `_view` fills the new
@@ -1333,8 +1380,8 @@ a pinned follow: `new = commit`; if `commit` is not an ancestor of
 `refs/remotes/origin/<b>` (`merge-base --is-ancestor`), it does NOT move and
 returns `{moved: False, reason: "not-on-branch"}` (sync_error "The reviewed
 version isn't in <who>'s app any more. Nothing was changed."). A non-ff
-mirror move (rollback, switch) pins the old tip under `refs/fused/backup/
-<ms>-<why>` and writes its Activity line with no Undo (§17 fetch row).
+mirror move (rollback, switch) writes its Activity line; since 2026-10-29
+nothing is pinned (§16.16).
 I3 for a marketplace copy reads: **`refs/heads/<b>` == `record.approved.commit`
 after every fetch** (origin/<b> is the author's tip, fetched for objects
 and the ancestor check only).
@@ -1349,19 +1396,18 @@ when the snapshot is FRESH (`status == "ok"`, not `stale`) and lacks the
 slug; `"unknown"` (→ `record.approved` is used, no listing change) when the
 catalog is stale, errored or absent. `engine._run_inner` calls
 `market.refresh_approved(root)` before the fetch for marketplace copies: it
-updates `record.approved`/`record.listing` and, when the approved commit
-changed, clears the undo hold (`skip_tip`) — "a new author tip clears it by
-itself" (§17.2) reads "a new release clears it" here. A delisted copy fetches
+updates `record.approved`/`record.listing` (it no longer touches an undo
+hold: there is none since §16.16). A delisted copy fetches
 nothing and makes no move; its state sentence is "No longer in the
 Marketplace. Your copy keeps working on its last reviewed version." and its
 card label "Marketplace · no longer listed".
 
 **Moves.** Unchanged from §17.3: ff, bring-in, settle, discard, match, keep
-working, move aside, go back, restore, push_to_main (collaborator) all run
+working, move aside, go back, push_to_main (collaborator) all run
 against the mirror, which now holds the approved commit. The Activity line
 for an automatic ff/bring-in on a marketplace copy is `"Updated to <who>'s
-release of <Mon D>: <whats_new>"` (kind `update`, Undo); `_subjects` is not
-used. The undo hold (`skip_tip`) holds until the next release.
+release of <Mon D>: <whats_new>"` (kind `update`); `_subjects` is not
+used.
 
 **B5 — merged but not released.** `merged` row of §17.2 on a marketplace
 copy: settle runs only when the PR head is an ancestor of the mirror
@@ -1369,7 +1415,7 @@ copy: settle runs only when the PR head is an ancestor of the mirror
 sentence is `"<who> merged your change. It ships in <who>'s next release."`
 (state stays `merged`, buttons: Check for a new release). When a release
 containing it arrives, the normal bring-in/settle runs with the Activity line
-`"<who> released your change. You're on the reviewed version."` + Undo, and
+`"<who> released your change. You're on the reviewed version."`, and
 `proposal.live = True` → page: "Your change is live for everyone." when the
 review file credits Bob's login (`row.releases[0].credits`), else the same
 line without the credit sentence.
@@ -1386,12 +1432,12 @@ writes the marketplace fields from `market = {slug, approved}`.
 
 **Switching (D13).** `market.py`:
 ```python
-def switch_to_link(root) -> dict     # marketplace → github: kind, marker, pushurl guard kept; mirror → origin/<b> (ff or pinned non-ff); then one ff when clean & not ahead; Activity kind "switch" "Following <who> directly now. You'll get every change, unreviewed." Undo
-def switch_to_reviewed(root, row) -> dict   # github → marketplace: refused with "Propose or discard your changes first." when ahead > 0 or dirty; mirror → approved (pin); HEAD ≠ approved → pin + reset --hard approved; Activity "Switched to reviewed releases." Undo
+def switch_to_link(root) -> dict     # marketplace → github: kind, marker, pushurl guard kept; mirror → origin/<b> (ff or non-ff); then one ff when clean & not ahead; Activity kind "switch" "Following <who> directly now. You'll get every change, unreviewed."
+def switch_to_reviewed(root, row) -> dict   # github → marketplace: refused with "Propose or discard your changes first." when ahead > 0 or dirty; mirror → approved; HEAD ≠ approved → reset --hard approved (no pin since §16.16); Activity "Switched to reviewed releases."
 ```
-Undo of a `switch` line = the opposite switch (`engine.restore` dispatches
-on `kind == "switch"`; the backup ref, when one exists, is what the reverse
-`reset --hard` lands on). Both are buttons on the Source panel too
+Switching back is the opposite switch (Undo of a `switch` line — via
+`engine.restore` / `market.undo_switch` — was removed 2026-10-29, §16.16).
+Both are buttons on the Source panel too
 (`switch-link` on marketplace copies, `switch-reviewed` on github copies
 whose repo has a row; both `confirm`). The prompts: `appfile_git.probe`
 gains state `switch-link` (a GitHub link opened for a repo whose copy is a
@@ -1482,8 +1528,8 @@ contains a blocked commit for its slug (`merge-base --is-ancestor`):
   `/api/apps/background/start|restart` — `marketplace.open_gate`. Scheduled
   Claude tasks in the folder are not gated: they run Claude, not the app);
   target = newest `row.releases[*].commit` that is not
-  blocked and is an ancestor of `origin/<b>`; mirror → target (pin, no
-  Undo); worktree: clean and `ahead == 0` → pin + `reset --hard target`;
+  blocked and is an ancestor of `origin/<b>`; mirror → target; worktree:
+  clean and `ahead == 0` → `reset --hard target` (no pin since §16.16);
   else `merge_tree(HEAD, target, base=<blocked commit>)` (the revert as a
   three-way merge) → clean → `commit-tree -p HEAD` "Rolled back to the
   reviewed version of <date>" landed by `land_ff_locked`; conflict →
@@ -1491,7 +1537,7 @@ contains a blocked commit for its slug (`merge-base --is-ancestor`):
   Claude** (purpose `update`, theirs = target, base = blocked) and the app
   stays stopped. Activity kind `rollback`, text "Fused blocked the version
   you were running: <reason>. Rolled back to the release of <date>. <what
-  to do>", NO Undo. No target (every release blocked) → stopped, sentence
+  to do>" (read-only, like every line). No target (every release blocked) → stopped, sentence
   says so, button "Remove this app".
 - **soft**: `block.level = soft`; automatic moves skip; opening asks:
   until `confirm_soft` (the `confirm-block` action) the same doors answer
@@ -1505,11 +1551,8 @@ contains a blocked commit for its slug (`merge-base --is-ancestor`):
   changed." No rollback.
 Enforcement runs under the copy lock and `replay.slot()`; it never runs
 while a merge job is open (it marks the record and the open gate still
-answers 423). **Undo never lands on a blocked commit (M1):** `store.
-activity()` reports `undo: False` and `engine.restore` refuses ("That
-version was blocked by Fused") when the line's backup commit, or any commit
-it contains for this slug, is on the block list (`blocks.is_blocked_commit`
-walks `rev-list <backup> ^<mirror>` ∪ the backup itself).
+answers 423). (The rule that Undo never lands on a blocked commit — and
+`blocks.backup_blocked` behind it — went with Undo, 2026-10-29, §16.16.)
 **Tools in Claude:** WS-ENGINE finds how an installed app's tools reach
 Claude (`claude_config/plugins.py`, `user_plugin.py`, `skill_plugin.py`,
 `claude_agent/agent._plugin_mcp_servers`) and unregisters them on a hard
@@ -1657,7 +1700,7 @@ with Claude + Check again).
 - `SourceLine`: marketplace → "Marketplace · reviewed · release of <date>".
 - `SourcePanel`: the server's buttons as today; new states' sentences come
   from the server; `BlockedStrip` for `block`/`block_warn`; the soft-block
-  confirm sheet; the `switch` lines' Undo.
+  confirm sheet. (The `switch` lines' Undo was removed, §16.16.)
 - `ListingStrip` (own copies): status sentence + buttons; `PublishDialog`
   (details form prefilled from `/api/contrib/listing-draft`, which returns
   `{slug, app_id, name, description, category, categories, tags, icon,
@@ -1671,7 +1714,7 @@ with Claude + Check again).
   shows releases with What's new and "Blocked" where blocked; trust card
   text "Reviewed by Fused" replaces the unreviewed-GitHub warning on the
   install surface for marketplace rows; Installed page rows: marketplace
-  (Check for a new release · Open · Undo last release via the app page),
+  (Check for a new release · Open),
   legacy ("Switch to the reviewed version" / "No longer updated"), delisted;
   the switch prompts ("Switch to reviewed releases?" from the job's
   `confirm` answer; "Follow <who> directly?" on `FusedFilePage` state
@@ -1697,8 +1740,8 @@ list is enforced whatever the switch says.
 ### 18.9 Tests
 
 Targeted pytest only where git moves data (§17.9's rule): `tests/
-test_contrib_market.py` (pinned follow, release move + undo hold, delisted,
-switch both ways + undo, adopt_legacy, B5 merged-unreleased → released),
+test_contrib_market.py` (pinned follow, release move, delisted, switch both
+ways, adopt_legacy, B5 merged-unreleased → released),
 `tests/test_contrib_blocks.py` (hard rollback clean/ahead/conflict, soft
 and its gate, link warn, offline keeps last list, a shrunk list never lifts
 a block still running, the backend asked only when `needed`),
@@ -2009,7 +2052,7 @@ The GitHub card is rung 2's door, inline:
   listing twice — once inside the ladder, once for the listing buttons —
   accepted), then a 2-column grid: Proposals (today's `ProposalsTab`
   content, Try/Accept/Decline), Activity (`contrib.activity` + listing
-  events, Undo as today), Contributors, Listing (Edit details → the
+  events; read-only since §16.16), Contributors, Listing (Edit details → the
   PublishDialog prefilled; Doctor chip; review sentence; repository
   visibility).
 - Copy of someone else's app: "It comes from" / "Your changes" / "Your

@@ -39,9 +39,10 @@ list. Every line about a pull request carries a `key` (`pr:12:merged`,
 twice, or an Accept here that the next listing sees again, never says it
 twice.
 
-NEVER UNDO, NEVER RAISES. These lines move nothing (no backup, no aside);
-a failure to write one is logged and dropped — a timeline line must never
-fail the read or the move it describes.
+READ-ONLY, NEVER RAISES. Activity offers no action on any line, and these
+lines move nothing (no backup); a failure to write one is logged and
+dropped — a timeline line must never fail the read or the move it
+describes.
 """
 from __future__ import annotations
 
@@ -185,9 +186,10 @@ def proposal_lines(record: dict, before: dict | None, after: dict | None, pr: di
             text += f" It reaches you with {owner}'s next Community release."
         elif kind == "github":
             text += " It comes into your copy with the next update."
+        mine = bool(me and gh.same_login(who, me))
         out.append(line("proposal-accepted", text, at=iso(pr.get("merged_at") or
                                                           pr.get("closed_at")),
-                        key=f"pr:{n}:merged", actor=who, link=url))
+                        key=f"pr:{n}:merged", actor=None if mine else who, link=url))
     elif was != "closed" and now == "closed":
         out.append(line("proposal-declined",
                         f"{owner} closed your proposal {title} without taking it.",
@@ -264,9 +266,20 @@ def inbox_listed(app_dir: str, items: list, *, repo: str | None) -> int:
             continue
         out.extend(gone)
 
+    wrote: list = []
+
     def fn(r):
-        for x in out:
-            store.append_activity(r, x)
+        # Merge with Claude may have recorded `ours` while this listing ran
+        # (`inbox_event("combined")`): keep it, and never credit the sender
+        # with that head.
+        cur = _seen(r) or {}
+        for k, v in now.items():
+            got = cur.get(k).get("ours") if isinstance(cur.get(k), dict) else None
+            if got:
+                v["ours"] = got
+        skip = {f"inbox:{k}:head:{v['ours']}" for k, v in now.items() if v.get("ours")}
+        wrote.extend(1 for x in out if x.get("key") not in skip
+                     and store.append_activity(r, x))
         r["inbox_seen"] = now
 
     try:
@@ -274,7 +287,7 @@ def inbox_listed(app_dir: str, items: list, *, repo: str | None) -> int:
     except Exception:  # noqa: BLE001
         logger.exception("timeline: inbox lines failed for %s", root)
         return 0
-    return len(out)
+    return len(wrote)
 
 
 #: The note `proposals.withdraw` leaves on the pull request it closes.
@@ -304,14 +317,15 @@ def _left(rec: dict, n: int | None, was: dict, repo: str | None) -> list[dict] |
     if pr.get("merged"):
         by = pr.get("merged_by")
         me = (gh.identity() or {}).get("login")
-        if by and me and gh.same_login(by, me):
+        mine = bool(by and me and gh.same_login(by, me))
+        if mine:
             text = f"You merged {who}'s proposal {title} on GitHub."
         elif by:
             text = f"{by} merged {who}'s proposal {title} on GitHub."
         else:
             text = f"{who}'s proposal {title} was merged on GitHub."
         return [line("inbox-accepted", text, at=iso(pr.get("merged_at") or pr.get("closed_at")),
-                     key=f"inbox:{n}:merged", actor=by or who, link=url)]
+                     key=f"inbox:{n}:merged", actor=None if mine else by, link=url)]
     withdrew = False
     try:
         withdrew = any(gh.same_login(c.get("author"), who) and _WITHDREW.search(
@@ -364,7 +378,8 @@ def inbox_event(app_dir: str, number: int, what: str, *, author: str | None = No
     if what not in texts:
         return
     kind, text, key = texts[what]
-    note(app_dir, kind, text, key=key, actor=who if who != "the sender" else None, link=url)
+    # The author's own step: no `actor` (the page marks only someone else's).
+    note(app_dir, kind, text, key=key, link=url)
     if what == "combined" and head:
         store = _store()
 
@@ -387,7 +402,7 @@ def reviewed(app_dir: str, number: int, pr: dict, result: dict) -> None:
     else:
         text = f"Claude read {who}'s proposal {title} and thinks it needs a look."
     note(app_dir, "inbox-reviewed", text + (f" {summary}" if summary else ""),
-         key=f"inbox:{number}:review:{result.get('head_sha') or ''}", actor=who,
+         key=f"inbox:{number}:review:{result.get('head_sha') or ''}",
          link=pr.get("url") or None)
 
 
