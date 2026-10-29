@@ -183,40 +183,6 @@ def test_a_listed_app_stands_on_rung_three(w):
     assert out["listing"]["listing"]["approved"]["version"] == "1.0.0"
 
 
-def test_switches_hide_rung_three_and_the_link_only(w):
-    head = git(w.app, "rev-parse", "HEAD")
-    row = {"slug": "sine-starter", "repo": REPO, "branch": "main", "commit": head,
-           "name": "Sine Starter", "description": "", "category": "starters", "tags": [],
-           "icon": None, "preview": None, "remix_of": None, "version": "1.0.0"}
-    w.fake.commit(INDEX, "main", {"apps/sine-starter.json": json.dumps(row) + "\n"},
-                  "List sine-starter", author="fusedio")
-    w.listing.refresh(w.app)
-    write_prefs(marketplace_enabled=False, contrib_enabled=False)
-    calls = []
-    from fused_render.contrib import gh, listing
-    real_repo, real_doctor = gh.repo, listing.doctor_blockers
-    gh.repo = lambda *a, **k: calls.append("gh.repo") or real_repo(*a, **k)
-    listing.doctor_blockers = lambda *a, **k: calls.append("doctor") or real_doctor(*a, **k)
-    try:
-        out = w.read(w.app)
-    finally:
-        gh.repo, listing.doctor_blockers = real_repo, real_doctor
-    assert out["flags"] == {"sources": False, "marketplace": False}
-    assert out["rung"] == 2  # the ladder shows two rungs
-    assert out["listing"] is None
-    assert out["github"]["link"] is None
-    assert out["github"]["repo"] == REPO
-    # Every switch off: no GitHub lookup and no App Doctor run for the read.
-    assert out["github"]["visibility"] is None and out["doctor"] == {"clear": None,
-                                                                    "failing": None}
-    assert calls == []
-    # The loop on (Marketplace still off): the visibility comes back, the
-    # doctor (it only feeds the listing gate) still does not run.
-    write_prefs(contrib_enabled=True)
-    out = w.read(w.app)
-    assert out["github"]["visibility"] == "public" and out["doctor"]["clear"] is None
-
-
 def test_a_github_copy_is_not_mine(w):
     rec = w.store.get(w.app)
     rec["kind"] = "github"
@@ -251,32 +217,21 @@ def test_not_an_app_is_refused(w, tmp_path):
     assert out["ok"] is False and out["reason"] == "not-an-app"
 
 
-def test_every_switch_off_still_answers_the_whole_ladder(w):
-    write_prefs(marketplace_enabled=False, github_link_enabled=False, contrib_enabled=False)
-    out = w.read(w.app)
-    assert out["ok"] is True and out["mine"] is True and out["rung"] == 2
-    assert out["flags"] == {"sources": False, "marketplace": False}
-    for key in ("kind", "github", "listing", "doctor", "pending", "remix_of"):
-        assert key in out
-
-
-def test_a_legacy_github_link_switch_folds_into_the_loop_once(w):
+def test_a_legacy_github_link_switch_is_dropped_once(w):
     """Contract 3: the old Share-sheet switch has no Preferences row, so a
-    stored value is folded into `contrib_enabled` once and deleted — never
-    left as a switch the UI cannot turn off."""
+    stored value is deleted once — never left as a switch the UI cannot
+    turn off. (It used to fold into `contrib_enabled`; the loop is always
+    on since 2026-10-29, and a stored `contrib_enabled` is ignored.)"""
     from fused_render.shell import prefs, storage
 
     path = prefs._path()
     storage.write_json(path, {"marketplace_enabled": False, "github_link_enabled": True})
-    assert prefs.read_prefs() == {"marketplace_enabled": False, "contrib_enabled": True}
+    assert prefs.read_prefs() == {"marketplace_enabled": False}
     assert "github_link_enabled" not in storage.read_json(path)  # written back once
-    assert w.read(w.app)["flags"]["sources"] is True
-    # An explicit loop choice wins; `false` only goes away.
-    storage.write_json(path, {"contrib_enabled": False, "github_link_enabled": True})
+    assert w.read(w.app)["flags"] == {"sources": True, "marketplace": True}
+    storage.write_json(path, {"contrib_enabled": False, "github_link_enabled": False})
     assert prefs.read_prefs() == {"contrib_enabled": False}
-    storage.write_json(path, {"github_link_enabled": False})
-    assert prefs.read_prefs() == {}
-    assert w.read(w.app)["flags"]["sources"] is False
+    assert w.read(w.app)["flags"]["sources"] is True
 
 
 def test_fresh_re_asks_what_is_cached(w):

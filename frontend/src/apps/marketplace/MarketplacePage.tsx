@@ -21,7 +21,6 @@ import { useEffect, useRef, useState } from "react";
 import { IS_EMBED, navigateUrl, pushHistory, replaceSearch } from "@platform/lib/router";
 import { useNavEpoch } from "@platform/lib/hooks";
 import { MARKETPLACE_HOME, releaseWaiting, useCatalog } from "@platform/lib/marketplace";
-import { useMarketplaceFeature } from "@platform/lib/marketplace-flag";
 import { StoreHeader, type StoreTab } from "./StoreHeader";
 import { CatalogFooter, Discover } from "./Discover";
 import { InstalledPage } from "./InstalledPage";
@@ -36,12 +35,6 @@ type Route =
   | { kind: "app"; slug: string }
   | { kind: "file"; path: string }
   | { kind: "unknown" };
-
-/** A listing link's landing (§18.5): the deep link opens the app's page with
- *  this marker, and the page is shown bare when the store is off. */
-export function isListingLink(search: string): boolean {
-  return new URLSearchParams(search).get("via") === "link";
-}
 
 /** The `.fused` install page's own address. */
 export const MARKETPLACE_FILE = MARKETPLACE_HOME + "/file";
@@ -93,17 +86,10 @@ export function MarketplacePage({ fusedFile }: { fusedFile?: string } = {}) {
   const navEpoch = useNavEpoch();
   const route: Route = fusedFile ? { kind: "file", path: fusedFile } : parseMarketplacePath(location.pathname, location.search);
   // A chrome-free embed (the window a `.fused` double-click opened) shows the
-  // page alone: no store header to wander off into the catalog from. So does
-  // a `.fused` opened with the store OFF (`marketplace_enabled`; the install
-  // page is the one `.fused` view whatever the flag says): no header whose
-  // tabs would land on the "Marketplace is off" notice, and no catalog read
-  // — the store's API is not asked for on a file open the flag never offered.
-  const storeOn = useMarketplaceFeature();
-  // A listing link (`?via=link`) lands on the app's page whatever the flag
-  // says — the `.fused` rule extended to listings — and, with the store
-  // off, bare: no header whose tabs lead to the "Marketplace is off" notice.
-  const viaLink = route.kind === "app" && isListingLink(location.search);
-  const bare = (route.kind === "file" && (IS_EMBED || storeOn !== true)) || (viaLink && storeOn !== true);
+  // page alone: no store header to wander off into the catalog from, and no
+  // catalog read. (Until 2026-10-29 a `.fused` or a listing link opened with
+  // the store switched off rendered bare too; the store is always on now.)
+  const bare = route.kind === "file" && IS_EMBED;
   const snap = useCatalog(!bare);
   const initial = route.kind === "discover" ? readParams() : { category: "all", q: "" };
   const [category, setCategory] = useState(initial.category);
@@ -181,7 +167,10 @@ export function MarketplacePage({ fusedFile }: { fusedFile?: string } = {}) {
   } else if (route.kind === "installed") {
     body = <InstalledPage snap={snap} />;
   } else if (route.kind === "app") {
-    body = <AppDetailPage slug={route.slug} snap={snap} bare={bare} />;
+    // Keyed by slug: a hop to another app's page (a "More like this" card)
+    // is a fresh mount, so what the page remembers about an install asked
+    // for there (AppDetailPage `asked`) dies with the hop.
+    body = <AppDetailPage key={route.slug} slug={route.slug} snap={snap} bare={bare} />;
   } else if (route.kind === "file") {
     body = <FusedFilePage key={route.path} path={route.path} />;
   } else {

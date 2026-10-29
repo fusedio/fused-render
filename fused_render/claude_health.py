@@ -1240,8 +1240,7 @@ def snapshot(refresh: bool = False) -> dict:
 def warm_in_background() -> None:
     """Fill the cache off the request path, so the first GET is a disk read.
 
-    Called from the server entry points, never from create_app — the same rule
-    community.ensure_showcase_in_background follows, and for the same reason: importing
+    Called from the server entry points, never from create_app: importing
     the server in a test must not spawn the user's login shell.
 
     Failures are swallowed. A cold cache costs the first request its probe; a

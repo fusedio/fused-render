@@ -2039,10 +2039,11 @@ it, behind an approval card. Owner's ask: "give the bots tools so they can
 search for an app in the marketplace and then ask the user the approval in
 order to install it and use it".
 
-**Roster.** Both tools are on the roster only while `shell.prefs.marketplace_enabled()`
-(`tools.marketplace_on`): the pref gates entry points, and a bot tool is one,
-like the sidebar row and the `/marketplace` routes. The steps engine mounts its
-two action lines (`MARKETPLACE_ACTIONS`) under the same condition; the agent
+**Roster.** Both tools are always on the roster (`tools.marketplace_on`;
+until 2026-10-29 it followed the `marketplace_enabled` pref, which gated the
+entry points — the sidebar row, the `/marketplace` routes and these tools).
+The steps engine mounts its two action lines (`MARKETPLACE_ACTIONS`) under
+the same condition; the agent
 engine's prompt says what to do "when `marketplace_search` is among your tools".
 
 **`marketplace_search {query?}`** (read, no card, repeatable; `call_key` None).

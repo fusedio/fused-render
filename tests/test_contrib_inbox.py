@@ -332,11 +332,7 @@ def test_orphaned_try_copies_are_swept(world):
     os.makedirs(junk)
     assert trycopy.sweep_orphans() == 1  # the record-less one only
     assert os.path.isdir(path) and not os.path.exists(junk)
-    write_prefs(contrib_enabled=False)
-    assert trycopy.sweep_orphans() == 1 and not os.path.exists(path)
     # Uninstalling the author's app takes its Try copies with it.
-    write_prefs(contrib_enabled=True)
-    path = inbox.try_open(alice, pr["number"])["path"]
     app_state_remove.prune_stores(alice)
     assert not os.path.exists(path)
 

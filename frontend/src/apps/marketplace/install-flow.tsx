@@ -120,12 +120,28 @@ function setPending(req: SheetRequest | null) {
   for (const l of listeners) l(req);
 }
 
+/** Who hears that THIS window just started an install or update job for a
+ *  slug (the app page: an install asked for there opens the app when it
+ *  lands). Only a job that came back from the POST counts — a `confirm`
+ *  answer, a cancelled sheet or a job another window started are not
+ *  starts here. */
+const startListeners = new Set<(slug: string) => void>();
+export function onInstallStarted(cb: (slug: string) => void): () => void {
+  startListeners.add(cb);
+  return () => {
+    startListeners.delete(cb);
+  };
+}
+
 function start(app: AppEntry, opts: InstallOpts = {}) {
   // installApp records the failure on the job itself (the pill turns into
   // Retry with the reason), so nothing more to say here.
   installApp({ slug: app.slug, name: app.name }, opts)
     .then((r) => {
-      if (!("status" in r) || r.status !== "confirm") return;
+      if (!("status" in r) || r.status !== "confirm") {
+        for (const l of startListeners) l(app.slug);
+        return;
+      }
       if ("overwrite" in r) setPending({ kind: "overwrite", app, path: r.path });
       else setPending({ kind: "switch", app, who: r.who, path: r.path });
     })

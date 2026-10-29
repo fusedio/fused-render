@@ -55,6 +55,19 @@ contributor by default.
 
 ## 1. Feature flags
 
+**Amended 2026-10-29: the loop and the Community are ALWAYS ON.** The
+`contrib_enabled` and `marketplace_enabled` prefs are gone from Preferences
+and no longer read: `prefs.contrib_enabled()` / `prefs.marketplace_enabled()`
+answer `True`, `contrib/flags.py`'s four loop phases and `marketplace_ui()`
+are always on, and the client's `contrib-flags.ts` derives the same (the
+`marketplace-flag.ts` module is deleted). Only Remix keeps a switch
+(`contrib_remix_enabled`, opt-in, default OFF). The sidebar's Community row
+carries a Beta tag. The startup clone of the old showcase repo
+(`fused_render/community.py`, `POST /api/community`, the Apps hub's Showcase
+sync and the first-app step's showcase row) is removed with it: the Community
+page is where a new user gets apps. The text below predates this and is left
+as written; read every "with the loop off" as a state that no longer exists.
+
 **Amended 2026-10-22: ONE loop switch + Remix.** The four loop switches (A1–A4)
 below were folded into a single pref, `contrib_enabled`
 (`fused_render/shell/prefs.py`, opt-in `is True` getter `contrib_enabled()`,

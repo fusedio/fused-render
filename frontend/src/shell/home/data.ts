@@ -12,7 +12,6 @@ import {
   type ClaudeSessionFolder,
   type Task,
 } from "@platform/lib/api";
-import { runCommunity } from "@platform/lib/community";
 import { useCurrentAppsChanged, TASKS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
 import { api as botsApi, type Bot } from "@apps/bots/lib/api";
 import type { AppsSort } from "./layout";
@@ -71,8 +70,8 @@ export function usePagedApps(enabled: boolean) {
 }
 
 /** Fused apps — hydrate the recent row first. The server only scans the full
-    workspace when valid recents do not fill it, preserving discovery and the
-    showcase fallback without charging returning visits for an exhaustive walk.
+    workspace when valid recents do not fill it, preserving discovery without
+    charging returning visits for an exhaustive walk.
     Both row fetches ask for `limit * rows + 1`: one extra item so the cards
     strip has a next card to peek in at its right edge. Never a fixed MAX_ROW —
     that reintroduces the exhaustive workspace walk documented in strip.ts. */
@@ -91,48 +90,13 @@ export function useHomeApps(limit: number | null, rows: number, sort: AppsSort =
     if (limit === null) return;
     let alive = true;
     getHomeApps(Math.min(limit * rows + 1, MAX_ROW), sort).then(
-      async (r) => {
+      (r) => {
         if (!alive) return;
-        if (r.apps.length > 0) {
-          setAppsError(null);
-          setApps(r.apps.slice(0, MAX_ROW));
-          return;
-        }
-        // Empty on a brand-new install usually isn't "no apps" — it's this
-        // fetch landing before the startup showcase clone has finished.
-        // Apps.tsx escalates the same "no-cache" catalog status into a
-        // wait-for-clone-then-refetch; Home is the first page a new user sees.
-        try {
-          const local = await runCommunity<{ status?: string }>({ action: "catalog" });
-          if (!alive) return;
-          // Retired with the reviewed Marketplace (§18.5): no showcase
-          // clone is coming, so the empty row is the answer.
-          if (local.status === "retired") {
-            setApps([]);
-            return;
-          }
-          // A "no-cache" status means the clone is still missing — wait for
-          // it. But the clone can just as easily land in the gap between the
-          // first empty getHomeApps and this very check, which reports it
-          // "ok" already: that walk never re-ran, so its emptiness is just as
-          // stale. Either way, one more walk is needed before the row really
-          // is empty — retry unconditionally.
-          if (local.status === "no-cache") {
-            await runCommunity({ action: "refresh" });
-            if (!alive) return;
-          }
-          const again = await getHomeApps(Math.min(limit * rows + 1, MAX_ROW), sort);
-          if (!alive) return;
-          setApps(again.apps.slice(0, MAX_ROW));
-          return;
-        } catch (e) {
-          // The clone refused (no usable git, network, a foreign folder at
-          // <workspace>/showcase). The reason belongs in the empty state; the
-          // backend composes the whole sentence and it renders verbatim.
-          if (!alive) return;
-          setAppsError((e as Error).message);
-        }
-        setApps([]);
+        // Empty on a brand-new install is the answer: the Community page is
+        // where a new user gets apps (the startup showcase clone this used
+        // to wait for is gone, 2026-10-29).
+        setAppsError(null);
+        setApps(r.apps.slice(0, MAX_ROW));
       },
       (e: Error) => {
         if (!alive) return;

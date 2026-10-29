@@ -57,7 +57,6 @@ from fused_render.server.routers.copilot_health import router as copilot_health_
 from fused_render.server.routers.codex_health import router as codex_health_router
 from fused_render.server.routers.gemini_health import router as gemini_health_router
 from fused_render.server.routers.claude_sessions import router as claude_sessions_router
-from fused_render.server.routers.community import router as community_router
 from fused_render.server.routers.marketplace import router as marketplace_router
 from fused_render.server.routers.github import router as github_router
 from fused_render.server.routers.clipboard import router as clipboard_router
@@ -1049,13 +1048,9 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # apps ranked by a query; bots under Fused Bot.
     app.include_router(launcher_router)
     # An app clicked inside a macOS native window opens in its own window.
-    # Community marketplace backend for the /apps hub's Showcase tab and the
-    # explorer preview's Clone button (routers/community.py).
-    app.include_router(community_router)
     # The Marketplace (TEMPORARY backend, routers/marketplace.py): the
     # community-apps catalog, assets, and install/update jobs into
-    # <workspace>/app/. Not gated by the `marketplace_enabled` pref —
-    # that switches the shell's entry points only.
+    # <workspace>/app/. The Community is always offered (owner, 2026-10-29).
     app.include_router(marketplace_router)
     # Git repositories on this machine for the Explorer homepage's "Repos" tab
     # (routers/git_repos.py) — candidates come from the file index, never a

@@ -11,7 +11,7 @@
 //   3 Disk Access  — macOS Full Disk Access, why, and the one button there is
 //   4 Models       — local models that fit this machine, downloaded in the background
 //   5 Updates      — optional newsletter email; not a stage, never in the meter
-//   6 First app    — the Home composer, or a showcase local-AI app
+//   6 First app    — the Home composer
 //
 // Steps 1–3 write nothing but their STAGE STATUSES for the progress meter
 // (progress.ts — the sidebar's "Setup N%" row and the pills in the bar above;
@@ -20,7 +20,7 @@
 // downloads, which
 // are server-owned jobs that outlive the wizard and block nothing in it — a
 // head start, since a model is fetched on first use anyway. Step 6's create
-// (or a showcase open) is the only other durable action and doubles as
+// is the only other durable action and doubles as
 // "complete". ✕ / Escape
 // record a DISMISS — a different flag, so a later build can tell the two
 // apart. Both stop the auto-show; neither is undone by reopening from Help ›
@@ -229,11 +229,10 @@ export function OnboardingWizard({ config }: { config: Config }) {
   // to the NEXT launch, and a failed write must not hold the page over the
   // app the user is trying to reach. (`settled` is declared above, by the
   // step effect that reads it.)
-  // `via` names the ACTION that finished it — the composer made an app, or a
-  // showcase card was opened — and is what marks the First-app STAGE
-  // complete. "Finish setup" passes none: it ends the wizard but
+  // `via` names the ACTION that finished it — the composer made an app —
+  // and is what marks the First-app STAGE complete. "Finish setup" passes none: it ends the wizard but
   // builds nothing, and the meter must say so.
-  const markComplete = useCallback((via?: "composer" | "showcase") => {
+  const markComplete = useCallback((via?: "composer") => {
     if (via) reportStage("app", "complete", { via });
     if (settled.current) return;
     settled.current = true;
@@ -255,20 +254,18 @@ export function OnboardingWizard({ config }: { config: Config }) {
     [markComplete],
   );
 
-  // Step 6's actions (the composer's create, a showcase card) NAVIGATE — App
+  // Step 6's action (the composer's create) NAVIGATES — App
   // swaps this page out on the route change, not when the action starts, so
   // the composer's own `task_error` ("folder created, Claude didn't start")
   // lands in a composer that is still on screen where the user can read it.
   //
-  // A navigation off the last step IS completion (a showcase card opened, or
-  // the composer landed on the new app) — so cards need no click hook, and a
-  // click that does not navigate (a card's export icon) completes nothing.
-  // The unmount is that navigation.
+  // A navigation off the last step IS completion (the composer landed on the
+  // new app). The unmount is that navigation.
   const lastRef = useRef(last);
   lastRef.current = last;
   // The FLAG only: this unmount also fires on browser Back from the last
-  // step, where nothing was built. The First-app STAGE is claimed by the step
-  // itself, which checks the page it landed on (FirstAppStep onShowcaseOpened).
+  // step, where nothing was built. The First-app STAGE is claimed by the
+  // composer's own `onComplete`.
   //
   // Any OTHER way out is a close, and a close is dismissed — the ✕ and
   // Escape said so already, but browser Back, the brand link, the sidebar
@@ -478,7 +475,6 @@ export function OnboardingWizard({ config }: { config: Config }) {
               health={health}
               eyebrow={eyebrow}
               onComplete={() => markComplete("composer")}
-              onShowcaseOpened={() => markComplete("showcase")}
             />
           )}
         </div>

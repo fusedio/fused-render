@@ -105,10 +105,6 @@ def inv(w):
     assert_home_invariants(w.app)
 
 
-def _off():
-    write_prefs(contrib_enabled=False)
-
-
 def _alice(w, files, msg):
     return w.fake.commit(REPO, "main", files, msg, author="alice")
 
@@ -396,9 +392,8 @@ def _failures(w):
             if f["root"] == w.app]
 
 
-def test_loop_off_still_brings_in_cleanly(w):
-    """§17: with the switch off the engine still ff's and brings in."""
-    _off()
+def test_brings_in_cleanly(w):
+    """§17: the engine ff's and brings in."""
     mine = claude_commit(w.app, {"tweak.txt": "mine\n"}, "tweak")
     for i in range(2):
         tip = _alice(w, {f"c{i}.txt": "alice\n"}, f"a{i}")
@@ -409,46 +404,9 @@ def test_loop_off_still_brings_in_cleanly(w):
     assert _failures(w) == []
 
 
-def test_loop_off_stuck_states_are_todays_failure_rows(w):
-    """§17 (review P2 #16): with the loop off an edit in the way is still
-    saved as "Your edits" on Bob's own branch and the update comes in; an
-    overlap or a file in the way is git_upstream's failure row in plain
-    words, tree untouched."""
-    _off()
-    edit(w.app, "app.py", APP_LOUD)
-    tip = _alice(w, {"app.py": APP_PY + "# a\n"}, "a2")
-    assert w.sync(push=True)["status"] == "synced" and _failures(w) == []
-    inv(w)
-    assert git(w.app, "log", "-1", "--format=%s", "HEAD^1") == "Your edits"
-    assert read(w.app, "app.py") == APP_LOUD + "# a\n"
-    mine = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
-    _alice(w, {"index.html": PAGE.replace("blue", "green")}, "green")
-    res = w.sync(push=True)
-    assert res["status"] == "failed" and res["failure"]["reason"] == "diverged"
-    assert "index.html" in _failures(w)[0][1] and w.head() == mine
-    out = engine.bring_in(w.app)
-    assert out["reason"] == "diverged" and "index.html" in out["message"]
-    assert _anc(w, tip, w.head())
-    _remote_untouched(w, w.alice())
-
-
-def test_loop_off_never_overwrites_an_ignored_file(w):
-    edit(w.app, ".git/info/exclude", "data.csv\n")
-    edit(w.app, "data.csv", "bob's numbers\n")
-    _off()
-    head = w.head()
-    _alice(w, {"data.csv": "alice's numbers\n"}, "ship data")
-    res = w.sync()
-    assert res["status"] == "failed" and res["failure"]["reason"] == "git-failed"
-    assert _failures(w)[0][1] == ("alice's update adds data.csv, which you already have "
-                                  "here. Rename yours to get the update.")
-    assert w.head() == head and read(w.app, "data.csv") == "bob's numbers\n"
-
-
 def test_github_kind_goes_to_the_engine_whatever_the_flags(w, monkeypatch):
-    """P1/P2: the recorded kind decides — with the loop off a `github` copy
-    is synced by `engine.sync` (never the plain, pushing body)."""
-    _off()
+    """P1/P2: the recorded kind decides — a `github` copy is synced by
+    `engine.sync` (never the plain, pushing body)."""
     assert classify.kind_of(w.app) == "github"
     calls = []
     real = engine.sync
@@ -1013,21 +971,6 @@ def test_old_git_scratch_merge_gives_the_same_answers(w, monkeypatch):
     assert not bad["clean"] and bad["files"] == ["index.html"]
     assert w.sync()["why"] == "needs-merge"
     assert os.listdir(replay.work_dir()) == []
-
-
-def test_off_default_with_the_loop_off_keeps_the_switch_card(w):
-    """R5 with v3's rule (§17.6): "default" for a github copy is fused/mine;
-    another version with A1 off gets a check_repo-shaped state, and Switch
-    is the engine's Go back (never the author's branch)."""
-    _off()
-    git(w.app, "checkout", "-q", "-b", "feature")
-    _alice(w, {"c.txt": "alice\n"}, "a2")
-    res = w.sync()
-    assert res["why"] == "not-default"
-    assert (res["state"]["branch"], res["state"]["default_branch"], res["state"]["on_default"],
-            res["state"]["behind"]) == ("feature", "main", False, 1)
-    assert git_upstream.switch_repo(w.app)["ok"] is True
-    inv(w)
 
 
 def test_s3_restore_backs_up_an_ignored_file_it_overwrites(w):

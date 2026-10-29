@@ -1536,17 +1536,15 @@ export interface Prefs {
   // an older server answers without it, and the reader (monitor-flag.ts)
   // treats absence as off.
   monitor?: { enabled: boolean };
-  // Whether the Marketplace is OFFERED (opt-in, default off — shell/prefs.py
-  // `marketplace_enabled`): the sidebar's Marketplace row and the
-  // /marketplace pages. Gates the entry points, not /api/marketplace/*.
-  // OPTIONAL: an older server answers without it, and the reader
-  // (marketplace-flag.ts) treats absence as off.
+  // The Community is always offered since 2026-10-29 (it was the opt-in
+  // `marketplace_enabled` switch); the server still sends the key, always
+  // true. Nothing reads it any more.
   marketplace?: { enabled: boolean };
-  // The GitHub contribution loop's switches, RAW as set (shell/prefs.py
-  // `contrib_enabled` + `contrib_remix_enabled`, opt-in, default off —
-  // docs/CONTRIB_LOOP.md §1). Readers want the per-phase values with "remix
-  // needs the loop" applied: contrib-flags.ts. OPTIONAL: an older server
-  // answers without it, and absence means off.
+  // The GitHub contribution loop's switches, RAW as set (shell/prefs.py —
+  // docs/CONTRIB_LOOP.md §1). `enabled` is always true since 2026-10-29;
+  // `remix` (`contrib_remix_enabled`) is opt-in, default off. Readers want
+  // the per-phase values: contrib-flags.ts. OPTIONAL: an older server
+  // answers without it, and absence means Remix off.
   contrib?: ContribPrefs;
   // ONE TASK IN PROGRESS PER FOLDER (`project_queue_enabled`, shell/prefs.py).
   // Everything that wants to run in a folder somebody else's task is already
@@ -1988,16 +1986,7 @@ export function putMonitorEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { monitor_enabled: enabled });
 }
 
-export function putMarketplaceEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { marketplace_enabled: enabled });
-}
-
-/** The contribution loop's switch (`contrib_enabled`). */
-export function putContribEnabled(enabled: boolean): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { contrib_enabled: enabled });
-}
-
-/** The Remix switch (`contrib_remix_enabled`; effective only with the loop on). */
+/** The Remix switch (`contrib_remix_enabled`). */
 export function putContribRemixEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { contrib_remix_enabled: enabled });
 }

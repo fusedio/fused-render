@@ -12,12 +12,9 @@ contribution engine keeps it on the row's approved commit, never the
 author's tip (§18.0 M1). No app code comes from Fused storage any more
 (M2): the release-package path (`marketplace_release`, the tar.gz download,
 its extractor, the per-file stamp writer, the staging sweep) is deleted.
-Deliberately thin: this module plus routers/marketplace.py, a pref
-(`shell/prefs.marketplace_enabled`) and the shell routes; git behaviour is
+Deliberately thin: this module plus routers/marketplace.py and the shell
+routes; git behaviour is
 the engine's (contrib/market.py, contrib/blocks.py), never re-done here.
-
-It is NOT community.py (the /apps hub's old Showcase tab, retired while the
-Marketplace is on: routers/community.py answers `{status: "retired"}`).
 
 **The API** is a set of GET endpoints under `api_base()` (the constant
 `API_BASE`, overridable by `FUSED_RENDER_MARKETPLACE_API`, read per call).
@@ -37,7 +34,7 @@ releases) and `marketplace_blocklist` (B4). `client_version` is
 `fused_render.__version__`.
 
 **State dir** is ``~/.fused-render/marketplace/`` (FUSED_RENDER_HOME
-honoured) — UNNESTED by branch ref, exactly like community.STATE_DIR: the
+honoured) — UNNESTED by branch ref, like routers/claude_sessions.py's STATE_DIR: the
 catalog, block list and asset cache describe a remote service, not this
 checkout, so parallel branches share one copy. What IS per-setup is the
 workspace the apps install into (`seed.fused_dir()`), read per call.
@@ -124,7 +121,7 @@ installing <slug> do here", which the router, the bots' card
              user's own repo, an unrecorded clone, a row without a
              reviewed source (the old backend's rows have no `repo`).
   install, with `showcase` set → the user has this app as a subfolder of
-             the showcase clone (`community.SHOWCASE_DIR/<slug>`, the
+             the showcase clone (`<workspace>/showcase/<slug>`, the
              community repo's folders are named by slug) and no other copy.
              A plain install would find that folder by the page's app id
              and refuse ("already holds this app, installed another way"),
@@ -238,7 +235,7 @@ class InstallError(Exception):
 
 def state_dir() -> str:
     """``~/.fused-render/marketplace`` — unnested by branch, like
-    community.STATE_DIR (module docstring)."""
+    the module docstring."""
     base = os.environ.get("FUSED_RENDER_HOME") or os.path.expanduser("~/.fused-render")
     return os.path.join(base, "marketplace")
 
@@ -1552,17 +1549,21 @@ def _record_kind(path: str) -> str | None:
     return rec.get("kind") if rec else None
 
 
+#: The folder the old showcase clone lived in under the workspace
+#: (`<workspace>/showcase`; the clone itself is no longer made since
+#: 2026-10-29, but one left on upgraded machines still holds apps).
+SHOWCASE_NAME = "showcase"
+
+
 def _showcase_dir() -> str:
-    """`community.SHOWCASE_DIR`, read against the workspace as configured
-    NOW (that constant is fixed at import time)."""
-    from fused_render import community
+    """`<workspace>/showcase`, read against the workspace as configured NOW."""
     from fused_render.shell.seed import fused_dir
 
-    return os.path.join(fused_dir(), community.SHOWCASE_NAME)
+    return os.path.join(fused_dir(), SHOWCASE_NAME)
 
 
 def in_showcase(path: str) -> bool:
-    """Whether `path` sits inside the showcase clone (`community.SHOWCASE_DIR`)."""
+    """Whether `path` sits inside a showcase clone (`_showcase_dir`)."""
     from fused_render._platform import is_within
 
     return is_within(os.path.realpath(path), os.path.realpath(_showcase_dir()), strict=True)

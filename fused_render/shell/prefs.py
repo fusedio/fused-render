@@ -28,19 +28,16 @@ Export action — opt-in, default off; see ``app_sharing_enabled``),
 in a scaled iframe — opt-in, default off; see ``live_previews_enabled``),
 **monitor_enabled** (whether the process Monitor — status-bar System chip
 and /monitor page — is offered; opt-in, default off; see ``monitor_enabled``),
-**marketplace_enabled** (whether the Marketplace — sidebar row and the
-/marketplace pages — is offered; opt-in, default off; see
-``marketplace_enabled``),
+**marketplace_enabled** and **contrib_enabled** (legacy, no longer read: the
+Community and the GitHub contribution loop were opt-in switches until
+2026-10-29 and are always on now — ``marketplace_enabled()`` and
+``contrib_enabled()`` answer ``True``; a stored key is left alone and
+ignored),
 **github_link_enabled** (legacy, never kept: the Share sheet's GitHub
-install link used to have its own switch; since 2026-10-27 the link is part
-of Community apps (``contrib_enabled``). ``read_prefs`` folds a stored key
-once — ``true`` turns ``contrib_enabled`` on when that was never set — and
-deletes it, so there is no switch left that the UI cannot turn off; see
-``_fold_legacy``),
-**contrib_enabled** (the GitHub contribution loop — sources, your changes,
-the proposals inbox, merged proposals — one switch, opt-in, default off) and
-**contrib_remix_enabled** (remix, needs the loop on; see ``CONTRIB_PREF_KEYS``
-and ``fused_render.contrib.flags``),
+install link used to have its own switch; ``read_prefs`` deletes a stored
+key — see ``_fold_legacy``),
+**contrib_remix_enabled** (remix, opt-in, default off; see
+``CONTRIB_PREF_KEYS`` and ``fused_render.contrib.flags``),
 **indexing_enabled** (whether
 background file-index scanning may run — default ON only inside the native
 desktop app, OFF for browser/CLI installs and dev runs; see
@@ -155,20 +152,17 @@ LEGACY_GITHUB_LINK_KEY = "github_link_enabled"
 
 
 def _fold_legacy() -> dict:
-    """Fold `github_link_enabled` into `contrib_enabled` ONCE: a stored
-    `true` turns the loop on when `contrib_enabled` was never set (that
-    user had the link and kept it); the key is deleted either way — no
-    Preferences row writes it any more, so a value left behind could never
-    be switched off. Written back at once, so this runs one time per
-    machine. Answers the prefs as written."""
+    """Drop `github_link_enabled` ONCE: the key is deleted — no Preferences
+    row writes it any more, so a value left behind could never be switched
+    off (it used to fold into `contrib_enabled`, which is always on now).
+    Written back at once, so this runs one time per machine. Answers the
+    prefs as written."""
     with _PREFS_LOCK:
         data = storage.read_json(_path())
         data = data if isinstance(data, dict) else {}
         if LEGACY_GITHUB_LINK_KEY not in data:
             return data
-        legacy = data.pop(LEGACY_GITHUB_LINK_KEY)
-        if legacy is True and "contrib_enabled" not in data:
-            data["contrib_enabled"] = True
+        data.pop(LEGACY_GITHUB_LINK_KEY)
         try:
             storage.write_json(_path(), data)
         except OSError:
@@ -362,41 +356,33 @@ def monitor_enabled() -> bool:
 
 
 def marketplace_enabled() -> bool:
-    """Whether the Marketplace is offered (default off — opt-in).
-
-    ON, the shell offers its entry points: a sidebar row and the `/marketplace`
-    pages (browse, installed/updates, app detail) that install community apps
-    from the fused-render-community-apps repo into `<workspace>/app/`.
-    OFF, those entry points are hidden and `/marketplace` shows a notice
-    pointing at Preferences.
-
-    A SWITCH OVER THE ENTRY POINTS, like `monitor_enabled`: the
-    /api/marketplace routes (fused_render/marketplace.py) keep answering
-    regardless. Any non-`true` stored value (missing/legacy) reads as off, so
-    every install has to opt in.
+    """Whether the Community (the sidebar row and the `/marketplace` pages
+    that install community apps from the fused-render-community-apps repo
+    into `<workspace>/app/`) is offered: ALWAYS, since 2026-10-29. It was an
+    opt-in switch (`marketplace_enabled` in prefs.json) while in preview; the
+    getter stays so every caller keeps one question to ask, and a stored key
+    is ignored.
     """
-    return read_prefs().get("marketplace_enabled") is True
+    return True
 
 
-# The GitHub contribution loop (docs/CONTRIB_LOOP.md §1): ONE switch for the
-# loop (opt-in, default off) plus Remix on its own switch, which needs the loop
-# on. Until 2026-10-22 the loop was four phase switches with a prerequisite
-# chain. These are the RAW stored values, which Preferences shows as set;
-# every server branch asks `fused_render.contrib.flags` (whose phase getters
-# answer the loop switch, and `remix()` both).
-CONTRIB_PREF_KEYS = ("contrib_enabled", "contrib_remix_enabled")
+# The GitHub contribution loop (docs/CONTRIB_LOOP.md §1) is always on since
+# 2026-10-29 (it was one opt-in switch, `contrib_enabled`, and before
+# 2026-10-22 four phase switches with a prerequisite chain). Remix keeps its
+# own switch, opt-in. This is the RAW stored value, which Preferences shows
+# as set; every server branch asks `fused_render.contrib.flags`.
+CONTRIB_PREF_KEYS = ("contrib_remix_enabled",)
 
 
 def contrib_enabled() -> bool:
-    """The contribution loop (default off): install sources + share by link,
-    your changes + Propose, the author's inbox, merged proposals returning a
-    copy to following."""
-    return read_prefs().get("contrib_enabled") is True
+    """The contribution loop: install sources + share by link, your changes
+    + Propose, the author's inbox, merged proposals returning a copy to
+    following. Always on; the getter stays for its callers."""
+    return True
 
 
 def contrib_remix_enabled() -> bool:
-    """Remix (default off): publish your changed copy as a remix. Effective
-    only with the loop on — `contrib.flags.remix()` applies that."""
+    """Remix (default off): publish your changed copy as a remix."""
     return read_prefs().get("contrib_remix_enabled") is True
 
 
@@ -1101,11 +1087,10 @@ def _prefs_response() -> dict:
         # is offered (opt-in, default off). Not an API guard; see
         # `monitor_enabled`.
         "monitor": {"enabled": monitor_enabled()},
-        # Whether the Marketplace (sidebar row + /marketplace pages) is offered
-        # (opt-in, default off). Not an API guard; see `marketplace_enabled`.
+        # The Community and the contribution loop are always on (2026-10-29);
+        # the keys stay in the payload for readers that still ask. Remix is
+        # RAW as stored (opt-in, default off).
         "marketplace": {"enabled": marketplace_enabled()},
-        # The GitHub contribution loop + Remix (opt-in, default off), RAW as
-        # stored; `contrib.flags` applies "remix needs the loop".
         "contrib": {"enabled": contrib_enabled(), "remix": contrib_remix_enabled()},
         # The DEFAULT Fused environment (fusedcli.workbench_env): the canvas
         # catalog's initial pick, the `fused` wrapper outside a clone, share
@@ -1405,12 +1390,6 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
             if not isinstance(value, bool):
                 return JSONResponse({"error": "'monitor_enabled' must be a boolean"}, status_code=400)
             prefs["monitor_enabled"] = value
-            changed = True
-        if "marketplace_enabled" in body:
-            value = body.get("marketplace_enabled")
-            if not isinstance(value, bool):
-                return JSONResponse({"error": "'marketplace_enabled' must be a boolean"}, status_code=400)
-            prefs["marketplace_enabled"] = value
             changed = True
         for contrib_key in CONTRIB_PREF_KEYS:
             if contrib_key in body:
@@ -1776,8 +1755,8 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
         if not changed:
             return JSONResponse(
                 {"error": "no known preference in request (expected 'engine', "
-                          "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'monitor_enabled', 'marketplace_enabled', "
-                          "'contrib_enabled', 'contrib_remix_enabled', "
+                          "'engines', 'reader_enabled', 'canvases_enabled', 'app_sharing_enabled', 'live_previews_enabled', 'monitor_enabled', "
+                          "'contrib_remix_enabled', "
                           "'native_windows_enabled', 'chromium_windows_enabled', "
                           "'task_notify_terminal_sessions', "
                           "'project_queue_enabled', "
