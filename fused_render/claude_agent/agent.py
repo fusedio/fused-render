@@ -1179,6 +1179,13 @@ def _blocked_note(backend: str = "") -> str:
     tell a closing question from a closing answer, so the rule lives where the
     choice is made: the model must park on a card when it is blocked.
 
+    The card is also the model's only way to talk while blocked, so a user
+    who types a QUESTION into its "Other" box (which the CLI reports as a
+    full answer, D407) used to get another card back with the reply buried in
+    its wording. The Claude text therefore says to answer in plain text first,
+    in the same turn (text before a card does not end the turn), then put
+    only the choice that is still open back on a card.
+
     Appended to EVERY target's prompt, like `_origin_note`: this is a fact
     about how the app reads the run, not about the target. A non-Claude
     `backend` drops the tool name — no non-Claude agent has
@@ -1210,7 +1217,13 @@ def _blocked_note(backend: str = "") -> str:
         "them. If the thing you need is approval for an action, call the "
         "tool that takes the action and let the permission prompt stop the "
         f"turn. Use `{ANSWERABLE_TOOL}` only when you truly cannot proceed "
-        "without the answer."
+        "without the answer. If the user replies to a card with a question or "
+        "a request for information instead of a choice, answer it in plain "
+        "text first, in the same turn, then call "
+        f"`{ANSWERABLE_TOOL}` again with the choice that is still open: text "
+        "before a card does not end the turn. Do not end that plain-text "
+        "answer with a question, and do not repeat a choice they have "
+        "already made."
     )
 
 
