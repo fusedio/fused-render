@@ -5671,10 +5671,13 @@ def warm() -> None:
     try:
         snap = _rebuild_snapshot()
     except Exception:  # noqa: BLE001 — a warm that fails costs nothing but the warmth
+        # …and the builder still starts: with none, no snapshot is ever
+        # published, and `snapshot_rows` readers (the Monitor's labels) would
+        # see None for the life of the process. Its next build publishes one.
         logger.debug("tasks warm failed", exc_info=True)
-        return
-    logger.info("tasks warm: %d rows in %.2fs", len(snap.rows), time.monotonic() - started)
-    tasks_index.save(_SCAN, _BUILD_LOCK)
+    else:
+        logger.info("tasks warm: %d rows in %.2fs", len(snap.rows), time.monotonic() - started)
+        tasks_index.save(_SCAN, _BUILD_LOCK)
     if not tasks_watch.running():
         return
     global _builder_thread
@@ -5753,6 +5756,14 @@ def _rebuild_snapshot() -> _Snapshot:
         with _SNAP_COND:
             _building = False
             _SNAP_COND.notify_all()
+
+
+def snapshot_rows() -> list[dict] | None:
+    """The last published snapshot's rows, or None before the first build.
+    NEVER builds: for a reader outside the listing (the Monitor's process
+    labels, sysmon/labels.py) that may not pay for one, once a second."""
+    with _SNAP_COND:
+        return _snapshot.rows if _snapshot is not None else None
 
 
 def _await_snapshot(at_least: int, timeout: float) -> _Snapshot | None:

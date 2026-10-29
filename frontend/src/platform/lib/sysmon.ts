@@ -3,7 +3,7 @@
 // (fused_render/sysmon) plus the formatting every surface that shows it shares
 // (the System chip, the /monitor page). The chip's poll lives in
 // `shell/system-lib.ts`; the Monitor page polls on its own.
-import { getJson, mutateJson } from "@platform/lib/api";
+import { getJson, mutateJson, type Task } from "@platform/lib/api";
 
 export type SystemProcKind =
   | "app"
@@ -50,6 +50,44 @@ export interface SystemHistoryPoint {
   appMemBytes: number | null;
 }
 
+/** One live Claude tree (sysmon/labels.claude_tasks): a run's session host,
+ *  CLI and everything under them — or the app's own helper CLI — with the
+ *  task it belongs to and its figures summed over the whole tree. The task
+ *  fields are "" (canvas null) when no task matches the run. */
+export interface ClaudeTaskTree {
+  /** The tree's label, the same one its process rows carry. */
+  label: string;
+  helper: boolean;
+  run_id: string;
+  task_id: string;
+  title: string;
+  key: string;
+  session_id: string;
+  project: string;
+  target: string;
+  entry: string;
+  entry_origin: string;
+  canvas: Task["canvas"] | null;
+  /** Project folder's basename. */
+  folder: string;
+  model: string;
+  /** The task's own status ("in_progress", "done", …). */
+  status: string;
+  /** What the strip says: "running", "waiting" (on a card / blocked),
+   *  "done" (the task is done, its tree still alive), "idle" (any other
+   *  status — queued, upcoming… — with its tree alive), "" (no task). */
+  state: "running" | "waiting" | "done" | "idle" | "";
+  bg_jobs: { id: string; description: string }[];
+  /** The tree's top process — what Stop names. */
+  root_pid: number;
+  started_at: number | null;
+  pids: number[];
+  mem_bytes: number;
+  cpu_pct: number | null;
+  /** "done" or "idle": the task is not working, its tree is still up. */
+  done_alive: boolean;
+}
+
 /** The live Claude CLIs rolled up (sysmon/labels.claude_summary). */
 export interface ClaudeSummary {
   total: number;
@@ -58,6 +96,8 @@ export interface ClaudeSummary {
   mem_bytes: number;
   cpu_pct: number;
   top: { pid: number; label: string; mem: number; cpu: number }[];
+  /** Largest first. Absent from servers before the "Claude tasks" strip. */
+  tasks?: ClaudeTaskTree[];
 }
 
 /** The chip's compact verdict (`GET /api/system/activity`). "unknown" is a
