@@ -667,4 +667,5 @@ def test_the_canvases_root_rule_matches_canvases_py(root):
 
 def test_the_request_outlasts_a_push_that_waited_behind_a_running_one():
     from fused_render import canvases
-    assert _canvas_push._HTTP_TIMEOUT_S > 2 * canvases.PUSH_TIMEOUT
+    assert 2 * canvases.PUSH_TIMEOUT < _canvas_push._HTTP_TIMEOUT_S < 600
+    assert "600000 ms Bash timeout" in canvases._CLONE_CLAUDE_MD

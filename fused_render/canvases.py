@@ -212,8 +212,7 @@ PUSH_TERMINATE_GRACE_S = 2.0
 # `new_files` slug missing from `nodes`: the stale-closure race) waits for the
 # workbench's own row before the host invents one. Synthesizing at once put a
 # made-up position into the frame by delta and the new node jumped. Within the
-# grace the file is left out of deltas and the push is held; past it the row
-# is synthesized as for any orphan.
+# grace the push is held; past it the push synthesizes the row as for any orphan.
 ROWLESS_GRACE_S = 5.0
 
 # The Fused environment is part of a canvas's IDENTITY, not a process-wide
@@ -1503,6 +1502,8 @@ problem — fix them and push again.
 Push when a change set is COHERENT (e.g. a rename: the `.py` file *and* its
 `canvas.toml` entry), not after every edit.
 
+- A push that starts while another one runs waits for it, so the command
+  can take several minutes: give it a 600000 ms Bash timeout.
 - If you never push, nothing is lost: the watcher pushes the folder on its
   next tick once you stop working.
 - `--no-validate` / `--no-ignore` are refused here. Fix validation errors
@@ -2221,7 +2222,7 @@ class _SyncManager:
         self._push_proc: subprocess.Popen | None = None
         # ROWLESS: slug → when an embed snapshot created its file with no node
         # (ROWLESS_GRACE_S). Written under _op_lock by apply_snapshot, expired
-        # by the watcher tick: its own small lock.
+        # by the push: its own small lock.
         self._rowless: dict[str, float] = {}
         self._rowless_lock = threading.Lock()
         self._rowless_hold_logged: frozenset = frozenset()
@@ -3543,12 +3544,6 @@ class _SyncManager:
                            detail=f"could not freeze the clone for the push: {copy_error}")
             return "done"
         try:
-            dupes = canvas_snapshot.duplicate_node_rows(base_toml_snapshot)
-            if dupes:
-                return self._push_failed(
-                    "canvas.toml has more than one row for " + ", ".join(dupes),
-                    [f"Node '{n}' has more than one [[canvas.nodes]] row in canvas.toml"
-                     for n in dupes], started, frozen)
             try:
                 proc = self._run_push_cli(cli, copy_dir)
             except subprocess.TimeoutExpired:
@@ -3714,9 +3709,6 @@ class _SyncManager:
             # of the cache except once every AGENT_LIVE_CACHE_S (3 s), so it
             # does not add a scan per tick.
             self.agent_run_id()
-            # Expire rowless files past their grace: the forced disk_rev bump
-            # makes the page cut again, and that cut synthesizes their rows.
-            self._rowless_in_grace()
             gen = self._fp_gen
             current = self._take_fingerprint()
             self._note_disk(current)
@@ -4157,16 +4149,11 @@ class _SyncManager:
         A cut does NOT mark a frame as seen: the page cuts on every disk_rev
         move and drops the answer when it has no frame (boot, a reload), so
         only a frame's own ack or snapshot is evidence that one is there —
-        otherwise disk_to_embed would read "pending" with nobody to ack.
-
-        Files the embed just created without their node are left out while in
-        their ROWLESS_GRACE_S (expiring them first may itself bump the rev, so
-        it runs before the rev is taken)."""
-        exclude = self._rowless_in_grace()
+        otherwise disk_to_embed would read "pending" with nobody to ack."""
         self._note_disk()
         rev = self.disk_rev
         try:
-            disk = self._disk_reading(exclude)
+            disk = canvas_snapshot.compact_state_from_disk(self.dir, self._remote_ids())
         except FileNotFoundError:
             return self._cut_held(rev, "the clone has no canvas.toml yet")
         except Exception as exc:  # noqa: BLE001 — rtoml's own error types
@@ -4181,9 +4168,6 @@ class _SyncManager:
             # A good cut (the frame's hello asks for one) starts the leg over.
             self._delta_error = None
             self._bump()
-        synthesized = list(disk.get("synthesized") or [])
-        if synthesized:
-            self._persist_synthesized(synthesized)
         view = None if full else self._embed_view
         ops = canvas_snapshot.diff_views(disk, view)
         if view is not None and not ops:
@@ -4239,9 +4223,7 @@ class _SyncManager:
             return {s for s, t in self._rowless.items() if now - t < ROWLESS_GRACE_S}
 
     def _rowless_in_grace(self) -> set[str]:
-        """Slugs still inside ROWLESS_GRACE_S. Expires the rest; an expiry
-        forces a disk_rev bump (nothing on disk moved, so no scan would) so the
-        page cuts again and that cut synthesizes their rows."""
+        """Slugs still inside ROWLESS_GRACE_S. Expires the rest."""
         now = time.time()
         with self._rowless_lock:
             pending = bool(self._rowless)
@@ -4258,30 +4240,15 @@ class _SyncManager:
         if aged:
             self.log_event("embed_to_disk", "row grace elapsed",
                            detail=f"{', '.join(sorted(aged)[:5])}: no row from the workbench "
-                                  f"in {ROWLESS_GRACE_S:g}s; synthesizing")
-            self._force_rev()
+                                  f"in {ROWLESS_GRACE_S:g}s; the push adds its row")
         return live
 
-    def _force_rev(self) -> None:
-        """Advance disk_rev although no file moved (a decision changed, not
-        the disk), so the page asks for a delta."""
-        with self._rev_lock:
-            self._rev_key = None
-        self._note_disk()
-
-    def _disk_reading(self, exclude: set[str]) -> dict:
-        """compact_state_from_disk, leaving `exclude` (rowless files in their
-        grace) out: no synthesized row, no delta op, no persist."""
-        return canvas_snapshot.compact_state_from_disk(
-            self.dir, self._remote_ids(), exclude_orphans=exclude,
-            synthesize=not self._agent_run_id)
-
     def _synthesize_orphans(self) -> None:
-        """Invariant 2 on the PUSH path: a root-level source file with no
+        """Invariant 2, on the push path only: a root-level source file with no
         `[[canvas.nodes]]` row gets its synthesized row written into
-        canvas.toml before the push freezes the clone — whether or not any
-        frame ever cut a delta — so a node is never published without its
-        file's row. Under _op_lock (the push's freeze phase)."""
+        canvas.toml before the push freezes the clone, so a node is never
+        published without its file's row. Under _op_lock (the push's freeze
+        phase)."""
         rows = self._toml_rows()
         if rows is None:
             return  # no or unparsable canvas.toml: the push's validation says so
@@ -4293,26 +4260,19 @@ class _SyncManager:
             logger.warning("canvas %s: orphan scan failed: %s",
                            _sync_key(self.env, self.name), exc)
             return
-        if orphans:
-            self._persist_synthesized([slug for slug, _file in orphans], leg="disk_to_server")
-
-    def _persist_synthesized(self, names: list[str], *, leg: str = "disk_to_embed") -> None:
-        """canvas_snapshot.persist_synthesized, logged on the ring; a cut
-        itself already carries the rows either way. Under _op_lock (cut_delta's
-        caller and the push's freeze phase hold it)."""
+        if not orphans:
+            return
+        names = [slug for slug, _file in orphans]
         try:
             written = canvas_snapshot.persist_synthesized(self.dir, names)
-        except Exception as exc:  # noqa: BLE001 — the row reaches the frame anyway
-            self.log_event(leg, "synthesize failed", ok=False,
+        except Exception as exc:  # noqa: BLE001
+            self.log_event("disk_to_server", "synthesize failed", ok=False,
                            detail=f"{', '.join(names[:5])}: {exc}")
             return
-        # canvas.toml moved: note it now rather than on the next scan/fs event.
-        # The rows are byte-identical to the reading the cut carries, so the
-        # follow-up cut diffs to nothing.
         self._note_disk()
         if not written:
-            return  # idempotent: already in canvas.toml, nothing to log
-        self.log_event(leg, "rows synthesized",
+            return
+        self.log_event("disk_to_server", "rows synthesized",
                        detail="canvas.toml rows written for " + ", ".join(written[:5])
                               + (f" (+{len(written) - 5})" if len(written) > 5 else ""))
 
@@ -4418,8 +4378,10 @@ class _SyncManager:
         prev = self._embed_view
         # `rowless_prev`: a rowless file the embed has since dropped (UDF gone,
         # no node) is a delete, not an orphan to synthesize later.
+        with self._rowless_lock:
+            rowless = set(self._rowless)
         result = canvas_snapshot.apply_snapshot(self.dir, new, prev, backup=backup,
-                                                rowless_prev=self._rowless_peek())
+                                                rowless_prev=rowless)
         self._log_folder_fixes("embed_to_disk", result.get("folder_fixes") or [])
         # The embed now holds what it just sent: disk rows for ITS nodes only
         # (a disk-only node is Claude's and still owed to it as a delta), its
@@ -4457,10 +4419,6 @@ class _SyncManager:
                "upserted": result["upserted"], "deleted": result["deleted"],
                "deleted_files": deleted_files,
                "created": result["created"], "push_seq": self.push_seq}
-        # Rows apply_snapshot wrote for files the snapshot sent with no node
-        # (canvas_snapshot, invariant 2) — the frame learns of them by delta.
-        if result.get("synthesized"):
-            ack["synthesized"] = list(result["synthesized"])
         return self._embed_record(gen, seq, ack)
 
     def _forget_file_sessions(self, rels: list[str], trash: str | None) -> None:
@@ -4531,12 +4489,6 @@ class _SyncManager:
         if current == text:
             self._body_written[node] = new_hash
             return {"ok": True, "node": node, "file": file, "hash": new_hash,
-                    "changed": False, "created": False}
-        if current is not None and file.endswith(canvas_snapshot.EMBED_BODY_SUFFIXES) \
-                and canvas_snapshot.note_text(current) == canvas_snapshot.note_text(text):
-            self.log_event("embed_to_disk", "body kept",
-                           detail=f"{file}: the workbench changed only its markdown syntax")
-            return {"ok": True, "node": node, "file": file, "hash": current_hash,
                     "changed": False, "created": False}
         if current is not None and self._body_written.get(node) != base_hash:
             # Not the frame's own previous text: keep a copy, as a note body
@@ -5460,7 +5412,7 @@ def _snapshot_ack_detail(what: str, gen: int, seq: int, ack: dict) -> str:
     parts = [f"{what} {gen}/{seq}"]
     if not ack.get("changed"):
         parts.append("no change")
-    for key in ("upserted", "deleted", "created", "synthesized"):
+    for key in ("upserted", "deleted", "created"):
         names = ack.get(key) or []
         if names:
             parts.append(f"{key} {', '.join(map(str, names[:5]))}"
@@ -5646,7 +5598,8 @@ def api_canvases_sync_push(body: dict = Body(...), x_fused: str | None = Header(
                           "then push again",
                  "code": "server_changed", "server_stale": manager.server_stale},
                 status_code=409)
-        if manager.push_seq == before or manager._dirty_since is not None:
+        if manager.push_seq == before or manager._dirty_since is not None \
+                or manager._take_fingerprint() != manager._fingerprint:
             before = manager.push_seq
             if manager._push() == "busy":
                 return _busy(

@@ -423,7 +423,7 @@ def test_folder_name_only_row_is_read_by_rows_of_doc_and_disk_reading(tmp_path):
     disk = cs.compact_state_from_disk(d)
     assert disk["order"] == ["Section_1", "udf_0"]
     assert disk["nodes"]["Section_1"]["udfName"] == "Section_1"
-    assert disk["missing"] == [] and disk["synthesized"] == []
+    assert disk["missing"] == []
 
 
 def test_folder_name_only_row_survives_merge_and_gains_udf_name():
@@ -508,7 +508,8 @@ def test_folder_never_takes_a_udf_file_that_matches_its_name_by_case(tmp_path):
     assert "India_H3_coverage" not in disk["files"]
     assert "India_H3_coverage" not in disk["bodies"]
     assert disk["files"] == {"india_h3_coverage": "india_h3_coverage.py"}
-    assert disk["missing"] == [] and disk["synthesized"] == []
+    assert disk["missing"] == []
+    assert cs.orphan_sources(d, disk["nodes"]) == []
     # A plain row (no type) whose name differs from a file only by case is
     # missing, not that file's node.
     (tmp_path / "two").mkdir()
@@ -517,7 +518,7 @@ def test_folder_never_takes_a_udf_file_that_matches_its_name_by_case(tmp_path):
     assert disk2["missing"] == ["Other_Node"]
     # ...and the file, which no row names exactly, is an orphan: the same
     # second node macOS always showed, now beside a held `missing` row.
-    assert disk2["synthesized"] == ["other_node"]
+    assert cs.orphan_sources(d2, disk2["nodes"]) == [("other_node", "other_node.py")]
     assert cs._find_source(d2, "Other_Node") is None
     assert cs._find_source(d2, "other_node") == "other_node.py"
 
@@ -540,8 +541,8 @@ def test_synthesize_after_a_folder_clears_its_full_height():
 def test_compact_synthesized_row_after_folder_child(tmp_path):
     d = _clone(tmp_path, [folder("F", ["a"]), udf("a", 40.0, 60.0)],
                {"a.py": "A", "zz.py": "Z"})
+    assert cs.persist_synthesized(d, ["zz"]) == ["zz"]
     disk = cs.compact_state_from_disk(d)
-    assert disk["synthesized"] == ["zz"]
     assert (disk["nodes"]["zz"]["x"], disk["nodes"]["zz"]["y"]) == (1040.0, 1600.0)
 
 
@@ -821,19 +822,15 @@ def test_synthesize_a_slug_an_empty_folder_lists_at_its_corner():
     assert (row["x"], row["y"]) == (40, 40)
 
 
-def test_compact_and_persist_chain_synthesized_rows_inside_a_folder(tmp_path):
+def test_persist_chains_synthesized_rows_inside_a_folder(tmp_path):
     d = _clone(tmp_path, [folder("F", ["a", "g1", "g2"]), udf("a", 40.0, 60.0)],
                {"a.py": "A", "g1.py": "1", "g2.py": "2", "zz.py": "Z"})
+    assert cs.persist_synthesized(d, ["g1", "g2", "zz"]) == ["g1", "g2", "zz"]
     disk = cs.compact_state_from_disk(d)
-    assert disk["synthesized"] == ["g1", "g2", "zz"]
-    xy = {n: (disk["nodes"][n]["x"], disk["nodes"][n]["y"]) for n in disk["synthesized"]}
+    xy = {n: (disk["nodes"][n]["x"], disk["nodes"][n]["y"]) for n in ["g1", "g2", "zz"]}
     assert xy["g1"] == (40.0, 600.0)                    # below a, in F
     assert xy["g2"] == (40.0, 1140.0)                   # below g1, in F
     assert xy["zz"] == (1040.0, 1000.0 + 1140.0 + 540)  # after g2, absolute, no folder
-    assert cs.persist_synthesized(d, disk["synthesized"]) == ["g1", "g2", "zz"]
-    again = cs.compact_state_from_disk(d)
-    assert again["synthesized"] == []
-    assert all(again["nodes"][n] == disk["nodes"][n] for n in disk["synthesized"])
 
 
 def test_normalise_reports_a_repeated_losing_entry_once():

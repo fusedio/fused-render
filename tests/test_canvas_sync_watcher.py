@@ -20,7 +20,7 @@ from fastapi.testclient import TestClient
 
 import fused_render.canvases as canvases_mod
 from fused_render import canvas_snapshot
-from test_canvas_sync_loops import PROBE_NOTE, PROBE_NOTE_TIPTAP, _rows
+from test_canvas_sync_loops import _rows
 from test_canvases import (  # noqa: F401 — fixtures are used by name
     ENV,
     GUARD,
@@ -383,12 +383,6 @@ def test_a_delta_cut_and_ack_show_on_the_disk_to_embed_leg(harness, tmp_path, mo
                               json={"env": ENV, "name": "alpha", "rev": cut["rev"]}, headers=GUARD)
     assert ack.status_code == 200 and ack.json()["ok"], ack.text
     assert m._frame_seen is True and m._view_rev == cut["rev"]
-    # The cut persisted synthesized rows (a.py, b.py have none) after its rev
-    # was taken: one more cut + ack brings the frame level.
-    cut = harness.client.get("/api/canvases/delta?env=unstable&name=alpha").json()
-    harness.client.post("/api/canvases/delta/ack",
-                        json={"env": ENV, "name": "alpha", "rev": cut["rev"]}, headers=GUARD)
-    m._view_rev = m.disk_rev
     assert _state(harness)["legs"]["disk_to_embed"]["state"] == "idle"
     # Disk moves, the frame has not acked it: pending.
     (harness.root / "alpha" / "a.py").write_text("a-moved\n")
@@ -399,31 +393,19 @@ def test_a_delta_cut_and_ack_show_on_the_disk_to_embed_leg(harness, tmp_path, mo
     assert "delta cut" in actions and "delta acked" in actions, actions
 
 
-def test_a_cut_that_synthesized_rows_persists_them(harness, tmp_path, monkeypatch):
-    """B's compact_state_from_disk reports orphan files it gave a row; the cut
-    writes them into canvas.toml (canvas_snapshot.persist_synthesized) under
-    the lock, so the next push ships the node with its file."""
+def test_a_cut_writes_no_row_for_a_new_file_and_the_push_does(harness, tmp_path, monkeypatch):
     _quiet_watcher(monkeypatch)
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
-    real = canvas_snapshot.compact_state_from_disk
-    calls = []
-
-    def with_synthesized(clone_dir, remote_ids=None, **kw):
-        out = real(clone_dir, remote_ids, **kw)
-        out["synthesized"] = ["orphan"]
-        return out
-
-    def persist(clone_dir, names):
-        calls.append((clone_dir, list(names), _manager()._op_lock.locked()))
-        return list(names)
-
-    monkeypatch.setattr(canvas_snapshot, "compact_state_from_disk", with_synthesized)
-    monkeypatch.setattr(canvas_snapshot, "persist_synthesized", persist)
-    m = _start(harness)
-    harness.client.get("/api/canvases/delta?env=unstable&name=alpha&full=1")
-    assert calls == [(m.dir, ["orphan"], True)]
-    events = harness.client.get("/api/canvases/sync/log?env=unstable&name=alpha").json()["events"]
-    assert any(e["action"] == "rows synthesized" and "orphan" in e["detail"] for e in events)
+    _start(harness)
+    before = _toml(harness)
+    (harness.root / "alpha" / "foo.md").write_text("# foo\n")
+    cut = harness.client.get("/api/canvases/delta?env=unstable&name=alpha&full=1").json()
+    assert "ops" in cut and "foo" not in json.dumps(cut["ops"]), cut
+    assert _toml(harness) == before
+    res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"},
+                              headers=GUARD)
+    assert res.status_code == 200 and res.json()["ok"] is True, res.text
+    assert "foo" in [r["udfName"] for r in _rows(harness.root / "alpha")]
 
 
 # -- sync/log ------------------------------------------------------------------
@@ -847,41 +829,30 @@ def test_a_rowless_file_past_its_grace_is_synthesized_and_pushed(
     _capture_push(monkeypatch, seen)
     m = _start(harness)
     _snapshot(harness, 1, ROWLESS_BODY)
-    rev = m.disk_rev
     time.sleep(0.4)
     cut = harness.client.get("/api/canvases/delta?env=unstable&name=alpha&full=1").json()
-    assert m.disk_rev > rev, "the grace's end never woke the delta leg"
-    assert "fresh" in json.dumps(cut["ops"]), cut["ops"]
-    assert 'udfName = "fresh"' in _toml(harness)
-    assert m._rowless == {}
+    assert "fresh" not in json.dumps(cut["ops"]), cut["ops"]
+    assert 'udfName = "fresh"' not in _toml(harness)
     res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     assert res.status_code == 200 and res.json()["ok"] is True, res.text
     assert 'udfName = "fresh"' in seen["tomls"][0]
+    assert m._rowless == {}
     actions = _actions(harness)
     assert "row grace elapsed" in actions and "rows synthesized" in actions, actions
 
 
-def test_the_grace_ends_on_the_watcher_tick_without_any_cut(
+def test_a_rowless_file_deleted_in_the_embed_after_its_grace_is_not_pushed_back(
         harness, tmp_path, monkeypatch, fake_agent):
-    """Nothing on disk moves when the grace ends, so the tick forces the
-    disk_rev bump that makes the page cut again."""
-    monkeypatch.setattr(canvases_mod, "SCAN_INTERVAL_S", 0.05)
-    monkeypatch.setattr(canvases_mod, "DEBOUNCE_S", 30.0)
-    monkeypatch.setattr(canvases_mod, "PULL_POLL_S", 30.0)
-    monkeypatch.setattr(canvases_mod, "ROWLESS_GRACE_S", 0.8)
+    _quiet_watcher(monkeypatch)
+    monkeypatch.setattr(canvases_mod, "ROWLESS_GRACE_S", 0.0)
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
-    m = _start(harness)
+    _start(harness)
     _snapshot(harness, 1, ROWLESS_BODY)
-    time.sleep(0.3)  # the snapshot's own writes settle into disk_rev
-    rev = m.disk_rev
-    assert "fresh" in m._rowless
-    assert _wait_for(lambda: "fresh" not in m._rowless, timeout=3)
-    # Wait for the bump itself, not just the expiry: `_rowless_in_grace`
-    # drops the entry under its lock, then logs and `_force_rev`s (which
-    # fingerprints the clone) — a loaded runner read disk_rev in that gap.
-    assert _wait_for(lambda: m.disk_rev > rev, timeout=3), (
-        "the grace ended without waking the delta leg")
-    assert "row grace elapsed" in _actions(harness)
+    _snapshot(harness, 2, {"dashboard_body": {"studioState": {"nodes": []}}, "udfs": []})
+    assert not (harness.root / "alpha" / "fresh.py").exists()
+    res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    assert res.status_code == 200, res.text
+    assert 'udfName = "fresh"' not in _toml(harness)
 
 
 def test_a_snapshot_naming_the_node_settles_the_rowless_file(
@@ -946,10 +917,10 @@ def test_a_rename_during_the_grace_keeps_the_grace(
     cut = harness.client.get("/api/canvases/delta?env=unstable&name=alpha&full=1").json()
     assert "fresh2" not in json.dumps(cut["ops"]), cut["ops"]
     assert 'udfName = "fresh2"' not in _toml(harness)
-    # The grace ends (its start is the original file's): now it is synthesized.
     monkeypatch.setattr(canvases_mod, "ROWLESS_GRACE_S", 0.0)
-    cut = harness.client.get("/api/canvases/delta?env=unstable&name=alpha&full=1").json()
-    assert "fresh2" in json.dumps(cut["ops"]), cut["ops"]
+    res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"},
+                              headers=GUARD)
+    assert res.status_code == 200 and res.json()["ok"] is True, res.text
     assert 'udfName = "fresh2"' in _toml(harness)
 
 
@@ -1298,60 +1269,13 @@ def test_takeover_of_a_free_clone_is_a_plain_start(harness, tmp_path, monkeypatc
     _stop_sync("alpha")
 
 
-def _post_note_body(harness, text, base):
-    return harness.client.post("/api/canvases/body", json={
-        "env": ENV, "name": "alpha", "node": "probe", "file": "probe.md",
-        "base_hash": canvas_snapshot.body_hash(base), "text": text}, headers=GUARD)
-
-
-def _trashed(harness):
-    root = harness.root / ".sync" / "trash" / "alpha"
-    return sorted(p.read_text() for p in root.rglob("*") if p.is_file()) if root.exists() else []
-
-
-def test_a_note_body_is_written_only_when_its_text_changed(harness, tmp_path, monkeypatch):
-    _quiet_watcher(monkeypatch)
-    _cloned_shim_harness(harness, tmp_path, monkeypatch)
-    _start(harness)
-    note = harness.root / "alpha" / "probe.md"
-    note.write_text(PROBE_NOTE)
-    res = _post_note_body(harness, PROBE_NOTE_TIPTAP, PROBE_NOTE)
-    assert res.status_code == 200, res.text
-    assert res.json() == {"ok": True, "node": "probe", "file": "probe.md", "changed": False,
-                          "created": False, "hash": canvas_snapshot.body_hash(PROBE_NOTE)}
-    assert note.read_text() == PROBE_NOTE and _trashed(harness) == []
-    edited = PROBE_NOTE_TIPTAP.replace("About", "Roughly")
-    res = _post_note_body(harness, edited, PROBE_NOTE)
-    assert res.status_code == 200 and res.json()["changed"] is True, res.text
-    assert note.read_text() == edited and _trashed(harness) == [PROBE_NOTE]
-
-
-def test_a_new_file_gets_no_row_while_a_session_holds_the_push(
-        harness, tmp_path, monkeypatch, fake_agent):
-    _quiet_watcher(monkeypatch)
-    _cloned_shim_harness(harness, tmp_path, monkeypatch)
-    fake_agent.live = "run-held"
-    _start(harness).agent_run_id()
-    before = _toml(harness)
-    (harness.root / "alpha" / "foo.md").write_text("# foo\n")
-    cut = harness.client.get("/api/canvases/delta?env=unstable&name=alpha&full=1").json()
-    assert "ops" in cut, cut
-    assert not [op for op in cut["ops"] if op.get("name") in ("a", "b", "foo")], cut["ops"]
-    assert _toml(harness) == before
-    res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"},
-                              headers=GUARD)
-    assert res.status_code == 200 and res.json()["ok"] is True, res.text
-    assert sorted(r["udfName"] for r in _rows(harness.root / "alpha")) == ["a", "b", "foo"]
-
-
 def test_a_row_the_session_adds_inside_a_folder_is_the_only_row_the_push_ships(
-        harness, tmp_path, monkeypatch, fake_agent):
+        harness, tmp_path, monkeypatch):
     _quiet_watcher(monkeypatch)
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
     seen: dict = {}
     _capture_push(monkeypatch, seen)
-    fake_agent.live = "run-held"
-    _start(harness).agent_run_id()
+    _start(harness)
     (harness.root / "alpha" / "foo.md").write_text("# foo\n")
     harness.client.get("/api/canvases/delta?env=unstable&name=alpha&full=1")
     with open(harness.root / "alpha" / "canvas.toml", "a") as fh:
@@ -1364,20 +1288,3 @@ def test_a_row_the_session_adds_inside_a_folder_is_the_only_row_the_push_ships(
     foo = [r for r in _rows(harness.root / "alpha") if r["udfName"] == "foo"]
     assert len(foo) == 1 and (foo[0]["x"], foo[0]["y"]) == (12, 34), foo
     assert seen["tomls"][0].count('udfName = "foo"') == 1, seen["tomls"][0]
-
-
-def test_two_rows_for_one_node_fail_the_push_before_the_cli_runs(harness, tmp_path, monkeypatch):
-    _quiet_watcher(monkeypatch)
-    _cloned_shim_harness(harness, tmp_path, monkeypatch)
-    _start(harness)
-    (harness.root / "alpha" / "canvas.toml").write_text(
-        'type = "canvas"\n\n[[canvas.nodes]]\nudfName = "a"\n\n[[canvas.nodes]]\nudfName = "b"\n\n'
-        '[[canvas.nodes]]\nudfName = "a"\nx = 5\n')
-    res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"},
-                              headers=GUARD)
-    assert res.status_code == 200, res.text
-    body = res.json()
-    assert body["ok"] is False and body["push_state"] == "error", body
-    assert any("'a'" in line for line in body["error_detail"]), body
-    assert not any("'b'" in line for line in body["error_detail"]), body
-    assert not [c for c in harness.calls() if c[:3] == ["workbench", "canvas", "push"]]

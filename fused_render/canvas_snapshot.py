@@ -86,10 +86,8 @@ from __future__ import annotations
 
 import copy
 import hashlib
-import html
 import json
 import os
-import re
 import time
 from typing import Any, Callable, Iterable
 
@@ -128,13 +126,6 @@ CANVAS_KEYS = ("viewport", "viewportBounds", "comments")
 
 # The one file kind whose body the embed can change without its code editor.
 EMBED_BODY_SUFFIXES = (".md",)
-
-_NOTE_SYNTAX = re.compile(r"[\s\\`*~\[\]_#\-+>|:=]+")
-
-
-def note_text(markdown: str) -> str:
-    return _NOTE_SYNTAX.sub("", html.unescape(markdown))
-
 
 _SYNTHETIC_DESCRIPTION = "Exported from Fused UDF Workbench"
 
@@ -287,10 +278,6 @@ def shared_names(doc_or_rows: Any, *, same_kind: bool = False) -> list[str]:
             out.append(name)
         seen.add(key)
     return out
-
-
-def duplicate_node_rows(doc_or_rows: Any) -> list[str]:
-    return shared_names([r for r in _rows_list(doc_or_rows) if not is_folder(r)])
 
 
 def _clash_lines(rows: Any, suffix: str = "") -> list[str]:
@@ -659,12 +646,9 @@ def _find_source(clone_dir: str, name: str) -> str | None:
 # A `.py/.json/.md/.html` in the clone root with no `[[canvas.nodes]]` row is
 # an ORPHAN: a UDF the embed created whose node never reached a snapshot (the
 # workbench sent `udfs` before `studioState.nodes` caught up), a file Claude
-# wrote without a row. Ignored, it is invisible to the delta leg (rows only)
-# and the push ships a node-less UDF. So it gets a SYNTHESIZED row: after the
-# last node, titled by its slug, visible. The same rule everywhere a row is
-# synthesized (`compact_state_from_disk`, `persist_synthesized`,
-# `apply_snapshot`), byte-identical, so a reading that synthesized a row and
-# the toml that later persists it diff to nothing.
+# wrote without a row. Ignored, the push ships a node-less UDF. So the push
+# gives it a SYNTHESIZED row (`persist_synthesized`): after the last node,
+# titled by its slug, visible.
 
 # Mirrors canvases._SYNC_IGNORED_BASENAMES (not imported: canvases imports
 # this module). Files the app seeds into a clone that are never nodes.
@@ -795,8 +779,7 @@ def synthesize_row(rows: list[dict], slug: str, file: str) -> dict:
         resolved through the folder, a last row that IS a folder is cleared
         by its full height), at a fixed origin on an empty canvas.
 
-    Chained (each synthesized row appended to `rows` before the next) by
-    every caller alike, so the rows match byte for byte."""
+    Chained: each synthesized row is appended to `rows` before the next."""
     homes = folder_of(rows)
     home = homes.get(slug)
     last = next((r for r in reversed(rows) if isinstance(r, dict)), None)
@@ -827,11 +810,10 @@ def synthesize_row(rows: list[dict], slug: str, file: str) -> dict:
 
 
 def persist_synthesized(clone_dir: str, names: Iterable[str]) -> list[str]:
-    """Write the rows `compact_state_from_disk` synthesized for `names` into
-    canvas.toml (one atomic write), so the next push ships them. Re-derives
-    from disk: a name that has a row by now, or whose file is gone, is
-    skipped. Chained over `names` alone, in slug order — the same rows the
-    reading that reported them computed. Returns the names written."""
+    """Write a synthesized row for each of `names` that is still an orphan
+    into canvas.toml (one atomic write), so the push ships them. A name
+    that has a row by now, or whose file is gone, is skipped. Chained over
+    `names` alone, in slug order. Returns the names written."""
     wanted = set(names)
     if not wanted:
         return []
@@ -959,12 +941,11 @@ def apply_snapshot(
     `rowless_files` and the host still holds in grace: one this snapshot
     no longer lists (no UDF, no node, no row) has its file trashed and is
     reported in `deleted`. Returns `{changed, upserted, deleted, deleted_files,
-    renamed, created, written, synthesized, rowless_files, deferred_deletes,
+    renamed, created, written, rowless_files, deferred_deletes,
     folder_fixes}` (`deleted_files`: the source files this snapshot removed
     from the clone, by basename — a folder in `deleted` has none;
     `rowless_files`:
     slugs of new UDFs whose file came without a node — file created, no row;
-    `synthesized`: always empty here, kept for the ack's shape;
     `deferred_deletes`: known nodes the snapshot omitted while still listing
     their UDF — the host keeps them in its view; `folder_fixes`:
     `normalise_folders`' lines). Raises FileNotFoundError when the clone has no canvas.toml, and
@@ -1041,9 +1022,8 @@ def apply_snapshot(
         changed = True
 
     # Deletions. A name with no row is still a deletion when its file is
-    # there: a synthesized node (an orphan file the frame received as a
-    # delta before its row was persisted) the embed then deleted — leaving
-    # the file would re-synthesize it on the next reading.
+    # there: a node whose row left disk before the embed deleted it —
+    # leaving the file would make the next push synthesize it back.
     #
     # A vanished name the snapshot still lists among its UDFs is NOT a
     # deletion: the workbench drops a UDF with its node, so "UDF listed, node
@@ -1211,10 +1191,8 @@ def apply_snapshot(
     # snapshot brings the row. A row synthesized here would be "after the
     # last node", and the delta would move the user's node there. Reported
     # as `rowless_files` (slug = the file's stem, the name the push validates
-    # rows against) so the host exempts them from `compact_state_from_disk`'s
-    # synthesis for a grace window (`exclude_orphans`); one still row-less
-    # after it is a true orphan and is synthesized then.
-    synthesized: list[str] = []
+    # rows against) so the host holds the push for a grace window; one still
+    # row-less after it is a true orphan and the push synthesizes its row.
     rowless_files: list[str] = []
     for entry in new["new_files"]:
         fpath = os.path.join(clone_dir, entry["file"])
@@ -1244,7 +1222,7 @@ def apply_snapshot(
     return {"changed": changed or files_changed or bool(created) or bool(written),
             "upserted": upserted, "deleted": deleted, "deleted_files": deleted_files,
             "renamed": renamed,
-            "created": created, "written": written, "synthesized": synthesized,
+            "created": created, "written": written,
             "rowless_files": rowless_files, "deferred_deletes": deferred_deletes,
             "folder_fixes": folder_fixes, "at": time.time()}
 
@@ -1356,19 +1334,14 @@ def read_body(path: str) -> str | None:
     return None if data is None else data.decode("utf-8", "replace")
 
 
-def compact_state_from_disk(clone_dir: str, remote_ids: dict[str, str] | None = None,
-                            exclude_orphans: Iterable[str] = (), synthesize: bool = True) -> dict:
+def compact_state_from_disk(clone_dir: str, remote_ids: dict[str, str] | None = None) -> dict:
     """The clone as the embed should hold it::
 
         {nodes: {name: row}, order: [name], edges: [[a, b]],
          canvas: {viewport, viewportBounds, comments}, files: {name: basename},
          ids: {name: server id} (from the remote manifest, when known),
          bodies: {name: text} (every node's source file, all four kinds),
-         missing: [name],     (rows whose source file is not on disk)
-         synthesized: [name]} (orphan source files given a row here, after
-                               every real row — NOT on disk until the caller
-                               `persist_synthesized`s them; slugs in
-                               `exclude_orphans` are never synthesized)
+         missing: [name]}     (rows whose source file is not on disk)
 
     Same shape as `compact_state` where the keys overlap, so it serves as
     `prev` for `apply_snapshot` too. Raises FileNotFoundError when there is
@@ -1386,18 +1359,6 @@ def compact_state_from_disk(clone_dir: str, remote_ids: dict[str, str] | None = 
         if name and name not in nodes:        # two rows, one name: the first
             nodes[name] = _with_name(row, name)
             order.append(name)
-    # Orphan source files: synthesized rows, chained after the real ones
-    # exactly as `persist_synthesized` will write them. `exclude_orphans`
-    # (files the embed just created, still in the host's grace window) are
-    # left out entirely: no row, no entry anywhere in the reading.
-    synthesized: list[str] = []
-    placed = [r for r in rows if isinstance(r, dict)]
-    for slug, file in orphan_sources(clone_dir, nodes, exclude_orphans) if synthesize else ():
-        row = synthesize_row(placed, slug, file)
-        placed.append(row)
-        nodes[slug] = dict(row)
-        order.append(slug)
-        synthesized.append(slug)
     edges: list[list[str]] = []
     for e in canvas.get("edges") or []:
         if (isinstance(e, list) and len(e) == 2
@@ -1421,8 +1382,7 @@ def compact_state_from_disk(clone_dir: str, remote_ids: dict[str, str] | None = 
         bodies[name] = data.decode("utf-8", "replace") if data is not None else ""
     ids = {n: remote_ids[n] for n in nodes if remote_ids and isinstance(remote_ids.get(n), str)}
     return {"nodes": nodes, "order": order, "edges": edges, "canvas": scalars,
-            "files": files, "ids": ids, "bodies": bodies, "missing": missing,
-            "synthesized": synthesized}
+            "files": files, "ids": ids, "bodies": bodies, "missing": missing}
 
 
 def studio_patch_from_row(row: dict) -> dict:

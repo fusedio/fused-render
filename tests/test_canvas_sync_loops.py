@@ -1,11 +1,10 @@
 """Canvas sync, local loop: every source file has a row (canvas_snapshot).
 
 An orphan source file (a `.py/.json/.md/.html` in the clone root with no
-`[[canvas.nodes]]` row) is given a SYNTHESIZED row — by the disk reading the
-delta leg diffs (`compact_state_from_disk`), by the writer that persists it
-(`persist_synthesized`), and by a snapshot whose new UDF arrived without its
-node (`apply_snapshot`). Every test name carries "compact", "snapshot" or
-"delta" so the targeted `-k` run picks it up.
+`[[canvas.nodes]]` row) is given a SYNTHESIZED row by the push alone
+(`persist_synthesized`); the disk reading the delta leg diffs
+(`compact_state_from_disk`) leaves it out. Every test name carries
+"compact", "snapshot" or "delta" so the targeted `-k` run picks it up.
 """
 from __future__ import annotations
 
@@ -31,14 +30,28 @@ def _rows(clone_dir):
     return doc["canvas"]["nodes"]
 
 
+def _persisted(clone_dir):
+    names = [slug for slug, _ in cs.orphan_sources(clone_dir, [cs.row_name(r) for r in _rows(clone_dir)])]
+    cs.persist_synthesized(clone_dir, names)
+    return cs.compact_state_from_disk(clone_dir)
+
+
+def _drop_rows(clone_dir, keep):
+    doc = rtoml.loads(open(os.path.join(clone_dir, "canvas.toml")).read())
+    doc["canvas"]["nodes"] = [r for r in doc["canvas"]["nodes"] if r["udfName"] in keep]
+    open(os.path.join(clone_dir, "canvas.toml"), "w").write(rtoml.dumps(doc))
+
+
 A_ROW = {"udfName": "a", "x": 10, "y": 20, "width": 700, "height": 300,
          "zIndex": 4, "title": "a"}
 
 
 def test_compact_orphan_py_synthesized_after_last_node(tmp_path):
     d = _clone(tmp_path, [dict(A_ROW)], {"a.py": "A", "udf_4.py": "code4"})
-    disk = cs.compact_state_from_disk(d)
-    assert disk["synthesized"] == ["udf_4"]
+    unrowed = cs.compact_state_from_disk(d)
+    assert unrowed["order"] == ["a"] and "udf_4" not in unrowed["files"]
+    assert [r["udfName"] for r in _rows(d)] == ["a"]
+    disk = _persisted(d)
     assert disk["order"] == ["a", "udf_4"]
     row = disk["nodes"]["udf_4"]
     assert row == {"udfName": "udf_4", "x": 10, "y": 20 + 300 + 40, "zIndex": 5,
@@ -48,14 +61,11 @@ def test_compact_orphan_py_synthesized_after_last_node(tmp_path):
     assert disk["files"]["udf_4"] == "udf_4.py"
     assert disk["bodies"]["udf_4"] == "code4"
     assert disk["missing"] == []
-    # Nothing written: the reading only reports.
-    assert [r["udfName"] for r in _rows(d)] == ["a"]
 
 
 def test_compact_orphans_chain_in_slug_order(tmp_path):
     d = _clone(tmp_path, [dict(A_ROW)], {"a.py": "A", "zz.py": "z", "bb.html": "<p/>"})
-    disk = cs.compact_state_from_disk(d)
-    assert disk["synthesized"] == ["bb", "zz"]
+    disk = _persisted(d)
     assert disk["order"] == ["a", "bb", "zz"]
     bb, zz = disk["nodes"]["bb"], disk["nodes"]["zz"]
     assert bb["y"] == 20 + 300 + 40
@@ -65,13 +75,13 @@ def test_compact_orphans_chain_in_slug_order(tmp_path):
 
 def test_compact_orphan_on_empty_canvas_uses_origin(tmp_path):
     d = _clone(tmp_path, [], {"only.py": "x"})
-    row = cs.compact_state_from_disk(d)["nodes"]["only"]
+    row = _persisted(d)["nodes"]["only"]
     assert (row["x"], row["y"], row["zIndex"]) == (100, 100, 1)
 
 
 def test_compact_md_orphan_is_a_note_row(tmp_path):
     d = _clone(tmp_path, [dict(A_ROW)], {"a.py": "A", "notes.md": "# hi\n"})
-    disk = cs.compact_state_from_disk(d)
+    disk = _persisted(d)
     row = disk["nodes"]["notes"]
     assert "type" not in row  # kind comes from the suffix, not the row
     assert (row["width"], row["height"]) == (350, 250)  # NODE_DEFAULTS.TEXTBOX
@@ -89,7 +99,7 @@ def test_compact_md_orphan_is_a_note_row(tmp_path):
 
 def test_compact_json_orphan_carries_widget_background(tmp_path):
     d = _clone(tmp_path, [], {"w.json": "{}"})
-    row = cs.compact_state_from_disk(d)["nodes"]["w"]
+    row = _persisted(d)["nodes"]["w"]
     assert row["widgetBackgroundColor"] == "#2e2e2e"
 
 
@@ -99,15 +109,13 @@ def test_compact_ignored_basenames_never_synthesized(tmp_path):
         ".hidden.py": "x", "scratch_1.py": "x", "data.csv": "1,2", "canvas.toml.tmp": "",
     })
     os.mkdir(os.path.join(d, "sub.py"))  # a directory, not a source file
-    disk = cs.compact_state_from_disk(d)
-    assert disk["synthesized"] == []
-    assert disk["order"] == ["a"]
+    assert cs.orphan_sources(d, ["a"]) == []
 
 
 def test_compact_stem_collision_resolves_like_find_source(tmp_path):
     d = _clone(tmp_path, [], {"dup.md": "m", "dup.py": "p"})
-    disk = cs.compact_state_from_disk(d)
-    assert disk["synthesized"] == ["dup"]
+    disk = _persisted(d)
+    assert disk["order"] == ["dup"]
     assert disk["files"]["dup"] == "dup.py"
     assert "textBoxColor" not in disk["nodes"]["dup"]
 
@@ -117,40 +125,29 @@ def test_compact_row_with_missing_file_still_missing(tmp_path):
                {"a.py": "A", "orphan.py": "o"})
     disk = cs.compact_state_from_disk(d)
     assert disk["missing"] == ["gone"]
-    assert disk["synthesized"] == ["orphan"]
+    assert "orphan" not in disk["nodes"]
 
 
 def test_compact_persist_synthesized_writes_once_and_is_idempotent(tmp_path):
     d = _clone(tmp_path, [dict(A_ROW)], {"a.py": "A", "udf_4.py": "x", "n.md": "t"})
-    disk = cs.compact_state_from_disk(d)
-    assert cs.persist_synthesized(d, disk["synthesized"]) == ["n", "udf_4"]
-    rows = _rows(d)
-    assert [r["udfName"] for r in rows] == ["a", "n", "udf_4"]
-    # Byte-identical to the reading that reported them: the next reading
-    # synthesizes nothing and its rows equal the earlier synthesized ones.
-    again = cs.compact_state_from_disk(d)
-    assert again["synthesized"] == []
-    assert again["nodes"]["n"] == disk["nodes"]["n"]
-    assert again["nodes"]["udf_4"] == disk["nodes"]["udf_4"]
-    assert cs.diff_views(again, disk) == []
+    assert cs.persist_synthesized(d, ["n", "udf_4"]) == ["n", "udf_4"]
+    assert [r["udfName"] for r in _rows(d)] == ["a", "n", "udf_4"]
     mtime = os.stat(os.path.join(d, "canvas.toml")).st_mtime_ns
-    assert cs.persist_synthesized(d, disk["synthesized"]) == []
+    assert cs.persist_synthesized(d, ["n", "udf_4"]) == []
     assert os.stat(os.path.join(d, "canvas.toml")).st_mtime_ns == mtime
 
 
 def test_compact_persist_synthesized_only_named_and_present(tmp_path):
     d = _clone(tmp_path, [dict(A_ROW)], {"a.py": "A", "b.py": "b", "c.py": "c"})
-    disk = cs.compact_state_from_disk(d)
     os.remove(os.path.join(d, "c.py"))
-    # 'c' vanished since the cut, 'zz' was never an orphan.
     assert cs.persist_synthesized(d, ["b", "c", "zz"]) == ["b"]
-    assert _rows(d)[-1] == disk["nodes"]["b"]
+    assert _rows(d)[-1] == cs.synthesize_row([dict(A_ROW)], "b", "b.py")
     assert cs.persist_synthesized(d, []) == []
 
 
 def test_delta_full_state_upserts_synthesized_with_code(tmp_path):
     d = _clone(tmp_path, [dict(A_ROW)], {"a.py": "A", "udf_4.py": "code4", "n.md": "note"})
-    disk = cs.compact_state_from_disk(d)
+    disk = _persisted(d)
     ops = {o["name"]: o for o in cs.diff_views(disk, None) if o["op"] == "upsert"}
     assert ops["udf_4"]["code"] == "code4"
     assert ops["udf_4"]["file"] == "udf_4.py"
@@ -165,9 +162,9 @@ def test_delta_full_state_upserts_synthesized_with_code(tmp_path):
 
 def test_delta_against_held_view_upserts_only_the_synthesized_node(tmp_path):
     """The embed holds `a` (a held_view of the snapshot that carried only
-    `a`); the orphan is not in the view, so the next delta adds it."""
+    `a`); the push gave the orphan a row, so the next delta adds it."""
     d = _clone(tmp_path, [dict(A_ROW)], {"a.py": "A", "udf_4.py": "code4"})
-    disk = cs.compact_state_from_disk(d)
+    disk = _persisted(d)
     view = cs.held_view(disk, ["a"], edges=[], ids={}, bodies={"a": "A"}, embed_rows=None)
     assert "udf_4" not in view["nodes"]
     ops = cs.diff_views(disk, view)
@@ -263,7 +260,6 @@ def test_snapshot_new_udf_without_node_gets_file_but_no_row(tmp_path):
     result = cs.apply_snapshot(d, new, None)
     assert result["created"] == ["udf_4.py"]
     assert result["rowless_files"] == ["udf_4"]
-    assert result["synthesized"] == []
     assert result["changed"] is True
     assert open(os.path.join(d, "udf_4.py")).read() == "@fused.udf\ndef udf(): pass\n"
     assert open(toml).read() == before            # no row written
@@ -299,23 +295,15 @@ def test_snapshot_rowless_file_deleted_in_grace_is_trashed(tmp_path):
     assert trashed == ["udf_4.py"]
     assert not os.path.exists(os.path.join(d, "udf_4.py"))
     assert open(os.path.join(d, "canvas.toml")).read() == toml
-    assert cs.compact_state_from_disk(d)["synthesized"] == []
+    assert cs.orphan_sources(d, ["a"]) == []
 
 
-def test_compact_exclude_orphans_hides_in_grace_file_then_synthesizes(tmp_path):
+def test_compact_reading_leaves_orphans_out(tmp_path):
     d = _clone(tmp_path, [dict(A_ROW)], {"a.py": "A", "udf_4.py": "c", "z.py": "z"})
-    held = cs.compact_state_from_disk(d, None, exclude_orphans=["udf_4"])
-    assert "udf_4" not in held["nodes"] and "udf_4" not in held["order"]
-    assert "udf_4" not in held["files"] and "udf_4" not in held["bodies"]
-    assert held["synthesized"] == ["z"]           # other orphans unaffected
-    assert held["missing"] == []
-    assert not [o for o in cs.diff_views(held, None) if o.get("name") == "udf_4"]
+    disk = cs.compact_state_from_disk(d)
+    assert disk["order"] == ["a"] and set(disk["files"]) == {"a"} and disk["missing"] == []
+    assert not [o for o in cs.diff_views(disk, None) if o.get("name") in ("udf_4", "z")]
     assert [s for s, _ in cs.orphan_sources(d, ["a"], exclude=["udf_4"])] == ["z"]
-    # Grace over, still no row: a true orphan, synthesized as before.
-    lifted = cs.compact_state_from_disk(d)
-    assert lifted["synthesized"] == ["udf_4", "z"]
-    assert lifted["files"]["udf_4"] == "udf_4.py"
-    assert lifted["nodes"]["udf_4"] == cs.synthesize_row([dict(A_ROW)], "udf_4", "udf_4.py")
 
 
 def test_snapshot_new_udf_with_node_is_not_synthesized(tmp_path):
@@ -327,7 +315,6 @@ def test_snapshot_new_udf_with_node_is_not_synthesized(tmp_path):
         base_nodes=["a"],
     )
     result = cs.apply_snapshot(d, new, None)
-    assert result["synthesized"] == []
     assert result["upserted"] == ["udf_4"]
     assert [r["udfName"] for r in _rows(d)] == ["a", "udf_4"]
     assert _rows(d)[1]["x"] == 900
@@ -343,7 +330,6 @@ def test_snapshot_new_file_with_existing_disk_row_is_not_resynthesized(tmp_path)
         base_nodes=["a"],
     )
     result = cs.apply_snapshot(d, new, None)
-    assert result["synthesized"] == []
     assert result["created"] == ["udf_4.py"]
     rows = _rows(d)
     assert [r["udfName"] for r in rows] == ["a", "udf_4"]
@@ -368,7 +354,7 @@ def test_snapshot_existing_behaviours_kept_alongside_rowless_file(tmp_path):
     assert result["deleted"] == ["b"]
     assert trashed == ["b.py"]
     assert not os.path.exists(os.path.join(d, "b.py"))
-    assert result["rowless_files"] == ["n"] and result["synthesized"] == []
+    assert result["rowless_files"] == ["n"]
     assert open(os.path.join(d, "n.md")).read() == "note"
     rows = {r["udfName"]: r for r in _rows(d)}
     assert set(rows) == {"a"}
@@ -377,13 +363,12 @@ def test_snapshot_existing_behaviours_kept_alongside_rowless_file(tmp_path):
     assert doc["canvas"]["edges"] == []
 
 
-def test_snapshot_deleting_unpersisted_synthesized_node_removes_file(tmp_path):
-    """The frame got an orphan as a delta (view = that disk reading) before
-    its row was persisted, then the user deleted it: the file goes too, or
-    the next reading would re-synthesize it."""
+def test_snapshot_deleting_a_rowless_node_removes_file(tmp_path):
+    """The frame holds udf_4, its row left disk, then the user deleted it:
+    the file goes too, or the next push would synthesize it back."""
     d = _clone(tmp_path, [dict(A_ROW)], {"a.py": "A", "udf_4.py": "x"})
-    view = cs.compact_state_from_disk(d)
-    assert view["synthesized"] == ["udf_4"]
+    view = _persisted(d)
+    _drop_rows(d, {"a"})
     trashed = []
     new = _snapshot_new([_studio_node("a")], [{"slug": "a", "file": "a.py", "id": "sid-a"}])
     result = cs.apply_snapshot(d, new, view, backup=lambda rel, data: trashed.append(rel))
@@ -391,14 +376,16 @@ def test_snapshot_deleting_unpersisted_synthesized_node_removes_file(tmp_path):
     assert result["changed"] is True
     assert trashed == ["udf_4.py"]
     assert not os.path.exists(os.path.join(d, "udf_4.py"))
-    assert cs.compact_state_from_disk(d)["synthesized"] == []
+    assert cs.orphan_sources(d, ["a"]) == []
 
 
 def test_snapshot_rowless_rename_moves_file_not_trash(tmp_path):
-    """A row-less (synthesized) node renamed without a hint: its id
-    reappears under the new name, so the file follows the name."""
+    """A row-less node renamed without a hint: its id reappears under the
+    new name, so the file follows the name."""
     d = _clone(tmp_path, [dict(A_ROW)], {"a.py": "A", "udf_4.py": "code4"})
+    _persisted(d)
     view = cs.compact_state_from_disk(d, {"udf_4": "sid-4"})
+    _drop_rows(d, {"a"})
     trashed = []
     new = _snapshot_new(
         [_studio_node("a"), _studio_node("renamed", x=10, y=360)],
@@ -423,11 +410,9 @@ def test_snapshot_stale_nodes_keep_a_delivered_synthesized_node(tmp_path):
             {"slug": "udf_4", "file": "udf_4.py", "udf_body": '{"code": "c"}'}]
     first = cs.apply_snapshot(d, _snapshot_new([_studio_node("a")], udfs, ["a"]), None)
     assert first["rowless_files"] == ["udf_4"]
-    # Grace over, still row-less: the cut synthesizes, the host persists,
-    # the delta is acked.
+    # Grace over, still row-less: the push synthesizes, the delta is acked.
+    assert cs.persist_synthesized(d, ["udf_4"]) == ["udf_4"]
     view = cs.compact_state_from_disk(d)
-    assert view["synthesized"] == ["udf_4"]
-    assert cs.persist_synthesized(d, view["synthesized"]) == ["udf_4"]
     assert "udf_4" in view["nodes"]
     trashed = []
     again = cs.apply_snapshot(d, _snapshot_new([_studio_node("a")], udfs), view,
@@ -436,17 +421,6 @@ def test_snapshot_stale_nodes_keep_a_delivered_synthesized_node(tmp_path):
     assert again["deferred_deletes"] == ["udf_4"]
     assert again["rowless_files"] == []           # its row is already there
     assert [r["udfName"] for r in _rows(d)] == ["a", "udf_4"]
-    assert os.path.exists(os.path.join(d, "udf_4.py"))
-
-
-def test_snapshot_stale_nodes_keep_an_unpersisted_synthesized_node(tmp_path):
-    d = _clone(tmp_path, [dict(A_ROW)], {"a.py": "A", "udf_4.py": "c"})
-    view = cs.compact_state_from_disk(d)          # synthesized, not persisted
-    new = _snapshot_new([_studio_node("a")],
-                        [{"slug": "a", "file": "a.py", "id": "sid-a"},
-                         {"slug": "udf_4", "file": "udf_4.py", "id": "sid-4"}])
-    result = cs.apply_snapshot(d, new, view)
-    assert result["deleted"] == []
     assert os.path.exists(os.path.join(d, "udf_4.py"))
 
 
@@ -519,7 +493,8 @@ def test_compact_fusedignore_comments_blanks_dirs_and_paths(tmp_path):
 def test_snapshot_rowless_delete_leaves_toml_untouched(tmp_path):
     """Only the file goes: canvas.toml is not rewritten for nothing."""
     d = _clone(tmp_path, [dict(A_ROW)], {"a.py": "A", "udf_4.py": "x"})
-    view = cs.compact_state_from_disk(d)
+    view = _persisted(d)
+    _drop_rows(d, {"a"})
     toml = os.path.join(d, "canvas.toml")
     before = (open(toml).read(), os.stat(toml).st_mtime_ns)
     new = _snapshot_new([_studio_node("a")], [{"slug": "a", "file": "a.py", "id": "sid-a"}])
@@ -558,28 +533,3 @@ def test_snapshot_hidden_udf_lands_on_disk(tmp_path):
     result = cs.apply_snapshot(d, new, view)
     assert result["changed"] is True
     assert _rows(d)[0]["visible"] is False
-
-
-PROBE_NOTE = ("# Sync probe\n\n| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n\n"
-              "About ~10 s, a <name> tag, a [lon, lat] pair, **bold `code` inside**.\n")
-PROBE_NOTE_TIPTAP = ("# Sync probe\n\nab1234\n\nAbout \\~10 s, a &lt;name&gt; tag, "
-                     "a \\[lon, lat\\] pair, **bold** `code` **inside**.")
-BROAD_NOTE = ("Setext\n======\n\n* star\n+ plus\n\n> quote\nlazy\n\n***\n\n"
-              "Footnote[^1], a_b_c, _f_ and __g__, 5 < 6 &amp; ~7.\n\nline one  \nline two\n\n"
-              "    indented\n\n- [ ] task\n\n| k | v |\n|:--|--:|\n| `x_y` | **z** |\n")
-BROAD_NOTE_TIPTAP = ("# Setext\n\n- star\n\n\n- plus\n\n> quote lazy\n\n---\n\n"
-                     "Footnote\\[^1\\], a_b_c, *f* and **g**, 5 &lt; 6 & \\~7.\n\nline one\\\n"
-                     "line two\n\n```\nindented\n```\n\n- [ ] task\n\nkv`x_y`**z**")
-
-
-def test_compact_note_text_ignores_what_the_workbench_editor_reserializes():
-    assert cs.note_text(PROBE_NOTE) == cs.note_text(PROBE_NOTE_TIPTAP)
-    assert cs.note_text(BROAD_NOTE) == cs.note_text(BROAD_NOTE_TIPTAP)
-    assert cs.note_text(PROBE_NOTE) != cs.note_text(PROBE_NOTE_TIPTAP.replace("About", "About."))
-
-
-def test_compact_duplicate_node_rows_ignore_folders_sharing_a_name():
-    rows = [{"udfName": "a"}, {"udfName": "b"}, {"udfName": "a", "x": 1},
-            {"type": "udf-folder", "folderName": "b"}, {"type": "udf-folder", "folderName": "F"},
-            {"type": "udf-folder", "folderName": "F"}]
-    assert cs.duplicate_node_rows({"canvas": {"nodes": rows}}) == ["a"]
