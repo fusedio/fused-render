@@ -4431,7 +4431,7 @@ class _SyncManager:
         if stale is not None:
             return stale
         result = canvas_snapshot.apply_rename(self.dir, frm, to, file_from, file_to)
-        if frm in self._rowless:
+        if frm in self._rowless and result["moved"]:
             self._rowless.discard(frm)
             self._rowless.add(to)
         if frm in self._body_written:
