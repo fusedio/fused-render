@@ -5671,10 +5671,13 @@ def warm() -> None:
     try:
         snap = _rebuild_snapshot()
     except Exception:  # noqa: BLE001 — a warm that fails costs nothing but the warmth
+        # …and the builder still starts: with none, no snapshot is ever
+        # published, and `snapshot_rows` readers (the Monitor's labels) would
+        # see None for the life of the process. Its next build publishes one.
         logger.debug("tasks warm failed", exc_info=True)
-        return
-    logger.info("tasks warm: %d rows in %.2fs", len(snap.rows), time.monotonic() - started)
-    tasks_index.save(_SCAN, _BUILD_LOCK)
+    else:
+        logger.info("tasks warm: %d rows in %.2fs", len(snap.rows), time.monotonic() - started)
+        tasks_index.save(_SCAN, _BUILD_LOCK)
     if not tasks_watch.running():
         return
     global _builder_thread

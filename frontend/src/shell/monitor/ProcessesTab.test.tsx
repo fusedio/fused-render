@@ -8,6 +8,7 @@ import { act, create, type ReactTestInstance, type ReactTestRenderer } from "rea
 
 import type { ClaudeTaskTree, MachineSnapshot, MachineProc } from "@platform/lib/sysmon";
 import MonitorPage from "@shell/monitor/ProcessesTab";
+import { taskHref } from "@shell/tasks-lib";
 
 const GB = 1024 ** 3;
 const MB = 1024 ** 2;
@@ -504,10 +505,20 @@ const TREES: ClaudeTaskTree[] = [
   }),
 ];
 
-async function mountTrees(trees: ClaudeTaskTree[] = TREES): Promise<ReactTestRenderer> {
+async function mountTrees(
+  trees: ClaudeTaskTree[] = TREES,
+  openUrl: (url: string) => void = () => {},
+): Promise<ReactTestRenderer> {
   const claude = { total: 2, fused: 2, other: 0, mem_bytes: 520 * MB, cpu_pct: 2, top: [], tasks: trees };
   await act(async () => {
-    renderer = create(<MonitorPage load={async () => ({ ...PAYLOAD, claude })} pollMs={1e9} confirmMs={60_000} />);
+    renderer = create(
+      <MonitorPage
+        load={async () => ({ ...PAYLOAD, claude })}
+        pollMs={1e9}
+        confirmMs={60_000}
+        openUrl={openUrl}
+      />,
+    );
   });
   await flush();
   return renderer!;
@@ -571,6 +582,40 @@ test("a tree's Stop is aborted when its top process changed since the confirm op
   await flush();
   expect(calls).toHaveLength(0);
   expect(text(treeRow(r, 201))).not.toContain("Stopping…");
+});
+
+test("Open task goes to the task's own door: its chat, or its canvas page", async () => {
+  const opened: (string | null)[] = [];
+  const onCanvas = tree({
+    root_pid: 300,
+    task_id: "TASK-076",
+    key: "s-76",
+    session_id: "s-76",
+    canvas: { env: "prod", name: "my_canvas", file: "" },
+  });
+  const r = await mountTrees([tree({ root_pid: 201 }), onCanvas], (u) => opened.push(u));
+  const open = (pid: number) => treeRow(r, pid).find((n) => n.type === "button" && text(n) === "Open task");
+  click(open(201));
+  click(open(300));
+  expect(opened).toEqual([taskHref(tree({ root_pid: 201 })), taskHref(onCanvas)]);
+  expect(opened[0]).toContain("s-75");
+  expect(opened[1]).toContain("my_canvas");
+  expect(opened[1]).not.toBe(opened[0]);
+});
+
+test("an armed tree Stop sends nothing when the toolbar is already ending that process", async () => {
+  const calls = captureFetch({ ok: true, via: "claude" });
+  const r = await mountTrees();
+  const stop = () => treeRow(r, 201).find((n) => n.type === "button" && text(n) === "Stop");
+  click(stop()); // arm the strip's confirm
+  click(row(r, 201)); // and stop the same process from the toolbar
+  click(button(bar(r), "Stop"));
+  await act(async () => button(bar(r), "Stop").props.onClick());
+  await flush();
+  expect(text(treeRow(r, 201))).toContain("Stop TASK-075?"); // still armed…
+  await act(async () => stop().props.onClick()); // …and pressed
+  await flush();
+  expect(calls.filter((c) => c.url === "/api/system/activity/stop")).toHaveLength(1);
 });
 
 test("the helper's confirm says it ends one CLI, not a tree", async () => {

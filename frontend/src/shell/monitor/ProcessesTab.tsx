@@ -396,6 +396,7 @@ function ClaudeTreeRow({
   onAsk,
   onCancel,
   onStop,
+  onOpen,
 }: {
   t: ClaudeTaskTree;
   /** The tree's top process as the table has it: what Stop names. */
@@ -405,6 +406,7 @@ function ClaudeTreeRow({
   onAsk: (pid: number) => void;
   onCancel: () => void;
   onStop: (t: ClaudeTaskTree) => void;
+  onOpen: (href: string) => void;
 }) {
   const name = claudeTreeName(t);
   const st = claudeTreeState(t);
@@ -449,7 +451,7 @@ function ClaudeTreeRow({
         ) : (
           <>
             {href && (
-              <button type="button" className="btn btn-secondary monitor-btn" onClick={() => navigateUrl(href)}>
+              <button type="button" className="btn btn-secondary monitor-btn" onClick={() => onOpen(href)}>
                 Open task
               </button>
             )}
@@ -483,6 +485,7 @@ function ClaudeTrees({
   onAsk,
   onCancel,
   onStop,
+  onOpen,
 }: {
   trees: ClaudeTaskTree[];
   byPid: Map<number, MachineProc>;
@@ -491,6 +494,7 @@ function ClaudeTrees({
   onAsk: (pid: number) => void;
   onCancel: () => void;
   onStop: (t: ClaudeTaskTree) => void;
+  onOpen: (href: string) => void;
 }) {
   return (
     <section className="monitor-claude" aria-label="Claude tasks">
@@ -506,6 +510,7 @@ function ClaudeTrees({
             onAsk={onAsk}
             onCancel={onCancel}
             onStop={onStop}
+            onOpen={onOpen}
           />
         ))}
       </ul>
@@ -601,6 +606,7 @@ export default function ProcessesTab({
   confirmMs = CONFIRM_MS,
   initialPid = null,
   loadDetail = getProcessDetail,
+  openUrl = navigateUrl,
 }: {
   load?: () => Promise<MachineSnapshot>;
   loadHistory?: (pids: number[]) => Promise<Record<string, ProcHistoryPoint[]>>;
@@ -609,6 +615,8 @@ export default function ProcessesTab({
   /** `?pid=`: open the detail drawer on this process at mount. */
   initialPid?: number | null;
   loadDetail?: (pid: number) => Promise<ProcessDetail>;
+  /** Where "Open task" goes (test seam; the shell's own navigation). */
+  openUrl?: (url: string) => void;
 } = {}) {
   // The detail drawer's pid. Opened by clicking a row's name (not a row
   // select), or from `?pid=`; the URL is read once, never written here.
@@ -905,6 +913,9 @@ export default function ProcessesTab({
   const stopTree = async (t: ClaudeTaskTree) => {
     const asked = treeAsk;
     setTreeAsk(null);
+    // Already being ended (the toolbar's Stop on the same process): that
+    // request reports its own result; a second would only contradict it.
+    if (rows[t.root_pid]?.phase === "busy") return;
     const p = byPid.get(t.root_pid);
     if (!p || !asked || asked.pid !== t.root_pid || p.startedAt !== asked.startedAt) {
       notify({ title: `Not stopped: ${claudeTreeName(t)} has already ended`, tone: "info" });
@@ -1042,6 +1053,7 @@ export default function ProcessesTab({
           onAsk={askTree}
           onCancel={() => setTreeAsk(null)}
           onStop={(t) => void stopTree(t)}
+          onOpen={openUrl}
         />
       ) : (
         data?.claude &&

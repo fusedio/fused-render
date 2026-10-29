@@ -251,17 +251,18 @@ def _claude_runs(backend) -> dict[int, Owner]:
 
 
 def _run_session_order(pid: int, run: dict, hostj: dict) -> list[str]:
-    """Every session id the run answers to, most specific first: the one the
-    live CLI holds, the host's, the run's own (meta / launch.json / the
-    `session` file), and LAST `resumed_from` — the parent conversation, which
-    can be a different task's session."""
+    """The session ids the run itself holds, most specific first: the one the
+    live CLI holds, the host's, then the run's own (meta / launch.json / the
+    `session` file). NEVER `resumed_from`: on a fork it is the parent
+    conversation — another task — and on a plain resume the run's own
+    session is that same id, already named by host.json / launch.json."""
     meta = run.get("meta") or {}
     launch = _read_json(os.path.join(run["run_dir"], "launch.json"))
     parent = str(meta.get("resumed_from") or "")
     own = [s for s in (run.get("sessions") or ()) if s and s != parent]
     order = [_claude_session_id(pid), str(hostj.get("session_id") or ""),
              str(meta.get("session_id") or ""), str(launch.get("session_id") or ""),
-             str(launch.get("new_session_id") or ""), *own, parent]
+             str(launch.get("new_session_id") or ""), *own]
     out: list[str] = []
     for sid in order:
         if sid and sid not in out:
@@ -398,16 +399,30 @@ def _claude_session_name(pid: int) -> str:
     return f"Claude: {name}" if name else ""
 
 
-# The app's own one-shot model calls (server/ai.py's relay: titles, recaps,
-# fused.ai text) run a `claude -p --no-session-persistence` under the app with
-# no run dir and no session — and its cwd is the app bundle, which is what the
-# folder fallback used to print ("Claude: resources-6e"). `--fork-session` is
-# the heads-up side question (claude_agent/headsup.py), a fork of a real one.
+# The app's own one-shot model calls run a `claude -p --no-session-persistence`
+# under the app with no run dir and no session — and its cwd is the app
+# bundle, which is what the folder fallback used to print ("Claude:
+# resources-6e"). Told apart by their own argv:
+#   contrib/merge_job.resolver_argv  `--permission-mode dontAsk` + `--allowedTools`
+#   contrib/ai._run_cli              `--strict-mcp-config` + `--mcp-config` (empty)
+#   server/ai.py relay, claude_sessions recap: everything else — titles, recaps,
+#                                    fused.ai text
+# `--fork-session` is the heads-up side question (claude_agent/headsup.py), a
+# fork of a real session, not a helper.
 HELPER_LABEL = "Claude: titles & recaps helper"
+MERGE_LABEL = "Claude: merge resolver"
+CONTRIB_LABEL = "Claude: contribution review"
 
 
-def is_claude_helper(args: list[str] | None) -> bool:
-    return bool(args) and "--no-session-persistence" in args and "--fork-session" not in args
+def helper_label(args: list[str] | None) -> str:
+    """The label of an app helper CLI, or "" when `args` is not one."""
+    if not args or "--no-session-persistence" not in args or "--fork-session" in args:
+        return ""
+    if "--allowedTools" in args and "dontAsk" in args:
+        return MERGE_LABEL
+    if "--strict-mcp-config" in args and "--mcp-config" in args:
+        return CONTRIB_LABEL
+    return HELPER_LABEL
 
 
 _HEX_ID = re.compile(r"\s*\b[0-9a-f]{32}\b")
@@ -505,8 +520,9 @@ def classify(pid: int, args: list[str] | None) -> Owner | None:
     if pid in _warm_spares():
         return Owner("run", "Warm Python (idle)", {})
     if exe == "claude":
-        if is_claude_helper(args):
-            return Owner("claude", HELPER_LABEL, {"helper": True}, base=HELPER_LABEL)
+        helper = helper_label(args)
+        if helper:
+            return Owner("claude", helper, {"helper": True}, base=helper)
         label = _claude_session_name(pid) or "Claude CLI"
         return Owner("claude", label, {}, base=label)
     if _is_python(exe) and any(_basename(a) == "_child.py" for a in args[1:4]):
@@ -631,7 +647,7 @@ def _shell_snippet(args: list[str]) -> str:
     if at < 0:
         return ""
     cmd = line[at + len("eval '"):]
-    cmd = re.sub(r"^cd \S+ && ", "", cmd.strip())
+    cmd = re.sub(r'^cd (?:"[^"]*"|\\ |[^\s"])+ && ', "", cmd.strip())
     cmd = re.sub(r"'\s*<\s*/dev/null.*$", "", cmd)   # the wrapper's own tail
     return _trim(_redact_cmd(cmd), 40)
 
@@ -675,11 +691,11 @@ _NO_TASK = {"run_id": "", "session_id": "", "key": "", "task_id": "", "title": "
             "folder": "", "model": "", "status": "", "state": "", "bg_jobs": []}
 
 
-def claude_tasks(roots: dict[int, Owner], helpers: list[int], procs: list[dict]) -> list[dict]:
+def claude_tasks(roots: dict[int, Owner], helpers: dict[int, str], procs: list[dict]) -> list[dict]:
     """One entry per live Claude tree: each run (its session host, CLI and
     everything under them) and each app helper CLI, with memory and CPU summed
     over the whole tree. `roots` are the run processes (`claude_roots`),
-    `helpers` the helper CLIs' pids, `procs` the sampled rows
+    `helpers` the helper CLIs' pids and labels, `procs` the sampled rows
     `{pid, ppid, cpuPct, memBytes, startedAt}`. Largest first."""
     by_pid = {p["pid"]: p for p in procs}
     children: dict[int, list[int]] = {}
@@ -722,8 +738,8 @@ def claude_tasks(roots: dict[int, Owner], helpers: list[int], procs: list[dict])
         owner = owners[run_id]
         out.append(entry(root, owner, dict(owner.ref.get("task") or {}), False))
     in_runs = {p for t in out for p in t["pids"]}
-    for pid in helpers:
+    for pid, label in helpers.items():
         if pid in by_pid and pid not in in_runs:
-            out.append(entry(pid, Owner("claude", HELPER_LABEL), dict(_NO_TASK), True))
+            out.append(entry(pid, Owner("claude", label), dict(_NO_TASK), True))
     out.sort(key=lambda t: (-t["mem_bytes"], t["root_pid"]))
     return out

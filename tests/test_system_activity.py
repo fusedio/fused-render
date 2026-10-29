@@ -701,16 +701,17 @@ def test_claude_tree_is_labelled_by_task_and_rolled_up(client, fake):
 def test_a_shell_label_is_redacted_like_args(client, fake):
     backend, clock, s = fake
     owner = labels.Owner("claude", "TASK-1 · a", {"run_id": "r"}, base="TASK-1 · a")
+    # Driven through the sampler's own resolve: CLI -> Bash-tool wrapper -> curl.
     _add_proc(backend, 901, 1, ["/u/claude", "-p"])
-    _add_proc(backend, 905, 901, ["/usr/bin/curl", "--token", "hunter2"])
+    _add_proc(backend, 905, 901, ["/bin/sh", "/lib/claude_shell_prefix.sh", "eval 'true' < /dev/null"])
+    _add_proc(backend, 906, 905, ["/usr/bin/curl", "--token", "hunter2"])
     backend.descendants = lambda root: (
         {p: q for p, q in backend.tree.items() if p in (201, 202, 203, 204)} if root == ROOT
-        else {905: 901} if root == 901 else {})
-    owner_shell = labels.Owner("claude", "x", {}, base="TASK-1 · a", part="shell")
+        else {905: 901, 906: 905} if root == 901 else {})
     s._roots = lambda: {901: owner}
-    s._owners = lambda: {905: labels.claude_child(owner_shell, ["/usr/bin/curl", "--token", "hunter2"])}
     rows = {r["pid"]: r for r in client.get("/api/system/activity").json()["procs"]}
-    assert "hunter2" not in rows[905]["label"] and rows[905]["label"].startswith("TASK-1 · a › shell: curl")
+    assert rows[905]["label"] == "TASK-1 · a › shell: true"
+    assert "hunter2" not in rows[906]["label"] and rows[906]["label"].startswith("TASK-1 · a › shell: curl")
 
 
 def test_a_one_shot_claude_under_a_run_belongs_to_the_run(client, fake):

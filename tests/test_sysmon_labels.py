@@ -173,12 +173,32 @@ def test_claude_bash_tool_shells_read_as_shell_and_leaf_command():
     wrapper = ["/bin/sh", "/lib/fused_render/claude_shell_prefix.sh",
                "source /u/.claude/shell-snapshots/s.sh && eval 'cd /w/repo && sleep 300' < /dev/null && pwd -P >| /tmp/c"]
     assert _child_label(wrapper) == base + "shell: sleep 300"
+    for cd in ('cd "/w/my project"', "cd /w/my\\ project"):
+        quoted = ["/bin/sh", "/lib/fused_render/claude_shell_prefix.sh",
+                  f"eval '{cd} && sleep 300' < /dev/null"]
+        assert _child_label(quoted) == base + "shell: sleep 300"
     zsh = ["/bin/zsh", "-c", "source /u/.claude/shell-snapshots/s.sh; true"]
     assert _child_label(zsh) == base + "shell"
     assert _child_label(["tee", "-a", "/tmp/fused_render_claude-501/claude-cmds/s/1.out"]) \
         == base + "shell"
     assert _child_label(["sleep", "300"], "shell") == base + "shell: sleep 300"
     assert _child_label(["python3", "-c", "x"], "shell: sleep 300") == base + "shell: python3 -c x"
+
+
+def test_each_app_one_shot_claude_is_named_for_its_launcher(monkeypatch):
+    """merge_job.resolver_argv and contrib.ai._run_cli are not the titles helper."""
+    import json
+    from fused_render.contrib import merge_job
+    monkeypatch.setattr(labels, "_claude_session_name", lambda pid: "")
+    resolver = merge_job.resolver_argv("/u/claude", "/tmp/box")
+    assert labels.classify(7, resolver).label == labels.MERGE_LABEL
+    contrib = ["/u/claude", "-p", "--no-session-persistence", "--max-turns", "1", "--tools=",
+               "--setting-sources=", "--strict-mcp-config", "--mcp-config",
+               json.dumps({"mcpServers": {}}), "--model", "m", "--system-prompt", "s"]
+    assert labels.classify(8, contrib).label == labels.CONTRIB_LABEL
+    recap = ["/u/claude", "-p", "--no-session-persistence", "--max-turns", "1", "--tools", "",
+             "--model", "haiku", "--setting-sources=", "--strict-mcp-config", "--system-prompt", "s"]
+    assert labels.classify(9, recap).label == labels.HELPER_LABEL
 
 
 def test_the_apps_one_shot_claude_is_the_helper(monkeypatch):
@@ -216,7 +236,7 @@ def test_claude_tasks_rolls_each_tree_up_largest_first():
              _row(20, 1, 100), _row(21, 20, 900), _row(22, 21, 10),
              _row(30, 1, 120, 0.5), _row(40, 1, 5000)]
     roots = {10: running, 11: running, 20: done, 21: done}
-    got = labels.claude_tasks(roots, [30], procs)
+    got = labels.claude_tasks(roots, {30: labels.HELPER_LABEL}, procs)
     assert [t["root_pid"] for t in got] == [20, 10, 30]
     t2, t1, helper = got
     assert (t2["mem_bytes"], t2["pids"], t2["done_alive"]) == (1010, [20, 21, 22], True)
@@ -224,7 +244,7 @@ def test_claude_tasks_rolls_each_tree_up_largest_first():
     assert (t1["mem_bytes"], t1["cpu_pct"], t1["done_alive"]) == (400, 3.0, False)
     assert t1["started_at"] == 1010.0
     assert (helper["helper"], helper["label"], helper["key"]) == (True, labels.HELPER_LABEL, "")
-    assert labels.claude_tasks({}, [], []) == []
+    assert labels.claude_tasks({}, {}, []) == []
 
 
 def test_a_claude_run_is_labelled_by_the_task_its_host_session_belongs_to(tmp_path, monkeypatch):
@@ -302,6 +322,12 @@ def test_a_resumed_run_is_not_named_for_the_task_it_resumed(tmp_path, monkeypatc
     assert owner.label == "TASK-002 · Child"
     # Neither running nor waiting, tree alive: an amber "still alive" row.
     assert owner.ref["task"]["state"] == "idle"
+    # With no session of its own known yet, the run is NOT named for its parent.
+    (run / "launch.json").write_text("{}")
+    monkeypatch.setattr(project_queue, "scan_runs", lambda agent: [
+        {"run_id": run.name, "run_dir": str(run), "meta": meta, "sessions": {"s-parent"}}])
+    monkeypatch.setattr(labels, "_task_cache", None)
+    assert not labels._claude_runs(B())[601].label.startswith("TASK-001")
     monkeypatch.setattr(labels, "_claude_session_id", lambda pid: "s-parent")
     monkeypatch.setattr(labels, "_task_cache", None)
     assert labels._claude_runs(B())[601].label == "TASK-001 · Parent"   # the live CLI's word wins
@@ -320,6 +346,6 @@ def test_a_helper_inside_a_run_tree_is_not_its_own_entry():
     run = labels.Owner("claude", "TASK-1 · a", {"run_id": "r", "task": {"task_id": "TASK-1",
                        "state": "running", "bg_jobs": []}}, base="TASK-1 · a")
     procs = [_row(10, 1, 100), _row(11, 10, 100), _row(12, 11, 50), _row(30, 1, 70)]
-    got = labels.claude_tasks({10: run, 11: run}, [12, 30], procs)
+    got = labels.claude_tasks({10: run, 11: run}, {12: labels.HELPER_LABEL, 30: labels.HELPER_LABEL}, procs)
     assert [(t["root_pid"], t["helper"]) for t in got] == [(10, False), (30, True)]
     assert got[0]["mem_bytes"] == 250

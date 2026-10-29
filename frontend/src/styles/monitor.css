@@ -1034,8 +1034,11 @@ th[aria-sort="descending"] .monitor-sort {
   color: var(--fg-muted);
 }
 
+/* Capped and wrapping: a long "<Status> – still alive" or a stop error must
+   not widen its track and push Stop / Cancel past the strip's edge. */
 .monitor-claude-state {
-  white-space: nowrap;
+  max-width: 28ch;
+  overflow-wrap: anywhere;
   color: var(--fg-muted);
 }
 

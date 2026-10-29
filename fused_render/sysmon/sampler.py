@@ -347,7 +347,7 @@ class Sampler:
                 {"pid": r["pid"], "ppid": r["ppid"], "label": r["label"], "cpu": r["cpuPct"],
                  "mem": r["memBytes"]} for r in rows])
         try:
-            helpers = [pid for pid, o in resolved.items() if o.ref.get("helper")]
+            helpers = {pid: o.label for pid, o in resolved.items() if o.ref.get("helper")}
             claude = {**claude, "tasks": labels.claude_tasks(extra, helpers, rows)}
         except Exception:  # noqa: BLE001 — the strip is extra; the sample stands
             logger.debug("sysmon: claude task rollup failed", exc_info=True)
