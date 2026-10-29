@@ -125,8 +125,7 @@ _CHECK_META: dict[str, tuple[str, str, str]] = {
     "git": ("sharing", "warning", "fact"),
     # The GitHub contribution loop (docs/CONTRIB_LOOP.md §4): a repo that
     # commits its own `.fused/` ships the author's machine data to everyone
-    # who installs it. Only reported while `contrib.flags.sources()` is on
-    # (`_gated_checks`) — with the loop off the checklist is exactly today's.
+    # who installs it.
     "fused-dir-committed": ("sharing", "warning", "fact"),
     "generated": ("sharing", "warning", "fact"),
     "preview": ("sharing", "warning", "fact"),
@@ -618,19 +617,6 @@ def _fused_dir_committed_check(app_dir: str) -> dict:
     return _check("fused-dir-committed", label, FAIL,
                   "This app's repo includes its .fused folder, which holds this "
                   "machine's data. Remove it from the repo.", findings)
-
-
-def _gated_checks(app_dir: str) -> dict:
-    """Rows that exist only while a feature flag is on — absent, not skipped,
-    when it is off, so the checklist is byte-for-byte today's."""
-    try:
-        from fused_render.contrib import flags
-
-        if flags.sources():
-            return {"fused-dir-committed": _fused_dir_committed_check(app_dir)}
-    except Exception:  # noqa: BLE001 — a flag read never fails the report
-        pass
-    return {}
 
 
 def _generated_check(app_dir: str) -> dict:
@@ -1133,7 +1119,7 @@ def report(app_dir: str) -> dict:
         "icon": _icon_check(app_dir),
         "git": _repo_health_check(app_dir),
         "cross-browser": _cross_browser_check(app_dir),
-        **_gated_checks(app_dir),
+        "fused-dir-committed": _fused_dir_committed_check(app_dir),
     }
     checks = [by_id[cid] for cid in CHECK_ORDER if cid in by_id]
 

@@ -214,7 +214,7 @@ def test_record_install_and_finder_move_adoption(home, tmp_path):
 # ----------------------------------------------------------------- doctor
 
 
-def test_fused_dir_row_is_gated_and_reports_tracked_paths(home, tmp_path):
+def test_fused_dir_row_reports_tracked_paths(home, tmp_path):
     d = _clone(tmp_path, "x", "https://github.com/alice/x")
     write(d, ".fused/meta.json", "{}\n")
     git(d, "add", "-f", "-A")
