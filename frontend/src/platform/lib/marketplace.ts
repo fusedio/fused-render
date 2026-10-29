@@ -247,16 +247,30 @@ export function fetchInstalled(): Promise<{ apps: AppEntry[] }> {
   return getJson<{ apps: AppEntry[] }>("/api/marketplace/installed");
 }
 
-/** The install POST's answers: a job, or (§18.4 D13) a question — the user
+/** The install POST's answers: a job, or a question — (§18.4 D13) the user
  *  already follows this app's author by GitHub link, and installing from the
- *  Marketplace would switch that copy to reviewed releases. Posting again
- *  with `switch: true` is the yes. */
+ *  Marketplace would switch that copy to reviewed releases (posting again
+ *  with `switch: true` is the yes); or the user has this app as a subfolder
+ *  of their showcase clone, which would hold the install's place for good
+ *  (a showcase copy is only ever hidden, never deleted). Posting again with
+ *  `overwrite: true` installs the reviewed copy under `app/`, moves the
+ *  showcase copy's data along and hides it. */
 export type InstallAnswer =
   | { status: "ok"; job: InstallJob }
-  | { status: "confirm"; switch: "reviewed"; path: string; who: string | null };
+  | { status: "confirm"; switch: "reviewed"; path: string; who: string | null }
+  | { status: "confirm"; overwrite: "showcase"; path: string; message?: string };
 
-export function postInstall(slug: string, opts: { switch?: boolean } = {}): Promise<InstallAnswer> {
-  return postJson<InstallAnswer>("/api/marketplace/install", { slug, ...(opts.switch ? { switch: true } : {}) });
+export interface InstallOpts {
+  switch?: boolean;
+  overwrite?: boolean;
+}
+
+export function postInstall(slug: string, opts: InstallOpts = {}): Promise<InstallAnswer> {
+  return postJson<InstallAnswer>("/api/marketplace/install", {
+    slug,
+    ...(opts.switch ? { switch: true } : {}),
+    ...(opts.overwrite ? { overwrite: true } : {}),
+  });
 }
 
 /** Stage B's answer shape for the two Installed-page buttons. */
@@ -753,12 +767,13 @@ async function pollJobsOnce(): Promise<void> {
 /** Start an install (or an update — the server decides from what is on
  *  disk). The returned job is merged in at once so the pill turns into a
  *  ring on the same frame, then the poll takes over. A `confirm` answer (a
- *  GitHub-link copy of this app exists: switch it to reviewed releases?)
- *  starts nothing and is handed back for the caller's sheet; the same call
- *  with `switch: true` is the yes. */
+ *  GitHub-link copy of this app exists: switch it to reviewed releases? —
+ *  or a showcase copy does: overwrite it?) starts nothing and is handed
+ *  back for the caller's sheet; the same call with `switch: true` (or
+ *  `overwrite: true`) is the yes. */
 export async function installApp(
   app: { slug: string; name: string },
-  opts: { switch?: boolean } = {},
+  opts: InstallOpts = {},
 ): Promise<InstallJob | Extract<InstallAnswer, { status: "confirm" }>> {
   startedHere.set(app.slug, app.name);
   announced.delete(app.slug);

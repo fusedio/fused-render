@@ -177,8 +177,25 @@ def _ensure_meta(app_dir: str) -> None:
         pass
 
 
-def _after_move(app_dir: str, recorded: str) -> None:
+def settle_retired_origin(app_dir: str, origin: str) -> None:
+    """`app_dir` took over from `origin`, which stays on disk but is retired
+    (a Community install overwriting the user's showcase copy,
+    `marketplace._retire_showcase_copy`: the folder is only hidden, since
+    deleting a showcase subfolder dirties the clone). The witness test in
+    `_after_move` would read a still-present origin as a COPY and leave
+    everything pointing at it; this is the one caller that knows better,
+    so the move is settled as if the origin were gone — every store re-rooted,
+    the Claude sessions carried over, `meta.json` repointed. Best-effort."""
+    try:
+        _after_move(app_dir, origin, retired=True)
+    except Exception:  # noqa: BLE001 — the install already landed
+        logger.warning("could not settle the move %s -> %s", origin, app_dir, exc_info=True)
+
+
+def _after_move(app_dir: str, recorded: str, *, retired: bool = False) -> None:
     """The witness fired. Decide copy from move, and settle a move.
+    ``retired``: `recorded` is still on disk but retired (`settle_retired_origin`),
+    so it is a move all the same.
 
     The recorded folder still existing means this is a COPY — the sessions
     belong to the original, and the record stays as evidence for the app. Gone
@@ -189,7 +206,7 @@ def _after_move(app_dir: str, recorded: str) -> None:
     rather than erased. A relocate that had to leave a live session behind
     leaves the record stale too, and the next open tries again.
     """
-    if os.path.isdir(recorded):
+    if os.path.isdir(recorded) and not retired:
         logger.info("%s still exists — a copy, not a move; record left intact", recorded)
         return
     from fused_render import app_state_move, claude_session_move
@@ -213,7 +230,7 @@ def _after_move(app_dir: str, recorded: str) -> None:
     for source in dict.fromkeys(sources):
         if os.path.normcase(os.path.abspath(source)) == os.path.normcase(new):
             continue
-        if os.path.isdir(source):
+        if os.path.isdir(source) and not (retired and source == recorded):
             continue
         # The server's own stores — bookmarks, shell recents, scheduled
         # targets, the pin, the desk (current_apps), the registered-apps
