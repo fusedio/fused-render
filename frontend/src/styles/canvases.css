@@ -416,27 +416,6 @@
 .canvas-rail-item {
   position: relative;
 }
-.canvas-rail-spacer {
-  flex: 1 1 auto;
-}
-/* The Tasks door's running count: the sidebar's count chip, shrunk to the
-   rail's corner (the dot's spot, which this button does not wear). */
-.canvas-rail-count {
-  position: absolute;
-  top: 2px;
-  right: 1px;
-  min-width: 14px;
-  height: 14px;
-  padding: 0 3px;
-  border-radius: 7px;
-  font-size: 9px;
-  line-height: 14px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-  background: var(--status-progress);
-  color: var(--bg);
-}
-
 /* The rail's inner edge (ClaudeRail `.canvas-rail-seam`): pulled left, it opens
    the pane. 6px of hit area straddling the rail's border, and the app's seam
    hairline on hover — the explorer's reopen edge (.preview-side-reopen). */
@@ -473,7 +452,7 @@
    (schedule.css `.schedule-ring`), centred in the 28px seat; the seat's hover
    wash and `.active` are the sidebar's. */
 .canvas-rail-chats {
-  /* Scrolls before the Tasks door is pushed off. */
+  /* Scrolls on a short window rather than running off the rail. */
   flex: 0 1 auto;
 }
 .canvas-rail-chat {

@@ -2983,10 +2983,18 @@ export default function CanvasWorkspace({
             env={env}
             name={name}
             dir={dir}
-            activeSessionId={new URLSearchParams(window.location.search).get("session_id")}
+            node={node}
+            nodeReady={!node || !dir || nodeFileReady === nodeFile(dir, node)}
+            // The chat the pane would open on: a node's is the one its frame
+            // last sat on (`nodeSessions`, the node pane's boot source — the
+            // page URL's `session_id` is cleared on every node switch); the
+            // canvas chat's is the URL's.
+            activeSessionId={
+              node
+                ? nodeSessions.get(nodeSessionKey(env, name, node.file)) ?? null
+                : new URLSearchParams(window.location.search).get("session_id")
+            }
             onOpenChat={(href) => navigateUrl(href)}
-            tasksHref={canvasProjectPath(env, name, { tab: "tasks" })}
-            onTasks={() => navigateUrl(canvasProjectPath(env, name, { tab: "tasks" }))}
             onOpen={openFromRail}
             onPullStart={onRailPull}
           />

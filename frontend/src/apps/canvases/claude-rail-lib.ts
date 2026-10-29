@@ -7,6 +7,13 @@
 //     fresher than the listing — through the same `taskColumn` the Tasks page
 //     buckets by, so a Cancelled or Skipped row leaves the rail the moment it
 //     leaves the Board's live lanes.
+//   - THE SELECTED NODE'S CHATS ONLY, while a node is selected (owner,
+//     2026-10-29: "collapsed sidebar should behave exact same way as expanded
+//     sidebar"): the open pane shows the node's own chat then, and its Recent
+//     list holds that node's chats alone, so the rail narrows the same way. A
+//     node chat is one whose target is the node's file (`task.canvas.file`,
+//     routers/tasks.py `_task_canvas`); with no node selected the rail holds
+//     every chat on the canvas, as before.
 //   - THE LIST VIEW'S ORDER (owner, 2026-10-28: "the order/sort there should
 //     be similar to what we have in list view"): `sortForList`, the one
 //     ordering function every Tasks view reads (tasks-lib, design.md §5), over
@@ -32,20 +39,28 @@ export interface RailRow {
   row: Task | null;
 }
 
-/** Where the rail stands: the canvas, and its clone dir once it exists. */
+/** Where the rail stands: the canvas, its clone dir once it exists, and the
+ *  selected node's file (basename, as `task.canvas.file` names it) — null or
+ *  absent for the canvas as a whole. */
 export interface RailPlace {
   env: WorkbenchEnv;
   name: string;
   dir: string | null;
+  file?: string | null;
 }
 
 /** Is this pulse row one of the rail's: a chat (it has a session) on THIS
- *  canvas, and not archived. */
+ *  canvas — on the selected node, when one is — and not archived. */
 export function onRail(t: TaskPulseTask, place: RailPlace): boolean {
   if (!t.session_id) return false;
   if (taskColumn(t) === "archived") return false;
-  if (t.canvas && t.canvas.env === place.env && t.canvas.name === place.name) return true;
-  return place.dir !== null && t.project === place.dir;
+  const named = !!t.canvas && t.canvas.env === place.env && t.canvas.name === place.name;
+  if (!named && !(place.dir !== null && t.project === place.dir)) return false;
+  if (!place.file) return true;
+  // A row the server stamped names its node; one that predates `task.canvas`
+  // is matched by its target, the node's file under the clone.
+  if (named) return t.canvas!.file === place.file;
+  return place.dir !== null && t.target === `${place.dir.replace(/\/+$/, "")}/${place.file}`;
 }
 
 /**
