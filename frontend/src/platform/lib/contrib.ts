@@ -535,6 +535,10 @@ export interface Listing {
   doctor_clear: boolean;
   /** The app has edits not on GitHub yet — publishing needs them pushed. */
   unpushed: boolean;
+  /** A standing word under the sentence after a publish that went through
+   *  on a fallback (the fork of the index could not be synced: gh's token
+   *  has no `workflow` scope). Not an error. */
+  notice?: string | null;
 }
 
 /** GET /api/contrib/listing. `sentence` is the server's status line

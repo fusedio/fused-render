@@ -1664,7 +1664,12 @@ instead of Send again.
 `Listing = {listed: bool, slug, approved: {commit, at}, pr: {number, url,
 head_sha, state} | None, review: {status: "in-review"|"live"|"needs-
 confirmation"|"failed"|None, reasons: [str], new_powers: [{kind, detail}],
-whats_new} , update_available: bool, doctor_clear: bool, unpushed: bool}`.
+whats_new} , update_available: bool, doctor_clear: bool, unpushed: bool,
+notice: str|None}`. `notice` stands under the sentence after a publish whose
+push to the fork was refused for want of gh's `workflow` scope and went
+through on the merge-base fallback: the request is in, the fork's main stays
+behind the index's; it names `gh auth refresh -s workflow` (or github.com's
+Sync fork) and clears on the next publish that pushes straight through.
 `status` reads: the catalog row by repo (`market.row_for_repo`), the user's
 open PR in the index (`gh` search `repo:<index> is:pr is:open author:<login>
 head:fused-<slug>`), the `fused-review` comment block on it, and the
