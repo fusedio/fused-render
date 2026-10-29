@@ -307,16 +307,19 @@ export interface ContribAction {
   dialog?: string | null;
 }
 
+/** One Activity line — read-only (§16.16): nothing on it is a button. */
 export interface ActivityLine {
   id: string;
   /** Epoch seconds. */
   at: number;
-  /** "update", "switch" (a trust-level switch, Undo = the opposite
-   *  switch), "rollback" (a block rolled the copy back; never Undo), … */
+  /** "update", "switch" (a trust-level switch), "rollback" (a block rolled
+   *  the copy back), "proposal-accepted", … */
   kind: "update" | "switch" | "rollback" | (string & {});
   text: string;
-  /** Something moved away and can come back: offers Undo. */
-  undo: boolean;
+  /** §16.16: who took the step, when it was someone else. */
+  actor?: string;
+  /** §16.16: the github.com page it happened on (a pull request, the repo). */
+  link?: string;
 }
 
 export interface AppContrib {
@@ -488,8 +491,6 @@ export const runAction = (
     ...(opts.confirm ? { confirm: true } : {}),
     ...(opts.args ? { args: opts.args } : {}),
   });
-/** Undo / Restore one activity line (§16.9). */
-export const restoreActivity = (path: string, id: string) => post<ContribAnswer>("restore", { path, id });
 
 // ---- stage B: the author's Marketplace listing (§18.6) -----------------------
 

@@ -86,7 +86,7 @@ def sources() -> bool:
 def marketplace_ui() -> bool:
     """Whether a MARKETPLACE copy's UI is shown (docs/CONTRIB_LOOP.md §18.8,
     owner 2026-10-26): its Source panel, its buttons (Check for a new
-    release, Bring in, Undo, the switches, the block fixes) and its card
+    release, Bring in, the switches, the block fixes) and its card
     label. Always on since 2026-10-29 (it followed the Marketplace switch OR
     the contribution loop); kept as the one rule every site asks."""
     return _raw().get("marketplace") is True or sources()

@@ -348,6 +348,44 @@ test("a copy of someone else's app: It comes from / Your changes / Your proposal
   expect(out).not.toContain("Put it on GitHub");
 });
 
+test("Activity is read-only: names someone else's step, links to where it happened (§16.16)", async () => {
+  const withLines = {
+    ...COPY,
+    activity: [
+      {
+        id: "2",
+        at: 1_700_000_100,
+        kind: "proposal-accepted",
+        text: "sina accepted your proposal “Red”.",
+        actor: "sina",
+        link: "https://github.com/sina/sine/pull/4",
+      },
+      { id: "1", at: 1_700_000_000, kind: "update", text: "Got sina's latest." },
+    ],
+  } as AppContrib;
+  const t = await mount(
+    <CommunityTab
+      dir="/apps/sine"
+      slug="sine"
+      contrib={contribOf(withLines)}
+      ladder={ladderOf({ mine: false, kind: "github" })}
+      variant="page"
+    />,
+  );
+  const lines = t.root.findAll((n) => n.type === "li" && String(n.props.className).includes("contrib-activity-line"));
+  expect(lines.map(textOf)).toEqual([
+    expect.stringContaining("sina accepted your proposal “Red”."),
+    expect.stringContaining("Got sina's latest."),
+  ]);
+  expect(String(lines[0].props.className)).toContain("is-someone");
+  expect(String(lines[1].props.className)).not.toContain("is-someone");
+  const links = lines[0].findAll((n) => n.type === "a").map((n) => n.props.href);
+  expect(links).toEqual(["https://github.com/sina/sine/pull/4"]);
+  expect(lines[1].findAll((n) => n.type === "a")).toHaveLength(0);
+  // No line carries a button: nothing in Activity is an action.
+  expect(lines.flatMap((l) => l.findAll((n) => n.type === "button"))).toHaveLength(0);
+});
+
 test("kept mounted behind another tab, a copy's new event is not marked seen until the tab is shown", async () => {
   const withEvent = { ...COPY, copy: { ...COPY.copy, event: { kind: "merged-back", at: 1, who: "sina" } } } as AppContrib;
   const el = (hidden: boolean) => (

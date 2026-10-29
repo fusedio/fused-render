@@ -2,7 +2,7 @@
 (docs/CONTRIB_LOOP.md §17) against REAL git: Alice's repo on the FakeGitHub
 (real bare repos), Bob's GitHub-link copy cloned from it on its own branch
 `fused/mine` (`_contrib_gh_world`). Every move of §17.3 (ff, bring in,
-settle, discard/match, keep working, move aside, go back, restore,
+settle, discard/match, keep working, move aside, go back,
 push_to_main), the derived states of §17.2, the fetch row's mirror and its
 checked-out rule, the v2 → v3 migration, and the audit repros that still
 apply. Every step that moves something asserts I3 and I4 (`inv`).
@@ -172,7 +172,7 @@ def test_ff_on_following_says_what_came_in(w):
     assert w.head() == a
     inv(w)
     assert _texts(w)[-1] == "Got alice's latest: “Add notes”."
-    assert store.activity(w.app)[0]["undo"]             # every automatic move has Undo
+    assert not _activity(w)[-1]["backup"] and not _backups(w)   # a ff drops nothing: no backup
     _remote_untouched(w, a)
     assert (store.get(w.app) or {}).get("last_checked")
     assert store.get(w.app)["last_head"] == a           # adoption after a Finder move
@@ -184,55 +184,18 @@ def test_ff_on_following_says_what_came_in(w):
 
 
 @pytest.mark.parametrize("bob_has_changes", [False, True])
-def test_undo_of_an_automatic_move_holds(w, bob_has_changes):
-    """Acceptance step 2: Undo of an automatic ff / bring-in holds — opening
-    the app does not bring the same tip straight back (`kept-mine`); the
-    Bring in button does, and clears the hold. fused's own "Claude: "
-    commit prefix never reaches the line."""
+def test_an_automatic_move_is_named_and_read_only(w, bob_has_changes):
+    """An automatic ff / bring-in writes one read-only line (§16.16, no
+    backup); fused's own "Claude: " commit prefix never reaches it."""
     before = w.head()
     if bob_has_changes:
         before = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     tip = _alice(w, {"NOTES.md": "n\n"}, "Claude: Add notes")
     assert w.sync()["status"] == "synced" and _anc(w, tip, w.head())
     line = store.activity(w.app)[0]
-    assert line["undo"] and "Claude:" not in line["text"] and "“Add notes”" in line["text"]
-    assert engine.restore(w.app, line["id"])["ok"]
-    inv(w)
-    assert w.head() == before and store.get(w.app)["skip_tip"] == tip
-    git_upstream.note_app_opened(w.app, _runner=lambda fn: fn())
-    assert w.head() == before
-    assert w.sync()["why"] == "kept-mine" and w.head() == before
-    st = engine.status(w.app)
-    assert st["kept_mine"] and st["behind"] == 1
-    assert engine.bring_in(w.app)["ok"] and _anc(w, tip, w.head())
-    inv(w)
-    assert store.get(w.app)["skip_tip"] is None and not engine.status(w.app)["kept_mine"]
-
-
-def test_a_newer_tip_ends_the_undo_hold(w):
-    tip = _alice(w, {"NOTES.md": "n\n"}, "notes")
-    w.sync()
-    assert engine.restore(w.app, store.activity(w.app)[0]["id"])["ok"]
-    assert w.sync()["why"] == "kept-mine"
-    newer = _alice(w, {"MORE.md": "m\n"}, "more")
-    assert w.sync()["status"] == "synced" and w.head() == newer
-    inv(w)
-    assert store.get(w.app)["skip_tip"] is None and _anc(w, tip, w.head())
-
-
-def test_undo_of_a_settle_holds_too(w):
-    claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
-    n = _propose(w)
-    w.fake.merge(REPO, n, "squash")
-    w.sync()
-    line = _merged_lines(w)[0]
-    held = w.alice()
-    assert engine.restore(w.app, line["id"])["ok"]
-    undone = w.head()
-    assert undone != held and store.get(w.app)["skip_tip"] == held
-    assert w.sync()["why"] == "kept-mine" and w.head() == undone   # no settle again
-    inv(w)
-    assert engine.status(w.app)["kept_mine"] and len(_merged_lines(w)) == 1
+    assert "undo" not in line
+    assert "Claude:" not in line["text"] and "“Add notes”" in line["text"]
+    assert _anc(w, before, w.head()) and not _backups(w)
 
 
 def test_bring_in_merge_on_changes_keeps_bobs_commit_ids_r14(w):
@@ -252,7 +215,7 @@ def test_bring_in_merge_on_changes_keeps_bobs_commit_ids_r14(w):
         assert w.g("rev-list", "--parents", "-n", "1", "HEAD").split()[1:] == [before, tip]
         assert w.g("log", "-1", "--format=%s") == "Bring in alice's latest"
         _remote_untouched(w, tip)
-    assert len(_backups(w)) == 3 and all(e["backup"] for e in _activity(w))
+    assert not _backups(w) and not any(e["backup"] for e in _activity(w))
     assert _texts(w)[-1] == "Brought in alice's “notes 2”, your changes kept."
     assert read(w.app, "index.html") == PAGE.replace("blue", "red")
     st = engine.status(w.app)
@@ -330,13 +293,12 @@ def test_conflict_is_needs_merge_derived_and_match_resolves_it(w):
     assert out["ok"] and w.head() == tip
     inv(w)
     line = _activity(w)[-1]
-    assert line["text"] == "Switched to alice's version. Your version is saved."
-    assert replay.rev(w.app, line["backup"]) == mine
+    assert line["text"] == "Switched to alice's version." and not line["backup"]
     assert engine.status(w.app)["state"] == "following"
     _remote_untouched(w, tip)
 
 
-def test_blocked_then_move_aside_and_restore(w):
+def test_blocked_then_move_aside_says_where(w):
     edit(w.app, ".gitignore", "data.csv\n")
     git(w.app, "add", ".gitignore")
     git(w.app, "-c", "user.name=B", "-c", "user.email=b@x", "commit", "-qm", "ignore data")
@@ -357,9 +319,9 @@ def test_blocked_then_move_aside_and_restore(w):
     assert read(w.app, "data.csv") == "alice's numbers\n"
     assert _anc(w, tip, w.head()) and _anc(w, head, w.head())
     aside = next(e for e in _activity(w) if e["kind"] == "aside")
-    assert aside["aside"]["files"] == ["data.csv"]
-    assert engine.restore(w.app, aside["id"])["ok"]
-    assert read(w.app, "data.csv") == "bob's numbers\n"
+    # Activity is read-only (§16.16): the line says where the file went.
+    box = aside["text"].split("They're in ", 1)[1].rstrip(".")
+    assert read(box, "data.csv") == "bob's numbers\n"
     _remote_untouched(w, tip)
 
 
@@ -424,25 +386,21 @@ def test_github_kind_goes_to_the_engine_whatever_the_flags(w, monkeypatch):
 # ------------------------------------------------------------- the fixes
 
 
-def test_match_backs_up_everything_and_restore_undoes(w):
+def test_match_drops_everything_without_a_backup(w):
     mine = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     edit(w.app, "app.py", APP_LOUD)
     edit(w.app, "scratch.txt", "my notes\n")
     tip = _alice(w, {"index.html": PAGE.replace("blue", "green")}, "green")
     w.sync()
     out = engine.match(w.app)
-    assert out["ok"] and "Activity" in out["message"]
+    assert out["ok"] and out["message"] == "You're on alice's version."
     inv(w)
     assert w.head() == tip and not os.path.exists(os.path.join(w.app, "scratch.txt"))
     assert w.g("status", "--porcelain") == ""
     line = _activity(w)[-1]
-    assert line["kind"] == "match" and replay.rev(w.app, line["backup"]) == mine
-    assert engine.restore(w.app, line["id"])["ok"]
-    inv(w)
-    assert w.head() == mine
-    assert read(w.app, "app.py") == APP_LOUD
-    assert read(w.app, "scratch.txt") == "my notes\n"
-    assert "Brought back your version" in _texts(w)[-1]
+    # The person confirmed losing it (§16.16): no backup of mine.
+    assert line["kind"] == "match" and not line["backup"] and not _backups(w)
+    assert mine
 
 
 def test_discard_withdraws_only_when_asked(w):
@@ -492,18 +450,18 @@ def test_go_back_from_a_branch_claude_made_carries_its_commits(w):
     assert _anc(w, mine, w.head())
 
 
-def test_go_back_saves_a_diverged_version(w):
+def test_go_back_leaves_a_diverged_version(w):
     git(w.app, "checkout", "-q", "--detach")
     mine = claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     git(w.app, "checkout", "-q", HOME)
     other = claude_commit(w.app, {"app.py": APP_LOUD}, "on mine")
     git(w.app, "checkout", "-q", mine)
     out = engine.go_back_main(w.app)
-    assert out["ok"] and "saved" in out["message"]
+    assert out["ok"] and out["message"] == "Went back to your usual version of this app."
     inv(w)
     assert w.head() == other
     line = _activity(w)[-1]
-    assert replay.rev(w.app, line["backup"]) == mine
+    assert not line["backup"] and not _backups(w) and mine
 
 
 def test_checked_out_main_is_never_moved_and_go_back_carries_its_commits(w):
@@ -528,7 +486,7 @@ def test_checked_out_main_is_never_moved_and_go_back_carries_its_commits(w):
     assert _anc(w, on_main, w.head()) and _anc(w, tip, w.head())
 
 
-def test_author_rewind_pins_the_old_mirror(w):
+def test_author_rewind_moves_the_mirror_and_says_so(w):
     a1 = w.alice()
     a2 = _alice(w, {"NOTES.md": "n\n"}, "notes")
     w.sync()
@@ -537,20 +495,18 @@ def test_author_rewind_pins_the_old_mirror(w):
     assert w.sync()["status"] == "synced"
     inv(w)
     assert w.g("rev-parse", "refs/heads/main") == a1
-    pins = [b for b in _backups(w) if b.endswith("-rewound")]
-    assert len(pins) == 1 and replay.rev(w.app, pins[0]) == a2
+    assert not _backups(w)                                  # nothing pinned (§16.16)
     line = _activity(w)[-1]
-    assert line["kind"] == "rewound" and line["ref"] == pins[0] and not line["backup"]
+    assert line["kind"] == "rewound" and not line["backup"]
     assert line["text"] == ("alice went back to an earlier version of their app. Your copy "
                             "and your changes are untouched.")
-    assert pins[0] in store.referenced_backups(w.app)      # never pruned
     w.sync()
     assert len([e for e in _activity(w) if e["kind"] == "rewound"]) == 1
 
 
-def test_the_rewound_line_has_no_undo(w):
-    """Review P1 #3: Undo there would put the author's old version over
-    Bob's own branch."""
+def test_the_rewound_line_keeps_bobs_branch(w):
+    """Review P1 #3: an author rewind pins the mirror's old tip and never
+    moves Bob's own branch."""
     a1 = w.alice()
     _alice(w, {"NOTES.md": "n\n"}, "notes")
     w.sync()
@@ -558,15 +514,14 @@ def test_the_rewound_line_has_no_undo(w):
     _rewind(w, a1)
     w.sync()
     line = next(e for e in store.activity(w.app) if e["kind"] == "rewound")
-    assert line["undo"] is False
-    assert engine.restore(w.app, line["id"])["reason"] == "nothing"
+    assert "undo" not in line
     assert _anc(w, mine, w.head())
 
 
 def test_every_fetch_keeps_the_mirror_and_names_a_rewind(w):
     """Review P1 #4: a fetch outside the engine (Send/Update/remix's
     `proposals.tip_of(fetch=True)`) moves the mirror too, and a rewind it
-    absorbs still gets its line, naming the pin."""
+    absorbs still gets its line."""
     a1 = w.alice()
     _alice(w, {"NOTES.md": "n\n"}, "notes")
     w.sync()
@@ -576,7 +531,7 @@ def test_every_fetch_keeps_the_mirror_and_names_a_rewind(w):
         follow.fetch(w.app, fol)
     inv(w)
     lines = [e for e in _activity(w) if e["kind"] == "rewound"]
-    assert len(lines) == 1 and lines[0]["ref"] in store.referenced_backups(w.app)
+    assert len(lines) == 1
     w.sync()
     assert len([e for e in _activity(w) if e["kind"] == "rewound"]) == 1
 
@@ -587,7 +542,7 @@ def test_every_fetch_keeps_the_mirror_and_names_a_rewind(w):
 def test_settle_after_squash_landed_at_once(w):
     """§17.2 merged row: a two-commit proposal squash-merged; the next sync
     asks GitHub first, brings the squash in (same tree) and SETTLES —
-    fused/mine is the author's tip, the line says so once, with Undo."""
+    fused/mine is the author's tip, the line says so once."""
     claude_commit(w.app, {"index.html": PAGE.replace("blue", "red")}, "red")
     sent = claude_commit(w.app, {"index.html": PAGE.replace("blue", "crimson")}, "crimson")
     n = _propose(w)
@@ -601,16 +556,14 @@ def test_settle_after_squash_landed_at_once(w):
     lines = _merged_lines(w)
     assert [e["text"] for e in lines] == [
         "alice merged your change. You're on alice's latest version."]
-    assert _anc(w, sent, replay.rev(w.app, lines[0]["backup"]))   # Undo has his commits
+    assert sent and not lines[0]["backup"]                         # no backup (§16.16)
     assert not any(t.startswith("Brought in") for t in _texts(w))
     st = engine.status(w.app)
     assert st["state"] == "merged" and st["merged_in_tip"] and st["ahead"] == 0
-    assert not st["taken_back"] and not st["kept_mine"]
+    assert not st["taken_back"]
     landed = rec["proposal"]["landed_at"]
     assert w.sync()["status"] == "synced" and w.head() == w.alice()
     assert store.get(w.app)["proposal"]["landed_at"] == landed and len(_merged_lines(w)) == 1
-    assert engine.restore(w.app, lines[0]["id"])["ok"]
-    inv(w)
 
 
 def test_settle_after_a_merge_commit_accept_that_is_a_sibling(w):
@@ -630,7 +583,7 @@ def test_settle_after_a_merge_commit_accept_that_is_a_sibling(w):
     assert not _anc(w, x, m2) and not _anc(w, m2, x)  # never a fast-forward
     assert w.head() == m2 == w.alice()
     lines = _merged_lines(w)
-    assert len(lines) == 1 and _anc(w, x, replay.rev(w.app, lines[0]["backup"]))
+    assert len(lines) == 1 and not lines[0]["backup"]
     assert engine.status(w.app)["ahead"] == 0
 
 
@@ -684,7 +637,7 @@ def test_squash_accept_then_author_edits_the_proposed_lines(w, method):
     assert w.sync()["status"] == "synced"
     inv(w)
     assert w.head() == w.alice() and "ruby" in read(w.app, "index.html")
-    assert len(_merged_lines(w)) == 1 and _merged_lines(w)[0]["backup"]
+    assert len(_merged_lines(w)) == 1
     st = engine.status(w.app)
     assert not st["needs_merge"] and st["ahead"] == 0
 
@@ -789,7 +742,7 @@ def test_migration_from_a_v2_record_with_a_diverged_main(v2):
     rec = store.get(w.app)
     assert rec["v"] == 3
     raw = store.get_raw(store.key(w.app))
-    assert not {"root_commit", "needs_merge"} & set(raw)   # skip_tip: the undo hold
+    assert not {"root_commit", "needs_merge", "skip_tip"} & set(raw)
     assert not {"sent", "checked_tip", "returned_at"} & set(raw["proposal"])
     pins = [b for b in git(w.app, "for-each-ref", "--format=%(refname)",
                            replay.BACKUP_PREFIX).split() if "v3-move" in b]
@@ -831,7 +784,7 @@ def test_migration_of_the_2026_10_23_stuck_copy(v2):
     is Bob's bring-in merge M1 (parents: his sent commit B1, the author's
     v4), while GitHub's main is the accept merge M (parents v4, B1) — a
     sibling of M1, not a descendant — and the proposal is merged. The first
-    v3 sync migrates silently, settles onto M (M1 pinned with Undo), says
+    v3 sync migrates silently, settles onto M (M1 backed up), says
     "merged your change", and both invariants hold; the next sync is a
     noop."""
     w = v2
@@ -861,9 +814,7 @@ def test_migration_of_the_2026_10_23_stuck_copy(v2):
     rec = store.get(w.app)
     assert rec["v"] == 3 and rec["proposal"]["landed_at"]
     line = next(e for e in store.activity(w.app) if "merged your change" in e["text"])
-    assert line["undo"], line
-    raw = next(e for e in rec["activity"] if e["id"] == line["id"])
-    assert replay.rev(w.app, raw["backup"]) == m1
+    assert m1 and line
     lines = len(rec["activity"])
     w.sync()  # nothing more to do: no move, no second line, the stamp once
     assert git(w.app, "rev-parse", "HEAD") == m
@@ -973,25 +924,6 @@ def test_old_git_scratch_merge_gives_the_same_answers(w, monkeypatch):
     assert os.listdir(replay.work_dir()) == []
 
 
-def test_s3_restore_backs_up_an_ignored_file_it_overwrites(w):
-    """rev-sec S3: Undo of an older line restores a version that tracks a
-    path Bob now has as an IGNORED file — that file rides in the restore's
-    own backup, and undoing the restore brings it back."""
-    mine = claude_commit(w.app, {"settings.json": "old\n"}, "settings")
-    _alice(w, {".gitignore": "settings.json\n", "NOTES.md": "n\n"}, "ignore settings")
-    assert engine.match(w.app)["ok"]
-    line = _activity(w)[-1]
-    assert replay.rev(w.app, line["backup"]) == mine
-    edit(w.app, "settings.json", "BOB-PRECIOUS-TOKEN\n")
-    assert w.g("status", "--porcelain") == ""
-    assert engine.restore(w.app, line["id"])["ok"]
-    undo = _activity(w)[-1]
-    wip = replay.rev(w.app, undo["backup"] + "-wip")
-    assert wip and w.g("show", f"{wip}:settings.json") == "BOB-PRECIOUS-TOKEN"
-    assert engine.restore(w.app, undo["id"])["ok"]
-    assert read(w.app, "settings.json") == "BOB-PRECIOUS-TOKEN\n"
-
-
 def test_s3b_go_back_backs_up_an_ignored_file_it_overwrites(w):
     git(w.app, "checkout", "-q", "-b", "side")
     git(w.app, "rm", "-q", "--cached", "app.py")
@@ -1060,24 +992,6 @@ def test_refused_match_keeps_a_ready_merge(w, monkeypatch):
     assert dropped == []
 
 
-def test_partial_unaside_keeps_restore(w, tmp_path):
-    box = tmp_path / "aside"
-    box.mkdir()
-    (box / "a.txt").write_text("A\n")
-    (box / "b.txt").write_text("B\n")
-    lid = store.add_activity(w.app, "aside", "Moved aside", aside={"dir": str(box),
-                                                                   "files": ["a.txt", "b.txt"]})
-    edit(w.app, "b.txt", "someone else's\n")
-    out = engine.restore(w.app, lid)
-    assert out["ok"] and "b.txt is still set aside" in out["message"]
-    assert read(w.app, "a.txt") == "A\n" and read(w.app, "b.txt") == "someone else's\n"
-    assert store.activity_entry(w.app, lid)["restored_at"] is None
-    os.remove(os.path.join(w.app, "b.txt"))
-    assert engine.restore(w.app, lid)["ok"]
-    assert read(w.app, "b.txt") == "B\n"
-    assert store.activity_entry(w.app, lid)["restored_at"]
-
-
 # ------------------------------------------------------------- replay primitives
 
 
@@ -1108,7 +1022,7 @@ def test_settle_locked_needs_the_same_tree_only(w):
     same = claude_commit(w.app, {"index.html": PAGE.replace("blue", "green")}, "same green")
     edit(w.app, "app.py", APP_LOUD)               # an unsaved edit is kept (round 3b)
     ok, backup = replay.settle_locked(w.app)      # main from fused/mine's upstream
-    assert ok and w.head() == tip and replay.rev(w.app, backup) == same
+    assert ok and w.head() == tip and backup is None and same
     assert read(w.app, "app.py") == APP_LOUD
     inv(w)
     assert mine
@@ -1313,25 +1227,6 @@ def test_every_fetch_holds_the_slot(w, monkeypatch):
     finally:
         gu._check_slot.release()
     assert out == [(None, "busy")]
-
-
-def test_buttons_end_an_undo_hold(w):
-    """Review P2 #15: Keep working and Go back end the hold as every button
-    does."""
-    _alice(w, {"NOTES.md": "n\n"}, "notes")
-    w.sync()
-    assert engine.restore(w.app, store.activity(w.app)[0]["id"])["ok"]
-    assert store.get(w.app)["skip_tip"]
-    assert engine.keep_working(w.app)["ok"]
-    assert store.get(w.app)["skip_tip"] is None
-    assert engine.restore(w.app, next(e["id"] for e in store.activity(w.app)
-                                      if e["kind"] == "update"))["reason"] == "nothing"
-    _alice(w, {"MORE.md": "m\n"}, "more")
-    w.sync()
-    assert engine.restore(w.app, store.activity(w.app)[0]["id"])["ok"]
-    git(w.app, "checkout", "-q", "-b", "side")
-    assert engine.go_back_main(w.app)["ok"]
-    assert store.get(w.app)["skip_tip"] is None
 
 
 def test_one_guard_module():

@@ -190,10 +190,19 @@ def cached(root: str) -> dict | None:
 
 
 def _save(root: str, lo: dict) -> None:
-    from fused_render.contrib import store
+    """Store the read — and, in the same update, the timeline's lines for
+    what changed since the last one (§16.16: sent, turned down, needs your
+    OK, live, out)."""
+    from fused_render.contrib import store, timeline
 
     def put(rec):
+        old = rec.get("listing_own")
         rec["listing_own"] = lo
+        try:
+            for x in timeline.listing_lines(old if isinstance(old, dict) else None, lo):
+                store.append_activity(rec, x)
+        except Exception:  # noqa: BLE001 — never fails the read
+            logger.exception("listing: timeline lines failed for %s", root)
     store.update(root, put)
 
 

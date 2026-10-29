@@ -774,6 +774,7 @@ def record_install(app_dir, url, *, kind="github", market=None) -> dict | None:
                                (_local_default_branch(root) if root else None),
                                classified_by="marketplace", owner_checked=True)
         rec.update(store.market_fields(market))
+        _first_line(rec)
         store.put(app_dir, rec)
         _forget_kind(app_dir)
         _guard(app_dir, None, block=True, lookup=_sources_on())
@@ -789,10 +790,22 @@ def record_install(app_dir, url, *, kind="github", market=None) -> dict | None:
     rec = store.new_record(kind, repo=repo, branch=_local_default_branch(root) if root else None,
                            classified_by="install", owner_checked=checked)
     _with_push_rights(rec, ident)
+    _first_line(rec)
     store.put(app_dir, rec)
     _forget_kind(app_dir)
     _guard(app_dir, ident, block=True, lookup=False)
     return store.get(app_dir) or rec
+
+
+def _first_line(rec: dict) -> None:
+    """The install's Activity line (§16.16), on the record before it is put."""
+    try:
+        from fused_render.contrib import timeline
+        x = timeline.install_line(rec)
+        if x is not None:
+            store.append_activity(rec, x)
+    except Exception:  # noqa: BLE001
+        logger.exception("contrib: install line failed")
 
 
 def protect_fused_dir(app_dir, *, block=True) -> int:
@@ -1140,7 +1153,7 @@ def _migrate_pr_head(root, rec) -> None:
 
 
 #: The Activity line when an own copy's default branch had work of its own
-#: that fused/mine lacked (pinned, Undo). No git words (§0.1).
+#: that fused/mine lacked (pinned). No git words (§0.1).
 OWN_MOVE_TEXT = ("This is your app: your changes are back on its usual version. A version "
                  "that was there before is saved.")
 
@@ -1155,8 +1168,8 @@ def _unhome_locked(root, rec) -> None:
     When the default branch was AHEAD, those commits are the author's
     (`origin/<b>`'s): nothing is lost, and `_sync_plain` fast-forwards to
     them later under its own gates. Only commits found nowhere else (not in
-    `fused/mine`, not in `origin/<b>`) are pinned, with an Activity line
-    (Undo). Waits while a Claude turn is open. Slot held."""
+    `fused/mine`, not in `origin/<b>`) are pinned, with an Activity line.
+    Waits while a Claude turn is open. Slot held."""
     branch = rec.get("branch")
     if gu._current_branch(root) != HOME_BRANCH or not _valid_branch(branch):
         return

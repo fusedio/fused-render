@@ -26,9 +26,8 @@ HARD (`_hard`): the app stops (its background process, autostart off) and
 its tools leave the bots' registry (`bots/apptools.discover` skips a folder
 whose gate stands); the copy goes back to the newest release that is not
 blocked, does not contain a blocked commit, and is on the author's branch:
-the mirror moves there (pinned, no Undo), and the worktree too — a copy
-with nothing of Bob's (clean, not ahead) by `reset --hard` (HEAD pinned,
-untracked files kept); one with changes by a REVERT AS A MERGE: `merge-tree
+the mirror moves there, and the worktree too — a copy with nothing of
+Bob's (clean, not ahead) by `reset --hard` (untracked files kept); one with changes by a REVERT AS A MERGE: `merge-tree
 HEAD target --merge-base=<blocked>` takes back exactly what the blocked
 releases added and keeps Bob's own changes, landed as a two-parent commit
 (HEAD, target) "Rolled back to the reviewed version of <date>" by
@@ -37,8 +36,7 @@ the rollback is then a merge, so `ahead` (no merges) never counts it as
 Bob's, and the next release's merge base is the target, not the blocked
 commit. A conflict there is `blocked-release`: Merge with Claude (purpose
 `update`, theirs = target, base = blocked, `engine.merge_plan`), the app
-stays stopped. The Activity line (kind `rollback`) names the pin as `ref`:
-NO Undo — Undo would run the blocked code again (M1). Every release blocked
+stays stopped. The Activity line (kind `rollback`) is read-only (§16.16). Every release blocked
 → stopped, and the panel offers Remove this app.
 
 SOFT: `block.level = soft`; automatic moves pause; opening asks first: the
@@ -237,8 +235,7 @@ def contains_blocked(root, slug, sha, mirror=None, *, rec=None, levels=LEVELS) -
     """The entry of a blocked commit of `slug` that `sha` contains — `sha`
     itself, or a commit of `rev-list sha ^mirror` (one ancestry question per
     entry, never a walk of history) — unless rolled back in it. None when
-    there is none. "Undo never lands on a blocked commit" (M1) asks this of
-    a line's backup; the engine asks it of the approved commit."""
+    there is none. The engine asks it of the approved commit."""
     if not sha:
         return None
     for e in for_slug(slug):
@@ -255,23 +252,6 @@ def contains_blocked(root, slug, sha, mirror=None, *, rec=None, levels=LEVELS) -
             continue
         return e
     return None
-
-
-def backup_blocked(root, rec, backup_ref) -> bool:
-    """An Activity line's backup lands on a blocked commit (or one that
-    contains a blocked commit not in the mirror): its Undo is refused and
-    not offered. Only marketplace records are asked (M1 is about what a
-    marketplace copy runs)."""
-    if not isinstance(rec, dict) or rec.get("kind") != "marketplace":
-        return False
-    slug = _slug(rec)
-    if not for_slug(slug):
-        return False
-    sha = replay.rev(root, backup_ref) if backup_ref else None
-    if not sha:
-        return False
-    mirror = replay.rev(root, f"refs/heads/{rec.get('branch')}") if rec.get("branch") else None
-    return contains_blocked(root, slug, sha, mirror, rec=rec) is not None
 
 
 # ------------------------------------------------------------------- views
@@ -477,8 +457,7 @@ def _hard(root, rec, hits, all_hard, *, slug) -> dict:
                  rolled_back_to_at=target.get("at"))
     fol = follow.Follow("pinned", follow.github_url(rec["repo"]), rec["branch"],
                         commit=target["commit"])
-    m = follow.update_mirror(root, fol, why="blocked")
-    pin = m.get("backup")
+    follow.update_mirror(root, fol, why="blocked")
     # What the catalog row says now (the blocked release, or one built on
     # it): remembered so the next catalog read keeps the safe target.
     unsafe = ((rec.get("approved") or {}).get("commit")
@@ -521,7 +500,7 @@ def _hard(root, rec, hits, all_hard, *, slug) -> dict:
             text = _rollback_text(hit, target).replace(
                 "Rolled back to", "Your changes overlap it, so Merge with Claude can roll back to")
             if not old.get("conflict") or old.get("commit") != hit["commit"]:
-                store.add_activity(root, "rollback", text, ref=pin)
+                store.add_activity(root, "rollback", text)
             return {"level": "hard", "action": "conflict", "files": list(mt.get("files") or [])}
         from fused_render.contrib import market
 
@@ -530,18 +509,16 @@ def _hard(root, rec, hits, all_hard, *, slug) -> dict:
                                     "-p", head, "-p", target["commit"], "-m",
                                     "Rolled back to the reviewed version"
                                     + (f" of {when}" if when else "")))
-        refs = replay.backup_locked(root, head, why="blocked") if new else []
-        why = "failed" if not new or not refs else replay.land_ff_locked(root, new)[0]
+        why = replay.land_ff_locked(root, new)[0] if new else "failed"
         if why:
-            replay.unbackup_locked(root, refs)
             _set_block(root, block)
             return {"level": "hard", "action": "marked", "why": why}
-        backup = refs[0]
+        backup = None
     block["rolled_back_to"] = new
     _set_block(root, block)
     engine._status_cache.pop(root, None)
     engine._note_head(root, new)
-    store.add_activity(root, "rollback", _rollback_text(hit, target), ref=backup or pin)
+    store.add_activity(root, "rollback", _rollback_text(hit, target), backup=backup)
     return {"level": "hard", "action": "rolled-back", "target": target["commit"]}
 
 

@@ -433,7 +433,7 @@ def publish(app_dir, *, name: str, credit: str, step=None) -> dict:
         rec.update(kind="own", repo=full, branch=branch, classified_by="remix",
                    classified_at=now, owner_checked=True,
                    remix_of={"repo": original, "branch": branch},
-                   original_update=None, skip_tip=None)
+                   original_update=None)
 
     with replay.slot() as held:
         if not held:

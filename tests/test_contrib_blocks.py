@@ -82,7 +82,7 @@ def _rollback_lines(m):
     return [x for x in store.activity(m.app) if x["kind"] == "rollback"]
 
 
-def test_hard_block_on_a_clean_copy_rolls_back_without_undo(m):
+def test_hard_block_on_a_clean_copy_rolls_back(m):
     c2 = _release(m, {"index.html": RED}, "Red")
     _block(m, c2)
     assert blocks.gate(m.app) is not None             # before enforcement caught up
@@ -92,7 +92,9 @@ def test_hard_block_on_a_clean_copy_rolls_back_without_undo(m):
     inv(m)
     assert m.stopped == [m.app]
     line = _rollback_lines(m)[0]
-    assert not line["undo"]
+    assert "undo" not in line                          # read-only (§16.16)
+    raw = next(e for e in store.get(m.app)["activity"] if e["id"] == line["id"])
+    assert not raw["backup"] and "ref" not in raw     # nothing pinned: no guard applied
     assert line["text"].startswith("Fused blocked the version you were running: "
                                    "It read saved passwords. Rolled back to the release of Oct 1.")
     assert line["text"].endswith("Change your passwords.")
@@ -246,19 +248,6 @@ def test_update_mirror_refuses_a_pinned_target_that_contains_a_blocked_commit(m)
     res = follow.update_mirror(m.app, fol)
     assert res["moved"] is False and res["reason"] == follow.BLOCKED
     assert m.g("rev-parse", "refs/heads/main") == m.c1
-
-
-def test_undo_never_lands_on_a_blocked_commit(m):
-    c2 = _release(m, {"index.html": RED}, "Red", at="2026-10-10T10:00:00Z")
-    c3 = _release(m, {"NOTES.md": "n\n"}, "Notes", at="2026-10-12T10:00:00Z")
-    line = store.activity(m.app)[0]                  # c3's release: backup = c2
-    assert line["undo"]
-    _block(m, c2)
-    assert actions.activity(m.app)[0]["undo"] is False or not [
-        x for x in actions.activity(m.app) if x["id"] == line["id"] and x["undo"]]
-    refused = engine.restore(m.app, line["id"])
-    assert not refused["ok"] and refused["reason"] == "blocked"
-    assert m.head() == c3
 
 
 def test_soft_block_pauses_updates_and_asks_before_opening(m):
