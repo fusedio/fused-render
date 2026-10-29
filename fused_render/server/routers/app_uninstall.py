@@ -12,8 +12,9 @@
     and the app finds its data where it left it.
 * **linked** — a folder outside the workspace: we never delete what we did
   not create; the registry entry goes, nothing else.
-* **showcase** — a subfolder of the showcase clone: deleting it dirties the
-  repo and the next sync restores it, so the path is hidden (`app_hidden`).
+* **showcase** — a subfolder of a showcase clone left from before the
+  Community (2026-10-29): deleting it dirties that repo, so the path is
+  hidden (`app_hidden`).
 
 Every kind then archives the folder's tasks (the desk's own gesture, which
 cancels pending scheduled runs), prunes the stores (`app_state_remove`) and

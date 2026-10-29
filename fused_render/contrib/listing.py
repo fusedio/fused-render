@@ -131,12 +131,9 @@ _REVIEWS_REF = "refs/fused/reviews"
 
 
 def _enabled() -> bool:
-    """The Marketplace switch (§18.8) — the one gate for Publish."""
-    try:
-        from fused_render.shell import prefs
-        return bool(prefs.marketplace_enabled())
-    except Exception:  # noqa: BLE001 — an unreadable pref reads as off
-        return False
+    """The one gate for Publish (§18.8): always open since the Community
+    stopped being a switch (2026-10-29)."""
+    return True
 
 
 def index_repo() -> str:

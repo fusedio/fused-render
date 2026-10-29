@@ -22,7 +22,6 @@ import { getJson, postJson } from "@platform/lib/api";
 import type { SetupRecord } from "@platform/lib/github-setup";
 import { pauseWhileHidden } from "@platform/lib/pause-while-hidden";
 import { useContribFlags, type ContribFlags } from "@platform/lib/contrib-flags";
-import { useMarketplaceFeature } from "@platform/lib/marketplace-flag";
 
 export type { ContribFlags };
 
@@ -775,18 +774,13 @@ function anyFlag(f: ContribFlags): boolean {
   return f.sources || f.changes || f.inbox || f.loop || f.remix;
 }
 
-/** Whether `useAppContrib` reads at all: any contrib switch, the Marketplace
- *  switch, or `force` — a folder the caller already knows is a Marketplace
- *  copy. Such a copy's block is enforced whatever the switches say (§18.4),
- *  so the page must learn whether opening it asks first even with every
- *  switch off. */
-export function contribReadEnabled(
-  dir: string | null,
-  flags: ContribFlags | null,
-  market: boolean | null,
-  force: boolean,
-): boolean {
-  return !!dir && ((flags !== null && anyFlag(flags)) || market === true || force);
+/** Whether `useAppContrib` reads at all: any contrib phase (the loop is
+ *  always on, so once the flags have landed), or `force` — a folder the
+ *  caller already knows is a Marketplace copy. Such a copy's block is
+ *  enforced whatever the flags say (§18.4), so the page must learn whether
+ *  opening it asks first even before they land. */
+export function contribReadEnabled(dir: string | null, flags: ContribFlags | null, force: boolean): boolean {
+  return !!dir && ((flags !== null && anyFlag(flags)) || force);
 }
 
 export interface AppContribState {
@@ -811,15 +805,11 @@ export interface AppContribState {
  *  so the page with the feature off makes exactly the requests it always did. */
 export function useAppContrib(dir: string | null, opts: { marketplace?: boolean } = {}): AppContribState {
   const flags = useContribFlags();
-  // Stage B (§18.8): a Marketplace copy's panel, buttons and block strips
-  // answer with the Marketplace switch on too, Community flags or not; the
-  // server answers `{ok:false}` for any other copy then, and nothing shows.
   // `marketplace`: the caller knows this folder is a Marketplace copy (the
-  // ladder's `kind`, or the open gate's 423) — read whatever the switches
-  // say, since its block asks before it opens whatever they say.
-  const market = useMarketplaceFeature();
+  // ladder's `kind`, or the open gate's 423) — read before the flags land,
+  // since its block asks before it opens whatever they say.
   const force = !!opts.marketplace;
-  const enabled = contribReadEnabled(dir, flags, market, force);
+  const enabled = contribReadEnabled(dir, flags, force);
   const [data, setData] = useState<AppContrib | null>(null);
   const [settled, setSettled] = useState(false);
   const [pending, setPending] = useState(false);
@@ -912,7 +902,7 @@ export function useAppContrib(dir: string | null, opts: { marketplace?: boolean 
   const refresh = useCallback(() => (enabled ? read() : Promise.resolve()), [enabled, read]);
   // Not settled while the flags themselves are still being read: a
   // `?_tab=proposals` link must keep its tab through that window too.
-  const known = flags !== null || market === true || force;
+  const known = flags !== null || force;
   return {
     data: enabled ? data : null,
     settled: known && settled,

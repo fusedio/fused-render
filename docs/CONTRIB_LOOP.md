@@ -55,6 +55,19 @@ contributor by default.
 
 ## 1. Feature flags
 
+**Amended 2026-10-29: the loop and the Community are ALWAYS ON.** The
+`contrib_enabled` and `marketplace_enabled` prefs are gone from Preferences
+and no longer read: `prefs.contrib_enabled()` / `prefs.marketplace_enabled()`
+answer `True`, `contrib/flags.py`'s four loop phases and `marketplace_ui()`
+are always on, and the client's `contrib-flags.ts` derives the same (the
+`marketplace-flag.ts` module is deleted). Only Remix keeps a switch
+(`contrib_remix_enabled`, opt-in, default OFF). The sidebar's Community row
+carries a Beta tag. The startup clone of the old showcase repo
+(`fused_render/community.py`, `POST /api/community`, the Apps hub's Showcase
+sync and the first-app step's showcase row) is removed with it: the Community
+page is where a new user gets apps. The text below predates this and is left
+as written; read every "with the loop off" as a state that no longer exists.
+
 **Amended 2026-10-22: ONE loop switch + Remix.** The four loop switches (A1–A4)
 below were folded into a single pref, `contrib_enabled`
 (`fused_render/shell/prefs.py`, opt-in `is True` getter `contrib_enabled()`,
@@ -1386,6 +1399,20 @@ marketplace copy) with the sentence "Follow <who> directly? You'll get every
 change, unreviewed."; `marketplace.start_install` on a slug whose repo has a
 `github` copy returns `{"status": "confirm", "switch": "reviewed", "path",
 "who"}` and runs `switch_to_reviewed` when called again with `switch=True`.
+The other `confirm` is the user's SHOWCASE copy (`marketplace.showcase_copy`:
+`<workspace>/showcase/<slug>`, an app folder, not hidden): a plain install
+would find it by the page's app id and refuse, and its uninstall only hides
+it, so `start_install` answers `{"status": "confirm", "overwrite":
+"showcase", "path", "slug", "message"}`; called again with `overwrite=True`
+the job installs the reviewed clone under `app/` (`install_target(ignore=)`
+leaves the showcase folder out of the id walk), moves the showcase copy's
+`.fused/` into it (`appfile_git.install(carry_from=)`, merged file by file
+into a `.fused/` the clone tracks) and retires the showcase copy: hidden,
+settled as a move to the new copy (`app_fused_dir.settle_retired_origin`:
+bookmarks, recents, the desk, the pin and the Claude sessions follow it),
+whatever still names it archived and pruned as its uninstall would; files
+kept. A hidden showcase copy never holds an app's place:
+`appfile.workspace_app_with_id` skips hidden folders.
 
 **The install commit is vetted (M3).** `marketplace.install_app` clones
 the commit `market._pick(row, slug)` answers, whichever row it came from

@@ -555,7 +555,7 @@ def test_buttons_feed_the_own_panel(w):
                              "github": {"signed_in": True}}, b)
     assert [a["id"] for a in b.items] == ["publish-market", "check-listing"]
     assert b.items[0]["dialog"] == "listing"
-    # Signed out, the switch off, or a github copy: nothing, never a raise.
+    # Signed out, or a github copy: nothing, never a raise.
     for f in ({"kind": "own", "repo": REPO, "app_dir": w.app, "github": {}},
               {"kind": "github", "repo": REPO, "app_dir": w.app,
                "github": {"signed_in": True}},
@@ -563,11 +563,6 @@ def test_buttons_feed_the_own_panel(w):
         b = actions._Buttons()
         actions_listing.buttons(f, b)
         assert b.items == []
-    write_prefs(marketplace_enabled=False)
-    b = actions._Buttons()
-    actions_listing.buttons({"kind": "own", "repo": REPO, "app_dir": w.app,
-                             "github": {"signed_in": True}}, b)
-    assert b.items == []
 
 
 def test_routes_gate_offer_and_run_jobs(w):
@@ -605,9 +600,6 @@ def test_routes_gate_offer_and_run_jobs(w):
     assert done["status"] == "done" and done["result"]["listing"]["listed"]
     refused = r.api_contrib_listing_action(dict(body, action="remove-market"), x_fused="1")
     assert refused["reason"] == "confirm" and "keep their copy" in refused["message"]
-
-    write_prefs(marketplace_enabled=False)
-    assert r.api_contrib_listing(path=w.app)["reason"] == "disabled"
 
 
 def test_an_unread_pr_head_is_never_a_remove(w, monkeypatch):

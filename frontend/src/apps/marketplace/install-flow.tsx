@@ -24,9 +24,14 @@
 // release in under the user's own changes — nothing is overwritten, so no
 // sheet asks. An install whose answer is `confirm` (the user already follows
 // this author by GitHub link) asks "Switch to reviewed releases?" and posts
-// again with `switch: true` on the yes.
+// again with `switch: true` on the yes; one whose answer is the other
+// `confirm` (the user has this app as a subfolder of their showcase clone,
+// which would hold the install's place for good — a showcase copy is hidden
+// on uninstall, never deleted) asks "Overwrite your showcase copy?" and posts
+// again with `overwrite: true`: the reviewed copy lands under app/, the
+// showcase copy's data moves along and the showcase copy is hidden.
 import { useEffect, useRef, useState } from "react";
-import { BadgeCheck, Download, RefreshCw } from "lucide-react";
+import { BadgeCheck, Download, FolderInput, RefreshCw } from "lucide-react";
 import { Modal } from "@platform/ui/modal/Modal";
 import { AppIcon, StatusCallout, TrustList } from "@platform/ui/appstore";
 import {
@@ -39,6 +44,7 @@ import {
   releaseWaiting,
   type AppEntry,
   type InstallJob,
+  type InstallOpts,
 } from "@platform/lib/marketplace";
 import { notify } from "@platform/lib/notifications";
 import { formatSize } from "@platform/lib/format";
@@ -98,13 +104,14 @@ function writeAck(slug: string) {
 // -- The sheet request store ---------------------------------------------------
 
 /** What the one sheet is asking about: a first install of a Python app, an
- *  update (one app, or "Update all") that would replace local edits, or the
- *  switch of a GitHub-link copy to reviewed releases (the install's
- *  `confirm` answer). */
+ *  update (one app, or "Update all") that would replace local edits, the
+ *  switch of a GitHub-link copy to reviewed releases, or the overwrite of
+ *  the user's showcase copy (the install's two `confirm` answers). */
 type SheetRequest =
   | { kind: "install"; app: AppEntry }
   | { kind: "update"; apps: AppEntry[] }
-  | { kind: "switch"; app: AppEntry; who: string | null; path: string };
+  | { kind: "switch"; app: AppEntry; who: string | null; path: string }
+  | { kind: "overwrite"; app: AppEntry; path: string };
 
 let pending: SheetRequest | null = null;
 const listeners = new Set<(r: SheetRequest | null) => void>();
@@ -113,14 +120,30 @@ function setPending(req: SheetRequest | null) {
   for (const l of listeners) l(req);
 }
 
-function start(app: AppEntry, opts: { switch?: boolean } = {}) {
+/** Who hears that THIS window just started an install or update job for a
+ *  slug (the app page: an install asked for there opens the app when it
+ *  lands). Only a job that came back from the POST counts — a `confirm`
+ *  answer, a cancelled sheet or a job another window started are not
+ *  starts here. */
+const startListeners = new Set<(slug: string) => void>();
+export function onInstallStarted(cb: (slug: string) => void): () => void {
+  startListeners.add(cb);
+  return () => {
+    startListeners.delete(cb);
+  };
+}
+
+function start(app: AppEntry, opts: InstallOpts = {}) {
   // installApp records the failure on the job itself (the pill turns into
   // Retry with the reason), so nothing more to say here.
   installApp({ slug: app.slug, name: app.name }, opts)
     .then((r) => {
-      if ("status" in r && r.status === "confirm") {
-        setPending({ kind: "switch", app, who: r.who, path: r.path });
+      if (!("status" in r) || r.status !== "confirm") {
+        for (const l of startListeners) l(app.slug);
+        return;
       }
+      if ("overwrite" in r) setPending({ kind: "overwrite", app, path: r.path });
+      else setPending({ kind: "switch", app, who: r.who, path: r.path });
     })
     .catch(() => {});
 }
@@ -211,7 +234,59 @@ export function InstallSheetHost() {
   const close = () => setPending(null);
   if (req.kind === "update") return <UpdateSheet apps={req.apps} onClose={close} />;
   if (req.kind === "switch") return <SwitchSheet app={req.app} who={req.who} onClose={close} />;
+  if (req.kind === "overwrite") return <OverwriteSheet app={req.app} path={req.path} onClose={close} />;
   return <InstallSheet app={req.app} onClose={close} />;
+}
+
+/** "Overwrite your showcase copy?" — the install found this app as a
+ *  subfolder of the user's showcase clone, where it would otherwise hold
+ *  the app's place for good (uninstalling a showcase app only hides it).
+ *  The yes installs the reviewed copy under app/, moves the showcase copy's
+ *  data (`.fused/`) along with everything that names the folder (bookmarks,
+ *  recents, sessions), and hides the showcase copy; its files stay on disk,
+ *  since deleting them dirties the clone. */
+function OverwriteSheet({ app, path, onClose }: { app: AppEntry; path: string; onClose: () => void }) {
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  const confirm = () => {
+    onClose();
+    start(app, { overwrite: true });
+  };
+  return (
+    <Modal
+      title="Overwrite your showcase copy?"
+      onClose={onClose}
+      initialFocus={confirmRef}
+      width={460}
+      dialogClassName="mp-sheet"
+      footer={
+        <>
+          <button type="button" className="btn btn-secondary" onClick={onClose}>
+            Keep the showcase copy
+          </button>
+          <button ref={confirmRef} type="button" className="btn btn-primary mp-sheet-install" onClick={confirm}>
+            <FolderInput size={14} strokeWidth={2.2} aria-hidden="true" />
+            Overwrite
+          </button>
+        </>
+      }
+    >
+      <div className="mp-sheet-head">
+        <AppIcon src={app.icon_url} name={app.name} seed={app.slug} size={56} />
+        <div className="mp-sheet-id">
+          <div className="mp-sheet-name">{app.name}</div>
+          <div className="mp-sheet-meta">Already in your showcase folder</div>
+        </div>
+      </div>
+      <p className="mp-sheet-lede">
+        You have {app.name} at <code title={path}>{path.split("/").slice(-2).join("/")}</code>. The Community version
+        is installed in your apps folder instead, and the app&rsquo;s data moves there with it.
+      </p>
+      <p className="mp-sheet-lede is-quiet">
+        Your bookmarks, recents and sessions for it follow the app. The showcase copy leaves your apps; its files
+        stay in the showcase folder, so nothing is deleted.
+      </p>
+    </Modal>
+  );
 }
 
 /** "Switch to reviewed releases?" — the install found a copy of this app the

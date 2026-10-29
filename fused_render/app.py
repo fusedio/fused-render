@@ -284,11 +284,6 @@ def _start_server_thread(port: int) -> "tuple[uvicorn.Server, threading.Thread]"
     from fused_render.shell import onboarding as shell_onboarding
 
     shell_onboarding.seed_for_existing_users(start_dir)
-    # Showcase apps: clone/sync the community repo into <workspace>/showcase in
-    # the background — the apps grid lists it as an ordinary tag dir once done.
-    from fused_render import community
-
-    community.ensure_showcase_in_background()
     # One-time migrations over the workspace's app folders, one entry point:
     # the apps under <workspace>/local move to <workspace>/app (owner,
     # 2026-10-12; apps_root_migration docstring carries the rules) — the

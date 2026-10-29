@@ -416,9 +416,9 @@ def test_a_shrunk_list_never_lifts_a_block_whose_code_still_runs(m, how):
 
 
 def test_the_backend_is_asked_only_when_the_list_can_act(m, monkeypatch):
-    """Upgrade risk: with the Community off and no copy the list can act on,
-    neither startup nor the sweep calls the backend (on main, fused never
-    did with the store off)."""
+    """The Community is always on (2026-10-29), so the list is always worth
+    asking for: startup and the sweep call the backend with or without a
+    copy the list can act on."""
     from fused_render import marketplace
 
     asked = []
@@ -430,11 +430,8 @@ def test_the_backend_is_asked_only_when_the_list_can_act(m, monkeypatch):
     assert blocks.sweep_tick(now=10_000.0) and asked == [True]
     for k in list((store.all() or {})):
         store.drop(k)
-    assert store.all() == {} and not blocks.needed()
-    assert blocks.sweep_tick(now=20_000.0) is False and asked == [True]
-    from _contrib_gh_world import write_prefs
-    write_prefs(marketplace_enabled=True)   # switching the Community on is enough
-    assert blocks.needed()
+    assert store.all() == {} and blocks.needed()
+    assert blocks.sweep_tick(now=20_000.0) and asked == [True, True]
 
 
 def test_a_hard_block_never_moves_a_folder_whose_config_runs_commands(m):

@@ -699,10 +699,7 @@ def test_push_is_refused_in_plain_words_for_a_guarded_copy(ops, reader, wired, t
     # carries `no-push://fused` on origin: the view says so instead of Push
     # (`repo.push_blocked`), the op answers with the same plain sentence, not
     # git's "remote helper" error, and nothing reaches the remote. The
-    # sentence points at the app page only while that page has the panel
-    # (A1 on, §16.12).
-    import json
-
+    # sentence points at the app page, which always has the panel (§16.12).
     root, remote, _ = wired
     home = tmp_path / "apphome"
     home.mkdir()
@@ -711,9 +708,6 @@ def test_push_is_refused_in_plain_words_for_a_guarded_copy(ops, reader, wired, t
     assert reader.main(root)["repo"]["push_blocked"] is None
     git(root, "config", "remote.origin.url", "https://github.com/alice/x.git")
     git(root, "config", "remote.origin.pushurl", "no-push://fused")
-    assert reader.main(root)["repo"]["push_blocked"] == (
-        "This copy of alice/x has changes of its own, and they stay on this computer.")
-    (home / "prefs.json").write_text(json.dumps({"contrib_enabled": True}))
     blocked = reader.main(root)["repo"]["push_blocked"]
     assert blocked == "This app follows alice/x. Send your changes from its app page."
     write(root, "pkg/mod.py", "kept here\n")
@@ -2140,8 +2134,6 @@ def test_reset_is_refused_off_fused_mine(ops, wired, tmp_path, monkeypatch):
     """The author's branch is a mirror only the fetch writes (§17.1 I3), so
     reset there is refused in plain words (no branch name) naming the app
     page's real button (the author's login, as `actions.py` labels it)."""
-    import json
-
     root, _, _ = wired
     home = tmp_path / "apphome"
     home.mkdir()
@@ -2153,9 +2145,6 @@ def test_reset_is_refused_off_fused_mine(ops, wired, tmp_path, monkeypatch):
     got = ops.main(root, op="reset", sha=first)
     assert got["ok"] is False and got["reason"] == "follows-author", got
     assert "fused/mine" not in got["message"]  # §0.1: no branch names
-    assert "turn on Community apps" in got["message"]
-    (home / "prefs.json").write_text(json.dumps({"contrib_enabled": True}))
-    got = ops.main(root, op="reset", sha=first)
     assert got["message"] == (
         "This app follows alice/x. Only your own version can be reset here: go back to it "
         "first. To go back to their version exactly, use “Use alice's version” on "

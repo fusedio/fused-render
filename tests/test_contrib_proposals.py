@@ -405,9 +405,9 @@ def test_offline_identity_is_cached_for_gated_posts_but_not_for_strict(w):
 
 
 def test_disabled_wording(w):
+    """§17.9: Remix keeps its switch (the loop itself is always on)."""
     from fused_render.contrib import remix
-    write_prefs(contrib_enabled=False, contrib_remix_enabled=False)   # §17.9: the real switch
-    assert _p().preflight(w.app)["message"] == "This isn't turned on."
+    write_prefs(contrib_remix_enabled=False)
     assert remix.start_draft(w.app)["message"] == "This isn't turned on."
 
 

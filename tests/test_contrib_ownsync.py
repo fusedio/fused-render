@@ -95,14 +95,7 @@ def env(tmp_path, monkeypatch):
     ownsync.note_seen(e.lap)
     e.other = str(tmp_path / "other")
     git(str(tmp_path), "clone", "-q", e.remote, e.other)
-    _flags(e, sources=True)
     return e
-
-
-def _flags(e, **on):
-    # One switch since 2026-10-22: any phase named on turns the loop on.
-    with open(e.home / "prefs.json", "w") as f:
-        json.dump({"contrib_enabled": any(on.values())}, f)
 
 
 def _commit(repo, name, text, msg):
@@ -171,17 +164,6 @@ def _rewrite_elsewhere(e):
 
 
 # ---------------------------------------------------------------- the hook
-
-
-def test_flags_off_diverged_is_todays_failure(env):
-    """Loop off: resolve answers "not handled" and today's row is recorded,
-    tree untouched."""
-    _flags(env)
-    head = _diverge(env)
-    with replay.slot():
-        git_upstream._run(env.lap, "fetch", "--", "origin", "main")
-        assert ownsync.resolve(env.lap, action="test", push=True) is None
-    assert _head(env.lap) == head
 
 
 def test_diverged_puts_edits_on_top_and_publishes(env):
@@ -437,10 +419,7 @@ def test_B3_origin_pointed_at_a_new_repo_never_replaces_the_folder(env):
     assert readme in pins                                   # GitHub's old version kept
 
 
-@pytest.mark.parametrize("flags_on", [True, False])
-def test_B3b_repo_recreated_with_readme(env, flags_on):
-    if not flags_on:
-        _flags(env)
+def test_B3b_repo_recreated_with_readme(env):
     _commit(env.lap, "x.txt", "x\n", "published")
     git(env.lap, "push", "-q", "origin", "main")
     git(env.lap, "fetch", "-q", "origin")
@@ -449,10 +428,7 @@ def test_B3b_repo_recreated_with_readme(env, flags_on):
     head = _head(env.lap)
     res = _sync(env.lap)
     assert _head(env.lap) == head and os.path.exists(os.path.join(env.lap, "x.txt"))
-    if flags_on:
-        assert res["status"] == "skipped" and res["why"] == "github-changed"
-    else:
-        assert res["status"] == "failed" and res["failure"]["reason"] == "diverged"
+    assert res["status"] == "skipped" and res["why"] == "github-changed"
 
 
 def _no_reflog(e):

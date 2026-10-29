@@ -388,10 +388,10 @@ const ENTRIES = [
     keywords: "git push pull commit fast-forward sync github remote auto",
     renderOnly: true,
   },
-  // Owner 2026-10-27: three switches decide what Share offers — Public link
-  // (this row), Contributing (the GitHub card + install link) and Remix.
-  // The Share button itself is there when any of them is on
-  // (share-app-flag.ts `useAppShareOffered`); .fused file export always.
+  // Owner 2026-10-27: what Share offers — Public link (this row), the
+  // GitHub card + install link (always, since 2026-10-29) and Remix. The
+  // Share button is always there (share-app-flag.ts `useAppShareOffered`);
+  // .fused file export always.
   {
     id: "share-sheet",
     needs: "fused",
@@ -411,32 +411,9 @@ const ENTRIES = [
     keywords: "thumbnail preview iframe cards live hover image",
     renderOnly: true,
   },
-  // Community: the store of reviewed, open-source apps (one switch), the
-  // GitHub contribution loop (one switch), and Remix on its own
-  // (docs/CONTRIB_LOOP.md §1). Off by default.
-  {
-    id: "marketplace",
-    group: "apps",
-    section: "Community",
-    label: "Community",
-    description:
-      "The community store of reviewed, open-source apps: a Community row in the sidebar and its pages. Every release is reviewed by Fused before it reaches you, and you can list your own apps there.",
-    keywords: "marketplace store community apps gallery install reviewed releases publish open source",
-    renderOnly: true,
-    badge: "Beta",
-  },
-  {
-    id: "contrib",
-    group: "apps",
-    section: "Community",
-    label: "Contributing",
-    description:
-      "Cards say whether an app is yours or follows someone else's, and Share offers its GitHub install link. Your edits to someone else's app stay on top of theirs and you can propose them to the author; proposals to your apps show up on the app with a safety review to try, accept or decline. Once accepted, your copy goes back to following theirs and you're credited.",
-    keywords:
-      "community apps contribute follow author source origin propose proposals proposal edits pull request inbox review accept decline merged accepted credit contributors github install link",
-    renderOnly: true,
-    badge: "Beta",
-  },
+  // Community: Remix on its own switch (docs/CONTRIB_LOOP.md §1), off by
+  // default. The Community store and the contribution loop stopped being
+  // switches on 2026-10-29 — always on, no row.
   {
     id: "contrib-remix",
     group: "apps",

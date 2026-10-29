@@ -76,7 +76,6 @@ import ModelsDock from "@shell/ModelsDock";
 import SystemDock from "@shell/SystemDock";
 import UpdatesDock from "@shell/UpdatesDock";
 import { useMonitorFeature } from "@platform/lib/monitor-flag";
-import { useMarketplaceFeature } from "@platform/lib/marketplace-flag";
 import ActivityDock from "@shell/ActivityDock";
 import RepoUpdatesDock from "@shell/RepoUpdatesDock";
 import NativeAppSyncNotices from "@shell/NativeAppSyncNotices";
@@ -756,13 +755,11 @@ export default function App({ config }: { config: Config }) {
   // to "monitor" when the pref landed would flash a stat of ~/monitor first.
   const monitorOn = useMonitorFeature();
   const isMonitor = pathname === "/monitor";
-  // The Marketplace (apps/marketplace) — a PREFIX: Discover at the bare path,
-  // `/installed` and `/app/<slug>` beneath it. Behind its flag exactly like
-  // the Monitor above (marketplace-flag.ts, `marketplace_enabled`, default
-  // off), and a sentinel either way for the same no-flash reason. The bare
-  // path is spelled as its own equality literal: tests/test_shell_routes.py
-  // scrapes those literals from this file and GETs each from the server.
-  const marketplaceOn = useMarketplaceFeature();
+  // The Community (apps/marketplace) — a PREFIX: Discover at the bare path,
+  // `/installed` and `/app/<slug>` beneath it. Always on (it was behind the
+  // `marketplace_enabled` switch until 2026-10-29). The bare path is spelled
+  // as its own equality literal: tests/test_shell_routes.py scrapes those
+  // literals from this file and GETs each from the server.
   const isMarketplace = pathname === "/marketplace" || pathname.startsWith("/marketplace/");
   // The AI Models page (apps/ai_models/) — a PREFIX, not one path: its five
   // tabs are sub-paths beneath it (`/ai-models/local`, …), and the bare prefix
@@ -1037,44 +1034,17 @@ export default function App({ config }: { config: Config }) {
       </div>
     );
   } else if (isMarketplace) {
-    // The Marketplace — chrome-free, the page owns its sticky header and
+    // The Community — chrome-free, the page owns its sticky header and
     // scroll. Not keyed on `epoch`, like AI Models: Discover, Installed and an
     // app's page are paths, and a hop between them must keep the header and
-    // scroll container mounted. The page reads the path itself. Off, nothing is
-    // fetched: the notice is the whole page.
-    // `/marketplace/file` (a `.fused`'s install page by path) is NOT behind
-    // the flag: it is the install page, which every `.fused` open renders
-    // whatever the flag says (isFusedInstallView), reached by address here.
-    // Nor is an app's page reached from a listing link (`?via=link`, the
-    // `fused-render://open?marketplace=<slug>` deep link via InstallLinkPage,
-    // CONTRIB_LOOP.md §18.5): the `.fused` rule extended to listings — the
-    // page renders bare while the store is off.
-    const fileRoute =
-      pathname === "/marketplace/file" ||
-      (pathname.startsWith("/marketplace/app/") && new URLSearchParams(location.search).get("via") === "link");
+    // scroll container mounted. The page reads the path itself (including
+    // `/marketplace/file`, a `.fused`'s install page by path, and an app's
+    // page reached from a listing link, `?via=link`).
     main = (
       <div id="content">
-        {marketplaceOn === null && !fileRoute ? (
-          <RouteFallback />
-        ) : marketplaceOn || fileRoute ? (
-          <Suspense fallback={<RouteFallback />}>
-            <MarketplacePage />
-          </Suspense>
-        ) : (
-          <div className="monitor-off deploy-muted">
-            The Community is off. Turn it on under{" "}
-            <a
-              href="/preferences?s=marketplace"
-              onClick={(e) => {
-                e.preventDefault();
-                navigateUrl("/preferences?s=marketplace");
-              }}
-            >
-              Preferences › Sharing & sync
-            </a>
-            .
-          </div>
-        )}
+        <Suspense fallback={<RouteFallback />}>
+          <MarketplacePage />
+        </Suspense>
       </div>
     );
   } else if (isCanvases) {

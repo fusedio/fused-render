@@ -6,8 +6,8 @@ Every endpoint is a sync def on purpose: the catalog build, search, clones
 and the engine's moves block on HTTP and git, and FastAPI runs sync
 endpoints on its threadpool, keeping those waits off the event loop.
 
-NOT gated on the `marketplace_enabled` pref (shell/prefs.py): like every other
-feature flag here, the pref gates the shell's entry points, not the API.
+Never gated: the Community is always offered (2026-10-29; before that its
+pref gated the shell's entry points, not the API).
 
 The mutating routes (POST /install, /ack, /adopt, /check) carry the same
 X-Fused guard as every other write route (`X-Fused: 1`, else 403 — the D3
@@ -120,14 +120,16 @@ def api_marketplace_asset(slug: str, path: str, v: str | None = None):
 def api_marketplace_install(body: dict = Body(...), x_fused: str | None = Header(default=None)):
     """Start installing `slug` — or updating its marketplace copy, or (with
     `switch: true`) switching the user's GitHub-link copy of the same repo to
-    reviewed releases — in the background. Answers the job immediately (the
-    running one, if any: idempotent), or the `confirm` question (module
+    reviewed releases, or (with `overwrite: true`) installing over the
+    user's showcase copy — in the background. Answers the job immediately
+    (the running one, if any: idempotent), or a `confirm` question (module
     docstring). X-Fused-guarded."""
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
     try:
-        got = marketplace.start_install(str(body.get("slug") or ""), switch=body.get("switch") is True)
+        got = marketplace.start_install(str(body.get("slug") or ""), switch=body.get("switch") is True,
+                                        overwrite=body.get("overwrite") is True)
     except marketplace.InstallError as exc:
         return _error(str(exc))
     if got.get("status") == "confirm":

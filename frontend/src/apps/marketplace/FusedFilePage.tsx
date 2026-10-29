@@ -3,7 +3,7 @@
 // from the same @platform/ui/appstore blocks: hero with the primary action
 // and a "⋯" menu, the Information strip, the screenshot stage, Overview
 // (readme) / Files beside an Information list and the "Before you install"
-// card. The one install page, whatever `marketplace_enabled` says: the
+// card. The one install page: the
 // fusedapp template (fused_render/templates/fusedapp) only draws card peeks.
 //
 // Reached two ways, one component:

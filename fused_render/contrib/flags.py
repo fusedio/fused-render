@@ -1,11 +1,12 @@
 """The contribution loop's feature flags (docs/CONTRIB_LOOP.md §1).
 
-Two opt-in prefs (`shell/prefs.py`, default OFF): `contrib_enabled` is the
-loop (sources, changes, inbox, loop — until 2026-10-22 four separate phase
-switches with a prerequisite chain, folded into one), `contrib_remix_enabled`
-is Remix, effective only with the loop on. The five phase getters below are
-kept so every server branch keeps asking by phase, and `snapshot()` keeps its
-five-key shape because `/api/contrib/app` returns it as `flags`.
+The loop (sources, changes, inbox, loop) is ALWAYS ON since 2026-10-29 — it
+was one opt-in pref (`contrib_enabled`), and until 2026-10-22 four separate
+phase switches with a prerequisite chain. One opt-in pref remains
+(`shell/prefs.py`, default OFF): `contrib_remix_enabled` is Remix. The five
+phase getters below are kept so every server branch keeps asking by phase,
+and `snapshot()` keeps its five-key shape because `/api/contrib/app` returns
+it as `flags`.
 
 At most one `read_prefs()` per change of prefs.json (`_raw`'s stat memo): the
 flag is asked on every sync, card and Doctor row, and a `stat` is all an
@@ -50,16 +51,16 @@ def _raw() -> dict:
 
 
 def _switches(stored: dict) -> dict:
-    return {"enabled": stored.get("contrib_enabled") is True,
+    # `enabled` (the loop) and `marketplace` (the Community) are always on
+    # (2026-10-29); the keys stay so `effective` and `raw` keep their shape.
+    return {"enabled": True,
             "remix": stored.get("contrib_remix_enabled") is True,
-            # The Marketplace switch (`prefs.marketplace_enabled`), read in
-            # the same memo for `marketplace_ui` (§18.8).
-            "marketplace": stored.get("marketplace_enabled") is True}
+            "marketplace": True}
 
 
 def effective(raw: dict) -> dict:
     """`raw` (the stored switches) as the five phase values — the loop's
-    four phases are the one switch, remix needs it too; same rule
+    four phases are always on, remix is its own switch; same rule
     `contrib-flags.ts` applies client-side."""
     on = raw.get("enabled") is True
     return {"sources": on, "changes": on, "inbox": on, "loop": on,
@@ -86,10 +87,8 @@ def marketplace_ui() -> bool:
     """Whether a MARKETPLACE copy's UI is shown (docs/CONTRIB_LOOP.md §18.8,
     owner 2026-10-26): its Source panel, its buttons (Check for a new
     release, Bring in, Undo, the switches, the block fixes) and its card
-    label — with the Marketplace switch OR the contribution loop on. The
-    proposal and remix buttons on it still need their own phases, and a
-    GitHub-link copy's UI is the loop's alone (`sources`). One rule, every
-    site."""
+    label. Always on since 2026-10-29 (it followed the Marketplace switch OR
+    the contribution loop); kept as the one rule every site asks."""
     return _raw().get("marketplace") is True or sources()
 
 

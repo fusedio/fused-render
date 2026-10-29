@@ -259,25 +259,24 @@ def test_put_rejects_bad_monitor_enabled(tmp_path, monkeypatch):
     assert not (home / "prefs.json").exists()
 
 
-def test_marketplace_enabled_defaults_off_and_toggles(tmp_path, monkeypatch):
+def test_marketplace_and_contrib_are_always_on(tmp_path, monkeypatch):
+    """The Community and the contribution loop stopped being switches on
+    2026-10-29: the payload says on, a stored key is ignored, and a PUT of
+    the old keys is no known preference."""
     client, home = _client(tmp_path, monkeypatch)
-    # Default off: the Marketplace entry points are opt-in.
-    assert client.get("/api/prefs").json()["marketplace"]["enabled"] is False
-    body = client.put("/api/prefs", json={"marketplace_enabled": True}, headers=FUSED).json()
-    assert body["marketplace"]["enabled"] is True
-    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["marketplace_enabled"] is True
-    assert prefs_mod.marketplace_enabled() is True
-    assert client.put("/api/prefs", json={"marketplace_enabled": False}, headers=FUSED).json()[
-        "marketplace"
-    ]["enabled"] is False
-    # A hand-edited junk value reads as off; a non-boolean PUT is refused.
-    (home / "prefs.json").write_text(json.dumps({"marketplace_enabled": "yes"}), encoding="utf-8")
-    assert prefs_mod.marketplace_enabled() is False
-    assert (
-        client.put("/api/prefs", json={"marketplace_enabled": "yes"}, headers=FUSED).status_code
-        == 400
-    )
+    got = client.get("/api/prefs").json()
+    assert got["marketplace"]["enabled"] is True and got["contrib"]["enabled"] is True
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "prefs.json").write_text(json.dumps({"marketplace_enabled": False, "contrib_enabled": False}),
+                                     encoding="utf-8")
+    assert prefs_mod.marketplace_enabled() is True and prefs_mod.contrib_enabled() is True
+    assert client.get("/api/prefs").json()["marketplace"]["enabled"] is True
+    for key in ("marketplace_enabled", "contrib_enabled"):
+        assert client.put("/api/prefs", json={key: True}, headers=FUSED).status_code == 400
+    # Remix keeps its switch.
+    assert client.put("/api/prefs", json={"contrib_remix_enabled": True}, headers=FUSED).json()[
+        "contrib"
+    ]["remix"] is True
 
 
 def test_removed_always_on_prefs_are_not_in_the_payload(tmp_path, monkeypatch):

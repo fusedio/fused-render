@@ -49,7 +49,6 @@ import {
   type ListingPower,
 } from "@platform/lib/contrib";
 import { releaseDate } from "@platform/lib/format";
-import { useMarketplaceFeature } from "@platform/lib/marketplace-flag";
 import { notify } from "@platform/lib/notifications";
 import { navigateUrl } from "@platform/lib/router";
 import { Button } from "@platform/shadcn/ui/button";
@@ -152,18 +151,17 @@ export function useListing({
   dir: string;
   contrib: AppContribState;
   /** The caller already knows (the ladder's `flags.marketplace` + `mine`);
-   *  else the Marketplace switch and `/api/contrib/app`'s copy decide. */
+   *  else `/api/contrib/app`'s copy decides. */
   eligible?: boolean;
   /** Called after every action's re-read. */
   onChanged?: () => void;
 }): ListingKit | null {
-  const flag = useMarketplaceFeature();
   const c = contrib.data;
-  // The Marketplace switch alone decides; the route answers `{ok:false}` for
-  // a folder that is not an own app with a repo. When the Source panel has
-  // already said the copy is someone else's, the read is skipped.
+  // The route answers `{ok:false}` for a folder that is not an own app with
+  // a repo. When the Source panel has already said the copy is someone
+  // else's, the read is skipped.
   const notMine = !!c && (c.copy.kind !== "own" || !c.copy.repo);
-  const eligible = eligibleOverride ?? (flag === true && !notMine);
+  const eligible = eligibleOverride ?? !notMine;
   const [answer, setAnswer] = useState<ListingAnswer | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [job, setJob] = useState<{ id: string; since: number } | null>(null);

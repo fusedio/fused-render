@@ -38,7 +38,6 @@ import { railExtras } from "@shell/sidebar-rail-lib";
 import { displayName, isBot } from "@platform/lib/flavor";
 import { useTaskPeekEnabled } from "@shell/task-peek-flag";
 import { useCanvasesFeature } from "@apps/canvases/feature-flag";
-import { useMarketplaceFeature } from "@platform/lib/marketplace-flag";
 import { useAiRuntime } from "@apps/ai_models/lib/aiRuntime";
 import { isAiModelsPath, tabHref } from "@apps/ai_models/routes";
 import { isBotsPath } from "@apps/bots/routes";
@@ -533,11 +532,12 @@ export default function GlobalSidebar({ config }: { config: Config }) {
   const bot = isBot();
   const canvasesEnabled = useCanvasesFeature() && !bot;
   const canvasesInNav = canvasesEnabled;
-  // The Marketplace (apps/marketplace, default off — marketplace-flag.ts):
-  // a row after AI Models when the pref is on, never under Fused Bot. `null`
-  // (the read not landed yet) is off, so nothing flashes in. PREFIX match:
-  // /marketplace/app/<slug> and /marketplace/installed are the same store.
-  const marketplaceInNav = useMarketplaceFeature() === true && !bot;
+  // The Community (apps/marketplace): a row after AI Models, never under
+  // Fused Bot. Always on since 2026-10-29 (it was behind the
+  // `marketplace_enabled` switch while in preview — the Beta tag stays).
+  // PREFIX match: /marketplace/app/<slug> and /marketplace/installed are the
+  // same store.
+  const marketplaceInNav = !bot;
   const marketplaceActive = pathname === "/marketplace" || pathname.startsWith("/marketplace/");
   // THE FRONT DOOR: Home, or Bots under the Fused Bot flavor, which has no
   // Home page. Same answer as App.tsx's "/" redirect, so clicking the title
@@ -1077,6 +1077,11 @@ export default function GlobalSidebar({ config }: { config: Config }) {
               label="Community"
               icon={MARKETPLACE_ICON}
               active={marketplaceActive}
+              trailing={
+                // Beta while the store is still settling — the same chip as
+                // the AI Models row above.
+                <span className="sidebar-count-chip sidebar-beta-chip">Beta</span>
+              }
             />
           )}
         </div>
