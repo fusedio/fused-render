@@ -634,29 +634,38 @@ def _rebuild_in_background() -> None:
 _REBUILD_THREAD: threading.Thread | None = None
 
 
-def get_snapshot(refresh: bool = False, force: bool = False) -> tuple[dict | None, str | None]:
+def get_snapshot(refresh: bool = False, force: bool = False,
+                 background: bool = False) -> tuple[dict | None, str | None]:
     """The catalog snapshot for GET /catalog — the ONLY caller allowed to
-    rebuild a cache because it is old: past CACHE_TTL_S the cache is
-    answered at once and rebuilt in the background (`_rebuild_in_background`);
-    on ``refresh`` the build is waited for, when the last attempt is over
-    REFRESH_MIN_INTERVAL_S old (``force`` skips both age checks: a rebuild
-    now, for a caller that just learned the cache is wrong). While another
-    request is already rebuilding, the existing cache is answered at once
-    rather than waiting. Answers (snapshot, None) or, when
+    rebuild a cache because it is old: rebuilt when older than CACHE_TTL_S
+    (with ``background``, the page's read, the old cache is answered at
+    once and the rebuild runs on a thread — `_rebuild_in_background`), or
+    on ``refresh`` when the last attempt is over REFRESH_MIN_INTERVAL_S old
+    (``refresh`` waits for a build already in flight, bounded; ``force``
+    skips both age checks: a rebuild now, for a caller that just learned
+    the cache is wrong). A plain read that finds another request already
+    rebuilding answers the existing cache at once rather than waiting.
+    Answers (snapshot, None) or, when
     there is no cache at all and the build failed, (None, message). Never
     raises. Everything else uses `cached_snapshot()`."""
     cached = _read_cache()
     if not force and _fresh_enough(cached, refresh, time.time()):
         return cached, None
-    if cached is not None and not force and not refresh:
-        # Past the TTL with a cache in hand: answer it NOW and rebuild in
-        # the background — the page must never wait on the Community for a
-        # list it already has (the next read gets the new one). Only an
-        # explicit refresh (the Refresh button) waits for the build.
+    if cached is not None and background and not refresh:
+        # Past the TTL with a cache in hand (the page's read): answer it NOW
+        # and rebuild in the background — the page must never wait on the
+        # Community for a list it already has (the next read gets the new
+        # one). Every other caller keeps waiting for the build.
         _rebuild_in_background()
         return cached, None
     if cached is not None and not force:
-        if not _CATALOG_LOCK.acquire(blocking=False):
+        if refresh:
+            # The Refresh button: a build in flight (the background one, most
+            # likely) is exactly what it wants — wait for it, bounded, then
+            # the re-read below answers what it stored.
+            if not _CATALOG_LOCK.acquire(timeout=FORCE_WAIT_S):
+                return cached, None
+        elif not _CATALOG_LOCK.acquire(blocking=False):
             return cached, None  # a rebuild is in flight; it will land shortly
     elif cached is not None:
         # `force` is a caller that must not answer from the old cache (the
@@ -1197,7 +1206,7 @@ def _fresh(snap: dict | None) -> bool:
 
 def catalog(refresh: bool = False) -> dict:
     """GET /api/marketplace/catalog's payload."""
-    snap, error = get_snapshot(refresh=refresh)
+    snap, error = get_snapshot(refresh=refresh, background=True)
     if snap is None:
         return {"status": "error", "message": error, "apps": [], "categories": [],
                 "collections": [], "index": index_repo()}
