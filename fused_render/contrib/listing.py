@@ -77,6 +77,15 @@ INDEX_ENV = "FUSED_RENDER_MARKETPLACE_INDEX"
 INDEX_DEFAULT = "fusedio/fused-apps-index"
 #: The index's required check (§18.2 `review.yml`).
 REVIEW_CHECK = "review"
+#: Said on the listing (persisted, `notice`) after a publish whose push to
+#: the fork was refused for want of gh's `workflow` scope and went through
+#: on the fallback instead: the request is in, but the fork's main stays
+#: behind the index's until the token can bring workflow commits in.
+#: Cleared by the next publish whose push goes straight through.
+FORK_SYNC_NOTICE = ("Sent, but fused couldn't sync your fork of the index: run "
+                    "`gh auth refresh -s workflow` in a terminal to let fused sync your "
+                    "fork, or sync it on github.com.")
+
 #: The fork branch a slug's pull request comes from — one per slug, reused.
 BRANCH_PREFIX = "fused-"
 #: The comment that confirms new powers (§18.2 step 7), by the PR author.
@@ -197,6 +206,13 @@ def _save(root: str, lo: dict) -> None:
 
     def put(rec):
         old = rec.get("listing_own")
+        # The fork-sync notice (FORK_SYNC_NOTICE) is `_send`'s to set or
+        # clear: a read that does not carry the key keeps what is stored,
+        # decided here under the record's lock — a read that began before
+        # a publish cannot put the publish's word back the way it was.
+        if "notice" not in lo:
+            cur = old.get("notice") if isinstance(old, dict) else None
+            lo["notice"] = cur if isinstance(cur, str) else None
         rec["listing_own"] = lo
         try:
             for x in timeline.listing_lines(old if isinstance(old, dict) else None, lo):
@@ -832,6 +848,7 @@ def _read(root: str) -> dict:
                       "whats_new": (entry or {}).get("whats_new")} if row else None),
         "tip": tip, "branch": branch, "repo": repo, "checked_at": time.time(), "error": None,
         "doctor_clear": not blockers, "doctor_blockers": blockers,
+        # No `notice`: `_save` keeps the stored one (set or cleared by `_send`).
     }
 
 
@@ -843,6 +860,7 @@ def refresh(root: str) -> dict:
         lo = _read(root)
     except PlainError as exc:  # gh.GitHubError is one: offline, signed out, …
         lo = dict(cached(root) or {})
+        lo.pop("notice", None)  # `_save` keeps the stored one
         lo.update(error=exc.message, error_reason=getattr(exc, "reason", None),
                   checked_at=time.time())
     _save(root, lo)
@@ -889,6 +907,8 @@ def view(root: str, lo: dict | None = None) -> dict:
         "pushed_tip": pushed,
         "checked_at": lo.get("checked_at"),
         "error": lo.get("error"),
+        # A standing word under the sentence (FORK_SYNC_NOTICE); not an error.
+        "notice": lo.get("notice") if isinstance(lo.get("notice"), str) else None,
         "index": lo.get("index") or index_repo(),
         # The entry page's id (None without one) beside the row's slug: a
         # listing made under a name-based slug can't be updated (the index
@@ -1131,6 +1151,7 @@ def _send(root: str, me: dict, slug: str, row: dict | None, *, kind: str, title:
                              reason="not-listed")
         sha = _commit_row(scratch, base, slug, row, title, me)
         _step("push")
+        notice = None
         try:
             gh.push(scratch, sha, fork, branch, force=True)
         except gh.GitHubError as exc:
@@ -1149,6 +1170,11 @@ def _send(root: str, me: dict, slug: str, row: dict | None, *, kind: str, title:
                         "%s, the index commit the fork already has", fork, known[:12])
             sha = _commit_row(scratch, known, slug, row, title, me)
             gh.push(scratch, sha, fork, branch, force=True)
+            notice = FORK_SYNC_NOTICE  # the request is in; the fork stays behind
+    # Stored now, not with the pull request below: a PR call that fails
+    # must not leave the last publish's word standing (or missing).
+    lo = dict(lo, notice=notice)
+    _save(root, lo)
     _step("pr")
     pr = gh.find_open_pr(index, fork_owner, branch)
     if pr is not None:
@@ -1162,7 +1188,7 @@ def _send(root: str, me: dict, slug: str, row: dict | None, *, kind: str, title:
               pr=_pr_public(pr, kind=kind, pr_row=row),
               review={"status": "in-review", "reasons": [], "new_powers": [],
                       "whats_new": None, "sha": pr.get("head_sha"), "confirmed": False},
-              checked_at=time.time(), error=None, index=index)
+              checked_at=time.time(), error=None, index=index, notice=notice)
     _save(root, lo)
     return {"ok": True, "pr": {"number": pr.get("number"), "url": pr.get("url")},
             "listing": view(root, lo)}

@@ -1146,7 +1146,8 @@
   overflow-wrap: anywhere;
 }
 
-/* Listed under an older id than the app's own (oldIdNote): one plain line. */
+/* Listed under an older id than the app's own (oldIdNote), or the listing's
+   standing `notice` (fork could not be synced): one plain line. */
 .contrib-listing-moved {
   margin: 6px 0 0;
   font-size: 12.5px;

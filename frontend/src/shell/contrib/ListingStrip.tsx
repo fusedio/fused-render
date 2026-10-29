@@ -426,6 +426,7 @@ export function ListingNotes({ kit }: { kit: ListingKit }) {
   return (
     <>
       {moved && <p className="contrib-listing-moved">{moved}</p>}
+      {kit.listing?.notice && <p className="contrib-listing-moved">{kit.listing.notice}</p>}
       {kit.reasons.length > 0 && (
         <ul className="contrib-listing-reasons" aria-label="Why the review didn't pass">
           {kit.reasons.map((r, i) => (
