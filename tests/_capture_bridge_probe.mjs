@@ -137,7 +137,7 @@ const REPLIES = {
 const element = () => ({
   style: { setProperty() {} }, classList: { add() {}, remove() {} },
   setAttribute() {}, getAttribute: () => null, hasAttribute: () => false,
-  appendChild() {}, addEventListener() {}, remove() {},
+  appendChild() {}, insertBefore() {}, addEventListener() {}, remove() {},
 });
 
 const win = {
@@ -205,10 +205,10 @@ try {
   const run = new Function(
     "window", "document", "location", "navigator", "fetch", "history",
     "setTimeout", "clearTimeout", "MediaRecorder", "WebSocket", "MediaStream",
-    "matchMedia", src);
+    "matchMedia", "MutationObserver", src);
   run(win, win.document, win.location, win.navigator, win.fetch, win.history,
       setTimeout, clearTimeout, FakeRecorder, FakeSocket, win.MediaStream,
-      win.matchMedia);
+      win.matchMedia, class { observe() {} });
 
   const capture = win.fused.capture;
   out.keys = Object.keys(capture).sort();
