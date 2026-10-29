@@ -423,7 +423,6 @@ def test_folder_name_only_row_is_read_by_rows_of_doc_and_disk_reading(tmp_path):
     disk = cs.compact_state_from_disk(d)
     assert disk["order"] == ["Section_1", "udf_0"]
     assert disk["nodes"]["Section_1"]["udfName"] == "Section_1"
-    assert disk["missing"] == []
 
 
 def test_folder_name_only_row_survives_merge_and_gains_udf_name():
@@ -483,7 +482,6 @@ def test_folder_row_never_has_a_source_file_even_when_one_bears_its_exact_name(t
     disk = cs.compact_state_from_disk(d)
     assert "F" not in disk["files"] and "F" not in disk["bodies"]
     assert disk["files"] == {"a": "a.py"}
-    assert disk["missing"] == []
 
 
 def test_folder_never_takes_a_udf_file_that_matches_its_name_by_case(tmp_path):
@@ -497,13 +495,12 @@ def test_folder_never_takes_a_udf_file_that_matches_its_name_by_case(tmp_path):
     assert "India_H3_coverage" not in disk["files"]
     assert "India_H3_coverage" not in disk["bodies"]
     assert disk["files"] == {"india_h3_coverage": "india_h3_coverage.py"}
-    assert disk["missing"] == []
-    # A plain row (no type) whose name differs from a file only by case is
-    # missing, not that file's node.
+    # A plain row (no type) whose name differs from a file only by case has
+    # no file, so it is no node.
     (tmp_path / "two").mkdir()
     d2 = _clone(tmp_path / "two", [udf("Other_Node", 40.0, 60.0)], {"other_node.py": "B"})
     disk2 = cs.compact_state_from_disk(d2)
-    assert disk2["missing"] == ["Other_Node"]
+    assert disk2["nodes"] == {}
     assert cs._find_source(d2, "Other_Node") is None
     assert cs._find_source(d2, "other_node") == "other_node.py"
 

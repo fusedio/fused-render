@@ -148,9 +148,10 @@ _SYNTHETIC_DESCRIPTION = "Exported from Fused UDF Workbench"
 # converges on the folderName instead of flip-flopping.
 #
 # What the server tolerates, this tolerates. A `childUdfOrder` entry naming
-# no row is KEPT: the workbench's deleteNode leaves one behind and the server
-# round-trips it (its hydration ignores the name), and a name Claude lists
-# before writing the row binds once the row exists.
+# no row is KEPT here: the workbench's deleteNode leaves one behind and the
+# server round-trips it (its hydration ignores the name), and a name Claude
+# lists before writing the row binds once the row exists. `reconcile_rows`
+# prunes it at push and after a pull.
 # `normalise_folders` drops only what no reader can honour: a non-string
 # entry, an entry naming a folder, a name listed twice by one folder, and a
 # name two folders list (the preferred folder keeps it, local's nesting in a
@@ -1113,12 +1114,15 @@ def compact_state_from_disk(clone_dir: str, remote_ids: dict[str, str] | None = 
         {nodes: {name: row}, order: [name], edges: [[a, b]],
          canvas: {viewport, viewportBounds, comments}, files: {name: basename},
          ids: {name: server id} (from the remote manifest, when known),
-         bodies: {name: text} (every node's source file, all four kinds),
-         missing: [name]}     (rows whose source file is not on disk)
+         bodies: {name: text}}   (every node's source file, all four kinds)
 
-    Same shape as `compact_state` where the keys overlap, so it serves as
-    `prev` for `apply_snapshot` too. Raises FileNotFoundError when there is
-    no canvas.toml and whatever rtoml raises on a malformed one.
+    A row whose source file is not on disk is not a node (files define
+    nodes, rows only carry their layout): left out, with the edges naming
+    it, until `reconcile_rows` drops it from the toml. A folder row has no
+    file of its own and is always a node. Same shape as `compact_state`
+    where the keys overlap, so it serves as `prev` for `apply_snapshot` too.
+    Raises FileNotFoundError when there is no canvas.toml and whatever rtoml
+    raises on a malformed one.
     """
     doc = _load_toml(os.path.join(clone_dir, "canvas.toml"))
     canvas = doc.get("canvas") or {}
@@ -1127,35 +1131,118 @@ def compact_state_from_disk(clone_dir: str, remote_ids: dict[str, str] | None = 
     rows = canvas.get("nodes") if isinstance(canvas.get("nodes"), list) else []
     nodes: dict[str, dict] = {}
     order: list[str] = []
+    files: dict[str, str] = {}
+    bodies: dict[str, str] = {}
     for row in rows:
         name = row_name(row)
-        if name and name not in nodes:        # two rows, one name: the first
-            nodes[name] = _with_name(row, name)
-            order.append(name)
+        if not name or name in nodes:        # two rows, one name: the first
+            continue
+        if not is_folder(row):
+            file = _find_source(clone_dir, name)
+            if file is None:
+                continue
+            files[name] = file
+            data = _read_bytes(os.path.join(clone_dir, file))
+            bodies[name] = data.decode("utf-8", "replace") if data is not None else ""
+        nodes[name] = _with_name(row, name)
+        order.append(name)
     edges: list[list[str]] = []
     for e in canvas.get("edges") or []:
         if (isinstance(e, list) and len(e) == 2
-                and isinstance(e[0], str) and isinstance(e[1], str)):
+                and e[0] in nodes and e[1] in nodes):
             edges.append([e[0], e[1]])
     scalars = {k: canvas[k] for k in CANVAS_KEYS if k in canvas}
-    files: dict[str, str] = {}
-    bodies: dict[str, str] = {}
-    missing: list[str] = []
-    for name, row in nodes.items():
-        # A folder is a row with no source file of its own: never look one
-        # up for it, whatever happens to sit in the clone under its name.
-        if row.get("type") == "udf-folder":
-            continue
-        file = _find_source(clone_dir, name)
-        if file is None:
-            missing.append(name)
-            continue
-        files[name] = file
-        data = _read_bytes(os.path.join(clone_dir, file))
-        bodies[name] = data.decode("utf-8", "replace") if data is not None else ""
     ids = {n: remote_ids[n] for n in nodes if remote_ids and isinstance(remote_ids.get(n), str)}
     return {"nodes": nodes, "order": order, "edges": edges, "canvas": scalars,
-            "files": files, "ids": ids, "bodies": bodies, "missing": missing}
+            "files": files, "ids": ids, "bodies": bodies}
+
+
+_NODE_GAP_PX = 75
+_DEFAULT_NODE_SIZE = (700, 500)
+_DEFAULT_TEXTBOX_SIZE = (350, 250)
+
+
+def node_files(clone_dir: str, skip: Iterable[str] = ()) -> dict[str, str]:
+    skip = set(skip)
+    present = sorted(os.listdir(clone_dir))
+    out: dict[str, str] = {}
+    for suffix in _SOURCE_SUFFIXES:
+        for f in present:
+            stem = f[:-len(suffix)]
+            if (f.endswith(suffix) and stem and not f.startswith(".") and f not in skip
+                    and not (suffix == ".py" and stem.startswith("_"))
+                    and os.path.isfile(os.path.join(clone_dir, f))):
+                out.setdefault(stem, f)
+    return out
+
+
+def _is_num(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def reconcile_rows(clone_dir: str, *, pending: Iterable[str] = (), skip: Iterable[str] = (),
+                   backup: Callable[[str, bytes], None] | None = None) -> dict:
+    path = os.path.join(clone_dir, "canvas.toml")
+    doc = _load_toml(path)
+    before = copy.deepcopy(doc)
+    if "type" not in doc:
+        doc = {"type": "canvas", **doc}
+    canvas = doc.get("canvas", {})
+    if not isinstance(canvas, dict):
+        raise ValueError("canvas.toml: [canvas] is not a table")
+    files = node_files(clone_dir, skip)
+    pending = set(pending)
+    rows: list = []
+    names: set[str] = set()
+    dropped: list[str] = []
+    for row in canvas.get("nodes") if isinstance(canvas.get("nodes"), list) else []:
+        if is_folder(row):
+            rows.append(row)
+            continue
+        name = row_name(row)
+        if name is None or name in names or (name not in files and name not in pending):
+            dropped.append(str(name))
+            continue
+        names.add(name)
+        rows.append(row)
+    children = {c for r in rows if is_folder(r) and isinstance(r.get("childUdfOrder"), list)
+                for c in r["childUdfOrder"] if isinstance(c, str)}
+    tops = [(r.get("x") or 0, (r.get("y") or 0) + (r.get("height") or 0)) for r in rows
+            if is_folder(r) or row_name(r) not in children]
+    tops = [(x, bottom) for x, bottom in tops if _is_num(x) and _is_num(bottom)]
+    x = min((t[0] for t in tops), default=100)
+    y = max((t[1] for t in tops), default=100 - _NODE_GAP_PX)
+    added: list[str] = []
+    for stem in sorted(files):
+        if stem in names or stem in pending:
+            continue
+        width, height = (_DEFAULT_TEXTBOX_SIZE if files[stem].endswith(".md")
+                         else _DEFAULT_NODE_SIZE)
+        y += _NODE_GAP_PX
+        rows.append({"udfName": stem, "x": x, "y": y, "width": width, "height": height})
+        y += height
+        added.append(stem)
+    kept = {row_name(r) for r in rows} - {None}
+    for row in rows:
+        order = row.get("childUdfOrder") if is_folder(row) else None
+        if isinstance(order, list):
+            row["childUdfOrder"] = [c for c in order if isinstance(c, str) and c in kept]
+    edges = [e for e in canvas.get("edges") or []
+             if isinstance(e, list) and len(e) == 2
+             and all(isinstance(end, str) and end in kept for end in e)]
+    for key, value in (("nodes", rows), ("edges", edges)):
+        if canvas.get(key, []) != value:
+            canvas[key] = value
+    if canvas:
+        doc["canvas"] = canvas
+    changed = doc != before
+    if changed:
+        if backup is not None:
+            old = _read_bytes(path)
+            if old is not None:
+                backup("canvas.toml", old)
+        _write_atomic(path, _dump_toml(doc))
+    return {"changed": changed, "dropped": dropped, "added": added}
 
 
 def studio_patch_from_row(row: dict) -> dict:

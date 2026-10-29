@@ -1,8 +1,8 @@
 """Canvas sync, local loop: rows and source files (canvas_snapshot).
 
-A source file with no `[[canvas.nodes]]` row is left as it is: fused-render
-writes no rows (the server places a row-less UDF when it is pushed), and the
-disk reading the delta leg diffs (`compact_state_from_disk`) leaves it out.
+A source file with no `[[canvas.nodes]]` row is left out of the disk reading
+the delta leg diffs (`compact_state_from_disk`); `reconcile_rows` gives it a
+default row at push and after a pull.
 Every test name carries "compact", "snapshot" or "delta" so the targeted
 `-k` run picks it up.
 """
@@ -48,12 +48,35 @@ U4_ROW = {"udfName": "udf_4", "x": 10, "y": 360, "width": 700, "height": 500,
           "zIndex": 5, "title": "udf_4"}
 
 
-def test_compact_row_with_missing_file_still_missing(tmp_path):
-    d = _clone(tmp_path, [dict(A_ROW), {"udfName": "gone", "x": 0, "y": 0}],
-               {"a.py": "A", "orphan.py": "o"})
+def test_compact_and_reconcile_take_the_files_as_the_nodes(tmp_path):
+    folder = {"udfName": "F", "folderName": "F", "type": "udf-folder", "x": 1000, "y": 0,
+              "height": 800, "childUdfOrder": ["b", "gone", "nobody"]}
+    rows = [dict(A_ROW), {"udfName": "gone", "x": 0, "y": 0}, dict(A_ROW, x=99), folder,
+            {"udfName": "b", "x": 40, "y": 75, "height": 5000}]
+    d = _clone(tmp_path, rows, {"a.py": "A", "b.json": "{}", "orphan.py": "o", "note.md": "n",
+                                "_init.py": "", ".hidden.py": "", "CLAUDE.md": "",
+                                "late.py": ""},
+               edges=[["a", "gone"], ["a", "b"], ["F", "a"]])
     disk = cs.compact_state_from_disk(d)
-    assert disk["missing"] == ["gone"]
-    assert "orphan" not in disk["nodes"]
+    assert disk["order"] == ["a", "F", "b"] and disk["edges"] == [["a", "b"], ["F", "a"]]
+    doc = rtoml.loads(open(os.path.join(d, "canvas.toml")).read())
+    del doc["type"]
+    open(os.path.join(d, "canvas.toml"), "w").write(rtoml.dumps(doc))
+    old = open(os.path.join(d, "canvas.toml"), "rb").read()
+    trashed = []
+    res = cs.reconcile_rows(d, pending=["late"], skip=["CLAUDE.md"],
+                            backup=lambda rel, data: trashed.append((rel, data)))
+    assert res == {"changed": True, "dropped": ["gone", "a"], "added": ["note", "orphan"]}
+    assert trashed == [("canvas.toml", old)]
+    doc = rtoml.loads(open(os.path.join(d, "canvas.toml")).read())
+    assert doc["type"] == "canvas"
+    assert doc["canvas"]["edges"] == [["a", "b"], ["F", "a"]]
+    assert [(r["udfName"], r.get("x"), r.get("y"), r.get("width"), r.get("height"))
+            for r in doc["canvas"]["nodes"]] == [
+        ("a", 10, 20, 700, 300), ("F", 1000, 0, None, 800), ("b", 40, 75, None, 5000),
+        ("note", 10, 875, 350, 250), ("orphan", 10, 1200, 700, 500)]
+    assert doc["canvas"]["nodes"][1]["childUdfOrder"] == ["b"]
+    assert cs.reconcile_rows(d, pending=["late"], skip=["CLAUDE.md"])["changed"] is False
 
 
 def test_delta_retypes_a_node_whose_file_changed_kind(tmp_path):
@@ -184,7 +207,7 @@ def test_snapshot_rowless_file_the_embed_dropped_is_trashed(tmp_path):
 def test_compact_reading_leaves_rowless_files_out(tmp_path):
     d = _clone(tmp_path, [dict(A_ROW)], {"a.py": "A", "udf_4.py": "c", "z.py": "z"})
     disk = cs.compact_state_from_disk(d)
-    assert disk["order"] == ["a"] and set(disk["files"]) == {"a"} and disk["missing"] == []
+    assert disk["order"] == ["a"] and set(disk["files"]) == {"a"}
     assert not [o for o in cs.diff_views(disk, None) if o.get("name") in ("udf_4", "z")]
 
 

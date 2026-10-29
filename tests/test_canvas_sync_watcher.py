@@ -346,9 +346,9 @@ def test_state_reports_every_leg_state(harness, tmp_path, monkeypatch):
     m._rev_times[m.disk_rev] = time.time() - 0.4
     d2e = _state(harness)["legs"]["disk_to_embed"]
     assert d2e["state"] == "pending" and d2e["oldest_age_ms"] >= 400, d2e
-    m._last_cut_held = "source file missing for c"
+    m._last_cut_held = "canvas.toml unreadable: bad"
     d2e = _state(harness)["legs"]["disk_to_embed"]
-    assert d2e["state"] == "held" and d2e["reason"] == "source file missing for c", d2e
+    assert d2e["state"] == "held" and d2e["reason"] == "canvas.toml unreadable: bad", d2e
     m._delta_error = "the workbench refused the delta for rev 3"
     assert _state(harness)["legs"]["disk_to_embed"]["state"] == "error"
     m._delta_error = None
@@ -539,24 +539,44 @@ def _capture_push(monkeypatch, seen: dict):
     monkeypatch.setattr(canvases_mod._SyncManager, "_run_push_cli", capture)
 
 
-def test_a_row_less_file_is_pushed_as_it_is_and_no_row_is_written(
+def test_a_push_reconciles_the_clone_rows_with_its_files(
         harness, tmp_path, monkeypatch, fake_agent):
-    """A file Claude wrote without a [[canvas.nodes]] row ships as it is:
-    neither the cut nor the push writes a row, the server places the UDF."""
     _quiet_watcher(monkeypatch)
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
     seen: dict = {}
     _capture_push(monkeypatch, seen)
     _start(harness)
-    before = _toml(harness)
     (harness.root / "alpha" / "orphan_x.py").write_text("print(1)\n")
+    with_ghost = _toml(harness) + '\n[[canvas.nodes]]\nudfName = "ghost"\n'
+    (harness.root / "alpha" / "canvas.toml").write_text(with_ghost)
     cut = harness.client.get("/api/canvases/delta?env=unstable&name=alpha&full=1").json()
-    assert "ops" in cut and "orphan_x" not in json.dumps(cut["ops"]), cut
+    assert "ops" in cut and "ghost" not in json.dumps(cut["ops"]), cut
     res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     assert res.status_code == 200 and res.json()["ok"] is True, res.text
-    assert "orphan_x.py" in seen["files"][0]
-    assert 'udfName = "orphan_x"' not in seen["tomls"][0], seen["tomls"][0]
-    assert _toml(harness) == before
+    assert [r["udfName"] for r in _rows(str(harness.root / "alpha"))] == ["a", "b", "orphan_x"]
+    assert _toml(harness) == seen["tomls"][0]
+    trashed = list((harness.root / ".sync" / "trash" / "alpha").glob("*/canvas.toml"))
+    assert [t.read_text() for t in trashed] == [with_ghost]
+
+
+def test_a_push_waits_for_the_source_of_a_node_the_workbench_just_created(
+        harness, tmp_path, monkeypatch, fake_agent):
+    _quiet_watcher(monkeypatch)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    seen: dict = {}
+    _capture_push(monkeypatch, seen)
+    m = _start(harness)
+    _snapshot(harness, 1, {**FRESH_NODE_BODY, "body_channel": True,
+                           "udfs": [{"slug": "fresh", "file": "fresh.py"}]})
+    res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    assert res.status_code == 409 and res.json()["code"] == "busy", res.text
+    assert 'udfName = "fresh"' in _toml(harness)
+    with m._op_lock:
+        m.apply_body("fresh", "fresh.py", canvas_snapshot.body_hash(""), "print(2)\n")
+    res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    assert res.status_code == 200 and res.json()["ok"] is True, res.text
+    fresh = [r for r in _rows(str(harness.root / "alpha")) if r["udfName"] == "fresh"]
+    assert len(fresh) == 1 and fresh[0]["x"] == 900, fresh
 
 
 def test_a_manual_push_that_landed_is_ok_even_if_the_clone_moved_during_it(

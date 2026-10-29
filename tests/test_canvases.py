@@ -581,14 +581,16 @@ def test_create_canvas_seeds_the_starter_udf_on_the_server(harness, tmp_path):
     # client-only default.
     harness.log_in()
     shipped = tmp_path / "shipped"
-    harness.set_scenario({"push_capture": str(shipped)})
+    harness.set_scenario({"push_capture": str(shipped), "pull_files": {"canvas.toml": ""}})
     res = harness.client.post("/api/canvases/create", json={"env": ENV, "name": "gamma"}, headers=GUARD)
     assert res.status_code == 200
     pushes = [c for c in harness.calls() if c[1:3] == ["canvas", "push"]]
     assert len(pushes) == 1 and pushes[0][-2:] == ["--canvas", "gamma"]
     assert "@fused.udf" in (shipped / "udf.py").read_text(encoding="utf-8")
     doc = canvas_snapshot._load_toml(str(shipped / "canvas.toml"))
-    assert list(canvas_snapshot.rows_of_doc(doc)["nodes"]) == []
+    assert doc["type"] == "canvas"
+    assert doc["canvas"]["nodes"] == [
+        {"udfName": "udf", "x": 100, "y": 100, "width": 700, "height": 500}]
 
 
 def test_create_canvas_does_not_seed_a_canvas_that_has_nodes(harness):
@@ -1665,8 +1667,13 @@ class SyncShims:
         )
 
 
+def _canvas_toml(*names: str, quote: str = '"') -> str:
+    return f"type = {quote}canvas{quote}\n" + "".join(
+        f'\n[[canvas.nodes]]\nudfName = "{n}"\n' for n in names)
+
+
 _BASE_FILES = {
-    "canvas.toml": 'type = "canvas"\n',
+    "canvas.toml": _canvas_toml("a", "b"),
     "a.py": "a1\n",
     "b.py": "b1\n",
 }
@@ -1865,7 +1872,7 @@ def test_stamp_only_move_with_unchanged_files_is_adopted_not_stale(
     assert _wait_for(lambda: _manager()._remote is not None)
 
     with _staged():
-        shims.set_remote_files({**_BASE_FILES, "canvas.toml": "type = 'canvas'\n"})
+        shims.set_remote_files({**_BASE_FILES, "canvas.toml": _canvas_toml("a", "b", quote="'")})
         shims.set_manifest("t2")
 
     assert _wait_for(lambda: _manager()._remote["last_updated"] == "t2"), _watcher_diag()
@@ -1890,13 +1897,14 @@ def test_stamp_only_move_is_adopted_over_an_unpushed_layout_edit(
     assert _wait_for(lambda: _manager()._remote is not None)
     m = _manager()
     with m._op_lock:
-        m._base_toml = canvases_mod.canvas_snapshot.rows_of_doc({"type": "canvas"})
+        m._base_toml = canvases_mod.canvas_snapshot.rows_of_doc(
+            {"type": "canvas", "canvas": {"nodes": [{"udfName": "a"}, {"udfName": "b"}]}})
         m._save_base()
 
     with _staged():
         (harness.root / "alpha" / "canvas.toml").write_text(
             'type = "canvas"\n\n[canvas]\nx = 1\n', encoding="utf-8")
-        shims.set_remote_files({**_BASE_FILES, "canvas.toml": "type = 'canvas'\n"})
+        shims.set_remote_files({**_BASE_FILES, "canvas.toml": _canvas_toml("a", "b", quote="'")})
         shims.set_manifest("t2")
 
     assert _wait_for(lambda: _manager()._remote["last_updated"] == "t2"), _watcher_diag()
@@ -1990,9 +1998,7 @@ def test_sync_merge_applies_remote_delete_when_untouched(harness, tmp_path, monk
     assert body["ok"] is True, body
     assert _sync_view("alpha")["merge_seq"] >= 1
     assert not (harness.root / "alpha" / "b.py").exists()
-    assert (
-        harness.root / "alpha" / "canvas.toml"
-    ).read_text() == 'type = "canvas"\nlocal = true\n'
+    assert canvas_snapshot._load_toml(str(harness.root / "alpha" / "canvas.toml"))["local"] is True
     # The remote-deleted file's bytes landed in the trash safety net.
     trashed = list((harness.root / ".sync" / "trash" / "alpha").glob("*/b.py"))
     assert trashed and trashed[0].read_text() == "b1\n"
@@ -2039,7 +2045,8 @@ def test_sync_shim_poll_pulls_clean_via_cli_force(harness, tmp_path, monkeypatch
     harness.client.post("/api/canvases/sync/start", json={"env": ENV, "name": "alpha"}, headers=GUARD)
 
     assert _wait_for(lambda: getattr(_manager(), "_remote", None) is not None)
-    remote = {**_BASE_FILES, "remote_udf.py": "print('from workbench')\n"}
+    remote = {**_BASE_FILES, "remote_udf.py": "print('from workbench')\n",
+              "canvas.toml": _canvas_toml("a", "b", "remote_udf")}
     harness.set_scenario({"pull_files": remote})
     shims.set_remote_files(remote)  # a stamp move over unchanged files is adopted
     shims.set_manifest("t2")
