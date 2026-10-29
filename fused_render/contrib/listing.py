@@ -206,6 +206,13 @@ def _save(root: str, lo: dict) -> None:
 
     def put(rec):
         old = rec.get("listing_own")
+        # The fork-sync notice (FORK_SYNC_NOTICE) is `_send`'s to set or
+        # clear: a read that does not carry the key keeps what is stored,
+        # decided here under the record's lock — a read that began before
+        # a publish cannot put the publish's word back the way it was.
+        if "notice" not in lo:
+            cur = old.get("notice") if isinstance(old, dict) else None
+            lo["notice"] = cur if isinstance(cur, str) else None
         rec["listing_own"] = lo
         try:
             for x in timeline.listing_lines(old if isinstance(old, dict) else None, lo):
@@ -841,8 +848,7 @@ def _read(root: str) -> dict:
                       "whats_new": (entry or {}).get("whats_new")} if row else None),
         "tip": tip, "branch": branch, "repo": repo, "checked_at": time.time(), "error": None,
         "doctor_clear": not blockers, "doctor_blockers": blockers,
-        # Until a publish goes through without the fallback (`_send`).
-        "notice": old.get("notice") if isinstance(old.get("notice"), str) else None,
+        # No `notice`: `_save` keeps the stored one (set or cleared by `_send`).
     }
 
 
@@ -854,6 +860,7 @@ def refresh(root: str) -> dict:
         lo = _read(root)
     except PlainError as exc:  # gh.GitHubError is one: offline, signed out, …
         lo = dict(cached(root) or {})
+        lo.pop("notice", None)  # `_save` keeps the stored one
         lo.update(error=exc.message, error_reason=getattr(exc, "reason", None),
                   checked_at=time.time())
     _save(root, lo)
@@ -1164,6 +1171,10 @@ def _send(root: str, me: dict, slug: str, row: dict | None, *, kind: str, title:
             sha = _commit_row(scratch, known, slug, row, title, me)
             gh.push(scratch, sha, fork, branch, force=True)
             notice = FORK_SYNC_NOTICE  # the request is in; the fork stays behind
+    # Stored now, not with the pull request below: a PR call that fails
+    # must not leave the last publish's word standing (or missing).
+    lo = dict(lo, notice=notice)
+    _save(root, lo)
     _step("pr")
     pr = gh.find_open_pr(index, fork_owner, branch)
     if pr is not None:
