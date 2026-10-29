@@ -1,6 +1,7 @@
 """The unix-socket protocol between the Linux supervisor / server and the
 native-window host (window_host_ipc.py). Pure stdlib sockets, so it runs on
 every OS that has AF_UNIX (macOS included) — no GTK involved."""
+
 import errno
 import json
 import os
@@ -13,7 +14,6 @@ from pathlib import Path
 from unittest import mock
 
 import pytest
-
 from fused_render import window_host_ipc as ipc
 
 pytestmark = pytest.mark.skipif(
@@ -52,8 +52,9 @@ def server(sock_path):
 
 
 def test_socket_path_lives_in_the_runtime_dir():
-    assert ipc.socket_path(Path("/run/user/1000/fused-render")) == \
-        Path("/run/user/1000/fused-render/window-host.sock")
+    assert ipc.socket_path(Path("/run/user/1000/fused-render")) == Path(
+        "/run/user/1000/fused-render/window-host.sock"
+    )
 
 
 def test_round_trip(sock_path, server):
@@ -161,11 +162,19 @@ def test_a_slow_request_does_not_block_a_concurrent_ping(sock_path):
         thread.join(timeout=3)
 
 
-@pytest.mark.parametrize("code,transient", [
-    (errno.EMFILE, True), (errno.ENFILE, True), (errno.ECONNABORTED, True),
-    (errno.EINTR, True), (errno.ENOBUFS, True), (errno.ENOMEM, True),
-    (errno.EBADF, False), (errno.EINVAL, False),
-])
+@pytest.mark.parametrize(
+    "code,transient",
+    [
+        (errno.EMFILE, True),
+        (errno.ENFILE, True),
+        (errno.ECONNABORTED, True),
+        (errno.EINTR, True),
+        (errno.ENOBUFS, True),
+        (errno.ENOMEM, True),
+        (errno.EBADF, False),
+        (errno.EINVAL, False),
+    ],
+)
 def test_transient_accept_error_classification(code, transient):
     assert ipc._is_transient_accept_error(OSError(code, "x")) is transient
 
@@ -245,13 +254,18 @@ def test_on_listening_runs_before_any_dispatch(sock_path):
         return {"ok": True}
 
     def start_serving():
-        started["thread"] = ipc.serve(sock_path, handler, stop, on_listening=on_listening)
+        started["thread"] = ipc.serve(
+            sock_path, handler, stop, on_listening=on_listening
+        )
 
     starter = threading.Thread(target=start_serving)
     starter.start()
     try:
+        # Wait for `on_listening` to start, not for the socket file: the file
+        # appears at bind(), before listen(), and a connect in that gap is
+        # refused rather than queued.
         deadline = time.monotonic() + 3
-        while not os.path.exists(sock_path) and time.monotonic() < deadline:
+        while not order and time.monotonic() < deadline:
             time.sleep(0.01)
 
         client_result = {}
