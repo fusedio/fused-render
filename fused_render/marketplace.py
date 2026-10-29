@@ -1771,8 +1771,8 @@ def install_app(slug: str, row: dict, report=lambda **kw: None, *,
     install replaces (the confirm's yes) — never the install's target, its
     `.fused/` and `.venv` carried into the new copy, retired once the copy
     is in place. Answers `{action, path}`. Raises InstallError."""
+    from fused_render import app_id as app_identity
     from fused_render import app_listing, appfetch, appfile, appfile_git
-
     from fused_render.contrib import market as contrib_market
 
     row = resolve_install(slug, row)
@@ -1811,6 +1811,17 @@ def install_app(slug: str, row: dict, report=lambda **kw: None, *,
         # is what lands. The app id is the page's own, else the repo-derived
         # one `install` re-derives and checks.
         derived = appfile_git.expected_identity(clone_dir, url)[1]
+        if overwrite:
+            # The showcase folder was picked by NAME (`showcase_copy`); its
+            # page must declare the same app as the reviewed clone's before
+            # its data moves and it is hidden.
+            try:
+                have = app_listing.app_entry(overwrite)
+            except OSError:
+                have = None
+            if have is None or app_identity.app_id(have) != app_identity.app_id(entry):
+                raise InstallError(f"The showcase copy at {overwrite} is not this app, so this "
+                                   "install can't overwrite it.")
         fd, built = tempfile.mkstemp(dir=appfetch.downloads_dir(), prefix=".market-", suffix=".fused")
         os.close(fd)
         os.remove(built)
@@ -1825,12 +1836,13 @@ def install_app(slug: str, row: dict, report=lambda **kw: None, *,
         if target.get("found_by") == "git":
             raise InstallError(f"You already have a copy of this app at {target['path']}.")
         if target.get("found_by") and in_showcase(target["path"]):
-            # A showcase subfolder (found by the page's id, under a name the
-            # slug lookup in `plan_install` did not predict) can only be
-            # hidden, never removed: the overwrite is the way through.
+            # A showcase subfolder found by the page's id under a name the
+            # slug lookup in `plan_install` did not predict: the overwrite
+            # sheet never offered it. Uninstalling it (which only hides it)
+            # takes it out of the id walk, so the next install lands.
             raise InstallError(f"You have this app in your showcase folder at {target['path']}. "
-                               "Overwrite it to install the Community version in your apps "
-                               "folder, with its data.")
+                               "Uninstall it there (its files stay), then install it again and "
+                               "the Community version lands in your apps folder.")
         if target["state"] == appfile.STATE_REPLACE:
             # Another copy of this app (installed from a file) holds its
             # place; replacing it would send it to the Trash. Never on the
@@ -1869,7 +1881,10 @@ def install_app(slug: str, row: dict, report=lambda **kw: None, *,
         contrib_store.note_head(dest, commit)
     except Exception:  # noqa: BLE001 — the engine's first sync notes it too
         logger.warning("marketplace: could not note the head of %s", dest, exc_info=True)
-    if overwrite:
+    if overwrite and _record_kind(dest) == "marketplace":
+        # Only once the new copy is the recorded one: a record the store
+        # could not write (logged, never fatal) leaves the showcase copy in
+        # view rather than hiding the one copy the hub still lists.
         _retire_showcase_copy(overwrite)
     _reset_apps_snapshot()
     return {"action": "install", "path": dest}

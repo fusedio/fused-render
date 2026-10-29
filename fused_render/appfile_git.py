@@ -507,7 +507,12 @@ def _place(staged: str, dest: str, *, park_existing: bool, kind: str = "github",
     exactly as a parked copy's do. With both (the install also lands on a
     keep-data husk at ``dest``), the showcase copy's dirs win — they are the
     data the user was told moves along — and the parked copy supplies only
-    what it lacks; the rest of the parked copy retires as it always does."""
+    what it lacks; the rest of the parked copy retires as it always does.
+    A clone that TRACKS `.fused/` already has one at ``dest``: the carried
+    `.fused/` is then merged into it entry by entry (the clone's own entries
+    kept), so the data the user was promised still moves."""
+    from fused_render import app_fused_dir
+
     root = os.path.dirname(dest)
     os.makedirs(root, exist_ok=True)
     work = tempfile.mkdtemp(dir=root, prefix=f".install-{os.path.basename(dest)}-")
@@ -532,9 +537,19 @@ def _place(staged: str, dest: str, *, park_existing: bool, kind: str = "github",
             for name in _CARRY:
                 for src_root in (carry_from, parked):
                     src = os.path.join(src_root, name) if src_root else None
-                    if src and os.path.isdir(src) and not os.path.lexists(os.path.join(dest, name)):
-                        os.rename(src, os.path.join(dest, name))
-                        undo.append((os.path.join(dest, name), src))
+                    if not src or not os.path.isdir(src):
+                        continue
+                    into = os.path.join(dest, name)
+                    if not os.path.lexists(into):
+                        os.rename(src, into)
+                        undo.append((into, src))
+                        break
+                    if src_root == carry_from and name == app_fused_dir.DIRNAME and os.path.isdir(into):
+                        for entry in os.listdir(src):
+                            a, b = os.path.join(src, entry), os.path.join(into, entry)
+                            if not os.path.lexists(b):
+                                os.rename(a, b)
+                                undo.append((b, a))
                         break
         except BaseException:
             for a, b in reversed(undo):

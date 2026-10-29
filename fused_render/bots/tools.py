@@ -1495,7 +1495,12 @@ def _market_install(bot, d: dict) -> str:
     except _mkt.InstallError as e:
         return f"error: {e}"
     if job.get("status") == "confirm":
-        # The plan changed between the card and the call (the user installed by link meanwhile).
+        # The plan changed between the card and the call (the user installed by link, or cloned the
+        # showcase, meanwhile).
+        if job.get("overwrite") == "showcase":
+            return (f"error: the user already has this app in their showcase folder at {job.get('path')}; "
+                    "installing the Community version means overwriting that copy, which is the user's "
+                    "choice: the user decides that in the app (its Community page)")
         return ("error: the user follows this app by GitHub link; switching it to reviewed releases is the user's "
                 "choice: the user decides that in the app (its Community page)")
     deadline = time.monotonic() + MARKET_INSTALL_WAIT_S

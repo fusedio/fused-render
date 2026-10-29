@@ -1765,7 +1765,7 @@ def test_a_showcase_copy_under_another_name_is_refused_with_the_way_through(env,
     assert r.status_code == 200 and r.json()["status"] == "ok"
     job = _wait_job(client, "sine-starter")
     assert job["state"] == "error" and job["error"].startswith(f"You have this app in your showcase folder at {d}")
-    assert "Overwrite" in job["error"]
+    assert "Uninstall it there" in job["error"]
 
 
 def test_overwrite_onto_a_husk_still_carries_the_showcase_copys_data(env, gh_world):
@@ -1788,3 +1788,46 @@ def test_overwrite_onto_a_husk_still_carries_the_showcase_copys_data(env, gh_wor
         assert f.read() == "showcase"
     assert not os.path.exists(os.path.join(husk, ".fused", "old.txt"))
     assert not os.path.exists(os.path.join(d, ".fused"))
+
+
+def test_overwrite_refuses_a_showcase_folder_that_declares_another_app(env, gh_world):
+    """`showcase/<slug>` is picked by name; a folder there whose page carries
+    another app's id is not this app, and neither its data nor its place
+    is taken."""
+    from fused_render import app_hidden
+
+    d = _showcase_copy(env, "sine-starter", page=PAGE.replace("sine-starter-0a1b2c3d", "other-app-deadbeef"))
+    client = _client()
+    r = client.post("/api/marketplace/install", json={"slug": "sine-starter", "overwrite": True}, headers=FUSED)
+    assert r.status_code == 200 and r.json()["status"] == "ok", r.json()
+    job = _wait_job(client, "sine-starter")
+    assert job["state"] == "error" and job["error"].startswith(f"The showcase copy at {d} is not this app"), job
+    assert os.path.isfile(os.path.join(d, ".fused", "data.txt"))
+    assert app_hidden.hidden_paths() == set()
+    assert not os.path.exists(_app_dir(env, "sine-starter"))
+
+
+def test_overwrite_merges_the_data_into_a_fused_dir_the_clone_tracks(env, gh_world):
+    """An author who commits `.fused/` ships one in the clone: the showcase
+    copy's entries join it (the clone's own kept) rather than staying behind
+    in the hidden folder."""
+    tracked = gh_world.fake.commit(gh_world.full, "main", {".fused/shipped.txt": "theirs\n", ".fused/data.txt": "theirs\n"},
+                                   "Ship .fused", author="alice")
+    env["api"].set_files("sine-starter", {"index.html": PAGE, "app.py": "A = 1\n", ".fused/shipped.txt": "theirs\n",
+                                          ".fused/data.txt": "theirs\n"}, "1.1.0", commit=tracked, repo=gh_world.full)
+    d = _showcase_copy(env, "sine-starter", data="mine")
+    _write(d, ".fused/only-here.txt", "mine too")
+    client = _client()
+    r = client.post("/api/marketplace/install", json={"slug": "sine-starter", "overwrite": True}, headers=FUSED)
+    assert r.status_code == 200 and r.json()["status"] == "ok", r.json()
+    job = _wait_job(client, "sine-starter")
+    assert job["state"] == "done", job
+    dest = _app_dir(env, "sine-starter")
+    with open(os.path.join(dest, ".fused", "only-here.txt")) as f:
+        assert f.read() == "mine too"
+    with open(os.path.join(dest, ".fused", "shipped.txt")) as f:
+        assert f.read() == "theirs\n"
+    # The clone's own entry under a name both had is kept; the showcase one stays where it was.
+    with open(os.path.join(dest, ".fused", "data.txt")) as f:
+        assert f.read() == "theirs\n"
+    assert os.path.isfile(os.path.join(d, ".fused", "data.txt"))
