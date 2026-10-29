@@ -626,8 +626,14 @@ def _rebuild_in_background() -> None:
         finally:
             _CATALOG_LOCK.release()
 
-    _REBUILD_THREAD = threading.Thread(target=run, name="marketplace-catalog-rebuild", daemon=True)
-    _REBUILD_THREAD.start()
+    thread = threading.Thread(target=run, name="marketplace-catalog-rebuild", daemon=True)
+    try:
+        thread.start()
+    except RuntimeError:  # no thread to be had: no worker would release the lock
+        _CATALOG_LOCK.release()
+        logger.warning("marketplace: could not start the catalog rebuild thread", exc_info=True)
+        return  # the cache is answered anyway; the next read tries again
+    _REBUILD_THREAD = thread
 
 
 #: The last background rebuild (tests join it; nothing else waits on it).
