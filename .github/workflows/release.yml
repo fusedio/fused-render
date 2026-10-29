@@ -143,6 +143,7 @@ jobs:
       dmg_sha256: ${{ steps.artifacts.outputs.dmg_sha256 }}
       dmg_url: ${{ steps.artifacts.outputs.dmg_url }}
       wheel_url: ${{ steps.artifacts.outputs.wheel_url }}
+      pkg_url: ${{ steps.artifacts.outputs.pkg_url }}
     permissions:
       contents: write # needed to attach the DMG to a GitHub Release
       id-token: write # needed to assume the AWS role via OIDC
@@ -196,6 +197,8 @@ jobs:
         env:
           CODESIGN_CERT_P12: ${{ secrets.CODESIGN_CERT_P12 }}
           CODESIGN_CERT_PASSWORD: ${{ secrets.CODESIGN_CERT_PASSWORD }}
+          INSTALLER_CERT_P12: ${{ secrets.INSTALLER_CERT_P12 }}
+          INSTALLER_CERT_PASSWORD: ${{ secrets.INSTALLER_CERT_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
           NOTARY_API_KEY_P8: ${{ secrets.NOTARY_API_KEY_P8 }}
           NOTARY_API_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
@@ -210,6 +213,17 @@ jobs:
           security set-keychain-settings -lut 14400 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$CODESIGN_CERT_PASSWORD" -T /usr/bin/codesign
+          # The installer certificate (Developer ID INSTALLER, a different type
+          # from the application one above) signs the .pkg network installer
+          # (scripts/build_pkg.sh). Optional: without it the pkg is built
+          # unsigned and not published, and the release is unaffected.
+          if [[ -n "${INSTALLER_CERT_P12:-}" ]]; then
+            INSTALLER_CERT_PATH="$RUNNER_TEMP/installer-cert.p12"
+            echo "$INSTALLER_CERT_P12" | base64 --decode -o "$INSTALLER_CERT_PATH"
+            security import "$INSTALLER_CERT_PATH" -k "$KEYCHAIN_PATH" -P "$INSTALLER_CERT_PASSWORD" \
+              -T /usr/bin/productbuild -T /usr/bin/productsign
+            rm -f "$INSTALLER_CERT_PATH"
+          fi
           # Without this, codesign blocks on a keychain-access UI prompt that
           # can never be answered in CI (see docs/signing.md's CI notes).
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
@@ -234,6 +248,22 @@ jobs:
           FUSED_RENDER_CODESIGN_KEYCHAIN: ${{ env.KEYCHAIN_PATH }}
           FUSED_RENDER_NOTARY_PROFILE: ${{ env.NOTARY_PROFILE }}
         run: bash scripts/build_dmg.sh
+
+      # The network installer: a tiny .pkg whose postinstall downloads the DMG
+      # built above from the CDN and verifies the sha256 pinned here. Built
+      # from the FINAL (stapled) DMG bytes, under the URL the upload step
+      # below publishes them at, and while the ephemeral keychain still holds
+      # the installer identity + notary profile. Signed only when the
+      # INSTALLER_* secrets exist; the upload step publishes it only then.
+      - name: Build, sign, notarize, staple installer pkg
+        env:
+          FUSED_RENDER_INSTALLER_IDENTITY: ${{ secrets.INSTALLER_IDENTITY }}
+          FUSED_RENDER_CODESIGN_KEYCHAIN: ${{ env.KEYCHAIN_PATH }}
+          FUSED_RENDER_NOTARY_PROFILE: ${{ env.NOTARY_PROFILE }}
+        run: |
+          set -euo pipefail
+          DMG_PATH="$(ls dist/*.dmg)"
+          bash scripts/build_pkg.sh "$DMG_PATH" "https://${CDN_DOMAIN}/fused-render-dmgs/$(basename "$DMG_PATH")"
 
       - name: Delete ephemeral keychain
         if: always()
@@ -269,6 +299,22 @@ jobs:
           echo "WHL_URL=https://${CDN_DOMAIN}/fused-render-wheels/$(basename "$WHL_PATH")" >> "$GITHUB_ENV"
           aws s3 cp "$DMG_PATH" "s3://${S3_BUCKET}/fused-render-dmgs/$(basename "$DMG_PATH")"
           aws s3 cp "$WHL_PATH" "s3://${S3_BUCKET}/fused-render-wheels/$(basename "$WHL_PATH")"
+          # The installer pkg, only when signed: Gatekeeper refuses an
+          # unsigned pkg from the internet, so an unsigned one (no INSTALLER_*
+          # secrets yet) stays off the page and the Release. Same prefix as
+          # the DMG it installs: covered by the CI role's policy and by the
+          # invalidation below. The fixed-name copy is the link to hand
+          # around; it always holds the latest release's installer.
+          PKG_PATH="$(ls dist/*.pkg 2>/dev/null || true)"
+          if [[ -n "$PKG_PATH" ]] && pkgutil --check-signature "$PKG_PATH" | grep -q "Status: signed"; then
+            aws s3 cp "$PKG_PATH" "s3://${S3_BUCKET}/fused-render-dmgs/$(basename "$PKG_PATH")"
+            aws s3 cp "$PKG_PATH" "s3://${S3_BUCKET}/fused-render-dmgs/FusedRender-Installer.pkg" \
+              --cache-control no-cache
+            echo "PKG_PATH=$PKG_PATH" >> "$GITHUB_ENV"
+            echo "pkg_url=https://${CDN_DOMAIN}/fused-render-dmgs/$(basename "$PKG_PATH")" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::installer pkg is unsigned or missing — not published (see docs/signing.md, Installer package)"
+          fi
           # Exposed as job outputs for the split-out bump-homebrew job and the
           # publish-download-page job (which needs every platform's URL at
           # once to write a single merged manifest). Written only after the
@@ -316,7 +362,7 @@ jobs:
       - name: Upload DMG + wheel to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$RELEASE_TAG" "$DMG_PATH" "$WHL_PATH" --clobber
+        run: gh release upload "$RELEASE_TAG" "$DMG_PATH" "$WHL_PATH" ${PKG_PATH:+"$PKG_PATH"} --clobber
 
   # FusedRender.app for Intel Macs: the render job above with
   # FUSED_RENDER_ARCH=x86_64 on an Intel runner. A plain copy, like the bot job
@@ -380,6 +426,8 @@ jobs:
         env:
           CODESIGN_CERT_P12: ${{ secrets.CODESIGN_CERT_P12 }}
           CODESIGN_CERT_PASSWORD: ${{ secrets.CODESIGN_CERT_PASSWORD }}
+          INSTALLER_CERT_P12: ${{ secrets.INSTALLER_CERT_P12 }}
+          INSTALLER_CERT_PASSWORD: ${{ secrets.INSTALLER_CERT_PASSWORD }}
           KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
           NOTARY_API_KEY_P8: ${{ secrets.NOTARY_API_KEY_P8 }}
           NOTARY_API_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
@@ -394,6 +442,17 @@ jobs:
           security set-keychain-settings -lut 14400 "$KEYCHAIN_PATH"
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
           security import "$CERT_PATH" -k "$KEYCHAIN_PATH" -P "$CODESIGN_CERT_PASSWORD" -T /usr/bin/codesign
+          # The installer certificate (Developer ID INSTALLER, a different type
+          # from the application one above) signs the .pkg network installer
+          # (scripts/build_pkg.sh). Optional: without it the pkg is built
+          # unsigned and not published, and the release is unaffected.
+          if [[ -n "${INSTALLER_CERT_P12:-}" ]]; then
+            INSTALLER_CERT_PATH="$RUNNER_TEMP/installer-cert.p12"
+            echo "$INSTALLER_CERT_P12" | base64 --decode -o "$INSTALLER_CERT_PATH"
+            security import "$INSTALLER_CERT_PATH" -k "$KEYCHAIN_PATH" -P "$INSTALLER_CERT_PASSWORD" \
+              -T /usr/bin/productbuild -T /usr/bin/productsign
+            rm -f "$INSTALLER_CERT_PATH"
+          fi
           # Without this, codesign blocks on a keychain-access UI prompt that
           # can never be answered in CI (see docs/signing.md's CI notes).
           security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
@@ -415,6 +474,18 @@ jobs:
           FUSED_RENDER_NOTARY_PROFILE: ${{ env.NOTARY_PROFILE }}
           FUSED_RENDER_ARCH: x86_64
         run: bash scripts/build_dmg.sh
+
+      # Same installer as the arm64 job's, pinned to the Intel DMG; ships
+      # through S3 and the Release like the Intel DMG (not the download page).
+      - name: Build, sign, notarize, staple installer pkg
+        env:
+          FUSED_RENDER_INSTALLER_IDENTITY: ${{ secrets.INSTALLER_IDENTITY }}
+          FUSED_RENDER_CODESIGN_KEYCHAIN: ${{ env.KEYCHAIN_PATH }}
+          FUSED_RENDER_NOTARY_PROFILE: ${{ env.NOTARY_PROFILE }}
+        run: |
+          set -euo pipefail
+          DMG_PATH="$(ls dist/*-x86_64.dmg)"
+          bash scripts/build_pkg.sh "$DMG_PATH" "https://${CDN_DOMAIN}/fused-render-dmgs/$(basename "$DMG_PATH")"
 
       - name: Delete ephemeral keychain
         if: always()
@@ -440,6 +511,13 @@ jobs:
           echo "DMG_PATH=$DMG_PATH" >> "$GITHUB_ENV"
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
           aws s3 cp "$DMG_PATH" "s3://${S3_BUCKET}/fused-render-dmgs/$(basename "$DMG_PATH")"
+          PKG_PATH="$(ls dist/*-x86_64.pkg 2>/dev/null || true)"
+          if [[ -n "$PKG_PATH" ]] && pkgutil --check-signature "$PKG_PATH" | grep -q "Status: signed"; then
+            aws s3 cp "$PKG_PATH" "s3://${S3_BUCKET}/fused-render-dmgs/$(basename "$PKG_PATH")"
+            echo "PKG_PATH=$PKG_PATH" >> "$GITHUB_ENV"
+          else
+            echo "::warning::Intel installer pkg is unsigned or missing — not published"
+          fi
 
       # Before the manifest, unlike the arm64 job: the manifest writes a NEW
       # prefix (fused-render-macos-x86_64/), and if the CI role's IAM policy
@@ -448,7 +526,7 @@ jobs:
       - name: Upload DMG to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "$RELEASE_TAG" "$DMG_PATH" --clobber
+        run: gh release upload "$RELEASE_TAG" "$DMG_PATH" ${PKG_PATH:+"$PKG_PATH"} --clobber
 
       - name: Publish signed macOS (Intel) update manifest
         env:
@@ -799,6 +877,7 @@ jobs:
             needs.build-linux-release.outputs.version }}
           DMG_URL: ${{ needs.build-sign-notarize-release.outputs.dmg_url }}
           DMG_SHA256: ${{ needs.build-sign-notarize-release.outputs.dmg_sha256 }}
+          PKG_URL: ${{ needs.build-sign-notarize-release.outputs.pkg_url }}
           WHL_URL: ${{ needs.build-sign-notarize-release.outputs.wheel_url }}
           LINUX_URL: ${{ needs.build-linux-release.outputs.appimage_url }}
         run: |

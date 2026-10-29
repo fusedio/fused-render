@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Installer product definition for the network installer. The at-sign tokens
+     are filled in by scripts/build_pkg.sh (productbuild -distribution). -->
+<installer-gui-script minSpecVersion="2">
+  <title>@DISPLAY_NAME@ @VERSION@</title>
+  <!-- customize="never": one hidden choice, nothing to pick. rootVolumeOnly:
+       the postinstall installs into /Applications of the boot volume, which
+       is also what asks for the admin password. require-scripts: the
+       postinstall is the whole install, so a target that cannot run scripts
+       must not be offered. -->
+  <options customize="never" require-scripts="true" rootVolumeOnly="true"/>
+  <!-- Matches the app's LSMinimumSystemVersion (scripts/setup_py2app.py). -->
+  <allowed-os-versions>
+    <os-version min="11.0"/>
+  </allowed-os-versions>
+  <welcome file="welcome.html" mime-type="text/html"/>
+  <conclusion file="conclusion.html" mime-type="text/html"/>
+  <installation-check script="checkMachine()"/>
+  <script><![CDATA[
+  function checkMachine() {
+    // The arm64 pkg carries an arm64 image. Refuse an Intel Mac here, with a
+    // message, rather than letting the postinstall fail with a generic
+    // "installation failed" (the x86_64 pkg skips this: Apple silicon runs
+    // it under Rosetta, as the updater's docstring explains).
+    if ('@ARCH@' == 'arm64' && system.sysctl('hw.optional.arm64') != 1) {
+      my.result.title = 'This installer is for Apple silicon Macs';
+      my.result.message = 'On an Intel Mac, download the Intel build (the -x86_64 .dmg) from https://github.com/fusedio/fused-render/releases and drag it to Applications.';
+      my.result.type = 'Fatal';
+      return false;
+    }
+    return true;
+  }
+  ]]></script>
+  <choices-outline>
+    <line choice="default">
+      <line choice="@PKG_ID@"/>
+    </line>
+  </choices-outline>
+  <choice id="default"/>
+  <choice id="@PKG_ID@" visible="false">
+    <pkg-ref id="@PKG_ID@"/>
+  </choice>
+  <!-- installKBytes: the pkg has no payload, so without this Installer's
+       "Installation Type" page would say the install takes 0 bytes; this is
+       the app's size, so the figure the person sees is the real one. -->
+  <pkg-ref id="@PKG_ID@" version="@VERSION@" onConclusion="none" installKBytes="@INSTALL_KBYTES@">@COMPONENT_PKG@</pkg-ref>
+</installer-gui-script>
