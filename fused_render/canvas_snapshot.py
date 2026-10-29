@@ -1176,10 +1176,6 @@ def node_files(clone_dir: str, skip: Iterable[str] = ()) -> dict[str, str]:
     return out
 
 
-def _is_num(value: Any) -> bool:
-    return isinstance(value, (int, float)) and not isinstance(value, bool)
-
-
 def reconcile_rows(clone_dir: str, *, pending: Iterable[str] = (), skip: Iterable[str] = (),
                    backup: Callable[[str, bytes], None] | None = None) -> dict:
     path = os.path.join(clone_dir, "canvas.toml")
@@ -1196,10 +1192,11 @@ def reconcile_rows(clone_dir: str, *, pending: Iterable[str] = (), skip: Iterabl
     names: set[str] = set()
     dropped: list[str] = []
     for row in canvas.get("nodes") if isinstance(canvas.get("nodes"), list) else []:
+        name = row_name(row)
         if is_folder(row):
+            names.add(name)
             rows.append(row)
             continue
-        name = row_name(row)
         if name is None or name in names or (name not in files and name not in pending):
             dropped.append(str(name))
             continue
@@ -1207,9 +1204,8 @@ def reconcile_rows(clone_dir: str, *, pending: Iterable[str] = (), skip: Iterabl
         rows.append(row)
     children = {c for r in rows if is_folder(r) and isinstance(r.get("childUdfOrder"), list)
                 for c in r["childUdfOrder"] if isinstance(c, str)}
-    tops = [(r.get("x") or 0, (r.get("y") or 0) + (r.get("height") or 0)) for r in rows
+    tops = [(_num(r.get("x"), 0), _num(r.get("y"), 0) + _num(r.get("height"), 0)) for r in rows
             if is_folder(r) or row_name(r) not in children]
-    tops = [(x, bottom) for x, bottom in tops if _is_num(x) and _is_num(bottom)]
     x = min((t[0] for t in tops), default=100)
     y = max((t[1] for t in tops), default=100 - _NODE_GAP_PX)
     added: list[str] = []
