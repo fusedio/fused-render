@@ -504,7 +504,10 @@ def _place(staged: str, dest: str, *, park_existing: bool, kind: str = "github",
     another folder of this app that stays where it is (a Community install
     overwriting the user's showcase copy, `marketplace.install_app`) whose
     `_CARRY` dirs — its `.fused/` data and `.venv` — move into the new copy
-    exactly as a parked copy's do; mutually exclusive with ``park_existing``."""
+    exactly as a parked copy's do. With both (the install also lands on a
+    keep-data husk at ``dest``), the showcase copy's dirs win — they are the
+    data the user was told moves along — and the parked copy supplies only
+    what it lacks; the rest of the parked copy retires as it always does."""
     root = os.path.dirname(dest)
     os.makedirs(root, exist_ok=True)
     work = tempfile.mkdtemp(dir=root, prefix=f".install-{os.path.basename(dest)}-")
@@ -526,12 +529,13 @@ def _place(staged: str, dest: str, *, park_existing: bool, kind: str = "github",
                 raise GitInstallError(f"{dest} appeared during the install; open the link again")
             os.rename(clone_in, dest)
             undo.append((dest, clone_in))
-            carry = parked or carry_from
-            for name in _CARRY if carry else ():
-                src = os.path.join(carry, name)
-                if os.path.isdir(src) and not os.path.lexists(os.path.join(dest, name)):
-                    os.rename(src, os.path.join(dest, name))
-                    undo.append((os.path.join(dest, name), src))
+            for name in _CARRY:
+                for src_root in (carry_from, parked):
+                    src = os.path.join(src_root, name) if src_root else None
+                    if src and os.path.isdir(src) and not os.path.lexists(os.path.join(dest, name)):
+                        os.rename(src, os.path.join(dest, name))
+                        undo.append((os.path.join(dest, name), src))
+                        break
         except BaseException:
             for a, b in reversed(undo):
                 try:

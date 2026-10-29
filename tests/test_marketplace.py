@@ -1766,3 +1766,25 @@ def test_a_showcase_copy_under_another_name_is_refused_with_the_way_through(env,
     job = _wait_job(client, "sine-starter")
     assert job["state"] == "error" and job["error"].startswith(f"You have this app in your showcase folder at {d}")
     assert "Overwrite" in job["error"]
+
+
+def test_overwrite_onto_a_husk_still_carries_the_showcase_copys_data(env, gh_world):
+    """A keep-data uninstall left `app/<slug>/.fused/` (a husk) and the
+    showcase copy exists too: the install lands in the husk, and it is the
+    showcase copy's data — what the sheet promised moves — that the new copy
+    gets, the husk's own leftovers retiring as a parked copy's always do."""
+    from fused_render import appfile
+
+    d = _showcase_copy(env, "sine-starter", data="showcase")
+    husk = _app_dir(env, "sine-starter")
+    _write(husk, ".fused/old.txt", "husk")
+    appfile.write_husk(husk, "sine-starter-0a1b2c3d", "Sine")
+    client = _client()
+    r = client.post("/api/marketplace/install", json={"slug": "sine-starter", "overwrite": True}, headers=FUSED)
+    assert r.status_code == 200 and r.json()["status"] == "ok", r.json()
+    job = _wait_job(client, "sine-starter")
+    assert job["state"] == "done" and job["path"] == husk, job
+    with open(os.path.join(husk, ".fused", "data.txt")) as f:
+        assert f.read() == "showcase"
+    assert not os.path.exists(os.path.join(husk, ".fused", "old.txt"))
+    assert not os.path.exists(os.path.join(d, ".fused"))
