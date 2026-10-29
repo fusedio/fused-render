@@ -3,8 +3,8 @@
 A folder is a `[[canvas.nodes]]` row with `type = "udf-folder"`; membership
 lives only in its `childUdfOrder`, and a child's x/y are relative to the
 folder's x/y. These pin that the sync keeps both halves together: the
-three-way merge, folder rows written without `udfName`, synthesized rows,
-the delta's `position`, and the folder checks on pull and snapshot.
+three-way merge, folder rows written without `udfName`, the delta's
+`position`, and the folder checks on pull and snapshot.
 """
 from __future__ import annotations
 
@@ -423,7 +423,7 @@ def test_folder_name_only_row_is_read_by_rows_of_doc_and_disk_reading(tmp_path):
     disk = cs.compact_state_from_disk(d)
     assert disk["order"] == ["Section_1", "udf_0"]
     assert disk["nodes"]["Section_1"]["udfName"] == "Section_1"
-    assert disk["missing"] == [] and disk["synthesized"] == []
+    assert disk["missing"] == []
 
 
 def test_folder_name_only_row_survives_merge_and_gains_udf_name():
@@ -459,17 +459,6 @@ def test_snapshot_converges_a_folder_name_only_row_to_one_row(tmp_path):
     assert [(r.get("udfName"), r.get("folderName")) for r in rows] == [
         ("Section_1", "Section_1"), ("udf_0", None)]
     assert res["deleted"] == [] and res["folder_fixes"] == []
-
-
-def test_persist_synthesized_counts_folder_name_only_rows(tmp_path):
-    d = _clone(tmp_path, [dict(SKILL_FOLDER), udf("udf_0", 40.0, 60.0)],
-               {"udf_0.py": "A", "Section_1.py": "not a node: the folder has this name",
-                "extra.py": "B"})
-    written = cs.persist_synthesized(d, ["Section_1", "extra"])
-    assert written == ["extra"]
-    rows = _disk_rows(d)
-    assert [cs.row_name(r) for r in rows] == ["Section_1", "udf_0", "extra"]
-    assert rows[0]["udfName"] == "Section_1"
 
 
 def test_snapshot_deleting_a_folder_never_trashes_a_same_named_file(tmp_path):
@@ -508,41 +497,15 @@ def test_folder_never_takes_a_udf_file_that_matches_its_name_by_case(tmp_path):
     assert "India_H3_coverage" not in disk["files"]
     assert "India_H3_coverage" not in disk["bodies"]
     assert disk["files"] == {"india_h3_coverage": "india_h3_coverage.py"}
-    assert disk["missing"] == [] and disk["synthesized"] == []
+    assert disk["missing"] == []
     # A plain row (no type) whose name differs from a file only by case is
     # missing, not that file's node.
     (tmp_path / "two").mkdir()
     d2 = _clone(tmp_path / "two", [udf("Other_Node", 40.0, 60.0)], {"other_node.py": "B"})
     disk2 = cs.compact_state_from_disk(d2)
     assert disk2["missing"] == ["Other_Node"]
-    # ...and the file, which no row names exactly, is an orphan: the same
-    # second node macOS always showed, now beside a held `missing` row.
-    assert disk2["synthesized"] == ["other_node"]
     assert cs._find_source(d2, "Other_Node") is None
     assert cs._find_source(d2, "other_node") == "other_node.py"
-
-
-# -- 3. synthesized placement ------------------------------------------------
-
-def test_synthesize_after_a_folder_child_is_placed_in_absolute_coords():
-    rows = [folder("F", ["a"]), udf("a", 40.0, 60.0)]
-    row = cs.synthesize_row(rows, "new", "new.py")
-    assert (row["x"], row["y"]) == (1040.0, 1000.0 + 60.0 + 500 + 40)
-    assert cs.folder_of(rows + [row]).get("new") is None
-
-
-def test_synthesize_after_a_folder_clears_its_full_height():
-    rows = [udf("a", 40.0, 60.0), folder("F", [])]
-    row = cs.synthesize_row(rows, "new", "new.py")
-    assert (row["x"], row["y"]) == (1000.0, 1000.0 + 700 + 40)
-
-
-def test_compact_synthesized_row_after_folder_child(tmp_path):
-    d = _clone(tmp_path, [folder("F", ["a"]), udf("a", 40.0, 60.0)],
-               {"a.py": "A", "zz.py": "Z"})
-    disk = cs.compact_state_from_disk(d)
-    assert disk["synthesized"] == ["zz"]
-    assert (disk["nodes"]["zz"]["x"], disk["nodes"]["zz"]["y"]) == (1040.0, 1600.0)
 
 
 # -- 4. delta position only when it moved --------------------------------------
@@ -804,38 +767,6 @@ def test_force_pull_normalises_the_pulled_toml_and_goes_dirty(tmp_path, monkeypa
     assert "'F'" in event["detail"], event
 
 
-# -- synthesis inside a folder that already lists the slug ----------------------
-
-def test_synthesize_a_slug_a_folder_lists_inside_it_below_its_lowest_child():
-    rows = [folder("F", ["a", "b", "new"]), udf("a", 40.0, 600.0), udf("b", 40.0, 60.0),
-            udf("z", 5000.0, 5000.0)]
-    row = cs.synthesize_row(rows, "new", "new.py")
-    # Relative to F, under a (the lowest of F's rows), never after z.
-    assert (row["x"], row["y"]) == (40.0, 600.0 + 500 + 40)
-    assert cs.folder_of(rows + [row])["new"] is rows[0]
-
-
-def test_synthesize_a_slug_an_empty_folder_lists_at_its_corner():
-    rows = [folder("F", ["new"]), udf("z", 5000.0, 5000.0)]
-    row = cs.synthesize_row(rows, "new", "new.py")
-    assert (row["x"], row["y"]) == (40, 40)
-
-
-def test_compact_and_persist_chain_synthesized_rows_inside_a_folder(tmp_path):
-    d = _clone(tmp_path, [folder("F", ["a", "g1", "g2"]), udf("a", 40.0, 60.0)],
-               {"a.py": "A", "g1.py": "1", "g2.py": "2", "zz.py": "Z"})
-    disk = cs.compact_state_from_disk(d)
-    assert disk["synthesized"] == ["g1", "g2", "zz"]
-    xy = {n: (disk["nodes"][n]["x"], disk["nodes"][n]["y"]) for n in disk["synthesized"]}
-    assert xy["g1"] == (40.0, 600.0)                    # below a, in F
-    assert xy["g2"] == (40.0, 1140.0)                   # below g1, in F
-    assert xy["zz"] == (1040.0, 1000.0 + 1140.0 + 540)  # after g2, absolute, no folder
-    assert cs.persist_synthesized(d, disk["synthesized"]) == ["g1", "g2", "zz"]
-    again = cs.compact_state_from_disk(d)
-    assert again["synthesized"] == []
-    assert all(again["nodes"][n] == disk["nodes"][n] for n in disk["synthesized"])
-
-
 def test_normalise_reports_a_repeated_losing_entry_once():
     rows = [folder("G", ["a"]), folder("F", ["a", "a", "G", "G"]), udf("a", 0.0, 0.0)]
     fixes = cs.normalise_folders(rows)
@@ -1052,20 +983,3 @@ def test_merge_two_new_same_named_folders_sharing_a_child_union_their_children()
     assert rows["G"]["childUdfOrder"] == ["a", "b", "c"]
     again, _info = cs.merge_toml(base, merged, remote)
     assert cs.rows_of_doc(again)["rows"] == cs.rows_of_doc(merged)["rows"]
-
-
-
-def test_synthesis_and_placement_resolve_a_child_through_its_own_same_named_folder():
-    first = folder("Folder_2", ["a"], x=0.0, y=0.0)
-    second = folder("Folder_2", ["b", "c", "new"], x=5000.0, y=3000.0)
-    rows = [first, second, udf("a", 10.0, 900.0), udf("b", 40.0, 60.0), udf("c", 40.0, 700.0)]
-    row = cs.synthesize_row(rows, "new", "new.py")
-    # Relative to the SECOND Folder_2, below its lowest child c — never a
-    # (the first Folder_2's child, lower in its own folder).
-    assert (row["x"], row["y"]) == (40.0, 700.0 + 500 + 40)
-    assert cs.folder_of(rows + [row])["new"] is second
-    assert cs._absolute_xy(rows, rows[3]) == (5040.0, 3060.0)
-    assert cs._absolute_xy(rows, rows[2]) == (10.0, 900.0)
-    # And an orphan after a child of the second folder is placed through it.
-    after = cs.synthesize_row(rows[:4] + [udf("c", 40.0, 700.0)], "zz", "zz.py")
-    assert (after["x"], after["y"]) == (5040.0, 3000.0 + 700.0 + 500 + 40)

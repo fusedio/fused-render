@@ -588,7 +588,7 @@ def test_create_canvas_seeds_the_starter_udf_on_the_server(harness, tmp_path):
     assert len(pushes) == 1 and pushes[0][-2:] == ["--canvas", "gamma"]
     assert "@fused.udf" in (shipped / "udf.py").read_text(encoding="utf-8")
     doc = canvas_snapshot._load_toml(str(shipped / "canvas.toml"))
-    assert list(canvas_snapshot.rows_of_doc(doc)["nodes"]) == ["udf"]
+    assert list(canvas_snapshot.rows_of_doc(doc)["nodes"]) == []
 
 
 def test_create_canvas_does_not_seed_a_canvas_that_has_nodes(harness):

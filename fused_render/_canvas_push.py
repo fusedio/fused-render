@@ -100,7 +100,7 @@ _GUARD_VALUE = "1"
 # The endpoint runs the push synchronously and canvases.PUSH_TIMEOUT is 180s, so
 # this has to outlast it — otherwise a slow-but-successful push looks like a
 # failure here and the session is told the wrong thing.
-_HTTP_TIMEOUT_S = 200.0
+_HTTP_TIMEOUT_S = 400.0
 
 # Flags that change what `canvas push` publishes in ways the endpoint cannot
 # express: it always pushes the whole clone, with validation, honouring
