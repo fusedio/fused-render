@@ -1492,6 +1492,11 @@ def test_stale_cache_readers_never_call_the_builder(env, monkeypatch):
     assert built == []
     assert _client().get("/api/marketplace/asset/local-chat/icon.svg").status_code == 200
     assert built == []
+    # /catalog answers the old cache at once and rebuilds in the background…
+    cat = mp.catalog()
+    assert cat["status"] == "ok" and cat["stale"] is False
+    mp._REBUILD_THREAD.join(5)
+    # …and the next read sees what that build left (here: a failure, flagged).
     cat = mp.catalog()
     assert built == [1] and cat["status"] == "ok" and cat["stale"] is True
 
@@ -1520,6 +1525,8 @@ def test_crashing_build_backs_off_and_refresh_is_rate_limited(env, monkeypatch):
         raise RuntimeError("bug")
 
     monkeypatch.setattr(mp, "_build_snapshot", crash)
+    mp.catalog()  # old cache answered; the crashing build runs in the background
+    mp._REBUILD_THREAD.join(5)
     assert mp.catalog()["stale"] is True and built == [1]
     assert mp.catalog()["status"] == "ok" and built == [1]
     assert mp.catalog(refresh=True)["status"] == "ok" and built == [1]
