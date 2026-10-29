@@ -36,7 +36,7 @@ Why: Safari buttons/inputs don't inherit font or colour; Firefox dims placeholde
 
 | Area | Trap | Fix |
 |---|---|---|
-| Scrollbars | `::-webkit-scrollbar` invisible in Firefox; standard props reached Safari last (Baseline Dec 2025). An engine that supports `scrollbar-color` **ignores** `::-webkit-scrollbar` once it is set (inherits!). | Write both on the same element: `scrollbar-width: thin; scrollbar-color: var(--line) transparent;` plus `::-webkit-scrollbar { width: 8px } ::-webkit-scrollbar-thumb { background: var(--line) }`. Same colours in both so no engine looks different. |
+| Scrollbars | `::-webkit-scrollbar` invisible in Firefox; standard props reached Safari last (Baseline Dec 2025). An engine that supports `scrollbar-color` **ignores** `::-webkit-scrollbar` once it is set (inherits!). | Usually: write nothing. Inside fused-render, `runtime.js` already gives every view the shell's quiet hover-only bar, themed and placed before your CSS. For a different look, write both on the same element: `scrollbar-width: thin; scrollbar-color: var(--line) transparent;` plus `::-webkit-scrollbar { width: 8px } ::-webkit-scrollbar-thumb { background: var(--line) }`. Same colours in both so no engine looks different. |
 | Selection | `user-select` still needs `-webkit-user-select` in Safari. | Always both, prefix first. |
 | Line clamp | Needs the legacy trio. | `display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;` |
 | Blur panels | `backdrop-filter` unprefixed only Safari ≥ 18. | `-webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);` plus a solid-ish `background` — blur is decoration, never what makes text readable. |
