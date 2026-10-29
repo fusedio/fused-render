@@ -56,6 +56,7 @@ import {
   type MarketRelease,
 } from "@platform/lib/marketplace";
 import { AppActionPill, CategoryGlyph, EmptyState, MarketCard, compactCount, openDetail, remixOf } from "./shared";
+import { onInstallStarted } from "./install-flow";
 import { trustItemsFor } from "./trust";
 
 /** U+202F NARROW NO-BREAK SPACE: "12.4 MB" never wraps between number and
@@ -76,24 +77,44 @@ export function AppDetailPage({ slug, snap, bare = false }: { slug: string; snap
   // The pill stays on this page while the job runs; a reader who clicked Get
   // (or Retry) and is still here when the job reaches `done` is taken to the
   // app — in this window (openInstalledApp is a navigateUrl, never a new
-  // window). Two things keep it from firing when it should not:
-  //  * `asked` is set by THIS page's pill alone, and only by a Get or Retry
-  //    click — so an install started from a Discover card and then watched
-  //    from here does not open on its own, and a done job the page merely
-  //    finds (an earlier install, still listed) cannot be one it asked for:
-  //    the pill read Open then, not Get;
-  //  * it is a ref on this mount: leaving the page before the install
-  //    finishes drops it, and coming back starts clean — the reader who
-  //    moved away is not yanked back to the app.
+  // window). Three things keep it from firing when it should not:
+  //  * `intent` is set by THIS page's pill alone, and only by a Get or Retry
+  //    click — so an install started from a Discover card or a related-app
+  //    card and then watched from here does not open on its own, and a done
+  //    job the page merely finds (an earlier install, still listed) cannot
+  //    be one it asked for: the pill read Open then, not Get;
+  //  * `asked` is set only when THIS window's install flow reports a job
+  //    started for the slug (install-flow onInstallStarted) while that
+  //    intent stands — a "Before you install" or "Switch?" sheet the reader
+  //    cancels starts nothing, so a job another window starts later, which
+  //    the poll would surface here, never opens;
+  //  * both are refs on this mount, and the page is mounted per slug
+  //    (MarketplacePage keys it): leaving the page before the install
+  //    finishes — to Discover, to another app's page, anywhere — drops them,
+  //    and coming back starts clean: the reader who moved away is not
+  //    yanked back to the app.
+  const intent = useRef<string | null>(null);
   const asked = useRef<string | null>(null);
+  useEffect(
+    () =>
+      onInstallStarted((started) => {
+        if (started === slug && intent.current === slug) {
+          asked.current = slug;
+          intent.current = null;
+        }
+      }),
+    [slug],
+  );
   useEffect(() => {
     if (!job || job.slug !== slug || asked.current !== slug || isActive(job)) return;
     asked.current = null;
     // On `error` the reader is back at Retry: another click arms it again.
-    if (job.state === "done" && job.path) openInstalledApp(job.path);
+    // An update's Retry lands as an `update` job: the reader asked for the
+    // new version, not to be taken into the app.
+    if (job.state === "done" && job.action !== "update" && job.path) openInstalledApp(job.path);
   }, [job, slug]);
   const onAct = (action: { kind: string }) => {
-    if (action.kind === "get" || action.kind === "retry") asked.current = slug;
+    intent.current = action.kind === "get" || action.kind === "retry" ? slug : null;
   };
 
   // Bare (a listing link with the store off): nothing leads into the store.

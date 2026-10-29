@@ -36,12 +36,6 @@ type Route =
   | { kind: "file"; path: string }
   | { kind: "unknown" };
 
-/** A listing link's landing (§18.5): the deep link opens the app's page with
- *  this marker. */
-export function isListingLink(search: string): boolean {
-  return new URLSearchParams(search).get("via") === "link";
-}
-
 /** The `.fused` install page's own address. */
 export const MARKETPLACE_FILE = MARKETPLACE_HOME + "/file";
 
@@ -173,7 +167,10 @@ export function MarketplacePage({ fusedFile }: { fusedFile?: string } = {}) {
   } else if (route.kind === "installed") {
     body = <InstalledPage snap={snap} />;
   } else if (route.kind === "app") {
-    body = <AppDetailPage slug={route.slug} snap={snap} bare={bare} />;
+    // Keyed by slug: a hop to another app's page (a "More like this" card)
+    // is a fresh mount, so what the page remembers about an install asked
+    // for there (AppDetailPage `asked`) dies with the hop.
+    body = <AppDetailPage key={route.slug} slug={route.slug} snap={snap} bare={bare} />;
   } else if (route.kind === "file") {
     body = <FusedFilePage key={route.path} path={route.path} />;
   } else {
