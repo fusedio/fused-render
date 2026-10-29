@@ -134,12 +134,15 @@ installing <slug> do here", which the router, the bots' card
              nothing runs; called again with `overwrite=True` the job
              installs the reviewed clone under `app/` with
              `install_target(ignore=<showcase copy>)`, moves the showcase
-             copy's `.fused/` (its data) and `.venv` into the new copy
-             (`appfile_git.install(carry_from=)`), then retires the
-             showcase copy the way its uninstall does (`app_hidden.hide`,
-             its desk tasks archived, every store that remembers it
-             pruned) — its files stay on disk, since deleting a showcase
-             subfolder dirties the clone.
+             copy's `.fused/` (its data) into the new copy
+             (`appfile_git.install(carry_from=)`, merged file by file into
+             a `.fused/` the clone tracks), then retires the showcase copy:
+             hidden (`app_hidden.hide`; its files stay on disk, since
+             deleting a showcase subfolder dirties the clone) and settled as
+             a move to the new copy (`app_fused_dir.settle_retired_origin`:
+             bookmarks, recents, the desk, the pin and the Claude sessions
+             follow it), what is left archived and pruned as its uninstall
+             does.
 """
 from __future__ import annotations
 
@@ -1703,8 +1706,8 @@ def start_install(slug: str, *, update: bool = False, switch: bool = False,
             return {"status": "confirm", "overwrite": "showcase", "slug": slug,
                     "path": plan["showcase"].replace(os.sep, "/"),
                     "message": "Overwrite your showcase copy? The Community version is installed "
-                               "in your apps folder, its data moves along, and the showcase copy "
-                               "is hidden."}
+                               "in your apps folder; its data, bookmarks and sessions move along, "
+                               "and the showcase copy is hidden."}
         plan = {**plan, "overwrite": plan["showcase"]}
     action = plan["action"]
     with _JOBS_LOCK:
@@ -1814,7 +1817,10 @@ def install_app(slug: str, row: dict, report=lambda **kw: None, *,
         if overwrite:
             # The showcase folder was picked by NAME (`showcase_copy`); its
             # page must declare the same app as the reviewed clone's before
-            # its data moves and it is hidden.
+            # its data moves and it is hidden. Two pages that declare no id
+            # count as the same app under the same slug, the rule
+            # `install_target` applies to `app/<slug>` (an id on one side
+            # only is a mismatch).
             try:
                 have = app_listing.app_entry(overwrite)
             except OSError:
@@ -1885,24 +1891,29 @@ def install_app(slug: str, row: dict, report=lambda **kw: None, *,
         # Only once the new copy is the recorded one: a record the store
         # could not write (logged, never fatal) leaves the showcase copy in
         # view rather than hiding the one copy the hub still lists.
-        _retire_showcase_copy(overwrite)
+        _retire_showcase_copy(overwrite, dest)
     _reset_apps_snapshot()
     return {"action": "install", "path": dest}
 
 
-def _retire_showcase_copy(path: str) -> None:
-    """The showcase copy an install overwrote leaves every surface — the
-    three steps its uninstall runs (routers/app_uninstall.api_uninstall,
-    kind `showcase`): hidden from the hub, its desk tasks archived, every
-    store that remembers it (recents, bookmarks, the desk, …) pruned. Its
-    files stay: deleting a showcase subfolder dirties the clone. Best-effort
-    — the new copy is already in place, so nothing here fails the install."""
-    from fused_render import app_hidden, app_state_remove
+def _retire_showcase_copy(path: str, dest: str) -> None:
+    """The showcase copy at `path` handed over to the new copy at `dest`:
+    hidden from the hub (its files stay — deleting a showcase subfolder
+    dirties the clone), then settled as a MOVE to `dest`
+    (`app_fused_dir.settle_retired_origin`: bookmarks, recents, the pin, the
+    desk, scheduled targets, the app's recency and its Claude sessions all
+    follow the app, as they do when a folder is dragged), and whatever still
+    names the old folder after that — a task the move could not carry — is
+    archived and pruned the way its uninstall does
+    (routers/app_uninstall.api_uninstall). Best-effort — the new copy is
+    already in place, so nothing here fails the install."""
+    from fused_render import app_fused_dir, app_hidden, app_state_remove
 
     try:
         app_hidden.hide(path)
     except Exception:  # noqa: BLE001
         logger.warning("marketplace: could not hide the showcase copy %s", path, exc_info=True)
+    app_fused_dir.settle_retired_origin(dest, path)
     try:
         from fused_render.server.routers import current_apps as desk_router
 

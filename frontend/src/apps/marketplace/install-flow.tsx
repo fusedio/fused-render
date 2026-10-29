@@ -226,8 +226,9 @@ export function InstallSheetHost() {
  *  subfolder of the user's showcase clone, where it would otherwise hold
  *  the app's place for good (uninstalling a showcase app only hides it).
  *  The yes installs the reviewed copy under app/, moves the showcase copy's
- *  data (`.fused/`) and Python environment along, and hides the showcase
- *  copy; its files stay on disk, since deleting them dirties the clone. */
+ *  data (`.fused/`) along with everything that names the folder (bookmarks,
+ *  recents, sessions), and hides the showcase copy; its files stay on disk,
+ *  since deleting them dirties the clone. */
 function OverwriteSheet({ app, path, onClose }: { app: AppEntry; path: string; onClose: () => void }) {
   const confirmRef = useRef<HTMLButtonElement>(null);
   const confirm = () => {
@@ -265,8 +266,8 @@ function OverwriteSheet({ app, path, onClose }: { app: AppEntry; path: string; o
         is installed in your apps folder instead, and the app&rsquo;s data moves there with it.
       </p>
       <p className="mp-sheet-lede is-quiet">
-        The showcase copy disappears from your apps and recents. Its files stay in the showcase folder, so nothing is
-        deleted.
+        Your bookmarks, recents and sessions for it follow the app. The showcase copy leaves your apps; its files
+        stay in the showcase folder, so nothing is deleted.
       </p>
     </Modal>
   );

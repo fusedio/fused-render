@@ -1706,8 +1706,14 @@ def test_overwrite_installs_under_app_moves_the_data_and_retires_the_showcase_co
     from fused_render import app_hidden, current_apps
     from fused_render.contrib import store
 
+    from fused_render import app_fused_dir
+
     d = _showcase_copy(env, "sine-starter")
     _write(d, ".venv/pyvenv.cfg", "home = x\n")
+    # Opened once: its `.fused/meta.json` witnesses the showcase path, which
+    # rides into the new copy and must be settled as a MOVE there even
+    # though the showcase folder stays on disk.
+    assert app_fused_dir.ensure(d) and app_fused_dir.recorded_app_dir(d) == d
     current_apps.add(d)
     assert [a["path"] for a in current_apps.list_apps()] == [d]
     client = _client()
@@ -1720,15 +1726,20 @@ def test_overwrite_installs_under_app_moves_the_data_and_retires_the_showcase_co
     # The reviewed clone, recorded as a marketplace copy, under app/.
     assert _git(dest, "rev-parse", "HEAD") == gh_world.approved
     assert store.get(dest)["kind"] == "marketplace"
-    # The showcase copy's data (and venv) moved along; its files stayed.
+    # The showcase copy's data moved along; its venv (shebangs name its old
+    # path) and its files stayed.
     with open(os.path.join(dest, ".fused", "data.txt")) as f:
         assert f.read() == "mine"
-    assert os.path.isfile(os.path.join(dest, ".venv", "pyvenv.cfg"))
-    assert not os.path.exists(os.path.join(d, ".fused")) and not os.path.exists(os.path.join(d, ".venv"))
+    assert not os.path.exists(os.path.join(dest, ".venv")) and os.path.isdir(os.path.join(d, ".venv"))
+    assert not os.path.exists(os.path.join(d, ".fused"))
     assert os.path.isfile(os.path.join(d, "index.html"))
-    # Retired: hidden from the hub, off the desk, gone from the plan.
+    # Retired: hidden from the hub, gone from the plan; the desk row (and
+    # every other store) follows the app to its new folder, as on a move.
     assert app_hidden._canon(d) in app_hidden.hidden_paths()
-    assert current_apps.list_apps() == []
+    assert [a["path"] for a in current_apps.list_apps()] == [dest]
+    assert app_fused_dir.recorded_app_dir(dest) == dest
+    [hop] = app_fused_dir.read_meta(dest)["migrations"]
+    assert (hop["from"], hop["to"]) == (d, dest) and "pending" not in hop
     assert mp.showcase_copy("sine-starter") is None
     plan = mp.plan_install("sine-starter", _entry("sine-starter"))
     assert plan["action"] == "update" and plan["path"] == dest and plan["showcase"] is None
@@ -1770,9 +1781,9 @@ def test_a_showcase_copy_under_another_name_is_refused_with_the_way_through(env,
 
 def test_overwrite_onto_a_husk_still_carries_the_showcase_copys_data(env, gh_world):
     """A keep-data uninstall left `app/<slug>/.fused/` (a husk) and the
-    showcase copy exists too: the install lands in the husk, and it is the
-    showcase copy's data — what the sheet promised moves — that the new copy
-    gets, the husk's own leftovers retiring as a parked copy's always do."""
+    showcase copy exists too: the install lands in the husk, the showcase
+    copy's data — what the sheet promised moves — goes first, and the husk's
+    fills in what it lacked."""
     from fused_render import appfile
 
     d = _showcase_copy(env, "sine-starter", data="showcase")
@@ -1786,7 +1797,9 @@ def test_overwrite_onto_a_husk_still_carries_the_showcase_copys_data(env, gh_wor
     assert job["state"] == "done" and job["path"] == husk, job
     with open(os.path.join(husk, ".fused", "data.txt")) as f:
         assert f.read() == "showcase"
-    assert not os.path.exists(os.path.join(husk, ".fused", "old.txt"))
+    # The husk's own data fills what the showcase copy lacked, never trashed.
+    with open(os.path.join(husk, ".fused", "old.txt")) as f:
+        assert f.read() == "husk"
     assert not os.path.exists(os.path.join(d, ".fused"))
 
 
@@ -1831,3 +1844,27 @@ def test_overwrite_merges_the_data_into_a_fused_dir_the_clone_tracks(env, gh_wor
     with open(os.path.join(dest, ".fused", "data.txt")) as f:
         assert f.read() == "theirs\n"
     assert os.path.isfile(os.path.join(d, ".fused", "data.txt"))
+
+
+def test_overwrite_merges_nested_data_under_a_tracked_fused_dir(env, gh_world):
+    """The clone tracks `.fused/data/seed.txt`: `.fused/data` exists at the
+    destination, so the showcase copy's own files under it must still come
+    across one by one rather than the whole `data/` being left behind."""
+    tracked = gh_world.fake.commit(gh_world.full, "main", {".fused/data/seed.txt": "theirs\n"}, "Seed",
+                                   author="alice")
+    env["api"].set_files("sine-starter", {"index.html": PAGE, "app.py": "A = 1\n", ".fused/data/seed.txt": "theirs\n"},
+                         "1.1.0", commit=tracked, repo=gh_world.full)
+    d = _showcase_copy(env, "sine-starter")
+    _write(d, ".fused/data/state.txt", "mine")
+    _write(d, ".fused/data/deep/more.txt", "mine too")
+    client = _client()
+    r = client.post("/api/marketplace/install", json={"slug": "sine-starter", "overwrite": True}, headers=FUSED)
+    assert r.status_code == 200 and r.json()["status"] == "ok", r.json()
+    job = _wait_job(client, "sine-starter")
+    assert job["state"] == "done", job
+    dest = _app_dir(env, "sine-starter")
+    for rel, want in ((".fused/data/seed.txt", "theirs\n"), (".fused/data/state.txt", "mine"),
+                      (".fused/data/deep/more.txt", "mine too"), (".fused/data.txt", "mine")):
+        with open(os.path.join(dest, *rel.split("/"))) as f:
+            assert f.read() == want, rel
+    assert not os.path.exists(os.path.join(d, ".fused", "data", "state.txt"))

@@ -504,13 +504,16 @@ def _place(staged: str, dest: str, *, park_existing: bool, kind: str = "github",
     another folder of this app that stays where it is (a Community install
     overwriting the user's showcase copy, `marketplace.install_app`) whose
     `_CARRY` dirs — its `.fused/` data and `.venv` — move into the new copy
-    exactly as a parked copy's do. With both (the install also lands on a
-    keep-data husk at ``dest``), the showcase copy's dirs win — they are the
-    data the user was told moves along — and the parked copy supplies only
-    what it lacks; the rest of the parked copy retires as it always does.
-    A clone that TRACKS `.fused/` already has one at ``dest``: the carried
-    `.fused/` is then merged into it entry by entry (the clone's own entries
-    kept), so the data the user was promised still moves."""
+    exactly as a parked copy's do — its `.fused/` only: a `.venv` moved to
+    another path keeps shebangs that name the old one, and the app rebuilds
+    its own. Whatever is already at ``dest`` under a carried dir (a clone
+    that TRACKS `.fused/`, or the first source's entries when there are two)
+    is kept, and the rest of the source tree is merged in file by file
+    (`_carry_tree`), so no part of the data the user was promised stays
+    behind. With both ``carry_from`` and a parked copy (the install lands on
+    a keep-data husk), the showcase copy's data goes first and the husk's
+    fills what it lacks; only a husk file clashing with one of those
+    retires with the parked copy, as every replaced copy's leftovers do."""
     from fused_render import app_fused_dir
 
     root = os.path.dirname(dest)
@@ -536,21 +539,17 @@ def _place(staged: str, dest: str, *, park_existing: bool, kind: str = "github",
             undo.append((dest, clone_in))
             for name in _CARRY:
                 for src_root in (carry_from, parked):
-                    src = os.path.join(src_root, name) if src_root else None
-                    if not src or not os.path.isdir(src):
+                    if src_root is None or (src_root == carry_from and name != app_fused_dir.DIRNAME):
+                        continue
+                    src = os.path.join(src_root, name)
+                    if not os.path.isdir(src) or os.path.islink(src):
                         continue
                     into = os.path.join(dest, name)
                     if not os.path.lexists(into):
                         os.rename(src, into)
                         undo.append((into, src))
-                        break
-                    if src_root == carry_from and name == app_fused_dir.DIRNAME and os.path.isdir(into):
-                        for entry in os.listdir(src):
-                            a, b = os.path.join(src, entry), os.path.join(into, entry)
-                            if not os.path.lexists(b):
-                                os.rename(a, b)
-                                undo.append((b, a))
-                        break
+                    elif os.path.isdir(into) and not os.path.islink(into):
+                        _carry_tree(src, into, undo)
         except BaseException:
             for a, b in reversed(undo):
                 try:
@@ -571,6 +570,19 @@ def _place(staged: str, dest: str, *, park_existing: bool, kind: str = "github",
                     logger.warning("replace: no Trash for the old copy; kept at %s", keep)
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def _carry_tree(src: str, into: str, undo: list) -> None:
+    """Move every entry of `src` that `into` lacks across (recursing where
+    both hold a directory); an entry both hold otherwise stays in `src`. Each
+    rename is appended to `undo` as `(new, old)`."""
+    for entry in os.listdir(src):
+        a, b = os.path.join(src, entry), os.path.join(into, entry)
+        if not os.path.lexists(b):
+            os.rename(a, b)
+            undo.append((b, a))
+        elif os.path.isdir(a) and not os.path.islink(a) and os.path.isdir(b) and not os.path.islink(b):
+            _carry_tree(a, b, undo)
 
 
 def _home_name() -> str:
@@ -635,8 +647,8 @@ def install(fused_path: str, target: dict, manifest: dict, *, force: bool,
             carry_from: str | None = None) -> dict:
     """Install or update the clone ``target`` (appfile.install_target's
     answer for a git-source file) describes. Answers the action taken.
-    ``carry_from``: a folder whose `.fused/` and `.venv` move into a NEW
-    clone (`_place`); only a fresh install reads it.
+    ``carry_from``: a folder whose `.fused/` moves into a NEW clone
+    (`_place`); only a fresh install reads it.
 
     ``kind="marketplace"`` (docs/CONTRIB_LOOP.md §18.4): a Marketplace
     install of a clone made at the approved commit (`clone(commit=)`),
