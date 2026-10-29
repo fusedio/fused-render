@@ -485,11 +485,10 @@ def install_line(record: dict, *, url: str | None = None) -> dict | None:
         text = (f"Installed {owner}'s app from the Community"
                 + (f", version {ver}" if ver else "")
                 + (f" (released {when})" if when else "") + ".")
-        return line("installed", text, actor=owner, link=link)
+        return line("installed", text, link=link)  # this person's own step: no actor
     if kind == "github":
         return line("installed", f"Installed {owner}'s app from GitHub ({repo}). "
-                    f"You'll get {owner}'s changes as they publish them.", actor=owner,
-                    link=link)
+                    f"You'll get {owner}'s changes as they publish them.", link=link)
     if kind == "own" and repo:
         return line("installed", f"Installed your app from GitHub ({repo}).", link=link)
     return None

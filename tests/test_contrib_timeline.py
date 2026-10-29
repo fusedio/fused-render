@@ -306,6 +306,7 @@ def test_install_lines():
                           "approved": {"at": "2026-10-26T00:00:00Z", "version": "1.2"}})
     assert mk["text"] == "Installed alice's app from the Community, version 1.2 (released Oct 26)."
     assert tl.install_line({"kind": "own", "repo": None}) is None
+    assert "actor" not in gh_line and "actor" not in mk          # the installer's own step
 
 
 def test_record_install_writes_the_first_line(w, tmp_path):

@@ -445,7 +445,9 @@
   flex: 0 0 auto;
   width: 13px;
   height: 13px;
-  align-self: center;
+  /* On the first line of a wrapped entry, not between its lines. */
+  align-self: flex-start;
+  margin-top: 3px;
   color: var(--fg-faint);
 }
 
