@@ -55,7 +55,8 @@ def test_compact_and_reconcile_take_the_files_as_the_nodes(tmp_path):
             {"udfName": "b", "x": 40, "y": 75, "height": 5000}]
     d = _clone(tmp_path, rows, {"a.py": "A", "b.json": "{}", "orphan.py": "o", "note.md": "n",
                                 "_init.py": "", ".hidden.py": "", "CLAUDE.md": "",
-                                "late.py": ""},
+                                "late.py": "", "nobody.py": "", "secret.py": "",
+                                ".fusedignore": "secret.py\n"},
                edges=[["a", "gone"], ["a", "b"], ["F", "a"]])
     disk = cs.compact_state_from_disk(d)
     assert disk["order"] == ["a", "F", "b"] and disk["edges"] == [["a", "b"], ["F", "a"]]
@@ -66,7 +67,7 @@ def test_compact_and_reconcile_take_the_files_as_the_nodes(tmp_path):
     trashed = []
     res = cs.reconcile_rows(d, pending=["late"], skip=["CLAUDE.md"],
                             backup=lambda rel, data: trashed.append((rel, data)))
-    assert res == {"changed": True, "dropped": ["gone", "a"], "added": ["note", "orphan"]}
+    assert res == {"changed": True, "dropped": ["gone", "a"], "added": ["nobody", "note", "orphan"]}
     assert trashed == [("canvas.toml", old)]
     doc = rtoml.loads(open(os.path.join(d, "canvas.toml")).read())
     assert doc["type"] == "canvas"
@@ -74,8 +75,9 @@ def test_compact_and_reconcile_take_the_files_as_the_nodes(tmp_path):
     assert [(r["udfName"], r.get("x"), r.get("y"), r.get("width"), r.get("height"))
             for r in doc["canvas"]["nodes"]] == [
         ("a", 10, 20, 700, 300), ("F", 1000, 0, None, 800), ("b", 40, 75, None, 5000),
-        ("note", 10, 875, 350, 250), ("orphan", 10, 1200, 700, 500)]
-    assert doc["canvas"]["nodes"][1]["childUdfOrder"] == ["b"]
+        ("nobody", -990, 875, 700, 500), ("note", 10, 1450, 350, 250),
+        ("orphan", 10, 1775, 700, 500)]
+    assert doc["canvas"]["nodes"][1]["childUdfOrder"] == ["b", "nobody"]
     assert cs.reconcile_rows(d, pending=["late"], skip=["CLAUDE.md"])["changed"] is False
 
 

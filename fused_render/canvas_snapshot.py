@@ -84,6 +84,7 @@ clear error, not a silent skip.
 from __future__ import annotations
 
 import copy
+import fnmatch
 import hashlib
 import json
 import os
@@ -1162,8 +1163,25 @@ _DEFAULT_NODE_SIZE = (700, 500)
 _DEFAULT_TEXTBOX_SIZE = (350, 250)
 
 
+def _fusedignored(clone_dir: str) -> set[str]:
+    data = _read_bytes(os.path.join(clone_dir, ".fusedignore"))
+    rules = []
+    for line in (data or b"").decode("utf-8", "replace").splitlines():
+        line = line.strip()
+        negated = line.startswith("!")
+        line = line[1:].strip() if negated else line
+        if line and not line.startswith("#") and not line.endswith("/"):
+            rules.append((line.lstrip("/"), negated))
+    out: set[str] = set()
+    for f in os.listdir(clone_dir):
+        for pattern, negated in rules:
+            if fnmatch.fnmatchcase(f, pattern):
+                (out.discard if negated else out.add)(f)
+    return out
+
+
 def node_files(clone_dir: str, skip: Iterable[str] = ()) -> dict[str, str]:
-    skip = set(skip)
+    skip = set(skip) | _fusedignored(clone_dir)
     present = sorted(os.listdir(clone_dir))
     out: dict[str, str] = {}
     for suffix in _SOURCE_SUFFIXES:
@@ -1202,10 +1220,14 @@ def reconcile_rows(clone_dir: str, *, pending: Iterable[str] = (), skip: Iterabl
             continue
         names.add(name)
         rows.append(row)
-    children = {c for r in rows if is_folder(r) and isinstance(r.get("childUdfOrder"), list)
-                for c in r["childUdfOrder"] if isinstance(c, str)}
+    owners: dict[str, dict] = {}
+    for r in rows:
+        if is_folder(r) and isinstance(r.get("childUdfOrder"), list):
+            for c in r["childUdfOrder"]:
+                if isinstance(c, str):
+                    owners.setdefault(c, r)
     tops = [(_num(r.get("x"), 0), _num(r.get("y"), 0) + _num(r.get("height"), 0)) for r in rows
-            if is_folder(r) or row_name(r) not in children]
+            if is_folder(r) or row_name(r) not in owners]
     x = min((t[0] for t in tops), default=100)
     y = max((t[1] for t in tops), default=100 - _NODE_GAP_PX)
     added: list[str] = []
@@ -1215,7 +1237,9 @@ def reconcile_rows(clone_dir: str, *, pending: Iterable[str] = (), skip: Iterabl
         width, height = (_DEFAULT_TEXTBOX_SIZE if files[stem].endswith(".md")
                          else _DEFAULT_NODE_SIZE)
         y += _NODE_GAP_PX
-        rows.append({"udfName": stem, "x": x, "y": y, "width": width, "height": height})
+        owner = owners.get(stem, {})
+        rows.append({"udfName": stem, "x": x - _num(owner.get("x"), 0),
+                     "y": y - _num(owner.get("y"), 0), "width": width, "height": height})
         y += height
         added.append(stem)
     kept = {row_name(r) for r in rows} - {None}
