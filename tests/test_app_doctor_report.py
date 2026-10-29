@@ -142,7 +142,6 @@ _EXPECTED_META = {
     "icon": ("essentials", "warning", "fact"),
     "device-paths": ("sharing", "warning", "candidate"),
     "git": ("sharing", "warning", "fact"),
-    "fused-dir-committed": ("sharing", "warning", "fact"),
     "generated": ("sharing", "warning", "fact"),
     "preview": ("sharing", "warning", "fact"),
     "cross-browser": ("sharing", "warning", "candidate"),
@@ -170,7 +169,8 @@ def test_checks_are_grouped_essentials_then_sharing_in_server_order(workspace):
     d = _app(workspace)
     report = app_doctor.report(str(d))
     ids = [c["id"] for c in report["checks"]]
-    assert ids == list(app_doctor.CHECK_ORDER)
+    # `fused-dir-committed` is flag-gated (absent with the contrib loop off).
+    assert ids == [c for c in app_doctor.CHECK_ORDER if c != "fused-dir-committed"]
     sections = [c["section"] for c in report["checks"]]
     # Every essentials row before every sharing row.
     assert sections == sorted(sections, key=app_doctor.SECTIONS.index)
