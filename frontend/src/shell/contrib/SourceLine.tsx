@@ -64,6 +64,8 @@ export function simpleStatus(ladder: LadderAnswer | null | undefined): string[] 
     parts.push("the Community review didn't pass");
   } else if (state === "removing") {
     parts.push(sentence || "leaving the Community");
+  } else if (ladder.flags?.marketplace && ladder.rung === 2) {
+    parts.push("not in the Community yet");
   }
   if (ladder.github.unpushed > 0) parts.push(`${plural(ladder.github.unpushed, "edit")} not online yet`);
   return parts;

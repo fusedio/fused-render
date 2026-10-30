@@ -29,8 +29,13 @@ import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode }
 import { ArrowRight, Check, Copy, Download, ExternalLink, GitBranch, Laptop, Store } from "lucide-react";
 import {
   ackContrib,
+  getListingDraft,
   ladderListing,
   oldIdNote,
+  plainMessage,
+  runJob,
+  runListingAction,
+  useUnmountSignal,
   useLadder,
   type AppContribState,
   type ContribAction,
@@ -626,11 +631,55 @@ function SimpleOwnView({
   const notListed = !listingState || NOT_LISTED.has(listingState);
   const inboxOffered = !!c?.flags.inbox && !!c.inbox;
   const waiting = c?.inbox?.count ?? 0;
+  const repo = l.github.repo;
+  const signal = useUnmountSignal();
+  const [listingNow, setListingNow] = useState(false);
+  const [listErr, setListErr] = useState<string | null>(null);
 
   const copyLink = async () => {
     if (!link) return;
     const ok = await copyToClipboard(link);
     notify({ title: ok ? "Install link copied" : "Couldn't copy the link", tone: ok ? "info" : "error" });
+  };
+  // "Add to the Community" in one press: the listing draft's details sent as
+  // `publish-market` (what the Share sheet's switch does, §20.2). With no
+  // description to send, the listing's own details sheet opens instead —
+  // the one field it needs, rather than a refusal.
+  const addToCommunity = async () => {
+    if (listingNow || !listing) return;
+    setListingNow(true);
+    setListErr(null);
+    try {
+      const draft = await getListingDraft(dir);
+      const desc = (draft.description || "").trim();
+      if (!desc) {
+        listing.openPublish();
+        return;
+      }
+      const started = await runListingAction(dir, PUBLISH_ID, {
+        args: {
+          name: draft.name || slug,
+          description: desc,
+          category: draft.category || "",
+          tags: draft.tags ?? [],
+          icon: draft.icon ?? null,
+          preview: draft.preview ?? null,
+        },
+      });
+      if (!started.ok) {
+        if (started.reason === "invalid") listing.openPublish();
+        else setListErr(plainMessage(started));
+        return;
+      }
+      if (started.job) {
+        const r = await runJob(Promise.resolve(started), { signal: signal() });
+        if (!r.ok && r.reason === "aborted") return;
+        if (!r.ok) setListErr(r.message);
+      }
+      await listing.refresh();
+    } finally {
+      setListingNow(false);
+    }
   };
   // The Source panel speaks only when something needs a look or is running
   // (a success or a plain fact is already in the sentence above).
@@ -640,6 +689,10 @@ function SimpleOwnView({
     !!listing &&
     (listingState === "failed" || listingState === "needs-confirmation" || oldIdNote(listing.listing) !== null);
   const doctorGate = rung >= 2 && l.flags.marketplace && notListed && l.doctor.clear === false;
+  // The one next step on GitHub alone: list it (Doctor clear, no edits
+  // waiting, the listing route answering).
+  const canList =
+    rung === 2 && l.flags.marketplace && notListed && l.doctor.clear === true && l.github.unpushed === 0 && !!listing;
 
   return (
     <>
@@ -647,10 +700,29 @@ function SimpleOwnView({
         <div className="contrib-simple-status-main">
           <p className="contrib-simple-sentence">{parts.join(" · ")}</p>
           <p className="contrib-rung-sentence">
-            {rung < 2
-              ? "Share puts it online for anyone, in one switch."
-              : "Anyone with the link installs it, and it stays up to date."}
+            {rung < 2 ? (
+              "Share puts it online for anyone, in one switch."
+            ) : (
+              <>
+                On GitHub
+                {repo && (
+                  <>
+                    {" as "}
+                    <a href={githubUrl(repo)} target="_blank" rel="noopener noreferrer">
+                      {repo}
+                    </a>
+                  </>
+                )}
+                . Anyone with the link installs it, and it stays up to date.
+                {canList && " It is not in the Community yet: add it and anyone can find it there."}
+              </>
+            )}
           </p>
+          {listErr && (
+            <p className="contrib-error" role="alert">
+              {listErr}
+            </p>
+          )}
         </div>
         <div className="contrib-rung-actions">
           {rung < 2 ? (
@@ -658,12 +730,18 @@ function SimpleOwnView({
               <GitBranch data-icon="inline-start" />
               Put it online
             </Button>
-          ) : link ? (
-            <Button size="sm" variant="outline" onClick={() => void copyLink()}>
+          ) : canList ? (
+            <Button size="sm" disabled={listingNow || !!listing?.busy} onClick={() => void addToCommunity()}>
+              <Store data-icon="inline-start" />
+              {listingNow ? "Adding…" : "Add to the Community"}
+            </Button>
+          ) : null}
+          {rung >= 2 && link && (
+            <Button size="sm" variant={canList ? "outline" : "outline"} onClick={() => void copyLink()}>
               <Copy data-icon="inline-start" />
               Copy install link
             </Button>
-          ) : null}
+          )}
         </div>
       </section>
 

@@ -161,7 +161,8 @@ test("own app on rung 2: the repo sentence, and List it in the Community waits o
   // Simple view: the sentence, the Doctor gate as a row with Fix with Claude.
   expect(rungs(t)).toHaveLength(0);
   const out = text(t);
-  expect(out).toContain("Online · 2 edits not online yet");
+  expect(out).toContain("Online · not in the Community yet · 2 edits not online yet");
+  expect(out).toContain("vasu/sine");
   expect(out).toContain("3 things");
   expect(out).toContain("to fix before it can be in the Community");
   expect(out).toContain("Fix with Claude");
@@ -468,4 +469,41 @@ test("badge and Overview line: waiting proposals on an own app, a dot for a copy
   // An own app that is all caught up: nothing to say.
   const quiet = { ...own, inbox: { items: [], count: 0 } };
   expect(communityLine(contribOf(quiet), ladder)).toBeNull();
+});
+
+test("own app on GitHub alone, Doctor clear: the Simple view names the repo and offers Add to the Community", async () => {
+  listingAnswer = {
+    ok: true,
+    state: "not-listed",
+    sentence: "sine isn't in the Community yet.",
+    listing: null,
+    actions: [{ id: "publish-market", label: "Publish to Community", primary: true }],
+  };
+  const t = await mount(
+    <CommunityTab
+      dir="/apps/sine-alone"
+      slug="sine"
+      contrib={contribOf(null)}
+      ladder={ladderOf({
+        rung: 2,
+        kind: "own",
+        github: {
+          installed: true,
+          signed_in: true,
+          login: "vasu",
+          repo: "vasu/sine",
+          visibility: "public",
+          unpushed: 0,
+          link: "https://udf.ai/x",
+        },
+      })}
+      variant="page"
+    />,
+  );
+  const out = text(t);
+  expect(out).toContain("Online · not in the Community yet");
+  expect(out).toContain("vasu/sine");
+  const add = t.root.findAll((n) => n.type === "button" && textOf(n).includes("Add to the Community"));
+  expect(add).toHaveLength(1);
+  expect(add[0].props.disabled).toBe(false);
 });

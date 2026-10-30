@@ -2165,8 +2165,12 @@ ladder the page already holds; on every tab; the Overview gains nothing.
 
 ### 20.4 The Community tab (`CommunityTab.tsx` `SimpleOwnView`)
 
-Own app with Simple on: the status sentence with Put it online (rung 1,
-opens the Share sheet) or Copy install link; then only
+Own app with Simple on: the status sentence ("Online · not in the Community
+yet" on GitHub alone) with the repo named under it, and ONE next step — Put
+it online (rung 1, opens the Share sheet), **Add to the Community** (rung 2,
+Doctor clear, nothing unpushed: `publish-market` from the listing draft in
+one press, the details sheet only when the draft has no description) or
+Copy install link; then only
 what asks for a decision — the Source panel's sentence and its own buttons
 when its tone is attention or working (a merge, a stuck state, an error), a
 listing that failed or needs a confirm with the listing's buttons, the
