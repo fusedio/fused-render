@@ -128,6 +128,10 @@ Auto-created at app root. Convention, no helper API — build paths off `os.path
 | `fused.env` | `"local"` vs `"hosted"` (exported). |
 | `fused.autoReload(false)` | Kill reload-on-file-change (in-page editors). Render App: `autoReload(true)` THROWS (no live reload there). |
 
+**Types.** `fused_render/static/fused.d.ts` (served at `<origin>/static/fused.d.ts`) declares `window.fused` for TypeScript and for editors' JS language service — copy beside sources or add to tsconfig `include`; `/// <reference path="fused.d.ts" />` in a `.js` also works. Script-style globals, no import.
+
+**Framework / bundler (React, Vite, TS).** Build to ONE module with FIXED names (`entryFileNames: "app.js"`, `assetFileNames: "app.[ext]"`, `inlineDynamicImports: true`, `input: "src/main.tsx"`); `index.html` (hand-written, carries the app markers) loads them: `link.href = fused.rawUrl("dist/app.css")`, `import(fused.rawUrl("dist/app.js"))`. No chunks (a bundle's relative `import()` resolves against the raw URL, not the folder). Rebuild ≠ auto-reload: only the page + its `.py` are watched — refresh. Full recipe + worked app: `docs/FRAMEWORKS.md`, `examples/react-vite/`.
+
 **Render App** (standalone `fused-render-app`: same bridge, subset runtime). Session is on it when the system prompt says so, the app is a `.fused` bundle or a folder under `~/Fused/local/`, or a call throws `<name> is not supported on Render App`. There: `fused.fileIndex` and `fused.snapshot` do not exist (no stubs — reading them throws that sentence); `fused.autoReload(true)` throws; `fused.capture` is macOS-only, no browser `client` recorder; `runPython` cap is 600 s, not 60; no `fused-render calls` CLI (Verifying below) — read the browser console. Everything else in the table is identical. App that needs the missing members belongs in full fused-render; don't polyfill.
 
 - Uncaught `runPython` rejection → red traceback overlay (good default). Catch for custom UI.

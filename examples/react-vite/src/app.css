@@ -1,0 +1,9 @@
+.app { max-width: 640px; margin: 0 auto; padding: 48px 24px; }
+.app h1 { font-size: 22px; margin: 0 0 8px; }
+.muted { color: var(--fused-fg-muted, #9aa0a6); margin: 0 0 24px; }
+label { display: flex; align-items: center; gap: 12px; margin-bottom: 24px; }
+input[type="range"] { flex: 1; }
+output { min-width: 3ch; text-align: right; font-variant-numeric: tabular-nums; }
+.primes { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.primes li { padding: 4px 10px; border: 1px solid var(--fused-border, #2a303a); border-radius: 999px; font-variant-numeric: tabular-nums; }
+.error { color: #ff6b6b; white-space: pre-wrap; }

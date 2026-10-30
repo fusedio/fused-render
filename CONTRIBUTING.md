@@ -15,6 +15,23 @@ cd frontend && npm install && npm run build   # Node 22
 Or run `scripts/dev.sh` for a watch + server dev loop. Wheels and the DMG build
 the shell automatically at package time, so installed users never need Node.
 
+## Running the tests
+
+The suite needs a Python 3.12 venv with the `dev` extra and a built shell
+(`create_app()` refuses to start without `fused_render/static/shell-dist/`):
+
+```
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python -e ".[dev,bundled,fused]"
+cd frontend && npm install && npm run build && cd ..
+.venv/bin/python -m pytest -q -n auto          # Python; xdist-safe
+cd frontend && npm run typecheck && bun test   # shell: tsc --noEmit, then the bun unit tests
+```
+
+CI (`.github/workflows/test.yml`) runs the same three things on every pull
+request. `scripts/dev.sh` builds the venv and the shell for you if you would
+rather start from the dev loop. One or two files: `pytest -n 0 tests/test_x.py`.
+
 ## Real-weights reproducers
 
 One test file loads real model weights and is **skipped by default** — the

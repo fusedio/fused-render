@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html data-fused-theme="shell">
+<head>
+<meta charset="utf-8" />
+<!-- The one marker that makes this folder an app (read from the first 4 KiB). -->
+<meta name="fused-app" />
+<meta name="fused-api-version" content="1" />
+<title>React + Vite on fused-render</title>
+<style>
+  :root { color-scheme: dark; --bg: var(--fused-bg, #101318); --text: var(--fused-fg, #dce2ea); }
+  :root[data-theme="light"] { color-scheme: light; --bg: var(--fused-bg, #f7f8fa); --text: var(--fused-fg, #1a1f27); }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+</style>
+</head>
+<body>
+  <div id="root"></div>
+  <script>
+    // fused-render injects `window.fused` ahead of this script, so the page can
+    // ask it for a URL that serves a file beside index.html. That is how the
+    // Vite output comes in: one stylesheet and one ES module, both built by
+    // `npm run build` (or kept fresh by `npm run watch`).
+    (function () {
+      var css = document.createElement("link");
+      css.rel = "stylesheet";
+      css.href = fused.rawUrl("dist/app.css");
+      document.head.appendChild(css);
+      import(fused.rawUrl("dist/app.js")).catch(function (err) {
+        document.getElementById("root").textContent =
+          "dist/app.js did not load — run `npm install && npm run build` in this folder. (" + err + ")";
+      });
+    })();
+  </script>
+</body>
+</html>

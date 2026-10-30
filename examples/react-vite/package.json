@@ -1,0 +1,23 @@
+{
+  "name": "fused-render-react-vite-example",
+  "private": true,
+  "version": "0.1.0",
+  "description": "A fused-render app whose page is a React component tree built by Vite into one file the page loads through fused.rawUrl().",
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "watch": "vite build --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.0"
+  }
+}
