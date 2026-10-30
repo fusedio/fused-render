@@ -5128,32 +5128,36 @@ def _owned_response(env: str, name: str, owner: dict, *, code: str = "owned",
 
 def _is_fused_process(pid: int) -> bool:
     """Is `pid` a live process of THIS app (a fused-render / Fused desktop
-    process), by its command line: the same executable name as ours, or a
-    command naming the app or the package. The gate before `sync/force_quit`
+    process), by its executable: the very same executable as ours (full path),
+    or one named for the app or the package. The gate before `sync/force_quit`
     signals a lock holder — a pid that was reused by something else is never
     ours, whatever the lock file says."""
     if not isinstance(pid, int) or pid <= 0 or pid == os.getpid():
         return False
     if not canvas_sync_state.pid_alive(pid):
         return False
-    command = canvas_sync_state.process_command(pid)
-    if not command:
+    exe_path = canvas_sync_state.process_executable(pid)
+    if not exe_path:
         return False
-    # The EXECUTABLE's name, not the whole command line: on a dev machine every
-    # process under a `.../fused-render/` checkout (node, an editor) would
-    # otherwise match, and on Windows (pid-probed lock) a reused pid whose
-    # image path merely contains the folder would pass.
-    exe = os.path.basename(command.split(" ")[0]).lower()
+    # The SAME executable as ours (a dev server's venv python, a pip install's
+    # python.exe on Windows): full path, not basename — `Program Files\\x.exe`
+    # and `Program Files\\y.exe` share a basename of nothing useful, and a
+    # reused pid under another python must not read as ours.
+    own = canvas_sync_state.process_executable(os.getpid()) or sys.executable
+    try:
+        if own and os.path.normcase(os.path.realpath(exe_path)) == os.path.normcase(os.path.realpath(own)):
+            return True
+    except OSError:
+        pass
+    # Or an executable NAMED for this app (the packaged app's main binary; an
+    # older bundle moved to a hidden sibling path still carries the name).
+    exe = os.path.basename(exe_path).lower()
     if "fused_render" in exe or "fused-render" in exe or "fusedrender" in exe:
         return True
     from fused_render import _flavor
 
     app = _flavor.app_name().lower()
-    if app and app in exe:
-        return True
-    own = canvas_sync_state.process_command(os.getpid()) or ""
-    own_exe = os.path.basename(own.split(" ")[0]).lower() if own else ""
-    return bool(own_exe) and exe == own_exe
+    return bool(app) and app in exe
 
 
 def _unreachable_owner_response(env: str, name: str, held: dict, *, why: str) -> JSONResponse:

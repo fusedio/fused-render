@@ -221,12 +221,15 @@ def card_names_this_server(card: dict | None) -> bool:
     return port > 0 and card.get("port") == port and card.get("pid") != os.getpid()
 
 
-def process_command(pid: int) -> str | None:
-    """The command line (or executable path) of `pid`, or None when it cannot
-    be read (no such process, no permission). POSIX asks `ps`; Windows asks
-    the kernel for the image path. For deciding whether a lock holder that no
-    longer answers on its port is one of OUR processes before it is signalled —
-    never for anything that runs."""
+def process_executable(pid: int) -> str | None:
+    """The executable PATH of `pid` (no arguments), or None when it cannot be
+    read (no such process, no permission). Linux reads `/proc/<pid>/exe`,
+    macOS asks `ps -o comm=` (the full path there), Windows asks the kernel
+    for the image path. A whole path, never a command line split on spaces:
+    `C:\\Program Files\\…` and `/Applications/Fused Render.app/…` must not
+    collapse to `Program` or `/Applications/Fused`. For deciding whether a
+    lock holder that no longer answers on its port is one of OUR processes
+    before it is signalled — never for anything that runs."""
     if not isinstance(pid, int) or pid <= 0:
         return None
     if sys.platform == "win32":
@@ -243,15 +246,20 @@ def process_command(pid: int) -> str | None:
                 buf = ctypes.create_unicode_buffer(size.value)
                 if not kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
                     return None
-                return buf.value
+                return buf.value or None
             finally:
                 kernel32.CloseHandle(handle)
         except Exception:  # noqa: BLE001
             return None
+    if sys.platform.startswith("linux"):
+        try:
+            return os.readlink(f"/proc/{pid}/exe").split(" (deleted)")[0] or None
+        except OSError:
+            return None
     import subprocess
 
     try:
-        out = subprocess.run(["/bin/ps", "-o", "command=", "-p", str(pid)],
+        out = subprocess.run(["/bin/ps", "-o", "comm=", "-p", str(pid)],
                              capture_output=True, text=True, timeout=5, close_fds=False)
     except (OSError, subprocess.SubprocessError):
         return None

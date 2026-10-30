@@ -1178,10 +1178,13 @@ export default function CanvasWorkspace({
     setTakeoverError(null);
     try {
       const result = await forceQuitOwner(env, name);
-      setForceQuitPid(null);
-      if (!result.freed) {
+      if (result.freed) {
+        setForceQuitPid(null);
+      } else {
+        // Still held: the button stays (the 5 s sync/start retry cannot
+        // claim a held lock, and a second press is the user's call).
         setTakeoverError(
-          `pid ${result.pid ?? "?"} was told to quit but still holds the canvas; this page keeps trying.`,
+          `pid ${result.pid ?? "?"} was told to quit but still holds the canvas; try again in a moment.`,
         );
       }
       await ensureSync();
