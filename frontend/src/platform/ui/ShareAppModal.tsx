@@ -399,7 +399,7 @@ function listingLine(ladder: LadderAnswer): { text: string; detail: string | nul
 //
 // Automatic is fine, magic is not (owner 2026-10-16): every move this card
 // makes is one the Advanced card makes on a button, and the Community tab's
-// Recent list carries it with Undo where the server offers one.
+// Recent list (Activity, read-only — §16.16) records it.
 
 type SimplePhase = null | "connect" | "install" | "login" | "online" | "list" | "remove" | "push";
 
@@ -462,6 +462,9 @@ export function SimpleShareCard({
   // The index refused the listing for its details (no description): the
   // server's sentence, and the one line the person types to answer it.
   const [needDetails, setNeedDetails] = useState<string | null>(null);
+  // The index refused a detail the description field cannot fix: the
+  // sentence, with the Community tab (its details form) as the way out.
+  const [detailsErr, setDetailsErr] = useState<string | null>(null);
   const [description, setDescription] = useState("");
   const [removeConfirm, setRemoveConfirm] = useState<string | null>(null);
   const [pushConfirm, setPushConfirm] = useState<string | null>(null);
@@ -513,6 +516,10 @@ export function SimpleShareCard({
       try {
       const draft = await getListingDraft(dir);
       if (goneRef.current) return;
+      if (draft.ok === false) {
+        setErr("Couldn't read the app's listing details just now. Try again in a moment.");
+        return;
+      }
       const desc = (description.trim() || draft.description || "").trim();
       if (!desc) {
         setNeedDetails("Describe your app in one line, so people know what it does.");
@@ -533,8 +540,13 @@ export function SimpleShareCard({
         if (opensDoctor(started.reason)) {
           setErr(said);
           setDoctorErr(said);
-        } else if (started.reason === "invalid") {
+        } else if (started.reason === "invalid" && /describ/i.test(said)) {
           setNeedDetails(said);
+        } else if (started.reason === "invalid") {
+          // A name, category, icon, preview or version the index refused:
+          // not something one field here can fix — the Community tab's
+          // details form can.
+          setDetailsErr(said);
         } else {
           setErr(said);
         }
@@ -549,6 +561,7 @@ export function SimpleShareCard({
       await reload();
       } finally {
         listingRef.current = false;
+        if (!goneRef.current) setPhase(null);
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps -- unmountSignal is a stable getter
@@ -575,6 +588,7 @@ export function SimpleShareCard({
         const d = await pollRecord(getGithubInstall, { isGone });
         if (!d || goneRef.current) return;
         if (d.state === "error") throw new Error(d.error || "GitHub's tool didn't install. Try again.");
+        if (recordRunning(d)) throw new Error("GitHub's tool is still installing. Close Share and open it again in a moment.");
         s = await getGithubStatus().catch(() => null);
         if (goneRef.current) return;
         if (s) setStatus(s);
@@ -633,11 +647,23 @@ export function SimpleShareCard({
   useEffect(() => {
     if (rung !== 1) return;
     let cancelled = false;
-    void Promise.allSettled([getGithubStatus(), getGithubLogin(), getGithubPublish()]).then(([s, l, p]) => {
+    void Promise.allSettled([getGithubStatus(), getGithubLogin(), getGithubPublish(), getGithubInstall()]).then(([s, l, p, i]) => {
       if (cancelled || goneRef.current || runRef.current) return;
       if (s.status === "fulfilled") setStatus(s.value);
       const pubRoot = p.status === "fulfilled" ? (p.value.root ?? "").replace(/\/+$/, "") : "";
-      if (p.status === "fulfilled" && recordRunning(p.value) && pubRoot === dir.replace(/\/+$/, "")) {
+      if (i.status === "fulfilled" && recordRunning(i.value)) {
+        // gh is installing (started from the Git panel or an earlier sheet):
+        // watch it rather than ask for a second install (the server 409s).
+        setPhase("install");
+        runRef.current = true;
+        void pollRecord(getGithubInstall, { isGone }).then((done) => {
+          runRef.current = false;
+          if (goneRef.current) return;
+          if (done?.state === "error") setErr(done.error || "GitHub's tool didn't install. Try again.");
+          setPhase(null);
+          void getGithubStatus().then((s2) => !goneRef.current && setStatus(s2)).catch(() => {});
+        });
+      } else if (p.status === "fulfilled" && recordRunning(p.value) && pubRoot === dir.replace(/\/+$/, "")) {
         setPhase("online");
         setPublish(p.value);
         runRef.current = true;
@@ -744,6 +770,8 @@ export function SimpleShareCard({
           if (!r.ok) setErr(r.message);
         }
         await reload();
+      } catch {
+        if (!goneRef.current) setErr("The edits didn't publish. Try again.");
       } finally {
         if (!goneRef.current) setPhase(null);
       }
@@ -810,6 +838,13 @@ export function SimpleShareCard({
       );
     } else if (phase === "list") {
       listText = "Sending it to the Community…";
+    } else if (rung >= 2 && detailsErr) {
+      listText = detailsErr;
+      listAction = (
+        <Button size="xs" variant="outline" disabled={running} onClick={openCommunity}>
+          Open Community
+        </Button>
+      );
     } else if (rung >= 2 && needDetails) {
       listText = needDetails;
     } else if (rung >= 2 && ladder.doctor?.clear === false) {
@@ -822,8 +857,8 @@ export function SimpleShareCard({
     } else if (rung >= 2 && !running) {
       listText = "Not in the Community yet";
       listAction = (
-        <Button size="xs" variant="outline" disabled={running} onClick={() => void listIt(ladder)}>
-          List it
+        <Button size="xs" variant="outline" disabled={running} onClick={() => void (signedIn ? listIt(ladder) : run())}>
+          {signedIn ? "List it" : "Sign in and list it"}
         </Button>
       );
     } else {
@@ -989,7 +1024,16 @@ export function SimpleShareCard({
           dir={dir}
           onClose={() => {
             setDoctorOpen(false);
-            void reload();
+            // Doctor clear now → the listing the switch promised (§20.5),
+            // without a second press; `listIt` itself skips a listed, in
+            // review, failed or removing app (rung 3 / the listing state).
+            void reload().then((next) => {
+              if (!next || goneRef.current || !signedIn) return;
+              const state = next.listing?.state ?? null;
+              if ((next.rung ?? 1) === 2 && next.doctor?.clear === true && (!state || state === "not-listed")) {
+                void listIt(next);
+              }
+            });
           }}
         />
       )}
@@ -1659,9 +1703,10 @@ export function ShareAppModal({
       for (let i = 0; i < LADDER_PENDING_TRIES; i++) {
         const l = await getLadder(app.path);
         if (cancelled) return;
-        // Own app + the Community switch on → the one-switch card (§20);
-        // anything else → the plain link card below (`/api/share/github`).
-        if (ownLadder(l) && l.flags?.marketplace) {
+        // An own app's ladder → the one-switch card with the Community
+        // switch on (§20), today's ladder card with it off; anything else
+        // → the plain link card below (`/api/share/github`).
+        if (ownLadder(l)) {
           setLadder(l);
           setNotOwn(false);
         } else {
@@ -2175,19 +2220,32 @@ export function ShareAppModal({
         ? `This shares ${author}'s version. Your changes aren't included — propose them or publish a remix.`
         : `This shares ${author}'s version. Your changes aren't included — propose them to ${author}.`
       : null;
-  // The one-switch card (§20) is the only own-app card on the sheet (owner
-  // 2026-10-28), gated by the Community switch; `GithubLadderCard` stays
-  // exported for the Community tab's full view and its test.
+  // The one-switch card (§20) is the own-app card with the Community switch
+  // on (owner 2026-10-28); with it off, the ladder card as before.
   const githubCard = ladder ? (
-    <SimpleShareCard
-      dir={app.path}
-      ladder={ladder}
-      reload={reloadLadder}
-      primary={githubFirst}
-      locked={working}
-      onBusy={setLadderPublishing}
-      onClose={onClose}
-    />
+    ladder.flags?.marketplace ? (
+      <SimpleShareCard
+        dir={app.path}
+        ladder={ladder}
+        reload={reloadLadder}
+        primary={githubFirst}
+        locked={working}
+        onBusy={setLadderPublishing}
+        onClose={onClose}
+      />
+    ) : (
+      // Community off: putting an app on GitHub needs no switch (§19.2), so
+      // today's ladder card stays the door — never a sentence with no button.
+      <GithubLadderCard
+        dir={app.path}
+        ladder={ladder}
+        reload={reloadLadder}
+        primary={githubFirst}
+        locked={working}
+        onBusy={setLadderPublishing}
+        onClose={onClose}
+      />
+    )
   ) : (
     <OptionCard
       icon={<GitBranch />}

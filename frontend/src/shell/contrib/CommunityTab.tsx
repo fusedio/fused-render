@@ -136,6 +136,10 @@ export function CommunityTab({ dir, slug, contrib, variant, ladder: given, hidde
     setModeState(m);
   };
   const simple = simpleOffered && mode === "simple";
+  // Not now's set-aside proposals live here, so a Simple → Everything →
+  // Simple round trip does not bring them back.
+  const [aside, setAside] = useState<ReadonlySet<number>>(() => new Set());
+  const putAside = (n: number) => setAside((a) => new Set(a).add(n));
   const busy = !!kit?.busy || !!listing?.busy;
   const onBusyRef = useRef(onBusy);
   onBusyRef.current = onBusy;
@@ -182,6 +186,8 @@ export function CommunityTab({ dir, slug, contrib, variant, ladder: given, hidde
       kit={kit}
       listing={listing}
       openDoctor={() => setDoctorOpen(true)}
+      aside={aside}
+      onAside={putAside}
     />
   ) : mine ? (
     <OwnView
@@ -608,7 +614,7 @@ function OwnView({
 // a decision: a stuck or working Source-panel state with the server's own
 // fix buttons, a listing that failed or waits on a confirm, the Doctor gate
 // before a first listing — then Proposals (the inbox, compact: Add / Not
-// now) and Recent (Activity with Undo). No rungs, no grid.
+// now) and Recent (the Activity list, read-only). No rungs, no grid.
 
 function SimpleOwnView({
   dir,
@@ -618,6 +624,8 @@ function SimpleOwnView({
   kit,
   listing,
   openDoctor,
+  aside,
+  onAside,
 }: {
   dir: string;
   slug: string;
@@ -626,6 +634,8 @@ function SimpleOwnView({
   kit: SourcePanelKit | null;
   listing: ListingKit | null;
   openDoctor: () => void;
+  aside: ReadonlySet<number>;
+  onAside: (number: number) => void;
 }) {
   const c = contrib.data;
   const rung = l.rung ?? 1;
@@ -798,7 +808,7 @@ function SimpleOwnView({
 
       {inboxOffered && (
         <Card title={waiting > 0 ? `Proposals · ${waiting}` : "Proposals"} wide>
-          <ProposalsTab dir={dir} slug={slug} contrib={contrib} compact />
+          <ProposalsTab dir={dir} slug={slug} contrib={contrib} compact aside={aside} onAside={onAside} />
         </Card>
       )}
       {kit && kit.activity.length > 0 && (

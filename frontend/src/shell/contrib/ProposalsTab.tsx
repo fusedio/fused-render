@@ -69,6 +69,8 @@ export function ProposalsTab({
   slug,
   contrib,
   compact = false,
+  aside: asideGiven,
+  onAside: onAsideGiven,
 }: {
   dir: string;
   slug: string;
@@ -77,6 +79,10 @@ export function ProposalsTab({
    *  read, and Add / Not now — Try it first and Decline as quiet links. Not
    *  now sets the card aside for this visit (nothing is sent). */
   compact?: boolean;
+  /** The set-aside numbers, held by a parent that outlives this list (the
+   *  Community tab across its Simple / Everything switch); own state else. */
+  aside?: ReadonlySet<number>;
+  onAside?: (number: number) => void;
 }) {
   const inbox = contrib.data?.inbox ?? null;
   // THE CARDS SURVIVE A RE-LIST. After an Accept or a Decline the server
@@ -92,7 +98,9 @@ export function ProposalsTab({
   const settledGone = (n: number) => setGone((g) => new Set(g).add(n));
   // Not now (compact): set aside for this visit, nothing sent to the sender
   // — the tab's badge still counts it, and "Show" brings it back.
-  const [aside, setAside] = useState<ReadonlySet<number>>(() => new Set());
+  const [asideOwn, setAsideOwn] = useState<ReadonlySet<number>>(() => new Set());
+  const aside = asideGiven ?? asideOwn;
+  const setAsideNumber = (n: number) => (onAsideGiven ? onAsideGiven(n) : setAsideOwn((a) => new Set(a).add(n)));
   const [showAside, setShowAside] = useState(false);
   const shown = compact && !showAside ? items.filter((i) => !aside.has(i.number)) : items;
   const asideCount = compact ? items.filter((i) => aside.has(i.number)).length : 0;
@@ -173,7 +181,7 @@ export function ProposalsTab({
               compact={compact}
               refresh={contrib.refresh}
               onSettled={() => settledGone(item.number)}
-              onAside={() => setAside((a) => new Set(a).add(item.number))}
+              onAside={() => setAsideNumber(item.number)}
             />
           </li>
         ))}

@@ -2125,8 +2125,9 @@ No switch of its own (owner 2026-10-28: "it serves no purpose"). Simple
 sharing is what an own app gets whenever the Community switch — the store,
 Settings' "Community" row, the ladder's `flags.marketplace` — is on:
 `SourceLine.simpleOn(ladder)`, read by the Share sheet, the header line and
-the Community tab alike. With it off: the Share sheet shows the plain link
-card (as for a copy), the Community tab the §19 ladder. The Fused
+the Community tab alike. With it off: the Share sheet shows today's ladder
+card (putting an app on GitHub needs no switch, §19.2), the Community tab
+the §19 ladder. The Fused
 public-link card (the canvas share) is untouched either way.
 
 ### 20.2 Share sheet (`platform/ui/ShareAppModal.tsx` `SimpleShareCard`)
@@ -2175,7 +2176,7 @@ what asks for a decision — the Source panel's sentence and its own buttons
 when its tone is attention or working (a merge, a stuck state, an error), a
 listing that failed or needs a confirm with the listing's buttons, the
 Doctor gate before a first listing with Fix with Claude; then Proposals and
-Recent (Activity with Undo, unchanged). Proposals = `ProposalsTab
+Recent (the Activity list, read-only — §16.16). Proposals = `ProposalsTab
 compact`: each card "<who> proposes: <title>", Claude's read (the same
 review block), **Add** (Accept — the same review gate, flagged-confirm,
 stale and merge handling; the confirm reads "Add <who>'s change?") and **Not
@@ -2202,5 +2203,6 @@ renders whichever view the tab does.
 Q2 switch placement: none — the Community switches decide (above). Q3: the switch lists automatically once Doctor is clear (with
 the Community switch on). Q4: off = Remove from the Community with the
 server's confirm. Q5: Add runs the review gate first (the inbox's rule,
-unchanged). Q6: Undo stays what Recent offers. Q7: Remix is not in Simple.
+unchanged). Q6: Recent is read-only (§16.16); Undo lives where the
+server's actions offer it. Q7: Remix is not in Simple.
 Q8: no install counts (the client catalog carries none).
