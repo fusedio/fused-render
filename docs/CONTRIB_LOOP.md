@@ -2105,3 +2105,93 @@ machinery, rebind is a store fix.
 - Frontend: `CommunityTab.test.tsx` (own ladder renders the three rungs
   and the current one's button; copy view renders the three cards),
   `ShareAppModal` test for the three card states.
+
+## 20. Simple sharing (owner 2026-10-28: "implement option A")
+
+Design: https://claude.ai/artifact/Ma16WXfpMvVxN5q9vECq1D (three options; the
+owner picked A, "One switch"). Why: the loop works and its copy already
+avoids git words (§13), but a novice meets nine surfaces on the way to a
+first share — the Share sheet's three check rows, a name field and a
+visibility radio, the three rungs, a seven-field listing form, App Doctor,
+the review — and an inbox with four verbs for one decision. Simple sharing is
+a second RENDERER over the same server contract: nothing in §16–§19 changes,
+no new route, no new action. The Overview tab shows only the app (owner
+2026-10-28); Simple lives in the header's source line, the Share sheet and
+the Community tab.
+
+### 20.1 When it applies
+
+No switch of its own (owner 2026-10-28: "it serves no purpose"). Simple
+sharing is what an own app gets whenever the Community switch — the store,
+Settings' "Community" row, the ladder's `flags.marketplace` — is on:
+`SourceLine.simpleOn(ladder)`, read by the Share sheet, the header line and
+the Community tab alike. With it off: the Share sheet shows the plain link
+card (as for a copy), the Community tab the §19 ladder. The Fused
+public-link card (the canvas share) is untouched either way.
+
+### 20.2 Share sheet (`platform/ui/ShareAppModal.tsx` `SimpleShareCard`)
+
+For an own app (`ownLadder`) with Simple on, in place of `GithubLadderCard`:
+one switch, "Anyone can install this". On runs the rungs in order and shows
+each as a row — connect GitHub (install gh and sign in with the same records
+`GithubLadderCard` polls; the device code is the row's text), put it online
+(`publish-github` with `slugRepoName(folder)` and visibility PUBLIC, no
+name field, no radio), and, with the Community switch on, list it
+(`publish-market` with `listing-draft`'s details; a missing description is a
+row with one field, "Describe your app in one line"; App Doctor findings are
+a row "N things to fix before listing · Fix with Claude" that opens App
+Doctor — never a separate modal of its own). A failed review or a confirm
+is a row with "Open Community". Refusals keep their server
+sentence; a gh "name already exists" is said in product words. A step already
+running at open (a sign-in in the browser, a publish for this folder) is
+adopted and watched, as the ladder card does.
+
+THE OFF SIDE IS ASYMMETRIC. Fused cannot un-publish a repository and leaving
+the Community is a maintainer-merged request (§18.6): off = `remove-market`
+(the server's `REMOVE_CONFIRM` first) while the app is listed or in review;
+on GitHub alone the switch stays on and disabled. Edits not online yet are a row
+with Publish (the Source panel's `publish-now` / `push-main`, confirm
+sentence shown inline when the server asks). The install link rides
+`sources` as before (§19.2); the Community rows ride `marketplace`.
+
+### 20.3 The header (`shell/contrib/SourceLine.tsx` `simpleStatus`)
+
+For an own app with Simple on, the source line IS the status: "Only on this
+Mac" · "Online" + "in the Community since <date>" / "Fused is reviewing it
+for the Community" / "the Community needs your confirmation" / "the
+Community review didn't pass" + "N edits not online yet", and "Copy install
+link" as the line's one action when the link is offered. Read off the
+ladder the page already holds; on every tab; the Overview gains nothing.
+
+### 20.4 The Community tab (`CommunityTab.tsx` `SimpleOwnView`)
+
+Own app with Simple on: the status sentence with Put it online (rung 1,
+opens the Share sheet) or Copy install link; then only
+what asks for a decision — the Source panel's sentence and its own buttons
+when its tone is attention or working (a merge, a stuck state, an error), a
+listing that failed or needs a confirm with the listing's buttons, the
+Doctor gate before a first listing with Fix with Claude; then Suggestions and
+Recent (Activity with Undo, unchanged). Suggestions = `ProposalsTab
+compact`: each card "<who> suggests: <title>", Claude's read (the same
+review block), **Add** (Accept — the same review gate, flagged-confirm,
+stale and merge handling; the confirm reads "Add <who>'s change?") and **Not
+now** (set aside for this visit; nothing is sent, the tab's badge still
+counts it, "Show" brings it back), with Try it first, Decline and View on
+GitHub as quiet links. Not now is NOT Decline: Decline posts to the sender.
+
+A Simple / Everything toggle on the tab itself (owner 2026-10-28) switches
+to §19.4's ladder + grid (the full inbox, Listing details, Activity,
+Contributors, Publish update / Remove); the pick is kept per folder while
+the window lives — not a preference.
+
+A copy of someone else's app keeps §19.4's other-side view in Simple mode
+(its "Your changes" card is already one sentence and one primary); the
+sheet's `ContribModal` renders whichever view the tab does.
+
+### 20.5 Defaults taken (the design's open questions)
+
+Q2 switch placement: none — the Community switches decide (above). Q3: the switch lists automatically once Doctor is clear (with
+the Community switch on). Q4: off = Remove from the Community with the
+server's confirm. Q5: Add runs the review gate first (the inbox's rule,
+unchanged). Q6: Undo stays what Recent offers. Q7: Remix is not in Simple.
+Q8: no install counts (the client catalog carries none).

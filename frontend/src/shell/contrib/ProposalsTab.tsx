@@ -61,9 +61,23 @@ import { ContribDialog } from "./ContribDialog";
 import { JobProgress, useElapsed } from "./JobProgress";
 import { MergeReview, mergeShown } from "./MergeReview";
 import { QuietAction } from "./StatusStrip";
+import { cn } from "@platform/lib/utils";
 import { ACCEPT_STEPS, plural, possessive } from "./words";
 
-export function ProposalsTab({ dir, slug, contrib }: { dir: string; slug: string; contrib: AppContribState }) {
+export function ProposalsTab({
+  dir,
+  slug,
+  contrib,
+  compact = false,
+}: {
+  dir: string;
+  slug: string;
+  contrib: AppContribState;
+  /** Simple sharing (§20): each card is "<who> suggests: <title>", Claude's
+   *  read, and Add / Not now — Try it first and Decline as quiet links. Not
+   *  now sets the card aside for this visit (nothing is sent). */
+  compact?: boolean;
+}) {
   const inbox = contrib.data?.inbox ?? null;
   // THE CARDS SURVIVE A RE-LIST. After an Accept or a Decline the server
   // reads `loading` with no items while it lists again; unmounting every
@@ -76,6 +90,12 @@ export function ProposalsTab({ dir, slug, contrib }: { dir: string; slug: string
   const listed = inbox && inbox.loading && inbox.items.length === 0 ? lastItems.current : (inbox?.items ?? []);
   const items = listed.filter((i) => !gone.has(i.number));
   const settledGone = (n: number) => setGone((g) => new Set(g).add(n));
+  // Not now (compact): set aside for this visit, nothing sent to the sender
+  // — the tab's badge still counts it, and "Show" brings it back.
+  const [aside, setAside] = useState<ReadonlySet<number>>(() => new Set());
+  const [showAside, setShowAside] = useState(false);
+  const shown = compact && !showAside ? items.filter((i) => !aside.has(i.number)) : items;
+  const asideCount = compact ? items.filter((i) => aside.has(i.number)).length : 0;
 
   // Can't reach GitHub: said as such, even while a listing is retrying —
   // never the bare skeleton (which reads as "almost there") and never an
@@ -119,9 +139,11 @@ export function ProposalsTab({ dir, slug, contrib }: { dir: string; slug: string
             <EmptyMedia variant="icon">
               <Inbox />
             </EmptyMedia>
-            <EmptyTitle>No proposals right now</EmptyTitle>
+            <EmptyTitle>{compact ? "No suggestions yet" : "No proposals right now"}</EmptyTitle>
             <EmptyDescription>
-              When someone sends changes to {slug}, they show up here with Claude&rsquo;s read of them.
+              {compact
+                ? `When someone suggests a change to ${slug}, it shows up here with Claude’s read of it.`
+                : `When someone sends changes to ${slug}, they show up here with Claude’s read of them.`}
             </EmptyDescription>
           </EmptyHeader>
         </Empty>
@@ -129,29 +151,39 @@ export function ProposalsTab({ dir, slug, contrib }: { dir: string; slug: string
     );
   }
   return (
-    <div className="contrib-inbox">
-      <p className="contrib-inbox-count">
-        {plural(items.length, "proposal")} for {slug}
-        {listedAgo && (
-          <span className="contrib-inbox-age">
-            {" · "}
-            {inbox.loading ? "asking GitHub again…" : `from GitHub ${listedAgo}; Check asks again`}
-          </span>
-        )}
-      </p>
+    <div className={cn("contrib-inbox", compact && "is-compact")}>
+      {!compact && (
+        <p className="contrib-inbox-count">
+          {plural(items.length, "proposal")} for {slug}
+          {listedAgo && (
+            <span className="contrib-inbox-age">
+              {" · "}
+              {inbox.loading ? "asking GitHub again…" : `from GitHub ${listedAgo}; Check asks again`}
+            </span>
+          )}
+        </p>
+      )}
       <ul className="contrib-inbox-list">
-        {items.map((item) => (
+        {shown.map((item) => (
           <li key={item.number}>
             <InboxCard
               dir={dir}
               slug={slug}
               item={item}
+              compact={compact}
               refresh={contrib.refresh}
               onSettled={() => settledGone(item.number)}
+              onAside={() => setAside((a) => new Set(a).add(item.number))}
             />
           </li>
         ))}
       </ul>
+      {asideCount > 0 && (
+        <p className="contrib-inbox-aside">
+          {plural(asideCount, "suggestion")} set aside for now.{" "}
+          <QuietAction onClick={() => setShowAside((v) => !v)}>{showAside ? "Hide" : "Show"}</QuietAction>
+        </p>
+      )}
     </div>
   );
 }
@@ -166,16 +198,21 @@ function InboxCard({
   dir,
   slug,
   item,
+  compact = false,
   refresh,
   onSettled,
+  onAside,
 }: {
   dir: string;
   slug: string;
   item: InboxItem;
+  compact?: boolean;
   refresh: () => Promise<void>;
   /** Accepted or declined here: the list drops it without waiting for the
    *  re-list (which may briefly still name it). */
   onSettled: () => void;
+  /** Compact: Not now — set aside for this visit. */
+  onAside?: () => void;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -251,31 +288,50 @@ function InboxCard({
   const age = timeAgo(Date.parse(item.created_at) / 1000);
 
   return (
-    <article className="contrib-inbox-card" aria-labelledby={`contrib-pr-${item.number}`}>
-      <header className="contrib-inbox-head">
-        <div className="contrib-inbox-who">
-          <span className="contrib-inbox-author">{who}</span>
-          {!item.from_fused && (
-            <Badge variant="outline" className="h-4.5 px-1.5 text-[10.5px] font-medium">
-              from GitHub
-            </Badge>
-          )}
-          {age && <span className="contrib-inbox-age">{age}</span>}
-          {stale && (
-            <Badge variant="outline" className="contrib-inbox-stale h-4.5 px-1.5 text-[10.5px] font-medium">
-              No longer fits
-            </Badge>
-          )}
-        </div>
-        <QuietAction href={item.url}>
-          View on GitHub
-          <ExternalLink aria-hidden="true" />
-        </QuietAction>
-      </header>
+    <article className={cn("contrib-inbox-card", compact && "is-compact")} aria-labelledby={`contrib-pr-${item.number}`}>
+      {!compact && (
+        <header className="contrib-inbox-head">
+          <div className="contrib-inbox-who">
+            <span className="contrib-inbox-author">{who}</span>
+            {!item.from_fused && (
+              <Badge variant="outline" className="h-4.5 px-1.5 text-[10.5px] font-medium">
+                from GitHub
+              </Badge>
+            )}
+            {age && <span className="contrib-inbox-age">{age}</span>}
+            {stale && (
+              <Badge variant="outline" className="contrib-inbox-stale h-4.5 px-1.5 text-[10.5px] font-medium">
+                No longer fits
+              </Badge>
+            )}
+          </div>
+          <QuietAction href={item.url}>
+            View on GitHub
+            <ExternalLink aria-hidden="true" />
+          </QuietAction>
+        </header>
+      )}
       <h3 id={`contrib-pr-${item.number}`} className="contrib-inbox-title">
-        {item.title}
+        {compact ? (
+          <>
+            <span className="contrib-inbox-author">{who}</span> suggests: {item.title}
+            {age && <span className="contrib-inbox-age"> · {age}</span>}
+            {!item.from_fused && (
+              <Badge variant="outline" className="ml-2 h-4.5 px-1.5 align-middle text-[10.5px] font-medium">
+                from GitHub
+              </Badge>
+            )}
+            {stale && (
+              <Badge variant="outline" className="contrib-inbox-stale ml-2 h-4.5 px-1.5 align-middle text-[10.5px] font-medium">
+                No longer fits
+              </Badge>
+            )}
+          </>
+        ) : (
+          item.title
+        )}
       </h3>
-      <Provenance item={item} who={who} />
+      {!compact && <Provenance item={item} who={who} />}
 
       <ReviewBlock
         item={item}
@@ -363,25 +419,50 @@ function InboxCard({
         </p>
       )}
 
-      <footer className="contrib-inbox-actions">
-        <Button
-          variant="outline"
-          disabled={!!busy || !review || !!tryCopy || merging}
-          onClick={onTry}
-          title={reading ? "Available once Claude has read it" : undefined}
-        >
-          {spin("try")}
-          Try
-        </Button>
-        <span className="contrib-inbox-spacer" />
-        <Button variant="outline" disabled={!!busy || merging} onClick={() => setAsk("decline")}>
-          Decline
-        </Button>
-        <Button disabled={!!busy || !review || merging} onClick={() => setAsk("accept")}>
-          {spin("accept")}
-          {busy === "accept" ? "Accepting…" : "Accept"}
-        </Button>
-      </footer>
+      {compact ? (
+        <footer className="contrib-inbox-actions is-compact">
+          <Button
+            size="sm"
+            disabled={!!busy || !review || merging}
+            onClick={() => setAsk("accept")}
+            title={reading ? "Available once Claude has read it" : undefined}
+          >
+            {spin("accept")}
+            {busy === "accept" ? "Adding…" : "Add"}
+          </Button>
+          <Button size="sm" variant="outline" disabled={!!busy} onClick={onAside}>
+            Not now
+          </Button>
+          <span className="contrib-inbox-spacer" />
+          <QuietAction onClick={onTry} disabled={!!busy || !review || !!tryCopy || merging}>
+            Try it first
+          </QuietAction>
+          <QuietAction onClick={() => setAsk("decline")} disabled={!!busy || merging}>
+            Decline
+          </QuietAction>
+          <QuietAction href={item.url}>View on GitHub</QuietAction>
+        </footer>
+      ) : (
+        <footer className="contrib-inbox-actions">
+          <Button
+            variant="outline"
+            disabled={!!busy || !review || !!tryCopy || merging}
+            onClick={onTry}
+            title={reading ? "Available once Claude has read it" : undefined}
+          >
+            {spin("try")}
+            Try
+          </Button>
+          <span className="contrib-inbox-spacer" />
+          <Button variant="outline" disabled={!!busy || merging} onClick={() => setAsk("decline")}>
+            Decline
+          </Button>
+          <Button disabled={!!busy || !review || merging} onClick={() => setAsk("accept")}>
+            {spin("accept")}
+            {busy === "accept" ? "Accepting…" : "Accept"}
+          </Button>
+        </footer>
+      )}
 
       <AlertDialog open={ask === "try"} onOpenChange={(o) => !o && setAsk(null)}>
         <AlertDialogContent>
@@ -410,7 +491,7 @@ function InboxCard({
       <AlertDialog open={ask === "accept"} onOpenChange={(o) => !o && setAsk(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Accept {possessive(who)} proposal?</AlertDialogTitle>
+            <AlertDialogTitle>{compact ? `Add ${possessive(who)} change?` : `Accept ${possessive(who)} proposal?`}</AlertDialogTitle>
             <AlertDialogDescription>
               {possessive(who)} changes go into {slug}, and everyone who follows it gets them.
               {flagged || mustConfirm
@@ -452,7 +533,7 @@ function InboxCard({
                 });
               }}
             >
-              Accept
+              {compact ? "Add" : "Accept"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

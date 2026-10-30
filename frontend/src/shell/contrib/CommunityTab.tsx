@@ -30,6 +30,7 @@ import { ArrowRight, Check, Copy, Download, ExternalLink, GitBranch, Laptop, Sto
 import {
   ackContrib,
   ladderListing,
+  oldIdNote,
   useLadder,
   type AppContribState,
   type ContribAction,
@@ -51,6 +52,7 @@ import { PUBLISH_ID, ListingNotes, useListing, type ListingKit } from "./Listing
 import { MergeReview } from "./MergeReview";
 import { ProposalsTab } from "./ProposalsTab";
 import { ActivityList, FileList, KitProgress, useSourcePanel, type SourcePanelKit } from "./SourcePanel";
+import { simpleOn, simpleStatus } from "./SourceLine";
 import { QuietAction } from "./StatusStrip";
 import { authorOf, githubUrl, plural, possessive } from "./words";
 
@@ -69,6 +71,9 @@ export function copyCardOf(id: string): CopyCard {
   if (PROPOSAL_IDS.has(id)) return "proposal";
   return "source";
 }
+
+/** The Simple / Everything pick per folder, for as long as the window lives. */
+const viewModes = new Map<string, "simple" | "everything">();
 
 /** The listing states whose buttons live on rung 3 (anything but "not listed
  *  yet", whose next action sits on rung 2). */
@@ -112,6 +117,18 @@ export function CommunityTab({ dir, slug, contrib, variant, ladder: given, hidde
   const listing = useListing({ dir, contrib, eligible: market, onChanged: refreshLadder });
   listingRef.current = listing;
   const [doctorOpen, setDoctorOpen] = useState(false);
+  // Simple sharing (§20): with the Community switch on, the own app's tab
+  // opens as suggestions + Recent under one status sentence, and a toggle on
+  // the tab itself switches to the full ladder + grid (owner 2026-10-28:
+  // "both UIs controlled by a toggle on that page"). The pick is kept per
+  // folder while the window lives — no preference.
+  const simpleOffered = simpleOn(l);
+  const [mode, setModeState] = useState<"simple" | "everything">(() => viewModes.get(dir) ?? "simple");
+  const setMode = (m: "simple" | "everything") => {
+    viewModes.set(dir, m);
+    setModeState(m);
+  };
+  const simple = simpleOffered && mode === "simple";
   const busy = !!kit?.busy || !!listing?.busy;
   const onBusyRef = useRef(onBusy);
   onBusyRef.current = onBusy;
@@ -139,7 +156,27 @@ export function CommunityTab({ dir, slug, contrib, variant, ladder: given, hidde
     );
   }
 
-  const body = mine ? (
+  const toggle = mine && simpleOffered && (
+    <div className="contrib-view-toggle" role="group" aria-label="How much to show">
+      <button type="button" aria-pressed={mode === "simple"} onClick={() => setMode("simple")}>
+        Simple
+      </button>
+      <button type="button" aria-pressed={mode === "everything"} onClick={() => setMode("everything")}>
+        Everything
+      </button>
+    </div>
+  );
+  const body = mine && simple ? (
+    <SimpleOwnView
+      dir={dir}
+      slug={slug}
+      contrib={contrib}
+      ladder={l as LadderAnswer}
+      kit={kit}
+      listing={listing}
+      openDoctor={() => setDoctorOpen(true)}
+    />
+  ) : mine ? (
     <OwnView
       dir={dir}
       slug={slug}
@@ -160,6 +197,7 @@ export function CommunityTab({ dir, slug, contrib, variant, ladder: given, hidde
 
   return (
     <div className={cn("contrib-community", `is-${variant}`)}>
+      {toggle}
       {body}
       {kit?.sheets}
       {listing?.sheets}
@@ -551,6 +589,141 @@ function OwnView({
           </Card>
         )}
       </div>
+    </>
+  );
+}
+
+// ---- Simple sharing: the own app's tab (§20) ---------------------------------
+//
+// One status sentence (the header's, `simpleStatus`), then only what asks for
+// a decision: a stuck or working Source-panel state with the server's own
+// fix buttons, a listing that failed or waits on a confirm, the Doctor gate
+// before a first listing — then Suggestions (the inbox, compact: Add / Not
+// now) and Recent (Activity with Undo). No rungs, no grid.
+
+function SimpleOwnView({
+  dir,
+  slug,
+  contrib,
+  ladder: l,
+  kit,
+  listing,
+  openDoctor,
+}: {
+  dir: string;
+  slug: string;
+  contrib: AppContribState;
+  ladder: LadderAnswer;
+  kit: SourcePanelKit | null;
+  listing: ListingKit | null;
+  openDoctor: () => void;
+}) {
+  const c = contrib.data;
+  const rung = l.rung ?? 1;
+  const parts = simpleStatus(l) ?? ["Only on this Mac"];
+  const link = l.flags.sources ? l.github.link : null;
+  const listingState = listing?.state ?? l.listing?.state ?? null;
+  const notListed = !listingState || NOT_LISTED.has(listingState);
+  const inboxOffered = !!c?.flags.inbox && !!c.inbox;
+  const waiting = c?.inbox?.count ?? 0;
+
+  const copyLink = async () => {
+    if (!link) return;
+    const ok = await copyToClipboard(link);
+    notify({ title: ok ? "Install link copied" : "Couldn't copy the link", tone: ok ? "info" : "error" });
+  };
+  // The Source panel speaks only when something needs a look or is running
+  // (a success or a plain fact is already in the sentence above).
+  const panelSpeaks =
+    !!kit && (kit.tone === "attention" || kit.tone === "working" || !!kit.merge || !!kit.error || l.github.unpushed > 0);
+  const listingSpeaks =
+    !!listing &&
+    (listingState === "failed" || listingState === "needs-confirmation" || oldIdNote(listing.listing) !== null);
+  const doctorGate = rung >= 2 && l.flags.marketplace && notListed && l.doctor.clear === false;
+
+  return (
+    <>
+      <section className="contrib-simple-status" aria-label="Where this app stands">
+        <div className="contrib-simple-status-main">
+          <p className="contrib-simple-sentence">{parts.join(" · ")}</p>
+          <p className="contrib-rung-sentence">
+            {rung < 2
+              ? "Share puts it online for anyone, in one switch."
+              : "Anyone with the link installs it, and it stays up to date."}
+          </p>
+        </div>
+        <div className="contrib-rung-actions">
+          {rung < 2 ? (
+            <Button size="sm" onClick={() => openShareApp({ path: dir, name: slug })}>
+              <GitBranch data-icon="inline-start" />
+              Put it online
+            </Button>
+          ) : link ? (
+            <Button size="sm" variant="outline" onClick={() => void copyLink()}>
+              <Copy data-icon="inline-start" />
+              Copy install link
+            </Button>
+          ) : null}
+        </div>
+      </section>
+
+      {panelSpeaks && kit && (
+        <section className="contrib-simple-fix" aria-label="Needs a look">
+          <p className="contrib-rung-detail">{kit.panel.sentence}</p>
+          <FileList files={kit.panel.files} />
+          <KitProgress kit={kit} />
+          {kit.merge && <MergeReview dir={dir} job={kit.merge} brief disabled={!!kit.busy} refresh={contrib.refresh} />}
+          {kit.error && !kit.sheetOpen && (
+            <p className="contrib-error" role="alert">
+              {kit.error}
+            </p>
+          )}
+          <div className="contrib-rung-actions">
+            {kit.rest.map(kit.button)}
+            {kit.footCheck && (
+              <QuietAction onClick={() => kit.press(kit.footCheck as ContribAction)} disabled={!!kit.busy}>
+                {kit.checkLabel(kit.footCheck)}
+              </QuietAction>
+            )}
+          </div>
+        </section>
+      )}
+
+      {listingSpeaks && listing && (
+        <section className="contrib-simple-fix" aria-label="The Community listing">
+          <p className="contrib-rung-detail">{listing.sentence}</p>
+          <ListingNotes kit={listing} />
+          <div className="contrib-rung-actions">
+            {listing.primary && listing.button(listing.primary)}
+            {listing.others.map(listing.button)}
+          </div>
+        </section>
+      )}
+
+      {doctorGate && (
+        <section className="contrib-simple-fix" aria-label="Before listing">
+          <p className="contrib-rung-detail">
+            {l.doctor.failing ? plural(l.doctor.failing, "thing") : "A few things"} to fix before it can be in the
+            Community.
+          </p>
+          <div className="contrib-rung-actions">
+            <Button size="sm" variant="outline" onClick={openDoctor}>
+              Fix with Claude
+            </Button>
+          </div>
+        </section>
+      )}
+
+      {inboxOffered && (
+        <Card title={waiting > 0 ? `Suggestions · ${waiting}` : "Suggestions"} wide>
+          <ProposalsTab dir={dir} slug={slug} contrib={contrib} compact />
+        </Card>
+      )}
+      {kit && kit.activity.length > 0 && (
+        <Card title="Recent" wide>
+          <ActivityList kit={kit} />
+        </Card>
+      )}
     </>
   );
 }
