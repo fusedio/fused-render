@@ -168,8 +168,10 @@ _SYNTHETIC_DESCRIPTION = "Exported from Fused UDF Workbench"
 #
 # KNOWN GAP (view leg only): the snapshot and delta legs (`apply_snapshot`,
 # `compact_state_from_disk`, `diff_views`) key rows by name alone, so of two
-# rows sharing a name they keep the FIRST and do not show the other;
-# `folder_problems` and `normalise_folders` report the clash.
+# rows sharing a name they keep the FIRST and do not show the other. For two
+# FOLDERS that is permanent (`folder_problems` reports it); for two non-folder
+# rows it lasts until the next write folds them into one
+# (`merge_same_named_rows`: every toml write, the push's freeze, a merge).
 
 FOLDER_TYPE = "udf-folder"
 
@@ -346,16 +348,46 @@ def _folder_ids(rows: Iterable[Any]) -> dict[int, tuple[str, int]]:
     return out
 
 
+def merge_same_named_rows(rows: list) -> list[str]:
+    """Two NON-folder rows of one name are one node twice (one source file
+    has one row; the server hydrates the first and drops the rest): fold
+    every later row into the first, in place, later fields winning — the
+    first row is the one the sync synthesized for a file that appeared
+    (a default sticky), the later one is what the author then wrote for it,
+    title, place and all. Folders are left alone: two folders may share a
+    name on purpose (see the merge section). One line per name merged."""
+    first: dict[str, dict] = {}
+    keep: list = []
+    merged: list[str] = []
+    for row in rows:
+        name = row_name(row) if isinstance(row, dict) and not is_folder(row) else None
+        if name is None:
+            keep.append(row)
+            continue
+        if name in first:
+            first[name].update(row)
+            if name not in merged:
+                merged.append(name)
+            continue
+        first[name] = row
+        keep.append(row)
+    if merged:
+        rows[:] = keep
+    return [f"two rows share the name {n!r}: merged into the first" for n in merged]
+
+
 def normalise_folders(rows: list, prefer: dict[str, Any] | None = None) -> list[str]:
     """Make `rows` (in place) satisfy `folder_problems` as far as dropping
-    entries can: a `childUdfOrder` that is not a list becomes empty; an entry
-    that is not a non-empty string, names a folder, or repeats within its
-    folder is dropped; a name two folders list stays only in `prefer[name]`
-    (a folder name, or a (name, occurrence) pair) when that folder lists
-    it, else in the first lister in document order. Entries naming no row
-    are kept. Returns one line per fix, plus one per name rows share
-    (reported, not fixable here)."""
-    fixes = _clash_lines(rows, " (not fixed)")
+    entries can: two non-folder rows of one name become one
+    (`merge_same_named_rows`); a `childUdfOrder` that is not a list becomes
+    empty; an entry that is not a non-empty string, names a folder, or
+    repeats within its folder is dropped; a name two folders list stays
+    only in `prefer[name]` (a folder name, or a (name, occurrence) pair)
+    when that folder lists it, else in the first lister in document order.
+    Entries naming no row are kept. Returns one line per fix, plus one per
+    name two folders share (reported, not fixable here)."""
+    fixes = merge_same_named_rows(rows)
+    fixes += _clash_lines(rows, " (not fixed)")
     # An entry names the UDF when one has the name, a folder only otherwise.
     leaves = {row_name(r) for r in rows if not is_folder(r)} - {None}
     folders = ({row_name(r) for r in rows if is_folder(r)} - {None}) - leaves
@@ -1216,6 +1248,13 @@ def apply_snapshot(
     # Folder grammar: normalised, never rejected (see "folders" above). A
     # row the normalisation put back as it was is not reported upserted,
     # and a doc that ends where it began is not written.
+    # Non-folder names two rows carry are about to fold into one row whose
+    # fields the embed has never seen (it holds the first row's): reported
+    # as `folded`, so the host drops them from the embed's view and the next
+    # delta carries the folded row to the frame instead of the frame's next
+    # snapshot writing its stale first-row fields back.
+    folder_names = {row_name(r) for r in rows if is_folder(r)}
+    folded = [n for n in shared_names(rows, same_kind=True) if n not in folder_names]
     folder_fixes = normalise_folders(rows)
     if folder_fixes:
         changed = True
@@ -1233,7 +1272,7 @@ def apply_snapshot(
             "renamed": renamed,
             "created": created, "written": written, "synthesized": synthesized,
             "rowless_files": rowless_files, "deferred_deletes": deferred_deletes,
-            "folder_fixes": folder_fixes, "at": time.time()}
+            "folded": folded, "folder_fixes": folder_fixes, "at": time.time()}
 
 
 def held_view(disk: dict, names: Iterable[str], *, edges: list, ids: dict,
@@ -2073,6 +2112,22 @@ def merge_toml(base: dict | None, local_doc: dict, remote_doc: dict) -> tuple[di
     """
     info: dict[str, list] = {"added": [], "removed": [], "taken": [], "kept": [],
                              "renamed": [], "folder_fixes": []}
+    # Two non-folder rows of one name on either side are one node twice:
+    # fold them BEFORE keying, so the three-way merge sees one row per
+    # name and a remote edit to that node is not undone by local's second
+    # copy afterwards.
+    # On COPIES: the caller compares the merged rows with its own local_doc
+    # to tell a no-op merge from one that changed something, and a fold is
+    # a change it must write.
+    side_fixes: list[str] = []
+    folded_sides = []
+    for side_doc in (local_doc, remote_doc):
+        side_rows = side_doc.get("canvas", {}).get("nodes") if isinstance(side_doc.get("canvas"), dict) else None
+        if isinstance(side_rows, list) and shared_names(side_rows, same_kind=True):
+            side_doc = copy.deepcopy(side_doc)
+            side_fixes += merge_same_named_rows(side_doc["canvas"]["nodes"])
+        folded_sides.append(side_doc)
+    local_doc, remote_doc = folded_sides
     b_keyed = _keyed(base) if base else ([], {})
     l_keyed, r_keyed = _align_folders(b_keyed, _keyed(local_doc), _keyed(remote_doc))
     B, L, R = _Side(*b_keyed), _Side(*l_keyed), _Side(*r_keyed)
@@ -2125,7 +2180,14 @@ def merge_toml(base: dict | None, local_doc: dict, remote_doc: dict) -> tuple[di
         home = renames.get(home, home)
         if home in merged_at:
             local_nesting[child] = merged_at[home]
-    info["folder_fixes"] = normalise_folders(list(merged.values()), prefer=local_nesting)
+    merged_rows = list(merged.values())
+    info["folder_fixes"] = normalise_folders(merged_rows, prefer=local_nesting)
+    info["folder_fixes"] = [f for f in side_fixes if f not in info["folder_fixes"]] + info["folder_fixes"]
+    # A non-folder row folded into its first namesake is gone from the list:
+    # drop its key too, or the document would still carry it.
+    alive = {id(row) for row in merged_rows}
+    for key in [k for k, row in merged.items() if id(row) not in alive]:
+        del merged[key]
     _reframe_children(merged, B, L, R, renames)
 
     paired = {g for f, g in renames.items() if f in ln}
