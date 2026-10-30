@@ -421,14 +421,17 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       // On the bridge, the pointer IS on its way: the bridge's own enter said
       // so, and a move within it (no leftward direction) must not unsay it.
       const onBridge = !!target?.classList?.contains("canvas-rail-peek-bridge");
-      // A move too small to have a direction keeps the last apex: a jittering
-      // hand must not collapse the triangle to a point.
+      // A move too small to have a direction is no move: a jittering hand
+      // must neither collapse the triangle to a point nor, by landing a pixel
+      // right of the apex, read as "outside" and release a hold (CodeRabbit
+      // on #2032). Only the card and the bridge are ruled on regardless.
       const moved = Math.hypot(here.x - apex.x, here.y - apex.y) >= 3;
+      if (!moved && !inCard && !onBridge) return;
       setCone(!inCard && (onBridge || inSafeCone(here, apex, box)));
-      if (moved) {
-        apex = here;
-        if (debug) setApexPt(apex);
-      }
+      // The overlay draws the triangle the TEST used — the previous apex —
+      // so "pointer inside" is said of the triangle on screen.
+      if (debug) setApexPt(apex);
+      if (moved) apex = here;
     };
     document.addEventListener("pointermove", onMove, true);
     return () => {
