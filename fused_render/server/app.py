@@ -831,6 +831,21 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
 
         supervisor.unload_all()
 
+    # Every canvas sync manager stops with the server, and its clone's writer
+    # lock is released. The Mac app's quit rung (app.py `_stop_children`) does
+    # this itself because the lifespan never runs there; every exit that IS a
+    # lifespan one — the Linux supervisor's child server, a pip `fused-render`
+    # on Windows — had NO rung at all, so a lock file stayed behind naming a
+    # dead pid. Harmless under flock (the kernel drops it), but on Windows the
+    # lock is that file plus a pid probe, and a reused pid made the clone
+    # refuse every later start. `latch=False`: not a quit, so a later app in
+    # this process (tests) may still start managers.
+    @on_shutdown_always
+    async def _shutdown_canvas_sync():
+        from fused_render import canvases as _canvases
+
+        await asyncio.to_thread(_canvases.shutdown, latch=False)
+
     # Every managed engine dies with the app: template daemons and
     # background/daemon children alike (stop_all clears both).
     @on_shutdown_always

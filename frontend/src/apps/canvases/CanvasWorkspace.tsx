@@ -198,6 +198,8 @@ import {
   pullCanvas,
   startSync,
   takeoverSync,
+  unreachableOwnerFromError,
+  forceQuitOwner,
   syncEventsUrl,
   type WorkbenchEnv,
   canvasNameFromPath,
@@ -607,6 +609,11 @@ export default function CanvasWorkspace({
   // owner's refusal (its message) until the next attempt or a release.
   const [takingOver, setTakingOver] = useState(false);
   const [takeoverError, setTakeoverError] = useState<string | null>(null);
+  // The takeover came back `owner_unreachable` with a pid the server vouches
+  // for as a Fused process of ours (a restart's leftover): the "Force quit"
+  // button's target. Null until then, and after any release or success.
+  const [forceQuitPid, setForceQuitPid] = useState<number | null>(null);
+  const [forceQuitting, setForceQuitting] = useState(false);
   // sync/start failed for another reason (the server still coming up, a
   // transient 5xx): shown, and retried like an owned clone.
   const [startError, setStartError] = useState<string | null>(null);
@@ -1127,6 +1134,7 @@ export default function CanvasWorkspace({
       const started = await startSync(env, name);
       setOwned(null);
       setTakeoverError(null);
+      setForceQuitPid(null);
       setStartError(null);
       setDir(started.dir);
     } catch (e) {
@@ -1149,14 +1157,40 @@ export default function CanvasWorkspace({
       const started = await takeoverSync(env, name);
       setOwned(null);
       setStartError(null);
+      setForceQuitPid(null);
       setDir(started.dir);
     } catch (e) {
       if (e instanceof CanvasOwnedError) setOwned(e.owner);
       setTakeoverError((e as Error).message);
+      const unreachable = unreachableOwnerFromError(e);
+      setForceQuitPid(unreachable?.canForceQuit && unreachable.pid > 0 ? unreachable.pid : null);
     } finally {
       setTakingOver(false);
     }
   }, [env, name]);
+
+  // "Force quit": the holder is one of our own processes that no longer
+  // answers (an update's restart left it behind). Only ever shown after the
+  // server said so, and only sent on the user's press; the server re-checks
+  // every guard before SIGTERM. Then sync/start, which claims the freed lock.
+  const forceQuit = useCallback(async (): Promise<void> => {
+    setForceQuitting(true);
+    setTakeoverError(null);
+    try {
+      const result = await forceQuitOwner(env, name);
+      setForceQuitPid(null);
+      if (!result.freed) {
+        setTakeoverError(
+          `pid ${result.pid ?? "?"} was told to quit but still holds the canvas; this page keeps trying.`,
+        );
+      }
+      await ensureSync();
+    } catch (e) {
+      setTakeoverError((e as Error).message);
+    } finally {
+      setForceQuitting(false);
+    }
+  }, [env, name, ensureSync]);
 
   // Boot: base URL + handle + make sure the watcher runs. sync/start goes
   // out at once, IN PARALLEL with status + whoami (it needs neither): the
@@ -2832,9 +2866,27 @@ export default function CanvasWorkspace({
                   canvas. Close it there and this page picks the canvas up on its own, or take
                   it over here.
                 </p>
-                <button type="button" className="btn btn-primary" onClick={() => void takeOver()} disabled={takingOver}>
-                  {takingOver ? "Taking over…" : "Take over here"}
-                </button>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={() => void takeOver()}
+                    disabled={takingOver || forceQuitting}
+                  >
+                    {takingOver ? "Taking over…" : "Take over here"}
+                  </button>
+                  {forceQuitPid !== null && (
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => void forceQuit()}
+                      disabled={forceQuitting || takingOver}
+                      title="Send that Fused process the ordinary quit signal (SIGTERM). It is a leftover of this app that no longer answers; nothing else is touched."
+                    >
+                      {forceQuitting ? "Quitting it…" : `Force quit that Fused (pid ${forceQuitPid})`}
+                    </button>
+                  )}
+                </div>
                 {takeoverError && (
                   <p role="alert" style={{ margin: 0, color: "var(--error, #d44)" }}>
                     {takeoverError}
