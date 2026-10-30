@@ -1948,7 +1948,7 @@ def _seed_default_udf(env: str, name: str) -> None:
             with open(os.path.join(target, f"{_DEFAULT_UDF_NAME}.py"), "w",
                       encoding="utf-8") as f:
                 f.write(_DEFAULT_UDF_CODE)
-            canvas_snapshot.reconcile_rows(target)
+            canvas_snapshot.reconcile_rows(target, skip=_SYNC_IGNORED_BASENAMES)
         except Exception as e:  # noqa: BLE001 — best effort, see docstring
             logger.warning("canvas %s: starter UDF not seeded — %s", key, e)
             return
