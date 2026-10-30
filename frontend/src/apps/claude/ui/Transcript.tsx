@@ -717,12 +717,12 @@ export const Transcript = memo(function Transcript({
     bgInFlight.current = true;
     const fail = (reason: string) => {
       console.warn("[claude] background failed:", reason);
-      actions.addNote("Could not send that command to the background" + (reason ? ": " + reason : "."), "⏹");
+      actions.addNote("Could not send that to the background" + (reason ? ": " + reason : "."), "⏹");
     };
     runAgent("task_background", { run_id: runId, tool_use_id: toolUseId })
       .then((res) => {
         if ("error" in res && res.error) fail(String(res.error));
-        else if ((res as { backgrounded?: boolean }).backgrounded === false) fail("the command was not running yet");
+        else if ((res as { backgrounded?: boolean }).backgrounded === false) fail("it was not running yet");
       })
       .catch((err) => fail(err instanceof Error ? err.message : String(err)))
       .finally(() => {
