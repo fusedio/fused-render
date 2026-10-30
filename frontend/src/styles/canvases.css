@@ -790,3 +790,16 @@
   font-size: 11px;
   color: var(--fg-muted);
 }
+
+/* THE BRIDGE between the card and the rail (RailPeek): transparent, the
+   gap's width, the card's height; a pointer resting in it is "on the card".
+   Hit-testable only while the card is up. */
+.canvas-rail-peek-bridge {
+  position: fixed;
+  z-index: 44;
+  pointer-events: none;
+  background: transparent;
+}
+.canvas-rail-peek-bridge.is-on {
+  pointer-events: auto;
+}

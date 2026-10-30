@@ -39,6 +39,13 @@ export const PEEK_SWAP_MS = 80;
 /** Leaving both the ring and the card: the card closes after this, unless
  *  the pointer comes back onto either. */
 export const PEEK_CLOSE_MS = 250;
+/** How long a pointer may HANG in the safe cone or the bridge — heading for
+ *  the card but not arriving — before the card stops waiting for it (owner,
+ *  2026-10-30: "there should be a timeout to hang out in that invisible area
+ *  … some reasonable amount of time"). Then the ordinary grace applies. */
+export const PEEK_CONE_MS = 1200;
+/** The safe cone's base reaches this far past the card's top and bottom. */
+export const PEEK_CONE_PAD = 32;
 /** The card's width, where the row leaves room for it. */
 export const PEEK_WIDTH = 420;
 /** The card's height cap; shorter rows shrink it. */
@@ -74,6 +81,40 @@ export function peekPlacement(anchor: Box, rail: Box, bounds: Box, maxHeight = P
   const maxTop = bounds.top + bounds.height - PEEK_INSET - height;
   const top = Math.min(maxTop, Math.max(minTop, centre - height / 2));
   return { left: Math.round(left), top: Math.round(top), width: Math.round(width), height: Math.round(height) };
+}
+
+export interface Point {
+  x: number;
+  y: number;
+}
+
+/**
+ * THE SAFE CONE (Amazon's mega-menu triangle, Floating UI's `safePolygon`,
+ * menu-aim): the triangle from the hovered ring's centre (the apex, at the
+ * rail) to the card's NEAR edge — its right side, padded top and bottom —
+ * widening from right to left. A pointer inside it is heading for the card
+ * and may cross other rings or the canvas on the way without the card
+ * closing or swapping; the rail column itself (x at or past the apex) and
+ * the card's own box are not the cone's — the rings and the card speak for
+ * those.
+ */
+export function inSafeCone(p: Point, apex: Point, card: Box, pad = PEEK_CONE_PAD): boolean {
+  const edgeX = card.left + card.width;
+  if (p.x >= apex.x || p.x < edgeX) return false;
+  const top: Point = { x: edgeX, y: card.top - pad };
+  const bottom: Point = { x: edgeX, y: card.top + card.height + pad };
+  return pointInTriangle(p, apex, top, bottom);
+}
+
+/** Barycentric sign test. */
+export function pointInTriangle(p: Point, a: Point, b: Point, c: Point): boolean {
+  const sign = (p1: Point, p2: Point, p3: Point) => (p1.x - p3.x) * (p2.y - p3.y) - (p2.x - p3.x) * (p1.y - p3.y);
+  const d1 = sign(p, a, b);
+  const d2 = sign(p, b, c);
+  const d3 = sign(p, c, a);
+  const neg = d1 < 0 || d2 < 0 || d3 < 0;
+  const pos = d1 > 0 || d2 > 0 || d3 > 0;
+  return !(neg && pos);
 }
 
 /** The kept-alive set after `key` was previewed: most recent first, at most
@@ -133,6 +174,10 @@ export class PeekIntent {
   private pointerKey: string | null = null;
   private focusKey: string | null = null;
   private overCard = false;
+  /** The pointer is in the safe cone or on the bridge: on its way to the
+   *  card. Holds the card and defers a swap, for PEEK_CONE_MS at most. */
+  private inCone = false;
+  private coneTimer = 0;
   /** The card holds the keyboard focus. */
   private held = false;
   /** A pointer is down inside the card (a text selection, a scrollbar drag)
@@ -159,6 +204,12 @@ export class PeekIntent {
     if (via === "pointer") {
       this.pointerKey = key;
       this.muteFocus = false;
+      // Crossing a ring INSIDE the cone is not a hover of it: the swap waits
+      // until the pointer leaves the cone still on that ring (`leaveCone`).
+      if (this.inCone && this.shown !== null && key !== this.shown) {
+        this.cancelOpen();
+        return;
+      }
     } else {
       this.focusKey = key;
       if (this.muteFocus) return;
@@ -240,6 +291,36 @@ export class PeekIntent {
   enterCard(): void {
     this.overCard = true;
     this.cancelClose();
+    this.leaveCone(false);
+  }
+
+  /** The pointer entered the safe cone (or the bridge) on its way to the
+   *  card: hold, and start the hang clock. */
+  enterCone(): void {
+    if (this.inCone) return;
+    this.inCone = true;
+    this.cancelClose();
+    this.coneTimer = this.timers.set(() => {
+      this.coneTimer = 0;
+      // Hung too long: the cone stops speaking for the pointer.
+      this.leaveCone(true);
+    }, PEEK_CONE_MS);
+  }
+
+  /** The pointer left the cone — onto the card, back to the rail, or away.
+   *  `settle` re-arms whatever the pointer rests on: a swap to the ring under
+   *  it, else the grace close. */
+  leaveCone(settle = true): void {
+    if (this.coneTimer) this.timers.clear(this.coneTimer);
+    this.coneTimer = 0;
+    if (!this.inCone) return;
+    this.inCone = false;
+    if (!settle) return;
+    if (this.pointerKey !== null && this.pointerKey !== this.shown && this.pendingKey !== this.pointerKey) {
+      this.enterRing(this.pointerKey, "pointer");
+      return;
+    }
+    this.scheduleClose();
   }
 
   /** The pointer left the card. */
@@ -271,6 +352,7 @@ export class PeekIntent {
   dismiss(returningFocus = false): void {
     this.cancelOpen();
     this.cancelClose();
+    this.leaveCone(false);
     this.held = false;
     this.pressing = false;
     // The card goes pointer-events: none under the pointer; no leave fires.
@@ -283,6 +365,7 @@ export class PeekIntent {
   dispose(): void {
     this.cancelOpen();
     this.cancelClose();
+    this.leaveCone(false);
   }
 
   private get overRing(): boolean {
@@ -296,7 +379,7 @@ export class PeekIntent {
   }
 
   private get kept(): boolean {
-    return this.overRing || this.overCard || this.held || this.pressing;
+    return this.overRing || this.overCard || this.inCone || this.held || this.pressing;
   }
 
   private scheduleClose(): void {

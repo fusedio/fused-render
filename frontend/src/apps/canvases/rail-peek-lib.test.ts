@@ -3,6 +3,8 @@
 import { describe, expect, it } from "bun:test";
 import {
   PEEK_CLOSE_MS,
+  PEEK_CONE_MS,
+  inSafeCone,
   PEEK_GAP,
   PEEK_INSET,
   PEEK_KEEP,
@@ -50,6 +52,24 @@ describe("peekPlacement", () => {
     const row = { left: 0, top: 0, width: 160, height: 400 };
     const rail = { left: 112, top: 0, width: 48, height: 400 };
     expect(peekPlacement(ring(100), rail, row)).toBeNull();
+  });
+});
+
+describe("inSafeCone", () => {
+  const card = { left: 924, top: 48, width: 420, height: 640 };
+  const apex = { x: 1376, y: 100 }; // the ring's centre, in the rail
+  it("a diagonal path from the ring toward the card's far corner is inside", () => {
+    expect(inSafeCone({ x: 1360, y: 140 }, apex, card)).toBe(true);
+    expect(inSafeCone({ x: 1350, y: 400 }, apex, card)).toBe(true);
+    expect(inSafeCone({ x: 1346, y: 650 }, apex, card)).toBe(true);
+  });
+  it("the rail column and the card itself are not the cone's", () => {
+    expect(inSafeCone({ x: 1380, y: 200 }, apex, card)).toBe(false);
+    expect(inSafeCone({ x: 1300, y: 200 }, apex, card)).toBe(false);
+  });
+  it("a point far off the card's padded edge is outside", () => {
+    expect(inSafeCone({ x: 1360, y: 850 }, apex, card)).toBe(false);
+    expect(inSafeCone({ x: 1360, y: -100 }, apex, card)).toBe(false);
   });
 });
 
@@ -316,6 +336,43 @@ describe("PeekIntent", () => {
     intent.leaveRing();
     clock.tick(PEEK_CLOSE_MS);
     expect(shown).toEqual(["a", null, "b", null]);
+  });
+
+  it("in the cone, crossing another ring does not swap and the card holds; leaving the cone on that ring swaps", () => {
+    const { clock, shown, intent } = rig();
+    intent.showNow("a");
+    intent.leaveRing();
+    intent.enterCone();
+    intent.enterRing("b");
+    intent.leaveRing();
+    clock.tick(PEEK_CLOSE_MS + 50);
+    expect(shown).toEqual(["a"]);
+    // Still in the cone, now resting on b: leaving the cone there swaps to b.
+    intent.enterRing("b");
+    intent.leaveCone();
+    clock.tick(PEEK_SWAP_MS);
+    expect(shown).toEqual(["a", "b"]);
+  });
+
+  it("hanging in the cone past PEEK_CONE_MS lets the grace close run", () => {
+    const { clock, shown, intent } = rig();
+    intent.showNow("a");
+    intent.leaveRing();
+    intent.enterCone();
+    clock.tick(PEEK_CONE_MS - 1);
+    expect(shown).toEqual(["a"]);
+    clock.tick(1 + PEEK_CLOSE_MS);
+    expect(shown).toEqual(["a", null]);
+  });
+
+  it("reaching the card from the cone keeps it, with no clock running", () => {
+    const { clock, shown, intent } = rig();
+    intent.showNow("a");
+    intent.leaveRing();
+    intent.enterCone();
+    intent.enterCard();
+    clock.tick(PEEK_CONE_MS + PEEK_CLOSE_MS + 1000);
+    expect(shown).toEqual(["a"]);
   });
 
   it("re-entering the shown ring is a no-op (no second show, no close)", () => {

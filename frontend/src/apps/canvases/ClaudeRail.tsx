@@ -519,6 +519,7 @@ export function ClaudeRail({
           onReload={refreshListing}
           onPointerEnter={() => intent.enterCard()}
           onPointerLeave={() => intent.leaveCard()}
+          onCone={(inside) => (inside ? intent.enterCone() : intent.leaveCone())}
           onPressInside={onPressInside}
           onHold={(on) => intent.hold(on)}
           onDismiss={dismissToRing}

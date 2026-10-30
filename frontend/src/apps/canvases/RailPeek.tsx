@@ -69,6 +69,7 @@ import {
   PEEK_MAX_HEIGHT,
   PEEK_PLAIN_HEIGHT,
   PEEK_WIDTH,
+  inSafeCone,
   peekPlacement,
   statusWords,
   type Box,
@@ -137,6 +138,10 @@ export interface RailPeekProps {
   onReload: () => void;
   onPointerEnter: () => void;
   onPointerLeave: () => void;
+  /** The pointer entered (`true`) or left (`false`) the safe cone between
+   *  the shown ring and the card, or the bridge over the gap (rail-peek-lib
+   *  `inSafeCone`, PeekIntent `enterCone`/`leaveCone`). */
+  onCone: (inside: boolean) => void;
   /** A pointer went down inside the card — on the card itself or on one of
    *  the chat's portaled popovers (React's capture phase crosses portals,
    *  the DOM's `contains` does not): hold it through the gesture, and tell
@@ -205,6 +210,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     onReload,
     onPointerEnter,
     onPointerLeave,
+    onCone,
     onPressInside,
     onHold,
     onDismiss,
@@ -243,16 +249,17 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // A seat with no session gets the short card (PEEK_PLAIN_HEIGHT).
   const maxHeightFor = (key: string) =>
     kept.find((s) => s.pulse.key === key)?.pulse.session_id ? PEEK_MAX_HEIGHT : PEEK_PLAIN_HEIGHT;
+  // The rail's left edge as of the last placement: where the bridge below
+  // ends. A ref, not state — `place` runs before every `setBox`, so the
+  // render that draws the new box reads a fresh value.
+  const railLeft = useRef(0);
   const place = (key: string): Box | null => {
     const anchor = anchorOf(key);
     const row = railEl?.parentElement;
     if (!anchor || !railEl || !row) return null;
-    return peekPlacement(
-      anchor.getBoundingClientRect(),
-      railEl.getBoundingClientRect(),
-      row.getBoundingClientRect(),
-      maxHeightFor(key),
-    );
+    const rail = railEl.getBoundingClientRect();
+    railLeft.current = rail.left;
+    return peekPlacement(anchor.getBoundingClientRect(), rail, row.getBoundingClientRect(), maxHeightFor(key));
   };
 
   // PLACED, THEN SHOWN (header). Hidden → shown sets the box on this frame and
@@ -348,6 +355,38 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shownKey]);
 
+  // THE SAFE CONE (header; rail-peek-lib `inSafeCone`): while the card is up,
+  // every pointer move is tested against the triangle from the shown ring's
+  // centre to the card's padded right edge. Inside → `onCone(true)`: the
+  // card holds and a ring crossed on the way does not swap; outside →
+  // `onCone(false)`: the intent re-arms for whatever the pointer rests on.
+  // The bridge's own enter/leave feed the same switch, so one clock
+  // (PEEK_CONE_MS) covers both.
+  const coneOn = useRef(false);
+  const setCone = (inside: boolean) => {
+    if (coneOn.current === inside) return;
+    coneOn.current = inside;
+    onCone(inside);
+  };
+  useEffect(() => {
+    if (!on || !box || !shownKey) return;
+    const anchor = anchorOf(shownKey);
+    if (!anchor) return;
+    const r = anchor.getBoundingClientRect();
+    const apex = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    const onMove = (e: PointerEvent) => {
+      const inCard = cardRef.current?.contains(e.target as Node) ?? false;
+      setCone(!inCard && inSafeCone({ x: e.clientX, y: e.clientY }, apex, box));
+    };
+    document.addEventListener("pointermove", onMove, true);
+    return () => {
+      document.removeEventListener("pointermove", onMove, true);
+      setCone(false);
+    };
+    // `onCone` is the host's stable callback.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [on, box, shownKey]);
+
   // INERT WHILE HIDDEN (React 18 has no `inert` prop): the fading card and
   // the warm mounts behind it take no focus, no hit, and are out of the
   // accessibility tree — `aria-hidden` on a subtree that might still hold
@@ -427,7 +466,31 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // listing; the pulse then takes the ring, and the card with it (prune).
   const onFiled = () => onReload();
 
+  // THE BRIDGE (owner, 2026-10-30: "an invisible [strip] between the item I
+  // am hovering and the preview, so the user doesn't have to move fast or
+  // time it"): a transparent band over the gap between the card's right edge
+  // and the rail, the card's full height, that counts as the card for the
+  // pointer — resting in the gap holds the card open past the grace, and
+  // the canvas wrapper under the gap never sees the pointer (it focuses its
+  // frame on enter). It stops 3px short of the rail so the rail's seam (the
+  // drag that opens the pane) keeps its own hit area. Only while the card is
+  // up (`.is-on`), like the card itself.
+  const bridge =
+    box && railLeft.current > box.left + box.width + 1
+      ? { left: box.left + box.width, top: box.top, width: Math.max(0, railLeft.current - 3 - (box.left + box.width)), height: box.height }
+      : null;
+
   return createPortal(
+    <>
+    {bridge && (
+      <div
+        className={"canvas-rail-peek-bridge" + (visible ? " is-on" : "")}
+        aria-hidden="true"
+        style={bridge}
+        onPointerEnter={() => setCone(true)}
+        onPointerLeave={() => setCone(false)}
+      />
+    )}
     <div
       ref={cardRef}
       id={id}
@@ -571,7 +634,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
           })}
         </div>
       </div>
-    </div>,
+    </div>
+    </>,
     document.body,
   );
 });
