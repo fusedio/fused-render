@@ -74,9 +74,9 @@ def test_compact_and_reconcile_take_the_files_as_the_nodes(tmp_path):
     assert doc["canvas"]["edges"] == [["a", "b"], ["F", "a"]]
     assert [(r["udfName"], r.get("x"), r.get("y"), r.get("width"), r.get("height"))
             for r in doc["canvas"]["nodes"]] == [
-        ("a", 10, 20, 700, 300), ("F", 1000, 0, None, 800), ("b", 40, 75, None, 5000),
-        ("nobody", -990, 875, 700, 500), ("note", 10, 1450, 350, 250),
-        ("orphan", 10, 1775, 700, 500)]
+        ("a", 10, 20, 700, 300), ("F", 1000, 0, None, 5690), ("b", 40, 75, None, 5000),
+        ("nobody", 40, 5150, 700, 500), ("note", 10, 875, 350, 250),
+        ("orphan", 10, 1200, 700, 500)]
     assert doc["canvas"]["nodes"][1]["childUdfOrder"] == ["b", "nobody"]
     assert cs.reconcile_rows(d, pending=["late"], skip=["CLAUDE.md"])["changed"] is False
 

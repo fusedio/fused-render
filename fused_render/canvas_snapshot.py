@@ -1159,6 +1159,7 @@ def compact_state_from_disk(clone_dir: str, remote_ids: dict[str, str] | None = 
 
 
 _NODE_GAP_PX = 75
+_FOLDER_PADDING_PX = 40
 _DEFAULT_NODE_SIZE = (700, 500)
 _DEFAULT_TEXTBOX_SIZE = (350, 250)
 
@@ -1236,11 +1237,18 @@ def reconcile_rows(clone_dir: str, *, pending: Iterable[str] = (), skip: Iterabl
             continue
         width, height = (_DEFAULT_TEXTBOX_SIZE if files[stem].endswith(".md")
                          else _DEFAULT_NODE_SIZE)
-        y += _NODE_GAP_PX
-        owner = owners.get(stem, {})
-        rows.append({"udfName": stem, "x": x - _num(owner.get("x"), 0),
-                     "y": y - _num(owner.get("y"), 0), "width": width, "height": height})
-        y += height
+        owner = owners.get(stem)
+        if owner is None:
+            y += _NODE_GAP_PX
+            rows.append({"udfName": stem, "x": x, "y": y, "width": width, "height": height})
+            y += height
+        else:
+            kids = [r for r in rows if owners.get(row_name(r)) is owner]
+            kx = min((_num(r.get("x"), 0) for r in kids), default=_FOLDER_PADDING_PX)
+            ky = max((_num(r.get("y"), 0) + _num(r.get("height"), 0) for r in kids),
+                     default=0) + _NODE_GAP_PX
+            rows.append({"udfName": stem, "x": kx, "y": ky, "width": width, "height": height})
+            owner["height"] = max(_num(owner.get("height"), 0), ky + height + _FOLDER_PADDING_PX)
         added.append(stem)
     kept = {row_name(r) for r in rows} - {None}
     for row in rows:
