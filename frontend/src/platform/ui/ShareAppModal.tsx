@@ -98,6 +98,7 @@ import {
   getLadder,
   getListingDraft,
   ladderListing,
+  notifyLadderChanged,
   opensDoctor,
   plainMessage,
   publishGithub,
@@ -1152,13 +1153,22 @@ export function GithubLadderCard({
   /** A done publish: re-read until the ladder says rung 2 (see
    *  PUBLISH_SETTLE_TRIES). The card re-renders in its rung-2 state then. */
   const settlePublish = useCallback(async () => {
-    for (let i = 0; i < PUBLISH_SETTLE_TRIES; i++) {
-      const next = await reload();
-      if (goneRef.current || (next?.ok && next.mine && (next.rung ?? 1) >= 2)) return;
-      await sleep(PUBLISH_SETTLE_MS);
-      if (goneRef.current) return;
+    // The page behind this sheet re-reads NOW: the server's `classify.rebind`
+    // may land after this loop gives up, and the ladder answers `pending`
+    // meanwhile — which the page's `useLadder` already polls through. Told
+    // again when the loop ends, whatever it saw (a notify is one GET).
+    notifyLadderChanged(dir);
+    try {
+      for (let i = 0; i < PUBLISH_SETTLE_TRIES; i++) {
+        const next = await reload();
+        if (goneRef.current || (next?.ok && next.mine && (next.rung ?? 1) >= 2)) return;
+        await sleep(PUBLISH_SETTLE_MS);
+        if (goneRef.current) return;
+      }
+    } finally {
+      notifyLadderChanged(dir);
     }
-  }, [reload]);
+  }, [dir, reload]);
 
   // Rung 1 at open: the status read, and any record ALREADY running (a sign-in
   // waiting in the browser, an install, a publish started a moment ago) is
@@ -1696,6 +1706,11 @@ export function ShareAppModal({
   // shown and the ladder re-read every LADDER_PENDING_MS, as `useLadder` does,
   // so a copy that turns out to be the user's own swaps to the ladder card.
   const [notOwn, setNotOwn] = useState(false);
+  // The rung this sheet last saw: the baseline `reloadLadder` compares
+  // against before telling the page behind it that the rung moved. Seeded
+  // by the mount read below (null until then: a first answer is never a
+  // move).
+  const rungRef = useRef<string | null>(null);
   useEffect(() => {
     if (!linkEligible) return;
     let cancelled = false;
@@ -1708,6 +1723,7 @@ export function ShareAppModal({
         // → the plain link card below (`/api/share/github`).
         if (ownLadder(l)) {
           setLadder(l);
+          if (rungRef.current === null) rungRef.current = `${l.rung ?? 1}:${l.github.unpushed}`;
           setNotOwn(false);
         } else {
           setLadder(null);
@@ -1740,10 +1756,19 @@ export function ShareAppModal({
 
   // Re-read after each ladder step; an answer that is no longer an own
   // app's (a transient failure) keeps the card where it was.
+  // A re-read that MOVES the folder — the rung (1 → 2 after "Put it on
+  // GitHub" settles) or the unpushed count (the Push step) — also tells the
+  // app page behind this sheet (`notifyLadderChanged`): its `useLadder` /
+  // `useAppContrib` hold their own state and would otherwise keep the old
+  // rung — no Community tab, no "Add to the Community", a stale "N edits
+  // not on GitHub yet" — until a reload.
   const reloadLadder = useCallback(async (): Promise<LadderAnswer | null> => {
     const l = await getLadder(app.path, { fresh: true });
     if (ownLadder(l)) {
       setLadder(l);
+      const key = `${l.rung ?? 1}:${l.github.unpushed}`;
+      if (rungRef.current !== null && rungRef.current !== key) notifyLadderChanged(app.path);
+      rungRef.current = key;
       return l;
     }
     return null;
