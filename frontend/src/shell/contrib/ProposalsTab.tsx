@@ -73,7 +73,7 @@ export function ProposalsTab({
   dir: string;
   slug: string;
   contrib: AppContribState;
-  /** Simple sharing (§20): each card is "<who> suggests: <title>", Claude's
+  /** Simple sharing (§20): each card is "<who> proposes: <title>", Claude's
    *  read, and Add / Not now — Try it first and Decline as quiet links. Not
    *  now sets the card aside for this visit (nothing is sent). */
   compact?: boolean;
@@ -139,10 +139,10 @@ export function ProposalsTab({
             <EmptyMedia variant="icon">
               <Inbox />
             </EmptyMedia>
-            <EmptyTitle>{compact ? "No suggestions yet" : "No proposals right now"}</EmptyTitle>
+            <EmptyTitle>No proposals right now</EmptyTitle>
             <EmptyDescription>
               {compact
-                ? `When someone suggests a change to ${slug}, it shows up here with Claude’s read of it.`
+                ? `When someone proposes a change to ${slug}, it shows up here with Claude’s read of it.`
                 : `When someone sends changes to ${slug}, they show up here with Claude’s read of them.`}
             </EmptyDescription>
           </EmptyHeader>
@@ -180,7 +180,7 @@ export function ProposalsTab({
       </ul>
       {asideCount > 0 && (
         <p className="contrib-inbox-aside">
-          {plural(asideCount, "suggestion")} set aside for now.{" "}
+          {plural(asideCount, "proposal")} set aside for now.{" "}
           <QuietAction onClick={() => setShowAside((v) => !v)}>{showAside ? "Hide" : "Show"}</QuietAction>
         </p>
       )}
@@ -314,7 +314,7 @@ function InboxCard({
       <h3 id={`contrib-pr-${item.number}`} className="contrib-inbox-title">
         {compact ? (
           <>
-            <span className="contrib-inbox-author">{who}</span> suggests: {item.title}
+            <span className="contrib-inbox-author">{who}</span> proposes: {item.title}
             {age && <span className="contrib-inbox-age"> · {age}</span>}
             {!item.from_fused && (
               <Badge variant="outline" className="ml-2 h-4.5 px-1.5 align-middle text-[10.5px] font-medium">

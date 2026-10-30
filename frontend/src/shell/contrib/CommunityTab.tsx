@@ -123,7 +123,7 @@ export function CommunityTab({ dir, slug, contrib, variant, ladder: given, hidde
   listingRef.current = listing;
   const [doctorOpen, setDoctorOpen] = useState(false);
   // Simple sharing (§20): with the Community switch on, the own app's tab
-  // opens as suggestions + Recent under one status sentence, and a toggle on
+  // opens as proposals + Recent under one status sentence, and a toggle on
   // the tab itself switches to the full ladder + grid (owner 2026-10-28:
   // "both UIs controlled by a toggle on that page"). The pick is kept per
   // folder while the window lives — no preference.
@@ -603,7 +603,7 @@ function OwnView({
 // One status sentence (the header's, `simpleStatus`), then only what asks for
 // a decision: a stuck or working Source-panel state with the server's own
 // fix buttons, a listing that failed or waits on a confirm, the Doctor gate
-// before a first listing — then Suggestions (the inbox, compact: Add / Not
+// before a first listing — then Proposals (the inbox, compact: Add / Not
 // now) and Recent (Activity with Undo). No rungs, no grid.
 
 function SimpleOwnView({
@@ -793,7 +793,7 @@ function SimpleOwnView({
       )}
 
       {inboxOffered && (
-        <Card title={waiting > 0 ? `Suggestions · ${waiting}` : "Suggestions"} wide>
+        <Card title={waiting > 0 ? `Proposals · ${waiting}` : "Proposals"} wide>
           <ProposalsTab dir={dir} slug={slug} contrib={contrib} compact />
         </Card>
       )}

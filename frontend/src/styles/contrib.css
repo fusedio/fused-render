@@ -1560,7 +1560,7 @@
 
 /* ---- Simple sharing (docs/CONTRIB_LOOP.md §20) ------------------------------
    The own app's Community tab as one sentence, the fixes that need a hand,
-   Suggestions and Recent. Same surface as a rung (border, radius, --bg-alt),
+   Proposals and Recent. Same surface as a rung (border, radius, --bg-alt),
    no eyebrows, no grid. */
 .contrib-simple-status {
   display: flex;

@@ -2174,9 +2174,9 @@ Copy install link; then only
 what asks for a decision — the Source panel's sentence and its own buttons
 when its tone is attention or working (a merge, a stuck state, an error), a
 listing that failed or needs a confirm with the listing's buttons, the
-Doctor gate before a first listing with Fix with Claude; then Suggestions and
-Recent (Activity with Undo, unchanged). Suggestions = `ProposalsTab
-compact`: each card "<who> suggests: <title>", Claude's read (the same
+Doctor gate before a first listing with Fix with Claude; then Proposals and
+Recent (Activity with Undo, unchanged). Proposals = `ProposalsTab
+compact`: each card "<who> proposes: <title>", Claude's read (the same
 review block), **Add** (Accept — the same review gate, flagged-confirm,
 stale and merge handling; the confirm reads "Add <who>'s change?") and **Not
 now** (set aside for this visit; nothing is sent, the tab's badge still
