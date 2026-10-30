@@ -50,9 +50,9 @@
 // timings (open after 150ms, swap between rings without closing, 250ms of
 // grace to cross to the card, never close under a card that holds the
 // keyboard) are rail-peek-lib's `PeekIntent`; this file only reports the
-// rings' pointer and focus to it and draws what it says. Escape, a press
-// outside the rail and the card, or focus leaving for the workbench frame
-// dismiss it. ArrowLeft on a focused ring is the keyboard's way into the
+// rings' pointer and focus to it and draws what it says. Escape or a press
+// outside the rail and the card dismiss it; a click into the workbench frame
+// closes it on the grace like any other leave. ArrowLeft on a focused ring is the keyboard's way into the
 // card. Off, the rings keep their one-line pointer caption (`data-hint`); on,
 // the card replaces it — two captions for one hover would be noise.
 import {
@@ -273,9 +273,14 @@ export function ClaudeRail({
     [peekOn, kept, seats],
   );
   // While the card is up: a press anywhere but the rail and the card closes
-  // it, and so does focus leaving for a frame (a click into the workbench —
-  // the document loses focus to the frame, so the window hears `blur`; the
-  // active element says where it went). Cmd-Tab away leaves it be.
+  // it. A click INTO the workbench frame is not a press this document sees,
+  // and it needs no rule of its own: the pointer is on the canvas, off the
+  // ring and the card, so the grace close runs — and a card that was holding
+  // the keyboard loses it to the frame (`onBlurCapture` → hold(false)), which
+  // starts the same grace. There used to be a window-`blur` dismiss here; the
+  // canvas wrapper focuses its frame on pointer ENTER (`focusCanvasOnEnter`),
+  // and the 8px gap between rail and card is over that wrapper, so crossing
+  // to the card blurred the window and killed the card mid-crossing (Bugbot).
   //
   // "INSIDE THE CARD" IS REACT'S ANSWER, NOT THE DOM'S: the chat's menus and
   // pickers are portals — React descendants of the card, DOM children of
@@ -301,19 +306,14 @@ export function ClaudeRail({
       }, 0);
     };
     const onUp = () => intent.pressEnd();
-    const onBlur = () => {
-      if (document.activeElement instanceof HTMLIFrameElement) intent.dismiss();
-    };
     document.addEventListener("pointerdown", onDown, true);
     window.addEventListener("pointerup", onUp, true);
     window.addEventListener("pointercancel", onUp, true);
-    window.addEventListener("blur", onBlur);
     return () => {
       window.clearTimeout(tick);
       document.removeEventListener("pointerdown", onDown, true);
       window.removeEventListener("pointerup", onUp, true);
       window.removeEventListener("pointercancel", onUp, true);
-      window.removeEventListener("blur", onBlur);
     };
   }, [peekKey, intent]);
   const dismissToRing = useCallback(() => {

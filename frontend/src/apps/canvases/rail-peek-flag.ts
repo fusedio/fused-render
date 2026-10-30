@@ -8,7 +8,7 @@
 // default, so a rail never grows a card the reader turned off because a GET
 // was still out.
 import { useEffect, useState } from "react";
-import { getPrefsShared } from "@platform/lib/api";
+import { dropSharedPrefsRead, getPrefsShared } from "@platform/lib/api";
 
 let enabled: boolean | null = null;
 let reading: Promise<void> | null = null;
@@ -58,8 +58,11 @@ export function useCanvasRailPeek(): boolean {
   return current;
 }
 
-/** Test-only: forget the cached answer so a suite starts from "not asked". */
+/** Test-only: forget the cached answer so a suite starts from "not asked".
+ *  Drops the SHARED prefs read too (api.ts): in one bun process another
+ *  flag module's in-flight GET would otherwise answer for this one. */
 export function resetCanvasRailPeekFlagForTests() {
+  dropSharedPrefsRead();
   reading = null;
   generation += 1;
   enabled = null;

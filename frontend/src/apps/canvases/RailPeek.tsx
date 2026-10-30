@@ -102,10 +102,13 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   ref,
 ) {
   const cardRef = useRef<HTMLDivElement | null>(null);
-  // The last seat shown, so the fade-out has something to fade.
+  // The last seat shown, so the fade-out has something to fade — the head
+  // AND the chat: both key on `view`, so the transcript stays visible through
+  // the fade rather than vanishing under a fading empty frame (Bugbot).
   const last = useRef<RailRow | null>(null);
   if (shown) last.current = shown;
   const view = shown ?? last.current;
+  const viewKey = view?.pulse.key ?? null;
 
   const [box, setBox] = useState<Box | null>(null);
   const [on, setOn] = useState(false);
@@ -298,7 +301,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
           {kept.map(({ pulse: t, row }) => (
             <div
               key={t.key}
-              className={"canvas-rail-peek-chat" + (t.key === shownKey ? " is-shown" : "")}
+              className={"canvas-rail-peek-chat" + (t.key === viewKey ? " is-shown" : "")}
             >
               <ChatMount
                 file={row?.target || t.target || t.project}
