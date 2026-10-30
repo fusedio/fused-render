@@ -2020,6 +2020,14 @@ the panel, actions and activity of §16.9/§18.7 are shown as they are.
   `contrib_enabled` off hides Proposals/Contributors/other-side view
   (today's rule). Putting an app on GitHub needs no switch.
 
+- Two live readers of one folder agree through a signal, not a cache:
+  `notifyLadderChanged(dir)` (contrib.ts) makes every `useLadder` /
+  `useAppContrib` on that folder re-read. The Share sheet sends it when a
+  publish record turns `done` (and again when its settle loop ends) and
+  whenever its own re-read moves the rung or the unpushed count — the app
+  page behind the sheet otherwise kept rung 1 until a reload, since an
+  in-window modal closing fires no `focus` event (2026-10-30).
+
 ### 19.3 Share sheet A (`platform/ui/ShareAppModal.tsx`)
 
 The GitHub card is rung 2's door, inline:
