@@ -79,6 +79,7 @@ import {
   PEEK_WIDTH,
   inSafeCone,
   peekPlacement,
+  safeConePoints,
   statusWords,
   type Box,
 } from "./rail-peek-lib";
@@ -117,6 +118,21 @@ function seatFacts(seat: RailRow, dir: string | null): SeatFacts {
     scope: railScope(t, dir),
     words: draft ? "draft" : statusWords(t, !!row?.failed),
   };
+}
+
+/** THE DEBUG OVERLAY SWITCH (owner, 2026-10-30: "can you highlight the cone
+ *  so I can see it — add a border"): `?peek_debug=1` on the page URL, or
+ *  `localStorage["fused-render:rail-peek-debug"] = "1"`. Off by default and
+ *  never shipped on: it draws the safe cone, the bridge and the card's hit
+ *  box as dashed outlines over the page, lit while the pointer is inside the
+ *  cone — a tool for tuning the geometry, not a feature. */
+export function peekDebugOn(): boolean {
+  try {
+    if (new URLSearchParams(window.location.search).get("peek_debug") === "1") return true;
+    return window.localStorage.getItem("fused-render:rail-peek-debug") === "1";
+  } catch {
+    return false;
+  }
 }
 
 export interface RailPeekHandle {
@@ -366,16 +382,29 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   }, [shownKey]);
 
   // THE SAFE CONE (header; rail-peek-lib `inSafeCone`): while the card is up,
-  // every pointer move is tested against the triangle from the shown ring's
-  // centre to the card's padded right edge. Inside → `onCone(true)`: the
-  // card holds and a ring crossed on the way does not swap; outside →
-  // `onCone(false)`: the intent re-arms for whatever the pointer rests on.
-  // The bridge's own enter/leave feed the same switch, so one clock
-  // (PEEK_CONE_MS) covers both.
+  // every pointer move is tested against the triangle from the pointer's
+  // PREVIOUS position to the card's padded right edge — menu-aim's rule, and
+  // the one that works when the card sits 8px off the rail: a triangle fixed
+  // at the ring's centre is a sliver there, so a diagonal across the rings
+  // below was never inside it. With the apex riding the pointer, a move
+  // straight down the rail (same x) falls outside — browsing rings swaps as
+  // ever — while a move angled toward the card, over whatever rings it
+  // crosses, stays inside: `onCone(true)`, the card holds and the crossed
+  // ring does not swap; outside → `onCone(false)`, the intent re-arms for
+  // whatever the pointer rests on. The bridge's own enter/leave feed the
+  // same switch, so one clock (PEEK_CONE_MS) covers both. The first apex is
+  // the ring's centre.
   const coneOn = useRef(false);
+  // The overlay (debug only) needs the cone's live state as STATE: a ref
+  // repaints nothing. Written only while debugging, so the ordinary card
+  // never re-renders on a pointer move.
+  const debug = peekDebugOn();
+  const [coneLit, setConeLit] = useState(false);
+  const [apexPt, setApexPt] = useState<{ x: number; y: number } | null>(null);
   const setCone = (inside: boolean) => {
     if (coneOn.current === inside) return;
     coneOn.current = inside;
+    if (debug) setConeLit(inside);
     onCone(inside);
   };
   useEffect(() => {
@@ -383,10 +412,23 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     const anchor = anchorOf(shownKey);
     if (!anchor) return;
     const r = anchor.getBoundingClientRect();
-    const apex = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    let apex = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    if (debug) setApexPt(apex);
     const onMove = (e: PointerEvent) => {
-      const inCard = cardRef.current?.contains(e.target as Node) ?? false;
-      setCone(!inCard && inSafeCone({ x: e.clientX, y: e.clientY }, apex, box));
+      const here = { x: e.clientX, y: e.clientY };
+      const target = e.target as HTMLElement | null;
+      const inCard = cardRef.current?.contains(target) ?? false;
+      // On the bridge, the pointer IS on its way: the bridge's own enter said
+      // so, and a move within it (no leftward direction) must not unsay it.
+      const onBridge = !!target?.classList?.contains("canvas-rail-peek-bridge");
+      // A move too small to have a direction keeps the last apex: a jittering
+      // hand must not collapse the triangle to a point.
+      const moved = Math.hypot(here.x - apex.x, here.y - apex.y) >= 3;
+      setCone(!inCard && (onBridge || inSafeCone(here, apex, box)));
+      if (moved) {
+        apex = here;
+        if (debug) setApexPt(apex);
+      }
     };
     document.addEventListener("pointermove", onMove, true);
     return () => {
@@ -499,8 +541,39 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       ? { left: box.left + box.width, top: box.top, width: Math.max(0, railLeft.current - 3 - (box.left + box.width)), height: box.height }
       : null;
 
+  // THE DEBUG OVERLAY (`peekDebugOn`): an SVG the size of the viewport, no
+  // pointer events, over everything — the cone as a dashed triangle (lit
+  // while the pointer is in it), the bridge and the card's box as dashed
+  // rectangles, the apex as a dot.
+  const overlay =
+    debug && box && visible && apexPt
+      ? (() => {
+          const [a, t, b] = safeConePoints(apexPt, box);
+          return (
+            <svg
+              className={"canvas-rail-peek-debug" + (coneLit ? " is-lit" : "")}
+              aria-hidden="true"
+              width={window.innerWidth}
+              height={window.innerHeight}
+              viewBox={`0 0 ${window.innerWidth} ${window.innerHeight}`}
+            >
+              <polygon className="canvas-rail-peek-debug-cone" points={`${a.x},${a.y} ${t.x},${t.y} ${b.x},${b.y}`} />
+              {bridge && (
+                <rect className="canvas-rail-peek-debug-bridge" x={bridge.left} y={bridge.top} width={bridge.width} height={bridge.height} />
+              )}
+              <rect className="canvas-rail-peek-debug-card" x={box.left} y={box.top} width={box.width} height={box.height} rx={10} />
+              <circle className="canvas-rail-peek-debug-apex" cx={a.x} cy={a.y} r={4} />
+              <text className="canvas-rail-peek-debug-label" x={t.x - 8} y={t.y - 6} textAnchor="end">
+                {coneLit ? "cone: pointer inside — holding" : "cone"}
+              </text>
+            </svg>
+          );
+        })()
+      : null;
+
   return createPortal(
     <>
+    {overlay}
     {bridge && (
       <div
         className={"canvas-rail-peek-bridge" + (visible ? " is-on" : "")}

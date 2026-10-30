@@ -5,6 +5,7 @@ import {
   PEEK_CLOSE_MS,
   PEEK_CONE_MS,
   inSafeCone,
+  safeConePoints,
   PEEK_GAP,
   PEEK_INSET,
   PEEK_KEEP,
@@ -66,6 +67,12 @@ describe("inSafeCone", () => {
   it("the rail column and the card itself are not the cone's", () => {
     expect(inSafeCone({ x: 1380, y: 200 }, apex, card)).toBe(false);
     expect(inSafeCone({ x: 1300, y: 200 }, apex, card)).toBe(false);
+  });
+  it("safeConePoints is the shape the hit test reads", () => {
+    const [a, t, b] = safeConePoints(apex, card, 32);
+    expect(a).toEqual(apex);
+    expect(t).toEqual({ x: 1344, y: 16 });
+    expect(b).toEqual({ x: 1344, y: 720 });
   });
   it("a point far off the card's padded edge is outside", () => {
     expect(inSafeCone({ x: 1360, y: 850 }, apex, card)).toBe(false);

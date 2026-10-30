@@ -101,9 +101,16 @@ export interface Point {
 export function inSafeCone(p: Point, apex: Point, card: Box, pad = PEEK_CONE_PAD): boolean {
   const edgeX = card.left + card.width;
   if (p.x >= apex.x || p.x < edgeX) return false;
-  const top: Point = { x: edgeX, y: card.top - pad };
-  const bottom: Point = { x: edgeX, y: card.top + card.height + pad };
+  const [, top, bottom] = safeConePoints(apex, card, pad);
   return pointInTriangle(p, apex, top, bottom);
+}
+
+/** The cone's three corners — apex, then the card edge's padded top and
+ *  bottom — the one place its shape is written (the hit test above and the
+ *  debug overlay in RailPeek both read it). */
+export function safeConePoints(apex: Point, card: Box, pad = PEEK_CONE_PAD): [Point, Point, Point] {
+  const edgeX = card.left + card.width;
+  return [apex, { x: edgeX, y: card.top - pad }, { x: edgeX, y: card.top + card.height + pad }];
 }
 
 /** Barycentric sign test. */

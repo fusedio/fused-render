@@ -813,3 +813,43 @@
 .canvas-rail-peek-bridge.is-on {
   pointer-events: auto;
 }
+
+/* THE DEBUG OVERLAY (RailPeek `peekDebugOn`: `?peek_debug=1`): the safe cone,
+   the bridge and the card's hit box as dashed outlines; the cone fills and
+   brightens while the pointer is inside it. Never shown by default. */
+.canvas-rail-peek-debug {
+  position: fixed;
+  inset: 0;
+  z-index: 46;
+  pointer-events: none;
+  overflow: visible;
+}
+.canvas-rail-peek-debug-cone {
+  fill: color-mix(in srgb, var(--accent) 10%, transparent);
+  stroke: var(--accent);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 4;
+}
+.canvas-rail-peek-debug.is-lit .canvas-rail-peek-debug-cone {
+  fill: color-mix(in srgb, var(--accent) 28%, transparent);
+  stroke-dasharray: none;
+  stroke-width: 2;
+}
+.canvas-rail-peek-debug-bridge {
+  fill: color-mix(in srgb, #2bb673 30%, transparent);
+  stroke: #2bb673;
+  stroke-width: 1.5;
+}
+.canvas-rail-peek-debug-card {
+  fill: none;
+  stroke: #e0a020;
+  stroke-width: 1.5;
+  stroke-dasharray: 4 4;
+}
+.canvas-rail-peek-debug-apex {
+  fill: var(--accent);
+}
+.canvas-rail-peek-debug-label {
+  fill: var(--accent);
+  font: 600 11px system-ui, sans-serif;
+}
