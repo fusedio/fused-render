@@ -577,12 +577,22 @@
   flex-direction: column;
   background: var(--bg);
   color: var(--fg);
-  border: 1px solid var(--border);
+  /* THE EDGE READS AGAINST THE WORKBENCH (owner, 2026-10-30: "hard to know
+     the separation between that and the code panel — contrasting border,
+     subtle but noticeable"). The card floats over the embed's own dark
+     panels, which share the app's border tone, so a plain `--border`
+     vanished. Two lines: a 1px border a few steps brighter than --border
+     (a quarter of the ink), and a 1px halo of the background colour outside
+     it, so the border stands on a thin band of our own tone whatever panel
+     is beneath — the same trick a menu on a menu uses. The drop shadow does
+     the rest. */
+  border: 1px solid color-mix(in srgb, var(--fg) 24%, var(--bg));
   border-radius: 10px;
   overflow: hidden;
   box-shadow:
-    0 12px 32px rgba(0, 0, 0, 0.22),
-    0 1px 3px rgba(0, 0, 0, 0.14);
+    0 0 0 1px color-mix(in srgb, var(--bg) 70%, transparent),
+    0 14px 36px rgba(0, 0, 0, 0.32),
+    0 2px 6px rgba(0, 0, 0, 0.2);
   transform: translateX(6px);
   transition: transform var(--dur-med) var(--ease-out);
 }

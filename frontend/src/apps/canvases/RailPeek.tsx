@@ -63,7 +63,15 @@ import { Kebab } from "@apps/claude/ui/Kebab";
 import { AgentProvider } from "@apps/claude/ui/agent-context";
 import { timeAgo } from "@platform/lib/format";
 import { chatDraftKey, peekDraftSyncer } from "@platform/lib/drafts";
-import { cardTitleLine, isDraftTask, nextRunChip, taskColumn, taskHref } from "@shell/tasks-lib";
+import {
+  cardTitleLine,
+  isDraftTask,
+  messageStamp,
+  nextRunAt,
+  relativeWhen,
+  taskColumn,
+  taskHref,
+} from "@shell/tasks-lib";
 import { railScope, type RailRow } from "./claude-rail-lib";
 import {
   PEEK_MAX_HEIGHT,
@@ -171,7 +179,11 @@ function PlainBody({ facts }: { facts: SeatFacts }) {
   const words = (draft ? description || preview : "") || "";
   const same = words.toLowerCase() === label.trim().toLowerCase();
   const saved = draft ? timeAgo(row?.draft?.updated_at) : null;
-  const next = !draft && row ? nextRunChip(row) : null;
+  // The run itself, not the List's chip: `nextRunChip` is null for an
+  // Upcoming row because the row's own stamp already says the time there —
+  // this card has no such stamp (CodeRabbit on #2029).
+  const at = !draft && row ? nextRunAt(row) : null;
+  const next = at ? `Runs ${relativeWhen(at)} · ${messageStamp(at)}` : null;
   const meta = draft
     ? [str(form.model), str(form.effort), str(form.permission)].filter(Boolean)
     : [str(row?.model), str(row?.effort)].filter(Boolean);
@@ -186,9 +198,7 @@ function PlainBody({ facts }: { facts: SeatFacts }) {
             ? saved
               ? `Not sent · saved ${saved}`
               : "Not sent"
-            : next
-              ? next.title
-              : "Not started yet"}
+            : next ?? "Not started yet"}
         </span>
       </div>
       <p className={"canvas-rail-peek-plain-words" + (!words || same ? " is-empty" : "")}>
@@ -423,8 +433,17 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Tab" || e.key.startsWith("Arrow")) lastKeyAt.current = Date.now();
     };
+    // A pointer press focuses by mouse: a click right after a Tab is not
+    // keyboard focus (CodeRabbit on #2029).
+    const onPointer = () => {
+      lastKeyAt.current = 0;
+    };
     document.addEventListener("keydown", onKey, true);
-    return () => document.removeEventListener("keydown", onKey, true);
+    document.addEventListener("pointerdown", onPointer, true);
+    return () => {
+      document.removeEventListener("keydown", onKey, true);
+      document.removeEventListener("pointerdown", onPointer, true);
+    };
   }, []);
   const onFocusCapture = (e: ReactFocusEvent<HTMLDivElement>) => {
     const t = e.target as HTMLElement;
