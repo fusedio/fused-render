@@ -60,6 +60,7 @@ import type { Task } from "@platform/lib/api";
 import { shortTaskId } from "@platform/lib/task-id";
 import { ChatMount, draftHref } from "@apps/claude";
 import { Kebab } from "@apps/claude/ui/Kebab";
+import { AgentProvider } from "@apps/claude/ui/agent-context";
 import { timeAgo } from "@platform/lib/format";
 import { chatDraftKey, peekDraftSyncer } from "@platform/lib/drafts";
 import { cardTitleLine, isDraftTask, nextRunChip, taskColumn, taskHref } from "@shell/tasks-lib";
@@ -490,24 +491,36 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                 type="button"
                 className="btn canvas-rail-peek-open"
                 title={head.draft ? "Open the draft" : "Open this chat in the Claude panel"}
-                onClick={() => onOpenChat(head.href!)}
+                onClick={() => {
+                  onOpenChat(head.href!);
+                  // The door closes the card too: a hop that keeps the rail
+                  // mounted (a node switch) must not leave it up.
+                  onDismiss();
+                }}
               >
                 Open
               </button>
             )}
-            {head.t.session_id && (
+            {head.t.session_id && shownKey && (
+              // Mounted only while a seat is SHOWN (not through the fade): the
+              // menu listens for task announcements and re-reads the listing
+              // on each, which a hidden card has no business doing. Inside the
+              // chat's AgentProvider, so its terminal hand-off names the
+              // chat's own agent, not the default one.
               <span className="canvas-rail-peek-kebab">
-                <Kebab
-                  // Keyed per chat: the menu caches its labels per session.
-                  key={head.t.key}
-                  file={head.row?.target || head.t.target || head.t.project}
-                  sessionId={head.t.session_id}
-                  running={taskColumn(head.t) === "in_progress" || taskColumn(head.t) === "queued"}
-                  asking={taskColumn(head.t) === "needs_attention"}
-                  queued={taskColumn(head.t) === "queued"}
-                  onErased={onFiled}
-                  onArchived={onFiled}
-                />
+                <AgentProvider backend={head.row?.backend ?? head.t.backend ?? ""}>
+                  <Kebab
+                    // Keyed per chat: the menu caches its labels per session.
+                    key={head.t.key}
+                    file={head.row?.target || head.t.target || head.t.project}
+                    sessionId={head.t.session_id}
+                    running={taskColumn(head.t) === "in_progress" || taskColumn(head.t) === "queued"}
+                    asking={taskColumn(head.t) === "needs_attention"}
+                    queued={taskColumn(head.t) === "queued"}
+                    onErased={onFiled}
+                    onArchived={onFiled}
+                  />
+                </AgentProvider>
               </span>
             )}
           </div>

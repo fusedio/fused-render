@@ -170,7 +170,13 @@ export function ClaudeRail({
 }) {
   const rows = useTasksPulseRows();
   const nodeFile = node?.file ?? null;
-  const place = useMemo(() => ({ env, name, dir, file: nodeFile }), [env, name, dir, nodeFile]);
+  const peekOn = useCanvasRailPeek();
+  // Drafts and scheduled rows ride the rail only with the hover card on
+  // (claude-rail-lib `sessionless`): off, the rail is byte-for-byte the old one.
+  const place = useMemo(
+    () => ({ env, name, dir, file: nodeFile, sessionless: peekOn }),
+    [env, name, dir, nodeFile, peekOn],
+  );
   // A new task's locked target: the node's file under the clone while a node
   // is selected, else the clone. Null until the clone exists.
   const target = dir && nodeFile ? `${dir.replace(/\/+$/, "")}/${nodeFile}` : dir;
@@ -218,7 +224,6 @@ export function ClaudeRail({
   // `kept` the chats that stay mounted behind it (newest first), both written
   // by the intent machine and nothing else. The ring elements are kept by key
   // for the card's placement and for handing focus back on Escape.
-  const peekOn = useCanvasRailPeek();
   const [peekKey, setPeekKey] = useState<string | null>(null);
   const [kept, setKept] = useState<readonly string[]>([]);
   const intentRef = useRef<PeekIntent | null>(null);
@@ -426,6 +431,9 @@ export function ClaudeRail({
               // listing.
               const draft = !!row && isDraftTask(row);
               const href = (row && draft ? draftHref(row) : null) ?? taskHref(merged);
+              // No door, no ring (as before): a form-scheduled row with no
+              // session, or a pulse-only draft the listing has not named yet.
+              if (!href) return null;
               const words = draft ? "draft" : statusWords(t, !!row?.failed);
               const peeked = peekOn && peekKey === t.key;
               // The list's item is a wrapper, the link is a link: `aria-haspopup`
@@ -438,7 +446,7 @@ export function ClaudeRail({
                     if (el) ringEls.current.set(t.key, el);
                     else ringEls.current.delete(t.key);
                   }}
-                  href={href ?? "#"}
+                  href={href}
                   className={
                     "sidebar-rail-btn canvas-rail-chat" +
                     (activeSessionId && t.session_id === activeSessionId ? " active" : "") +
@@ -469,12 +477,9 @@ export function ClaudeRail({
                       }
                     : {})}
                   onClick={(e) => {
-                    // No door yet (a draft the listing has not named): the
-                    // `#` must not navigate on any kind of click.
-                    if (!href) e.preventDefault();
                     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
                     e.preventDefault();
-                    if (href) onOpenChat(href);
+                    onOpenChat(href);
                   }}
                 >
                   <StatusIcon
@@ -489,8 +494,9 @@ export function ClaudeRail({
                     unread={t.unread > 0}
                     background={liveJobRow(t)}
                     // The red centre dot the List gives a draft row and a
-                    // settled row holding unsent words (tasks-lib.draftRing).
-                    draftHeld={!!row && draftRing(merged as Task)}
+                    // settled row holding unsent words (tasks-lib.draftRing) —
+                    // with the card on; off, the ring is the old ring.
+                    draftHeld={peekOn && !!row && draftRing(merged as Task)}
                     {...(row?.failed ? { failed: true } : {})}
                   />
                 </a>

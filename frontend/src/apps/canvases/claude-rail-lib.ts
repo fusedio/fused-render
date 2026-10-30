@@ -47,6 +47,9 @@ export interface RailPlace {
   name: string;
   dir: string | null;
   file?: string | null;
+  /** Admit rows with no session yet (drafts, scheduled tasks) — the hover
+   *  card's rail (owner, 2026-10-30); off, the rail is what it was: chats. */
+  sessionless?: boolean;
 }
 
 /** Is this row one of the rail's: a row on THIS canvas — on the selected
@@ -57,6 +60,7 @@ export interface RailPlace {
  *  the LISTING, not the pulse (`/api/tasks/pulse` leaves `kind: "draft"`
  *  rows out; the listing feed a mounted chat holds carries them). */
 export function onRail(t: TaskPulseTask, place: RailPlace): boolean {
+  if (!t.session_id && !place.sessionless) return false;
   if (taskColumn(t) === "archived") return false;
   const named = !!t.canvas && t.canvas.env === place.env && t.canvas.name === place.name;
   if (!named && !(place.dir !== null && t.project === place.dir)) return false;
@@ -106,9 +110,9 @@ export function railRows(
   const pulseKeys = new Set(rows.map((t) => t.key));
   // Drafts the pulse does not carry (header): the listing's own draft rows
   // on this canvas stand in as their own pulse row — a `Task` is a superset.
-  const drafts: TaskPulseTask[] = [...listing.values()].filter(
-    (r) => !pulseKeys.has(r.key) && isDraftTask(r) && onRail(r, place),
-  );
+  const drafts: TaskPulseTask[] = place.sessionless
+    ? [...listing.values()].filter((r) => !pulseKeys.has(r.key) && isDraftTask(r) && onRail(r, place))
+    : [];
   const mine = [...rows.filter((t) => onRail(t, place)), ...drafts];
   const byKey = new Map(mine.map((t) => [t.key, t]));
   const held = new Map<string, Task>();

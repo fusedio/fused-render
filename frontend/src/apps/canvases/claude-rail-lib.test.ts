@@ -8,6 +8,8 @@ import { sortForList } from "@shell/tasks-lib";
 import { onRail, railRows, railScope } from "./claude-rail-lib";
 
 const PLACE = { env: "unstable" as const, name: "demo", dir: "/home/me/canvases/demo" };
+/** The hover card's rail: drafts and scheduled rows admitted. */
+const PLACE_ALL = { ...PLACE, sessionless: true };
 
 /** A full task row with every field the rail's order can read set to a
  *  harmless default; the test states only what it is about. */
@@ -38,9 +40,10 @@ describe("onRail", () => {
     expect(onRail(archived, PLACE)).toBe(false);
   });
 
-  it("keeps a row with no session (a draft, a scheduled task); drops one on another canvas", () => {
+  it("a row with no session is on the rail only when the host admits them (the hover card); another canvas never is", () => {
     const noSession = pulse(task({ key: "a", session_id: "" }));
-    expect(onRail(noSession, PLACE)).toBe(true);
+    expect(onRail(noSession, PLACE)).toBe(false);
+    expect(onRail(noSession, PLACE_ALL)).toBe(true);
     const elsewhere = pulse(task({ key: "b", project: "/elsewhere", target: "/elsewhere" }));
     expect(onRail(elsewhere, PLACE)).toBe(false);
   });
@@ -48,9 +51,11 @@ describe("onRail", () => {
   it("a draft the pulse does not carry comes from the listing, ranked like the List", () => {
     const draft = task({ key: "draft:1", kind: "draft", status: "upcoming", session_id: "" } as Partial<Task> & { key: string });
     const live = task({ key: "a", status: "in_progress" });
-    const seats = railRows([pulse(live)], new Map([["draft:1", draft], ["a", live]]), PLACE);
+    const seats = railRows([pulse(live)], new Map([["draft:1", draft], ["a", live]]), PLACE_ALL);
     expect(seats.map((s) => s.pulse.key)).toEqual(sortForList([live, draft], Date.now()).map((t) => t.key));
     expect(seats.find((s) => s.pulse.key === "draft:1")?.row).toBe(draft);
+    // The plain rail (flag off) is chats only, as it always was.
+    expect(railRows([pulse(live)], new Map([["draft:1", draft], ["a", live]]), PLACE).map((s) => s.pulse.key)).toEqual(["a"]);
   });
 
   it("railScope: a stamped node file, a legacy target under the clone, else the canvas", () => {

@@ -198,11 +198,7 @@
   background: var(--c-bubble-user);
   border-radius: 18px 18px 4px 18px;
   padding: 9px 14px;
-  /* 82% of a wide log; in a NARROW one (the canvas rail's 420px card, a
-     slim side peek) the bubble stops short of the left lane instead, so the
-     hover stamp drawn there ("23 Oct, 19:06", ~80px) and the fork glyph
-     never land on the words (Akshil, 2026-10-30). */
-  max-width: min(82%, calc(100% - 108px));
+  max-width: 82%;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -2723,4 +2719,13 @@
   outline: 1px solid var(--c-border-strong);
   outline-offset: 2px;
   border-radius: 3px;
+}
+
+/* A PEEK CHAT IS NARROW (the Tasks side peek at its floor, the canvas rail's
+   420px card): its user bubble stops short of the left lane, so the hover
+   stamp drawn there ("23 Oct, 19:06", ~80px) and the fork glyph never land
+   on the words (Akshil, 2026-10-30). Never under 40% of the log, whatever
+   the arithmetic says of a tiny box. Wide chats keep the 82% rule above. */
+.chat-root.chat-peek .turn.user .bubble {
+  max-width: max(40%, min(82%, calc(100% - 108px)));
 }
