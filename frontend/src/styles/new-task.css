@@ -1001,13 +1001,17 @@ button.new-task-source:focus-visible {
 }
 
 /* The names are cut by characters; this cap is for the ones whose characters
-   run wide (CJK, emoji, `WWWW`) — `.pp-v`'s own ellipsis takes over there. */
+   run wide (CJK, emoji, `WWWW`). A block, not `.pp-v`'s flex row, so
+   `text-overflow` can draw the ellipsis at the end there (a flex container's
+   text never gets one). Line height = the pill's 28px less its border. */
 .pp-v.pp-where {
+  display: block;
   max-width: 240px;
-  gap: 4px;
+  line-height: 26px;
 }
 
 .pp-where-sep {
+  margin: 0 4px;
   color: var(--fg-faint);
 }
 

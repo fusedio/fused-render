@@ -15,6 +15,12 @@ describe("cutMiddle", () => {
     expect(got.includes("\uFFFD")).toBe(false);
   });
 
+  test("never splits a grapheme cluster", () => {
+    const family = "👨‍👩‍👧";
+    const got = cutMiddle(family.repeat(6), 3);
+    expect(got).toBe(`${family}…${family}`);
+  });
+
   test("cuts the middle, keeping both ends", () => {
     expect(cutMiddle("abcdefghijkl", 7)).toBe("abc…jkl");
     expect(cutMiddle("abcdefghijkl", 8)).toBe("abcd…jkl");

@@ -17,10 +17,28 @@ export const WHERE_MAX_CHARS = 22;
  *  a long node never squeezes the canvas down to a lone ellipsis. */
 const CANVAS_MIN_CHARS = 8;
 
+// `Intl.Segmenter` is ES2022; the lib here is ES2020, so the one call it needs
+// is typed by hand. Where it is missing, code points are the next best unit.
+type GraphemeSegmenter = { segment(s: string): Iterable<{ segment: string }> };
+const Segmenter = (
+  Intl as unknown as {
+    Segmenter?: new (
+      locale?: string,
+      options?: { granularity: "grapheme" },
+    ) => GraphemeSegmenter;
+  }
+).Segmenter;
+const segmenter = Segmenter ? new Segmenter(undefined, { granularity: "grapheme" }) : null;
+
+/** What the reader counts as characters: grapheme clusters, so a flag, a
+ *  skin-toned or ZWJ emoji, or an accent is never cut in two. */
+function graphemes(s: string): string[] {
+  return segmenter ? Array.from(segmenter.segment(s), (g) => g.segment) : Array.from(s);
+}
+
 /** `s` in at most `max` characters, the middle replaced by one ellipsis. */
 export function cutMiddle(s: string, max: number): string {
-  // By code point, so an emoji is never split into a lone surrogate.
-  const chars = Array.from(s);
+  const chars = graphemes(s);
   if (chars.length <= max) return s;
   if (max <= 1) return ELLIPSIS;
   const keep = max - 1;
@@ -41,8 +59,8 @@ export function whereParts(
   max: number = WHERE_MAX_CHARS,
 ): { canvas: string; node: string | null } {
   if (!node) return { canvas: cutMiddle(canvas, max), node: null };
-  const canvasLen = Array.from(canvas).length;
-  const nodeLen = Array.from(node).length;
+  const canvasLen = graphemes(canvas).length;
+  const nodeLen = graphemes(node).length;
   if (canvasLen + nodeLen <= max) return { canvas, node };
   // The floor never takes more than half the budget, so the node always
   // keeps some of its own.
