@@ -52,6 +52,7 @@ def test_compact_and_reconcile_take_the_files_as_the_nodes(tmp_path):
     folder = {"udfName": "F", "folderName": "F", "type": "udf-folder", "x": 1000, "y": 0,
               "height": 800, "childUdfOrder": ["b", "gone", "nobody"]}
     rows = [dict(A_ROW), {"udfName": "gone", "x": 0, "y": 0}, dict(A_ROW, x=99), folder,
+            dict(folder, x=5, childUdfOrder=["orphan"]),
             {"udfName": "b", "x": 40, "y": 75, "height": 5000}]
     d = _clone(tmp_path, rows, {"a.py": "A", "b.json": "{}", "orphan.py": "o", "note.md": "n",
                                 "_init.py": "", ".hidden.py": "", "CLAUDE.md": "",
@@ -67,7 +68,7 @@ def test_compact_and_reconcile_take_the_files_as_the_nodes(tmp_path):
     trashed = []
     res = cs.reconcile_rows(d, pending=["late"], skip=["CLAUDE.md"],
                             backup=lambda rel, data: trashed.append((rel, data)))
-    assert res == {"changed": True, "dropped": ["gone", "a"], "added": ["nobody", "note", "orphan"]}
+    assert res == {"changed": True, "dropped": ["gone", "a", "F"], "added": ["nobody", "note", "orphan"]}
     assert trashed == [("canvas.toml", old)]
     doc = rtoml.loads(open(os.path.join(d, "canvas.toml")).read())
     assert doc["type"] == "canvas"
@@ -75,8 +76,8 @@ def test_compact_and_reconcile_take_the_files_as_the_nodes(tmp_path):
     assert [(r["udfName"], r.get("x"), r.get("y"), r.get("width"), r.get("height"))
             for r in doc["canvas"]["nodes"]] == [
         ("a", 10, 20, 700, 300), ("F", 1000, 0, None, 5690), ("b", 40, 75, None, 5000),
-        ("nobody", 40, 5150, 700, 500), ("note", 10, 875, 350, 250),
-        ("orphan", 10, 1200, 700, 500)]
+        ("nobody", 40, 5150, 700, 500), ("note", 10, 5765, 350, 250),
+        ("orphan", 10, 6090, 700, 500)]
     assert doc["canvas"]["nodes"][1]["childUdfOrder"] == ["b", "nobody"]
     assert cs.reconcile_rows(d, pending=["late"], skip=["CLAUDE.md"])["changed"] is False
 

@@ -1164,6 +1164,10 @@ _DEFAULT_NODE_SIZE = (700, 500)
 _DEFAULT_TEXTBOX_SIZE = (350, 250)
 
 
+def _default_size(filename: str) -> tuple[int, int]:
+    return _DEFAULT_TEXTBOX_SIZE if filename.endswith(".md") else _DEFAULT_NODE_SIZE
+
+
 def _fusedignored(clone_dir: str) -> set[str]:
     data = _read_bytes(os.path.join(clone_dir, ".fusedignore"))
     rules = []
@@ -1212,11 +1216,8 @@ def reconcile_rows(clone_dir: str, *, pending: Iterable[str] = (), skip: Iterabl
     dropped: list[str] = []
     for row in canvas.get("nodes") if isinstance(canvas.get("nodes"), list) else []:
         name = row_name(row)
-        if is_folder(row):
-            names.add(name)
-            rows.append(row)
-            continue
-        if name is None or name in names or (name not in files and name not in pending):
+        if name is None or name in names or not (
+                is_folder(row) or name in files or name in pending):
             dropped.append(str(name))
             continue
         names.add(name)
@@ -1227,29 +1228,29 @@ def reconcile_rows(clone_dir: str, *, pending: Iterable[str] = (), skip: Iterabl
             for c in r["childUdfOrder"]:
                 if isinstance(c, str):
                     owners.setdefault(c, r)
+    missing = [s for s in sorted(files) if s not in names and s not in pending]
+    for stem in missing:
+        owner = owners.get(stem)
+        if owner is None:
+            continue
+        width, height = _default_size(files[stem])
+        kids = [r for r in rows if owners.get(row_name(r)) is owner]
+        kx = min((_num(r.get("x"), 0) for r in kids), default=_FOLDER_PADDING_PX)
+        ky = max((_num(r.get("y"), 0) + _num(r.get("height"), 0) for r in kids),
+                 default=0) + _NODE_GAP_PX
+        rows.append({"udfName": stem, "x": kx, "y": ky, "width": width, "height": height})
+        owner["height"] = max(_num(owner.get("height"), 0), ky + height + _FOLDER_PADDING_PX)
     tops = [(_num(r.get("x"), 0), _num(r.get("y"), 0) + _num(r.get("height"), 0)) for r in rows
             if is_folder(r) or row_name(r) not in owners]
     x = min((t[0] for t in tops), default=100)
     y = max((t[1] for t in tops), default=100 - _NODE_GAP_PX)
-    added: list[str] = []
-    for stem in sorted(files):
-        if stem in names or stem in pending:
+    for stem in missing:
+        if stem in owners:
             continue
-        width, height = (_DEFAULT_TEXTBOX_SIZE if files[stem].endswith(".md")
-                         else _DEFAULT_NODE_SIZE)
-        owner = owners.get(stem)
-        if owner is None:
-            y += _NODE_GAP_PX
-            rows.append({"udfName": stem, "x": x, "y": y, "width": width, "height": height})
-            y += height
-        else:
-            kids = [r for r in rows if owners.get(row_name(r)) is owner]
-            kx = min((_num(r.get("x"), 0) for r in kids), default=_FOLDER_PADDING_PX)
-            ky = max((_num(r.get("y"), 0) + _num(r.get("height"), 0) for r in kids),
-                     default=0) + _NODE_GAP_PX
-            rows.append({"udfName": stem, "x": kx, "y": ky, "width": width, "height": height})
-            owner["height"] = max(_num(owner.get("height"), 0), ky + height + _FOLDER_PADDING_PX)
-        added.append(stem)
+        width, height = _default_size(files[stem])
+        y += _NODE_GAP_PX
+        rows.append({"udfName": stem, "x": x, "y": y, "width": width, "height": height})
+        y += height
     kept = {row_name(r) for r in rows} - {None}
     for row in rows:
         order = row.get("childUdfOrder") if is_folder(row) else None
@@ -1270,7 +1271,7 @@ def reconcile_rows(clone_dir: str, *, pending: Iterable[str] = (), skip: Iterabl
             if old is not None:
                 backup("canvas.toml", old)
         _write_atomic(path, _dump_toml(doc))
-    return {"changed": changed, "dropped": dropped, "added": added}
+    return {"changed": changed, "dropped": dropped, "added": missing}
 
 
 def studio_patch_from_row(row: dict) -> dict:
