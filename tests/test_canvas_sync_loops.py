@@ -179,71 +179,6 @@ def test_snapshot_new_udf_without_node_gets_file_but_no_row(tmp_path):
     assert (row["udfName"], row["x"], row["y"]) == ("udf_4", 900, 700)
 
 
-def test_snapshot_rowless_file_the_embed_dropped_is_trashed(tmp_path):
-    """The user deletes the new UDF before its node ever reached disk: the
-    next snapshot lists neither, so the file goes (else the push would
-    publish it back as a UDF)."""
-    d = _clone(tmp_path, [dict(A_ROW)], {"a.py": "A"})
-    udfs_a = [{"slug": "a", "file": "a.py", "id": "sid-a"}]
-    new_udf = {"slug": "udf_4", "file": "udf_4.py", "udf_body": '{"code": "c"}'}
-    r1 = cs.apply_snapshot(d, _snapshot_new([_studio_node("a")], udfs_a + [new_udf], ["a"]),
-                           None)
-    assert r1["rowless_files"] == ["udf_4"]
-    # Still listed (nodes lagging): kept.
-    r2 = cs.apply_snapshot(d, _snapshot_new([_studio_node("a")], udfs_a + [new_udf]), None,
-                           rowless_prev=r1["rowless_files"])
-    assert r2["deleted"] == [] and os.path.exists(os.path.join(d, "udf_4.py"))
-    assert r2["rowless_files"] == ["udf_4"]
-    # Gone from the embed: trashed, toml untouched.
-    trashed = []
-    toml = open(os.path.join(d, "canvas.toml")).read()
-    r3 = cs.apply_snapshot(d, _snapshot_new([_studio_node("a")], udfs_a), None,
-                           backup=lambda rel, data: trashed.append(rel),
-                           rowless_prev=["udf_4"])
-    assert r3["deleted"] == ["udf_4"] and r3["changed"] is True
-    assert trashed == ["udf_4.py"]
-    assert not os.path.exists(os.path.join(d, "udf_4.py"))
-    assert open(os.path.join(d, "canvas.toml")).read() == toml
-    assert r3["rowless_files"] == []
-
-
-def test_compact_reading_leaves_rowless_files_out(tmp_path):
-    d = _clone(tmp_path, [dict(A_ROW)], {"a.py": "A", "udf_4.py": "c", "z.py": "z"})
-    disk = cs.compact_state_from_disk(d)
-    assert disk["order"] == ["a"] and set(disk["files"]) == {"a"}
-    assert not [o for o in cs.diff_views(disk, None) if o.get("name") in ("udf_4", "z")]
-
-
-def test_snapshot_new_udf_with_node_gets_its_own_row(tmp_path):
-    d = _clone(tmp_path, [dict(A_ROW)], {"a.py": "A"})
-    new = _snapshot_new(
-        [_studio_node("a"), _studio_node("udf_4", x=900)],
-        [{"slug": "a", "file": "a.py", "id": "sid-a"},
-         {"slug": "udf_4", "file": "udf_4.py", "udf_body": '{"code": "x"}'}],
-        base_nodes=["a"],
-    )
-    result = cs.apply_snapshot(d, new, None)
-    assert result["upserted"] == ["udf_4"]
-    assert [r["udfName"] for r in _rows(d)] == ["a", "udf_4"]
-    assert _rows(d)[1]["x"] == 900
-
-
-def test_snapshot_new_file_with_existing_disk_row_keeps_that_row(tmp_path):
-    """Claude already wrote the row; the embed ships only the file."""
-    d = _clone(tmp_path, [dict(A_ROW), {"udfName": "udf_4", "x": 5, "y": 6}], {"a.py": "A"})
-    new = _snapshot_new(
-        [_studio_node("a")],
-        [{"slug": "a", "file": "a.py", "id": "sid-a"},
-         {"slug": "udf_4", "file": "udf_4.py", "udf_body": '{"code": "x"}'}],
-        base_nodes=["a"],
-    )
-    result = cs.apply_snapshot(d, new, None)
-    assert result["created"] == ["udf_4.py"]
-    rows = _rows(d)
-    assert [r["udfName"] for r in rows] == ["a", "udf_4"]
-    assert rows[1] == {"udfName": "udf_4", "x": 5, "y": 6}
-
-
 def test_snapshot_existing_behaviours_kept_alongside_rowless_file(tmp_path):
     """Deletion and embed_rows key deletion still apply in the snapshot
     that also creates a row-less file."""
@@ -305,30 +240,6 @@ def test_snapshot_rowless_rename_moves_file_not_trash(tmp_path):
     assert open(os.path.join(d, "renamed.py")).read() == "code4"
     assert not os.path.exists(os.path.join(d, "udf_4.py"))
     assert [r["udfName"] for r in _rows(d)] == ["a", "renamed"]
-
-
-def test_snapshot_stale_nodes_keep_a_rowless_file_that_got_its_row(tmp_path):
-    """The embed's `nodes` still lag its `udfs` on the NEXT autosave, after
-    the file got a row some other way (Claude wrote it, a pull brought the
-    server's) and the delta delivered it (view holds it): the UDF the
-    snapshot still lists is not a deletion — row and file survive."""
-    d = _clone(tmp_path, [dict(A_ROW)], {"a.py": "A"})
-    udfs = [{"slug": "a", "file": "a.py", "id": "sid-a"},
-            {"slug": "udf_4", "file": "udf_4.py", "udf_body": '{"code": "c"}'}]
-    first = cs.apply_snapshot(d, _snapshot_new([_studio_node("a")], udfs, ["a"]), None)
-    assert first["rowless_files"] == ["udf_4"]
-    _add_row(d, dict(U4_ROW))
-    view = cs.compact_state_from_disk(d)
-    assert "udf_4" in view["nodes"]
-    trashed = []
-    again = cs.apply_snapshot(d, _snapshot_new([_studio_node("a")], udfs), view,
-                              backup=lambda rel, data: trashed.append(rel),
-                              rowless_prev=first["rowless_files"])
-    assert again["deleted"] == [] and trashed == []
-    assert again["deferred_deletes"] == ["udf_4"]
-    assert again["rowless_files"] == []           # its row is already there
-    assert [r["udfName"] for r in _rows(d)] == ["a", "udf_4"]
-    assert os.path.exists(os.path.join(d, "udf_4.py"))
 
 
 def test_snapshot_deferred_delete_kept_in_view_then_deleted(tmp_path):

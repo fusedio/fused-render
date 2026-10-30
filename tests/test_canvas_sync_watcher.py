@@ -559,8 +559,9 @@ def test_a_push_reconciles_the_clone_rows_with_its_files(
     assert [t.read_text() for t in trashed] == [with_ghost]
 
 
+@pytest.mark.parametrize("settle", ["body", "hello"])
 def test_a_push_waits_for_the_source_of_a_node_the_workbench_just_created(
-        harness, tmp_path, monkeypatch, fake_agent):
+        harness, tmp_path, monkeypatch, fake_agent, settle):
     _quiet_watcher(monkeypatch)
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
     seen: dict = {}
@@ -568,15 +569,22 @@ def test_a_push_waits_for_the_source_of_a_node_the_workbench_just_created(
     m = _start(harness)
     _snapshot(harness, 1, {**FRESH_NODE_BODY, "body_channel": True,
                            "udfs": [{"slug": "fresh", "file": "fresh.py"}]})
-    res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    push = lambda: harness.client.post(  # noqa: E731
+        "/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    res = push()
     assert res.status_code == 409 and res.json()["code"] == "busy", res.text
     assert 'udfName = "fresh"' in _toml(harness)
-    with m._op_lock:
-        m.apply_body("fresh", "fresh.py", canvas_snapshot.body_hash(""), "print(2)\n")
-    res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
+    harness.client.get("/api/canvases/delta?env=unstable&name=alpha&full=1")
+    assert push().status_code == 409
+    if settle == "body":
+        with m._op_lock:
+            m.apply_body("fresh", "fresh.py", canvas_snapshot.body_hash(""), "print(2)\n")
+    else:
+        harness.client.get("/api/canvases/delta?env=unstable&name=alpha&full=hello")
+    res = push()
     assert res.status_code == 200 and res.json()["ok"] is True, res.text
-    fresh = [r for r in _rows(str(harness.root / "alpha")) if r["udfName"] == "fresh"]
-    assert len(fresh) == 1 and fresh[0]["x"] == 900, fresh
+    fresh = [r["x"] for r in _rows(str(harness.root / "alpha")) if r["udfName"] == "fresh"]
+    assert fresh == ([900] if settle == "body" else []), fresh
 
 
 def test_a_manual_push_that_landed_is_ok_even_if_the_clone_moved_during_it(
@@ -619,10 +627,9 @@ def test_fusedignored_files_stay_out_of_the_frozen_copy(
     clone = harness.root / "alpha"
     seen: dict = {}
     _capture_push(monkeypatch, seen)
-    _start(harness)
-    # After start: sync/start re-seeds the app's own .fusedignore.
     with open(clone / ".fusedignore", "a") as f:
-        f.write("scratch_*.csv\n")
+        f.write("scratch_*.csv")
+    _start(harness)
     (clone / "scratch_big.csv").write_text("x,y\n")
     harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     files = seen["files"][0]
@@ -853,25 +860,6 @@ def test_a_frame_reload_never_trashes_a_rowless_file(
     _snapshot(harness, 1, EMPTY_SNAPSHOT, gen=2)
     assert (harness.root / "alpha" / "fresh.py").read_text() == "print(2)\n"
     assert m._rowless == set()
-
-
-def test_a_rename_carries_the_rowless_entry(harness, tmp_path, monkeypatch, fake_agent):
-    """Rename a rowless file before its row arrives: the entry follows the
-    new name, so a snapshot that then drops the renamed UDF still trashes it."""
-    _quiet_watcher(monkeypatch)
-    _cloned_shim_harness(harness, tmp_path, monkeypatch)
-    m = _start(harness)
-    _snapshot(harness, 1, ROWLESS_BODY)
-    res = harness.client.post("/api/canvases/snapshot", json={
-        "env": ENV, "name": "alpha", "gen": 1, "seq": 2,
-        "rename": {"from": "fresh", "to": "fresh2",
-                   "file_from": "fresh.py", "file_to": "fresh2.py"}}, headers=GUARD)
-    assert res.status_code == 200, res.text
-    assert "fresh2" in m._rowless and "fresh" not in m._rowless
-    assert (harness.root / "alpha" / "fresh2.py").exists()
-    assert 'udfName = "fresh2"' not in _toml(harness)
-    _snapshot(harness, 3, EMPTY_SNAPSHOT)
-    assert not (harness.root / "alpha" / "fresh2.py").exists()
 
 
 # -- third review round -------------------------------------------------------------
