@@ -47,8 +47,9 @@ export interface RailPlace {
   name: string;
   dir: string | null;
   file?: string | null;
-  /** Admit rows with no session yet (drafts, scheduled tasks) — the hover
-   *  card's rail (owner, 2026-10-30); off, the rail is what it was: chats. */
+  /** Admit rows with no session yet (drafts, scheduled tasks). The canvas
+   *  rail always does (owner, 2026-10-30); the option exists so the two
+   *  rulings stay provable apart. */
   sessionless?: boolean;
 }
 

@@ -171,11 +171,13 @@ export function ClaudeRail({
   const rows = useTasksPulseRows();
   const nodeFile = node?.file ?? null;
   const peekOn = useCanvasRailPeek();
-  // Drafts and scheduled rows ride the rail only with the hover card on
-  // (claude-rail-lib `sessionless`): off, the rail is byte-for-byte the old one.
+  // Drafts and scheduled rows ride the rail whatever the card flag says
+  // (owner, 2026-10-30: "the flag is only for the preview thing; the fixes
+  // we made — order etc. — should be there without the flag"): the rail is
+  // the List's order in rings, drafts included (claude-rail-lib `sessionless`).
   const place = useMemo(
-    () => ({ env, name, dir, file: nodeFile, sessionless: peekOn }),
-    [env, name, dir, nodeFile, peekOn],
+    () => ({ env, name, dir, file: nodeFile, sessionless: true }),
+    [env, name, dir, nodeFile],
   );
   // A new task's locked target: the node's file under the clone while a node
   // is selected, else the clone. Null until the clone exists.
@@ -494,9 +496,8 @@ export function ClaudeRail({
                     unread={t.unread > 0}
                     background={liveJobRow(t)}
                     // The red centre dot the List gives a draft row and a
-                    // settled row holding unsent words (tasks-lib.draftRing) —
-                    // with the card on; off, the ring is the old ring.
-                    draftHeld={peekOn && !!row && draftRing(merged as Task)}
+                    // settled row holding unsent words (tasks-lib.draftRing).
+                    draftHeld={!!row && draftRing(merged as Task)}
                     {...(row?.failed ? { failed: true } : {})}
                   />
                 </a>
