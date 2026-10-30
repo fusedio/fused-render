@@ -2453,6 +2453,19 @@ not by choice.
   Views that never opted in receive none of it. A standalone view (no shell
   above it) gets no tokens, so authors write `var(--fused-x, fallback)` and only
   the fallbacks apply there — accepted.
+- **AP-17** **Every view wears the shell's scrollbar.** `runtime.js` puts a
+  sheet first in every view's `<head>`, opted in or not: the 10px hover-only
+  bar of `styles/scrollbars.css`, thumb inked from `currentColor`, so it reads
+  on any palette. Left to the engine, a dark view's bars can come out light
+  whatever `color-scheme` says, and apps were each pasting their own
+  `::-webkit-scrollbar` block. The view keeps control: every rule is
+  `*`-level, so an author's own `::-webkit-scrollbar*` rule wins by order and a
+  more specific one wins outright; a non-`auto` `scrollbar-width`/
+  `scrollbar-color` makes Chromium skip the pseudo rules; and
+  `data-fused-scrollbars="native"` on `<html>` skips the sheet. The viewport
+  bar's track is painted in the document's canvas colour (`<html>`'s
+  background, else `<body>`'s), because a transparent one shows the parent
+  document through the frame.
 
 ---
 

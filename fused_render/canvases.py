@@ -92,6 +92,7 @@ import logging
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -4696,12 +4697,22 @@ def refuse_new_managers() -> None:
         _QUITTING = True
 
 
-def shutdown() -> None:
+def shutdown(*, latch: bool = True) -> None:
     """Quit rung: stop every sync manager — a push CLI in flight, its watcher
     and fs threads, its writer lock — then close any claim left open. The
-    packaged app never runs the server's lifespan (app.py
+    packaged Mac app never runs the server's lifespan (app.py
     QUIT_CHILDREN_BUDGET_S), so without this a push CLI outlived the app as
-    an orphan and the lock fds were left to the process exit.
+    an orphan and the lock fds were left to the process exit. The server's
+    lifespan shutdown (server/app.py) runs it too, with `latch=False`, for
+    every exit that IS a lifespan one — the Linux supervisor's child, a pip
+    `fused-render` on Windows, where the lock is a pid-probed file that
+    nothing but this release ever clears (an unreleased file + pid reuse is a
+    canvas no later start can claim).
+
+    `latch` arms `_QUITTING` (no new manager from here on): the quit rung's
+    contract. The lifespan caller leaves it off — a test process (or an
+    embedding) that builds a second app after the first one shut down must
+    still be able to start managers.
 
     A push is STOPPED, not waited for: its CLI is terminated (SIGTERM, then
     SIGKILL after PUSH_TERMINATE_GRACE_S) so its fold never runs on a half
@@ -4712,7 +4723,8 @@ def shutdown() -> None:
     by STOP_JOIN_S, and the kernel drops any flock left at exit."""
     global _QUITTING
     with _SYNC_LOCK:
-        _QUITTING = True
+        if latch:
+            _QUITTING = True
         managers = list(_syncs.values())
         _syncs.clear()
     for manager in managers:
@@ -4959,14 +4971,88 @@ def _sync_start_response(env: str, name: str):
 
 
 def _owned_response(env: str, name: str, owner: dict, *, code: str = "owned",
-                    error: str | None = None) -> JSONResponse:
+                    error: str | None = None, **extra) -> JSONResponse:
     """The 409 the page reads as "another process owns this clone"
-    (`ownerFromError`): `{error, code, owner: {pid, port, since}}`."""
+    (`ownerFromError`): `{error, code, owner: {pid, port, since}}`. `extra`
+    fields ride along (takeover's `can_force_quit`)."""
     owner = {k: owner.get(k) for k in ("pid", "port", "since")}
-    return JSONResponse(
-        {"error": error or (f"canvas {_sync_key(env, name)!r} is synced by another fused-render "
-                            f"(pid {owner['pid']}, port {owner['port']})"),
-         "code": code, "owner": owner}, status_code=409)
+    body = {"error": error or (f"canvas {_sync_key(env, name)!r} is synced by another fused-render "
+                               f"(pid {owner['pid']}, port {owner['port']})"),
+            "code": code, "owner": owner}
+    body.update(extra)
+    return JSONResponse(body, status_code=409)
+
+
+def _is_fused_process(pid: int) -> bool:
+    """Is `pid` a live process of THIS app (a fused-render / Fused desktop
+    process), by its executable: the very same executable as ours (full path),
+    or one named for the app or the package. The gate before `sync/force_quit`
+    signals a lock holder — a pid that was reused by something else is never
+    ours, whatever the lock file says."""
+    if not isinstance(pid, int) or pid <= 0 or pid == os.getpid():
+        return False
+    if not canvas_sync_state.pid_alive(pid):
+        return False
+    exe_path = canvas_sync_state.process_executable(pid)
+    if not exe_path:
+        return False
+    # The SAME executable as ours (a dev server's venv python, a pip install's
+    # python.exe on Windows): full path, not basename — `Program Files\\x.exe`
+    # and `Program Files\\y.exe` share a basename of nothing useful, and a
+    # reused pid under another python must not read as ours.
+    own = canvas_sync_state.process_executable(os.getpid()) or sys.executable
+    try:
+        if own and os.path.normcase(os.path.realpath(exe_path)) == os.path.normcase(os.path.realpath(own)):
+            return True
+    except OSError:
+        pass
+    # Or an executable NAMED for this app (the packaged app's main binary; an
+    # older bundle moved to a hidden sibling path still carries the name).
+    exe = os.path.basename(exe_path).lower()
+    if "fused_render" in exe or "fused-render" in exe or "fusedrender" in exe:
+        return True
+    from fused_render import _flavor
+
+    app = _flavor.app_name().lower()
+    if app and app in exe:
+        return True
+    # Or a Python running THIS package by name: the Linux supervisor's child
+    # (`python3 -I -m fused_render.cli serve`, under a per-launch AppImage
+    # mount, so its path never equals ours after an update) or a pip
+    # install's `fused-render serve` from another venv. Tokens are tested as
+    # the module name or a script's BASENAME — a checkout path that merely
+    # contains `fused-render` (every process started under the repo) is not
+    # a match.
+    for token in canvas_sync_state.process_argv(pid) or []:
+        if token == "fused_render" or token.startswith("fused_render."):
+            return True
+        # Both separators: the card may be read on any platform, and a
+        # Windows token is `C:\\…\\Scripts\\fused-render.exe`.
+        if token.replace("\\", "/").rsplit("/", 1)[-1].lower() in _FUSED_SCRIPT_NAMES:
+            return True
+    return False
+
+
+#: The package's console scripts (pyproject `[project.scripts]`), as argv[0]
+#: basenames on every platform.
+_FUSED_SCRIPT_NAMES = frozenset({
+    "fused-render", "fused-render.exe", "fused-render-script.py",
+    "fused-render-app", "fused-render-app.exe", "fused-render-app-script.py",
+})
+
+
+def _unreachable_owner_response(env: str, name: str, held: dict, *, why: str) -> JSONResponse:
+    """The takeover's answer when the lock's holder cannot be asked: `code`
+    `owner_unreachable`, plus `can_force_quit` — true when the card's pid is
+    a live process of this app (and not us), so the page can offer the
+    user a "Force quit" of it. Nothing is signalled here."""
+    pid = held.get("pid")
+    can_force_quit = isinstance(pid, int) and _is_fused_process(pid)
+    hint = (" You can force quit that process from here." if can_force_quit
+            else " Close it there.")
+    return _owned_response(env, name, held, code="owner_unreachable",
+                           error=f"pid {pid} owns this canvas but {why}.{hint}",
+                           can_force_quit=can_force_quit)
 
 
 @router.post("/api/canvases/sync/start")
@@ -5117,17 +5203,22 @@ def api_canvases_sync_takeover(body: dict = Body(...), x_fused: str | None = Hea
     if held is not None:
         port = held.get("port")
         if not isinstance(port, int) or port <= 0:
-            return _owned_response(env, name, held, error=(
-                f"pid {held.get('pid')} owns this canvas but published no port to ask; "
-                f"close it there"))
+            return _unreachable_owner_response(env, name, held, why="published no port to ask")
+        if canvas_sync_state.card_names_this_server(held):
+            # The card names OUR port: the holder is a predecessor that lost
+            # the port to us (an update's restart, a quit that never released).
+            # Asking it would ask ourselves — `{released: false}`, then the
+            # same refusal, and a button that visibly does nothing.
+            return _unreachable_owner_response(
+                env, name, held, why=f"its port {port} is now this Fused's own, so it cannot be asked")
         status, answer = _ask_peer_release(port, env, name)
         if status == 404:
             return _owned_response(env, name, held, code="owner_too_old", error=(
                 f"pid {held.get('pid')} (port {port}) runs an older Fused that cannot hand a "
                 f"canvas over; close it there"))
         if status is None:
-            return _owned_response(env, name, held, error=(
-                f"pid {held.get('pid')} (port {port}) did not answer; close it there"))
+            return _unreachable_owner_response(
+                env, name, held, why=f"nothing answered on its port {port}")
         if status != 200:
             return _owned_response(env, name, held, code=str(answer.get("code") or "owned"),
                                    error=str(answer.get("error") or
@@ -5136,6 +5227,73 @@ def api_canvases_sync_takeover(body: dict = Body(...), x_fused: str | None = Hea
         logger.info("canvas %s: lock handed over by pid %s (port %s), released=%s",
                     _sync_key(env, name), held.get("pid"), port, answer.get("released"))
     return _sync_start_response(env, name)
+
+
+FORCE_QUIT_WAIT_S = 6.0
+
+
+@router.post("/api/canvases/sync/force_quit_owner")
+def api_canvases_sync_force_quit_owner(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+    """USER-PRESSED: send SIGTERM to the process holding this clone's writer
+    lock, when it is one of this app's own processes that can no longer be
+    asked to hand over (sync/takeover answered `owner_unreachable`). The
+    case is an update's restart that left the old instance alive without a
+    server, or a quit that never finished: a live flock with nobody behind
+    it, which no page could clear before (D1440 rejected killing a LIVE
+    owner — one that still answers; this never signals such a one).
+
+    Guards, all re-checked here and not trusted from the page: the lock is
+    held right now by a pid other than ours; that pid is a Fused process by
+    its command line (`_is_fused_process`); and its port, if any, either is
+    ours or does not answer `sync/release` — an owner that answers is asked
+    to release instead and never signalled. Then SIGTERM (the ordinary quit
+    signal; never SIGKILL from here), and a bounded wait for the lock to
+    free. Answers `{ok, freed, pid}`; the page re-arms through sync/start
+    once `freed`."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    name = body.get("name")
+    if not isinstance(name, str) or not _NAME_RE.fullmatch(name):
+        return _error("'name' must be a canvas name (letters, digits, underscore)")
+    env, bad = _require_env(body.get("env"))
+    if bad is not None:
+        return bad
+    path = _lock_path(env, name)
+    held = canvas_sync_state.lock_holder(path)
+    if held is None:
+        return {"ok": True, "freed": True, "pid": None, "signalled": False}
+    pid = held.get("pid")
+    if not isinstance(pid, int) or pid <= 0 or pid == os.getpid():
+        return _error("the lock holder's pid is unknown; close that Fused yourself", 409)
+    if not _is_fused_process(pid):
+        return _error(f"pid {pid} is not a running Fused process; nothing was signalled", 409)
+    port = held.get("port")
+    if isinstance(port, int) and port > 0 and not canvas_sync_state.card_names_this_server(held):
+        status, answer = _ask_peer_release(port, env, name)
+        if status is not None:
+            # It answers (a 404 included: an older build without the release
+            # route is a LIVE owner): not a leftover, not ours to kill.
+            return _owned_response(env, name, held, error=(
+                f"pid {pid} (port {port}) is a running Fused that still answers; "
+                f"use Take over, or close it there"))
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    except OSError as exc:
+        return _error(f"could not signal pid {pid}: {exc}", 500)
+    logger.warning("canvas %s: SIGTERM sent to lock holder pid %s (port %s) on the user's request",
+                   _sync_key(env, name), pid, port)
+    deadline = time.monotonic() + FORCE_QUIT_WAIT_S
+    freed = False
+    while time.monotonic() < deadline:
+        now_held = canvas_sync_state.lock_holder(path)
+        if now_held is None or now_held.get("pid") != pid:
+            freed = True
+            break
+        time.sleep(0.2)
+    return {"ok": True, "freed": freed, "pid": pid, "signalled": True}
 
 
 @router.post("/api/canvases/snapshot")

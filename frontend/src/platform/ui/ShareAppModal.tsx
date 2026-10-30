@@ -89,19 +89,22 @@ import {
 } from "lucide-react";
 import { getJson, postJson, revealPath, saveAppFileToDisk } from "@platform/lib/api";
 import { copyToClipboard } from "@platform/lib/clipboard";
-import { timeAgo } from "@platform/lib/format";
+import { releaseDate, timeAgo } from "@platform/lib/format";
 import { notify } from "@platform/lib/notifications";
 import { encodeFsPathSegments, navigate, navigateUrl, urlForFsPath } from "@platform/lib/router";
 import { cn } from "@platform/lib/utils";
 import {
   getAppContrib,
   getLadder,
+  getListingDraft,
   ladderListing,
+  notifyLadderChanged,
   opensDoctor,
   plainMessage,
   publishGithub,
   runAction,
   runJob,
+  runListingAction,
   useUnmountSignal,
   type ContribAction,
   type LadderAnswer,
@@ -161,6 +164,7 @@ import { Input } from "@platform/shadcn/ui/input";
 import { Label } from "@platform/shadcn/ui/label";
 import { RadioGroup, RadioGroupItem } from "@platform/shadcn/ui/radio-group";
 import { Skeleton } from "@platform/shadcn/ui/skeleton";
+import { Switch } from "@platform/shadcn/ui/switch";
 
 const LOGIN_POLL_MS = 1500;
 // The guarded GETs (whoami runs a CLI child) carry the X-Fused header too —
@@ -372,6 +376,672 @@ function listingLine(ladder: LadderAnswer): { text: string; detail: string | nul
   }
 }
 
+// ---- Simple sharing: the one switch (docs/CONTRIB_LOOP.md §20) ---------------
+//
+// For an app the user owns while the Community switch is on (the ladder's
+// `flags.marketplace` — owner 2026-10-28: no switch of its own, "if
+// community is on, show the share option via GitHub"): the GitHub card is
+// ONE switch, "Anyone can install this". With the switch off the sheet shows
+// the plain link card, as for a copy. On, it runs the ladder's rungs in order without showing them —
+// connect GitHub (install gh, sign in: the same records `GithubLadderCard`
+// polls), put it online (`publish-github` with the folder's name, PUBLIC —
+// no name field, no visibility radio), and, with the Community switch on,
+// list it (`publish-market` from the listing draft) once App Doctor is
+// clear. What is happening is a short list of rows, each a sentence; the one
+// thing the person may be asked is a one-line description when the app has
+// none (the index refuses a listing without one).
+//
+// THE OFF SIDE IS ASYMMETRIC. Fused cannot un-publish a GitHub repository,
+// and leaving the Community is a maintainer-merged request: so off = Remove
+// from the Community (the server's own confirm sentence first) while the
+// app is listed or in review, and the switch stays on and disabled, with a
+// sentence, while the app is on GitHub alone. A failed review or a confirm
+// points at the Community tab, where the listing's own buttons are.
+//
+// Automatic is fine, magic is not (owner 2026-10-16): every move this card
+// makes is one the Advanced card makes on a button, and the Community tab's
+// Recent list (Activity, read-only — §16.16) records it.
+
+type SimplePhase = null | "connect" | "install" | "login" | "online" | "list" | "remove" | "push";
+
+/** "2 edits" — spelled here, not imported from the shell's words.ts
+ *  (platform may not import the shell). */
+function plural(n: number, one: string, many = one + "s"): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+/** A gh "name already taken" refusal (raw stderr, verbatim on the record)
+ *  in product words; anything else as it stands. */
+function publishErrorSentence(raw: string | null | undefined, name: string): string {
+  const said = (raw || "").trim();
+  if (/already exists|name already/i.test(said)) {
+    return `There is already something called ${name} on your GitHub. Rename the app folder and try again.`;
+  }
+  // gh's own words can speak git ("remote", "push"): they stay on the
+  // record, where Advanced shows them; here one plain sentence.
+  return "Couldn't put it online. Try again.";
+}
+
+export function SimpleShareCard({
+  dir,
+  ladder,
+  reload,
+  primary,
+  locked,
+  onBusy,
+  onClose,
+}: {
+  dir: string;
+  ladder: LadderAnswer;
+  reload: () => Promise<LadderAnswer | null>;
+  primary: boolean;
+  locked: boolean;
+  onBusy?: (busy: boolean) => void;
+  onClose: () => void;
+}) {
+  const gh = ladder.github;
+  const rung = ladder.rung ?? 1;
+  const flags = ladder.flags ?? { sources: false, marketplace: false };
+  const name = folderName(dir);
+  const goneRef = useRef(false);
+  useEffect(() => {
+    goneRef.current = false;
+    return () => {
+      goneRef.current = true;
+    };
+  }, []);
+  const isGone = useCallback(() => goneRef.current, []);
+  const unmountSignal = useUnmountSignal();
+
+  const [phase, setPhase] = useState<SimplePhase>(null);
+  const [status, setStatus] = useState<GithubStatus | null>(null);
+  const [login, setLogin] = useState<LoginRecord | null>(null);
+  const [publish, setPublish] = useState<SetupRecord | null>(null);
+  const [err, setErr] = useState("");
+  const [doctorErr, setDoctorErr] = useState<string | null>(null);
+  const [doctorOpen, setDoctorOpen] = useState(false);
+  // The index refused the listing for its details (no description): the
+  // server's sentence, and the one line the person types to answer it.
+  const [needDetails, setNeedDetails] = useState<string | null>(null);
+  // The index refused a detail the description field cannot fix: the
+  // sentence, with the Community tab (its details form) as the way out.
+  const [detailsErr, setDetailsErr] = useState<string | null>(null);
+  const [description, setDescription] = useState("");
+  const [removeConfirm, setRemoveConfirm] = useState<string | null>(null);
+  const [pushConfirm, setPushConfirm] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  // In-flight guards, read at call time (state lands a render later): a run
+  // started by the switch, and a listing send started by any button.
+  const runRef = useRef(false);
+  const listingRef = useRef(false);
+
+  const signedIn = status ? status.found && status.signed_in : gh.signed_in;
+  const account = (status?.account ?? gh.login) || null;
+  const running = phase !== null;
+  const heavy = phase === "online" || phase === "list" || phase === "remove" || phase === "push";
+  useEffect(() => {
+    if (!heavy) return;
+    onBusy?.(true);
+    return () => onBusy?.(false);
+  }, [heavy, onBusy]);
+
+  const { listing, sentence: listingSentence } = ladderListing(ladder.listing);
+  const listingState = ladder.listing?.state ?? listing?.review?.status ?? (listing?.listed ? "live" : null);
+  const listed = listingState === "live" || listingState === "in-review" || listingState === "needs-confirmation";
+  const removeAction = (ladder.listing?.actions ?? []).find((a) => a.id === "remove-market") ?? null;
+  const link = flags.sources ? gh.link : null;
+
+  /** A done publish: re-read until the ladder says rung 2 (the server's
+   *  rebind lands a beat after the record). Answers the last read. */
+  const settle = useCallback(async (): Promise<LadderAnswer | null> => {
+    let last: LadderAnswer | null = null;
+    for (let i = 0; i < PUBLISH_SETTLE_TRIES; i++) {
+      last = await reload();
+      if (goneRef.current || (last?.ok && last.mine && (last.rung ?? 1) >= 2)) return last;
+      await sleep(PUBLISH_SETTLE_MS);
+      if (goneRef.current) return last;
+    }
+    return last;
+  }, [reload]);
+
+  /** Rung 3: list it in the Community from the draft, when nothing stands in
+   *  the way. Doctor findings are a row with Fix with Claude, not an error;
+   *  a missing description is a row with a field. */
+  const listIt = useCallback(
+    async (l: LadderAnswer) => {
+      if (!l.flags?.marketplace || (l.rung ?? 1) < 2 || l.rung === 3) return;
+      if (l.doctor.clear === false) return;
+      if (listingRef.current) return;
+      listingRef.current = true;
+      setPhase("list");
+      try {
+      const draft = await getListingDraft(dir);
+      if (goneRef.current) return;
+      if (draft.ok === false) {
+        setErr("Couldn't read the app's listing details just now. Try again in a moment.");
+        return;
+      }
+      const desc = (description.trim() || draft.description || "").trim();
+      if (!desc) {
+        setNeedDetails("Describe your app in one line, so people know what it does.");
+        return;
+      }
+      const args = {
+        name: draft.name || name,
+        description: desc,
+        category: draft.category || "",
+        tags: draft.tags ?? [],
+        icon: draft.icon ?? null,
+        preview: draft.preview ?? null,
+      };
+      const started = await runListingAction(dir, "publish-market", { args });
+      if (goneRef.current) return;
+      if (!started.ok) {
+        const said = plainMessage(started);
+        if (opensDoctor(started.reason)) {
+          setErr(said);
+          setDoctorErr(said);
+        } else if (started.reason === "invalid" && /describ/i.test(said)) {
+          setNeedDetails(said);
+        } else if (started.reason === "invalid") {
+          // A name, category, icon, preview or version the index refused:
+          // not something one field here can fix — the Community tab's
+          // details form can.
+          setDetailsErr(said);
+        } else {
+          setErr(said);
+        }
+        return;
+      }
+      if (started.job) {
+        const r = await runJob(Promise.resolve(started), { signal: unmountSignal() });
+        if (goneRef.current || (!r.ok && r.reason === "aborted")) return;
+        if (!r.ok) setErr(r.message);
+      }
+      setNeedDetails(null);
+      await reload();
+      } finally {
+        listingRef.current = false;
+        if (!goneRef.current) setPhase(null);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- unmountSignal is a stable getter
+    [dir, name, description, reload],
+  );
+
+  /** The switch turned on: connect, put it online, list it. Each step is
+   *  skipped when it already holds, so the same run resumes after a stop. */
+  const run = useCallback(async () => {
+    if (running || locked || runRef.current) return;
+    runRef.current = true;
+    setErr("");
+    setDoctorErr(null);
+    try {
+      setPhase("connect");
+      // A read that FAILS is not "not installed": say so, never install.
+      let s: GithubStatus | null = await getGithubStatus().catch(() => null);
+      if (goneRef.current) return;
+      if (!s) throw new Error("Couldn't check GitHub just now. Try again in a moment.");
+      setStatus(s);
+      if (!s.found) {
+        setPhase("install");
+        await startGithubInstall();
+        const d = await pollRecord(getGithubInstall, { isGone });
+        if (!d || goneRef.current) return;
+        if (d.state === "error") throw new Error(d.error || "GitHub's tool didn't install. Try again.");
+        if (recordRunning(d)) throw new Error("GitHub's tool is still installing. Close Share and open it again in a moment.");
+        s = await getGithubStatus().catch(() => null);
+        if (goneRef.current) return;
+        if (s) setStatus(s);
+      }
+      if (!s?.signed_in) {
+        setPhase("login");
+        const rec = await startGithubLogin();
+        if (goneRef.current) return;
+        setLogin(rec);
+        const d = await pollRecord(getGithubLogin, { isGone, onTick: setLogin });
+        if (!d || goneRef.current) return;
+        setLogin(null);
+        if (d.canceled) return;
+        if (d.error) throw new Error(d.error);
+        s = await getGithubStatus().catch(() => null);
+        if (goneRef.current) return;
+        if (s) setStatus(s);
+        if (!s?.signed_in) throw new Error("The GitHub sign-in didn't finish. Try again.");
+      }
+      let l: LadderAnswer | null = ladder;
+      if (rung < 2) {
+        setPhase("online");
+        const rec = await publishGithub(dir, { name: slugRepoName(name), visibility: "public" });
+        if (goneRef.current) return;
+        setPublish(rec);
+        const d = recordRunning(rec) ? await pollRecord(getGithubPublish, { isGone, onTick: setPublish }) : rec;
+        if (goneRef.current) return;
+        // The poll gave up before the record settled (reads kept failing):
+        // not done, not failed — say so rather than start over on a repo
+        // that may already exist.
+        if (!d || recordRunning(d)) throw new Error("Still putting it online. Close Share and open it again in a moment.");
+        if (d.state === "error") throw new Error(publishErrorSentence(d.error, slugRepoName(name)));
+        l = await settle();
+        if (goneRef.current) return;
+        if (!l || (l.rung ?? 1) < 2) {
+          throw new Error("It is on GitHub, but this page hasn't caught up yet. Close Share and open it again.");
+        }
+      }
+      if (l) await listIt(l);
+    } catch (e) {
+      if (goneRef.current) return;
+      const said = (e as Error).message;
+      setErr(said);
+      const reason = (e as { body?: { reason?: unknown } }).body?.reason;
+      setDoctorErr(typeof reason === "string" && opensDoctor(reason) ? said : null);
+    } finally {
+      runRef.current = false;
+      if (!goneRef.current) setPhase(null);
+    }
+  }, [running, locked, ladder, rung, dir, name, isGone, settle, listIt]);
+
+  // At open: a step already running (a sign-in waiting in the browser, a
+  // publish started a moment ago from this folder) is adopted and watched
+  // to its end, as the ladder card does; a settled record is an earlier
+  // attempt's and is left alone.
+  useEffect(() => {
+    if (rung !== 1) return;
+    let cancelled = false;
+    void Promise.allSettled([getGithubStatus(), getGithubLogin(), getGithubPublish(), getGithubInstall()]).then(([s, l, p, i]) => {
+      if (cancelled || goneRef.current || runRef.current) return;
+      if (s.status === "fulfilled") setStatus(s.value);
+      const pubRoot = p.status === "fulfilled" ? (p.value.root ?? "").replace(/\/+$/, "") : "";
+      if (i.status === "fulfilled" && recordRunning(i.value)) {
+        // gh is installing (started from the Git panel or an earlier sheet):
+        // watch it rather than ask for a second install (the server 409s).
+        setPhase("install");
+        runRef.current = true;
+        void pollRecord(getGithubInstall, { isGone }).then((done) => {
+          runRef.current = false;
+          if (goneRef.current) return;
+          if (done?.state === "error") setErr(done.error || "GitHub's tool didn't install. Try again.");
+          setPhase(null);
+          void getGithubStatus().then((s2) => !goneRef.current && setStatus(s2)).catch(() => {});
+        });
+      } else if (p.status === "fulfilled" && recordRunning(p.value) && pubRoot === dir.replace(/\/+$/, "")) {
+        setPhase("online");
+        setPublish(p.value);
+        runRef.current = true;
+        void pollRecord(getGithubPublish, { isGone, onTick: setPublish }).then(async (done) => {
+          try {
+            if (!done || goneRef.current) return;
+            if (done.state === "error") setErr(publishErrorSentence(done.error, slugRepoName(name)));
+            else {
+              const next = await settle();
+              if (!goneRef.current && next) await listIt(next);
+            }
+          } finally {
+            runRef.current = false;
+            if (!goneRef.current) setPhase(null);
+          }
+        });
+      } else if (l.status === "fulfilled" && recordRunning(l.value)) {
+        setPhase("login");
+        setLogin(l.value);
+        runRef.current = true;
+        void pollRecord(getGithubLogin, { isGone, onTick: setLogin }).then(() => {
+          runRef.current = false;
+          if (goneRef.current) return;
+          setLogin(null);
+          setPhase(null);
+          void getGithubStatus().then((s2) => !goneRef.current && setStatus(s2)).catch(() => {});
+        });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+    // Once per rung-1 open; the watchers only close over stable refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rung]);
+
+  /** The switch turned off: leave the Community (confirm first, the server's
+   *  sentence). On GitHub alone there is nothing to undo, and the switch is
+   *  disabled then (see `offDisabled`). */
+  const turnOff = useCallback(
+    async (confirmed: boolean) => {
+      if (running || locked || !removeAction) return;
+      setErr("");
+      setPhase("remove");
+      try {
+        const started = await runListingAction(dir, removeAction.id, { confirm: confirmed });
+        if (goneRef.current) return;
+        if (!started.ok && started.reason === "confirm" && !confirmed) {
+          setRemoveConfirm(plainMessage(started));
+          return;
+        }
+        if (!started.ok) {
+          setErr(plainMessage(started));
+          return;
+        }
+        setRemoveConfirm(null);
+        if (started.job) {
+          const r = await runJob(Promise.resolve(started), { signal: unmountSignal() });
+          if (goneRef.current || (!r.ok && r.reason === "aborted")) return;
+          if (!r.ok) setErr(r.message);
+        }
+        await reload();
+      } finally {
+        if (!goneRef.current) setPhase(null);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- unmountSignal is a stable getter
+    [running, locked, removeAction, dir, reload],
+  );
+
+  /** Edits not online yet: the Source panel's own publish action, run here. */
+  const pushEdits = useCallback(
+    async (confirmed: boolean) => {
+      if (running || locked) return;
+      setErr("");
+      setPhase("push");
+      try {
+        const a = await getAppContrib(dir);
+        if (goneRef.current) return;
+        const act = (a.actions ?? []).find((x) => x.id === "publish-now" || x.id === "push-main") ?? null;
+        if (!act) {
+          // No one-button way: the Community tab shows the edits and every option.
+          setErr("These edits need a closer look. The Community tab shows them.");
+          return;
+        }
+        if (!confirmed && act.confirm) {
+          setPushConfirm(act.confirm);
+          return;
+        }
+        const started = await runAction(dir, act.id, { confirm: confirmed });
+        if (goneRef.current) return;
+        if (!started.ok && started.reason === "confirm" && !confirmed) {
+          setPushConfirm(plainMessage(started));
+          return;
+        }
+        setPushConfirm(null);
+        if (!started.ok) {
+          setErr(plainMessage(started));
+          return;
+        }
+        if (started.job) {
+          const r = await runJob(Promise.resolve(started), { signal: unmountSignal() });
+          if (goneRef.current || (!r.ok && r.reason === "aborted")) return;
+          if (!r.ok) setErr(r.message);
+        }
+        await reload();
+      } catch {
+        if (!goneRef.current) setErr("The edits didn't publish. Try again.");
+      } finally {
+        if (!goneRef.current) setPhase(null);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- unmountSignal is a stable getter
+    [running, locked, dir, reload],
+  );
+
+  const openCommunity = () => {
+    if (heavy) return;
+    onClose();
+    navigateUrl(communityTabUrl(dir));
+  };
+
+  const copyLink = async () => {
+    if (!link) return;
+    if (await copyToClipboard(link)) {
+      setCopied(true);
+      window.setTimeout(() => {
+        if (!goneRef.current) setCopied(false);
+      }, 1500);
+    }
+  };
+
+  // ---- the rows -----------------------------------------------------------------
+  const on = rung >= 2 || running;
+  // Off has nothing to undo on GitHub alone (see the header comment).
+  const offDisabled = rung >= 2 && !(flags.marketplace && removeAction);
+  const connectText = running && (phase === "connect" || phase === "install" || phase === "login")
+    ? phase === "install"
+      ? "Setting up GitHub's tool…"
+      : phase === "login"
+        ? login?.code
+          ? `Sign in in the browser window that just opened. Your code: ${login.code}`
+          : "Sign in in the browser window that just opened."
+        : "Checking GitHub…"
+    : signedIn
+      ? `Connected GitHub${account ? ` as ${account}` : ""}`
+      : "Connect GitHub (once)";
+  const onlineText = rung >= 2
+    ? `Online as ${gh.repo ?? slugRepoName(name)}`
+    : phase === "online"
+      ? publish?.state === "done"
+        ? "Online — finishing up…"
+        : (publish?.state === "running" && publish.detail) || "Putting it online…"
+      : "Put it online";
+  const failing = ladder.doctor?.failing ?? 0;
+  const whenListed = releaseDate(listing?.approved?.at ?? null);
+  let listText: string | null = null;
+  let listAction: ReactNode = null;
+  if (flags.marketplace) {
+    if (listingState === "live") {
+      listText = whenListed ? `In the Community since ${whenListed}` : "In the Community";
+    } else if (listingState === "in-review") {
+      listText = "Fused is reviewing it for the Community, about 30 minutes";
+    } else if (listingState === "needs-confirmation" || listingState === "failed" || listingState === "removing") {
+      // A confirm, a failed review, a removal under way: the Community tab
+      // has the listing's own buttons; the card points at it.
+      listText = listingSentence || listingLine(ladder).text;
+      listAction = (
+        <Button size="xs" variant="outline" disabled={running} onClick={openCommunity}>
+          Open Community
+        </Button>
+      );
+    } else if (phase === "list") {
+      listText = "Sending it to the Community…";
+    } else if (rung >= 2 && detailsErr) {
+      listText = detailsErr;
+      listAction = (
+        <Button size="xs" variant="outline" disabled={running} onClick={openCommunity}>
+          Open Community
+        </Button>
+      );
+    } else if (rung >= 2 && needDetails) {
+      listText = needDetails;
+    } else if (rung >= 2 && ladder.doctor?.clear === false) {
+      listText = `${failing ? plural(failing, "thing") : "A few things"} to fix before listing`;
+      listAction = (
+        <Button size="xs" variant="outline" disabled={running} onClick={() => setDoctorOpen(true)}>
+          Fix with Claude
+        </Button>
+      );
+    } else if (rung >= 2 && !running) {
+      listText = "Not in the Community yet";
+      listAction = (
+        <Button size="xs" variant="outline" disabled={running} onClick={() => void (signedIn ? listIt(ladder) : run())}>
+          {signedIn ? "List it" : "Sign in and list it"}
+        </Button>
+      );
+    } else {
+      listText = "List it in the Community";
+    }
+  }
+  const unpushed = rung >= 2 ? gh.unpushed : 0;
+
+  const row = (state: "done" | "now" | "next", text: string, action?: ReactNode, children?: ReactNode) => (
+    <div className="flex items-start gap-2.5" data-step={state}>
+      <span
+        aria-hidden
+        className={cn(
+          "mt-1 flex size-3.5 shrink-0 items-center justify-center rounded-full border [&_svg]:size-2.5",
+          state === "done" && "border-primary bg-primary text-primary-foreground",
+          state === "now" && "border-primary",
+          state === "next" && "border-border",
+        )}
+      >
+        {state === "done" && <Check />}
+        {state === "now" && <Loader2 className="animate-spin text-primary" />}
+      </span>
+      <div className="flex min-w-0 flex-1 flex-col gap-1.5">
+        <span className={cn("text-[13px] leading-5", state === "next" && "text-muted-foreground")}>{text}</span>
+        {children}
+      </div>
+      {action && <div className="flex shrink-0 items-center">{action}</div>}
+    </div>
+  );
+
+  const sub = !on
+    ? "Public, named after the app. About a minute."
+    : offDisabled && !listed
+      ? "On GitHub. Anyone with the link installs it."
+      : listed
+        ? "Off takes it out of the Community; people keep what they installed."
+        : "Public, named after the app.";
+
+  const errLine = err ? (
+    <>
+      <p className="m-0 text-[13px] leading-5 text-destructive" role="alert">
+        {err}
+      </p>
+      {doctorErr !== null && err === doctorErr && (
+        <div>
+          <Button size="sm" variant="outline" onClick={() => setDoctorOpen(true)}>
+            Open App Doctor
+          </Button>
+        </div>
+      )}
+    </>
+  ) : null;
+
+  return (
+    <OptionCard
+      icon={<GitBranch />}
+      title="Share"
+      description={
+        rung >= 2
+          ? "Anyone with the link installs it, and it stays up to date."
+          : "Only you have it. One switch puts it online for anyone."
+      }
+    >
+      <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background/60 p-3">
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <span className="text-[13px] font-medium leading-5" id="simple-share-switch-label">
+            Anyone can install this
+          </span>
+          <span className="text-xs leading-4 text-muted-foreground">{sub}</span>
+        </div>
+        <Switch
+          checked={on}
+          disabled={locked || running || (on && offDisabled)}
+          aria-labelledby="simple-share-switch-label"
+          onCheckedChange={(next) => {
+            if (next) void run();
+            else void turnOff(false);
+          }}
+        />
+      </div>
+      {(on || err) && (
+        <div className="flex flex-col gap-2 px-1" aria-live="polite">
+          {row(signedIn && phase !== "login" && phase !== "install" ? "done" : running ? "now" : "next", connectText)}
+          {row(rung >= 2 ? "done" : phase === "online" ? "now" : "next", onlineText)}
+          {listText &&
+            row(
+              listingState === "live" ? "done" : phase === "list" ? "now" : "next",
+              listText,
+              listAction,
+              needDetails && !running ? (
+                <div className="flex items-center gap-1.5">
+                  <Input
+                    type="text"
+                    value={description}
+                    onChange={(e) => setDescription(e.currentTarget.value)}
+                    placeholder="What it does, in one line"
+                    aria-label="One-line description"
+                    className="h-7 min-w-0 flex-1 text-[12.5px]"
+                  />
+                  <Button size="xs" disabled={!description.trim()} onClick={() => void listIt(ladder)}>
+                    List it
+                  </Button>
+                </div>
+              ) : null,
+            )}
+          {unpushed > 0 &&
+            row(
+              phase === "push" ? "now" : "next",
+              phase === "push" ? "Publishing your changes…" : `${plural(unpushed, "edit")} not online yet`,
+              pushConfirm === null ? (
+                <Button size="xs" variant="outline" disabled={running} onClick={() => void pushEdits(false)}>
+                  Publish
+                </Button>
+              ) : null,
+            )}
+        </div>
+      )}
+      {pushConfirm !== null && (
+        <div className="flex flex-col gap-2 rounded-lg border border-border bg-background/60 p-3">
+          <p className="m-0 text-[13px] leading-5">{pushConfirm}</p>
+          <div className="flex justify-end gap-1.5">
+            <Button size="sm" variant="outline" onClick={() => setPushConfirm(null)}>
+              Cancel
+            </Button>
+            <Button size="sm" disabled={running} onClick={() => void pushEdits(true)}>
+              Publish changes
+            </Button>
+          </div>
+        </div>
+      )}
+      {removeConfirm !== null && (
+        <div className="flex flex-col gap-2 rounded-lg border border-border bg-background/60 p-3">
+          <p className="m-0 text-[13px] leading-5">{removeConfirm}</p>
+          <div className="flex justify-end gap-1.5">
+            <Button size="sm" variant="outline" onClick={() => setRemoveConfirm(null)}>
+              Keep it
+            </Button>
+            <Button size="sm" variant="destructive" disabled={running} onClick={() => void turnOff(true)}>
+              Remove from the Community
+            </Button>
+          </div>
+        </div>
+      )}
+      {link && rung >= 2 && (
+        <div className="flex items-center gap-1.5">
+          <Input
+            type="text"
+            readOnly
+            value={link}
+            onFocus={(e) => e.currentTarget.select()}
+            aria-label="Install link"
+            className="h-8 flex-1 truncate bg-muted/40 font-mono text-[12.5px] text-foreground"
+          />
+          <Button size="sm" variant={primary ? "default" : "outline"} onClick={() => void copyLink()}>
+            {copied ? <Check data-icon="inline-start" /> : <Copy data-icon="inline-start" />}
+            {copied ? "Copied" : "Copy install link"}
+          </Button>
+        </div>
+      )}
+      {errLine}
+      {doctorOpen && (
+        <AppDoctorModal
+          dir={dir}
+          onClose={() => {
+            setDoctorOpen(false);
+            // Doctor clear now → the listing the switch promised (§20.5),
+            // without a second press; `listIt` itself skips a listed, in
+            // review, failed or removing app (rung 3 / the listing state).
+            void reload().then((next) => {
+              if (!next || goneRef.current || !signedIn) return;
+              const state = next.listing?.state ?? null;
+              if ((next.rung ?? 1) === 2 && next.doctor?.clear === true && (!state || state === "not-listed")) {
+                void listIt(next);
+              }
+            });
+          }}
+        />
+      )}
+    </OptionCard>
+  );
+}
+
 export function GithubLadderCard({
   dir,
   ladder,
@@ -483,13 +1153,22 @@ export function GithubLadderCard({
   /** A done publish: re-read until the ladder says rung 2 (see
    *  PUBLISH_SETTLE_TRIES). The card re-renders in its rung-2 state then. */
   const settlePublish = useCallback(async () => {
-    for (let i = 0; i < PUBLISH_SETTLE_TRIES; i++) {
-      const next = await reload();
-      if (goneRef.current || (next?.ok && next.mine && (next.rung ?? 1) >= 2)) return;
-      await sleep(PUBLISH_SETTLE_MS);
-      if (goneRef.current) return;
+    // The page behind this sheet re-reads NOW: the server's `classify.rebind`
+    // may land after this loop gives up, and the ladder answers `pending`
+    // meanwhile — which the page's `useLadder` already polls through. Told
+    // again when the loop ends, whatever it saw (a notify is one GET).
+    notifyLadderChanged(dir);
+    try {
+      for (let i = 0; i < PUBLISH_SETTLE_TRIES; i++) {
+        const next = await reload();
+        if (goneRef.current || (next?.ok && next.mine && (next.rung ?? 1) >= 2)) return;
+        await sleep(PUBLISH_SETTLE_MS);
+        if (goneRef.current) return;
+      }
+    } finally {
+      notifyLadderChanged(dir);
     }
-  }, [reload]);
+  }, [dir, reload]);
 
   // Rung 1 at open: the status read, and any record ALREADY running (a sign-in
   // waiting in the browser, an install, a publish started a moment ago) is
@@ -1027,6 +1706,11 @@ export function ShareAppModal({
   // shown and the ladder re-read every LADDER_PENDING_MS, as `useLadder` does,
   // so a copy that turns out to be the user's own swaps to the ladder card.
   const [notOwn, setNotOwn] = useState(false);
+  // The rung this sheet last saw: the baseline `reloadLadder` compares
+  // against before telling the page behind it that the rung moved. Seeded
+  // by the mount read below (null until then: a first answer is never a
+  // move).
+  const rungRef = useRef<string | null>(null);
   useEffect(() => {
     if (!linkEligible) return;
     let cancelled = false;
@@ -1034,10 +1718,15 @@ export function ShareAppModal({
       for (let i = 0; i < LADDER_PENDING_TRIES; i++) {
         const l = await getLadder(app.path);
         if (cancelled) return;
+        // An own app's ladder → the one-switch card with the Community
+        // switch on (§20), today's ladder card with it off; anything else
+        // → the plain link card below (`/api/share/github`).
         if (ownLadder(l)) {
           setLadder(l);
+          if (rungRef.current === null) rungRef.current = `${l.rung ?? 1}:${l.github.unpushed}`;
           setNotOwn(false);
         } else {
+          setLadder(null);
           setNotOwn(true);
         }
         if (!(l.ok && l.pending)) return;
@@ -1067,10 +1756,19 @@ export function ShareAppModal({
 
   // Re-read after each ladder step; an answer that is no longer an own
   // app's (a transient failure) keeps the card where it was.
+  // A re-read that MOVES the folder — the rung (1 → 2 after "Put it on
+  // GitHub" settles) or the unpushed count (the Push step) — also tells the
+  // app page behind this sheet (`notifyLadderChanged`): its `useLadder` /
+  // `useAppContrib` hold their own state and would otherwise keep the old
+  // rung — no Community tab, no "Add to the Community", a stale "N edits
+  // not on GitHub yet" — until a reload.
   const reloadLadder = useCallback(async (): Promise<LadderAnswer | null> => {
     const l = await getLadder(app.path, { fresh: true });
     if (ownLadder(l)) {
       setLadder(l);
+      const key = `${l.rung ?? 1}:${l.github.unpushed}`;
+      if (rungRef.current !== null && rungRef.current !== key) notifyLadderChanged(app.path);
+      rungRef.current = key;
       return l;
     }
     return null;
@@ -1547,16 +2245,32 @@ export function ShareAppModal({
         ? `This shares ${author}'s version. Your changes aren't included — propose them or publish a remix.`
         : `This shares ${author}'s version. Your changes aren't included — propose them to ${author}.`
       : null;
+  // The one-switch card (§20) is the own-app card with the Community switch
+  // on (owner 2026-10-28); with it off, the ladder card as before.
   const githubCard = ladder ? (
-    <GithubLadderCard
-      dir={app.path}
-      ladder={ladder}
-      reload={reloadLadder}
-      primary={githubFirst}
-      locked={working}
-      onBusy={setLadderPublishing}
-      onClose={onClose}
-    />
+    ladder.flags?.marketplace ? (
+      <SimpleShareCard
+        dir={app.path}
+        ladder={ladder}
+        reload={reloadLadder}
+        primary={githubFirst}
+        locked={working}
+        onBusy={setLadderPublishing}
+        onClose={onClose}
+      />
+    ) : (
+      // Community off: putting an app on GitHub needs no switch (§19.2), so
+      // today's ladder card stays the door — never a sentence with no button.
+      <GithubLadderCard
+        dir={app.path}
+        ladder={ladder}
+        reload={reloadLadder}
+        primary={githubFirst}
+        locked={working}
+        onBusy={setLadderPublishing}
+        onClose={onClose}
+      />
+    )
   ) : (
     <OptionCard
       icon={<GitBranch />}

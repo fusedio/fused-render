@@ -174,6 +174,10 @@ EXPECTED_SHUTDOWN = [
     "_shutdown_resource_trail",
     "_shutdown_captures",
     "_shutdown_ai_workers",
+    # Every canvas sync manager stopped and its clone's writer lock released —
+    # the rung the Mac quit runs itself (app.py `_stop_children`) and every
+    # lifespan exit (Linux supervisor child, pip on Windows) had none of.
+    "_shutdown_canvas_sync",
     "_shutdown_engines",
     # Status-bar terminal (PLAN-status-bar-terminal.md): registered where
     # `terminal_router` is included in `create_app`, well after the handlers
@@ -230,6 +234,10 @@ EXPECTED_SHUTDOWN_LEAN = [
     "_startup_shutdown_ai",
     "_shutdown_captures",
     "_shutdown_ai_workers",
+    # Every canvas sync manager stopped and its clone's writer lock released —
+    # the rung the Mac quit runs itself (app.py `_stop_children`) and every
+    # lifespan exit (Linux supervisor child, pip on Windows) had none of.
+    "_shutdown_canvas_sync",
     "_shutdown_engines",
     "_shutdown_terminal_sessions",
     # A request can start a bot's Chrome in a lean app too.

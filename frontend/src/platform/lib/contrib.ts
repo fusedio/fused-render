@@ -900,6 +900,13 @@ export function useAppContrib(dir: string | null, opts: { marketplace?: boolean 
     };
   }, [enabled, read]);
 
+  // The folder's rung moved from outside this page (the Share sheet put it
+  // on GitHub): the record was rebound on the server, so read it again.
+  useEffect(() => {
+    if (!enabled || !dir) return;
+    return onLadderChanged(dir, () => void read());
+  }, [enabled, dir, read]);
+
   const refresh = useCallback(() => (enabled ? read() : Promise.resolve()), [enabled, read]);
   // Not settled while the flags themselves are still being read: a
   // `?_tab=proposals` link must keep its tab through that window too.
@@ -911,6 +918,49 @@ export function useAppContrib(dir: string | null, opts: { marketplace?: boolean 
     answered: known && (!enabled || answered),
     refresh,
   };
+}
+
+// ---- "this folder's rung moved" ------------------------------------------------
+
+/** Listeners keyed by folder (trailing slashes dropped). */
+const ladderListeners = new Map<string, Set<() => void>>();
+
+const ladderKey = (dir: string) => dir.replace(/\/+$/, "");
+
+/** Subscribe to `notifyLadderChanged(dir)`; returns the unsubscribe. */
+export function onLadderChanged(dir: string, cb: () => void): () => void {
+  const key = ladderKey(dir);
+  let set = ladderListeners.get(key);
+  if (!set) {
+    set = new Set();
+    ladderListeners.set(key, set);
+  }
+  set.add(cb);
+  return () => {
+    const cur = ladderListeners.get(key);
+    if (!cur) return;
+    cur.delete(cb);
+    if (cur.size === 0) ladderListeners.delete(key);
+  };
+}
+
+/** Tell every `useLadder` / `useAppContrib` on `dir` to re-read now. Called
+ *  by whoever just MOVED the folder's rung from outside the page — the
+ *  Share sheet after "Put it on GitHub" settles, a listing publish, a
+ *  remove. Each hook holds its own state (§19.1: read live, never cached
+ *  across folders), so without this the sheet saw rung 2 while the app page
+ *  behind it stayed on rung 1 — no Community tab, no "Add to the
+ *  Community" — until a reload or an alt-tab (`focus`), because an
+ *  in-window modal closing fires no focus event. */
+export function notifyLadderChanged(dir: string): void {
+  const set = ladderListeners.get(ladderKey(dir));
+  if (!set) return;
+  for (const cb of Array.from(set)) cb();
+}
+
+/** How many listeners `dir` has right now (tests). */
+export function ladderListenerCount(dir: string): number {
+  return ladderListeners.get(ladderKey(dir))?.size ?? 0;
 }
 
 // ---- the ladder (§19.1/§19.2) -------------------------------------------------
@@ -1001,6 +1051,12 @@ export function useLadder(dir: string | null): LadderState {
     const onFocus = () => void read();
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
+  }, [dir, read]);
+
+  // Something else moved this folder's rung (the Share sheet): re-read.
+  useEffect(() => {
+    if (!dir) return;
+    return onLadderChanged(dir, () => void read());
   }, [dir, read]);
 
   // Ownership still being asked (`pending`): read again shortly, a bounded
