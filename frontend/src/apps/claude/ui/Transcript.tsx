@@ -112,9 +112,6 @@ export interface TranscriptProps {
    *  (`null`, not `""`) so a copied address carries no dangling `&msg=`. */
   onAnchorSpent?: () => void;
   onShowSent?: (turn: UserTurn) => void;
-  /** A queued / not-sent bubble was clicked: pull it back into the box
-   *  (`TurnProps.onPullPending`). */
-  onPullPending?: (key: string) => void;
   /** "Fork from here" on a user turn (`TurnProps.onFork`). */
   onFork?: (key: string) => void;
   /** PR2: a receipt's thumbnail or glyph opens the full-size viewer. */
@@ -175,7 +172,6 @@ export const Transcript = memo(function Transcript({
   msgAnchor,
   onAnchorSpent,
   onShowSent,
-  onPullPending,
   onFork,
   onOpenShot,
   paneNoun,
@@ -965,7 +961,6 @@ export const Transcript = memo(function Transcript({
                   anchored={turn.role === "user" && !!flare && turn.uuid === flare}
                   {...(tail && tail.turnKey === turn.key ? { tail } : {})}
                   {...(onShowSent ? { onShowSent } : {})}
-                  {...(onPullPending ? { onPullPending } : {})}
                   {...(onFork ? { onFork } : {})}
                   {...(after ? { cardsAfter: after } : {})}
                   {...(onOpenShot ? { onOpenShot } : {})}

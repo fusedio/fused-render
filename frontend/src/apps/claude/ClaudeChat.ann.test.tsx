@@ -1366,12 +1366,9 @@ function heldStart(): () => void {
 
 test("a line typed while the run is only STARTING is parked as a queued bubble, and sends after", async () => {
   // `sendMessage` sets its own `sending` gate before its first await and holds
-  // it for the whole turn, but the STATUS the composer routes on stays `idle`
-  // until `pollLoop` reports — one `start` round-trip away. A line typed inside
-  // that window used to be REFUSED by the composer's latch and left in the box
-  // with no sign (PR #1074's fix for the words being nowhere) — and a fast
-  // second Enter then glued it onto the third line (multi-send QA 2026-09-19).
-  // Claude Code queues such a line; so does this page now (`ui/outbox.ts`).
+  // it for the whole turn, but the STATUS stays `idle` until `pollLoop`
+  // reports — one `start` round-trip away. A line typed inside that window is
+  // parked (`ui/outbox.ts`), never refused.
   const open = heldStart();
   const { r } = await mountChat();
   await typeInBox(r, "first message");
@@ -1405,15 +1402,11 @@ test("a line typed while the run is only STARTING is parked as a queued bubble, 
   expect(JSON.stringify(r.toJSON())).toContain("1 message waiting to send");
 
   await act(async () => open());
-  // The follow-up road waits FOLLOWUP_WAIT_TRIES × FOLLOWUP_WAIT_MS (3 s, real
-  // clock in this harness) for a live run before it falls through.
-  await settle(3400);
+  await settle(200);
 
-  // The door is open, and the parked line went out on its own. The run it was
-  // parked behind had already ENDED by the time the drain reached the host
-  // (this harness answers the first poll `done`), so the follow-up road found
-  // no run — and fell through to a fresh turn (`SendOptions.orStart`) rather
-  // than giving up: one bubble, tag gone, never lost and never typed twice.
+  // The first turn ended (this harness answers the first poll `done`), and the
+  // parked line went out as a fresh turn of its own: one bubble, tag gone.
+  expect(runs.filter((c) => c.action === "send")).toHaveLength(0);
   expect(started()).toHaveLength(2);
   expect(started()[1]!.params.message).toContain("second message");
   expect(byClass(r, "turn-pending")).toHaveLength(0);
@@ -1424,169 +1417,189 @@ test("a line typed while the run is only STARTING is parked as a queued bubble, 
   expect(boxValue(r)).toBe("");
 });
 
-test("a parked line stopped before the inbox confirmed it comes back as ONE not-sent bubble", async () => {
-  // Bugbot round 2 (PR #1323): a stop hands an unconfirmed follow-up back twice
-  // in one tick — `returnSend` for its pictures, `onStranded` for its words —
-  // and each posted a "not sent" row, so one line came back as two bubbles.
+// ---- lines typed while this chat's own turn runs --------------------------
+
+/** A chat whose first turn is running and stays running (`pollLive`). */
+async function midTurnChat(seed: Record<string, string> = {}) {
   pollLive = true;
-  let releaseSend!: () => void;
-  holdSend = new Promise<void>((resolve) => {
-    releaseSend = resolve;
-  });
-  const open = heldStart();
-  const { r } = await mountChat();
-  await typeInBox(r, "first message");
-  await act(async () => {
-    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
-  });
-  await settle();
-  // Parked behind the start window…
+  const rig = await mountChat(seed);
+  await typeInBox(rig.r, "first message");
+  await pressEnterInBox(rig.r);
+  await settle(60);
+  expect(started()).toHaveLength(1);
+  return rig;
+}
+
+/** End the running turn: the next poll answers `done`. */
+async function endTurn(): Promise<void> {
+  pollLive = false;
+  await settle(600);
+}
+
+function tags(r: Chat): string[] {
+  return byClass(r, "turn-pending").map((n) => String(n.props.children));
+}
+
+/** Every string a held row shows: text children and titles/alts/srcs. */
+function rowText(row: ReturnType<Chat["root"]["findAll"]>[number]): string {
+  return row
+    .findAll(() => true)
+    .flatMap((n) => {
+      const p = n.props as Record<string, unknown>;
+      const own = [p.title, p.alt, p.src, p["aria-label"]].filter((v) => typeof v === "string");
+      const kids = typeof p.children === "string" ? [p.children] : Array.isArray(p.children) ? p.children.filter((c) => typeof c === "string") : [];
+      return [...own, ...kids] as string[];
+    })
+    .join(" ");
+}
+
+function heldTexts(r: Chat): string[] {
+  return byClass(r, "is-pending").map((n) => String(n.findAllByProps({ className: "bubble" })[0]!.props.children));
+}
+
+test("Enter while the turn runs parks the line: a queued row at the bottom, nothing written to the CLI", async () => {
+  const { r } = await midTurnChat();
   await typeInBox(r, "second message");
   await pressEnterInBox(r);
-  await settle();
-  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual(["queued"]);
-  // …the run goes live and stays live (`pollLive`), so the drain sends it as a
-  // follow-up whose `send` is now HELD: taken by the host, not yet confirmed.
-  await act(async () => open());
   await settle(60);
-  expect(runs.filter((c) => c.action === "send")).toHaveLength(1);
-  // Stop, with the send still out.
-  await act(async () => {
-    sendBtn(r).props.onClick?.({ preventDefault() {} });
-    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
-  });
-  await settle(60);
-  releaseSend();
-  await settle(60);
-  // EXACTLY ONE "not sent" row for the one line, its words once in the log.
-  const tags = byClass(r, "turn-pending").map((n) => String(n.props.children));
-  expect(tags).toEqual(["not sent · click to edit"]);
+  expect(boxValue(r)).toBe("");
+  expect(runs.filter((c) => c.action === "send")).toHaveLength(0);
+  expect(started()).toHaveLength(1);
+  expect(tags(r)).toEqual(["queued"]);
+  // One bubble for the line, never two: the held row is its only ink.
   const bubbles = byClass(r, "bubble").map((n) => String(n.props.children));
   expect(bubbles.filter((b) => b === "second message")).toHaveLength(1);
-  expect(boxValue(r)).toBe("");
+  expect(bubbles[bubbles.length - 1]).toBe("second message");
 });
 
-test("a parked line whose `send` FAILS on its own comes back as ONE not-sent bubble", async () => {
-  // Bugbot round 3 (PR #1323): with no stop in play, the failed follow-up's
-  // `returnSend` is the only hand-back — and the row it posts must not be
-  // followed by a second one from any later strand.
-  pollLive = true;
-  failSend = true;
-  const open = heldStart();
-  const { r } = await mountChat();
-  await typeInBox(r, "first message");
-  await act(async () => {
-    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
-  });
-  await settle();
-  await typeInBox(r, "second message");
-  await pressEnterInBox(r);
-  await settle();
-  await act(async () => open());
-  await settle(60);
-  expect(runs.filter((c) => c.action === "send")).toHaveLength(1);
-  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual([
-    "not sent · click to edit",
-  ]);
-  // A stop afterwards strands nothing for it (the entry is gone) — still one.
-  await act(async () => {
-    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
-  });
-  await settle(60);
-  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual([
-    "not sent · click to edit",
-  ]);
-  expect(byClass(r, "bubble").map((n) => String(n.props.children)).filter((b) => b === "second message"))
-    .toHaveLength(1);
-});
-
-test("a stop hands lines back in the order they were typed, whichever road each took", async () => {
-  // Bugbot round 4 (PR #1323): A landed, B parked-and-unconfirmed, C landed.
-  // B's `returnSend` used to post its row first and A/C landed behind it.
-  pollLive = true;
-  holdSendNth = 2;
-  let releaseB!: () => void;
-  holdSend = new Promise<void>((resolve) => {
-    releaseB = resolve;
-  });
-  const open = heldStart();
-  const { r } = await mountChat();
-  await typeInBox(r, "first message");
-  await act(async () => {
-    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
-  });
-  await settle();
+test("held lines drain in order once the turn is idle, one new turn each", async () => {
+  const { r } = await midTurnChat();
   for (const line of ["A", "B", "C"]) {
     await typeInBox(r, line);
     await pressEnterInBox(r);
   }
-  await settle();
-  await act(async () => open());
   await settle(60);
-  // Three sends out: A confirmed, B held, C confirmed.
-  expect(runs.filter((c) => c.action === "send")).toHaveLength(3);
-  await act(async () => {
-    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
-  });
-  await settle(60);
-  releaseB();
-  await settle(60);
-  const rows = byClass(r, "is-pending");
-  expect(rows.map((n) => String(n.findAllByProps({ className: "bubble" })[0]!.props.children)))
-    .toEqual(["A", "B", "C"]);
-  expect(byClass(r, "turn-pending")).toHaveLength(3);
-  // ↑ pulls the newest — C — first.
-  await act(async () => {
-    r.root
-      .findByType("textarea")
-      .props.onKeyDown({ key: "ArrowUp", shiftKey: false, preventDefault() {} });
-  });
-  expect(boxValue(r)).toBe("C");
+  expect(heldTexts(r)).toEqual(["A", "B", "C"]);
+  expect(runs.filter((c) => c.action === "send")).toHaveLength(0);
+  await endTurn();
+  await settle(600);
+  expect(runs.filter((c) => c.action === "send")).toHaveLength(0);
+  expect(started().map((c) => String(c.params.message))).toEqual(["first message", "A", "B", "C"]);
+  expect(tags(r)).toEqual([]);
+  const bubbles = byClass(r, "bubble").map((n) => String(n.props.children));
+  for (const line of ["A", "B", "C"]) expect(bubbles.filter((b) => b === line)).toHaveLength(1);
 });
 
-test("two identical parked lines, one out and one waiting, each keep their own row on Stop", async () => {
-  // Bugbot round 3: rows are owned by send id, never matched by text — two
-  // "again"s are two sends, and a stop must leave exactly two "not sent" rows.
+test("Stop retags every held line not-sent, and none of them goes out", async () => {
+  const { r } = await midTurnChat();
+  for (const line of ["A", "B"]) {
+    await typeInBox(r, line);
+    await pressEnterInBox(r);
+  }
+  await settle(60);
+  expect(tags(r)).toEqual(["queued", "queued"]);
+  // The composer's button is a Stop while the run is live.
+  await act(async () => {
+    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+  });
+  await settle(600);
+  expect(tags(r)).toEqual(["not sent · click to edit", "not sent · click to edit"]);
+  expect(heldTexts(r)).toEqual(["A", "B"]);
+  expect(sentOut()).toEqual(["first message"]);
+  // A click on one puts it back in the box.
+  await act(async () => byClass(r, "turn-pending")[0]!.props.onClick());
+  await settle(30);
+  expect(boxValue(r)).toBe("A");
+  expect(heldTexts(r)).toEqual(["B"]);
+});
+
+test("flag off: a held line drains without asking the project queue", async () => {
+  const { r } = await midTurnChat();
+  await typeInBox(r, "later");
+  await pressEnterInBox(r);
+  await endTurn();
+  expect(started().map((c) => String(c.params.message))).toEqual(["first message", "later"]);
+  expect(admits).toHaveLength(0);
+});
+
+test("flag on: a held line is admitted at its drain, not when it was typed", async () => {
+  prefsBody = { queue: { enabled: true } };
   pollLive = true;
-  let releaseSend!: () => void;
-  holdSend = new Promise<void>((resolve) => {
-    releaseSend = resolve;
-  });
-  const open = heldStart();
   const { r } = await mountChat();
+  await act(async () => publishProjectQueueEnabled(true));
   await typeInBox(r, "first message");
+  await pressEnterInBox(r);
+  await settle(60);
+  expect(admits).toHaveLength(1);
+  await typeInBox(r, "later");
+  await pressEnterInBox(r);
+  await settle(60);
+  expect(admits).toHaveLength(1);
+  await endTurn();
+  expect(admits.map((a) => String(a.message))).toEqual(["first message", "later"]);
+  expect(started().map((c) => String(c.params.message))).toEqual(["first message", "later"]);
+});
+
+test("a picture-only line held mid-turn gets its own row with the picture, and drains", async () => {
+  const { r } = await midTurnChat();
   await act(async () => {
-    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
+    r.root.findByType("textarea").props.onPaste({ clipboardData: {}, preventDefault: () => {} });
   });
   await settle();
-  await typeInBox(r, "again");
   await pressEnterInBox(r);
-  await typeInBox(r, "again");
-  await pressEnterInBox(r);
-  await settle();
-  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual([
-    "queued",
-    "queued",
-  ]);
-  // The run goes live: BOTH "again"s drain into it — a follow-up opens the
-  // latch as soon as it is handed to the controller, so the second follows the
-  // first out — and both `send`s are held: two sends out, two ids, neither
-  // confirmed.
-  await act(async () => open());
   await settle(60);
-  expect(runs.filter((c) => c.action === "send")).toHaveLength(2);
-  await act(async () => {
-    r.root.findByType("form").props.onSubmit({ preventDefault: () => {} });
-  });
-  await settle(60);
-  releaseSend();
-  await settle(60);
-  expect(byClass(r, "turn-pending").map((n) => String(n.props.children))).toEqual([
-    "not sent · click to edit",
-    "not sent · click to edit",
-  ]);
-  expect(byClass(r, "bubble").map((n) => String(n.props.children)).filter((b) => b === "again"))
-    .toHaveLength(2);
+  expect(runs.filter((c) => c.action === "send")).toHaveLength(0);
+  const rows = byClass(r, "is-pending");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]!.findAllByProps({ className: "bubble" })).toHaveLength(0);
+  expect(rowText(rows[0]!)).toContain("shot.png");
+  expect(tags(r)).toEqual(["queued"]);
+  await endTurn();
+  expect(started()).toHaveLength(2);
+  expect(String(started()[1]!.params.message)).toContain("/shots/shot.png");
+  expect(byClass(r, "is-pending")).toHaveLength(0);
+});
+
+test("a reload brings held lines back as not-sent rows and never sends them", async () => {
+  const store = new Map<string, string>();
+  const g = globalThis as { sessionStorage?: unknown };
+  const had = Object.prototype.hasOwnProperty.call(g, "sessionStorage");
+  const was = g.sessionStorage;
+  g.sessionStorage = {
+    getItem: (k: string) => store.get(k) ?? null,
+    setItem: (k: string, v: string) => void store.set(k, v),
+    removeItem: (k: string) => void store.delete(k),
+  };
+  try {
+    const first = await midTurnChat();
+    await typeInBox(first.r, "held over");
+    await pressEnterInBox(first.r);
+    await settle(60);
+    expect(JSON.parse(store.get("claude.outbox:s1") ?? "[]")).toEqual([{ text: "held over", items: [] }]);
+    // Another session's lines are its own.
+    store.set("claude.outbox:s2", JSON.stringify([{ text: "other chat", items: [] }]));
+    await act(async () => first.r.unmount());
+    mounted.splice(mounted.indexOf(first.r), 1);
+    // A picture-only line whose picture is a saved view comes back too.
+    const saved = JSON.parse(store.get("claude.outbox:s1")!) as unknown[];
+    saved.push({ text: "", items: [{ id: "a1", kind: "image", view: "/shots/a.png", name: "a.png" }] });
+    store.set("claude.outbox:s1", JSON.stringify(saved));
+    runs.length = 0;
+    pollLive = false;
+
+    const { r } = await mountChat({ session_id: "s1" });
+    await settle(200);
+    expect(tags(r)).toEqual(["not sent · click to edit", "not sent · click to edit"]);
+    const rows = byClass(r, "is-pending");
+    expect(String(rows[0]!.findAllByProps({ className: "bubble" })[0]!.props.children)).toBe("held over");
+    expect(rows[1]!.findAllByProps({ className: "bubble" })).toHaveLength(0);
+    expect(rowText(rows[1]!)).toContain("a.png");
+    await settle(400);
+    expect(sentOut()).toEqual([]);
+  } finally {
+    if (had) g.sessionStorage = was;
+    else delete g.sessionStorage;
+  }
 });
 
 test("Back with a line still PARKED empties the outbox: no bubble, no hint carried into the landing", async () => {

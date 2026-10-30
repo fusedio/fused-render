@@ -419,18 +419,9 @@ test("A BLOCK NEVER TAKES STOP: the button still ends a live turn (T:17193-17195
   expect(idle.sent).toEqual([]);
 });
 
-test("queued follow-ups are named under the box, singular and plural", () => {
-  const hint = (c: ReturnType<typeof mount>) =>
-    c.root
-      .findAllByProps({ className: "c-queued" })
-      .map((n) => n.props.children);
-  expect(hint(mount({ queued: ["a"] }))).toEqual([
-    "1 follow-up is queued for this turn.",
-  ]);
-  expect(hint(mount({ queued: ["a", "b"] }))).toEqual([
-    "2 follow-ups are queued for this turn.",
-  ]);
-  expect(hint(mount())).toEqual([]);
+test("no follow-up footnote under the box: held lines are rows in the transcript", () => {
+  const c = mount({ status: "running" });
+  expect(c.root.findAllByProps({ className: "c-queued" })).toEqual([]);
 });
 
 // ---- the programmatic send, and the latch around the send window ----------

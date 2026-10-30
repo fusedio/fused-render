@@ -224,26 +224,6 @@ export interface ComposerCardProps {
   sessionId: string;
   controls: ComposerControls;
   status: RunStatus;
-  /** Follow-ups typed while a run is live that have not been acknowledged. */
-  queued?: string[];
-  /**
-   * THE PROJECT QUEUE IS ON (prefs `queue.enabled`), which TAKES THE NOTE BELOW
-   * AWAY.
-   *
-   * A follow-up typed into this chat's own running turn is held by the live host
-   * for the seconds the turn has left. Under the queue that is the ONE waiting
-   * state with nothing to say about it: there is no scheduler entry, so nothing
-   * to be behind, nothing to run next and nothing to delete — and the bubbles are
-   * already in the transcript above, in order, exactly where the reader put them.
-   * A footnote counting them is a third piece of chrome for a state that resolves
-   * itself, in a pane that now says "waiting" about messages that genuinely are
-   * (Akshil, 2026-09-12).
-   *
-   * FLAG OFF THE NOTE STAYS, untouched: there is no other ink in that build
-   * saying a follow-up went somewhere, and a line that has gone invisible is
-   * worse than 24px of composer card (the note's own original argument).
-   */
-  queueOn?: boolean;
   /**
    * HOW FULL THE MODEL'S CONTEXT WINDOW IS for the conversation on screen
    * (`ChatState.context` — the latest reply's own `usage`, raw). `null`/absent,
@@ -556,8 +536,6 @@ export function ComposerCard({
   sessionId,
   controls,
   status,
-  queued,
-  queueOn,
   context,
   onSend,
   onFollowUp,
@@ -2172,7 +2150,6 @@ export function ComposerCard({
     [boxRef],
   );
 
-  const count = queued?.length ?? 0;
   const collapsed = variant === "chat" && !active && !blocked;
   // WHICH AGENT THE BOX SPEAKS TO (D18): the pill's answer, else the catalog's
   // default. Subscribed, so the first read and a Preferences switch repaint.
@@ -2340,25 +2317,9 @@ export function ComposerCard({
           }}
           {...(onPaste ? { onPaste } : {})}
         />
-        {/* A DIVERGENCE FROM T, RECORDED (visual pass 3, FIX-27). T has no
-            queued line at all: its own queue handling (T:15905-15917) puts the
-            stranded text back INTO the box, so the reader learns about it by
-            finding their words there. This line is kept — a follow-up that has
-            gone somewhere invisible is worse than 24px of composer card — but
-            it is the one thing in this file that adds a box T does not draw
-            (91 → 115 while a follow-up is pending), so it is written down here
-            rather than left for a fourth visual pass to find again. */}
-        {count > 0 && !queueOn ? (
-          <div className="c-queued">
-            {count === 1
-              ? "1 follow-up is queued for this turn."
-              : `${count} follow-ups are queued for this turn.`}
-          </div>
-        ) : null}
         {/* THE AGENT IS OFF (D17): the placeholder says so; this is the link. */}
         {blockedNote ? <div className="c-queued c-blocked-note">{blockedNote}</div> : null}
-        {/* THE OUTBOX'S LINE (ui/outbox.ts): lines this PAGE is still holding,
-            as against the follow-ups above that the run's host already has.
+        {/* THE OUTBOX'S LINE (ui/outbox.ts): lines this PAGE is still holding.
             Drawn whatever the queue flag says — these are not the project
             queue's, and ↑ is the thing to do about them. */}
         {(queuedCount ?? 0) + (notSentCount ?? 0) > 0 ? (
