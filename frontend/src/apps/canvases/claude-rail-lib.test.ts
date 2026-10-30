@@ -5,9 +5,11 @@
 import { describe, expect, it } from "bun:test";
 import type { Task, TaskPulseTask } from "@platform/lib/api";
 import { sortForList } from "@shell/tasks-lib";
-import { onRail, railRows } from "./claude-rail-lib";
+import { onRail, railRows, railScope } from "./claude-rail-lib";
 
 const PLACE = { env: "unstable" as const, name: "demo", dir: "/home/me/canvases/demo" };
+/** The hover card's rail: drafts and scheduled rows admitted. */
+const PLACE_ALL = { ...PLACE, sessionless: true };
 
 /** A full task row with every field the rail's order can read set to a
  *  harmless default; the test states only what it is about. */
@@ -38,11 +40,33 @@ describe("onRail", () => {
     expect(onRail(archived, PLACE)).toBe(false);
   });
 
-  it("drops a row with no session, and one on another canvas", () => {
+  it("a row with no session is on the rail only when the host admits them (the hover card); another canvas never is", () => {
     const noSession = pulse(task({ key: "a", session_id: "" }));
-    const elsewhere = pulse(task({ key: "b", project: "/elsewhere", target: "/elsewhere" }));
     expect(onRail(noSession, PLACE)).toBe(false);
+    expect(onRail(noSession, PLACE_ALL)).toBe(true);
+    const elsewhere = pulse(task({ key: "b", project: "/elsewhere", target: "/elsewhere" }));
     expect(onRail(elsewhere, PLACE)).toBe(false);
+  });
+
+  it("a draft the pulse does not carry comes from the listing, ranked like the List", () => {
+    const draft = task({ key: "draft:1", kind: "draft", status: "upcoming", session_id: "" } as Partial<Task> & { key: string });
+    const live = task({ key: "a", status: "in_progress" });
+    const seats = railRows([pulse(live)], new Map([["draft:1", draft], ["a", live]]), PLACE_ALL);
+    expect(seats.map((s) => s.pulse.key)).toEqual(sortForList([live, draft], Date.now()).map((t) => t.key));
+    expect(seats.find((s) => s.pulse.key === "draft:1")?.row).toBe(draft);
+    // The plain rail (flag off) is chats only, as it always was.
+    expect(railRows([pulse(live)], new Map([["draft:1", draft], ["a", live]]), PLACE).map((s) => s.pulse.key)).toEqual(["a"]);
+  });
+
+  it("railScope: a stamped node file, a legacy target under the clone, else the canvas", () => {
+    expect(railScope({ canvas: { env: "unstable", name: "demo", file: "hex.py" }, target: "", project: "" }, PLACE.dir))
+      .toEqual({ kind: "node", name: "hex", file: "hex.py" });
+    expect(railScope({ target: `${PLACE.dir}/widget_5.json`, project: PLACE.dir }, PLACE.dir))
+      .toEqual({ kind: "node", name: "widget_5", file: "widget_5.json" });
+    expect(railScope({ target: PLACE.dir, project: PLACE.dir }, PLACE.dir)).toEqual({ kind: "canvas" });
+    expect(railScope({ target: `${PLACE.dir}/sub/x.py`, project: PLACE.dir }, PLACE.dir)).toEqual({ kind: "canvas" });
+    expect(railScope({ canvas: { env: "unstable", name: "demo", file: "" }, target: "", project: "" }, null))
+      .toEqual({ kind: "canvas" });
   });
 
   it("matches by `task.canvas` when the row carries it", () => {

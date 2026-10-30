@@ -476,6 +476,16 @@ def canvas_shot_slow_fallback_enabled() -> bool:
     return read_prefs().get("canvas_shot_slow_fallback_enabled") is True
 
 
+def canvas_rail_peek_enabled() -> bool:
+    """Whether the canvas page's collapsed Claude rail shows a chat under the
+    pointer as a floating, live card (hover one of the rail's status rings →
+    the chat itself, scrollable and typeable, beside the rail) instead of the
+    one-line caption alone. Default off. Same idiom as
+    `canvas_shot_slow_fallback_enabled`: only a stored `true` is on.
+    """
+    return read_prefs().get("canvas_rail_peek_enabled") is True
+
+
 def task_summary_titles_enabled() -> bool:
     """Whether Tasks rows are titled ONLY by the server's stable `title` (a
     name the reader chose, else the app's own haiku AI title refreshed every
@@ -1133,6 +1143,9 @@ def _prefs_response() -> dict:
         # The slow in-canvas screenshot fallback on a Mac
         # (`canvas_shot_slow_fallback_enabled`; off by default).
         "canvas_shot": {"slow_fallback": canvas_shot_slow_fallback_enabled()},
+        # The collapsed Claude rail's hover preview card on the canvas page
+        # (`canvas_rail_peek_enabled`; off by default).
+        "canvas_rail_peek": {"enabled": canvas_rail_peek_enabled()},
         # Stable AI Tasks titles (`task_summary_titles_enabled`).
         "task_summary_titles": {"enabled": task_summary_titles_enabled()},
         # Lean Claude sessions (`claude_strict_mcp_enabled`, default off).
@@ -1469,6 +1482,13 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["canvas_shot_slow_fallback_enabled"] = value
             changed = True
+        if "canvas_rail_peek_enabled" in body:
+            value = body.get("canvas_rail_peek_enabled")
+            if not isinstance(value, bool):
+                return JSONResponse({"error": "'canvas_rail_peek_enabled' must be a boolean"},
+                                    status_code=400)
+            prefs["canvas_rail_peek_enabled"] = value
+            changed = True
         if "task_summary_titles_enabled" in body:
             value = body.get("task_summary_titles_enabled")
             if not isinstance(value, bool):
@@ -1762,6 +1782,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'project_queue_enabled', "
                           "'task_recap_titles_enabled', "
                           "'canvas_shot_slow_fallback_enabled', "
+                          "'canvas_rail_peek_enabled', "
                           "'task_summary_titles_enabled', "
                           "'claude_strict_mcp_enabled', 'claude_default_permission', "
                           "'bots_autostage', 'bots_sounds', 'bots_clear_enabled', "

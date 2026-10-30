@@ -27,6 +27,16 @@ import { isChunkLoadError } from "@platform/lib/chunk-load";
 
 const ClaudeChat = lazy(() => import("./ClaudeChat"));
 
+/** Fetch the chat's chunk ahead of a mount a host can see coming — the canvas
+ *  rail's hover card, where the first pointer-over would otherwise pay the
+ *  chunk load on top of the transcript read. Idempotent: the module graph
+ *  caches the import, and `lazy` above resolves against the same promise. */
+export function preloadChat(): void {
+  void import("./ClaudeChat").catch(() => {
+    /* the mount's own Suspense/boundary reports a failed chunk */
+  });
+}
+
 /**
  * THE CHUNK'S OWN FAILURE, which `Suspense` has no opinion about: a `lazy`
  * import that REJECTS throws from render, and with no boundary above it React

@@ -3,7 +3,7 @@
 // host that imports this barrel, which is exactly what `ChatMount`'s
 // `React.lazy` boundary exists to keep out of the shell's entry chunk.
 export type { ClaudeChatProps, ChatParamsSource, ClaudeAsk } from "./ClaudeChat";
-export { ChatMount, type ChatMountProps } from "./ChatMount";
+export { ChatMount, preloadChat, type ChatMountProps } from "./ChatMount";
 // The skeleton a host shows while it is still deciding whether a chat goes in
 // a box (the tasks wall resolving a card's folder) — the same one ChatMount's
 // own `Suspense` shows, so the two waits look like one.

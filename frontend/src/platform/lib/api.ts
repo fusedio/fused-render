@@ -1565,6 +1565,10 @@ export interface Prefs {
   // (`canvas_shot_slow_fallback_enabled`, shell/prefs.py; off by default).
   // Optional: absent (older server) reads as off.
   canvas_shot?: { slow_fallback: boolean };
+  // The canvas page's collapsed Claude rail shows the hovered chat as a live
+  // floating card (`canvas_rail_peek_enabled`, shell/prefs.py; off by
+  // default). Optional: absent (older server) reads as off.
+  canvas_rail_peek?: { enabled: boolean };
   // Stable AI titles: Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
   // shell/prefs.py; off by default). Optional: absent reads as off.
   task_summary_titles?: { enabled: boolean };
@@ -2024,6 +2028,10 @@ export function putTaskRecapTitlesEnabled(enabled: boolean): Promise<Prefs> {
 
 export function putCanvasShotSlowFallbackEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvas_shot_slow_fallback_enabled: enabled });
+}
+
+export function putCanvasRailPeekEnabled(enabled: boolean): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { canvas_rail_peek_enabled: enabled });
 }
 
 /** One PUT per Bots page-wide switch (`Prefs.bots`). */

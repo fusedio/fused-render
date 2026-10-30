@@ -29,7 +29,7 @@
 // the listed rows rather than above them — a chat that just finished takes
 // its place under the running ones, not the rail's head.
 import type { Task, TaskPulseTask } from "@platform/lib/api";
-import { sortForList, taskColumn } from "@shell/tasks-lib";
+import { isDraftTask, sortForList, taskColumn } from "@shell/tasks-lib";
 import type { WorkbenchEnv } from "./api";
 
 /** One rail seat: the pulse row (live status) and, once the listing holds it,
@@ -47,12 +47,21 @@ export interface RailPlace {
   name: string;
   dir: string | null;
   file?: string | null;
+  /** Admit rows with no session yet (drafts, scheduled tasks). The canvas
+   *  rail always does (owner, 2026-10-30); the option exists so the two
+   *  rulings stay provable apart. */
+  sessionless?: boolean;
 }
 
-/** Is this pulse row one of the rail's: a chat (it has a session) on THIS
- *  canvas — on the selected node, when one is — and not archived. */
+/** Is this row one of the rail's: a row on THIS canvas — on the selected
+ *  node, when one is — and not archived. A row with no session yet (a draft,
+ *  a scheduled task) is on the rail too (owner, 2026-10-30: "the draft is
+ *  ordered, but drafts are not shown"): the List shows them for the canvas,
+ *  and the rail is the List's order in rings. Drafts reach `railRows` from
+ *  the LISTING, not the pulse (`/api/tasks/pulse` leaves `kind: "draft"`
+ *  rows out; the listing feed a mounted chat holds carries them). */
 export function onRail(t: TaskPulseTask, place: RailPlace): boolean {
-  if (!t.session_id) return false;
+  if (!t.session_id && !place.sessionless) return false;
   if (taskColumn(t) === "archived") return false;
   const named = !!t.canvas && t.canvas.env === place.env && t.canvas.name === place.name;
   if (!named && !(place.dir !== null && t.project === place.dir)) return false;
@@ -61,6 +70,30 @@ export function onRail(t: TaskPulseTask, place: RailPlace): boolean {
   // is matched by its target, the node's file under the clone.
   if (named) return t.canvas!.file === place.file;
   return place.dir !== null && t.target === `${place.dir.replace(/\/+$/, "")}/${place.file}`;
+}
+
+/** WHERE A ROW LIVES on the canvas: the canvas as a whole, or one node
+ *  (RailPeek's head says which — owner, 2026-10-30: "I don't know if that
+ *  chat is associated with a node or not"). A row the server stamped names
+ *  its node file; one that predates `task.canvas` is read off its target
+ *  under the clone. The node's name is the file's stem, as the workbench
+ *  names it (CanvasWorkspace `nodeHopFromUrl`). */
+export function railScope(
+  t: Pick<TaskPulseTask, "canvas" | "target" | "project">,
+  dir: string | null,
+): { kind: "canvas" } | { kind: "node"; name: string; file: string } {
+  let file = t.canvas?.file || "";
+  if (!file && dir) {
+    const base = dir.replace(/\/+$/, "") + "/";
+    const target = t.target || "";
+    if (target.startsWith(base)) {
+      const rest = target.slice(base.length);
+      if (rest && !rest.includes("/")) file = rest;
+    }
+  }
+  if (!file) return { kind: "canvas" };
+  const dot = file.lastIndexOf(".");
+  return { kind: "node", name: dot > 0 ? file.slice(0, dot) : file, file };
 }
 
 /**
@@ -75,7 +108,13 @@ export function railRows(
   place: RailPlace,
   now: number = Date.now(),
 ): RailRow[] {
-  const mine = rows.filter((t) => onRail(t, place));
+  const pulseKeys = new Set(rows.map((t) => t.key));
+  // Drafts the pulse does not carry (header): the listing's own draft rows
+  // on this canvas stand in as their own pulse row — a `Task` is a superset.
+  const drafts: TaskPulseTask[] = place.sessionless
+    ? [...listing.values()].filter((r) => !pulseKeys.has(r.key) && isDraftTask(r) && onRail(r, place))
+    : [];
+  const mine = [...rows.filter((t) => onRail(t, place)), ...drafts];
   const byKey = new Map(mine.map((t) => [t.key, t]));
   const held = new Map<string, Task>();
   const ranked: Task[] = mine.map((t) => {

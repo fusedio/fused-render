@@ -455,8 +455,21 @@
   /* Scrolls on a short window rather than running off the rail. */
   flex: 0 1 auto;
 }
+/* The list item wraps the link (ClaudeRail: the popup attributes live on the
+   link, not on a `listitem`); it is the 28px seat and nothing else. */
+.canvas-rail-seat {
+  display: flex;
+  flex: 0 0 auto;
+}
 .canvas-rail-chat {
   position: relative;
+}
+/* The ring whose chat the hover card shows (ClaudeRail `.peeked`, behind
+   `canvas_rail_peek_enabled`): the hover wash stays on while the pointer is
+   over the card, so the card and its ring read as one thing. */
+.canvas-rail-chat.peeked {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg);
 }
 
 /* THE SCRIM OVER THE WORKBENCH WHILE A PICTURE IS TAKEN (CanvasWorkspace,
@@ -520,4 +533,283 @@
   from {
     opacity: 0;
   }
+}
+
+/* THE CARD OFF THE RAIL (RailPeek.tsx; behind `canvas_rail_peek_enabled`):
+   the hovered chat itself, a gap off the rail's left edge, placed by
+   rail-peek-lib `peekPlacement` (inline left/top/width/height). One element,
+   kept in the DOM; `.is-on` fades it in and slides the inner card 6px
+   (var(--dur-med)); off, `visibility` waits for the fade so the close is a
+   fade too. NO TRANSFORM ON THIS BOX — a transformed ancestor would re-root
+   every fixed-position popover inside the chat — hence the slide on the
+   inner wrapper, which ends at `transform: none`. Position changes glide
+   only while the card is up (the ring-to-ring swap); a hidden card jumps.
+   Under the shadcn dialogs (z-50, NewJobModal) and over the page. */
+.canvas-rail-peek {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 45;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity var(--dur-med) var(--ease-out),
+    visibility 0s linear var(--dur-med);
+}
+.canvas-rail-peek.is-on {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition:
+    opacity var(--dur-med) var(--ease-out),
+    top var(--dur-med) var(--ease-out),
+    left var(--dur-med) var(--ease-out),
+    visibility 0s;
+}
+.canvas-rail-peek-card {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--fg);
+  /* THE EDGE READS AGAINST THE WORKBENCH (owner, 2026-10-30: "hard to know
+     the separation between that and the code panel — contrasting border,
+     subtle but noticeable"). The card floats over the embed's own dark
+     panels, which share the app's border tone, so a plain `--border`
+     vanished. Two lines: a 1px border a few steps brighter than --border
+     (a quarter of the ink), and a 1px halo of the background colour outside
+     it, so the border stands on a thin band of our own tone whatever panel
+     is beneath — the same trick a menu on a menu uses. The drop shadow does
+     the rest. */
+  border: 1px solid color-mix(in srgb, var(--fg) 24%, var(--bg));
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--bg) 70%, transparent),
+    0 14px 36px rgba(0, 0, 0, 0.32),
+    0 2px 6px rgba(0, 0, 0, 0.2);
+  transform: translateX(6px);
+  transition: transform var(--dur-med) var(--ease-out);
+}
+.canvas-rail-peek.is-on .canvas-rail-peek-card {
+  transform: none;
+}
+/* The head: the ring, the chat's title line, its state in words, and two
+   seats — the panel door and the close. 12px, like the rail's own captions. */
+.canvas-rail-peek-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 4px 8px 4px 6px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+/* The title gives way, the words do not: "waiting for you, unread" is the
+   fact a reader came for; the title is on the ring's caption too. */
+.canvas-rail-peek-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+.canvas-rail-peek-words {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  color: var(--fg-muted);
+}
+.canvas-rail-peek-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.canvas-rail-peek-btn:hover {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg);
+}
+.canvas-rail-peek-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  color: var(--fg);
+}
+/* The chats: every kept mount stacked in the same box, the shown one visible.
+   `visibility`, not `display`: a hidden chat keeps its layout and its scroll
+   position, which is what makes coming back to it instant. */
+.canvas-rail-peek-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.canvas-rail-peek-chat {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  visibility: hidden;
+}
+.canvas-rail-peek-chat.is-shown {
+  visibility: visible;
+}
+
+/* The head's facts (RailPeek, owner 2026-10-30): the task number in the
+   Tasks page's register, and WHERE the chat lives — "Canvas", or the node's
+   name — as a quiet chip. The "Open" door is a word, not a glyph. */
+.canvas-rail-peek-id {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+.canvas-rail-peek-scope {
+  flex: 0 0 auto;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 18px;
+  padding: 0 7px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+}
+.canvas-rail-peek-scope.is-node {
+  color: var(--fg);
+  background: rgba(var(--tint), 0.06);
+}
+/* The door, as the app's outline button (`.btn`, the sync strip's "Open in
+   workbench"), sized to the head's 26px seats. */
+.canvas-rail-peek-open {
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 10px;
+  font-size: 12px;
+  line-height: 22px;
+}
+/* The chat's own ⋮ (apps/claude/ui/Kebab), in a head seat: its button takes
+   the head's size and hover wash so it sits level with the close beside it. */
+.canvas-rail-peek-kebab {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+.canvas-rail-peek-kebab .c-kebabbtn {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.canvas-rail-peek-kebab .c-kebabbtn:hover {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg);
+}
+/* A seat with no conversation yet (a draft, a scheduled task): the card
+   hugs its content (`.is-plain`, no inline height) — the List's `Draft`
+   pill, when it was touched, its words, its settings. One door: the head's
+   Open. */
+.canvas-rail-peek.is-plain {
+  height: auto;
+  max-height: 220px;
+}
+/* …so the shown seat has to be IN FLOW: the stacked chats are absolute
+   (every kept mount in one box), which gives a hugging card no height. */
+.canvas-rail-peek.is-plain .canvas-rail-peek-body {
+  flex: 0 1 auto;
+}
+.canvas-rail-peek.is-plain .canvas-rail-peek-chat.is-shown {
+  position: static;
+}
+.canvas-rail-peek-plain {
+  padding: 14px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+}
+.canvas-rail-peek-plain-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.canvas-rail-peek-pill {
+  flex: 0 0 auto;
+  font-size: 11px;
+  line-height: 18px;
+  padding: 0 7px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+}
+.canvas-rail-peek-pill.is-draft {
+  color: var(--error, #d64545);
+  border-color: color-mix(in srgb, var(--error, #d64545) 45%, transparent);
+}
+.canvas-rail-peek-plain-when {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.canvas-rail-peek-plain-words {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.canvas-rail-peek-plain-words.is-empty {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+.canvas-rail-peek-plain-meta {
+  margin: 0;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+/* THE BRIDGE between the card and the rail (RailPeek): transparent, the
+   gap's width, the card's height; a pointer resting in it is "on the card".
+   Hit-testable only while the card is up. */
+.canvas-rail-peek-bridge {
+  position: fixed;
+  z-index: 44;
+  pointer-events: none;
+  background: transparent;
+}
+.canvas-rail-peek-bridge.is-on {
+  pointer-events: auto;
 }
