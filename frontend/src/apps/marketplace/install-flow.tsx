@@ -542,8 +542,7 @@ function InstallSheet({
         <div className="mp-sheet-id">
           <div className="mp-sheet-name">{app.name}</div>
           <div className="mp-sheet-meta">
-            {app.author?.github || app.author?.name || "Unknown"} · v
-            {app.version}
+            {`${app.author?.github || app.author?.name || "Unknown"} · v${app.version}`}
             {app.size_bytes > 0 && <> · {formatSize(app.size_bytes)}</>}
           </div>
         </div>
