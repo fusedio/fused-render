@@ -978,6 +978,39 @@ button.new-task-source:focus-visible {
   color: var(--fg-muted);
 }
 
+/* THE READ-ONLY WHERE PILL (NewJobModal `WherePill`): a canvas's locked target,
+   `canvas › node`. The pill's own chassis, minus every sign of a control — no
+   hover border, no pressable shadow — and a span, so the dialog's button skin
+   never reaches it. The `help` cursor (Akshil, 2026-10-30: "the cursor when I
+   hover on that pill should change") says there is something to read on
+   hover — the full path — without promising a click. A value pill's width:
+   the names arrive already middle-cut (`where-label.ts`), so the pill does not
+   stretch, and the row's four pills stay on one line. */
+.new-task-dialog .nt-pills .pp--static {
+  cursor: help;
+  box-shadow: none;
+}
+
+.new-task-dialog .nt-pills .pp--static:hover {
+  border-color: var(--border);
+}
+
+.new-task-dialog .nt-pills .pp--static:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The names are cut by characters; this cap is for the ones whose characters
+   run wide (CJK, emoji, `WWWW`) — `.pp-v`'s own ellipsis takes over there. */
+.pp-v.pp-where {
+  max-width: 240px;
+  gap: 4px;
+}
+
+.pp-where-sep {
+  color: var(--fg-faint);
+}
+
 .pp-dot {
   width: 7px;
   height: 7px;

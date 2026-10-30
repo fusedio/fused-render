@@ -92,6 +92,11 @@ interface Card {
   /** The locked target as it was at the press: a node switched while the
    *  schedule read is out must not move the task (Bugbot on #2015). */
   target: string | null;
+  /** The selected node's name at the same press, for the card's WHERE pill
+   *  (null = the canvas as a whole). */
+  node: string | null;
+  /** The canvas's name at the same press, beside it. */
+  canvas: string;
   modes: string[];
   recents: string[];
 }
@@ -239,10 +244,12 @@ export function ClaudeRail({
     if (opening || card || waiting) return;
     setOpening(true);
     const at = target;
+    const on = node?.udfName ?? null;
+    const canvasName = name;
     void cardSeed().then((got) => {
       if (!alive.current) return;
       setOpening(false);
-      setCard({ seq: Date.now(), target: at, ...got });
+      setCard({ seq: Date.now(), target: at, node: on, canvas: canvasName, ...got });
     });
   };
 
@@ -342,6 +349,10 @@ export function ClaudeRail({
           // is stated, not asked (the + is held until the clone exists).
           initialTarget={card.target}
           lockTarget={card.target !== null}
+          // …and SAID as the canvas and the node, not as that path (Akshil,
+          // 2026-10-30): the card's read-only WHERE pill. The canvas and node
+          // as they were at the press, the same snapshot as the target.
+          lockedWhere={{ canvas: card.canvas, node: card.node }}
           // From the List, not the calendar: a task typed here is one to run
           // now, and the when-row folds into More options.
           planning={false}

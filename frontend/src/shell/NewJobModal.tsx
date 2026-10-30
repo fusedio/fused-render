@@ -112,7 +112,9 @@ import {
   taskRunLabel,
   taskRunOptions,
 } from "./schedule-lib";
+import { whereParts } from "./where-label";
 import { ICON_CLOCK, ICON_CPU, ICON_FOLDER, ICON_PLUS, ICON_SHIELD } from "./ScheduleCalendar";
+import { CanvasGlyph } from "@apps/canvases/glyph";
 // `~/…` for a path under home — the one way this app shortens a folder, shared
 // with the Tasks page rather than written a second time here.
 // …and `projectMatches`, which is the Tasks toolbar's Project filter's OWN
@@ -646,6 +648,50 @@ function PropPill({
         </div>
       )}
     </div>
+  );
+}
+
+// THE WHERE PILL, READ-ONLY: the locked target stated in the words of the
+// place it was made from — `canvas › node`, or the canvas alone (NewJobModal
+// `lockedWhere`). PropPill's chassis and nothing of its control: no button, no
+// popover, no hover change. A tab stop all the same, so the keyboard can reach
+// the full path the hint carries (platform/lib/hints answers focus as well as
+// the pointer); its accessible name is the sentence, the visible parts are its
+// drawing.
+export function WherePill({
+  where,
+  path,
+}: {
+  where: { canvas: string; node?: string | null };
+  /** The full target, for the hint. */
+  path: string;
+}) {
+  const node = where.node || "";
+  const said = node
+    ? `Runs on canvas ${where.canvas}, node ${node}`
+    : `Runs on canvas ${where.canvas}`;
+  // Drawn middle-cut to a value pill's width (`where-label.ts`); the names in
+  // full are the accessible name's and the hint's.
+  const shown = whereParts(where.canvas, node);
+  return (
+    <span
+      className="pp pp--static"
+      role="note"
+      aria-label={said}
+      tabIndex={0}
+      data-hint={path || said}
+    >
+      <span className="pp-k" aria-hidden="true"><CanvasGlyph size={12} /></span>
+      <span className="pp-v pp-where" aria-hidden="true">
+        {shown.canvas}
+        {shown.node && (
+          <>
+            <span className="pp-where-sep">›</span>
+            {shown.node}
+          </>
+        )}
+      </span>
+    </span>
   );
 }
 
@@ -2669,6 +2715,7 @@ export default function NewJobModal({
   chatBack,
   chatKey,
   lockTarget = false,
+  lockedWhere = null,
   sourceTask = null,
   editing,
   permissionModes,
@@ -2744,6 +2791,20 @@ export default function NewJobModal({
    * but one takes the reader out of the app they are standing in.
    */
   lockTarget?: boolean;
+  /**
+   * THE LOCKED TARGET, SAID IN THE PLACE'S OWN WORDS (Akshil, 2026-10-30: "a
+   * Where field that states the canvas and node name — this is the canvas and
+   * this is the node in that canvas on which this task will run").
+   *
+   * Set by the canvas page's rail (ClaudeRail), whose locked target is a clone
+   * dir or a node file in it — a path that names neither the canvas nor the
+   * node the reader is looking at. With `lockTarget` it brings back a WHERE
+   * pill the app Tasks tab goes without: read-only, `canvas › node` (or just
+   * the canvas), the full path on hover (`WherePill`). Absent, the card is
+   * exactly what it was — a locked card still has no WHERE pill. Display only:
+   * the saved target and Save's check are `initialTarget`'s, unchanged.
+   */
+  lockedWhere?: { canvas: string; node?: string | null } | null;
   /**
    * THE FOLDERS THIS PAGE CALLS PROJECTS — the very array the toolbar's Project
    * filter offers (Scheduled.tsx `projectOptions`), handed down rather than
@@ -5395,6 +5456,12 @@ export default function NewJobModal({
               WHERE popover: opening the pill drops the last few folders the
               user scheduled against with the field on top and Browse as the
               last row (Akshil, 2026-08-15). */}
+          {/* A CANVAS'S LOCKED CARD IS THE EXCEPTION (`lockedWhere`): its path is a
+              clone dir that names neither the canvas nor the node, so the pill
+              comes back read-only and says both (Akshil, 2026-10-30). */}
+          {lockTarget && lockedWhere && (
+            <WherePill where={lockedWhere} path={tildePath(target.trim(), home)} />
+          )}
           {!lockTarget && (
             <PropPill
               k=""
