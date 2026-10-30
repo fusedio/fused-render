@@ -74,19 +74,31 @@ function hydrateAcks() {
     const raw = localStorage.getItem(ACK_KEY);
     if (raw !== null) {
       const arr = JSON.parse(raw) as unknown;
-      const slugs = Array.isArray(arr) ? arr.filter((x): x is string => typeof x === "string" && !!x) : [];
+      const slugs = Array.isArray(arr)
+        ? arr.filter((x): x is string => typeof x === "string" && !!x)
+        : [];
       for (const s of slugs) acks.add(s);
-      void Promise.allSettled(slugs.map((s) => ackMarketplacePython(s))).then((rs) => {
-        if (!rs.every((r) => r.status === "fulfilled")) return;
-        try { localStorage.removeItem(ACK_KEY); } catch { /* no storage */ }
-      });
+      void Promise.allSettled(slugs.map((s) => ackMarketplacePython(s))).then(
+        (rs) => {
+          if (!rs.every((r) => r.status === "fulfilled")) return;
+          try {
+            localStorage.removeItem(ACK_KEY);
+          } catch {
+            /* no storage */
+          }
+        },
+      );
     }
   } catch {
     /* storage blocked or unreadable: nothing to import */
   }
   getMarketplaceAcks()
-    .then((r) => { for (const s of r.slugs || []) acks.add(s); })
-    .catch(() => { /* server unreachable: the sheet may ask again */ });
+    .then((r) => {
+      for (const s of r.slugs || []) acks.add(s);
+    })
+    .catch(() => {
+      /* server unreachable: the sheet may ask again */
+    });
 }
 hydrateAcks();
 
@@ -142,7 +154,8 @@ function start(app: AppEntry, opts: InstallOpts = {}) {
         for (const l of startListeners) l(app.slug);
         return;
       }
-      if ("overwrite" in r) setPending({ kind: "overwrite", app, path: r.path });
+      if ("overwrite" in r)
+        setPending({ kind: "overwrite", app, path: r.path });
       else setPending({ kind: "switch", app, who: r.who, path: r.path });
     })
     .catch(() => {});
@@ -153,32 +166,47 @@ function start(app: AppEntry, opts: InstallOpts = {}) {
 export function checkRelease(app: AppEntry): void {
   void checkForRelease(app).then((r) => {
     if (r.status === "error") {
-      notify({ title: r.message || r.error || "Couldn't check for a new release", tone: "error" });
+      notify({
+        title: r.message || r.error || "Couldn't check for a new release",
+        tone: "error",
+      });
       return;
     }
     // The sync's own text can carry a raw error: never shown (§0.1).
     if (r.sync && r.sync.ok === false) {
-      notify({ title: `Couldn't bring in the new release of ${app.name}. Its app page says why.`, tone: "error" });
+      notify({
+        title: `Couldn't bring in the new release of ${app.name}. Its app page says why.`,
+        tone: "error",
+      });
       return;
     }
     const after = r.app ?? null;
     if (after && releaseWaiting(after)) {
-      notify({ title: `A new release of ${app.name} is waiting. Its app page has the way to bring it in.`, tone: "info" });
+      notify({
+        title: `A new release of ${app.name} is waiting. Its app page has the way to bring it in.`,
+        tone: "info",
+      });
     } else if (after) {
-      notify({ title: `${app.name} has the newest reviewed release.`, tone: "info" });
+      notify({
+        title: `${app.name} has the newest reviewed release.`,
+        tone: "info",
+      });
     }
   });
 }
 
 /** Local edits an update would overwrite: only the old package update does
  *  that — a reviewed copy brings a release in under the user's changes. */
-const hasLocalEdits = (app: AppEntry) => !isMarketCopy(app) && !!app.installed?.modified;
+const hasLocalEdits = (app: AppEntry) =>
+  !isMarketCopy(app) && !!app.installed?.modified;
 
 /** "v1.0.0 → v1.1.0", or just the version when an update keeps it (the
  *  author changed files without bumping it). */
 function versionStep(app: AppEntry): string {
   const have = app.installed?.version;
-  return have && have !== app.version ? `v${have} → v${app.version}` : `v${app.version}`;
+  return have && have !== app.version
+    ? `v${have} → v${app.version}`
+    : `v${app.version}`;
 }
 
 /** The pill's click, for any surface. */
@@ -198,7 +226,8 @@ export function runPrimaryAction(app: AppEntry, job: InstallJob | null): void {
       else start(app);
       return;
     case "get":
-      if (app.requires_python && !readAcks().has(app.slug)) setPending({ kind: "install", app });
+      if (app.requires_python && !readAcks().has(app.slug))
+        setPending({ kind: "install", app });
       else start(app);
       return;
     default:
@@ -208,7 +237,10 @@ export function runPrimaryAction(app: AppEntry, job: InstallJob | null): void {
 
 /** "Update all": straight through when nothing was edited locally, else one
  *  confirmation naming the edited apps (the others update either way). */
-export function runUpdateAll(apps: AppEntry[], jobs: Record<string, InstallJob>): void {
+export function runUpdateAll(
+  apps: AppEntry[],
+  jobs: Record<string, InstallJob>,
+): void {
   const idle = apps.filter((a) => !isActive(jobs[a.slug]));
   // Reviewed copies check for their release; only package installs update.
   idle.filter(isMarketCopy).forEach(checkRelease);
@@ -232,9 +264,12 @@ export function InstallSheetHost() {
   }, []);
   if (!req) return null;
   const close = () => setPending(null);
-  if (req.kind === "update") return <UpdateSheet apps={req.apps} onClose={close} />;
-  if (req.kind === "switch") return <SwitchSheet app={req.app} who={req.who} onClose={close} />;
-  if (req.kind === "overwrite") return <OverwriteSheet app={req.app} path={req.path} onClose={close} />;
+  if (req.kind === "update")
+    return <UpdateSheet apps={req.apps} onClose={close} />;
+  if (req.kind === "switch")
+    return <SwitchSheet app={req.app} who={req.who} onClose={close} />;
+  if (req.kind === "overwrite")
+    return <OverwriteSheet app={req.app} path={req.path} onClose={close} />;
   return <InstallSheet app={req.app} onClose={close} />;
 }
 
@@ -245,7 +280,15 @@ export function InstallSheetHost() {
  *  data (`.fused/`) along with everything that names the folder (bookmarks,
  *  recents, sessions), and hides the showcase copy; its files stay on disk,
  *  since deleting them dirties the clone. */
-function OverwriteSheet({ app, path, onClose }: { app: AppEntry; path: string; onClose: () => void }) {
+function OverwriteSheet({
+  app,
+  path,
+  onClose,
+}: {
+  app: AppEntry;
+  path: string;
+  onClose: () => void;
+}) {
   const confirmRef = useRef<HTMLButtonElement>(null);
   const confirm = () => {
     onClose();
@@ -263,7 +306,12 @@ function OverwriteSheet({ app, path, onClose }: { app: AppEntry; path: string; o
           <button type="button" className="btn btn-secondary" onClick={onClose}>
             Keep the showcase copy
           </button>
-          <button ref={confirmRef} type="button" className="btn btn-primary mp-sheet-install" onClick={confirm}>
+          <button
+            ref={confirmRef}
+            type="button"
+            className="btn btn-primary mp-sheet-install"
+            onClick={confirm}
+          >
             <FolderInput size={14} strokeWidth={2.2} aria-hidden="true" />
             Overwrite
           </button>
@@ -278,12 +326,15 @@ function OverwriteSheet({ app, path, onClose }: { app: AppEntry; path: string; o
         </div>
       </div>
       <p className="mp-sheet-lede">
-        You have {app.name} at <code title={path}>{path.split("/").slice(-2).join("/")}</code>. The Community version
-        is installed in your apps folder instead, and the app&rsquo;s data moves there with it.
+        You have {app.name} at{" "}
+        <code title={path}>{path.split("/").slice(-2).join("/")}</code>. The
+        Community version is installed in your apps folder instead, and the
+        app&rsquo;s data moves there with it.
       </p>
       <p className="mp-sheet-lede is-quiet">
-        Your bookmarks, recents and sessions for it follow the app. The showcase copy leaves your apps; its files
-        stay in the showcase folder, so nothing is deleted.
+        Your bookmarks, recents and sessions for it follow the app. The showcase
+        copy leaves your apps; its files stay in the showcase folder, so nothing
+        is deleted.
       </p>
     </Modal>
   );
@@ -293,7 +344,15 @@ function OverwriteSheet({ app, path, onClose }: { app: AppEntry; path: string; o
  *  user follows by GitHub link (§18.4 D13). Switching is one Activity line
  *  with Undo on the app page; the user's own changes must be proposed or
  *  discarded first (the server says so if they are not). */
-function SwitchSheet({ app, who, onClose }: { app: AppEntry; who: string | null; onClose: () => void }) {
+function SwitchSheet({
+  app,
+  who,
+  onClose,
+}: {
+  app: AppEntry;
+  who: string | null;
+  onClose: () => void;
+}) {
   const confirmRef = useRef<HTMLButtonElement>(null);
   const name = who || app.author?.github || app.author?.name || "the author";
   const confirm = () => {
@@ -312,7 +371,12 @@ function SwitchSheet({ app, who, onClose }: { app: AppEntry; who: string | null;
           <button type="button" className="btn btn-secondary" onClick={onClose}>
             Keep following {name}
           </button>
-          <button ref={confirmRef} type="button" className="btn btn-primary mp-sheet-install" onClick={confirm}>
+          <button
+            ref={confirmRef}
+            type="button"
+            className="btn btn-primary mp-sheet-install"
+            onClick={confirm}
+          >
             <BadgeCheck size={14} strokeWidth={2.2} aria-hidden="true" />
             Switch
           </button>
@@ -327,16 +391,24 @@ function SwitchSheet({ app, who, onClose }: { app: AppEntry; who: string | null;
         </div>
       </div>
       <p className="mp-sheet-lede">
-        You follow {name} directly today. Reviewed releases arrive only after Fused&rsquo;s check.
+        You follow {name} directly today. Reviewed releases arrive only after
+        Fused&rsquo;s check.
       </p>
       <p className="mp-sheet-lede is-quiet">
-        Your copy stays where it is, with its data. You can undo the switch from the app&rsquo;s Activity.
+        Your copy stays where it is, with its data. You can undo the switch from
+        the app&rsquo;s Activity.
       </p>
     </Modal>
   );
 }
 
-function UpdateSheet({ apps, onClose }: { apps: AppEntry[]; onClose: () => void }) {
+function UpdateSheet({
+  apps,
+  onClose,
+}: {
+  apps: AppEntry[];
+  onClose: () => void;
+}) {
   const confirmRef = useRef<HTMLButtonElement>(null);
   const edited = apps.filter(hasLocalEdits);
   const single = apps.length === 1 ? apps[0] : null;
@@ -356,16 +428,30 @@ function UpdateSheet({ apps, onClose }: { apps: AppEntry[]; onClose: () => void 
           <button type="button" className="btn btn-secondary" onClick={onClose}>
             Cancel
           </button>
-          <button ref={confirmRef} type="button" className="btn btn-primary mp-sheet-install" onClick={confirm}>
+          <button
+            ref={confirmRef}
+            type="button"
+            className="btn btn-primary mp-sheet-install"
+            onClick={confirm}
+          >
             <RefreshCw size={14} strokeWidth={2.2} aria-hidden="true" />
-            {single ? "Update anyway" : apps.length === edited.length ? "Update all anyway" : `Update all ${apps.length}`}
+            {single
+              ? "Update anyway"
+              : apps.length === edited.length
+                ? "Update all anyway"
+                : `Update all ${apps.length}`}
           </button>
         </>
       }
     >
       {single ? (
         <div className="mp-sheet-head">
-          <AppIcon src={single.icon_url} name={single.name} seed={single.slug} size={56} />
+          <AppIcon
+            src={single.icon_url}
+            name={single.name}
+            seed={single.slug}
+            size={56}
+          />
           <div className="mp-sheet-id">
             <div className="mp-sheet-name">{single.name}</div>
             <div className="mp-sheet-meta">{versionStep(single)}</div>
@@ -383,7 +469,12 @@ function UpdateSheet({ apps, onClose }: { apps: AppEntry[]; onClose: () => void 
           <ul className="mp-sheet-apps">
             {edited.map((a) => (
               <li key={a.slug}>
-                <AppIcon src={a.icon_url} name={a.name} seed={a.slug} size={28} />
+                <AppIcon
+                  src={a.icon_url}
+                  name={a.name}
+                  seed={a.slug}
+                  size={28}
+                />
                 <span className="mp-sheet-app-name">{a.name}</span>
                 <span className="mp-sheet-app-v">{versionStep(a)}</span>
               </li>
@@ -394,17 +485,28 @@ function UpdateSheet({ apps, onClose }: { apps: AppEntry[]; onClose: () => void 
       <StatusCallout
         tone="warn"
         className="mp-sheet-warn"
-        title={single ? "You've edited this app's files" : "Their local edits will be replaced"}
+        title={
+          single
+            ? "You've edited this app's files"
+            : "Their local edits will be replaced"
+        }
       >
-        Updating replaces {single ? "the app's" : "each app's"} own files with the new version, so your changes to
-        them are lost — they are not saved anywhere first. Files you added, {single ? "its" : "their"} data and Python
-        environment are kept.
+        Updating replaces {single ? "the app's" : "each app's"} own files with
+        the new version, so your changes to them are lost — they are not saved
+        anywhere first. Files you added, {single ? "its" : "their"} data and
+        Python environment are kept.
       </StatusCallout>
     </Modal>
   );
 }
 
-function InstallSheet({ app, onClose }: { app: AppEntry; onClose: () => void }) {
+function InstallSheet({
+  app,
+  onClose,
+}: {
+  app: AppEntry;
+  onClose: () => void;
+}) {
   const confirmRef = useRef<HTMLButtonElement>(null);
   const confirm = () => {
     writeAck(app.slug);
@@ -423,7 +525,12 @@ function InstallSheet({ app, onClose }: { app: AppEntry; onClose: () => void }) 
           <button type="button" className="btn btn-secondary" onClick={onClose}>
             Cancel
           </button>
-          <button ref={confirmRef} type="button" className="btn btn-primary mp-sheet-install" onClick={confirm}>
+          <button
+            ref={confirmRef}
+            type="button"
+            className="btn btn-primary mp-sheet-install"
+            onClick={confirm}
+          >
             <Download size={14} strokeWidth={2.2} aria-hidden="true" />
             Install
           </button>
@@ -435,12 +542,14 @@ function InstallSheet({ app, onClose }: { app: AppEntry; onClose: () => void }) 
         <div className="mp-sheet-id">
           <div className="mp-sheet-name">{app.name}</div>
           <div className="mp-sheet-meta">
-            {app.author.name} · v{app.version}
+            {`${app.author?.github || app.author?.name || "Unknown"} · v${app.version}`}
             {app.size_bytes > 0 && <> · {formatSize(app.size_bytes)}</>}
           </div>
         </div>
       </div>
-      <p className="mp-sheet-lede">Before you install, here is what {app.name} does on your machine.</p>
+      <p className="mp-sheet-lede">
+        Before you install, here is what {app.name} does on your machine.
+      </p>
       <TrustList items={trustItemsFor(app)} />
     </Modal>
   );
