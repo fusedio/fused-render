@@ -112,9 +112,6 @@ export interface TranscriptProps {
    *  (`null`, not `""`) so a copied address carries no dangling `&msg=`. */
   onAnchorSpent?: () => void;
   onShowSent?: (turn: UserTurn) => void;
-  /** A queued / not-sent bubble was clicked: pull it back into the box
-   *  (`TurnProps.onPullPending`). */
-  onPullPending?: (key: string) => void;
   /** "Fork from here" on a user turn (`TurnProps.onFork`). */
   onFork?: (key: string) => void;
   /** PR2: a receipt's thumbnail or glyph opens the full-size viewer. */
@@ -175,7 +172,6 @@ export const Transcript = memo(function Transcript({
   msgAnchor,
   onAnchorSpent,
   onShowSent,
-  onPullPending,
   onFork,
   onOpenShot,
   paneNoun,
@@ -721,12 +717,12 @@ export const Transcript = memo(function Transcript({
     bgInFlight.current = true;
     const fail = (reason: string) => {
       console.warn("[claude] background failed:", reason);
-      actions.addNote("Could not send that command to the background" + (reason ? ": " + reason : "."), "⏹");
+      actions.addNote("Could not send that to the background" + (reason ? ": " + reason : "."), "⏹");
     };
     runAgent("task_background", { run_id: runId, tool_use_id: toolUseId })
       .then((res) => {
         if ("error" in res && res.error) fail(String(res.error));
-        else if ((res as { backgrounded?: boolean }).backgrounded === false) fail("the command was not running yet");
+        else if ((res as { backgrounded?: boolean }).backgrounded === false) fail("it was not running yet");
       })
       .catch((err) => fail(err instanceof Error ? err.message : String(err)))
       .finally(() => {
@@ -965,7 +961,6 @@ export const Transcript = memo(function Transcript({
                   anchored={turn.role === "user" && !!flare && turn.uuid === flare}
                   {...(tail && tail.turnKey === turn.key ? { tail } : {})}
                   {...(onShowSent ? { onShowSent } : {})}
-                  {...(onPullPending ? { onPullPending } : {})}
                   {...(onFork ? { onFork } : {})}
                   {...(after ? { cardsAfter: after } : {})}
                   {...(onOpenShot ? { onOpenShot } : {})}

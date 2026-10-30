@@ -8730,8 +8730,9 @@ def _task_stop(run_id: str, task_id: str) -> dict:
 
 
 def _task_background(run_id: str, tool_use_id: str) -> dict:
-    """Send the running foreground Bash call `tool_use_id` to the background:
-    a `background_tasks` control request to the live session host (10 s).
+    """Send the running foreground Bash or Agent call `tool_use_id` to the
+    background: a `background_tasks` control request to the live session
+    host (10 s).
     `{"ok": True, "backgrounded": bool}`, or `{"error"}` (no live host, the
     CLI's refusal for an unknown id, or no answer)."""
     if _bad_id(run_id):
@@ -12661,7 +12662,7 @@ def main(action: str = "start", file: str = "", message: str = "",
         # Stop a running task: `stop_task` control request.
         return _task_stop(run_id, task_id)
     if action == "task_background":
-        # Ctrl+B: a running foreground Bash call -> background_tasks request.
+        # Ctrl+B: a running foreground Bash/Agent call -> background_tasks request.
         return _task_background(run_id, tool_use_id)
     if action == "tasks":
         # A finished turn's tasks panel while its host runs on (`_run_tasks`).

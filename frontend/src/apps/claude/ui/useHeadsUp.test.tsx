@@ -301,14 +301,6 @@ test("countUserTurns skips interrupt markers", () => {
   expect(countUserTurns(turns)).toBe(2);
 });
 
-test("countUserTurns ignores queued/unsent rows until the send adopts them", () => {
-  const queued = { role: "user", text: "later", pending: "queued" };
-  const turns = [{ role: "user", text: "hi" }, queued, { role: "user", text: "x", pending: "unsent" }];
-  expect(countUserTurns(turns)).toBe(1);
-  const { pending: _gone, ...adopted } = queued;
-  expect(countUserTurns([turns[0], adopted])).toBe(2);
-});
-
 test("idle on mount: asks once and shows a note the server still holds", async () => {
   answers = [{ state: "note", id: "n1", note: NOTE }];
   mount({ runId: "r1", running: false, enabled: true, userTurns: 4 });
