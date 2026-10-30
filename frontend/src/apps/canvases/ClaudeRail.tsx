@@ -267,9 +267,10 @@ export function ClaudeRail({
   useEffect(() => {
     if (!peekOn && peekKey) intent.dismiss();
   }, [peekOn, peekKey, intent]);
-  const seatKeys = seats.map((s) => s.pulse.key).join("|");
+  // JSON, not a joined string: a key is free to contain any delimiter.
+  const seatKeys = JSON.stringify(seats.map((s) => s.pulse.key));
   useEffect(() => {
-    const live = new Set(seatKeys ? seatKeys.split("|") : []);
+    const live = new Set(JSON.parse(seatKeys) as string[]);
     intent.prune(live);
     setKept((k) => (k.every((key) => live.has(key)) ? k : k.filter((key) => live.has(key))));
   }, [seatKeys, intent]);
@@ -324,6 +325,20 @@ export function ClaudeRail({
       window.removeEventListener("pointercancel", onUp, true);
     };
   }, [peekKey, intent]);
+  // NO ROOM FOR A CARD (RailPeek `onNoRoom`: a window too short or narrow):
+  // the rings keep their one-line caption until a resize gives the card room
+  // again — a hover that shows nothing at all is the one outcome to avoid.
+  const [noRoom, setNoRoom] = useState(false);
+  const onNoRoom = useCallback(() => {
+    intent.dismiss();
+    setNoRoom(true);
+  }, [intent]);
+  useEffect(() => {
+    if (!noRoom) return;
+    const re = () => setNoRoom(false);
+    window.addEventListener("resize", re);
+    return () => window.removeEventListener("resize", re);
+  }, [noRoom]);
   const dismissToRing = useCallback(() => {
     const key = intent.current;
     intent.dismiss(true);
@@ -446,7 +461,7 @@ export function ClaudeRail({
                   // title's line, then the reply's — what the row clamps.
                   // With the hover card on, an EMPTY hint is the opt-out
                   // (hints.ts `hintOf`): the card is the caption.
-                  data-hint={peekOn ? "" : line.hint || label}
+                  data-hint={peekOn && !noRoom ? "" : line.hint || label}
                   data-hint-title={line.hint || label}
                   data-hint-reply={reply}
                   // Beside the ring, not at the pointer (platform/lib/hints
@@ -466,6 +481,9 @@ export function ClaudeRail({
                       }
                     : {})}
                   onClick={(e) => {
+                    // No door yet (a draft the listing has not named): the
+                    // `#` must not navigate on any kind of click.
+                    if (!href) e.preventDefault();
                     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
                     e.preventDefault();
                     if (href) onOpenChat(href);
@@ -504,7 +522,7 @@ export function ClaudeRail({
           onPressInside={onPressInside}
           onHold={(on) => intent.hold(on)}
           onDismiss={dismissToRing}
-          onNoRoom={() => intent.dismiss()}
+          onNoRoom={onNoRoom}
           onOpenChat={onOpenChat}
         />
       )}
@@ -527,7 +545,12 @@ export function ClaudeRail({
           planning={false}
           permissionModes={card.modes}
           recentTargets={card.recents}
-          onClose={() => setCard(null)}
+          // Closed without creating: the card may have left a DRAFT behind,
+          // which the pulse never carries — re-read so its ring shows now.
+          onClose={() => {
+            setCard(null);
+            void refreshListing().catch(() => undefined);
+          }}
           // "Something changed, re-read": the pulse will move the new row
           // onto the rail; the listing is re-read now so its caption and
           // rank are not 600ms behind its ring.

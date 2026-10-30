@@ -195,7 +195,12 @@ export class PeekIntent {
       this.focusKey = null;
       this.muteFocus = false;
     }
-    if (!this.overRing) this.cancelOpen();
+    // A pending open survives only while the ring it is for is still the one
+    // the pointer or the focus rests on: the pointer leaving ring B while the
+    // focus still sits on ring A must not open B.
+    if (this.pendingKey !== null && this.pendingKey !== this.pointerKey && this.pendingKey !== this.focusKey) {
+      this.cancelOpen();
+    }
     this.scheduleClose();
   }
 
@@ -221,6 +226,10 @@ export class PeekIntent {
     if (this.pendingKey !== null && !live.has(this.pendingKey)) this.cancelOpen();
     if (this.shown !== null && !live.has(this.shown)) {
       this.cancelClose();
+      // The card's composer may have held the focus; its unmount fires no
+      // blur in every engine, so the hold is dropped here.
+      this.held = false;
+      this.pressing = false;
       this.set(null);
       return;
     }

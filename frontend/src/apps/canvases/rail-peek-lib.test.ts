@@ -295,6 +295,29 @@ describe("PeekIntent", () => {
     expect(shown).toEqual(["a", null, "a"]);
   });
 
+  it("the pointer leaving a pending ring while focus rests on another cancels that open", () => {
+    const { clock, shown, intent } = rig();
+    intent.enterRing("a", "focus");
+    clock.tick(PEEK_OPEN_MS);
+    intent.enterRing("b", "pointer");
+    intent.leaveRing("pointer");
+    clock.tick(10_000);
+    expect(shown).toEqual(["a"]);
+  });
+
+  it("prune closing the shown chat drops a keyboard hold", () => {
+    const { clock, shown, intent } = rig();
+    intent.showNow("a");
+    intent.hold(true);
+    intent.prune(new Set(["b"]));
+    expect(shown).toEqual(["a", null]);
+    intent.enterRing("b");
+    clock.tick(PEEK_OPEN_MS);
+    intent.leaveRing();
+    clock.tick(PEEK_CLOSE_MS);
+    expect(shown).toEqual(["a", null, "b", null]);
+  });
+
   it("re-entering the shown ring is a no-op (no second show, no close)", () => {
     const { clock, shown, intent } = rig();
     intent.enterRing("a");

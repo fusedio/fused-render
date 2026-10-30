@@ -45,6 +45,14 @@ describe("onRail", () => {
     expect(onRail(elsewhere, PLACE)).toBe(false);
   });
 
+  it("a draft the pulse does not carry comes from the listing, ranked like the List", () => {
+    const draft = task({ key: "draft:1", kind: "draft", status: "upcoming", session_id: "" } as Partial<Task> & { key: string });
+    const live = task({ key: "a", status: "in_progress" });
+    const seats = railRows([pulse(live)], new Map([["draft:1", draft], ["a", live]]), PLACE);
+    expect(seats.map((s) => s.pulse.key)).toEqual(sortForList([live, draft], Date.now()).map((t) => t.key));
+    expect(seats.find((s) => s.pulse.key === "draft:1")?.row).toBe(draft);
+  });
+
   it("railScope: a stamped node file, a legacy target under the clone, else the canvas", () => {
     expect(railScope({ canvas: { env: "unstable", name: "demo", file: "hex.py" }, target: "", project: "" }, PLACE.dir))
       .toEqual({ kind: "node", name: "hex", file: "hex.py" });

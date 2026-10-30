@@ -56,29 +56,11 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
-import { archiveTask, downloadTaskTranscript, unarchiveTask, type Task } from "@platform/lib/api";
+import type { Task } from "@platform/lib/api";
 import { shortTaskId } from "@platform/lib/task-id";
-import { notify } from "@platform/lib/notifications";
-import { RUN_BLOCKED_HINT, TASK_ACTION_LABELS, blockedActionLabel } from "@platform/lib/task-actions";
-import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
-import { EraseTaskModal } from "@platform/ui/EraseTaskModal";
-import {
-  TASK_ICON_ARCHIVE,
-  TASK_ICON_DOWNLOAD,
-  TASK_ICON_TRASH,
-  TASK_ICON_UNARCHIVE,
-} from "@platform/ui/TaskActionIcons";
 import { ChatMount, draftHref } from "@apps/claude";
-import { useArchiveConfirm } from "@shell/archive-confirm";
-import {
-  cardTitleLine,
-  draftTag,
-  eraseBlocked,
-  filingIntent,
-  isDraftTask,
-  nextRunChip,
-  taskHref,
-} from "@shell/tasks-lib";
+import { Kebab } from "@apps/claude/ui/Kebab";
+import { cardTitleLine, draftTag, isDraftTask, nextRunChip, taskColumn, taskHref } from "@shell/tasks-lib";
 import { railScope, type RailRow } from "./claude-rail-lib";
 import {
   PEEK_MAX_HEIGHT,
@@ -88,15 +70,6 @@ import {
   statusWords,
   type Box,
 } from "./rail-peek-lib";
-
-/** The ⋮ every list in this app wears (TaskPeek's, vertical). */
-const ICON_DOTS = (
-  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-    <circle cx="12" cy="5" r="1.6" fill="currentColor" />
-    <circle cx="12" cy="12" r="1.6" fill="currentColor" />
-    <circle cx="12" cy="19" r="1.6" fill="currentColor" />
-  </svg>
-);
 
 /** What one seat is, for the head and the body: the pulse row, the full row
  *  once held, and the answers both halves ask (RailPeek `seatFacts`). */
@@ -278,6 +251,12 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     if (!shownKey || !railEl) return;
     const re = () => {
       const next = place(shownKey);
+      // The row shrank under the card (a window resized down to nothing):
+      // the card leaves rather than standing clamped over the canvas.
+      if (!next) {
+        onNoRoom();
+        return;
+      }
       setBox((prev) =>
         next && prev && next.left === prev.left && next.top === prev.top && next.width === prev.width && next.height === prev.height
           ? prev
@@ -327,6 +306,32 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     [shownKey],
   );
 
+  // WHICH FOCUS HOLDS THE CARD. Typing (an editable), a popup of the chat's
+  // (its ⋮ menu, a picker, a dialog), or focus that the KEYBOARD brought here
+  // (Tab, an arrow — the ArrowLeft way in) — those are a reader using the
+  // card, and it must not close under them. A plain button focused by a
+  // click, or by a menu handing focus back to its trigger on Escape, is not:
+  // a reader who closed the ⋮ and moved the pointer away expects the card to
+  // follow the pointer rule again, not to stand until a second Escape.
+  const lastKeyAt = useRef(0);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Tab" || e.key.startsWith("Arrow")) lastKeyAt.current = Date.now();
+    };
+    document.addEventListener("keydown", onKey, true);
+    return () => document.removeEventListener("keydown", onKey, true);
+  }, []);
+  const onFocusCapture = (e: ReactFocusEvent<HTMLDivElement>) => {
+    const t = e.target as HTMLElement;
+    const editable =
+      t.matches("textarea, input, select, [contenteditable=''], [contenteditable='true']");
+    // NOT the card itself, which is a `dialog` too: the nearest popup role
+    // above the target has to be something INSIDE the card.
+    const pop = t.closest("[role='menu'], [role='listbox'], [role='dialog'], [role='alertdialog']");
+    const popup = !!pop && pop !== cardRef.current;
+    const keyboard = Date.now() - lastKeyAt.current < 400;
+    onHold(editable || popup || keyboard);
+  };
   const onBlurCapture = (e: ReactFocusEvent<HTMLDivElement>) => {
     const next = e.relatedTarget as Node | null;
     if (next && e.currentTarget.contains(next)) return;
@@ -345,92 +350,16 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
 
   const head = view ? seatFacts(view, dir) : null;
 
-  // THE ⋮ (owner, 2026-10-30: "give me my kebab menu as well to archive,
-  // delete, download"): the side peek's rows, in its words and order
-  // (TaskPeek `menuItems`, platform/lib/task-actions) — the door, the
-  // transcript download, filing, deletion — minus the terminal hand-offs,
-  // which the pane's own ⋮ keeps. A row with no session yet (a draft, a
-  // scheduled task) has only its door: nothing to download, file or erase
-  // here. The card HOLDS while the menu or a dialog is up: the pointer is
-  // off the card on a menu row, and a grace close under an open dialog would
-  // pull the card from beneath it.
-  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
-  const [erasing, setErasing] = useState<Pick<Task, "key" | "task_id"> | null>(null);
-  const [acting, setActing] = useState(false);
-  const archiveAsk = useArchiveConfirm();
-  const busy = menuAt !== null || erasing !== null || archiveAsk.node !== null;
-  useEffect(() => {
-    if (busy) onHold(true);
-    else onHold(!!cardRef.current?.contains(document.activeElement));
-    // `onHold` is the host's stable callback; `busy` is the fact.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [busy]);
-  const refile = async (facts: SeatFacts) => {
-    const filing = facts.row ? filingIntent(facts.merged as Task) : null;
-    if (!filing || acting) return;
-    setActing(true);
-    try {
-      if (filing.kind === "archive") await archiveTask(facts.t.key);
-      else await unarchiveTask(facts.t.key);
-      onReload();
-    } catch (e) {
-      notify({ title: (e as Error).message, tone: "error" });
-    } finally {
-      setActing(false);
-    }
-  };
-  const downloading = useRef(false);
-  const download = async (facts: SeatFacts) => {
-    if (!facts.t.session_id || downloading.current) return;
-    downloading.current = true;
-    try {
-      await downloadTaskTranscript(facts.t.key, "md");
-    } catch (e) {
-      notify({ title: (e as Error).message, tone: "error" });
-    } finally {
-      downloading.current = false;
-    }
-  };
-  const menuItems = (): MenuEntry[] => {
-    if (!head) return [];
-    const items: MenuEntry[] = [];
-    if (head.href) {
-      const href = head.href;
-      items.push({ label: head.draft ? "Open the draft" : "Open in the Claude panel", onClick: () => onOpenChat(href) });
-    }
-    if (!head.t.session_id) return items;
-    if (items.length) items.push("separator");
-    items.push({ label: TASK_ACTION_LABELS.download, icon: TASK_ICON_DOWNLOAD, onClick: () => void download(head) });
-    items.push("separator");
-    const blocked = eraseBlocked(head.t);
-    const filing = head.row ? filingIntent(head.merged as Task) : null;
-    if (filing) {
-      items.push({
-        label: filing.kind === "archive" ? TASK_ACTION_LABELS.archive : TASK_ACTION_LABELS.unarchive,
-        icon: filing.kind === "archive" ? TASK_ICON_ARCHIVE : TASK_ICON_UNARCHIVE,
-        disabled: acting,
-        onClick: () => {
-          if (filing.kind === "archive" && head.row) archiveAsk.guard(head.merged as Task, () => void refile(head));
-          else void refile(head);
-        },
-      });
-    } else if (blocked) {
-      items.push({
-        label: blockedActionLabel(TASK_ACTION_LABELS.archive, RUN_BLOCKED_HINT),
-        icon: TASK_ICON_ARCHIVE,
-        disabled: true,
-        onClick: () => {},
-      });
-    }
-    items.push({
-      label: blockedActionLabel(TASK_ACTION_LABELS.delete, blocked ? RUN_BLOCKED_HINT : null),
-      icon: TASK_ICON_TRASH,
-      danger: true,
-      disabled: blocked,
-      onClick: () => setErasing({ key: head.t.key, task_id: head.t.task_id }),
-    });
-    return items;
-  };
+  // THE ⋮ IS THE CHAT'S OWN (owner, 2026-10-30: "it is not the same kebab
+  // menu — fix that"): `@apps/claude/ui/Kebab`, the menu the pane's chat
+  // wears — continue in terminal, copy the command, download the transcript,
+  // archive, delete — with its own labels, refusals and erase dialog. Its
+  // popup is a portal; the card HOLDS through it because the popup takes the
+  // keyboard focus and React's focus events cross portals (`onFocusCapture`
+  // → `onHold(true)`), and a press on one of its rows is "inside" by the
+  // same route (`onPressInside`). Filing or erasing the task re-reads the
+  // listing; the pulse then takes the ring, and the card with it (prune).
+  const onFiled = () => onReload();
 
   return createPortal(
     <div
@@ -447,7 +376,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       onPointerEnter={onPointerEnter}
       onPointerLeave={onPointerLeave}
       onPointerDownCapture={onPressInside}
-      onFocusCapture={() => onHold(true)}
+      onFocusCapture={onFocusCapture}
       onBlurCapture={onBlurCapture}
     >
       <div className="canvas-rail-peek-card">
@@ -479,27 +408,28 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
             {head.href && (
               <button
                 type="button"
-                className="canvas-rail-peek-btn canvas-rail-peek-open"
+                className="btn canvas-rail-peek-open"
                 title={head.draft ? "Open the draft" : "Open this chat in the Claude panel"}
                 onClick={() => onOpenChat(head.href!)}
               >
                 Open
               </button>
             )}
-            <button
-              type="button"
-              className="canvas-rail-peek-btn"
-              title="More actions"
-              aria-label="More actions"
-              aria-haspopup="menu"
-              aria-expanded={menuAt !== null}
-              onClick={(e) => {
-                const r = e.currentTarget.getBoundingClientRect();
-                setMenuAt({ x: r.right - 220, y: r.bottom + 4 });
-              }}
-            >
-              {ICON_DOTS}
-            </button>
+            {head.t.session_id && (
+              <span className="canvas-rail-peek-kebab">
+                <Kebab
+                  // Keyed per chat: the menu caches its labels per session.
+                  key={head.t.key}
+                  file={head.row?.target || head.t.target || head.t.project}
+                  sessionId={head.t.session_id}
+                  running={taskColumn(head.t) === "in_progress" || taskColumn(head.t) === "queued"}
+                  asking={taskColumn(head.t) === "needs_attention"}
+                  queued={taskColumn(head.t) === "queued"}
+                  onErased={onFiled}
+                  onArchived={onFiled}
+                />
+              </span>
+            )}
             <button
               type="button"
               className="canvas-rail-peek-btn"
@@ -570,20 +500,6 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
             );
           })}
         </div>
-        {menuAt && <ContextMenu x={menuAt.x} y={menuAt.y} items={menuItems()} onClose={() => setMenuAt(null)} />}
-        {archiveAsk.node}
-        {erasing && (
-          <EraseTaskModal
-            task={erasing}
-            onClose={() => setErasing(null)}
-            onDone={() => {
-              const gone = erasing;
-              setErasing(null);
-              notify({ title: `Deleted ${shortTaskId(gone.task_id)}`, tone: "info" });
-              onReload();
-            }}
-          />
-        )}
       </div>
     </div>,
     document.body,

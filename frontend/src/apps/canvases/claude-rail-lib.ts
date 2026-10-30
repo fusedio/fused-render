@@ -29,7 +29,7 @@
 // the listed rows rather than above them — a chat that just finished takes
 // its place under the running ones, not the rail's head.
 import type { Task, TaskPulseTask } from "@platform/lib/api";
-import { sortForList, taskColumn } from "@shell/tasks-lib";
+import { isDraftTask, sortForList, taskColumn } from "@shell/tasks-lib";
 import type { WorkbenchEnv } from "./api";
 
 /** One rail seat: the pulse row (live status) and, once the listing holds it,
@@ -49,11 +49,13 @@ export interface RailPlace {
   file?: string | null;
 }
 
-/** Is this pulse row one of the rail's: a row on THIS canvas — on the
- *  selected node, when one is — and not archived. A row with no session yet
- *  (a draft, a scheduled task) is on the rail too (owner, 2026-10-30: "the
- *  draft is ordered, but drafts are not shown"): the List shows them for the
- *  canvas, and the rail is the List's order in rings. */
+/** Is this row one of the rail's: a row on THIS canvas — on the selected
+ *  node, when one is — and not archived. A row with no session yet (a draft,
+ *  a scheduled task) is on the rail too (owner, 2026-10-30: "the draft is
+ *  ordered, but drafts are not shown"): the List shows them for the canvas,
+ *  and the rail is the List's order in rings. Drafts reach `railRows` from
+ *  the LISTING, not the pulse (`/api/tasks/pulse` leaves `kind: "draft"`
+ *  rows out; the listing feed a mounted chat holds carries them). */
 export function onRail(t: TaskPulseTask, place: RailPlace): boolean {
   if (taskColumn(t) === "archived") return false;
   const named = !!t.canvas && t.canvas.env === place.env && t.canvas.name === place.name;
@@ -101,7 +103,13 @@ export function railRows(
   place: RailPlace,
   now: number = Date.now(),
 ): RailRow[] {
-  const mine = rows.filter((t) => onRail(t, place));
+  const pulseKeys = new Set(rows.map((t) => t.key));
+  // Drafts the pulse does not carry (header): the listing's own draft rows
+  // on this canvas stand in as their own pulse row — a `Task` is a superset.
+  const drafts: TaskPulseTask[] = [...listing.values()].filter(
+    (r) => !pulseKeys.has(r.key) && isDraftTask(r) && onRail(r, place),
+  );
+  const mine = [...rows.filter((t) => onRail(t, place)), ...drafts];
   const byKey = new Map(mine.map((t) => [t.key, t]));
   const held = new Map<string, Task>();
   const ranked: Task[] = mine.map((t) => {

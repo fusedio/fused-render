@@ -686,11 +686,37 @@
   color: var(--fg);
   background: rgba(var(--tint), 0.06);
 }
+/* The door, as the app's outline button (`.btn`, the sync strip's "Open in
+   workbench"), sized to the head's 26px seats. */
 .canvas-rail-peek-open {
-  width: auto;
-  padding: 0 8px;
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 10px;
   font-size: 12px;
-  font-weight: 500;
+  line-height: 22px;
+}
+/* The chat's own ⋮ (apps/claude/ui/Kebab), in a head seat: its button takes
+   the head's size and hover wash so it sits level with the close beside it. */
+.canvas-rail-peek-kebab {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+.canvas-rail-peek-kebab .c-kebabbtn {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.canvas-rail-peek-kebab .c-kebabbtn:hover {
+  background: rgba(var(--tint), 0.08);
   color: var(--fg);
 }
 /* A seat with no conversation yet (a draft, a scheduled task): what it is,
