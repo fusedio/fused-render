@@ -5157,7 +5157,31 @@ def _is_fused_process(pid: int) -> bool:
     from fused_render import _flavor
 
     app = _flavor.app_name().lower()
-    return bool(app) and app in exe
+    if app and app in exe:
+        return True
+    # Or a Python running THIS package by name: the Linux supervisor's child
+    # (`python3 -I -m fused_render.cli serve`, under a per-launch AppImage
+    # mount, so its path never equals ours after an update) or a pip
+    # install's `fused-render serve` from another venv. Tokens are tested as
+    # the module name or a script's BASENAME — a checkout path that merely
+    # contains `fused-render` (every process started under the repo) is not
+    # a match.
+    for token in canvas_sync_state.process_argv(pid) or []:
+        if token == "fused_render" or token.startswith("fused_render."):
+            return True
+        # Both separators: the card may be read on any platform, and a
+        # Windows token is `C:\\…\\Scripts\\fused-render.exe`.
+        if token.replace("\\", "/").rsplit("/", 1)[-1].lower() in _FUSED_SCRIPT_NAMES:
+            return True
+    return False
+
+
+#: The package's console scripts (pyproject `[project.scripts]`), as argv[0]
+#: basenames on every platform.
+_FUSED_SCRIPT_NAMES = frozenset({
+    "fused-render", "fused-render.exe", "fused-render-script.py",
+    "fused-render-app", "fused-render-app.exe", "fused-render-app-script.py",
+})
 
 
 def _unreachable_owner_response(env: str, name: str, held: dict, *, why: str) -> JSONResponse:

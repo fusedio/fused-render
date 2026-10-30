@@ -267,6 +267,39 @@ def process_executable(pid: int) -> str | None:
     return line or None
 
 
+def process_argv(pid: int) -> list[str] | None:
+    """The argument vector of `pid`, or None when it cannot be read. Linux
+    reads `/proc/<pid>/cmdline` (NUL-separated, exact); macOS splits `ps -o
+    args=` on whitespace (a path with a space becomes two tokens — the
+    callers test tokens for module and script NAMES, which have none);
+    Windows asks WMI through PowerShell, bounded. Companion of
+    `process_executable` for a holder whose interpreter path says nothing
+    (the Linux supervisor's child is `python3 -I -m fused_render.cli serve`
+    under a per-launch AppImage mount; a pip install is `fused-render serve`
+    from whatever venv)."""
+    if not isinstance(pid, int) or pid <= 0:
+        return None
+    if sys.platform.startswith("linux"):
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                raw = f.read()
+        except OSError:
+            return None
+        return [t.decode("utf-8", "replace") for t in raw.split(b"\0") if t] or None
+    import subprocess
+
+    if sys.platform == "win32":
+        cmd = ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+               f"(Get-CimInstance Win32_Process -Filter 'ProcessId={int(pid)}').CommandLine"]
+    else:
+        cmd = ["/bin/ps", "-o", "args=", "-p", str(pid)]
+    try:
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=10, close_fds=False)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return out.stdout.split() or None
+
+
 LOCK_READ_RETRY_S = 0.02
 
 

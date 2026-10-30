@@ -1355,6 +1355,27 @@ def test_force_quit_owner_signals_only_an_unanswering_fused_process(harness, tmp
         canvases_mod._stop_manager(ENV, "alpha")
 
 
+def test_is_fused_process_recognises_a_relocated_leftover_by_argv(monkeypatch):
+    """A Linux AppImage child (`python3 -I -m fused_render.cli serve` under a
+    per-launch mount) or a pip `fused-render serve` from another venv has an
+    interpreter path unlike ours and no app name in it: the argv rule finds
+    it. A repo path that merely contains `fused-render` does not."""
+    monkeypatch.setattr(canvas_sync_state, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(canvas_sync_state, "process_executable",
+                        lambda pid: "/tmp/.mount_FusedAB12/usr/bin/python3" if pid != os.getpid()
+                        else sys.executable)
+    cases = {
+        4001: (["/tmp/.mount_FusedAB12/usr/bin/python3", "-I", "-m", "fused_render.cli", "serve"], True),
+        4002: (["/home/u/.venvs/x/bin/python", "/home/u/.venvs/x/bin/fused-render", "serve"], True),
+        4003: ([r"C:\Py\python.exe", r"C:\Py\Scripts\fused-render.exe", "serve"], True),
+        4004: (["/usr/bin/python3", "/Users/u/Documents/fused-dev/fused-render/scripts/dev.sh"], False),
+        4005: (["node", "/Users/u/fused-render/frontend/node_modules/.bin/vite"], False),
+    }
+    monkeypatch.setattr(canvas_sync_state, "process_argv", lambda pid: cases[pid][0])
+    for pid, (_argv, expected) in cases.items():
+        assert canvases_mod._is_fused_process(pid) is expected, pid
+
+
 def test_takeover_of_a_free_clone_is_a_plain_start(harness, tmp_path, monkeypatch):
     _quiet_watcher(monkeypatch)
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
