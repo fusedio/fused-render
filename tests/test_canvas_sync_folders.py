@@ -511,7 +511,7 @@ def _reading(rows):
     nodes = {cs.row_name(r): dict(r) for r in rows}
     return {"nodes": nodes, "order": list(nodes), "edges": [], "canvas": {},
             "files": {n: n + ".py" for n, r in nodes.items() if not cs.is_folder(r)},
-            "ids": {}, "bodies": {}}
+            "ids": {}, "bodies": {}, "rowed": nodes}
 
 
 def test_delta_upsert_omits_position_when_unchanged():

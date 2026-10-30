@@ -545,46 +545,52 @@ def test_a_push_reconciles_the_clone_rows_with_its_files(
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
     seen: dict = {}
     _capture_push(monkeypatch, seen)
-    _start(harness)
-    (harness.root / "alpha" / "orphan_x.py").write_text("print(1)\n")
-    with_ghost = _toml(harness) + '\n[[canvas.nodes]]\nudfName = "ghost"\n'
-    (harness.root / "alpha" / "canvas.toml").write_text(with_ghost)
+    clone = harness.root / "alpha"
+    ghost = '[[canvas.nodes]]\nudfName = "ghost"\n'
+    (clone / "canvas.toml").write_text(ghost)
+    m = _start(harness)
+    assert "ghost" in _toml(harness) and _toml(harness).startswith('type = "canvas"')
+    assert m._take_fingerprint() != m._fingerprint
+    (clone / "orphan_x.py").write_text("print(1)\n")
+    with_ghost = _toml(harness)
     cut = harness.client.get("/api/canvases/delta?env=unstable&name=alpha&full=1").json()
     assert "ops" in cut and "ghost" not in json.dumps(cut["ops"]), cut
     res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     assert res.status_code == 200 and res.json()["ok"] is True, res.text
-    assert [r["udfName"] for r in _rows(str(harness.root / "alpha"))] == ["a", "b", "orphan_x"]
+    assert [r["udfName"] for r in _rows(str(clone))] == ["a", "b", "orphan_x"]
     assert _toml(harness) == seen["tomls"][0]
     trashed = list((harness.root / ".sync" / "trash" / "alpha").glob("*/canvas.toml"))
     assert [t.read_text() for t in trashed] == [with_ghost]
 
 
-@pytest.mark.parametrize("settle", ["body", "hello"])
-def test_a_push_waits_for_the_source_of_a_node_the_workbench_just_created(
-        harness, tmp_path, monkeypatch, fake_agent, settle):
+def test_a_push_does_not_wait_for_the_source_of_a_node_the_workbench_just_created(
+        harness, tmp_path, monkeypatch, fake_agent):
     _quiet_watcher(monkeypatch)
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
     seen: dict = {}
     _capture_push(monkeypatch, seen)
     m = _start(harness)
-    _snapshot(harness, 1, {**FRESH_NODE_BODY, "body_channel": True,
-                           "udfs": [{"slug": "fresh", "file": "fresh.py"}]})
+    body = {**FRESH_NODE_BODY, "body_channel": True,
+            "udfs": [{"slug": "fresh", "file": "fresh.py"}, {"slug": "a", "file": "a.py"}]}
+    studio = body["dashboard_body"]["studioState"]
+    body["dashboard_body"] = {"studioState": {
+        "nodes": studio["nodes"] + [{"id": "n-a", "type": "simple-udf", "data": {"udfName": "a"}}],
+        "edges": [{"source": "n-a", "target": "n-fresh"}]}}
+    _snapshot(harness, 1, body)
+    cut = harness.client.get("/api/canvases/delta?env=unstable&name=alpha").json()
+    assert not [o for o in cut["ops"] if o["op"] in ("edges", "delete")], cut
     push = lambda: harness.client.post(  # noqa: E731
         "/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     res = push()
-    assert res.status_code == 409 and res.json()["code"] == "busy", res.text
-    assert 'udfName = "fresh"' in _toml(harness)
-    harness.client.get("/api/canvases/delta?env=unstable&name=alpha&full=1")
-    assert push().status_code == 409
-    if settle == "body":
-        with m._op_lock:
-            m.apply_body("fresh", "fresh.py", canvas_snapshot.body_hash(""), "print(2)\n")
-    else:
-        harness.client.get("/api/canvases/delta?env=unstable&name=alpha&full=hello")
-    res = push()
     assert res.status_code == 200 and res.json()["ok"] is True, res.text
-    fresh = [r["x"] for r in _rows(str(harness.root / "alpha")) if r["udfName"] == "fresh"]
-    assert fresh == ([900] if settle == "body" else []), fresh
+    assert 'udfName = "fresh"' not in seen["tomls"][0]
+    with m._op_lock:
+        m.apply_body("fresh", "fresh.py", canvas_snapshot.body_hash(""), "print(2)\n")
+    _snapshot(harness, 2, body)
+    assert push().json()["ok"] is True
+    assert "x = 900" in seen["tomls"][1]
+    assert canvas_snapshot.compact_state_from_disk(str(harness.root / "alpha"))["edges"] == [
+        ["a", "fresh"]]
 
 
 def test_a_manual_push_that_landed_is_ok_even_if_the_clone_moved_during_it(
@@ -627,9 +633,13 @@ def test_fusedignored_files_stay_out_of_the_frozen_copy(
     clone = harness.root / "alpha"
     seen: dict = {}
     _capture_push(monkeypatch, seen)
-    with open(clone / ".fusedignore", "a") as f:
-        f.write("scratch_*.csv")
+    mine = "scratch_*.csv\n\n\n# mine"
+    (clone / ".fusedignore").write_text(mine)
     _start(harness)
+    assert (clone / ".fusedignore").read_text().startswith(mine + "\n")
+    (clone / ".fusedignore").chmod(0)
+    canvases_mod._seed_clone_claude_files(str(clone), "alpha")
+    (clone / ".fusedignore").chmod(0o644)
     (clone / "scratch_big.csv").write_text("x,y\n")
     harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     files = seen["files"][0]
@@ -806,7 +816,7 @@ def test_a_rowless_file_gets_no_row_and_no_delta_op_until_its_node_arrives(
     """The embed created fresh.py without its node (the stale-closure race):
     a row invented here would push a made-up position into the frame and
     the node jumps. No row is written, the delta says nothing about it, a
-    push ships the file as it is (the server places it), and the
+    push gives the published copy a default row (not the clone), and the
     workbench's own row, at its position, settles it."""
     _quiet_watcher(monkeypatch)
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
@@ -822,8 +832,8 @@ def test_a_rowless_file_gets_no_row_and_no_delta_op_until_its_node_arrives(
     assert 'udfName = "fresh"' not in _toml(harness)
     res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     assert res.status_code == 200 and res.json()["ok"] is True, res.text
-    assert "fresh.py" in seen["files"][0] and 'udfName = "fresh"' not in seen["tomls"][0]
-    assert "fresh" in m._rowless
+    assert "fresh.py" in seen["files"][0] and 'udfName = "fresh"' in seen["tomls"][0]
+    assert 'udfName = "fresh"' not in _toml(harness) and "fresh" in m._rowless
     _snapshot(harness, 2, FRESH_NODE_BODY)
     assert m._rowless == set()
     toml = _toml(harness)

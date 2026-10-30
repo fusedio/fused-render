@@ -663,5 +663,3 @@ def test_the_canvases_root_rule_matches_canvases_py(root):
     assert _canvas_push._ENVS == fusedcli.WORKBENCH_ENV_CHOICES
     assert str(root) == canvases.canvases_root(ENV)
     _ = json
-
-

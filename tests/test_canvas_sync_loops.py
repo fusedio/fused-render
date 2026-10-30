@@ -51,8 +51,9 @@ U4_ROW = {"udfName": "udf_4", "x": 10, "y": 360, "width": 700, "height": 500,
 def test_compact_and_reconcile_take_the_files_as_the_nodes(tmp_path):
     folder = {"udfName": "F", "folderName": "F", "type": "udf-folder", "x": 1000, "y": 0,
               "height": 800, "childUdfOrder": ["b", "gone", "nobody"]}
+    note = {"udfName": "note", "folderName": "note", "type": "udf-folder", "x": 0, "y": 0}
     rows = [dict(A_ROW), {"udfName": "gone", "x": 0, "y": 0}, dict(A_ROW, x=99), folder,
-            dict(folder, x=5, childUdfOrder=["orphan"]),
+            dict(folder, x=5, childUdfOrder=["orphan"]), note,
             {"udfName": "b", "x": 40, "y": 75, "height": 5000}]
     d = _clone(tmp_path, rows, {"a.py": "A", "b.json": "{}", "orphan.py": "o", "note.md": "n",
                                 "_init.py": "", ".hidden.py": "", "CLAUDE.md": "",
@@ -60,7 +61,16 @@ def test_compact_and_reconcile_take_the_files_as_the_nodes(tmp_path):
                                 ".fusedignore": "secret.py\n"},
                edges=[["a", "gone"], ["a", "b"], ["F", "a"]])
     disk = cs.compact_state_from_disk(d)
-    assert disk["order"] == ["a", "F", "b"] and disk["edges"] == [["a", "b"], ["F", "a"]]
+    assert disk["order"] == ["a", "F", "note", "b"]
+    assert list(disk["rowed"]) == ["a", "gone", "F", "note", "b"]
+    assert disk["edges"] == [["a", "gone"], ["a", "b"], ["F", "a"]]
+    view = cs.held_view(disk, ["a", "F", "note", "b", "gone"], embed_rows=None, ids={},
+                        edges=[["a", "gone"], ["a", "b"], ["F", "a"]], bodies={"a": "A", "b": "{}"})
+    os.remove(os.path.join(d, "b.json"))
+    assert cs.diff_views(cs.compact_state_from_disk(d), view) == []
+    (full_edges,) = [o for o in cs.diff_views(disk, None) if o["op"] == "edges"]
+    assert full_edges["set"] == [["a", "b"], ["F", "a"]]
+    open(os.path.join(d, "b.json"), "w").write("{}")
     doc = rtoml.loads(open(os.path.join(d, "canvas.toml")).read())
     del doc["type"]
     open(os.path.join(d, "canvas.toml"), "w").write(rtoml.dumps(doc))
@@ -68,17 +78,20 @@ def test_compact_and_reconcile_take_the_files_as_the_nodes(tmp_path):
     trashed = []
     res = cs.reconcile_rows(d, pending=["late"], skip=["CLAUDE.md"],
                             backup=lambda rel, data: trashed.append((rel, data)))
-    assert res == {"changed": True, "dropped": ["gone", "a", "F"], "added": ["nobody", "note", "orphan"]}
+    assert res == {"changed": True, "dropped": ["gone", "a"],
+                   "added": ["nobody", "note", "orphan"]}
     assert trashed == [("canvas.toml", old)]
     doc = rtoml.loads(open(os.path.join(d, "canvas.toml")).read())
     assert doc["type"] == "canvas"
     assert doc["canvas"]["edges"] == [["a", "b"], ["F", "a"]]
-    assert [(r["udfName"], r.get("x"), r.get("y"), r.get("width"), r.get("height"))
+    assert [(r["udfName"], r.get("type"), r.get("x"), r.get("y"), r.get("width"), r.get("height"))
             for r in doc["canvas"]["nodes"]] == [
-        ("a", 10, 20, 700, 300), ("F", 1000, 0, None, 5690), ("b", 40, 75, None, 5000),
-        ("nobody", 40, 5150, 700, 500), ("note", 10, 5765, 350, 250),
-        ("orphan", 10, 6090, 700, 500)]
-    assert doc["canvas"]["nodes"][1]["childUdfOrder"] == ["b", "nobody"]
+        ("a", None, 10, 20, 700, 300), ("F", "udf-folder", 1000, 0, None, 5690),
+        ("F", "udf-folder", 5, 0, None, 800), ("note", "udf-folder", 0, 0, None, None),
+        ("b", None, 40, 75, None, 5000), ("nobody", None, 40, 5150, 700, 500),
+        ("orphan", None, 40, 75, 700, 500), ("note", None, 0, 5765, 350, 250)]
+    assert [r.get("childUdfOrder") for r in doc["canvas"]["nodes"][1:3]] == [
+        ["b", "nobody"], ["orphan"]]
     assert cs.reconcile_rows(d, pending=["late"], skip=["CLAUDE.md"])["changed"] is False
 
 

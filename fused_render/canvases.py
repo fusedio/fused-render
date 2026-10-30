@@ -196,9 +196,11 @@ _FRESH_WINDOW_S = 10.0
 # here also keeps the name safe as a path segment and an argv element.
 _NAME_RE = re.compile(r"^[A-Za-z0-9_]{1,128}$")
 
-# How long the manual pull endpoint waits for the manager's _flight_lock
+# How long the manual push/pull endpoints wait for the manager's _flight_lock
 # (and a push or pull for each short _op_lock phase) before giving up with a
-# 409.
+# 409. Short on purpose: the caller is a Claude session that just asked to
+# publish, and "a sync operation is in flight, try again" is a better answer
+# than a request that hangs for the whole PUSH_TIMEOUT.
 MANUAL_PUSH_LOCK_WAIT_S = 5.0
 # How long /api/canvases/snapshot waits on _op_lock before answering 409.
 SNAPSHOT_LOCK_WAIT_S = 1.0
@@ -1586,18 +1588,20 @@ def _seed_clone_claude_files(target: str, name: str) -> None:
     cli = fused_cli()
     if cli is None or _shim_manifest_command(cli) is None:
         return
-    ignore = os.path.join(target, ".fusedignore")
-    kept = open(ignore, encoding="utf-8").read().splitlines() if os.path.isfile(ignore) else []
-    for basename, content in (
-        ("CLAUDE.md", _CLONE_CLAUDE_MD.format(name=name)),
-        (".fusedignore", "".join(f"{line}\n" for line in dict.fromkeys(
-            kept + _CLONE_FUSEDIGNORE.splitlines()))),
-    ):
-        try:
-            with open(os.path.join(target, basename), "w", encoding="utf-8") as f:
-                f.write(content)
-        except OSError:
-            pass
+    try:
+        with open(os.path.join(target, "CLAUDE.md"), "w", encoding="utf-8") as f:
+            f.write(_CLONE_CLAUDE_MD.format(name=name))
+        with open(os.path.join(target, ".fusedignore"), "a+", encoding="utf-8",
+                  errors="replace") as f:
+            f.seek(0)
+            text = f.read()
+            add = [line for line in _CLONE_FUSEDIGNORE.splitlines()
+                   if line not in text.splitlines()]
+            if add:
+                f.write("\n" * bool(text and not text.endswith("\n"))
+                        + "".join(f"{line}\n" for line in add))
+    except OSError:
+        pass
 
 
 def _iso_epoch(value) -> float | None:
@@ -1937,9 +1941,8 @@ def _seed_default_udf(env: str, name: str) -> None:
             doc = canvas_snapshot._load_toml(os.path.join(target, "canvas.toml"))
             # Not empty after all (a row, or any source file even without
             # one): nothing to seed, and nothing of the user's to overwrite.
-            if canvas_snapshot.rows_of_doc(doc)["nodes"] or any(
-                    f.endswith(canvas_snapshot._SOURCE_SUFFIXES)
-                    and f not in _SYNC_IGNORED_BASENAMES for f in os.listdir(target)):
+            if canvas_snapshot.rows_of_doc(doc)["nodes"] or canvas_snapshot.node_files(
+                    target, _SYNC_IGNORED_BASENAMES):
                 return
             with open(os.path.join(target, f"{_DEFAULT_UDF_NAME}.py"), "w",
                       encoding="utf-8") as f:
@@ -2220,10 +2223,7 @@ class _SyncManager:
         self._flight_lock = threading.Lock()
         self._push_started_at: float | None = None
         self._push_proc: subprocess.Popen | None = None
-        # ROWLESS: files this embed generation created whose node has not
-        # reached a snapshot yet (no row). Under _op_lock.
         self._rowless: set[str] = set()
-        self._bodyless: set[str] = set()
         # leg → the last folder-fix set logged (`_log_folder_fixes`).
         self._folder_fixes_logged: dict[str, frozenset] = {}
         self._pull_started_at: float | None = None
@@ -2374,8 +2374,10 @@ class _SyncManager:
         # than that.
         now = time.time()
         fresh = all(now - mtime < _FRESH_WINDOW_S for mtime, _ in self._fingerprint.values())
-        self._reconcile_rows("server_to_disk")
-        self._fingerprint = self._take_fingerprint()
+        try:
+            canvas_snapshot.add_canvas_type(self.dir)
+        except Exception as exc:
+            self.log_event("server_to_disk", "type not added", ok=False, detail=str(exc))
         self._dirty_since: float | None = None if fresh else now
         self.push_state = "idle" if fresh else "pending"  # idle | pending | pushing | error
         self._last_pull_poll = time.time()
@@ -2657,11 +2659,10 @@ class _SyncManager:
         # a disk_rev move: count a manifest rotation as one.
         self._note_disk()
 
-    def _reconcile_rows(self, leg: str) -> None:
+    def _reconcile_rows(self, leg: str, directory: str, *, pending=(), backup=None) -> None:
         try:
             result = canvas_snapshot.reconcile_rows(
-                self.dir, pending=self._bodyless | self._rowless, skip=_SYNC_IGNORED_BASENAMES,
-                backup=lambda rel, data: self._backup_to(self._new_trash_dir(), rel, data))
+                directory, pending=pending, skip=_SYNC_IGNORED_BASENAMES, backup=backup)
         except Exception as exc:
             self.log_event(leg, "rows not reconciled", ok=False, detail=str(exc))
             return
@@ -3514,10 +3515,9 @@ class _SyncManager:
         if not self._op_lock.acquire(timeout=wait):
             return deferred("another sync step held the clone")
         try:
-            if self._bodyless:
-                return deferred("the workbench has not sent the source of "
-                                + ", ".join(sorted(self._bodyless)) + " yet")
-            self._reconcile_rows("disk_to_server")
+            self._reconcile_rows(
+                "disk_to_server", self.dir, pending=self._rowless,
+                backup=lambda rel, data: self._backup_to(self._new_trash_dir(), rel, data))
             frozen = self._take_fingerprint()
             self._fingerprint = frozen
             self._dirty_since = None
@@ -3528,6 +3528,8 @@ class _SyncManager:
             except (OSError, shutil.Error) as exc:
                 copy_dir = None
                 copy_error = str(exc)
+            else:
+                self._reconcile_rows("disk_to_server", copy_dir)
         finally:
             self._op_lock.release()
         if copy_dir is None:
@@ -3901,9 +3903,6 @@ class _SyncManager:
         self.log_event("server_to_disk", "hard pull start" if hard else "pull start")
         try:
             result = self._pull(cli, wait, hard=hard)
-            if result.get("ok"):
-                with self._op_lock:
-                    self._reconcile_rows("server_to_disk")
         finally:
             self._pull_in_flight = False
             self._pull_started_at = None
@@ -4036,7 +4035,6 @@ class _SyncManager:
             # just brought down, so the fence has nothing left to hold out.
             self._embed_view = None
             self._rowless = set()
-            self._bodyless = set()
             self._embed_applied = {}
             self._embed_max_seq = -1
             self._hard_fence = None
@@ -4131,13 +4129,12 @@ class _SyncManager:
         self._embed_view = canvas_snapshot.held_view(
             disk, names, edges=edges, ids=ids, bodies=bodies, embed_rows=embed_rows)
 
-    def cut_delta(self, full: str) -> dict:
+    def cut_delta(self, full: bool) -> dict:
         """diff(disk, embed_view) for the page to post to the frame. Under
         _op_lock, so a snapshot write never lands between the toml read and
         the file reads. Returns `{rev, base_rev, ops, full}`; `{rev, held}`
         when the clone has no readable canvas.toml (not cloned yet, or
-        mid-write): the page asks again shortly. A row whose source file is
-        not there is no node, never a reason to hold. Empty ops
+        mid-write): the page asks again shortly. Empty ops
         against a known view mean the embed already holds disk: the view
         moves here and nothing is posted.
 
@@ -4152,8 +4149,6 @@ class _SyncManager:
         move and drops the answer when it has no frame (boot, a reload), so
         only a frame's own ack or snapshot is evidence that one is there —
         otherwise disk_to_embed would read "pending" with nobody to ack."""
-        if full == "hello":
-            self._bodyless = set()
         self._note_disk()
         rev = self.disk_rev
         try:
@@ -4170,8 +4165,9 @@ class _SyncManager:
             # A good cut (the frame's hello asks for one) starts the leg over.
             self._delta_error = None
             self._bump()
-        view = self._embed_view if full in ("", "0") else None
+        view = None if full else self._embed_view
         ops = canvas_snapshot.diff_views(disk, view)
+        disk["edges"] = canvas_snapshot.held_edges(disk, view["nodes"] if view else ())
         if view is not None and not ops:
             self._embed_view = self._adopt(disk)
             self._view_rev = rev
@@ -4314,9 +4310,6 @@ class _SyncManager:
         held = list(new["nodes"]) + [n for n in result.get("deferred_deletes") or []
                                      if n not in new["nodes"]]
         self._rowless = set(result.get("rowless_files") or ())
-        self._bodyless = {slug for slug, file in new["files"].items()
-                          if slug not in new["ids"]
-                          and not os.path.isfile(os.path.join(self.dir, file))}
         for gone in result.get("deleted") or ():
             self._body_written.pop(gone, None)
         self._refresh_view_after_write(held, edges=new["edges"], ids=new["ids"],
@@ -4425,7 +4418,6 @@ class _SyncManager:
         # body pending and posts again.
         canvas_snapshot._write_atomic(path, text)
         self._body_written[node] = new_hash
-        self._bodyless.discard(node)
         created = current is None
         if created:
             # The frame's row for a new UDF comes with its snapshot, usually
@@ -4466,9 +4458,6 @@ class _SyncManager:
         if frm in self._rowless and result["moved"]:
             self._rowless.discard(frm)
             self._rowless.add(to)
-        if frm in self._bodyless:
-            self._bodyless.discard(frm)
-            self._bodyless.add(to)
         if frm in self._body_written:
             self._body_written[to] = self._body_written.pop(frm)
         renamed = canvas_snapshot.rename_prev(self._embed_view, frm, to, file_to)
@@ -5337,8 +5326,8 @@ def api_canvases_delta(name: str = "", env: str = "", full: str = ""):
     """The delta that takes the embed from what it holds to what disk holds
     (embed v3, canvas_snapshot.py's delta section). The workspace page asks
     when the events socket (or its sync/state fallback poll) shows `disk_rev`
-    advanced, with `full=1` to heal a refused delta, and with `full=hello`
-    when the frame says hello after hydrating; it posts the answer to the frame as
+    advanced, and with `full=1` when
+    the frame says hello after hydrating; it posts the answer to the frame as
     `fused-embed-delta` and relays the ack to /api/canvases/delta/ack."""
     if not _NAME_RE.fullmatch(name or ""):
         return _error("'name' must be a canvas name (letters, digits, underscore)")
@@ -5355,7 +5344,7 @@ def api_canvases_delta(name: str = "", env: str = "", full: str = ""):
                           detail=f"the clone stayed locked past {SNAPSHOT_LOCK_WAIT_S:g}s")
         return _busy("a sync operation is in flight for this canvas; try again in a moment")
     try:
-        return JSONResponse(manager.cut_delta(full))
+        return JSONResponse(manager.cut_delta(full == "1"))
     finally:
         manager._op_lock.release()
 

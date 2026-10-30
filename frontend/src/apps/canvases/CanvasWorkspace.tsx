@@ -1714,12 +1714,12 @@ export default function CanvasWorkspace({
   // applied since: a second refusal does not heal again (no loop).
   const deltaHealRef = useRef(false);
   const relayDelta = useCallback(
-    (mode: "diff" | "heal" | "hello") => {
+    (full: boolean) => {
       deltaChainRef.current = deltaChainRef.current.then(async () => {
         const started = Date.now();
         for (;;) {
           try {
-            const delta = await getDelta(env, name, mode);
+            const delta = await getDelta(env, name, full);
             if (delta.held !== undefined) {
               if (Date.now() - started > DELTA_RETRY_WINDOW_MS) return;
               await new Promise((r) => window.setTimeout(r, DELTA_RETRY_MS));
@@ -1791,7 +1791,7 @@ export default function CanvasWorkspace({
     } else if (rev === lastDeltaRevRef.current) {
       return;
     }
-    relayDelta("diff");
+    relayDelta(false);
   }, [sync?.disk_rev, sync?.watcher_epoch, relayDelta]);
 
   // The node this page currently shows, readable from the message handler
@@ -2019,7 +2019,7 @@ export default function CanvasWorkspace({
         for (const wake of waiters) wake();
         // The frame (re)hydrated from the server: bring it to disk with a
         // full state, whatever the server thought it held before.
-        relayDelta("hello");
+        relayDelta(true);
         sendHostFocus();
         sendCodePanelState();
         sendAiModels();
@@ -2056,7 +2056,7 @@ export default function CanvasWorkspace({
         // red (until the next applied delta) rather than looping.
         if (!ok && !booting && !deltaHealRef.current) {
           deltaHealRef.current = true;
-          relayChainRef.current = relayChainRef.current.then(() => relayDelta("heal"));
+          relayChainRef.current = relayChainRef.current.then(() => relayDelta(true));
         }
       }
       if (type === "fused-embed-selection") {

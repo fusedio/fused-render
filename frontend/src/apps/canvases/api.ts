@@ -398,10 +398,10 @@ export interface CanvasDelta {
 }
 
 /** Embed v3: diff(disk, what the frame holds), for `fused-embed-delta`.
- *  `heal` asks for the whole state; `hello` too, and says the frame just
- *  hydrated. Throws with `.status` 409 while a sync leg holds the clone. */
-export const getDelta = (env: WorkbenchEnv, name: string, mode: "diff" | "heal" | "hello") =>
-  getJson<CanvasDelta>(`/api/canvases/delta?${q(env, name)}&full=${{ diff: 0, heal: 1, hello: "hello" }[mode]}`);
+ *  `full` asks for the whole state (the frame just hydrated). Throws with
+ *  `.status` 409 while a sync leg holds the clone. */
+export const getDelta = (env: WorkbenchEnv, name: string, full: boolean) =>
+  getJson<CanvasDelta>(`/api/canvases/delta?${q(env, name)}&full=${full ? 1 : 0}`);
 
 /** The frame applied (`ok`) or refused a delta: the host's picture of the
  *  frame moves to that revision, or is dropped so the next delta is full. */
