@@ -39,10 +39,10 @@ Design rules, all of them load-bearing:
     engaged for that folder, so there is genuinely no merge base to protect and
     the real CLI is exactly right. But a positively-identified clone
     (`_clone_name` matched) is a different case even when the endpoint reports
-    "no watcher" (409 `no_watcher`) or a timeout: a merge base from a prior
-    sync session can still be sitting on disk, and the remote can have moved
-    through the hosted workbench with nothing watching to notice — so those
-    two refuse instead of falling through. "When unsure, fall through" only
+    "no watcher" (409 `no_watcher`): a merge base from a prior sync session
+    can still be sitting on disk, and the remote can have moved through the
+    hosted workbench with nothing watching to notice, so that one refuses
+    instead of falling through. "When unsure, fall through" only
     holds while the fall-through is a no-op; for a clone target it never is.
 """
 import json
@@ -96,11 +96,6 @@ _ORIGIN_ENV = "FUSED_RENDER_ORIGIN"
 # against drive-by requests from a browser, not a secret.
 _GUARD_HEADER = "X-Fused"
 _GUARD_VALUE = "1"
-
-# The endpoint runs the push synchronously and canvases.PUSH_TIMEOUT is 180s, so
-# this has to outlast it — otherwise a slow-but-successful push looks like a
-# failure here and the session is told the wrong thing.
-_HTTP_TIMEOUT_S = 400.0
 
 # Flags that change what `canvas push` publishes in ways the endpoint cannot
 # express: it always pushes the whole clone, with validation, honouring
@@ -259,25 +254,16 @@ def parse_push(args: list[str]) -> dict | None:
             "unsupported": unsupported, "env": workbench_opts.get("--env")}
 
 
-_TIMED_OUT = -1  # sentinel status: connected, but no response within _HTTP_TIMEOUT_S
-
-
 def _post_push(origin: str, name: str, env: str) -> tuple[int | None, dict]:
     """POST the push. `(status, body)`. `env` is the clone path's environment
     segment: the canvas is (env, name), and the server routes the push to that
     environment's sync manager.
 
     status None        -> could not connect at all (server not around) — safe
-                           to fall through to the real CLI.
-    status _TIMED_OUT   -> the request timed out. NOT safe to fall through: on
-                           localhost a bare connect() either succeeds almost
-                           instantly or fails immediately with a connection
-                           error (a distinct, non-timeout OSError) — so a
-                           `socket.timeout`/`TimeoutError` surfacing after the
-                           full `_HTTP_TIMEOUT_S` window means the connection
-                           was made and the server's own guarded push may
-                           still be running. Falling through here would start
-                           a second, unguarded push racing the first.
+                           to fall through to the real CLI. No timeout: a
+                           push waits for the clone's lock and then for the
+                           CLI, and the server's own guarded push would race
+                           a second one started here.
     """
     import urllib.error
     import urllib.request
@@ -289,7 +275,7 @@ def _post_push(origin: str, name: str, env: str) -> tuple[int | None, dict]:
         headers={"Content-Type": "application/json", _GUARD_HEADER: _GUARD_VALUE},
     )
     try:
-        with urllib.request.urlopen(request, timeout=_HTTP_TIMEOUT_S) as response:
+        with urllib.request.urlopen(request) as response:
             return response.status, _decode(response.read())
     except urllib.error.HTTPError as exc:
         # A 4xx/5xx still carries the server's JSON body, which is the whole
@@ -298,10 +284,6 @@ def _post_push(origin: str, name: str, env: str) -> tuple[int | None, dict]:
             return exc.code, _decode(exc.read())
         except OSError:
             return exc.code, {}
-    except TimeoutError:
-        # socket.timeout is TimeoutError since Python 3.10; caught ahead of
-        # the general OSError branch below on purpose — see the docstring.
-        return _TIMED_OUT, {}
     except (urllib.error.URLError, OSError, ValueError):
         return None, {}
 
@@ -404,18 +386,6 @@ def maybe_intercept(args: list[str], out, err) -> int | None:
     if status is None:
         # Server unreachable — the real CLI is the honest fallback.
         return _fall_through(name, env, err, parsed["env"])
-    if status == _TIMED_OUT:
-        # We connected — the server IS running a guarded push for this canvas,
-        # possibly still in flight. Falling through would run the raw,
-        # unguarded push concurrently with it. Refuse instead of guessing.
-        err.write(
-            "fused-render: the canvas push request timed out waiting for a "
-            "response from fused-render.\n"
-            "The push may still be running inside fused-render's own sync "
-            "manager. Do not retry with a different push command — check the "
-            "canvas's sync status in the workspace, and try again once it "
-            "settles.\n")
-        return 1
     if status == 409 and body.get("code") == "no_watcher":
         # No LIVE manager for this folder right now — but the target was
         # already positively identified as a canvas clone (_clone_name

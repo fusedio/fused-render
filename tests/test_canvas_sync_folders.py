@@ -495,14 +495,11 @@ def test_folder_never_takes_a_udf_file_that_matches_its_name_by_case(tmp_path):
     assert "India_H3_coverage" not in disk["files"]
     assert "India_H3_coverage" not in disk["bodies"]
     assert disk["files"] == {"india_h3_coverage": "india_h3_coverage.py"}
-    # A plain row (no type) whose name differs from a file only by case has
-    # no file, so it is no node.
     (tmp_path / "two").mkdir()
     d2 = _clone(tmp_path / "two", [udf("Other_Node", 40.0, 60.0)], {"other_node.py": "B"})
     disk2 = cs.compact_state_from_disk(d2)
     assert disk2["nodes"] == {}
-    assert cs._find_source(d2, "Other_Node") is None
-    assert cs._find_source(d2, "other_node") == "other_node.py"
+    assert cs.node_files(d2) == {"other_node": "other_node.py"}
 
 
 # -- 4. delta position only when it moved --------------------------------------

@@ -1,11 +1,4 @@
-"""Canvas sync, local loop: rows and source files (canvas_snapshot).
-
-A source file with no `[[canvas.nodes]]` row is left out of the disk reading
-the delta leg diffs (`compact_state_from_disk`); `reconcile_rows` gives it a
-default row at push and after a pull.
-Every test name carries "compact", "snapshot" or "delta" so the targeted
-`-k` run picks it up.
-"""
+"""Canvas sync, local loop: rows and source files (canvas_snapshot)."""
 from __future__ import annotations
 
 import os
@@ -54,15 +47,17 @@ def test_compact_and_reconcile_take_the_files_as_the_nodes(tmp_path):
     note = {"udfName": "note", "folderName": "note", "type": "udf-folder", "x": 0, "y": 0}
     rows = [dict(A_ROW), {"udfName": "gone", "x": 0, "y": 0}, dict(A_ROW, x=99), folder,
             dict(folder, x=5, childUdfOrder=["orphan"]), note,
-            {"udfName": "b", "x": 40, "y": 75, "height": 5000}]
+            {"udfName": "b", "x": 40, "y": 75, "height": 5000}, {"udfName": "_init", "x": 0, "y": 0}]
     d = _clone(tmp_path, rows, {"a.py": "A", "b.json": "{}", "orphan.py": "o", "note.md": "n",
                                 "_init.py": "", ".hidden.py": "", "CLAUDE.md": "",
                                 "late.py": "", "nobody.py": "", "secret.py": "",
-                                ".fusedignore": "secret.py\n"},
+                                ".fusedignore": "/secret.py\n"},
                edges=[["a", "gone"], ["a", "b"], ["F", "a"]])
     disk = cs.compact_state_from_disk(d)
-    assert disk["order"] == ["a", "F", "note", "b"]
-    assert list(disk["rowed"]) == ["a", "gone", "F", "note", "b"]
+    assert disk["order"] == ["a", "F", "note", "b"] and disk["nodes"]["a"]["x"] == 99
+    assert list(disk["rowed"]) == ["a", "gone", "F", "note", "b", "_init"]
+    assert disk["files"] == {"a": "a.py", "b": "b.json", "late": "late.py", "nobody": "nobody.py",
+                             "orphan": "orphan.py"}
     assert disk["edges"] == [["a", "gone"], ["a", "b"], ["F", "a"]]
     view = cs.held_view(disk, ["a", "F", "note", "b", "gone"], embed_rows=None, ids={},
                         edges=[["a", "gone"], ["a", "b"], ["F", "a"]], bodies={"a": "A", "b": "{}"})
@@ -76,23 +71,59 @@ def test_compact_and_reconcile_take_the_files_as_the_nodes(tmp_path):
     open(os.path.join(d, "canvas.toml"), "w").write(rtoml.dumps(doc))
     old = open(os.path.join(d, "canvas.toml"), "rb").read()
     trashed = []
-    res = cs.reconcile_rows(d, pending=["late"], skip=["CLAUDE.md"],
+    res = cs.reconcile_rows(d, pending=["late"],
                             backup=lambda rel, data: trashed.append((rel, data)))
-    assert res == {"changed": True, "dropped": ["gone", "a"],
-                   "added": ["nobody", "note", "orphan"]}
+    assert res == {"changed": True, "dropped": ["a"], "added": ["nobody", "orphan"]}
     assert trashed == [("canvas.toml", old)]
     doc = rtoml.loads(open(os.path.join(d, "canvas.toml")).read())
     assert doc["type"] == "canvas"
-    assert doc["canvas"]["edges"] == [["a", "b"], ["F", "a"]]
-    assert [(r["udfName"], r.get("type"), r.get("x"), r.get("y"), r.get("width"), r.get("height"))
+    assert doc["canvas"]["edges"] == [["a", "gone"], ["a", "b"], ["F", "a"]]
+    assert [(r["udfName"], r.get("type"), r.get("x"), r.get("y"), r.get("height"), r.get("zIndex"))
             for r in doc["canvas"]["nodes"]] == [
-        ("a", None, 10, 20, 700, 300), ("F", "udf-folder", 1000, 0, None, 5690),
-        ("F", "udf-folder", 5, 0, None, 800), ("note", "udf-folder", 0, 0, None, None),
-        ("b", None, 40, 75, None, 5000), ("nobody", None, 40, 5150, 700, 500),
-        ("orphan", None, 40, 75, 700, 500), ("note", None, 0, 5765, 350, 250)]
-    assert [r.get("childUdfOrder") for r in doc["canvas"]["nodes"][1:3]] == [
-        ["b", "nobody"], ["orphan"]]
-    assert cs.reconcile_rows(d, pending=["late"], skip=["CLAUDE.md"])["changed"] is False
+        ("gone", None, 0, 0, None, None), ("a", None, 99, 20, 300, 4),
+        ("F", "udf-folder", 1000, 0, 5690, None), ("F", "udf-folder", 5, 0, 800, None),
+        ("note", "udf-folder", 0, 0, None, None), ("b", None, 40, 75, 5000, None),
+        ("_init", None, 0, 0, None, None), ("nobody", None, 0, 5150, 500, 5),
+        ("orphan", None, 40, 75, 500, 6)]
+    assert doc["canvas"]["nodes"][-1] == {
+        "udfName": "orphan", "x": 40, "y": 75, "zIndex": 6, "width": 700, "height": 500,
+        "title": "orphan", "visible": True, "nodeDescriptionScaleFactor": 1.5}
+    assert [r.get("childUdfOrder") for r in doc["canvas"]["nodes"][2:4]] == [
+        ["b", "gone", "nobody"], ["orphan"]]
+    assert cs.reconcile_rows(d, pending=["late"])["changed"] is False
+    assert cs.reconcile_rows(d, publish=True) == {
+        "changed": True, "dropped": ["gone", "_init"], "added": ["late"]}
+    doc = rtoml.loads(open(os.path.join(d, "canvas.toml")).read())
+    assert doc["canvas"]["edges"] == [["a", "b"], ["F", "a"]]
+    assert [r["udfName"] for r in doc["canvas"]["nodes"]] == [
+        "a", "F", "F", "note", "b", "nobody", "orphan", "late"]
+    assert (doc["canvas"]["nodes"][-1]["x"], doc["canvas"]["nodes"][-1]["y"]) == (0, 5765)
+
+
+def test_delta_and_snapshot_hold_a_node_through_a_two_step_rename(tmp_path):
+    d = _clone(tmp_path, [dict(A_ROW), {"udfName": "foo", "x": 1, "y": 2}],
+               {"a.py": "A", "foo.py": "F"}, edges=[["a", "foo"]])
+    disk = cs.compact_state_from_disk(d, {"foo": "sid-foo"})
+    view = cs.held_view(disk, ["a", "foo"], edges=[["a", "foo"]], ids={"foo": "sid-foo"},
+                        bodies={"a": "A", "foo": "F"}, embed_rows=None)
+    doc = rtoml.loads(open(os.path.join(d, "canvas.toml")).read())
+    doc["canvas"]["nodes"][1]["udfName"] = "bar"
+    doc["canvas"]["edges"] = [["a", "bar"]]
+    open(os.path.join(d, "canvas.toml"), "w").write(rtoml.dumps(doc))
+    assert cs.diff_views(cs.compact_state_from_disk(d), view) == [{"op": "edges", "set": []}]
+    udfs = [{"slug": "a", "file": "a.py", "id": "sid-a"},
+            {"slug": "foo", "file": "foo.py", "id": "sid-foo"}]
+    nodes = [_studio_node("a"), _studio_node("foo")]
+    res = cs.apply_snapshot(d, _snapshot_new(nodes, udfs), view)
+    assert res["upserted"] == [] and res["deleted"] == [] and res["fileless"] == []
+    assert [r["udfName"] for r in _rows(d)] == ["a", "bar"]
+    res = cs.apply_snapshot(d, _snapshot_new(nodes[:1], udfs[:1], base_nodes=["a", "foo"]), None)
+    assert res["deleted"] == [] and os.path.exists(os.path.join(d, "foo.py"))
+    os.replace(os.path.join(d, "foo.py"), os.path.join(d, "bar.py"))
+    ops = cs.diff_views(cs.compact_state_from_disk(d), view)
+    assert [(o["op"], o.get("name")) for o in ops] == [
+        ("delete", "foo"), ("upsert", "bar"), ("edges", None)]
+    assert ops[2]["set"] == [["a", "bar"]]
 
 
 def test_delta_retypes_a_node_whose_file_changed_kind(tmp_path):
@@ -167,8 +198,6 @@ def _studio_node(name, x=10, y=20):
 
 
 def test_snapshot_new_udf_without_node_gets_file_but_no_row(tmp_path):
-    """The embed HAS the node (placed where the user dropped it); a row
-    invented here would move it. File only, slug reported rowless."""
     d = _clone(tmp_path, [dict(A_ROW)], {"a.py": "A"})
     udfs = [{"slug": "a", "file": "a.py", "id": "sid-a"},
             {"slug": "udf_4", "file": "udf_4.py",
@@ -220,8 +249,6 @@ def test_snapshot_existing_behaviours_kept_alongside_rowless_file(tmp_path):
 
 
 def test_snapshot_deleting_a_rowless_node_removes_file(tmp_path):
-    """The frame holds udf_4, its row left disk, then the user deleted it:
-    the file goes too, or the next push would publish it back."""
     d = _clone(tmp_path, [dict(A_ROW), dict(U4_ROW)], {"a.py": "A", "udf_4.py": "x"})
     view = cs.compact_state_from_disk(d)
     _drop_rows(d, {"a"})
@@ -235,8 +262,6 @@ def test_snapshot_deleting_a_rowless_node_removes_file(tmp_path):
 
 
 def test_snapshot_rowless_rename_moves_file_not_trash(tmp_path):
-    """A row-less node renamed without a hint: its id reappears under the
-    new name, so the file follows the name."""
     d = _clone(tmp_path, [dict(A_ROW), dict(U4_ROW)], {"a.py": "A", "udf_4.py": "code4"})
     view = cs.compact_state_from_disk(d, {"udf_4": "sid-4"})
     _drop_rows(d, {"a"})
@@ -276,7 +301,7 @@ def test_snapshot_deferred_delete_kept_in_view_then_deleted(tmp_path):
     view1 = cs.held_view(disk1, new1["nodes"], edges=new1["edges"], ids=new1["ids"],
                          bodies=bodies, embed_rows=new1["nodes"],
                          extra_names=r1["deferred_deletes"])
-    assert "x" in view1["nodes"] and "x" in view1["order"]
+    assert "x" in view1["nodes"]
     assert not [o for o in cs.diff_views(disk1, view1)
                 if o["op"] == "upsert" and o["name"] == "x"]
     # Without the extra name the next delta would re-add x (the lost delete).

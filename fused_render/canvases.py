@@ -1411,7 +1411,7 @@ def _rmtree_quiet(path: str) -> None:
 # merge base, and listed in .fusedignore so `canvas push` never uploads them.
 # The CLI's `pull --force` deletes them (they're not in the bundle), so every
 # pull path re-seeds afterwards.
-_SYNC_IGNORED_BASENAMES = frozenset({"CLAUDE.md", ".fusedignore"})
+_SYNC_IGNORED_BASENAMES = canvas_snapshot.IGNORED_BASENAMES
 
 _CLONE_FUSEDIGNORE = "CLAUDE.md\n.fusedignore\n"
 
@@ -1942,13 +1942,12 @@ def _seed_default_udf(env: str, name: str) -> None:
             doc = canvas_snapshot._load_toml(os.path.join(target, "canvas.toml"))
             # Not empty after all (a row, or any source file even without
             # one): nothing to seed, and nothing of the user's to overwrite.
-            if canvas_snapshot.rows_of_doc(doc)["nodes"] or canvas_snapshot.node_files(
-                    target, _SYNC_IGNORED_BASENAMES):
+            if canvas_snapshot.rows_of_doc(doc)["nodes"] or canvas_snapshot.node_files(target):
                 return
             with open(os.path.join(target, f"{_DEFAULT_UDF_NAME}.py"), "w",
                       encoding="utf-8") as f:
                 f.write(_DEFAULT_UDF_CODE)
-            canvas_snapshot.reconcile_rows(target, skip=_SYNC_IGNORED_BASENAMES)
+            canvas_snapshot.reconcile_rows(target)
         except Exception as e:  # noqa: BLE001 — best effort, see docstring
             logger.warning("canvas %s: starter UDF not seeded — %s", key, e)
             return
@@ -2225,6 +2224,7 @@ class _SyncManager:
         self._push_started_at: float | None = None
         self._push_proc: subprocess.Popen | None = None
         self._rowless: set[str] = set()
+        self._fileless: set[str] = set()
         # leg → the last folder-fix set logged (`_log_folder_fixes`).
         self._folder_fixes_logged: dict[str, frozenset] = {}
         self._pull_started_at: float | None = None
@@ -2576,12 +2576,13 @@ class _SyncManager:
 
     # -- sync-point state (merge base + remote manifest) -------------------
 
-    def _take_file_hashes(self) -> dict[str, str]:
-        """Per-file md5 of the clone, same walk/skip rules as the
-        fingerprint (relpaths are os-native, matching zip relpaths after
-        os.path.join normalization on this platform)."""
+    def _take_file_hashes(self, top: str) -> dict[str, str]:
+        """Per-file md5 of `top` (the clone, or the frozen copy a push
+        ships), same walk/skip rules as the fingerprint (relpaths are
+        os-native, matching zip relpaths after os.path.join normalization
+        on this platform)."""
         hashes: dict[str, str] = {}
-        for root, dirs, files in os.walk(self.dir):
+        for root, dirs, files in os.walk(top):
             dirs[:] = [d for d in dirs if not d.startswith(".")]
             for f in files:
                 if f.startswith(".") or f in _SYNC_IGNORED_BASENAMES:
@@ -2592,7 +2593,7 @@ class _SyncManager:
                         digest = hashlib.md5(fh.read()).hexdigest()
                 except OSError:
                     continue
-                hashes[os.path.relpath(path, self.dir)] = digest
+                hashes[os.path.relpath(path, top)] = digest
         return hashes
 
     def _load_base(self) -> None:
@@ -2660,10 +2661,9 @@ class _SyncManager:
         # a disk_rev move: count a manifest rotation as one.
         self._note_disk()
 
-    def _reconcile_rows(self, leg: str, directory: str, *, pending=(), backup=None) -> None:
+    def _reconcile_rows(self, leg: str, directory: str, **kw) -> None:
         try:
-            result = canvas_snapshot.reconcile_rows(
-                directory, pending=pending, skip=_SYNC_IGNORED_BASENAMES, backup=backup)
+            result = canvas_snapshot.reconcile_rows(directory, **kw)
         except Exception as exc:
             self.log_event(leg, "rows not reconciled", ok=False, detail=str(exc))
             return
@@ -2730,7 +2730,7 @@ class _SyncManager:
             return None
         try:
             proc = subprocess.run(
-                [*cli.command, "workbench", "canvas", "validate", self.dir],
+                [*cli.command, "workbench", "canvas", "validate", self.dir, "--skip", "node_files"],
                 capture_output=True, text=True, timeout=VALIDATE_TIMEOUT,
                 encoding="utf-8", errors="replace",
                 env=_cli_env(cli, self.env),
@@ -3300,72 +3300,27 @@ class _SyncManager:
 
     def _freeze_copy(self) -> str:
         """Copy the clone to `.sync/push/<name>/` (fresh each push) for the
-        CLI to read while _op_lock is free. Dot-DIRS are left out (the
-        fingerprint and every sync walk skip them too); dot-files — the
-        clone's `.fusedignore` above all, which the CLI reads from the folder
-        it pushes — are copied. Under _op_lock, so no snapshot write lands
-        half-way through the copy. Raises OSError/shutil.Error on failure."""
-        import fnmatch
-
+        CLI to read while _op_lock is free: dot-dirs, what `.fusedignore`
+        names (`canvas_snapshot.fusedignored`) and the files the workbench
+        created without a row yet are left out; `.fusedignore` itself
+        travels. Under _op_lock, so no snapshot write lands half-way
+        through the copy. Raises OSError/shutil.Error on failure."""
         dest = self._push_copy_dir()
         _rmtree_quiet(dest)
         os.makedirs(os.path.dirname(dest), exist_ok=True)
-        # What the clone's .fusedignore lists is never pushed (the CLI skips
-        # it), so it is not worth copying either — but only where this can be
-        # SURE: the copy is what gets published, and a file wrongly left out
-        # here is deleted server-side, while one wrongly copied is still
-        # dropped by the CLI's own (full gitignore) filter. So a deliberately
-        # small subset: a pattern without a "/" matches a FILE by basename at
-        # the clone root only and a DIRECTORY by name at any depth (a trailing
-        # "/" = directories only), last match wins with `!` re-including. Any
-        # rule with a "/" in it (`/x.py`, `src/*.py`, where fnmatch's `*`
-        # would cross "/") turns the subset off: everything is copied and the
-        # CLI decides. `.fusedignore` itself always travels (the CLI reads it).
-        rules: list[tuple[str, bool, bool]] = []
-        try:
-            with open(os.path.join(self.dir, ".fusedignore"), encoding="utf-8",
-                      errors="replace") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line or line.startswith("#"):
-                        continue
-                    negated = line.startswith("!")
-                    line = line[1:] if negated else line
-                    dir_only = line.endswith("/")
-                    line = line.rstrip("/")
-                    if not line:
-                        continue
-                    if "/" in line:
-                        rules = []
-                        break
-                    rules.append((line, negated, dir_only))
-        except OSError:
-            rules = []
-
-        def ignored(name: str, is_dir: bool, at_root: bool) -> bool:
-            if not is_dir and not at_root:
-                return False
-            out = False
-            for pattern, negated, dir_only in rules:
-                if dir_only and not is_dir:
-                    continue
-                if fnmatch.fnmatchcase(name, pattern):
-                    out = not negated
-            return out
-
+        rules = canvas_snapshot.fusedignore_rules(self.dir)
+        files = canvas_snapshot.node_files(self.dir)
+        rowless = {files[n] for n in self._rowless if n in files}
         root = os.path.normpath(self.dir)
 
         def ignore(folder: str, names: list[str]) -> list[str]:
-            out = []
             at_root = os.path.normpath(folder) == root
+            out = []
             for n in names:
                 is_dir = os.path.isdir(os.path.join(folder, n))
-                if n.startswith(".") and is_dir:
-                    out.append(n)
-                    continue
-                if n == ".fusedignore" or not rules:
-                    continue
-                if ignored(n, is_dir, at_root):
+                if ((is_dir and n.startswith(".")) or (at_root and n in rowless)
+                        or (n != ".fusedignore" and canvas_snapshot.fusedignored(
+                            rules, n, is_dir=is_dir, at_root=at_root))):
                     out.append(n)
             return out
 
@@ -3522,15 +3477,15 @@ class _SyncManager:
             frozen = self._take_fingerprint()
             self._fingerprint = frozen
             self._dirty_since = None
-            base_snapshot = self._take_file_hashes()
-            base_toml_snapshot = self._toml_rows()
             try:
                 copy_dir = self._freeze_copy()
             except (OSError, shutil.Error) as exc:
                 copy_dir = None
                 copy_error = str(exc)
             else:
-                self._reconcile_rows("disk_to_server", copy_dir)
+                self._reconcile_rows("disk_to_server", copy_dir, publish=True)
+                base_snapshot = self._take_file_hashes(copy_dir)
+                base_toml_snapshot = self._toml_rows(copy_dir)
         finally:
             self._op_lock.release()
         if copy_dir is None:
@@ -3806,18 +3761,18 @@ class _SyncManager:
         self._last_pull_poll = 0.0
         self.log_event("server_to_disk", "server check", detail="page focused")
 
-    def _toml_rows(self) -> dict | None:
-        """The compact rows of the clone's canvas.toml, or None."""
+    def _toml_rows(self, top: str) -> dict | None:
+        """The compact rows of `top`'s canvas.toml, or None."""
         try:
             return canvas_snapshot.rows_of_doc(
-                canvas_snapshot._load_toml(os.path.join(self.dir, "canvas.toml")))
+                canvas_snapshot._load_toml(os.path.join(top, "canvas.toml")))
         except Exception:  # noqa: BLE001 — no toml, or unparsable: no base rows
             return None
 
     def _set_sync_point(self) -> None:
         """Disk IS the sync point: file hashes and canvas.toml rows alike."""
-        self._base_files = self._take_file_hashes()
-        self._base_toml = self._toml_rows()
+        self._base_files = self._take_file_hashes(self.dir)
+        self._base_toml = self._toml_rows(self.dir)
 
     def _merge_toml_bytes(self, local: bytes, remote: bytes) -> bytes | None:
         """canvas.toml merged per node against the sync point's rows, as the
@@ -4036,6 +3991,9 @@ class _SyncManager:
             # just brought down, so the fence has nothing left to hold out.
             self._embed_view = None
             self._rowless = set()
+            if self._fileless:
+                self._reconcile_rows("embed_to_disk", self.dir, drop=self._fileless)
+                self._fileless = set()
             self._embed_applied = {}
             self._embed_max_seq = -1
             self._hard_fence = None
@@ -4260,6 +4218,13 @@ class _SyncManager:
         delete."""
         cur = self._embed_view or {}
         out = dict(disk)
+        held = [n for n in cur.get("nodes", {}) if n not in disk["nodes"]
+                and (n in disk["rowed"] or n in disk["files"])]
+        if held:
+            out["nodes"] = {**disk["nodes"],
+                            **{n: disk["rowed"].get(n, cur["nodes"][n]) for n in held}}
+            out["bodies"] = {**disk["bodies"],
+                             **{n: cur["bodies"][n] for n in held if n in cur.get("bodies", {})}}
         if cur.get("embed_rows"):
             out["embed_rows"] = cur["embed_rows"]
         held_ids = cur.get("ids") or {}
@@ -4311,6 +4276,7 @@ class _SyncManager:
         held = list(new["nodes"]) + [n for n in result.get("deferred_deletes") or []
                                      if n not in new["nodes"]]
         self._rowless = set(result.get("rowless_files") or ())
+        self._fileless = (self._fileless | set(result["fileless"])) - set(result["deleted"])
         for gone in result.get("deleted") or ():
             self._body_written.pop(gone, None)
         self._refresh_view_after_write(held, edges=new["edges"], ids=new["ids"],
@@ -4367,7 +4333,7 @@ class _SyncManager:
         # A node has ONE source. A post naming another suffix than the file
         # already there (a type the frame changed) would plant a second
         # source.
-        existing = canvas_snapshot._find_source(self.dir, node)
+        existing = canvas_snapshot.node_files(self.dir).get(node)
         if existing is not None and existing != file:
             raise ValueError(f"{node!r} is {existing!r} on disk, not {file!r}")
         # A hard pull replaced the clone (see `_body_fence_rev`): until the
@@ -4429,6 +4395,7 @@ class _SyncManager:
                 rows = set(canvas_snapshot.rows_of_doc(doc)["nodes"])
             except Exception:  # noqa: BLE001 — no toml yet: the row is owed either way
                 pass
+            self._fileless.discard(node)
             if node not in rows:
                 self._rowless.add(node)
         # The frame holds what it just wrote: the view's body moves with
@@ -4456,9 +4423,10 @@ class _SyncManager:
         if stale is not None:
             return stale
         result = canvas_snapshot.apply_rename(self.dir, frm, to, file_from, file_to)
-        if frm in self._rowless and result["moved"]:
-            self._rowless.discard(frm)
-            self._rowless.add(to)
+        for held in (self._rowless, self._fileless):
+            if frm in held and result["changed"]:
+                held.discard(frm)
+                held.add(to)
         if frm in self._body_written:
             self._body_written[to] = self._body_written.pop(frm)
         renamed = canvas_snapshot.rename_prev(self._embed_view, frm, to, file_to)

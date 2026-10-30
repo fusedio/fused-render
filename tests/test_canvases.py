@@ -590,7 +590,8 @@ def test_create_canvas_seeds_the_starter_udf_on_the_server(harness, tmp_path):
     doc = canvas_snapshot._load_toml(str(shipped / "canvas.toml"))
     assert doc["type"] == "canvas"
     assert doc["canvas"]["nodes"] == [
-        {"udfName": "udf", "x": 100, "y": 100, "width": 700, "height": 500}]
+        {"udfName": "udf", "x": 100, "y": 100, "zIndex": 1, "width": 700, "height": 500,
+         "title": "udf", "visible": True, "nodeDescriptionScaleFactor": 1.5}]
 
 
 def test_create_canvas_does_not_seed_a_canvas_that_has_nodes(harness):

@@ -16,6 +16,7 @@ import threading
 import time
 
 import pytest
+import rtoml
 from fastapi.testclient import TestClient
 
 import fused_render.canvases as canvases_mod
@@ -557,8 +558,12 @@ def test_a_push_reconciles_the_clone_rows_with_its_files(
     assert "ops" in cut and "ghost" not in json.dumps(cut["ops"]), cut
     res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     assert res.status_code == 200 and res.json()["ok"] is True, res.text
-    assert [r["udfName"] for r in _rows(str(clone))] == ["a", "b", "orphan_x"]
-    assert _toml(harness) == seen["tomls"][0]
+    assert [r["udfName"] for r in _rows(str(clone))] == ["ghost", "a", "b", "orphan_x"]
+    shipped = rtoml.loads(seen["tomls"][0])["canvas"]["nodes"]
+    assert [r["udfName"] for r in shipped] == ["a", "b", "orphan_x"]
+    assert list(m._base_toml["nodes"]) == ["a", "b", "orphan_x"]
+    assert m._base_files["canvas.toml"] == canvases_mod.hashlib.md5(
+        seen["tomls"][0].encode()).hexdigest()
     trashed = list((harness.root / ".sync" / "trash" / "alpha").glob("*/canvas.toml"))
     assert [t.read_text() for t in trashed] == [with_ghost]
 
@@ -712,8 +717,8 @@ def test_the_quit_rung_terminates_a_push_in_flight(harness, tmp_path, monkeypatc
 def test_nested_or_slashed_fusedignore_rules_never_drop_a_published_file(
         harness, tmp_path, monkeypatch, fake_agent):
     """A file left out of the copy is DELETED server-side; one wrongly copied
-    is still filtered by the CLI. So: root-level basename matches only, and
-    any rule with a "/" disables the copy-side filter entirely."""
+    is still filtered by the CLI. So: root-level basename matches only, a
+    leading "/" anchors, and a rule with an inner "/" is left to the CLI."""
     _quiet_watcher(monkeypatch)
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
     clone = harness.root / "alpha"
@@ -725,21 +730,17 @@ def test_nested_or_slashed_fusedignore_rules_never_drop_a_published_file(
     (clone / "root.csv").write_text("r\n")
     (clone / "build").mkdir()
     (clone / "build" / "out.txt").write_text("o\n")
+    (clone / "secret.py").write_text("s\n")
+    (clone / "sub" / "secret.py").write_text("s\n")
     with open(clone / ".fusedignore", "a") as f:
-        f.write("*.csv\nbuild/\n")
+        f.write("*.csv\nbuild/\n/secret.py\nsrc/*.py\n")
     harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     copy_root = seen["files"][0]
     assert "root.csv" not in copy_root and "build" not in copy_root, copy_root
-    assert "sub" in copy_root, copy_root
-    assert seen["sub"][0] == ["nested.csv"], seen["sub"]
-
-    # A rule with a "/" in it: the copy keeps everything, the CLI decides.
-    with open(clone / ".fusedignore", "a") as f:
-        f.write("src/*.py\n")
-    (clone / "a.py").write_text("a3\n")
-    harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
-    copy_root = seen["files"][1]
-    assert "root.csv" in copy_root and "build" in copy_root, copy_root
+    assert "secret.py" not in copy_root and "sub" in copy_root, copy_root
+    assert seen["sub"][0] == ["nested.csv", "secret.py"], seen["sub"]
+    assert "secret" not in canvas_snapshot.node_files(str(clone))
+    assert 'udfName = "secret"' not in seen["tomls"][0]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="flock is POSIX")
@@ -813,11 +814,6 @@ def _actions(harness):
 
 def test_a_rowless_file_gets_no_row_and_no_delta_op_until_its_node_arrives(
         harness, tmp_path, monkeypatch, fake_agent):
-    """The embed created fresh.py without its node (the stale-closure race):
-    a row invented here would push a made-up position into the frame and
-    the node jumps. No row is written, the delta says nothing about it, a
-    push gives the published copy a default row (not the clone), and the
-    workbench's own row, at its position, settles it."""
     _quiet_watcher(monkeypatch)
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
     seen: dict = {}
@@ -832,7 +828,7 @@ def test_a_rowless_file_gets_no_row_and_no_delta_op_until_its_node_arrives(
     assert 'udfName = "fresh"' not in _toml(harness)
     res = harness.client.post("/api/canvases/sync/push", json={"env": ENV, "name": "alpha"}, headers=GUARD)
     assert res.status_code == 200 and res.json()["ok"] is True, res.text
-    assert "fresh.py" in seen["files"][0] and 'udfName = "fresh"' in seen["tomls"][0]
+    assert "fresh.py" not in seen["files"][0] and "fresh.py" not in m._base_files
     assert 'udfName = "fresh"' not in _toml(harness) and "fresh" in m._rowless
     _snapshot(harness, 2, FRESH_NODE_BODY)
     assert m._rowless == set()
@@ -856,23 +852,51 @@ def test_a_rowless_file_deleted_in_the_embed_is_trashed_and_not_pushed_back(
     assert "fresh.py" not in seen["files"][0]
 
 
-def test_a_frame_reload_never_trashes_a_rowless_file(
+def test_a_frame_reload_keeps_a_rowless_file_and_drops_a_fileless_row(
         harness, tmp_path, monkeypatch, fake_agent):
-    """Generation 1 created fresh.py and its row never came (the auto-push
-    waits for the Claude session, so the server never saw the file). The
-    frame reloads: generation 2 hydrates from the server and lists neither
-    the UDF nor its node, which is no deletion. The file stays for the push."""
     _quiet_watcher(monkeypatch)
     _cloned_shim_harness(harness, tmp_path, monkeypatch)
     m = _start(harness)
     _snapshot(harness, 1, ROWLESS_BODY)
     assert "fresh" in m._rowless
+    _snapshot(harness, 2, {**FRESH_NODE_BODY, "body_channel": True, "udfs": [
+        {"slug": "fresh", "file": "fresh.py"}, {"slug": "udf_1", "file": "udf_1.py"}],
+        "dashboard_body": {"studioState": {
+            "nodes": FRESH_NODE_BODY["dashboard_body"]["studioState"]["nodes"] + [
+                {"id": "n-1", "type": "simple-udf", "data": {"udfName": "udf_1"}}],
+            "edges": [{"source": "n-fresh", "target": "n-1"}]}}})
+    assert m._rowless == set() and m._fileless == {"udf_1"}
+    assert 'udfName = "udf_1"' in _toml(harness)
     _snapshot(harness, 1, EMPTY_SNAPSHOT, gen=2)
     assert (harness.root / "alpha" / "fresh.py").read_text() == "print(2)\n"
-    assert m._rowless == set()
+    assert m._rowless == set() and m._fileless == set()
+    toml = _toml(harness)
+    assert 'udfName = "fresh"' in toml and 'udfName = "udf_1"' not in toml and "edges = []" in toml
 
 
 # -- third review round -------------------------------------------------------------
+
+def test_an_empty_delta_keeps_a_node_the_frame_holds_without_its_file(
+        harness, tmp_path, monkeypatch, fake_agent):
+    _quiet_watcher(monkeypatch)
+    _cloned_shim_harness(harness, tmp_path, monkeypatch)
+    m = _start(harness)
+    body = {**FRESH_NODE_BODY, "body_channel": True,
+            "udfs": [{"slug": "fresh", "file": "fresh.py"}, {"slug": "a", "file": "a.py"}]}
+    studio = body["dashboard_body"]["studioState"]
+    body["dashboard_body"] = {"studioState": {
+        "nodes": studio["nodes"] + [{"id": "n-a", "type": "simple-udf", "data": {"udfName": "a"}}],
+        "edges": [{"source": "n-a", "target": "n-fresh"}]}}
+    _snapshot(harness, 1, body)
+    cut = harness.client.get("/api/canvases/delta?env=unstable&name=alpha").json()
+    assert [o["op"] for o in cut["ops"]] == ["upsert"], cut
+    harness.client.post("/api/canvases/delta/ack",
+                        json={"env": ENV, "name": "alpha", "rev": cut["rev"]}, headers=GUARD)
+    for _ in range(2):
+        cut = harness.client.get("/api/canvases/delta?env=unstable&name=alpha").json()
+        assert cut["ops"] == [], cut
+        assert "fresh" in m._embed_view["nodes"]
+
 
 def test_a_write_after_the_pull_recheck_is_not_baselined_as_synced(
         harness, tmp_path, monkeypatch, fake_agent):
