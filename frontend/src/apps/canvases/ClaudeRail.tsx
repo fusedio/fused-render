@@ -66,8 +66,14 @@ import {
 } from "react";
 import { Plus } from "lucide-react";
 import PanelIcon from "@platform/ui/PanelIcon";
-import { getSchedule, getTasks, type Task } from "@platform/lib/api";
-import { readListing, rememberListing, useTasksPulseRows } from "@shell/tasksPulse";
+import { getSchedule, type Task } from "@platform/lib/api";
+import {
+  onDraftChange,
+  readListing,
+  refreshListing,
+  subscribeListing,
+  useTasksPulseRows,
+} from "@shell/tasksPulse";
 import {
   cardTitleLine,
   draftRing,
@@ -80,7 +86,7 @@ import {
 import { StatusIcon } from "@shell/ScheduleTaskViews";
 import NewJobModal from "@shell/NewJobModal";
 import { draftHref, preloadChat } from "@apps/claude";
-import { onRail, railRows } from "./claude-rail-lib";
+import { railRows } from "./claude-rail-lib";
 import { PeekIntent, keepAlive, statusWords } from "./rail-peek-lib";
 import { useCanvasRailPeek } from "./rail-peek-flag";
 import { RailPeek, type RailPeekHandle } from "./RailPeek";
@@ -102,11 +108,6 @@ interface Card {
   modes: string[];
   recents: string[];
 }
-
-/** The listing re-read's retries after a failed `getTasks`: this many more
- *  tries, this many ms apart (times the attempt number). */
-const LISTING_RETRIES = 2;
-const LISTING_RETRY_MS = 3000;
 
 /** How long the + waits on the schedule before opening the card without it
  *  (CodeRabbit on #1998): a read that hangs — not fails — would otherwise
@@ -174,57 +175,37 @@ export function ClaudeRail({
   // is selected, else the clone. Null until the clone exists.
   const target = dir && nodeFile ? `${dir.replace(/\/+$/, "")}/${nodeFile}` : dir;
   const scope = node ? node.udfName : "this canvas";
-  // This canvas's live chats, unordered — the signature below is what decides
-  // when the listing is re-read; the order is `railRows`'s, once it is held.
-  const mine = useMemo(() => rows.filter((t) => onRail(t, place)), [rows, place]);
-
   // THE CAPTION'S WORDS ARE THE LISTING'S, not the pulse's: the pulse carries
   // status and a title, but the list row's caption is built from the full row
-  // (recap, last reply, last message) — and so is the List's ORDER
-  // (sortForList reads the full row). Seeded from the listing the Tasks page
-  // already holds, and re-read whenever one of THIS canvas's rows moves —
-  // keyed on what changes a caption or a rank, so an idle canvas never asks
-  // again.
+  // (recap, last reply, last message, the draft) — and so is the List's ORDER
+  // (sortForList reads the full row).
+  //
+  // FOLLOWED LIVE, not read once (owner, 2026-10-30: "if I make the draft in
+  // the card it doesn't update instantly … the sidebar should get updates
+  // instantly as well"): the rail subscribes to the listing feed the Tasks
+  // page and the pane's own Recent list follow (`subscribeListing`, the
+  // `/api/tasks/changes` long-poll, refcounted to one transport per
+  // document), so a draft typed into the card's composer, a rename, a chip
+  // — anything the listing carries — reaches the rings the moment the
+  // server announces it. The read used to be a one-shot `getTasks` repeated
+  // when a row's STATUS moved, which a draft never moves: the dot waited for
+  // the next pane open. The pulse poll stands down while the feed is live,
+  // as it does for every other follower. A failed read keeps the rows on
+  // screen (the feed says `failed`; the last good rows are still the best
+  // answer).
   const [listing, setListing] = useState<Task[] | null>(() => readListing());
-  const sig = mine.map((t) => `${t.key}:${t.status}:${t.last_active}:${t.unread}`).join("|");
-  const alive = useRef(true);
-  useEffect(() => {
-    alive.current = true;
-    return () => {
-      alive.current = false;
-    };
-  }, []);
-  const refreshListing = useCallback(
+  useEffect(
     () =>
-      getTasks().then((r) => {
-        if (!alive.current) return;
-        rememberListing(r.tasks);
-        setListing(r.tasks);
+      subscribeListing((ev) => {
+        if (!ev.failed) setListing(ev.rows);
       }),
     [],
   );
-  useEffect(() => {
-    if (!sig) return;
-    let off = false;
-    let timer = 0;
-    // A read that fails is tried again, a bounded number of times and later
-    // each time (CodeRabbit on #1998): the effect only re-runs when a row
-    // moves, so a swallowed failure would leave the captions and the order
-    // on the old listing for as long as the canvas sits still.
-    const read = (attempt: number) => {
-      timer = window.setTimeout(() => {
-        if (off) return;
-        refreshListing().catch(() => {
-          if (!off && attempt < LISTING_RETRIES) read(attempt + 1);
-        });
-      }, attempt === 0 ? 600 : LISTING_RETRY_MS * attempt);
-    };
-    read(0);
-    return () => {
-      off = true;
-      window.clearTimeout(timer);
-    };
-  }, [sig, refreshListing]);
+  // A DRAFT RECORD MOVED (the feed's draft channel: a composer's unsent words
+  // saved or cleared, a New task card's form) — the rows' `draft` join is a
+  // listing fact, so re-read it now rather than on the next row movement.
+  // Collapsed to one read per tick by `refreshListing` itself.
+  useEffect(() => onDraftChange(() => refreshListing()), []);
   const full = useMemo(() => new Map((listing ?? []).map((t) => [t.key, t])), [listing]);
 
   // THE RAIL'S SEATS, in the List's order (claude-rail-lib). `now` is read
@@ -373,6 +354,13 @@ export function ClaudeRail({
   // that fails or hangs still opens the card — the modal falls back to "auto" on an empty modes
   // list, and an empty recents list only means fewer suggestions — because a
   // + that does nothing is worse than a card with one fewer dropdown option.
+  const alive = useRef(true);
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
   const [card, setCard] = useState<Card | null>(null);
   const [opening, setOpening] = useState(false);
   const waiting = dir === null ? "Loading the canvas…" : !nodeReady && node ? `Saving ${node.file}…` : null;
@@ -493,6 +481,11 @@ export function ClaudeRail({
                     // The full row's column where it is held: a draft row is
                     // `draft` only once `kind` is known (the pulse has no kind).
                     status={taskColumn(merged)}
+                    // With the card on, the ring's own native `title` tooltip
+                    // ("Done", "Draft") would float over the card a second
+                    // later; "" is no tooltip. The link's aria-label still
+                    // names the chat and its state.
+                    {...(peekOn ? { label: "" } : {})}
                     unread={t.unread > 0}
                     background={liveJobRow(t)}
                     // The red centre dot the List gives a draft row and a
@@ -516,7 +509,7 @@ export function ClaudeRail({
           anchorOf={anchorOf}
           railEl={railRef.current}
           dir={dir}
-          onReload={() => void refreshListing().catch(() => undefined)}
+          onReload={refreshListing}
           onPointerEnter={() => intent.enterCard()}
           onPointerLeave={() => intent.leaveCard()}
           onPressInside={onPressInside}
@@ -549,12 +542,12 @@ export function ClaudeRail({
           // which the pulse never carries — re-read so its ring shows now.
           onClose={() => {
             setCard(null);
-            void refreshListing().catch(() => undefined);
+            refreshListing();
           }}
           // "Something changed, re-read": the pulse will move the new row
           // onto the rail; the listing is re-read now so its caption and
           // rank are not 600ms behind its ring.
-          onCreated={() => void refreshListing().catch(() => undefined)}
+          onCreated={() => refreshListing()}
         />
       )}
     </aside>

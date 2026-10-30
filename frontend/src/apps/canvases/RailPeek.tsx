@@ -60,7 +60,9 @@ import type { Task } from "@platform/lib/api";
 import { shortTaskId } from "@platform/lib/task-id";
 import { ChatMount, draftHref } from "@apps/claude";
 import { Kebab } from "@apps/claude/ui/Kebab";
-import { cardTitleLine, draftTag, isDraftTask, nextRunChip, taskColumn, taskHref } from "@shell/tasks-lib";
+import { timeAgo } from "@platform/lib/format";
+import { chatDraftKey, peekDraftSyncer } from "@platform/lib/drafts";
+import { cardTitleLine, isDraftTask, nextRunChip, taskColumn, taskHref } from "@shell/tasks-lib";
 import { railScope, type RailRow } from "./claude-rail-lib";
 import {
   PEEK_MAX_HEIGHT,
@@ -149,6 +151,46 @@ export interface RailPeekProps {
   onNoRoom: () => void;
   /** "Open in panel →", and any hop the chat itself makes. */
   onOpenChat: (href: string) => void;
+}
+
+/** A seat with no conversation yet (header of the body above). */
+function PlainBody({ facts }: { facts: SeatFacts }) {
+  const { row, draft, label } = facts;
+  const form = (row?.form ?? {}) as Record<string, unknown>;
+  const str = (v: unknown) => (typeof v === "string" ? v.trim() : "");
+  // The words: a task draft's description, a chat draft's composer preview.
+  // Never the title again — it is in the head.
+  const preview = str(row?.draft?.preview);
+  const description = str(form.description);
+  const words = (draft ? description || preview : "") || "";
+  const same = words.toLowerCase() === label.trim().toLowerCase();
+  const saved = draft ? timeAgo(row?.draft?.updated_at) : null;
+  const next = !draft && row ? nextRunChip(row) : null;
+  const meta = draft
+    ? [str(form.model), str(form.effort), str(form.permission)].filter(Boolean)
+    : [str(row?.model), str(row?.effort)].filter(Boolean);
+  return (
+    <div className="canvas-rail-peek-plain">
+      <div className="canvas-rail-peek-plain-row">
+        <span className={"canvas-rail-peek-pill" + (draft ? " is-draft" : "")}>
+          {draft ? "Draft" : "Scheduled"}
+        </span>
+        <span className="canvas-rail-peek-plain-when">
+          {draft
+            ? saved
+              ? `Not sent · saved ${saved}`
+              : "Not sent"
+            : next
+              ? next.title
+              : "Not started yet"}
+        </span>
+      </div>
+      <p className={"canvas-rail-peek-plain-words" + (!words || same ? " is-empty" : "")}>
+        {words && !same ? words : draft ? "No description yet." : "No message yet."}
+      </p>
+      {meta.length > 0 && <p className="canvas-rail-peek-plain-meta">{meta.join(" · ")}</p>}
+    </div>
+  );
 }
 
 export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailPeek(
@@ -282,6 +324,29 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     if (next && box && (next.top !== box.top || next.left !== box.left || next.height !== box.height)) setBox(next);
   });
 
+  // LEAVING A CHAT SAVES ITS DRAFT (owner, 2026-10-30: "if I make the draft
+  // in the card it doesn't update instantly"). A session chat's composer
+  // writes its unsent words on window blur, page hide or its own UNMOUNT —
+  // never per keystroke (Composer, "one rule for every composer") — and a
+  // kept-alive mount never unmounts: the card hid, the words sat unwritten,
+  // the ring's draft dot waited for the pane to open. So the card hiding, or
+  // swapping to another chat, is the leave: the chat that just left view
+  // flushes its draft syncer now, and the listing feed carries the dot back
+  // to the ring (ClaudeRail `onDraftChange` → `refreshListing`).
+  const lastShownKey = useRef<string | null>(null);
+  useEffect(() => {
+    const prev = lastShownKey.current;
+    lastShownKey.current = shownKey;
+    if (!prev || prev === shownKey) return;
+    const seat = kept.find((s) => s.pulse.key === prev);
+    const sid = seat?.pulse.session_id;
+    if (!sid) return;
+    const file = seat.row?.target || seat.pulse.target || seat.pulse.project;
+    peekDraftSyncer(chatDraftKey(sid, file))?.flushNow();
+    // `kept` only matters for the seat that just left; the key is the trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shownKey]);
+
   // INERT WHILE HIDDEN (React 18 has no `inert` prop): the fading card and
   // the warm mounts behind it take no focus, no hit, and are out of the
   // accessibility tree — `aria-hidden` on a subtree that might still hold
@@ -365,12 +430,14 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     <div
       ref={cardRef}
       id={id}
-      className={"canvas-rail-peek" + (visible ? " is-on" : "")}
+      className={"canvas-rail-peek" + (visible ? " is-on" : "") + (view && !view.pulse.session_id ? " is-plain" : "")}
       role="dialog"
       aria-label={head ? `${head.label} — preview` : "Chat preview"}
       style={
         box
-          ? { left: box.left, top: box.top, width: box.width, height: box.height }
+          ? view?.pulse.session_id
+            ? { left: box.left, top: box.top, width: box.width, height: box.height }
+            : { left: box.left, top: box.top, width: box.width }
           : undefined
       }
       onPointerEnter={onPointerEnter}
@@ -387,6 +454,19 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
           // node's chat from the canvas's), then the door as a word, the ⋮,
           // and the close.
           <div className="canvas-rail-peek-head" onKeyDown={onHeadKeyDown}>
+            {/* The close leads (owner, 2026-10-30: "move the cross to the top
+                left") — the pane's own Hide sits at ITS top row's left end
+                too (ClaudeChat `onHidePane`), so the two dismissals share a
+                corner. */}
+            <button
+              type="button"
+              className="canvas-rail-peek-btn"
+              title="Close the preview (Esc)"
+              aria-label="Close the preview"
+              onClick={onDismiss}
+            >
+              <X size={14} aria-hidden="true" />
+            </button>
             {head.id && (
               <span className="canvas-rail-peek-id" title={head.words}>
                 {head.id}
@@ -430,15 +510,6 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                 />
               </span>
             )}
-            <button
-              type="button"
-              className="canvas-rail-peek-btn"
-              title="Close the preview (Esc)"
-              aria-label="Close the preview"
-              onClick={onDismiss}
-            >
-              <X size={14} aria-hidden="true" />
-            </button>
           </div>
         )}
         <div className="canvas-rail-peek-body">
@@ -474,27 +545,13 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                   />
                 ) : (
                   // NO SESSION YET — a draft, or a scheduled task that has not
-                  // run: there is no conversation to show, so the card says
-                  // what the row is and where its press goes.
-                  <div className="canvas-rail-peek-plain">
-                    <p className="canvas-rail-peek-plain-title">
-                      {facts.draft ? "Unsent draft" : "Not started yet"}
-                    </p>
-                    <p className="canvas-rail-peek-plain-words">
-                      {facts.draft
-                        ? (row && draftTag(row)?.title) || "Nothing written yet."
-                        : (row && nextRunChip(row)?.title) || "Scheduled, no run yet."}
-                    </p>
-                    {facts.href && (
-                      <button
-                        type="button"
-                        className="canvas-rail-peek-plain-open"
-                        onClick={() => onOpenChat(facts.href!)}
-                      >
-                        {facts.draft ? "Open the draft" : "Open"}
-                      </button>
-                    )}
-                  </div>
+                  // run: no conversation to show, so the card is SHORT and
+                  // says what the row is in the List's own vocabulary — the
+                  // `Draft` pill, when it was last touched, the words it holds
+                  // (the form's description or the composer's preview; the
+                  // title is already in the head), and the settings it would
+                  // run with. The head's Open is its one door.
+                  <PlainBody facts={facts} />
                 )}
               </div>
             );
