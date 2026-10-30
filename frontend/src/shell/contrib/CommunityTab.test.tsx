@@ -88,18 +88,44 @@ const rungs = (t: ReactTestRenderer) =>
   t.root.findAll((n) => n.type === "section" && typeof n.props["data-rung"] === "number");
 const current = (t: ReactTestRenderer) => rungs(t).filter((n) => n.props["aria-current"] === "step");
 
-test("own app on rung 1: three rungs, the first current, its button is Put it on GitHub", async () => {
+test("own app on rung 1 with Community on: Simple view — one sentence, Put it online, no rungs; Everything shows the ladder", async () => {
   const t = await mount(
     <CommunityTab dir="/apps/sine" slug="sine" contrib={contribOf(null)} ladder={ladderOf({})} variant="page" />,
   );
+  expect(rungs(t)).toHaveLength(0);
+  const out = text(t);
+  expect(out).toContain("Only on this Mac");
+  expect(out).toContain("Put it online");
+  expect(out).not.toContain("In the Community");
+  const everything = t.root.findAll((n) => n.type === "button" && textOf(n) === "Everything");
+  expect(everything).toHaveLength(1);
+  await act(async () => {
+    everything[0].props.onClick();
+  });
   expect(rungs(t).map((n) => n.props["data-rung"])).toEqual([1, 2, 3]);
+  // The pick is kept per folder for the window: put it back for the tests below.
+  const simple = t.root.findAll((n) => n.type === "button" && textOf(n) === "Simple");
+  await act(async () => {
+    simple[0].props.onClick();
+  });
+  expect(rungs(t)).toHaveLength(0);
+});
+
+test("own app with the Community switch off: the ladder, two rungs, Put it on GitHub", async () => {
+  const t = await mount(
+    <CommunityTab
+      dir="/apps/sine"
+      slug="sine"
+      contrib={contribOf(null)}
+      ladder={ladderOf({ flags: { sources: false, marketplace: false } })}
+      variant="page"
+    />,
+  );
+  expect(rungs(t).map((n) => n.props["data-rung"])).toEqual([1, 2]);
   expect(current(t).map((n) => n.props["data-rung"])).toEqual([1]);
   const out = text(t);
-  expect(out).toContain("On this Mac");
   expect(out).toContain("Only you have it.");
   expect(out).toContain("Put it on GitHub");
-  expect(out).toContain("On GitHub");
-  expect(out).toContain("In the Community");
 });
 
 test("own app on rung 2: the repo sentence, and List it in the Community waits on Doctor", async () => {
@@ -132,23 +158,16 @@ test("own app on rung 2: the repo sentence, and List it in the Community waits o
       variant="page"
     />,
   );
-  expect(current(t).map((n) => n.props["data-rung"])).toEqual([2]);
+  // Simple view: the sentence, the Doctor gate as a row with Fix with Claude.
+  expect(rungs(t)).toHaveLength(0);
   const out = text(t);
+  expect(out).toContain("Online · not in the Community yet · 2 edits not online yet");
   expect(out).toContain("vasu/sine");
-  expect(out).toContain("Public · 2 edits not pushed yet.");
-  expect(out).toContain("List it in the Community");
-  expect(out).toContain("Turns on when Doctor is green");
-  // The Listing card: Edit details on the title line, Last published Never.
-  expect(out).toContain("Edit details");
-  expect(out).not.toContain("Name, description, category");
-  expect(out).toContain("Last published");
-  expect(out).toContain("Never");
+  expect(out).toContain("3 things");
+  expect(out).toContain("to fix before it can be in the Community");
   expect(out).toContain("Fix with Claude");
   expect(out).toContain("Copy install link");
-  // The List button is there but off until Doctor is green.
-  const list = t.root.findAll((n) => n.type === "button" && textOf(n).includes("List it in the Community"));
-  expect(list.length).toBeGreaterThan(0);
-  expect(list.every((b) => b.props.disabled === true)).toBe(true);
+  expect(out).not.toContain("Edit details");
 });
 
 test("listed under an older id than the app's own: one line says how to move it", async () => {
@@ -241,15 +260,14 @@ test("own app with unpushed edits: one Publish now, List it waits on it", async 
       variant="page"
     />,
   );
+  // Simple view: the edits are a sentence, Publish now its one button.
   const buttons = t.root.findAll((n) => n.type === "button").map(textOf);
   expect(buttons.filter((b) => b === "Publish now")).toHaveLength(1);
-  expect(buttons.filter((b) => b.includes("List it in the Community"))).toHaveLength(1);
-  const list = t.root.findAll((n) => n.type === "button" && textOf(n).includes("List it in the Community"));
-  expect(list[0].props.disabled).toBe(true);
-  expect(text(t)).toContain("Turns on once your edits are on GitHub.");
+  expect(text(t)).toContain("1 edit not online yet");
+  expect(text(t)).not.toContain("List it in the Community");
 });
 
-test("marketplace switch off: two rungs, and rung 2's next action is Copy install link", async () => {
+test("Community switch off: the ladder with two rungs, and rung 2's next action is Copy install link", async () => {
   const t = await mount(
     <CommunityTab
       dir="/apps/sine"
@@ -331,8 +349,20 @@ test("a copy of someone else's app: It comes from / Your changes / Your proposal
       variant="page"
     />,
   );
+  // Simple first (Community on): the panel's sentence, its buttons, no cards.
+  expect(rungs(t)).toHaveLength(0);
+  let out = text(t);
+  expect(out).toContain("You changed 3 files of sina's app.");
+  expect(out).toContain("A copy of sina's app");
+  expect(t.root.findAll((n) => n.type === "button").map(textOf)).toContain("Propose to sina");
+  expect(out).not.toContain("It comes from");
+  // Everything: the three cards.
+  const everything = t.root.findAll((n) => n.type === "button" && textOf(n) === "Everything");
+  await act(async () => {
+    everything[0].props.onClick();
+  });
   expect(rungs(t).map((n) => n.props["data-rung"])).toEqual([1, 2, 3]);
-  const out = text(t);
+  out = text(t);
   expect(out).toContain("It comes from");
   expect(out).toContain("Your changes");
   expect(out).toContain("Your proposal");
@@ -346,6 +376,10 @@ test("a copy of someone else's app: It comes from / Your changes / Your proposal
   expect(source.findAll((n) => n.type === "button").map(textOf)).toContain("Check now");
   // No ladder words on the other side.
   expect(out).not.toContain("Put it on GitHub");
+  const simple = t.root.findAll((n) => n.type === "button" && textOf(n) === "Simple");
+  await act(async () => {
+    simple[0].props.onClick();
+  });
 });
 
 test("Activity is read-only: names someone else's step, links to where it happened (§16.16)", async () => {
@@ -451,4 +485,41 @@ test("badge and Overview line: waiting proposals on an own app, a dot for a copy
   // An own app that is all caught up: nothing to say.
   const quiet = { ...own, inbox: { items: [], count: 0 } };
   expect(communityLine(contribOf(quiet), ladder)).toBeNull();
+});
+
+test("own app on GitHub alone, Doctor clear: the Simple view names the repo and offers Add to the Community", async () => {
+  listingAnswer = {
+    ok: true,
+    state: "not-listed",
+    sentence: "sine isn't in the Community yet.",
+    listing: null,
+    actions: [{ id: "publish-market", label: "Publish to Community", primary: true }],
+  };
+  const t = await mount(
+    <CommunityTab
+      dir="/apps/sine-alone"
+      slug="sine"
+      contrib={contribOf(null)}
+      ladder={ladderOf({
+        rung: 2,
+        kind: "own",
+        github: {
+          installed: true,
+          signed_in: true,
+          login: "vasu",
+          repo: "vasu/sine",
+          visibility: "public",
+          unpushed: 0,
+          link: "https://udf.ai/x",
+        },
+      })}
+      variant="page"
+    />,
+  );
+  const out = text(t);
+  expect(out).toContain("Online · not in the Community yet");
+  expect(out).toContain("vasu/sine");
+  const add = t.root.findAll((n) => n.type === "button" && textOf(n).includes("Add to the Community"));
+  expect(add).toHaveLength(1);
+  expect(add[0].props.disabled).toBe(false);
 });
