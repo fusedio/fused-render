@@ -1,0 +1,307 @@
+// The rail's hover card, the parts without a DOM (rail-peek-lib): where it
+// stands, when it opens and closes, and what stays mounted.
+import { describe, expect, it } from "bun:test";
+import {
+  PEEK_CLOSE_MS,
+  PEEK_GAP,
+  PEEK_INSET,
+  PEEK_KEEP,
+  PEEK_MAX_HEIGHT,
+  PEEK_OPEN_MS,
+  PEEK_SWAP_MS,
+  PEEK_WARM_MS,
+  PEEK_WIDTH,
+  PeekIntent,
+  keepAlive,
+  peekPlacement,
+  type Timers,
+} from "./rail-peek-lib";
+
+const ROW = { left: 0, top: 40, width: 1400, height: 900 };
+const RAIL = { left: 1352, top: 40, width: 48, height: 900 };
+const ring = (top: number) => ({ left: 1362, top, width: 28, height: 28 });
+
+describe("peekPlacement", () => {
+  it("stands a gap off the rail, centred on the ring, at full size on a big row", () => {
+    const box = peekPlacement(ring(400), RAIL, ROW)!;
+    expect(box.width).toBe(PEEK_WIDTH);
+    expect(box.height).toBe(PEEK_MAX_HEIGHT);
+    expect(box.left + box.width).toBe(RAIL.left - PEEK_GAP);
+    expect(box.top + box.height / 2).toBe(414);
+  });
+
+  it("clamps to the row's top and bottom insets", () => {
+    const high = peekPlacement(ring(50), RAIL, ROW)!;
+    expect(high.top).toBe(ROW.top + PEEK_INSET);
+    const low = peekPlacement(ring(900), RAIL, ROW)!;
+    expect(low.top + low.height).toBe(ROW.top + ROW.height - PEEK_INSET);
+  });
+
+  it("shrinks to what a short, narrow row leaves", () => {
+    const row = { left: 0, top: 0, width: 400, height: 400 };
+    const rail = { left: 352, top: 0, width: 48, height: 400 };
+    const box = peekPlacement(ring(100), rail, row)!;
+    expect(box.height).toBe(400 - 2 * PEEK_INSET);
+    expect(box.width).toBe(rail.left - PEEK_GAP - PEEK_INSET);
+    expect(box.left).toBe(PEEK_INSET);
+  });
+
+  it("answers null when there is no room for a card at all", () => {
+    const row = { left: 0, top: 0, width: 160, height: 400 };
+    const rail = { left: 112, top: 0, width: 48, height: 400 };
+    expect(peekPlacement(ring(100), rail, row)).toBeNull();
+  });
+});
+
+describe("keepAlive", () => {
+  it("puts the newest first and caps the set", () => {
+    let kept: readonly string[] = [];
+    for (const k of ["a", "b", "c", "d"]) kept = keepAlive(kept, k);
+    expect(kept).toEqual(["d", "c", "b"]);
+    expect(kept.length).toBe(PEEK_KEEP);
+  });
+  it("moves a known key to the front instead of doubling it", () => {
+    expect(keepAlive(["a", "b", "c"], "b")).toEqual(["b", "a", "c"]);
+  });
+  it("the front key is the same array (a no-op state write)", () => {
+    const kept = ["a", "b"];
+    expect(keepAlive(kept, "a")).toBe(kept);
+  });
+  it("a cap of zero still keeps the one just previewed", () => {
+    expect(keepAlive(["a"], "b", 0)).toEqual(["b"]);
+  });
+});
+
+/** A hand-cranked clock for the intent's timers. */
+class Clock implements Timers {
+  now = 0;
+  private next = 1;
+  private due = new Map<number, { at: number; fn: () => void }>();
+  set(fn: () => void, ms: number): number {
+    const id = this.next++;
+    this.due.set(id, { at: this.now + ms, fn });
+    return id;
+  }
+  clear(id: number): void {
+    this.due.delete(id);
+  }
+  tick(ms: number): void {
+    const until = this.now + ms;
+    for (;;) {
+      const ready = [...this.due.entries()].filter(([, t]) => t.at <= until).sort((a, b) => a[1].at - b[1].at);
+      if (ready.length === 0) break;
+      const [id, t] = ready[0]!;
+      this.due.delete(id);
+      this.now = t.at;
+      t.fn();
+    }
+    this.now = until;
+  }
+}
+
+function rig() {
+  const clock = new Clock();
+  const shown: (string | null)[] = [];
+  const warmed: string[] = [];
+  const intent = new PeekIntent({ show: (k) => shown.push(k), warm: (k) => warmed.push(k) }, clock);
+  return { clock, shown, warmed, intent };
+}
+
+describe("PeekIntent", () => {
+  it("warms after a short dwell, shows after PEEK_OPEN_MS", () => {
+    const { clock, shown, warmed, intent } = rig();
+    intent.enterRing("a");
+    expect(warmed).toEqual([]);
+    clock.tick(PEEK_WARM_MS);
+    expect(warmed).toEqual(["a"]);
+    expect(shown).toEqual([]);
+    clock.tick(PEEK_OPEN_MS - PEEK_WARM_MS - 1);
+    expect(shown).toEqual([]);
+    clock.tick(1);
+    expect(shown).toEqual(["a"]);
+    expect(intent.current).toBe("a");
+  });
+
+  it("a focus arrival warms at once (deliberate), a pointer sweep warms nothing", () => {
+    const { clock, warmed, intent } = rig();
+    intent.enterRing("a", "focus");
+    expect(warmed).toEqual(["a"]);
+    intent.leaveRing("focus");
+    intent.enterRing("b");
+    clock.tick(PEEK_WARM_MS - 1);
+    intent.leaveRing();
+    clock.tick(1000);
+    expect(warmed).toEqual(["a"]);
+  });
+
+  it("a pass-through hover shows nothing", () => {
+    const { clock, shown, intent } = rig();
+    intent.enterRing("a");
+    clock.tick(PEEK_OPEN_MS / 2);
+    intent.leaveRing();
+    clock.tick(1000);
+    expect(shown).toEqual([]);
+  });
+
+  it("a pointer leaving a PENDING ring while another is shown keeps the shown one", () => {
+    const { clock, shown, intent } = rig();
+    intent.showNow("a");
+    intent.leaveRing();
+    intent.enterRing("b");
+    clock.tick(PEEK_SWAP_MS / 2);
+    intent.leaveRing();
+    clock.tick(PEEK_CLOSE_MS - 1);
+    expect(shown).toEqual(["a"]);
+    clock.tick(1);
+    expect(shown).toEqual(["a", null]);
+  });
+
+  it("swaps to another ring after the shorter wait, never closing between", () => {
+    const { clock, shown, intent } = rig();
+    intent.enterRing("a");
+    clock.tick(PEEK_OPEN_MS);
+    intent.leaveRing();
+    intent.enterRing("b");
+    clock.tick(PEEK_SWAP_MS);
+    expect(shown).toEqual(["a", "b"]);
+  });
+
+  it("leaving ring and card closes after the grace; coming back cancels it", () => {
+    const { clock, shown, intent } = rig();
+    intent.enterRing("a");
+    clock.tick(PEEK_OPEN_MS);
+    intent.leaveRing();
+    clock.tick(PEEK_CLOSE_MS - 1);
+    intent.enterCard();
+    clock.tick(1000);
+    expect(shown).toEqual(["a"]);
+    intent.leaveCard();
+    clock.tick(PEEK_CLOSE_MS);
+    expect(shown).toEqual(["a", null]);
+    expect(intent.current).toBeNull();
+  });
+
+  it("a card holding focus does not close on a pointer leave; releasing it does", () => {
+    const { clock, shown, intent } = rig();
+    intent.enterRing("a");
+    clock.tick(PEEK_OPEN_MS);
+    intent.leaveRing();
+    intent.enterCard();
+    intent.hold(true);
+    intent.leaveCard();
+    clock.tick(10_000);
+    expect(shown).toEqual(["a"]);
+    intent.hold(false);
+    clock.tick(PEEK_CLOSE_MS);
+    expect(shown).toEqual(["a", null]);
+  });
+
+  it("showNow opens with no wait and dismiss closes with none", () => {
+    const { clock, shown, intent } = rig();
+    intent.showNow("a");
+    expect(shown).toEqual(["a"]);
+    intent.hold(true);
+    intent.dismiss();
+    expect(shown).toEqual(["a", null]);
+    // Held state is cleared by dismiss: a later leave closes normally.
+    intent.enterRing("b");
+    clock.tick(PEEK_OPEN_MS);
+    intent.leaveRing();
+    clock.tick(PEEK_CLOSE_MS);
+    expect(shown).toEqual(["a", null, "b", null]);
+  });
+
+  it("an outside-press dismiss leaves focus live: the next Tab onto a ring opens", () => {
+    const { clock, shown, intent } = rig();
+    intent.showNow("a");
+    intent.dismiss();
+    intent.enterRing("b", "focus");
+    clock.tick(PEEK_OPEN_MS);
+    expect(shown).toEqual(["a", null, "b"]);
+  });
+
+  it("a dismiss with the pointer on the card forgets the card: the next card closes on leave", () => {
+    const { clock, shown, intent } = rig();
+    intent.showNow("a");
+    intent.enterCard();
+    intent.dismiss();
+    intent.enterRing("b");
+    clock.tick(PEEK_OPEN_MS);
+    intent.leaveRing();
+    clock.tick(PEEK_CLOSE_MS);
+    expect(shown).toEqual(["a", null, "b", null]);
+  });
+
+  it("a press inside the card holds it through the gesture", () => {
+    const { clock, shown, intent } = rig();
+    intent.showNow("a");
+    intent.enterCard();
+    intent.pressStart();
+    intent.leaveCard();
+    clock.tick(10_000);
+    expect(shown).toEqual(["a"]);
+    intent.pressEnd();
+    clock.tick(PEEK_CLOSE_MS);
+    expect(shown).toEqual(["a", null]);
+  });
+
+  it("prune forgets rings that left the rail and closes a card whose chat did", () => {
+    const { clock, shown, intent } = rig();
+    intent.enterRing("a");
+    clock.tick(PEEK_OPEN_MS);
+    // Ring a unmounts under the pointer: no leave fires. Prune stands in.
+    intent.prune(new Set(["b"]));
+    expect(shown).toEqual(["a", null]);
+    intent.enterRing("b");
+    clock.tick(PEEK_OPEN_MS);
+    intent.leaveRing();
+    clock.tick(PEEK_CLOSE_MS);
+    expect(shown).toEqual(["a", null, "b", null]);
+  });
+
+  it("prune with the hovered ring gone but the shown chat alive closes on the grace", () => {
+    const { clock, shown, intent } = rig();
+    intent.showNow("a");
+    intent.leaveRing();
+    intent.enterRing("b");
+    // b unmounts mid-pending: the pointer rests on nothing now.
+    intent.prune(new Set(["a"]));
+    clock.tick(PEEK_CLOSE_MS);
+    expect(shown).toEqual(["a", null]);
+  });
+
+  it("focus coming back to the ring after an Escape dismiss does not reopen; Tabbing on does", () => {
+    const { clock, shown, intent } = rig();
+    intent.showNow("a");
+    // Escape: the host dismisses and hands focus back to ring a.
+    intent.dismiss(true);
+    intent.enterRing("a", "focus");
+    clock.tick(10_000);
+    expect(shown).toEqual(["a", null]);
+    // Tab to the next ring: focus leaves a, arrives on b — that opens.
+    intent.leaveRing("focus");
+    intent.enterRing("b", "focus");
+    clock.tick(PEEK_OPEN_MS);
+    expect(shown).toEqual(["a", null, "b"]);
+  });
+
+  it("a pointer arrival after a dismiss opens as usual", () => {
+    const { clock, shown, intent } = rig();
+    intent.showNow("a");
+    intent.dismiss(true);
+    intent.enterRing("a", "focus");
+    intent.enterRing("a", "pointer");
+    clock.tick(PEEK_OPEN_MS);
+    expect(shown).toEqual(["a", null, "a"]);
+  });
+
+  it("re-entering the shown ring is a no-op (no second show, no close)", () => {
+    const { clock, shown, intent } = rig();
+    intent.enterRing("a");
+    clock.tick(PEEK_OPEN_MS);
+    intent.leaveRing();
+    intent.enterRing("a");
+    clock.tick(10_000);
+    expect(shown).toEqual(["a"]);
+  });
+});

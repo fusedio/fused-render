@@ -502,6 +502,18 @@ const ENTRIES = [
     available: ({ prefs }) => prefs.canvases?.enabled === true,
   },
   {
+    id: "canvases-rail-peek",
+    needs: "fused",
+    group: "features",
+    section: "Sidebar",
+    label: "Preview chats from the collapsed Claude rail",
+    description: "On a canvas with the Claude panel hidden, pointing at one of the rail's chats opens that chat as a floating card beside the rail — scroll it, read it, type into it — without opening the panel. Move away or press Escape to dismiss it.",
+    keywords: "canvas rail hover preview peek card chat collapsed claude panel popover",
+    renderOnly: true,
+    child: true,
+    available: ({ prefs }) => prefs.canvases?.enabled === true,
+  },
+  {
     id: "monitor",
     group: "general",
     section: "Status bar",

@@ -25,6 +25,7 @@ import {
 import {
   CanvasesControl,
   CanvasesEmbedProxyControl,
+  CanvasRailPeekControl,
   GitSyncControl,
   LivePreviewsControl,
   MonitorControl,
@@ -93,6 +94,7 @@ export const CONTROLS: Record<SettingId, ComponentType<PrefControlProps>> = {
   "rebuild-index": RebuildIndexControl,
   canvases: CanvasesControl,
   "canvases-embed-proxy": CanvasesEmbedProxyControl,
+  "canvases-rail-peek": CanvasRailPeekControl,
   monitor: MonitorControl,
   reader: ReaderControl,
   "chromium-windows": ChromiumWindowsControl,

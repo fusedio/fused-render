@@ -9,6 +9,7 @@ import {
   putAppSharingEnabled,
   putCanvasesEmbedProxy,
   putCanvasesEnabled,
+  putCanvasRailPeekEnabled,
   putGitAutoSyncEnabled,
   putLivePreviewsEnabled,
   putMonitorEnabled,
@@ -23,6 +24,7 @@ import {
 } from "@platform/lib/api";
 import { publishContribFlags } from "@platform/lib/contrib-flags";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
+import { publishCanvasRailPeekEnabled } from "@apps/canvases/rail-peek-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
 import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
@@ -243,6 +245,23 @@ export function CanvasesEmbedProxyControl({ prefs, onChange }: PrefControlProps)
           </>
         ) : undefined
       }
+      onChange={onChange}
+    />
+  );
+}
+
+// Published (rail-peek-flag.ts), so a canvas page in THIS tab follows the
+// switch at once. Another tab's shell holds its first answer until it reloads
+// — the same deal every published flag here offers.
+export function CanvasRailPeekControl({ prefs, onChange }: PrefControlProps) {
+  const on = prefs.canvas_rail_peek?.enabled === true;
+  return (
+    <PrefToggleRow
+      id="canvases-rail-peek"
+      checked={on}
+      put={putCanvasRailPeekEnabled}
+      after={(next) => publishCanvasRailPeekEnabled(next.canvas_rail_peek?.enabled === true)}
+      status={on ? "On — hovering a chat on the rail opens it as a card you can use." : "Off — hovering shows the chat's one-line caption."}
       onChange={onChange}
     />
   );
