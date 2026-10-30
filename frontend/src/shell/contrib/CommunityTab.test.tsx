@@ -349,8 +349,20 @@ test("a copy of someone else's app: It comes from / Your changes / Your proposal
       variant="page"
     />,
   );
+  // Simple first (Community on): the panel's sentence, its buttons, no cards.
+  expect(rungs(t)).toHaveLength(0);
+  let out = text(t);
+  expect(out).toContain("You changed 3 files of sina's app.");
+  expect(out).toContain("A copy of sina's app");
+  expect(t.root.findAll((n) => n.type === "button").map(textOf)).toContain("Propose to sina");
+  expect(out).not.toContain("It comes from");
+  // Everything: the three cards.
+  const everything = t.root.findAll((n) => n.type === "button" && textOf(n) === "Everything");
+  await act(async () => {
+    everything[0].props.onClick();
+  });
   expect(rungs(t).map((n) => n.props["data-rung"])).toEqual([1, 2, 3]);
-  const out = text(t);
+  out = text(t);
   expect(out).toContain("It comes from");
   expect(out).toContain("Your changes");
   expect(out).toContain("Your proposal");
@@ -364,6 +376,10 @@ test("a copy of someone else's app: It comes from / Your changes / Your proposal
   expect(source.findAll((n) => n.type === "button").map(textOf)).toContain("Check now");
   // No ladder words on the other side.
   expect(out).not.toContain("Put it on GitHub");
+  const simple = t.root.findAll((n) => n.type === "button" && textOf(n) === "Simple");
+  await act(async () => {
+    simple[0].props.onClick();
+  });
 });
 
 test("Activity is read-only: names someone else's step, links to where it happened (§16.16)", async () => {

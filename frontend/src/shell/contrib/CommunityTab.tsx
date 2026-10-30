@@ -127,7 +127,9 @@ export function CommunityTab({ dir, slug, contrib, variant, ladder: given, hidde
   // the tab itself switches to the full ladder + grid (owner 2026-10-28:
   // "both UIs controlled by a toggle on that page"). The pick is kept per
   // folder while the window lives — no preference.
-  const simpleOffered = simpleOn(l);
+  // Offered for an own app (`simpleOn`) and for a copy of someone else's
+  // (the same Community switch, read off the ladder's flags).
+  const simpleOffered = simpleOn(l) || (!mine && !!l?.flags?.marketplace && !!contrib.data);
   const [mode, setModeState] = useState<"simple" | "everything">(() => viewModes.get(dir) ?? "simple");
   const setMode = (m: "simple" | "everything") => {
     viewModes.set(dir, m);
@@ -161,7 +163,7 @@ export function CommunityTab({ dir, slug, contrib, variant, ladder: given, hidde
     );
   }
 
-  const toggle = mine && simpleOffered && (
+  const toggle = simpleOffered && (
     <div className="contrib-view-toggle" role="group" aria-label="How much to show">
       <button type="button" aria-pressed={mode === "simple"} onClick={() => setMode("simple")}>
         Simple
@@ -191,6 +193,8 @@ export function CommunityTab({ dir, slug, contrib, variant, ladder: given, hidde
       listing={listing}
       openDoctor={() => setDoctorOpen(true)}
     />
+  ) : contrib.data && simple ? (
+    <SimpleCopyView dir={dir} contrib={contrib} kit={kit} variant={variant} />
   ) : contrib.data ? (
     <CopyView dir={dir} contrib={contrib} kit={kit} variant={variant} />
   ) : (
@@ -797,6 +801,98 @@ function SimpleOwnView({
           <ProposalsTab dir={dir} slug={slug} contrib={contrib} compact />
         </Card>
       )}
+      {kit && kit.activity.length > 0 && (
+        <Card title="Recent" wide>
+          <ActivityList kit={kit} />
+        </Card>
+      )}
+    </>
+  );
+}
+
+// ---- Simple sharing: a copy of someone else's app (§20.4) --------------------
+//
+// One sentence (the Source panel's own: following, your changes, waiting for
+// the author, merged, needs a merge…), the server's buttons for it — the
+// primary as a button, the rest quiet, Check now in the foot — and Recent.
+// No three cards, no About. The Source panel's sentence already names the
+// one decision each state asks for, so nothing is re-decided here.
+
+function SimpleCopyView({
+  dir,
+  contrib,
+  kit,
+  variant,
+}: {
+  dir: string;
+  contrib: AppContribState;
+  kit: SourcePanelKit | null;
+  variant: "page" | "sheet";
+}) {
+  const c = contrib.data;
+  if (!c) return null;
+  const copy = c.copy;
+  const who = kit?.who ?? authorOf(copy);
+  const repo = kit?.panel.repo ?? copy.repo;
+  const marketplace = copy.kind === "marketplace";
+  const releasedOn = releaseDate(copy.approved?.at ?? null);
+  const from = marketplace
+    ? `A copy of ${possessive(who)} app from the Community${releasedOn ? `, release of ${releasedOn}` : ""}.`
+    : copy.remix_of
+      ? `Your remix of ${copy.remix_of}.`
+      : `A copy of ${possessive(who)} app${repo ? ` (${repo})` : ""}.`;
+  const sentence = kit?.panel.sentence || from;
+  const needsLook = !!kit && (kit.tone === "attention" || kit.tone === "working" || !!kit.merge || !!kit.error);
+  return (
+    <>
+      {variant === "sheet" && kit && (kit.block || kit.blockWarn) && (
+        <BlockedStrip
+          dir={dir}
+          block={kit.block}
+          warn={kit.blockWarn}
+          who={who}
+          actions={kit.allActions}
+          disabled={!!kit.busy}
+          onChanged={() => void contrib.refresh()}
+        />
+      )}
+      <section className="contrib-simple-status" aria-label="Where this copy stands">
+        <div className="contrib-simple-status-main">
+          <p className="contrib-simple-sentence">{sentence}</p>
+          <p className="contrib-rung-sentence">
+            {from} Your edits stay on this copy until you send them to {who}.
+          </p>
+          {kit && (
+            <>
+              <FileList files={kit.panel.files} />
+              <KitProgress kit={kit} />
+              {kit.merge && (
+                <MergeReview dir={dir} job={kit.merge} brief disabled={!!kit.busy} refresh={contrib.refresh} />
+              )}
+              {kit.error && !kit.sheetOpen && (
+                <p className="contrib-error" role="alert">
+                  {kit.error}
+                </p>
+              )}
+            </>
+          )}
+        </div>
+        {kit && (
+          <div className="contrib-rung-actions" data-tone={needsLook ? kit.tone : undefined}>
+            {kit.rest.map(kit.button)}
+            {kit.footCheck && (
+              <QuietAction onClick={() => kit.press(kit.footCheck as ContribAction)} disabled={!!kit.busy}>
+                {kit.checkLabel(kit.footCheck)}
+              </QuietAction>
+            )}
+            {kit.dismiss && (
+              <QuietAction onClick={kit.dismiss} disabled={!!kit.busy}>
+                Dismiss
+              </QuietAction>
+            )}
+          </div>
+        )}
+      </section>
       {kit && kit.activity.length > 0 && (
         <Card title="Recent" wide>
           <ActivityList kit={kit} />

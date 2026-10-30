@@ -2188,9 +2188,14 @@ to §19.4's ladder + grid (the full inbox, Listing details, Activity,
 Contributors, Publish update / Remove); the pick is kept per folder while
 the window lives — not a preference.
 
-A copy of someone else's app keeps §19.4's other-side view in Simple mode
-(its "Your changes" card is already one sentence and one primary); the
-sheet's `ContribModal` renders whichever view the tab does.
+A copy of someone else's app (owner 2026-10-30: "where's the simple UI"):
+`SimpleCopyView` — the Source panel's own sentence (following, your
+changes, waiting for the author, merged, needs a merge…) with its buttons
+(the primary as a button, the rest quiet, Check now in the foot, Dismiss for
+a settled answer), a line saying whose app it is and that edits stay on the
+copy until sent, and Recent. No three cards, no About; Everything is §19.4's
+view. The same Simple / Everything toggle; the sheet's `ContribModal`
+renders whichever view the tab does.
 
 ### 20.5 Defaults taken (the design's open questions)
 
