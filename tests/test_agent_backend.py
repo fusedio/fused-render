@@ -297,6 +297,11 @@ def test_every_prompt_shape_says_a_blocked_turn_must_park_on_a_card(
         assert rule in claude and "`AskUserQuestion`" in claude, target
         # ... and the tool is for a BLOCKED turn only, never a closing flourish.
         assert "only when you truly cannot proceed" in claude, target
+        # ... and a user who answers a card with a question gets a plain-text
+        # reply first, not the same card again.
+        assert "answer it in plain text first" in claude, target
+        assert "again with the choice that is still open" in claude, target
+        assert "do not repeat a choice they have already made" in claude, target
         assert claude.endswith(agent._blocked_note()), target
         # Copilot has no question tool (D12): the same Done rule, a permission
         # prompt as the one card that parks it, and a flagged question otherwise.
