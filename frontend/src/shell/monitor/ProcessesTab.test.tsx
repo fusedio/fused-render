@@ -7,6 +7,7 @@ import { afterEach, expect, test } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 
 import type { ClaudeTaskTree, MachineSnapshot, MachineProc } from "@platform/lib/sysmon";
+import { _resetNotificationsForTest } from "@platform/lib/notifications";
 import MonitorPage from "@shell/monitor/ProcessesTab";
 import { taskHref } from "@shell/tasks-lib";
 
@@ -67,6 +68,7 @@ afterEach(() => {
   act(() => renderer?.unmount());
   renderer = null;
   globalThis.fetch = realFetch;
+  _resetNotificationsForTest();
 });
 
 async function flush(): Promise<void> {
