@@ -1587,13 +1587,12 @@ def _seed_clone_claude_files(target: str, name: str) -> None:
     if cli is None or _shim_manifest_command(cli) is None:
         return
     ignore = os.path.join(target, ".fusedignore")
-    kept = open(ignore, encoding="utf-8").read() if os.path.isfile(ignore) else ""
-    missing = [line for line in _CLONE_FUSEDIGNORE.splitlines() if line not in kept.splitlines()]
-    seeds = [("CLAUDE.md", _CLONE_CLAUDE_MD.format(name=name))]
-    if missing:
-        seeds.append((".fusedignore", kept + ("\n" if kept and not kept.endswith("\n") else "")
-                      + "".join(f"{line}\n" for line in missing)))
-    for basename, content in seeds:
+    kept = open(ignore, encoding="utf-8").read().splitlines() if os.path.isfile(ignore) else []
+    for basename, content in (
+        ("CLAUDE.md", _CLONE_CLAUDE_MD.format(name=name)),
+        (".fusedignore", "".join(f"{line}\n" for line in dict.fromkeys(
+            kept + _CLONE_FUSEDIGNORE.splitlines()))),
+    ):
         try:
             with open(os.path.join(target, basename), "w", encoding="utf-8") as f:
                 f.write(content)
@@ -4132,7 +4131,7 @@ class _SyncManager:
         self._embed_view = canvas_snapshot.held_view(
             disk, names, edges=edges, ids=ids, bodies=bodies, embed_rows=embed_rows)
 
-    def cut_delta(self, full: bool, hello: bool = False) -> dict:
+    def cut_delta(self, full: str) -> dict:
         """diff(disk, embed_view) for the page to post to the frame. Under
         _op_lock, so a snapshot write never lands between the toml read and
         the file reads. Returns `{rev, base_rev, ops, full}`; `{rev, held}`
@@ -4153,7 +4152,7 @@ class _SyncManager:
         move and drops the answer when it has no frame (boot, a reload), so
         only a frame's own ack or snapshot is evidence that one is there —
         otherwise disk_to_embed would read "pending" with nobody to ack."""
-        if hello:
+        if full == "hello":
             self._bodyless = set()
         self._note_disk()
         rev = self.disk_rev
@@ -4171,7 +4170,7 @@ class _SyncManager:
             # A good cut (the frame's hello asks for one) starts the leg over.
             self._delta_error = None
             self._bump()
-        view = None if full else self._embed_view
+        view = self._embed_view if full in ("", "0") else None
         ops = canvas_snapshot.diff_views(disk, view)
         if view is not None and not ops:
             self._embed_view = self._adopt(disk)
@@ -5356,7 +5355,7 @@ def api_canvases_delta(name: str = "", env: str = "", full: str = ""):
                           detail=f"the clone stayed locked past {SNAPSHOT_LOCK_WAIT_S:g}s")
         return _busy("a sync operation is in flight for this canvas; try again in a moment")
     try:
-        return JSONResponse(manager.cut_delta(full in ("1", "hello"), hello=full == "hello"))
+        return JSONResponse(manager.cut_delta(full))
     finally:
         manager._op_lock.release()
 
