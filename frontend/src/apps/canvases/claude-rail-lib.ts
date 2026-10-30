@@ -49,10 +49,12 @@ export interface RailPlace {
   file?: string | null;
 }
 
-/** Is this pulse row one of the rail's: a chat (it has a session) on THIS
- *  canvas — on the selected node, when one is — and not archived. */
+/** Is this pulse row one of the rail's: a row on THIS canvas — on the
+ *  selected node, when one is — and not archived. A row with no session yet
+ *  (a draft, a scheduled task) is on the rail too (owner, 2026-10-30: "the
+ *  draft is ordered, but drafts are not shown"): the List shows them for the
+ *  canvas, and the rail is the List's order in rings. */
 export function onRail(t: TaskPulseTask, place: RailPlace): boolean {
-  if (!t.session_id) return false;
   if (taskColumn(t) === "archived") return false;
   const named = !!t.canvas && t.canvas.env === place.env && t.canvas.name === place.name;
   if (!named && !(place.dir !== null && t.project === place.dir)) return false;
@@ -61,6 +63,30 @@ export function onRail(t: TaskPulseTask, place: RailPlace): boolean {
   // is matched by its target, the node's file under the clone.
   if (named) return t.canvas!.file === place.file;
   return place.dir !== null && t.target === `${place.dir.replace(/\/+$/, "")}/${place.file}`;
+}
+
+/** WHERE A ROW LIVES on the canvas: the canvas as a whole, or one node
+ *  (RailPeek's head says which — owner, 2026-10-30: "I don't know if that
+ *  chat is associated with a node or not"). A row the server stamped names
+ *  its node file; one that predates `task.canvas` is read off its target
+ *  under the clone. The node's name is the file's stem, as the workbench
+ *  names it (CanvasWorkspace `nodeHopFromUrl`). */
+export function railScope(
+  t: Pick<TaskPulseTask, "canvas" | "target" | "project">,
+  dir: string | null,
+): { kind: "canvas" } | { kind: "node"; name: string; file: string } {
+  let file = t.canvas?.file || "";
+  if (!file && dir) {
+    const base = dir.replace(/\/+$/, "") + "/";
+    const target = t.target || "";
+    if (target.startsWith(base)) {
+      const rest = target.slice(base.length);
+      if (rest && !rest.includes("/")) file = rest;
+    }
+  }
+  if (!file) return { kind: "canvas" };
+  const dot = file.lastIndexOf(".");
+  return { kind: "node", name: dot > 0 ? file.slice(0, dot) : file, file };
 }
 
 /**

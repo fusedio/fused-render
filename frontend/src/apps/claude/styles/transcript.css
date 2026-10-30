@@ -198,7 +198,11 @@
   background: var(--c-bubble-user);
   border-radius: 18px 18px 4px 18px;
   padding: 9px 14px;
-  max-width: 82%;
+  /* 82% of a wide log; in a NARROW one (the canvas rail's 420px card, a
+     slim side peek) the bubble stops short of the left lane instead, so the
+     hover stamp drawn there ("23 Oct, 19:06", ~80px) and the fork glyph
+     never land on the words (Akshil, 2026-10-30). */
+  max-width: min(82%, calc(100% - 108px));
   white-space: pre-wrap;
   word-break: break-word;
 }

@@ -659,3 +659,75 @@
 .canvas-rail-peek-chat.is-shown {
   visibility: visible;
 }
+
+/* The head's facts (RailPeek, owner 2026-10-30): the task number in the
+   Tasks page's register, and WHERE the chat lives — "Canvas", or the node's
+   name — as a quiet chip. The "Open" door is a word, not a glyph. */
+.canvas-rail-peek-id {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+.canvas-rail-peek-scope {
+  flex: 0 0 auto;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 18px;
+  padding: 0 7px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+}
+.canvas-rail-peek-scope.is-node {
+  color: var(--fg);
+  background: rgba(var(--tint), 0.06);
+}
+.canvas-rail-peek-open {
+  width: auto;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--fg);
+}
+/* A seat with no conversation yet (a draft, a scheduled task): what it is,
+   its words, and its door. */
+.canvas-rail-peek-plain {
+  padding: 24px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.canvas-rail-peek-plain-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 500;
+}
+.canvas-rail-peek-plain-words {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--fg-muted);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 180px;
+  overflow: auto;
+}
+.canvas-rail-peek-plain-open {
+  align-self: flex-start;
+  margin-top: 8px;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font-size: 12px;
+  cursor: pointer;
+}
+.canvas-rail-peek-plain-open:hover {
+  background: rgba(var(--tint), 0.08);
+}

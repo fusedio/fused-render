@@ -5,7 +5,7 @@
 import { describe, expect, it } from "bun:test";
 import type { Task, TaskPulseTask } from "@platform/lib/api";
 import { sortForList } from "@shell/tasks-lib";
-import { onRail, railRows } from "./claude-rail-lib";
+import { onRail, railRows, railScope } from "./claude-rail-lib";
 
 const PLACE = { env: "unstable" as const, name: "demo", dir: "/home/me/canvases/demo" };
 
@@ -38,11 +38,22 @@ describe("onRail", () => {
     expect(onRail(archived, PLACE)).toBe(false);
   });
 
-  it("drops a row with no session, and one on another canvas", () => {
+  it("keeps a row with no session (a draft, a scheduled task); drops one on another canvas", () => {
     const noSession = pulse(task({ key: "a", session_id: "" }));
+    expect(onRail(noSession, PLACE)).toBe(true);
     const elsewhere = pulse(task({ key: "b", project: "/elsewhere", target: "/elsewhere" }));
-    expect(onRail(noSession, PLACE)).toBe(false);
     expect(onRail(elsewhere, PLACE)).toBe(false);
+  });
+
+  it("railScope: a stamped node file, a legacy target under the clone, else the canvas", () => {
+    expect(railScope({ canvas: { env: "unstable", name: "demo", file: "hex.py" }, target: "", project: "" }, PLACE.dir))
+      .toEqual({ kind: "node", name: "hex", file: "hex.py" });
+    expect(railScope({ target: `${PLACE.dir}/widget_5.json`, project: PLACE.dir }, PLACE.dir))
+      .toEqual({ kind: "node", name: "widget_5", file: "widget_5.json" });
+    expect(railScope({ target: PLACE.dir, project: PLACE.dir }, PLACE.dir)).toEqual({ kind: "canvas" });
+    expect(railScope({ target: `${PLACE.dir}/sub/x.py`, project: PLACE.dir }, PLACE.dir)).toEqual({ kind: "canvas" });
+    expect(railScope({ canvas: { env: "unstable", name: "demo", file: "" }, target: "", project: "" }, null))
+      .toEqual({ kind: "canvas" });
   });
 
   it("matches by `task.canvas` when the row carries it", () => {

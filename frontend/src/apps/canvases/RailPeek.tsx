@@ -56,12 +56,83 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
-import PanelIcon from "@platform/ui/PanelIcon";
-import { ChatMount } from "@apps/claude";
-import { cardTitleLine, liveJobRow, taskColumn, taskHref } from "@shell/tasks-lib";
-import { StatusIcon } from "@shell/ScheduleTaskViews";
-import type { RailRow } from "./claude-rail-lib";
-import { PEEK_MAX_HEIGHT, PEEK_WIDTH, peekPlacement, statusWords, type Box } from "./rail-peek-lib";
+import { archiveTask, downloadTaskTranscript, unarchiveTask, type Task } from "@platform/lib/api";
+import { shortTaskId } from "@platform/lib/task-id";
+import { notify } from "@platform/lib/notifications";
+import { RUN_BLOCKED_HINT, TASK_ACTION_LABELS, blockedActionLabel } from "@platform/lib/task-actions";
+import ContextMenu, { type MenuEntry } from "@platform/ui/ContextMenu";
+import { EraseTaskModal } from "@platform/ui/EraseTaskModal";
+import {
+  TASK_ICON_ARCHIVE,
+  TASK_ICON_DOWNLOAD,
+  TASK_ICON_TRASH,
+  TASK_ICON_UNARCHIVE,
+} from "@platform/ui/TaskActionIcons";
+import { ChatMount, draftHref } from "@apps/claude";
+import { useArchiveConfirm } from "@shell/archive-confirm";
+import {
+  cardTitleLine,
+  draftTag,
+  eraseBlocked,
+  filingIntent,
+  isDraftTask,
+  nextRunChip,
+  taskHref,
+} from "@shell/tasks-lib";
+import { railScope, type RailRow } from "./claude-rail-lib";
+import {
+  PEEK_MAX_HEIGHT,
+  PEEK_PLAIN_HEIGHT,
+  PEEK_WIDTH,
+  peekPlacement,
+  statusWords,
+  type Box,
+} from "./rail-peek-lib";
+
+/** The ⋮ every list in this app wears (TaskPeek's, vertical). */
+const ICON_DOTS = (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+    <circle cx="12" cy="5" r="1.6" fill="currentColor" />
+    <circle cx="12" cy="12" r="1.6" fill="currentColor" />
+    <circle cx="12" cy="19" r="1.6" fill="currentColor" />
+  </svg>
+);
+
+/** What one seat is, for the head and the body: the pulse row, the full row
+ *  once held, and the answers both halves ask (RailPeek `seatFacts`). */
+interface SeatFacts {
+  t: RailRow["pulse"];
+  row: Task | null;
+  /** The pulse's live status over the full row (or the pulse alone). */
+  merged: Task | RailRow["pulse"];
+  label: string;
+  /** Where its press goes: a draft's New task card, else the chat's door. */
+  href: string | null;
+  draft: boolean;
+  /** `#T12` — "" on a draft, which has no task number yet. */
+  id: string;
+  scope: ReturnType<typeof railScope>;
+  words: string;
+}
+
+function seatFacts(seat: RailRow, dir: string | null): SeatFacts {
+  const { pulse: t, row } = seat;
+  const merged = row ? { ...row, status: t.status } : t;
+  const line = cardTitleLine(merged);
+  const draft = !!row && isDraftTask(row);
+  const href = (row && draft ? draftHref(row) : null) ?? taskHref(merged);
+  return {
+    t,
+    row,
+    merged,
+    label: line.text || t.title || "Chat",
+    href,
+    draft,
+    id: draft ? "" : shortTaskId(t.task_id),
+    scope: railScope(t, dir),
+    words: draft ? "draft" : statusWords(t, !!row?.failed),
+  };
+}
 
 export interface RailPeekHandle {
   /** Put the keyboard in the shown chat's composer (or on the card's first
@@ -82,6 +153,12 @@ export interface RailPeekProps {
   anchorOf: (key: string) => HTMLElement | null;
   /** The rail, for its edge and for the row it stands in (its parent). */
   railEl: HTMLElement | null;
+  /** The clone dir: what a legacy row's target is read against to name its
+   *  node (claude-rail-lib `railScope`). */
+  dir: string | null;
+  /** The ⋮ filed or deleted a task: re-read the listing now rather than on
+   *  the pulse's next move. */
+  onReload: () => void;
   onPointerEnter: () => void;
   onPointerLeave: () => void;
   /** A pointer went down inside the card — on the card itself or on one of
@@ -93,12 +170,31 @@ export interface RailPeekProps {
   onHold: (on: boolean) => void;
   /** Escape inside the card, or its close button. */
   onDismiss: () => void;
+  /** The row left no room for a card (rail-peek-lib `peekPlacement` null —
+   *  a window under ~140px tall or ~170px wide): the host drops the show so
+   *  the ring is not left saying `aria-expanded` for a card that never drew. */
+  onNoRoom: () => void;
   /** "Open in panel →", and any hop the chat itself makes. */
   onOpenChat: (href: string) => void;
 }
 
 export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailPeek(
-  { id, shown, kept, anchorOf, railEl, onPointerEnter, onPointerLeave, onPressInside, onHold, onDismiss, onOpenChat },
+  {
+    id,
+    shown,
+    kept,
+    anchorOf,
+    railEl,
+    dir,
+    onReload,
+    onPointerEnter,
+    onPointerLeave,
+    onPressInside,
+    onHold,
+    onDismiss,
+    onNoRoom,
+    onOpenChat,
+  },
   ref,
 ) {
   const cardRef = useRef<HTMLDivElement | null>(null);
@@ -128,11 +224,19 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     if (!kept.some((s) => s.pulse.key === key)) focusRefs.current.delete(key);
   }
 
+  // A seat with no session gets the short card (PEEK_PLAIN_HEIGHT).
+  const maxHeightFor = (key: string) =>
+    kept.find((s) => s.pulse.key === key)?.pulse.session_id ? PEEK_MAX_HEIGHT : PEEK_PLAIN_HEIGHT;
   const place = (key: string): Box | null => {
     const anchor = anchorOf(key);
     const row = railEl?.parentElement;
     if (!anchor || !railEl || !row) return null;
-    return peekPlacement(anchor.getBoundingClientRect(), railEl.getBoundingClientRect(), row.getBoundingClientRect());
+    return peekPlacement(
+      anchor.getBoundingClientRect(),
+      railEl.getBoundingClientRect(),
+      row.getBoundingClientRect(),
+      maxHeightFor(key),
+    );
   };
 
   // PLACED, THEN SHOWN (header). Hidden → shown sets the box on this frame and
@@ -143,7 +247,12 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       setOn(false);
       return;
     }
-    setBox(place(shownKey));
+    const next = place(shownKey);
+    if (!next) {
+      onNoRoom();
+      return;
+    }
+    setBox(next);
     const id = requestAnimationFrame(() => setOn(true));
     return () => cancelAnimationFrame(id);
     // `place` reads the DOM; the key is what decides when to re-read.
@@ -191,7 +300,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   useEffect(() => {
     if (!shownKey) return;
     const next = place(shownKey);
-    if (next && box && (next.top !== box.top || next.left !== box.left)) setBox(next);
+    if (next && box && (next.top !== box.top || next.left !== box.left || next.height !== box.height)) setBox(next);
   });
 
   // INERT WHILE HIDDEN (React 18 has no `inert` prop): the fading card and
@@ -234,15 +343,94 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     }
   };
 
-  const head = (() => {
-    if (!view) return null;
-    const { pulse: t, row } = view;
-    const merged = row ? { ...row, status: t.status } : t;
-    const line = cardTitleLine(merged);
-    const label = line.text || t.title || "Chat";
-    const href = taskHref(merged);
-    return { t, row, label, href, words: statusWords(t, !!row?.failed) };
-  })();
+  const head = view ? seatFacts(view, dir) : null;
+
+  // THE ⋮ (owner, 2026-10-30: "give me my kebab menu as well to archive,
+  // delete, download"): the side peek's rows, in its words and order
+  // (TaskPeek `menuItems`, platform/lib/task-actions) — the door, the
+  // transcript download, filing, deletion — minus the terminal hand-offs,
+  // which the pane's own ⋮ keeps. A row with no session yet (a draft, a
+  // scheduled task) has only its door: nothing to download, file or erase
+  // here. The card HOLDS while the menu or a dialog is up: the pointer is
+  // off the card on a menu row, and a grace close under an open dialog would
+  // pull the card from beneath it.
+  const [menuAt, setMenuAt] = useState<{ x: number; y: number } | null>(null);
+  const [erasing, setErasing] = useState<Pick<Task, "key" | "task_id"> | null>(null);
+  const [acting, setActing] = useState(false);
+  const archiveAsk = useArchiveConfirm();
+  const busy = menuAt !== null || erasing !== null || archiveAsk.node !== null;
+  useEffect(() => {
+    if (busy) onHold(true);
+    else onHold(!!cardRef.current?.contains(document.activeElement));
+    // `onHold` is the host's stable callback; `busy` is the fact.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [busy]);
+  const refile = async (facts: SeatFacts) => {
+    const filing = facts.row ? filingIntent(facts.merged as Task) : null;
+    if (!filing || acting) return;
+    setActing(true);
+    try {
+      if (filing.kind === "archive") await archiveTask(facts.t.key);
+      else await unarchiveTask(facts.t.key);
+      onReload();
+    } catch (e) {
+      notify({ title: (e as Error).message, tone: "error" });
+    } finally {
+      setActing(false);
+    }
+  };
+  const downloading = useRef(false);
+  const download = async (facts: SeatFacts) => {
+    if (!facts.t.session_id || downloading.current) return;
+    downloading.current = true;
+    try {
+      await downloadTaskTranscript(facts.t.key, "md");
+    } catch (e) {
+      notify({ title: (e as Error).message, tone: "error" });
+    } finally {
+      downloading.current = false;
+    }
+  };
+  const menuItems = (): MenuEntry[] => {
+    if (!head) return [];
+    const items: MenuEntry[] = [];
+    if (head.href) {
+      const href = head.href;
+      items.push({ label: head.draft ? "Open the draft" : "Open in the Claude panel", onClick: () => onOpenChat(href) });
+    }
+    if (!head.t.session_id) return items;
+    if (items.length) items.push("separator");
+    items.push({ label: TASK_ACTION_LABELS.download, icon: TASK_ICON_DOWNLOAD, onClick: () => void download(head) });
+    items.push("separator");
+    const blocked = eraseBlocked(head.t);
+    const filing = head.row ? filingIntent(head.merged as Task) : null;
+    if (filing) {
+      items.push({
+        label: filing.kind === "archive" ? TASK_ACTION_LABELS.archive : TASK_ACTION_LABELS.unarchive,
+        icon: filing.kind === "archive" ? TASK_ICON_ARCHIVE : TASK_ICON_UNARCHIVE,
+        disabled: acting,
+        onClick: () => {
+          if (filing.kind === "archive" && head.row) archiveAsk.guard(head.merged as Task, () => void refile(head));
+          else void refile(head);
+        },
+      });
+    } else if (blocked) {
+      items.push({
+        label: blockedActionLabel(TASK_ACTION_LABELS.archive, RUN_BLOCKED_HINT),
+        icon: TASK_ICON_ARCHIVE,
+        disabled: true,
+        onClick: () => {},
+      });
+    }
+    items.push({
+      label: blockedActionLabel(TASK_ACTION_LABELS.delete, blocked ? RUN_BLOCKED_HINT : null),
+      icon: TASK_ICON_TRASH,
+      danger: true,
+      disabled: blocked,
+      onClick: () => setErasing({ key: head.t.key, task_id: head.t.task_id }),
+    });
+    return items;
+  };
 
   return createPortal(
     <div
@@ -264,28 +452,54 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     >
       <div className="canvas-rail-peek-card">
         {head && (
+          // THE HEAD (owner, 2026-10-30): the task's number where the Tasks
+          // page prints it, its title, WHERE it lives (the canvas, or one
+          // node — the pane's chats do not say, and a reader could not tell a
+          // node's chat from the canvas's), then the door as a word, the ⋮,
+          // and the close.
           <div className="canvas-rail-peek-head" onKeyDown={onHeadKeyDown}>
-            <StatusIcon
-              status={taskColumn(head.t)}
-              unread={head.t.unread > 0}
-              background={liveJobRow(head.t)}
-              {...(head.row?.failed ? { failed: true } : {})}
-            />
+            {head.id && (
+              <span className="canvas-rail-peek-id" title={head.words}>
+                {head.id}
+              </span>
+            )}
             <span className="canvas-rail-peek-title" title={head.label}>
               {head.label}
             </span>
-            <span className="canvas-rail-peek-words">{head.words}</span>
+            <span
+              className={"canvas-rail-peek-scope" + (head.scope.kind === "node" ? " is-node" : "")}
+              title={
+                head.scope.kind === "node"
+                  ? `On the node ${head.scope.name} (${head.scope.file})`
+                  : "On the canvas as a whole"
+              }
+            >
+              {head.scope.kind === "node" ? head.scope.name : "Canvas"}
+            </span>
             {head.href && (
               <button
                 type="button"
-                className="canvas-rail-peek-btn"
-                title="Open in the Claude panel"
-                aria-label="Open in the Claude panel"
+                className="canvas-rail-peek-btn canvas-rail-peek-open"
+                title={head.draft ? "Open the draft" : "Open this chat in the Claude panel"}
                 onClick={() => onOpenChat(head.href!)}
               >
-                <PanelIcon side="right" />
+                Open
               </button>
             )}
+            <button
+              type="button"
+              className="canvas-rail-peek-btn"
+              title="More actions"
+              aria-label="More actions"
+              aria-haspopup="menu"
+              aria-expanded={menuAt !== null}
+              onClick={(e) => {
+                const r = e.currentTarget.getBoundingClientRect();
+                setMenuAt({ x: r.right - 220, y: r.bottom + 4 });
+              }}
+            >
+              {ICON_DOTS}
+            </button>
             <button
               type="button"
               className="canvas-rail-peek-btn"
@@ -298,35 +512,78 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
           </div>
         )}
         <div className="canvas-rail-peek-body">
-          {kept.map(({ pulse: t, row }) => (
-            <div
-              key={t.key}
-              className={"canvas-rail-peek-chat" + (t.key === viewKey ? " is-shown" : "")}
-            >
-              <ChatMount
-                file={row?.target || t.target || t.project}
-                sessionId={t.session_id ?? undefined}
-                // The task's own settings, a seed (TaskPeek passes the same).
-                {...(row?.model ? { model: row.model } : {})}
-                {...(row?.effort ? { effort: row.effort } : {})}
-                {...(row?.backend ?? t.backend ? { backend: (row?.backend ?? t.backend)! } : {})}
-                chatOnly
-                peek
-                // A hover must never take the keyboard: the reader is pointing,
-                // not typing, until they click into the card or ArrowLeft in.
-                noFocus
-                // No annotate seats: the card has no canvas of its own to mark.
-                noAnnTools
-                paramsSource="memory"
-                focusRef={focusRefFor(t.key)}
-                onEscape={onDismiss}
-                // A hop out of the chat (a Recent row, a link) is the ring's
-                // own navigation: the canvas page's hop reader does the rest.
-                onNavigate={onOpenChat}
-              />
-            </div>
-          ))}
+          {kept.map((seat) => {
+            const { pulse: t, row } = seat;
+            const facts = seatFacts(seat, dir);
+            return (
+              <div
+                key={t.key}
+                className={"canvas-rail-peek-chat" + (t.key === viewKey ? " is-shown" : "")}
+              >
+                {t.session_id ? (
+                  <ChatMount
+                    file={row?.target || t.target || t.project}
+                    sessionId={t.session_id}
+                    // The task's own settings, a seed (TaskPeek passes the same).
+                    {...(row?.model ? { model: row.model } : {})}
+                    {...(row?.effort ? { effort: row.effort } : {})}
+                    {...(row?.backend ?? t.backend ? { backend: (row?.backend ?? t.backend)! } : {})}
+                    chatOnly
+                    peek
+                    // A hover must never take the keyboard: the reader is pointing,
+                    // not typing, until they click into the card or ArrowLeft in.
+                    noFocus
+                    // No annotate seats: the card has no canvas of its own to mark.
+                    noAnnTools
+                    paramsSource="memory"
+                    focusRef={focusRefFor(t.key)}
+                    onEscape={onDismiss}
+                    // A hop out of the chat (a Recent row, a link) is the ring's
+                    // own navigation: the canvas page's hop reader does the rest.
+                    onNavigate={onOpenChat}
+                  />
+                ) : (
+                  // NO SESSION YET — a draft, or a scheduled task that has not
+                  // run: there is no conversation to show, so the card says
+                  // what the row is and where its press goes.
+                  <div className="canvas-rail-peek-plain">
+                    <p className="canvas-rail-peek-plain-title">
+                      {facts.draft ? "Unsent draft" : "Not started yet"}
+                    </p>
+                    <p className="canvas-rail-peek-plain-words">
+                      {facts.draft
+                        ? (row && draftTag(row)?.title) || "Nothing written yet."
+                        : (row && nextRunChip(row)?.title) || "Scheduled, no run yet."}
+                    </p>
+                    {facts.href && (
+                      <button
+                        type="button"
+                        className="canvas-rail-peek-plain-open"
+                        onClick={() => onOpenChat(facts.href!)}
+                      >
+                        {facts.draft ? "Open the draft" : "Open"}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
+        {menuAt && <ContextMenu x={menuAt.x} y={menuAt.y} items={menuItems()} onClose={() => setMenuAt(null)} />}
+        {archiveAsk.node}
+        {erasing && (
+          <EraseTaskModal
+            task={erasing}
+            onClose={() => setErasing(null)}
+            onDone={() => {
+              const gone = erasing;
+              setErasing(null);
+              notify({ title: `Deleted ${shortTaskId(gone.task_id)}`, tone: "info" });
+              onReload();
+            }}
+          />
+        )}
       </div>
     </div>,
     document.body,

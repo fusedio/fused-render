@@ -68,10 +68,18 @@ import { Plus } from "lucide-react";
 import PanelIcon from "@platform/ui/PanelIcon";
 import { getSchedule, getTasks, type Task } from "@platform/lib/api";
 import { readListing, rememberListing, useTasksPulseRows } from "@shell/tasksPulse";
-import { cardTitleLine, liveJobRow, recapTitlesOn, taskColumn, taskHref } from "@shell/tasks-lib";
+import {
+  cardTitleLine,
+  draftRing,
+  isDraftTask,
+  liveJobRow,
+  recapTitlesOn,
+  taskColumn,
+  taskHref,
+} from "@shell/tasks-lib";
 import { StatusIcon } from "@shell/ScheduleTaskViews";
 import NewJobModal from "@shell/NewJobModal";
-import { preloadChat } from "@apps/claude";
+import { draftHref, preloadChat } from "@apps/claude";
 import { onRail, railRows } from "./claude-rail-lib";
 import { PeekIntent, keepAlive, statusWords } from "./rail-peek-lib";
 import { useCanvasRailPeek } from "./rail-peek-flag";
@@ -408,8 +416,14 @@ export function ClaudeRail({
               const line = cardTitleLine(merged);
               const reply = row && !recapTitlesOn(row) ? row.last_reply || "" : "";
               const label = line.text || t.title || "Chat";
-              const href = taskHref(merged);
-              if (!href) return null;
+              // A DRAFT'S DOOR is the New task card (`draftHref`, as the List's
+              // row press); every other row's is the chat's (`taskHref`). A
+              // pulse-only draft (the listing not held yet) has neither for a
+              // moment: it still gets its ring, the press waits for the
+              // listing.
+              const draft = !!row && isDraftTask(row);
+              const href = (row && draft ? draftHref(row) : null) ?? taskHref(merged);
+              const words = draft ? "draft" : statusWords(t, !!row?.failed);
               const peeked = peekOn && peekKey === t.key;
               // The list's item is a wrapper, the link is a link: `aria-haspopup`
               // and `aria-expanded` are not allowed on `listitem`, and a link
@@ -421,13 +435,13 @@ export function ClaudeRail({
                     if (el) ringEls.current.set(t.key, el);
                     else ringEls.current.delete(t.key);
                   }}
-                  href={href}
+                  href={href ?? "#"}
                   className={
                     "sidebar-rail-btn canvas-rail-chat" +
                     (activeSessionId && t.session_id === activeSessionId ? " active" : "") +
                     (peeked ? " peeked" : "")
                   }
-                  aria-label={`${label} — ${statusWords(t, !!row?.failed)}`}
+                  aria-label={`${label} — ${words}`}
                   // The list row's own caption (platform/lib/hints): the
                   // title's line, then the reply's — what the row clamps.
                   // With the hover card on, an EMPTY hint is the opt-out
@@ -454,13 +468,18 @@ export function ClaudeRail({
                   onClick={(e) => {
                     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
                     e.preventDefault();
-                    onOpenChat(href);
+                    if (href) onOpenChat(href);
                   }}
                 >
                   <StatusIcon
-                    status={taskColumn(t)}
+                    // The full row's column where it is held: a draft row is
+                    // `draft` only once `kind` is known (the pulse has no kind).
+                    status={taskColumn(merged)}
                     unread={t.unread > 0}
                     background={liveJobRow(t)}
+                    // The red centre dot the List gives a draft row and a
+                    // settled row holding unsent words (tasks-lib.draftRing).
+                    draftHeld={!!row && draftRing(merged as Task)}
                     {...(row?.failed ? { failed: true } : {})}
                   />
                 </a>
@@ -478,11 +497,14 @@ export function ClaudeRail({
           kept={keptSeats}
           anchorOf={anchorOf}
           railEl={railRef.current}
+          dir={dir}
+          onReload={() => void refreshListing().catch(() => undefined)}
           onPointerEnter={() => intent.enterCard()}
           onPointerLeave={() => intent.leaveCard()}
           onPressInside={onPressInside}
           onHold={(on) => intent.hold(on)}
           onDismiss={dismissToRing}
+          onNoRoom={() => intent.dismiss()}
           onOpenChat={onOpenChat}
         />
       )}

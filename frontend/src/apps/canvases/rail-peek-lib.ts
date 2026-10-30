@@ -43,6 +43,9 @@ export const PEEK_CLOSE_MS = 250;
 export const PEEK_WIDTH = 420;
 /** The card's height cap; shorter rows shrink it. */
 export const PEEK_MAX_HEIGHT = 640;
+/** …and for a seat with no conversation (a draft, a scheduled task): what it
+ *  is, its words and its door need no transcript's worth of card. */
+export const PEEK_PLAIN_HEIGHT = 220;
 /** Between the card's right edge and the rail. */
 export const PEEK_GAP = 8;
 /** The card keeps this far inside the row's edges. */
@@ -60,10 +63,10 @@ export interface Box {
 /** Where the card stands for a ring at `anchor`, beside a rail at `rail`,
  *  inside the workspace row `bounds` (all viewport rects). Null when the row
  *  leaves no room at all. */
-export function peekPlacement(anchor: Box, rail: Box, bounds: Box): Box | null {
+export function peekPlacement(anchor: Box, rail: Box, bounds: Box, maxHeight = PEEK_MAX_HEIGHT): Box | null {
   const room = rail.left - bounds.left - PEEK_GAP - PEEK_INSET;
   const width = Math.min(PEEK_WIDTH, room);
-  const height = Math.min(PEEK_MAX_HEIGHT, bounds.height - 2 * PEEK_INSET);
+  const height = Math.min(maxHeight, bounds.height - 2 * PEEK_INSET);
   if (width < 120 || height < 120) return null;
   const left = rail.left - PEEK_GAP - width;
   const centre = anchor.top + anchor.height / 2;
