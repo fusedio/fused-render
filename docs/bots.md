@@ -2101,6 +2101,15 @@ Chips: `marketplace_search` → "N apps found"; `marketplace_install` → the
 first sentence ("Installed Name v1.2 at …"). Both are `_NO_THUMB` in the
 steps engine (the browser did not move).
 
+Tests: `tests/test_marketplace.py` (`test_bot_marketplace_tools_search_card_and_install`:
+roster, the search lines, the card's label and risk sentence, no forever rule,
+a real clone at the approved commit that APPS then lists, the INSTALLED flag
+and the second-install refusal, over the FakeUdf + FakeGitHub world) and the
+engine tests (`test_marketplace_install_asks_even_under_never_ask` in
+`test_bots_agent_engine.py` and `test_bots_steps_engine.py`: the card under
+"Never ask", nothing run before the yes, one card per slug; the agent one also
+covers the denial).
+
 ## 16. Bot terminals — `terminal_run` / `terminal_read` / `terminal_interrupt` (`tools.TERMINAL_TOOLS`, 2026-10-20)
 
 A bot can run a command in its own terminal (a pty session, `pty_session.py`) and read what came back, so a

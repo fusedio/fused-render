@@ -1853,3 +1853,75 @@ def test_overwrite_merges_nested_data_under_a_tracked_fused_dir(env, gh_world):
         with open(os.path.join(dest, *rel.split("/"))) as f:
             assert f.read() == want, rel
     assert not os.path.exists(os.path.join(d, ".fused", "data", "state.txt"))
+
+
+class _ToolBot:
+    """The slice of Bot that tools.roster / describe / risk / execute read
+    (docs/bots.md §15): an ordinary bot (not Super Bot), nothing attached."""
+
+    def __init__(self):
+        self.meta = {"name": "Tester", "approval": "never", "allow_rules": []}
+        self.browser = None
+        self.stop_flag = __import__("threading").Event()
+
+    def contacts(self):
+        return []
+
+    def all_files(self):
+        return []
+
+    def folders(self):
+        return []
+
+
+def test_bot_marketplace_tools_search_card_and_install(env, gh_world, monkeypatch):
+    """The owner's ask, end to end through the bots' tool table: every bot
+    has `marketplace_search` and `marketplace_install` on its roster; the
+    search lists the catalog with slugs the model can install; an install
+    ALWAYS raises an approval card (the risk sentence is non-empty even under
+    "Never ask", and there is no "approve forever" rule), whose label names
+    the app and the folder; and `execute` clones the approved commit into
+    the apps root, where APPS then sees it."""
+    from fused_render.bots import apptools, tools
+
+    bot = _ToolBot()
+    names = [t["name"] for t in tools.roster(bot)]
+    assert "marketplace_search" in names and "marketplace_install" in names
+    assert "marketplace_install" in tools.ALWAYS_ASK
+
+    # Search: the server's ranked search with a query, the whole catalog without.
+    label, out = tools.execute(bot, "marketplace_search", {"query": "sine"}, {})
+    assert label == 'search the Community for "sine"'
+    assert out.startswith('1 app matches "sine"') and "- sine-starter: Sine Starter v1.0.0 [starters]" in out
+    assert tools.ui_summary("marketplace_search", out) == "1 app found"
+    _label, out = tools.execute(bot, "marketplace_search", {}, {})
+    assert out.startswith("2 apps match (whole catalog)") and "- local-chat:" in out and "- sine-starter:" in out
+    assert tools.risk(bot, "marketplace_search", {"query": "sine"}, {}) == ""  # read-only, no card
+
+    # The card: raised whatever the approval setting says, never approvable forever.
+    d = {"slug": "sine-starter"}
+    assert tools.describe(bot, "marketplace_install", d, {}) == \
+        f'install the Community app "Sine Starter" v1.0.0 into {_app_dir(env, "sine-starter")}'
+    why = tools.risk(bot, "marketplace_install", d, {})
+    assert "downloads this community app" in why and "from its author's GitHub repo" in why
+    assert tools.forever_rule(bot, "marketplace_install", d, {}) is None
+    assert tools.call_key(bot, "marketplace_install", d) is not None
+    # A slug the catalog lacks: an error the model reads, never a card the user denies.
+    assert tools.risk(bot, "marketplace_install", {"slug": "ghost-app"}, {}) == ""
+    _label, out = tools.execute(bot, "marketplace_install", {"slug": "ghost-app"}, {})
+    assert out.startswith("error: no such app in the catalog")
+
+    # The install itself (the user said yes): a real clone at the approved commit, then in APPS.
+    monkeypatch.setattr(apptools, "ROOTS", [apptools.apps_root()])
+    monkeypatch.setattr(tools, "MARKET_INSTALL_WAIT_S", 60)
+    label, out = tools.execute(bot, "marketplace_install", d, {})
+    dest = _app_dir(env, "sine-starter")
+    assert out.startswith(f"Installed Sine Starter v1.0.0 at {dest}. It is now in APPS as `sine-starter`"), out
+    assert tools.ui_summary("marketplace_install", out) == f"Installed Sine Starter v1.0.0 at {dest}"
+    assert _git(dest, "rev-parse", "HEAD").strip() == gh_world.approved
+    assert "sine-starter" in [os.path.basename(a["dir"]) for a in apptools.apps()]
+    # Installed now: the search says so, and a second install is refused before any card.
+    _label, out = tools.execute(bot, "marketplace_search", {"query": "sine"}, {})
+    assert "(INSTALLED)" in out
+    assert tools.risk(bot, "marketplace_install", d, {}) == ""
+    assert tools.execute(bot, "marketplace_install", d, {})[1].startswith("error: already installed at")

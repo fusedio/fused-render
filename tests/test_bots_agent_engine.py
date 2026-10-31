@@ -1653,3 +1653,68 @@ def test_bot_tool_gate_carries_risk(server, fake_cli, monkeypatch, stub_risk):
     assert stub_risk[0][0] == "click" and stub_risk[0][1] == {"ref": "sb2"}
     bot.say("approve")
     finish(t)
+
+
+def _stub_market(monkeypatch, calls):
+    """The marketplace seam (tools._market_*): a one-app catalog, no network."""
+    from fused_render.bots import tools
+
+    monkeypatch.setattr(tools, "_market_search", lambda d: (
+        '1 app matches "sine" (slug: name version [category] — what it does). INSTALLED ones are in APPS already; '
+        "`marketplace_install` with a slug installs one after the user approves.\n"
+        "- sine-starter: Sine Starter v1.0.0 [starters] — sine-starter app"))
+    monkeypatch.setattr(tools, "_market_target", lambda d: (str(d.get("slug") or ""), False, ""))
+    monkeypatch.setattr(tools, "_market_name", lambda slug: ("Sine Starter", "1.0.0"))
+    monkeypatch.setattr(tools, "_market_where", lambda slug: "/ws/app/sine-starter")
+
+    def install(bot, d):
+        calls.append(d)
+        return ("Installed Sine Starter v1.0.0 at /ws/app/sine-starter. It is now in APPS as `sine-starter`: "
+                "`show sine-starter` puts it in the chat as a card the user opens. Tell the user it is installed in one line.")
+    monkeypatch.setattr(tools, "_market_install", install)
+
+
+def test_marketplace_install_asks_even_under_never_ask(server, fake_cli, monkeypatch):
+    """docs §15: a bot searches the Community without a card, and installing
+    an app raises the approval card whatever the Approvals setting says
+    (ALWAYS_ASK); the install runs only after the yes, once per slug."""
+    installs = []
+    _stub_market(monkeypatch, installs)
+    bot = FakeBot()
+    bot.meta["approval"] = "auto"  # "Never ask"
+    t = start(bot, [{"tool": "marketplace_search", "args": {"query": "sine"}},
+                    {"tool": "marketplace_install", "args": {"slug": "sine-starter"}},
+                    {"tool": "marketplace_install", "args": {"slug": "sine-starter"}},
+                    {"result": "Installed Sine Starter."}], monkeypatch)
+    ev = bot.wait_event("approval")
+    assert ev and ev["text"].startswith('About to install the Community app "Sine Starter" v1.0.0 into /ws/app/sine-starter. '
+                                        "It downloads this community app")
+    assert ev["detail"] == 'install the Community app "Sine Starter" v1.0.0 into /ws/app/sine-starter'
+    assert "forever" not in ev  # never approvable for good
+    assert installs == []  # nothing ran before the yes
+    bot.say("approve")
+    finish(t)
+    assert installs == [{"slug": "sine-starter"}]
+    calls = fake_cli("call")
+    assert calls[0]["result"].startswith('1 app matches "sine"')
+    assert calls[1]["result"].startswith('APPROVED by the user: install the Community app "Sine Starter" v1.0.0 into '
+                                         "/ws/app/sine-starter\n\nInstalled Sine Starter v1.0.0 at /ws/app/sine-starter")
+    assert calls[2]["result"].startswith("NOT RUN AGAIN")  # a second install of the same slug: no second card
+    assert sum(1 for e in bot.events if e["role"] == "approval") == 1
+    acts = [e for e in bot.events if e["role"] == "action"]
+    assert [a["text"] for a in acts][:2] == ['search the Community for "sine"',
+                                             'install the Community app "Sine Starter" v1.0.0 into /ws/app/sine-starter']
+    assert acts[0]["result"] == "1 app found" and acts[1]["result"] == "Installed Sine Starter v1.0.0 at /ws/app/sine-starter"
+
+
+def test_marketplace_install_denied_does_not_run(server, fake_cli, monkeypatch):
+    installs = []
+    _stub_market(monkeypatch, installs)
+    bot = FakeBot()
+    t = start(bot, [{"tool": "marketplace_install", "args": {"slug": "sine-starter"}},
+                    {"result": "Left it."}], monkeypatch)
+    assert bot.wait_event("approval")
+    bot.say("no")
+    finish(t)
+    assert installs == []
+    assert fake_cli("call")[0]["result"].startswith('DENIED by the user: install the Community app "Sine Starter"')
