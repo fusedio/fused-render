@@ -512,15 +512,18 @@ def enforce(support_dir: str, read_pidfile, *, support_base: str | None = None,
     if claim(support_dir):
         return Outcome(role="primary", sweep=sweep_leftovers(rivals_of, sweep_with, record))
     started = clock()
+
+    def budget_for_holder() -> float:
+        # The holder's boot budget counts from ITS start when the record says
+        # when that was, never less than `min_wait_s` and never more than a
+        # whole budget from now.
+        since = holder_since(support_dir)
+        if since is None:
+            return boot_wait_s
+        return min(boot_wait_s, max(min_wait_s, since + boot_wait_s - wall()))
+
     who = holder(support_dir)
-    # The holder's boot budget counts from ITS start when the record says
-    # when that was, never less than `min_wait_s` and never more than a
-    # whole budget from now.
-    remaining = boot_wait_s
-    since = holder_since(support_dir)
-    if since is not None:
-        remaining = min(boot_wait_s, max(min_wait_s, since + boot_wait_s - wall()))
-    deadline = started + remaining
+    deadline = clock() + budget_for_holder()
     while True:
         pid, port = read_pidfile()
         if pid and port and alive(pid) and pidfile_is_the_app(pid, who) and probe(port):
@@ -537,6 +540,11 @@ def enforce(support_dir: str, read_pidfile, *, support_base: str | None = None,
             return out
         if who is None:
             who = holder(support_dir)
+            if who is not None:
+                # A NEW holder (the old one died, a successor took the lock):
+                # its own budget, from its own start — not the tail of the
+                # old one's.
+                deadline = clock() + budget_for_holder()
         if clock() >= deadline:
             return Outcome(role="duplicate", live=None, holder=who,
                            waited_s=clock() - started)

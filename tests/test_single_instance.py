@@ -387,6 +387,31 @@ def test_unknown_holder_no_pidfile_and_a_held_lock_still_ends_at_the_budget(supp
     assert 4.0 <= clock.t < 5.0
 
 
+def test_a_new_holder_gets_its_own_budget_not_the_old_ones_tail(support):
+    """Holder 42 has 3 s of budget left and then dies; 43 takes the lock
+    (it started just now). 43 gets a whole budget from its start, not the
+    seconds 42 had left."""
+    world = {"holder": 42, "since": 1000.0 - 72.0, "polls": 0}
+
+    def holder(d):
+        return world["holder"]
+
+    def since(d):
+        return world["since"]
+
+    def alive(pid):
+        world["polls"] += 1
+        if pid == 42 and world["polls"] >= 3:
+            world["holder"], world["since"] = 43, 1000.0  # 43 just started
+            return False
+        return True
+
+    out, clock = _enforce(support, claim=lambda d: False, holder=holder, since=since,
+                          alive=alive, wall=lambda: 1000.0, boot_wait_s=75.0, min_wait_s=2.0)
+    assert out.role == "duplicate" and out.live is None and out.holder == 43
+    assert clock.t >= 74.0  # not ~3 s
+
+
 def test_an_older_build_holder_with_no_record_still_gets_the_wait(support):
     """A holder from before this module wrote no record: `holder` is None,
     the pidfile is the only name, and we still defer to it once it serves."""
@@ -435,13 +460,19 @@ def test_app_gate_stalled_holder_asks_rechecks_then_stops_it_or_exits(monkeypatc
     monkeypatch.setattr(si, "sweep_leftovers", lambda **k: leftovers.append(True) or si.Sweep())
     monkeypatch.setattr(si, "claim", lambda d: claims.append(d) or True)
     monkeypatch.setattr(si, "alive", lambda pid: True)
-    monkeypatch.setattr(si, "is_our_binary", lambda pid, own=None: True)
+    # A DMG / translocated copy holds the lock: its path is not ours, and it
+    # must still be the one stopped — the lock, not the path, says who it is.
+    monkeypatch.setattr(si, "is_our_binary", lambda pid, own=None: False)
     monkeypatch.setattr(app_mod, "hard_exit", lambda code=0, **k: exits.append(code))
     monkeypatch.setattr(si, "enforce", lambda d, r, **k: stalled)
     # "Stop it and start": re-check still stalled → stop 77, take the lock, clear the rest.
+    budgets = []
+    monkeypatch.setattr(si, "enforce",
+                        lambda d, r, **k: budgets.append(k.get("boot_wait_s")) or stalled)
     monkeypatch.setattr(app_mod, "_stalled_copy_alert", lambda pid: True)
     assert app_mod._enforce_single_instance() is None
     assert swept == [[77]] and claims and leftovers == [True] and exits == []
+    assert budgets == [None, None]  # the re-check keeps the full default budget
     # "Quit": exit, touch nothing.
     swept.clear(); leftovers.clear(); claims.clear()
     monkeypatch.setattr(app_mod, "_stalled_copy_alert", lambda pid: False)

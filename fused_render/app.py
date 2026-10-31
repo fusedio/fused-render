@@ -1609,11 +1609,13 @@ def _enforce_single_instance() -> tuple[int, int] | None:
         return None  # unreachable; hard_exit never returns
     # "Stop it and start". The modal may have stood for minutes: look again
     # first — the holder may have died and a fresh instance may be serving
-    # by now (defer to it), or the lock may simply be free (take it).
+    # by now (defer to it), or the lock may simply be free (take it). The
+    # FULL budget: a successor that took the lock under the modal is a
+    # booting app and gets its own 75 s from its own start, while the same
+    # stalled holder gets only the floor (its `since` is long past).
     try:
         again = single_instance.enforce(APP_SUPPORT_DIR, read_pidfile,
                                         support_base=_APP_SUPPORT_BASE,
-                                        boot_wait_s=5.0, min_wait_s=5.0,
                                         record=health.record_event)
     except Exception:  # noqa: BLE001
         logger.exception("single instance: re-check after the alert failed")
@@ -1622,12 +1624,15 @@ def _enforce_single_instance() -> tuple[int, int] | None:
         return None
     if again.live is not None:
         return again.live
-    # Still the same stalled holder: stop it — re-verified alive and ours,
-    # the pid is not something recycled under the modal — take the lock, then
-    # clear every OTHER leftover too.
+    # Still the same stalled holder: stop it, take the lock, then clear every
+    # OTHER leftover too. Trusted by the lock, as defer trusts it — a copy run
+    # from the DMG or a translocated bundle holds the lock and fails an
+    # executable-path check, and leaving it would start us WITHOUT the lock
+    # (the leftover that parks the scheduler lease). "Same pid as the one
+    # the user was asked about, still alive, still named by the record" is
+    # the guard against a pid recycled under the modal.
     target = again.holder
-    if (target is not None and target == outcome.holder
-            and single_instance.alive(target) and single_instance.is_our_binary(target)):
+    if target is not None and target == outcome.holder and single_instance.alive(target):
         single_instance.sweep([single_instance.Rival(target, 0.0)])
     if single_instance.claim(APP_SUPPORT_DIR):
         single_instance.sweep_leftovers(record=health.record_event,
