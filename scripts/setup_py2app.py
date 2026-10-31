@@ -648,8 +648,8 @@ OPTIONS = {
         # browser would after one Allow click; the OS then prompts with these
         # strings. REQUIRED like the microphone one: an app that touches the
         # camera or location without its usage string is killed, not asked.
-        # The string is half of it: in a Chromium window the capture runs in
-        # THIS app's processes, so the hardened-runtime entitlement
+        # The string is half of it: in any window of OURS the capture is
+        # judged against THIS app's hardened runtime, so the entitlement
         # `com.apple.security.device.camera` (build_dmg.sh) is the other half —
         # without it tccd refuses with no prompt and the page sees black.
         "NSCameraUsageDescription": (

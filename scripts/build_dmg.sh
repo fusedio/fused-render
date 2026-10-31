@@ -1370,7 +1370,7 @@ if [[ -n "$SIGN_IDENTITY" ]]; then
        at all: without it the mic is refused outright, prompt or no prompt.
        Screen recording needs no entitlement — only the System Settings grant. -->
   <key>com.apple.security.device.audio-input</key><true/>
-  <!-- A page's `getUserMedia({video})` in one of our Chromium windows (the AI
+  <!-- A page's `getUserMedia({video})` in one of our windows (the AI
        Playground's Webcam button). Same rule as the microphone: the
        NSCameraUsageDescription string alone is not enough under the hardened
        runtime — tccd logs "requires entitlement com.apple.security.device.camera

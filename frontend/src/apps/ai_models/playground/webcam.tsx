@@ -104,16 +104,18 @@ export function useWebcam({ onError }: { onError: (message: string) => void }) {
     (onBlob: (blob: Blob) => void) => {
       const video = videoRef.current;
       if (!video) return;
-      // A live track with no frame behind it: the OS let `getUserMedia`
-      // resolve and then refused the hardware (a hardened-runtime build
-      // without the camera entitlement, a camera another app holds, a
-      // Privacy & Security denial after the fact). The viewfinder sat black
-      // and this button used to do nothing at all; now it says why and
-      // closes, so the camera light — if any — goes out.
+      // A live track with no frame behind it. Usually the OS let
+      // `getUserMedia` resolve and then refused the hardware (a hardened-
+      // runtime build without the camera entitlement, a camera another app
+      // holds, a Privacy & Security denial after the fact): the viewfinder
+      // sat black and this button used to do nothing at all. It can also be
+      // a camera still warming up — indistinguishable at the instant of the
+      // click — so the sentence offers a retry before it blames Settings.
+      // Either way the camera is closed, so its light goes out.
       if (!video.videoWidth) {
         stop();
         onError(
-          "The camera gave no picture. Check System Settings › Privacy & Security › Camera, and that nothing else is using it.",
+          "The camera has not sent a picture yet. Try again, or check System Settings › Privacy & Security › Camera.",
         );
         return;
       }
