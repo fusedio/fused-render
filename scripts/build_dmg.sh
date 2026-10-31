@@ -1378,7 +1378,7 @@ if [[ -n "$SIGN_IDENTITY" ]]; then
        prompt. Chromium then hands the page a track that never carries a frame,
        so the viewfinder is a black box rather than an error. The check is on
        the RESPONSIBLE process — this app — even when the Plugin helper is the
-       one opening the device. Ad-hoc builds (no `--options runtime`) never hit
+       one opening the device. Ad-hoc builds (signed without the hardened runtime) never hit
        this, which is why it was only ever seen in a shipped DMG. -->
   <key>com.apple.security.device.camera</key><true/>
 </dict>
