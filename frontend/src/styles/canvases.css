@@ -715,11 +715,14 @@ button.canvas-rail-peek-scope.is-node {
     background-color 0.12s ease,
     border-color 0.12s ease;
 }
-button.canvas-rail-peek-scope.is-node:hover {
+button.canvas-rail-peek-scope.is-node[aria-disabled="true"] {
+  cursor: default;
+}
+button.canvas-rail-peek-scope.is-node:not([aria-disabled="true"]):hover {
   background: rgba(var(--tint), 0.14);
   border-color: rgba(var(--tint), 0.35);
 }
-button.canvas-rail-peek-scope.is-node:active {
+button.canvas-rail-peek-scope.is-node:not([aria-disabled="true"]):active {
   background: rgba(var(--tint), 0.2);
 }
 button.canvas-rail-peek-scope.is-node:focus-visible {

@@ -78,7 +78,7 @@ import {
   taskColumn,
   taskHref,
 } from "@shell/tasks-lib";
-import { railScope, type RailRow } from "./claude-rail-lib";
+import { nodeName, railScope, type RailRow } from "./claude-rail-lib";
 import {
   PEEK_MAX_HEIGHT,
   PEEK_PLAIN_HEIGHT,
@@ -184,16 +184,6 @@ export interface RailPeekProps {
   /** Pin the shown card — the chip's press by keyboard, which no pointer-down
    *  (`onPressInside`) announced. */
   onPin: () => void;
-}
-
-/** A node file's stem — the name the workbench gives the node (claude-rail-lib
- *  `railScope`). The page's selected file is GUESSED from the workbench's
- *  echo (a widget's extension may not be the one the chat's row names), so
- *  the chip compares names, not files. */
-function stemOf(file: string | null): string | null {
-  if (!file) return null;
-  const dot = file.lastIndexOf(".");
-  return dot > 0 ? file.slice(0, dot) : file;
 }
 
 /** A seat with no conversation yet (header of the body above). */
@@ -596,43 +586,50 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
             <span className="canvas-rail-peek-title" title={head.label}>
               {head.label}
             </span>
-            {head.scope.kind === "node" && head.scope.name !== stemOf(selectedFile) ? (
+            {head.scope.kind === "node" ? (
               // The node's chip is a door: it selects the node in the
               // workbench (which zooms to it and shows its code). The card
               // STAYS (owner, 2026-10-31: "when I click on the tag, shouldn't
               // the chat preview still stay open") — the press is inside the
               // card, so it pins it like any other; the rail then narrows to
               // that node, whose rings still hold this chat, and the card
-              // follows its ring.
-              <button
-                type="button"
-                className="canvas-rail-peek-scope is-node"
-                title={`Select the node ${head.scope.name} (${head.scope.file}) in the workbench`}
-                onClick={(e) => {
-                  if (head.scope.kind === "node") onSelectNode(head.scope.name);
-                  // A pointer press pinned it already (`onPressInside`); an
-                  // Enter or Space did not.
-                  onPin();
-                  // Back to the composer: the reader is still in this chat,
-                  // and WebKit leaves a pressed button unfocused — focus on
-                  // the body, where a later press into the canvas frame is
-                  // not heard as the window's blur and so never closes the
-                  // pinned card (ClaudeRail's frame-press rule). A seat with
-                  // no composer (a draft on the node) keeps it on the chip.
-                  const box = shownKey ? focusRefs.current.get(shownKey)?.current : null;
-                  (box ?? e.currentTarget).focus({ preventScroll: true });
-                }}
-              >
-                {head.scope.name}
-              </button>
-            ) : head.scope.kind === "node" ? (
-              // Already the selected node: nothing to go to.
-              <span
-                className="canvas-rail-peek-scope is-node"
-                title={`On the node ${head.scope.name} (${head.scope.file}), selected`}
-              >
-                {head.scope.name}
-              </span>
+              // follows its ring. The selected node's chip is the SAME
+              // button, `aria-disabled` (still focusable): swapping it for a
+              // span when the selection echo lands would unmount the focus
+              // it may hold (Bugbot on #2044). Names, not files: the page's
+              // selected file is a guess from the echo (claude-rail-lib
+              // `onRail`).
+              (() => {
+                const current = !!selectedFile && nodeName(selectedFile) === head.scope.name;
+                return (
+                  <button
+                    type="button"
+                    className="canvas-rail-peek-scope is-node"
+                    aria-disabled={current || undefined}
+                    title={
+                      current
+                        ? `On the node ${head.scope.name} (${head.scope.file}), selected`
+                        : `Select the node ${head.scope.name} (${head.scope.file}) in the workbench`
+                    }
+                    onClick={(e) => {
+                      if (!current && head.scope.kind === "node") onSelectNode(head.scope.name);
+                      // A pointer press pinned it already (`onPressInside`); an
+                      // Enter or Space did not.
+                      onPin();
+                      // Back to the composer: the reader is still in this chat,
+                      // and WebKit leaves a pressed button unfocused — focus on
+                      // the body, where a later press into the canvas frame is
+                      // not heard as the window's blur and so never closes the
+                      // pinned card (ClaudeRail's frame-press rule). A seat with
+                      // no composer (a draft on the node) keeps it on the chip.
+                      const box = shownKey ? focusRefs.current.get(shownKey)?.current : null;
+                      (box ?? e.currentTarget).focus({ preventScroll: true });
+                    }}
+                  >
+                    {head.scope.name}
+                  </button>
+                );
+              })()
             ) : (
               <span className="canvas-rail-peek-scope" title="On the canvas as a whole">
                 Canvas

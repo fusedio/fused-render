@@ -100,6 +100,20 @@ describe("onRail", () => {
     expect(onRail(onNode, NODE)).toBe(true);
     expect(onRail(onFolder, NODE)).toBe(false);
   });
+
+  it("matches the selected node by NAME: the page's file is a guess from the workbench's echo", () => {
+    // The echo names the node only; the page guesses `widget_5.json`, the
+    // row says the widget's real file.
+    const GUESS = { ...PLACE, file: "widget_5.json" };
+    const stamped = pulse(task({ key: "a", canvas: { env: "unstable", name: "demo", file: "widget_5.html" } }));
+    const legacy = pulse(task({ key: "b", target: `${PLACE.dir}/widget_5.html` }));
+    const other = pulse(task({ key: "c", canvas: { env: "unstable", name: "demo", file: "widget_50.json" } }));
+    const nested = pulse(task({ key: "d", target: `${PLACE.dir}/sub/widget_5.html` }));
+    expect(onRail(stamped, GUESS)).toBe(true);
+    expect(onRail(legacy, GUESS)).toBe(true);
+    expect(onRail(other, GUESS)).toBe(false);
+    expect(onRail(nested, GUESS)).toBe(false);
+  });
 });
 
 describe("railRows", () => {
