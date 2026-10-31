@@ -1567,8 +1567,10 @@ export interface Prefs {
   canvas_shot?: { slow_fallback: boolean };
   // The canvas page's collapsed Claude rail shows the hovered chat as a live
   // floating card (`canvas_rail_peek_enabled`, shell/prefs.py; off by
-  // default). Optional: absent (older server) reads as off.
-  canvas_rail_peek?: { enabled: boolean };
+  // default). Optional: absent (older server) reads as off. `trigger` is what
+  // opens the card (`canvas_rail_peek_trigger`): a press on a ring, or a
+  // hover; absent reads as "click".
+  canvas_rail_peek?: { enabled: boolean; trigger?: CanvasRailPeekTrigger };
   // Stable AI titles: Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
   // shell/prefs.py; off by default). Optional: absent reads as off.
   task_summary_titles?: { enabled: boolean };
@@ -2032,6 +2034,13 @@ export function putCanvasShotSlowFallbackEnabled(enabled: boolean): Promise<Pref
 
 export function putCanvasRailPeekEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvas_rail_peek_enabled: enabled });
+}
+
+/** What opens the rail's preview card (`Prefs.canvas_rail_peek.trigger`). */
+export type CanvasRailPeekTrigger = "click" | "hover";
+
+export function putCanvasRailPeekTrigger(trigger: CanvasRailPeekTrigger): Promise<Prefs> {
+  return putJson<Prefs>("/api/prefs", { canvas_rail_peek_trigger: trigger });
 }
 
 /** One PUT per Bots page-wide switch (`Prefs.bots`). */

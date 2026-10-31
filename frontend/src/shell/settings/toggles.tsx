@@ -10,6 +10,8 @@ import {
   putCanvasesEmbedProxy,
   putCanvasesEnabled,
   putCanvasRailPeekEnabled,
+  putCanvasRailPeekTrigger,
+  type CanvasRailPeekTrigger,
   putGitAutoSyncEnabled,
   putLivePreviewsEnabled,
   putMonitorEnabled,
@@ -24,7 +26,7 @@ import {
 } from "@platform/lib/api";
 import { publishContribFlags } from "@platform/lib/contrib-flags";
 import { publishCanvasesEnabled } from "@apps/canvases/feature-flag";
-import { publishCanvasRailPeekEnabled } from "@apps/canvases/rail-peek-flag";
+import { publishCanvasRailPeek } from "@apps/canvases/rail-peek-flag";
 import { publishAppSharingEnabled } from "@platform/lib/share-app-flag";
 import { publishLivePreviewsEnabled } from "@platform/lib/live-previews-flag";
 import { publishMonitorEnabled } from "@platform/lib/monitor-flag";
@@ -260,10 +262,45 @@ export function CanvasRailPeekControl({ prefs, onChange }: PrefControlProps) {
       id="canvases-rail-peek"
       checked={on}
       put={putCanvasRailPeekEnabled}
-      after={(next) => publishCanvasRailPeekEnabled(next.canvas_rail_peek?.enabled === true)}
-      status={on ? "On — hovering a chat on the rail opens it as a card you can use." : "Off — hovering shows the chat's one-line caption."}
+      after={(next) => publishCanvasRailPeek(next.canvas_rail_peek)}
+      status={
+        on
+          ? `On — ${prefs.canvas_rail_peek?.trigger === "hover" ? "hovering" : "clicking"} a chat on the rail opens it as a card you can use.`
+          : "Off — hovering shows the chat's one-line caption; clicking opens it in the panel."
+      }
       onChange={onChange}
     />
+  );
+}
+
+// What opens that card. Published the same way, so an open canvas page in
+// this tab switches trigger at once (ClaudeRail closes a card that was up).
+export function CanvasRailPeekTriggerControl({ prefs, onChange }: PrefControlProps) {
+  const { busy, error, run } = usePrefWrite(onChange);
+  const value: CanvasRailPeekTrigger = prefs.canvas_rail_peek?.trigger === "hover" ? "hover" : "click";
+  return (
+    <SettingRow
+      id="canvases-rail-peek-trigger"
+      control={
+        <SettingSelect
+          id="canvases-rail-peek-trigger"
+          value={value}
+          options={[
+            { key: "click", label: "Click" },
+            { key: "hover", label: "Hover" },
+          ]}
+          disabled={busy}
+          onChange={(v) =>
+            void run(
+              () => putCanvasRailPeekTrigger(v as CanvasRailPeekTrigger),
+              (next) => publishCanvasRailPeek(next.canvas_rail_peek),
+            )
+          }
+        />
+      }
+    >
+      {error && <ErrorBanner>{error}</ErrorBanner>}
+    </SettingRow>
   );
 }
 

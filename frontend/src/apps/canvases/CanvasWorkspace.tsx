@@ -156,7 +156,10 @@
 //     canvas pane (keyboard follows the hover: Space-pan, Delete, Cmd+Z),
 //     unless the user is typing somewhere — a wandering mouse must not pull
 //     keystrokes out of the chat onto canvas hotkeys. The chat never takes
-//     focus on hover: a text surface is clicked into.
+//     focus on hover: a text surface is clicked into. Nor while the Claude
+//     rail's pinned card is up (ClaudeRail `onCardPinned`): a press into the
+//     frame is what closes that card, and the page can only hear it as the
+//     frame TAKING the focus — so a hover must not hand it over first.
 //
 // The node pane's chat (owner, 2026-10-19: "when I switch from one node to
 // another, each time I get the new claude session screen"). Selecting a node
@@ -1468,8 +1471,10 @@ export default function CanvasWorkspace({
   // Pointer enters the canvas pane: give the frame focus, unless the user is
   // mid-drag from elsewhere or typing (header). `preventScroll`: a focus
   // must never shift the page.
+  const railCardPinnedRef = useRef(false);
   const focusCanvasOnEnter = useCallback((e: React.MouseEvent) => {
     if (e.buttons !== 0) return;
+    if (railCardPinnedRef.current) return;
     if (activeElementIsEditable(document)) return;
     frameRef.current?.focus({ preventScroll: true });
   }, []);
@@ -3059,6 +3064,9 @@ export default function CanvasWorkspace({
             onOpenChat={(href) => navigateUrl(href)}
             onOpen={openFromRail}
             onPullStart={onRailPull}
+            onCardPinned={(on) => {
+              railCardPinnedRef.current = on;
+            }}
           />
         )}
       </div>

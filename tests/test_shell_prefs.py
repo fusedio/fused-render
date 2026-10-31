@@ -1680,7 +1680,7 @@ def test_canvas_rail_peek_defaults_off_toggles_and_rejects_junk(tmp_path, monkey
     """The collapsed Claude rail's hover preview card (Settings › Canvases):
     same opt-in idiom — only a stored `true` is on, the PUT takes booleans."""
     client, home = _client(tmp_path, monkeypatch)
-    assert client.get("/api/prefs").json()["canvas_rail_peek"] == {"enabled": False}
+    assert client.get("/api/prefs").json()["canvas_rail_peek"]["enabled"] is False
     body = client.put("/api/prefs", json={"canvas_rail_peek_enabled": True},
                       headers=FUSED).json()
     assert body["canvas_rail_peek"]["enabled"] is True
@@ -1694,6 +1694,31 @@ def test_canvas_rail_peek_defaults_off_toggles_and_rejects_junk(tmp_path, monkey
     (home / "prefs.json").write_text(json.dumps({"canvas_rail_peek_enabled": 1}),
                                      encoding="utf-8")
     assert prefs_mod.canvas_rail_peek_enabled() is False
+
+
+def test_canvas_rail_peek_trigger_defaults_click_switches_and_rejects_junk(tmp_path, monkeypatch):
+    """What opens the rail's preview card: click unless the reader picked
+    hover; the PUT takes only the two words, and junk on disk reads as click."""
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["canvas_rail_peek"] == {"enabled": False,
+                                                                  "trigger": "click"}
+    body = client.put("/api/prefs", json={"canvas_rail_peek_trigger": "hover"},
+                      headers=FUSED).json()
+    assert body["canvas_rail_peek"]["trigger"] == "hover"
+    # The trigger is its own key: it never turns the card itself on.
+    assert body["canvas_rail_peek"]["enabled"] is False
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["canvas_rail_peek_trigger"] == "hover"
+    assert prefs_mod.canvas_rail_peek_trigger() == "hover"
+    for junk in ("Hover", "", None, True):
+        bad = client.put("/api/prefs", json={"canvas_rail_peek_trigger": junk},
+                         headers=FUSED)
+        assert bad.status_code == 400
+        assert "canvas_rail_peek_trigger" in bad.json()["error"]
+    assert prefs_mod.canvas_rail_peek_trigger() == "hover"
+    (home / "prefs.json").write_text(json.dumps({"canvas_rail_peek_trigger": "press"}),
+                                     encoding="utf-8")
+    assert prefs_mod.canvas_rail_peek_trigger() == "click"
 
 
 def test_task_summary_titles_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
