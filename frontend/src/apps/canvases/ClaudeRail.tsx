@@ -64,8 +64,12 @@
 // dismissed — Escape, its ×, its Open, or a press anywhere but a ring (the +,
 // the panel button and the seam included). The ring's press no longer opens
 // the pane; the card's Open does, and a modified press still follows the
-// link. The hover caption comes back, since a hover now shows nothing else;
-// it steps aside while a card is up. With no room for a card,
+// link. THE PRESS LANDS IN THE COMPOSER (owner, 2026-10-31: "when we click
+// the chat item we focus on the card composer so user can type"): under
+// either trigger a plain press shows the card and puts the keyboard in its
+// composer (`focusComposerSoon`) — with the hover trigger too, where the press
+// used to open the pane. The hover caption comes back, since a hover now shows
+// nothing else; it steps aside while a card is up. With no room for a card,
 // the press opens the pane as before (the first such press included). A press into the workbench frame is
 // not seen by this document; it is heard as the window's blur with the frame
 // holding the focus — which is why the page stops handing the frame focus on
@@ -112,6 +116,10 @@ import type { WorkbenchEnv } from "./api";
 
 /** The hover card's DOM id (one rail per page; the ring's `aria-controls`). */
 const PEEK_ID = "canvas-rail-peek";
+
+/** How long a press waits for the card's composer to mount before it gives up
+ *  putting the keyboard there (a cold chat chunk takes ~1s). */
+const FOCUS_WAIT_MS = 2500;
 
 /** What the New task card needs from the schedule before it can open: the
  *  permission modes the server offers and the folders existing tasks point at
@@ -400,6 +408,35 @@ export function ClaudeRail({
     };
     requestAnimationFrame(attempt);
   }, []);
+  // A PRESS ON A RING PUTS THE KEYBOARD IN THE COMPOSER (owner, 2026-10-31:
+  // "instead of opening the sidebar we focus the composer on click, for the
+  // user ready to type"). The card is drawn a frame after the show and the
+  // chat's chunk may still be loading, so retry until the composer exists —
+  // never falling back to the card's first button (that is the ×) — and give
+  // up after FOCUS_WAIT_MS. One wait at a time (a later press supersedes it);
+  // it also ends the moment the card closes, or the reader has put the focus
+  // somewhere in the card themselves.
+  const composerWait = useRef(0);
+  const focusComposerSoon = useCallback(
+    (key: string) => {
+      const token = ++composerWait.current;
+      const until = performance.now() + FOCUS_WAIT_MS;
+      const attempt = () => {
+        if (composerWait.current !== token || intent.current !== key) return;
+        const card = document.getElementById(PEEK_ID);
+        // The reader already went into the shown chat or the head (a click
+        // on the transcript, the ⋮): leave the focus where they put it. The
+        // composer of ANOTHER kept chat, left focused by the previous card,
+        // does not count — a swap still has to move it.
+        const a = document.activeElement;
+        if (a?.closest(".canvas-rail-peek-chat.is-shown, .canvas-rail-peek-head") && card?.contains(a)) return;
+        if (peekRef.current?.focusComposer() && card?.contains(document.activeElement)) return;
+        if (performance.now() < until) requestAnimationFrame(attempt);
+      };
+      requestAnimationFrame(attempt);
+    },
+    [intent],
+  );
   // ESCAPE WITH THE FOCUS NOWHERE closes a pinned card. The ring (below),
   // the card's head and its chat each take their own Escape; a press that
   // opened the card in an engine that does not focus a link on click (WebKit)
@@ -588,19 +625,29 @@ export function ClaudeRail({
                   onClick={(e) => {
                     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
                     e.preventDefault();
-                    if (byClick && !noRoom) {
+                    if (peekOn && !noRoom) {
                       pressedHref.current = href;
                       requestAnimationFrame(() => {
                         pressedHref.current = null;
                       });
-                      if (intent.toggle(t.key)) {
+                      // Click trigger: the press toggles the card. Hover
+                      // trigger: the card is (or is about to be) up under
+                      // the pointer — the press makes sure of it, unpinned,
+                      // and the pointer rules keep closing it.
+                      const opened = byClick
+                        ? intent.toggle(t.key)
+                        : (intent.showNow(t.key), true);
+                      if (opened) {
                         // The press focused the link (Chromium) and the hint
                         // followed the focus a beat before `captionless`
                         // emptied it.
                         hideHint();
-                        // Enter on a focused ring: the keyboard goes in with
-                        // the card, as ArrowLeft takes it.
-                        if (e.detail === 0) focusCardSoon();
+                        // Ready to type, whether it was a click or an Enter
+                        // on a focused ring.
+                        if (t.session_id) focusComposerSoon(t.key);
+                        // A draft or scheduled row has no composer: an Enter
+                        // still takes the keyboard into the card.
+                        else if (e.detail === 0) focusCardSoon();
                       }
                       return;
                     }
