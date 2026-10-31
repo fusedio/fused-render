@@ -176,6 +176,7 @@ export function ClaudeRail({
   activeSessionId,
   onOpen,
   onOpenChat,
+  onSelectNode,
   onPullStart,
   onCardPinned,
 }: {
@@ -198,6 +199,8 @@ export function ClaudeRail({
   onOpen: () => void;
   /** Open one of the canvas's chats: its Tasks-page door (`taskHref`). */
   onOpenChat: (href: string) => void;
+  /** The card's node chip: select that node in the workbench (RailPeek). */
+  onSelectNode: (udfName: string) => void;
   /** A pointer down on the rail's inner edge: the start of a pull that opens
    *  the pane at the width the pointer drags it to (CanvasWorkspace
    *  `onRailPull`). */
@@ -744,6 +747,14 @@ export function ClaudeRail({
           onDismiss={dismissToRing}
           onNoRoom={onNoRoom}
           onOpenChat={onOpenChat}
+          onSelectNode={onSelectNode}
+          selectedFile={nodeFile}
+          onPin={() => {
+            const key = intent.current;
+            if (!key) return;
+            intent.press(key);
+            if (seats.find((s) => s.pulse.key === key)?.pulse.session_id) focusComposerSoon(key);
+          }}
         />
       )}
       {card && (

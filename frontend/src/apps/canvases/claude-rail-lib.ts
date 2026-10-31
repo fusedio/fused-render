@@ -67,9 +67,23 @@ export function onRail(t: TaskPulseTask, place: RailPlace): boolean {
   if (!named && !(place.dir !== null && t.project === place.dir)) return false;
   if (!place.file) return true;
   // A row the server stamped names its node; one that predates `task.canvas`
-  // is matched by its target, the node's file under the clone.
-  if (named) return t.canvas!.file === place.file;
-  return place.dir !== null && t.target === `${place.dir.replace(/\/+$/, "")}/${place.file}`;
+  // is matched by its target, the node's file under the clone. BY NAME, not
+  // by file: the page's selected file is guessed from the workbench's echo,
+  // which names the node only (a widget's `.json` may be an `.html` on disk),
+  // and a node's name is unique on its canvas.
+  const want = nodeName(place.file);
+  if (named) return !!t.canvas!.file && nodeName(t.canvas!.file) === want;
+  if (place.dir === null) return false;
+  const base = place.dir.replace(/\/+$/, "") + "/";
+  const rest = (t.target || "").startsWith(base) ? t.target!.slice(base.length) : "";
+  return !!rest && !rest.includes("/") && nodeName(rest) === want;
+}
+
+/** A node file's name as the workbench names the node: the file's stem
+ *  (`hex.py` → `hex`, `widget_5.json` → `widget_5`). */
+export function nodeName(file: string): string {
+  const dot = file.lastIndexOf(".");
+  return dot > 0 ? file.slice(0, dot) : file;
 }
 
 /** WHERE A ROW LIVES on the canvas: the canvas as a whole, or one node
@@ -92,8 +106,7 @@ export function railScope(
     }
   }
   if (!file) return { kind: "canvas" };
-  const dot = file.lastIndexOf(".");
-  return { kind: "node", name: dot > 0 ? file.slice(0, dot) : file, file };
+  return { kind: "node", name: nodeName(file), file };
 }
 
 /**

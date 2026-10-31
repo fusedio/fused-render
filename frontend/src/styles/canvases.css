@@ -704,6 +704,31 @@
   color: var(--fg);
   background: rgba(var(--tint), 0.06);
 }
+/* The node chip is a button (it selects the node in the workbench): the
+   same chip, with a button's UA styles reset and a hover wash like the
+   head's other seats. */
+button.canvas-rail-peek-scope.is-node {
+  margin: 0;
+  font-family: inherit;
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    border-color 0.12s ease;
+}
+button.canvas-rail-peek-scope.is-node[aria-disabled="true"] {
+  cursor: default;
+}
+button.canvas-rail-peek-scope.is-node:not([aria-disabled="true"]):hover {
+  background: rgba(var(--tint), 0.14);
+  border-color: rgba(var(--tint), 0.35);
+}
+button.canvas-rail-peek-scope.is-node:not([aria-disabled="true"]):active {
+  background: rgba(var(--tint), 0.2);
+}
+button.canvas-rail-peek-scope.is-node:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 /* The door, as the app's outline button (`.btn`, the sync strip's "Open in
    workbench"), sized to the head's 26px seats. */
 .canvas-rail-peek-open {
