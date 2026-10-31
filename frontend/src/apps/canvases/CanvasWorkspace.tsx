@@ -1386,6 +1386,18 @@ export default function CanvasWorkspace({
     if (!frame?.contentWindow || !origin) return;
     frame.contentWindow.postMessage({ type: "fused-embed-select", udfName }, origin);
   }, []);
+  // The rail card's node chip (RailPeek): pressed before the frame is ready
+  // (no window or origin yet), the ask is kept and replayed — with the
+  // page's own node — when the frame comes up (auth-ready, hydration), rather
+  // than dropped (CodeRabbit on #2044).
+  const pendingSelectRef = useRef<string | null>(null);
+  const selectFromRail = useCallback(
+    (udfName: string) => {
+      pendingSelectRef.current = frameRef.current?.contentWindow && baseOriginRef.current ? null : udfName;
+      sendSelect(udfName);
+    },
+    [sendSelect],
+  );
 
   // Whether the right pane is up (see the header): an older workbench's
   // expand chip acts on this pane, so it needs the state to show itself.
@@ -1941,7 +1953,7 @@ export default function CanvasWorkspace({
           // A fresh document: down until its next hello (the selection gate
           // below), whether or not the src changed.
           frameUpRef.current = false;
-          sendSelect(nodeRef.current?.udfName ?? null);
+          sendSelect(pendingSelectRef.current ?? nodeRef.current?.udfName ?? null);
         }
       }
       if (type === "fused-embed-snapshot") {
@@ -2069,8 +2081,10 @@ export default function CanvasWorkspace({
         // Once more now that the canvas is there to select in: an older
         // workbench picks its first UDF on hydration, and this puts it back
         // on the page's own node (or none). A current one already settled on
-        // the replay it was holding, and a repeat is a no-op there.
-        sendSelect(nodeRef.current?.udfName ?? null);
+        // the replay it was holding, and a repeat is a no-op there. A chip
+        // press that came before the frame (`selectFromRail`) is spent here.
+        sendSelect(pendingSelectRef.current ?? nodeRef.current?.udfName ?? null);
+        pendingSelectRef.current = null;
       }
       if (type === "fused-embed-delta-applied" || type === "fused-embed-delta-rejected") {
         const rev = event.data?.rev;
@@ -3064,7 +3078,7 @@ export default function CanvasWorkspace({
             onOpenChat={(href) => navigateUrl(href)}
             // The card's node chip: the workbench selects the node (zooms to
             // it, shows its code); its selection echo sets `node` here.
-            onSelectNode={sendSelect}
+            onSelectNode={selectFromRail}
             onOpen={openFromRail}
             onPullStart={onRailPull}
             onCardPinned={(on) => {

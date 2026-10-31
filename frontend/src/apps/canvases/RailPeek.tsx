@@ -181,8 +181,9 @@ export interface RailPeekProps {
   /** The node the canvas page has selected (its file), if any: that node's
    *  chip is a label, not a door — it is already selected. */
   selectedFile: string | null;
-  /** Pin the shown card — the chip's press by keyboard, which no pointer-down
-   *  (`onPressInside`) announced. */
+  /** The chip was pressed: pin the shown card (a keyboard press has no
+   *  pointer-down to do it, `onPressInside`), and see the keyboard into its
+   *  composer once that has mounted (ClaudeRail `focusComposerSoon`). */
   onPin: () => void;
 }
 
@@ -612,16 +613,19 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                         : `Select the node ${head.scope.name} (${head.scope.file}) in the workbench`
                     }
                     onClick={(e) => {
-                      if (!current && head.scope.kind === "node") onSelectNode(head.scope.name);
-                      // A pointer press pinned it already (`onPressInside`); an
-                      // Enter or Space did not.
+                      // Pinned FIRST: the selection may reshape the rail (it
+                      // narrows to the node), and only a pinned card is held
+                      // through that (CodeRabbit on #2044).
                       onPin();
+                      if (!current && head.scope.kind === "node") onSelectNode(head.scope.name);
                       // Back to the composer: the reader is still in this chat,
                       // and WebKit leaves a pressed button unfocused — focus on
                       // the body, where a later press into the canvas frame is
                       // not heard as the window's blur and so never closes the
                       // pinned card (ClaudeRail's frame-press rule). A seat with
-                      // no composer (a draft on the node) keeps it on the chip.
+                      // no composer (a draft on the node), or a chat still
+                      // mounting, keeps it on the chip — the latter until
+                      // `onPin`'s wait moves it on.
                       const box = shownKey ? focusRefs.current.get(shownKey)?.current : null;
                       (box ?? e.currentTarget).focus({ preventScroll: true });
                     }}

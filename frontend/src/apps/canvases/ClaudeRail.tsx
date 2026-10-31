@@ -750,7 +750,10 @@ export function ClaudeRail({
           onSelectNode={onSelectNode}
           selectedFile={nodeFile}
           onPin={() => {
-            if (intent.current) intent.press(intent.current);
+            const key = intent.current;
+            if (!key) return;
+            intent.press(key);
+            if (seats.find((s) => s.pulse.key === key)?.pulse.session_id) focusComposerSoon(key);
           }}
         />
       )}
