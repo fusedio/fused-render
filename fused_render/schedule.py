@@ -2065,6 +2065,7 @@ def create(target: str, message: str, due=None, session_id: str = "",
     # (which never fires). Reads the store rather than testing `entry`, for the
     # same reason. A future-dated message rings nothing and waits for its time.
     _ring()
+    _log_created(entry)
     return entry
 
 
@@ -2649,6 +2650,7 @@ def _claim(entry_id: str, now: datetime, session_id: str = "") -> dict | None:
                 return None
             entry["state"] = SENDING
             entry["fired"] = now.isoformat()
+            _hold_said.pop(entry_id, None)
             if session_id and not str(entry.get("session_id") or ""):
                 entry["session_id"] = session_id
                 entry["session_learned"] = True
@@ -4367,7 +4369,7 @@ def _tick_queued(manager, due: list[str], now: datetime) -> list[dict]:
             try:
                 dispatch_entry(entry_id, now)
             except SpawnBusy as exc:
-                logger.debug("holding %s: %s", entry_id, exc)
+                _log_hold(entry_id, str(exc))
             continue
         manager.enqueue(folder, task_key, entry_id)
     # Everything `dispatch_entry` claimed since `tick` opened the sink — which
@@ -4504,8 +4506,7 @@ def tick(now: datetime | None = None) -> list[dict]:
         # else, and with the manager on it is `dispatch_entry` that resolves it.
         resolved = ""
         if session and session in busy:
-            logger.debug("holding %s: session %s already has a send in flight",
-                         entry_id, session)
+            _log_hold(entry_id, f"session {session} already has a send in flight")
             continue
         # …unless what the transcript is showing is the closing rows of a turn
         # we have ALREADY filed a verdict for, which is the one case where the
@@ -4521,8 +4522,7 @@ def tick(now: datetime | None = None) -> list[dict]:
             # turn we have ALREADY filed a verdict for, which is the one case
             # where the 45-second window holds a message against the very turn
             # it is waiting for (`_verdict_echo`).
-            logger.debug("holding %s: session %s has a live turn", entry_id,
-                         session)
+            _log_hold(entry_id, f"session {session} has a live turn")
             left = _live_expires_in(session, now)
             if left:
                 held_soon.append(left)
@@ -4531,7 +4531,7 @@ def tick(now: datetime | None = None) -> list[dict]:
         if by_entry is not None and session_cap.held(by_entry, session):
             # At the cap: left PENDING, like a busy session, and the next
             # `exited` event (or the 30-second poll) tries again.
-            logger.debug("holding %s: at the session cap", entry_id)
+            _log_hold(entry_id, "at the session cap")
             continue
         entry = _claim(entry_id, now, resolved)
         if entry is None:
@@ -4974,6 +4974,109 @@ def resend(entry_id: str, now: datetime | None = None) -> dict:
     return {"ok": True, "found": True, "entry": entry, "reason": note}
 
 
+# A hold is logged at INFO when it begins and then once per this many seconds
+# for as long as it lasts; `_claim` forgets the entry, so the next hold of the
+# same message is a new episode. The steady state of a held message is near
+# silence, but a log that never says WHY a due message has not gone cannot
+# answer "my task sits in Upcoming" (2026-10-31).
+_HOLD_LOG_EVERY_S = 3600.0
+_hold_said: dict[str, float] = {}
+
+
+def _log_hold(entry_id: str, reason: str) -> None:
+    """Say at INFO that `entry_id` was left pending this pass and why — when
+    the hold begins, and then once per `_HOLD_LOG_EVERY_S` while it lasts;
+    every other pass says it at DEBUG, as all four hold sites used to."""
+    now = time.monotonic()
+    if now - _hold_said.get(entry_id, float("-inf")) < _HOLD_LOG_EVERY_S:
+        logger.debug("holding %s: %s", entry_id, reason)
+        return
+    if len(_hold_said) > 500:
+        for stale in sorted(_hold_said, key=_hold_said.get)[:250]:
+            _hold_said.pop(stale, None)
+    _hold_said[entry_id] = now
+    logger.info("holding %s: %s", entry_id, reason)
+
+
+def _beat_start() -> None:
+    """Stamp `tick_started` before a pass, so a parked process's watchdog
+    (`queue_manager._duties_check`) can tell a slow pass from a stopped
+    scheduler: it judges staleness on the newer of this and `beat`."""
+    try:
+        tasks_store.write_lease_record(tasks_store.DUTIES_LEASE,
+                                       tick_started=time.time())
+    except Exception:  # noqa: BLE001
+        logger.debug("could not stamp the pass start", exc_info=True)
+
+
+def _beat(sent: int, error: str, failures: int) -> None:
+    """The scheduler's heartbeat: stamped into the machine-duties lease file
+    this process holds (`tasks_store.write_lease_record` — a no-op when it does
+    not, which is every test that drives `tick` by hand and every process
+    that is not the leader). A parked process reads it back
+    (`queue_manager._duties_check`) to tell a leader that is ticking from one
+    that is wedged, and a created message's log line quotes its age."""
+    try:
+        now = time.time()
+        tasks_store.write_lease_record(
+            tasks_store.DUTIES_LEASE, beat=now,
+            beat_at=datetime.fromtimestamp(now, timezone.utc).isoformat(timespec="seconds"),
+            sent=sent, error=error, failures=failures)
+    except Exception:  # noqa: BLE001 — a heartbeat never stops the loop
+        logger.debug("could not write the scheduler heartbeat", exc_info=True)
+
+
+def due_pending_count(now: datetime | float | None = None) -> int:
+    """How many pending messages are due at `now` — what a parked process
+    asks before it worries about the leader (`queue_manager._duties_check`).
+    Accepts the watchdog's epoch seconds as well as a datetime."""
+    if now is None:
+        now = _now()
+    elif not isinstance(now, datetime):
+        now = datetime.fromtimestamp(float(now), timezone.utc)
+    with _lock:
+        entries = _read()
+    count = 0
+    for entry in entries:
+        if entry.get("state") != PENDING:
+            continue
+        try:
+            if parse_due(entry.get("due")) <= now:
+                count += 1
+        except ValueError:
+            continue
+    return count
+
+
+def _log_created(entry: dict) -> None:
+    """One INFO line per created message naming the process that will send
+    it and when that process last ticked — so a user's log answers "why is
+    my task still Upcoming" on its own (2026-10-31: the New task form's
+    entries sat pending for ever while chat, which needs no scheduler, kept
+    working; nothing in any log named the process that should have sent
+    them). Reads the lease file once; never raises."""
+    try:
+        holder = tasks_store.lease_holder(tasks_store.DUTIES_LEASE)
+        if holder.get("held_here"):
+            who = f"this process (pid {os.getpid()})"
+        elif holder.get("alive"):
+            who = (f"pid {holder['pid']} ({holder.get('label', '?')}, "
+                   f"v{holder.get('version') or '?'})")
+        elif holder.get("pid"):
+            who = (f"an unstamped process (older build); last stamped pid "
+                   f"{holder['pid']} ({holder.get('label', '?')}) is gone")
+        else:
+            who = "no scheduler record on this machine"
+        beat = holder.get("beat")
+        age = f"{time.time() - float(beat):.0f}s ago" if beat else "never"
+        logger.info("schedule: created %s due %s%s; scheduler = %s, last tick %s",
+                    entry.get("id"), entry.get("due"),
+                    " (immediate)" if entry.get("immediate") else "", who, age)
+    except Exception:  # noqa: BLE001 — a log line never fails a create
+        logger.debug("could not describe the scheduler for %s", entry.get("id"),
+                     exc_info=True)
+
+
 def _loop() -> None:
     """Daemon-thread body: tick() on a timer — or as soon as something rings —
     forever. `tick` already keeps a per-entry failure on its entry, but wrap
@@ -4985,11 +5088,24 @@ def _loop() -> None:
     it always was) and the wait is what lets work stored ALREADY DUE go
     immediately — see `_wake`. Cleared after the wait and before the tick, so a
     ring that arrives while a tick is running wakes the pass after it."""
+    failures = 0
+    started = False
     while True:
+        sent = 0
+        error = ""
         try:
-            tick()
-        except Exception:
+            if not started:
+                started = True
+                logger.info("scheduler: running in pid %s (store %s)",
+                            os.getpid(), store_path())
+            _beat_start()
+            sent = len(tick())
+            failures = 0
+        except Exception as exc:  # noqa: BLE001 — logged, then the loop goes on
+            failures += 1
+            error = f"{type(exc).__name__}: {exc}"[:200]
             logger.exception("scheduled-message tick failed")
+        _beat(sent, error, failures)
         _wake.wait(POLL_INTERVAL_S)
         _wake.clear()
 

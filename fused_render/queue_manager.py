@@ -2382,7 +2382,7 @@ def get() -> QueueManager:
 
 
 def reset_for_tests(manager: QueueManager | None = None) -> None:
-    global _manager, _duties_waiter_thread, _duties_state
+    global _manager, _duties_waiter_thread, _duties_state, _duties_watch_thread
     _manager = manager
     # Forget any waiter thread a prior test started. `tasks_store`'s own
     # `reset_leases_for_tests()` fixture (conftest.py) releases the lease
@@ -2393,6 +2393,7 @@ def reset_for_tests(manager: QueueManager | None = None) -> None:
     # still-blocked waiter is responsible for joining it (with a timeout)
     # before it ends — this does not join.
     _duties_waiter_thread = None
+    _duties_watch_thread = None
     _duties_state = _DUTIES_IDLE
 
 
@@ -2403,7 +2404,15 @@ def reset_for_tests(manager: QueueManager | None = None) -> None:
 # or anything else this module already locks — a duties winner and a `_txn`
 # writer are unrelated critical sections and must never share a lock name,
 # or one would block on the other for no reason.
-_DUTIES_LEASE = "machine-duties.lock"
+_DUTIES_LEASE = tasks_store.DUTIES_LEASE
+# The parked process's watchdog over the holder it waits behind — see
+# `_duties_check`. How often it looks, how old a heartbeat has to be before
+# the holder counts as stopped (six missed 30-second ticks), and how often
+# the same verdict is repeated in the log.
+_DUTIES_WATCH_S = 60.0
+_LEADER_STALE_S = 180.0
+_WATCH_LOG_EVERY_S = 300.0
+_duties_watch_thread: threading.Thread | None = None
 
 
 _duties_waiter_thread: threading.Thread | None = None
@@ -2501,7 +2510,7 @@ def ensure_duties_waiter() -> threading.Thread:
     Deferred imports: `schedule` reaches back into this module (`_qm()`'s
     fallback wiring, and each tick's `reconcile()`), so importing it at
     module level here would cycle."""
-    global _duties_waiter_thread, _duties_state
+    global _duties_waiter_thread, _duties_state, _duties_watch_thread
     with _duties_waiter_lock:
         if _duties_state != _DUTIES_IDLE:
             return _duties_waiter_thread
@@ -2511,7 +2520,25 @@ def ensure_duties_waiter() -> threading.Thread:
             backoff = _DUTIES_RETRY_MIN_S
             while True:
                 try:
+                    # SAY WHO HAS IT before parking. The wait below is
+                    # silent and can last for the life of this process; a
+                    # user whose scheduled tasks never start needs the log
+                    # to name the process that is supposed to be starting
+                    # them (2026-10-31). Read, not computed: the holder
+                    # wrote itself into the file (`write_lease_record`).
+                    holder = tasks_store.lease_holder(_DUTIES_LEASE)
+                    pid = holder.get("pid")
+                    if pid and pid != os.getpid() and holder.get("alive"):
+                        logger.info(
+                            "machine duties: parked behind pid %s (%s, v%s) — "
+                            "scheduled tasks are dispatched by that process "
+                            "until it exits", pid, holder.get("label", "?"),
+                            holder.get("version") or "?")
+                    waited = time.monotonic()
                     tasks_store.acquire_lease_blocking(_DUTIES_LEASE)
+                    logger.info(
+                        "machine duties: pid %s now runs the scheduler "
+                        "(waited %.0fs)", os.getpid(), time.monotonic() - waited)
 
                     from fused_render import schedule
 
@@ -2548,4 +2575,116 @@ def ensure_duties_waiter() -> threading.Thread:
         _duties_waiter_thread = threading.Thread(
             target=run, daemon=True, name="fused-queue-duties-waiter")
         _duties_waiter_thread.start()
+        _duties_watch_thread = threading.Thread(
+            target=_duties_watch, daemon=True, name="fused-queue-duties-watch")
+        _duties_watch_thread.start()
         return _duties_waiter_thread
+
+
+def _duties_watch() -> None:
+    """Thread body: while this process is parked behind another holder of
+    the machine-duties lease, look every `_DUTIES_WATCH_S` at whether that
+    holder is still doing the job, and say so in the log when it is not
+    (`_duties_check`). Ends once this process holds the lease itself (the
+    waiter flips `_duties_state` to done), or when a test reset replaced it.
+
+    Daemon, sleeps first: a process that wins the lease at startup — the
+    ordinary case — never reaches a check."""
+    last_said = 0.0
+    failed = False
+    pause = threading.Event()
+    while True:
+        # An Event's wait, not `time.sleep`: the waiter's own retry sleep is
+        # what tests count, and this thread must not add to it.
+        pause.wait(_DUTIES_WATCH_S)
+        with _duties_waiter_lock:
+            if (_duties_state == _DUTIES_DONE
+                    or _duties_watch_thread is not threading.current_thread()):
+                return
+        try:
+            last_said = _duties_check(time.time(), last_said)
+        except Exception:  # noqa: BLE001 — a watchdog never takes anything down
+            if not failed:
+                logger.warning("machine duties: watch failed (said once)",
+                               exc_info=True)
+            failed = True
+
+
+def _duties_check(now: float, last_said: float) -> float:
+    """One look at the holder of the machine-duties lease, from a process
+    that does not hold it. Returns the time the log was last written to, so
+    the caller repeats a verdict no more than once per `_WATCH_LOG_EVERY_S`.
+
+    THE ONE SYMPTOM THIS EXISTS FOR: a task created from the New task form
+    sits in Upcoming for ever while chat keeps working, and nothing anywhere
+    says why (2026-10-31). Chat spawns need no scheduler; a scheduled message
+    needs the ONE process on the machine that holds this lease to tick, and
+    that process can be a leftover from an update restart, a lean
+    `fused-render open`, or a wedged server — none of them visible to the
+    user. So this is written only when the thing that hurts is true: due
+    messages are waiting AND the holder is not ticking (its heartbeat —
+    `schedule._beat`, stamped beside the lease file — is older than
+    `_LEADER_STALE_S`, or its last pass failed). A healthy holder that is
+    merely HOLDING entries logs its own reasons (`schedule._log_hold`).
+
+    Reads only: the lease file, the pid, and one pass over the store."""
+    holder = tasks_store.lease_holder(_DUTIES_LEASE)
+    if holder.get("held_here"):
+        return last_said
+    from fused_render import schedule
+
+    due = schedule.due_pending_count(now)
+    if not due or now - last_said < _WATCH_LOG_EVERY_S:
+        return last_said
+    pid = holder.get("pid")
+    label = holder.get("label", "?")
+    version = holder.get("version") or "?"
+    waiting = f"{due} due task(s) waiting"
+    if not pid:
+        logger.warning(
+            "machine duties: %s and no scheduler record on this machine — the "
+            "lease is held by an older build, or by nothing (then this process "
+            "would have taken it)", waiting)
+        return now
+    if not holder.get("alive"):
+        logger.warning(
+            "machine duties: %s; the lease is held by a process that did not "
+            "stamp it (an older build) — the last stamped scheduler, pid %s "
+            "(%s, v%s), is gone", waiting, pid, label, version)
+        return now
+    last = _last_activity(holder)
+    if last is None:
+        logger.warning(
+            "machine duties: %s; scheduler pid %s (%s, v%s) holds the lease but "
+            "has never started a pass", waiting, pid, label, version)
+        return now
+    age = now - last
+    if age > _LEADER_STALE_S:
+        logger.warning(
+            "machine duties: scheduler pid %s (%s, v%s) has shown no activity "
+            "for %.0fs; %s — if that process is a leftover (an old copy of the "
+            "app, a lean open, a terminal serve), quit it and this one takes "
+            "over", pid, label, version, age, waiting)
+        return now
+    if holder.get("error"):
+        logger.warning(
+            "machine duties: scheduler pid %s (%s) ticks but its last pass "
+            "failed (%s); %s", pid, label, holder["error"], waiting)
+        return now
+    return last_said
+
+
+def _last_activity(holder: dict) -> float | None:
+    """The newest of the scheduler's two stamps — a pass STARTING
+    (`tick_started`) or FINISHING (`beat`) — as epoch seconds, or None for a
+    holder that never stamped either. Judged on both so a slow pass (the
+    first one builds the queue index; any may wait on the store lock) is not
+    read as a stopped scheduler."""
+    best = None
+    for key in ("beat", "tick_started"):
+        try:
+            value = float(holder.get(key))
+        except (TypeError, ValueError):
+            continue
+        best = value if best is None else max(best, value)
+    return best

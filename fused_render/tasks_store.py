@@ -131,6 +131,7 @@ import math
 import os
 import re
 import threading
+import sys
 import time
 import urllib.parse
 from datetime import datetime, timezone
@@ -320,6 +321,17 @@ def _update(filename: str, mutate):
 # free the moment the process exits.
 _lease_handles: dict[str, object] = {}
 _lease_lock = threading.Lock()
+# What this process last wrote into each lease file it holds — see
+# `write_lease_record`. Kept so a heartbeat can add one field without
+# re-deriving the identity fields, and so `since` survives every rewrite.
+_lease_records: dict[str, dict] = {}
+
+# The machine-duties lease: whoever holds it runs the scheduler (and the
+# project-queue resume) for this branch's store. Named here, in the module
+# that owns leases, because two modules need the name — `queue_manager`
+# takes it and `schedule` stamps its heartbeat into it — and neither may
+# import the other at module level.
+DUTIES_LEASE = "machine-duties.lock"
 
 
 def duties_dir() -> str:
@@ -388,6 +400,7 @@ def acquire_lease_blocking(name: str) -> None:
             handle.close()
             return
         _lease_handles[name] = handle
+    write_lease_record(name)
 
 
 def try_acquire_lease(name: str, *, machine_wide: bool = False) -> bool:
@@ -405,7 +418,8 @@ def try_acquire_lease(name: str, *, machine_wide: bool = False) -> bool:
             handle.close()
             return False
         _lease_handles[name] = handle
-        return True
+    write_lease_record(name)
+    return True
 
 
 def release_lease(name: str) -> None:
@@ -413,8 +427,138 @@ def release_lease(name: str) -> None:
     Closing the handle is what drops the flock."""
     with _lease_lock:
         handle = _lease_handles.pop(name, None)
+        _lease_records.pop(name, None)
     if handle is not None:
         handle.close()
+
+
+def _process_label() -> str:
+    """Who this process is, for a human reading the record or a log line: the
+    interpreter's basename, the program's basename, and its first bare-word
+    argument (`open`, `serve`) — enough to tell the desktop app from a
+    `fused-render open`, a pip `serve` in a terminal or a worktree dev server.
+    Flags, paths and anything else in argv are left out: a value there could
+    be a token, and this string lands in STATE_DIR and in INFO logs."""
+    parts = [os.path.basename(sys.executable or "python")]
+    argv = [str(a) for a in sys.argv]
+    if argv:
+        parts.append(os.path.basename(argv[0]) or argv[0])
+    if len(argv) > 1 and re.fullmatch(r"[A-Za-z][\w-]*", argv[1]):
+        parts.append(argv[1])
+    return " ".join(p for p in parts if p)[:120]
+
+
+def _version() -> str:
+    try:
+        from fused_render import __version__  # noqa: PLC0415
+    except Exception:  # noqa: BLE001 — a label, never a failure
+        return ""
+    return str(__version__)
+
+
+def _record_path(name: str, *, machine_wide: bool = False) -> str:
+    """The lease's SIDECAR: `<lease file>.json`, beside it. Not the lock file
+    itself — Windows' `msvcrt.locking` makes byte 0 unreadable to everyone
+    but the holder, and a rewrite-in-place has an empty instant a rival can
+    read. A separate file written whole and landed with `os.replace` has
+    neither problem on either platform."""
+    base = STATE_DIR if machine_wide else duties_dir()
+    return os.path.join(base, name + ".json")
+
+
+def write_lease_record(name: str, **fields) -> dict:
+    """Stamp this process's identity — and whatever `fields` add, which is the
+    scheduler's heartbeat — beside the lease it holds, as one JSON object
+    (`_record_path`).
+
+    A `flock` says somebody holds the file and nothing else: not who, not
+    whether they are doing the job. A user whose scheduled tasks sat in
+    Upcoming for ever while chat kept working (2026-10-31) had exactly that
+    gap — the scheduler was in another process and no file, log or screen
+    could name it. The holder writes itself here; `lease_holder` reads it.
+
+    A NO-OP (answering `{}`) for a lease this process does not hold: the
+    record belongs to whoever does. `since` is set once and kept across
+    rewrites; everything else in `fields` replaces what was there. The
+    identity fields are computed outside `_lease_lock`, and only on the first
+    write."""
+    with _lease_lock:
+        if name not in _lease_handles:
+            return {}
+        record = dict(_lease_records.get(name) or {})
+    if "pid" not in record:
+        record.update(pid=os.getpid(), label=_process_label(),
+                      version=_version(), since=time.time())
+    record.update(fields)
+    path = _record_path(name)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(record, fh)
+        os.replace(tmp, path)
+    except (OSError, ValueError, TypeError):
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        return record
+    with _lease_lock:
+        if name in _lease_handles:
+            _lease_records[name] = record
+    return record
+
+
+def read_lease_record(name: str, *, machine_wide: bool = False) -> dict:
+    """The JSON object the current (or last) holder of `name` wrote — `{}` for
+    a lease nobody has stamped yet (a holder on a build before this existed)
+    or a file that does not parse."""
+    try:
+        with open(_record_path(name, machine_wide=machine_wide),
+                  encoding="utf-8") as fh:
+            data = json.loads(fh.read() or "{}")
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def pid_alive(pid) -> bool:
+    """Whether `pid` names a running process. A pid we may not signal still
+    exists; 0, negatives and anything unreadable or out of range are "no"
+    (`os.kill(0, 0)` and `os.kill(-1, 0)` would otherwise succeed)."""
+    try:
+        value = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if value <= 0:
+        return False
+    try:
+        _platform.probe_pid(value)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except Exception:  # noqa: BLE001 — OverflowError, ctypes.ArgumentError…
+        return False
+    return True
+
+
+def lease_holder(name: str) -> dict:
+    """Who holds `name`, as far as the record can say: the stored record plus
+    `held_here` (this very process holds the flock) and `alive` (the pid in
+    the record still exists). The record outlives its writer — a leader that
+    exited leaves its pid behind until the next winner rewrites the file,
+    and a winner on an OLDER build never writes one — so a record whose pid
+    is dead while somebody holds the lock means "the holder did not stamp
+    it", which is what the readers say. `{"held_here": ...}` alone when
+    nothing has been written yet."""
+    with _lease_lock:
+        here = name in _lease_handles
+    record = read_lease_record(name)
+    if not record:
+        return {"held_here": here}
+    record["held_here"] = here
+    record["alive"] = pid_alive(record.get("pid"))
+    return record
 
 
 def reset_leases_for_tests() -> None:
@@ -427,6 +571,7 @@ def reset_leases_for_tests() -> None:
     with _lease_lock:
         handles = list(_lease_handles.values())
         _lease_handles.clear()
+        _lease_records.clear()
     for handle in handles:
         handle.close()
 
