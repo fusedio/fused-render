@@ -414,29 +414,42 @@ export function ClaudeRail({
   // chat's chunk may still be loading, so retry until the composer exists —
   // never falling back to the card's first button (that is the ×) — and give
   // up after FOCUS_WAIT_MS. One wait at a time (a later press supersedes it);
-  // it also ends the moment the card closes, or the reader has put the focus
-  // somewhere in the card themselves.
-  const composerWait = useRef(0);
+  // it also ends the moment the card closes, or the reader does anything
+  // themselves: ANY later press or key (capture, document-wide) is theirs —
+  // the chat's ⋮ menu and pickers are portals, so "focus is inside the card"
+  // cannot tell them apart from the wait's own focus (Bugbot on #2037).
+  // Registered after the press that started the wait: that press, and the
+  // Enter keydown that precedes an Enter-click, are already past.
+  const composerWait = useRef<(() => void) | null>(null);
   const focusComposerSoon = useCallback(
     (key: string) => {
-      const token = ++composerWait.current;
+      composerWait.current?.();
+      let live = true;
+      let raf = 0;
+      const stop = () => {
+        live = false;
+        cancelAnimationFrame(raf);
+        document.removeEventListener("pointerdown", stop, true);
+        document.removeEventListener("keydown", stop, true);
+        if (composerWait.current === stop) composerWait.current = null;
+      };
+      composerWait.current = stop;
+      document.addEventListener("pointerdown", stop, true);
+      document.addEventListener("keydown", stop, true);
       const until = performance.now() + FOCUS_WAIT_MS;
       const attempt = () => {
-        if (composerWait.current !== token || intent.current !== key) return;
+        if (!live) return;
+        if (intent.current !== key) return stop();
         const card = document.getElementById(PEEK_ID);
-        // The reader already went into the shown chat or the head (a click
-        // on the transcript, the ⋮): leave the focus where they put it. The
-        // composer of ANOTHER kept chat, left focused by the previous card,
-        // does not count — a swap still has to move it.
-        const a = document.activeElement;
-        if (a?.closest(".canvas-rail-peek-chat.is-shown, .canvas-rail-peek-head") && card?.contains(a)) return;
-        if (peekRef.current?.focusComposer() && card?.contains(document.activeElement)) return;
-        if (performance.now() < until) requestAnimationFrame(attempt);
+        if (peekRef.current?.focusComposer() && card?.contains(document.activeElement)) return stop();
+        if (performance.now() < until) raf = requestAnimationFrame(attempt);
+        else stop();
       };
-      requestAnimationFrame(attempt);
+      raf = requestAnimationFrame(attempt);
     },
     [intent],
   );
+  useEffect(() => () => composerWait.current?.(), []);
   // ESCAPE WITH THE FOCUS NOWHERE closes a pinned card. The ring (below),
   // the card's head and its chat each take their own Escape; a press that
   // opened the card in an engine that does not focus a link on click (WebKit)
