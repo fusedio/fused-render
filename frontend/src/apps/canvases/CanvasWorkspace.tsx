@@ -3062,6 +3062,9 @@ export default function CanvasWorkspace({
                 : new URLSearchParams(window.location.search).get("session_id")
             }
             onOpenChat={(href) => navigateUrl(href)}
+            // The card's node chip: the workbench selects the node (zooms to
+            // it, shows its code); its selection echo sets `node` here.
+            onSelectNode={sendSelect}
             onOpen={openFromRail}
             onPullStart={onRailPull}
             onCardPinned={(on) => {

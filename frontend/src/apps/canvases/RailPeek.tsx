@@ -175,6 +175,12 @@ export interface RailPeekProps {
   onNoRoom: () => void;
   /** "Open in panel →", and any hop the chat itself makes. */
   onOpenChat: (href: string) => void;
+  /** The head's node chip: select that node in the workbench (its name, as
+   *  the workbench names it — the file's stem). */
+  onSelectNode: (udfName: string) => void;
+  /** The node the canvas page has selected (its file), if any: that node's
+   *  chip is a label, not a door — it is already selected. */
+  selectedFile: string | null;
 }
 
 /** A seat with no conversation yet (header of the body above). */
@@ -236,6 +242,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     onDismiss,
     onNoRoom,
     onOpenChat,
+    onSelectNode,
+    selectedFile,
   },
   ref,
 ) {
@@ -574,16 +582,43 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
             <span className="canvas-rail-peek-title" title={head.label}>
               {head.label}
             </span>
-            <span
-              className={"canvas-rail-peek-scope" + (head.scope.kind === "node" ? " is-node" : "")}
-              title={
-                head.scope.kind === "node"
-                  ? `On the node ${head.scope.name} (${head.scope.file})`
-                  : "On the canvas as a whole"
-              }
-            >
-              {head.scope.kind === "node" ? head.scope.name : "Canvas"}
-            </span>
+            {head.scope.kind === "node" && head.scope.file !== selectedFile ? (
+              // The node's chip is a door: it selects the node in the
+              // workbench (which zooms to it and shows its code). The card
+              // STAYS (owner, 2026-10-31: "when I click on the tag, shouldn't
+              // the chat preview still stay open") — the press is inside the
+              // card, so it pins it like any other; the rail then narrows to
+              // that node, whose rings still hold this chat, and the card
+              // follows its ring.
+              <button
+                type="button"
+                className="canvas-rail-peek-scope is-node"
+                title={`Select the node ${head.scope.name} (${head.scope.file}) in the workbench`}
+                onClick={() => {
+                  if (head.scope.kind === "node") onSelectNode(head.scope.name);
+                  // Back to the composer: the reader is still in this chat,
+                  // and WebKit leaves a pressed button unfocused — focus on
+                  // the body, where a later press into the canvas frame is
+                  // not heard as the window's blur and so never closes the
+                  // pinned card (ClaudeRail's frame-press rule).
+                  if (shownKey) focusRefs.current.get(shownKey)?.current?.focus({ preventScroll: true });
+                }}
+              >
+                {head.scope.name}
+              </button>
+            ) : head.scope.kind === "node" ? (
+              // Already the selected node: nothing to go to.
+              <span
+                className="canvas-rail-peek-scope is-node"
+                title={`On the node ${head.scope.name} (${head.scope.file}), selected`}
+              >
+                {head.scope.name}
+              </span>
+            ) : (
+              <span className="canvas-rail-peek-scope" title="On the canvas as a whole">
+                Canvas
+              </span>
+            )}
             {head.href && (
               <button
                 type="button"
