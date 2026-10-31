@@ -441,6 +441,11 @@ export function ClaudeRail({
         if (!live) return;
         if (intent.current !== key) return stop();
         const card = document.getElementById(PEEK_ID);
+        // Focus went to a control outside the card (not the body, not the
+        // pressed ring): the reader moved on, never pull it back
+        // (CodeRabbit on #2037).
+        const a = document.activeElement;
+        if (a && a !== document.body && !card?.contains(a) && a !== ringEls.current.get(key)) return stop();
         if (peekRef.current?.focusComposer() && card?.contains(document.activeElement)) return stop();
         if (performance.now() < until) raf = requestAnimationFrame(attempt);
         else stop();
