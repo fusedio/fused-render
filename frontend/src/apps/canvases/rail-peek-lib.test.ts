@@ -384,4 +384,73 @@ describe("PeekIntent", () => {
     clock.tick(10_000);
     expect(shown).toEqual(["a"]);
   });
+
+  describe("the click trigger (toggle)", () => {
+    it("a press shows at once and warms; the same press again closes", () => {
+      const { clock, shown, warmed, intent } = rig();
+      expect(intent.toggle("a")).toBe(true);
+      expect(shown).toEqual(["a"]);
+      expect(warmed).toEqual(["a"]);
+      expect(intent.toggle("a")).toBe(false);
+      expect(shown).toEqual(["a", null]);
+      clock.tick(10_000);
+      expect(shown).toEqual(["a", null]);
+    });
+
+    it("a press on another ring swaps without closing between", () => {
+      const { shown, intent } = rig();
+      intent.toggle("a");
+      expect(intent.toggle("b")).toBe(true);
+      expect(shown).toEqual(["a", "b"]);
+    });
+
+    it("pinned: no pointer leave, focus loss, press end or seat change closes it", () => {
+      const { clock, shown, intent } = rig();
+      intent.toggle("a");
+      intent.enterCard();
+      intent.leaveCard();
+      intent.hold(true);
+      intent.hold(false);
+      intent.pressStart();
+      intent.pressEnd();
+      intent.enterCone();
+      clock.tick(PEEK_CONE_MS);
+      intent.prune(new Set(["a", "b"]));
+      clock.tick(10_000);
+      expect(shown).toEqual(["a"]);
+    });
+
+    it("dismiss unpins: a later hover-style leave closes on the grace as before", () => {
+      const { clock, shown, intent } = rig();
+      intent.toggle("a");
+      intent.dismiss();
+      intent.showNow("b");
+      intent.leaveRing();
+      clock.tick(PEEK_CLOSE_MS);
+      expect(shown).toEqual(["a", null, "b", null]);
+    });
+
+    it("reset forgets a ring the pointer rested on under the old trigger", () => {
+      const { clock, shown, intent } = rig();
+      intent.enterRing("a");
+      clock.tick(PEEK_OPEN_MS);
+      intent.reset();
+      expect(shown).toEqual(["a", null]);
+      intent.toggle("b");
+      intent.enterCone();
+      clock.tick(PEEK_CONE_MS + PEEK_SWAP_MS + PEEK_CLOSE_MS);
+      expect(shown).toEqual(["a", null, "b"]);
+    });
+
+    it("a pinned card whose chat left the rail closes, and unpins", () => {
+      const { clock, shown, intent } = rig();
+      intent.toggle("a");
+      intent.prune(new Set(["b"]));
+      expect(shown).toEqual(["a", null]);
+      intent.showNow("b");
+      intent.leaveCard();
+      clock.tick(PEEK_CLOSE_MS);
+      expect(shown).toEqual(["a", null, "b", null]);
+    });
+  });
 });

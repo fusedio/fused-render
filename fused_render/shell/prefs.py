@@ -486,6 +486,19 @@ def canvas_rail_peek_enabled() -> bool:
     return read_prefs().get("canvas_rail_peek_enabled") is True
 
 
+VALID_CANVAS_RAIL_PEEK_TRIGGERS = ("click", "hover")
+
+
+def canvas_rail_peek_trigger() -> str:
+    """What opens the rail's preview card while `canvas_rail_peek_enabled` is
+    on (`canvas_rail_peek_trigger` pref): `"click"` — a press on a ring opens
+    the card and it stays until dismissed — or `"hover"` — resting on a ring
+    opens it and leaving closes it. `"click"` when unset or junk.
+    """
+    value = read_prefs().get("canvas_rail_peek_trigger")
+    return value if value in VALID_CANVAS_RAIL_PEEK_TRIGGERS else "click"
+
+
 def task_summary_titles_enabled() -> bool:
     """Whether Tasks rows are titled ONLY by the server's stable `title` (a
     name the reader chose, else the app's own haiku AI title refreshed every
@@ -1145,7 +1158,9 @@ def _prefs_response() -> dict:
         "canvas_shot": {"slow_fallback": canvas_shot_slow_fallback_enabled()},
         # The collapsed Claude rail's hover preview card on the canvas page
         # (`canvas_rail_peek_enabled`; off by default).
-        "canvas_rail_peek": {"enabled": canvas_rail_peek_enabled()},
+        # …and what opens it (`canvas_rail_peek_trigger`: click | hover).
+        "canvas_rail_peek": {"enabled": canvas_rail_peek_enabled(),
+                             "trigger": canvas_rail_peek_trigger()},
         # Stable AI Tasks titles (`task_summary_titles_enabled`).
         "task_summary_titles": {"enabled": task_summary_titles_enabled()},
         # Lean Claude sessions (`claude_strict_mcp_enabled`, default off).
@@ -1489,6 +1504,15 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                                     status_code=400)
             prefs["canvas_rail_peek_enabled"] = value
             changed = True
+        if "canvas_rail_peek_trigger" in body:
+            value = body.get("canvas_rail_peek_trigger")
+            if value not in VALID_CANVAS_RAIL_PEEK_TRIGGERS:
+                return JSONResponse(
+                    {"error": "'canvas_rail_peek_trigger' must be one of: "
+                              + ", ".join(repr(v) for v in VALID_CANVAS_RAIL_PEEK_TRIGGERS)},
+                    status_code=400)
+            prefs["canvas_rail_peek_trigger"] = value
+            changed = True
         if "task_summary_titles_enabled" in body:
             value = body.get("task_summary_titles_enabled")
             if not isinstance(value, bool):
@@ -1782,7 +1806,7 @@ def put_prefs(body: dict = Body(...), x_fused: str | None = Header(default=None)
                           "'project_queue_enabled', "
                           "'task_recap_titles_enabled', "
                           "'canvas_shot_slow_fallback_enabled', "
-                          "'canvas_rail_peek_enabled', "
+                          "'canvas_rail_peek_enabled', 'canvas_rail_peek_trigger', "
                           "'task_summary_titles_enabled', "
                           "'claude_strict_mcp_enabled', 'claude_default_permission', "
                           "'bots_autostage', 'bots_sounds', 'bots_clear_enabled', "

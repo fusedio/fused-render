@@ -3,7 +3,9 @@
 // items; I should be able to interact with it as well — scroll and add
 // something, click something"). Behind `canvas_rail_peek_enabled`
 // (rail-peek-flag.ts); the rings' side of the wiring is ClaudeRail.tsx, the
-// timings and the geometry are rail-peek-lib.ts.
+// timings and the geometry are rail-peek-lib.ts. A press on a ring opens it
+// by default; a hover does under `canvas_rail_peek_trigger: "hover"` — the
+// card itself draws the same either way.
 //
 // WHAT IT IS: the chat itself. Not a caption, not a picture — the same
 // `ChatMount` the Tasks page's side peek frames (`peek`, `chatOnly`), on the

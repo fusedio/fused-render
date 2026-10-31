@@ -1,6 +1,6 @@
-// THE RAIL'S HOVER CARD, the parts that need no DOM (RailPeek.tsx draws it;
+// THE RAIL'S PREVIEW CARD, the parts that need no DOM (RailPeek.tsx draws it;
 // ClaudeRail.tsx wires the rings). Behind `canvas_rail_peek_enabled`
-// (rail-peek-flag.ts).
+// (rail-peek-flag.ts); what opens it is `canvas_rail_peek_trigger`.
 //
 // Three rulings live here so they can be proved without a browser:
 //
@@ -17,7 +17,10 @@
 //     grace, long enough to cross the gap between them; and a card the reader
 //     is USING — one that holds the keyboard focus, because they are typing —
 //     does not close on a pointer leave at all. Escape, a press outside, or
-//     the pane opening dismiss it at once. The pointer and the keyboard focus
+//     the pane opening dismiss it at once. THE CLICK TRIGGER (the default)
+//     skips all of that: a press on a ring PINS the card (`toggle`) — no
+//     pointer or focus moves it, no grace closes it — until the same ring is
+//     pressed again, another ring takes it, or it is dismissed. The pointer and the keyboard focus
 //     are tracked apart: a ring that loses focus while the pointer still
 //     rests on it is still hovered.
 //   - WHAT STAYS WARM (`keepAlive`): the chats the reader has previewed stay
@@ -188,6 +191,9 @@ export class PeekIntent {
    *  by the next pointer arrival, the next focus LEAVING a ring (Tab moving
    *  on), or `showNow`. */
   private muteFocus = false;
+  /** Opened by a press (the click trigger, `toggle`, `showNow(key, true)`):
+   *  stays up whatever the pointer and the focus do, until `dismiss`. */
+  private pinned = false;
 
   constructor(
     private readonly sink: IntentSink,
@@ -281,6 +287,7 @@ export class PeekIntent {
       // blur in every engine, so the hold is dropped here.
       this.held = false;
       this.pressing = false;
+      this.pinned = false;
       this.set(null);
       return;
     }
@@ -337,13 +344,27 @@ export class PeekIntent {
     else this.scheduleClose();
   }
 
-  /** Show `key` now, no wait — the keyboard's way in (ArrowLeft on a ring). */
-  showNow(key: string): void {
+  /** Show `key` now, no wait — the keyboard's way in (ArrowLeft on a ring).
+   *  `pin`: the card stays up until dismissed (the click trigger). */
+  showNow(key: string, pin = false): void {
+    this.pinned = pin;
     this.muteFocus = false;
     this.cancelOpen();
     this.cancelClose();
     this.sink.warm(key);
     this.set(key);
+  }
+
+  /** The click trigger's press on ring `key`: the card showing `key` closes,
+   *  anything else shows `key` pinned (swapping from another ring without a
+   *  close). True when the press opened (or swapped) the card. */
+  toggle(key: string): boolean {
+    if (this.shown === key) {
+      this.dismiss();
+      return false;
+    }
+    this.showNow(key, true);
+    return true;
   }
 
   /** Close now: Escape, a press outside, the pane opening. `returningFocus`
@@ -355,10 +376,20 @@ export class PeekIntent {
     this.leaveCone(false);
     this.held = false;
     this.pressing = false;
+    this.pinned = false;
     // The card goes pointer-events: none under the pointer; no leave fires.
     this.overCard = false;
     this.muteFocus = returningFocus;
     this.set(null);
+  }
+
+  /** Forget everything — the trigger changed: the old trigger's pointer and
+   *  focus reports (a ring the pointer still rests on, which the new trigger
+   *  will never hear leave) must not steer the new one. */
+  reset(): void {
+    this.pointerKey = null;
+    this.focusKey = null;
+    this.dismiss();
   }
 
   /** Stop every timer (unmount). */
@@ -379,7 +410,7 @@ export class PeekIntent {
   }
 
   private get kept(): boolean {
-    return this.overRing || this.overCard || this.inCone || this.held || this.pressing;
+    return this.pinned || this.overRing || this.overCard || this.inCone || this.held || this.pressing;
   }
 
   private scheduleClose(): void {
