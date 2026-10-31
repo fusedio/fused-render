@@ -643,11 +643,15 @@ OPTIONS = {
             "opened asks it to — for example, the other side of a call for "
             "meeting notes."
         ),
-        # The app's own windows are WKWebViews (mac_window.py) that GRANT a
+        # The app's own windows (mac_window.py, chromium/mac.py) GRANT a
         # page of ours `getUserMedia` and `navigator.geolocation` the way a
         # browser would after one Allow click; the OS then prompts with these
         # strings. REQUIRED like the microphone one: an app that touches the
         # camera or location without its usage string is killed, not asked.
+        # The string is half of it: in any window of OURS the capture is
+        # judged against THIS app's hardened runtime, so the entitlement
+        # `com.apple.security.device.camera` (build_dmg.sh) is the other half —
+        # without it tccd refuses with no prompt and the page sees black.
         "NSCameraUsageDescription": (
             f"{_APP} uses the camera when a page you opened asks for it."
         ),

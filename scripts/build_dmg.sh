@@ -1370,6 +1370,17 @@ if [[ -n "$SIGN_IDENTITY" ]]; then
        at all: without it the mic is refused outright, prompt or no prompt.
        Screen recording needs no entitlement — only the System Settings grant. -->
   <key>com.apple.security.device.audio-input</key><true/>
+  <!-- A page's `getUserMedia({video})` in one of our windows (the AI
+       Playground's Webcam button). Same rule as the microphone: the
+       NSCameraUsageDescription string alone is not enough under the hardened
+       runtime — tccd logs "requires entitlement com.apple.security.device.camera
+       but it is missing ... Policy disallows prompt" and refuses WITHOUT a
+       prompt. Chromium then hands the page a track that never carries a frame,
+       so the viewfinder is a black box rather than an error. The check is on
+       the RESPONSIBLE process — this app — even when the Plugin helper is the
+       one opening the device. Ad-hoc builds (no `--options runtime`) never hit
+       this, which is why it was only ever seen in a shipped DMG. -->
+  <key>com.apple.security.device.camera</key><true/>
 </dict>
 </plist>
 PLIST
@@ -1400,6 +1411,13 @@ PLIST
   <key>com.apple.security.cs.allow-unsigned-executable-memory</key><true/>
   <key>com.apple.security.cs.disable-library-validation</key><true/>
   <key>com.apple.security.cs.allow-dyld-environment-variables</key><true/>
+  <!-- getUserMedia from a page in a Chromium window is serviced by a helper
+       (the Plugin one, in tccd's log) with the app as the responsible process.
+       tccd judges the responsible process's entitlements, which the app block
+       above carries; these mirror them on the accessing process so the grant
+       does not depend on that attribution. -->
+  <key>com.apple.security.device.audio-input</key><true/>
+  <key>com.apple.security.device.camera</key><true/>
 </dict>
 </plist>
 PLIST
