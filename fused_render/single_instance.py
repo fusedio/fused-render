@@ -147,17 +147,23 @@ def claim(support_dir: str) -> bool:
     if not _platform.flock(handle, blocking=False):
         handle.close()
         return False
-    _HANDLE = handle
     tmp = record_path(support_dir) + f".{os.getpid()}.tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump({"pid": os.getpid(), "since": time.time()}, fh)
         os.replace(tmp, record_path(support_dir))
     except OSError:
+        # A lock without a record would be a holder nobody can name: another
+        # branch's sweep would read it as a leftover and kill it, and a
+        # newcomer could not tell it from a stall. Hold nothing rather than
+        # that; the caller treats the raise as "lock dir unusable".
         try:
             os.unlink(tmp)
         except OSError:
             pass
+        handle.close()
+        raise
+    _HANDLE = handle
     return True
 
 
@@ -421,31 +427,47 @@ def _zombie(pid: int) -> bool:
 
 
 def _probe_ok(port: int) -> bool:
+    """A fused-render server answers `/api/config` with JSON that carries a
+    `version` — a bare 200 from `/` would accept any local HTTP server that
+    happened to take the port after a crash."""
     import urllib.request
 
     try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1) as resp:
-            return resp.status == 200
-    except Exception:  # noqa: BLE001 — refused, timeout, bad status: not ok
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/config", timeout=1) as resp:
+            if resp.status != 200:
+                return False
+            data = json.loads(resp.read(65536).decode("utf-8", "replace") or "{}")
+    except Exception:  # noqa: BLE001 — refused, timeout, bad status, not JSON: not ok
         return False
+    return isinstance(data, dict) and bool(data.get("version"))
 
 
 # --------------------------------------------------------------- the sweep
 
 
-def sweep(found: list[Rival], *, alive=alive, term=None, kill=None,
+def sweep(found: list[Rival], *, alive=alive, term=None, kill=None, still_rival=None,
           term_wait_s: float = TERM_WAIT_S, kill_wait_s: float = KILL_WAIT_S,
           clock=time.monotonic, sleep=time.sleep) -> Sweep:
     """Stop every rival: TERM, wait, KILL, wait. What is still alive after
-    that is `failed`."""
+    that is `failed`. `still_rival(pid)` is asked immediately before EACH
+    signal — a rival that exited and had its pid reused between the listing
+    and the signal must not take the signal; default: the pid still runs our
+    binary."""
     if term is None:
         def term(pid: int) -> None:
             _platform.kill_tree(pid, signal.SIGTERM)
     if kill is None:
         def kill(pid: int) -> None:
             _platform.kill_tree(pid, _platform.SIGKILL)
+    if still_rival is None:
+        still_rival = is_our_binary
     result = Sweep()
-    targets = [r.pid for r in found]
+    targets = []
+    for rival in found:
+        if still_rival(rival.pid):
+            targets.append(rival.pid)
+        else:
+            logger.info("single instance: pid %s is no longer this app; left alone", rival.pid)
     if not targets:
         return result
     for pid in targets:
@@ -455,6 +477,8 @@ def sweep(found: list[Rival], *, alive=alive, term=None, kill=None,
             logger.debug("single instance: TERM %s failed", pid, exc_info=True)
     pending = _wait_gone(targets, alive, term_wait_s, clock, sleep)
     for pid in pending:
+        if not still_rival(pid):
+            continue  # died and was reused in the wait: not ours to KILL
         try:
             kill(pid)
         except Exception:  # noqa: BLE001
@@ -489,10 +513,10 @@ def enforce(support_dir: str, read_pidfile, *, support_base: str | None = None,
     `(None, None)` from the pidfile/portfile the serving app writes once it
     is ready. `support_base` is the unbranched support dir, under which
     every branch's instance lock lives (`rivals` spares their holders).
-    `is_ours(pid)` is consulted only as a tie-breaker: when the lock's
-    record names one pid and the pidfile another, the pidfile pid is
-    deferred to only if it runs our binary (a crash can leave a pidfile
-    whose pid was recycled by something else listening on the port).
+    `is_ours(pid)` decides whether a pidfile pid that is NOT the lock's
+    recorded holder may be deferred to: only if it runs our binary (a crash
+    can leave a pidfile whose pid was recycled by something else listening
+    on the port).
     `record(kind, **fields)` is `health.record_event` when the caller has
     one."""
     if is_ours is None:
@@ -503,7 +527,12 @@ def enforce(support_dir: str, read_pidfile, *, support_base: str | None = None,
     ours_cache: dict[int, bool] = {}
 
     def pidfile_is_the_app(pid: int, who: int | None) -> bool:
-        if who is None or pid == who:
+        # The lock's record names the app; a pidfile pid that is not it has
+        # to prove itself by its binary (a crash leaves a pidfile; the pid can
+        # be reused by something else that listens on the port). `claim`
+        # never holds a lock without a record, so "held, no record" means
+        # the record is momentarily unreadable — the same proof applies.
+        if who is not None and pid == who:
             return True
         if pid not in ours_cache:
             ours_cache[pid] = bool(is_ours(pid))

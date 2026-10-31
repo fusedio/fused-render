@@ -106,6 +106,52 @@ def test_a_pid_holding_a_lock_in_another_branch_dir_is_another_app(tmp_path, sup
     assert si.holds_a_lock(os.getpid(), str(tmp_path / "missing")) is False
 
 
+@posix_only
+def test_claim_holds_nothing_when_the_record_cannot_be_written(support, monkeypatch):
+    """A lock without a record is a holder nobody can name — another
+    branch's sweep would kill it, a newcomer could not tell it from a stall.
+    So the claim fails loudly instead, and the lock stays free."""
+    def no_replace(src, dst):
+        raise OSError("read-only")
+
+    monkeypatch.setattr(si.os, "replace", no_replace)
+    with pytest.raises(OSError):
+        si.claim(support)
+    monkeypatch.undo()
+    assert si._HANDLE is None
+    rival = _rival().hold(si.lock_path(support))  # free: somebody else can take it
+    _rival().release(rival)
+
+
+def test_probe_accepts_only_a_fused_server(monkeypatch):
+    import io
+    import urllib.request
+
+    class Resp(io.BytesIO):
+        def __init__(self, status, body):
+            super().__init__(body)
+            self.status = status
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    answers = {}
+    monkeypatch.setattr(urllib.request, "urlopen",
+                        lambda url, timeout=1: answers[url.rsplit(":", 1)[1].split("/")[0]])
+    answers["1"] = Resp(200, b'{"version": "0.7.16"}')
+    answers["2"] = Resp(200, b"<html>some other server</html>")
+    answers["3"] = Resp(200, b"{}")
+    answers["4"] = Resp(500, b'{"version": "x"}')
+    assert si._probe_ok(1) is True
+    assert si._probe_ok(2) is False
+    assert si._probe_ok(3) is False
+    assert si._probe_ok(4) is False
+    assert si._probe_ok(5) is False  # KeyError → refused
+
+
 def test_holder_since_reads_the_record_or_nothing(support):
     assert si.holder_since(support) is None
     with open(si.record_path(support), "w", encoding="utf-8") as fh:
@@ -225,10 +271,23 @@ class World:
             self.alive.discard(pid)
 
 
-def _sweep(world, found):
+def _sweep(world, found, still_rival=lambda pid: True):
     clock = Clock()
     return si.sweep(found, alive=world.is_alive, term=world.term, kill=world.kill,
-                    clock=clock, sleep=clock.sleep)
+                    still_rival=still_rival, clock=clock, sleep=clock.sleep)
+
+
+def test_sweep_rechecks_identity_before_every_signal():
+    """A rival that exited and had its pid reused between the listing and
+    the signal is not ours any more: no TERM; and one reused during the TERM
+    wait gets no KILL."""
+    world = World(immortal=[10, 20])
+    checks = {10: iter([False]), 20: iter([True, False])}
+    result = _sweep(world, [si.Rival(10, 1.0), si.Rival(20, 1.0)],
+                    still_rival=lambda pid: next(checks[pid]))
+    assert world.termed == [20]
+    assert world.killed == []
+    assert result.failed == [20]  # still alive, but not ours to KILL
 
 
 def test_sweep_terms_then_kills_and_reports_what_survived():
@@ -412,12 +471,17 @@ def test_a_new_holder_gets_its_own_budget_not_the_old_ones_tail(support):
     assert clock.t >= 74.0  # not ~3 s
 
 
-def test_an_older_build_holder_with_no_record_still_gets_the_wait(support):
-    """A holder from before this module wrote no record: `holder` is None,
-    the pidfile is the only name, and we still defer to it once it serves."""
+def test_an_unreadable_record_defers_only_to_a_pidfile_pid_that_is_ours(support):
+    """The lock is held but its record cannot be read for the moment: the
+    pidfile pid is deferred to only once its binary proves it is this app."""
     out, _ = _enforce(support, claim=lambda d: False, holder=lambda d: None,
-                      pidfile=lambda: (42, 1777), probe=lambda port: True)
+                      pidfile=lambda: (42, 1777), probe=lambda port: True,
+                      is_ours=lambda pid: True)
     assert out.role == "duplicate" and out.live == (42, 1777) and out.holder is None
+    out, clock = _enforce(support, claim=lambda d: False, holder=lambda d: None,
+                          pidfile=lambda: (42, 1777), probe=lambda port: True,
+                          is_ours=lambda pid: False, boot_wait_s=3.0)
+    assert out.live is None and clock.t >= 3.0
 
 
 @posix_only
@@ -455,14 +519,18 @@ def test_app_gate_stalled_holder_asks_rechecks_then_stops_it_or_exits(monkeypatc
     import fused_render.app as app_mod
 
     stalled = si.Outcome(role="duplicate", live=None, holder=77, waited_s=75.0)
-    swept, leftovers, exits, claims = [], [], [], []
+    swept, leftovers, exits, claims, notices = [], [], [], [], []
     monkeypatch.setattr(si, "sweep", lambda rv, **k: swept.append([r.pid for r in rv]) or si.Sweep())
     monkeypatch.setattr(si, "sweep_leftovers", lambda **k: leftovers.append(True) or si.Sweep())
     monkeypatch.setattr(si, "claim", lambda d: claims.append(d) or True)
     monkeypatch.setattr(si, "alive", lambda pid: True)
-    # A DMG / translocated copy holds the lock: its path is not ours, and it
-    # must still be the one stopped — the lock, not the path, says who it is.
+    # A DMG / translocated copy holds the lock: its PATH is not ours, yet it
+    # is a Fused process by name and must be the one stopped — the lock says
+    # who it is; the name check only rejects a recycled pid.
     monkeypatch.setattr(si, "is_our_binary", lambda pid, own=None: False)
+    monkeypatch.setattr(app_mod, "_is_fused_process", lambda pid: True)
+    monkeypatch.setattr(app_mod, "_notice_alert", lambda t, x: notices.append(t))
+    monkeypatch.setattr(app_mod, "_release_crashlog", lambda: None)
     monkeypatch.setattr(app_mod, "hard_exit", lambda code=0, **k: exits.append(code))
     monkeypatch.setattr(si, "enforce", lambda d, r, **k: stalled)
     # "Stop it and start": re-check still stalled → stop 77, take the lock, clear the rest.
@@ -491,12 +559,13 @@ def test_app_gate_stalled_holder_asks_rechecks_then_stops_it_or_exits(monkeypatc
     assert app_mod._enforce_single_instance() is None
     assert swept == [] and leftovers == [True]
     # Consented, stopped, but the lock still cannot be taken (holder stuck in
-    # the kernel): start anyway, no exit.
+    # the kernel): start anyway, no exit — and say so once.
     swept.clear(); leftovers.clear(); exits.clear()
     monkeypatch.setattr(si, "enforce", lambda d, r, **k: stalled)
     monkeypatch.setattr(si, "claim", lambda d: False)
     assert app_mod._enforce_single_instance() is None
     assert swept == [[77]] and leftovers == [] and exits == []
+    assert notices == ["Fused Render started, but another copy is still running"]
 
 
 def test_app_gate_falls_back_to_the_pidfile_when_the_lock_dir_is_unusable(monkeypatch):
@@ -506,8 +575,10 @@ def test_app_gate_falls_back_to_the_pidfile_when_the_lock_dir_is_unusable(monkey
         raise OSError("read-only volume")
 
     monkeypatch.setattr(si, "enforce", boom)
+    monkeypatch.setattr(si, "MIN_WAIT_S", 0.2)
+    monkeypatch.setattr(si, "POLL_S", 0.05)
     monkeypatch.setattr(app_mod, "read_pidfile", lambda: (None, None))
-    assert app_mod._enforce_single_instance() is None
+    assert app_mod._enforce_single_instance() is None  # waited the floor, nobody came
     monkeypatch.setattr(app_mod, "read_pidfile", lambda: (os.getpid(), 1777))
     monkeypatch.setattr(si, "_probe_ok", lambda port: True)
     assert app_mod._enforce_single_instance() == (os.getpid(), 1777)

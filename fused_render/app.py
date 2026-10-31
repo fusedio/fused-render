@@ -1587,13 +1587,21 @@ def _enforce_single_instance() -> tuple[int, int] | None:
         # fall back to the old question — is the recorded instance alive and
         # answering? — so at least a plainly running app is not doubled.
         logger.exception("single instance: lock check failed; falling back to the pidfile")
-        try:
-            pid, port = read_pidfile()
-            if pid and port and single_instance.alive(pid) and single_instance._probe_ok(port):
-                return pid, port
-        except Exception:  # noqa: BLE001
-            logger.debug("single instance: pidfile fallback failed", exc_info=True)
-        return None
+        # A holder still booting has no pidfile yet: give it the floor budget
+        # before concluding nobody is home.
+        deadline = time.monotonic() + single_instance.MIN_WAIT_S
+        while True:
+            try:
+                pid, port = read_pidfile()
+                if (pid and port and single_instance.alive(pid)
+                        and single_instance._probe_ok(port)):
+                    return pid, port
+            except Exception:  # noqa: BLE001
+                logger.debug("single instance: pidfile fallback failed", exc_info=True)
+                return None
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(single_instance.POLL_S)
     if outcome.role == "primary":
         return None
     if outcome.live is not None:
@@ -1605,6 +1613,7 @@ def _enforce_single_instance() -> tuple[int, int] | None:
                    "in %.0fs", f"pid {outcome.holder}" if outcome.holder else "another copy",
                    outcome.waited_s)
     if not _stalled_copy_alert(outcome.holder):
+        _release_crashlog()
         hard_exit(1)
         return None  # unreachable; hard_exit never returns
     # "Stop it and start". The modal may have stood for minutes: look again
@@ -1633,24 +1642,50 @@ def _enforce_single_instance() -> tuple[int, int] | None:
     # the guard against a pid recycled under the modal.
     target = again.holder
     if target is not None and target == outcome.holder and single_instance.alive(target):
-        single_instance.sweep([single_instance.Rival(target, 0.0)])
+        # Identity by NAME as well as path (`canvases._is_fused_process`, the
+        # force-quit rule): a translocated or DMG copy is still "FusedRender"
+        # to `ps`, a pid recycled by something else is not.
+        single_instance.sweep([single_instance.Rival(target, 0.0)],
+                              still_rival=_is_fused_process)
     if single_instance.claim(APP_SUPPORT_DIR):
         single_instance.sweep_leftovers(record=health.record_event,
                                         support_base=_APP_SUPPORT_BASE)
         return None
     # The holder would not die (a process stuck in the kernel keeps its
-    # flock). Starting without the lock beats not starting: the old code
-    # started here too, and the log says what happened.
+    # flock). Starting without the lock beats not starting — the old code
+    # started here too — but say so: scheduled tasks may wait behind it.
     logger.error("single instance: could not take the instance lock after stopping %s; "
                  "starting WITHOUT it — scheduled tasks may wait behind that process",
                  target)
+    _notice_alert("Fused Render started, but another copy is still running",
+                  f"Process {target or 'unknown'} could not be stopped. Fused Render will "
+                  "work, but scheduled tasks may not start until that process is gone. "
+                  "Quit it from Activity Monitor or restart your Mac.")
     return None
+
+
+def _is_fused_process(pid: int) -> bool:
+    try:
+        from fused_render import canvases
+
+        return bool(canvases._is_fused_process(pid))
+    except Exception:  # noqa: BLE001 — unknowable means "not ours to signal"
+        return False
 
 
 #: How long the stalled-copy alert waits for an answer before it counts as
 #: Quit. Launches can pile up behind an unanswered modal (each later launch
 #: defers to the same stalled holder and asks the same question).
 STALLED_ALERT_TIMEOUT_S = 10 * 60.0
+
+
+def _release_crashlog() -> None:
+    try:
+        from fused_render.crashlog import release
+
+        release()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _stalled_copy_alert(pid: int | None) -> bool:
@@ -1751,6 +1786,7 @@ def main() -> None:
         # prevent.
         logger.info("found live server (pid %s, port %s); reusing it", pid, port)
         webbrowser.open(f"http://127.0.0.1:{port}/")
+        _release_crashlog()  # hard_exit skips atexit; an empty crash file would read as a crash
         hard_exit(0)
 
     # One-shot relocation of the workspace out of iCloud-synced ~/Documents
