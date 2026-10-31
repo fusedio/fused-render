@@ -518,9 +518,9 @@ const ENTRIES = [
     needs: "fused",
     group: "features",
     section: "Sidebar",
-    label: "Open the chat preview on",
-    description: "Click: the card stays until you click the chat again, click elsewhere or press Escape; its Open button opens the chat in the panel. Hover: the card follows the pointer, and a click opens the chat in the panel.",
-    keywords: "canvas rail hover click trigger preview peek card chat collapsed claude panel popover open",
+    label: "Switch a kept-open preview on",
+    description: "Hovering a chat previews it; clicking it keeps the card open, ready to type, until you click elsewhere, press Escape, or use its × or Open. This picks what moves a kept-open card to another chat. Click: click the other chat. Hover: hover it.",
+    keywords: "canvas rail hover click trigger switch pin keep open preview peek card chat collapsed claude panel popover",
     renderOnly: true,
     child: true,
     // Only means something while the preview itself is on.

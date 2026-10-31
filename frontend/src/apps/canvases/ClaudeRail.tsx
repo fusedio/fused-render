@@ -56,26 +56,29 @@
 // card. Off, the rings keep their one-line pointer caption (`data-hint`); on,
 // the card replaces it — two captions for one hover would be noise.
 //
-// …OR A PRESS OPENS IT — the default trigger (`canvas_rail_peek_trigger`,
-// owner 2026-10-31: "change that to click, and add a trigger toggle
-// hover/click"). A press on a ring opens its card PINNED (PeekIntent
-// `toggle`): the pointer and the focus move nothing, and it stays until the
-// same ring is pressed again, another ring's press swaps it, or it is
-// dismissed — Escape, its ×, its Open, or a press anywhere but a ring (the +,
-// the panel button and the seam included). The ring's press no longer opens
-// the pane; the card's Open does, and a modified press still follows the
-// link. THE PRESS LANDS IN THE COMPOSER (owner, 2026-10-31: "when we click
-// the chat item we focus on the card composer so user can type"): under
-// either trigger a plain press shows the card and puts the keyboard in its
-// composer (`focusComposerSoon`) — with the hover trigger too, where the press
-// used to open the pane. The hover caption comes back, since a hover now shows
-// nothing else; it steps aside while a card is up. With no room for a card,
-// the press opens the pane as before (the first such press included). A press into the workbench frame is
-// not seen by this document; it is heard as the window's blur with the frame
-// holding the focus — which is why the page stops handing the frame focus on
-// a mere pointer ENTER while a pinned card is up (`onCardPinned`,
-// CanvasWorkspace `focusCanvasOnEnter`): otherwise crossing the canvas would
-// read as a click on it.
+// A CLICK PINS IT (owner, 2026-10-31: "when I hover on an item we show the
+// preview; if I click, the preview stays until I click outside or on another
+// item"). A press on a ring (PeekIntent `press`) — or anywhere in the card
+// (`pressStart`) — PINS the card: the pointer leaving no longer closes it;
+// a press outside does (anywhere but a ring — the +, the panel button and the
+// seam included), as do Escape, its × and its Open. A press on a ring never
+// closes it. The ring's press no longer opens the pane; the card's Open does,
+// and a modified press still follows the link. THE PRESS LANDS IN THE
+// COMPOSER: a plain press puts the keyboard in the card's composer
+// (`focusComposerSoon`), ready to type. With no room for a card, the press
+// opens the pane as before (the first such press included).
+//
+// THE TRIGGER (`canvas_rail_peek_trigger`) only decides how a PINNED card
+// moves to another chat (PeekIntent `setSwap`): "click" (the default) —
+// another ring's press; a hover on it moves nothing — or "hover" — resting
+// on another ring swaps the chat, and the card stays pinned. A hover shows
+// the card under either.
+//
+// A press into the workbench frame is not seen by this document; it is heard
+// as the window's blur with the frame holding the focus — which is why the
+// page stops handing the frame focus on a mere pointer ENTER while a pinned
+// card is up (`onCardPinned`, CanvasWorkspace `focusCanvasOnEnter`):
+// otherwise crossing the canvas would read as a click on it.
 import {
   useCallback,
   useEffect,
@@ -201,9 +204,8 @@ export function ClaudeRail({
   const rows = useTasksPulseRows();
   const nodeFile = node?.file ?? null;
   const peekOn = useCanvasRailPeek();
+  // What moves a pinned card to another chat (header).
   const trigger = useCanvasRailPeekTrigger();
-  // A press opens the card (header); else a hover does.
-  const byClick = peekOn && trigger === "click";
   // Drafts and scheduled rows ride the rail whatever the card flag says
   // (owner, 2026-10-30: "the flag is only for the preview thing; the fixes
   // we made — order etc. — should be there without the flag"): the rail is
@@ -260,11 +262,13 @@ export function ClaudeRail({
   // by the intent machine and nothing else. The ring elements are kept by key
   // for the card's placement and for handing focus back on Escape.
   const [peekKey, setPeekKey] = useState<string | null>(null);
+  const [pinned, setPinned] = useState(false);
   const [kept, setKept] = useState<readonly string[]>([]);
   const intentRef = useRef<PeekIntent | null>(null);
   if (!intentRef.current) {
     intentRef.current = new PeekIntent({
       show: setPeekKey,
+      pin: setPinned,
       warm: (key) => setKept((s) => keepAlive(s, key)),
     });
   }
@@ -288,11 +292,10 @@ export function ClaudeRail({
   useEffect(() => {
     if (!peekOn && peekKey) intent.dismiss();
   }, [peekOn, peekKey, intent]);
-  // The trigger switched under an open card (Settings in this tab): a pinned
-  // card would otherwise outlive the hover rules, a hover card the press
-  // rules. Start over from closed.
+  // The trigger (Settings, published to this tab) only changes what a pinned
+  // card does with a hover on another ring; an open card keeps standing.
   useEffect(() => {
-    intent.reset();
+    intent.setSwap(trigger);
   }, [trigger, intent]);
   // JSON, not a joined string: a key is free to contain any delimiter.
   const seatKeys = JSON.stringify(seats.map((s) => s.pulse.key));
@@ -317,9 +320,9 @@ export function ClaudeRail({
   // canvas wrapper focuses its frame on pointer ENTER (`focusCanvasOnEnter`),
   // and the 8px gap between rail and card is over that wrapper, so crossing
   // to the card blurred the window and killed the card mid-crossing (Bugbot).
-  // The click trigger is the one exception (header): there a pinned card
-  // holds the frame's focus-on-enter off, so a blur onto the frame IS a
-  // press on the canvas, and closes it (the pinned-card effect below).
+  // A pinned card is the one exception (header): it holds the frame's
+  // focus-on-enter off, so a blur onto the frame IS a press on the canvas,
+  // and closes it (the pinned-card effect below).
   //
   // "INSIDE THE CARD" IS REACT'S ANSWER, NOT THE DOM'S: the chat's menus and
   // pickers are portals — React descendants of the card, DOM children of
@@ -333,20 +336,19 @@ export function ClaudeRail({
     intent.pressStart();
   }, [intent]);
   //
-  // WITH THE CLICK TRIGGER only the rings' list is exempt — a ring's own
-  // press toggles or swaps the card (`onClick`); the gaps between rings and
-  // the list's scrollbar are near misses — and so is the bridge over the gap
-  // to the card (RailPeek), which reads as the card's edge. The rail's other
-  // seats (the +, the panel button, the seam) dismiss it like any outside
-  // press: nothing else ever closes a pinned card. With the hover trigger the
-  // whole rail is exempt, as before; the pointer leaving the ring does the
-  // closing there.
+  // A PINNED card exempts only the rings' list — a ring's own press pins or
+  // swaps the card (`onClick`); the gaps between rings and the list's
+  // scrollbar are near misses — and the bridge over the gap to the card
+  // (RailPeek), which reads as the card's edge. The rail's other seats (the
+  // +, the panel button, the seam) dismiss it like any outside press:
+  // nothing else ever closes a pinned card. An unpinned (hover) card exempts
+  // the whole rail; the pointer leaving the ring does the closing there.
   useEffect(() => {
     if (!peekKey) return;
     let tick = 0;
     const onDown = (e: PointerEvent) => {
       const t = e.target as Node | null;
-      if (byClick) {
+      if (pinned) {
         const el = t instanceof Element ? t : null;
         if (el?.closest(".canvas-rail-peek-bridge")) return;
         if (el && railRef.current?.querySelector(".canvas-rail-chats")?.contains(el)) return;
@@ -367,7 +369,7 @@ export function ClaudeRail({
       window.removeEventListener("pointerup", onUp, true);
       window.removeEventListener("pointercancel", onUp, true);
     };
-  }, [peekKey, intent, byClick]);
+  }, [peekKey, intent, pinned]);
   // NO ROOM FOR A CARD (RailPeek `onNoRoom`: a window too short or narrow):
   // the rings keep their one-line caption until a resize gives the card room
   // again — a hover that shows nothing at all is the one outcome to avoid.
@@ -458,10 +460,10 @@ export function ClaudeRail({
   // ESCAPE WITH THE FOCUS NOWHERE closes a pinned card. The ring (below),
   // the card's head and its chat each take their own Escape; a press that
   // opened the card in an engine that does not focus a link on click (WebKit)
-  // leaves the focus on the body, where none of those hears it — and with the
-  // click trigger no pointer move will ever close the card for them.
+  // leaves the focus on the body, where none of those hears it — and no
+  // pointer move will ever close a pinned card for them.
   useEffect(() => {
-    if (!byClick || !peekKey) return;
+    if (!pinned || !peekKey) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || e.defaultPrevented) return;
       if (e.target !== document.body && e.target !== document.documentElement) return;
@@ -470,13 +472,13 @@ export function ClaudeRail({
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [byClick, peekKey, dismissToRing]);
+  }, [pinned, peekKey, dismissToRing]);
   // A PRESS INTO THE WORKBENCH FRAME closes a pinned card (header): the page
   // hears it only as this window's blur with the frame left holding the
   // focus. A blur with the focus anywhere else — another app, another
   // window — keeps the card. Read a tick later: the engines disagree on
   // whether `activeElement` has moved yet when the blur fires.
-  const pinnedUp = byClick && peekKey !== null;
+  const pinnedUp = pinned && peekKey !== null;
   const pinnedRef = useRef(onCardPinned);
   pinnedRef.current = onCardPinned;
   useEffect(() => {
@@ -500,7 +502,8 @@ export function ClaudeRail({
   const onRingKey = (key: string) => (e: ReactKeyboardEvent<HTMLAnchorElement>) => {
     if (e.key === "ArrowLeft") {
       e.preventDefault();
-      intent.showNow(key, byClick);
+      // A deliberate way in, like a press: pinned.
+      intent.showNow(key, true);
       focusCardSoon();
     } else if (e.key === "Escape" && intent.current) {
       e.preventDefault();
@@ -591,11 +594,9 @@ export function ClaudeRail({
               if (!href) return null;
               const words = draft ? "draft" : statusWords(t, !!row?.failed);
               const peeked = peekOn && peekKey === t.key;
-              // The rings' own captions step aside for the card: always with
-              // the hover trigger (the card IS the hover), and with the click
-              // trigger while a card is up — the caption draws beside the
-              // ring, which is where the card stands.
-              const captionless = peekOn && (!byClick || peekKey !== null);
+              // The rings' own captions step aside for the card: a hover
+              // shows the card, and the card IS the caption.
+              const captionless = peekOn;
               // The list's item is a wrapper, the link is a link: `aria-haspopup`
               // and `aria-expanded` are not allowed on `listitem`, and a link
               // that opens a dialog is the shape they describe.
@@ -632,7 +633,7 @@ export function ClaudeRail({
                         onKeyDown: onRingKey(t.key),
                       }
                     : {})}
-                  {...(peekOn && !byClick
+                  {...(peekOn
                     ? {
                         onPointerEnter: () => intent.enterRing(t.key, "pointer"),
                         onPointerLeave: () => intent.leaveRing("pointer"),
@@ -648,25 +649,16 @@ export function ClaudeRail({
                       requestAnimationFrame(() => {
                         pressedHref.current = null;
                       });
-                      // Click trigger: the press toggles the card. Hover
-                      // trigger: the card is (or is about to be) up under
-                      // the pointer — the press makes sure of it, unpinned,
-                      // and the pointer rules keep closing it.
-                      const opened = byClick
-                        ? intent.toggle(t.key)
-                        : (intent.showNow(t.key), true);
-                      if (opened) {
-                        // The press focused the link (Chromium) and the hint
-                        // followed the focus a beat before `captionless`
-                        // emptied it.
-                        hideHint();
-                        // Ready to type, whether it was a click or an Enter
-                        // on a focused ring.
-                        if (t.session_id) focusComposerSoon(t.key);
-                        // A draft or scheduled row has no composer: an Enter
-                        // still takes the keyboard into the card.
-                        else if (e.detail === 0) focusCardSoon();
-                      }
+                      // Shown now and pinned (header) — over a hover card of
+                      // this ring it only pins; over another's, it swaps.
+                      intent.press(t.key);
+                      hideHint();
+                      // Ready to type, whether it was a click or an Enter
+                      // on a focused ring.
+                      if (t.session_id) focusComposerSoon(t.key);
+                      // A draft or scheduled row has no composer: an Enter
+                      // still takes the keyboard into the card.
+                      else if (e.detail === 0) focusCardSoon();
                       return;
                     }
                     onOpenChat(href);

@@ -24,19 +24,22 @@ const RAIL = { left: 1352, top: 40, width: 48, height: 900 };
 const ring = (top: number) => ({ left: 1362, top, width: 28, height: 28 });
 
 describe("peekPlacement", () => {
-  it("stands a gap off the rail, centred on the ring, at full size on a big row", () => {
-    const box = peekPlacement(ring(400), RAIL, ROW)!;
+  it("stands a gap off the rail, its top level with the ring's top, at full size on a big row", () => {
+    const box = peekPlacement(ring(60), RAIL, ROW)!;
     expect(box.width).toBe(PEEK_WIDTH);
     expect(box.height).toBe(PEEK_MAX_HEIGHT);
     expect(box.left + box.width).toBe(RAIL.left - PEEK_GAP);
-    expect(box.top + box.height / 2).toBe(414);
+    expect(box.top).toBe(60);
+    // A shorter card (a draft's) aligns the same way.
+    expect(peekPlacement(ring(300), RAIL, ROW, 220)!.top).toBe(300);
   });
 
-  it("clamps to the row's top and bottom insets", () => {
-    const high = peekPlacement(ring(50), RAIL, ROW)!;
-    expect(high.top).toBe(ROW.top + PEEK_INSET);
-    const low = peekPlacement(ring(900), RAIL, ROW)!;
+  it("rises only as far as the row's bottom needs, never above its top", () => {
+    const low = peekPlacement(ring(700), RAIL, ROW)!;
     expect(low.top + low.height).toBe(ROW.top + ROW.height - PEEK_INSET);
+    expect(low.top).toBeLessThan(700);
+    const high = peekPlacement(ring(42), RAIL, ROW)!;
+    expect(high.top).toBe(ROW.top + PEEK_INSET);
   });
 
   it("shrinks to what a short, narrow row leaves", () => {
@@ -252,19 +255,6 @@ describe("PeekIntent", () => {
     expect(shown).toEqual(["a", null, "b", null]);
   });
 
-  it("a press inside the card holds it through the gesture", () => {
-    const { clock, shown, intent } = rig();
-    intent.showNow("a");
-    intent.enterCard();
-    intent.pressStart();
-    intent.leaveCard();
-    clock.tick(10_000);
-    expect(shown).toEqual(["a"]);
-    intent.pressEnd();
-    clock.tick(PEEK_CLOSE_MS);
-    expect(shown).toEqual(["a", null]);
-  });
-
   it("prune forgets rings that left the rail and closes a card whose chat did", () => {
     const { clock, shown, intent } = rig();
     intent.enterRing("a");
@@ -385,28 +375,52 @@ describe("PeekIntent", () => {
     expect(shown).toEqual(["a"]);
   });
 
-  describe("the click trigger (toggle)", () => {
-    it("a press shows at once and warms; the same press again closes", () => {
+  describe("a click pins it (press, pressStart)", () => {
+    it("a press shows at once, warms and pins; pressing it again keeps it", () => {
       const { clock, shown, warmed, intent } = rig();
-      expect(intent.toggle("a")).toBe(true);
+      intent.press("a");
       expect(shown).toEqual(["a"]);
       expect(warmed).toEqual(["a"]);
-      expect(intent.toggle("a")).toBe(false);
-      expect(shown).toEqual(["a", null]);
+      expect(intent.isPinned).toBe(true);
+      intent.press("a");
+      intent.leaveRing();
       clock.tick(10_000);
-      expect(shown).toEqual(["a", null]);
+      expect(shown).toEqual(["a"]);
+    });
+
+    it("a press over a hover card of the same ring pins it without a flash", () => {
+      const { clock, shown, intent } = rig();
+      intent.enterRing("a");
+      clock.tick(PEEK_OPEN_MS);
+      intent.press("a");
+      intent.leaveRing();
+      clock.tick(10_000);
+      expect(shown).toEqual(["a"]);
+    });
+
+    it("a press inside a hover card pins it", () => {
+      const { clock, shown, intent } = rig();
+      intent.showNow("a");
+      intent.enterCard();
+      intent.pressStart();
+      intent.pressEnd();
+      intent.leaveCard();
+      clock.tick(10_000);
+      expect(shown).toEqual(["a"]);
+      expect(intent.isPinned).toBe(true);
     });
 
     it("a press on another ring swaps without closing between", () => {
       const { shown, intent } = rig();
-      intent.toggle("a");
-      expect(intent.toggle("b")).toBe(true);
+      intent.press("a");
+      intent.press("b");
       expect(shown).toEqual(["a", "b"]);
+      expect(intent.isPinned).toBe(true);
     });
 
     it("pinned: no pointer leave, focus loss, press end or seat change closes it", () => {
       const { clock, shown, intent } = rig();
-      intent.toggle("a");
+      intent.press("a");
       intent.enterCard();
       intent.leaveCard();
       intent.hold(true);
@@ -420,9 +434,53 @@ describe("PeekIntent", () => {
       expect(shown).toEqual(["a"]);
     });
 
+    it("swap on click (the default): a hover or a focus on another ring moves nothing", () => {
+      const { clock, shown, warmed, intent } = rig();
+      intent.press("a");
+      intent.leaveRing();
+      intent.enterRing("b");
+      intent.enterRing("c", "focus");
+      clock.tick(10_000);
+      expect(shown).toEqual(["a"]);
+      expect(warmed).toEqual(["a"]);
+    });
+
+    it("swap on hover: a hover on another ring swaps, and the card stays pinned", () => {
+      const { clock, shown, intent } = rig();
+      intent.setSwap("hover");
+      intent.press("a");
+      intent.leaveRing();
+      intent.enterRing("b");
+      clock.tick(PEEK_SWAP_MS);
+      expect(shown).toEqual(["a", "b"]);
+      intent.leaveRing();
+      clock.tick(10_000);
+      expect(shown).toEqual(["a", "b"]);
+      expect(intent.isPinned).toBe(true);
+      // A sweep that only crosses a ring swaps nothing.
+      intent.enterRing("c");
+      clock.tick(PEEK_SWAP_MS / 2);
+      intent.leaveRing();
+      clock.tick(10_000);
+      expect(shown).toEqual(["a", "b"]);
+    });
+
+    it("tells the sink when it pins and unpins", () => {
+      const clock = new Clock();
+      const pins: boolean[] = [];
+      const intent = new PeekIntent({ show: () => {}, warm: () => {}, pin: (on) => pins.push(on) }, clock);
+      intent.press("a");
+      intent.press("b");
+      intent.dismiss();
+      intent.showNow("c");
+      intent.pressStart();
+      intent.prune(new Set());
+      expect(pins).toEqual([true, false, true, false]);
+    });
+
     it("dismiss unpins: a later hover-style leave closes on the grace as before", () => {
       const { clock, shown, intent } = rig();
-      intent.toggle("a");
+      intent.press("a");
       intent.dismiss();
       intent.showNow("b");
       intent.leaveRing();
@@ -430,21 +488,9 @@ describe("PeekIntent", () => {
       expect(shown).toEqual(["a", null, "b", null]);
     });
 
-    it("reset forgets a ring the pointer rested on under the old trigger", () => {
-      const { clock, shown, intent } = rig();
-      intent.enterRing("a");
-      clock.tick(PEEK_OPEN_MS);
-      intent.reset();
-      expect(shown).toEqual(["a", null]);
-      intent.toggle("b");
-      intent.enterCone();
-      clock.tick(PEEK_CONE_MS + PEEK_SWAP_MS + PEEK_CLOSE_MS);
-      expect(shown).toEqual(["a", null, "b"]);
-    });
-
     it("a pinned card whose chat left the rail closes, and unpins", () => {
       const { clock, shown, intent } = rig();
-      intent.toggle("a");
+      intent.press("a");
       intent.prune(new Set(["b"]));
       expect(shown).toEqual(["a", null]);
       intent.showNow("b");

@@ -265,7 +265,7 @@ export function CanvasRailPeekControl({ prefs, onChange }: PrefControlProps) {
       after={(next) => publishCanvasRailPeek(next.canvas_rail_peek)}
       status={
         on
-          ? `On — ${prefs.canvas_rail_peek?.trigger === "hover" ? "hovering" : "clicking"} a chat on the rail opens it as a card you can use.`
+          ? "On — hovering a chat on the rail opens it as a card you can use; a click keeps it open."
           : "Off — hovering shows the chat's one-line caption; clicking opens it in the panel."
       }
       onChange={onChange}
