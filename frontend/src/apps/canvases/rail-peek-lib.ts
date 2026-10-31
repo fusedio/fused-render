@@ -1,14 +1,16 @@
 // THE RAIL'S PREVIEW CARD, the parts that need no DOM (RailPeek.tsx draws it;
 // ClaudeRail.tsx wires the rings). Behind `canvas_rail_peek_enabled`
-// (rail-peek-flag.ts); what opens it is `canvas_rail_peek_trigger`.
+// (rail-peek-flag.ts); what moves a pinned card to another chat is
+// `canvas_rail_peek_trigger`.
 //
 // Three rulings live here so they can be proved without a browser:
 //
 //   - WHERE THE CARD STANDS (`peekPlacement`): beside the rail, its right edge
-//     a gap off the rail's left edge, centred on the ring under the pointer
-//     and clamped inside the workspace row — so a ring at the top of a short
-//     window gets a card that starts at the row's top, not one hanging off
-//     the window. Never wider than the row leaves it.
+//     a gap off the rail's left edge, its TOP LEVEL WITH THE RING'S TOP
+//     (owner, 2026-10-31: "the top of the card and the top of item should be
+//     aligned … unless there is not enough space in bottom") — pushed up only
+//     as far as the row's bottom needs, and never above the row's top. Never
+//     wider than the row leaves it.
 //   - WHEN IT OPENS AND CLOSES (`PeekIntent`): a hover is not a click. The
 //     card waits PEEK_OPEN_MS before it shows, so a pointer crossing the rail
 //     on its way somewhere opens nothing; once up, moving to another ring
@@ -17,12 +19,15 @@
 //     grace, long enough to cross the gap between them; and a card the reader
 //     is USING — one that holds the keyboard focus, because they are typing —
 //     does not close on a pointer leave at all. Escape, a press outside, or
-//     the pane opening dismiss it at once. THE CLICK TRIGGER (the default)
-//     skips all of that: a press on a ring PINS the card (`toggle`) — no
-//     pointer or focus moves it, no grace closes it — until the same ring is
-//     pressed again, another ring takes it, or it is dismissed. The pointer and the keyboard focus
-//     are tracked apart: a ring that loses focus while the pointer still
-//     rests on it is still hovered.
+//     the pane opening dismiss it at once. A CLICK PINS IT (owner,
+//     2026-10-31): a press on a ring (`press`) or anywhere in the card
+//     (`pressStart`) — the hover rules then stop closing it, and only a
+//     press outside, Escape, its × or its Open does. What a pinned card does
+//     when the pointer rests on ANOTHER ring is the trigger's call (`setSwap`,
+//     `canvas_rail_peek_trigger`): "click" — nothing, another ring's press
+//     swaps it; "hover" — the hover swaps it, still pinned. The pointer and
+//     the keyboard focus are tracked apart: a ring that loses focus while
+//     the pointer still rests on it is still hovered.
 //   - WHAT STAYS WARM (`keepAlive`): the chats the reader has previewed stay
 //     mounted (hidden) after the card closes, newest first, up to PEEK_KEEP,
 //     so coming back to one is instant — the "load fast" half of the ask.
@@ -79,10 +84,9 @@ export function peekPlacement(anchor: Box, rail: Box, bounds: Box, maxHeight = P
   const height = Math.min(maxHeight, bounds.height - 2 * PEEK_INSET);
   if (width < 120 || height < 120) return null;
   const left = rail.left - PEEK_GAP - width;
-  const centre = anchor.top + anchor.height / 2;
   const minTop = bounds.top + PEEK_INSET;
   const maxTop = bounds.top + bounds.height - PEEK_INSET - height;
-  const top = Math.min(maxTop, Math.max(minTop, centre - height / 2));
+  const top = Math.max(minTop, Math.min(maxTop, anchor.top));
   return { left: Math.round(left), top: Math.round(top), width: Math.round(width), height: Math.round(height) };
 }
 
@@ -155,6 +159,9 @@ const windowTimers: Timers = {
 export interface IntentSink {
   /** The card should show `key`, or hide (`null`). Called only on change. */
   show(key: string | null): void;
+  /** The card became pinned (`true`) or stopped being pinned. Called only on
+   *  change. */
+  pin?(on: boolean): void;
   /** `key` is about to be wanted: mount it now. Called on every arrival. */
   warm(key: string): void;
 }
@@ -162,6 +169,10 @@ export interface IntentSink {
 /** How a ring came to be "entered": the pointer resting on it, or the
  *  keyboard focus. The two leave independently. */
 export type Via = "pointer" | "focus";
+
+/** What moves a PINNED card to another chat (`canvas_rail_peek_trigger`):
+ *  that ring's press, or a hover on it. */
+export type SwapOn = "click" | "hover";
 
 /**
  * The hover-intent state machine (header). One per rail; the rings and the
@@ -191,9 +202,11 @@ export class PeekIntent {
    *  by the next pointer arrival, the next focus LEAVING a ring (Tab moving
    *  on), or `showNow`. */
   private muteFocus = false;
-  /** Opened by a press (the click trigger, `toggle`, `showNow(key, true)`):
-   *  stays up whatever the pointer and the focus do, until `dismiss`. */
+  /** Pinned by a press (`press`, `pressStart`, `showNow(key, true)`): the
+   *  card stays up whatever the pointer and the focus do, until `dismiss`. */
   private pinned = false;
+  /** What a pinned card does with a hover on another ring (`setSwap`). */
+  private swap: SwapOn = "click";
 
   constructor(
     private readonly sink: IntentSink,
@@ -203,6 +216,17 @@ export class PeekIntent {
   /** What the card shows now, if anything. */
   get current(): string | null {
     return this.shown;
+  }
+
+  /** Whether the card is pinned (header). */
+  get isPinned(): boolean {
+    return this.pinned;
+  }
+
+  /** The trigger: what moves a pinned card to another ring's chat. */
+  setSwap(on: SwapOn): void {
+    this.swap = on;
+    if (on === "click" && this.pinned) this.cancelOpen();
   }
 
   /** The pointer (or the keyboard focus) arrived on ring `key`. */
@@ -220,6 +244,9 @@ export class PeekIntent {
       this.focusKey = key;
       if (this.muteFocus) return;
     }
+    // A pinned card under the click trigger: a hover (or a Tab) on another
+    // ring moves nothing — that ring's press does.
+    if (this.pinned && this.swap === "click") return;
     this.cancelClose();
     if (this.shown === key) {
       this.cancelOpen();
@@ -261,10 +288,12 @@ export class PeekIntent {
     this.scheduleClose();
   }
 
-  /** A pointer went down inside the card: hold it through the gesture. */
+  /** A pointer went down inside the card: hold it through the gesture —
+   *  and pin it, since a click on the card is a click (header). */
   pressStart(): void {
     this.pressing = true;
     this.cancelClose();
+    if (this.shown !== null) this.setPinned(true);
   }
 
   /** …and came up (anywhere). */
@@ -287,7 +316,7 @@ export class PeekIntent {
       // blur in every engine, so the hold is dropped here.
       this.held = false;
       this.pressing = false;
-      this.pinned = false;
+      this.setPinned(false);
       this.set(null);
       return;
     }
@@ -345,9 +374,9 @@ export class PeekIntent {
   }
 
   /** Show `key` now, no wait — the keyboard's way in (ArrowLeft on a ring).
-   *  `pin`: the card stays up until dismissed (the click trigger). */
+   *  `pin`: the card stays up until dismissed (`press`). */
   showNow(key: string, pin = false): void {
-    this.pinned = pin;
+    this.setPinned(pin);
     this.muteFocus = false;
     this.cancelOpen();
     this.cancelClose();
@@ -355,16 +384,13 @@ export class PeekIntent {
     this.set(key);
   }
 
-  /** The click trigger's press on ring `key`: the card showing `key` closes,
-   *  anything else shows `key` pinned (swapping from another ring without a
-   *  close). True when the press opened (or swapped) the card. */
-  toggle(key: string): boolean {
-    if (this.shown === key) {
-      this.dismiss();
-      return false;
-    }
+  /** A press on ring `key` (either trigger): show it now, pinned — over a
+   *  hover card of the same ring, it only pins; over another ring's card, it
+   *  swaps without a close. A press never closes the card (owner,
+   *  2026-10-31: it "stays unless I click outside, or click on cross or
+   *  click open"). */
+  press(key: string): void {
     this.showNow(key, true);
-    return true;
   }
 
   /** Close now: Escape, a press outside, the pane opening. `returningFocus`
@@ -376,20 +402,11 @@ export class PeekIntent {
     this.leaveCone(false);
     this.held = false;
     this.pressing = false;
-    this.pinned = false;
+    this.setPinned(false);
     // The card goes pointer-events: none under the pointer; no leave fires.
     this.overCard = false;
     this.muteFocus = returningFocus;
     this.set(null);
-  }
-
-  /** Forget everything — the trigger changed: the old trigger's pointer and
-   *  focus reports (a ring the pointer still rests on, which the new trigger
-   *  will never hear leave) must not steer the new one. */
-  reset(): void {
-    this.pointerKey = null;
-    this.focusKey = null;
-    this.dismiss();
   }
 
   /** Stop every timer (unmount). */
@@ -399,8 +416,10 @@ export class PeekIntent {
     this.leaveCone(false);
   }
 
-  private get overRing(): boolean {
-    return this.pointerKey !== null || this.focusKey !== null;
+  private setPinned(on: boolean): void {
+    if (this.pinned === on) return;
+    this.pinned = on;
+    this.sink.pin?.(on);
   }
 
   private set(key: string | null): void {
@@ -410,7 +429,12 @@ export class PeekIntent {
   }
 
   private get kept(): boolean {
-    return this.pinned || this.overRing || this.overCard || this.inCone || this.held || this.pressing;
+    // The focus holds only the card it is FOR: a ring Escape handed the focus
+    // back to (muted) must not hold another ring's hover card open.
+    const focusHolds = this.focusKey !== null && this.focusKey === this.shown;
+    return (
+      this.pinned || this.pointerKey !== null || focusHolds || this.overCard || this.inCone || this.held || this.pressing
+    );
   }
 
   private scheduleClose(): void {

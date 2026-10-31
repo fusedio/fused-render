@@ -490,10 +490,12 @@ VALID_CANVAS_RAIL_PEEK_TRIGGERS = ("click", "hover")
 
 
 def canvas_rail_peek_trigger() -> str:
-    """What opens the rail's preview card while `canvas_rail_peek_enabled` is
-    on (`canvas_rail_peek_trigger` pref): `"click"` — a press on a ring opens
-    the card and it stays until dismissed — or `"hover"` — resting on a ring
-    opens it and leaving closes it. `"click"` when unset or junk.
+    """What moves a PINNED rail preview card to another chat while
+    `canvas_rail_peek_enabled` is on (`canvas_rail_peek_trigger` pref). A
+    hover always opens the card and a press always pins it (it then stays
+    until a press outside, Escape, its close or its Open); `"click"` — only
+    another ring's press swaps a pinned card — or `"hover"` — resting on
+    another ring swaps it, still pinned. `"click"` when unset or junk.
     """
     value = read_prefs().get("canvas_rail_peek_trigger")
     return value if value in VALID_CANVAS_RAIL_PEEK_TRIGGERS else "click"

@@ -76,7 +76,7 @@ export function useCanvasRailPeek(): boolean {
   return useAnswer().enabled;
 }
 
-/** What opens the card: "click" until the prefs say "hover". */
+/** What moves a pinned card to another chat: "click" until the prefs say "hover". */
 export function useCanvasRailPeekTrigger(): CanvasRailPeekTrigger {
   return useAnswer().trigger;
 }
