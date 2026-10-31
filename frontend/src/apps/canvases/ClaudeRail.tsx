@@ -272,9 +272,14 @@ export function ClaudeRail({
         // A swap while the reader is IN the card (typing in a pinned card's
         // composer, then hovering another ring under the hover trigger): the
         // chat they were in is about to hide, focus and all — take the
-        // keyboard to the new chat's composer (the effect below).
+        // keyboard to the new chat's composer (the effect below). Let go of
+        // the old one NOW: a hidden chat is not inert, and keys typed before
+        // the new composer takes over would land — Enter would send — in the
+        // chat that just left view (Bugbot on #2040).
         const card = document.getElementById(PEEK_ID);
-        refocusOn.current = key && card?.contains(document.activeElement) ? key : null;
+        const a = document.activeElement;
+        refocusOn.current = key && a && card?.contains(a) ? key : null;
+        if (refocusOn.current && a instanceof HTMLElement) a.blur();
         setPeekKey(key);
       },
       pin: setPinned,
@@ -433,7 +438,9 @@ export function ClaudeRail({
   // Enter keydown that precedes an Enter-click, are already past.
   const composerWait = useRef<(() => void) | null>(null);
   const focusComposerSoon = useCallback(
-    (key: string) => {
+    // `keys: false` — a swap carrying the keyboard over (below): the reader
+    // may be mid-word, and their keys are the reason to finish the move.
+    (key: string, keys = true) => {
       composerWait.current?.();
       let live = true;
       let raf = 0;
@@ -446,7 +453,7 @@ export function ClaudeRail({
       };
       composerWait.current = stop;
       document.addEventListener("pointerdown", stop, true);
-      document.addEventListener("keydown", stop, true);
+      if (keys) document.addEventListener("keydown", stop, true);
       const until = performance.now() + FOCUS_WAIT_MS;
       const attempt = () => {
         if (!live) return;
@@ -472,7 +479,7 @@ export function ClaudeRail({
     const key = refocusOn.current;
     refocusOn.current = null;
     if (!key || key !== peekKey) return;
-    if (seats.find((s) => s.pulse.key === key)?.pulse.session_id) focusComposerSoon(key);
+    if (seats.find((s) => s.pulse.key === key)?.pulse.session_id) focusComposerSoon(key, false);
     else focusCardSoon();
     // The ref is spent on the first run, so a later `seats` change is a no-op.
   }, [peekKey, seats, focusComposerSoon, focusCardSoon]);
