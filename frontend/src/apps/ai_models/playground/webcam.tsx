@@ -103,7 +103,20 @@ export function useWebcam({ onError }: { onError: (message: string) => void }) {
   const capture = useCallback(
     (onBlob: (blob: Blob) => void) => {
       const video = videoRef.current;
-      if (!video || !video.videoWidth) return;
+      if (!video) return;
+      // A live track with no frame behind it: the OS let `getUserMedia`
+      // resolve and then refused the hardware (a hardened-runtime build
+      // without the camera entitlement, a camera another app holds, a
+      // Privacy & Security denial after the fact). The viewfinder sat black
+      // and this button used to do nothing at all; now it says why and
+      // closes, so the camera light — if any — goes out.
+      if (!video.videoWidth) {
+        stop();
+        onError(
+          "The camera gave no picture. Check System Settings › Privacy & Security › Camera, and that nothing else is using it.",
+        );
+        return;
+      }
       const canvas = document.createElement("canvas");
       canvas.width = video.videoWidth;
       canvas.height = video.videoHeight;
@@ -115,7 +128,7 @@ export function useWebcam({ onError }: { onError: (message: string) => void }) {
         if (blob) onBlob(blob);
       }, "image/png");
     },
-    [stop],
+    [stop, onError],
   );
 
   return { open, start, stop, capture, videoRef };
