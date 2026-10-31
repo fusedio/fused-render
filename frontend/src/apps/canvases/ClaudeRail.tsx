@@ -749,6 +749,9 @@ export function ClaudeRail({
           onOpenChat={onOpenChat}
           onSelectNode={onSelectNode}
           selectedFile={nodeFile}
+          onPin={() => {
+            if (intent.current) intent.press(intent.current);
+          }}
         />
       )}
       {card && (

@@ -722,6 +722,10 @@ button.canvas-rail-peek-scope.is-node:hover {
 button.canvas-rail-peek-scope.is-node:active {
   background: rgba(var(--tint), 0.2);
 }
+button.canvas-rail-peek-scope.is-node:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
 /* The door, as the app's outline button (`.btn`, the sync strip's "Open in
    workbench"), sized to the head's 26px seats. */
 .canvas-rail-peek-open {
