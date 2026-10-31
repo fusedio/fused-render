@@ -712,6 +712,67 @@ def _ps_text() -> str | None:
     return "\n".join(keep) + "\n"
 
 
+def _scheduler_text() -> str:
+    """Who runs the scheduler on this machine, and what it owes.
+
+    The one question behind "my task sits in Upcoming while chat works"
+    (2026-10-31): scheduled messages are sent by the ONE process holding the
+    machine-duties lease, and that can be a leftover from an update restart,
+    a lean `fused-render open` or a terminal `serve` — nothing the user can
+    see. Three witnesses, all from disk or one short command:
+
+    * the lease record the holder stamps (`tasks_store.lease_holder`: pid,
+      label, version, heartbeat — absent for a holder on an older build);
+    * `lsof` on the lock file, which names the real holder whether or not it
+      stamps anything;
+    * the schedule store, SUMMARIZED: counts per state and the pending
+      entries by id, due, flags and target — never their text, which is
+      user-authored (the module doc's privacy rule).
+    """
+    from fused_render import tasks_store
+
+    now = time.time()
+    lock = os.path.join(tasks_store.duties_dir(), tasks_store.DUTIES_LEASE)
+    out = [f"generated at {time.strftime('%Y-%m-%dT%H:%M:%S%z', time.localtime(now))}",
+           f"this process: pid {os.getpid()}", f"lease file: {lock}", ""]
+    holder = tasks_store.lease_holder(tasks_store.DUTIES_LEASE)
+    out.append("lease record: " + (json.dumps(holder, default=str, sort_keys=True)
+                                   if holder.get("pid") else
+                                   "(none — nobody on a build that stamps has held it)"))
+    for key in ("tick_started", "beat"):
+        try:
+            out.append(f"  {key}: {now - float(holder[key]):.0f}s ago")
+        except (KeyError, TypeError, ValueError):
+            out.append(f"  {key}: never")
+    out.append("")
+    if not sys.platform.startswith("win"):
+        out.append(_run(["lsof", "-F", "pc", lock]).rstrip())
+        out.append("  (p<pid> c<command> = the process holding the lock; nothing = unheld)")
+        out.append("")
+    store = os.path.join(_home(), "scheduled_messages.json")
+    out.append(f"store: {store}")
+    try:
+        with open(store, encoding="utf-8") as f:
+            entries = json.load(f).get("entries") or []
+    except (OSError, ValueError, AttributeError) as e:
+        out.append(f"  unreadable: {e}")
+        return "\n".join(out) + "\n"
+    counts: dict[str, int] = {}
+    for e in entries:
+        if isinstance(e, dict):
+            counts[str(e.get("state"))] = counts.get(str(e.get("state")), 0) + 1
+    out.append("  by state: " + json.dumps(counts, sort_keys=True))
+    pending = [e for e in entries if isinstance(e, dict) and e.get("state") == "pending"]
+    out.append(f"  pending ({len(pending)}), text omitted:")
+    for e in sorted(pending, key=lambda e: str(e.get("due") or ""))[:50]:
+        out.append("    " + json.dumps({
+            "id": e.get("id"), "due": e.get("due"), "created": e.get("created"),
+            "immediate": bool(e.get("immediate")), "session": bool(e.get("session_id")),
+            "template": bool(e.get("template_id")), "backend": e.get("backend"),
+            "target": e.get("target")}, default=str))
+    return "\n".join(out) + "\n"
+
+
 def _unified_log(w: _Writer, window_start: float, now: float, tmp_dir: str) -> None:
     """`log show` for memory kills, App Nap and our native helper.
     Streamed to a temp file beside the zip (never held in memory), tail-capped.
@@ -932,6 +993,11 @@ def build_bundle(since_s: float | None = None, out_dir: str | None = None, *,
                 w.skipped.append({"source": "os/ps-tree.txt", "reason": "not supported"})
             else:
                 _add_text(w, "os/ps-tree.txt", ps, "ps -axo …")
+            try:
+                sched = _scheduler_text()
+            except Exception as e:  # noqa: BLE001 - evidence, never a reason to fail
+                sched = f"scheduler inspection failed: {e}\n"
+            _add_text(w, "state/scheduler.txt", sched, "lease record, lsof, store summary")
             try:
                 bundle = _bundle_exec_text()
             except Exception as e:  # noqa: BLE001 - evidence, never a reason to fail
