@@ -969,6 +969,7 @@ export function ImageStage({ model, entry }: { model: string; entry: AiCatalogMo
       {webcam.open && (
         <WebcamOverlay
           videoRef={webcam.videoRef}
+          ready={webcam.ready}
           onCapture={capture}
           onClose={webcam.stop}
         />
