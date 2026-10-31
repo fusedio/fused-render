@@ -471,6 +471,14 @@
   background: rgba(var(--tint), 0.08);
   color: var(--fg);
 }
+/* …and the ring whose card a click PINNED (ClaudeRail `.is-pinned`): a step
+   firmer than the hover wash, with a hairline, so "this one is open" holds
+   while the pointer is elsewhere — and still quieter than the ring's own
+   status colour. */
+.canvas-rail-chat.peeked.is-pinned {
+  background: rgba(var(--tint), 0.14);
+  box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.22);
+}
 
 /* THE SCRIM OVER THE WORKBENCH WHILE A PICTURE IS TAKEN (CanvasWorkspace,
    canvas-shot-scrim.ts). The capture runs inside the cross-origin frame and

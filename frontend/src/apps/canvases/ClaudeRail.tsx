@@ -621,8 +621,13 @@ export function ClaudeRail({
               const words = draft ? "draft" : statusWords(t, !!row?.failed);
               const peeked = peekOn && peekKey === t.key;
               // The rings' own captions step aside for the card: a hover
-              // shows the card, and the card IS the caption.
-              const captionless = peekOn;
+              // shows the card, and the card IS the caption. The exception
+              // is a hover that shows nothing — another ring while a card is
+              // pinned under the click trigger (owner, 2026-10-31: "show me
+              // the tooltip title so I know what other chat it is at least"):
+              // that ring gets its title back, the title alone.
+              const titleOnly = peekOn && pinned && trigger === "click" && peekKey !== null && peekKey !== t.key;
+              const captionless = peekOn && !titleOnly;
               // The list's item is a wrapper, the link is a link: `aria-haspopup`
               // and `aria-expanded` are not allowed on `listitem`, and a link
               // that opens a dialog is the shape they describe.
@@ -637,7 +642,8 @@ export function ClaudeRail({
                   className={
                     "sidebar-rail-btn canvas-rail-chat" +
                     (activeSessionId && t.session_id === activeSessionId ? " active" : "") +
-                    (peeked ? " peeked" : "")
+                    (peeked ? " peeked" : "") +
+                    (peeked && pinned ? " is-pinned" : "")
                   }
                   aria-label={`${label} — ${words}`}
                   // The list row's own caption (platform/lib/hints): the
@@ -646,7 +652,7 @@ export function ClaudeRail({
                   // opt-out (hints.ts `hintOf`): the card is the caption.
                   data-hint={captionless && !noRoom ? "" : line.hint || label}
                   data-hint-title={line.hint || label}
-                  data-hint-reply={reply}
+                  data-hint-reply={titleOnly ? "" : reply}
                   // Beside the ring, not at the pointer (platform/lib/hints
                   // `placeBeside`): a 48px column at the window's edge.
                   data-hint-side="left"
