@@ -39,6 +39,10 @@
 // has run (ClaudeRail `warm`). The chat's chunk is fetched when the rail
 // mounts with the flag on (`preloadChat`).
 //
+// A PRESS ON A RING LANDS IN THE COMPOSER (owner, 2026-10-31: "when we click
+// the chat item we focus on the card composer so user can type — instead of
+// opening the sidebar"): `focusComposer`, retried until the chat has mounted.
+//
 // ACCESSIBILITY: the card is a non-modal `dialog` named for its chat; the ring
 // that opened it says `aria-expanded` and `aria-controls` (ClaudeRail). The
 // keyboard's way in is ArrowLeft on a focused ring (`focusChat` lands in the
@@ -125,6 +129,10 @@ export interface RailPeekHandle {
   /** Put the keyboard in the shown chat's composer (or on the card's first
    *  button while the chat is still loading). False when nothing is shown. */
   focusChat(): boolean;
+  /** Put the keyboard in the shown chat's composer and nowhere else: false
+   *  until the composer has mounted (the chat chunk may still be loading), so
+   *  a press that wants to type is never parked on the card's × meanwhile. */
+  focusComposer(): boolean;
 }
 
 export interface RailPeekProps {
@@ -417,6 +425,12 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
         const target = box ?? cardRef.current?.querySelector<HTMLElement>("button");
         if (!target) return false;
         target.focus({ preventScroll: true });
+        return true;
+      },
+      focusComposer() {
+        const box = shownKey ? focusRefs.current.get(shownKey)?.current : null;
+        if (!box) return false;
+        box.focus({ preventScroll: true });
         return true;
       },
     }),
