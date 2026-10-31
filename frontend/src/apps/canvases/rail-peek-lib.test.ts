@@ -488,6 +488,18 @@ describe("PeekIntent", () => {
       expect(shown).toEqual(["a", null, "b", null]);
     });
 
+    it("a ring Escape handed the focus back to does not hold another ring's hover card", () => {
+      const { clock, shown, intent } = rig();
+      intent.showNow("a", true);
+      intent.dismiss(true);
+      intent.enterRing("a", "focus");
+      intent.enterRing("b");
+      clock.tick(PEEK_OPEN_MS);
+      intent.leaveRing();
+      clock.tick(PEEK_CLOSE_MS);
+      expect(shown).toEqual(["a", null, "b", null]);
+    });
+
     it("a pinned card whose chat left the rail closes, and unpins", () => {
       const { clock, shown, intent } = rig();
       intent.press("a");

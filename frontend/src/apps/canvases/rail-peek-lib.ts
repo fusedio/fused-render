@@ -416,10 +416,6 @@ export class PeekIntent {
     this.leaveCone(false);
   }
 
-  private get overRing(): boolean {
-    return this.pointerKey !== null || this.focusKey !== null;
-  }
-
   private setPinned(on: boolean): void {
     if (this.pinned === on) return;
     this.pinned = on;
@@ -433,7 +429,12 @@ export class PeekIntent {
   }
 
   private get kept(): boolean {
-    return this.pinned || this.overRing || this.overCard || this.inCone || this.held || this.pressing;
+    // The focus holds only the card it is FOR: a ring Escape handed the focus
+    // back to (muted) must not hold another ring's hover card open.
+    const focusHolds = this.focusKey !== null && this.focusKey === this.shown;
+    return (
+      this.pinned || this.pointerKey !== null || focusHolds || this.overCard || this.inCone || this.held || this.pressing
+    );
   }
 
   private scheduleClose(): void {

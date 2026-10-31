@@ -262,12 +262,21 @@ export function ClaudeRail({
   // by the intent machine and nothing else. The ring elements are kept by key
   // for the card's placement and for handing focus back on Escape.
   const [peekKey, setPeekKey] = useState<string | null>(null);
+  const refocusOn = useRef<string | null>(null);
   const [pinned, setPinned] = useState(false);
   const [kept, setKept] = useState<readonly string[]>([]);
   const intentRef = useRef<PeekIntent | null>(null);
   if (!intentRef.current) {
     intentRef.current = new PeekIntent({
-      show: setPeekKey,
+      show: (key) => {
+        // A swap while the reader is IN the card (typing in a pinned card's
+        // composer, then hovering another ring under the hover trigger): the
+        // chat they were in is about to hide, focus and all — take the
+        // keyboard to the new chat's composer (the effect below).
+        const card = document.getElementById(PEEK_ID);
+        refocusOn.current = key && card?.contains(document.activeElement) ? key : null;
+        setPeekKey(key);
+      },
       pin: setPinned,
       warm: (key) => setKept((s) => keepAlive(s, key)),
     });
@@ -348,9 +357,9 @@ export function ClaudeRail({
     let tick = 0;
     const onDown = (e: PointerEvent) => {
       const t = e.target as Node | null;
+      const el = t instanceof Element ? t : null;
+      if (el?.closest(".canvas-rail-peek-bridge")) return;
       if (pinned) {
-        const el = t instanceof Element ? t : null;
-        if (el?.closest(".canvas-rail-peek-bridge")) return;
         if (el && railRef.current?.querySelector(".canvas-rail-chats")?.contains(el)) return;
       } else if (railRef.current?.contains(t)) return;
       insidePress.current = false;
@@ -457,6 +466,16 @@ export function ClaudeRail({
     [intent],
   );
   useEffect(() => () => composerWait.current?.(), []);
+  // …and after a swap that left the keyboard in the chat going out of view
+  // (`refocusOn`, set in the intent's sink).
+  useEffect(() => {
+    const key = refocusOn.current;
+    refocusOn.current = null;
+    if (!key || key !== peekKey) return;
+    if (seats.find((s) => s.pulse.key === key)?.pulse.session_id) focusComposerSoon(key);
+    else focusCardSoon();
+    // The ref is spent on the first run, so a later `seats` change is a no-op.
+  }, [peekKey, seats, focusComposerSoon, focusCardSoon]);
   // ESCAPE WITH THE FOCUS NOWHERE closes a pinned card. The ring (below),
   // the card's head and its chat each take their own Escape; a press that
   // opened the card in an engine that does not focus a link on click (WebKit)
