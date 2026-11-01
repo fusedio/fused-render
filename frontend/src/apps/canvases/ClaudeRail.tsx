@@ -140,10 +140,12 @@ import type { WorkbenchEnv } from "./api";
 /** The hover card's DOM id (one rail per page; the ring's `aria-controls`). */
 const PEEK_ID = "canvas-rail-peek";
 
-/** How long a confirmed read keeps its ring hollow by the rail's own hand
- *  after the server agreed (header: the pulse's ~600ms poll is well inside
- *  it; the listing feed's push arrives sooner still). */
-const MARK_SETTLE_MS = 5000;
+/** How long a press's read may stay in flight before the rail gives the dot
+ *  back (CodeRabbit on #2049): a write that hangs would otherwise hold the
+ *  ring hollow — and a re-press mute — for as long as the browser waits. The
+ *  request itself is not cancelled; a write the server applies after the
+ *  deadline shows as the pulse's next zero. */
+const READ_WAIT_MS = 8000;
 
 /** How long a press waits for the card's composer to mount before it gives up
  *  putting the keyboard there (a cold chat chunk takes ~1s). */
@@ -310,14 +312,6 @@ export function ClaudeRail({
       return next;
     });
   }, []);
-  // Timers that retire a confirmed mark (below); cleared on unmount.
-  const markTimers = useRef(new Set<number>());
-  useEffect(
-    () => () => {
-      for (const id of markTimers.current) window.clearTimeout(id);
-    },
-    [],
-  );
   const clearUnread = useCallback(
     (t: TaskPulseTask) => {
       // Hollow already (a press while the pulse has yet to agree): nothing
@@ -327,21 +321,18 @@ export function ClaudeRail({
       if (!mark) return;
       setMarks((m) => new Map(m).set(t.key, mark));
       // Not awaited: the press is opening the chat and must not wait on the
-      // write. A refusal puts the dot back — unless a later press replaced
-      // the mark, whose own write is the one that counts. A CONFIRMED write
-      // retires the mark a few seconds on: the pulse has long since
-      // reported the zero by then, and a mark with no end would hide a
-      // later dot that happened to repeat the same count and stamp.
-      void markWholeTaskRead(t.key).then(
-        () => {
-          const id = window.setTimeout(() => {
-            markTimers.current.delete(id);
-            dropMark(t.key, mark);
-          }, MARK_SETTLE_MS);
-          markTimers.current.add(id);
-        },
-        () => dropMark(t.key, mark),
-      );
+      // write. A refusal — or a write still out past READ_WAIT_MS — puts
+      // the dot back; unless a later press replaced the mark, whose own
+      // write is the one that counts. A confirmed write leaves the mark to
+      // the rows (`keepMarks`): it ends on the row's own word (the zero),
+      // never on a clock — the listing feed can run up to its 20s floor
+      // behind the write, and a dot that came back meanwhile would be a
+      // lie. A mark cannot outlive its truth: a message is unread only
+      // once it has HAPPENED, so a real new dot always moves `happened_at`.
+      const deadline = new Promise<never>((_, reject) => {
+        window.setTimeout(() => reject(new Error("read timed out")), READ_WAIT_MS);
+      });
+      void Promise.race([markWholeTaskRead(t.key), deadline]).catch(() => dropMark(t.key, mark));
     },
     [dropMark],
   );
@@ -646,6 +637,20 @@ export function ClaudeRail({
   const allRef = useRef<HTMLButtonElement | null>(null);
   const plusRef = useRef<HTMLButtonElement | null>(null);
   const refocusPlus = useRef(false);
+  // THE POINTER'S RESTING PLACE AT THE SEAT'S PRESS. The press reshapes the
+  // rail (the seat goes, the list grows), and the engine then reports a
+  // pointer ENTER on whichever ring slid under the unmoved pointer — which
+  // would open that chat's hover card over a press that asked for no chat.
+  // A ring entered at this very spot is ignored until the pointer has
+  // moved; the first real move clears it (`enterRing` below).
+  const stillAt = useRef<{ x: number; y: number } | null>(null);
+  const lastPointer = useRef<{ x: number; y: number } | null>(null);
+  const enterRing = (key: string, e: ReactPointerEvent<HTMLAnchorElement>) => {
+    const at = stillAt.current;
+    if (at && Math.abs(e.clientX - at.x) < 2 && Math.abs(e.clientY - at.y) < 2) return;
+    stillAt.current = null;
+    intent.enterRing(key, "pointer");
+  };
   useEffect(() => {
     if (node || !refocusPlus.current) return;
     refocusPlus.current = false;
@@ -666,7 +671,14 @@ export function ClaudeRail({
   };
 
   return (
-    <aside ref={railRef} className="canvas-rail" aria-label="Claude">
+    <aside
+      ref={railRef}
+      className="canvas-rail"
+      aria-label="Claude"
+      onPointerMove={(e) => {
+        lastPointer.current = { x: e.clientX, y: e.clientY };
+      }}
+    >
       {/* THE RAIL'S INNER EDGE IS A SEAM: pulled left it opens the pane at the
           width the pointer takes it to — the explorer sidebar's reopen edge
           (SideReopenEdge) and the global sidebar's rail, the same gesture on
@@ -771,7 +783,7 @@ export function ClaudeRail({
                     : {})}
                   {...(peekOn
                     ? {
-                        onPointerEnter: () => intent.enterRing(t.key, "pointer"),
+                        onPointerEnter: (e: ReactPointerEvent<HTMLAnchorElement>) => enterRing(t.key, e),
                         onPointerLeave: () => intent.leaveRing("pointer"),
                         onFocus: () => intent.enterRing(t.key, "focus"),
                         onBlur: () => intent.leaveRing("focus"),
@@ -845,6 +857,14 @@ export function ClaudeRail({
                 // the focus, which would fall to the body — hand it to the
                 // + once the node is gone (the effect above).
                 refocusPlus.current = e.detail === 0;
+                // A pinned card closes on this press like any other outside
+                // press — from the keyboard too, which the document's
+                // pointerdown rule never hears (Bugbot on #2049).
+                if (intent.current) intent.dismiss();
+                // Where the pointer rests now (the press's own spot, or the
+                // last move for a keyboard press): a ring sliding under it
+                // is not a hover (`stillAt`).
+                stillAt.current = e.detail === 0 ? lastPointer.current : { x: e.clientX, y: e.clientY };
                 onSelectNode(null);
               }}
             >

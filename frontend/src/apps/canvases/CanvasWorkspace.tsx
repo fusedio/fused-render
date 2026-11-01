@@ -1907,6 +1907,9 @@ export default function CanvasWorkspace({
         }
         canvasChatSidRef.current = new URLSearchParams(window.location.search).get("session_id");
         navHopRef.current = true;
+        // The URL outranks a rail ask kept for the frame's boot: the hello
+        // replay reads the page's node, which this sets (CodeRabbit on #2049).
+        pendingSelectRef.current = null;
         sendSelect(null);
         setNode(null);
         return;
@@ -1922,6 +1925,7 @@ export default function CanvasWorkspace({
       // carries on the URL: the pane boots off the seeded map either way,
       // but the address should still restore the task's session on reload.
       navHopRef.current = true;
+      pendingSelectRef.current = null; // as above: the URL's node wins
       sendSelect(next.udfName);
       setNodeBootSeq((n) => n + 1);
       setNode(next);
