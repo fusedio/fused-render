@@ -179,14 +179,6 @@ def _close_duckdb_stash() -> None:
                        exc_info=True)
 
 
-def _is_process_alive(pid: int) -> bool:
-    try:
-        _platform.probe_pid(pid)
-    except OSError:
-        return False
-    return True
-
-
 def _read_int(path: str) -> int | None:
     try:
         with open(path) as f:
@@ -195,26 +187,14 @@ def _read_int(path: str) -> int | None:
         return None
 
 
-def find_running_server() -> tuple[int, int] | None:
-    """Return (pid, port) of an already-live fused-render instance, or None.
-
-    "Live" means: the recorded pid is running AND it serves the shell page
-    on the recorded port. Probing "/" (not /api/config) matters: "/" reads
-    shell.html from disk, so a zombie whose bundle files were deleted or
-    replaced (e.g. a build-dir instance clobbered by a rebuild) fails the
-    probe and a fresh healthy instance gets started instead.
-    """
-    pid = _read_int(PIDFILE)
-    port = _read_int(PORTFILE)
-    if pid is None or port is None or not _is_process_alive(pid):
-        return None
-    try:
-        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=1) as resp:
-            if resp.status == 200:
-                return pid, port
-    except (urllib.error.URLError, OSError, ValueError):
-        pass
-    return None
+def read_pidfile() -> tuple[int | None, int | None]:
+    """`(pid, port)` the serving instance recorded once it was ready, or
+    `(None, None)`. Just the file: whether that instance is alive and
+    answering is `single_instance.enforce`'s question, decided against the
+    instance lock rather than this file (the file is written late — after
+    readiness — and removed early — at the quit press — so on its own it
+    says nothing reliable about a process in either transition)."""
+    return _read_int(PIDFILE), _read_int(PORTFILE)
 
 
 def _port_in_use(port: int) -> bool:
@@ -254,6 +234,10 @@ def _write_pidfile(port: int) -> None:
 
 
 def _remove_pidfile() -> None:
+    # OURS ONLY. A quit that ran after another instance wrote the file would
+    # otherwise leave that instance serving with no record of it.
+    if _read_int(PIDFILE) not in (None, os.getpid()):
+        return
     for path in (PIDFILE, PORTFILE):
         try:
             os.remove(path)
@@ -1586,6 +1570,188 @@ def _status_item_seed_position() -> float:
     return max(values) + STATUS_ITEM_GAP_PT
 
 
+def _enforce_single_instance() -> tuple[int, int] | None:
+    """single_instance.py at startup. Returns the live app to defer to — the
+    caller opens it and exits — or None when this process is the app (any
+    leftover copies already stopped). Never raises: housekeeping is not a
+    reason not to launch. A lock holder that is alive but never serves is
+    the one case the user is asked about (`_stalled_copy_alert`)."""
+    from fused_render import health, single_instance
+
+    try:
+        outcome = single_instance.enforce(APP_SUPPORT_DIR, read_pidfile,
+                                          support_base=_APP_SUPPORT_BASE,
+                                          record=health.record_event)
+    except Exception:  # noqa: BLE001 — housekeeping, never a reason not to launch
+        # The lock dir itself is unusable (read-only, quota, a dead mount):
+        # fall back to the old question — is the recorded instance alive and
+        # answering? — so at least a plainly running app is not doubled.
+        logger.exception("single instance: lock check failed; falling back to the pidfile")
+        # A holder still booting has no pidfile yet: give it the floor budget
+        # before concluding nobody is home.
+        deadline = time.monotonic() + single_instance.MIN_WAIT_S
+        while True:
+            try:
+                pid, port = read_pidfile()
+                if (pid and port and single_instance.alive(pid)
+                        and single_instance._probe_ok(port)):
+                    return pid, port
+            except Exception:  # noqa: BLE001
+                logger.debug("single instance: pidfile fallback failed", exc_info=True)
+                return None
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(single_instance.POLL_S)
+    if outcome.role == "primary":
+        return None
+    if outcome.live is not None:
+        if outcome.waited_s > 2:
+            logger.info("single instance: waited %.0fs for pid %s to serve",
+                        outcome.waited_s, outcome.live[0])
+        return outcome.live
+    logger.warning("single instance: %s holds the instance lock but served nothing "
+                   "in %.0fs", f"pid {outcome.holder}" if outcome.holder else "another copy",
+                   outcome.waited_s)
+    if not _stalled_copy_alert(outcome.holder):
+        _release_crashlog()
+        hard_exit(1)
+        return None  # unreachable; hard_exit never returns
+    # "Stop it and start". The modal may have stood for minutes: look again
+    # first — the holder may have died and a fresh instance may be serving
+    # by now (defer to it), or the lock may simply be free (take it). The
+    # FULL budget: a successor that took the lock under the modal is a
+    # booting app and gets its own 75 s from its own start, while the same
+    # stalled holder gets only the floor (its `since` is long past).
+    try:
+        again = single_instance.enforce(APP_SUPPORT_DIR, read_pidfile,
+                                        support_base=_APP_SUPPORT_BASE,
+                                        record=health.record_event)
+    except Exception:  # noqa: BLE001
+        logger.exception("single instance: re-check after the alert failed")
+        again = outcome
+    if again.role == "primary":
+        return None
+    if again.live is not None:
+        return again.live
+    # Still the same stalled holder: stop it, take the lock, then clear every
+    # OTHER leftover too. Trusted by the lock, as defer trusts it — a copy run
+    # from the DMG or a translocated bundle holds the lock and fails an
+    # executable-path check, and leaving it would start us WITHOUT the lock
+    # (the leftover that parks the scheduler lease). "Same pid as the one
+    # the user was asked about, still alive, still named by the record" is
+    # the guard against a pid recycled under the modal.
+    target = again.holder
+    if target is not None and target == outcome.holder and single_instance.alive(target):
+        # Identity by NAME as well as path (`canvases._is_fused_process`, the
+        # force-quit rule): a translocated or DMG copy is still "FusedRender"
+        # to `ps`, a pid recycled by something else is not.
+        single_instance.sweep([single_instance.Rival(target, 0.0)],
+                              still_rival=_is_fused_process)
+    if single_instance.claim(APP_SUPPORT_DIR):
+        single_instance.sweep_leftovers(record=health.record_event,
+                                        support_base=_APP_SUPPORT_BASE)
+        return None
+    # The holder would not die (a process stuck in the kernel keeps its
+    # flock). Starting without the lock beats not starting — the old code
+    # started here too — but say so: scheduled tasks may wait behind it.
+    logger.error("single instance: could not take the instance lock after stopping %s; "
+                 "starting WITHOUT it — scheduled tasks may wait behind that process",
+                 target)
+    _notice_alert("Fused Render started, but another copy is still running",
+                  f"Process {target or 'unknown'} could not be stopped. Fused Render will "
+                  "work, but scheduled tasks may not start until that process is gone. "
+                  "Quit it from Activity Monitor or restart your Mac.")
+    return None
+
+
+def _is_fused_process(pid: int) -> bool:
+    try:
+        from fused_render import canvases
+
+        return bool(canvases._is_fused_process(pid))
+    except Exception:  # noqa: BLE001 — unknowable means "not ours to signal"
+        return False
+
+
+#: How long the stalled-copy alert waits for an answer before it counts as
+#: Quit. Launches can pile up behind an unanswered modal (each later launch
+#: defers to the same stalled holder and asks the same question).
+STALLED_ALERT_TIMEOUT_S = 10 * 60.0
+
+
+def _release_crashlog() -> None:
+    try:
+        from fused_render.crashlog import release
+
+        release()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _stalled_copy_alert(pid: int | None) -> bool:
+    """One modal: a copy of Fused Render holds the instance lock but is not
+    serving. True when the user chose to stop it and start this one; False
+    for Quit, for no answer within `STALLED_ALERT_TIMEOUT_S`, and on any
+    platform without AppKit (where the WARNING in the log is the whole of
+    it). Runs before rumps owns the run loop, so the shared application is
+    created and activated here first — a modal under an unactivated
+    accessory app would sit behind every window."""
+    if sys.platform != "darwin":
+        return False
+    try:
+        from AppKit import (NSAlert, NSAlertFirstButtonReturn, NSApplication,
+                            NSApplicationActivationPolicyAccessory)
+
+        app = NSApplication.sharedApplication()
+        app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+        app.activateIgnoringOtherApps_(True)
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("Fused Render is already running, but not responding")
+        who = f"process {pid}" if pid else "another copy"
+        alert.setInformativeText_(
+            f"An earlier copy of Fused Render ({who}) is still running and did not "
+            "start serving. Stop it and start this one? Scheduled tasks cannot run "
+            "while it stays.")
+        alert.addButtonWithTitle_("Stop it and start")
+        alert.addButtonWithTitle_("Quit")
+        # `abortModal` is the one modal-ending call AppKit allows from a
+        # secondary thread; the timer fires only if nobody answered.
+        timer = threading.Timer(STALLED_ALERT_TIMEOUT_S, app.abortModal)
+        timer.daemon = True
+        timer.start()
+        try:
+            answer = alert.runModal()
+        finally:
+            timer.cancel()
+        if answer == NSAlertFirstButtonReturn:
+            return True
+        if answer != NSAlertFirstButtonReturn + 1:
+            logger.warning("single instance: alert returned %r (timeout or abort); "
+                           "treating as Quit", answer)
+        return False
+    except Exception:  # noqa: BLE001 — no AppKit, no alert; the log has it
+        logger.warning("single instance: could not show the stalled-copy alert for %s",
+                       pid, exc_info=True)
+        return False
+
+
+def _notice_alert(title: str, text: str) -> None:
+    """One OK-only modal, macOS only; silent elsewhere (the log has it)."""
+    if sys.platform != "darwin":
+        return
+    try:
+        from AppKit import NSAlert, NSApplication
+
+        NSApplication.sharedApplication().activateIgnoringOtherApps_(True)
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_(title)
+        alert.setInformativeText_(text)
+        alert.addButtonWithTitle_("OK")
+        alert.runModal()
+    except Exception:  # noqa: BLE001
+        logger.warning("single instance: could not show notice %r", title, exc_info=True)
+
+
 def main() -> None:
     os.makedirs(APP_SUPPORT_DIR, exist_ok=True)
     setup_logging()  # first: everything after this can crash-report to the file
@@ -1609,14 +1775,19 @@ def main() -> None:
     # and set the bits now, before the first spawn — see bundle_exec.
     bundle_exec.repair_own_bundle()
 
-    existing = find_running_server()
+    existing = _enforce_single_instance()
     if existing is not None:
         pid, port = existing
-        # Another instance already owns the menu bar and the pidfile; don't
-        # start a second server, just point the browser at it and exit.
+        # Another instance holds the instance lock and serves; don't start a
+        # second server, point the browser at it and go. `hard_exit`, not
+        # `return`: a duplicate that returned from main() could outlive it
+        # (anything keeping the interpreter up) and sit beside the real app
+        # for a day — exactly the leftover single_instance.py exists to
+        # prevent.
         logger.info("found live server (pid %s, port %s); reusing it", pid, port)
         webbrowser.open(f"http://127.0.0.1:{port}/")
-        return
+        _release_crashlog()  # hard_exit skips atexit; an empty crash file would read as a crash
+        hard_exit(0)
 
     # One-shot relocation of the workspace out of iCloud-synced ~/Documents
     # (D337) — HERE, before the run loop, not in the server thread. The
