@@ -1386,14 +1386,20 @@ export default function CanvasWorkspace({
     if (!frame?.contentWindow || !origin) return;
     frame.contentWindow.postMessage({ type: "fused-embed-select", udfName }, origin);
   }, []);
-  // The rail card's node chip (RailPeek): pressed before the frame is ready
-  // (no window or origin yet), the ask is kept and replayed — with the
-  // page's own node — when the frame comes up (auth-ready, hydration), rather
-  // than dropped (CodeRabbit on #2044).
-  const pendingSelectRef = useRef<string | null>(null);
+  // The rail card's node chip (RailPeek), or the rail's own last seat asking
+  // for NO node (ClaudeRail, `null`): pressed before the frame is ready (no
+  // window or origin yet), the ask is kept and replayed — in place of the
+  // page's own node — when the frame comes up (auth-ready, hydration),
+  // rather than dropped (CodeRabbit on #2044). Boxed, so a kept deselect
+  // (`{ udfName: null }`) reads apart from nothing kept (`null`). Kept
+  // through the frame's BOOT too (auth-ready seen, hello not yet): a frame
+  // that has not hydrated takes no selection, and the hello replay would
+  // otherwise put the page's own node back — undoing the deselect.
+  const pendingSelectRef = useRef<{ udfName: string | null } | null>(null);
   const selectFromRail = useCallback(
-    (udfName: string) => {
-      pendingSelectRef.current = frameRef.current?.contentWindow && baseOriginRef.current ? null : udfName;
+    (udfName: string | null) => {
+      const up = !!frameRef.current?.contentWindow && !!baseOriginRef.current && frameUpRef.current;
+      pendingSelectRef.current = up ? null : { udfName };
       sendSelect(udfName);
     },
     [sendSelect],
@@ -1953,7 +1959,8 @@ export default function CanvasWorkspace({
           // A fresh document: down until its next hello (the selection gate
           // below), whether or not the src changed.
           frameUpRef.current = false;
-          sendSelect(pendingSelectRef.current ?? nodeRef.current?.udfName ?? null);
+          const kept = pendingSelectRef.current;
+          sendSelect(kept ? kept.udfName : nodeRef.current?.udfName ?? null);
         }
       }
       if (type === "fused-embed-snapshot") {
@@ -2083,8 +2090,9 @@ export default function CanvasWorkspace({
         // on the page's own node (or none). A current one already settled on
         // the replay it was holding, and a repeat is a no-op there. A chip
         // press that came before the frame (`selectFromRail`) is spent here.
-        sendSelect(pendingSelectRef.current ?? nodeRef.current?.udfName ?? null);
+        const kept = pendingSelectRef.current;
         pendingSelectRef.current = null;
+        sendSelect(kept ? kept.udfName : nodeRef.current?.udfName ?? null);
       }
       if (type === "fused-embed-delta-applied" || type === "fused-embed-delta-rejected") {
         const rev = event.data?.rev;

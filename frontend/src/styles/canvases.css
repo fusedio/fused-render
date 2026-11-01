@@ -464,6 +464,20 @@
 .canvas-rail-chat {
   position: relative;
 }
+/* The seat under the list while a node is selected (ClaudeRail
+   `.canvas-rail-all`): the canvas glyph, the way back to every chat on the
+   canvas. Below the scroller, so a short window never scrolls it away; a
+   hairline above it, the rail's own divider (.sidebar-rail-items wears the
+   same), so it reads as the list's foot and not as one more chat. */
+.canvas-rail-all-seat {
+  display: flex;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 28px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--rail-sep);
+}
 /* The ring whose chat the hover card shows (ClaudeRail `.peeked`, behind
    `canvas_rail_peek_enabled`): the hover wash stays on while the pointer is
    over the card, so the card and its ring read as one thing. */

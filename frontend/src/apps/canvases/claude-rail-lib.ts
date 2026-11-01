@@ -151,3 +151,56 @@ export function railRows(
     })
     .filter((r): r is RailRow => r !== null);
 }
+
+// A PRESS ON A RING CLEARS ITS DOT (owner, 2026-11-01: "on click it should
+// be unread, the dot should go away"). The write is the List's own
+// whole-task read (api.markWholeTaskRead); the pulse reports the new count
+// on its next poll, ~600ms later, and the dot must not stand for those
+// 600ms. So the rail holds a MARK per pressed ring — what the row reported
+// at the press — and draws the ring hollow while the row still says exactly
+// that. The moment the row says anything else, the mark is spent:
+//   - unread 0: the server confirmed the read — the mark is not needed;
+//   - a new `happened_at` or another count: something landed after the
+//     press, and that IS news — the dot comes back on the server's word,
+//     never hidden by a stale mark.
+// A refused write drops the mark (ClaudeRail), the List's rollback.
+
+/** What a pressed ring's row reported at the press. */
+export interface ReadMark {
+  unread: number;
+  happened: number;
+}
+
+/** The mark a press on this row leaves, or null when it has nothing to
+ *  clear (a second press on a hollow ring posts nothing). */
+export function readMark(t: Pick<TaskPulseTask, "unread" | "happened_at">): ReadMark | null {
+  return t.unread > 0 ? { unread: t.unread, happened: t.happened_at ?? 0 } : null;
+}
+
+/** Is the dot held off by this mark: the row still reports exactly what the
+ *  press cleared. */
+export function dotCleared(
+  mark: ReadMark | undefined,
+  t: Pick<TaskPulseTask, "unread" | "happened_at">,
+): boolean {
+  return !!mark && t.unread === mark.unread && (t.happened_at ?? 0) === mark.happened;
+}
+
+/** The marks still worth holding after the rows moved: a mark whose row is
+ *  gone, or no longer reports what the press cleared (header), is spent.
+ *  Returns the same map when nothing is spent, so a state set is a no-op. */
+export function keepMarks(
+  marks: ReadonlyMap<string, ReadMark>,
+  rows: readonly Pick<TaskPulseTask, "key" | "unread" | "happened_at">[],
+): ReadonlyMap<string, ReadMark> {
+  if (marks.size === 0) return marks;
+  const byKey = new Map(rows.map((t) => [t.key, t]));
+  let out: Map<string, ReadMark> | null = null;
+  for (const [key, mark] of marks) {
+    const t = byKey.get(key);
+    if (t && dotCleared(mark, t)) continue;
+    if (!out) out = new Map(marks);
+    out.delete(key);
+  }
+  return out ?? marks;
+}
