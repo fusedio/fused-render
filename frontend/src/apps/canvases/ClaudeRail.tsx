@@ -79,6 +79,25 @@
 // page stops handing the frame focus on a mere pointer ENTER while a pinned
 // card is up (`onCardPinned`, CanvasWorkspace `focusCanvasOnEnter`):
 // otherwise crossing the canvas would read as a click on it.
+//
+// A PRESS CLEARS THE DOT (owner, 2026-11-01: "if I click on the item it
+// should unread and go away"): a plain press on a ring — whether it opens
+// the card or the pane — is the reader opening that chat, and opening a
+// thread is what clears its badge everywhere else (ScheduleTaskViews
+// `openBorrowed`, task-open-read.ts). The write is the List's whole-task
+// read; the ring goes hollow at once and stays so until the pulse confirms
+// it (claude-rail-lib `readMark` / `keepMarks`: a refused write, or news
+// that lands after the press, brings the dot back). A modified press (a new
+// tab) clears nothing: the page it opens does its own reading.
+//
+// THE LAST SEAT WHILE A NODE IS SELECTED is the way back to the whole
+// canvas (owner, 2026-11-01: "at the end of that list, only in the collapsed
+// list, a canvas icon button which when clicked shows all canvas chats, not
+// just filtered chats"): the canvas glyph, which asks the workbench to
+// DESELECT (`onSelectNode(null)`) — the selection echo sets `node` back to
+// null, and the rail widens to every chat on the canvas, the + with it. It
+// stands even when the node has no chat of its own: an empty list with no
+// way out of the filter is the thing to avoid.
 import {
   useCallback,
   useEffect,
@@ -90,7 +109,7 @@ import {
 } from "react";
 import { Plus } from "lucide-react";
 import PanelIcon from "@platform/ui/PanelIcon";
-import { getSchedule, type Task } from "@platform/lib/api";
+import { getSchedule, markWholeTaskRead, type Task, type TaskPulseTask } from "@platform/lib/api";
 import {
   onDraftChange,
   readListing,
@@ -111,7 +130,8 @@ import { StatusIcon } from "@shell/ScheduleTaskViews";
 import NewJobModal from "@shell/NewJobModal";
 import { draftHref, preloadChat } from "@apps/claude";
 import { hideHint } from "@platform/lib/hints";
-import { railRows } from "./claude-rail-lib";
+import { dotCleared, keepMarks, railRows, readMark, type ReadMark } from "./claude-rail-lib";
+import { CanvasGlyph } from "./glyph";
 import { PeekIntent, keepAlive, statusWords } from "./rail-peek-lib";
 import { useCanvasRailPeek, useCanvasRailPeekTrigger } from "./rail-peek-flag";
 import { RailPeek, type RailPeekHandle } from "./RailPeek";
@@ -119,6 +139,13 @@ import type { WorkbenchEnv } from "./api";
 
 /** The hover card's DOM id (one rail per page; the ring's `aria-controls`). */
 const PEEK_ID = "canvas-rail-peek";
+
+/** How long a press's read may stay in flight before the rail gives the dot
+ *  back (CodeRabbit on #2049): a write that hangs would otherwise hold the
+ *  ring hollow — and a re-press mute — for as long as the browser waits. The
+ *  request itself is not cancelled; a write the server applies after the
+ *  deadline shows as the pulse's next zero. */
+const READ_WAIT_MS = 8000;
 
 /** How long a press waits for the card's composer to mount before it gives up
  *  putting the keyboard there (a cold chat chunk takes ~1s). */
@@ -199,8 +226,10 @@ export function ClaudeRail({
   onOpen: () => void;
   /** Open one of the canvas's chats: its Tasks-page door (`taskHref`). */
   onOpenChat: (href: string) => void;
-  /** The card's node chip: select that node in the workbench (RailPeek). */
-  onSelectNode: (udfName: string) => void;
+  /** The card's node chip: select that node in the workbench (RailPeek);
+   *  null — the rail's last seat while a node is selected (header) — asks
+   *  it to deselect, back to the whole canvas. */
+  onSelectNode: (udfName: string | null) => void;
   /** A pointer down on the rail's inner edge: the start of a pull that opens
    *  the pane at the width the pointer drags it to (CanvasWorkspace
    *  `onRailPull`). */
@@ -264,6 +293,49 @@ export function ClaudeRail({
   // row moves (the pulse) or the listing re-reads, which is when a rank can
   // change.
   const seats = useMemo(() => railRows(rows, full, place), [rows, full, place]);
+
+  // THE DOTS A PRESS CLEARED (header; claude-rail-lib `ReadMark`): held
+  // while the pulse still reports what the press saw, spent the moment it
+  // says anything else. Pruned against the rows the rail draws from, so a
+  // stale mark never outlives its row.
+  const [marks, setMarks] = useState<ReadonlyMap<string, ReadMark>>(() => new Map());
+  const marksRef = useRef(marks);
+  marksRef.current = marks;
+  useEffect(() => {
+    setMarks((m) => keepMarks(m, rows));
+  }, [rows]);
+  const dropMark = useCallback((key: string, mark: ReadMark) => {
+    setMarks((m) => {
+      if (m.get(key) !== mark) return m;
+      const next = new Map(m);
+      next.delete(key);
+      return next;
+    });
+  }, []);
+  const clearUnread = useCallback(
+    (t: TaskPulseTask) => {
+      // Hollow already (a press while the pulse has yet to agree): nothing
+      // to clear, and no second write.
+      if (dotCleared(marksRef.current.get(t.key), t)) return;
+      const mark = readMark(t);
+      if (!mark) return;
+      setMarks((m) => new Map(m).set(t.key, mark));
+      // Not awaited: the press is opening the chat and must not wait on the
+      // write. A refusal — or a write still out past READ_WAIT_MS — puts
+      // the dot back; unless a later press replaced the mark, whose own
+      // write is the one that counts. A confirmed write leaves the mark to
+      // the rows (`keepMarks`): it ends on the row's own word (the zero),
+      // never on a clock — the listing feed can run up to its 20s floor
+      // behind the write, and a dot that came back meanwhile would be a
+      // lie. A mark cannot outlive its truth: a message is unread only
+      // once it has HAPPENED, so a real new dot always moves `happened_at`.
+      const deadline = new Promise<never>((_, reject) => {
+        window.setTimeout(() => reject(new Error("read timed out")), READ_WAIT_MS);
+      });
+      void Promise.race([markWholeTaskRead(t.key), deadline]).catch(() => dropMark(t.key, mark));
+    },
+    [dropMark],
+  );
 
   // THE HOVER CARD (header; RailPeek.tsx). `peekKey` is what the card shows,
   // `kept` the chats that stay mounted behind it (newest first), both written
@@ -560,6 +632,30 @@ export function ClaudeRail({
   }, []);
   const [card, setCard] = useState<Card | null>(null);
   const [opening, setOpening] = useState(false);
+  // The all-chats seat pressed by keyboard (below): when the node goes, the
+  // keyboard goes to the +, the rail's first seat, rather than to the body.
+  const allRef = useRef<HTMLButtonElement | null>(null);
+  const plusRef = useRef<HTMLButtonElement | null>(null);
+  const refocusPlus = useRef(false);
+  // THE POINTER'S RESTING PLACE AT THE SEAT'S PRESS. The press reshapes the
+  // rail (the seat goes, the list grows), and the engine then reports a
+  // pointer ENTER on whichever ring slid under the unmoved pointer — which
+  // would open that chat's hover card over a press that asked for no chat.
+  // A ring entered at this very spot is ignored until the pointer has
+  // moved; the first real move clears it (`enterRing` below).
+  const stillAt = useRef<{ x: number; y: number } | null>(null);
+  const lastPointer = useRef<{ x: number; y: number } | null>(null);
+  const enterRing = (key: string, e: ReactPointerEvent<HTMLAnchorElement>) => {
+    const at = stillAt.current;
+    if (at && Math.abs(e.clientX - at.x) < 2 && Math.abs(e.clientY - at.y) < 2) return;
+    stillAt.current = null;
+    intent.enterRing(key, "pointer");
+  };
+  useEffect(() => {
+    if (node || !refocusPlus.current) return;
+    refocusPlus.current = false;
+    plusRef.current?.focus({ preventScroll: true });
+  }, [node]);
   const waiting = dir === null ? "Loading the canvas…" : !nodeReady && node ? `Saving ${node.file}…` : null;
   const openNewTask = () => {
     if (opening || card || waiting) return;
@@ -575,7 +671,14 @@ export function ClaudeRail({
   };
 
   return (
-    <aside ref={railRef} className="canvas-rail" aria-label="Claude">
+    <aside
+      ref={railRef}
+      className="canvas-rail"
+      aria-label="Claude"
+      onPointerMove={(e) => {
+        lastPointer.current = { x: e.clientX, y: e.clientY };
+      }}
+    >
       {/* THE RAIL'S INNER EDGE IS A SEAM: pulled left it opens the pane at the
           width the pointer takes it to — the explorer sidebar's reopen edge
           (SideReopenEdge) and the global sidebar's rail, the same gesture on
@@ -599,6 +702,7 @@ export function ClaudeRail({
       </button>
       <div className="sidebar-rail-items">
         <button
+          ref={plusRef}
           type="button"
           className="sidebar-rail-btn canvas-rail-item"
           title={waiting ?? (node ? `New task on ${node.udfName}` : "New task")}
@@ -615,6 +719,8 @@ export function ClaudeRail({
             {seats.map(({ pulse: t, row }) => {
               // The live status is the pulse's (fresher than the listing).
               const merged = row ? { ...row, status: t.status } : t;
+              // Hollow since the press, until the pulse agrees (header).
+              const unread = t.unread > 0 && !dotCleared(marks.get(t.key), t);
               const line = cardTitleLine(merged);
               const reply = row && !recapTitlesOn(row) ? row.last_reply || "" : "";
               const label = line.text || t.title || "Chat";
@@ -628,7 +734,7 @@ export function ClaudeRail({
               // No door, no ring (as before): a form-scheduled row with no
               // session, or a pulse-only draft the listing has not named yet.
               if (!href) return null;
-              const words = draft ? "draft" : statusWords(t, !!row?.failed);
+              const words = draft ? "draft" : statusWords(unread ? t : { ...t, unread: 0 }, !!row?.failed);
               const peeked = peekOn && peekKey === t.key;
               // The rings' own captions step aside for the card: a hover
               // shows the card, and the card IS the caption. The exception
@@ -677,7 +783,7 @@ export function ClaudeRail({
                     : {})}
                   {...(peekOn
                     ? {
-                        onPointerEnter: () => intent.enterRing(t.key, "pointer"),
+                        onPointerEnter: (e: ReactPointerEvent<HTMLAnchorElement>) => enterRing(t.key, e),
                         onPointerLeave: () => intent.leaveRing("pointer"),
                         onFocus: () => intent.enterRing(t.key, "focus"),
                         onBlur: () => intent.leaveRing("focus"),
@@ -686,6 +792,8 @@ export function ClaudeRail({
                   onClick={(e) => {
                     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
                     e.preventDefault();
+                    // Opened, by either door below: read (header).
+                    clearUnread(t);
                     if (peekOn && !noRoom) {
                       pressedHref.current = href;
                       requestAnimationFrame(() => {
@@ -715,7 +823,7 @@ export function ClaudeRail({
                     // later; "" is no tooltip. The link's aria-label still
                     // names the chat and its state.
                     {...(captionless ? { label: "" } : {})}
-                    unread={t.unread > 0}
+                    unread={unread}
                     background={liveJobRow(t)}
                     // The red centre dot the List gives a draft row and a
                     // settled row holding unsent words (tasks-lib.draftRing).
@@ -726,6 +834,42 @@ export function ClaudeRail({
                 </div>
               );
             })}
+          </div>
+        )}
+        {node && (
+          // The way back to the whole canvas (header): the canvas glyph,
+          // under the list's foot, deselects the node in the workbench.
+          // BELOW the scroller, not its last row: on a short window the
+          // list scrolls (no bar to say so), and a way out that has
+          // scrolled off is no way out.
+          <div className="canvas-rail-all-seat">
+            <button
+              ref={allRef}
+              type="button"
+              className="sidebar-rail-btn canvas-rail-item canvas-rail-all"
+              title={`All chats on ${name}`}
+              aria-label={`All chats on ${name} (deselect ${node.udfName})`}
+              data-hint={`All chats on ${name}`}
+              data-hint-side="left"
+              onClick={(e) => {
+                hideHint();
+                // A keyboard press: this button is about to unmount under
+                // the focus, which would fall to the body — hand it to the
+                // + once the node is gone (the effect above).
+                refocusPlus.current = e.detail === 0;
+                // A pinned card closes on this press like any other outside
+                // press — from the keyboard too, which the document's
+                // pointerdown rule never hears (Bugbot on #2049).
+                if (intent.current) intent.dismiss();
+                // Where the pointer rests now (the press's own spot, or the
+                // last move for a keyboard press): a ring sliding under it
+                // is not a hover (`stillAt`).
+                stillAt.current = e.detail === 0 ? lastPointer.current : { x: e.clientX, y: e.clientY };
+                onSelectNode(null);
+              }}
+            >
+              <CanvasGlyph size={16} />
+            </button>
           </div>
         )}
       </div>

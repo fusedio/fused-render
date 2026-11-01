@@ -5,7 +5,7 @@
 import { describe, expect, it } from "bun:test";
 import type { Task, TaskPulseTask } from "@platform/lib/api";
 import { sortForList } from "@shell/tasks-lib";
-import { onRail, railRows, railScope } from "./claude-rail-lib";
+import { dotCleared, keepMarks, onRail, railRows, railScope, readMark } from "./claude-rail-lib";
 
 const PLACE = { env: "unstable" as const, name: "demo", dir: "/home/me/canvases/demo" };
 /** The hover card's rail: drafts and scheduled rows admitted. */
@@ -166,5 +166,48 @@ describe("railRows", () => {
     expect(seats[0]?.row?.key).toBe("held");
     expect(seats[1]?.row).toBeNull();
     expect(seats[3]?.row).toBeNull();
+  });
+});
+
+// A press on a ring clears its dot at once and holds it hollow until the
+// pulse agrees (owner, 2026-11-01); anything that lands after the press is
+// news again, on the server's word.
+describe("readMark / dotCleared / keepMarks", () => {
+  const row = (unread: number, happened_at = 1_000) => ({ key: "a", unread, happened_at });
+
+  it("a press on a row with unread leaves a mark; a hollow ring leaves none", () => {
+    expect(readMark(row(2))).toEqual({ unread: 2, happened: 1_000 });
+    expect(readMark(row(0))).toBeNull();
+    expect(readMark({ unread: 1 })).toEqual({ unread: 1, happened: 0 });
+  });
+
+  it("the dot stays off while the row still reports what the press saw", () => {
+    const mark = readMark(row(2))!;
+    expect(dotCleared(mark, row(2))).toBe(true);
+    expect(dotCleared(undefined, row(2))).toBe(false);
+  });
+
+  it("the server confirming (unread 0) or news after the press ends the mark", () => {
+    const mark = readMark(row(2))!;
+    expect(dotCleared(mark, row(0))).toBe(false);
+    expect(dotCleared(mark, row(3))).toBe(false);
+    // Same count, later activity: a new message replaced the read ones.
+    expect(dotCleared(mark, row(2, 2_000))).toBe(false);
+  });
+
+  it("keepMarks drops spent marks and marks whose row left, and keeps the map when nothing changed", () => {
+    const a = readMark(row(2))!;
+    const b = { unread: 1, happened: 500 };
+    const marks = new Map([
+      ["a", a],
+      ["b", b],
+      ["gone", b],
+    ]);
+    const kept = keepMarks(marks, [row(2), { key: "b", unread: 0, happened_at: 500 }]);
+    expect([...kept.keys()]).toEqual(["a"]);
+    // Unchanged: the same map back, so a state set is a no-op.
+    expect(keepMarks(kept, [row(2)])).toBe(kept);
+    const empty = new Map();
+    expect(keepMarks(empty, [row(2)])).toBe(empty);
   });
 });
