@@ -433,3 +433,17 @@ def test_a_failure_already_on_file_is_not_doubled(agent, tmp_path, transcript):
                         _assistant("API Error: no network",
                                    isApiErrorMessage=True)])
     assert [t["role"] for t in turns] == ["user", "error"]
+
+
+def test_a_stop_older_than_the_slack_is_still_a_stop_not_a_crash(
+        agent, tmp_path, transcript):
+    """Bugbot (PR #2063): `_died_mid_turn` vouches for a Stop marker only
+    within five seconds of the log's last write, but `_stopped_last` reads the
+    marker the way the live path does and has the last word — a reply it
+    stamps `stopped` never also wears the red crash line."""
+    d = _stage_run(agent, tmp_path, _OUT_OPEN, cancelled=True)
+    old = time.time() - 120
+    os.utime(d / "cancelled", (old, old))
+    turns = transcript([_user("build it"), _tool_call()])
+    assert [t["role"] for t in turns] == ["user", "assistant"]
+    assert turns[-1].get("stopped") is True

@@ -138,6 +138,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
+from fused_render import _platform
 from fused_render._platform import is_within
 from fused_render import netlog
 from fused_render import (
@@ -2184,11 +2185,17 @@ def _pid_gone(run_dir: str) -> bool:
         return False
     if pid <= 0:
         return False
+    # `probe_pid`, never a bare `os.kill(pid, 0)`: on Windows signal 0 is
+    # CTRL_C_EVENT, so a listing lap would be interrupting the very process
+    # it asked about (Bugbot, PR #2063). The shared probe raises
+    # `ProcessLookupError` for a process that is gone on every platform, and
+    # returns — or raises something else — for one that exists or cannot be
+    # asked about.
     try:
-        os.kill(pid, 0)
+        _platform.probe_pid(pid)
     except ProcessLookupError:
         return True
-    except OSError:
+    except Exception:  # noqa: BLE001 — EPERM, a Windows handle error: alive
         return False
     return False
 

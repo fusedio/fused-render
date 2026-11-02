@@ -11663,8 +11663,15 @@ def _history(file: str, session_id: str, app_reads: bool = False,
     # transcript's last word is that unfinished turn (a user prompt nothing
     # answered, or a reply whose tools never returned), and never over a
     # failure already on file (an API error row is its own `error` turn).
+    # A STOPPED TURN IS NOT A DEAD ONE: `_stopped_last` is the authoritative
+    # read of the Stop marker (poll-cursor staleness and all), and a reply it
+    # has just stamped `stopped` keeps its ⏹ note alone — a Stop whose CLI
+    # wrote past `_died_mid_turn`'s own five-second slack must not wear the
+    # note AND a red crash line (Bugbot, PR #2063).
     if last_run and turns and not transcript and \
-            turns[-1].get("role") in ("assistant", "user"):
+            turns[-1].get("role") in ("assistant", "user") and \
+            not turns[-1].get("stopped") and \
+            not _stopped_last(file, session_id):
         death = _died_mid_turn(last_run)
         if death:
             if turns[-1].get("role") == "assistant":
