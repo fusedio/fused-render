@@ -261,6 +261,20 @@ describe("the Skills page", () => {
     ]);
   });
 
+  test("skills.sh rows are ranked by relevance and capped at 8 behind Show more", async () => {
+    const row = (skillId: string, installs: number) => ({ id: `o/r/${skillId}`, source: "o/r", skillId, name: skillId, installs, added: false });
+    searchReply = () => ({ ok: true, skills: [
+      ...Array.from({ length: 9 }, (_, i) => row(`noise-${i}`, 1000 - i)), row("vercel-react-best", 5),
+    ] });
+    const box = await mount();
+    await type(box, "react");
+    const rows = () => box.root.findAll((n) => n.type === "div" && String(n.props.className ?? "").split(" ").includes("cc-srow"));
+    expect(rows()).toHaveLength(8);
+    expect(textOf(rows()[0])).toContain("vercel-react-best");
+    await act(async () => { button(box, "Show 2 more").props.onClick(); });
+    expect(rows()).toHaveLength(10);
+  });
+
   test("no match anywhere offers to write that skill", async () => {
     searchReply = () => ({ ok: true, skills: [] });
     const box = await mount();

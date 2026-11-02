@@ -20,6 +20,7 @@ import {
   REMOTE_MIN,
   formatInstalls,
   groupRemote,
+  rankRemote,
   matchSkills,
   readParams,
   skillKey,
@@ -300,14 +301,19 @@ export default function Skills() {
           )}
           {remoteRows.length > 0 && (
             <div className="settings-card">
-              {groupRemote(remoteRows).map(({ top, rest }) => (
-                <div key={top.id}>
-                  {remoteRow(top, rest.length)}
-                  {rest.length > 0 && openGroups.has(top.skillId) && (
-                    <div className="cc-srow-others">{rest.map((r) => remoteRow(r, 0))}</div>
-                  )}
-                </div>
-              ))}
+              <ShowMore
+                items={rankRemote(groupRemote(remoteRows), q)}
+                limit={8}
+                resetKey={q}
+                render={({ top, rest }) => (
+                  <div key={top.id}>
+                    {remoteRow(top, rest.length)}
+                    {rest.length > 0 && openGroups.has(top.skillId) && (
+                      <div className="cc-srow-others">{rest.map((r) => remoteRow(r, 0))}</div>
+                    )}
+                  </div>
+                )}
+              />
             </div>
           )}
         </section>

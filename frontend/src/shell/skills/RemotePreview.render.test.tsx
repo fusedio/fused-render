@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from "react-test-renderer";
 import { createElement } from "react";
 import { installDomShim } from "@platform/lib/testDomShim";
-import { formatInstalls, groupRemote } from "./model";
+import { formatInstalls, groupRemote, rankRemote } from "./model";
 
 installDomShim();
 const { RemotePreview, formatBytes } = await import("./RemotePreview");
@@ -75,5 +75,13 @@ describe("helpers", () => {
       { skillId: "a", installs: 1, id: "1" }, { skillId: "b", installs: 5, id: "2" }, { skillId: "a", installs: 9, id: "3" },
     ]);
     expect(g.map((x) => [x.top.id, x.rest.map((r) => r.id)])).toEqual([["3", ["1"]], ["2", []]]);
+  });
+  test("rankRemote orders by relevance tier, then installs", () => {
+    const row = (name: string, source: string, installs: number) => ({ name, source, installs, skillId: name, id: name });
+    const groups = [
+      row("design-mobile", "o/react-kit", 900), row("my-react-thing", "o/x", 10), row("react-best", "o/y", 5),
+      row("react", "o/z", 1), row("other", "o/w", 999),
+    ].map((r) => ({ top: r, rest: [] }));
+    expect(rankRemote(groups, "React").map((g) => g.top.name)).toEqual(["react", "my-react-thing", "react-best", "design-mobile", "other"]);
   });
 });
