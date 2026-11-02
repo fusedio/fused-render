@@ -100,6 +100,10 @@ export function popStyle(
    * the same box as `left` would be.
    */
   alignEnd = false,
+  /** The panel's own width, for the alignEnd clamp: a panel hanging from a
+   *  trigger near the window's LEFT edge would otherwise run off it, so it
+   *  switches to a `left` of POP_EDGE instead. Unused without alignEnd. */
+  width?: number,
 ): React.CSSProperties {
   const r = el?.getBoundingClientRect();
   if (!r) return {};
@@ -118,9 +122,14 @@ export function popStyle(
   // reckoned in viewport terms, because what the reader cares about is whether
   // the panel is on their screen; only the offsets are converted.
   const o = fixedBox(el);
-  const s: React.CSSProperties = alignEnd
+  // alignEnd hangs the panel from the trigger's RIGHT edge — unless that
+  // would push its left edge off the window, in which case it sits at the
+  // window's left margin instead (a Folder pill beside an open Browse panel
+  // on a narrow window).
+  const offLeft = alignEnd && width !== undefined && r.right - width < POP_EDGE;
+  const s: React.CSSProperties = alignEnd && !offLeft
     ? { position: "fixed", left: "auto", right: o.x + o.w - r.right, top: "auto", bottom: "auto" }
-    : { position: "fixed", left: r.left - o.x, right: "auto", top: "auto", bottom: "auto" };
+    : { position: "fixed", left: offLeft ? POP_EDGE - o.x : r.left - o.x, right: "auto", top: "auto", bottom: "auto" };
   if (scrolls) {
     const below = window.innerHeight - r.bottom - 4 - POP_EDGE;
     const above = r.top - 4 - POP_EDGE;

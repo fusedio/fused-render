@@ -2080,9 +2080,13 @@ input.schedule-when-field {
 .schedule-recur {
   position: fixed;
   top: 10vh;
-  /* 10px right of the card wherever the card ended up (see the shift above). */
-  left: max(calc(50% + 65px), 602px);
-  width: min(380px, 38vw);
+  /* 10px right of the card wherever the card ended up (see the shift above:
+     `22px + card width` once the shift is capped) — and never past the
+     window's right edge less 8px. The panel gives up width first (down to
+     240px) so card and panel both fit on a window of ~850px; narrower than
+     that it sits over the card's edge rather than off-screen. */
+  left: min(max(calc(50% + 65px), calc(22px + min(580px, 100vw - 32px))), calc(100vw - clamp(240px, 100vw - min(580px, 100vw - 32px) - 30px, 380px) - 8px));
+  width: clamp(240px, calc(100vw - min(580px, 100vw - 32px) - 30px), 380px);
   z-index: 50;
   display: flex;
   flex-direction: column;
@@ -2263,8 +2267,10 @@ input.schedule-when-field {
   position: relative;
   /* …but never past the window's left edge: the card is the thing being
      edited, so on a narrow window it keeps 12px of margin and the panel is
-     the one that runs off the right. (`302px` = half the card + the margin.) */
-  left: max(-235px, calc(302px - 50vw));
+     the one that gives way. Half the card is `min(290px, 50vw - 16px)` — the
+     card is 580px until the window is narrower than that plus the overlay's
+     margins — so the shift that leaves 12px is `12px - 50vw + half`. */
+  left: max(-235px, calc(12px - 50vw + min(290px, 50vw - 16px)));
 }
 
 /* `top` and `height` are set INLINE by NewJobModal, measured off the dialog's
@@ -2275,8 +2281,9 @@ input.schedule-when-field {
 .schedule-explorer {
   position: fixed;
   top: 10vh;
-  left: max(calc(50% + 65px), 602px);
-  width: min(460px, 44vw);
+  /* Same geometry as .schedule-recur above, with this panel's own width. */
+  left: min(max(calc(50% + 65px), calc(22px + min(580px, 100vw - 32px))), calc(100vw - clamp(240px, 100vw - min(580px, 100vw - 32px) - 30px, 460px) - 8px));
+  width: clamp(240px, calc(100vw - min(580px, 100vw - 32px) - 30px), 460px);
   height: min(600px, 82vh);
   z-index: 50;
   display: flex;

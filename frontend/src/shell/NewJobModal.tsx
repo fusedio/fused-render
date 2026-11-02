@@ -648,7 +648,7 @@ function PropPill({
           role="dialog"
           aria-label={ariaLabel}
           className={"schedule-pop nt-pop" + (popClassName ? " " + popClassName : "")}
-          style={{ ...popStyle(pillRef.current, popHeight, false, false, align === "end"), width: popWidth }}
+          style={{ ...popStyle(pillRef.current, popHeight, false, false, align === "end", popWidth), width: popWidth }}
         >
           {children}
         </div>
