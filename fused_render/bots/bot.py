@@ -3040,15 +3040,36 @@ class Bot:
                     # `app` lets the chat render an app card under this message (open inline / beside the chat).
                     self.emit("done", f"Your app \"{bd['name']}\" is ready: {_app_link(bd['dir'])}" + (f"\n\n{reply}" if reply else ""),
                               app={"name": bd["name"], "dir": bd["dir"]}, source="build", via=bd.get("via"))
+                    app = os.path.basename(str(bd.get("dir") or "").rstrip("/"))
                     with self.lock:
                         bd["done_at"] = time.time()
                         # The app it just built is ticked under "Apps it may use without asking": its scripts run
                         # without a card from here on, and Settings shows that (tools.risk reads only the tick).
-                        apptools.trust_app(self.meta, os.path.basename(str(bd.get("dir") or "").rstrip("/")))
+                        apptools.trust_app(self.meta, app)
                         self.save()
+                    self._trust_for_asker(bd.get("via"), app)
                     return
                 stable = ""
         threading.Thread(target=run, name=f"build-{(bd.get('entry_id') or '')[:8]}", daemon=True).start()
+
+    def _trust_for_asker(self, via, app):
+        """A build Super Bot handed off is ticked for Super Bot too (owner, 2026-11-02): it asked for the app and
+        told the user it is built, so its Settings must not show that app unticked. Outside this bot's lock: two
+        bots' locks are never held together."""
+        if (via or {}).get("kind") != chan.HANDOFF_KIND:
+            return
+        sid = str(via.get("addr") or "").partition(":")[0]
+        if not sid or sid == self.id or not Bot._exists(sid):
+            return
+        try:
+            sb = _registry().get(sid)
+        except Exception:  # noqa: BLE001
+            return
+        if sb.deleted:
+            return
+        with sb.lock:
+            if apptools.trust_app(sb.meta, app):
+                sb.save()
 
     def _surface_build_stall(self, bd, row, st):
         """A build that stopped moving is told in the chat of the bot that asked
