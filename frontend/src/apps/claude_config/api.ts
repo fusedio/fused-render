@@ -319,6 +319,8 @@ export interface RemoteSkill {
   source: string;
   skillId: string;
   name: string;
+  /** skills.sh install count; 0 when unknown. */
+  installs: number;
   /** A skill with this slug is already in one of the user's skills dirs. */
   added: boolean;
 }
@@ -360,7 +362,9 @@ export const skills = {
   search: (query: string) =>
     callModule<OkResult & { skills?: RemoteSkill[] }>("skills", { action: "search", query }),
   remotePreview: (source: string, skillId: string) =>
-    callModule<OkResult & { text: string; files: string[] }>("skills", {
+    callModule<
+      OkResult & { text: string; readme: string; readmeIsSkill: boolean; fileCount: number; totalBytes: number }
+    >("skills", {
       action: "remote_preview",
       source,
       skill_id: skillId,
