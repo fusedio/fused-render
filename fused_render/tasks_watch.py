@@ -421,6 +421,25 @@ def live_from_registry(session_id: str,
     return running, active
 
 
+def departed_before(session_id: str, transcript_mtime: float) -> bool:
+    """Has every process that held this session GONE, with the transcript
+    untouched since the last one left? The departed half of
+    `live_from_registry` on its own, for a reader that wants exactly that
+    and not the registry's status word (`/api/claude-sessions/liveness`): a
+    turn left open in the file by a process that died stays open for ever,
+    and this is the earliest fact that says so. A session nothing here ever
+    held answers False — no opinion."""
+    if not session_id:
+        return False
+    with _cond:
+        if session_id in _registry:
+            return False
+        gone_at = _departed.get(session_id)
+    if gone_at is None:
+        return False
+    return transcript_mtime <= gone_at
+
+
 def is_turn_ended(session_id: str) -> bool:
     """Did the queue manager already say this session's TURN is over
     (`mark_turn_ended`), with nothing newer entitled to disagree?

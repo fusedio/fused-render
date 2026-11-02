@@ -330,3 +330,120 @@ def test_a_tool_only_turn_between_two_failures_resolves_nothing(agent, transcrip
     roles = [t["role"] for t in turns]
     assert roles.count("error") == 2
     assert "overloaded" in [t for t in turns if t["role"] == "error"][0]["text"]
+
+
+# ------------------------------------------------ a turn whose process died
+# The host killed with the app, a `kill -9`: the transcript ends on a tool
+# call with no result and nothing ever writes an error row. Rendered from the
+# transcript alone that was a chip spinning for ever under a Done ring (Sina,
+# 2026-10-31). The run dir says the process is gone with the turn open, and
+# `_history` turns that into the same red `error` turn an API failure gets.
+
+
+def _tool_call(tool_id="t1"):
+    return {"type": "assistant",
+            "message": {"role": "assistant",
+                        "content": [{"type": "tool_use", "id": tool_id,
+                                     "name": "Bash",
+                                     "input": {"command": "make"}}]}}
+
+
+def _dead_pid():
+    import subprocess
+    proc = subprocess.Popen(["true"])
+    proc.wait()
+    return proc.pid
+
+
+def _stage_run(agent, tmp_path, rows, pid=None, cancelled=False):
+    """A run dir for SESSION as its process leaves it: `out.jsonl` holding
+    `rows`, the CLI's pid in `pid` (dead unless given), the Stop marker when
+    `cancelled`."""
+    d = tmp_path / "runs" / "20260101-000000-abcdef"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "meta.json").write_text(json.dumps(
+        {"file": str(tmp_path / "proj"), "resumed_from": "", "message": "go"}))
+    (d / "session").write_text(SESSION)
+    (d / "out.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    (d / "pid").write_text(str(_dead_pid() if pid is None else pid))
+    if cancelled:
+        (d / "cancelled").write_text("")
+    return d
+
+
+_OUT_OPEN = [{"type": "system", "subtype": "init", "session_id": SESSION},
+             {"type": "user", "message": {"role": "user", "content": [
+                 {"type": "text", "text": "build it"}]}},
+             {"type": "assistant", "message": {"role": "assistant", "content": [
+                 {"type": "tool_use", "id": "t1", "name": "Bash",
+                  "input": {"command": "make"}}]}}]
+
+
+def test_a_run_that_died_mid_turn_restores_as_a_failure(agent, tmp_path,
+                                                        transcript):
+    _stage_run(agent, tmp_path, _OUT_OPEN)
+    turns = transcript([_user("build it"), _tool_call()])
+    assert [t["role"] for t in turns] == ["user", "assistant", "error"]
+    assert "stopped unexpectedly" in turns[-1]["text"]
+    assert "Send your message again" in turns[-1]["text"]
+    # The chip the reader was watching stops spinning and says why.
+    tool = [s for s in turns[1]["segments"] if s.get("kind") == "tool"][0]
+    assert tool["status"] == "error"
+    assert tool["output"] == turns[-1]["text"]
+
+
+def test_a_prompt_nothing_answered_restores_as_a_failure(agent, tmp_path,
+                                                         transcript):
+    """Died before the first reply row: the prompt is the last word."""
+    _stage_run(agent, tmp_path, _OUT_OPEN[:2])
+    turns = transcript([_user("build it")])
+    assert [t["role"] for t in turns] == ["user", "error"]
+
+
+def test_a_finished_run_whose_process_left_later_is_not_a_failure(
+        agent, tmp_path, transcript):
+    """The ordinary end of every chat: `result` closed the turn, the host was
+    reaped later. The trailing bookkeeping row changes nothing."""
+    _stage_run(agent, tmp_path, _OUT_OPEN + [
+        {"type": "result", "subtype": "success"},
+        {"type": "command_lifecycle"}])
+    turns = transcript([_user("build it"), _assistant("Built.")])
+    assert [t["role"] for t in turns] == ["user", "assistant"]
+
+
+def test_a_stopped_run_is_not_a_failure(agent, tmp_path, transcript):
+    _stage_run(agent, tmp_path, _OUT_OPEN, cancelled=True)
+    turns = transcript([_user("build it"), _tool_call()])
+    assert [t["role"] for t in turns] == ["user", "assistant"]
+    tool = [s for s in turns[1]["segments"] if s.get("kind") == "tool"][0]
+    assert tool["status"] == "running"
+
+
+def test_a_live_run_is_not_a_failure(agent, tmp_path, transcript):
+    _stage_run(agent, tmp_path, _OUT_OPEN, pid=os.getpid())
+    turns = transcript([_user("build it"), _tool_call()])
+    assert [t["role"] for t in turns] == ["user", "assistant"]
+
+
+def test_a_failure_already_on_file_is_not_doubled(agent, tmp_path, transcript):
+    """An API error row is its own `error` turn; the dead run dir adds no
+    second one under it."""
+    _stage_run(agent, tmp_path, _OUT_OPEN)
+    turns = transcript([_user("build it"),
+                        _assistant("API Error: no network",
+                                   isApiErrorMessage=True)])
+    assert [t["role"] for t in turns] == ["user", "error"]
+
+
+def test_a_stop_older_than_the_slack_is_still_a_stop_not_a_crash(
+        agent, tmp_path, transcript):
+    """Bugbot (PR #2063): `_died_mid_turn` vouches for a Stop marker only
+    within five seconds of the log's last write, but `_stopped_last` reads the
+    marker the way the live path does and has the last word — a reply it
+    stamps `stopped` never also wears the red crash line."""
+    d = _stage_run(agent, tmp_path, _OUT_OPEN, cancelled=True)
+    old = time.time() - 120
+    os.utime(d / "cancelled", (old, old))
+    turns = transcript([_user("build it"), _tool_call()])
+    assert [t["role"] for t in turns] == ["user", "assistant"]
+    assert turns[-1].get("stopped") is True
