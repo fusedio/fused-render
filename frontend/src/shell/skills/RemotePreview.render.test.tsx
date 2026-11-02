@@ -58,11 +58,12 @@ describe("RemotePreview", () => {
 
 describe("RemotePreview too large", () => {
   test("a tooLarge reply shows a muted note, not the error banner", async () => {
-    reply = { ok: false, tooLarge: true, error: "download is larger than 50 MB" };
+    reply = { ok: false, tooLarge: true, error: "This skill is too large to add (over 25 MB or 500 files)." };
     const box = await mount();
     const text = textOf(box.root);
-    expect(text).toContain("This repo is too large to preview here. Open it on GitHub to read it.");
-    expect(text).not.toContain("download is larger than");
+    expect(text).toContain("This skill is too large to add (over 25 MB or 500 files). Open it on GitHub to read it.");
+    const add = box.root.findAll((n) => n.props.size === "sm" && typeof n.props.onClick === "function")[0];
+    expect(add.props.disabled).toBe(true);
     expect(text).toContain("View on GitHub");
     expect(box.root.findAll((n) => n.props["data-testid"] === "remote-preview-toolarge")).not.toHaveLength(0);
   });

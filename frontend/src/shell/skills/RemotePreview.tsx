@@ -55,7 +55,7 @@ export function RemotePreview({
         {added ? (
           <span className="cc-lrow-meta">Added</span>
         ) : (
-          <Button size="sm" disabled={busy} onClick={onAdd}>
+          <Button size="sm" disabled={busy || (loaded !== null && "tooLarge" in loaded)} onClick={onAdd}>
             {busy ? "Adding…" : "Add skill"}
           </Button>
         )}
@@ -86,7 +86,7 @@ export function RemotePreview({
       {loaded === null && <p className="cc-skill-empty">Loading…</p>}
       {loaded && "tooLarge" in loaded && (
         <p className="cc-aside-label m-0" data-testid="remote-preview-toolarge">
-          This repo is too large to preview here. Open it on GitHub to read it.
+          This skill is too large to add (over 25 MB or 500 files). Open it on GitHub to read it.
         </p>
       )}
       {loaded && "error" in loaded && <ErrorBanner>{loaded.error}</ErrorBanner>}
