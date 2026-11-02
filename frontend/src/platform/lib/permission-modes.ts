@@ -21,11 +21,13 @@ export const PERMISSION_LABELS: Record<string, string> = {
  *  menu, and the reader weighing the other three got nothing for them. */
 export const PERMISSION_HINTS: Record<string, string> = {
   auto: "Approves safe actions on its own, holds the rest for you.",
-  acceptEdits: "File edits go through; every other action waits for you.",
+  acceptEdits: "File edits go through on their own. Other actions wait for you, bar the commands the agent already trusts.",
   plan: "Reads and plans only. Changes nothing until you say so.",
   prompt: "Holds every action for your approval.",
 };
 
 /** A mode this map has never heard of shows its key, which is still better
- *  than hiding it. */
-export const permissionLabel = (key: string): string => PERMISSION_LABELS[key] ?? key;
+ *  than hiding it. An OWN-property check: a stored key like "toString" must
+ *  read as itself, not as the inherited function. */
+export const permissionLabel = (key: string): string =>
+  Object.prototype.hasOwnProperty.call(PERMISSION_LABELS, key) ? PERMISSION_LABELS[key] : key;

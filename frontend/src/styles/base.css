@@ -126,6 +126,21 @@ iframe {
    NO transition and NO delay, which is the whole point. `z-index` is above the
    modal layer because a tip explains a control and a control may live in a
    dialog; it never takes a pointer, so it cannot block one. */
+/* Text for assistive technology only — a menu row's one-line meaning, which
+   sighted readers get from the hint panel on hover (the panel itself is
+   aria-hidden). The usual clip recipe: in the tree, out of the layout. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
 .hint-panel {
   position: fixed;
   left: 0;

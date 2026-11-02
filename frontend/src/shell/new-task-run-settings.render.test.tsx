@@ -178,6 +178,8 @@ function pillOf(b: ReactTestRenderer, aria: string) {
 /** Everything a node prints, flattened — menu rows are text plus an icon. */
 function textOf(n: unknown): string {
   if (typeof n === "string") return n;
+  // A row's screen-reader-only description is not what it SAYS on screen.
+  if ((n as { props?: { className?: string } }).props?.className === "sr-only") return "";
   const kids = (n as { children?: unknown[] }).children;
   return Array.isArray(kids) ? kids.map(textOf).join("") : "";
 }
@@ -207,6 +209,8 @@ async function pick(b: ReactTestRenderer, aria: string, choice: string) {
     .find((o) => textOf(o) === choice);
   expect(option, `no "${choice}" option under ${aria}`).toBeTruthy();
   await act(async () => { option!.props.onClick(); });
+  // One decision per popover: a pick closes it.
+  expect(find(), `${aria} popover stayed open after a pick`).toBeFalsy();
 }
 
 /** Type into one of the card's text boxes, addressed the way a reader finds it

@@ -2080,7 +2080,7 @@ input.schedule-when-field {
 .schedule-recur {
   position: fixed;
   top: 10vh;
-  left: calc(50% + 4px);
+  left: calc(50% + 65px);
   width: min(380px, 38vw);
   z-index: 50;
   display: flex;
@@ -2251,10 +2251,16 @@ input.schedule-when-field {
   transition: left 0.18s ease-out;
 }
 
+/* THE PAIR IS CENTRED AS ONE: the card is 580px (NewJobModal `width={580}`)
+   and the Browse panel 460px with 10px between them, 1050px in all, so the
+   card moves half of (1050 − 580) = 235px left and the panel starts 65px right
+   of centre. The old −240px / +4px pair was sized for a 460px card and put the
+   panel 46px over the card's right edge — right where the Folder and When
+   pills now sit (Akshil, 2026-11-02, "this seems broken"). */
 .modal-dialog:has(.schedule-explorer:not(.is-closing)),
 .modal-dialog:has(.schedule-recur:not(.is-closing)) {
   position: relative;
-  left: -240px;
+  left: -235px;
 }
 
 /* `top` and `height` are set INLINE by NewJobModal, measured off the dialog's
@@ -2265,7 +2271,7 @@ input.schedule-when-field {
 .schedule-explorer {
   position: fixed;
   top: 10vh;
-  left: calc(50% + 4px);
+  left: calc(50% + 65px);
   width: min(460px, 44vw);
   height: min(600px, 82vh);
   z-index: 50;

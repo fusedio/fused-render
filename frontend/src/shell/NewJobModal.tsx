@@ -556,7 +556,7 @@ const PILL_NAMES: readonly PillName[] = ["where", "when", "access", "model", "ef
 
 function PropPill({
   k, icon, value, open, onToggle, onDismiss, onKeyDown, pillRef, children,
-  className, ariaLabel, invalid, empty, popWidth, popHeight, popClassName,
+  className, ariaLabel, invalid, empty, popWidth, popHeight, popClassName, align,
 }: {
   k: string;
   icon?: ReactNode;
@@ -579,6 +579,10 @@ function PropPill({
   popWidth: number;
   popHeight: number;
   popClassName?: string;
+  /** Which edge of the pill the popover hangs from. `end` for the pills on
+   *  the right of the row (Folder, When): a panel opening leftward from a
+   *  pill at the card's right edge would otherwise run off the card. */
+  align?: "start" | "end";
 }) {
   const popRef = useRef<HTMLDivElement>(null);
   // Closed BY FOCUS LEAVING, as opposed to by a pick or Escape: focus is
@@ -644,7 +648,7 @@ function PropPill({
           role="dialog"
           aria-label={ariaLabel}
           className={"schedule-pop nt-pop" + (popClassName ? " " + popClassName : "")}
-          style={{ ...popStyle(pillRef.current, popHeight), width: popWidth }}
+          style={{ ...popStyle(pillRef.current, popHeight, false, false, align === "end"), width: popWidth }}
         >
           {children}
         </div>
@@ -4908,6 +4912,9 @@ export default function NewJobModal({
     setTimeOpen(false);
     setWhenPane("presets");
   };
+  // The mode hints' ids: the hover panel is aria-hidden, so each row also
+  // describes itself by a clipped span a screen reader can read.
+  const permHintBase = useId();
   const permissionOptions = [...(permissionModes.length ? permissionModes : ["auto"])]
     // No plan mode for an agent without one (§7 `plan_mode`).
     .filter((m) => m !== "plan" || capsOf(agent).plan_mode)
@@ -5448,7 +5455,7 @@ export default function NewJobModal({
             onDismiss={() => dismissPill("model")}
             pillRef={modelPillRef}
             popWidth={220}
-            popHeight={runModels.length * 28 + 40}
+            popHeight={taskRunOptions(runModels, model).length * 28 + 40}
           >
             <div className="nt-pop-h">Model</div>
             {/* Same contract as Permissions: the KEY is submitted, the label is
@@ -5489,7 +5496,7 @@ export default function NewJobModal({
               onDismiss={() => dismissPill("effort")}
               pillRef={effortPillRef}
               popWidth={200}
-              popHeight={runEfforts.length * 28 + 40}
+              popHeight={taskRunOptions(runEfforts, effort).length * 28 + 40}
             >
               <div className="nt-pop-h">Thinking</div>
               <div className="nt-menu" role="group" aria-label="Thinking">
@@ -5538,10 +5545,14 @@ export default function NewJobModal({
                   role="menuitemradio"
                   aria-checked={permission === m}
                   data-hint={PERMISSION_HINTS[m]}
+                  aria-describedby={PERMISSION_HINTS[m] ? `${permHintBase}-${m}` : undefined}
                   onClick={() => { setPermission(m); setAccessOpen(false); }}
                 >
                   {permissionLabel(m)}
                   {permission === m && ICON_CHECK}
+                  {PERMISSION_HINTS[m] && (
+                    <span id={`${permHintBase}-${m}`} className="sr-only">{PERMISSION_HINTS[m]}</span>
+                  )}
                 </button>
               ))}
             </div>
@@ -5584,6 +5595,7 @@ export default function NewJobModal({
               popWidth={300}
               popHeight={320}
               popClassName="nt-pop--where"
+              align="end"
             >
               <input
                 ref={pathRef}
@@ -5903,7 +5915,8 @@ export default function NewJobModal({
             pillRef={whenPillRef}
             popWidth={250}
             popHeight={whenPane === "presets" ? 250 : 200}
-          >
+          
+            align="end">
             {whenPane === "presets" ? (
               <>
                 <div className="nt-pop-h">Run</div>
