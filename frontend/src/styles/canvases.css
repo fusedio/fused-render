@@ -667,8 +667,8 @@
   overflow: hidden;
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--bg) 70%, transparent),
-    0 14px 36px rgba(0, 0, 0, 0.32),
-    0 2px 6px rgba(0, 0, 0, 0.2);
+    0 14px 36px var(--shadow-sm),
+    0 2px 6px var(--shadow-ink-soft);
   transform: translateX(6px);
   transition: transform var(--dur-med) var(--ease-out);
 }
@@ -683,8 +683,8 @@
   border-color: var(--accent);
   box-shadow:
     0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent),
-    0 14px 36px rgba(0, 0, 0, 0.32),
-    0 2px 6px rgba(0, 0, 0, 0.2);
+    0 14px 36px var(--shadow-sm),
+    0 2px 6px var(--shadow-ink-soft);
 }
 /* The head, TWO ROWS (owner, 2026-11-02): the first row is the facts and
    the seats — pin, number, where-chip, then at the right the unread count

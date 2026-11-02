@@ -64,6 +64,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { Archive, ArchiveRestore, MessageSquare, Pencil, X } from "lucide-react";
+import { notify } from "@platform/lib/notifications";
 import { archiveTask, renameTask, unarchiveTask, type Task } from "@platform/lib/api";
 import { pokeTasks } from "@shell/tasksPulse";
 import { useArchiveConfirm } from "@shell/archive-confirm";
@@ -579,6 +580,15 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     onHeld(false);
     onReload();
   };
+  // The Archive seat's call can finish after a ring press swapped the card
+  // to another (held) chat: only the chat that was filed lets go of the pin,
+  // read off the ref when the call returns, not when it started.
+  const shownKeyRef = useRef(shownKey);
+  shownKeyRef.current = shownKey;
+  const onFiledKey = (key: string) => {
+    if (shownKeyRef.current === key) onHeld(false);
+    onReload();
+  };
 
   // THE ARCHIVE SEAT (owner, 2026-11-02): the ⋮'s Archive as a button of its
   // own on the head's first row. Same door, same rule: a run in flight asks
@@ -589,6 +599,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // and the card holds through the ask. `filing` greys the seat while the
   // call is out, so a second press cannot file the task twice.
   const archiveAsk = useArchiveConfirm();
+  const cancelArchiveAsk = archiveAsk.cancel;
   // Which chat the pending ask is about: the dialog draws only while that
   // chat is still the shown one — a swap or close with the ask up must not
   // leave a Confirm that files the chat that left view.
@@ -602,10 +613,9 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       try {
         if (archived) await unarchiveTask(facts.t.key);
         else await archiveTask(facts.t.key);
-        onFiled();
-      } catch {
-        // The ⋮'s own archive fails the same quiet way; the listing re-read
-        // on the next pulse says what the row is.
+        onFiledKey(facts.t.key);
+      } catch (e) {
+        notify({ title: (e as Error).message, tone: "error" });
       } finally {
         setFiling(false);
       }
@@ -613,7 +623,9 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     if (archived) void go();
     else
       archiveAsk.guard(
-        facts.row ?? { status: facts.t.status, kind: "task", background_jobs: facts.t.background_jobs },
+        // The pulse's status and jobs, not the listing row's: the row can still
+        // read "done" a moment after a new turn started.
+        { status: facts.t.status, kind: facts.row?.kind ?? "task", background_jobs: facts.t.background_jobs },
         () => void go(),
       );
   };
@@ -703,7 +715,11 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     renameSettled.current = true;
     setDraft(null);
     setRenameError("");
-  }, [shownKey]);
+    // The same goes for an Archive ask still waiting for its answer: it was
+    // about the chat that left view and must not come back with it.
+    askedKey.current = null;
+    cancelArchiveAsk();
+  }, [shownKey, cancelArchiveAsk]);
 
   // THE BRIDGE (owner, 2026-10-30: "an invisible [strip] between the item I
   // am hovering and the preview, so the user doesn't have to move fast or
