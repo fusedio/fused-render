@@ -187,6 +187,34 @@ export function cardTitleLine(task: {
     : { text: firstLine(task.title ?? ""), said: false, kind: "title", hint: task.title ?? undefined };
 }
 
+/** THE ROW'S TWO LINES WITH RECAPS ON (owner, 2026-11-02: "we show msg and
+ *  reply, instead we should show recap there, both places"): the title stays
+ *  the task's own line — the reader's newest message, or its name — and the
+ *  haiku recap takes the italic aside the reply used to have. `cardTitleLine`
+ *  is asked with the recap withheld, so it never promotes the recap to the
+ *  title; Board and Cards keep calling it plain. */
+export function titleLineSansRecap(task: Parameters<typeof cardTitleLine>[0]): CardTitle {
+  if (!("recap" in task)) return cardTitleLine(task);
+  const { recap: _recap, ...rest } = task;
+  return cardTitleLine(rest);
+}
+
+/** The italic aside after a row's title: the turn's recap when the server
+ *  has one (prefs `task_recap.enabled`), else the last reply's first line as
+ *  before; "" when neither. */
+export function taskAside(task: { recap?: { text: string } | null; last_reply?: string; status?: string }): string {
+  // The recap only once the turn has ended (`cardTitleLine`'s own rule): a
+  // running turn's aside would be the PREVIOUS turn's recap beside the
+  // newest message.
+  const recap = (task.recap?.text ?? "").trim();
+  if (recap && TURN_ENDED.has(task.status ?? "")) return recap;
+  const reply = plainLine(task.last_reply ?? "");
+  // With recaps on, an interrupted turn has no reply worth a line (the title
+  // path skips it too); without them the reply shows as it always did.
+  if ("recap" in task && reply === INTERRUPTED_REPLY) return "";
+  return reply;
+}
+
 /** A path as a person reads it: $HOME collapsed to "~". */
 export function tildePath(path: string, home: string): string {
   if (!home) return path;

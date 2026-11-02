@@ -153,7 +153,8 @@ import {
   taskUnread,
   taskUnreadLabel,
   cardTitleLine,
-  recapTitlesOn,
+  taskAside,
+  titleLineSansRecap,
   taskWhenFor,
   type TaskSortBy,
   threadView,
@@ -3635,8 +3636,13 @@ function TaskNode({
   // task's name when nothing has been said. One function decides it for the
   // List, the Board and the Cards wall (tasks-lib.cardTitleLine), so a
   // fallback cannot drift between views.
-  const line = cardTitleLine(task);
+  // …with the recap, when there is one, as the ASIDE after the title rather
+  // than the title itself (tasks-lib `titleLineSansRecap` / `taskAside`;
+  // owner, 2026-11-02): the title keeps saying what the task is, the italics
+  // say what the last turn did.
+  const line = titleLineSansRecap(task);
   const label = line.text || "(untitled)";
+  const aside = taskAside(task);
   // Whether this row's work is still ahead of it, which is the one thing that
   // greys its title. tasks-lib.isUpcomingTask owns both halves of the question
   // (the lane, and whether its next run has already gone by).
@@ -4541,21 +4547,20 @@ function TaskNode({
              the row's own styles (hints.ts `renderTaskHint`, Akshil,
              2026-09-19): what the row clamps is what the reader is missing. */
           data-hint-title={line.hint}
-          data-hint-reply={recapTitlesOn(task) ? "" : task.last_reply || ""}
+          data-hint-reply={aside}
         >
           {label}
         </span>
-        {/* Never with task recap titles on (`recapTitlesOn`: the server sends a
-            `recap` key only then): the title carries the words, and the full
-            reply stays in the hover (`data-hint-reply`). */}
-        {task.last_reply && !recapTitlesOn(task) ? (
+        {/* The aside: the turn's recap with recaps on, the last reply without
+            (tasks-lib `taskAside`); the hover shows it whole (`data-hint-reply`). */}
+        {aside ? (
           <span
             className="tasks-title-reply"
-            data-hint={task.last_reply}
+            data-hint={aside}
             data-hint-title={line.hint}
-            data-hint-reply={task.last_reply}
+            data-hint-reply={aside}
           >
-            {task.last_reply}
+            {aside}
           </span>
         ) : null}
         {/* The one thing that follows the title (Akshil, 2026-08-23): a file

@@ -60,7 +60,7 @@ export const PEEK_WIDTH = 420;
 export const PEEK_MAX_HEIGHT = 640;
 /** …and for a seat with no conversation (a draft, a scheduled task): what it
  *  is, its words and its door need no transcript's worth of card. */
-export const PEEK_PLAIN_HEIGHT = 220;
+export const PEEK_PLAIN_HEIGHT = 250;
 /** Between the card's right edge and the rail. */
 export const PEEK_GAP = 8;
 /** The card keeps this far inside the row's edges. */

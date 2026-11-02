@@ -292,7 +292,7 @@ export function ClaudeRail({
   // once per derivation, as `sortForList` asks; the derivation re-runs when a
   // row moves (the pulse) or the listing re-reads, which is when a rank can
   // change.
-  const seats = useMemo(() => railRows(rows, full, place), [rows, full, place]);
+  const baseSeats = useMemo(() => railRows(rows, full, place), [rows, full, place]);
 
   // THE DOTS A PRESS CLEARED (header; claude-rail-lib `ReadMark`): held
   // while the pulse still reports what the press saw, spent the moment it
@@ -344,6 +344,14 @@ export function ClaudeRail({
   const [peekKey, setPeekKey] = useState<string | null>(null);
   const refocusOn = useRef<string | null>(null);
   const [pinned, setPinned] = useState(false);
+  // HELD (owner, 2026-11-02): the card's own pin was pressed. Over and above
+  // `pinned` (which a ring press or a press inside the card also sets, and an
+  // outside press ends), a held card ignores the outside press, the press
+  // into the workbench frame, the all-chats seat and Escape — only its × (the
+  // same button) or its Open door let go. Dropped with the card.
+  const [held, setHeld] = useState(false);
+  const heldRef = useRef(false);
+  heldRef.current = held;
   const [kept, setKept] = useState<readonly string[]>([]);
   const intentRef = useRef<PeekIntent | null>(null);
   if (!intentRef.current) {
@@ -368,6 +376,31 @@ export function ClaudeRail({
   }
   const intent = intentRef.current;
   useEffect(() => () => intent.dispose(), [intent]);
+  useEffect(() => {
+    if (!peekKey) setHeld(false);
+  }, [peekKey]);
+  // A HELD CHAT KEEPS ITS RING (owner, 2026-11-02, asked what should happen
+  // when a node is selected and the held chat is not among that node's):
+  // the rail narrows to the node, and the held chat — if it is not the
+  // node's — stays as ONE more ring at the top, so the card has an anchor
+  // and the reader can see what they pinned. Letting go (the ×, Open) drops
+  // the ring with the next derivation; archiving the chat lets go first
+  // (RailPeek `fileTask`). Anything else — closing the card, hiding the
+  // chat — would undo the one thing the pin promised: "it stays".
+  const heldKey = held ? peekKey : null;
+  const seats = useMemo(() => {
+    if (!heldKey || baseSeats.some((s) => s.pulse.key === heldKey)) return baseSeats;
+    const pulse = rows.find((t) => t.key === heldKey) ?? full.get(heldKey) ?? null;
+    if (!pulse) return baseSeats;
+    return [{ pulse, row: full.get(heldKey) ?? null }, ...baseSeats];
+  }, [baseSeats, heldKey, rows, full]);
+  // THE LAST RING PRESSED (owner, 2026-11-02): "the active css to the last
+  // selected task… keep by task id so it is easier to spot; it doesn't
+  // change when we filter tasks based on the selected node, only when we
+  // click a task item". A press on a ring, either door; nothing else moves
+  // it, and it survives the rail narrowing to a node and widening again.
+  const [lastPressed, setLastPressed] = useState<string | null>(null);
+  const pressId = (t: TaskPulseTask) => t.task_id || t.key;
   const railRef = useRef<HTMLElement | null>(null);
   const peekRef = useRef<RailPeekHandle | null>(null);
   const ringEls = useRef(new Map<string, HTMLElement>());
@@ -444,6 +477,8 @@ export function ClaudeRail({
       const t = e.target as Node | null;
       const el = t instanceof Element ? t : null;
       if (el?.closest(".canvas-rail-peek-bridge")) return;
+      // A held card is not closed by any press outside it (header).
+      if (heldRef.current) return;
       if (pinned) {
         if (el && railRef.current?.querySelector(".canvas-rail-chats")?.contains(el)) return;
       } else if (railRef.current?.contains(t)) return;
@@ -573,6 +608,7 @@ export function ClaudeRail({
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || e.defaultPrevented) return;
       if (e.target !== document.body && e.target !== document.documentElement) return;
+      if (heldRef.current) return;
       e.preventDefault();
       dismissToRing();
     };
@@ -595,6 +631,7 @@ export function ClaudeRail({
       window.clearTimeout(tick);
       tick = window.setTimeout(() => {
         const a = document.activeElement;
+        if (heldRef.current) return;
         if (a instanceof HTMLIFrameElement && !document.getElementById(PEEK_ID)?.contains(a)) intent.dismiss();
       }, 0);
     };
@@ -611,7 +648,8 @@ export function ClaudeRail({
       // A deliberate way in, like a press: pinned.
       intent.showNow(key, true);
       focusCardSoon();
-    } else if (e.key === "Escape" && intent.current) {
+    } else if (e.key === "Escape" && intent.current && !heldRef.current) {
+      // A held card ignores Escape here as everywhere (header).
       e.preventDefault();
       intent.dismiss();
     }
@@ -759,7 +797,9 @@ export function ClaudeRail({
                     "sidebar-rail-btn canvas-rail-chat" +
                     (activeSessionId && t.session_id === activeSessionId ? " active" : "") +
                     (peeked ? " peeked" : "") +
-                    (peeked && pinned ? " is-pinned" : "")
+                    (peeked && pinned ? " is-pinned" : "") +
+                    (peeked && held ? " is-held" : "") +
+                    (lastPressed !== null && pressId(t) === lastPressed ? " is-last" : "")
                   }
                   aria-label={`${label} — ${words}`}
                   // The list row's own caption (platform/lib/hints): the
@@ -792,8 +832,10 @@ export function ClaudeRail({
                   onClick={(e) => {
                     if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
                     e.preventDefault();
-                    // Opened, by either door below: read (header).
+                    // Opened, by either door below: read (header), and the
+                    // last ring pressed (header).
                     clearUnread(t);
+                    setLastPressed(pressId(t));
                     if (peekOn && !noRoom) {
                       pressedHref.current = href;
                       requestAnimationFrame(() => {
@@ -860,7 +902,7 @@ export function ClaudeRail({
                 // A pinned card closes on this press like any other outside
                 // press — from the keyboard too, which the document's
                 // pointerdown rule never hears (Bugbot on #2049).
-                if (intent.current) intent.dismiss();
+                if (intent.current && !heldRef.current) intent.dismiss();
                 // Where the pointer rests now (the press's own spot, or the
                 // last move for a keyboard press): a ring sliding under it
                 // is not a hover (`stillAt`).
@@ -893,6 +935,8 @@ export function ClaudeRail({
           onOpenChat={onOpenChat}
           onSelectNode={onSelectNode}
           selectedFile={nodeFile}
+          held={held}
+          onHeld={setHeld}
           onPin={() => {
             const key = intent.current;
             if (!key) return;
