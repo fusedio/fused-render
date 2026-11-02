@@ -6145,7 +6145,8 @@ export function loadAiModel(
 /** One model an app declares (`[tool.fused-render.app.models]`), as the
  *  first-open overview shows it. `provider` is "local" | "apple" | "cloud";
  *  `sizeGb` is null for apple/cloud. `candidates` is only non-empty on a
- *  swappable row and lists already-downloaded same-capability models. */
+ *  non-empty when an already-downloaded same-capability model could replace
+ *  the declared one. */
 export interface AppModelRow {
   capability: string;
   verb: string;
@@ -6155,7 +6156,6 @@ export interface AppModelRow {
   provider: "local" | "apple" | "cloud";
   sizeGb: number | null;
   downloaded: boolean;
-  swappable: boolean;
   choice: string;
   candidates: { id: string; label: string; sizeGb: number | null }[];
   jobId: string | null;

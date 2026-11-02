@@ -49,7 +49,7 @@ export function substitutionsOf(rows: AppModelRow[], choices: Record<string, str
   const out: Record<string, string> = {};
   for (const r of rows) {
     const c = choices[r.capability];
-    if (r.swappable && c && c !== r.model) out[r.capability] = c;
+    if (c && c !== r.model) out[r.capability] = c;
   }
   return out;
 }

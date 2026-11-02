@@ -12,7 +12,7 @@ import { footerHint, rowDetail, rowValue, substitutionsOf, rowProgress, pendingR
 const row = (over: Partial<AppModelRow> = {}): AppModelRow => ({
   capability: "text-to-image", verb: "image", label: "FLUX.2 klein 4B",
   model: "black-forest-labs/FLUX.2-klein-4B", use: "Image generation", provider: "local",
-  sizeGb: 7.8, downloaded: false, swappable: false, choice: "black-forest-labs/FLUX.2-klein-4B",
+  sizeGb: 7.8, downloaded: false, choice: "black-forest-labs/FLUX.2-klein-4B",
   candidates: [], jobId: null, ...over,
 });
 const textRow = (over: Partial<AppModelRow> = {}) =>
@@ -137,9 +137,9 @@ describe("review dialog", () => {
     expect(button(r, "Download")).toBeDefined();
   });
 
-  test("Change shows only on swappable rows with candidates, and picking one shows the amber callout", async () => {
-    const swap = row({ swappable: true, candidates: [{ id: "other/z", label: "Z-Image Turbo", sizeGb: 3 }] });
-    ov = overview([swap, textRow({ swappable: true })]);
+  test("Change shows only on rows with candidates, and picking one shows the amber callout", async () => {
+    const swap = row({ candidates: [{ id: "other/z", label: "Z-Image Turbo", sizeGb: 3 }] });
+    ov = overview([swap, textRow()]);
     const r = await mount();
     expect(r.root.findAll((n) => n.type === "button" && n.props.className === "am-change").length).toBe(1);
     await press(r, "Change");
@@ -244,7 +244,7 @@ describe("pure helpers", () => {
     expect(rowDetail(row({ provider: "cloud", use: "Summaries" }))).toContain("off this machine");
   });
   test("footer hint and substitutions", () => {
-    const rows = [row({ swappable: true, candidates: [{ id: "o/z", label: "Z", sizeGb: 3 }] })];
+    const rows = [row({ candidates: [{ id: "o/z", label: "Z", sizeGb: 3 }] })];
     expect(footerHint(rows, {}, 6)).toBe("7.8 GB · about 6 min");
     expect(footerHint(rows, { "text-to-image": "o/z" }, 6)).toBe("Nothing to download");
     expect(substitutionsOf(rows, { "text-to-image": "o/z" })).toEqual({ "text-to-image": "o/z" });

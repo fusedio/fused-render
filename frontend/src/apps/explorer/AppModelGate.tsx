@@ -203,7 +203,7 @@ export function AppModelGate({
   }
 
   const none = pendingRows(rows, choices).length === 0;
-  const swapNotes = rows.filter((r) => r.swappable && choices[r.capability] && choices[r.capability] !== r.model);
+  const swapNotes = rows.filter((r) => choices[r.capability] && choices[r.capability] !== r.model);
 
   if (phase === "review") {
     return (
@@ -243,7 +243,7 @@ export function AppModelGate({
                 detail={
                   <>
                     {rowDetail(row)}
-                    {row.swappable && row.candidates.length > 0 && (
+                    {row.candidates.length > 0 && (
                       <ChangeLink row={row} choice={pick.id} onPick={(id) => setChoices((c) => ({ ...c, [row.capability]: id }))} />
                     )}
                   </>
