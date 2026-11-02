@@ -1010,7 +1010,7 @@ button.new-task-source:focus-visible {
   align-self: center;
   width: 5px;
   height: 5px;
-  margin: -2px 9px 0 1px;
+  margin: -2px 9px 0 4px;
   border-right: 1.5px solid currentColor;
   border-bottom: 1.5px solid currentColor;
   transform: rotate(45deg);
