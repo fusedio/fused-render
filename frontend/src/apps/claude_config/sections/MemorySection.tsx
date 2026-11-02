@@ -20,8 +20,9 @@
 // is null. See
 // claude_config/memory.py's _project_path for why a "-" -> "/" replace is not
 // an option.
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { Button } from "@platform/shadcn/ui/button";
+import { NativeSelect, NativeSelectOption } from "@platform/shadcn/ui/native-select";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import * as cc from "../api";
 import {
@@ -75,6 +76,8 @@ export default function MemorySection({ filter = "", title, blurb }: HeadedSecti
   const load = useCallback(() => cc.memory.list(), []);
   const { data, error, reload } = useModuleData(load);
   const { node: modal, ask } = useConfirm();
+  // Picked project slug ("" = all). Component state only, no URL write.
+  const [picked, setPicked] = useState("");
 
   const clear = async (project: string) => {
     const ok = await ask<boolean>({
@@ -121,13 +124,16 @@ export default function MemorySection({ filter = "", title, blurb }: HeadedSecti
     );
 
   const needle = filter.trim().toLowerCase();
-  const projects = data.projects
+  const titleOf = (p: cc.MemoryProject) => p.path ?? p.pathGuess ?? p.project;
+  const sorted = [...data.projects].sort((a, b) => titleOf(a).localeCompare(titleOf(b)));
+  // A project that vanished after a reload falls back to All.
+  const active = sorted.some((p) => p.project === picked) ? picked : "";
+  const projects = sorted
+    .filter((p) => !active || p.project === active)
     .map((p) => ({
       ...p,
       shown: needle
-        ? p.files.filter(
-            (f) => `${f.name} ${f.description ?? ""} ${p.path ?? p.project}`.toLowerCase().includes(needle),
-          )
+        ? p.files.filter((f) => `${f.name} ${f.description ?? ""} ${titleOf(p)}`.toLowerCase().includes(needle))
         : p.files,
     }))
     .filter((p) => p.shown.length > 0 || !needle);
@@ -140,7 +146,24 @@ export default function MemorySection({ filter = "", title, blurb }: HeadedSecti
       <Head
         title={title}
         blurb={`${plural(fileCount, "file")} across ${plural(data.projects.length, "project")}`}
-        aside={<RefreshButton onClick={reload} />}
+        aside={
+          <div className="flex items-center gap-2">
+            <NativeSelect
+              size="sm"
+              aria-label="Filter by project"
+              value={active}
+              onChange={(e) => setPicked(e.target.value)}
+            >
+              <NativeSelectOption value="">All projects ({fileCount} files)</NativeSelectOption>
+              {sorted.map((p) => (
+                <NativeSelectOption key={p.project} value={p.project}>
+                  {titleOf(p)} ({p.files.length})
+                </NativeSelectOption>
+              ))}
+            </NativeSelect>
+            <RefreshButton onClick={reload} />
+          </div>
+        }
       />
       {!projects.length && (
         <Empty>{needle ? "No memory files match." : "No persistent memory found under projects/*/memory/."}</Empty>

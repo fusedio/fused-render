@@ -15,14 +15,23 @@ function textOf(node: ReactTestInstance | string): string {
 
 const realFetch = globalThis.fetch;
 let fileCount = 8;
+let multi = false;
 
 function fakeFetch(): Promise<Response> {
   const files = Array.from({ length: fileCount }, (_, i) => ({ name: `note-${i}.md`, description: `memory ${i}` }));
-  const data = { projects: [{ project: "-p", path: "/work/p", pathConfirmed: true, files }] };
+  const data = multi
+    ? {
+        projects: [
+          { project: "-z", path: "/work/zeta", pathConfirmed: true, files: [{ name: "zfile.md", description: null }] },
+          { project: "-gone-x", path: null, pathConfirmed: false, pathGuess: "/gone/Alpha", files: [{ name: "afile.md", description: null }] },
+        ],
+      }
+    : { projects: [{ project: "-p", path: "/work/p", pathConfirmed: true, files }] };
   return Promise.resolve({ ok: true, status: 200, json: async () => data, text: async () => JSON.stringify(data) } as unknown as Response);
 }
 
 beforeEach(() => {
+  multi = false;
   globalThis.fetch = fakeFetch as unknown as typeof fetch;
 });
 afterEach(() => {
@@ -67,5 +76,33 @@ describe("MemorySection show more", () => {
     expect(rows(box)).toBe(8);
     await act(async () => { box.update(createElement(MemorySection, { filter: "note", title: "Memory", blurb: "b" })); });
     expect(rows(box)).toBe(6);
+  });
+});
+
+describe("MemorySection project picker", () => {
+  const select = (box: ReactTestRenderer) => box.root.findByType("select");
+  test("lists All plus each project, sorted by title", async () => {
+    multi = true;
+    const box = await mount();
+    const opts = select(box).findAllByType("option").map(textOf);
+    expect(opts).toEqual(["All projects (2 files)", "/gone/Alpha (1)", "/work/zeta (1)"]);
+  });
+
+  test("choosing a project hides the other groups", async () => {
+    multi = true;
+    const box = await mount();
+    expect(textOf(box.root)).toContain("zfile.md");
+    expect(textOf(box.root)).toContain("afile.md");
+    await act(async () => { select(box).props.onChange({ target: { value: "-z" } }); });
+    expect(textOf(box.root)).toContain("zfile.md");
+    expect(textOf(box.root)).not.toContain("afile.md");
+  });
+
+  test("a guessed group shows the guess and a folder-not-found tag", async () => {
+    multi = true;
+    const box = await mount();
+    const text = textOf(box.root);
+    expect(text).toContain("/gone/Alpha");
+    expect(text).toContain("folder not found");
   });
 });
