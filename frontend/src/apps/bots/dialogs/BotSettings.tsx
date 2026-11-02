@@ -28,7 +28,7 @@ import { ApiError, api, request, type AllowRule, type AppRow, type Bot, type Chr
 import { EFFORTS, loginGroups, loginHint, loginLabel, loginValue, modelsFor, normApp } from "../lib/botform";
 import { faceOf } from "../lib/face";
 import { act, autoStage, clearContextOn, getState, setAutoStage, setClearContext, setSounds, soundsOn } from "../state/store";
-import type { BotDialogValue } from "./actions";
+import { exportBotFile, type BotDialogValue } from "./actions";
 import { askConfirm } from "./ask";
 import { FacePopover } from "./FacePopover";
 import { PhoneSection } from "./PhoneSection";
@@ -189,6 +189,12 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
     if (busy.current) return;
     if (okDisabled) { onClose(null); return; }
     if (await confirm("Discard changes?", "You have unsaved changes to this bot's settings.", "Discard")) onClose(null);
+  };
+  // Export bot…: the export dialog takes the one dialog slot, so Settings closes; unsaved edits ask first, as a close does.
+  const exportFile = async () => {
+    if (busy.current) return;
+    if (!okDisabled && !(await confirm("Discard changes?", "You have unsaved changes to this bot's settings.", "Discard"))) return;
+    exportBotFile(bot.id);
   };
 
   return (
@@ -390,6 +396,7 @@ export function BotSettings({ bot, tab: tab0, onClose }: BotSettingsProps) {
           </div>
         </div>
         <DialogFooter className={FOOTER_CLASS}>
+          {isSuper ? null : <Button variant="ghost" className="sm:mr-auto" onClick={() => { void exportFile(); }}>Export bot…</Button>}
           <Button variant="outline" onClick={() => onClose(null)}>Cancel</Button>
           <Button disabled={okDisabled} onClick={ok}>Save</Button>
         </DialogFooter>

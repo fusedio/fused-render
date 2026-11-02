@@ -26,6 +26,7 @@ def ws(tmp_path, monkeypatch):
     """A tmp fused workspace (apps root = <ws>/app), no greeting model call."""
     w = tmp_path / "ws"
     monkeypatch.setenv("FUSED_RENDER_DIR", str(w))
+    reset_bots_caches()  # a Bot / folder cached by id under the previous test's workspace must not answer here
     os.makedirs(bpaths.apps_root())
     monkeypatch.setattr(apptools, "ROOTS", [bpaths.apps_root()])
     monkeypatch.setattr(apptools, "REGISTRY_FILES", [])
@@ -81,7 +82,7 @@ def test_create_list_and_cursor(client, ws):
     # the selected bot reports detail
     d = one(status(client, shot_for=bid), bid)
     assert d["memory"] == "" and d["skills"] == [] and d["browser"]["files"] == [] and d["browser"]["artifacts"] == []
-    assert d["browser"]["artifacts_dir"].endswith(os.path.join("bots", "scout"))
+    assert d["browser"]["artifacts_dir"].endswith(os.path.join("bots", "scout", ".fused", "inbox"))  # the Inbox
 
 
 def test_create_rejects_unknown_model_quietly_and_settings_loudly(client, ws):
@@ -245,10 +246,13 @@ def test_delete_removes_the_folders(client, ws):
     bid = make(client)
     b = registry.get(bid)
     os.makedirs(b.cache_dir, exist_ok=True)
-    assert os.path.isdir(bpaths.bot_dir(bid))
+    folder, private, cache = bpaths.bot_folder(bid), bpaths.bot_dir(bid), bpaths.bot_cache_dir(bid)
+    assert os.path.isdir(private) and private == os.path.join(folder, ".fused")
     st, out = j(delete(client, f"/api/bots/{bid}"))
     assert st == 200 and out == {"ok": True}
-    assert not os.path.exists(bpaths.bot_dir(bid)) and not os.path.exists(bpaths.bot_cache_dir(bid))
+    assert not os.path.exists(folder) and not os.path.exists(private) and not os.path.exists(cache)
+    with pytest.raises(LookupError):
+        bpaths.bot_folder(bid)  # forgotten: no folder answers for the id any more
     assert all(x["id"] != bid for x in status(client)["bots"])
     assert j(delete(client, f"/api/bots/{bid}"))[0] == 404
 

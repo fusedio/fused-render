@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<!-- The .fusedbot bot-package template (docs/bots.md §17, D1455). Opening a
+     .fusedbot is the ordinary template path: /explorer/view/<path>.fusedbot and
+     /explorer/embed/<path>.fusedbot resolve to this template on stat. The
+     INSTALL PAGE itself is the shell's React page (frontend apps/bots/file
+     BotFilePage), which the shell renders IN PLACE of this template at those
+     URLs (shell App.tsx isBotFileInstallView). What this template still does,
+     exactly as the fusedapp template does for a .fused:
+
+     - A card peek / thumbnail (`_preview=1`, a reserved shell param): the
+       icon tile and the name, from the light probe (GET /api/botfile/install
+       ?light=1 — the index and bot.json only, never a staging, never an
+       install).
+     - A bare load as the WHOLE WINDOW (a /render URL typed by hand): hands
+       the window to the install page at the file's own embed URL (chrome-free,
+       like the bare page this load asked for). Framed, or already at an
+       /explorer/ URL, it never redirects — a shell that framed it meant it,
+       and an /explorer/ URL that still rendered this template would replace
+       into itself forever.
+
+     Nothing in the file runs here, and this page must not import
+     fused_render (SPEC PY-15). -->
+<html data-fused-theme="shell">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Fused bot</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --fg: #e8eaed; --fg-muted: #9aa0a6; --bg: #131417; --error: #ff6b6b; --tile: #24272d;
+  }
+  :root[data-theme="light"] {
+    color-scheme: light;
+    --fg: #1f2023; --fg-muted: #61656c; --bg: #ffffff; --error: #c62828; --tile: #eceef1;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: var(--fg); background: var(--bg); overflow: auto;
+  }
+  .page { max-width: 720px; margin: 0 auto; padding: 48px 24px 96px; }
+  .hero { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 12px; }
+  /* The mark is the bots' icon tile (AppIcon's ~22.5% squircle). Without an
+     icon member it is the bot's face colour with its initials. */
+  .mark { width: 72px; height: 72px; border-radius: 16px; object-fit: contain; background: var(--tile); }
+  .mark.ph { display: flex; align-items: center; justify-content: center; color: var(--fg-muted);
+             font-size: 22px; font-weight: 700; letter-spacing: .01em; }
+  .mark.ph.face { color: var(--bg); }
+  h1 { font-size: 28px; font-weight: 700; letter-spacing: -.022em; margin: 0; line-height: 1.15; }
+  .meta { color: var(--fg-muted); font-size: .9em; margin: -4px 0 2px; }
+  .sub { color: var(--fg-muted); font-size: .85em; }
+  .error { color: var(--error); white-space: pre-wrap; }
+  .preview .page { padding: 16px; }
+  .preview .hero { gap: 10px; }
+  .preview .mark { width: 56px; height: 56px; border-radius: 13px; }
+  .preview .mark.ph { font-size: 18px; }
+  .preview h1 { font-size: 17px; font-weight: 650; letter-spacing: -.01em; }
+  .preview .meta { font-size: 12px; margin: -2px 0 0; }
+</style>
+</head>
+<body>
+<div class="page" id="page"><div class="sub">Reading bot package…</div></div>
+<script>
+  const page = document.getElementById("page");
+  const FILE = fused.params.get("_file");
+  const isPreview = new URLSearchParams(location.search).get("_preview") === "1";
+  if (isPreview) document.body.classList.add("preview");
+
+  const api = (q) => "/api/botfile/" + q + "?path=" + encodeURIComponent(FILE);
+  const fmtDate = (s) => {
+    if (!s || !/^\d{4}-\d{2}-\d{2}/.test(s)) return null;
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return s;
+    return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+  };
+
+  function fail(msg) {
+    page.innerHTML = "";
+    const h = document.createElement("h1"); h.textContent = "Could not read bot package";
+    const pre = document.createElement("div"); pre.className = "error"; pre.textContent = msg;
+    page.append(h, pre);
+  }
+
+  function placeholderMark(name, face) {
+    const words = String(name || "").replace(/[_-]+/g, " ").split(/\s+/).filter(Boolean);
+    const ini = words.length > 1 ? words[0][0] + words[1][0] : (words[0] || "Bot").slice(0, 2);
+    const d = document.createElement("div"); d.className = "mark ph"; d.textContent = ini.toUpperCase();
+    const color = face && typeof face.color === "string" ? face.color : "";
+    if (/^#[0-9a-fA-F]{6}$/.test(color)) { d.classList.add("face"); d.style.background = color; }
+    return d;
+  }
+
+  function render(t) {
+    const pub = t.public || {};
+    page.innerHTML = "";
+    const hero = document.createElement("div"); hero.className = "hero";
+    if (t.icon) {
+      const img = document.createElement("img"); img.className = "mark"; img.alt = ""; img.src = api("icon");
+      img.onerror = () => { img.replaceWith(placeholderMark(t.name, pub.face)); };
+      hero.appendChild(img);
+    } else hero.appendChild(placeholderMark(t.name, pub.face));
+    const h1 = document.createElement("h1"); h1.textContent = t.name; hero.appendChild(h1);
+    const meta = document.createElement("div"); meta.className = "meta";
+    const skills = (t.skills || []).length, apps = (t.apps || []).length;
+    const bits = [];
+    if (pub.model) bits.push(pub.model);
+    bits.push(skills + (skills === 1 ? " skill" : " skills"));
+    if (apps) bits.push(apps + (apps === 1 ? " app" : " apps"));
+    if (fmtDate(t.exported_at)) bits.push("exported " + fmtDate(t.exported_at));
+    meta.textContent = bits.join(" · ");
+    hero.appendChild(meta);
+    page.appendChild(hero);
+  }
+
+  // The file's own embed URL, built the way the shell codec does (router.ts
+  // urlForFsPath): only a drive-letter path is normalized — a backslash is a
+  // legal POSIX filename character and must round-trip.
+  function embedHref(path) {
+    const norm = /^[A-Za-z]:[\\/]/.test(path) ? String(path).replace(/\\/g, "/") : String(path);
+    const segs = norm.replace(/^\/+/, "").split("/").filter(Boolean).map(encodeURIComponent);
+    return "/explorer/embed/" + segs.join("/");
+  }
+
+  function handOffToInstallPage() {
+    if (isPreview || !FILE || window.top !== window) return false;
+    if (location.pathname.startsWith("/explorer/")) return false;
+    location.replace(embedHref(FILE));
+    return true;
+  }
+
+  async function load() {
+    if (!FILE) return fail("No .fusedbot file selected.");
+    if (handOffToInstallPage()) return;
+    let resp, data;
+    try {
+      resp = await fetch(api("install") + "&light=1");
+      data = await resp.json();
+    } catch (e) {
+      return fail("Could not read the bot package: " + e);
+    }
+    if (!resp.ok) return fail((data && data.error) || "Not a valid .fusedbot file.");
+    render(data);
+  }
+  load();
+</script>
+</body>
+</html>

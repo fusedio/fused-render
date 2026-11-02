@@ -294,6 +294,7 @@ def users(bid: str, bots) -> list:
 def _metas_on_disk() -> list[dict] | None:
     """Every bot.json as written (no Bot built), or None when one is unreadable:
     a decision about deleting logins must not be made on a partial list."""
+    import json
     from fused_render.bots import store
     out = []
     for bid in store.list_ids():
@@ -304,6 +305,36 @@ def _metas_on_disk() -> list[dict] | None:
         if not isinstance(m, dict):
             return None
         out.append({**m, "id": m.get("id") or bid})
+    # Bots still in the pre-v3 legacy tree (the migration has not lifted them yet) name browsers too; reading them
+    # here is what keeps the sweep from removing their logins in the window before the stamp.
+    # …and bots the v3 migration parked under `<bots_root>/.unmigrated/<id>/` (unreadable bot.json or a bad id):
+    # the user may repair them by hand, so their logins stay until then. A parked bot.json that cannot be read
+    # still names its browser by the folder (a pre-browsers bot's browser id IS its bot id).
+    legacy = bpaths.legacy_data_dir()
+    parked = os.path.join(bpaths.bots_root(), ".unmigrated")
+    for base in (legacy, parked):
+        try:
+            names = sorted(os.listdir(base)) if os.path.isdir(base) else []
+        except OSError:
+            return None
+        for n in names:
+            meta = os.path.join(base, n, "bot.json")
+            if not os.path.isfile(meta):
+                continue
+            try:
+                with open(meta, encoding="utf-8") as f:
+                    m = json.load(f)
+            except (OSError, ValueError):
+                if base == parked:
+                    out.append({"id": n})
+                    continue
+                return None
+            if not isinstance(m, dict):
+                if base == parked:
+                    out.append({"id": n})
+                    continue
+                return None
+            out.append({**m, "id": m.get("id") or n})
     return out
 
 

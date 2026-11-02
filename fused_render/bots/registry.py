@@ -24,7 +24,7 @@ every pass first makes sure this process owns (re-trying the flock while it
 does not), then runs `handoffs.sweep` (docs §11) and every bot's
 `tick_routines()` (routines plus the file inbox) every 20 s. Becoming owner
 (`_become_owner`) runs what used to run at every start: the layout migration,
-the FusedBot import, the Super Bot seed, the orphan-browser sweep, the
+the FusedBot import, the v3 folder migration, the Super Bot seed, the orphan-browser sweep, the
 channels router, plus the takeover walk (`_reconcile`: a bot whose bot.json
 still says running from an owner that quit goes idle, a routine stuck on
 "started" gets its outcome) and the routines wake agent (`sync_wake`, the
@@ -60,7 +60,7 @@ OLD_OWNER_WAIT_S = 10.0    # after winning the flock: wait this long for the pre
                            # app dropped the lock BEFORE stopping its engines; see shutdown())
 
 _lock = threading.Lock()
-_bots: dict = {}           # bot dir -> Bot (keyed by dir so a redirected home never serves a stale Bot)
+_bots: dict = {}           # bot id -> Bot (a redirected home/workspace clears it: shutdown/reset)
 _sched = {"thread": None, "stop": None}
 _chan = {"router": None}   # the channels router (bots/channels/router.py); None until start()
 # Ownership (module docstring). `fh`: the flock'd lock file while this process owns; `lean`: never elect;
@@ -93,7 +93,9 @@ def _botmod():
 
 
 def _key(bid: str) -> str:
-    return bpaths.bot_dir(bid)
+    # By id, not by folder: resolving the folder (paths.bot_folder) raises for an unknown bid, and the id is
+    # the one name a bot keeps for life (its folder is fixed at creation, but the id is what callers hold).
+    return bid
 
 
 def get(bid: str):
@@ -112,7 +114,12 @@ def get(bid: str):
     with _lock:
         b = _bots.get(key)
         if b is None:
-            if not os.path.isfile(os.path.join(key, "bot.json")):
+            from fused_render.bots import store
+            try:
+                exists = os.path.isfile(store.meta_path(bid))
+            except LookupError:
+                exists = False  # no folder carries this id
+            if not exists:
                 raise ValueError(f"no such bot {bid}")
             b = _botmod().Bot(bid)
             _bots[key] = b
@@ -339,7 +346,7 @@ def _try_probe_lock() -> bool:
 
 def _become_owner() -> None:
     """What every start() used to do, now once, in the winner, before its first
-    tick: layout migration, the FusedBot import, the Super Bot seed, the orphan
+    tick: layout migration, the FusedBot import, the v3 folder migration, the Super Bot seed, the orphan
     browser sweep, the channels router, the takeover walk, the wake agent.
     Idempotent per ownership; errors in one step never block the next."""
     if _OWNER["ready"]:
@@ -349,6 +356,7 @@ def _become_owner() -> None:
     # interrupted hand-off's result card that must reach the phone, and on_event skips a router that is None.
     for label, step in (("layout migration", lambda: bpaths.migrate_layout()),
                         ("FusedBot import", _import_fusedbot),
+                        ("v3 folder migration", _migrate_v3),
                         ("Super Bot seed", seed_super),
                         ("channels router", _start_router),
                         ("takeover walk", _reconcile),
@@ -365,8 +373,20 @@ def _import_fusedbot() -> None:
     fusedbot_import.import_once()
 
 
+def _migrate_v3() -> None:
+    # After the FusedBot import (which writes the legacy layout this lifts) and before the Super Bot seed and
+    # anything that builds a Bot: from here on only the per-bot folders under the workspace are read.
+    from fused_render.bots import migrate_v3
+    migrate_v3.migrate_once()
+
+
 def _sweep_browsers() -> None:
-    from fused_render.bots import browsers
+    from fused_render.bots import browsers, migrate_v3
+    if not os.path.exists(migrate_v3.stamp_path()):
+        # Until the v3 migration has stamped, the bots still in the legacy tree are invisible to list_ids(), so
+        # the sweep would read their browsers as orphans and delete logins nothing has backed up yet.
+        logger.info("browser sweep skipped: the v3 folder migration has not completed")
+        return
     n = browsers.sweep(all())
     if n:
         logger.info("removed %d orphan browser folder(s)", n)

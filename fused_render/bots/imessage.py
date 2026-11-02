@@ -48,11 +48,6 @@ def data_dir():
     return _bpaths.imessage_dir()
 
 
-def bots_dir():
-    """`<home>/bots/data/bots`: one folder per bot."""
-    return _bpaths.data_dir()
-
-
 def cursor_path():
     return os.path.join(data_dir(), "imessage.json")
 
@@ -66,7 +61,7 @@ def state_path():
     return os.path.join(data_dir(), "imessage-state.json")
 
 
-_LAZY = {"DATA": data_dir, "BOTS": bots_dir, "CURSOR": cursor_path, "LOCK": lock_path, "STATE": state_path}
+_LAZY = {"DATA": data_dir, "CURSOR": cursor_path, "LOCK": lock_path, "STATE": state_path}
 
 
 def __getattr__(name):  # PEP 562: OpenBot's module constants, resolved now
@@ -127,16 +122,12 @@ def resolve_contact(who, contacts):
 
 
 def super_meta():
-    """(Super Bot's id, its bot.json dict) or (None, {}), read from disk on every call (no Bot objects)."""
-    bots = bots_dir()
-    try:
-        ids = sorted(os.listdir(bots))
-    except OSError:
-        return None, {}
-    for bid in ids:
+    """(Super Bot's id, its meta dict) or (None, {}), read from disk on every call (no Bot objects). The merged
+    meta (store.read_meta), not bot.json alone: `imessage`/`imessage_enabled` are private state (.fused/state.json)."""
+    from fused_render.bots import store
+    for bid in store.list_ids():
         try:
-            with open(os.path.join(bots, bid, "bot.json"), encoding="utf-8") as f:
-                m = json.load(f)
+            m = store.read_meta(bid)
         except (OSError, ValueError):
             continue
         if isinstance(m, dict) and m.get("kind") == "super":

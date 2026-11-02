@@ -595,6 +595,48 @@ def bot_send(bid: str, body: dict = Body(...), x_fused: str | None = Header(defa
     return {"ok": True}
 
 
+def _package():
+    from fused_render.bots import package
+    return package
+
+
+# Before the `/api/bots/{bid}/{op}` POST catch-all, like `/send`: registered later, "package" would be swallowed as
+# an unknown op.
+@router.get("/api/bots/{bid}/package")
+@_handled
+def bot_package_plan(bid: str):
+    """What exporting this bot as a `.fusedbot` would carry (package.plan): the export dialog's whole model."""
+    from fused_render.bots.bot import is_super
+    try:
+        if is_super(_store().read_meta(bid)):  # before the plan: no scan of a bot that can never be exported
+            raise ValueError("Super Bot cannot be exported: it is this machine's own assistant")
+    except (FileNotFoundError, LookupError):
+        raise ValueError(f"no such bot {bid}")
+    except OSError as e:
+        raise ValueError(f"cannot read bot {bid}: {e}")
+    try:
+        return _package().plan(bid)
+    except OSError as e:
+        raise ValueError(f"cannot read bot {bid}: {e}")
+
+
+@router.post("/api/bots/{bid}/package")
+@_handled
+def bot_package_write(bid: str, body: dict = Body(default=None), x_fused: str | None = Header(default=None)):
+    """Write the `.fusedbot` into Downloads (the same folder the app file export saves to) and answer its path, so
+    the dialog can offer Reveal. Body: `{memory: bool, apps: [folder], file_name?: str}`."""
+    guard = _require_fused(x_fused)
+    if guard is not None:
+        return guard
+    from fused_render.server.routers.appfile import _export_destination_dir
+    body = body if isinstance(body, dict) else {}
+    apps = body.get("apps") if body.get("apps") is not None else []
+    path = _package().write(bid, memory=_truthy(body.get("memory")), apps=apps,
+                            file_name=body.get("file_name") if isinstance(body.get("file_name"), str) else None,
+                            dest_dir=_export_destination_dir())
+    return {"ok": True, "path": path}
+
+
 _CONTROL = {"pause": "pause", "resume": "resume", "stop": "stop", "takeover": "takeover",
             "giveback": "giveback", "popout": "popout", "dock": "dock", "wake": "wake_browser", "open": "opened",
             "clear": "clear_context"}
@@ -738,8 +780,6 @@ def _settings(bid, body):
     # edits in memory for the next save() to persist.
     folders = bm.clean_folders(body["folders"]) if isinstance(body.get("folders"), list) else None  # ValueError -> 400
     terminal = _check_terminal(bm, body, bm.is_super(b.meta))
-    if name and name != b.meta.get("name") and b.meta.get("artifacts_dir") and not os.path.isdir(b.meta["artifacts_dir"]):
-        b.meta.pop("artifacts_dir", None)  # never used on disk: let the new name pick the folder
     b.meta["name"] = name or b.meta.get("name")
     if body.get("instructions") is not None:
         b.meta["instructions"] = str(body["instructions"]).strip()

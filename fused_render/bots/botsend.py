@@ -3,30 +3,31 @@
     python -m fused_render.bots.botsend <bot name or id> "<task text>"
     python -m fused_render.bots.botsend --list
 
-Writes the task into the bot's inbox folder (`<home>/bots/data/bots/<id>/inbox/`);
+Writes the task into the bot's inbox folder (`~/Fused/bots/<folder>/.fused/inbox/`);
 the server's scheduler picks it up within ~20 s and runs it exactly as if you
 had typed it in the chat. Nothing listens on the network: only processes on
 this machine can do this.
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
 import time
 
 from fused_render.bots import paths as bpaths
+from fused_render.bots import store
 
 
 def bots():
+    # The merged meta (store.read_meta), not bot.json alone: `status` is private state (.fused/state.json).
     out = []
-    root = bpaths.data_dir()
-    for bid in sorted(os.listdir(root)) if os.path.isdir(root) else []:
+    for bid in store.list_ids():
         try:
-            with open(os.path.join(root, bid, "bot.json"), encoding="utf-8") as f:
-                out.append(json.load(f))
+            m = store.read_meta(bid)
         except (OSError, ValueError):
-            pass
+            continue
+        m.setdefault("id", bid)
+        out.append(m)
     return out
 
 
@@ -47,7 +48,7 @@ def main(argv):
     if not task:
         print("empty task", file=sys.stderr)
         return 1
-    inbox = os.path.join(bpaths.data_dir(), match[0]["id"], "inbox")
+    inbox = os.path.join(bpaths.bot_dir(match[0]["id"]), "inbox")
     os.makedirs(inbox, exist_ok=True)
     name = time.strftime("%Y%m%d-%H%M%S") + f"-{os.getpid()}"
     with open(os.path.join(inbox, name + ".tmp"), "w", encoding="utf-8") as f:

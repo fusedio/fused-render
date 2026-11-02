@@ -309,6 +309,38 @@ export interface Starter {
 export interface StarterInstallReply { ok: true; key: string; dir: string; installed: boolean; existed: boolean; name: string }
 
 export interface Ok { ok: true }
+
+/** GET /api/bots/<id>/package (bots/package.py plan()): what an "Export bot…" would put in the `.fusedbot`. `public` is
+ *  bot.json as on disk; an app row's `problem` says why it cannot travel (folder gone, not a fused app, over the caps). */
+export type PackageSourceKind = "bundled" | "marketplace" | "starter";
+export interface PackageAppRow {
+  folder: string; name: string; app_id: string | null;
+  source: { kind: PackageSourceKind; slug?: string; key?: string; [k: string]: unknown };
+  /** Bundled rows: the size of what ships; 0 for references (starter / marketplace). */
+  bytes: number;
+  problem?: string;
+  /** Bundled app with no id yet and no git remote: exporting stamps an app id into its entry page (as sharing the app does). */
+  mints_app_id?: boolean;
+}
+export interface PackagePlan {
+  ok: true; name: string; file_name: string; public: Record<string, unknown>;
+  skills: { name: string; title: string; trigger: string }[];
+  memory_bytes: number;
+  /** UTF-8 bytes of every skill file (absent from an older backend: count 0). */
+  skills_bytes?: number;
+  apps: PackageAppRow[];
+  /** Skill files that cannot travel (a refused name, a symlink): listed so they do not vanish silently. */
+  skills_skipped?: { name: string; problem: string }[];
+  /** Secret-looking strings found in the text that travels: a caution, never a block. */
+  secrets: { where: string; snippet: string }[];
+  /** What the secret scan covered (bundled app sources are not scanned here). */
+  secrets_scope?: string[];
+  /** Skills + memory over the text cap: the export would be refused, so Export is disabled with this sentence. */
+  text_problem?: string | null;
+  super: boolean;
+}
+/** POST /api/bots/<id>/package: `apps` = the folders to ship (bundled) or reference; `file_name` absent = plan's default. */
+export interface PackageWriteBody { memory: boolean; apps: string[]; file_name?: string }
 /** GET /api/bots/setup. `chrome.found` null = could not tell; `claude` is fused-render's cached Claude Code health
  *  snapshot (never a spawn), read loosely: only `found` and `signed_in` are looked at. */
 export interface SetupReply {
@@ -465,6 +497,8 @@ export const api = {
   routines: (id: string, body: RoutineBody) => post<{ ok: true; routine?: Routine }>(`${bid(id)}/routines`, body, "routine"),
   skills: (id: string, body: SkillBody) => post<{ ok: true; skills: Skill[] }>(`${bid(id)}/skills`, body, "skill"),
   exportTranscript: (id: string) => get<{ ok: true; name: string; text: string }>(`${bid(id)}/export`, "export"),
+  packagePlan: (id: string) => get<PackagePlan>(`${bid(id)}/package`, "package plan"),
+  packageWrite: (id: string, body: PackageWriteBody) => post<{ ok: true; path: string }>(`${bid(id)}/package`, body, "export bot"),
   reveal: (id: string, path?: string) => post<{ ok: true; path: string }>(`${bid(id)}/reveal`, path ? { path } : {}, "reveal"),
   builds: () => get<{ builds: BuildRow[] }>(`${B}/builds`, "builds"),
   saveBuilds: (builds: BuildRow[]) => post<Ok>(`${B}/builds`, { builds }, "builds"),

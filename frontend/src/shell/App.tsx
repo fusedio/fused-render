@@ -133,6 +133,9 @@ const MonitorPage = lazy(() => import("@shell/monitor/MonitorPage"));
 const MarketplacePage = lazy(() =>
   import("@apps/marketplace").then((m) => ({ default: m.MarketplacePage })),
 );
+// The `.fusedbot` install page (apps/bots/file): its own chunk, so a package
+// opened from a listing does not pull the whole Bots page in.
+const BotFilePage = lazy(() => import("@apps/bots/file/BotFilePage"));
 
 /** Params that belong to a PAGE rather than to a route — see `useNavEpoch`.
  *  Module-level so the array identity is stable across renders. */
@@ -494,6 +497,30 @@ function FusedFileView({ fsPath }: { fsPath: string }) {
   );
 }
 
+// A `.fusedbot` bot package opened anywhere — the same interception as
+// isFusedInstallView, for the Bots install page (apps/bots/file BotFilePage).
+// Same exclusions: a thumbnail, a frozen snapshot, another named mode, a
+// navigation known to be a directory.
+function isBotFileInstallView(fsPath: string): boolean {
+  if (IS_PREVIEW || IS_SNAPSHOT || !/.\.fusedbot$/i.test(basename(fsPath))) return false;
+  if (navHintIsDir() === true) return false;
+  const mode = new URLSearchParams(location.search).get("_mode");
+  return !mode || mode === "fusedbot";
+}
+
+// The bot install page in place of StatView; records the file in recents like
+// FusedFileView.
+function BotFileView({ fsPath }: { fsPath: string }) {
+  useRecentsTracking(fsPath, false, null);
+  return (
+    <div id="content">
+      <Suspense fallback={<RouteFallback />}>
+        <BotFilePage path={fsPath} />
+      </Suspense>
+    </div>
+  );
+}
+
 export default function App({ config }: { config: Config }) {
   // …and only while the feature is on (shell/task-peek-flag.ts): off, the epoch
   // is judged on the whole URL, which is what it did before any of this.
@@ -835,6 +862,7 @@ export default function App({ config }: { config: Config }) {
   // view there is (see isFusedInstallView); the flag gates the store's entry
   // points only.
   const fusedFile = fsPath && isFusedInstallView(fsPath) ? fsPath : null;
+  const botFile = fsPath && isBotFileInstallView(fsPath) ? fsPath : null;
   // A resolved fsPath mounts StatView below, which owns the title itself.
   useDocumentTitle(
     isPanel
@@ -1194,6 +1222,8 @@ export default function App({ config }: { config: Config }) {
     );
   } else if (fusedFile) {
     main = <FusedFileView key={epoch + ":" + fusedFile} fsPath={fusedFile} />;
+  } else if (botFile) {
+    main = <BotFileView key={epoch + ":" + botFile} fsPath={botFile} />;
   } else {
     main = (
       <StatView

@@ -1231,9 +1231,13 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     from fused_render.bots import registry as _bots_registry
     from fused_render.bots.routes import forward_middleware as _bots_forward
     from fused_render.bots.phone import router as phone_bots_router
+    from fused_render.bots.file_routes import router as botfile_router
     from fused_render.bots.routes import router as bots_router
 
     app.include_router(bots_router)
+    # The `.fusedbot` install page's `/api/botfile/*` (bots/file_routes.py, docs/bots.md §17): outside the
+    # owned prefixes ("file" would parse as a bot id), so its install POST forwards to the owner itself.
+    app.include_router(botfile_router)
     # The iOS app's door (bots/phone.py, docs/bots.md §14): `/api/phone/bots/*`, an owned prefix like the two
     # above, and the one bots prefix the LAN listener forwards (lan.py) for a paired phone.
     app.include_router(phone_bots_router)

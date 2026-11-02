@@ -96,8 +96,12 @@ names.
 ```
 fused_render/bots/            the backend package (in-process; no daemon, no fused.daemon)
   __init__.py
-  paths.py        state roots: <home>/bots/data/<id>, <home>/bots/cache/<id>, ~/Fused/bots (inbox), ~/Fused/app (apps)
-  store.py        bot dirs, bot.json (atomic write), events.jsonl, usage.jsonl ledger + summary
+  paths.py        state roots: root() (<home>/bots, machine-level), bots_root() (~/Fused/bots), bot_folder(bid)
+                  (public), bot_private(bid) == bot_dir(bid) (<folder>/.fused), bot_cache_dir, bot_inbox; place/forget/
+                  folders (the id -> folder index); is_bot_workdir; legacy_data_dir/legacy_cache_dir (read-only probes)
+  store.py        bot.json (public half, PUBLIC_KEYS) + .fused/state.json (the rest), split at read_meta/write_meta so
+                  Bot.meta stays one dict; events.jsonl, usage.jsonl ledger + summary
+  migrate_v3.py   one-shot lift of the legacy home-side trees into ~/Fused/bots/<folder>/, backup first (section 17)
   browser.py      per-bot Chrome over CDP (port of OpenBot browser.py) + AX-tree snapshot + change report
   bot.py          class Bot: lifecycle, memory, skills, artifacts/inbox, routines, offers, builds, send/pause/resume/stop,
                   takeover/giveback/popout/dock, file inbox (botsend), summary(); the engine-neutral half of agents.py
@@ -115,6 +119,9 @@ fused_render/bots/            the backend package (in-process; no daemon, no fus
                   thread (routines, file inbox), takeover walk, routines wake agent, slow-call log
   routes.py       the HTTP API (section 3), an `_web.APIRouter` included from server.py
   botsend.py      CLI: `python -m fused_render.bots.botsend <bot> "<task>"` (drops into the bot's inbox dir)
+  package.py      .fusedbot export: resolve_source, plan(bid), write(bid, ...) (section 17)
+  botfile.py      .fusedbot import: probe(path), install(path, ...) (section 17)
+  file_routes.py  /api/botfile/* (install probe + install, icon, upload), its own router (section 17)
 frontend/
   bots.html                 the page `/` serves (second Vite input beside lite.html)
   src/apps/bots/            the React app (section 4)
@@ -122,31 +129,50 @@ tests/test_bots_*.py        store, routes (fake claude), steps engine, agent eng
 docs/bots.md             this file
 ```
 
-State: `paths.home()/bots/`, never beside the code, laid out **byte-for-byte
-like OpenBot's `.fused/`** so moving an OpenBot install is one copy
-(`rsync -a <OpenBot>/.fused/ ~/.fused-render/bots/`; owner's call,
-2026-10-02):
+State is split in two roots (v3, 2026-11-02, D1454). Everything per-bot lives
+in one folder under the workspace (`FUSED_RENDER_DIR` overrides `~/Fused`):
+public files at the folder root, private and transient ones under its
+gitignored `.fused/`. Cross-bot machine state stays home-side
+(`shell.storage.home_dir()/bots`, branch-nested in dev):
 
 ```
-~/.fused-render/bots/
-  data/bots/<id>/        bot.json, events.jsonl, memory.md, skills/, downloads/, files/, inbox/
-  data/browsers/<bid>/   browser.json, profile/ or profile.enc — a set of logins; bot.json's `browser_id`
-                         names it, several bots may name the same one (shared logins, §6)
-  data/usage.jsonl       usage ledger
-  data/builds.json       Builds panel list
-  data/imessage*.json    iMessage cursor / state / lock
-  cache/bots/<id>/       shot.png, window.json (the bot's Chrome window ids, its tabs, viewport), steps/ (deletable)
-  cache/browsers/<bid>/  session.json (the live Chrome handle)
-  cache/slow.jsonl       slow-call log
-  dock.json              ours (no OpenBot counterpart)
+~/.fused-render/bots/                     paths.root()        machine-level
+  data/browsers/<bid>/profile, browser.json   a set of logins; bot.json's `browser_id` names it,
+                                          several bots may name the same one (shared logins, §6)
+  data/usage.jsonl  data/builds.json  data/imessage*.json  data/routines.lock
+  cache/browsers/<bid>/session.json   cache/slow.jsonl   dock.json
+  .layout-v2  .layout-v3  imported-from-fusedbot.json  super-seeded.json
+  backup/ is NOT here: backups go to <base_home>/backup/bot-migration-v3/<ts>/  (base_home = ~/.fused-render, never branch-nested)
+
+~/Fused/bots/                             paths.bots_root()   per-bot folders
+  <folder>/                               paths.bot_folder(bid)      PUBLIC
+    bot.json                              store.meta_path(bid)       public half (PUBLIC_KEYS, §2)
+    skills/<name>.md                      Bot.skills_dir
+    README.md                             optional, authored by the user; never generated
+    .gitignore                            seeded once by paths.place(): ".fused/\n"
+    .fused/                               paths.bot_dir(bid) == paths.bot_private(bid)   PRIVATE
+      state.json                          store.state_path(bid)      every other meta key
+      events.jsonl                        store.events_path(bid)
+      memory.md  files/  downloads/  inbox/<task>/  (inbox = the Inbox; index.jsonl lives in inbox/)
+      cache/                              paths.bot_cache_dir(bid): shot.png, window.json, steps/, badjson/, mcp.json, viewport.json, tabs.json
 ```
 
-0.11.x shipped the bots one level up (`bots/data/<id>`, ledgers at `bots/`);
-`bots/paths.migrate_layout()` moves such a home over once at startup, before
-`onboarding.seed_for_existing_users` counts bots. The Inbox root stays
-`~/Fused/bots/<bot name>/`; the apps root stays `~/Fused/app`
-(`_config()["fused_dir"] + "/app"`; `FUSED_RENDER_DIR` overrides the
-workspace as everywhere else).
+`<folder>` is the slug of the bot's name at creation (`paths.place`: fallback
+the id; a folder of that name holding another id's `bot.json` gets
+`<slug>-<id4>`; a folder with no `bot.json`, an old Inbox, is adopted).
+Renaming the bot never renames the folder (apps do not either); the 8-hex `id`
+stays the API key everywhere, and `paths.folders()` maps id -> folder by
+scanning `*/bot.json` (cached per process, rescanned once on a miss).
+`paths.bot_folder` raises `LookupError` for an id no `bot.json` carries.
+`bot_dir` keeps its name: it is where a bot's private files live, `.fused/`.
+
+Until v3 the tree mirrored OpenBot's `.fused/` (`data/bots/<id>/`,
+`cache/bots/<id>/`, the Inbox at `~/Fused/bots/<name>/<task>/`); `migrate_v3`
+lifts it (§17). 0.11.x shipped the bots one level up (`bots/data/<id>`,
+ledgers at `bots/`); `bots/paths.migrate_layout()` still moves such a home
+into that legacy layout once at startup, before `migrate_v3` and before
+`onboarding.seed_for_existing_users` counts bots. The apps root stays
+`~/Fused/app` (`_config()["fused_dir"] + "/app"`).
 
 Three OpenBot fallbacks read `~/.fused-render/server.json`; here they are
 `os.environ["FUSED_RENDER_ORIGIN"]` (set by `make_server`) else
@@ -180,7 +206,33 @@ pending_offer, offers_declined, artifacts_dir, control, dl_pct`) plus
 `memory` (detail only), `skills` (detail only), `learning` (a learn-from-last
 worker is running; a second `learn` is refused meanwhile), `shot` (the shot URL,
 `/api/bots/<id>/shot`, or null), `shot_ts`, `viewport: [1280, 800]`, `events`
-(since the page's cursor).
+(since the page's cursor). `artifacts_dir` is no longer stored: `summary()`
+answers `paths.bot_inbox(id)`, and the key is dropped from the meta on load.
+
+On disk (v3, `store.py`) the meta is split by key. `bot.json` holds the
+public keys, and each routine row in it only the public routine keys:
+
+```python
+PUBLIC_KEYS = frozenset({"id", "name", "model", "effort", "instructions", "face", "preset", "kind", "approval",
+                         "build_access", "terminal", "engine", "max_steps", "step_cap", "super_access", "created",
+                         "apps", "routines"})
+ROUTINE_PUBLIC_KEYS = frozenset({"id", "task", "kind", "created", "minutes", "anchor", "time", "weekdays", "at"})
+# `enabled` is private: the runtime flips it (a once-routine completing, the circuit breaker), and the public file must not churn.
+```
+
+Everything else lives in `.fused/state.json` (a routine's `last`,
+`last_result`, `next`, `fails`, `runs`, … merge back by routine id; a private
+row with no public twin is dropped). `Bot.meta` is still one dict and
+`Bot.save()` is unchanged; nothing outside `store.py` knows about the split.
+`state.json` (compact) is written on every save; `bot.json` (`indent=2,
+sort_keys=True`, trailing newline) is rewritten only when its text changes, so
+runtime saves leave a git checkout of the folder clean. `read_meta` raises
+`FileNotFoundError` when `bot.json` is missing. `apps` is the bot's app
+manifest, `[{folder, name, app_id, source: {kind: "bundled"|"marketplace"|
+"starter", …}}]`: seeded once (on load when absent, and by `migrate_v3`) from
+`trusted_apps` ∪ the basenames of `builds[].dir` still under the apps root ∪
+the preset's starters, each source resolved by `package.resolve_source`; after
+that only the export dialog edits it, the bot never regrows it.
 
 Status reply: `{bots: [summary…], ts, usage: null|summary, imessage: null|state}`.
 Usage summary and iMessage state are the OpenBot shapes (`_usage_summary`,
@@ -464,7 +516,7 @@ profile folder, so sharing is one `BrowserProcess` (browser.py) with one
 a tab is the bot's when Chrome says it sits in one of the bot's windows
 (`Browser.getWindowForTarget`, D1341) or its opener chain leads there (a
 popup; one with window features gets a window of its own, recorded as the
-bot's too). `cache/bots/<id>/window.json` holds the window ids (valid for one
+bot's too). `.fused/cache/window.json` holds the window ids (valid for one
 Chrome pid), the tabs in them and the bot's viewport. Every bot, alone or
 not, runs the same code: its first action adopts the blank launch window or
 opens one (`Target.createTarget(newWindow)`; headless composites every
@@ -2152,3 +2204,212 @@ per-bot opt-out and the global pref going off.
 `terminal` allow rules (`preset.json` `terminal_allow`) for the read-only commands `gh pr view|list|diff|checks`,
 `gh issue view|list`, `gh run view|list`, `gh repo view` and `gh search`; never `gh api`. The rules are inert until
 the user turns the bot's Terminal on.
+
+## 17. Bot package — `.fusedbot` (`package.py`, `botfile.py`, `file_routes.py`, `migrate_v3.py`, 2026-11-02)
+
+A bot travels as one file: its public folder (§1) plus, optionally, its memory
+and the apps it uses. Export writes it from the bot's menu or Settings footer
+("Export bot…"; the old `export` action is now labelled "Export transcript");
+opening one shows an install page; installing always makes a NEW bot. Design
+page with the owner's answers: <https://claude.ai/artifact/MgZLky3CyjTzH3mNZsXDr6>
+(D1454 layout, D1455 package).
+
+**The file.** The `.fused` app file's container (`appfile_container.py`, D870:
+magic `FUSEDAPP`, deflated JSON index, per-member deflate streams), told apart
+by a kind key in the index. `KINDS = {"app": ("fused_app_file", 2), "bot":
+("fused_bot_file", 1)}`; `write(..., kind=)` stamps one key and refuses an
+index carrying the other, `read_index(..., kind=)` refuses the other kind with
+a sentence ("this is a fused bot package, not an app file" and vice versa), and
+`kind_of(path)` (a bounded read of header + index only) answers `"app" |
+"bot" | None` for routing a dropped file. Defaults keep every app caller
+byte-identical; `bots/apps.py::_container_index` answers a bot package with
+`ValueError("this is a bot package; open it from the Bots page")`.
+
+| member | what |
+|---|---|
+| `bot.json` | the public half: `store.public_json` of the PUBLIC_KEYS of the merged meta — byte-identical to disk once split, filtered when a private key sits in an unsplit file |
+| `skills/<name>.md` | every skill whose name can travel (a symlink, a refused name or a non-UTF-8 name is skipped and listed under `skills_skipped`) |
+| `README.md` | when the folder has one |
+| `icon.svg` | when the folder has one (≤ `appfile.MAX_ICON_BYTES`); the install page falls back to the face |
+| `.fused/memory.md` | only when the export ticked Memory and the file exists |
+| `apps/<folder>.fused` | one complete app file per bundled app (`export_app_file`) |
+
+Index: `{fused_bot_file: 1, name, exported_at, origin: {bot_id, exported_at},
+apps: [{folder, name, app_id, source}]}` (the chosen rows of `plan()` without
+`bytes` / `problem`). Caps: `PACKAGE_MAX_BYTES` 1 GiB total,
+`TEXT_MAX_BYTES` 1 MiB for memory + skills together, checked on declared sizes
+before writing and by the container's own write caps after. `EXT = ".fusedbot"`.
+
+**Three reference kinds.** `package.resolve_source(app_dir)` decides from the
+installed copy's own stamps: `{kind: "starter", key}` when
+`<app>/.fused/starter.json` has a key; else `{kind: "marketplace", slug,
+repo?, commit?}` when `contrib.store.get_raw(key(app_dir))` (read-only; `get()`
+re-binds and may write) is a marketplace record with a slug; else
+`{kind: "bundled"}`. Only bundled apps ride in the file;
+starters and marketplace apps travel as references and install from their
+source on the other Mac. A marketplace ref that cannot be fetched there shows
+the error with Retry; it is never bundled as a fallback.
+
+**Export.** `GET /api/bots/{bid}/package` → `plan(bid)`:
+
+```
+{ok: true, name, file_name: "<slug>.fusedbot", public: <the public half>,
+ skills: [{name, title, trigger}], skills_bytes, skills_skipped: [{name, problem}],
+ memory_bytes, text_problem: str|null, super: bool,
+ apps: [{folder, name, app_id, source, bytes, problem?, mints_app_id?}],
+ secrets: [{where: "instructions"|"memory"|"skills/<name>"|"readme"|"routines"|"scan", snippet}],
+ secrets_scope: ["instructions", "memory", "skills", "readme", "routines"]}
+```
+
+`apps` is the bot's `apps` manifest (§2), each row re-resolved and sized:
+starter / marketplace `bytes: 0`, bundled = the folder's exportable members
+(`appfile._iter_app_files`); `problem` when the folder is gone, is not a fused
+app, or is over the app-file caps; `mints_app_id` on a bundled row says the
+app has no id and no git remote yet, so `export_app_file` will stamp one into
+its entry page (the dialog discloses it). `secrets` reuses App Doctor's secret
+patterns over instructions, memory, every skill body, README and routine tasks
+(the engine's MASKED excerpt, never the raw value; a scan that breaks adds a
+visible `where: "scan"` hit); the dialog shows a caution line and does not
+block. Text is read bounded (`TEXT_MAX_BYTES + 1`); over the cap the plan
+carries `text_problem` and the dialog disables Export. `POST
+/api/bots/{bid}/package` `{memory, apps: [folder], file_name?}` → `{ok, path}`:
+`write()` refuses Super Bot (`ValueError`); `apps` may name folders outside the
+manifest ("Add app…"), which must be fused apps present now and are appended to
+the bot's `apps` manifest afterwards through the live Bot under its lock; the
+package is built in a scratch dir, its final size re-checked against the cap,
+then hard-linked onto a unique name in Downloads
+(`routers/appfile._export_destination_dir` / `_unique_export_path`; `os.link`
+refuses a name a racing writer took, `os.replace` only where links are not
+supported).
+Both routes sit before the `/{bid}/{op}` catch-all so `package` is not
+swallowed; the POST needs the `X-Fused` header like every mutation. The dialog
+opens with every app ticked (a `problem` row muted and untickable) and Memory
+OFF.
+
+**Install routes** (`file_routes.py`, its own router at `/api/botfile/*`; the
+POSTs run in the owner, forwarding through `routes._forward_client` like the
+bots router's middleware, §7):
+
+| route | answer |
+|---|---|
+| `GET /install?path=<abs>[&light=1]` | `probe(path)`; `light` reads only the index + `bot.json` (the template's card peek) |
+| `POST /install` `{path, apps: [folder], memory, request_id?, bot_id?}` | `install(...)`, `X-Fused`. `request_id` (≤64 `[A-Za-z0-9_-]`) makes the POST idempotent in the owner: a resend answers the first result (a 200-entry, 1 h memo), so a page Retry after a lost reply never mints a second bot. `bot_id` is re-install mode (the per-row Retry): no bot is created; the file's `origin` must match that bot's, only the listed rows install, and they join its `apps` + `trusted_apps` |
+| `GET /icon?path=` | the `icon.svg` member, else 404 (the page falls back to the face) |
+| `POST /upload?name=<file name>` (body = the raw bytes) | writes `<downloads dir>/<safe name>.fusedbot` (appfetch's dir), `Content-Length` checked against the 1 GiB cap before a byte is read, streamed to a temp file, `X-Fused` → `{ok, path}` |
+
+`probe` answers `{ok, name, public, skills, memory: bool, exported_at, origin,
+apps: [{folder, name, app_id, source, state, ticked, tickable, reason?}],
+staging}`. Bundled members are extracted to
+`appfile.install_dir()/.install-bot-<sha10 of path+mtime>/<folder>.fused`, the
+`.install-` prefix letting `appfile._sweep_install_staging` clean it after its
+TTL. Per-row state:
+
+| source | state | ticked | tickable |
+|---|---|---|---|
+| bundled | `appfile.install_target(member, light=True)["state"]` | `new`, `update` | not `WARN_STATES` (`diverged`, `same`, `downgrade`, `unknown`) and not `clash`; `same` reads "Already installed" |
+| starter | `installed` / `missing` (`starters.list_state`) | when missing | yes |
+| marketplace | `installed` / `missing` (`marketplace.installed_copies()`) | when missing | yes |
+
+**Install order.** `install` → `{ok, bot_id, apps: [{folder, ok, state,
+error?}], warnings: [str]}`. Once `bot.create()` has returned the POST answers
+200 whatever fails afterwards (a skill that did not parse, memory, the greeting)
+— those become `warnings`; a non-200 can only happen before the bot exists, so
+a Retry is always safe. Apps first, in the order given: bundled → `appfile.install_app_file`,
+**never `force`** (a state that would need force is reported skipped, so a
+package can never overwrite an app the user edited); starter →
+`starters.ensure([key])`; marketplace → `marketplace.start_install(slug)`,
+polled up to `tools.MARKET_INSTALL_WAIT_S` (240 s). Then the bot, in the owner
+process: `bot.create(name, model, effort, instructions, greet=False)`; face,
+approval, build_access, terminal, engine, max_steps / step_cap; `preset` as the
+key only (no `apply_preset`: the skills are in the file); routines from the
+file with run fields stripped and every row **`enabled: false`**; `apps` = the
+file rows; `trusted_apps` = the folders that installed OK and are in the
+index's `apps` rows (`trusted_apps` is private, never in the file); skills via
+`skill_save`; memory via `set_memory` only when asked and present; private
+state gets `origin` (the exporter's `{bot_id, exported_at}`); a `system` event
+"Imported from <file>"; then `greet()`. A fresh id every time: there is no
+update-in-place. The page's failed row re-POSTs with only that folder and the
+`bot_id` it was given (re-install mode above).
+
+**Opening one.** `templates/registry.json` maps `".fusedbot": ["fusedbot",
+"claude"]`; `templates/fusedbot/template.html` (modelled on `fusedapp`) peeks
+with `light=1` on a card and hands a whole-window load to the shell, whose
+`isBotFileInstallView` renders `BotFilePage` (`apps/bots/file/`). A `.fusedbot`
+dropped on the Bots page uploads and opens that view; dropped on the apps panel
+it is refused ("That is a bot package. Drop it on the Bots page, not the apps
+panel.").
+
+**Migration (`migrate_v3.migrate_once`).** Runs once in
+`registry._become_owner()`, after `_import_fusedbot` (which still writes the
+legacy layout, so one start lifts both) and before `seed_super`, before any
+`Bot` is built. Idempotent, never raises, answers `{moved, skipped, backup,
+stamped}`. Each rung is the precondition of the next:
+
+1. **Nothing to do.** `<home>/bots/.layout-v3` exists AND no legacy
+   `<id>/bot.json` remains → return (legacy bots that appear after the stamp,
+   a FusedBot import on a later start, are lifted the same way). No legacy bot
+   and no stamp → stamp and return (a fresh install never backs up). A
+   non-blocking `flock` on `<bots_root>/.migrate.lock` keeps two homes sharing
+   one `~/Fused` from lifting at once (the loser logs and returns).
+2. **Backup.** Both roots, browsers included: `root()` → `dest/home-bots/`,
+   `bots_root()` → `dest/fused-bots/`, `dest =
+   <base_home>/backup/bot-migration-v3/<UTC YYYYmmdd-HHMMSS>/` (base_home is
+   `~/.fused-render`, never branch-nested). Skipped: sockets and FIFOs by type,
+   and regular FILES named `Singleton*`, `RunningChromeVersion`, `*.lock`,
+   `*.tmp` (never a directory of such a name). Verified per root: no
+   unreadable entry on either side, and the copy's digest over every
+   `(relpath, size)` equals the source's. `dest/manifest.json`: `{version: 3,
+   created_at, home_bots, fused_bots, roots: {<sub>: {files, bytes, digest,
+   copy_digest, links}}, entries: [{id, name, src_data, src_cache,
+   src_inbox|null, dst_folder, already_placed?|unmigrated?}], files, bytes}`
+   (`digest` is over `(relpath, size, mtime_ns)`; `links` lists symlink
+   targets, one outside the roots is logged as not backed up). A failed or
+   short backup is left on disk with `failed.json` beside it and is never
+   reused; the run moves nothing, stamps nothing, and the new resolvers see
+   zero bots until a later start succeeds. A verified backup of the SAME trees
+   (per-root `digest` equal to a fresh walk, and the copy re-walked against
+   its `copy_digest`) is reused instead of copied again.
+3. **Place.** Every bot's old Inbox (pinned `artifacts_dir`, else the folder of
+   its name when it looks like an Inbox: `index.jsonl` or only task-shaped
+   children) is first STAGED to `<bots_root>/.inbox-<id>/`, so the bot lands
+   under its CURRENT name whatever folder its Inbox occupied and a namesake's
+   Inbox is never adopted; an Inbox pinned by two bots goes to the one whose
+   name it carries, else stays in place (recorded under `skipped`); one pinned
+   outside the root stays, pin dropped (recorded). Then `paths.place(bid,
+   name, adopt=True)`: slug of the name; a folder holding another id →
+   `<slug>-<id4>`; a bot.json-less folder with no `.fused/state.json` (a run
+   that died before writing the meta) is adopted. The SAME id already placed →
+   skipped (another branch home moved it first); its legacy files are lifted
+   into `<folder>/.fused/legacy-leftovers/<home tag>/`, never deleted. An
+   unreadable `bot.json` or a non-8-hex id → parked as-is under
+   `<bots_root>/.unmigrated/<id>/` (recorded; the stamp proceeds).
+4. **Move.** The staged Inbox children → `.fused/inbox/`, legacy `skills/` →
+   `<folder>/skills/`, the rest of the data dir → `.fused/` (profiles too;
+   `browsers.adopt` lifts them as before), the cache dir → `.fused/cache/`;
+   finally `store.write_meta` without `artifacts_dir` and with `apps` seeded.
+   File by file (`_move_tree`): `os.rename`, or across volumes `copy2` +
+   verify size + `unlink`; ANY error raises and the bot fails (nothing of it is
+   deleted). A destination that already exists is a clash: the legacy file goes
+   to `<folder>/.fused/legacy-leftovers/<same relative path>` instead, never
+   over anything. A bot counts as moved only when its legacy data and cache
+   dirs hold nothing but `bot.json` (checked, empty dirs pruned).
+5. **Stamp + remove.** Only when every bot moved, was skipped as already
+   placed (leftovers lifted), or was parked: stray legacy entries that are not
+   a bot go to `.unmigrated/stray-<ts>/`; the legacy trees are verified drained
+   (bot.json files and empty dirs only, else no stamp); then they are RENAMED
+   aside atomically (`data/.bots-removed-<ts>`, `cache/.bots-removed-<ts>`),
+   `.layout-v3` is written (`{at, backup, moved, skipped, strays}`), and the
+   renamed dirs are removed. Any failure stamps and removes nothing; the next
+   start retries. `registry._sweep_browsers` runs only once the stamp exists,
+   and `browsers._metas_on_disk` also reads legacy `bot.json`s for
+   `browser_id`, so a legacy bot's logins are never swept in the window before.
+
+The backup is **never auto-pruned**: deleting `~/.fused-render/backup/bot-migration-v3/`
+is the user's call.
+
+Tests: `tests/test_bots_store.py` (the split, the git-clean public write, and
+migrate_v3: backup + manifest, move, stamp, remove, skip on same id with
+leftovers kept, Inbox staging incl. pinned and shared pins, clash → leftovers,
+an aborted or short backup leaving the legacy tree intact, no reuse of a
+changed tree or a failed backup, a cross-device copy failure keeping the
+source, the browser sweep waiting for the stamp).

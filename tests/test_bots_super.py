@@ -22,6 +22,7 @@ from fused_render.bots.channels import base as chan
 def ws(tmp_path, monkeypatch):
     w = tmp_path / "ws"
     monkeypatch.setenv("FUSED_RENDER_DIR", str(w))
+    reset_bots_caches()  # a Bot / folder cached by id under the previous test's workspace must not answer here
     os.makedirs(bpaths.apps_root())
     monkeypatch.setattr(apptools, "ROOTS", [bpaths.apps_root()])
     monkeypatch.setattr(apptools, "REGISTRY_FILES", [])

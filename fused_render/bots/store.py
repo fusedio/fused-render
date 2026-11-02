@@ -1,15 +1,17 @@
-"""The bots' on-disk store (docs/bots.md §1, §2): bot dirs, bot.json,
-events.jsonl, the usage ledger and its summary, the transcript export, and
-the Builds panel's list. Ported from OpenBot agents.py (`_bot_dir`,
-`_read_meta`, `_list_ids`, `_iter_events`, `_usage_log`, `_usage_summary`,
-`_export_md`) and browser.py (`write_json_atomic`).
+"""The bots' on-disk store (docs/bots.md §1, §2): bot.json + state.json (the
+public/private split of a bot's meta), events.jsonl, the usage ledger and its
+summary, the transcript export, and the Builds panel's list. Ported from
+OpenBot agents.py (`_bot_dir`, `_read_meta`, `_list_ids`, `_iter_events`,
+`_usage_log`, `_usage_summary`, `_export_md`) and browser.py
+(`write_json_atomic`).
 
 Every path resolves through `fused_render.bots.paths` on each call, so
-FUSED_RENDER_HOME can be redirected after import (tests do).
+FUSED_RENDER_HOME / FUSED_RENDER_DIR can be redirected after import (tests do).
 """
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
@@ -43,42 +45,161 @@ def write_json_atomic(path: str, obj) -> None:
 
 
 # ------------------------------------------------------------------- bots ---
+# The bot.json split (bots v3): a bot folder is meant to be shared (exported, committed to git), so its root
+# bot.json carries only what DEFINES the bot; everything the runtime writes (status, counters, browser id,
+# phone handle, routine run state, …) goes to `.fused/state.json`, which is gitignored. The in-memory Bot.meta
+# stays ONE dict: read_meta merges, write_meta splits, and nothing outside this module knows there are two files.
+PUBLIC_KEYS = frozenset({"id", "name", "model", "effort", "instructions", "face", "preset", "kind", "approval",
+                         "build_access", "terminal", "engine", "max_steps", "step_cap", "super_access", "created",
+                         "apps", "routines"})
+# A routine row is split the same way, by its `id`: the definition is public; last, last_result, last_message,
+# last_done, next, fails, runs, … are run state and private.
+# `enabled` is NOT public: the runtime flips it (a once-routine completing, the failure circuit breaker), and
+# a public file that churned on every such event would defeat the git-clean rule; an imported routine starts
+# disabled anyway (botfile).
+ROUTINE_PUBLIC_KEYS = frozenset({"id", "task", "kind", "created", "minutes", "anchor", "time", "weekdays", "at"})
+STATE_FILE = "state.json"
+
+
 def bot_dir(bid: str) -> str:
+    """The bot's PRIVATE folder (`<folder>/.fused`); alias of paths.bot_dir, kept for old callers."""
     return _bpaths.bot_dir(bid)
 
 
 def meta_path(bid: str) -> str:
-    return os.path.join(bot_dir(bid), BOT_FILE)
+    """`<folder>/bot.json`, the public half. Raises LookupError for a bid no folder carries."""
+    return os.path.join(_bpaths.bot_folder(bid), BOT_FILE)
+
+
+def state_path(bid: str) -> str:
+    """`<folder>/.fused/state.json`, the private half. Raises LookupError for a bid no folder carries."""
+    return os.path.join(_bpaths.bot_private(bid), STATE_FILE)
 
 
 def events_path(bid: str) -> str:
-    return os.path.join(bot_dir(bid), EVENTS_FILE)
+    return os.path.join(_bpaths.bot_private(bid), EVENTS_FILE)
 
 
 def read_meta(bid: str) -> dict:
-    """bot.json; raises OSError / ValueError like OpenBot `_read_meta`."""
-    with open(meta_path(bid), encoding="utf-8") as f:
-        return json.load(f)
+    """The bot's whole meta: bot.json overlaid on state.json (public keys win), routines merged by `id`
+    (a public row plus its private run state; a private row whose routine is gone is dropped). Raises
+    FileNotFoundError when there is no bot.json — also for a bid no folder carries, since every caller treats
+    "unknown bot" and "no bot.json" alike (OpenBot `_read_meta` raised OSError for both) — and ValueError on
+    corrupt JSON in either file."""
+    # The folder is resolved ONCE: a second lookup could miss (delete() racing this read) and raise LookupError
+    # out of a function whose callers catch OSError; and a read must not create `.fused/` (bot_private would).
+    try:
+        folder = _bpaths.bot_folder(bid)
+    except LookupError as e:
+        raise FileNotFoundError(str(e)) from e
+    path = os.path.join(folder, BOT_FILE)
+    with open(path, encoding="utf-8") as f:
+        public = json.load(f)
+    if not isinstance(public, dict):
+        raise ValueError(f"{path}: not a JSON object")
+    spath = os.path.join(folder, _bpaths._PRIVATE, STATE_FILE)
+    try:
+        with open(spath, encoding="utf-8") as f:
+            private = json.load(f)
+    except FileNotFoundError:
+        private = {}
+    except (OSError, ValueError) as e:
+        # The private half is runtime state the bot can rebuild; a torn state.json must not make the bot
+        # unloadable when its bot.json is fine.
+        logging.getLogger(__name__).warning("bots: %s unreadable (%s); starting the bot with empty state", spath, e)
+        private = {}
+    if not isinstance(private, dict):
+        private = {}
+    priv_routines = private.pop("routines", None)
+    out = {**private, **public}
+    if isinstance(public.get("routines"), list):
+        by_id = {r.get("id"): r for r in priv_routines or [] if isinstance(r, dict) and r.get("id")}
+        merged = []
+        for row in public["routines"]:
+            if isinstance(row, dict) and row.get("id") in by_id:
+                priv = by_id[row["id"]]
+                row = {**row, **{k: v for k, v in priv.items() if k not in ROUTINE_PUBLIC_KEYS}}
+            merged.append(row)
+        out["routines"] = merged
+    return out
+
+
+def split_meta(meta: dict) -> tuple[dict, dict]:
+    """(public, private) halves of a meta dict, as NEW dicts (Bot.meta is live; never mutate it). Public to
+    package.py, which ships exactly the public half."""
+    public = {k: v for k, v in meta.items() if k in PUBLIC_KEYS}
+    private = {k: v for k, v in meta.items() if k not in PUBLIC_KEYS}
+    routines = meta.get("routines")
+    if isinstance(routines, list):
+        pub_rows, priv_rows = [], []
+        for row in routines:
+            if not isinstance(row, dict):
+                pub_rows.append(row)
+                continue
+            if not row.get("id"):
+                # No id to rejoin the halves by: the row travels whole in bot.json rather than lose its run
+                # state on every save (routine_add always mints one; this is a hand-written row).
+                logging.getLogger(__name__).warning("bots: routine row without id kept whole in bot.json: %r",
+                                                    row.get("task"))
+                pub_rows.append(dict(row))
+                continue
+            pub_rows.append({k: v for k, v in row.items() if k in ROUTINE_PUBLIC_KEYS})
+            rest = {k: v for k, v in row.items() if k not in ROUTINE_PUBLIC_KEYS}
+            if rest:
+                priv_rows.append({"id": row["id"], **rest})
+        public["routines"] = pub_rows
+        if priv_rows:
+            private["routines"] = priv_rows
+    return public, private
+
+
+def public_json(public: dict) -> str:
+    """bot.json's exact text: a human- and git-facing file, so indented, key-sorted, newline-terminated, and
+    deterministic — write_meta compares this text to decide whether the file needs writing at all."""
+    return json.dumps(public, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 
 def write_meta(bid: str, meta: dict) -> None:
-    os.makedirs(bot_dir(bid), exist_ok=True)
-    write_json_atomic(meta_path(bid), meta)
+    """Save the bot's meta: state.json always (atomically), bot.json only when its text would change. The
+    second rule keeps a bot folder git-clean: the runtime saves on every status flip and routine tick, and
+    none of that may touch the public file. state.json goes first, so a bot.json that appears (a new bot)
+    always has its private half beside it. Raises LookupError when the bot has no folder (place() first)."""
+    public, private = split_meta(meta)
+    # bot.json's `id` is what paths.folders() keys the folder by: a missing or foreign one would lose the bot on
+    # the next scan (or pose it as another), so the file always carries the bid it is saved under.
+    if public.get("id") != bid:
+        if public.get("id"):
+            logging.getLogger(__name__).warning("bots: meta for %s carried id %r; saving it as %s",
+                                                bid, public["id"], bid)
+        public["id"] = bid
+    path = meta_path(bid)
+    write_json_atomic(state_path(bid), private)
+    text = public_json(public)
+    try:
+        with open(path, encoding="utf-8") as f:
+            if f.read() == text:
+                return
+    except (OSError, ValueError):
+        pass  # missing, unreadable or not UTF-8: it differs, rewrite it
+    tmp = f"{path}.{os.getpid()}-{threading.get_ident()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
 def list_ids(strict: bool = False) -> list[str]:
-    """Every bot id with a bot.json, sorted. `strict`: an unlistable data dir raises instead of
-    reading as "no bots" (registry.all must not call an empty scan complete)."""
-    data = _bpaths.data_dir()
-    try:
-        names = os.listdir(data)
-    except FileNotFoundError:
-        return []
-    except OSError:
-        if strict:
-            raise
-        return []
-    return sorted(d for d in names if os.path.isfile(os.path.join(data, d, BOT_FILE)))
+    """Every bot id with a bot.json, sorted (a folder place() made whose bot.json is not written yet is not a
+    bot yet). `strict`: an unlistable bots root raises instead of reading as "no bots" (registry.all must not
+    call an empty scan complete)."""
+    found = _bpaths.folders(strict=strict)
+    return sorted(bid for bid, folder in found.items() if os.path.isfile(os.path.join(folder, BOT_FILE)))
 
 
 # ----------------------------------------------------------------- events ---
@@ -387,3 +508,6 @@ def builds_write(builds: list) -> None:
         raise ValueError("builds must be a list")
     with _builds_lock:
         write_json_atomic(_bpaths.builds_path(), builds)
+
+
+_split = split_meta  # the name the first callers used
