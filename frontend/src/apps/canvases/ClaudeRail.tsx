@@ -68,11 +68,11 @@
 // (`focusComposerSoon`), ready to type. With no room for a card, the press
 // opens the pane as before (the first such press included).
 //
-// THE TRIGGER (`canvas_rail_peek_trigger`) only decides how a PINNED card
-// moves to another chat (PeekIntent `setSwap`): "click" (the default) —
-// another ring's press; a hover on it moves nothing — or "hover" — resting
-// on another ring swaps the chat, and the card stays pinned. A hover shows
-// the card under either.
+// A PINNED CARD MOVES ONLY ON A PRESS (owner, 2026-11-02: "click only" — the
+// click-or-hover trigger pref of 2026-10-31 is gone): resting on another
+// ring shows that ring's title and moves nothing; its press swaps the chat.
+// A pinned card can also be RESIZED from its left corners, and keeps that
+// size for the next pin (RailPeek; a hover card is always the default size).
 //
 // A press into the workbench frame is not seen by this document; it is heard
 // as the window's blur with the frame holding the focus — which is why the
@@ -133,7 +133,7 @@ import { hideHint } from "@platform/lib/hints";
 import { dotCleared, keepMarks, railRows, readMark, type RailRow, type ReadMark } from "./claude-rail-lib";
 import { CanvasGlyph } from "./glyph";
 import { PeekIntent, keepAlive, statusWords } from "./rail-peek-lib";
-import { useCanvasRailPeek, useCanvasRailPeekTrigger } from "./rail-peek-flag";
+import { useCanvasRailPeek } from "./rail-peek-flag";
 import { RailPeek, type RailPeekHandle } from "./RailPeek";
 import type { WorkbenchEnv } from "./api";
 
@@ -241,8 +241,6 @@ export function ClaudeRail({
   const rows = useTasksPulseRows();
   const nodeFile = node?.file ?? null;
   const peekOn = useCanvasRailPeek();
-  // What moves a pinned card to another chat (header).
-  const trigger = useCanvasRailPeekTrigger();
   // Drafts and scheduled rows ride the rail whatever the card flag says
   // (owner, 2026-10-30: "the flag is only for the preview thing; the fixes
   // we made — order etc. — should be there without the flag"): the rail is
@@ -358,7 +356,7 @@ export function ClaudeRail({
     intentRef.current = new PeekIntent({
       show: (key) => {
         // A swap while the reader is IN the card (typing in a pinned card's
-        // composer, then hovering another ring under the hover trigger): the
+        // composer, then pressing another ring): the
         // chat they were in is about to hide, focus and all — take the
         // keyboard to the new chat's composer (the effect below). Let go of
         // the old one NOW: a hidden chat is not inert, and keys typed before
@@ -423,11 +421,6 @@ export function ClaudeRail({
   useEffect(() => {
     if (!peekOn && peekKey) intent.dismiss();
   }, [peekOn, peekKey, intent]);
-  // The trigger (Settings, published to this tab) only changes what a pinned
-  // card does with a hover on another ring; an open card keeps standing.
-  useEffect(() => {
-    intent.setSwap(trigger);
-  }, [trigger, intent]);
   // JSON, not a joined string: a key is free to contain any delimiter.
   const seatKeys = JSON.stringify(seats.map((s) => s.pulse.key));
   useEffect(() => {
@@ -506,7 +499,7 @@ export function ClaudeRail({
   // NO ROOM FOR A CARD (RailPeek `onNoRoom`: a window too short or narrow):
   // the rings keep their one-line caption until a resize gives the card room
   // again — a hover that shows nothing at all is the one outcome to avoid.
-  // A PRESS that found no room (the click trigger) is answered the way the
+  // A PRESS that found no room is answered the way the
   // press answers with no room from then on: it opens the chat in the pane
   // (`pressedHref`, set on the press, read during the commit it causes —
   // RailPeek places in a layout effect — and dropped on the next frame, so
@@ -736,10 +729,10 @@ export function ClaudeRail({
               // The rings' own captions step aside for the card: a hover
               // shows the card, and the card IS the caption. The exception
               // is a hover that shows nothing — another ring while a card is
-              // pinned under the click trigger (owner, 2026-10-31: "show me
-              // the tooltip title so I know what other chat it is at least"):
-              // that ring gets its title back, the title alone.
-              const titleOnly = peekOn && pinned && trigger === "click" && peekKey !== null && peekKey !== t.key;
+              // pinned (owner, 2026-10-31: "show me the tooltip title so I
+              // know what other chat it is at least"): that ring gets its
+              // title back, the title alone.
+              const titleOnly = peekOn && pinned && peekKey !== null && peekKey !== t.key;
               const captionless = peekOn && !titleOnly;
               // The list's item is a wrapper, the link is a link: `aria-haspopup`
               // and `aria-expanded` are not allowed on `listitem`, and a link
@@ -953,6 +946,7 @@ export function ClaudeRail({
           selectedFile={nodeFile}
           held={held}
           onHeld={setHeld}
+          pinned={pinned}
           onPin={() => {
             const key = intent.current;
             if (!key) return;

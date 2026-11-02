@@ -7735,7 +7735,15 @@ Cursor Bugbot found that the IMAGE_GENERATION workload's fixed `guidance: 4.0` m
 - The Skills page now shows and sorts by skills.sh install counts and folds rows sharing a `skillId` under the most-installed one. This reverses the old header comment in `Skills.tsx` ("nothing on this page shows or ranks by installs"): search rows carry no description, so install count is the only signal separating the real repo from 1-install forks.
 - `.cc-aside-files` CSS stays: NewSkill's preview still uses it.
 
-## D1454: Apps declare their AI models; first open shows an overview (2026-11-02, feat/ai-model-overview)
+## D1454: Bots status line shows live activity from a transient `doing` field (2026-11-02, bots/live-activity-status)
+
+The Bots status line read "running · step 2 · last step 1 min ago" and nothing else: no way to tell thinking from a tool in flight from a mid-task message still waiting for delivery.
+- `Bot.set_doing(text)` keeps `meta["doing"]` / `meta["doing_since"]` in memory only: no `save()`, no `status` / `updated` change, `summary()` reads it live. "" clears it; `_run_task`'s `finally` clears it so it never outlives a task.
+- Vocabulary: `thinking` (task or mid-task message written, thinking block, a tool result handed back), `writing` (a text block), or a tool label (`builtin_label` for built-ins, `<tool> <first string arg>` for the bot's MCP tools; the permission tool is skipped). The agent engine's `_drive` / `handle_tool` and the steps engine's model-call / `tools.describe` points set them. The `waiting` path is untouched: the UI shows its own text there.
+- `summary()` also reports `inbox_n` (`len(bot.inbox)`), so the Composer appends "your message is queued for its next step" while a mid-task message is unread.
+- The text lives in `runningStatusText` (`apps/bots/lib/derive.ts`, tested); with no `doing` (other engines) it falls back to "last step X".
+
+## D1455: Apps declare their AI models; first open shows an overview (2026-11-02, feat/ai-model-overview)
 
 - An app lists the models it uses under `[tool.fused-render.app.models]` (verb key, `model`, optional `use`). It is a sibling of the background-app keys and never makes an app a background app; `background_apps` does not read it, and the store review's background rule skips it.
 - First open shows a "Before you open" gate (`AppModelGate` around `TemplatePreview`); it fails open, and downloads reuse `/api/ai/runtime/download` and `/api/jobs`. Acceptance lives in `<app>/.fused/models.json` (`accepted`, `hash`, `substitutions`), so it moves with the folder and is never exported. The hash covers (capability, model) only, so relabeling `use` does not re-ask.

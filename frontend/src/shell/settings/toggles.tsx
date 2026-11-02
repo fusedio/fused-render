@@ -10,8 +10,6 @@ import {
   putCanvasesEmbedProxy,
   putCanvasesEnabled,
   putCanvasRailPeekEnabled,
-  putCanvasRailPeekTrigger,
-  type CanvasRailPeekTrigger,
   putGitAutoSyncEnabled,
   putLivePreviewsEnabled,
   putMonitorEnabled,
@@ -270,37 +268,6 @@ export function CanvasRailPeekControl({ prefs, onChange }: PrefControlProps) {
       }
       onChange={onChange}
     />
-  );
-}
-
-// What opens that card. Published the same way, so an open canvas page in
-// this tab switches trigger at once (ClaudeRail closes a card that was up).
-export function CanvasRailPeekTriggerControl({ prefs, onChange }: PrefControlProps) {
-  const { busy, error, run } = usePrefWrite(onChange);
-  const value: CanvasRailPeekTrigger = prefs.canvas_rail_peek?.trigger === "hover" ? "hover" : "click";
-  return (
-    <SettingRow
-      id="canvases-rail-peek-trigger"
-      control={
-        <SettingSelect
-          id="canvases-rail-peek-trigger"
-          value={value}
-          options={[
-            { key: "click", label: "Click" },
-            { key: "hover", label: "Hover" },
-          ]}
-          disabled={busy}
-          onChange={(v) =>
-            void run(
-              () => putCanvasRailPeekTrigger(v as CanvasRailPeekTrigger),
-              (next) => publishCanvasRailPeek(next.canvas_rail_peek),
-            )
-          }
-        />
-      }
-    >
-      {error && <ErrorBanner>{error}</ErrorBanner>}
-    </SettingRow>
   );
 }
 

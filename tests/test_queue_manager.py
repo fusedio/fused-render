@@ -2140,7 +2140,11 @@ def test_card_cleared_goes_to_the_head_when_somebody_else_has_the_folder():
     m.card_cleared("a", "run")
     assert blocked_of(m) == []
     assert line_of(m) == ["a", "c"]
-    assert m.positions()["a"]["priority"] is True
+    # The head of the LINE, promoted — but a resume marker, so not a place in
+    # the printed line (`positions`, below); `place` still names its slot.
+    assert m.snapshot()["folders"][F1]["line"][0]["promoted"] is True
+    assert m.place("a")["position"] == 1
+    assert "a" not in m.positions()
 
 
 def test_card_cleared_leaves_a_verdict_we_are_already_holding_alone():
@@ -2207,6 +2211,27 @@ def test_card_cleared_files_a_resume_marker_when_somebody_else_holds():
     assert head["promoted"] is True
     assert head["entry_id"] == ""
     assert head["run_id"] == "run-a"
+
+
+def test_positions_leaves_a_resume_marker_out_of_the_line_but_names_it_ahead():
+    """SINA'S RECORDING (2026-10-31): the marker is a LIVE RUN — its card was
+    answered and it is editing the tree beside the owner — and listed as a
+    place in the line it read `queued` (`_status` ranks the line above a live
+    transcript), wore a dashed ring, offered Force start, and that press
+    answered "nothing waiting to start". A process is not a message: it is not
+    in `positions()`. It still stands ahead of the real waiting work behind it
+    — the pump owns it next — and `place()` (the endpoints' own slot answer)
+    is unchanged."""
+    world, m = parked_elsewhere()
+    world.running_keys |= {"a", "run-a"}
+    m.enqueue(F1, "c", "e-c")
+    assert line_of(m) == ["a", "c"]
+    assert "a" not in m.positions()
+    assert m.positions()["c"] == {"key": F1, "position": 1, "ahead_key": "a",
+                                  "ahead_names": ["a", "sess-a", "run-a"],
+                                  "priority": False}
+    assert m.holds_live("a") is True
+    assert m.place("a")["position"] == 1
 
 
 def test_the_pump_hands_the_folder_to_a_resume_marker_without_spawning():
