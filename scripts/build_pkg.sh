@@ -17,7 +17,8 @@
 #
 # Pieces (scripts/pkg/):
 #   postinstall       the install itself, static; reviewed in the repo
-#   release.env       (generated) APP_NAME/VERSION/ARCH/DMG_URL/DMG_SHA256
+#   progress.js       the download's progress window (Installer has no hook)
+#   release.env       (generated) APP_NAME/VERSION/ARCH/DMG_URL/DMG_SHA256/DMG_BYTES
 #   distribution.xml  Installer product: title, min OS, arch check, pages
 #   welcome.html, conclusion.html   the two pages of the wizard
 #
@@ -103,7 +104,8 @@ BRANCH_REF="${BRANCH_REF#-}"
 PKG_ID="${BUNDLE_ID}${BRANCH_REF:+.$BRANCH_REF}.installer"
 
 DMG_SHA256="$(shasum -a 256 "$DMG_PATH" | cut -d' ' -f1)"
-DMG_SIZE_MB="$(( ($(stat -f %z "$DMG_PATH") + 524288) / 1048576 ))"
+DMG_BYTES="$(stat -f %z "$DMG_PATH")"
+DMG_SIZE_MB="$(( (DMG_BYTES + 524288) / 1048576 ))"
 # What Installer's "Installation Type" page reports as the space taken: the
 # installed app's size when the bundle build_dmg.sh just produced is still
 # around (it is, in the release job), else the compressed DMG's as a floor.
@@ -130,6 +132,8 @@ mkdir -p "$BUILD_DIR/scripts" "$BUILD_DIR/resources" "$DIST_DIR"
 # ---------------------------------------------------------------------------
 cp "$PKG_SRC/postinstall" "$BUILD_DIR/scripts/postinstall"
 chmod 755 "$BUILD_DIR/scripts/postinstall"
+cp "$PKG_SRC/progress.js" "$BUILD_DIR/scripts/progress.js"
+chmod 644 "$BUILD_DIR/scripts/progress.js"
 bash -n "$BUILD_DIR/scripts/postinstall"
 # Single-quoted values: the URL and names are ours, but a shell-sourced file
 # must never be able to execute a surprise.
@@ -141,6 +145,7 @@ VERSION='${VERSION}'
 ARCH='${ARCH}'
 DMG_URL='${DMG_URL}'
 DMG_SHA256='${DMG_SHA256}'
+DMG_BYTES='${DMG_BYTES}'
 EOF
 chmod 644 "$BUILD_DIR/scripts/release.env"
 bash -n "$BUILD_DIR/scripts/release.env"

@@ -20,7 +20,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-# APP_NAME, DISPLAY_NAME, VERSION, ARCH, DMG_URL, DMG_SHA256 — written by
+# APP_NAME, DISPLAY_NAME, VERSION, ARCH, DMG_URL, DMG_SHA256, DMG_BYTES — written by
 # build_pkg.sh for this one release.
 # shellcheck source=/dev/null
 source "$HERE/release.env"
@@ -61,7 +61,22 @@ fi
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/$APP_NAME-installer.XXXXXX")"
 MOUNT="$WORK/mnt"
 MOUNTED=""
+CURL_PID=""
+PROGRESS_DIR=""
+STATUS_FILE=""
+FINISHED=""
+# macOS's /bin/bash 3.2 exits 0 when `set -u` trips inside a script with an
+# EXIT trap, even if the trap re-exits with $?, and Installer would then
+# report success with nothing installed. So the trap exits 1 itself unless
+# the script reached its last line.
 cleanup() {
+  if [[ -n "$CURL_PID" ]]; then
+    kill "$CURL_PID" 2>/dev/null || true
+  fi
+  # Closes the progress window: it exits as soon as its status file is gone.
+  if [[ -n "$PROGRESS_DIR" ]]; then
+    rm -rf "$PROGRESS_DIR"
+  fi
   if [[ -n "$MOUNTED" ]]; then
     local i
     for i in 1 2 3 4 5; do
@@ -76,20 +91,74 @@ cleanup() {
     fi
   fi
   rm -rf "$WORK"
+  if [[ -z "$FINISHED" ]]; then
+    exit 1
+  fi
 }
 trap cleanup EXIT
+
+# ---------------------------------------------------------------------------
+# Progress window
+# ---------------------------------------------------------------------------
+# Installer.app gives a package script no hook into its own status text or
+# progress bar, so for the whole download it would only say "Running package
+# scripts". progress.js (osascript, run as the person, not root) draws a small
+# floating window from one status line this script rewrites as it goes. Only
+# for a GUI install with a person to show it to, same rule as the auto-open
+# below; best effort: the install never waits on it or depends on it. The
+# status file and a copy of the script live in their own world-readable
+# directory because the person's process cannot read root's WORK or the
+# pkg's Scripts directory.
+status() {  # status <percent 0-100 | -1 for indeterminate> <message>
+  if [[ -n "$STATUS_FILE" ]]; then
+    { printf '%s\t%s\n' "$1" "$2" > "$STATUS_FILE.tmp" \
+      && chmod 644 "$STATUS_FILE.tmp" \
+      && mv -f "$STATUS_FILE.tmp" "$STATUS_FILE"; } 2>/dev/null || true
+  fi
+}
+if [[ -n "$OWNER" && -z "${COMMAND_LINE_INSTALL:-}" && -f "$HERE/progress.js" ]]; then
+  if PROGRESS_DIR="$(mktemp -d "/tmp/$APP_NAME-progress.XXXXXX")" \
+      && chmod 755 "$PROGRESS_DIR" \
+      && cp "$HERE/progress.js" "$PROGRESS_DIR/progress.js" \
+      && chmod 644 "$PROGRESS_DIR/progress.js"; then
+    STATUS_FILE="$PROGRESS_DIR/status"
+    status -1 "Connecting to fused.io…"
+    /bin/launchctl asuser "$(/usr/bin/id -u "$OWNER")" /usr/bin/sudo -u "$OWNER" \
+      /usr/bin/osascript -l JavaScript "$PROGRESS_DIR/progress.js" "$STATUS_FILE" "$DISPLAY_NAME Installer" \
+      </dev/null >/dev/null 2>&1 &
+  else
+    log "could not set up the progress window; installing without it"
+  fi
+fi
 
 # ---------------------------------------------------------------------------
 # Download + verify
 # ---------------------------------------------------------------------------
 log "downloading $APP_NAME $VERSION ($ARCH) from $DMG_URL"
 DMG="$WORK/$APP_NAME.dmg"
-if ! /usr/bin/curl --fail --location --silent --show-error \
-    --retry 3 --retry-delay 2 --connect-timeout 20 \
-    --speed-limit 1024 --speed-time 60 \
-    --output "$DMG" "$DMG_URL"; then
+# In the background so the loop below can report progress against the size
+# pinned at build time; a retry restarts the file, and the percentage with it.
+/usr/bin/curl --fail --location --silent --show-error \
+  --retry 3 --retry-delay 2 --connect-timeout 20 \
+  --speed-limit 1024 --speed-time 60 \
+  --output "$DMG" "$DMG_URL" &
+CURL_PID=$!
+TOTAL_MB=$(( DMG_BYTES / 1048576 ))
+while kill -0 "$CURL_PID" 2>/dev/null; do
+  if [[ -n "$STATUS_FILE" && "$DMG_BYTES" -gt 0 ]]; then
+    GOT="$(/usr/bin/stat -f %z "$DMG" 2>/dev/null || echo 0)"
+    PCT=$(( GOT * 100 / DMG_BYTES ))
+    if (( PCT > 100 )); then PCT=100; fi
+    status "$PCT" "Downloading ${DISPLAY_NAME}… $PCT% ($(( GOT / 1048576 )) of $TOTAL_MB MB)"
+  fi
+  sleep 0.5
+done
+if ! wait "$CURL_PID"; then
+  CURL_PID=""
   fail "download failed — check the internet connection and run the installer again"
 fi
+CURL_PID=""
+status -1 "Checking the download…"
 
 ACTUAL_SHA256="$(/usr/bin/shasum -a 256 "$DMG" | /usr/bin/cut -d' ' -f1)"
 if [[ "$ACTUAL_SHA256" != "$DMG_SHA256" ]]; then
@@ -110,6 +179,7 @@ MOUNTED=1
 SRC="$MOUNT/$APP_NAME.app"
 [[ -d "$SRC" ]] || fail "$APP_NAME.app not found in the downloaded image"
 
+status -1 "Copying $DISPLAY_NAME into Applications…"
 mkdir -p "$APPS_DIR"
 STAGE="$APPS_DIR/.$APP_NAME-installing-$$.app"
 rm -rf "$STAGE"
@@ -144,6 +214,7 @@ if [[ -e "$OLD" ]]; then
   fi
 fi
 log "installed $APP_NAME $VERSION to $DEST"
+status 100 "Installed $DISPLAY_NAME $VERSION"
 
 # ---------------------------------------------------------------------------
 # Register + open
@@ -165,4 +236,5 @@ if [[ -n "$OWNER" && -z "$WAS_RUNNING" && -z "${COMMAND_LINE_INSTALL:-}" ]]; the
     log "could not open $APP_NAME automatically; open it from the Applications folder"
   fi
 fi
+FINISHED=1
 exit 0

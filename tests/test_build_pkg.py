@@ -54,6 +54,15 @@ def test_postinstall_fails_closed():
     assert src.startswith("#!/bin/bash\n"), "Installer runs scripts via their shebang; /bin/bash is the one every Mac has"
     assert "set -euo pipefail" in src
     assert "--insecure" not in src and " -k " not in src, "TLS verification is part of the pin"
+    # bash 3.2 exits 0 when `set -u` trips under an EXIT trap; the trap must
+    # turn an unfinished run into a failure itself.
+    assert 'if [[ -z "$FINISHED" ]]; then\n    exit 1' in src
+    assert src.rstrip().endswith("FINISHED=1\nexit 0")
+    # bash 3.2 reads a UTF-8 byte after `$NAME` into the name (`$NAME…` is
+    # an unbound variable), so such a reference must be braced.
+    for script in (_POSTINSTALL, _BUILD_PKG):
+        bad = re.findall(r"\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7f]", _read(script))
+        assert not bad, f"{os.path.basename(script)}: brace these for bash 3.2: {bad}"
 
 
 def test_postinstall_verifies_the_hash_before_mounting():
@@ -75,9 +84,9 @@ def test_release_env_contract():
     build = _read(_BUILD_PKG)
     post = _read(_POSTINSTALL)
     written = set(re.findall(r"(?m)^([A-Z0-9_]+)='\$\{[A-Z0-9_]+\}'$", build))
-    assert written == {"APP_NAME", "DISPLAY_NAME", "VERSION", "ARCH", "DMG_URL", "DMG_SHA256"}
+    assert written == {"APP_NAME", "DISPLAY_NAME", "VERSION", "ARCH", "DMG_URL", "DMG_SHA256", "DMG_BYTES"}
     assert 'source "$HERE/release.env"' in post
-    for var in ("APP_NAME", "VERSION", "ARCH", "DMG_URL", "DMG_SHA256"):
+    for var in written:
         assert f"${var}" in post or f"${{{var}" in post, f"postinstall never reads {var}"
 
 
