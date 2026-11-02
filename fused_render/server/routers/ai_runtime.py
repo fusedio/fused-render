@@ -44,6 +44,7 @@ from fastapi import APIRouter, Body, Header
 from fastapi.responses import JSONResponse
 
 from fused_render._view_url_codec import canonical_fs_path
+from fused_render import app_models
 from fused_render.ai import catalog, fit, footprints, hw_detect, registry, speed, supervisor
 # The `speakers` rule and the per-engine option rules, imported rather than
 # restated. They are the SAME modules the runners import out of their own venvs
@@ -1846,8 +1847,24 @@ def _validate_download_file(model_id: str, file: object) -> tuple[str | None, JS
     return file, None
 
 
+def _apply_app_model(body: dict, x_fused_page: str | None, capability: str | None) -> None:
+    """Swap a declared model for the user's per-app substitute, in place.
+
+    Only a call naming the app's declared id, or none, is rewritten; an
+    omitted model with no substitute stays omitted so `default_for` still runs
+    (`app_models.substitution_for`)."""
+    if not capability or not x_fused_page or not isinstance(body, dict):
+        return
+    model = body.get("model")
+    if model is not None and not isinstance(model, str):
+        return
+    sub = app_models.substitution_for(unquote(x_fused_page), capability, model)
+    if sub:
+        body["model"] = sub
+
 @router.post("/api/ai/runtime/download")
-def api_ai_download(body: dict = Body(...), x_fused: str | None = Header(default=None)):
+def api_ai_download(body: dict = Body(...), x_fused: str | None = Header(default=None),
+                    x_fused_page: str | None = Header(default=None)):
     """Fetch a model's weights without loading them.
 
     Same machinery as a load — the runner's worker is the only thing that knows
@@ -1867,6 +1884,8 @@ def api_ai_download(body: dict = Body(...), x_fused: str | None = Header(default
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    cap = body.get("capability") if isinstance(body, dict) else None
+    _apply_app_model(body, x_fused_page, cap if isinstance(cap, str) else None)
     model = _model_of(body)
     if not model:
         return _error("'model' must be a Hugging Face repo id", status=400)
@@ -1961,6 +1980,7 @@ def api_ai_image(body: dict = Body(...), x_fused: str | None = Header(default=No
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    _apply_app_model(body, x_fused_page, registry.IMAGE_GENERATION)
     page = unquote(x_fused_page) if x_fused_page else ""
     # See the docstring above: defaults to `page` (the ordinary case), but a
     # caller that sends a distinct `X-Fused-Source` (the Playground) can make
@@ -2346,6 +2366,7 @@ def api_ai_video(body: dict = Body(...), x_fused: str | None = Header(default=No
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    _apply_app_model(body, x_fused_page, registry.VIDEO_GENERATION)
     page = unquote(x_fused_page) if x_fused_page else ""
     source = unquote(x_fused_source) if x_fused_source else page
     requester_id, requester_label = _requester_identity(
@@ -2552,6 +2573,7 @@ def api_ai_speech(body: dict = Body(...), x_fused: str | None = Header(default=N
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    _apply_app_model(body, x_fused_page, registry.TEXT_TO_SPEECH)
     page = unquote(x_fused_page) if x_fused_page else ""
     source = unquote(x_fused_source) if x_fused_source else page
     requester_id, requester_label = _requester_identity(
@@ -2652,6 +2674,7 @@ def api_ai_transcribe(body: dict = Body(...), x_fused: str | None = Header(defau
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    _apply_app_model(body, x_fused_page, registry.SPEECH_TO_TEXT)
     page = unquote(x_fused_page) if x_fused_page else ""
     requester_id, requester_label = _requester_identity(
         x_fused_requester, x_fused_requester_label, x_fused_page)
@@ -3011,6 +3034,7 @@ def api_ai_embed(body: dict = Body(...), x_fused: str | None = Header(default=No
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    _apply_app_model(body, x_fused_page, registry.EMBEDDINGS)
     requester_id, requester_label = _requester_identity(
         x_fused_requester, x_fused_requester_label, x_fused_page)
 
@@ -3284,6 +3308,7 @@ def api_ai_decide(body: dict = Body(...), x_fused: str | None = Header(default=N
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    _apply_app_model(body, x_fused_page, registry.DECISIONS)
     requester_id, requester_label = _requester_identity(
         x_fused_requester, x_fused_requester_label, x_fused_page)
 
@@ -3405,6 +3430,7 @@ def api_ai_vision(body: dict = Body(...), x_fused: str | None = Header(default=N
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
+    _apply_app_model(body, x_fused_page, registry.VISION)
     requester_id, requester_label = _requester_identity(
         x_fused_requester, x_fused_requester_label, x_fused_page)
 

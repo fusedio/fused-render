@@ -98,6 +98,11 @@ _CHECK_META: dict[str, tuple[str, str, str]] = {
     "app-id": ("essentials", "warning", "fact"),
     "api-version": ("essentials", "critical", "fact"),
     "pyproject": ("essentials", "warning", "fact"),
+    # A candidate, not a fact: a regex scan for literal model ids in
+    # `fused.ai.*` calls (the author may build the id at runtime). Essentials,
+    # never sharing: `contrib/listing.doctor_blockers` blocks publish only on
+    # failing sharing rows, and this one is a warning, not a block.
+    "models": ("essentials", "warning", "candidate"),
     "readme": ("essentials", "info", "fact"),
     "icon": ("essentials", "warning", "fact"),
     "device-paths": ("sharing", "warning", "candidate"),
@@ -705,6 +710,111 @@ def _pyproject_check(app_dir: str) -> dict:
                  "pyproject.toml parses" if ok else f"pyproject.toml: {reason}")
 
 
+# --------------------------------------------------- undeclared AI models
+
+_MODEL_FILE_SUFFIXES = (".html", ".htm", ".js", ".mjs", ".ts", ".py")
+_MODEL_FILE_MAX_BYTES = 1_000_000
+_MODEL_LOOKBACK = 6
+_AI_CALL_RE = re.compile(
+    r"fused\.ai\.(text|image|video|speech|transcribe|embed|decide|vision)\s*\(")
+_AI_MODEL_LITERAL_RE = re.compile(r"""["']?\bmodel["']?\s*[:=]\s*["']([^"'\n]+)["']""")
+_AI_DOWNLOAD_RE = re.compile(r"""fused\.ai\.models\.download\(\s*["']([^"'\n]+)["']""")
+
+
+def _model_scan_files(app_dir: str):
+    """Source files worth scanning, app-relative paths in a stable order.
+    Hidden directories and the vendored/bookkeeping names are skipped."""
+    seen = 0
+    stack = [("", app_dir)]
+    while stack:
+        rel_dir, dir_abs = stack.pop()
+        try:
+            entries = sorted(os.scandir(dir_abs), key=lambda e: e.name)
+        except OSError:
+            continue
+        for entry in entries:
+            seen += 1
+            if seen > _MAX_ENTRIES:
+                return
+            rel = f"{rel_dir}/{entry.name}" if rel_dir else entry.name
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    if entry.name not in _SKIP_DIRS and not entry.name.startswith(".") \
+                            and entry.name != "__pycache__":
+                        stack.append((rel, entry.path))
+                elif entry.name.endswith(_MODEL_FILE_SUFFIXES) \
+                        and entry.stat().st_size <= _MODEL_FILE_MAX_BYTES:
+                    yield rel, entry.path
+            except OSError:
+                continue
+
+
+def _undeclared_model_uses(app_dir: str) -> list[dict]:
+    """Literal model ids in `fused.ai.<verb>(...)` calls (or
+    `fused.ai.models.download("...")`) that `[tool.fused-render.app.models]`
+    does not declare. Regex only: no network, no model loads. Each finding
+    carries `verb` (None for a download) and `model` beside the usual
+    rule/path/line/excerpt."""
+    from fused_render import app_models
+    declared = {row["model"] for row in app_models.load_declaration(app_dir).values()}
+    out: list[dict] = []
+    for rel, path in sorted(_model_scan_files(app_dir)):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                lines = f.read().splitlines()
+        except OSError:
+            continue
+        openers: list[tuple[int, int, str]] = []  # (line, col, verb)
+        for i, line in enumerate(lines):
+            openers.extend((i, m.start(), m.group(1)) for m in _AI_CALL_RE.finditer(line))
+            hits = [(m.start(), None, m.group(1)) for m in _AI_DOWNLOAD_RE.finditer(line)]
+            for m in _AI_MODEL_LITERAL_RE.finditer(line):
+                near = [o for o in openers
+                        if i - o[0] <= _MODEL_LOOKBACK and (o[0], o[1]) <= (i, m.start())]
+                if near:
+                    hits.append((m.start(), near[-1][2], m.group(1)))
+            for _, verb, model in sorted(hits, key=lambda h: h[0]):
+                model = model.strip()
+                if not model or "${" in model or model in declared:
+                    continue
+                out.append({"rule": "models:undeclared", "path": rel, "line": i + 1,
+                            "excerpt": line.strip()[:160], "verb": verb, "model": model})
+    return out
+
+
+def _models_snippet(findings: list[dict]) -> str:
+    lines = ["[tool.fused-render.app.models]"]
+    taken: dict = {}
+    for f in findings:
+        key = f["verb"] or "text"
+        if key in taken and taken[key] != f["model"]:
+            lines.append(f"# also used with {key}: {f['model']}")
+            continue
+        if key in taken:
+            continue
+        taken[key] = f["model"]
+        note = "" if f["verb"] else "  # set the key to this model's capability"
+        lines.append(f'{key} = {{ model = "{f["model"]}" }}{note}')
+    return "\n".join(lines)
+
+
+def _models_check(app_dir: str) -> dict:
+    label = "Declares the AI models it uses"
+    found = _undeclared_model_uses(app_dir)
+    if not found:
+        return _check("models", label, PASS,
+                      "every AI model this app names is declared (or it names none)")
+    first = found[0]
+    detail = (
+        f"Uses an AI model it doesn't declare: {first['model']} "
+        f"({first['path']}:{first['line']}). Users see declared models in an "
+        "overview before anything downloads; add this to pyproject.toml:\n"
+        + _models_snippet(found))
+    findings = [{k: f[k] for k in ("rule", "path", "line", "excerpt")} for f in found]
+    return _check("models", label, FAIL, detail, findings)
+
+
+
 def _icon_check(app_dir: str) -> dict:
     # The same precedence the shell draws by (app_listing.ICON_NAMES): the svg
     # is the icon when both are there, so it is the one that has to parse.
@@ -1092,6 +1202,7 @@ def report(app_dir: str) -> dict:
         "readme": _readme_check(app_dir),
         "preview": _preview_check(app_dir),
         "pyproject": _pyproject_check(app_dir),
+        "models": _models_check(app_dir),
         "icon": _icon_check(app_dir),
         "git": _repo_health_check(app_dir),
         **_gated_checks(app_dir),
@@ -1137,6 +1248,8 @@ def report_one(app_dir: str, check_id: str) -> dict | None:
         return _preview_check(app_dir)
     if check_id == "pyproject":
         return _pyproject_check(app_dir)
+    if check_id == "models":
+        return _models_check(app_dir)
     if check_id == "icon":
         return _icon_check(app_dir)
     if check_id == "git":

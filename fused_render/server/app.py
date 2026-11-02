@@ -81,6 +81,7 @@ from fused_render.server.routers.ai_models import router as ai_models_router
 from fused_render.server.routers.hf_auth import router as hf_auth_router
 from fused_render.server.routers.hub_models import router as hub_models_router
 from fused_render.server.routers.ai_runtime import router as ai_runtime_router
+from fused_render.server.routers.app_models import router as app_models_router
 from fused_render.server.routers.ai_benchmark import router as ai_benchmark_router
 from fused_render.server.routers.render import router as render_router
 from fused_render.server.routers.run import router as run_router
@@ -1108,6 +1109,7 @@ def create_app(start_dir: str, lean: bool = False) -> FastAPI:
     # that change that. Reads unguarded; the three POSTs start processes and
     # write gigabytes, so they carry the D3 X-Fused guard.
     app.include_router(ai_runtime_router)
+    app.include_router(app_models_router)
     # The AI Models page's Benchmark tab (routers/ai_benchmark.py, SPEC AI-14):
     # run a fixed per-capability workload against a local model and keep the
     # throughput/memory/load figures forever. The read is unguarded; the run and
