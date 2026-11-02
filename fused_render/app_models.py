@@ -3,13 +3,13 @@
 A publisher lists the models the app uses in its `pyproject.toml`::
 
     [tool.fused-render.app.models]
-    image = { model = "black-forest-labs/FLUX.2-klein-4B", swappable = true }
+    image = { model = "black-forest-labs/FLUX.2-klein-4B" }
     text  = { model = "Qwen/Qwen3-4B-Instruct-GGUF", use = "Captions" }
 
-The key is the `fused.ai` verb, `model` the catalog id, `swappable` (default
-false) lets the user substitute an already-downloaded same-capability model,
-`use` is a short human label. The first time an app is opened the user sees an
-overview of these models and accepts it; the choice lives in
+The key is the `fused.ai` verb, `model` the catalog id, `use` is a short
+human label. The user may substitute any declared model with an
+already-downloaded model of the same capability. The first time an app is
+opened the user sees an overview of these models and accepts it; the choice lives in
 `<app>/.fused/models.json` (moves with the folder, never exported), keyed by a
 hash of the declaration so a changed declaration asks again.
 
@@ -98,14 +98,13 @@ def _parse(pyproject: str) -> dict:
         out[cap] = {
             "verb": verb,
             "model": model.strip(),
-            "swappable": entry.get("swappable") is True,
             "use": use.strip() if isinstance(use, str) and use.strip() else None,
         }
     return out
 
 
 def load_declaration(app_dir: str) -> dict:
-    """`{capability: {verb, model, swappable, use}}`; `{}` when the folder
+    """`{capability: {verb, model, use}}`; `{}` when the folder
     declares nothing (missing file, parse error, no table). Never raises."""
     pyproject = os.path.join(app_dir, "pyproject.toml")
     try:
@@ -121,9 +120,9 @@ def load_declaration(app_dir: str) -> dict:
 
 
 def declaration_hash(decl: dict) -> str:
-    """sha256 over (capability, model, swappable) only: a `use` relabel must
+    """sha256 over (capability, model) only: a `use` relabel must
     not re-show the overview."""
-    rows = sorted([cap, r["model"], bool(r["swappable"])] for cap, r in decl.items())
+    rows = sorted([cap, r["model"]] for cap, r in decl.items())
     return hashlib.sha256(json.dumps(rows, sort_keys=True).encode()).hexdigest()
 
 

@@ -71,13 +71,10 @@ def _row(cap: str, decl_row: dict, state: dict, by_id: dict, by_cap: dict) -> di
         size = entry.get("size_gb") if entry is not None else None
     else:
         downloaded, size = True, None
-    swappable = bool(decl_row["swappable"])
-    candidates = []
-    if swappable:
-        candidates = [
-            {"id": e["id"], "label": _label(e["id"], e), "sizeGb": e.get("size_gb")}
-            for e in by_cap.get(cap, ()) if e.get("downloaded") and e["id"] != model
-        ]
+    candidates = [
+        {"id": e["id"], "label": _label(e["id"], e), "sizeGb": e.get("size_gb")}
+        for e in by_cap.get(cap, ()) if e.get("downloaded") and e["id"] != model
+    ]
     stored = (state.get("substitutions") or {}).get(cap)
     return {
         "capability": cap,
@@ -88,8 +85,7 @@ def _row(cap: str, decl_row: dict, state: dict, by_id: dict, by_cap: dict) -> di
         "provider": provider,
         "sizeGb": size,
         "downloaded": downloaded,
-        "swappable": swappable,
-        "choice": stored if swappable and stored else model,
+        "choice": stored or model,
         "candidates": candidates,
         "jobId": None if downloaded else _live_job(model),
     }
@@ -144,8 +140,6 @@ def accept(body: dict = Body(...)):
             return _error(f"substitute for {cap!r} must be a model id", 400)
         if sub == row["model"]:
             continue
-        if not row["swappable"]:
-            return _error(f"{cap!r} is not swappable", 400)
         ok = {e["id"] for e in by_cap.get(cap, ()) if e.get("downloaded")}
         if sub not in ok:
             return _error(f"{sub!r} is not a downloaded {cap} model", 400)

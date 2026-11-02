@@ -20,7 +20,7 @@ def _app(tmp_path, toml_body, name="app"):
 ALL_VERBS = """
 [tool.fused-render.app.models]
 text = { model = "Qwen/Qwen3-4B-Instruct-GGUF", use = "Captions" }
-image = { model = "black-forest-labs/FLUX.2-klein-4B", swappable = true }
+image = { model = "black-forest-labs/FLUX.2-klein-4B" }
 video = { model = "v/video" }
 speech = { model = "s/speech" }
 transcribe = { model = "t/whisper" }
@@ -40,9 +40,9 @@ def test_declaration_normalizes_all_verbs(tmp_path):
     }
     img = decl["text-to-image"]
     assert img == {"verb": "image", "model": "black-forest-labs/FLUX.2-klein-4B",
-                   "swappable": True, "use": None}
+                   "use": None}
     txt = decl["text-generation"]
-    assert txt["swappable"] is False and txt["use"] == "Captions"
+    assert txt["use"] == "Captions" and "swappable" not in txt
 
 
 def test_unknown_key_and_bad_entries_ignored(tmp_path):
@@ -73,9 +73,15 @@ def test_hash_rules(tmp_path):
     relabeled = ALL_VERBS.replace('use = "Captions"', 'use = "Other"')
     b = app_models.declaration_hash(app_models.load_declaration(_app(tmp_path, relabeled, "b")))
     assert a == b
-    swapped = ALL_VERBS.replace("swappable = true", "swappable = false")
-    c = app_models.declaration_hash(app_models.load_declaration(_app(tmp_path, swapped, "c")))
-    assert c != a
+    # a leftover `swappable` key is an unknown key: ignored, never hashed
+    for i, val in enumerate(("true", "false")):
+        left = ALL_VERBS.replace(
+            'model = "black-forest-labs/FLUX.2-klein-4B"',
+            f'model = "black-forest-labs/FLUX.2-klein-4B", swappable = {val}')
+        assert left != ALL_VERBS
+        decl = app_models.load_declaration(_app(tmp_path, left, f"c{i}"))
+        assert "swappable" not in decl["text-to-image"]
+        assert app_models.declaration_hash(decl) == a
     changed = ALL_VERBS.replace("v/video", "v/video2")
     d_ = app_models.declaration_hash(app_models.load_declaration(_app(tmp_path, changed, "d")))
     assert d_ != a
@@ -204,7 +210,7 @@ def test_overview_local_not_downloaded(api, tmp_path):
     img = by["text-to-image"]
     assert img["provider"] == "local" and img["downloaded"] is False
     assert img["sizeGb"] == 7.8 and img["label"] == "FLUX.2 klein 4B"
-    assert img["use"] == "Image generation" and img["swappable"] is True
+    assert img["use"] == "Image generation"
     assert by["text-generation"]["use"] == "Captions"
     assert ov["totalGb"] == pytest.approx(10.3)
     assert ov["needGb"] == pytest.approx(10.3)
@@ -223,13 +229,16 @@ decide = { model = "sonnet" }
     assert ov["needGb"] == 0 and ov["etaMin"] is None
 
 
-def test_swappable_candidates_only_downloaded_same_capability(api, tmp_path):
+def test_candidates_only_downloaded_same_capability(api, tmp_path):
     d = _app(tmp_path, ALL_VERBS_SMALL)
     api.state["downloaded"] = {"other/small-img", "Qwen/Qwen3-4B-Instruct-GGUF"}
     by = {r["capability"]: r for r in _overview(api, d)["rows"]}
     assert by["text-to-image"]["candidates"] == [
         {"id": "other/small-img", "label": "Small image", "sizeGb": 3.4}]
-    assert by["text-generation"]["candidates"] == []  # not swappable
+    # the only text model in the catalog is the declared one, so there is
+    # nothing else downloaded to offer (every row is swappable now)
+    assert by["text-generation"]["candidates"] == []
+    assert "swappable" not in by["text-to-image"]
     assert by["text-generation"]["downloaded"] is True
 
 
@@ -256,6 +265,23 @@ def test_accept_roundtrip_and_declaration_change(api, tmp_path):
     assert _overview(api, d)["accepted"] is False
 
 
+def test_accept_substitution_needs_no_swappable_key(api, tmp_path):
+    d = _app(tmp_path, ALL_VERBS_SMALL)
+    assert "swappable" not in open(os.path.join(d, "pyproject.toml")).read()
+    api.state["downloaded"] = {"other/small-img"}
+    r = _accept(api, d, {"text-to-image": "other/small-img"})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    with open(os.path.join(d, ".fused", "models.json")) as f:
+        assert json.load(f)["substitutions"] == {"text-to-image": "other/small-img"}
+
+
+def test_accept_still_rejects_undownloaded_substitute(api, tmp_path):
+    d = _app(tmp_path, ALL_VERBS_SMALL)
+    r = _accept(api, d, {"text-to-image": "other/small-img"})  # in catalog, not downloaded
+    assert r.status_code == 400 and "not a downloaded" in r.text
+    assert not os.path.exists(os.path.join(d, ".fused", "models.json"))
+
+
 def test_accept_rejects_bad_substitutes(api, tmp_path):
     d = _app(tmp_path, ALL_VERBS_SMALL)
     assert _accept(api, d, {"text-to-image": "other/not-here"}).status_code == 400
@@ -273,7 +299,7 @@ def test_accept_undeclared_is_404(api, tmp_path):
 
 ALL_VERBS_SMALL = """
 [tool.fused-render.app.models]
-image = { model = "black-forest-labs/FLUX.2-klein-4B", swappable = true }
+image = { model = "black-forest-labs/FLUX.2-klein-4B" }
 text = { model = "Qwen/Qwen3-4B-Instruct-GGUF", use = "Captions" }
 """
 
@@ -301,9 +327,9 @@ DECLARED = {
 @pytest.fixture()
 def swapped_app(tmp_path):
     lines = "\n".join(
-        f'{verb} = {{ model = "{model}", swappable = true }}'
+        f'{verb} = {{ model = "{model}" }}'
         for verb, model, _ in DECLARED.values())
-    lines += '\ntext = { model = "decl/text", swappable = true }'
+    lines += '\ntext = { model = "decl/text" }'
     d = _app(tmp_path, "[tool.fused-render.app.models]\n" + lines)
     decl = app_models.load_declaration(d)
     subs = {cap: f"sub/{decl[cap]['verb']}" for cap in decl}
