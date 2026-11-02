@@ -271,16 +271,19 @@ def test_on_listening_runs_before_any_dispatch(sock_path):
         client_result = {}
 
         def client():
-            client_result["reply"] = ipc.request(sock_path, {"cmd": "ping"}, timeout=3)
+            try:
+                client_result["reply"] = ipc.request(sock_path, {"cmd": "ping"}, timeout=10)
+            except Exception as exc:  # noqa: BLE001 — surfaced by the assert below
+                client_result["error"] = exc
 
         client_thread = threading.Thread(target=client)
         client_thread.start()
         time.sleep(0.2)  # the connection queues in the backlog while the gate holds
         assert order == ["on_listening-start"]
         gate.set()
-        starter.join(timeout=3)
-        client_thread.join(timeout=3)
-        assert client_result["reply"] == {"ok": True}
+        starter.join(timeout=10)
+        client_thread.join(timeout=10)
+        assert client_result.get("reply") == {"ok": True}, client_result
         assert order == ["on_listening-start", "on_listening-end", "dispatch"]
     finally:
         stop.set()

@@ -1064,16 +1064,23 @@ def test_spawn_really_delivers_the_prompt_to_the_claude_process(
     request.addfinalizer(lambda: reap_host(
         os.path.join(claude_spawn.load_agent().RUNS, task["run_id"])))
 
-    # the spawn is detached, so wait for the stub to finish writing
+    # the spawn is detached, so wait for the stub to finish writing — the
+    # file EXISTS the moment `cat` opens it, before the JSON line has landed
+    # (a half-written file failed `json.loads` here once on CI), so wait for
+    # a complete line, not for the path.
     deadline = time.monotonic() + 30
-    while time.monotonic() < deadline and not stdin_log.exists():
-        time.sleep(0.1)
+    row = None
+    while time.monotonic() < deadline and row is None:
+        try:
+            row = json.loads(stdin_log.read_text())
+        except (OSError, ValueError):
+            time.sleep(0.1)
     assert stdin_log.exists(), "claude was never executed (the live bug)"
+    assert row is not None, "the prompt never finished landing on claude's stdin"
 
     argv = argv_log.read_text().splitlines()
     # the prompt reached the process, over stdin as one stream-json user line
     assert "hello from the test" not in "\n".join(argv)   # never in argv
-    row = json.loads(stdin_log.read_text())
     # A scheduled turn is prefixed with the `<live-app-state>` block naming the
     # file the task was scheduled against (schedule._outgoing), so the user's
     # own words are the tail rather than the whole message.
