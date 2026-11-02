@@ -294,6 +294,12 @@ const ICON_VIEW_WORKSPACE = svg(
   <><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18" /><path d="M8 14h8" /><path d="M8 17.5h5" /></>,
 );
 const ICON_X = svg(<><path d="M18 6 6 18" /><path d="m6 6 12 12" /></>);
+// lucide `arrow-up-down`: the tab editor's Sort menu (Akshil, 2026-11-02).
+const ICON_SORT = svg(
+  <><path d="m21 16-4 4-4-4" /><path d="M17 20V4" /><path d="m3 8 4-4 4 4" /><path d="M7 4v16" /></>,
+);
+const ICON_CHECK = svg(<path d="M20 6 9 17l-5-5" />);
+const SORT_OPTIONS: ReadonlyArray<readonly [TaskSortBy, string]> = [["changed", "Last change"], ["created", "Created"]];
 const VIEW_ICONS: Record<TaskView, React.ReactNode> = {
   list: ICON_VIEW_LIST,
   board: ICON_VIEW_BOARD,
@@ -393,6 +399,12 @@ function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone, sort
   const [adding, setAdding] = useState(false);
   const available = TASK_VIEWS.filter((v) => !tabs.includes(v));
   const addRef = useRef<HTMLDivElement>(null);
+  // SORT AS A MENU (Akshil, 2026-11-02): an icon button beside the + with the
+  // two orders in a dropdown, not a labelled segmented control — the label and
+  // second pill row read as a stray form field in a strip of chips.
+  const [sorting, setSorting] = useState(false);
+  const sortRef = useRef<HTMLDivElement>(null);
+  const sortLabel = SORT_OPTIONS.find(([v]) => v === sortBy)?.[1] ?? "";
   const stripRef = useRef<HTMLDivElement>(null);
   // DRAG TO REORDER (Akshil, 2026-10-16): native HTML5 drag on the chips. The
   // chip being carried and the one under the pointer; the drop splices the
@@ -436,13 +448,14 @@ function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone, sort
   // WebKit does not focus a button on click, so a blur-based close fired on the
   // mousedown and unmounted the item before its click could land.
   useEffect(() => {
-    if (!adding) return;
+    if (!adding && !sorting) return;
     const onDown = (e: PointerEvent) => {
       if (!addRef.current?.contains(e.target as Node)) setAdding(false);
+      if (!sortRef.current?.contains(e.target as Node)) setSorting(false);
     };
     document.addEventListener("pointerdown", onDown, true);
     return () => document.removeEventListener("pointerdown", onDown, true);
-  }, [adding]);
+  }, [adding, sorting]);
   // Escape = Cancel (or close the + menu first), wherever focus is: a removed
   // chip takes the focus with it, so a listener on the strip alone missed the
   // key right after the most natural edit.
@@ -451,11 +464,12 @@ function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone, sort
       if (e.key !== "Escape") return;
       e.stopPropagation();
       if (adding) setAdding(false);
+      else if (sorting) setSorting(false);
       else onCancel();
     };
     window.addEventListener("keydown", onKey, true);
     return () => window.removeEventListener("keydown", onKey, true);
-  }, [adding, onCancel]);
+  }, [adding, sorting, onCancel]);
   return (
     <div className="schedule-view-editor" role="group" aria-label="Edit views" ref={stripRef}>
       <div className="schedule-view-editor-tabs">
@@ -568,23 +582,40 @@ function ViewTabsEditor({ tabs, active, onPick, onChange, onCancel, onDone, sort
             </div>
           )}
         </div>
-        <div className="schedule-view-sort">
-          <span className="schedule-view-sort-lbl" id="schedule-sort-lbl">Sort by</span>
-          <div className="schedule-form-seg" role="radiogroup" aria-labelledby="schedule-sort-lbl">
-            {([["changed", "Last change"], ["created", "Created"]] as const).map(([v, label]) => (
-              <button
-                key={v}
-                type="button"
-                role="radio"
-                aria-checked={sortBy === v}
-                data-sort={v}
-                className={"btn btn-secondary schedule-view-btn" + (sortBy === v ? " is-active" : "")}
-                onClick={() => onSortBy(v)}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
+        <div className="schedule-view-add schedule-view-sort" ref={sortRef}>
+          <button
+            type="button"
+            className="btn btn-secondary schedule-view-add-btn"
+            aria-label={`Sort by: ${sortLabel}`}
+            aria-haspopup="menu"
+            aria-expanded={sorting}
+            title={`Sort by: ${sortLabel}`}
+            onClick={() => setSorting((o) => !o)}
+          >
+            {ICON_SORT}
+          </button>
+          {sorting && (
+            <div className="schedule-view-add-menu schedule-view-sort-menu" role="menu" aria-label="Sort by" data-hint-stop>
+              <div className="schedule-view-menu-head" aria-hidden="true">Sort by</div>
+              {SORT_OPTIONS.map(([v, label]) => (
+                <button
+                  key={v}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={sortBy === v}
+                  className="schedule-view-add-item"
+                  data-sort={v}
+                  onClick={() => {
+                    onSortBy(v);
+                    setSorting(false);
+                  }}
+                >
+                  <span className="schedule-view-add-name">{label}</span>
+                  {sortBy === v && <span className="schedule-view-sort-check">{ICON_CHECK}</span>}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         {/* Right after the +, not at the far end (Akshil, 2026-10-19): the
             three controls that finish the edit sit together. */}
