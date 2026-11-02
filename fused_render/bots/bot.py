@@ -1891,6 +1891,15 @@ class Bot:
             self.save()
         self._write_still(still)
 
+    def set_doing(self, text):
+        """What the bot is doing right now ("thinking", "writing", a tool's label). Transient: kept in
+        memory only (no save(), no `updated`), read live by summary(). "" clears it."""
+        text = str(text or "")
+        with self.lock:
+            if self.meta.get("doing") != text:
+                self.meta["doing"] = text
+                self.meta["doing_since"] = time.time()
+
     @property
     def browser_id(self):
         return self.meta.get("browser_id") or self.id
@@ -1918,9 +1927,10 @@ class Bot:
         shot_ts = self.browser.shot_ts()
         with self.lock:  # hand-off watchers change rows in place (under this lock); copy them as they stand
             meta = dict(self.meta)
+            inbox_n = len(self.inbox)
             if meta.get("handoffs"):
                 meta["handoffs"] = [dict(h) for h in meta["handoffs"]]
-        return {**meta, "id": self.id, "seq": self.seq, "news_seq": self.news_seq(), "last_user_ts": self.last_user_ts(), "browser": bs, "browser_id": self.browser_id,
+        return {**meta, "inbox_n": inbox_n, "id": self.id, "seq": self.seq, "news_seq": self.news_seq(), "last_user_ts": self.last_user_ts(), "browser": bs, "browser_id": self.browser_id,
                 "browser_name": browsers.read_meta(self.browser_id).get("name") or self.meta.get("name") or "",
                 "shared_with": self.shared_with(), "encrypt": bool(self.browser.encrypt),
                 "terminal_id": self.terminal_id(), "terminal_available": _tools_mod().terminal_enabled(self),
@@ -3656,6 +3666,9 @@ def _run_task(run, bot, task, label):
     try:
         run(bot, task, label)
     finally:
+        _clear = getattr(bot, "set_doing", None)
+        if _clear:
+            _clear("")  # a stale "doing" never outlives its task
         with bot.lock:
             if bot.thread is threading.current_thread():
                 bot.task_via = dict(chan.WEB)

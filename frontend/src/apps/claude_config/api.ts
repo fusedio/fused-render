@@ -239,6 +239,9 @@ export interface MemoryProject {
   // The munge is lossy, so a null here means "we refuse to guess", not "none".
   path: string | null;
   pathConfirmed: boolean;
+  // Best-effort display path when `path` is null (resolved prefix + heuristic
+  // remainder); null when `path` is set or no guess is possible. Unconfirmed.
+  pathGuess?: string | null;
   files: MemoryFile[];
 }
 
@@ -363,7 +366,7 @@ export const skills = {
     callModule<OkResult & { skills?: RemoteSkill[] }>("skills", { action: "search", query }),
   remotePreview: (source: string, skillId: string) =>
     callModule<
-      OkResult & { text: string; readme: string; readmeIsSkill: boolean; fileCount: number; totalBytes: number }
+      OkResult & { text: string; readme: string; readmeIsSkill: boolean; fileCount: number; totalBytes: number; tooLarge?: boolean }
     >("skills", {
       action: "remote_preview",
       source,

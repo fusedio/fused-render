@@ -1,4 +1,4 @@
-// THE CLAUDE MARK, inline (`templates/claude/icon.svg`, verbatim path data). Lives in platform/ui so both the chat (apps/claude) and the App Doctor can draw it.
+// THE CLAUDE MARK, inline (`templates/claude/icon.svg`, verbatim path data). Lives in platform/ui so both the chat (apps/claude) and the shell can draw it.
 //
 // Every "this is Claude" glyph in this view used to be an orange `✻` — a
 // six-pointed asterisk that is a *typographic* stand-in for the mark, not the

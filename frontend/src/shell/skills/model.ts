@@ -107,3 +107,28 @@ export function groupRemote<T extends { skillId: string; installs: number }>(row
   }
   return [...groups.values()];
 }
+
+/** How well a remote row matches the query, lowest is best: 0 exact name,
+ * 1 name starts with it or has it as a word, 2 name contains it, 3 the
+ * source (owner/repo) contains it, 4 anything else. */
+export function relevanceTier(row: { name: string; source: string }, q: string): number {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return 4;
+  const name = row.name.toLowerCase();
+  if (name === needle) return 0;
+  if (name.startsWith(needle) || name.split(/[-_\s]+/).includes(needle)) return 1;
+  if (name.includes(needle)) return 2;
+  if (row.source.toLowerCase().includes(needle)) return 3;
+  return 4;
+}
+
+/** Groups ordered by the relevance tier of the top row, then by installs. */
+export function rankRemote<T extends { name: string; source: string; installs: number }>(
+  groups: { top: T; rest: T[] }[],
+  q: string,
+): { top: T; rest: T[] }[] {
+  return groups
+    .map((g) => ({ g, t: relevanceTier(g.top, q) }))
+    .sort((a, b) => a.t - b.t || b.g.top.installs - a.g.top.installs)
+    .map((x) => x.g);
+}

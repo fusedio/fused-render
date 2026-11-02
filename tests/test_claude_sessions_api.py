@@ -355,6 +355,65 @@ def _user_text_row(text):
                         "content": [{"type": "text", "text": text}]}}
 
 
+def test_a_departed_writer_ends_the_turn_the_file_left_open(client, projects_dir,
+                                                            tmp_path, monkeypatch):
+    """A turn open in the file stays open for ever once the process writing it
+    is gone (the host killed with the app, a crash) — only `STALE_TAIL_SEC`
+    closed it, and the chat said "Running outside this app" over a dead turn
+    for the balance of that window (Sina, 2026-10-31). The live registry's
+    "every process on it departed, and nothing wrote the file since"
+    (`tasks_watch.departed_before`) is the earlier word. ONLY that word: the
+    registry's `idle`/`waiting` status is not asked (a terminal session parked
+    on its own card is a turn genuinely open), and this app's own send mark
+    outranks a departure (the previous process left; the new turn's echo has
+    not landed yet)."""
+    from fused_render import tasks_watch
+    path = _session(projects_dir, "proj", "s1", str(tmp_path))
+    _rows(path, _user_text_row("do the thing"), _assistant("tool_use"))
+    asked = []
+
+    def departed(session_id, mtime):
+        asked.append((session_id, mtime))
+        return True
+
+    monkeypatch.setattr(tasks_watch, "departed_before", departed)
+    monkeypatch.setattr(tasks_watch, "is_marked_running", lambda sid: False)
+    assert _liveness(client, path).json()["running"] is False
+    assert asked[0][0] == "s1" and asked[0][1] == os.path.getmtime(path)
+
+    # The send mark: this app just sent into the session; the departure is
+    # the OLD process's and the turn is real.
+    monkeypatch.setattr(tasks_watch, "is_marked_running", lambda sid: True)
+    assert _liveness(client, path).json()["running"] is True
+
+    # Nothing ever held the session here: the tail rule stands.
+    monkeypatch.setattr(tasks_watch, "departed_before", lambda sid, m: False)
+    monkeypatch.setattr(tasks_watch, "is_marked_running", lambda sid: False)
+    assert _liveness(client, path).json()["running"] is True
+
+
+def test_departed_before_is_the_registrys_departure_and_nothing_else(
+        monkeypatch):
+    """The function the probe leans on, against the watcher's own state: a
+    session still registered is not departed whatever its status; one whose
+    files all went is, until something writes the transcript after it."""
+    from fused_render import tasks_watch
+    tasks_watch.reset()
+    try:
+        assert tasks_watch.departed_before("s1", 10.0) is False
+        with tasks_watch._cond:
+            tasks_watch._departed["s1"] = 100.0
+        assert tasks_watch.departed_before("s1", 90.0) is True
+        assert tasks_watch.departed_before("s1", 100.0) is True
+        assert tasks_watch.departed_before("s1", 101.0) is False
+        with tasks_watch._cond:
+            tasks_watch._registry["s1"] = {"pid": 1, "status": "waiting"}
+        assert tasks_watch.departed_before("s1", 90.0) is False
+        assert tasks_watch.departed_before("", 0.0) is False
+    finally:
+        tasks_watch.reset()
+
+
 def test_the_stop_buttons_interrupt_marker_ends_the_turn(client, projects_dir,
                                                          tmp_path):
     """Claude Code answers an interrupt by writing "[Request interrupted by

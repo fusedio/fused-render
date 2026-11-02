@@ -7734,3 +7734,11 @@ Cursor Bugbot found that the IMAGE_GENERATION workload's fixed `guidance: 4.0` m
 - `remote_preview` returns the repo's root README (relative image/link targets made absolute) instead of the SKILL.md plus file list, falling back to the SKILL.md (`readmeIsSkill`), with `fileCount`/`totalBytes`. A README says what the repo is for; a SKILL.md alone rarely does.
 - The Skills page now shows and sorts by skills.sh install counts and folds rows sharing a `skillId` under the most-installed one. This reverses the old header comment in `Skills.tsx` ("nothing on this page shows or ranks by installs"): search rows carry no description, so install count is the only signal separating the real repo from 1-install forks.
 - `.cc-aside-files` CSS stays: NewSkill's preview still uses it.
+
+## D1454: Bots status line shows live activity from a transient `doing` field (2026-11-02, bots/live-activity-status)
+
+The Bots status line read "running · step 2 · last step 1 min ago" and nothing else: no way to tell thinking from a tool in flight from a mid-task message still waiting for delivery.
+- `Bot.set_doing(text)` keeps `meta["doing"]` / `meta["doing_since"]` in memory only: no `save()`, no `status` / `updated` change, `summary()` reads it live. "" clears it; `_run_task`'s `finally` clears it so it never outlives a task.
+- Vocabulary: `thinking` (task or mid-task message written, thinking block, a tool result handed back), `writing` (a text block), or a tool label (`builtin_label` for built-ins, `<tool> <first string arg>` for the bot's MCP tools; the permission tool is skipped). The agent engine's `_drive` / `handle_tool` and the steps engine's model-call / `tools.describe` points set them. The `waiting` path is untouched: the UI shows its own text there.
+- `summary()` also reports `inbox_n` (`len(bot.inbox)`), so the Composer appends "your message is queued for its next step" while a mid-task message is unread.
+- The text lives in `runningStatusText` (`apps/bots/lib/derive.ts`, tested); with no `doing` (other engines) it falls back to "last step X".

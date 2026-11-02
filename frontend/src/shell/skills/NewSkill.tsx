@@ -511,7 +511,7 @@ export function NewSkill({
         )}
       </div>
 
-      <aside className="cc-skill-aside" aria-label="SKILL.md" data-testid="draft-aside">
+      <aside className="cc-skill-aside cc-aside-scroll" aria-label="SKILL.md" data-testid="draft-aside">
         {status?.text ? (
           <>
             <h2 className="cc-aside-title m-0">

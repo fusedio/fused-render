@@ -595,20 +595,6 @@ def test_an_agent_refusal_from_the_app_task_keeps_its_body(tmp_path, monkeypatch
         "task_error": error["error"], "task_refusal": error}
 
 
-def test_app_doctor_with_claude_off_refuses_before_dropping_the_verdict(
-        client, workspace, monkeypatch):
-    from fused_render import app_doctor_ai
-    from fused_render.agent_backends import registry
-    d = _app_dir(workspace, "demo")
-    _claude_off(monkeypatch)
-    monkeypatch.setattr(app_doctor_ai, "begin",
-                        lambda *a, **k: pytest.fail("begin drops the last verdict"))
-    r = client.post("/api/apps/doctor/run", headers=HDRS,
-                    json={"path": str(d), "check": "cross-browser", "force": True})
-    assert r.status_code == 400, r.text
-    assert r.json() == registry.disabled_error("claude")
-
-
 @pytest.mark.parametrize(
     "bad",
     ["", "  ", "a/b", "a\\b", ".hidden", " .hidden", " a/b ", None, 7],

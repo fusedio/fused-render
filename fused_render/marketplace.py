@@ -229,6 +229,22 @@ class InstallError(Exception):
     on the job (or the bot's result) verbatim."""
 
 
+class ReplaceNeeded(InstallError):
+    """An install refused because another copy of the app, installed another
+    way (a plain folder or a `.fused` install anywhere in the workspace),
+    holds its place. The job carries `code: "replace"` and `replace_path`
+    so the page can offer the way out: posting again with `replace: <path>`
+    installs the reviewed copy, moves that copy's `.fused/` data along and
+    hides the old folder (the showcase overwrite recipe, `start_install`)."""
+
+    def __init__(self, path: str, message: str):
+        super().__init__(message)
+        self.path = path
+
+    def fields(self) -> dict:
+        return {"code": "replace", "replace_path": self.path.replace(os.sep, "/")}
+
+
 # ---------------------------------------------------------------------------
 # configuration (read per call — tests and env overrides take effect live)
 # ---------------------------------------------------------------------------
@@ -1727,7 +1743,7 @@ def _update_job(slug: str, **fields) -> None:
 
 
 def start_install(slug: str, *, update: bool = False, switch: bool = False,
-                  overwrite: bool = False) -> dict:
+                  overwrite: bool = False, replace: str | None = None) -> dict:
     """Start installing, updating or switching `slug` in the background
     (`plan_install` decides which; `update` is the bot tool's flag and
     changes nothing here — what is installed decides). Answers the job —
@@ -1737,8 +1753,13 @@ def start_install(slug: str, *, update: bool = False, switch: bool = False,
     with nothing started; likewise `{"status": "confirm", "overwrite":
     "showcase", "path", "slug", "message"}` when the user's showcase copy
     of the slug would hold the install's place and `overwrite` is not set
-    (module docstring). Raises InstallError for a request that cannot
-    start (bad/unknown slug, a refusing plan)."""
+    (module docstring). `replace`: the path a failed job named as
+    `replace_path` (`ReplaceNeeded`) — a copy of the app installed another
+    way; the install then goes by the showcase overwrite recipe against it
+    (`install_app(overwrite=)`: data carried, folder hidden). The path is
+    checked here (a workspace app folder, not a showcase subfolder, no
+    contrib record) and again by id in `install_app`. Raises InstallError
+    for a request that cannot start (bad/unknown slug, a refusing plan)."""
     del update  # documented above: the plan, not the caller, decides
     if not is_slug(slug):
         raise InstallError("invalid app slug")
@@ -1769,6 +1790,8 @@ def start_install(slug: str, *, update: bool = False, switch: bool = False,
                                "in your apps folder; its data, bookmarks and sessions move along, "
                                "and the showcase copy is hidden."}
         plan = {**plan, "overwrite": plan["showcase"]}
+    elif plan["action"] == "install" and replace:
+        plan = {**plan, "overwrite": _replaceable_copy(slug, replace)}
     action = plan["action"]
     with _JOBS_LOCK:
         job = _JOBS.get(slug)
@@ -1783,6 +1806,42 @@ def start_install(slug: str, *, update: bool = False, switch: bool = False,
     threading.Thread(target=_run_job, args=(slug, row, plan), daemon=True,
                      name=f"marketplace-{action}-{slug}").start()
     return out
+
+
+def _replaceable_copy(slug: str, path: str) -> str:
+    """`path` as a copy a Community install may replace, or InstallError:
+    an app folder inside the workspace that is not a showcase subfolder
+    (those have their own confirm) and that no contrib record claims (a
+    marketplace, GitHub-link or own copy is found by `plan_install` and
+    never lands here). `install_app` still checks its page declares the
+    same app before anything moves. Answers the path in its WORKSPACE
+    spelling (normalised, not resolved — as `showcase_copy` does), since
+    `_retire_showcase_copy` settles bookmarks, recents and sessions by
+    the spelling those stores hold; `realpath` serves the checks only."""
+    from fused_render import app_listing, appfile
+    from fused_render._platform import is_within
+    from fused_render.shell.seed import fused_dir
+
+    if not os.path.isabs(path):
+        raise InstallError("That folder is not in your Fused workspace, so it can't be replaced from here.")
+    spelled = os.path.normpath(path)
+    real = os.path.realpath(spelled)
+    if not is_within(real, os.path.realpath(fused_dir()), strict=True):
+        raise InstallError("That folder is not in your Fused workspace, so it can't be replaced from here.")
+    if in_showcase(real):
+        raise InstallError("That is a showcase copy; install again and say yes to overwriting it.")
+    if real == os.path.realpath(os.path.join(appfile.install_dir(), slug)):
+        raise InstallError(f"{spelled} is where the install lands. Uninstall it first, then install "
+                           "it from the Community.")
+    try:
+        entry = app_listing.app_entry(real)
+    except OSError:
+        entry = None
+    if entry is None:
+        raise InstallError(f"No app page at {spelled}, so there is nothing to replace.")
+    if _record_kind(real):
+        raise InstallError(f"{spelled} is a copy this Community install already knows; use its own buttons.")
+    return spelled
 
 
 def resolve_install(slug: str, row: dict) -> dict:
@@ -1886,8 +1945,8 @@ def install_app(slug: str, row: dict, report=lambda **kw: None, *,
             except OSError:
                 have = None
             if have is None or app_identity.app_id(have) != app_identity.app_id(entry):
-                raise InstallError(f"The showcase copy at {overwrite} is not this app, so this "
-                                   "install can't overwrite it.")
+                raise InstallError(f"The copy at {overwrite} is not this app, so this "
+                                   "install can't replace it.")
         fd, built = tempfile.mkstemp(dir=appfetch.downloads_dir(), prefix=".market-", suffix=".fused")
         os.close(fd)
         os.remove(built)
@@ -1912,9 +1971,18 @@ def install_app(slug: str, row: dict, report=lambda **kw: None, *,
         if target["state"] == appfile.STATE_REPLACE:
             # Another copy of this app (installed from a file) holds its
             # place; replacing it would send it to the Trash. Never on the
-            # user's behalf from here.
-            raise InstallError(f"{target['path']} already holds this app, installed another way. "
-                               "Uninstall it first, then install it from the Community.")
+            # user's behalf from here. A copy ELSEWHERE in the workspace
+            # gets the way out (`ReplaceNeeded`: install under app/, carry
+            # its data, hide it); one sitting at app/<slug> itself is where
+            # the install lands, so there is nothing to carry it into —
+            # `install_target(ignore=)` would find it again by slug and the
+            # replace would loop. That one stays an uninstall-first.
+            if os.path.realpath(target["path"]) == os.path.realpath(
+                    os.path.join(appfile.install_dir(), slug)):
+                raise InstallError(f"{target['path']} already holds this app, installed another way. "
+                                   "Uninstall it first, then install it from the Community.")
+            raise ReplaceNeeded(target["path"],
+                                f"{target['path']} already holds this app, installed another way.")
         try:
             # `approved` is the vetted release (`_pick` above), a dict with
             # the 40-hex commit: a bare sha would leave the copy with no
@@ -1957,9 +2025,11 @@ def install_app(slug: str, row: dict, report=lambda **kw: None, *,
 
 
 def _retire_showcase_copy(path: str, dest: str) -> None:
-    """The showcase copy at `path` handed over to the new copy at `dest`:
-    hidden from the hub (its files stay — deleting a showcase subfolder
-    dirties the clone), then settled as a MOVE to `dest`
+    """The copy at `path` (a showcase subfolder, or a copy installed another
+    way the user asked to replace: `ReplaceNeeded`) handed over to the new
+    copy at `dest`: hidden from the hub (its files stay — deleting a
+    showcase subfolder dirties the clone, and a folder the user put
+    elsewhere is theirs to delete), then settled as a MOVE to `dest`
     (`app_fused_dir.settle_retired_origin`: bookmarks, recents, the pin, the
     desk, scheduled targets, the app's recency and its Claude sessions all
     follow the app, as they do when a folder is dragged), and whatever still
@@ -1972,7 +2042,7 @@ def _retire_showcase_copy(path: str, dest: str) -> None:
     try:
         app_hidden.hide(path)
     except Exception:  # noqa: BLE001
-        logger.warning("marketplace: could not hide the showcase copy %s", path, exc_info=True)
+        logger.warning("marketplace: could not hide the replaced copy %s", path, exc_info=True)
     app_fused_dir.settle_retired_origin(dest, path)
     try:
         from fused_render.server.routers import current_apps as desk_router
@@ -2048,7 +2118,8 @@ def _run_job(slug: str, row: dict, plan: dict) -> None:
         _update_job(slug, state="done", step="done", progress=1.0, bytes_done=total,
                     path=result["path"].replace(os.sep, "/"), message=message)
     except InstallError as exc:
-        _update_job(slug, state="error", error=str(exc), message=str(exc))
+        extra = exc.fields() if isinstance(exc, ReplaceNeeded) else {}
+        _update_job(slug, state="error", error=str(exc), message=str(exc), **extra)
     except Exception as exc:  # noqa: BLE001 — a job must always finish
         logger.exception("marketplace: %s of %s crashed", plan.get("action"), slug)
         msg = f"{plan.get('action') or 'install'} failed ({exc.__class__.__name__}: {exc})"

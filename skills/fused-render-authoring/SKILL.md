@@ -169,15 +169,6 @@ function isPreview() {
 
 Iframe = blank canvas; shell follows OS/pref light-dark. Quick answer: `data-fused-theme="shell"` on `<html>`, two `:root` token blocks against `data-theme`. Simple apps (forms, dashboards, tools): define colours as `var(--fused-bg, fallback)` etc. so they follow the selected colour preset too. Full rules → `fused-render-theming`.
 
-## Cross-browser (MANDATORY for every view)
-
-Views open in the user's default desktop browser — Chrome/Edge, Firefox, Safari — and the macOS WKWebView popover. Desktop only. Chrome-tested ≠ done.
-
-- **Load `fused-render-cross-browser` BEFORE writing the first `<style>`** — it holds the reset to paste, the Safari prefixes, form-control/scrollbar/font/JS traps with fixes. Not optional, not only-when-broken.
-- Features: only MDN **Baseline: Widely available**. Newly-available → `@supports` + fallback. Chrome-only → never.
-- No build step, no autoprefixer — prefixes hand-written.
-- Before "done": re-read `<style>` and JS against the `fused-render-cross-browser` trap table and fix what you find. Code check only, best effort — never launch a second browser.
-
 ## Preview templates
 
 Same html, opened FOR target file: read-only `_file` param carries path. Reader `.py` only when Python adds value; text → `readFile`, media → `rawUrl`. Built-in sources: `fused_render/templates/<name>/` (see `xlsx/`; server serves staged copy `~/.fused-render/.core-templates/`). Extension → mode list: `fused_render/templates/registry.json`. User overrides → `fused-render-custom-templates`.

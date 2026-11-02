@@ -475,6 +475,30 @@ def test_memory_list_shows_no_path_when_it_cannot_confirm_one(client, claude_dir
     assert p["pathConfirmed"] is False
 
 
+def test_memory_list_guesses_a_path_when_the_deep_folders_are_gone(
+        client, claude_dir, tmp_path):
+    # Only <tmp>/home exists; Documents/Fused/local-disk-cleaner were deleted.
+    (tmp_path / "home").mkdir()
+    gone = str(tmp_path / "home" / "Documents" / "Fused" / "local-disk-cleaner")
+    slug = memory._munge(gone)
+    _memory_project(claude_dir, slug)
+
+    [p] = _post(client, "memory", action="list").json()["projects"]
+    assert p["path"] is None
+    assert p["pathConfirmed"] is False
+    assert p["pathGuess"] == gone
+
+
+def test_memory_list_has_no_guess_for_a_confirmed_path(client, claude_dir, tmp_path):
+    project = tmp_path / "work" / "fused-render"
+    project.mkdir(parents=True)
+    _memory_project(claude_dir, memory._munge(str(project)))
+
+    [p] = _post(client, "memory", action="list").json()["projects"]
+    assert p["pathConfirmed"] is True
+    assert p["pathGuess"] is None
+
+
 # -- memory: per-file frontmatter description ---------------------------------
 # Round 2 of the Claude config redesign makes the memory FILE the row (grouped
 # by project), not the project — so `files` carries a {name, description} pair

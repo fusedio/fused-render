@@ -144,7 +144,6 @@ _EXPECTED_META = {
     "git": ("sharing", "warning", "fact"),
     "generated": ("sharing", "warning", "fact"),
     "preview": ("sharing", "warning", "fact"),
-    "cross-browser": ("sharing", "warning", "candidate"),
     # Always present since the contribution loop stopped being a flag
     # (2026-10-29, `contrib/flags.py`: `sources()` is on everywhere).
     "fused-dir-committed": ("sharing", "warning", "fact"),
@@ -265,9 +264,8 @@ def test_a_clean_app_passes_every_check_it_can_answer(workspace):
     rows = _rows(report)
     assert report["ok"] is True
     assert report["entry"] == str(d / "index.html")
-    # Every row is one of the four states (`unrun` is the on-demand
-    # cross-browser row before anyone asked for it), and none of them failed.
-    assert {c["state"] for c in report["checks"]} <= {"pass", "fail", "skip", "unrun"}
+    # Every row is one of the three states, and none of them failed.
+    assert {c["state"] for c in report["checks"]} <= {"pass", "fail", "skip"}
     assert [c["id"] for c in report["checks"] if c["state"] == "fail"] == []
     # pyproject.toml is present (the fixture writes one) and parses.
     assert rows["pyproject"]["state"] == "pass"
