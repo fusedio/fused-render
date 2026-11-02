@@ -622,8 +622,10 @@ def _locate(source: str, skill_id: str) -> tuple:
                        key=lambda p: (p.count("/"), p))
         found = next((p for p in cands if p.rpartition("/")[0].rpartition("/")[2].lower() == skill_id), None)
         if found is None:
-            for p in cands[:_LOCATE_NAME_READS]:
-                text = repo.read(p)[:4096].decode("utf-8", errors="replace")
+            head = cands[:_LOCATE_NAME_READS]
+            with concurrent.futures.ThreadPoolExecutor(_FETCH_WORKERS) as pool:
+                texts = list(pool.map(lambda p: repo.read(p)[:4096].decode("utf-8", errors="replace"), head))
+            for p, text in zip(head, texts):
                 if (lib.parse_frontmatter(text).get("name") or "").lower() == skill_id:
                     found = p
                     break
