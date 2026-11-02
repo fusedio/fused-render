@@ -1791,7 +1791,7 @@ def start_install(slug: str, *, update: bool = False, switch: bool = False,
                                "and the showcase copy is hidden."}
         plan = {**plan, "overwrite": plan["showcase"]}
     elif plan["action"] == "install" and replace:
-        plan = {**plan, "overwrite": _replaceable_copy(replace)}
+        plan = {**plan, "overwrite": _replaceable_copy(slug, replace)}
     action = plan["action"]
     with _JOBS_LOCK:
         job = _JOBS.get(slug)
@@ -1808,31 +1808,40 @@ def start_install(slug: str, *, update: bool = False, switch: bool = False,
     return out
 
 
-def _replaceable_copy(path: str) -> str:
+def _replaceable_copy(slug: str, path: str) -> str:
     """`path` as a copy a Community install may replace, or InstallError:
     an app folder inside the workspace that is not a showcase subfolder
     (those have their own confirm) and that no contrib record claims (a
     marketplace, GitHub-link or own copy is found by `plan_install` and
     never lands here). `install_app` still checks its page declares the
-    same app before anything moves."""
-    from fused_render import app_listing
+    same app before anything moves. Answers the path in its WORKSPACE
+    spelling (normalised, not resolved — as `showcase_copy` does), since
+    `_retire_showcase_copy` settles bookmarks, recents and sessions by
+    the spelling those stores hold; `realpath` serves the checks only."""
+    from fused_render import app_listing, appfile
     from fused_render._platform import is_within
     from fused_render.shell.seed import fused_dir
 
-    real = os.path.realpath(path)
-    if not os.path.isabs(path) or not is_within(real, os.path.realpath(fused_dir()), strict=True):
+    if not os.path.isabs(path):
+        raise InstallError("That folder is not in your Fused workspace, so it can't be replaced from here.")
+    spelled = os.path.normpath(path)
+    real = os.path.realpath(spelled)
+    if not is_within(real, os.path.realpath(fused_dir()), strict=True):
         raise InstallError("That folder is not in your Fused workspace, so it can't be replaced from here.")
     if in_showcase(real):
         raise InstallError("That is a showcase copy; install again and say yes to overwriting it.")
+    if real == os.path.realpath(os.path.join(appfile.install_dir(), slug)):
+        raise InstallError(f"{spelled} is where the install lands. Uninstall it first, then install "
+                           "it from the Community.")
     try:
         entry = app_listing.app_entry(real)
     except OSError:
         entry = None
     if entry is None:
-        raise InstallError(f"No app page at {path}, so there is nothing to replace.")
+        raise InstallError(f"No app page at {spelled}, so there is nothing to replace.")
     if _record_kind(real):
-        raise InstallError(f"{path} is a copy this Community install already knows; use its own buttons.")
-    return real
+        raise InstallError(f"{spelled} is a copy this Community install already knows; use its own buttons.")
+    return spelled
 
 
 def resolve_install(slug: str, row: dict) -> dict:
@@ -1962,7 +1971,16 @@ def install_app(slug: str, row: dict, report=lambda **kw: None, *,
         if target["state"] == appfile.STATE_REPLACE:
             # Another copy of this app (installed from a file) holds its
             # place; replacing it would send it to the Trash. Never on the
-            # user's behalf from here.
+            # user's behalf from here. A copy ELSEWHERE in the workspace
+            # gets the way out (`ReplaceNeeded`: install under app/, carry
+            # its data, hide it); one sitting at app/<slug> itself is where
+            # the install lands, so there is nothing to carry it into —
+            # `install_target(ignore=)` would find it again by slug and the
+            # replace would loop. That one stays an uninstall-first.
+            if os.path.realpath(target["path"]) == os.path.realpath(
+                    os.path.join(appfile.install_dir(), slug)):
+                raise InstallError(f"{target['path']} already holds this app, installed another way. "
+                                   "Uninstall it first, then install it from the Community.")
             raise ReplaceNeeded(target["path"],
                                 f"{target['path']} already holds this app, installed another way.")
         try:
