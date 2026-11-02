@@ -464,6 +464,37 @@
 .canvas-rail-chat {
   position: relative;
 }
+/* NO DEAD ZONES (owner, 2026-11-02): the ring is 28px in a 48px rail with
+   4px between seats, and a pointer resting in the gap or the margin hovered
+   nothing. The link's hit area reaches half the gap up and down and nearly
+   to the rail's edges (9px: a 10th would scroll the rail sideways) — and the
+   WASH IS PAINTED ON THAT SAME BOX (owner: "tip of my pointer is on a
+   different item and a different item is shown highlighted"), so what lights
+   up is exactly what the pointer is over. The pseudo sits under the ring
+   (`z-index: -1` inside the link's own stacking context), and every state
+   wash the seat used to paint on itself moves onto it. */
+.canvas-rail-chat {
+  isolation: isolate;
+}
+.canvas-rail-chat::after {
+  content: "";
+  position: absolute;
+  inset: -2px -9px;
+  border-radius: 8px;
+  z-index: -1;
+}
+.canvas-rail-chat.canvas-rail-chat:hover,
+.canvas-rail-chat.canvas-rail-chat.active,
+.canvas-rail-chat.canvas-rail-chat.peeked,
+.canvas-rail-chat.canvas-rail-chat.is-last {
+  background: none;
+  box-shadow: none;
+}
+.canvas-rail-chat:hover::after,
+.canvas-rail-chat.active::after,
+.canvas-rail-chat.peeked::after {
+  background: rgba(var(--tint), 0.08);
+}
 /* The seat under the list while a node is selected (ClaudeRail
    `.canvas-rail-all`): the canvas glyph, the way back to every chat on the
    canvas. Below the scroller, so a short window never scrolls it away; a
@@ -471,27 +502,50 @@
    same), so it reads as the list's foot and not as one more chat. */
 .canvas-rail-all-seat {
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
   flex: 0 0 auto;
   width: 28px;
   margin-top: 6px;
   padding-top: 6px;
   border-top: 1px solid var(--rail-sep);
 }
+/* The held outsider's seat in the foot (ClaudeRail `heldExtra`): the ring
+   of a pinned chat that is not the selected node's, above the canvas glyph
+   and under the hairline, so it reads as "pinned, outside this list". */
+.canvas-rail-held {
+  display: flex;
+  justify-content: center;
+}
 /* The ring whose chat the hover card shows (ClaudeRail `.peeked`, behind
    `canvas_rail_peek_enabled`): the hover wash stays on while the pointer is
    over the card, so the card and its ring read as one thing. */
 .canvas-rail-chat.peeked {
-  background: rgba(var(--tint), 0.08);
   color: var(--fg);
 }
 /* …and the ring whose card a click PINNED (ClaudeRail `.is-pinned`): a step
    firmer than the hover wash, with a hairline, so "this one is open" holds
    while the pointer is elsewhere — and still quieter than the ring's own
    status colour. */
-.canvas-rail-chat.peeked.is-pinned {
+.canvas-rail-chat.peeked.is-pinned::after {
   background: rgba(var(--tint), 0.14);
   box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.22);
+}
+/* …and the ring whose card the reader HELD with its pin (ClaudeRail
+   `.is-held`; owner, 2026-11-02: "the item which is active on right sidebar
+   gets border accent as well"): the accent, the card's own held border, so
+   the ring and the card read as one thing while the pointer is anywhere. */
+.canvas-rail-chat.peeked.is-held::after {
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+/* THE LAST RING PRESSED (ClaudeRail `.is-last`; owner, 2026-11-02): the
+   sidebar's own current-place wash, a step firmer, with a hairline — so the
+   chat the reader last opened is found again at a glance, on a rail that
+   may have narrowed to a node and back since. Under the held accent. */
+.canvas-rail-chat.is-last::after {
+  background: rgba(var(--tint), 0.12);
+  box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.28);
 }
 
 /* THE SCRIM OVER THE WORKBENCH WHILE A PICTURE IS TAKEN (CanvasWorkspace,
@@ -621,27 +675,202 @@
 .canvas-rail-peek.is-on .canvas-rail-peek-card {
   transform: none;
 }
-/* The head: the ring, the chat's title line, its state in words, and two
-   seats — the panel door and the close. 12px, like the rail's own captions. */
+/* A HELD card (the pin pressed; RailPeek `.is-held`) wears the accent on its
+   edge, the whole way round (owner, 2026-11-02: "in pin, we make border
+   accent of the whole preview window") — the one card on the page that an
+   outside press will not close should look held. The halo keeps its job. */
+.canvas-rail-peek.is-held .canvas-rail-peek-card {
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent),
+    0 14px 36px var(--shadow-sm),
+    0 2px 6px var(--shadow-ink-soft);
+}
+/* The head, TWO ROWS (owner, 2026-11-02): the first row is the facts and
+   the seats — pin, number, where-chip, then at the right the unread count
+   and age, archive, Open, ⋮ — and the second row is the title alone, full
+   width. 12px, like the rail's own captions. */
 .canvas-rail-peek-head {
   display: flex;
-  align-items: center;
-  gap: 8px;
-  min-height: 34px;
-  padding: 4px 8px 4px 6px;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 8px 5px 6px;
   border-bottom: 1px solid var(--border);
   font-size: 12px;
   flex: 0 0 auto;
 }
-/* The title gives way, the words do not: "waiting for you, unread" is the
-   fact a reader came for; the title is on the ring's caption too. */
+.canvas-rail-peek-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  min-width: 0;
+}
+/* The flexible gap: everything before it hugs the left, everything after
+   it the right, and a long node name shrinks before any seat does. */
+.canvas-rail-peek-gap {
+  flex: 1 1 0;
+  min-width: 4px;
+}
+/* The title row: the recap sentence, one line, the head's old title style
+   (12px, 500, ellipsis) on a line of its own — no box (owner, 2026-11-02:
+   "keep it as it was previously just in a new line"). The pencil at its
+   right end shows on hover or focus (TaskPeekWho's rule). */
+.canvas-rail-peek-titlerow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  min-height: 22px;
+  padding: 0 2px 0 6px;
+}
 .canvas-rail-peek-title {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 500;
+}
+/* The reply after the title, the List row's `.tasks-title-reply`: a quiet
+   italic aside that takes what the title leaves, never a second title. With
+   no reply the title has the row (its `flex: 0 1 auto` still shrinks it to
+   the box). */
+.canvas-rail-peek-reply {
+  flex: 1 1 0;
+  min-width: 0;
+  margin-left: 4px;
+  color: var(--fg-muted);
+  font-style: italic;
+  font-weight: 300;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.canvas-rail-peek-titlerow:not(:has(.canvas-rail-peek-reply)) .canvas-rail-peek-title {
+  flex: 1 1 auto;
+}
+.canvas-rail-peek-rename {
+  width: 22px;
+  height: 22px;
+  opacity: 0;
+}
+.canvas-rail-peek-titlerow:hover .canvas-rail-peek-rename,
+.canvas-rail-peek-rename:focus-visible {
+  opacity: 1;
+}
+@media (hover: none) {
+  .canvas-rail-peek-rename {
+    opacity: 0.6;
+  }
+}
+.canvas-rail-peek-title-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-weight: 500;
+  line-height: 18px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 1px 4px;
+  margin: 0;
+}
+.canvas-rail-peek-title-input[aria-invalid="true"] {
+  border-color: var(--error);
+}
+.canvas-rail-peek-title-input:disabled {
+  opacity: 0.6;
+}
+.canvas-rail-peek-rename-error {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--error);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The pin: pressed, it is the × (held card). Bootstrap's filled angled pin
+   at rest (RailPeek `PinAngleFill`); the seat's own hover wash either way. */
+/* THE PULSE SEAT: "2 ▭ 3m ago" as muted words (no chip), and the archive
+   button standing over the words' right end, shown on hover or focus — the
+   List row's hover-revealed actions (owner, 2026-11-02: "only on hover over
+   that area, like we did in card view"). The button carries the card's
+   background so it covers the age it stands on. A seat with no words
+   (`is-bare`) shows the button at rest. */
+.canvas-rail-peek-pulse {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  min-width: 26px;
+  height: 26px;
+}
+.canvas-rail-peek-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.canvas-rail-peek-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.canvas-rail-peek-count.is-unread {
+  color: var(--fg);
+}
+.canvas-rail-peek-count svg {
+  position: relative;
+  top: 0.5px;
+}
+/* Scoped under the pulse (two classes): the base seat rule has one, and the
+   minifier is free to order equals as it likes. */
+.canvas-rail-peek-pulse .canvas-rail-peek-archive {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 44px;
+  justify-content: flex-end;
+  padding-right: 6px;
+  border-radius: 0 6px 6px 0;
+  opacity: 0;
+  pointer-events: none;
+  /* Fades in from the right over the words it stands on — the List row's
+     revealed actions (`.tasks-acts-inner`): the card's background, solid
+     under the glyph, gone at the button's left edge. */
+  background: linear-gradient(to right, transparent, var(--bg) 42%);
+  transition: opacity 0.12s ease;
+}
+.canvas-rail-peek-pulse:hover .canvas-rail-peek-archive,
+.canvas-rail-peek-pulse:focus-within .canvas-rail-peek-archive,
+.canvas-rail-peek-pulse.is-bare .canvas-rail-peek-archive {
+  opacity: 1;
+  pointer-events: auto;
+}
+.canvas-rail-peek-pulse .canvas-rail-peek-archive:hover {
+  color: var(--fg);
+  background: linear-gradient(to right, transparent, var(--bg) 42%);
+}
+.canvas-rail-peek-pulse .canvas-rail-peek-archive:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+@media (hover: none) {
+  .canvas-rail-peek-pulse .canvas-rail-peek-archive {
+    opacity: 1;
+    pointer-events: auto;
+    position: static;
+    width: 26px;
+    padding-right: 0;
+    background: transparent;
+  }
 }
 .canvas-rail-peek-words {
   flex: 0 0 auto;
@@ -782,7 +1011,7 @@ button.canvas-rail-peek-scope.is-node:focus-visible {
    Open. */
 .canvas-rail-peek.is-plain {
   height: auto;
-  max-height: 220px;
+  max-height: 250px;
 }
 /* …so the shown seat has to be IN FLOW: the stacked chats are absolute
    (every kept mount in one box), which gives a hugging card no height. */

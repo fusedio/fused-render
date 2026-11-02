@@ -11,9 +11,10 @@
 // `ChatMount` the Tasks page's side peek frames (`peek`, `chatOnly`), on the
 // hovered chat's session, in a 420×640 card a gap off the rail. The reader
 // scrolls the transcript, answers a question, types a message, follows a
-// link, as in the pane; "Open in panel →" in the card's head is the door the
-// ring's own press opens (`taskHref`), for when a preview turns into a
-// session.
+// link, as in the pane; "Open" in the card's head is the door the ring's own
+// press opens (`taskHref`), for when a preview turns into a session. The
+// head is two rows: facts and seats (pin, number, where, unread + when,
+// archive, Open, ⋮), then the title alone.
 //
 // WHY IT NEVER FLASHES:
 //   - ONE CARD, kept in the DOM, shown and hidden by a class: the open is an
@@ -54,6 +55,7 @@ import {
   useImperativeHandle,
   useLayoutEffect,
   useEffect,
+  useCallback,
   useRef,
   useState,
   type FocusEvent as ReactFocusEvent,
@@ -61,8 +63,11 @@ import {
   type MutableRefObject,
 } from "react";
 import { createPortal } from "react-dom";
-import { X } from "lucide-react";
-import type { Task } from "@platform/lib/api";
+import { Archive, ArchiveRestore, MessageSquare, Pencil, X } from "lucide-react";
+import { notify } from "@platform/lib/notifications";
+import { archiveTask, renameTask, unarchiveTask, type Task } from "@platform/lib/api";
+import { pokeTasks } from "@shell/tasksPulse";
+import { useArchiveConfirm } from "@shell/archive-confirm";
 import { shortTaskId } from "@platform/lib/task-id";
 import { ChatMount, draftHref } from "@apps/claude";
 import { Kebab } from "@apps/claude/ui/Kebab";
@@ -74,9 +79,12 @@ import {
   isDraftTask,
   messageStamp,
   nextRunAt,
+  recapTitlesOn,
   relativeWhen,
   taskColumn,
   taskHref,
+  taskWhen,
+  type CardTitle,
 } from "@shell/tasks-lib";
 import { nodeName, railScope, type RailRow } from "./claude-rail-lib";
 import {
@@ -88,6 +96,20 @@ import {
   statusWords,
   type Box,
 } from "./rail-peek-lib";
+
+/** The pin glyph (owner, 2026-11-02: "BsFillPinAngleFill use this") —
+ *  Bootstrap Icons' `pin-angle-fill` (MIT), inlined: react-icons is not a
+ *  dependency and one path does not earn one. Filled, angled, 16-unit box. */
+function PinAngleFill({ size = 14 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+      <path d="M9.828.722a.5.5 0 0 1 .354.146l4.95 4.95a.5.5 0 0 1 0 .707c-.48.48-1.072.588-1.503.588-.177 0-.335-.018-.46-.039l-3.134 3.134a6 6 0 0 1 .16 1.013c.046.702-.032 1.687-.72 2.375a.5.5 0 0 1-.707 0l-2.829-2.828-3.182 3.182c-.195.195-1.219.902-1.414.707s.512-1.22.707-1.414l3.182-3.182-2.828-2.829a.5.5 0 0 1 0-.707c.688-.688 1.673-.767 2.375-.72a6 6 0 0 1 1.013.16l3.134-3.133a3 3 0 0 1-.04-.461c0-.43.108-1.022.589-1.503a.5.5 0 0 1 .353-.146" />
+    </svg>
+  );
+}
+
+/** The server's cap on a task's name (TaskPeekWho's). */
+const TITLE_MAX_LENGTH = 200;
 
 /** What one seat is, for the head and the body: the pulse row, the full row
  *  once held, and the answers both halves ask (RailPeek `seatFacts`). */
@@ -104,11 +126,29 @@ interface SeatFacts {
   id: string;
   scope: ReturnType<typeof railScope>;
   words: string;
+  /** How many messages the chat holds (the listing's `message_count`; 0
+   *  until the full row is held, or for a chat with none). */
+  count: number;
+  /** Replies not yet read, 0 for none. */
+  unread: number;
+  /** When the chat last moved, in the list's relative register ("3m ago"); "" when it never has. */
+  when: string;
+  /** …and the same moment in full, for the hover. */
+  whenFull: string;
+  /** The server can rename it: a started session (TaskPeekWho `renamable`). */
+  renamable: boolean;
+  /** The title line as the List row builds it (its `hint` is the whole text). */
+  line: CardTitle;
+  /** The reply line the List row prints after the title in italics — only
+   *  with task recap titles OFF (with them on, the title IS the recap); ""
+   *  when the row holds none, or is pulse-only. */
+  reply: string;
 }
 
 function seatFacts(seat: RailRow, dir: string | null): SeatFacts {
   const { pulse: t, row } = seat;
   const merged = row ? { ...row, status: t.status } : t;
+  // The List's own title line (recap as the title once recaps are on).
   const line = cardTitleLine(merged);
   const draft = !!row && isDraftTask(row);
   const href = (row && draft ? draftHref(row) : null) ?? taskHref(merged);
@@ -122,6 +162,16 @@ function seatFacts(seat: RailRow, dir: string | null): SeatFacts {
     id: draft ? "" : shortTaskId(t.task_id),
     scope: railScope(t, dir),
     words: draft ? "draft" : statusWords(t, !!row?.failed),
+    count: Math.max(0, row?.message_count ?? 0),
+    unread: t.unread > 0 ? t.unread : 0,
+    // The List row's own clock and caption (tasks-lib `taskWhen`: "Last run
+    // <time>", "Drafted <time>"…) once the full row is held; the pulse's
+    // own stamp until then.
+    when: row ? taskWhen(merged as Task).text : relativeWhen(t.happened_at || t.last_active || 0),
+    whenFull: row ? taskWhen(merged as Task).title : messageStamp(t.happened_at || t.last_active || 0),
+    renamable: !!t.session_id && !draft && !/^(pending|draft|new):/.test(t.key),
+    line,
+    reply: row && !recapTitlesOn(row) ? (row.last_reply || "").trim() : "",
   };
 }
 
@@ -185,6 +235,15 @@ export interface RailPeekProps {
    *  pointer-down to do it, `onPressInside`), and see the keyboard into its
    *  composer once that has mounted (ClaudeRail `focusComposerSoon`). */
   onPin: () => void;
+  /** The reader PINNED the card from its head (owner, 2026-11-02: "pin is
+   *  basically keep it open until I click on the pin again"): the pin reads
+   *  as a ×, and nothing but that × — or the Open door — closes it: not an
+   *  outside press, not a press into the workbench, not Escape. Distinct
+   *  from the intent's own pinned (a ring press, a press inside the card),
+   *  which an outside press still ends. */
+  held: boolean;
+  /** The pin was pressed (`true`), or the × / Open let go (`false`). */
+  onHeld: (held: boolean) => void;
 }
 
 /** A seat with no conversation yet (header of the body above). */
@@ -249,6 +308,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     onSelectNode,
     selectedFile,
     onPin,
+    held,
+    onHeld,
   },
   ref,
 ) {
@@ -495,7 +556,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // card-wide handler would close the card under an open menu and, having
   // prevented default, stop the chat's handler from closing the menu itself.
   const onHeadKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (e.key === "Escape") {
+    if (e.key === "Escape" && !e.defaultPrevented && !heldRef.current) {
       e.preventDefault();
       onDismiss();
     }
@@ -512,7 +573,152 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // → `onHold(true)`), and a press on one of its rows is "inside" by the
   // same route (`onPressInside`). Filing or erasing the task re-reads the
   // listing; the pulse then takes the ring, and the card with it (prune).
-  const onFiled = () => onReload();
+  const onFiled = () => {
+    // A filed or erased chat leaves the rail: a held card lets go with it
+    // (the pin must not keep a ring for a chat the reader just put away).
+    onHeld(false);
+    onReload();
+  };
+  // The Archive seat's call can finish after a ring press swapped the card
+  // to another (held) chat: only the chat that was filed lets go of the pin,
+  // read off the ref when the call returns, not when it started.
+  const shownKeyRef = useRef(shownKey);
+  shownKeyRef.current = shownKey;
+  const onFiledKey = (key: string) => {
+    if (shownKeyRef.current === key) onHeld(false);
+    onReload();
+  };
+
+  // THE ARCHIVE SEAT (owner, 2026-11-02): the ⋮'s Archive as a button of its
+  // own on the head's first row. Same door, same rule: a run in flight asks
+  // first (`useArchiveConfirm`, the wording every single-task archive
+  // shares), a filed task re-reads the listing and the pulse takes the ring.
+  // Its dialog renders INSIDE the card so a press on it is "inside"
+  // (`onPressInside` runs in React's capture phase, which crosses portals)
+  // and the card holds through the ask. `filing` greys the seat while the
+  // call is out, so a second press cannot file the task twice.
+  const archiveAsk = useArchiveConfirm();
+  const cancelArchiveAsk = archiveAsk.cancel;
+  // Which chat the pending ask is about: the dialog draws only while that
+  // chat is still the shown one — a swap or close with the ask up must not
+  // leave a Confirm that files the chat that left view.
+  const askedKey = useRef<string | null>(null);
+  const [filing, setFiling] = useState(false);
+  const fileTask = (facts: SeatFacts) => {
+    askedKey.current = facts.t.key;
+    const archived = facts.t.status === "archived";
+    const go = async () => {
+      setFiling(true);
+      try {
+        if (archived) await unarchiveTask(facts.t.key);
+        else await archiveTask(facts.t.key);
+        onFiledKey(facts.t.key);
+      } catch (e) {
+        notify({ title: (e as Error).message, tone: "error" });
+      } finally {
+        setFiling(false);
+      }
+    };
+    if (archived) void go();
+    else
+      archiveAsk.guard(
+        // The pulse's status and jobs, not the listing row's: the row can still
+        // read "done" a moment after a new turn started.
+        { status: facts.t.status, kind: facts.row?.kind ?? "task", background_jobs: facts.t.background_jobs },
+        () => void go(),
+      );
+  };
+
+  // A HELD card ignores Escape (header): the head's and the chat's Escape
+  // both read the flag off a ref, so the chat's handler need not re-mount.
+  const heldRef = useRef(held);
+  heldRef.current = held;
+  const onChatEscape = useCallback(() => {
+    if (!heldRef.current) onDismiss();
+  }, [onDismiss]);
+
+  // THE TITLE IS THE READER'S TO RENAME (owner, 2026-11-02: "on title hover
+  // we can bring edit icon, we can name our tasks") — the side peek's own
+  // flow (TaskPeekWho): the pencil that shows on hover, or a double-click,
+  // turns the title into an input; Enter or blur saves, Escape cancels,
+  // saving what is stored does nothing, and saving "" gives the automatic
+  // title back. The input's Escape is its own (`defaultPrevented`), so the
+  // head's Escape does not close the card under it.
+  const [draft, setDraft] = useState<string | null>(null);
+  const [renaming, setRenaming] = useState(false);
+  const [renameError, setRenameError] = useState("");
+  const renameSettled = useRef(false);
+  const startRename = (facts: SeatFacts) => {
+    if (!facts.renamable || renaming) return;
+    renameSettled.current = false;
+    setRenameError("");
+    setDraft(facts.label.slice(0, TITLE_MAX_LENGTH));
+  };
+  const cancelRename = () => {
+    renameSettled.current = true;
+    setDraft(null);
+    setRenameError("");
+  };
+  const saveRename = async (facts: SeatFacts) => {
+    if (draft === null || renameSettled.current || renaming) return;
+    const next = draft.slice(0, TITLE_MAX_LENGTH).trim();
+    // Against the STORED name, not the shown line (a recap or last-message
+    // title is not the task's name; saving it unchanged is how the reader
+    // pins it). Only a renamed task has a name to match.
+    const stored = facts.merged.title_source === "renamed" ? (facts.merged.title || "").split("\n")[0].trim() : "";
+    if (next === stored) return cancelRename();
+    // Settled NOW, before the await: Enter's save and the blur the disabled
+    // input then fires must not send the rename twice (reviewer).
+    renameSettled.current = true;
+    setRenaming(true);
+    try {
+      await renameTask(facts.t.key, next);
+      setDraft(null);
+      setRenameError("");
+      pokeTasks();
+      onReload();
+    } catch (e) {
+      renameSettled.current = false;
+      setRenameError((e as Error).message || "Could not rename");
+      // The disabled input lost the keyboard; give it back so Enter retries.
+      requestAnimationFrame(() => titleInputRef.current?.focus());
+    } finally {
+      setRenaming(false);
+    }
+  };
+  const titleInputRef = useRef<HTMLInputElement | null>(null);
+  // IS THE TITLE CLIPPED? Measured, not guessed: the span's scroll width past
+  // its box, re-read when the line or the card's width changes (the card
+  // narrows on a narrow window, rail-peek-lib `peekPlacement`). Decides
+  // whether the title wears the app's hint (below).
+  const titleRef = useRef<HTMLSpanElement | null>(null);
+  const [titleClipped, setTitleClipped] = useState(false);
+  const titleText = view ? seatFacts(view, dir).label : "";
+  useLayoutEffect(() => {
+    const el = titleRef.current;
+    if (!el) {
+      setTitleClipped(false);
+      return;
+    }
+    const check = () => setTitleClipped(el.scrollWidth > el.clientWidth + 1);
+    check();
+    if (typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [titleText, draft, viewKey]);
+  // A swap to another chat, or the card closing, drops an open rename: the
+  // input would otherwise save into the chat that left view, or come back
+  // half-typed when the card reopens on the same chat.
+  useEffect(() => {
+    renameSettled.current = true;
+    setDraft(null);
+    setRenameError("");
+    // The same goes for an Archive ask still waiting for its answer: it was
+    // about the chat that left view and must not come back with it.
+    askedKey.current = null;
+    cancelArchiveAsk();
+  }, [shownKey, cancelArchiveAsk]);
 
   // THE BRIDGE (owner, 2026-10-30: "an invisible [strip] between the item I
   // am hovering and the preview, so the user doesn't have to move fast or
@@ -542,7 +748,12 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     <div
       ref={cardRef}
       id={id}
-      className={"canvas-rail-peek" + (visible ? " is-on" : "") + (view && !view.pulse.session_id ? " is-plain" : "")}
+      className={
+        "canvas-rail-peek" +
+        (visible ? " is-on" : "") +
+        (held ? " is-held" : "") +
+        (view && !view.pulse.session_id ? " is-plain" : "")
+      }
       role="dialog"
       aria-label={head ? `${head.label} — preview` : "Chat preview"}
       style={
@@ -560,122 +771,283 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     >
       <div className="canvas-rail-peek-card">
         {head && (
-          // THE HEAD (owner, 2026-10-30): the task's number where the Tasks
-          // page prints it, its title, WHERE it lives (the canvas, or one
-          // node — the pane's chats do not say, and a reader could not tell a
-          // node's chat from the canvas's), then the door as a word, the ⋮,
-          // and the close.
+          // THE HEAD, TWO ROWS (owner, 2026-11-02, after the one-row head of
+          // 2026-10-30): the first row is the task's FACTS and SEATS — the pin
+          // (where the × was: pressed, it IS the ×), its number where the
+          // Tasks page prints it, WHERE it lives (the canvas, or one node —
+          // the pane's chats do not say), then at the right its unread
+          // count and when it last moved (the archive shows over that on
+          // hover, the List row's way), the door as a word, and the ⋮. The
+          // second row is the TITLE alone, full width, with the pencil on
+          // hover: a recap title is a sentence, and a sentence squeezed
+          // between chips on one row lost its end.
           <div className="canvas-rail-peek-head" onKeyDown={onHeadKeyDown}>
-            {/* The close leads (owner, 2026-10-30: "move the cross to the top
-                left") — the pane's own Hide sits at ITS top row's left end
-                too (ClaudeChat `onHidePane`), so the two dismissals share a
-                corner. */}
-            <button
-              type="button"
-              className="canvas-rail-peek-btn"
-              title="Close the preview (Esc)"
-              aria-label="Close the preview"
-              onClick={onDismiss}
-            >
-              <X size={14} aria-hidden="true" />
-            </button>
-            {head.id && (
-              <span className="canvas-rail-peek-id" title={head.words}>
-                {head.id}
-              </span>
-            )}
-            <span className="canvas-rail-peek-title" title={head.label}>
-              {head.label}
-            </span>
-            {head.scope.kind === "node" ? (
-              // The node's chip is a door: it selects the node in the
-              // workbench (which zooms to it and shows its code). The card
-              // STAYS (owner, 2026-10-31: "when I click on the tag, shouldn't
-              // the chat preview still stay open") — the press is inside the
-              // card, so it pins it like any other; the rail then narrows to
-              // that node, whose rings still hold this chat, and the card
-              // follows its ring. The selected node's chip is the SAME
-              // button, `aria-disabled` (still focusable): swapping it for a
-              // span when the selection echo lands would unmount the focus
-              // it may hold (Bugbot on #2044). Names, not files: the page's
-              // selected file is a guess from the echo (claude-rail-lib
-              // `onRail`).
-              (() => {
-                const current = !!selectedFile && nodeName(selectedFile) === head.scope.name;
-                return (
-                  <button
-                    type="button"
-                    className="canvas-rail-peek-scope is-node"
-                    aria-disabled={current || undefined}
-                    title={
-                      current
-                        ? `On the node ${head.scope.name} (${head.scope.file}), selected`
-                        : `Select the node ${head.scope.name} (${head.scope.file}) in the workbench`
-                    }
-                    onClick={(e) => {
-                      // Pinned FIRST: the selection may reshape the rail (it
-                      // narrows to the node), and only a pinned card is held
-                      // through that (CodeRabbit on #2044).
-                      onPin();
-                      if (!current && head.scope.kind === "node") onSelectNode(head.scope.name);
-                      // Back to the composer: the reader is still in this chat,
-                      // and WebKit leaves a pressed button unfocused — focus on
-                      // the body, where a later press into the canvas frame is
-                      // not heard as the window's blur and so never closes the
-                      // pinned card (ClaudeRail's frame-press rule). A seat with
-                      // no composer (a draft on the node), or a chat still
-                      // mounting, keeps it on the chip — the latter until
-                      // `onPin`'s wait moves it on.
-                      const box = shownKey ? focusRefs.current.get(shownKey)?.current : null;
-                      (box ?? e.currentTarget).focus({ preventScroll: true });
-                    }}
-                  >
-                    {head.scope.name}
-                  </button>
-                );
-              })()
-            ) : (
-              <span className="canvas-rail-peek-scope" title="On the canvas as a whole">
-                Canvas
-              </span>
-            )}
-            {head.href && (
+            <div className="canvas-rail-peek-row">
               <button
                 type="button"
-                className="btn canvas-rail-peek-open"
-                title={head.draft ? "Open the draft" : "Open this chat in the Claude panel"}
+                className={"canvas-rail-peek-btn canvas-rail-peek-pin" + (held ? " is-held" : "")}
+                aria-pressed={held}
+                title={held ? "Unpin and close the preview" : "Pin the preview: it stays until you unpin it"}
+                // One label, the state in `aria-pressed` (a flipping label
+                // would announce the state twice, inverted).
+                aria-label="Pin the preview"
                 onClick={() => {
-                  onOpenChat(head.href!);
-                  // The door closes the card too: a hop that keeps the rail
-                  // mounted (a node switch) must not leave it up.
-                  onDismiss();
+                  if (held) {
+                    onHeld(false);
+                    onDismiss();
+                  } else {
+                    onHeld(true);
+                    onPin();
+                  }
                 }}
               >
-                Open
+                {held ? <X size={14} aria-hidden="true" /> : <PinAngleFill size={14} />}
               </button>
-            )}
-            {head.t.session_id && shownKey && (
-              // Mounted only while a seat is SHOWN (not through the fade): the
-              // menu listens for task announcements and re-reads the listing
-              // on each, which a hidden card has no business doing. Inside the
-              // chat's AgentProvider, so its terminal hand-off names the
-              // chat's own agent, not the default one.
-              <span className="canvas-rail-peek-kebab">
-                <AgentProvider backend={head.row?.backend ?? head.t.backend ?? ""}>
-                  <Kebab
-                    // Keyed per chat: the menu caches its labels per session.
-                    key={head.t.key}
-                    file={head.row?.target || head.t.target || head.t.project}
-                    sessionId={head.t.session_id}
-                    running={taskColumn(head.t) === "in_progress" || taskColumn(head.t) === "queued"}
-                    asking={taskColumn(head.t) === "needs_attention"}
-                    queued={taskColumn(head.t) === "queued"}
-                    onErased={onFiled}
-                    onArchived={onFiled}
+              {head.id && (
+                <span className="canvas-rail-peek-id" title={head.words}>
+                  {head.id}
+                </span>
+              )}
+              {head.scope.kind === "node" ? (
+                // The node's chip is a door: it selects the node in the
+                // workbench (which zooms to it and shows its code). The card
+                // STAYS (owner, 2026-10-31: "when I click on the tag, shouldn't
+                // the chat preview still stay open") — the press is inside the
+                // card, so it pins it like any other; the rail then narrows to
+                // that node, whose rings still hold this chat, and the card
+                // follows its ring. The selected node's chip is the SAME
+                // button, `aria-disabled` (still focusable): swapping it for a
+                // span when the selection echo lands would unmount the focus
+                // it may hold (Bugbot on #2044). Names, not files: the page's
+                // selected file is a guess from the echo (claude-rail-lib
+                // `onRail`).
+                (() => {
+                  const current = !!selectedFile && nodeName(selectedFile) === head.scope.name;
+                  return (
+                    <button
+                      type="button"
+                      className="canvas-rail-peek-scope is-node"
+                      aria-disabled={current || undefined}
+                      title={
+                        current
+                          ? `On the node ${head.scope.name} (${head.scope.file}), selected`
+                          : `Select the node ${head.scope.name} (${head.scope.file}) in the workbench`
+                      }
+                      onClick={(e) => {
+                        // Pinned FIRST: the selection may reshape the rail (it
+                        // narrows to the node), and only a pinned card is held
+                        // through that (CodeRabbit on #2044).
+                        onPin();
+                        if (!current && head.scope.kind === "node") onSelectNode(head.scope.name);
+                        // Back to the composer: the reader is still in this chat,
+                        // and WebKit leaves a pressed button unfocused — focus on
+                        // the body, where a later press into the canvas frame is
+                        // not heard as the window's blur and so never closes the
+                        // pinned card (ClaudeRail's frame-press rule). A seat with
+                        // no composer (a draft on the node), or a chat still
+                        // mounting, keeps it on the chip — the latter until
+                        // `onPin`'s wait moves it on.
+                        const box = shownKey ? focusRefs.current.get(shownKey)?.current : null;
+                        (box ?? e.currentTarget).focus({ preventScroll: true });
+                      }}
+                    >
+                      {head.scope.name}
+                    </button>
+                  );
+                })()
+              ) : (
+                <span className="canvas-rail-peek-scope" title="On the canvas as a whole">
+                  Canvas
+                </span>
+              )}
+              <span className="canvas-rail-peek-gap" aria-hidden="true" />
+              {head.t.session_id && !head.draft && (
+                // THE PULSE AND THE ARCHIVE share one seat: the unread count
+                // (none → no count, the glyph goes too) and when the chat
+                // last moved, muted words; the archive button sits over
+                // their right end and shows on hover or focus (owner,
+                // 2026-11-02: "only on hover over that area, like the card
+                // view"). A chat that never moved has no words — then the
+                // archive stands alone, always shown (`is-bare`).
+                <span className={"canvas-rail-peek-pulse" + (head.when || head.count > 0 ? "" : " is-bare")}>
+                  {(head.count > 0 || head.when) && (
+                    <span className="canvas-rail-peek-meta">
+                      {head.count > 0 && (
+                        // HOW MANY MESSAGES (owner, 2026-11-02: "number of
+                        // messages left of time"), the bubble after the
+                        // number as the mockup draws it; unread ones turn the
+                        // count to ink, and the hover says how many.
+                        <span
+                          className={"canvas-rail-peek-count" + (head.unread > 0 ? " is-unread" : "")}
+                          // The List row's own caption (ScheduleTaskViews
+                          // `.tasks-row-msgs`), in the app's hint panel.
+                          // `role="img"` so the label is read: a bare span's
+                          // aria-label is not announced.
+                          role="img"
+                          aria-label={
+                            `${head.count} message${head.count === 1 ? "" : "s"}` +
+                            (head.unread > 0 ? `, ${head.unread} unread` : "")
+                          }
+                          data-hint={
+                            `${head.count} message${head.count === 1 ? "" : "s"} in this task` +
+                            (head.unread > 0 ? ` — ${head.unread} unread` : "")
+                          }
+                        >
+                          {head.count}
+                          <MessageSquare size={12} aria-hidden="true" />
+                        </span>
+                      )}
+                      {head.when && (
+                        // …and the List row's time cell: the exact moment, and
+                        // which moment it is ("Last run …", "Drafted …").
+                        <span className="canvas-rail-peek-when" data-hint={head.whenFull || undefined}>
+                          {head.when}
+                        </span>
+                      )}
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    className="canvas-rail-peek-btn canvas-rail-peek-archive"
+                    disabled={filing}
+                    // ONE WORD, the List seat's caption (tasks-lib `filingIntent`;
+                    // Akshil, 2026-10-05: "just say archive").
+                    data-hint={head.t.status === "archived" ? "Unarchive" : "Archive"}
+                    aria-label={head.t.status === "archived" ? "Unarchive this task" : "Archive this task"}
+                    onClick={() => fileTask(head)}
+                  >
+                    {head.t.status === "archived" ? (
+                      <ArchiveRestore size={14} aria-hidden="true" />
+                    ) : (
+                      <Archive size={14} aria-hidden="true" />
+                    )}
+                  </button>
+                </span>
+              )}
+              {head.href && (
+                <button
+                  type="button"
+                  className="btn canvas-rail-peek-open"
+                  title={head.draft ? "Open the draft" : "Open this chat in the Claude panel"}
+                  onClick={() => {
+                    onOpenChat(head.href!);
+                    // The door closes the card too — a held one as well: a
+                    // hop that keeps the rail mounted (a node switch) must
+                    // not leave it up.
+                    onHeld(false);
+                    onDismiss();
+                  }}
+                >
+                  Open
+                </button>
+              )}
+              {head.t.session_id && shownKey && (
+                // Mounted only while a seat is SHOWN (not through the fade): the
+                // menu listens for task announcements and re-reads the listing
+                // on each, which a hidden card has no business doing. Inside the
+                // chat's AgentProvider, so its terminal hand-off names the
+                // chat's own agent, not the default one.
+                <span className="canvas-rail-peek-kebab">
+                  <AgentProvider backend={head.row?.backend ?? head.t.backend ?? ""}>
+                    <Kebab
+                      // Keyed per chat: the menu caches its labels per session.
+                      key={head.t.key}
+                      file={head.row?.target || head.t.target || head.t.project}
+                      sessionId={head.t.session_id}
+                      running={taskColumn(head.t) === "in_progress" || taskColumn(head.t) === "queued"}
+                      asking={taskColumn(head.t) === "needs_attention"}
+                      queued={taskColumn(head.t) === "queued"}
+                      onErased={onFiled}
+                      onArchived={onFiled}
+                    />
+                  </AgentProvider>
+                </span>
+              )}
+            </div>
+            <div className="canvas-rail-peek-titlerow">
+              {draft === null ? (
+                <>
+                  <span
+                    ref={titleRef}
+                    className="canvas-rail-peek-title"
+                    // The List row's own caption (ScheduleTaskViews `.tasks-title`,
+                    // hints.ts `renderTaskHint`): the title line and the reply
+                    // line WHOLE, in the row's styles. Only when something is
+                    // clipped — the title past its box, or a reply beside it
+                    // (owner, 2026-11-02: "if truncated and I hover it should
+                    // show me the full name in tooltip like we do at other
+                    // places"); a title fully in view says nothing twice.
+                    {...(titleClipped || head.reply
+                      ? {
+                          "data-hint": head.line.hint ?? head.label,
+                          "data-hint-title": head.line.hint ?? head.label,
+                          "data-hint-reply": head.reply,
+                        }
+                      : {})}
+                    onDoubleClick={head.renamable ? () => startRename(head) : undefined}
+                  >
+                    {head.label}
+                  </span>
+                  {head.reply && (
+                    // THE REPLY LINE: what the List prints after the title in
+                    // italics — the last turn's reply, with task recap titles
+                    // off (on, the title IS the recap — owner, 2026-11-02:
+                    // "show recap … like the Tasks view list"). Same hint as
+                    // the title: both lines whole.
+                    <span
+                      className="canvas-rail-peek-reply"
+                      data-hint={head.reply}
+                      data-hint-title={head.line.hint ?? head.label}
+                      data-hint-reply={head.reply}
+                    >
+                      {head.reply}
+                    </span>
+                  )}
+                  {head.renamable && (
+                    <button
+                      type="button"
+                      className="canvas-rail-peek-btn canvas-rail-peek-rename"
+                      title="Rename task"
+                      aria-label="Rename task"
+                      onClick={() => startRename(head)}
+                    >
+                      <Pencil size={12} aria-hidden="true" />
+                    </button>
+                  )}
+                </>
+              ) : (
+                <>
+                  <input
+                    ref={titleInputRef}
+                    className="canvas-rail-peek-title-input"
+                    value={draft}
+                    maxLength={TITLE_MAX_LENGTH}
+                    disabled={renaming}
+                    autoFocus
+                    aria-label="Task title"
+                    aria-invalid={renameError ? true : undefined}
+                    title={renameError || undefined}
+                    onFocus={(e) => e.currentTarget?.select?.()}
+                    onChange={(e) => setDraft(e.target.value)}
+                    onBlur={() => void saveRename(head)}
+                    onKeyDown={(e) => {
+                      // The Enter/Escape that settles an IME candidate is not
+                      // ours (keyCode 229 is Safari's spelling of isComposing).
+                      if (e.nativeEvent?.isComposing || e.keyCode === 229) return;
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void saveRename(head);
+                      } else if (e.key === "Escape") {
+                        e.preventDefault();
+                        cancelRename();
+                      }
+                    }}
                   />
-                </AgentProvider>
-              </span>
-            )}
+                  {renameError && <span className="canvas-rail-peek-rename-error">{renameError}</span>}
+                </>
+              )}
+            </div>
+            {askedKey.current === head.t.key && archiveAsk.node}
           </div>
         )}
         <div className="canvas-rail-peek-body">
@@ -704,7 +1076,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                     noAnnTools
                     paramsSource="memory"
                     focusRef={focusRefFor(t.key)}
-                    onEscape={onDismiss}
+                    onEscape={onChatEscape}
                     // A hop out of the chat (a Recent row, a link) is the ring's
                     // own navigation: the canvas page's hop reader does the rest.
                     onNavigate={onOpenChat}
