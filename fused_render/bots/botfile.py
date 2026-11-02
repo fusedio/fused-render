@@ -274,6 +274,12 @@ def _row_state(row: dict, staged: str | None) -> dict:
         except appfile.AppFileError as e:
             return {"state": "error", "ticked": False, "tickable": False, "reason": str(e)}
         state = t["state"]
+        if state == appfile.STATE_SAME:
+            # Installed at this exact version: nothing to write, but the row stays ticked (and tickable) so the
+            # bot gets to use it without asking, as the exporter's bot did — the member's own app id was checked
+            # against the copy by install_target, so this is the real app, not an index claim. Untick to refuse.
+            return {"state": state, "ticked": True, "tickable": True,
+                    "reason": "Already installed; the bot may use it without asking"}
         out = {"state": state, "ticked": state in (appfile.STATE_NEW, appfile.STATE_UPDATE),
                "tickable": state not in appfile.WARN_STATES and state != appfile.STATE_CLASH and not t.get("needs_force")}
         if state == appfile.STATE_CLASH:
@@ -288,7 +294,9 @@ def _row_state(row: dict, staged: str | None) -> dict:
     else:
         return {"state": "unknown", "ticked": False, "tickable": False, "reason": "Unknown app source"}
     if installed:
-        return {"state": "installed", "ticked": False, "tickable": False, "reason": "Already installed"}
+        # Same rule as a bundled app at the same version: ticked = trusted, untick to refuse; nothing is written.
+        return {"state": "installed", "ticked": True, "tickable": True,
+                "reason": "Already installed; the bot may use it without asking"}
     return {"state": "missing", "ticked": True, "tickable": True}
 
 
