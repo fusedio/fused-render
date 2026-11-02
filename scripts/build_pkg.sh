@@ -2,7 +2,6 @@
 # Build the macOS network installer: a tiny, signed, notarized .pkg whose
 # postinstall downloads this release's DMG from the CDN, verifies the sha256
 # pinned here at build time, and copies the app into /Applications.
-# Background and the alternatives weighed: docs/MACOS_INSTALLER_RESEARCH.md.
 #
 #   bash scripts/build_pkg.sh <stapled-dmg> <public-dmg-url>
 #
@@ -213,26 +212,40 @@ else
   fi
 fi
 
-rm -f "$PKG_PATH"
+# productbuild regenerates every pkg-ref's installKBytes from the component,
+# which is 0 for a payload-free one, so the "Installation Type" page would say
+# the install takes Zero KB whatever the template says. Build unsigned, put the
+# real figure back into the Distribution, re-flatten, and sign the result with
+# productsign (signing must come last: it covers the final Distribution).
+UNSIGNED_PKG="$BUILD_DIR/product-unsigned.pkg"
+EXPANDED="$BUILD_DIR/product-expanded"
+PATCHED_PKG="$BUILD_DIR/product-patched.pkg"
+rm -rf "$UNSIGNED_PKG" "$EXPANDED" "$PATCHED_PKG" "$PKG_PATH"
+echo "==> productbuild"
+productbuild \
+  --distribution "$BUILD_DIR/distribution.xml" \
+  --resources "$BUILD_DIR/resources" \
+  --package-path "$BUILD_DIR" \
+  --version "$VERSION" \
+  "$UNSIGNED_PKG"
+pkgutil --expand "$UNSIGNED_PKG" "$EXPANDED"
+sed -i '' -E "s/installKBytes=\"[0-9]+\"/installKBytes=\"${INSTALL_KBYTES}\"/" "$EXPANDED/Distribution"
+grep -q "installKBytes=\"${INSTALL_KBYTES}\"" "$EXPANDED/Distribution" || {
+  echo "FATAL: could not set installKBytes in the product Distribution" >&2
+  exit 1
+}
+pkgutil --flatten "$EXPANDED" "$PATCHED_PKG"
+
 if [[ -n "$SIGN_IDENTITY" ]]; then
-  echo "==> productbuild, signed: $SIGN_IDENTITY"
-  productbuild \
-    --distribution "$BUILD_DIR/distribution.xml" \
-    --resources "$BUILD_DIR/resources" \
-    --package-path "$BUILD_DIR" \
-    --version "$VERSION" \
+  echo "==> productsign: $SIGN_IDENTITY"
+  productsign \
     --sign "$SIGN_IDENTITY" --timestamp $KC_OPT \
-    "$PKG_PATH"
+    "$PATCHED_PKG" "$PKG_PATH"
   pkgutil --check-signature "$PKG_PATH"
 else
-  echo "==> productbuild, UNSIGNED (no 'Developer ID Installer' identity; local inspection only)"
+  echo "==> UNSIGNED (no 'Developer ID Installer' identity; local inspection only)"
   echo "    Gatekeeper refuses an unsigned pkg from the internet — see docs/signing.md"
-  productbuild \
-    --distribution "$BUILD_DIR/distribution.xml" \
-    --resources "$BUILD_DIR/resources" \
-    --package-path "$BUILD_DIR" \
-    --version "$VERSION" \
-    "$PKG_PATH"
+  mv "$PATCHED_PKG" "$PKG_PATH"
 fi
 
 # ---------------------------------------------------------------------------
