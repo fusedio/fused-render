@@ -11,7 +11,12 @@ Build workspace for the Map Viewer's browser rendering stack, committed under
     drawn on the GPU via deck.gl; band choice, rescale, colormap, stretch,
     gamma and nodata are shader uniforms, so restyling never refetches
   - `maplibre-gl-vector` — GeoJSON as-is; GeoParquet, Shapefile, GeoPackage,
-    FlatGeobuf, CSV, KML… through DuckDB-WASM, tiled in the browser
+    FlatGeobuf, CSV, KML… through DuckDB-WASM, tiled in the browser. A file
+    holding several layers (a GeoPackage with several tables, a zip of
+    shapefiles, a KML with folders) is never expanded by the library: the page
+    answers its `selectLayers` hook itself, so the library's own layer picker
+    never opens, and the map document gets one layer per source layer, each
+    with `options.source_layer` (the `split_layer` command)
   - `@carbonplan/zarr-layer` + `zarrita` — Zarr v2/v3 as a MapLibre custom layer
   - `pmtiles` — the `pmtiles://` protocol
   - `maplibre-gl-lidar` — LAS/LAZ/COPC/EPT point clouds through deck.gl's
@@ -22,7 +27,8 @@ Build workspace for the Map Viewer's browser rendering stack, committed under
   the main thread.
 - `laz-perf.wasm` — the LAZ decoder the point-cloud library loads; `build.sh`
   points the bundle at this copy instead of unpkg, so LAZ/COPC opens offline.
-- `map.bundle.css` — MapLibre's and the point-cloud library's stylesheets.
+- `map.bundle.css` — MapLibre's, the vector library's and the point-cloud
+  library's stylesheets.
 
 ## Point-cloud rendering
 
@@ -68,7 +74,8 @@ read — striped/non-TIFF rasters (to COG), NetCDF/HDF5 (to Zarr), a user's `.py
 deck.gl, MapLibre and the readers are all in the bundle. Two things still come
 from a CDN on first use, by the vector library's design: DuckDB-WASM
 (jsDelivr) and its `spatial` extension (extensions.duckdb.org). Offline, the
-page falls back to `prepare.py`'s GeoJSON conversion for vectors.
+page falls back to `prepare.py`'s GeoJSON conversion for vectors, which lists
+a multi-layer file's layers the same way and then converts each one.
 
 ## Rebuild
 

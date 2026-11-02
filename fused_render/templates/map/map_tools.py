@@ -100,7 +100,11 @@ def add_layer(map_path: str, source: str, name: str = "", kind: str = "auto",
     ept.json), or a .py script returning geodata. kind is
     auto|raster|vector|zarr|pmtiles|pointcloud. See map_style_reference for
     style and options keys. Creates the map file if it does not exist. Returns
-    the new layer's id, which the other layer tools take."""
+    the new layer's id, which the other layer tools take. A file holding
+    several vector layers (a GeoPackage with several tables, a zip of
+    shapefiles, a KML with folders) becomes one map layer per source layer
+    when the map opens, each with options.source_layer; set
+    options.source_layer to add only that one."""
     try:
         command = _drop_none(op="add_layer", source=source, name=name or None,
                              kind=kind, style=_json_arg(style),
@@ -170,9 +174,11 @@ def set_basemap(map_path: str, basemap: str) -> dict:
 
 def apply_commands(map_path: str, commands: list[dict]) -> dict:
     """Apply several map commands at once, all or nothing. Each is an object
-    with "op" (add_layer, remove_layer, update_layer, move_layer, set_view,
-    set_basemap, set_title, clear_layers) and that op's fields, e.g.
-    {"op": "update_layer", "id": "roads", "style": {"line_color": "#ff0000"}}."""
+    with "op" (add_layer, remove_layer, update_layer, move_layer, split_layer,
+    set_view, set_basemap, set_title, clear_layers) and that op's fields, e.g.
+    {"op": "update_layer", "id": "roads", "style": {"line_color": "#ff0000"}}
+    or {"op": "split_layer", "id": "parcels", "source_layers": ["lots", "roads"]},
+    which replaces a layer with one layer per named source layer of its file."""
     try:
         commands = _json_arg(commands)
     except map_doc.MapDocError as error:
@@ -182,16 +188,18 @@ def apply_commands(map_path: str, commands: list[dict]) -> dict:
     return _edit(map_path, commands)
 
 
-def describe_source(source: str) -> dict:
+def describe_source(source: str, layer: str = "") -> dict:
     """What a data file holds before mapping it: raster bands/dtype/CRS/bounds,
     vector feature count/fields/geometry type, or a NetCDF/Zarr's gridded
-    variables and dimensions. Use it to choose styles (bands, color_by)."""
+    variables and dimensions. Use it to choose styles (bands, color_by). A
+    file holding several vector layers also lists them under layers; pass
+    layer to describe one of them (the first is described otherwise)."""
     try:
         import prepare
     except Exception as error:  # the geo stack is the template venv's
         return {"status": "error", "message": f"describe_source needs the Map "
                 f"Viewer's environment: {error}"}
-    return prepare.main(source, action="inspect")
+    return prepare.main(source, action="inspect", layer=layer)
 
 
 def download_source(source: str, dest_dir: str) -> dict:

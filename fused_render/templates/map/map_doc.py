@@ -349,6 +349,26 @@ def _move_layer(doc: dict, cmd: dict) -> dict:
     return {"id": layer["id"], "index": target}
 
 
+def _split_layer(doc: dict, cmd: dict) -> dict:
+    index = _find(doc, cmd.get("id"))
+    names = cmd.get("source_layers")
+    if not (isinstance(names, list) and names
+            and all(isinstance(name, str) and name for name in names)
+            and len(set(names)) == len(names)):
+        raise MapDocError("source_layers must be a list of distinct layer names")
+    layer = doc["layers"].pop(index)
+    plain = layer["name"] == _basename(layer["source"])
+    ids = []
+    for offset, name in enumerate(names):
+        label = name if plain else f"{layer['name']} · {name}"
+        child = {**layer, "id": _unique_id(doc, _slug(label)), "name": label,
+                 "style": copy.deepcopy(layer["style"]),
+                 "options": {**layer["options"], "source_layer": name}}
+        doc["layers"].insert(index + offset, child)
+        ids.append(child["id"])
+    return {"ids": ids}
+
+
 def _set_view(doc: dict, cmd: dict) -> dict:
     if not any(k in cmd for k in ("center", "zoom", "bearing", "pitch", "bounds")):
         raise MapDocError("set_view needs center, zoom, bearing, pitch or bounds")
@@ -383,6 +403,7 @@ COMMANDS = {
     "remove_layer": _remove_layer,
     "update_layer": _update_layer,
     "move_layer": _move_layer,
+    "split_layer": _split_layer,
     "set_view": _set_view,
     "set_basemap": _set_basemap,
     "set_title": _set_title,

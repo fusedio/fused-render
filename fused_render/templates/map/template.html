@@ -438,6 +438,14 @@
   .px-table { border-collapse: collapse; font: 11px var(--mono); }
   .px-table td { padding: 1px 6px 1px 0; }
   .px-table td:first-child { color: var(--muted); }
+  #map .vector-control-popup { --vc-text: var(--text); --vc-text-strong: var(--text); --vc-text-soft: var(--muted);
+    --vc-muted: var(--faint); --vc-border-soft: var(--border); font-family: var(--font); }
+  #map .maplibregl-popup:has(.vector-control-popup) .maplibregl-popup-content { background: var(--panel); box-shadow: 0 1px 2px rgba(0,0,0,.1); }
+  #map .maplibregl-popup:has(.vector-control-popup) .maplibregl-popup-close-button { color: inherit; }
+  #map .maplibregl-popup[class*="-anchor-top"]:has(.vector-control-popup) .maplibregl-popup-tip { border-bottom-color: var(--panel); }
+  #map .maplibregl-popup[class*="-anchor-bottom"]:has(.vector-control-popup) .maplibregl-popup-tip { border-top-color: var(--panel); }
+  #map .maplibregl-popup-anchor-left:has(.vector-control-popup) .maplibregl-popup-tip { border-right-color: var(--panel); }
+  #map .maplibregl-popup-anchor-right:has(.vector-control-popup) .maplibregl-popup-tip { border-left-color: var(--panel); }
 </style>
 </head>
 <body>
@@ -769,6 +777,23 @@
       doc.layers.splice(target, 0, layer);
       return { id: layer.id, index: target };
     },
+    split_layer(doc, cmd) {
+      const index = find(doc, cmd.id), names = cmd.source_layers;
+      if (!(Array.isArray(names) && names.length && names.every(name => typeof name === "string" && name !== "")
+            && new Set(names).size === names.length)) fail("source_layers must be a list of distinct layer names");
+      const [layer] = doc.layers.splice(index, 1);
+      const plain = layer.name === basename(layer.source);
+      const ids = names.map((name, offset) => {
+        const label = plain ? name : `${layer.name} · ${name}`;
+        const child = Object.assign({}, layer, {
+          id: uniqueId(doc, slug(label)), name: label, style: clone(layer.style),
+          options: Object.assign({}, layer.options, { source_layer: name }),
+        });
+        doc.layers.splice(index + offset, 0, child);
+        return child.id;
+      });
+      return { ids };
+    },
     set_view(doc, cmd) {
       if (!["center", "zoom", "bearing", "pitch", "bounds"].some(k => k in cmd))
         fail("set_view needs center, zoom, bearing, pitch or bounds");
@@ -1085,7 +1110,7 @@ const raster = {
       // A remote COG's bounds land after addRaster resolves (the header is
       // read while the first tiles are); a fit asked for before then waits here.
       this.mgr.on("rasterchange", () => {
-        for (const id of [...pendingFit]) if ((runtime.get(id) || {}).engine === "raster") fitLayer(id);
+        for (const group of new Set(pendingFit.values())) fitLayers(group);
         scheduleUi();
       });
       this.mgr.on("error", event => console.warn("[map] raster:", event.error && event.error.message));
@@ -1152,7 +1177,10 @@ const vector = {
       // The control's own panel stays hidden: this page is the UI, and the
       // control is driven through its API. Its feature popups still show.
       this.ctl = new M.VectorControl({ collapsed: true, className: "fm-hidden-control",
-                                       enablePicker: true, maxTileZoom: 16 });
+                                       enablePicker: true, maxTileZoom: 16,
+                                       selectLayers: layers => {
+                                         throw Object.assign(new Error(`${layers.length} source layers`), { sourceLayers: layers });
+                                       } });
       map.addControl(this.ctl, "top-left");
     }
     return this.ctl;
@@ -1173,6 +1201,7 @@ const vector = {
     };
   },
   async add(layer, plan, r) {
+    if (plan.layers) { r.sourceLayers = plan.layers; return; }
     const vc = this.control();
     r.handle = `v-${layer.id}-${++seq}`;
     const options = { id: r.handle, name: layer.name, fitBounds: false, visible: layer.visible,
@@ -1198,7 +1227,8 @@ const vector = {
         options.ingestMode = size > STREAM_BYTES ? "stream" : "table";
       }
     }
-    r.info = await vc.addData(source, options);
+    try { r.info = await vc.addData(source, options); }
+    catch (error) { if (!error.sourceLayers) throw error; r.sourceLayers = error.sourceLayers; return; }
     r.kind = "vector";
   },
   async update(layer, r) {
@@ -1701,7 +1731,7 @@ const ENGINES = { raster, vector, zarr: zarrEngine, pmtiles: pmtilesEngine, poin
 // When the first reader fails, the one retry that can succeed: Python
 // re-encodes a raster (or fetches one the browser was refused), and reads a
 // vector DuckDB-WASM could not (its wasm comes from a CDN; offline, it can't).
-async function fallbackPlan(plan) {
+async function fallbackPlan(plan, layer) {
   if (plan.fallback) return null;
   // LAS 1.4 or a CRS the browser cannot read: Python rewrites the file.
   if (plan.load === "pointcloud" && !isEpt(plan.path) && !/\.copc\.laz$/i.test(String(plan.path).split(/[?#]/)[0]))
@@ -1711,7 +1741,8 @@ async function fallbackPlan(plan) {
     return action && { ...(await python(plan.path, action)), fallback: true };
   }
   if (plan.load === "vector" && !plan.geojson) {
-    const out = await python(plan.path, "geojson");
+    const out = await python(plan.path, "geojson", { layer: layer.options.source_layer || "" });
+    if (out.layers) return { ...out, fallback: true };
     const geojson = await (await fetch(httpUrl(out.path))).json();
     return { load: "vector", path: out.path, geojson, fallback: true,
              note: "read by Python (the in-browser vector engine was unavailable)" };
@@ -1740,11 +1771,19 @@ async function loadLayer(layer, r) {
       ENGINES[plan.load].remove(r);
       if (plan.load === "pointcloud") { r.note = "Converting…"; scheduleUi(); }
       let fallbackError = null;
-      const retry = await fallbackPlan(plan).catch(e => { fallbackError = e; return null; });
+      const retry = await fallbackPlan(plan, layer).catch(e => { fallbackError = e; return null; });
       // A point cloud's conversion explains a failure better than the reader.
       if (!retry) throw (plan.load === "pointcloud" && fallbackError) || error;
       r.plan = retry; r.note = retry.note || "";
       await ENGINES[retry.load].add(layer, retry, r);
+    }
+    if (r.sourceLayers) {
+      const current = docLayer(layer.id);
+      if (runtime.get(layer.id) === r && current && loadKey(current) === r.key) {
+        execute({ op: "split_layer", id: layer.id, source_layers: r.sourceLayers });
+        runtime.delete(layer.id);
+      }
+      return;
     }
     r.engine = r.plan.load;
     if (runtime.get(layer.id) !== r) { ENGINES[r.engine].remove(r); return; }
@@ -1757,7 +1796,6 @@ async function loadLayer(layer, r) {
     // A restyle that landed during that await skipped this still-loading layer.
     if (docLayer(layer.id) !== current) requestReconcile();
     applyOrder();
-    if (pendingFit.delete(layer.id)) fitLayer(layer.id);
   } catch (error) {
     if (runtime.get(layer.id) !== r) return;
     r.status = "error";
@@ -1766,6 +1804,8 @@ async function loadLayer(layer, r) {
     r.traceback = error && error.traceback;
     console.warn("[map] could not load", layer.source, error);
   }
+  const fitGroup = pendingFit.get(layer.id);
+  if (fitGroup) fitLayers(fitGroup);
   scheduleUi();
 }
 // The card swatch for a colormapped layer is its ramp.
@@ -1888,14 +1928,26 @@ map.on("moveend", () => {
   appliedView = JSON.stringify(doc.view);
   persist({ quiet: true });
 });
-const pendingFit = new Set();
-function fitLayer(id) {
-  const r = runtime.get(id);
-  if (!r || r.status !== "ready") { pendingFit.add(id); return; }
-  const b = ENGINES[r.engine].bounds(r);
-  if (!b || !b.every(Number.isFinite)) { if (r.engine === "raster") pendingFit.add(id); return; }
-  pendingFit.delete(id);
-  const [w, s, e, n] = b;
+const pendingFit = new Map();
+function deferFit(ids) { for (const id of ids) pendingFit.set(id, ids); }
+function fitLayer(id) { fitLayers([id]); }
+function fitLayers(ids) {
+  const group = ids.filter(id => docLayer(id));
+  const boxes = [];
+  let waiting = false, failed = false;
+  for (const id of group) {
+    const r = runtime.get(id);
+    if (!r || r.status === "loading") { waiting = true; continue; }
+    if (r.status !== "ready") { failed = true; continue; }
+    const b = ENGINES[r.engine].bounds(r);
+    if (b && b.every(Number.isFinite)) boxes.push(b);
+    else if (r.engine === "raster") waiting = true;
+  }
+  if (waiting || (failed && !boxes.length)) { deferFit(group); return; }
+  for (const id of group) pendingFit.delete(id);
+  if (!boxes.length) return;
+  const w = Math.min(...boxes.map(b => b[0])), s = Math.min(...boxes.map(b => b[1]));
+  const e = Math.max(...boxes.map(b => b[2])), n = Math.max(...boxes.map(b => b[3]));
   if (e - w < 1e-9 && n - s < 1e-9) map.flyTo({ center: [w, s], zoom: 14, duration: 700 });
   else map.fitBounds([[Math.max(w, -180), Math.max(s, -85)], [Math.min(e, 180), Math.min(n, 85)]],
                      { padding: 60, duration: 700, maxZoom: 17 });
@@ -1914,10 +1966,14 @@ function execute(command, { fit = false, quiet = false } = {}) {
   const [next, result] = MapDoc.apply(doc, command);
   doc = next;
   if (command.op === "add_layer") {
-    if (fit) pendingFit.add(result.id);
+    if (fit) deferFit([result.id]);
     if (!quiet) selected = result.id;
   }
   if (command.op === "remove_layer" && selected === command.id) selected = null;
+  if (command.op === "split_layer") {
+    if (selected === command.id) selected = result.ids[result.ids.length - 1];
+    if (pendingFit.delete(command.id)) deferFit(result.ids);
+  }
   persist({ quiet });
   requestReconcile();
   emit("change", { command, result });
@@ -2140,7 +2196,8 @@ const api = {
   version: 1,
   schema: { style: MapDoc.STYLE_KEYS, options: MapDoc.OPTION_KEYS, basemaps: MapDoc.BASEMAPS,
             kinds: MapDoc.KINDS, commands: ["add_layer", "remove_layer", "update_layer", "move_layer",
-                                            "set_view", "set_basemap", "set_title", "clear_layers"] },
+                                            "split_layer", "set_view", "set_basemap", "set_title",
+                                            "clear_layers"] },
   execute: (command, options) => execute(command, options),
   run(commands) {
     const [next, results] = MapDoc.applyAll(doc, commands);
@@ -2888,8 +2945,8 @@ const state = { dir: P.get("dir") || "" };
 function addSource(value, name) {
   const source = normalizeTarget(value);
   if (!source) return null;
-  const existing = doc.layers.find(l => l.source === source);
-  if (existing) { selectLayer(existing.id); fitLayer(existing.id); return existing.id; }
+  const existing = doc.layers.filter(l => l.source === source).map(l => l.id), last = existing[existing.length - 1];
+  if (last) { selectLayer(last); fitLayers(existing); return last; }
   const result = tryExecute({ op: "add_layer", source, ...(name ? { name } : {}) }, { fit: true });
   if (result) { refreshCode(); showStylePanel(); }
   return result && result.id;
@@ -3332,7 +3389,7 @@ async function openDocument(path) {
       }
       // A link that names layers but no camera should land on the data.
       if (doc.layers.length && !(cam.length === 3 && cam.every(Number.isFinite)))
-        pendingFit.add(doc.layers[doc.layers.length - 1].id);
+        deferFit([doc.layers[doc.layers.length - 1].id]);
     }
     requestReconcile();
     if (file) addSource(file);
