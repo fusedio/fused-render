@@ -509,7 +509,7 @@ def _already_there(row: dict) -> str | None:
     if kind == "marketplace":
         return (_market_copy(_str(src.get("slug"))) or {}).get("path")
     if kind == "github":
-        return _github_clone(_str(src.get("url")))  # a clone only: an app id match is display, never trust
+        return _github_clone(_str(src.get("url")))  # a clone only: an app id match counts for nothing
     return None
 
 
