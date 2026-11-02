@@ -1,7 +1,7 @@
 // Per-bot derived values shared by the list, the chat header, the preview and the live view (OpenBot core.js
 // helpers). Pure: each takes the bot and, where needed, its merged event list from the store.
 import type { Bot, BotEvent, Handoff, Routine } from "./api";
-import { fmtIn } from "./format";
+import { fmtAgo, fmtIn } from "./format";
 
 /** The newest event of `role`'s seq, or -1. */
 export const lastSeqOf = (evs: BotEvent[], role: BotEvent["role"]): number => {
@@ -52,6 +52,28 @@ export function activeHandoff(b: Pick<Bot, "handoffs">): Handoff | null {
 export const statusLabel = (b: Bot): string =>
   ({ running: `running · step ${b.step || 0}`, waiting: "waiting for you", paused: "paused", error: "error",
      idle: b.browser?.running ? "idle" : "idle · browser off" } as Record<string, string>)[b.status] || b.status;
+
+const DOING_WORDS: Record<string, string> = { thinking: "thinking", writing: "writing a reply" };
+
+/** The status line beside Pause / Stop for a bot that is running or waiting. A running bot that reports `doing` shows it
+ *  with how long it has been at it (from 5 s); one that does not (other engines) falls back to "last step X ago".
+ *  A message sent mid-task and not yet read is called out. `lastStepTs` is the newest non-user event (epoch s). */
+export function runningStatusText(b: Bot, lastStepTs: number, nowMs: number = Date.now()): string {
+  if (b.status === "waiting") return "Waiting for you · answer, sign in or approve above";
+  if (b.status !== "running") return "";
+  let out = statusLabel(b);
+  if (b.doing) {
+    out += ` · ${DOING_WORDS[b.doing] || b.doing}`;
+    const s = b.doing_since ? Math.floor(nowMs / 1000 - b.doing_since) : 0;
+    if (s >= 5) out += ` · ${s < 60 ? `${s}s` : `${Math.floor(s / 60)} min`}`;
+  } else {
+    const quiet = lastStepTs ? fmtAgo(lastStepTs, nowMs) : "";
+    if (quiet && quiet !== "now") out += ` · last step ${quiet}`;
+  }
+  const q = b.inbox_n || 0;
+  if (q > 0) out += q === 1 ? " · your message is queued for its next step" : ` · ${q} messages are queued for its next step`;
+  return out;
+}
 
 // Recency skips system notes: a browser going to sleep is not activity and must not reorder the list.
 export const lastTs = (evs: BotEvent[]): number => {
