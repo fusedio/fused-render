@@ -115,7 +115,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { Plus } from "lucide-react";
+import { GitBranch, GitCommitHorizontal, Plus, RefreshCw } from "lucide-react";
 import PanelIcon from "@platform/ui/PanelIcon";
 import { getSchedule, markWholeTaskRead, type Task, type TaskPulseTask } from "@platform/lib/api";
 import {
@@ -156,6 +156,8 @@ import {
 import { CanvasGlyph } from "@apps/canvases/glyph";
 import { PeekIntent, keepAlive, statusWords } from "./rail-peek-lib";
 import { useCanvasRailPeek } from "./rail-peek-flag";
+import { useRailGit } from "./rail-git";
+import { timeAgo } from "@platform/lib/format";
 import { RailPeek, type RailPeekHandle } from "./RailPeek";
 
 /** The hover card's DOM id (one rail per page; the ring's `aria-controls`). */
@@ -260,6 +262,7 @@ function cardSeed(): Promise<{ modes: string[]; recents: string[] }> {
 export function ClaudeRail({
   place,
   newTask,
+  git,
   activeSessionId,
   onOpen,
   onOpenChat,
@@ -273,6 +276,15 @@ export function ClaudeRail({
   place: RailPlace;
   /** What the + makes a task on (`NewTaskSeed`). */
   newTask: NewTaskSeed;
+  /** THE GIT SECTION (owner, 2026-11-02: "we need to show git as well when
+   *  collapsed … like the collapsed left sidebar where we have sections"):
+   *  under the chats, past a separator, the way the left rail splits
+   *  Projects / Canvases / Favourites — a Check-for-updates seat, the branch,
+   *  and the last three commits that touched `path` (rail-git.ts). Drawn only
+   *  where `path` sits in a repository; absent on a canvas (a clone is not
+   *  one). `onOpenGit` is the branch's and the commits' door: the page's git
+   *  panel (the explorer's git companion, the app page's git peek). */
+  git?: { path: string; onOpenGit?: () => void };
   /** The session the page's URL names, drawn as the current row. */
   activeSessionId: string | null;
   /** Open the pane as it is. */
@@ -295,6 +307,9 @@ export function ClaudeRail({
 }) {
   const rows = useTasksPulseRows();
   const peekOn = useCanvasRailPeek();
+  // THE GIT SECTION'S FACTS (header; rail-git.ts). Read for no path on a
+  // rail with no git — the hook is inert then.
+  const railGit = useRailGit(git?.path ?? null);
   // THE CANVAS PLACE'S OWN FACTS (header): the selected node, as the
   // workbench names it, and the canvas's name — what the foot's canvas seat
   // and the +'s words read. Null / the place's own name elsewhere.
@@ -1076,6 +1091,93 @@ export function ClaudeRail({
             </button>
             )}
           </div>
+        )}
+        {git && railGit.repo && (
+          // THE GIT SECTION (header): past the left rail's own separator
+          // (sidebar.css `.sidebar-rail-sep`), the repository the page sits
+          // in. Each seat wears the app's hint (platform/lib/hints), beside
+          // the rail like the rings' — a 48px column has no room for words.
+          <>
+            <span className="sidebar-rail-sep" aria-hidden="true" />
+            <div className="claude-rail-git" role="group" aria-label="Git">
+              {(() => {
+                const r = railGit.repo;
+                const behind = r.behind ?? 0;
+                const ahead = r.ahead ?? 0;
+                const counts =
+                  r.default_branch === null
+                    ? "No remote"
+                    : `${ahead} ahead · ${behind} behind ${r.default_branch}`;
+                const checkWords = railGit.checking
+                  ? "Checking for updates…"
+                  : railGit.checked === false
+                    ? "Check for updates — the remote could not be reached"
+                    : "Check for updates";
+                const branch = r.branch ?? "detached HEAD";
+                return (
+                  <>
+                    <button
+                      type="button"
+                      className={"sidebar-rail-btn claude-rail-item claude-rail-git-check" + (railGit.checking ? " is-checking" : "")}
+                      aria-label={`${checkWords} · ${counts}`}
+                      aria-busy={railGit.checking || undefined}
+                      disabled={railGit.checking || r.default_branch === null}
+                      data-hint={checkWords}
+                      data-hint-title={checkWords}
+                      data-hint-reply={counts}
+                      data-hint-side="left"
+                      onClick={() => {
+                        hideHint();
+                        railGit.check();
+                      }}
+                    >
+                      <RefreshCw size={16} aria-hidden="true" />
+                      {behind > 0 && <span className="sidebar-rail-dot is-unread" aria-hidden="true" />}
+                    </button>
+                    <button
+                      type="button"
+                      className="sidebar-rail-btn claude-rail-item claude-rail-git-branch"
+                      aria-label={`On ${branch} · ${counts}${git.onOpenGit ? " — open the Git panel" : ""}`}
+                      disabled={!git.onOpenGit}
+                      data-hint={`On ${branch}`}
+                      data-hint-title={`On ${branch}`}
+                      data-hint-reply={counts}
+                      data-hint-side="left"
+                      onClick={() => {
+                        hideHint();
+                        git.onOpenGit?.();
+                      }}
+                    >
+                      <GitBranch size={16} aria-hidden="true" />
+                    </button>
+                    {r.commits.map((c) => {
+                      const when = timeAgo(c.when) ?? "";
+                      const who = [c.author, when].filter(Boolean).join(" · ");
+                      return (
+                        <button
+                          key={c.sha}
+                          type="button"
+                          className="sidebar-rail-btn claude-rail-item claude-rail-git-commit"
+                          aria-label={`${c.subject} — ${who} (${c.short})`}
+                          disabled={!git.onOpenGit}
+                          data-hint={c.subject}
+                          data-hint-title={c.subject}
+                          data-hint-reply={`${who} · ${c.short}`}
+                          data-hint-side="left"
+                          onClick={() => {
+                            hideHint();
+                            git.onOpenGit?.();
+                          }}
+                        >
+                          <GitCommitHorizontal size={16} aria-hidden="true" />
+                        </button>
+                      );
+                    })}
+                  </>
+                );
+              })()}
+            </div>
+          </>
         )}
       </div>
       {peekOn && keptSeats.length > 0 && (

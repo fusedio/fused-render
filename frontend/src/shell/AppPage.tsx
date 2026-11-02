@@ -1213,6 +1213,10 @@ export default function AppPage({
           // whatever the entry probe has answered yet; the Tasks door routes
           // by the row's own `entry` either way (tasks-lib `taskHref`).
           newTask={{ target: dir, waiting: null, on: null }}
+          // The rail's Git section: this folder's repository; its door is
+          // the page's own git peek (App Doctor's "Open in git" opens the
+          // same one).
+          git={{ path: dir, onOpenGit: openGit }}
           activeSessionId={new URLSearchParams(location.search).get("session_id")}
           onOpen={claude.show}
           onOpenChat={openChatHere}

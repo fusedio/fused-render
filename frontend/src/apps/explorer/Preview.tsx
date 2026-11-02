@@ -1185,6 +1185,8 @@ function TemplatePreview({
   // keeps the crumb bar's Show button and the bare reopen edge.
   const railHere = !!sideSlot && sideTargets.some((e) => e.mode === "claude");
   const openClaudeSide = () => setSide("claude");
+  // The rail's Git section opens the git companion where this file has one.
+  const railGitDoor = sideTargets.some((e) => e.mode === "git") ? () => setSide("git", "git") : undefined;
 
   // The one writer. `null` CLOSES, and closing is a value (`_side=off`) rather
   // than a deleted param now that absence means open — while choosing the
@@ -2527,6 +2529,7 @@ function TemplatePreview({
           <ClaudeRail
             place={railPlace}
             newTask={{ target: fsPath, waiting: null, on: null }}
+            git={{ path: fsPath, ...(railGitDoor ? { onOpenGit: railGitDoor } : {}) }}
             activeSessionId={new URLSearchParams(location.search).get("session_id")}
             onOpen={openClaudeSide}
             // A ring's door is this file's own URL with the chat's session

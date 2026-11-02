@@ -6482,6 +6482,34 @@ export interface GitCommits {
   total: number;
 }
 
+/** The Claude rail's Git section (routers/git_rail.py): the branch and the
+ *  last three commits for a page's folder or file, and how far HEAD stands
+ *  from the remote's default branch as last fetched. */
+export interface RailGitRepo {
+  root: string;
+  branch: string | null;
+  default_branch: string | null;
+  ahead: number | null;
+  behind: number | null;
+  commits: GitCommit[];
+}
+
+export interface RailGit {
+  ok: boolean;
+  /** Null: the path is in no repository. */
+  repo: RailGitRepo | null;
+}
+
+export function getRailGit(path: string): Promise<RailGit> {
+  return getJson<RailGit>(`/api/git/rail?path=${encodeURIComponent(path)}`);
+}
+
+/** The rail's "Check for updates": one fetch of the default branch, then the
+ *  fresh counts. `checked` is false when the remote could not be reached. */
+export function postRailGitCheck(path: string): Promise<RailGit & { checked: boolean }> {
+  return mutateJson<RailGit & { checked: boolean }>("POST", "/api/git/rail/check", { path });
+}
+
 export function getGitCommits(path: string, limit = 30): Promise<GitCommits> {
   return getJson<GitCommits>(
     `/api/git/commits?path=${encodeURIComponent(path)}&limit=${limit}`,

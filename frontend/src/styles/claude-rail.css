@@ -717,3 +717,38 @@ button.claude-rail-peek-scope.is-node:focus-visible {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;
 }
+
+/* THE GIT SECTION (ClaudeRail `git`): under the chats, past the left rail's
+   separator, the repository the page sits in — Check for updates, the
+   branch, the last three commits. The same 28px seats as the rings; the
+   check's "behind" dot is the sidebar's own unread dot (sidebar.css
+   `.sidebar-rail-dot`). Never scrolls: five seats at most. A commit or
+   branch seat with no git panel to open (`onOpenGit` absent) is a label —
+   its hint still says what it is. */
+.claude-rail-git {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 0 0 auto;
+}
+.claude-rail-git .sidebar-rail-btn:disabled {
+  cursor: default;
+}
+.claude-rail-git .sidebar-rail-btn:disabled:not(.claude-rail-git-check) {
+  opacity: 1;
+}
+/* The check seat turns while a fetch is out. */
+.claude-rail-git-check.is-checking svg {
+  animation: claude-rail-git-spin 0.9s linear infinite;
+}
+@keyframes claude-rail-git-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .claude-rail-git-check.is-checking svg {
+    animation: none;
+    opacity: 0.6;
+  }
+}

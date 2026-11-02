@@ -1071,6 +1071,8 @@ export default function Listing({
   // row's Show button.
   const railHere = paneSides.includes("claude");
   const openClaudeSide = () => setSide({ open: true, mode: "claude" });
+  // The rail's Git section opens the git companion where this folder has one.
+  const railGitDoor = paneSides.includes("git") ? () => setSide({ open: true, mode: "git" }, "git") : undefined;
   // The two facts `setSide`'s guard above needs, written on every render (see
   // its own comment for why they are refs and not values).
   showingClaude.current = paneOpen && paneSide === "claude";
@@ -2346,6 +2348,7 @@ export default function Listing({
           <ClaudeRail
             place={railPlace}
             newTask={{ target: fsPath, waiting: null, on: null }}
+            git={{ path: fsPath, ...(railGitDoor ? { onOpenGit: railGitDoor } : {}) }}
             activeSessionId={new URLSearchParams(location.search).get("session_id")}
             onOpen={openClaudeSide}
             onOpenChat={(href) => navigateUrl(href)}
