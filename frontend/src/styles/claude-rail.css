@@ -62,8 +62,17 @@
    (schedule.css `.schedule-ring`), centred in the 28px seat; the seat's hover
    wash and `.active` are the sidebar's. */
 .claude-rail-chats {
-  /* Scrolls on a short window rather than running off the rail. */
-  flex: 0 1 auto;
+  /* The room the column leaves between the + and the foot: as many whole
+     rings as fit, from the top, and NO scroll (owner, 2026-11-02; ClaudeRail
+     `fit` measures this box). The gap is the items column's own. */
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
 }
 /* The list item wraps the link (ClaudeRail: the popup attributes live on the
    link, not on a `listitem`); it is the 28px seat and nothing else. */

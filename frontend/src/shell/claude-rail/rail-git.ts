@@ -10,7 +10,7 @@
 // fetch of the default branch (`POST /api/git/rail/check`), then the fresh
 // counts. `repo` is null where the path is in no repository (a canvas clone,
 // a plain folder): the section is not drawn.
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getRailGit, postRailGitCheck, type RailGitRepo } from "@platform/lib/api";
 import { useTasksPulseRows } from "@shell/tasksPulse";
 
@@ -58,8 +58,12 @@ export function useRailGit(path: string | null): RailGit {
     setChecked(null);
     reload();
   }, [reload]);
-  // After the pulse moves (header).
+  // After a task's STATUS moves (header) — a run that ended may have
+  // committed. The rows' key+status fingerprint, not the rows themselves:
+  // a streaming turn moves `last_active` every tick, and a git log per tick
+  // would be the exact cost this hook must not add.
   const rows = useTasksPulseRows();
+  const statusKey = useMemo(() => rows.map((t) => t.key + ":" + t.status).join("\n"), [rows]);
   const first = useRef(true);
   useEffect(() => {
     if (first.current) {
@@ -68,7 +72,7 @@ export function useRailGit(path: string | null): RailGit {
     }
     const t = window.setTimeout(reload, PULSE_SETTLE_MS);
     return () => window.clearTimeout(t);
-  }, [rows, reload]);
+  }, [statusKey, reload]);
   // …and when the tab comes back.
   useEffect(() => {
     const onVisible = () => {

@@ -109,6 +109,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -362,7 +363,34 @@ export function ClaudeRail({
   // once per derivation, as `sortForList` asks; the derivation re-runs when a
   // row moves (the pulse) or the listing re-reads, which is when a rank can
   // change.
-  const baseSeats = useMemo(() => railRows(rows, full, seatPlace), [rows, full, seatPlace]);
+  const allSeats = useMemo(() => railRows(rows, full, seatPlace), [rows, full, seatPlace]);
+  // ONLY AS MANY RINGS AS FIT, from the top — no scroll (owner, 2026-11-02:
+  // "if we have more chats let's not add scroll, just clip them; basically we
+  // only show the top chats"). The list takes the room the column leaves it
+  // (claude-rail.css `.claude-rail-chats`); how many whole seats that is, is
+  // measured off the list itself — its height, its row gap, one seat's
+  // height — and re-measured on every resize, so a taller window shows more
+  // and a shorter one fewer, never half a ring. `Infinity` until the first
+  // measure: the list must exist to be measured, and a first paint with
+  // every ring is clipped by the box the same frame.
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const [fit, setFit] = useState<number>(Infinity);
+  const anyRing = allSeats.length > 0;
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    const measure = () => {
+      const h = el.clientHeight;
+      const gap = parseFloat(getComputedStyle(el).rowGap) || 0;
+      const seat = el.firstElementChild?.getBoundingClientRect().height || 28;
+      setFit(Math.max(0, Math.floor((h + gap) / (seat + gap))));
+    };
+    measure();
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    ro?.observe(el);
+    return () => ro?.disconnect();
+  }, [anyRing]);
+  const baseSeats = useMemo(() => (fit < allSeats.length ? allSeats.slice(0, fit) : allSeats), [allSeats, fit]);
 
   // THE DOTS A PRESS CLEARED (header; claude-rail-lib `ReadMark`): held
   // while the pulse still reports what the press saw, spent the moment it
@@ -458,6 +486,8 @@ export function ClaudeRail({
   // reader sees what they pinned without mistaking it for one of the node's
   // chats. Letting go (the ×, Open) drops it with the next derivation;
   // archiving lets go first (RailPeek `onFiled`).
+  // …AND A HELD CHAT CLIPPED OUT of the list (above) draws in the foot the
+  // same way: still anchored, still seen.
   const heldKey = held ? peekKey : null;
   const heldExtra = useMemo((): RailRow | null => {
     if (!heldKey || baseSeats.some((s) => s.pulse.key === heldKey)) return null;
@@ -1042,8 +1072,13 @@ export function ClaudeRail({
         >
           <Plus size={16} aria-hidden="true" />
         </button>
-        {baseSeats.length > 0 && (
-          <div className="sidebar-rail-scroll claude-rail-chats" role="list" aria-label={`Chats on ${scope}`}>
+        {anyRing && (
+          <div
+            ref={listRef}
+            className="claude-rail-chats"
+            role="list"
+            aria-label={`Chats on ${scope}${allSeats.length > baseSeats.length ? ` (${baseSeats.length} of ${allSeats.length} shown)` : ""}`}
+          >
             {baseSeats.map(ringOf)}
           </div>
         )}
@@ -1056,7 +1091,7 @@ export function ClaudeRail({
           // way out.
           <div className="claude-rail-all-seat">
             {heldExtra && (
-              <div className="claude-rail-held" role="list" aria-label="Pinned chat, not on this node">
+              <div className="claude-rail-held" role="list" aria-label={node ? "Pinned chat, not on this node" : "Pinned chat, past the list's room"}>
                 {ringOf(heldExtra)}
               </div>
             )}
