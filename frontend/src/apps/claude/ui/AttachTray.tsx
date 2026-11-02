@@ -40,6 +40,9 @@ export interface AttachTrayProps {
   onRemove(att: Attachment): void;
   /** PR3's annotation chips share this row; they are handed in as-is. */
   children?: React.ReactNode;
+  /** One line under the chips: a refused retake's reason (`useAttachments`
+   *  `refusal`). Null draws nothing. */
+  notice?: string | null;
 }
 
 /** T:7192 `shotThumbBtn` — ONE builder for every place a screenshot is shown
@@ -173,15 +176,27 @@ function Chip({
   );
 }
 
-export function AttachTray({ items, paneNoun, onOpen, onRemove, children }: AttachTrayProps) {
-  if (!items.length && !children) return null;
+export function AttachTray({ items, paneNoun, onOpen, onRemove, notice, children }: AttachTrayProps) {
+  if (!items.length && !children && !notice) return null;
   return (
-    <div className="c-annchips">
-      {children}
-      {items.map((att) => (
-        <Chip key={att.id} att={att} paneNoun={paneNoun} onOpen={onOpen} onRemove={onRemove} />
-      ))}
-    </div>
+    <>
+      {(items.length > 0 || !!children) && (
+        <div className="c-annchips">
+          {children}
+          {items.map((att) => (
+            <Chip key={att.id} att={att} paneNoun={paneNoun} onOpen={onOpen} onRemove={onRemove} />
+          ))}
+        </div>
+      )}
+      {/* THE LINE A REFUSED RETAKE SPEAKS THROUGH (useAttachments `refusal`):
+          under the chips, not on one — the chip that stayed is a good picture
+          and its caveat is its own. */}
+      {notice ? (
+        <p className="c-attach-notice" role="status">
+          {notice}
+        </p>
+      ) : null}
+    </>
   );
 }
 

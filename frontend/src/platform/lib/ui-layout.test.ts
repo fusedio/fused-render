@@ -1,0 +1,26 @@
+// The ui-layout document's client-side sanitizer (ui-layout.ts), for the
+// fields that round-trip numbers: a bad value 400s the whole PUT, so every
+// field is clamped or dropped here first.
+import { describe, expect, it } from "bun:test";
+import { sanitizeUiLayout } from "./ui-layout";
+
+describe("sanitizeUiLayout canvasRailPeek", () => {
+  it("keeps a whole size, rounded", () => {
+    expect(sanitizeUiLayout({ v: 1, canvasRailPeek: { width: 520.4, height: 719.6 } }).canvasRailPeek).toEqual({
+      width: 520,
+      height: 720,
+    });
+  });
+  it("clamps to the server's bounds", () => {
+    expect(sanitizeUiLayout({ v: 1, canvasRailPeek: { width: 10, height: 99999 } }).canvasRailPeek).toEqual({
+      width: 120,
+      height: 10000,
+    });
+  });
+  it("drops a half size, a non-object, or junk numbers", () => {
+    expect(sanitizeUiLayout({ v: 1, canvasRailPeek: { width: 520 } }).canvasRailPeek).toBeUndefined();
+    expect(sanitizeUiLayout({ v: 1, canvasRailPeek: [520, 720] }).canvasRailPeek).toBeUndefined();
+    expect(sanitizeUiLayout({ v: 1, canvasRailPeek: { width: "520", height: 720 } }).canvasRailPeek).toBeUndefined();
+    expect(sanitizeUiLayout({ v: 1, canvasRailPeek: { width: NaN, height: 720 } }).canvasRailPeek).toBeUndefined();
+  });
+});

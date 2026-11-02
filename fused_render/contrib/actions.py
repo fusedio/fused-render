@@ -61,8 +61,8 @@ SWITCH_REVIEWED_CONFIRM = ("Switch to reviewed releases? Your copy goes to the v
 
 _OPEN_JOB = ("running", "landing", "ready")
 
-USE_GITHUB_CONFIRM = ("Your copy becomes the version on GitHub. Your edits are kept in "
-                      "Activity so you can bring them back.")
+USE_GITHUB_CONFIRM = ("Your copy becomes the version on GitHub. Your edits here are "
+                      "lost — this can't be undone.")
 
 
 def _moved_message() -> str:
@@ -334,17 +334,16 @@ def _github(f: dict, flags: dict) -> dict:
     extra: list[str] = []
     state = copy.get("state") or "following"
     lets_bring_in = True
-    held_said = False  # the sentence already says Bring in is the user's move
 
-    match_confirm = (f"Your copy becomes {who}'s version. Your changes are kept in "
-                     "Activity so you can bring them back.")
+    match_confirm = (f"Your copy becomes {who}'s version. Your changes are lost — this "
+                     "can't be undone.")
     push_confirm = (f"Your changes go straight into {who}'s app, without a proposal for "
                     f"{who} to look at first.")
 
     def discard_button():
         b.add("discard", "Discard my changes", danger=True,
               confirm=(f"Your changes to this app go away and it goes back to {who}'s "
-                       "version. fused keeps a copy you can bring back from Activity."))
+                       "version. This can't be undone."))
 
     def remix_button():
         if remix_on and not signed_out:
@@ -427,12 +426,11 @@ def _github(f: dict, flags: dict) -> dict:
         sentence = f"{_file_words(blocked)} {verb} in the way of {who}'s update."
         b.add("move-aside", "Move my file aside and update", primary=True)
     elif state == "merged":
-        if behind and (copy.get("auto_sync") is False or copy.get("kept_mine")):
-            # Automatic updates off, or the user undid one (§17.3: buttons
-            # only) — neither opening the app nor Check now moves anything;
-            # Bring in (offered below) does.
+        if behind and copy.get("auto_sync") is False:
+            # Automatic updates off (§17.3: buttons only) — neither opening
+            # the app nor Check now moves anything; Bring in (offered below)
+            # does.
             sentence = f"{who} merged your change. Bring it in when you're ready."
-            held_said = True
         elif behind:
             # Not in yet (Claude was busy): the next sync or Bring in brings
             # it, then settles onto the author's version.
@@ -492,11 +490,6 @@ def _github(f: dict, flags: dict) -> dict:
                     f"Following {who}'s latest.")
 
     if lets_bring_in and behind > 0:
-        if copy.get("kept_mine") and not held_said:
-            # §17.2 undo hold: the user undid an automatic bring-in (or ff,
-            # or settle) and the author's tip has not moved since — nothing
-            # comes in on its own until they ask.
-            extra.append(f"You undid that; {who}'s latest is waiting.")
         b.add("bring-in", f"Bring in {who}'s latest")
     if copy.get("claude_busy"):
         extra.append("Claude is still working on this app.")
@@ -693,7 +686,6 @@ _OWN_FIXES = {
     "put-on-top": dict(label="Put my edits on top"),
     "publish-over": dict(label="Publish mine over it", danger=True),  # + ownsync's confirm
     "save-edits": dict(label="Save my edits and continue"),
-    "bring-in": dict(label="Bring in and publish"),  # `kept`: an undone combine
 }
 
 
@@ -794,49 +786,8 @@ def for_app(app_dir: str, *, copy=_UNSET, proposal=_UNSET, github=_UNSET) -> dic
     return decide(facts(app_dir, copy=copy, proposal=proposal, github=github))
 
 
-def merge_open(app_dir: str) -> bool:
-    """A Merge with Claude job that will land in this folder is running or
-    waiting for Keep/Discard (an inbox proposal's merge never lands here).
-    Undo would move the folder under it, so it is off meanwhile."""
-    job = _call("open merge", "merge_job", "for_app", app_dir)
-    return isinstance(job, dict) and job.get("land", True) is not False
-
-
 def activity(app_dir: str) -> list:
     """The record's Activity lines, newest first (`store.activity`), or [] —
-    with no Undo while a merge is open here (`merge_open`)."""
+    read-only (§16.16)."""
     lines = _call("activity", "store", "activity", app_dir)
-    if not isinstance(lines, list):
-        return []
-    if any(isinstance(x, dict) and x.get("undo") for x in lines) and merge_open(app_dir):
-        return [{**x, "undo": False} if isinstance(x, dict) else x for x in lines]
-    blocked = _safely("blocked undo", _blocked_undo, app_dir, lines) or set()
-    if blocked:
-        return [{**x, "undo": False} if isinstance(x, dict) and x.get("id") in blocked else x
-                for x in lines]
-    return lines
-
-
-def _blocked_undo(app_dir: str, lines: list) -> set:
-    """M1 (§18.4): the ids of a marketplace copy's lines whose Undo would land
-    on a blocked commit — not offered (`engine.restore` refuses them too).
-    Here, not in `store.activity`: it asks git, which the store never does.
-    Nothing to ask while the block list has nothing for this app."""
-    from fused_render.contrib import blocks, store
-
-    rec = store.get(app_dir)
-    if not isinstance(rec, dict) or rec.get("kind") != "marketplace" \
-            or not blocks.for_slug(blocks._slug(rec)):
-        return set()
-    out = set()
-    for x in lines:
-        if not isinstance(x, dict) or not x.get("undo") or x.get("kind") == store.SWITCH_KIND:
-            continue
-        entry = store.activity_entry(app_dir, x.get("id")) or {}
-        backup = entry.get("backup")
-        if isinstance(backup, list):
-            backup = next((b for b in backup if isinstance(b, str)
-                           and not b.endswith("-wip")), None)
-        if backup and blocks.backup_blocked(store.key(app_dir), rec, backup):
-            out.add(x.get("id"))
-    return out
+    return lines if isinstance(lines, list) else []

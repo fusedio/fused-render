@@ -547,7 +547,12 @@ export function TextStage({
           backdrop or press Escape to close, exactly as `ImageStage`'s own
           lightbox answers to both. */}
       {webcam.open && (
-        <WebcamOverlay videoRef={webcam.videoRef} onCapture={capture} onClose={webcam.stop} />
+        <WebcamOverlay
+          videoRef={webcam.videoRef}
+          ready={webcam.ready}
+          onCapture={capture}
+          onClose={webcam.stop}
+        />
       )}
 
       {attachedImage && showAttachment && (

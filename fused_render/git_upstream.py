@@ -1097,6 +1097,25 @@ def last_checked(root):
         return _last_fetch.get(root)
 
 
+def _timeline_pulled(root, before, branch):
+    """An own copy took GitHub's newer commits (§16.16): who changed what."""
+    try:
+        from fused_render.contrib import timeline
+        timeline.pulled(root, before, _out(_run(root, "rev-parse", "HEAD")))
+    except Exception:  # noqa: BLE001
+        logger.exception("contrib timeline: pulled line failed for %s", root)
+
+
+def _timeline_published(root, before, branch):
+    """An own copy's push went through (§16.16): what it published,
+    `before..<b>` (`before`: origin's tip as this copy saw it first)."""
+    try:
+        from fused_render.contrib import timeline
+        timeline.published(root, before or None, _out(_run(root, "rev-parse", branch)))
+    except Exception:  # noqa: BLE001
+        logger.exception("contrib timeline: published line failed for %s", root)
+
+
 def _own_resolve(root, *, action, push):
     """An own copy's diverged default branch (§16.7): `contrib.ownsync`
     settles it (slot held). None = not handled (its flag off, the module
@@ -1180,6 +1199,7 @@ def _sync_plain(root, *, action, push, kind=None):
 
     pulled = 0
     pull_cmd = f"git pull --ff-only -- origin {default_branch}"
+    before_pull = _out(_run(root, "rev-parse", "HEAD")) if kind == "own" and behind > 0 else None
     if behind > 0:
         if not _is_clean(root, include_untracked=False):
             if kind == "own":
@@ -1215,6 +1235,8 @@ def _sync_plain(root, *, action, push, kind=None):
                     "state": state()}
         pulled = behind
         _record_pull(root, pulled)
+        if kind == "own":
+            _timeline_pulled(root, before_pull, default_branch)
 
     pushed = False
     if kind == "own" and ahead and not behind:
@@ -1228,6 +1250,9 @@ def _sync_plain(root, *, action, push, kind=None):
         if res is not None:
             return res
     if push and not held and (ahead or 0) > 0:
+        published_from = _out(_run(root, "rev-parse", "-q", "--verify",
+                                   f"refs/remotes/origin/{default_branch}")) \
+            if kind == "own" else None
         push_cmd = f"git push -- origin {default_branch}"
         result = _run(root, "push", "--", "origin", default_branch)
         if not _ok(result):
@@ -1240,6 +1265,8 @@ def _sync_plain(root, *, action, push, kind=None):
             return {"ok": False, "status": "failed", "failure": failure,
                     "pulled": pulled, "state": state()}
         pushed = True
+        if kind == "own":
+            _timeline_published(root, published_from, default_branch)
 
     _clear_failures(root)
     if kind == "own":

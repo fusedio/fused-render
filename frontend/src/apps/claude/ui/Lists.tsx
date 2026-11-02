@@ -19,6 +19,7 @@ import {
   TabsTrigger,
 } from "@platform/shadcn/ui/tabs";
 import type { Task } from "@platform/lib/api";
+import { lastChatId, setLastChat, useLastChat } from "@platform/lib/last-chat";
 import { TaskRowItem } from "@shell/ScheduleTaskViews";
 import { isDraftTask, taskHref, taskListKeys, upcomingEditEntry } from "@shell/tasks-lib";
 import { useProjectQueueEnabled } from "../feature-flag";
@@ -361,6 +362,24 @@ export function Lists({
     };
   };
 
+  // THE CHAT LAST PICKED (owner, 2026-11-02: "last selected stuff should be
+  // in expanded claude sidebar view as well"): the canvas rail's `.is-last`
+  // ring, as this list's row — one store for both (platform/lib/last-chat),
+  // and any row's press here moves it, as a ring's press does there.
+  const last = useLastChat();
+  const pick = (task: Task) => {
+    const at = pressFor(task);
+    if (!at.onPress) return at;
+    const press = at.onPress;
+    return {
+      ...at,
+      onPress: () => {
+        setLastChat(lastChatId(task));
+        press();
+      },
+    };
+  };
+
   const recentPanel = (
     <div ref={listRef} onKeyDown={onRowKeys}>
       {recent === null ? (
@@ -375,7 +394,8 @@ export function Lists({
             <TaskRowItem
               key={rowKeys[ix]}
               task={task}
-              {...pressFor(task)}
+              {...pick(task)}
+              selected={last !== null && lastChatId(task) === last}
               // RUN NEXT'S TWO HALVES (Akshil QA, 2026-09-16). The row's own
               // skip needs somewhere to put the claim it just made and a way to
               // ask for the truth; unwired, the press was a request with no

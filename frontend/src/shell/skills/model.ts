@@ -85,3 +85,50 @@ export function freeName(name: string, taken: (n: string) => boolean): string {
   for (let i = 2; i < 100; i++) if (!taken(cand(`-${i}`))) return cand(`-${i}`);
   return cand("-copy");
 }
+
+/** "3.9k installs", "1 install", "1.2M installs"; "" for 0. */
+export function formatInstalls(n: number): string {
+  if (!(n > 0)) return "";
+  const tenth = (v: number) => String(Math.round(v * 10) / 10);
+  let s = String(n);
+  if (n >= 1000) s = Math.round(n / 100) / 10 >= 1000 ? `${tenth(n / 1_000_000)}M` : `${tenth(n / 1000)}k`;
+  return `${s} ${n === 1 ? "install" : "installs"}`;
+}
+
+/** Remote rows by installs, most first, the rows sharing a skillId folded
+ * under the most-installed one: [{ top, rest }] in order of each top row. */
+export function groupRemote<T extends { skillId: string; installs: number }>(rows: T[]): { top: T; rest: T[] }[] {
+  const sorted = [...rows].sort((a, b) => b.installs - a.installs);
+  const groups = new Map<string, { top: T; rest: T[] }>();
+  for (const r of sorted) {
+    const g = groups.get(r.skillId);
+    if (g) g.rest.push(r);
+    else groups.set(r.skillId, { top: r, rest: [] });
+  }
+  return [...groups.values()];
+}
+
+/** How well a remote row matches the query, lowest is best: 0 exact name,
+ * 1 name starts with it or has it as a word, 2 name contains it, 3 the
+ * source (owner/repo) contains it, 4 anything else. */
+export function relevanceTier(row: { name: string; source: string }, q: string): number {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return 4;
+  const name = row.name.toLowerCase();
+  if (name === needle) return 0;
+  if (name.startsWith(needle) || name.split(/[-_\s]+/).includes(needle)) return 1;
+  if (name.includes(needle)) return 2;
+  if (row.source.toLowerCase().includes(needle)) return 3;
+  return 4;
+}
+
+/** Groups ordered by the relevance tier of the top row, then by installs. */
+export function rankRemote<T extends { name: string; source: string; installs: number }>(
+  groups: { top: T; rest: T[] }[],
+  q: string,
+): { top: T; rest: T[] }[] {
+  return groups
+    .map((g) => ({ g, t: relevanceTier(g.top, q) }))
+    .sort((a, b) => a.t - b.t || b.g.top.installs - a.g.top.installs)
+    .map((x) => x.g);
+}

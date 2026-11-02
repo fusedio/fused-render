@@ -3,7 +3,7 @@
 Three people on three "machines" (one home + one Fused workspace each, switched
 by env) against one FakeGitHub of real bare repos. Everything a person does is a
 request to the HTTP layer the page uses (GET /api/contrib/app, POST
-/api/contrib/action, /restore, /merge/accept, /inbox/*). The only direct module
+/api/contrib/action, /merge/accept, /inbox/*). The only direct module
 calls are the two triggers the page cannot make: "app open" / "Claude turn
 committed" (`git_upstream.sync_repo`), plus the install path itself
 (`appfile_git.install` from a staged clone) and plain git for edits.
@@ -433,7 +433,7 @@ def _step1_publish_and_install():
     no_pushes(before, "install / first open")
 
 
-def _step2_changes_bring_in_undo():
+def _step2_changes_bring_in():
     before = refs()
     res = turn_committed(W.bob, {"app.py": louder(3)}, "louder wave")
     no_pushes(before, "Bob's Claude turn")
@@ -453,33 +453,16 @@ def _step2_changes_bring_in_undo():
     lines = [x for x in out["activity"] if "alice" in x.get("text", "")]
     assert lines, out["activity"]
     line = lines[0]
-    assert line.get("undo"), f"automatic combine line has no Undo: {line}"
+    assert "undo" not in line, f"Activity is read-only (§16.16): {line}"
     assert "Claude:" not in line["text"], line
+    assert bob_mine != head(W.bob.app)
+    git(W.bob.app, "merge-base", "--is-ancestor", alice_tip, "HEAD")
 
     app_open(W.carol)
     assert head(W.carol.app) == alice_tip
     out = page(W.carol)
     assert out["panel"]["state"] == "following" and ids(out) == ["check"], out
     no_pushes(before, "app opens")
-
-    # Undo the automatic combine.
-    r = post(W.bob, "restore", id=line["id"])
-    assert r.get("ok"), r
-    assert head(W.bob.app) == bob_mine
-    assert read(W.bob.app, "index.html") == PAGE
-    out = page(W.bob)
-    assert "bring-in" in ids(out), ids(out)
-    # The next automatic open must not silently redo what was just undone.
-    app_open(W.bob)
-    assert head(W.bob.app) == bob_mine, "auto-sync re-merged right after Undo"
-    out = page(W.bob)
-    assert "bring-in" in ids(out), ids(out)
-    r = act(W.bob, "bring-in")
-    assert r.get("ok") and (r.get("done") or {}).get("status") == "done", r
-    assert read(W.bob.app, "index.html") == PAGE.replace("blue", "green")
-    assert read(W.bob.app, "app.py") == louder(3)
-    git(W.bob.app, "merge-base", "--is-ancestor", alice_tip, "HEAD")
-    no_pushes(before, "Undo / Bring in")
 
 
 def _step3_propose_overlap_merge_update():
@@ -616,7 +599,7 @@ def _step4_accept_squash_return():
     # own history until it settles; nothing of Alice's is among them.
     assert own[0] == "Claude: later idea", own
     assert set(own[1:]) <= {"Your edits", "Claude: louder wave"}, own
-    assert any(x.get("undo") and "merged your change" in x.get("text", "")
+    assert any("merged your change" in x.get("text", "")
                for x in out["activity"]), out["activity"]
     from fused_render.contrib import store
     assert (store.get(W.bob.app) or {}).get("proposal", {}).get("landed_at")
@@ -626,28 +609,6 @@ def _step4_accept_squash_return():
     out = page(W.carol)
     assert out["panel"]["state"] == "following", out["panel"]
     no_pushes(before, "the return / Carol's update")
-
-
-def _step4b_undo_return_then_bring_in():
-    """Partial cover for step 2's Undo path: the return line IS undoable."""
-    before = refs()
-    out = page(W.bob)
-    landed = head(W.bob.app)
-    line = next(x for x in out["activity"] if x.get("undo") and "merged your change" in x["text"])
-    r = post(W.bob, "restore", id=line["id"])
-    assert r.get("ok"), r
-    assert head(W.bob.app) != landed
-    out = page(W.bob)
-    assert out["panel"]["state"] != "following" and "bring-in" in ids(out), (out["panel"], ids(out))
-    app_open(W.bob)
-    undone = head(W.bob.app)
-    out = page(W.bob)
-    if "bring-in" in ids(out):
-        r = act(W.bob, "bring-in")
-        assert r.get("ok") and (r.get("done") or {}).get("status") == "done", r
-    diff = git(W.bob.app, "diff", "--name-only", tip_of(), "HEAD").split()
-    assert diff == ["later.txt"], (diff, undone == head(W.bob.app))
-    no_pushes(before, "Undo / Bring in")
 
 
 def _step5_alice_unpublished_edit_combined():
@@ -746,10 +707,9 @@ def _step7_remix():
 
 def test_contrib_loop_acceptance(world):
     _step1_publish_and_install()
-    _step2_changes_bring_in_undo()
+    _step2_changes_bring_in()
     _step3_propose_overlap_merge_update()
     _step4_accept_squash_return()
-    _step4b_undo_return_then_bring_in()
     _step5_alice_unpublished_edit_combined()
     _step6_flags_off_hand_edit()
     _step7_remix()

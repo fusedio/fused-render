@@ -12,6 +12,13 @@ import { Button } from "@platform/shadcn/ui/button";
 import { uploadFile } from "./client";
 import type { AttachedImage } from "./imageInput";
 
+/** How long a live stream may stay frameless before it is called a refusal.
+ *  Built-in cameras show a frame well inside a second; external ones and a
+ *  camera another app is releasing can take a few. Long enough that a slow
+ *  camera is never mistaken for a dead one; short enough that a person is
+ *  not left watching a black box wondering. */
+const NO_FRAME_MS = 8000;
+
 /** The live camera, as one hook: whether it is open, the ref for the overlay's
  *  <video>, and the three things a caller does with it.
  *
@@ -20,6 +27,14 @@ import type { AttachedImage } from "./imageInput";
  *  and a second error surface would be a second thing to dismiss. */
 export function useWebcam({ onError }: { onError: (message: string) => void }) {
   const [open, setOpen] = useState(false);
+  // Has the live view shown a frame yet? False from the moment the overlay
+  // opens until the <video> fires `loadeddata`; Capture is disabled until
+  // then, so a click during a camera's warm-up cannot close a working camera.
+  const [ready, setReady] = useState(false);
+  // Read through a ref by the open effect below, so a stage handing in a
+  // fresh closure each render cannot restart that effect's no-frame clock.
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
   const streamRef = useRef<MediaStream | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
@@ -27,6 +42,7 @@ export function useWebcam({ onError }: { onError: (message: string) => void }) {
     streamRef.current?.getTracks().forEach((track) => track.stop());
     streamRef.current = null;
     setOpen(false);
+    setReady(false);
   }, []);
 
   // The hook is the one owner of the stream's lifetime — a stage unmounting
@@ -45,6 +61,16 @@ export function useWebcam({ onError }: { onError: (message: string) => void }) {
   // The live view is attached HERE, not in the click that opened the camera:
   // the <video> does not exist until this render, so `srcObject` has nothing
   // to be set on until the overlay is mounted.
+  //
+  // The same effect watches for the first frame. A stream can be live with
+  // no picture behind it: the OS let `getUserMedia` resolve and then refused
+  // the hardware (a hardened-runtime build without the camera entitlement,
+  // a camera another app holds, a Privacy & Security denial after the fact)
+  // and the viewfinder sits black for good. A warming-up camera looks the
+  // same for its first second or two, so the two are told apart by TIME:
+  // `loadeddata` within the window is a working camera; nothing by the end
+  // of it is reported on the stage's error line and the camera closed, so
+  // its light — if any — goes out. Until then Capture is disabled.
   useEffect(() => {
     if (!open) return;
     const video = videoRef.current;
@@ -52,7 +78,23 @@ export function useWebcam({ onError }: { onError: (message: string) => void }) {
     if (!video || !stream) return;
     video.srcObject = stream;
     void video.play().catch(() => {});
-  }, [open]);
+    const onFrame = () => setReady(true);
+    video.addEventListener("loadeddata", onFrame);
+    const deadline = window.setTimeout(() => {
+      if (video.videoWidth) {
+        setReady(true);
+        return;
+      }
+      stop();
+      onErrorRef.current(
+        "The camera is on but sends no picture. Check System Settings › Privacy & Security › Camera, and that nothing else is using it.",
+      );
+    }, NO_FRAME_MS);
+    return () => {
+      video.removeEventListener("loadeddata", onFrame);
+      window.clearTimeout(deadline);
+    };
+  }, [open, stop]);
 
   // Escape cancels the webcam, the same way it closes every overlay here.
   useEffect(() => {
@@ -103,6 +145,9 @@ export function useWebcam({ onError }: { onError: (message: string) => void }) {
   const capture = useCallback(
     (onBlob: (blob: Blob) => void) => {
       const video = videoRef.current;
+      // No frame yet: the button is disabled until there is one, and a
+      // frameless camera reports itself from the open effect above, so this
+      // is only a keyboard-or-race guard — nothing to draw, nothing to say.
       if (!video || !video.videoWidth) return;
       const canvas = document.createElement("canvas");
       canvas.width = video.videoWidth;
@@ -118,7 +163,7 @@ export function useWebcam({ onError }: { onError: (message: string) => void }) {
     [stop],
   );
 
-  return { open, start, stop, capture, videoRef };
+  return { open, ready, start, stop, capture, videoRef };
 }
 
 /** The camera, over everything — the lightbox's own shape: a scrim, the live
@@ -127,10 +172,13 @@ export function useWebcam({ onError }: { onError: (message: string) => void }) {
  *  in the hook's `stop`, the one place the stream ends. */
 export function WebcamOverlay({
   videoRef,
+  ready,
   onCapture,
   onClose,
 }: {
   videoRef: MutableRefObject<HTMLVideoElement | null>;
+  /** The hook's `ready`: Capture is disabled until the live view has a frame. */
+  ready: boolean;
   onCapture: () => void;
   onClose: () => void;
 }) {
@@ -138,7 +186,12 @@ export function WebcamOverlay({
     <div className="pg-lightbox" role="dialog" aria-label="Webcam" onClick={onClose}>
       <div className="pg-webcam-box" onClick={(e) => e.stopPropagation()}>
         <video ref={videoRef} className="pg-webcam-video" playsInline muted />
-        <Button variant="outline" onClick={onCapture}>
+        <Button
+          variant="outline"
+          disabled={!ready}
+          title={ready ? undefined : "Waiting for the camera's first frame"}
+          onClick={onCapture}
+        >
           Capture
         </Button>
       </div>

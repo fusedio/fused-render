@@ -12,7 +12,7 @@ test("does not claim Chrome when it is n/a", () => {
   for (const showGit of [true, false]) {
     expect(toolsLead({ ...base, showGit, chromeApplies: false })).not.toContain("Chrome");
   }
-  expect(toolsLead({ ...base, chromeApplies: false })).toContain("fetches showcase apps with git");
+  expect(toolsLead({ ...base, chromeApplies: false })).toContain("installs Community apps with git");
 });
 
 test("the bot flavor is unchanged", () => {

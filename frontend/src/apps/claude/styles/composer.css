@@ -1982,3 +1982,16 @@ select.c-pill {
 .chat-root .waiting-bar-jump:hover {
   background: var(--c-card-bg);
 }
+
+/* A REFUSED RETAKE SAYS WHY (useAttachments `refusal`). The seat already holds
+   a good picture, which the refusal must not evict (Bugbot #1064) — but a
+   click that changed nothing and said nothing read as a dead button. One
+   quiet line under the chips, gone on its own after a few seconds or on the
+   next capture. `role="status"` so a screen reader hears it too. */
+.chat-root .c-attach-notice {
+  margin: 0 0 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--c-dim, var(--fg-muted));
+  overflow-wrap: anywhere;
+}

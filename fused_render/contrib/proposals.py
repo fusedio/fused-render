@@ -181,10 +181,10 @@ def _owner_name(record: dict) -> str:
     return repo.split("/")[0] if "/" in repo else "the author"
 
 
-def _activity(root, kind: str, text: str, *, backup=None) -> None:
+def _activity(root, kind: str, text: str, *, backup=None, link=None) -> None:
     """One Activity line per move (§16.9); never fails the move itself."""
     try:
-        _store().add_activity(root, kind, text, backup=backup)
+        _store().add_activity(root, kind, text, backup=backup, link=link)
     except Exception:  # noqa: BLE001
         logger.exception("proposals: activity line failed for %s", root)
 
@@ -803,7 +803,8 @@ def send(app_dir, *, title: str, description: str, note: str | None = None,
     with _refresh_lock:
         _last_refresh[root] = time.monotonic()
     _activity(root, "proposal-sent",
-              f"Sent your proposal to {_owner_name(record)}: {proposal['title']}")
+              f"Sent your proposal to {_owner_name(record)}: {proposal['title']}",
+              link=proposal["url"] or None)
     return view(root) or {}
 
 
@@ -1164,13 +1165,25 @@ def _apply_pr(root, pr: dict, comments: list | None) -> tuple[dict | None, str |
 
 def _ingest(root, record, pr: dict, comments: list | None) -> None:
     """`_apply_pr`, plus the one-time "declined" event on the open → closed
-    transition (a reopened-then-closed proposal says it again, as it should)."""
+    transition (a reopened-then-closed proposal says it again, as it should),
+    and the timeline's lines for what changed (§16.16: accepted, closed,
+    commented, asked, no longer fits, edited on GitHub)."""
+    before = (record or {}).get("proposal")
     q, prev = _apply_pr(root, pr, comments)
     if q is not None and prev == "open" and q["cache"]["state"] == "closed":
         try:
             _store().add_event(root, "declined", who=_owner_name(record))
         except Exception:  # noqa: BLE001
             logger.exception("proposals: declined event failed for %s", root)
+    if q is not None:
+        from fused_render.contrib import timeline
+        try:
+            timeline.write(root, timeline.proposal_lines(
+                record, before if isinstance(before, dict) else None, q, pr, comments,
+                me=(gh.identity() or {}).get("login") or q.get("user"),
+                local_head=_rev(root, PR_HEAD_REF)))
+        except Exception:  # noqa: BLE001 — the lines never fail the refresh
+            logger.exception("proposals: timeline lines failed for %s", root)
 
 
 def refresh(app_dir, *, force: bool = False) -> dict | None:

@@ -588,6 +588,7 @@
     transition: background 0.18s var(--ease), color 0.18s var(--ease);
   }
   .dl-list a:hover { background: rgba(243, 242, 237, 0.05); color: var(--ink); }
+  .dl-list a[hidden] { display: none; }
   .dl-list .nm { display: inline-flex; align-items: center; gap: 9px; font-weight: 600; }
   .dl-list .nm svg { width: 13px; height: 13px; color: var(--ink-3); }
   .dl-beta {
@@ -1547,6 +1548,11 @@
               <span id="dl-primary-label">Download for macOS</span>
             </a>
             <p class="dl-spec" id="dl-spec" hidden>Apple silicon (M1 and later) &middot; macOS 11+</p>
+            <!-- The .pkg network installer (scripts/build_pkg.sh): for people
+                 who would rather not drag an icon out of a disk image. Shown
+                 only once latest.json carries a pkg_url, i.e. a signed one
+                 has shipped. -->
+            <p class="dl-spec" id="dl-pkg" hidden>Prefer an installer? <a id="dl-pkg-link" rel="noopener" href="https://github.com/fusedio/fused-render/releases">Get the .pkg</a> &mdash; no drag and drop, it puts the app in Applications for you.</p>
             <p class="dl-note" id="dl-note" role="note" hidden><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.6 18.2 16.6a1 1 0 0 1-.87 1.5H2.67a1 1 0 0 1-.87-1.5L10 2.6z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M10 7.4v4.4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/><circle cx="10" cy="14.5" r="1" fill="currentColor"/></svg><span id="dl-note-text"></span></p>
             <details class="dl-others">
               <summary>Other platforms</summary>
@@ -1554,6 +1560,10 @@
                 <a id="dmg" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
                   <span class="nm"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-apple"/></svg>macOS</span>
                   <span class="sub">Apple silicon &middot; .dmg</span>
+                </a>
+                <a id="pkg" rel="noopener" href="https://github.com/fusedio/fused-render/releases" hidden>
+                  <span class="nm"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-apple"/></svg>macOS installer</span>
+                  <span class="sub">Apple silicon &middot; .pkg</span>
                 </a>
                 <a id="linux-appimage" rel="noopener" href="https://github.com/fusedio/fused-render/releases">
                   <span class="nm"><svg viewBox="0 0 20 20" aria-hidden="true"><use href="#i-linux"/></svg>Linux<span class="dl-beta">Beta</span></span>
@@ -1778,11 +1788,20 @@
     .then(function (m) {
       var v = document.getElementById("version");
       if (m.version && v) { v.textContent = "v" + m.version + " · free · open source"; v.hidden = false; }
-      var map = { dmg: m.dmg_url, "linux-appimage": m.linux_url };
+      var map = { dmg: m.dmg_url, "linux-appimage": m.linux_url, pkg: m.pkg_url };
       Object.keys(map).forEach(function (id) {
         var el = document.getElementById(id);
         if (el && map[id]) el.href = map[id];
       });
+      // The installer only exists for releases that could sign one.
+      if (m.pkg_url) {
+        var pkgRow = document.getElementById("pkg");
+        var pkgLine = document.getElementById("dl-pkg");
+        var pkgLink = document.getElementById("dl-pkg-link");
+        if (pkgRow) pkgRow.hidden = false;
+        if (pkgLink) pkgLink.href = m.pkg_url;
+        if (pkgLine && visitorOS === "mac") pkgLine.hidden = false;
+      }
       syncCta();
     })
     .catch(function () {});

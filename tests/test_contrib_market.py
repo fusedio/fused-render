@@ -128,24 +128,24 @@ def test_alice_pushing_never_moves_a_marketplace_copy(m):
     inv(m)
 
 
-def test_a_release_moves_the_copy_with_whats_new_and_undo_holds_until_the_next(m):
+def test_a_release_moves_the_copy_with_whats_new(m):
     c2 = _alice(m, {"NOTES.md": "n\n"}, "Notes")
     m.cat.release("sine", c2, whats_new="Adds notes", at="2026-10-20T10:00:00Z")
     assert m.sync()["status"] == "synced"
     inv(m)
     assert m.head() == c2
     line = _lines(m)[0]
-    assert line["text"] == "Updated to alice's release of Oct 20: Adds notes" and line["undo"]
-    assert engine.restore(m.app, line["id"])["ok"]
-    assert m.head() == m.c1 and store.get(m.app)["skip_tip"] == c2
-    assert m.sync()["why"] == "kept-mine" and m.head() == m.c1
-    inv(m)
+    # Read-only (§16.16): no `undo`, and a fast-forward to a release is not backed up.
+    assert line["text"] == "Updated to alice's release of Oct 20: Adds notes"
+    assert "undo" not in line
+    assert m.g("for-each-ref", "refs/fused/backup/") == ""
     c3 = _alice(m, {"MORE.md": "m\n"}, "More")
-    assert m.sync()["why"] == "kept-mine"          # Alice's push is not a release
+    m.sync()
+    assert m.head() == c2                          # Alice's push is not a release
     m.cat.release("sine", c3, whats_new="More things", at="2026-10-22T10:00:00Z")
     assert m.sync()["status"] == "synced" and m.head() == c3
     inv(m)
-    assert store.get(m.app)["skip_tip"] is None
+    assert "skip_tip" not in store.get(m.app)
 
 
 def test_a_commit_not_on_the_authors_branch_is_never_run(m):
@@ -196,7 +196,7 @@ def test_offline_catalog_is_no_move(m):
 # ---------------------------------------------------------------- switching
 
 
-def test_switch_to_link_follows_the_author_and_undo_switches_back(m):
+def test_switch_to_link_follows_the_author(m):
     c2 = _alice(m, {"NOTES.md": "n\n"}, "Unreviewed")
     m.sync()
     out = market.switch_to_link(m.app)
@@ -208,12 +208,10 @@ def test_switch_to_link_follows_the_author_and_undo_switches_back(m):
     assert m.g("config", "--local", "fused.kind") == "github"
     assert m.g("config", f"branch.{HOME}.remote") == "origin"
     line = _lines(m)[0]
-    assert line["kind"] == "switch" and line["undo"] and "unreviewed" in line["text"]
-    back = engine.restore(m.app, line["id"])
-    assert back["ok"], back
-    assert classify.kind_of(m.app) == "marketplace" and m.head() == m.c1
-    inv(m)
-    assert not [x for x in _lines(m) if x["id"] == line["id"]][0]["undo"]
+    assert line["kind"] == "switch" and "unreviewed" in line["text"]
+    assert "undo" not in line                       # read-only (§16.16)
+    assert m.g("for-each-ref", "refs/fused/backup/") == ""
+    assert all("backup" not in s for s in rec["switched"])
 
 
 def test_switch_to_reviewed_refuses_changes_then_pins(m):
@@ -233,9 +231,8 @@ def test_switch_to_reviewed_refuses_changes_then_pins(m):
     inv(m)
     line = _lines(m)[0]
     assert line["kind"] == "switch" and line["text"] == market.REVIEWED_TEXT
-    assert engine.restore(m.app, line["id"])["ok"]
-    assert classify.kind_of(m.app) == "github" and m.head() == c2
-    assert_home_invariants(m.app)
+    assert "undo" not in line
+    assert m.g("for-each-ref", "refs/fused/backup/") == ""   # nothing to guard: no backup
 
 
 # ------------------------------------------------------------------- legacy
@@ -350,7 +347,7 @@ def test_b5_merged_ships_in_the_next_release(m, method):
     rec = store.get(m.app)
     assert rec["proposal"]["landed_at"] and rec["proposal"]["live"]
     assert any(x["text"] == "alice released your change. You're on the reviewed version."
-               and x["undo"] for x in _lines(m))
+               and "undo" not in x for x in _lines(m))
     panel = actions.decide({**actions.facts(m.app), "flags": {"sources": True,
                                                                "changes": True}})
     assert "Your change is live for everyone." in panel["panel"]["sentence"]
@@ -410,47 +407,6 @@ def test_git_panel_pull_is_refused_and_get_latest_brings_in_the_release(m, monke
 
 
 # --------------------------------------------- the Marketplace switch alone
-
-
-def test_marketplace_switch_alone_shows_a_marketplace_copys_ui(m, monkeypatch):
-    """§18.8 (owner 2026-10-26): with the Marketplace switch on and the
-    loop off, a marketplace copy's panel, Undo and card show; a GitHub-link
-    copy's stay hidden; Propose/Remix still need the loop."""
-    from _contrib_gh_world import write_prefs
-
-    from fused_render import app_git
-    from fused_render.contrib import flags, refresh
-    from fused_render.server.routers import contrib as route
-    write_prefs(contrib_enabled=False, contrib_remix_enabled=False, marketplace_enabled=True)
-    assert flags.marketplace_ui() and not flags.sources()
-    monkeypatch.setattr(app_git, "app_dir_for", lambda p: m.app if p.startswith(m.app) else None)
-    c2 = _alice(m, {"NOTES.md": "n\n"}, "Notes")
-    m.cat.release("sine", c2, whats_new="Adds notes", at="2026-10-20T10:00:00Z")
-    assert m.sync()["status"] == "synced" and m.head() == c2
-    page = route.api_contrib_app(path=m.app)
-    assert page["ok"] and page["panel"]["kind"] == "marketplace", page
-    ids = {a["id"] for a in page["actions"]}
-    assert "check" in ids and "switch-link" in ids
-    assert not ids & {"propose", "update-proposal", "withdraw", "remix"}
-    line = page["activity"][0]
-    assert line["undo"] and line["text"].startswith("Updated to alice's release")
-    out = route.api_contrib_restore({"path": m.app, "id": line["id"]}, x_fused="1")
-    assert out["ok"], out
-    assert m.head() == m.c1
-    inv(m)
-    claude_commit(m.app, {"index.html": PAGE.replace("blue", "red")}, "red")
-    page = route.api_contrib_app(path=m.app)
-    assert not {a["id"] for a in page["actions"]} & {"propose", "remix"}
-    assert refresh.cards()[m.app]["label"] == "Community · reviewed"
-    # A GitHub-link copy: the loop's own gate, unchanged.
-    m.g("reset", "-q", "--hard", m.c1)
-    assert market.switch_to_link(m.app)["ok"]
-    assert route.api_contrib_app(path=m.app)["reason"] == "disabled"
-    out = route.api_contrib_action({"path": m.app, "action": "check"}, x_fused="1")
-    assert out["reason"] == "disabled"
-    assert m.app not in refresh.cards()
-    write_prefs(marketplace_enabled=False)
-    assert not flags.marketplace_ui()
 
 
 # ------------------------------------------------------------ install path

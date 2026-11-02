@@ -26,8 +26,8 @@
 //              runs, Keep / Discard once ready (MergeReview). The sentence
 //              already says what Claude did.
 //   checked    "Checked 3m ago · Check now" (Check now only when sent).
-//   activity   a disclosure of what moved and when, each line with Undo when
-//              something moved away (POST /api/contrib/restore).
+//   activity   a disclosure of what happened and when — read-only, no
+//              buttons (§16.16).
 //
 // A merged or declined answer stands until the user dismisses it (✕ → ack
 // "settled"), the one control here the server does not list: it is how the
@@ -42,8 +42,6 @@
 //              in the same `actions` list for an own app; they are drawn by
 //              the ListingStrip under this panel and posted to their own
 //              route, so they are taken out of this row.
-//   switch     Activity's `switch` lines carry Undo like any other line
-//              (the server's `undo`); a `rollback` line never does.
 //
 // The sheets are mounted outside any one state's branch, so a background
 // re-read that moves the state on never unmounts one mid-flight.
@@ -54,13 +52,27 @@
 // (CommunityTab.tsx) places the same pieces in its cards. Either renders
 // `kit.sheets` exactly once, outside every card, so the rule above holds.
 import { useEffect, useState, type ReactNode } from "react";
-import { Check, ChevronRight, Clock, Loader2, RotateCcw, TriangleAlert } from "lucide-react";
+import {
+  Check,
+  ChevronRight,
+  Clock,
+  Download,
+  ExternalLink,
+  GitPullRequest,
+  Loader2,
+  MessageSquare,
+  Sparkles,
+  Store,
+  TriangleAlert,
+  Upload,
+  X,
+  type LucideIcon,
+} from "lucide-react";
 import {
   LISTING_ACTION_IDS,
   ackContrib,
   okMessage,
   plainMessage,
-  restoreActivity,
   runAction,
   runJob,
   useUnmountSignal,
@@ -146,8 +158,7 @@ type Sheet =
   // `args`: what the first POST carried, when a "confirm" refusal opened the
   // sheet — the yes re-posts them, not a bare action.
   | { k: "confirm"; action: ContribAction; sentence: string; args?: Record<string, unknown> }
-  | { k: "update"; action: ContribAction }
-  | { k: "undo"; line: ActivityLine };
+  | { k: "update"; action: ContribAction };
 
 /** Any action's answer, as `act` reads it. */
 type Outcome = { ok: boolean; message?: string; reason?: string };
@@ -189,8 +200,6 @@ export interface SourcePanelKit {
   press: (a: ContribAction) => void;
   /** The primary as a Button, any other as a quiet text action. */
   button: (a: ContribAction) => ReactNode;
-  /** Ask before undoing one Activity line. */
-  askUndo: (line: ActivityLine) => void;
   /** Check now's quiet label ("Checking…" while it runs). */
   checkLabel: (a: ContribAction) => string;
   /** Every sheet the panel can open. Render exactly once, outside any card. */
@@ -522,51 +531,6 @@ export function useSourcePanel({
         </ContribDialog>
       )}
 
-      <AlertDialog
-        open={sheet?.k === "undo"}
-        onOpenChange={(o) => {
-          if (!o && !busy) setSheet(null);
-        }}
-      >
-        {sheet?.k === "undo" && (
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>{sheet.line.kind === "switch" ? "Switch back?" : "Undo this?"}</AlertDialogTitle>
-              <AlertDialogDescription>
-                {sheet.line.kind === "switch" ? (
-                  <>
-                    This undoes &ldquo;{sheet.line.text}&rdquo; and puts the app back the way it was before the
-                    switch.
-                  </>
-                ) : (
-                  <>
-                    The app goes back to how it was before this: &ldquo;{sheet.line.text}&rdquo;. What it has now is
-                    kept in the activity list too, so nothing is lost either way.
-                  </>
-                )}
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel disabled={!!busy}>Cancel</AlertDialogCancel>
-              <AlertDialogAction
-                disabled={!!busy}
-                onClick={async () => {
-                  const line = sheet.line;
-                  const r = await act(`undo:${line.id}`, async () => {
-                    const a = await restoreActivity(dir, line.id);
-                    if (a.ok) say(a);
-                    return a;
-                  });
-                  if (r !== "busy") setSheet(null);
-                }}
-              >
-                {spin(`undo:${sheet.line.id}`)}
-                Undo
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        )}
-      </AlertDialog>
     </>
   );
 
@@ -595,7 +559,6 @@ export function useSourcePanel({
     dismiss: SETTLED_STATES.has(panel.state) ? dismiss : undefined,
     press,
     button,
-    askUndo: (line) => setSheet({ k: "undo", line }),
     checkLabel: (a) => (busy === CHECK_ID ? DOING.check : a.label),
     sheets,
   };
@@ -615,23 +578,73 @@ export function KitProgress({ kit }: { kit: SourcePanelKit }) {
   );
 }
 
-/** What moved and when, each line with Undo when something moved away. */
+/** The icon of an Activity line's kind (§16.16) — what sort of step it was,
+ *  so the list reads at a glance. Anything unlisted is one of fused's own
+ *  moves (the clock). */
+const ACTIVITY_ICON: Record<string, LucideIcon> = {
+  "proposal-sent": GitPullRequest,
+  "proposal-updated": GitPullRequest,
+  "proposal-edited": GitPullRequest,
+  "proposal-reopened": GitPullRequest,
+  "inbox-opened": GitPullRequest,
+  "inbox-updated": GitPullRequest,
+  "inbox-tried": GitPullRequest,
+  "proposal-comment": MessageSquare,
+  "proposal-asked": MessageSquare,
+  "inbox-asked": MessageSquare,
+  "proposal-accepted": Check,
+  "inbox-accepted": Check,
+  "inbox-merged": Check,
+  merged: Check,
+  "listing-live": Check,
+  "listing-confirmed": Check,
+  "proposal-declined": X,
+  "proposal-withdrawn": X,
+  "inbox-declined": X,
+  "inbox-closed": X,
+  "inbox-withdrawn": X,
+  "proposal-no-fit": TriangleAlert,
+  "listing-failed": TriangleAlert,
+  "listing-confirm": TriangleAlert,
+  "inbox-reviewed": Sparkles,
+  published: Upload,
+  pulled: Download,
+  installed: Download,
+  update: Download,
+  "listing-sent": Store,
+  "listing-out": Store,
+  delisted: Store,
+  relisted: Store,
+};
+
+/** What happened and when — fused's own moves and (§16.16) the other
+ *  people's steps — read-only: the only thing a line offers is a link to
+ *  the GitHub page it happened on. */
 export function ActivityList({ kit }: { kit: SourcePanelKit }) {
   if (kit.activity.length === 0) return null;
   return (
     <ol className="contrib-activity" aria-label="Activity">
-      {kit.activity.map((line) => (
-        <li key={line.id} className="contrib-activity-line">
-          <span className="contrib-activity-at">{timeAgo(line.at) ?? ""}</span>
-          <span className="contrib-activity-text">{line.text}</span>
-          {line.undo && (
-            <QuietAction onClick={() => kit.askUndo(line)} disabled={!!kit.busy || kit.mergeOpen}>
-              <RotateCcw aria-hidden="true" />
-              {kit.busy === `undo:${line.id}` ? "Putting it back…" : "Undo"}
-            </QuietAction>
-          )}
-        </li>
-      ))}
+      {kit.activity.map((line) => {
+        const Icon = ACTIVITY_ICON[line.kind] ?? Clock;
+        return (
+          <li key={line.id} className={cn("contrib-activity-line", line.actor && "is-someone")}>
+            <span
+              className="contrib-activity-at"
+              title={line.at ? new Date(line.at * 1000).toLocaleString() : undefined}
+            >
+              {timeAgo(line.at) ?? ""}
+            </span>
+            <Icon className="contrib-activity-icon" aria-hidden="true" />
+            <span className="contrib-activity-text">{line.text}</span>
+            {line.link && (
+              <QuietAction href={line.link}>
+                Open
+                <ExternalLink aria-hidden="true" />
+              </QuietAction>
+            )}
+          </li>
+        );
+      })}
     </ol>
   );
 }

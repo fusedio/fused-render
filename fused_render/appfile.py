@@ -758,20 +758,31 @@ def divergence(app_dir: str, stamp: dict) -> list[str] | None:
     return changed
 
 
-def workspace_app_with_id(app_id: str) -> str | None:
+def workspace_app_with_id(app_id: str, *, ignore: str | None = None) -> str | None:
     """The workspace app folder whose entry page declares ``app_id``, or
     None — the whole walk (`app/`, a `local/` the migration skipped, any tag),
     so a copy the user renamed or moved is still this app. Never joins the
-    id into a path."""
+    id into a path.
+
+    Two folders are never the copy: one the user uninstalled from the hub
+    (`app_hidden` — a showcase subfolder stays on disk after its uninstall,
+    and would otherwise hold the app's place forever), and ``ignore`` — the
+    showcase copy a Community install is overwriting
+    (`marketplace.install_app`), which must not be found as the copy it
+    replaces."""
+    from fused_render import app_hidden
     from fused_render.shell.seed import fused_dir
 
     try:
-        rows = app_listing.discover_workspace_apps(fused_dir())
+        rows = app_hidden.drop_hidden(app_listing.discover_workspace_apps(fused_dir()))
     except Exception:  # noqa: BLE001 — an unwalkable workspace holds no copy we can name
         return None
+    skip = os.path.realpath(ignore) if ignore else None
     for row in rows:
         entry = row.get("entry_html")
         if not entry:
+            continue
+        if skip and os.path.realpath(row["path"]) == skip:
             continue
         try:
             if app_identity.app_id(entry) == app_id:
@@ -1000,7 +1011,7 @@ def _has_preview(fused_path: str, manifest: dict) -> bool:
         return False
 
 
-def install_target(fused_path: str, *, light: bool = False) -> dict:
+def install_target(fused_path: str, *, light: bool = False, ignore: str | None = None) -> dict:
     """What installing the ``.fused`` at ``fused_path`` would do — the install
     page's data and the POST's precondition. Read-only: one bounded manifest
     read, the workspace walk for the id, and (unless ``light``) the hash of
@@ -1010,7 +1021,9 @@ def install_target(fused_path: str, *, light: bool = False) -> dict:
     entry declares it is the installed copy, wherever it sits — else the
     slug of the manifest name (the file stem when empty) under ``app/``.
     ``light`` skips the divergence hashing (a card thumbnail, D396's rule:
-    a peek never pays for the open)."""
+    a peek never pays for the open). ``ignore`` is a folder the id walk
+    must not answer with (`workspace_app_with_id`): the showcase copy a
+    Community install overwrites, so the install lands under ``app/``."""
     fused_path = os.path.abspath(fused_path)
     if not os.path.isfile(fused_path):
         raise AppFileError(f"no such file: {fused_path}")
@@ -1025,7 +1038,7 @@ def install_target(fused_path: str, *, light: bool = False) -> dict:
     found_by: str | None = None
     husk = False
     husk_clash = False
-    by_id = workspace_app_with_id(app_id) if app_id else None
+    by_id = workspace_app_with_id(app_id, ignore=ignore) if app_id else None
     husk_by_id = husk_with_id(app_id) if app_id and by_id is None else None
     if by_id is not None:
         dest, found_by = by_id, "id"

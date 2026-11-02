@@ -138,6 +138,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
+from fused_render import _platform
 from fused_render._platform import is_within
 from fused_render import netlog
 from fused_render import (
@@ -1400,9 +1401,20 @@ def _merge(prompts: list[dict], entries: list[dict]) -> list[dict]:
     return messages
 
 
-def _turn_of_newest_chat(messages: list[dict], live: bool) -> None:
+def _turn_of_newest_chat(messages: list[dict], live: bool,
+                         dead: bool = False) -> None:
     """The newest chat message is the one whose turn may still be running; every
-    older one has been answered by definition."""
+    older one has been answered by definition.
+
+    `dead` is the caller's word that the run serving that prompt DIED WITHOUT
+    FINISHING IT (`_dead_turn`): its process is gone, its `out.jsonl` never
+    reached the `result` row every turn ends on, and nobody pressed Stop. Not
+    live and dead is `error` — the same word an API failure writes — so the
+    row reads Blocked with the red ring and Retry, instead of `done` with no
+    reply under it (the host killed mid-turn read Done within ten seconds,
+    while the chat still said "Running outside this app"; Sina, 2026-10-31).
+    Live outranks it: a run that is writing is not dead, whatever an older run
+    dir says."""
     for message in reversed(messages):
         if message["kind"] == "chat":
             # NOT over an API failure. The failed turn is a FACT read out of
@@ -1411,7 +1423,7 @@ def _turn_of_newest_chat(messages: list[dict], live: bool) -> None:
             # broken turn straight back to Done — the R2-3 defect surviving its
             # own fix, one function later.
             if message["turn"] != "error":
-                message["turn"] = "" if live else "idle"
+                message["turn"] = "" if live else ("error" if dead else "idle")
             return
 
 
@@ -2092,6 +2104,193 @@ def _hosted_runs() -> tuple[dict, dict]:
     for run_dir in [d for d in list(_bg_memo) if d not in scanned]:
         _bg_memo.pop(run_dir, None)
     return out, pending
+
+
+# run_dir -> ((out.jsonl size, mtime_ns), the turn is still open). The tail
+# read `_out_turn_open` memoizes; a dead run's file never changes again, so
+# one read per run is the whole cost. Pruned against the scan like `_bg_memo`.
+_dead_memo: dict[str, tuple] = {}
+
+# How far back `_out_turn_open` reads a run's out.jsonl. A turn's closing rows
+# (`result`, then the host's `command_lifecycle`) are small, and a tail this
+# long reaches past any `stream_event` burst the CLI writes before them.
+_DEAD_TAIL_BYTES = 64 * 1024
+
+
+def _out_turn_open(run_dir: str) -> bool:
+    """Does this run's `out.jsonl` end MID-TURN — is the newest row of the
+    conversation's own shape (a prompt echo, an assistant row) not followed by
+    the `result` row that closes every `claude -p` turn?
+
+    The transcript cannot answer this: a turn that was open when its process
+    died stays open in the file for ever, and the interrupt marker that
+    closes a stopped one is written by the CLI, not by a kill. The run dir's
+    own log is the one place the END of a turn is written by the process
+    that ended it. Read like `_poll`'s `saw_result` (agent.py), reduced to
+    the one question: top-level rows only (a subagent's `parent_tool_use_id`
+    rows are its own conversation), the newest `result` / `assistant` /
+    `user` / `system:init` decides, and `result` is the only closed answer.
+    A run with no log at all, or an empty one, is a prompt that went out and
+    was never even echoed back — open."""
+    path = os.path.join(run_dir, "out.jsonl")
+    try:
+        st = os.stat(path)
+    except OSError:
+        return True
+    stamp = (st.st_size, st.st_mtime_ns)
+    memo = _dead_memo.get(run_dir)
+    if memo is not None and memo[0] == stamp:
+        return memo[1]
+    # NO VERDICT IN THE WINDOW IS "CANNOT TELL", NOT "DEAD": a file bigger
+    # than the window whose closing rows sit past it (one enormous final
+    # reply) must not read as a crash. Only a log small enough to have been
+    # read whole, with nothing decisive in it, is a prompt nothing answered.
+    open_turn = st.st_size <= _DEAD_TAIL_BYTES
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(max(0, st.st_size - _DEAD_TAIL_BYTES))
+            chunk = fh.read().decode("utf-8", "replace")
+        lines = [ln for ln in chunk.split("\n") if ln.strip()]
+        if st.st_size > _DEAD_TAIL_BYTES and lines:
+            lines = lines[1:]  # the partial first line from the mid-file seek
+        for line in reversed(lines):
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(row, dict) or row.get("parent_tool_use_id"):
+                continue
+            kind = row.get("type")
+            if kind in ("result", "assistant", "user") or (
+                    kind == "system" and row.get("subtype") == "init"):
+                open_turn = kind != "result"
+                break
+    except OSError:
+        open_turn = False
+    _dead_memo[run_dir] = (stamp, open_turn)
+    return open_turn
+
+
+def _pid_gone(run_dir: str) -> bool:
+    """Is the process this run's `pid` file names GONE — for certain? No file
+    (a run still spawning, or one that never got that far) is not gone, and
+    neither is a probe that cannot answer: `EPERM` is a live process owned by
+    somebody else, and any other failure is "cannot tell", which must never
+    read as dead (the one direction a wrong answer here costs a user a red
+    row)."""
+    try:
+        with open(os.path.join(run_dir, "pid"), encoding="utf-8") as fh:
+            pid = int(fh.read().strip())
+    except (OSError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    # `probe_pid`, never a bare `os.kill(pid, 0)`: on Windows signal 0 is
+    # CTRL_C_EVENT, so a listing lap would be interrupting the very process
+    # it asked about (Bugbot, PR #2063). The shared probe raises
+    # `ProcessLookupError` for a process that is gone on every platform, and
+    # returns — or raises something else — for one that exists or cannot be
+    # asked about.
+    try:
+        _platform.probe_pid(pid)
+    except ProcessLookupError:
+        return True
+    except Exception:  # noqa: BLE001 — EPERM, a Windows handle error: alive
+        return False
+    return False
+
+
+# How long a stop marker vouches for a dead run past the log's last write.
+# `_cancel` writes `cancelled` and then interrupts; a kill that follows lands
+# within this. A run stopped once, CONTINUED (the log written again, later),
+# and then killed is not stopped — see `_stopped`.
+_STOP_MARKER_SLACK_SEC = 5.0
+
+
+def _stopped(run_dir: str) -> bool:
+    """Did the Stop button end this run — a `cancelled` marker at least as new
+    as the log's last write? `_cancelled_marker_state` (agent.py) retires the
+    marker against a poll cursor this reader does not have; the mtimes carry
+    the same fact: a marker older than the newest row is one a later turn
+    outlived."""
+    marker = os.path.join(run_dir, "cancelled")
+    try:
+        marked_at = os.path.getmtime(marker)
+    except OSError:
+        return False
+    try:
+        written_at = os.path.getmtime(os.path.join(run_dir, "out.jsonl"))
+    except OSError:
+        return True
+    return marked_at + _STOP_MARKER_SLACK_SEC >= written_at
+
+
+def _dead_turns() -> frozenset:
+    """Every session whose NEWEST run died mid-turn: the run's `claude` is gone
+    (`_pid_gone` — a `pid` file naming a dead process; a run still spawning
+    has none and is not this), its `out.jsonl` never reached `result`
+    (`_out_turn_open`), and nobody stopped it (`_stopped`; a stopped turn is
+    `done`, not broken). The host killed with the app, a `kill -9`, an OOM:
+    each leaves exactly this on disk and nothing else — no `exited` event
+    (the host is what would have posted it), no error row in the transcript
+    (the CLI is what would have written it).
+
+    NEWEST RUN ONLY, per session: `scan_runs` is newest-first, so the first
+    run naming a session is the one its last turn ran in; an older run that
+    died is history the turns after it have overtaken. `_dead_turn` applies
+    it only to a newest prompt with NO reply on file — a prompt answered
+    since (a terminal resume, a later run under another id) is answered,
+    whatever the old run dir says.
+
+    ASKED LAZILY: `_dead_turn` reaches this only for a row that is not live
+    and whose newest prompt nobody answered, which in the steady state is no
+    row at all — so the ordinary listing lap never walks the runs tree for
+    it. The walk itself is `scan_runs`' memoized one (one second), the tail
+    read is memoized on the file's size and mtime, and the pid probe — one
+    `kill(pid, 0)` for the newest run of each session in the window — is the
+    whole per-call cost; no memo of its own, because a probe is cheaper than
+    a stale "nobody" over a run that died a moment ago. NEVER RAISES: a
+    reader that cannot answer answers "nobody", and the row keeps the status
+    it had — a 500 over the whole listing for one unreadable run dir is the
+    wrong trade."""
+    dead: set[str] = set()
+    try:
+        agent = _agent_module()
+        if agent is not None:
+            seen: set[str] = set()
+            scanned: set[str] = set()
+            for run in project_queue.scan_runs(agent):
+                run_dir = run["run_dir"]
+                scanned.add(run_dir)
+                sessions = [s for s in run["sessions"] if s and s not in seen]
+                if not sessions:
+                    continue
+                seen.update(sessions)
+                if not _pid_gone(run_dir) or _stopped(run_dir):
+                    continue
+                if _out_turn_open(run_dir):
+                    dead.update(sessions)
+            for run_dir in [d for d in list(_dead_memo) if d not in scanned]:
+                _dead_memo.pop(run_dir, None)
+    except Exception:  # noqa: BLE001 — see the docstring: never over the listing
+        logger.exception("tasks: dead-run scan failed; no row is marked dead")
+        dead = set()
+    return frozenset(dead)
+
+
+def _dead_turn(prompts: list[dict], session_id: str, live: bool) -> bool:
+    """Is this task's newest prompt the one its dead run never finished? Both
+    halves, for the reason `_dead_turns` gives: the newest prompt has no reply
+    on file — `_mark_fate` stamps `failed` (True or False) on a prompt the
+    moment a reply lands, so its absence is "nothing ever answered this" —
+    AND the session's newest run died mid-turn. The cheap half first, and a
+    live session never asks: that is what keeps the runs walk off the
+    ordinary lap (`_dead_turns`)."""
+    if live or not session_id or not prompts:
+        return False
+    if prompts[-1].get("failed") is not None:
+        return False
+    return session_id in _dead_turns()
 
 
 def _background_jobs(held: tuple | None) -> dict | None:
@@ -4199,7 +4398,8 @@ def _row(task: dict, number: str, triage: dict, read: dict, now: float,
     # The tail's dicts ARE the merged list's dicts (a slice shares them), so the
     # liveness this writes onto the newest chat message is visible to the status
     # derivation below, which reads the whole thread.
-    _turn_of_newest_chat(tail, live)
+    _turn_of_newest_chat(tail, live,
+                         dead=_dead_turn(prompts, task["session_id"], live))
     for offset, message in enumerate(reversed(tail)):
         message["message_id"] = tasks_store.format_message_id(total - offset)
     _mark_unread(tail, task["key"], read)
@@ -5671,10 +5871,13 @@ def warm() -> None:
     try:
         snap = _rebuild_snapshot()
     except Exception:  # noqa: BLE001 — a warm that fails costs nothing but the warmth
+        # …and the builder still starts: with none, no snapshot is ever
+        # published, and `snapshot_rows` readers (the Monitor's labels) would
+        # see None for the life of the process. Its next build publishes one.
         logger.debug("tasks warm failed", exc_info=True)
-        return
-    logger.info("tasks warm: %d rows in %.2fs", len(snap.rows), time.monotonic() - started)
-    tasks_index.save(_SCAN, _BUILD_LOCK)
+    else:
+        logger.info("tasks warm: %d rows in %.2fs", len(snap.rows), time.monotonic() - started)
+        tasks_index.save(_SCAN, _BUILD_LOCK)
     if not tasks_watch.running():
         return
     global _builder_thread
@@ -5753,6 +5956,14 @@ def _rebuild_snapshot() -> _Snapshot:
         with _SNAP_COND:
             _building = False
             _SNAP_COND.notify_all()
+
+
+def snapshot_rows() -> list[dict] | None:
+    """The last published snapshot's rows, or None before the first build.
+    NEVER builds: for a reader outside the listing (the Monitor's process
+    labels, sysmon/labels.py) that may not pay for one, once a second."""
+    with _SNAP_COND:
+        return _snapshot.rows if _snapshot is not None else None
 
 
 def _await_snapshot(at_least: int, timeout: float) -> _Snapshot | None:
@@ -7074,7 +7285,8 @@ def _thread(task: dict, read: dict, now: float) -> list[dict]:
         # (bugbot). It is the newest by construction: `_merge` sorted the rest
         # ascending and the mark's `at` is the moment of the send.
         messages[-1]["message_id"] = tasks_store.format_message_id(len(messages))
-    _turn_of_newest_chat(messages, live)
+    _turn_of_newest_chat(messages, live,
+                         dead=_dead_turn(prompts, task["session_id"], live))
     _mark_unread(messages, task["key"], read)
     return messages
 
@@ -9820,6 +10032,15 @@ def api_queue_force(body: dict = Body(...),
     # user's answer away with them (review, 2026-09-21).
     answers = manager.held_answers(key)
     if not entry_id and not answers:
+        # A LIVE RUN WITH NOTHING WAITING is a row the client painted stale
+        # (`positions` no longer lists a resume marker, but a lap can be
+        # behind) or a task that is simply working — or parked on a card
+        # (`holds_live` counts those too), hence "live" and not "running".
+        # 409 — the queue's "not now" status — so the row's note reads as
+        # "wait", like a turn already open does (ScheduleTaskViews `force`).
+        if manager.holds_live(key):
+            return _error("This task is live — nothing is waiting to start",
+                          status=409)
         return _error("nothing waiting to start", status=400)
 
     entry: dict = {}

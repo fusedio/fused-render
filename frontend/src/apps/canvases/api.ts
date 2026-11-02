@@ -484,6 +484,35 @@ export const takeoverSync = async (env: WorkbenchEnv, name: string): Promise<Syn
   }
 };
 
+/** The takeover's `owner_unreachable` refusal: the holder cannot be asked
+ *  (its port is now this Fused's own after a restart, or nothing answers
+ *  there). `canForceQuit` is the server's verdict that the pid is a live
+ *  Fused process of this app — the page then offers "Force quit". Null for
+ *  any other refusal. */
+export const unreachableOwnerFromError = (e: unknown): { pid: number; canForceQuit: boolean } | null => {
+  if (!e || typeof e !== "object") return null;
+  const { status, body } = e as { status?: unknown; body?: unknown };
+  if (status !== 409 || !body || typeof body !== "object") return null;
+  const b = body as { code?: unknown; owner?: { pid?: unknown }; can_force_quit?: unknown };
+  if (b.code !== "owner_unreachable") return null;
+  return {
+    pid: typeof b.owner?.pid === "number" ? b.owner.pid : 0,
+    canForceQuit: b.can_force_quit === true,
+  };
+};
+
+/** USER-PRESSED "Force quit": SIGTERM the Fused process holding this clone's
+ *  lock when it can no longer be asked to hand over (see
+ *  `unreachableOwnerFromError`). The server re-checks every guard (the pid is
+ *  a Fused process, its port does not answer) before signalling. `freed`
+ *  says the lock came off within the server's wait; the page re-arms through
+ *  sync/start either way. */
+export const forceQuitOwner = (env: WorkbenchEnv, name: string) =>
+  postJson<{ ok: boolean; freed: boolean; pid: number | null; signalled: boolean }>(
+    "/api/canvases/sync/force_quit_owner",
+    { name, env },
+  );
+
 /** The four sync legs (embed_to_disk is the page's own: it fills that leg
  *  from its relay queue), disk_rev / watcher_epoch, and the lock owner. */
 export const getSyncState = (env: WorkbenchEnv, name: string) =>

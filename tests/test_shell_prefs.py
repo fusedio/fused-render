@@ -259,25 +259,24 @@ def test_put_rejects_bad_monitor_enabled(tmp_path, monkeypatch):
     assert not (home / "prefs.json").exists()
 
 
-def test_marketplace_enabled_defaults_off_and_toggles(tmp_path, monkeypatch):
+def test_marketplace_and_contrib_are_always_on(tmp_path, monkeypatch):
+    """The Community and the contribution loop stopped being switches on
+    2026-10-29: the payload says on, a stored key is ignored, and a PUT of
+    the old keys is no known preference."""
     client, home = _client(tmp_path, monkeypatch)
-    # Default off: the Marketplace entry points are opt-in.
-    assert client.get("/api/prefs").json()["marketplace"]["enabled"] is False
-    body = client.put("/api/prefs", json={"marketplace_enabled": True}, headers=FUSED).json()
-    assert body["marketplace"]["enabled"] is True
-    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
-    assert stored["marketplace_enabled"] is True
-    assert prefs_mod.marketplace_enabled() is True
-    assert client.put("/api/prefs", json={"marketplace_enabled": False}, headers=FUSED).json()[
-        "marketplace"
-    ]["enabled"] is False
-    # A hand-edited junk value reads as off; a non-boolean PUT is refused.
-    (home / "prefs.json").write_text(json.dumps({"marketplace_enabled": "yes"}), encoding="utf-8")
-    assert prefs_mod.marketplace_enabled() is False
-    assert (
-        client.put("/api/prefs", json={"marketplace_enabled": "yes"}, headers=FUSED).status_code
-        == 400
-    )
+    got = client.get("/api/prefs").json()
+    assert got["marketplace"]["enabled"] is True and got["contrib"]["enabled"] is True
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "prefs.json").write_text(json.dumps({"marketplace_enabled": False, "contrib_enabled": False}),
+                                     encoding="utf-8")
+    assert prefs_mod.marketplace_enabled() is True and prefs_mod.contrib_enabled() is True
+    assert client.get("/api/prefs").json()["marketplace"]["enabled"] is True
+    for key in ("marketplace_enabled", "contrib_enabled"):
+        assert client.put("/api/prefs", json={key: True}, headers=FUSED).status_code == 400
+    # Remix keeps its switch.
+    assert client.put("/api/prefs", json={"contrib_remix_enabled": True}, headers=FUSED).json()[
+        "contrib"
+    ]["remix"] is True
 
 
 def test_removed_always_on_prefs_are_not_in_the_payload(tmp_path, monkeypatch):
@@ -1657,6 +1656,54 @@ def test_task_recap_titles_defaults_off_toggles_and_rejects_junk(tmp_path, monke
     assert prefs_mod.task_recap_titles_enabled() is False
 
 
+def test_canvas_shot_slow_fallback_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
+    """The slow in-canvas screenshot fallback (Settings › Canvas screenshots):
+    same opt-in idiom — only a stored `true` is on, the PUT takes booleans."""
+    client, home = _client(tmp_path, monkeypatch)
+    assert client.get("/api/prefs").json()["canvas_shot"] == {"slow_fallback": False}
+    body = client.put("/api/prefs", json={"canvas_shot_slow_fallback_enabled": True},
+                      headers=FUSED).json()
+    assert body["canvas_shot"]["slow_fallback"] is True
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["canvas_shot_slow_fallback_enabled"] is True
+    assert prefs_mod.canvas_shot_slow_fallback_enabled() is True
+    bad = client.put("/api/prefs", json={"canvas_shot_slow_fallback_enabled": "yes"},
+                     headers=FUSED)
+    assert bad.status_code == 400
+    assert "canvas_shot_slow_fallback_enabled" in bad.json()["error"]
+    (home / "prefs.json").write_text(json.dumps({"canvas_shot_slow_fallback_enabled": 1}),
+                                     encoding="utf-8")
+    assert prefs_mod.canvas_shot_slow_fallback_enabled() is False
+
+
+def test_canvas_rail_peek_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
+    """The collapsed Claude rail's hover preview card (Settings › Canvases):
+    same opt-in idiom — only a stored `true` is on, the PUT takes booleans."""
+    client, home = _client(tmp_path, monkeypatch)
+    # The payload is the switch alone: the trigger choice of 2026-10-31 is
+    # gone (a hover previews, a click pins).
+    assert client.get("/api/prefs").json()["canvas_rail_peek"] == {"enabled": False}
+    body = client.put("/api/prefs", json={"canvas_rail_peek_enabled": True},
+                      headers=FUSED).json()
+    assert body["canvas_rail_peek"]["enabled"] is True
+    stored = json.loads((home / "prefs.json").read_text(encoding="utf-8"))
+    assert stored["canvas_rail_peek_enabled"] is True
+    assert prefs_mod.canvas_rail_peek_enabled() is True
+    bad = client.put("/api/prefs", json={"canvas_rail_peek_enabled": "yes"},
+                     headers=FUSED)
+    assert bad.status_code == 400
+    assert "canvas_rail_peek_enabled" in bad.json()["error"]
+    (home / "prefs.json").write_text(json.dumps({"canvas_rail_peek_enabled": 1}),
+                                     encoding="utf-8")
+    assert prefs_mod.canvas_rail_peek_enabled() is False
+    # The retired trigger key: ignored on disk, refused in a PUT.
+    (home / "prefs.json").write_text(json.dumps({"canvas_rail_peek_trigger": "hover"}),
+                                     encoding="utf-8")
+    assert client.get("/api/prefs").json()["canvas_rail_peek"] == {"enabled": False}
+    assert client.put("/api/prefs", json={"canvas_rail_peek_trigger": "hover"},
+                      headers=FUSED).status_code == 400
+
+
 def test_task_summary_titles_defaults_off_toggles_and_rejects_junk(tmp_path, monkeypatch):
     """Same opt-in idiom as the recap flag: only a stored `true` is on."""
     client, home = _client(tmp_path, monkeypatch)
@@ -1812,7 +1859,7 @@ def test_fused_render_indexing_env_overrides_both_the_pref_and_the_dev_default(
     assert prefs_mod.indexing_enabled() is expect
 
 
-# -- per-model engine pins (D1451) ----------------------------------------------
+# -- per-model engine pins (D1456) ----------------------------------------------
 #
 # The sibling of the per-capability preference above: `model_engines` maps a
 # cached repo id to a runner code. Same store/validate/degrade rules; what a pin

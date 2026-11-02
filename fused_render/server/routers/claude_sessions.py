@@ -1496,8 +1496,30 @@ def api_claude_session_liveness(path: str):
     except OSError:
         return {"exists": False, "mtime": 0.0, "size": 0, "running": False}
     now = datetime.now(timezone.utc).timestamp()
+    running = session_liveness.transcript_turn_open(resolved, now)
+    if running:
+        # …UNLESS THE PROCESS THAT WAS WRITING IT IS GONE. A turn open in the
+        # file stays open for ever when its `claude` dies mid-reply (the host
+        # killed with the app, a crash) — `STALE_TAIL_SEC` is the only thing
+        # that closes it, so the chat said "Running outside this app" over a
+        # dead turn for the balance of that window (Sina, 2026-10-31). The
+        # live registry knows the departure within a tick
+        # (`tasks_watch.departed_before`: every process that held the session
+        # is gone, and nobody wrote the transcript after the last one left); a
+        # session never registered here has no such word, and the tail rule
+        # stands.
+        # Departed ONLY — not the registry's `idle`/`waiting` word, which a
+        # terminal session parked on its own permission card wears with a
+        # turn genuinely open — and never over this app's own send mark,
+        # which is the one fact about the first seconds of a turn no file
+        # has caught up with yet (`tasks_watch.mark_running`).
+        from fused_render import tasks_watch
+        session_id = os.path.splitext(os.path.basename(resolved))[0]
+        if (tasks_watch.departed_before(session_id, stat.st_mtime)
+                and not tasks_watch.is_marked_running(session_id)):
+            running = False
     return {"exists": True, "mtime": stat.st_mtime, "size": stat.st_size,
-            "running": session_liveness.transcript_turn_open(resolved, now)}
+            "running": running}
 
 
 class TriagePatch(BaseModel):

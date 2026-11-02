@@ -342,9 +342,8 @@ READ_TOOLS = ("bot_chat",)
 # effective_approval. Creating or reshaping an agent is the user's call every time.
 MANAGE_TOOLS = ("bot_create", "bot_settings")
 SUPER_TOOLS = HANDOFF_TOOLS + MANAGE_TOOLS + READ_TOOLS
-# Every bot's door into the Marketplace (docs §15), on the roster only while
-# `shell.prefs.marketplace_enabled()` (the pref gates entry points; a bot tool
-# is one). Installing third-party code onto the Mac is ALWAYS_ASK like bot
+# Every bot's door into the Marketplace (docs §15), always on the roster
+# (the Community is no longer a switch, 2026-10-29). Installing third-party code onto the Mac is ALWAYS_ASK like bot
 # management: the card is raised under "Never ask" too, never approved forever.
 MARKET_TOOLS = ("marketplace_search", "marketplace_install")
 # The bot's own terminal (docs §16): on the roster only while terminal_enabled(bot).
@@ -1346,12 +1345,9 @@ def _url_refusal(bot, url: str) -> str | None:
 
 # ---- the Marketplace (docs §15) ------------------------------------------------
 def marketplace_on() -> bool:
-    """Whether the Marketplace tools are on the roster: the same pref that shows the shell its entry points."""
-    try:
-        from fused_render.shell import prefs
-        return bool(prefs.marketplace_enabled())
-    except Exception:  # noqa: BLE001
-        return False
+    """Whether the Marketplace tools are on the roster: always, since the
+    Community stopped being a switch (2026-10-29)."""
+    return True
 
 
 def _market_target(d: dict) -> tuple[str, bool, str]:
@@ -1389,6 +1385,11 @@ def _market_target(d: dict) -> tuple[str, bool, str]:
                               "that in the app (its Community page)")
     if plan["action"] == "update" and not update:
         return slug, update, f"already installed at {where} (in APPS; pass update: true only to update it)"
+    if plan["action"] == "install" and plan.get("showcase"):
+        # Overwriting the user's showcase copy (its data moves, the copy is hidden) is the user's call.
+        return slug, update, (f"the user already has this app in their showcase folder at {plan['showcase']}; "
+                              "installing the Community version means overwriting that copy, which is the "
+                              "user's choice: the user decides that in the app (its Community page)")
     if plan["action"] == "install" and update:
         update = False  # nothing to update: a plain install
     return slug, update, ""
@@ -1490,7 +1491,12 @@ def _market_install(bot, d: dict) -> str:
     except _mkt.InstallError as e:
         return f"error: {e}"
     if job.get("status") == "confirm":
-        # The plan changed between the card and the call (the user installed by link meanwhile).
+        # The plan changed between the card and the call (the user installed by link, or cloned the
+        # showcase, meanwhile).
+        if job.get("overwrite") == "showcase":
+            return (f"error: the user already has this app in their showcase folder at {job.get('path')}; "
+                    "installing the Community version means overwriting that copy, which is the user's "
+                    "choice: the user decides that in the app (its Community page)")
         return ("error: the user follows this app by GitHub link; switching it to reviewed releases is the user's "
                 "choice: the user decides that in the app (its Community page)")
     deadline = time.monotonic() + MARKET_INSTALL_WAIT_S
@@ -1711,9 +1717,6 @@ def execute(bot, act: str, d: dict, obs: dict) -> tuple[str, str]:
             return describe(bot, act, d, obs), botmod.bot_chat(bot, d.get("bot") or d.get("name") or "", d.get("last"))
         if act in MARKET_TOOLS:
             label = describe(bot, act, d, obs)  # BEFORE the install: afterwards the same call describes as "already installed"
-            if not marketplace_on():
-                # The roster and the steps prompt drop these while the pref is off; a model that names one anyway is refused.
-                return label, "error: the Community is off (the user turns it on in Preferences › Experimental flags)"
             return label, (_market_search(d) if act == "marketplace_search" else _market_install(bot, d))
         if act in TERMINAL_TOOLS:
             label = describe(bot, act, d, obs)

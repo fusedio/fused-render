@@ -3,8 +3,12 @@
 // network beyond `endProcess` (which only picks the endpoint), so the suite
 // can pin each rule directly.
 import {
+  formatBytes,
+  formatCpu,
   killSystemProcess,
   stopSystemProcess,
+  type ClaudeSummary,
+  type ClaudeTaskTree,
   type MachineProc,
 } from "@platform/lib/sysmon";
 
@@ -281,4 +285,76 @@ export function confirmQuestion(targets: MachineProc[], verb: string): string {
   }
   const lead = `${verb} ${n} processes? This includes ${targets.slice(0, 2).map(named).join(", ")}…`;
   return n > 10 ? `${lead} This may close apps you are using.` : lead;
+}
+
+// ---- the "Claude tasks" strip ------------------------------------------------------
+// Akshil: "I want to kill processes but I have zero context over what to kill —
+// which task is each linked to." One row per live Claude tree (sysmon/labels.
+// claude_tasks), its task named and its whole tree's memory and CPU summed.
+
+export type ClaudeTreeTone = "running" | "waiting" | "stale" | "idle";
+
+/** What a tree is doing, in words, and its tone. "Done – still alive" — the
+ *  task finished but its session host is still up (holding a background job,
+ *  or just idle) — is amber: the obvious thing to stop. */
+export function claudeTreeState(t: ClaudeTaskTree): { text: string; tone: ClaudeTreeTone } {
+  if (t.helper) return { text: "App helper", tone: "idle" };
+  if (!t.task_id) return { text: "No task", tone: "idle" };
+  if (t.state === "waiting") return { text: "Waiting on you", tone: "waiting" };
+  if (t.state === "running") return { text: "Running", tone: "running" };
+  if (t.state === "done") return { text: "Done – still alive", tone: "stale" };
+  // Any other status (queued, upcoming, …) with the tree still up.
+  return { text: `${statusWord(t.status)} – still alive`, tone: "stale" };
+}
+
+/** "upcoming" -> "Upcoming", "needs_attention" -> "Needs attention"; "Idle"
+ *  when the task carries none. */
+function statusWord(status: string): string {
+  const s = status.replace(/_/g, " ").trim();
+  return s ? s[0].toUpperCase() + s.slice(1) : "Idle";
+}
+
+/** "TASK-075 · Continue after usage limit"; the tree's own label when no task
+ *  matched (the run's title or folder) and for the app's helper. */
+export function claudeTreeName(t: ClaudeTaskTree): string {
+  if (t.helper || !t.task_id) return t.label;
+  return t.title ? `${t.task_id} · ${t.title}` : t.task_id;
+}
+
+/** "folder · model", whichever are known. */
+export function claudeTreeWhere(t: ClaudeTaskTree): string {
+  return [t.folder, t.model].filter(Boolean).join(" · ");
+}
+
+/** "1 background job · Poll PR 2020 checks" / "2 background jobs · …" — the
+ *  first job's description stands for the rest. "" with none. */
+export function claudeTreeJobs(t: ClaudeTaskTree): string {
+  const n = t.bg_jobs.length;
+  if (!n) return "";
+  const head = `${n} background job${n === 1 ? "" : "s"}`;
+  const first = t.bg_jobs.find((j) => j.description)?.description ?? "";
+  return first ? `${head} · ${first}` : head;
+}
+
+/** "1.42 GB · 3.1% CPU · 9 processes". */
+export function claudeTreeCost(t: ClaudeTaskTree): string {
+  const n = t.pids.length;
+  return `${formatBytes(t.mem_bytes)} · ${formatCpu(t.cpu_pct)} CPU · ${n} process${n === 1 ? "" : "es"}`;
+}
+
+/** The strip's trees, largest first (the server already sends them so; a
+ *  re-sort here keeps the order a rule of the page, not of the wire). */
+export function claudeTrees(c: ClaudeSummary | null | undefined): ClaudeTaskTree[] {
+  return [...(c?.tasks ?? [])].sort((a, b) => b.mem_bytes - a.mem_bytes || a.root_pid - b.root_pid);
+}
+
+/** "3 Claude tasks · 1.4 GB · 1 not working – still alive" — the strip's
+ *  heading; the last part counts the amber rows. */
+export function claudeTreesHeading(trees: ClaudeTaskTree[]): string {
+  const tasks = trees.filter((t) => !t.helper).length;
+  const mem = trees.reduce((a, t) => a + t.mem_bytes, 0);
+  const stale = trees.filter((t) => claudeTreeState(t).tone === "stale").length;
+  const parts = [`${tasks} Claude task${tasks === 1 ? "" : "s"}`, formatBytes(mem, true)];
+  if (stale) parts.push(`${stale} not working – still alive`);
+  return parts.join(" · ");
 }

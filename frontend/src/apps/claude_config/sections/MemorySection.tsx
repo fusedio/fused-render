@@ -15,11 +15,12 @@
 // A group is titled by the PROJECT FOLDER, not by the projects/ directory
 // name: that name is a munged cwd ("-Users-me-Work-fused-render") and reads
 // as nothing. The server resolves it — from a session transcript's recorded
-// cwd, else against the filesystem — and sends null when it cannot, in which
-// case this shows the slug rather than a path that might not exist. See
+// cwd, else against the filesystem — and sends null when it cannot confirm one.
+// Then it sends a labelled pathGuess instead, or shows the slug when even that
+// is null. See
 // claude_config/memory.py's _project_path for why a "-" -> "/" replace is not
 // an option.
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { Button } from "@platform/shadcn/ui/button";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
 import * as cc from "../api";
@@ -38,9 +39,11 @@ import {
   toastOk,
   useConfirm,
   useModuleData,
+  ShowMore,
 } from "../bits";
 import type { HeadedSectionProps } from "../bits";
 import { FileEditor } from "../FileEditor";
+import { ProjectPathSearch } from "../ProjectPathSearch";
 
 function MemoryFileEditor({ project, file, onDelete }: { project: string; file: string; onDelete: () => void }) {
   const load = useCallback(async () => {
@@ -73,6 +76,8 @@ export default function MemorySection({ filter = "", title, blurb }: HeadedSecti
   const load = useCallback(() => cc.memory.list(), []);
   const { data, error, reload } = useModuleData(load);
   const { node: modal, ask } = useConfirm();
+  // Picked project slug ("" = all). Component state only, no URL write.
+  const [picked, setPicked] = useState("");
 
   const clear = async (project: string) => {
     const ok = await ask<boolean>({
@@ -119,13 +124,16 @@ export default function MemorySection({ filter = "", title, blurb }: HeadedSecti
     );
 
   const needle = filter.trim().toLowerCase();
-  const projects = data.projects
+  const titleOf = (p: cc.MemoryProject) => p.path ?? p.pathGuess ?? p.project;
+  const sorted = [...data.projects].sort((a, b) => titleOf(a).localeCompare(titleOf(b)));
+  // A project that vanished after a reload falls back to All.
+  const active = sorted.some((p) => p.project === picked) ? picked : "";
+  const projects = sorted
+    .filter((p) => !active || p.project === active)
     .map((p) => ({
       ...p,
       shown: needle
-        ? p.files.filter(
-            (f) => `${f.name} ${f.description ?? ""} ${p.path ?? p.project}`.toLowerCase().includes(needle),
-          )
+        ? p.files.filter((f) => `${f.name} ${f.description ?? ""} ${titleOf(p)}`.toLowerCase().includes(needle))
         : p.files,
     }))
     .filter((p) => p.shown.length > 0 || !needle);
@@ -138,7 +146,21 @@ export default function MemorySection({ filter = "", title, blurb }: HeadedSecti
       <Head
         title={title}
         blurb={`${plural(fileCount, "file")} across ${plural(data.projects.length, "project")}`}
-        aside={<RefreshButton onClick={reload} />}
+        aside={
+          <div className="flex items-center gap-2">
+            <ProjectPathSearch
+              options={sorted.map((p) => ({
+                id: p.project,
+                title: titleOf(p),
+                count: p.files.length,
+                confirmed: !!p.pathConfirmed,
+              }))}
+              value={active}
+              onChange={setPicked}
+            />
+            <RefreshButton onClick={reload} />
+          </div>
+        }
       />
       {!projects.length && (
         <Empty>{needle ? "No memory files match." : "No persistent memory found under projects/*/memory/."}</Empty>
@@ -149,14 +171,21 @@ export default function MemorySection({ filter = "", title, blurb }: HeadedSecti
           <div className="cc-memgroup" key={p.project}>
             <div className="cc-memgroup-head">
               <div className="cc-memgroup-title">
-                {/* The folder, when the server could confirm which one it is —
-                    mono, because it is a path. Otherwise the raw slug, NOT
-                    dressed up as a path: the encoding is lossy and a
-                    plausible-looking /Users/me/Work/fused/render that doesn't
-                    exist would be worse than the slug it came from. */}
-                <span className={p.pathConfirmed ? "cc-mono" : undefined} title={p.path ?? undefined}>
-                  {p.path ?? p.project}
+                {/* The confirmed folder in mono. Without one, the server's
+                    best-effort pathGuess in mono plus a muted "folder not
+                    found" tag (the slug in its title). Only with neither is
+                    the raw slug shown, as before. */}
+                <span
+                  className={p.pathConfirmed || p.pathGuess ? "cc-mono" : undefined}
+                  title={p.path ?? undefined}
+                >
+                  {p.path ?? p.pathGuess ?? p.project}
                 </span>
+                {!p.pathConfirmed && p.pathGuess && (
+                  <span className="text-xs font-normal text-muted-foreground" title={p.project}>
+                    folder not found
+                  </span>
+                )}
                 <span className="cc-memgroup-count">{count}</span>
               </div>
               <div className="cc-memgroup-actions">
@@ -181,7 +210,10 @@ export default function MemorySection({ filter = "", title, blurb }: HeadedSecti
               </div>
             </div>
             <List>
-              {p.shown.map((f) => (
+              <ShowMore
+                items={p.shown}
+                resetKey={needle}
+                render={(f) => (
                 <ListRow
                   key={f.name}
                   name={f.name}
@@ -197,7 +229,8 @@ export default function MemorySection({ filter = "", title, blurb }: HeadedSecti
                     />
                   }
                 />
-              ))}
+              )}
+            />
             </List>
           </div>
         );

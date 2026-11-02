@@ -2453,6 +2453,19 @@ not by choice.
   Views that never opted in receive none of it. A standalone view (no shell
   above it) gets no tokens, so authors write `var(--fused-x, fallback)` and only
   the fallbacks apply there — accepted.
+- **AP-17** **Every view wears the shell's scrollbar.** `runtime.js` puts a
+  sheet first in every view's `<head>`, opted in or not: the 10px hover-only
+  bar of `styles/scrollbars.css`, thumb inked from `currentColor`, so it reads
+  on any palette. Left to the engine, a dark view's bars can come out light
+  whatever `color-scheme` says, and apps were each pasting their own
+  `::-webkit-scrollbar` block. The view keeps control: every rule is
+  `*`-level, so an author's own `::-webkit-scrollbar*` rule wins by order and a
+  more specific one wins outright; a non-`auto` `scrollbar-width`/
+  `scrollbar-color` makes Chromium skip the pseudo rules; and
+  `data-fused-scrollbars="native"` on `<html>` skips the sheet. The viewport
+  bar's track is painted in the document's canvas colour (`<html>`'s
+  background, else `<body>`'s), because a transparent one shows the parent
+  document through the frame.
 
 ---
 
@@ -11367,7 +11380,13 @@ platforms, one API, no field naming which one served you.
 - **CP-9** Packaging: `NSMicrophoneUsageDescription` in the bundle plist (an app
   that touches the mic without it is killed, not prompted) and
   `com.apple.security.device.audio-input` in the hardened-runtime entitlements
-  (without it the mic is refused whatever TCC says). Screen recording needs
+  (without it the mic is refused whatever TCC says). The camera is the same
+  pair — `NSCameraUsageDescription` plus `com.apple.security.device.camera` —
+  because a page's `getUserMedia({video})` in one of OUR windows — WKWebView or
+  Chromium (D1408) — is captured under this app's hardened runtime (tccd judges
+  the responsible app even when a helper opens the device); only the shell in
+  the user's own browser needed nothing from us. Without it tccd refuses with no
+  prompt and the page gets a track that never carries a frame. Screen recording needs
   neither — only the System Settings grant, which macOS 15+ re-confirms after
   ~30 idle days. Linux needs no packaging step at all: the still is
   ordinary D-Bus, and the recording permission is the browser's to ask for.
@@ -11927,11 +11946,10 @@ per-row fix.
   row is critical or warning, so a candidate still counts at its own severity
   for this one flag, though never in the modal's own presentation of it
   (AD-4).
-- **AD-3** Twelve checks, essentials then sharing, exactly:
+- **AD-3** Eleven checks, essentials then sharing, exactly:
   `secrets` (critical, candidate), `entry` (critical, fact), `api-version`
   (critical, fact), `pyproject` (warning, fact), `readme` (warning, fact),
-  `icon` (warning, fact) — then `device-paths` (warning, candidate),
-  `cross-browser` (warning, candidate, ON DEMAND — AD-8), `git`
+  `icon` (warning, fact) — then `device-paths` (warning, candidate), `git`
   (warning, fact), `pushed` (warning, fact), `generated` (warning, fact),
   `preview` (warning, fact). `pushed` (new, D767) reads ahead-of-upstream
   commits via `git rev-list --count @{upstream}..HEAD` — no network call,
@@ -11997,41 +12015,6 @@ per-row fix.
   0, the exact inverted urgency AD-2's severity table exists to prevent.
   Every finding still prints regardless of whether it blocks — only the exit
   code changes.
-- **AD-8** One row is MODEL-BACKED and ON DEMAND: `cross-browser`
-  (`fused_render/app_doctor_ai.py`), a one-shot `claude -p` at **Sonnet, low
-  effort** — fixed, not the user's pickers — over the app's `.html`/`.css`/
-  `.js`/`.svg` files (the `.fused` exporter's own gitignore-aware walk,
-  bounded to 40 files / 256 KB, numbered lines) with
-  `skills/fused-render-cross-browser/SKILL.md` read from disk as the rubric,
-  `--json-schema` for a structured verdict, prompt over stdin,
-  `--no-session-persistence`, `--tools=`. It NEVER
-  runs on a GET: `report()`/`report_one()` only read the cache at
-  `.fused/cache/app-doctor/cross-browser.json`, whose `checksum` is a sha256
-  of exactly the bytes the model was shown. Cache matches → the stored
-  verdict (pass, or fail with `{rule, path, line, excerpt}` findings); no
-  cache, or the view files changed since → `state: "unrun"` ("Not run yet"),
-  which counts toward neither `ok` nor the header dot. `POST
-  /api/apps/doctor/run` `{path, check, force?}` (`X-Fused` required, 400 for
-  a row not in `app_doctor.ON_DEMAND`, 502 with one sentence when the model
-  could not answer, previous verdict kept, single-flighted per folder) runs
-  it and returns the refreshed row; the panel draws **Check** on an unrun
-  row, swaps the returned row in place, and keeps an icon-only **Re-check**
-  (`force: true` — ask again although the cache still matches) on a settled
-  one for what the checksum cannot see (a rubric that moved on). THE VERDICT
-  IS WRITTEN FOR THE AUTHOR: the schema's own `description`s cap `summary`
-  at one plain sentence and give every finding a `what` (what a visitor sees
-  go wrong, in which browser, no code) and a `fix` (one sentence) — the
-  panel draws those as wrapping prose, never the source line, and the fix
-  prompt carries `fix` as "suggested fix". No free text rides in argv
-  (system prompt via `--system-prompt-file`).
-  Every row carries `ondemand: bool` so the panel never keeps its own list.
-  The row is a `candidate` (a model's reading earns a second look), so its
-  fix task is the ordinary per-row task with the triage-first prompt, routed
-  by the app-doctor skill's `cross-browser` section to
-  `fused-render-cross-browser`; `POST /api/apps/doctor` 409s a fix on an
-  unrun on-demand row, since its findings would describe a folder that no
-  longer exists. Verified live 2026-09-18: ~4 s on a two-line fixture, both
-  findings real.
 
 ## 49. App Python, Called Directly — Bots Run a Folder's `.py` Without the Page
 

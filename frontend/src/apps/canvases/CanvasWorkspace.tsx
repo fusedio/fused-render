@@ -156,7 +156,10 @@
 //     canvas pane (keyboard follows the hover: Space-pan, Delete, Cmd+Z),
 //     unless the user is typing somewhere — a wandering mouse must not pull
 //     keystrokes out of the chat onto canvas hotkeys. The chat never takes
-//     focus on hover: a text surface is clicked into.
+//     focus on hover: a text surface is clicked into. Nor while the Claude
+//     rail's pinned card is up (ClaudeRail `onCardPinned`): a press into the
+//     frame is what closes that card, and the page can only hear it as the
+//     frame TAKING the focus — so a hover must not hand it over first.
 //
 // The node pane's chat (owner, 2026-10-19: "when I switch from one node to
 // another, each time I get the new claude session screen"). Selecting a node
@@ -173,7 +176,7 @@ import { reopenWidth } from "@platform/lib/panel-drag";
 import { createPortal } from "react-dom";
 import { addCurrentApp } from "@platform/lib/api";
 import { CURRENT_APPS_CHANGED_EVENT } from "@platform/lib/tasksChanged";
-import { ChatMount, ShotViewer, type CanvasShot, type CanvasShotAnswer, type CanvasShotWhat, type Viewable } from "@apps/claude";
+import { ChatMount, ShotViewer, type CanvasShot, type CanvasShotAnswer, type CanvasShotBy, type CanvasShotWhat, type Viewable } from "@apps/claude";
 import { statPath } from "@platform/lib/api";
 import { EMBED_PREFIX, NAV_EVENT, VIEW_PREFIX, embedUrlForFsPath, navigateUrl } from "@platform/lib/router";
 import { ErrorBanner } from "@platform/ui/ErrorBanner";
@@ -198,6 +201,8 @@ import {
   pullCanvas,
   startSync,
   takeoverSync,
+  unreachableOwnerFromError,
+  forceQuitOwner,
   syncEventsUrl,
   type WorkbenchEnv,
   canvasNameFromPath,
@@ -216,6 +221,13 @@ import {
   type SyncOwner,
   type SyncState,
 } from "./sync-state";
+import { CANVAS_SHOT_SCRIM_HINT, canvasShotScrimLabel, type CanvasShotPhase } from "./canvas-shot-scrim";
+import { SHOT_UDF_CROP_MIN_WIDTH, nativeCanvasShot, type ShotRect } from "./canvas-shot-native";
+import { nativeShotRefusal, screenRecordingNeeded, slowRoadAllowedHere } from "./canvas-shot-permission";
+import type { ScreenshotSource } from "@platform/lib/screen-permission";
+import { watchTopOrigin } from "@apps/claude/shots";
+import { captureSources } from "@platform/lib/capture-audio";
+import { bundleName } from "@platform/lib/flavor";
 
 // How long a canvas screenshot waits for the frame's answer. html-to-image
 // over a big graph takes seconds; a frame without the handler never answers,
@@ -225,6 +237,33 @@ const THUMBNAIL_TIMEOUT_MS = 45_000;
 // before giving up: a page still framing the workbench (a fresh open, a
 // slow `fused whoami`) answers within this on an ordinary day.
 const FRAME_UP_WAIT_MS = 40_000;
+// How long the fast road waits for the workbench to say WHERE the graph and
+// the node are (`fused-embed-capture` `what: "rects"`, canvas-shot-native.ts):
+// a measurement, answered in a frame or two (1–300 ms measured). Only asked
+// of a workbench whose hello SAYS it knows the question (`capture` includes
+// "rects", `rectsSilentRef`): an older build takes any `what` it does not
+// know for a node capture and starts drawing. A late answer is simply
+// dropped — the whole frame is the picture meanwhile.
+const RECTS_WAIT_MS = 800;
+
+/** Resolves after the next frame has been painted: two animation frames —
+ *  the first runs before the pending commit's paint, the second after. A
+ *  document that gets no frames (a background tab, a driven browser) would
+ *  hold the capture for ever, so a short timer settles it instead; the
+ *  native road's own gate then decides what a hidden page deserves. */
+const NEXT_PAINT_MAX_MS = 150;
+function nextPaint(): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, NEXT_PAINT_MAX_MS);
+    if (typeof requestAnimationFrame !== "function") return;
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        clearTimeout(timer);
+        resolve();
+      }),
+    );
+  });
+}
 
 // Fallback cadence for GET sync/state while the events socket is down.
 const SYNC_POLL_MS = 2000;
@@ -573,6 +612,11 @@ export default function CanvasWorkspace({
   // owner's refusal (its message) until the next attempt or a release.
   const [takingOver, setTakingOver] = useState(false);
   const [takeoverError, setTakeoverError] = useState<string | null>(null);
+  // The takeover came back `owner_unreachable` with a pid the server vouches
+  // for as a Fused process of ours (a restart's leftover): the "Force quit"
+  // button's target. Null until then, and after any release or success.
+  const [forceQuitPid, setForceQuitPid] = useState<number | null>(null);
+  const [forceQuitting, setForceQuitting] = useState(false);
   // sync/start failed for another reason (the server still coming up, a
   // transient 5xx): shown, and retried like an owned clone.
   const [startError, setStartError] = useState<string | null>(null);
@@ -681,14 +725,137 @@ export default function CanvasWorkspace({
   // during that wait would otherwise both pass the check, and the second's
   // `shotPendingRef` would bury the first, whose promise then never settled.
   const shotBusyRef = useRef(false);
-  const requestCanvasShot = useCallback(async (what: CanvasShotWhat, udf?: string): Promise<ShotAnswer> => {
+  // THE FAST ROAD'S QUESTION (canvas-shot-native.ts): where, in the frame's
+  // CSS px, the flow graph is and — when a node is named — that node's
+  // output. Answered by a workbench that knows the question; null after
+  // RECTS_WAIT_MS otherwise. Its own pending slot, with a req the shot's
+  // `Date.now()` can never equal.
+  type EmbedRects = { canvas: ShotRect | null; udf: ShotRect | null; udfReason?: string };
+  const rectsPendingRef = useRef<{ req: number; resolve: (r: EmbedRects | null) => void } | null>(null);
+  // Whether this frame's workbench knows the question. True until a hello
+  // lists "rects" among its `capture` abilities: the deployed build before
+  // that treats an unknown `what` as a node capture (html-to-image of the
+  // selected node), so asking it would start the slow draw the fast road
+  // exists to avoid. Re-read on every hello (a reload, a newer build).
+  const rectsSilentRef = useRef(true);
+  const requestEmbedRects = useCallback((udfName: string | null): Promise<EmbedRects | null> => {
+    const frame = frameRef.current;
+    const origin = baseOriginRef.current;
+    if (!frame?.contentWindow || !origin) return Promise.resolve(null);
+    if (rectsSilentRef.current) return Promise.resolve(null);
+    const win = frame.contentWindow;
+    return new Promise<EmbedRects | null>((resolve) => {
+      const req = -Date.now();
+      const timer = setTimeout(() => {
+        if (rectsPendingRef.current?.req === req) {
+          rectsPendingRef.current = null;
+          resolve(null);
+        }
+      }, RECTS_WAIT_MS);
+      rectsPendingRef.current = {
+        req,
+        resolve: (r) => {
+          clearTimeout(timer);
+          rectsPendingRef.current = null;
+          resolve(r);
+        },
+      };
+      win.postMessage({ type: "fused-embed-capture", req, what: "rects", udfName }, origin);
+    });
+  }, []);
+  // WHAT THE SCRIM SAYS, for as long as a request is out (canvas-shot-scrim.ts):
+  // set before the frame wait, cleared with the answer — the timer's, the
+  // frame's or the page's own on unmount — so the workbench is never left
+  // under a wash with nothing behind it.
+  const [shotPhase, setShotPhase] = useState<CanvasShotPhase | null>(null);
+  // WHETHER THE OS SAYS SCREEN RECORDING IS NOT GRANTED, for the sentence a
+  // Mac gets when the native still cannot (canvas-shot-permission.ts
+  // `nativeShotRefusal`). Read from `GET /api/capture` once per page: the
+  // grant applies on relaunch, so the answer cannot change under this
+  // document.
+  const sourcesRef = useRef<Promise<ScreenshotSource | null> | null>(null);
+  const screenshotSource = useCallback((): Promise<ScreenshotSource | null> => {
+    if (!sourcesRef.current) {
+      sourcesRef.current = captureSources()
+        .then((src) => src.screenshot ?? null)
+        .catch(() => null);
+    }
+    return sourcesRef.current;
+  }, []);
+  const screenRecordingMissing = useCallback(
+    (): Promise<boolean> => screenshotSource().then((src) => screenRecordingNeeded(src)),
+    [screenshotSource],
+  );
+  // Where this window's viewport sits on the screen, learned from clicks
+  // (`shots/native-capture` `watchTopOrigin`): the chat registers the same
+  // watcher on ITS window, which is a frame of ours when a node is shown —
+  // the still is taken from this document, so this document learns it too.
+  useEffect(() => watchTopOrigin(window), []);
+  const requestCanvasShot = useCallback(async (what: CanvasShotWhat, udf?: string, by: CanvasShotBy = "user"): Promise<ShotAnswer> => {
     if (shotBusyRef.current || shotPendingRef.current) {
       return { ok: false, error: "a canvas screenshot is already being taken" };
     }
     shotBusyRef.current = true;
+    const udfName = udf || (what === "udf" ? nodeRef.current?.udfName ?? null : null);
     try {
-      if (!(await awaitFrameUp(FRAME_UP_WAIT_MS))) {
-        return { ok: false, error: "the workbench has not loaded in this canvas page yet — reload the canvas page and try again" };
+      // THE FRAME FIRST. A request that lands before the workbench's first
+      // hello (the agent's tool fires as its turn starts) waits for it under
+      // the scrim rather than failing at a moment that fixes itself.
+      if (!frameUpRef.current) {
+        setShotPhase({ what, by, udf: udfName, waitingForFrame: true });
+        const up = await awaitFrameUp(FRAME_UP_WAIT_MS);
+        setShotPhase(null);
+        if (!up) {
+          return { ok: false, error: "the workbench has not loaded in this canvas page yet — reload the canvas page and try again" };
+        }
+        // The scrim is still in the DOM until React commits and the browser
+        // paints; the native road's gate (`frameCovered`) would find it over
+        // the frame and photograph nothing. Wait for that paint.
+        await nextPaint();
+      }
+      // THE NATIVE ROAD, always first (canvas-shot-native.ts): the frame's
+      // live pixels off the screen, ~100 ms, nothing mutated, so no scrim
+      // either — the still would photograph it. Cropped to the box the
+      // workbench names; without an answer (a workbench build that does not
+      // know the question) the WHOLE frame — graph plus the workbench's own
+      // side panes — in a third of a second beats the exact picture in
+      // twenty under a scrim (owner, 2026-10-28: "if you don't find the
+      // rect, just take the screenshot").
+      const rects = await requestEmbedRects(what === "udf" ? udfName : null);
+      const frameEl = frameRef.current;
+      const whole: ShotRect | null = frameEl
+        ? { x: 0, y: 0, w: frameEl.clientWidth, h: frameEl.clientHeight }
+        : null;
+      const crop: ShotRect | null = rects ? (what === "canvas" ? rects.canvas : rects.udf) : whole;
+      // The workbench said this node has nothing to photograph (not run,
+      // still loading): that sentence is the answer, on every platform.
+      if (what === "udf" && rects && !rects.udf && rects.udfReason) {
+        return { ok: false, error: rects.udfReason };
+      }
+      if (crop) {
+        const blob = await nativeCanvasShot(frameRef.current, by, {
+          crop,
+          ...(what === "udf" ? { minWidth: SHOT_UDF_CROP_MIN_WIDTH } : {}),
+        });
+        if (blob) return { ok: true, blob };
+      }
+      // NATIVE COULD NOT. Off a Mac the slow embed road below draws it; on a
+      // Mac that road is off unless Settings turned it on, and the answer is
+      // the sentence that names the fix (canvas-shot-permission.ts).
+      // A Mac with no native still at all (macOS 11–12) falls back like any
+      // other platform: there is no grant to point at.
+      const nativeAvailable = (await screenshotSource())?.available !== false;
+      if (!(await slowRoadAllowedHere(nativeAvailable))) {
+        // A node the zoom draws too small for a crop (under
+        // SHOT_UDF_CROP_MIN_WIDTH) is declined above so the embed road can
+        // draw it at full size — a road this Mac does not take. The whole
+        // frame, the node somewhere in it, is still a picture; "bring the
+        // window to the front" would be the wrong sentence for it.
+        if (whole && crop && crop !== whole) {
+          const blob = await nativeCanvasShot(frameRef.current, by, { crop: whole });
+          if (blob) return { ok: true, blob };
+        }
+        return { ok: false, error: nativeShotRefusal({ permissionMissing: await screenRecordingMissing(), app: bundleName() }) };
       }
     } finally {
       shotBusyRef.current = false;
@@ -696,25 +863,36 @@ export default function CanvasWorkspace({
     const frame = frameRef.current;
     const origin = baseOriginRef.current;
     if (!frame?.contentWindow || !origin) {
+      setShotPhase(null);
       return { ok: false, error: "the workbench is not loaded yet" };
     }
     const win = frame.contentWindow;
-    return new Promise<ShotAnswer>((resolve) => {
+    setShotPhase({ what, by, udf: udfName, waitingForFrame: false });
+    const answer = await new Promise<ShotAnswer>((resolve) => {
       const req = Date.now();
       shotPendingRef.current = { req, resolve };
-      win.postMessage(
-        // The named node when the asker names one (the agent's tool may ask
-        // for any UDF on the canvas); else the node this page shows.
-        { type: "fused-embed-capture", req, what, udfName: udf || nodeRef.current?.udfName || null },
-        origin,
-      );
+      try {
+        win.postMessage(
+          // The named node when the asker names one (the agent's tool may ask
+          // for any UDF on the canvas); else the node this page shows.
+          { type: "fused-embed-capture", req, what, udfName: udf || nodeRef.current?.udfName || null },
+          origin,
+        );
+      } catch (err) {
+        // A frame mid-navigation: answer now, so the slot and the scrim are
+        // not held for a message that never went.
+        settleShot({ ok: false, error: `the workbench could not be reached (${String(err)})` });
+        return;
+      }
       shotTimerRef.current = setTimeout(() => {
         if (shotPendingRef.current?.req === req) {
           settleShot({ ok: false, error: "the workbench did not answer — it may still be drawing a slow capture (map nodes); wait a minute before asking again" });
         }
       }, THUMBNAIL_TIMEOUT_MS);
     });
-  }, [settleShot, awaitFrameUp]);
+    setShotPhase(null);
+    return answer;
+  }, [settleShot, awaitFrameUp, requestEmbedRects, screenRecordingMissing, screenshotSource]);
   // The in-page canvas chat's contract: the canvas view only (no node is
   // selected while that chat shows).
   const canvasShot = useMemo<CanvasShot>(
@@ -793,14 +971,18 @@ export default function CanvasWorkspace({
       const req = event.data.req;
       const what = event.data.what;
       const udf = typeof event.data.udf === "string" ? event.data.udf : undefined;
+      // The asker, for the scrim's line; anything but "agent" is the user.
+      const by: CanvasShotBy = event.data.by === "agent" ? "agent" : "user";
       if (!source) return;
       if (what !== "canvas" && what !== "udf") return;
-      void requestCanvasShot(what, udf).then((answer) => {
-        source.postMessage(
-          { type: "fused-canvas-shot-done", req, ...answer },
-          window.location.origin,
-        );
-      });
+      void requestCanvasShot(what, udf, by)
+        .catch((err: unknown): CanvasShotAnswer => ({ ok: false, error: `the canvas screenshot failed: ${String(err)}` }))
+        .then((answer) => {
+          source.postMessage(
+            { type: "fused-canvas-shot-done", req, ...answer },
+            window.location.origin,
+          );
+        });
     };
     window.addEventListener("message", onShotAsk);
     return () => window.removeEventListener("message", onShotAsk);
@@ -848,9 +1030,15 @@ export default function CanvasWorkspace({
   }, []);
 
   const [nodeFileReady, setNodeFileReady] = useState<string | null>(null);
+  // The node's file CONFIRMED on disk — not the give-up below. The pane opens
+  // its frame on either (the frame says what is wrong); the rail's New task
+  // waits for this one, since a task locked on a missing file has nothing to
+  // be filed under (CodeRabbit on #2015). After a give-up the probe stops, and
+  // the next `disk_rev` (the file landing) asks again.
+  const [nodeFileOnDisk, setNodeFileOnDisk] = useState<string | null>(null);
   const nodePath = node && dir ? nodeFile(dir, node) : null;
   useEffect(() => {
-    if (!nodePath || nodeFileReady === nodePath) return;
+    if (!nodePath || nodeFileOnDisk === nodePath) return;
     let cancelled = false;
     let timer: number | null = null;
     const started = Date.now();
@@ -859,6 +1047,7 @@ export default function CanvasWorkspace({
         await statPath(nodePath);
         if (cancelled) return;
         setNodeFileReady(nodePath);
+        setNodeFileOnDisk(nodePath);
       } catch {
         if (cancelled) return;
         if (Date.now() - started > NODE_FILE_WAIT_MS) {
@@ -873,7 +1062,7 @@ export default function CanvasWorkspace({
       cancelled = true;
       if (timer !== null) window.clearTimeout(timer);
     };
-  }, [nodePath, nodeFileReady, sync?.disk_rev]);
+  }, [nodePath, nodeFileOnDisk, sync?.disk_rev]);
   const onPull = useCallback(async (hard = false) => {
     setPullBusy(true);
     setPullError(null);
@@ -955,6 +1144,7 @@ export default function CanvasWorkspace({
       const started = await startSync(env, name);
       setOwned(null);
       setTakeoverError(null);
+      setForceQuitPid(null);
       setStartError(null);
       setDir(started.dir);
     } catch (e) {
@@ -977,14 +1167,43 @@ export default function CanvasWorkspace({
       const started = await takeoverSync(env, name);
       setOwned(null);
       setStartError(null);
+      setForceQuitPid(null);
       setDir(started.dir);
     } catch (e) {
       if (e instanceof CanvasOwnedError) setOwned(e.owner);
       setTakeoverError((e as Error).message);
+      const unreachable = unreachableOwnerFromError(e);
+      setForceQuitPid(unreachable?.canForceQuit && unreachable.pid > 0 ? unreachable.pid : null);
     } finally {
       setTakingOver(false);
     }
   }, [env, name]);
+
+  // "Force quit": the holder is one of our own processes that no longer
+  // answers (an update's restart left it behind). Only ever shown after the
+  // server said so, and only sent on the user's press; the server re-checks
+  // every guard before SIGTERM. Then sync/start, which claims the freed lock.
+  const forceQuit = useCallback(async (): Promise<void> => {
+    setForceQuitting(true);
+    setTakeoverError(null);
+    try {
+      const result = await forceQuitOwner(env, name);
+      if (result.freed) {
+        setForceQuitPid(null);
+      } else {
+        // Still held: the button stays (the 5 s sync/start retry cannot
+        // claim a held lock, and a second press is the user's call).
+        setTakeoverError(
+          `pid ${result.pid ?? "?"} was told to quit but still holds the canvas; try again in a moment.`,
+        );
+      }
+      await ensureSync();
+    } catch (e) {
+      setTakeoverError((e as Error).message);
+    } finally {
+      setForceQuitting(false);
+    }
+  }, [env, name, ensureSync]);
 
   // Boot: base URL + handle + make sure the watcher runs. sync/start goes
   // out at once, IN PARALLEL with status + whoami (it needs neither): the
@@ -1167,6 +1386,24 @@ export default function CanvasWorkspace({
     if (!frame?.contentWindow || !origin) return;
     frame.contentWindow.postMessage({ type: "fused-embed-select", udfName }, origin);
   }, []);
+  // The rail card's node chip (RailPeek), or the rail's own last seat asking
+  // for NO node (ClaudeRail, `null`): pressed before the frame is ready (no
+  // window or origin yet), the ask is kept and replayed — in place of the
+  // page's own node — when the frame comes up (auth-ready, hydration),
+  // rather than dropped (CodeRabbit on #2044). Boxed, so a kept deselect
+  // (`{ udfName: null }`) reads apart from nothing kept (`null`). Kept
+  // through the frame's BOOT too (auth-ready seen, hello not yet): a frame
+  // that has not hydrated takes no selection, and the hello replay would
+  // otherwise put the page's own node back — undoing the deselect.
+  const pendingSelectRef = useRef<{ udfName: string | null } | null>(null);
+  const selectFromRail = useCallback(
+    (udfName: string | null) => {
+      const up = !!frameRef.current?.contentWindow && !!baseOriginRef.current && frameUpRef.current;
+      pendingSelectRef.current = up ? null : { udfName };
+      sendSelect(udfName);
+    },
+    [sendSelect],
+  );
 
   // Whether the right pane is up (see the header): an older workbench's
   // expand chip acts on this pane, so it needs the state to show itself.
@@ -1252,8 +1489,10 @@ export default function CanvasWorkspace({
   // Pointer enters the canvas pane: give the frame focus, unless the user is
   // mid-drag from elsewhere or typing (header). `preventScroll`: a focus
   // must never shift the page.
+  const railCardPinnedRef = useRef(false);
   const focusCanvasOnEnter = useCallback((e: React.MouseEvent) => {
     if (e.buttons !== 0) return;
+    if (railCardPinnedRef.current) return;
     if (activeElementIsEditable(document)) return;
     frameRef.current?.focus({ preventScroll: true });
   }, []);
@@ -1668,6 +1907,9 @@ export default function CanvasWorkspace({
         }
         canvasChatSidRef.current = new URLSearchParams(window.location.search).get("session_id");
         navHopRef.current = true;
+        // The URL outranks a rail ask kept for the frame's boot: the hello
+        // replay reads the page's node, which this sets (CodeRabbit on #2049).
+        pendingSelectRef.current = null;
         sendSelect(null);
         setNode(null);
         return;
@@ -1683,6 +1925,7 @@ export default function CanvasWorkspace({
       // carries on the URL: the pane boots off the seeded map either way,
       // but the address should still restore the task's session on reload.
       navHopRef.current = true;
+      pendingSelectRef.current = null; // as above: the URL's node wins
       sendSelect(next.udfName);
       setNodeBootSeq((n) => n + 1);
       setNode(next);
@@ -1720,7 +1963,8 @@ export default function CanvasWorkspace({
           // A fresh document: down until its next hello (the selection gate
           // below), whether or not the src changed.
           frameUpRef.current = false;
-          sendSelect(nodeRef.current?.udfName ?? null);
+          const kept = pendingSelectRef.current;
+          sendSelect(kept ? kept.udfName : nodeRef.current?.udfName ?? null);
         }
       }
       if (type === "fused-embed-snapshot") {
@@ -1791,9 +2035,29 @@ export default function CanvasWorkspace({
         // From THE workbench frame only: a same-origin window that guessed
         // the pending `req` must not settle it with its own picture.
         if (event.source !== frameRef.current?.contentWindow) return;
-        const { req, ok, error, blob } = (event.data ?? {}) as {
-          req?: unknown; ok?: unknown; error?: unknown; blob?: unknown;
+        const { req, ok, error, blob, rects } = (event.data ?? {}) as {
+          req?: unknown; ok?: unknown; error?: unknown; blob?: unknown; rects?: unknown;
         };
+        // The fast road's measurement, matched to its own req (negative).
+        if (rectsPendingRef.current && req === rectsPendingRef.current.req) {
+          const r = rects as { canvas?: unknown; udf?: unknown; udfReason?: unknown } | null | undefined;
+          const box = (v: unknown): ShotRect | null => {
+            const o = v as { x?: unknown; y?: unknown; w?: unknown; h?: unknown } | null;
+            return o && [o.x, o.y, o.w, o.h].every((n) => typeof n === "number" && Number.isFinite(n))
+              ? { x: o.x as number, y: o.y as number, w: o.w as number, h: o.h as number }
+              : null;
+          };
+          rectsPendingRef.current.resolve(
+            ok === true && r && typeof r === "object"
+              ? {
+                  canvas: box(r.canvas),
+                  udf: box(r.udf),
+                  ...(typeof r.udfReason === "string" ? { udfReason: r.udfReason } : {}),
+                }
+              : null,
+          );
+          return;
+        }
         // Only the answer to OUR request: a stale one (after the timer gave
         // up) must not settle a later request.
         if (!shotPendingRef.current || req !== shotPendingRef.current.req) return;
@@ -1806,7 +2070,15 @@ export default function CanvasWorkspace({
         }
       }
       if (type === "fused-embed-hello") {
+        // From THE workbench frame only: a same-origin window's hello must
+        // not mark the frame up, nor say what it can capture.
+        if (event.source !== frameRef.current?.contentWindow) return;
         frameUpRef.current = true;
+        // What this build can capture (`capture: ["canvas","udf","rects"]`
+        // from the workbench's `postEmbedHello`); a hello without the list is
+        // a build from before the question existed.
+        const abilities = (event.data as { capture?: unknown }).capture;
+        rectsSilentRef.current = !(Array.isArray(abilities) && abilities.includes("rects"));
         const waiters = frameUpWaitersRef.current;
         frameUpWaitersRef.current = [];
         for (const wake of waiters) wake();
@@ -1820,8 +2092,11 @@ export default function CanvasWorkspace({
         // Once more now that the canvas is there to select in: an older
         // workbench picks its first UDF on hydration, and this puts it back
         // on the page's own node (or none). A current one already settled on
-        // the replay it was holding, and a repeat is a no-op there.
-        sendSelect(nodeRef.current?.udfName ?? null);
+        // the replay it was holding, and a repeat is a no-op there. A chip
+        // press that came before the frame (`selectFromRail`) is spent here.
+        const kept = pendingSelectRef.current;
+        pendingSelectRef.current = null;
+        sendSelect(kept ? kept.udfName : nodeRef.current?.udfName ?? null);
       }
       if (type === "fused-embed-delta-applied" || type === "fused-embed-delta-rejected") {
         const rev = event.data?.rev;
@@ -2632,9 +2907,27 @@ export default function CanvasWorkspace({
                   canvas. Close it there and this page picks the canvas up on its own, or take
                   it over here.
                 </p>
-                <button type="button" className="btn btn-primary" onClick={() => void takeOver()} disabled={takingOver}>
-                  {takingOver ? "Taking over…" : "Take over here"}
-                </button>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={() => void takeOver()}
+                    disabled={takingOver || forceQuitting}
+                  >
+                    {takingOver ? "Taking over…" : "Take over here"}
+                  </button>
+                  {forceQuitPid !== null && (
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={() => void forceQuit()}
+                      disabled={forceQuitting || takingOver}
+                      title="Send that Fused process the ordinary quit signal (SIGTERM). It is a leftover of this app that no longer answers; nothing else is touched."
+                    >
+                      {forceQuitting ? "Quitting it…" : `Force quit that Fused (pid ${forceQuitPid})`}
+                    </button>
+                  )}
+                </div>
                 {takeoverError && (
                   <p role="alert" style={{ margin: 0, color: "var(--error, #d44)" }}>
                     {takeoverError}
@@ -2644,6 +2937,19 @@ export default function CanvasWorkspace({
             ) : (
               <p style={{ padding: 16 }}>Loading workbench…</p>
             ))
+          )}
+          {shotPhase && (
+            // Over the frame, taking the pointer: see canvas-shot-scrim.ts.
+            // `aria-busy` on the region the chat's seat also reports busy.
+            <div className="canvas-shot-scrim" role="status" aria-live="polite" aria-busy="true">
+              <div className="canvas-shot-scrim-card">
+                <span className="canvas-shot-scrim-spinner" aria-hidden="true" />
+                <p className="canvas-shot-scrim-label">{canvasShotScrimLabel(shotPhase)}</p>
+                {!shotPhase.waitingForFrame && (
+                  <p className="canvas-shot-scrim-hint">{CANVAS_SHOT_SCRIM_HINT}</p>
+                )}
+              </div>
+            </div>
           )}
         </div>
         {!embedded && sideOpen && (
@@ -2770,12 +3076,26 @@ export default function CanvasWorkspace({
             env={env}
             name={name}
             dir={dir}
-            activeSessionId={new URLSearchParams(window.location.search).get("session_id")}
+            node={node}
+            nodeReady={!node || !dir || nodeFileOnDisk === nodeFile(dir, node)}
+            // The chat the pane would open on: a node's is the one its frame
+            // last sat on (`nodeSessions`, the node pane's boot source — the
+            // page URL's `session_id` is cleared on every node switch); the
+            // canvas chat's is the URL's.
+            activeSessionId={
+              node
+                ? nodeSessions.get(nodeSessionKey(env, name, node.file)) ?? null
+                : new URLSearchParams(window.location.search).get("session_id")
+            }
             onOpenChat={(href) => navigateUrl(href)}
-            tasksHref={canvasProjectPath(env, name, { tab: "tasks" })}
-            onTasks={() => navigateUrl(canvasProjectPath(env, name, { tab: "tasks" }))}
+            // The card's node chip: the workbench selects the node (zooms to
+            // it, shows its code); its selection echo sets `node` here.
+            onSelectNode={selectFromRail}
             onOpen={openFromRail}
             onPullStart={onRailPull}
+            onCardPinned={(on) => {
+              railCardPinnedRef.current = on;
+            }}
           />
         )}
       </div>
