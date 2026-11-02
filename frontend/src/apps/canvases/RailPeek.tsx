@@ -110,6 +110,7 @@ import {
 import { nodeName, railScope, type RailRow } from "./claude-rail-lib";
 import {
   PEEK_MAX_HEIGHT,
+  PEEK_MAX_WIDTH,
   PEEK_MIN_HEIGHT,
   PEEK_MIN_WIDTH,
   PEEK_PLAIN_HEIGHT,
@@ -127,7 +128,10 @@ import {
 function storedPeekSize(): { width: number; height: number } | null {
   const s = getUiLayout().canvasRailPeek;
   if (!s) return null;
-  return { width: Math.max(PEEK_MIN_WIDTH, s.width), height: Math.max(PEEK_MIN_HEIGHT, s.height) };
+  return {
+    width: Math.min(PEEK_MAX_WIDTH, Math.max(PEEK_MIN_WIDTH, s.width)),
+    height: Math.max(PEEK_MIN_HEIGHT, s.height),
+  };
 }
 
 type Corner = "tl" | "bl";

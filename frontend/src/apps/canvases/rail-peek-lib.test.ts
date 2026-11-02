@@ -9,6 +9,7 @@ import {
   PEEK_INSET,
   PEEK_KEEP,
   PEEK_MAX_HEIGHT,
+  PEEK_MAX_WIDTH,
   PEEK_MIN_HEIGHT,
   PEEK_MIN_WIDTH,
   PEEK_OPEN_MS,
@@ -70,11 +71,15 @@ describe("peekPlacement with a wish (a pinned card's remembered size)", () => {
     expect(box.left + box.width).toBe(RAIL.left - PEEK_GAP);
     expect(box.top).toBe(60);
   });
+  it("never asks for more width than the chat's reading column", () => {
+    expect(peekPlacement(ring(60), RAIL, ROW, { width: 2000 })!.width).toBe(PEEK_MAX_WIDTH);
+    expect(peekPlacement(ring(60), RAIL, ROW, { width: 600 })!.width).toBe(600);
+  });
   it("clamps the asked size to the row", () => {
     const row = { left: 0, top: 0, width: 900, height: 500 };
     const rail = { left: 852, top: 0, width: 48, height: 500 };
     const box = peekPlacement(ring(100), rail, row, { width: 2000, maxHeight: 2000 })!;
-    expect(box.width).toBe(rail.left - PEEK_GAP - PEEK_INSET);
+    expect(box.width).toBe(Math.min(PEEK_MAX_WIDTH, rail.left - PEEK_GAP - PEEK_INSET));
     expect(box.height).toBe(500 - 2 * PEEK_INSET);
     expect(box.top).toBe(PEEK_INSET);
   });
@@ -116,10 +121,14 @@ describe("dragResize", () => {
     expect(shrunk.width).toBe(242);
     expect(shrunk.height).toBe(PEEK_MIN_HEIGHT);
   });
-  it("never leaves the row: the top stops at the inset, the bottom too, the left too", () => {
+  it("stops widening at the chat's reading column, and never leaves the row", () => {
     const tl = dragResize("tl", start, -5000, -5000, ROW);
     expect(tl.top).toBe(ROW.top + PEEK_INSET);
-    expect(tl.left).toBe(ROW.left + PEEK_INSET);
+    expect(tl.width).toBe(PEEK_MAX_WIDTH);
+    expect(tl.left).toBe(start.left + start.width - PEEK_MAX_WIDTH);
+    // A row too narrow for the column: the row's inset is the stop.
+    const narrow = { left: 900, top: 40, width: 500, height: 900 };
+    expect(dragResize("tl", start, -5000, 0, narrow).left).toBe(narrow.left + PEEK_INSET);
     const bl = dragResize("bl", start, 0, 5000, ROW);
     expect(bl.top + bl.height).toBe(ROW.top + ROW.height - PEEK_INSET);
   });

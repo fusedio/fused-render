@@ -30,7 +30,8 @@
 //   - HOW BIG IT IS (`peekPlacement`, `PEEK_MIN_WIDTH`/`PEEK_MIN_HEIGHT`):
 //     420×640 for a hover; a PINNED card takes the size the reader last
 //     dragged it to from its left corners (RailPeek, ui-layout
-//     `canvasRailPeek`), both clamped to the row.
+//     `canvasRailPeek`), both clamped to the row, the width also to the
+//     chat's reading column (`PEEK_MAX_WIDTH`).
 //   - WHAT STAYS WARM (`keepAlive`): the chats the reader has previewed stay
 //     mounted (hidden) after the card closes, newest first, up to PEEK_KEEP,
 //     so coming back to one is instant — the "load fast" half of the ask.
@@ -65,6 +66,13 @@ export const PEEK_MAX_HEIGHT = 640;
  *  grips): room for the head's seats and a usable composer. */
 export const PEEK_MIN_WIDTH = 280;
 export const PEEK_MIN_HEIGHT = 240;
+/** …and no wider than the chat's own reading column (owner, 2026-11-02:
+ *  "max width in resize should be the max width I can have for Claude chat
+ *  … after which we show spaces left and right"): the transcript and the
+ *  composer are capped at 720px (transcript.css, composer.css
+ *  `.c-composer-chat`), so a card past 720 + its two 1px borders only adds
+ *  gutters. The height has no such cap: the row's is the limit. */
+export const PEEK_MAX_WIDTH = 722;
 /** …and for a seat with no conversation (a draft, a scheduled task): what it
  *  is, its words and its door need no transcript's worth of card. */
 export const PEEK_PLAIN_HEIGHT = 250;
@@ -101,7 +109,7 @@ export interface PeekWish {
 export function peekPlacement(anchor: Box, rail: Box, bounds: Box, wish: number | PeekWish = PEEK_MAX_HEIGHT): Box | null {
   const w: PeekWish = typeof wish === "number" ? { maxHeight: wish } : wish;
   const room = rail.left - bounds.left - PEEK_GAP - PEEK_INSET;
-  const width = Math.min(w.width ?? PEEK_WIDTH, room);
+  const width = Math.min(w.width ?? PEEK_WIDTH, PEEK_MAX_WIDTH, room);
   const height = Math.min(w.maxHeight ?? PEEK_MAX_HEIGHT, bounds.height - 2 * PEEK_INSET);
   if (width < 120 || height < 120) return null;
   const left = rail.left - PEEK_GAP - width;
@@ -121,7 +129,7 @@ export function dragResize(corner: "tl" | "bl", start: Box, dx: number, dy: numb
   // (peekPlacement accepts down to 120) must not be pushed past its inset.
   const clamp = (want: number, min: number, max: number) => Math.round(Math.min(Math.max(want, Math.min(min, max)), max));
   const right = start.left + start.width;
-  const maxWidth = right - (bounds.left + PEEK_INSET);
+  const maxWidth = Math.min(PEEK_MAX_WIDTH, right - (bounds.left + PEEK_INSET));
   const width = clamp(start.width - dx, PEEK_MIN_WIDTH, maxWidth);
   const minTop = bounds.top + PEEK_INSET;
   const maxBottom = bounds.top + bounds.height - PEEK_INSET;
