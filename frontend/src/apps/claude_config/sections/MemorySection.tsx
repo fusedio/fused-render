@@ -15,8 +15,9 @@
 // A group is titled by the PROJECT FOLDER, not by the projects/ directory
 // name: that name is a munged cwd ("-Users-me-Work-fused-render") and reads
 // as nothing. The server resolves it — from a session transcript's recorded
-// cwd, else against the filesystem — and sends null when it cannot, in which
-// case this shows the slug rather than a path that might not exist. See
+// cwd, else against the filesystem — and sends null when it cannot confirm one.
+// Then it sends a labelled pathGuess instead, or shows the slug when even that
+// is null. See
 // claude_config/memory.py's _project_path for why a "-" -> "/" replace is not
 // an option.
 import { useCallback } from "react";
@@ -150,14 +151,21 @@ export default function MemorySection({ filter = "", title, blurb }: HeadedSecti
           <div className="cc-memgroup" key={p.project}>
             <div className="cc-memgroup-head">
               <div className="cc-memgroup-title">
-                {/* The folder, when the server could confirm which one it is —
-                    mono, because it is a path. Otherwise the raw slug, NOT
-                    dressed up as a path: the encoding is lossy and a
-                    plausible-looking /Users/me/Work/fused/render that doesn't
-                    exist would be worse than the slug it came from. */}
-                <span className={p.pathConfirmed ? "cc-mono" : undefined} title={p.path ?? undefined}>
-                  {p.path ?? p.project}
+                {/* The confirmed folder in mono. Without one, the server's
+                    best-effort pathGuess in mono plus a muted "folder not
+                    found" tag (the slug in its title). Only with neither is
+                    the raw slug shown, as before. */}
+                <span
+                  className={p.pathConfirmed || p.pathGuess ? "cc-mono" : undefined}
+                  title={p.path ?? undefined}
+                >
+                  {p.path ?? p.pathGuess ?? p.project}
                 </span>
+                {!p.pathConfirmed && p.pathGuess && (
+                  <span className="text-xs font-normal text-muted-foreground" title={p.project}>
+                    folder not found
+                  </span>
+                )}
                 <span className="cc-memgroup-count">{count}</span>
               </div>
               <div className="cc-memgroup-actions">
