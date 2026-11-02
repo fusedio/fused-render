@@ -7726,3 +7726,11 @@ Cursor Bugbot found that the IMAGE_GENERATION workload's fixed `guidance: 4.0` m
 #1994 made every child script call `raise_request_timeout()` at import, which did `fused.options` unguarded. The test fakes of `fused` (and older SDKs) have no `options`, so the share shim, canvas push children and their tests died with `AttributeError`; every test-python lane and fused-engine went red on main.
 - `raise_request_timeout` now returns early when `fused` has no `options`, or `options` has no `request_timeout`. No other #1994 site touches `fused.options` directly (all call this function).
 - `_fused_cli.py` imports and calls it inside a try/except, so an unimportable `fused_render` still falls through to the real CLI (the shim's own promise).
+
+## D1453: Bots status line shows live activity from a transient `doing` field (2026-11-02, bots/live-activity-status)
+
+The Bots status line read "running · step 2 · last step 1 min ago" and nothing else: no way to tell thinking from a tool in flight from a mid-task message still waiting for delivery.
+- `Bot.set_doing(text)` keeps `meta["doing"]` / `meta["doing_since"]` in memory only: no `save()`, no `status` / `updated` change, `summary()` reads it live. "" clears it; `_run_task`'s `finally` clears it so it never outlives a task.
+- Vocabulary: `thinking` (task or mid-task message written, thinking block, a tool result handed back), `writing` (a text block), or a tool label (`builtin_label` for built-ins, `<tool> <first string arg>` for the bot's MCP tools; the permission tool is skipped). The agent engine's `_drive` / `handle_tool` and the steps engine's model-call / `tools.describe` points set them. The `waiting` path is untouched: the UI shows its own text there.
+- `summary()` also reports `inbox_n` (`len(bot.inbox)`), so the Composer appends "your message is queued for its next step" while a mid-task message is unread.
+- The text lives in `runningStatusText` (`apps/bots/lib/derive.ts`, tested); with no `doing` (other engines) it falls back to "last step X".

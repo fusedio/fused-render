@@ -128,6 +128,7 @@ class FakeBot:
         self.browser = FakeBrowser()
         self.events = []
         self.statuses = []
+        self.doings = []       # distinct consecutive set_doing values
         self.inbox = []
         self.lock = threading.RLock()
         self.cond = threading.Condition()
@@ -153,6 +154,10 @@ class FakeBot:
                 self.action_obs.append(self.browser.observes)
             self.cond.notify_all()
         return ev
+
+    def set_doing(self, text):
+        if not self.doings or self.doings[-1] != text:
+            self.doings.append(text)
 
     def set_status(self, status, **kw):
         self.meta["status"] = status
@@ -1718,3 +1723,27 @@ def test_marketplace_install_denied_does_not_run(server, fake_cli, monkeypatch):
     finish(t)
     assert installs == []
     assert fake_cli("call")[0]["result"].startswith('DENIED by the user: install the Community app "Sine Starter"')
+
+
+def test_drive_reports_what_the_bot_is_doing(server):
+    """thinking block -> a built-in tool -> its result -> a reply -> done: the live activity follows, and ends cleared."""
+    bot = FakeBot()
+    sess = agent_engine.session(bot)
+    sess = agent_engine.Turn(bot) if sess is None else sess
+    sess.is_super = True
+    evs = [
+        {"type": "assistant", "message": {"id": "m1", "content": [{"type": "thinking", "thinking": "hmm"}]}},
+        {"type": "assistant", "message": {"id": "m1", "content": [
+            {"type": "tool_use", "id": "t1", "name": "WebSearch", "input": {"query": "RL fine-tuning"}}]}},
+        {"type": "user", "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}},
+        {"type": "assistant", "message": {"id": "m2", "content": [{"type": "text", "text": "Here you go."}]}},
+        {"type": "result", "subtype": "success", "result": "Here you go."},
+    ]
+    assert agent_engine._drive(bot, sess, _Proc(evs)) == ("done", "Here you go.")
+    assert bot.doings == ["thinking", "search the web for RL fine-tuning", "thinking", "writing", ""]
+
+
+def test_mcp_tool_label_and_permission_tool_skipped():
+    assert agent_engine._tool_doing("mcp__bot__goto", {"url": "https://example.com/x"}) == "goto https://example.com/x"
+    assert agent_engine._tool_doing("mcp__bot__observe", {}) == "observe"
+    assert agent_engine._tool_doing("Bash", {"command": "ls"}) == "run `ls`"
