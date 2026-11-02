@@ -312,13 +312,16 @@ export interface Ok { ok: true }
 
 /** GET /api/bots/<id>/package (bots/package.py plan()): what an "Export bot…" would put in the `.fusedbot`. `public` is
  *  bot.json as on disk; an app row's `problem` says why it cannot travel (folder gone, not a fused app, over the caps). */
-export type PackageSourceKind = "bundled" | "marketplace" | "starter";
+export type PackageSourceKind = "bundled" | "marketplace" | "starter" | "github";
 export interface PackageAppRow {
   folder: string; name: string; app_id: string | null;
-  source: { kind: PackageSourceKind; slug?: string; key?: string; [k: string]: unknown };
-  /** Bundled rows: the size of what ships; 0 for references (starter / marketplace). */
+  /** github: `url` is the repo's https://github.com/<owner>/<name> link, `repo` its owner/name, `commit` the exporter's HEAD (display only). */
+  source: { kind: PackageSourceKind; slug?: string; key?: string; url?: string; repo?: string; commit?: string; [k: string]: unknown };
+  /** Bundled rows: the size of what ships; 0 for references (starter / marketplace / github). */
   bytes: number;
   problem?: string;
+  /** A bundled row that is a GitHub app whose link would not carry it: `code` is dirty / unpushed / no_default (share_app.github_link_state). */
+  fallback?: { kind: "github"; code: string; repo?: string | null };
   /** Bundled app with no id yet and no git remote: exporting stamps an app id into its entry page (as sharing the app does). */
   mints_app_id?: boolean;
 }

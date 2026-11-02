@@ -34,6 +34,20 @@ def _botfile():
     return botfile
 
 
+GITHUB_INSTALL_WAIT_S = 600  # added to the install budget per ticked github row (api_install)
+
+
+def _github_rows(path: str, apps: list[str]) -> int:
+    """How many of the ticked `apps` are github rows in the package at `path`; 0 when it cannot be read (the
+    install itself then answers why)."""
+    try:
+        bf = _botfile()
+        return sum(1 for r in bf._app_rows(bf._index(path))
+                   if r["folder"] in apps and r["source"].get("kind") == "github")
+    except Exception:  # noqa: BLE001 - only sizes a timeout
+        return 0
+
+
 def _abs(path: str) -> str | None:
     return path if path and os.path.isabs(path) else None
 
@@ -138,7 +152,10 @@ async def botfile_install(request: Request, x_fused: str | None = Header(default
     from fused_render.bots import tools
     from fused_render.bots.routes import FORWARD_TIMEOUT_S
     apps = [a for a in apps if isinstance(a, str)]
-    budget = FORWARD_TIMEOUT_S + tools.MARKET_INSTALL_WAIT_S * max(1, len(apps))
+    # A github row clones: each appfile_git._git call may take its TIMEOUT_S (300 s) and a clone is retried over
+    # ssh, so it gets GITHUB_INSTALL_WAIT_S on top of the per-row marketplace wait. One bounded index read.
+    n_gh = await asyncio.to_thread(_github_rows, path, apps)
+    budget = FORWARD_TIMEOUT_S + tools.MARKET_INSTALL_WAIT_S * max(1, len(apps)) + GITHUB_INSTALL_WAIT_S * n_gh
     fwd = await _forward_to_owner(request, raw, budget)
     if fwd is not None:
         if fwd.status_code == 200:

@@ -81,13 +81,16 @@ function fmtStamp(iso: string | null | undefined): string | null {
 // The Settings dialog's own words for each value (dialogs/BotSettings.tsx), so the page and the bot agree.
 const APPROVAL: Record<string, string> = { ask: "Ask me first", auto: "Never ask" };
 const BUILD_ACCESS: Record<string, string> = { scoped: "Ask before risky steps", full: "Run unattended" };
-const SOURCE: Record<string, string> = { bundled: "Bundled", marketplace: "Marketplace", starter: "Built in" };
+const SOURCE: Record<string, string> = { bundled: "Bundled", marketplace: "Marketplace", starter: "Built in", github: "GitHub" };
 
-/** A probe state as a short line: appfile's install states for a bundled app, installed/missing for a reference. */
+/** A probe state as a short line: appfile's install states for a bundled app, installed/missing for a reference
+ *  (a GitHub reference that is missing names the repo the install clones). */
 function stateText(a: BotFileApp): string {
   switch (a.state) {
-    case "new":
     case "missing":
+      if (a.source.kind === "github") return `From GitHub: ${a.source.repo || a.source.url || "?"}`;
+      return "Not installed";
+    case "new":
       return "Not installed";
     case "update":
       return "Update available";
@@ -109,6 +112,7 @@ const FAILED: Record<string, string> = {
   marketplace: "Could not fetch it from the Marketplace.",
   starter: "Built-in app could not be installed.",
   bundled: "Could not install the bundled app.",
+  github: "Could not clone it from GitHub.",
 };
 
 // -- Navigation -------------------------------------------------------------------------------------------------

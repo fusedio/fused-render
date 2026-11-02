@@ -23,7 +23,9 @@ import { errMsg } from "../state/store";
 import { CARD_CLASS, DIALOG_CLASS, DIALOG_SIZE, FOOTER_CLASS, HEADER_CLASS } from "./shell";
 
 const EXT = ".fusedbot";
-const SOURCE_LABEL: Record<PackageSourceKind, string> = { bundled: "Bundled", marketplace: "Marketplace", starter: "Built in" };
+const SOURCE_LABEL: Record<PackageSourceKind, string> = { bundled: "Bundled", marketplace: "Marketplace", starter: "Built in", github: "GitHub" };
+/** Why a GitHub app is bundled instead of linked (PackageAppRow.fallback.code → share_app.github_link_state's code). */
+const FALLBACK_WHY: Record<string, string> = { dirty: "uncommitted changes", unpushed: "unpushed commits", no_default: "no default branch" };
 const APPROVAL_LABEL: Record<string, string> = { ask: "Ask me first", auto: "Never ask" };
 
 /** Human size with GB too: a package may carry up to 1 GiB of bundled apps. */
@@ -301,13 +303,19 @@ const SCAN_SCOPE = ["instructions", "memory", "skills", "readme", "routines"];
 
 function PlanAppRow({ a, on, icon, disabled, onToggle }: { a: PackageAppRow; on: boolean; icon: string | null; disabled: boolean; onToggle: (on: boolean) => void }) {
   const bad = !!a.problem;
+  const gh = a.source.kind === "github";
+  const where = gh ? [a.source.repo || a.folder, a.source.commit ? a.source.commit.slice(0, 7) : ""].filter(Boolean).join(" @ ") : a.folder;
+  const fallback = !bad && a.source.kind === "bundled" && a.fallback
+    ? `Bundled: its GitHub copy has ${FALLBACK_WHY[a.fallback.code] ?? a.fallback.code}${a.fallback.repo ? ` (${a.fallback.repo})` : ""}`
+    : null;
   return (
     <label className={cn("flex items-center gap-3 rounded-md px-1 py-1.5 text-sm", bad ? "opacity-60" : "cursor-pointer hover:bg-foreground/[0.04]")}>
       <Checkbox checked={on && !bad} disabled={bad || disabled} onCheckedChange={(c) => onToggle(!!c)} />
       <AppIcon src={bad ? null : icon} name={a.name || a.folder} seed={a.folder} size={28} />
       <span className="flex min-w-0 flex-1 flex-col">
         <span className="truncate">{a.name || a.folder}</span>
-        <span className="truncate text-xs text-muted-foreground">{bad ? a.problem : a.folder}</span>
+        <span className="truncate text-xs text-muted-foreground" title={gh ? a.source.url : undefined}>{bad ? a.problem : where}</span>
+        {fallback ? <span className="truncate text-xs text-muted-foreground" title={fallback}>{fallback}</span> : null}
         {!bad && a.mints_app_id ? (
           <span className="truncate text-xs text-muted-foreground" title={`Exporting writes <meta name="fused-app-id"> into ${a.folder}'s entry page, the same stamp sharing the app makes.`}>
             Export stamps an app id into {a.folder}'s entry page (same as sharing the app)

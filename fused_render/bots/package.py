@@ -11,9 +11,10 @@ kind ever half-opens as the other. Members:
     .fused/memory.md     only when the exporter ticked it (memory is private; default off)
     apps/<folder>.fused  one nested app file per BUNDLED app the exporter chose
 
-Apps travel three ways (`resolve_source`): a starter or a marketplace app is a
-REFERENCE in the index (the importer installs it from its own source), only a
-hand-made app is bundled. Everything here reads the bot's files from disk,
+Apps travel four ways (`resolve_source`): a starter, a marketplace app or a
+GitHub-linked app (a clean, pushed clone of a GitHub repo — the user's own or a
+copy installed from someone's link) is a REFERENCE in the index (the importer
+installs it from its own source), only a hand-made app is bundled. Everything here reads the bot's files from disk,
 never a live Bot: the export must work whether or not the registry has that
 bot loaded, and a running task's in-memory meta is not what the user sees in
 the folder.
@@ -65,11 +66,20 @@ def _utc_now() -> str:
 
 # ------------------------------------------------------------------ sources ---
 def resolve_source(app_dir: str) -> dict:
-    """How an app reaches another machine: `{"kind": "starter", "key"}` when it was installed from a built-in
-    starter (its `.fused/starter.json` names one), `{"kind": "marketplace", "slug", "repo"?, "commit"?}` when the
-    contrib store records it as a marketplace copy, else `{"kind": "bundled"}`. A reference is always preferred
-    over bundling: the importer gets the app from where it is maintained, so it keeps receiving updates, and the
-    package stays small."""
+    """How an app reaches another machine, the first that applies: `{"kind": "starter", "key"}` when it was
+    installed from a built-in starter (its `.fused/starter.json` names one); `{"kind": "marketplace", "slug",
+    "repo"?, "commit"?}` when the contrib store records it as a marketplace copy; `{"kind": "github", "url",
+    "repo", "commit"?}` when `share_app.github_link_state` would offer its GitHub link (the folder is the root of
+    a clone whose `origin` is on GitHub with nothing uncommitted or unpushed — the user's own repo, or a copy
+    installed from someone's GitHub link, whose AUTHOR's repo the state answers); else `{"kind": "bundled"}`.
+    A reference is always preferred over bundling: the importer gets the app from where it is maintained, so it
+    keeps receiving updates, and the package stays small.
+
+    A GitHub app whose link would NOT carry it faithfully (`code` dirty / unpushed / no_default) is bundled
+    instead, and the dict carries `"fallback": {"kind": "github", "code", "repo"}` so the export dialog can say
+    why; `write()` never puts `fallback` in an index row. The url is the repo's canonical
+    `https://github.com/<owner>/<name>` — what `appfetch.download_github_app` and `appfile_git` compare on — not
+    the state's install-page link. No network: the state reads local refs only."""
     from fused_render.bots import starters
 
     rec0 = starters._installed_record(app_dir)
@@ -92,7 +102,50 @@ def resolve_source(app_dir: str) -> dict:
         if isinstance(commit, str) and commit:
             out["commit"] = commit
         return out
+    gh = _github_source(app_dir)
+    if gh is not None:
+        return gh
     return {"kind": "bundled"}
+
+
+_GITHUB_FALLBACK_CODES = ("dirty", "unpushed", "no_default")
+
+
+def _github_source(app_dir: str) -> dict | None:
+    """The `github` source for `app_dir` (resolve_source), the bundled-with-fallback dict when its GitHub copy is
+    not what the link installs, or None when GitHub is not how this app is shared at all."""
+    from fused_render import appfile_git, share_app
+
+    try:
+        state = share_app.github_link_state(os.path.realpath(app_dir))
+    except Exception:  # noqa: BLE001 - a git that fails to answer means "not a GitHub app", never a failed plan
+        log.debug("github link state failed for %s", app_dir, exc_info=True)
+        return None
+    repo = state.get("repo") if isinstance(state.get("repo"), str) and state.get("repo") else None
+    if state.get("ok") and repo and state.get("code") == "contributor":
+        # Someone else's app the user installed from a GitHub link: the state answers the AUTHOR's repo whatever
+        # the local tree holds. With edits of their own (`changes`) the link would drop them, so it is bundled
+        # like a dirty clone and the edits travel; without, the author's repo travels but not the local HEAD,
+        # which need not exist upstream (a contributor's commits are theirs, not the author's).
+        try:
+            changes = int(state.get("changes") or 0)
+        except (TypeError, ValueError):
+            changes = 1
+        if changes > 0:
+            return {"kind": "bundled", "fallback": {"kind": "github", "code": "dirty", "repo": repo}}
+        return {"kind": "github", "url": f"https://github.com/{repo}", "repo": repo}
+    if state.get("ok") and repo:
+        out = {"kind": "github", "url": f"https://github.com/{repo}", "repo": repo}
+        try:
+            commit = appfile_git._head(app_dir)
+        except Exception:  # noqa: BLE001 - the commit is display only
+            commit = None
+        if isinstance(commit, str) and commit:
+            out["commit"] = commit
+        return out
+    if state.get("code") in _GITHUB_FALLBACK_CODES:
+        return {"kind": "bundled", "fallback": {"kind": "github", "code": state["code"], "repo": repo}}
+    return None
 
 
 # -------------------------------------------------------------- reading the bot ---
@@ -207,6 +260,10 @@ def _scan(where: str, text: str, hits: list) -> None:
 
 
 # --------------------------------------------------------------------- apps ---
+# The source kinds that travel as an index row only: a gone folder keeps such a manifest source (_app_row).
+_REFERENCE_KINDS = ("starter", "marketplace", "github")
+
+
 def _app_dir(folder) -> str:
     """The app folder under apps_root() for a manifest/request `folder`; ValueError for anything but a plain child
     name, because `folder` arrives in a request body and is joined onto a real path."""
@@ -250,15 +307,16 @@ def _bundle_size(app_dir: str) -> tuple[int, str | None]:
 
 def _app_row(folder: str, manifest_row: dict | None) -> dict:
     """One plan row, re-resolved now: the manifest records what the app WAS when it was seeded, but a copy may have
-    been switched to a marketplace one or replaced since. A folder that is gone keeps its manifest source when that
-    was a reference (a reference needs no folder to travel); a gone bundled app is a problem."""
+    been switched to a marketplace one, pushed to GitHub or replaced since. A folder that is gone keeps its manifest
+    source when that was a reference (a reference needs no folder to travel); a gone bundled app is a problem. A
+    github row is `bytes: 0` and never sized or stamped: nothing of it ships but the index row."""
     app_dir = _app_dir(folder)
     row = manifest_row if isinstance(manifest_row, dict) else {}
     if os.path.isdir(app_dir):
         source = resolve_source(app_dir)
     else:
         prev = row.get("source")
-        source = prev if isinstance(prev, dict) and prev.get("kind") in ("starter", "marketplace") else {"kind": "bundled"}
+        source = prev if isinstance(prev, dict) and prev.get("kind") in _REFERENCE_KINDS else {"kind": "bundled"}
     app_id = row.get("app_id") if isinstance(row.get("app_id"), str) else None
     if app_id is None and os.path.isdir(app_dir):
         from fused_render import app_id as app_identity
@@ -269,7 +327,11 @@ def _app_row(folder: str, manifest_row: dict | None) -> dict:
         except OSError:
             app_id = None
     name = row.get("name") if isinstance(row.get("name"), str) and row.get("name") else folder
+    source = dict(source)
+    fallback = source.pop("fallback", None)
     out = {"folder": folder, "name": name, "app_id": app_id, "source": source, "bytes": 0}
+    if isinstance(fallback, dict):
+        out["fallback"] = fallback  # why a GitHub app is bundled; a plan-row key, never an index-row one (write())
     if source.get("kind") == "bundled":
         out["bytes"], problem = _bundle_size(app_dir)
         if problem:
@@ -369,7 +431,8 @@ def _file_name(file_name: str | None, name: str) -> str:
 def write(bid: str, *, memory: bool, apps: list[str], file_name: str | None, dest_dir: str) -> str:
     """Write the bot as a `.fusedbot` under `dest_dir` and return its path. `apps` are the folders the user ticked:
     manifest rows and folders added in the dialog alike, each re-resolved; a bundled one is exported as a nested
-    `.fused`, a reference travels as its index row only. Caps are checked on declared sizes BEFORE anything is
+    `.fused`, a reference (starter, marketplace, github) travels as its index row only — `{folder, name, app_id,
+    source}` with the source's kind/key/slug/url/repo/commit, never a plan row's `fallback`. Caps are checked on declared sizes BEFORE anything is
     exported, so an over-budget package fails in a second instead of after minutes of compression. Built in a
     scratch dir beside the destination and renamed in once complete: the result path is only ever absent or whole."""
     from fused_render.bots.bot import is_super

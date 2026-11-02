@@ -7,14 +7,15 @@
 // so it has its own small fetch with the same guard and error contract.
 import { ApiError, request } from "../lib/api";
 
-export type BotFileSourceKind = "bundled" | "marketplace" | "starter";
+export type BotFileSourceKind = "bundled" | "marketplace" | "starter" | "github";
 
 export interface BotFileApp {
   folder: string;
   name: string;
   app_id: string | null;
-  source: { kind: BotFileSourceKind; slug?: string; key?: string };
-  /** bundled: appfile's install state (new/update/same/…); starter/marketplace: "installed" | "missing". */
+  /** github: `url` is the https://github.com/<owner>/<name> link the install clones, `repo` its owner/name, `commit` the exporter's HEAD (display only). */
+  source: { kind: BotFileSourceKind; slug?: string; key?: string; url?: string; repo?: string; commit?: string };
+  /** bundled: appfile's install state (new/update/same/…); starter/marketplace/github: "installed" | "missing". */
   state: string;
   /** The probe's default: install it (a bundled app that is new/updated, a reference not installed yet). */
   ticked: boolean;

@@ -621,7 +621,11 @@ def _app_source(app_dir: str) -> dict:
         return {"kind": "bundled"}
     try:
         src = resolve_source(app_dir)
-        return src if isinstance(src, dict) and src.get("kind") else {"kind": "bundled"}
+        if not (isinstance(src, dict) and src.get("kind")):
+            return {"kind": "bundled"}
+        # `fallback` (why a GitHub copy shipped bundled) is dialog advice, re-derived on every plan(); the manifest
+        # only remembers the kind.
+        return {k: v for k, v in src.items() if k != "fallback"}
     except Exception:  # noqa: BLE001
         log.debug("bots v3 migration: resolve_source(%s) failed", app_dir, exc_info=True)
         return {"kind": "bundled"}

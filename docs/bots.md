@@ -2240,15 +2240,30 @@ apps: [{folder, name, app_id, source}]}` (the chosen rows of `plan()` without
 `TEXT_MAX_BYTES` 1 MiB for memory + skills together, checked on declared sizes
 before writing and by the container's own write caps after. `EXT = ".fusedbot"`.
 
-**Three reference kinds.** `package.resolve_source(app_dir)` decides from the
-installed copy's own stamps: `{kind: "starter", key}` when
+**Four reference kinds.** `package.resolve_source(app_dir)` decides from the
+installed copy's own stamps, in this order: `{kind: "starter", key}` when
 `<app>/.fused/starter.json` has a key; else `{kind: "marketplace", slug,
 repo?, commit?}` when `contrib.store.get_raw(key(app_dir))` (read-only; `get()`
-re-binds and may write) is a marketplace record with a slug; else
-`{kind: "bundled"}`. Only bundled apps ride in the file;
-starters and marketplace apps travel as references and install from their
-source on the other Mac. A marketplace ref that cannot be fetched there shows
-the error with Retry; it is never bundled as a fallback.
+re-binds and may write) is a marketplace record with a slug; else `{kind:
+"github", url, repo, commit?}` when `share_app.github_link_state(app_dir)` is
+`ok` — the folder is the root of a clone whose `origin` is on GitHub with nothing
+uncommitted or unpushed (the user's own repo, or a copy installed from someone's
+GitHub link, for which the state answers the AUTHOR's repo); `url` is the
+canonical `https://github.com/<owner>/<name>` (what `appfetch.download_github_app`
+clones and `appfile_git` compares on, not the state's install-page link),
+`commit` the exporter's HEAD, for display only; else `{kind: "bundled"}`. A
+GitHub app whose link would NOT carry it faithfully (state code `dirty`,
+`unpushed` or `no_default`) is bundled instead and the plan row carries
+`fallback: {kind: "github", code, repo}` so the dialog says why ("Bundled: its
+GitHub copy has uncommitted changes (owner/name)"); `write()` never puts
+`fallback` in an index row. A contributor's copy (state code `contributor`) with
+edits of its own (`changes > 0`) is bundled the same way (`code: "dirty"`) so the
+edits travel; without edits it is a github reference with no `commit` (its local
+HEAD need not exist upstream). Only bundled apps ride in the file; starters,
+marketplace and GitHub apps travel as references (`bytes: 0`, never sized, never
+stamped with an id) and install from their source on the other Mac. A reference
+that cannot be fetched there shows the error with Retry; it is never bundled as
+a fallback.
 
 **Export.** `GET /api/bots/{bid}/package` → `plan(bid)`:
 
@@ -2312,6 +2327,7 @@ TTL. Per-row state:
 | bundled | `appfile.install_target(member, light=True)["state"]` | `new`, `update` | not `WARN_STATES` (`diverged`, `same`, `downgrade`, `unknown`) and not `clash`; `same` reads "Already installed" |
 | starter | `installed` / `missing` (`starters.list_state`) | when missing | yes |
 | marketplace | `installed` / `missing` (`marketplace.installed_copies()`) | when missing | yes |
+| github | `installed` / `missing` (`appfile_git.installed_clone_of(normalize_url(url))`, else a workspace copy carrying the row's `app_id`; local git only, no network); a row whose `url` is not a `https://github.com/<owner>/<repo>` link of at most 256 chars (`appfetch.parse_github_repo`) reads `unknown`; `repo` and `url` are rewritten from the url's owner/name (the file's `repo` is never shown) | when missing | yes |
 
 **Install order.** `install` → `{ok, bot_id, apps: [{folder, ok, state,
 error?}], warnings: [str]}`. Once `bot.create()` has returned the POST answers
@@ -2321,7 +2337,18 @@ a Retry is always safe. Apps first, in the order given: bundled → `appfile.ins
 **never `force`** (a state that would need force is reported skipped, so a
 package can never overwrite an app the user edited); starter →
 `starters.ensure([key])`; marketplace → `marketplace.start_install(slug)`,
-polled up to `tools.MARKET_INSTALL_WAIT_S` (240 s). Then the bot, in the owner
+polled up to `tools.MARKET_INSTALL_WAIT_S` (240 s); github → `_install_github`:
+already a clone of the repo (`installed_clone_of`) → ok, nothing written; an
+`app_id` match alone is display only (ids are public), else
+`appfetch.download_github_app(url)` (synchronous; the clone the `open?git=` deep
+link makes, packed into a staged `.fused`) then the bundled path on that file
+(`install_target`; `same` → ok with nothing written; `install_app_file`, never
+forced). It follows the author's default-branch HEAD — what the platform's
+GitHub link installs — not the exporter's `commit`, which stays in the row for
+display; a pinned install would silently diverge from every other
+GitHub-installed copy. A clone failure (offline, private or deleted repo) is
+that row's error — "could not clone <repo> from GitHub: <reason>" — the bot is
+still made and the row's Retry runs it again. Then the bot, in the owner
 process: `bot.create(name, model, effort, instructions, greet=False)`; face,
 approval, build_access, terminal, engine, max_steps / step_cap; `preset` as the
 key only (no `apply_preset`: the skills are in the file); routines from the

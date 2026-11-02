@@ -4,7 +4,8 @@ A package is the app container (`appfile_container`, kind "bot") holding the bot
 `skills/<name>.md`, an optional `README.md`, `icon.svg` and `.fused/memory.md`, plus one nested
 `apps/<folder>.fused` per bundled app. The index's `apps` rows name every app the bot comes with; a row's
 `source` says how it travels: `bundled` (the nested app file), `starter` (a key of bots/starters/, copied
-from this install) or `marketplace` (a slug fetched at install time; never a bundled fallback).
+from this install), `marketplace` (a slug fetched at install time; never a bundled fallback) or `github` (a
+public repo url cloned at install time through the same path the `open?git=` deep link takes).
 
 Every byte here is as untrusted as a mailed `.fused`: the container reader validates the index, members
 are read bounded, every field taken from `bot.json` passes the same check the Settings dialog applies, and
@@ -34,7 +35,7 @@ logger = logging.getLogger(__name__)
 MAX_ENTRIES = appfile.MAX_OPEN_ENTRIES
 BOT_JSON_MAX_BYTES = 256 * 1024
 STAGING_PREFIX = ".install-bot-"  # under appfile.install_dir(): ".install-" so _sweep_install_staging ages it out
-SOURCE_KINDS = ("bundled", "starter", "marketplace")
+SOURCE_KINDS = ("bundled", "starter", "marketplace", "github")
 # What the file's bot.json may set on the new bot. `id`/`created` are minted fresh, `apps`/`routines` are
 # rebuilt below, and name/model/effort/instructions go through create(); `kind`/`super_access` are Super
 # Bot's (refused) and everything else in PUBLIC_KEYS has a validator in _public_fields.
@@ -132,15 +133,47 @@ def _app_rows(idx: dict) -> list[dict]:
             logger.debug("bot package: dropped a malformed apps row %r", r)  # every probe re-reads the index
             continue
         seen.add(r["folder"])
-        src = r.get("source") if isinstance(r.get("source"), dict) else {}
+        raw = r.get("source") if isinstance(r.get("source"), dict) else {}
         # Only the keys the installer reads, each a bounded string: the row lands in the new bot's manifest.
-        src = {k: v[:128] for k, v in src.items() if k in ("kind", "key", "slug", "repo", "commit") and isinstance(v, str)}
-        if src.get("kind") not in SOURCE_KINDS:
+        src = {k: v[:256] for k, v in raw.items()
+               if k in ("kind", "key", "slug", "repo", "commit", "url") and isinstance(v, str)}
+        if src.get("kind") == "github":
+            # The url is what gets cloned, so it alone names the repo: `repo` is rewritten from it (a row saying
+            # "trusted/app" over an attacker's url must not display the trusted name) and the url is
+            # canonicalized (query/fragment/.git dropped). An over-long url is refused on the RAW value, never a
+            # truncated one that might parse as some other repo.
+            gh = _github_repo_of(raw.get("url"))
+            if gh is None:
+                src["kind"] = "unknown"
+            else:
+                src["repo"] = f"{gh[0]}/{gh[1]}"
+                src["url"] = f"https://github.com/{gh[0]}/{gh[1]}"
+        elif src.get("kind") not in SOURCE_KINDS:
             src["kind"] = "unknown"
         app_id = r.get("app_id") if isinstance(r.get("app_id"), str) and len(r["app_id"]) <= 128 else None
         out.append({"folder": r["folder"], "name": (_str(r.get("name")) or r["folder"])[:120], "app_id": app_id,
                     "source": src})
     return out
+
+
+GITHUB_URL_MAX = 256
+
+
+def _github_repo_of(url) -> tuple[str, str] | None:
+    """(owner, name) of a github row's url, else None. It must be a `https://github.com/<owner>/<repo>` link
+    (appfetch.parse_github_repo) of at most GITHUB_URL_MAX chars: the only shape the install clones, and
+    anything else out of the file must not reach git."""
+    from fused_render import appfetch
+    if not isinstance(url, str) or not url or len(url) > GITHUB_URL_MAX:
+        return None
+    try:
+        return appfetch.parse_github_repo(url)
+    except appfetch.FetchError:
+        return None
+
+
+def _github_url_ok(url) -> bool:
+    return _github_repo_of(url) is not None
 
 
 def _check_text_budget(idx: dict) -> None:
@@ -262,6 +295,37 @@ def _market_copy(slug: str) -> dict | None:
         return None
 
 
+def _github_clone(url: str) -> str | None:
+    """The workspace clone of a github row's (canonical, `_app_rows`) url, else None:
+    `appfile_git.installed_clone_of`, the walk `appfile.install_target` runs for a git-source file. Local git and
+    the workspace walk only — no network."""
+    from fused_render import appfile_git
+    if not url:
+        return None
+    try:
+        return appfile_git.installed_clone_of(appfile_git.normalize_url(url))
+    except Exception:  # noqa: BLE001 - a git that cannot answer reads as "no clone"; the install says why
+        logger.warning("bot package: clone lookup failed for %s", url, exc_info=True)
+        return None
+
+
+def _github_copy(row: dict) -> str | None:
+    """Where a github row's app already is, for DISPLAY only (`_row_state`): its clone (`_github_clone`), or a
+    copy carrying the row's app id wherever it sits. Never a short-circuit or a grant — app ids are public, so a
+    hand-made app sharing one is not proof the repo is here (`_install_github` and `_already_there` ask
+    `_github_clone` only)."""
+    clone = _github_clone(_str(row["source"].get("url")))
+    if clone:
+        return clone
+    app_id = row.get("app_id")
+    if isinstance(app_id, str) and app_id:
+        try:
+            return appfile.workspace_app_with_id(app_id)
+        except Exception:  # noqa: BLE001 - as above
+            logger.warning("bot package: app id lookup failed for %s", app_id, exc_info=True)
+    return None
+
+
 def _row_state(row: dict, staged: str | None) -> dict:
     """state / ticked / tickable / reason for one app row (§8)."""
     src = row["source"]
@@ -291,6 +355,8 @@ def _row_state(row: dict, staged: str | None) -> dict:
         installed = _starter_installed(_str(src.get("key")))
     elif kind == "marketplace":
         installed = _market_copy(_str(src.get("slug"))) is not None
+    elif kind == "github":
+        installed = _github_copy(row) is not None
     else:
         return {"state": "unknown", "ticked": False, "tickable": False, "reason": "Unknown app source"}
     if installed:
@@ -352,7 +418,7 @@ def _install_bundled(staged: str | None) -> dict:
     except appfile.InstallNeedsConfirm as e:
         st = e.target["state"]
         return {"ok": False, "state": st, "error": "skipped: " + _BUNDLED_REASON.get(st, f"state {st!r} needs confirmation")}
-    except appfile.AppFileError as e:
+    except (appfile.AppFileError, OSError, ValueError) as e:  # a row's failure, never the whole install's
         return {"ok": False, "state": t["state"], "error": str(e)}
     return {"ok": True, "state": done.get("action") or "installed", "path": done["path"]}
 
@@ -399,6 +465,51 @@ def _install_marketplace(slug: str) -> dict:
     return {"ok": True, "state": "installed", "path": job.get("path") or (copy or {}).get("path")}
 
 
+def _install_github(row: dict) -> dict:
+    """One github row: clone its repo into a staged `.fused` through `appfetch.download_github_app` — EXACTLY
+    what the `fused-render://open?git=` deep link does — then install that file the way a bundled member is
+    installed (`install_target`, then `install_app_file`, never forced; `same` writes nothing). A clone of the
+    repo already here (`_github_clone`) → installed, nothing written, so a Retry is safe. A copy matched by app
+    id only is NOT enough (ids are public): the repo is cloned and `install_target` decides, so a hand-made app
+    holding the id is a replace/diverged row that is skipped, never overwritten or trusted unseen.
+
+    The install follows the AUTHOR'S DEFAULT-BRANCH HEAD, what the platform's GitHub link installs, not the
+    exporter's `commit` (which stays in the row for display). Pinning to the exporter's commit was considered and
+    rejected: the platform's GitHub share semantics are "follow the author" (share_app.github_link_state links the
+    default branch, appfile_git updates a clone to it), so a pinned install would silently diverge from every other
+    GitHub-installed copy of the same app. A clone failure (offline, private or deleted repo) is this row's error;
+    the bot is still made and the page's per-row Retry (re-install mode) runs this again."""
+    from fused_render import appfetch, appfile_git
+    url = _str(row["source"].get("url"))
+    repo = _str(row["source"].get("repo")) or url
+    if not _github_url_ok(url):
+        return {"ok": False, "state": "error", "error": f"not a GitHub repository link: {url or '(empty)'}"}
+    have = _github_clone(url)
+    if have:
+        return {"ok": True, "state": "installed", "path": have}
+    try:
+        staged = appfetch.download_github_app(url)
+    except (appfetch.FetchError, appfile_git.GitInstallError, appfile.AppFileError, OSError) as e:
+        return {"ok": False, "state": "error",
+                "error": f"could not clone {repo} from GitHub: {e or e.__class__.__name__}"}
+    # OSError/ValueError too: appfile_git.install's post-place steps (git config, record writes) must fail this
+    # row, never escape _install_apps and fail the whole POST before the bot exists.
+    try:
+        t = appfile.install_target(staged)
+    except (appfile.AppFileError, OSError, ValueError) as e:
+        return {"ok": False, "state": "error", "error": f"could not install {repo} from GitHub: {e}"}
+    if t["state"] == appfile.STATE_SAME:
+        return {"ok": True, "state": "same", "path": t["path"]}
+    try:
+        done = appfile.install_app_file(staged)
+    except appfile.InstallNeedsConfirm as e:
+        st = e.target["state"]
+        return {"ok": False, "state": st, "error": "skipped: " + _BUNDLED_REASON.get(st, f"state {st!r} needs confirmation")}
+    except (appfile.AppFileError, OSError, ValueError) as e:
+        return {"ok": False, "state": t["state"], "error": f"could not install {repo} from GitHub: {e}"}
+    return {"ok": True, "state": done.get("action") or "installed", "path": done["path"]}
+
+
 def _already_there(row: dict) -> str | None:
     """Where an app the user did NOT tick already lives, else None: it is trusted like one installed now.
     Bundled rows are found by app id (no extraction); a copy found that way is the same app whatever its
@@ -412,6 +523,8 @@ def _already_there(row: dict) -> str | None:
         return os.path.join(bpaths.apps_root(), key) if key and _starter_installed(key) else None
     if kind == "marketplace":
         return (_market_copy(_str(src.get("slug"))) or {}).get("path")
+    if kind == "github":
+        return _github_clone(_str(src.get("url")))  # a clone only: an app id match is display, never trust
     return None
 
 
@@ -501,6 +614,8 @@ def _install_apps(path: str, idx: dict, rows: list[dict], apps) -> tuple[list[di
             res = _install_starter(_str(row["source"].get("key")))
         elif kind == "marketplace":
             res = _install_marketplace(_str(row["source"].get("slug")))
+        elif kind == "github":
+            res = _install_github(row)
         else:
             res = {"ok": False, "state": "unknown", "error": "unknown app source"}
         if res["ok"]:
