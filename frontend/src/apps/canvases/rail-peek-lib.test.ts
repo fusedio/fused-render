@@ -9,11 +9,14 @@ import {
   PEEK_INSET,
   PEEK_KEEP,
   PEEK_MAX_HEIGHT,
+  PEEK_MIN_HEIGHT,
+  PEEK_MIN_WIDTH,
   PEEK_OPEN_MS,
   PEEK_SWAP_MS,
   PEEK_WARM_MS,
   PEEK_WIDTH,
   PeekIntent,
+  dragResize,
   keepAlive,
   peekPlacement,
   type Timers,
@@ -55,6 +58,70 @@ describe("peekPlacement", () => {
     const row = { left: 0, top: 0, width: 160, height: 400 };
     const rail = { left: 112, top: 0, width: 48, height: 400 };
     expect(peekPlacement(ring(100), rail, row)).toBeNull();
+  });
+});
+
+
+describe("peekPlacement with a wish (a pinned card's remembered size)", () => {
+  it("takes the asked width and height, right edge still against the rail", () => {
+    const box = peekPlacement(ring(60), RAIL, ROW, { width: 600, maxHeight: 800 })!;
+    expect(box.width).toBe(600);
+    expect(box.height).toBe(800);
+    expect(box.left + box.width).toBe(RAIL.left - PEEK_GAP);
+    expect(box.top).toBe(60);
+  });
+  it("clamps the asked size to the row", () => {
+    const row = { left: 0, top: 0, width: 900, height: 500 };
+    const rail = { left: 852, top: 0, width: 48, height: 500 };
+    const box = peekPlacement(ring(100), rail, row, { width: 2000, maxHeight: 2000 })!;
+    expect(box.width).toBe(rail.left - PEEK_GAP - PEEK_INSET);
+    expect(box.height).toBe(500 - 2 * PEEK_INSET);
+    expect(box.top).toBe(PEEK_INSET);
+  });
+  it("honours an asked top (where a top-left drag left it), clamped to the row", () => {
+    expect(peekPlacement(ring(300), RAIL, ROW, { top: 120 })!.top).toBe(120);
+    expect(peekPlacement(ring(300), RAIL, ROW, { top: -500 })!.top).toBe(ROW.top + PEEK_INSET);
+    expect(peekPlacement(ring(300), RAIL, ROW, { top: 5000 })!.top).toBe(ROW.top + ROW.height - PEEK_INSET - PEEK_MAX_HEIGHT);
+  });
+});
+
+describe("dragResize", () => {
+  const start = { left: 924, top: 200, width: 420, height: 640 };
+  it("top-left: the pointer moving up and left grows the card, bottom and right edges fixed", () => {
+    const box = dragResize("tl", start, -100, -50, ROW);
+    expect(box).toEqual({ left: 824, top: 150, width: 520, height: 690 });
+  });
+  it("bottom-left: the pointer moving down and left grows the card, top and right edges fixed", () => {
+    const box = dragResize("bl", start, -100, 50, ROW);
+    expect(box).toEqual({ left: 824, top: 200, width: 520, height: 690 });
+  });
+  it("never goes under the minimums", () => {
+    const tl = dragResize("tl", start, 1000, 1000, ROW);
+    expect(tl.width).toBe(PEEK_MIN_WIDTH);
+    expect(tl.height).toBe(PEEK_MIN_HEIGHT);
+    expect(tl.top + tl.height).toBe(start.top + start.height);
+    const bl = dragResize("bl", start, 1000, -1000, ROW);
+    expect(bl.width).toBe(PEEK_MIN_WIDTH);
+    expect(bl.height).toBe(PEEK_MIN_HEIGHT);
+    expect(bl.top).toBe(start.top);
+  });
+  it("a row smaller than the minimums wins over them", () => {
+    const row = { left: 0, top: 0, width: 400, height: 300 };
+    // Right edge at 250: 242px of room, under PEEK_MIN_WIDTH.
+    const small = { left: 100, top: 8, width: 150, height: 200 };
+    const grown = dragResize("tl", small, -900, -900, row);
+    expect(grown).toEqual({ left: PEEK_INSET, top: PEEK_INSET, width: 242, height: 200 });
+    // Shrinking in that row stops at the room too, not at the (bigger) minimum.
+    const shrunk = dragResize("bl", small, 900, -900, row);
+    expect(shrunk.width).toBe(242);
+    expect(shrunk.height).toBe(PEEK_MIN_HEIGHT);
+  });
+  it("never leaves the row: the top stops at the inset, the bottom too, the left too", () => {
+    const tl = dragResize("tl", start, -5000, -5000, ROW);
+    expect(tl.top).toBe(ROW.top + PEEK_INSET);
+    expect(tl.left).toBe(ROW.left + PEEK_INSET);
+    const bl = dragResize("bl", start, 0, 5000, ROW);
+    expect(bl.top + bl.height).toBe(ROW.top + ROW.height - PEEK_INSET);
   });
 });
 
@@ -434,7 +501,7 @@ describe("PeekIntent", () => {
       expect(shown).toEqual(["a"]);
     });
 
-    it("swap on click (the default): a hover or a focus on another ring moves nothing", () => {
+    it("pinned: a hover or a focus on another ring moves nothing (only a press swaps)", () => {
       const { clock, shown, warmed, intent } = rig();
       intent.press("a");
       intent.leaveRing();
@@ -443,26 +510,6 @@ describe("PeekIntent", () => {
       clock.tick(10_000);
       expect(shown).toEqual(["a"]);
       expect(warmed).toEqual(["a"]);
-    });
-
-    it("swap on hover: a hover on another ring swaps, and the card stays pinned", () => {
-      const { clock, shown, intent } = rig();
-      intent.setSwap("hover");
-      intent.press("a");
-      intent.leaveRing();
-      intent.enterRing("b");
-      clock.tick(PEEK_SWAP_MS);
-      expect(shown).toEqual(["a", "b"]);
-      intent.leaveRing();
-      clock.tick(10_000);
-      expect(shown).toEqual(["a", "b"]);
-      expect(intent.isPinned).toBe(true);
-      // A sweep that only crosses a ring swaps nothing.
-      intent.enterRing("c");
-      clock.tick(PEEK_SWAP_MS / 2);
-      intent.leaveRing();
-      clock.tick(10_000);
-      expect(shown).toEqual(["a", "b"]);
     });
 
     it("tells the sink when it pins and unpins", () => {

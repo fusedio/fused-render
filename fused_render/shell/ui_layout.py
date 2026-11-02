@@ -38,6 +38,9 @@ MAX_VIEW_STATE = 500
 MAX_PATH = 4096
 MAX_QUERY = 512
 MAX_RECENT_PATHS = 8
+# The canvas rail's pinned preview card, as dragged (RailPeek's corner grips).
+RAIL_PEEK_MIN = 120
+RAIL_PEEK_MAX = 10000
 _IDENT_RE = re.compile(r"^[a-z0-9_-]{1,32}$")
 
 
@@ -131,6 +134,15 @@ def _clean(doc) -> dict:
     if "rememberLastFolder" in doc:
         _check(isinstance(doc["rememberLastFolder"], bool))
         out["rememberLastFolder"] = doc["rememberLastFolder"]
+    if "canvasRailPeek" in doc:
+        rp = doc["canvasRailPeek"]
+        _check(isinstance(rp, dict))
+        size: dict = {}
+        for key in ("width", "height"):
+            v = rp.get(key)
+            _check(_is_int(v) and RAIL_PEEK_MIN <= v <= RAIL_PEEK_MAX)
+            size[key] = v
+        out["canvasRailPeek"] = size
     return out
 
 

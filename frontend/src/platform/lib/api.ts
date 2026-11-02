@@ -1567,10 +1567,9 @@ export interface Prefs {
   canvas_shot?: { slow_fallback: boolean };
   // The canvas page's collapsed Claude rail shows the hovered chat as a live
   // floating card (`canvas_rail_peek_enabled`, shell/prefs.py; off by
-  // default). Optional: absent (older server) reads as off. `trigger` is what
-  // opens the card (`canvas_rail_peek_trigger`): a press on a ring, or a
-  // hover; absent reads as "click".
-  canvas_rail_peek?: { enabled: boolean; trigger?: CanvasRailPeekTrigger };
+  // default). Optional: absent (older server) reads as off. A hover previews
+  // and a click pins — there is no trigger choice any more.
+  canvas_rail_peek?: { enabled: boolean };
   // Stable AI titles: Tasks rows titled only by the stable `title` (`task_summary_titles_enabled`,
   // shell/prefs.py; off by default). Optional: absent reads as off.
   task_summary_titles?: { enabled: boolean };
@@ -2036,13 +2035,6 @@ export function putCanvasRailPeekEnabled(enabled: boolean): Promise<Prefs> {
   return putJson<Prefs>("/api/prefs", { canvas_rail_peek_enabled: enabled });
 }
 
-/** What opens the rail's preview card (`Prefs.canvas_rail_peek.trigger`). */
-export type CanvasRailPeekTrigger = "click" | "hover";
-
-export function putCanvasRailPeekTrigger(trigger: CanvasRailPeekTrigger): Promise<Prefs> {
-  return putJson<Prefs>("/api/prefs", { canvas_rail_peek_trigger: trigger });
-}
-
 /** One PUT per Bots page-wide switch (`Prefs.bots`). */
 export function putBotsPref(
   key: "bots_autostage" | "bots_sounds" | "bots_clear_enabled",
@@ -2086,6 +2078,9 @@ export interface UiLayoutDoc {
   recentPaths?: string[];
   /** New task opens on the last folder used instead of the workspace. */
   rememberLastFolder?: boolean;
+  /** The size the reader dragged the canvas rail's PINNED preview card to
+   *  (RailPeek's corner grips); a hover card ignores it. */
+  canvasRailPeek?: { width: number; height: number };
 }
 
 export function getUiLayout(): Promise<{ exists: boolean; layout: UiLayoutDoc | null }> {

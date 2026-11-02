@@ -44,6 +44,25 @@
 // the chat item we focus on the card composer so user can type — instead of
 // opening the sidebar"): `focusComposer`, retried until the chat has mounted.
 //
+// A PINNED CARD RESIZES (owner, 2026-11-02: "when we click to preview let's
+// give the panel ability to resize … top left and bottom left corner … and
+// we remember that size; only for click though, hover size remain same"):
+// two grips on the card's left corners, shown only while the card is PINNED
+// (`pinned`: a ring press, a press inside, the pin) and the seat has a chat.
+// The right edge stands against the rail, so a drag moves the left edge for
+// the width; the top-left grip moves the top edge (the bottom stays), the
+// bottom-left the bottom (the top stays) — rail-peek-lib `dragResize`, with
+// its minimums and the row's edges. The size lands in the ui-layout
+// document (`canvasRailPeek`, D1386: it must survive a relaunch on another
+// port) and is the size of every pinned card from then on; a hover card is
+// always the default 420×640, so a hover keeps reading as a glance and a
+// click as the thing the reader shaped. While pinned, a top-left drag's top
+// is kept (`dragTop`) through re-placements on the same chat; a swap to
+// another ring aligns to that ring again. A press INSIDE a hover card pins
+// it too — but the remembered size waits for that press to END (`grown`):
+// a card that grew under a pressed pin would move the pin out from under
+// the pointer before the click landed.
+//
 // ACCESSIBILITY: the card is a non-modal `dialog` named for its chat; the ring
 // that opened it says `aria-expanded` and `aria-controls` (ClaudeRail). The
 // keyboard's way in is ArrowLeft on a focused ring (`focusChat` lands in the
@@ -61,6 +80,7 @@ import {
   type FocusEvent as ReactFocusEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MutableRefObject,
+  type PointerEvent as ReactPointerEvent,
 } from "react";
 import { createPortal } from "react-dom";
 import { Archive, ArchiveRestore, MessageSquare, Pencil, X } from "lucide-react";
@@ -74,6 +94,7 @@ import { Kebab } from "@apps/claude/ui/Kebab";
 import { AgentProvider } from "@apps/claude/ui/agent-context";
 import { timeAgo } from "@platform/lib/format";
 import { chatDraftKey, peekDraftSyncer } from "@platform/lib/drafts";
+import { getUiLayout, patchUiLayout } from "@platform/lib/ui-layout";
 import {
   cardTitleLine,
   isDraftTask,
@@ -89,13 +110,27 @@ import {
 import { nodeName, railScope, type RailRow } from "./claude-rail-lib";
 import {
   PEEK_MAX_HEIGHT,
+  PEEK_MIN_HEIGHT,
+  PEEK_MIN_WIDTH,
   PEEK_PLAIN_HEIGHT,
   PEEK_WIDTH,
+  dragResize,
   inSafeCone,
   peekPlacement,
   statusWords,
   type Box,
+  type PeekWish,
 } from "./rail-peek-lib";
+
+/** The size the reader last dragged a pinned card to (ui-layout
+ *  `canvasRailPeek`), floored at the grips' minimums; null for "never". */
+function storedPeekSize(): { width: number; height: number } | null {
+  const s = getUiLayout().canvasRailPeek;
+  if (!s) return null;
+  return { width: Math.max(PEEK_MIN_WIDTH, s.width), height: Math.max(PEEK_MIN_HEIGHT, s.height) };
+}
+
+type Corner = "tl" | "bl";
 
 /** The pin glyph (owner, 2026-11-02: "BsFillPinAngleFill use this") —
  *  Bootstrap Icons' `pin-angle-fill` (MIT), inlined: react-icons is not a
@@ -244,6 +279,10 @@ export interface RailPeekProps {
   held: boolean;
   /** The pin was pressed (`true`), or the × / Open let go (`false`). */
   onHeld: (held: boolean) => void;
+  /** The card is PINNED (PeekIntent: a ring press, a press inside, the pin's
+   *  press) — not a passing hover. Only a pinned card wears the corner grips
+   *  and takes the remembered size (header). */
+  pinned: boolean;
 }
 
 /** A seat with no conversation yet (header of the body above). */
@@ -310,6 +349,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     onPin,
     held,
     onHeld,
+    pinned,
   },
   ref,
 ) {
@@ -340,9 +380,54 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     if (!kept.some((s) => s.pulse.key === key)) focusRefs.current.delete(key);
   }
 
-  // A seat with no session gets the short card (PEEK_PLAIN_HEIGHT).
-  const maxHeightFor = (key: string) =>
-    kept.find((s) => s.pulse.key === key)?.pulse.session_id ? PEEK_MAX_HEIGHT : PEEK_PLAIN_HEIGHT;
+  // WHAT SIZE (header): a seat with no session gets the short card
+  // (PEEK_PLAIN_HEIGHT); a pinned chat card takes the remembered size, and
+  // keeps a top-left drag's top while it stays on the same chat
+  // (`dragTop`); a hover card is the default. Refs, not state: `place` runs
+  // from listeners and effects whose closures would otherwise go stale.
+  // GROWN (header): the pinned card takes the remembered size — at once for
+  // a ring press or the pin's, after the pointer comes up for a press inside
+  // the card (`onPressInside` runs in the capture phase, before the pin
+  // flips; the window's pointerup ends it).
+  const [grown, setGrown] = useState(false);
+  const grownRef = useRef(false);
+  grownRef.current = grown;
+  const pressingInside = useRef(false);
+  const growAfterPress = useRef(false);
+  const onPressInsideCapture = () => {
+    pressingInside.current = true;
+    onPressInside();
+  };
+  useEffect(() => {
+    const up = () => {
+      pressingInside.current = false;
+      if (growAfterPress.current) {
+        growAfterPress.current = false;
+        setGrown(true);
+      }
+    };
+    window.addEventListener("pointerup", up, true);
+    window.addEventListener("pointercancel", up, true);
+    return () => {
+      window.removeEventListener("pointerup", up, true);
+      window.removeEventListener("pointercancel", up, true);
+    };
+  }, []);
+  useEffect(() => {
+    if (!pinned) {
+      growAfterPress.current = false;
+      setGrown(false);
+    } else if (pressingInside.current) growAfterPress.current = true;
+    else setGrown(true);
+  }, [pinned]);
+  const dragTop = useRef<{ key: string; top: number } | null>(null);
+  const wishFor = (key: string): PeekWish => {
+    if (!kept.find((s) => s.pulse.key === key)?.pulse.session_id) return { maxHeight: PEEK_PLAIN_HEIGHT };
+    const size = grownRef.current ? storedPeekSize() : null;
+    if (!size) return { maxHeight: PEEK_MAX_HEIGHT };
+    const top = dragTop.current?.key === key ? dragTop.current.top : undefined;
+    return { width: size.width, maxHeight: size.height, top };
+  };
   // The rail's left edge as of the last placement: where the bridge below
   // ends. A ref, not state — `place` runs before every `setBox`, so the
   // render that draws the new box reads a fresh value.
@@ -353,8 +438,83 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     if (!anchor || !railEl || !row) return null;
     const rail = railEl.getBoundingClientRect();
     railLeft.current = rail.left;
-    return peekPlacement(anchor.getBoundingClientRect(), rail, row.getBoundingClientRect(), maxHeightFor(key));
+    return peekPlacement(anchor.getBoundingClientRect(), rail, row.getBoundingClientRect(), wishFor(key));
   };
+  // THE CORNER DRAG (header). `resizing` names the held grip while a drag is
+  // on: the card drops its glide transitions and the placement effects stand
+  // back so the box follows the pointer alone.
+  const [resizing, setResizing] = useState<Corner | null>(null);
+  const resizingRef = useRef<Corner | null>(null);
+  resizingRef.current = resizing;
+  const dragStart = useRef<{ x: number; y: number; box: Box; pointerId: number; corner: Corner } | null>(null);
+  // The box the last move asked for — what the release saves. A ref, not
+  // `box`: the move's state write may not have committed when the pointer
+  // comes up (reviewer).
+  const dragLast = useRef<Box | null>(null);
+  const onGripDown = (corner: Corner) => (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0 || !box) return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    dragStart.current = { x: e.clientX, y: e.clientY, box, pointerId: e.pointerId, corner };
+    dragLast.current = null;
+    setResizing(corner);
+  };
+  const onGripMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const start = dragStart.current;
+    const row = railEl?.parentElement;
+    if (!start || start.pointerId !== e.pointerId || !row) return;
+    const next = dragResize(start.corner, start.box, e.clientX - start.x, e.clientY - start.y, row.getBoundingClientRect());
+    dragLast.current = next;
+    setBox((prev) =>
+      prev && prev.left === next.left && prev.top === next.top && prev.width === next.width && prev.height === next.height
+        ? prev
+        : next,
+    );
+  };
+  const endDrag = () => {
+    const start = dragStart.current;
+    dragStart.current = null;
+    setResizing(null);
+    const last = dragLast.current;
+    dragLast.current = null;
+    // A press that never moved saves nothing — not the default size, not a
+    // size the row clamped (reviewer) — and leaves the card on its ring.
+    if (!start || !last || !shownKey || (last.width === start.box.width && last.height === start.box.height)) return;
+    // Only the top-left grip moves the top: that top is kept. A bottom-left
+    // drag's card still follows its ring.
+    if (start.corner === "tl") dragTop.current = { key: shownKey, top: last.top };
+    // Only the dimension the drag changed is remembered: a height-only drag
+    // in a narrow window must not persist the width the row clamped it to.
+    const prev = storedPeekSize();
+    const width = last.width !== start.box.width ? last.width : (prev?.width ?? last.width);
+    const height = last.height !== start.box.height ? last.height : (prev?.height ?? last.height);
+    // SET, never toggle (ui-layout header): the same answer on any base.
+    patchUiLayout((d) =>
+      d.canvasRailPeek?.width === width && d.canvasRailPeek?.height === height ? d : { ...d, canvasRailPeek: { width, height } },
+    );
+  };
+  const onGripUp = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const start = dragStart.current;
+    if (!start || start.pointerId !== e.pointerId) return;
+    if (e.currentTarget.hasPointerCapture(e.pointerId)) e.currentTarget.releasePointerCapture(e.pointerId);
+    endDrag();
+  };
+  // The grip can leave mid-drag (Escape, the chat pruned, the card unpinned
+  // or hidden): the drag ends there, or `.is-resizing` would stick and the
+  // follow-the-ring paths would stand back for good (reviewer).
+  const visible = on && box !== null && shownKey !== null;
+  const gripsOn = pinned && visible && !!view?.pulse.session_id;
+  useEffect(() => {
+    if (!gripsOn && dragStart.current) endDrag();
+    // `endDrag` reads refs; the flag is what decides.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gripsOn, shownKey]);
+  // A swap to another chat, or the card closing or unpinning, forgets the
+  // dragged top: the next placement aligns to its ring again.
+  useEffect(() => {
+    if (!shownKey || !pinned) dragTop.current = null;
+    else if (dragTop.current && dragTop.current.key !== shownKey) dragTop.current = null;
+  }, [shownKey, pinned]);
 
   // PLACED, THEN SHOWN (header). Hidden → shown sets the box on this frame and
   // the class on the next; shown → shown (a swap) moves the box under the
@@ -394,6 +554,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   useEffect(() => {
     if (!shownKey || !railEl) return;
     const re = () => {
+      if (resizingRef.current) return;
       const next = place(shownKey);
       // The row shrank under the card (a window resized down to nothing):
       // the card leaves rather than standing clamped over the canvas.
@@ -421,9 +582,10 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shownKey, railEl]);
   useEffect(() => {
-    if (!shownKey) return;
+    if (!shownKey || resizing) return;
     const next = place(shownKey);
-    if (next && box && (next.top !== box.top || next.left !== box.left || next.height !== box.height)) setBox(next);
+    if (next && box && (next.top !== box.top || next.left !== box.left || next.width !== box.width || next.height !== box.height))
+      setBox(next);
   });
 
   // LEAVING A CHAT SAVES ITS DRAFT (owner, 2026-10-30: "if I make the draft
@@ -485,7 +647,6 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // the warm mounts behind it take no focus, no hit, and are out of the
   // accessibility tree — `aria-hidden` on a subtree that might still hold
   // focus is the thing this avoids.
-  const visible = on && box !== null && shownKey !== null;
   useLayoutEffect(() => {
     cardRef.current?.toggleAttribute("inert", !visible);
   }, [visible]);
@@ -752,6 +913,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
         "canvas-rail-peek" +
         (visible ? " is-on" : "") +
         (held ? " is-held" : "") +
+        (resizing ? " is-resizing" : "") +
         (view && !view.pulse.session_id ? " is-plain" : "")
       }
       role="dialog"
@@ -765,10 +927,27 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       }
       onPointerEnter={onPointerEnter}
       onPointerLeave={onPointerLeave}
-      onPointerDownCapture={onPressInside}
+      onPointerDownCapture={onPressInsideCapture}
       onFocusCapture={onFocusCapture}
       onBlurCapture={onBlurCapture}
     >
+      {gripsOn &&
+        // THE GRIPS (header): the card's two left corners, hit areas with
+        // a resize cursor, only on a pinned chat card. `aria-hidden`: a
+        // pointer-only affordance; the card's size is a preference, not a
+        // control the keyboard needs.
+        (["tl", "bl"] as const).map((corner) => (
+          <div
+            key={corner}
+            className={"canvas-rail-peek-grip is-" + corner + (resizing === corner ? " is-active" : "")}
+            aria-hidden="true"
+            onPointerDown={onGripDown(corner)}
+            onPointerMove={onGripMove}
+            onPointerUp={onGripUp}
+            onPointerCancel={onGripUp}
+            onLostPointerCapture={() => dragStart.current && endDrag()}
+          />
+        ))}
       <div className="canvas-rail-peek-card">
         {head && (
           // THE HEAD, TWO ROWS (owner, 2026-11-02, after the one-row head of

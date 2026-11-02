@@ -1,7 +1,6 @@
 // THE RAIL'S PREVIEW CARD, the parts that need no DOM (RailPeek.tsx draws it;
 // ClaudeRail.tsx wires the rings). Behind `canvas_rail_peek_enabled`
-// (rail-peek-flag.ts); what moves a pinned card to another chat is
-// `canvas_rail_peek_trigger`.
+// (rail-peek-flag.ts).
 //
 // Three rulings live here so they can be proved without a browser:
 //
@@ -22,12 +21,16 @@
 //     the pane opening dismiss it at once. A CLICK PINS IT (owner,
 //     2026-10-31): a press on a ring (`press`) or anywhere in the card
 //     (`pressStart`) — the hover rules then stop closing it, and only a
-//     press outside, Escape, its × or its Open does. What a pinned card does
-//     when the pointer rests on ANOTHER ring is the trigger's call (`setSwap`,
-//     `canvas_rail_peek_trigger`): "click" — nothing, another ring's press
-//     swaps it; "hover" — the hover swaps it, still pinned. The pointer and
-//     the keyboard focus are tracked apart: a ring that loses focus while
-//     the pointer still rests on it is still hovered.
+//     press outside, Escape, its × or its Open does. A pinned card does
+//     NOTHING when the pointer rests on another ring — only that ring's
+//     press swaps it (owner, 2026-11-02: "click only"; the hover-swap
+//     trigger of 2026-10-31 is gone). The pointer and the keyboard focus
+//     are tracked apart: a ring that loses focus while the pointer still
+//     rests on it is still hovered.
+//   - HOW BIG IT IS (`peekPlacement`, `PEEK_MIN_WIDTH`/`PEEK_MIN_HEIGHT`):
+//     420×640 for a hover; a PINNED card takes the size the reader last
+//     dragged it to from its left corners (RailPeek, ui-layout
+//     `canvasRailPeek`), both clamped to the row.
 //   - WHAT STAYS WARM (`keepAlive`): the chats the reader has previewed stay
 //     mounted (hidden) after the card closes, newest first, up to PEEK_KEEP,
 //     so coming back to one is instant — the "load fast" half of the ask.
@@ -58,6 +61,10 @@ export const PEEK_CONE_PAD = 32;
 export const PEEK_WIDTH = 420;
 /** The card's height cap; shorter rows shrink it. */
 export const PEEK_MAX_HEIGHT = 640;
+/** A pinned card can be dragged no smaller than this (RailPeek's corner
+ *  grips): room for the head's seats and a usable composer. */
+export const PEEK_MIN_WIDTH = 280;
+export const PEEK_MIN_HEIGHT = 240;
 /** …and for a seat with no conversation (a draft, a scheduled task): what it
  *  is, its words and its door need no transcript's worth of card. */
 export const PEEK_PLAIN_HEIGHT = 250;
@@ -75,19 +82,60 @@ export interface Box {
   height: number;
 }
 
+/** What a placement may ask for beyond the defaults. */
+export interface PeekWish {
+  /** The height to aim for (the default cap, a plain card's, or the size
+   *  the reader dragged a pinned card to). */
+  maxHeight?: number;
+  /** The width to aim for (the reader's dragged width for a pinned card). */
+  width?: number;
+  /** Where the top should be instead of level with the ring: where a drag
+   *  from the top-left corner left it. Still clamped to the row. */
+  top?: number;
+}
+
 /** Where the card stands for a ring at `anchor`, beside a rail at `rail`,
  *  inside the workspace row `bounds` (all viewport rects). Null when the row
- *  leaves no room at all. */
-export function peekPlacement(anchor: Box, rail: Box, bounds: Box, maxHeight = PEEK_MAX_HEIGHT): Box | null {
+ *  leaves no room at all. `wish` is a number for the height cap alone, or
+ *  the fuller `PeekWish`. */
+export function peekPlacement(anchor: Box, rail: Box, bounds: Box, wish: number | PeekWish = PEEK_MAX_HEIGHT): Box | null {
+  const w: PeekWish = typeof wish === "number" ? { maxHeight: wish } : wish;
   const room = rail.left - bounds.left - PEEK_GAP - PEEK_INSET;
-  const width = Math.min(PEEK_WIDTH, room);
-  const height = Math.min(maxHeight, bounds.height - 2 * PEEK_INSET);
+  const width = Math.min(w.width ?? PEEK_WIDTH, room);
+  const height = Math.min(w.maxHeight ?? PEEK_MAX_HEIGHT, bounds.height - 2 * PEEK_INSET);
   if (width < 120 || height < 120) return null;
   const left = rail.left - PEEK_GAP - width;
   const minTop = bounds.top + PEEK_INSET;
   const maxTop = bounds.top + bounds.height - PEEK_INSET - height;
-  const top = Math.max(minTop, Math.min(maxTop, anchor.top));
+  const top = Math.max(minTop, Math.min(maxTop, w.top ?? anchor.top));
   return { left: Math.round(left), top: Math.round(top), width: Math.round(width), height: Math.round(height) };
+}
+
+/** The box a corner drag asks for: `corner` is which of the card's LEFT
+ *  corners is held (the right edge stands against the rail), `start` the box
+ *  when the pointer went down, `dx`/`dy` how far it has moved since. The
+ *  width and height are clamped to the minimums and to the row: a top-left
+ *  drag keeps the bottom edge where it was, a bottom-left drag the top. */
+export function dragResize(corner: "tl" | "bl", start: Box, dx: number, dy: number, bounds: Box): Box {
+  // The row wins over the minimums: a row with less room than PEEK_MIN_*
+  // (peekPlacement accepts down to 120) must not be pushed past its inset.
+  const clamp = (want: number, min: number, max: number) => Math.round(Math.min(Math.max(want, Math.min(min, max)), max));
+  const right = start.left + start.width;
+  const maxWidth = right - (bounds.left + PEEK_INSET);
+  const width = clamp(start.width - dx, PEEK_MIN_WIDTH, maxWidth);
+  const minTop = bounds.top + PEEK_INSET;
+  const maxBottom = bounds.top + bounds.height - PEEK_INSET;
+  let top: number;
+  let height: number;
+  if (corner === "tl") {
+    const bottom = start.top + start.height;
+    height = clamp(start.height - dy, PEEK_MIN_HEIGHT, bottom - minTop);
+    top = bottom - height;
+  } else {
+    height = clamp(start.height + dy, PEEK_MIN_HEIGHT, maxBottom - start.top);
+    top = start.top;
+  }
+  return { left: Math.round(right - width), top: Math.round(top), width, height };
 }
 
 export interface Point {
@@ -170,10 +218,6 @@ export interface IntentSink {
  *  keyboard focus. The two leave independently. */
 export type Via = "pointer" | "focus";
 
-/** What moves a PINNED card to another chat (`canvas_rail_peek_trigger`):
- *  that ring's press, or a hover on it. */
-export type SwapOn = "click" | "hover";
-
 /**
  * The hover-intent state machine (header). One per rail; the rings and the
  * card report their pointer and focus, and the sink hears what to draw.
@@ -205,8 +249,6 @@ export class PeekIntent {
   /** Pinned by a press (`press`, `pressStart`, `showNow(key, true)`): the
    *  card stays up whatever the pointer and the focus do, until `dismiss`. */
   private pinned = false;
-  /** What a pinned card does with a hover on another ring (`setSwap`). */
-  private swap: SwapOn = "click";
 
   constructor(
     private readonly sink: IntentSink,
@@ -221,12 +263,6 @@ export class PeekIntent {
   /** Whether the card is pinned (header). */
   get isPinned(): boolean {
     return this.pinned;
-  }
-
-  /** The trigger: what moves a pinned card to another ring's chat. */
-  setSwap(on: SwapOn): void {
-    this.swap = on;
-    if (on === "click" && this.pinned) this.cancelOpen();
   }
 
   /** The pointer (or the keyboard focus) arrived on ring `key`. */
@@ -244,9 +280,9 @@ export class PeekIntent {
       this.focusKey = key;
       if (this.muteFocus) return;
     }
-    // A pinned card under the click trigger: a hover (or a Tab) on another
-    // ring moves nothing — that ring's press does.
-    if (this.pinned && this.swap === "click") return;
+    // A pinned card: a hover (or a Tab) on another ring moves nothing — that
+    // ring's press does (header).
+    if (this.pinned) return;
     this.cancelClose();
     if (this.shown === key) {
       this.cancelOpen();
@@ -384,7 +420,7 @@ export class PeekIntent {
     this.set(key);
   }
 
-  /** A press on ring `key` (either trigger): show it now, pinned — over a
+  /** A press on ring `key`: show it now, pinned — over a
    *  hover card of the same ring, it only pins; over another ring's card, it
    *  swaps without a close. A press never closes the card (owner,
    *  2026-10-31: it "stays unless I click outside, or click on cross or

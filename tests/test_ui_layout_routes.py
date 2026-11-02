@@ -27,6 +27,7 @@ def _doc():
         "tasks": {"view": "board", "calRange": "week"},
         "recentPaths": ["/Users/me/Fused/local/foo"],
         "rememberLastFolder": True,
+        "canvasRailPeek": {"width": 520, "height": 720},
     }
 
 
@@ -77,6 +78,12 @@ def test_put_invalid_is_400(tmp_path, monkeypatch):
         {**base, "recentPaths": [1]},
         {**base, "rememberLastFolder": "yes"},
         {**base, "rememberLastFolder": 1},
+        {**base, "canvasRailPeek": {"width": 520}},
+        {**base, "canvasRailPeek": {"width": 119, "height": 720}},
+        {**base, "canvasRailPeek": {"width": 520, "height": 10001}},
+        {**base, "canvasRailPeek": {"width": 520.5, "height": 720}},
+        {**base, "canvasRailPeek": {"width": True, "height": 720}},
+        {**base, "canvasRailPeek": [520, 720]},
     ]
     for doc in bad:
         assert client.put("/api/ui-layout", json=doc, headers=FUSED).status_code == 400, doc
