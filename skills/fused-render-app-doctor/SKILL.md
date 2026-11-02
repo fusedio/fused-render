@@ -62,6 +62,12 @@ Shape: `[project]` with `name`, `version`, `requires-python`, `dependencies`, pl
 
 **Fix, won't parse.** Read the parse error from the row's `detail`, fix the syntax. Broken costs the app its extra packages, not its ability to open.
 
+## `models` — Uses an AI model it doesn't declare
+
+**candidate**, severity **warning** (never blocks publishing) — a literal model id in a `fused.ai.<verb>(...)` call, or in `fused.ai.models.download("...")`, that `[tool.fused-render.app.models]` doesn't list. The row names the first `file:line` and a TOML snippet.
+
+**Fix.** Add the snippet to `pyproject.toml`, with the key set to the verb's capability. Ids built at runtime (`model=pick()`) aren't seen; declare those by hand. Syntax and semantics: **`fused-render-ai`**, "Declaring models for your app".
+
 ## `readme` — has a README explaining the app
 
 **fact**, severity **info** — a `README` or `README.*` at the app root.
@@ -142,7 +148,7 @@ No row above judges whether a real `fused.*` call is correct. Read what the app 
 
 | App touches | Load |
 |---|---|
-| `fused.ai` (text/image/video/transcribe/embed), model or provider choice | `fused-render-ai` |
+| `fused.ai` (text/image/video/transcribe/embed), model or provider choice, a `models` finding | `fused-render-ai` |
 | `fused.runPython`, `fused.params`, general `.html`/`.py` view authoring | `fused-render-authoring` |
 | `fused.trackJob`/`fused.watchJob`, or a `runPython` risking the 60s timeout | `fused-render-jobs` |
 | `fused.fileIndex` | `fused-render-index` |

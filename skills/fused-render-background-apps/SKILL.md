@@ -19,6 +19,8 @@ Pick `daemon =` only when idle-reap is the actual problem (websocket/poll server
 
 Folder's `pyproject.toml`: `[tool.fused-render.app]` with EXACTLY ONE of `daemon =` / `main =` (path inside folder, file not dir). Optional `idle_timeout_s` (0 = resident). Bad manifest **silently** rejected (read as "no manifest") — rules in `background_apps.load_manifest`; check `GET /api/apps/background/status?html=<page>` if unsure yours parsed.
 
+A sibling `[tool.fused-render.app.models]` table (declared AI models, see `fused-render-ai`) does NOT make an app a background app; only `daemon =` / `main =` do.
+
 ## Daemon contract
 
 Plain script run as `[interpreter, daemon.py, --status <path>, --cache <dir>, --version <str>]`. Read `tests/fixtures/background_app/daemon.py` (minimal stdlib reference) before writing one. Race-free sequence: parse args → bind `127.0.0.1:0` → atomically publish `{port, token, pid}` to status file (temp + `os.replace`, BEFORE `serve_forever`) → serve. Require random token on every request (parent proxies via `/api/engines/<id>/proxy/`, but any local process can hit port). `GET /ping` → `{"ok": true, "version": <the --version you were GIVEN — never hardcode, defeats staleness respawn>}`. `GET /quit` → `shutdown()` on separate thread (same-thread deadlocks ThreadingHTTPServer).
