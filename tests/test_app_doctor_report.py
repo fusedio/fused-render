@@ -138,6 +138,7 @@ _EXPECTED_META = {
     "app-id": ("essentials", "warning", "fact"),
     "api-version": ("essentials", "critical", "fact"),
     "pyproject": ("essentials", "warning", "fact"),
+    "models": ("essentials", "warning", "candidate"),
     "readme": ("essentials", "info", "fact"),
     "icon": ("essentials", "warning", "fact"),
     "device-paths": ("sharing", "warning", "candidate"),
@@ -1569,3 +1570,97 @@ def test_the_secrets_commit_step_cannot_be_read_as_commit_the_secret_fix(workspa
                                      row["findings"], row["detail"])
     assert "commit the fix" not in prompt.lower()
     assert "live" in prompt.lower() or "relocat" in prompt.lower()
+
+
+# ------------------------------------------------------- models (undeclared)
+
+def _declare(d, body):
+    with open(d / "pyproject.toml", "a") as f:
+        f.write("\n[tool.fused-render.app.models]\n" + body)
+
+
+def _models(d):
+    return _rows(app_doctor.report(str(d)))["models"]
+
+
+def test_models_row_is_essentials_warning_and_never_a_publish_blocker():
+    from fused_render.contrib import listing
+    assert app_doctor._CHECK_META["models"] == ("essentials", "warning", "candidate")
+    assert "models" not in getattr(listing, "_DOCTOR_EXTRA", ())
+
+
+def test_an_app_with_no_ai_calls_passes(workspace):
+    d = _app(workspace)
+    assert _models(d)["state"] == "pass"
+
+
+def test_a_literal_model_in_an_html_call_is_flagged_with_line_and_snippet(workspace):
+    d = _app(workspace)
+    (d / "index.html").write_text(
+        PAGE.format(v=app_doctor.fused_api_version.current_version())
+        + '\n<script>\nawait fused.ai.image({model: "black-forest-labs/FLUX.2-klein-4B", prompt: "x"});\n</script>\n')
+    row = _models(d)
+    assert row["state"] == "fail" and row["severity"] == "warning"
+    (f,) = row["findings"]
+    assert f["rule"] == "models:undeclared" and f["path"] == "index.html"
+    assert f["line"] == 3
+    assert "index.html:3" in row["detail"]
+    assert '[tool.fused-render.app.models]\nimage = { model = "black-forest-labs/FLUX.2-klein-4B" }' in row["detail"]
+
+
+def test_a_multiline_options_object_is_caught(workspace):
+    d = _app(workspace)
+    (d / "app.js").write_text(
+        "const r = await fused.ai.transcribe(\n  blob,\n  {\n    model: 'mlx-community/whisper-x',\n  }\n);\n")
+    (f,) = _models(d)["findings"]
+    assert f["path"] == "app.js" and f["line"] == 4
+    assert 'transcribe = { model = "mlx-community/whisper-x" }' in _models(d)["detail"]
+
+
+def test_a_python_keyword_argument_is_caught(workspace):
+    d = _app(workspace)
+    (d / "run.py").write_text('out = fused.ai.text(prompt, model="Qwen/Qwen3-4B-Instruct-GGUF")\n')
+    (f,) = _models(d)["findings"]
+    assert f["path"] == "run.py" and f["line"] == 1
+
+
+def test_models_download_is_flagged(workspace):
+    d = _app(workspace)
+    (d / "app.js").write_text('await fused.ai.models.download("org/some-model");\n')
+    (f,) = _models(d)["findings"]
+    assert f["line"] == 1
+    assert "org/some-model" in _models(d)["detail"]
+
+
+def test_a_declared_id_is_not_flagged(workspace):
+    d = _app(workspace)
+    _declare(d, 'image = { model = "black-forest-labs/FLUX.2-klein-4B" }\n')
+    (d / "app.js").write_text('fused.ai.image({model: "black-forest-labs/FLUX.2-klein-4B"});\n')
+    assert _models(d)["state"] == "pass"
+
+
+def test_non_literal_models_are_not_flagged(workspace):
+    d = _app(workspace)
+    (d / "app.js").write_text(
+        'fused.ai.image({model: `${picked}`});\nfused.ai.image({model: picked});\n'
+        'fused.ai.image({model: ""});\n')
+    assert _models(d)["state"] == "pass"
+
+
+def test_vendored_and_hidden_dirs_are_ignored(workspace):
+    d = _app(workspace)
+    for sub in ("node_modules/x", ".fused/cache", ".venv/lib", ".hidden"):
+        (d / sub).mkdir(parents=True)
+        (d / sub / "a.js").write_text('fused.ai.image({model: "a/b"});\n')
+    assert _models(d)["state"] == "pass"
+
+
+def test_a_cloud_alias_must_be_declared_too(workspace):
+    d = _app(workspace)
+    (d / "app.js").write_text('fused.ai.text(p, {model: "sonnet"});\n')
+    assert _models(d)["state"] == "fail"
+
+
+def test_report_one_serves_the_models_row(workspace):
+    d = _app(workspace)
+    assert app_doctor.report_one(str(d), "models")["id"] == "models"
