@@ -180,7 +180,7 @@ They are imported into the same ephemeral keychain as the application cert
 (`-T /usr/bin/productbuild -T /usr/bin/productsign`), before the partition
 list is set.
 
-**What the postinstall does, in order:** download the DMG, with a small floating progress window (`scripts/pkg/progress.js`, osascript run as the person; Installer itself only says "Running package scripts") on GUI installs; compare its
+**What the postinstall does, in order:** download the DMG; compare its
 sha256 to the pinned one and stop on a mismatch before anything is mounted;
 mount it; `ditto` the app into `/Applications` and swap it in with the same
 rename-aside the in-app updater uses (an older copy that was running is

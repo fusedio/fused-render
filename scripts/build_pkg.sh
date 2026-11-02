@@ -17,8 +17,7 @@
 #
 # Pieces (scripts/pkg/):
 #   postinstall       the install itself, static; reviewed in the repo
-#   progress.js       the download's progress window (Installer has no hook)
-#   release.env       (generated) APP_NAME/VERSION/ARCH/DMG_URL/DMG_SHA256/DMG_BYTES
+#   release.env       (generated) APP_NAME/VERSION/ARCH/DMG_URL/DMG_SHA256
 #   distribution.xml  Installer product: title, min OS, arch check, pages
 #   welcome.html, conclusion.html   the two pages of the wizard
 #
@@ -132,8 +131,6 @@ mkdir -p "$BUILD_DIR/scripts" "$BUILD_DIR/resources" "$DIST_DIR"
 # ---------------------------------------------------------------------------
 cp "$PKG_SRC/postinstall" "$BUILD_DIR/scripts/postinstall"
 chmod 755 "$BUILD_DIR/scripts/postinstall"
-cp "$PKG_SRC/progress.js" "$BUILD_DIR/scripts/progress.js"
-chmod 644 "$BUILD_DIR/scripts/progress.js"
 bash -n "$BUILD_DIR/scripts/postinstall"
 # Single-quoted values: the URL and names are ours, but a shell-sourced file
 # must never be able to execute a surprise.
@@ -145,7 +142,6 @@ VERSION='${VERSION}'
 ARCH='${ARCH}'
 DMG_URL='${DMG_URL}'
 DMG_SHA256='${DMG_SHA256}'
-DMG_BYTES='${DMG_BYTES}'
 EOF
 chmod 644 "$BUILD_DIR/scripts/release.env"
 bash -n "$BUILD_DIR/scripts/release.env"
