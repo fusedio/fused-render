@@ -4882,16 +4882,22 @@ input.schedule-when-field {
   font-size: 12px;
   color: var(--fg-muted);
 }
-.schedule-view-sort {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex: 0 0 auto;
+/* The Sort menu is the + menu's twin (same button, same panel), narrower
+   because its two rows carry no hint. The head is the word the button's glyph
+   stands for; the check sits at the row's end like a macOS menu's tick. */
+.schedule-view-sort-menu {
+  min-width: 160px;
 }
-.schedule-view-sort-lbl {
+.schedule-view-menu-head {
+  padding: 4px 8px 2px;
+  font-size: 11px;
   color: var(--fg-muted);
-  font-size: 12px;
-  white-space: nowrap;
+}
+.schedule-view-sort-check {
+  display: inline-flex;
+  margin-left: auto;
+  padding-left: 16px;
+  color: var(--fg);
 }
 .schedule-view-editor-end {
   display: flex;
