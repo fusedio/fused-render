@@ -40,13 +40,20 @@ export function useRailGit(path: string | null): RailGit {
     };
   }, []);
   // One read in flight at a time; a later request supersedes an earlier one.
+  // A CHECK OUTRANKS A RELOAD: its answer is the fresh fetch, and a reload
+  // the pulse fired meanwhile must neither overwrite it nor make it skip
+  // (`checkingRef`): no reload runs while a check is out, and the check's
+  // answer always lands.
   const seq = useRef(0);
+  const checkingRef = useRef(false);
+  const pathRef = useRef(path);
+  pathRef.current = path;
   const reload = useCallback(() => {
-    if (!path) return;
+    if (!path || checkingRef.current) return;
     const mine = ++seq.current;
     getRailGit(path).then(
       (r) => {
-        if (alive.current && mine === seq.current) setRepo(r.repo);
+        if (alive.current && mine === seq.current && !checkingRef.current) setRepo(r.repo);
       },
       () => {
         /* a failed read keeps what is on screen */
@@ -59,11 +66,22 @@ export function useRailGit(path: string | null): RailGit {
     reload();
   }, [reload]);
   // After a task's STATUS moves (header) — a run that ended may have
-  // committed. The rows' key+status fingerprint, not the rows themselves:
-  // a streaming turn moves `last_active` every tick, and a git log per tick
-  // would be the exact cost this hook must not add.
+  // committed. ONLY the tasks in this repository (the rows whose project or
+  // target lies under the root the first read named): a task churning in
+  // another project is no reason to fork git here. Keyed on key+status, not
+  // the rows themselves: a streaming turn moves `last_active` every tick,
+  // and a git log per tick would be the exact cost this hook must not add.
   const rows = useTasksPulseRows();
-  const statusKey = useMemo(() => rows.map((t) => t.key + ":" + t.status).join("\n"), [rows]);
+  const root = repo?.root ?? null;
+  const statusKey = useMemo(() => {
+    if (!root) return "";
+    const base = root.replace(/\/+$/, "");
+    const under = (p: string | undefined) => !!p && (p === base || p.startsWith(base + "/"));
+    return rows
+      .filter((t) => under(t.project) || under(t.target))
+      .map((t) => t.key + ":" + t.status)
+      .join("\n");
+  }, [rows, root]);
   const first = useRef(true);
   useEffect(() => {
     if (first.current) {
@@ -82,24 +100,28 @@ export function useRailGit(path: string | null): RailGit {
     return () => document.removeEventListener("visibilitychange", onVisible);
   }, [reload]);
   const check = useCallback(() => {
-    if (!path || checking) return;
+    if (!path || checkingRef.current) return;
+    checkingRef.current = true;
     setChecking(true);
-    const mine = ++seq.current;
+    ++seq.current;
+    const asked = path;
     postRailGitCheck(path).then(
       (r) => {
+        checkingRef.current = false;
         if (!alive.current) return;
         setChecking(false);
-        if (mine === seq.current) {
-          setRepo(r.repo);
-          setChecked(r.checked);
-        }
+        // The page moved on to another path meanwhile: not ours to show.
+        if (pathRef.current !== asked) return;
+        setRepo(r.repo);
+        setChecked(r.checked);
       },
       () => {
+        checkingRef.current = false;
         if (!alive.current) return;
         setChecking(false);
-        setChecked(false);
+        if (pathRef.current === asked) setChecked(false);
       },
     );
-  }, [path, checking]);
+  }, [path]);
   return { repo, checking, checked, check, reload };
 }

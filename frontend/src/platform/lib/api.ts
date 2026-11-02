@@ -6488,6 +6488,10 @@ export interface GitCommits {
 export interface RailGitRepo {
   root: string;
   branch: string | null;
+  /** An `origin` remote is configured. */
+  has_remote: boolean;
+  /** Null until known: no remote, or a clone with no recorded symref (the
+   *  Check resolves it). */
   default_branch: string | null;
   ahead: number | null;
   behind: number | null;
@@ -6504,8 +6508,9 @@ export function getRailGit(path: string): Promise<RailGit> {
   return getJson<RailGit>(`/api/git/rail?path=${encodeURIComponent(path)}`);
 }
 
-/** The rail's "Check for updates": one fetch of the default branch, then the
- *  fresh counts. `checked` is false when the remote could not be reached. */
+/** The rail's "Check for updates": git_upstream's own bounded check, then the
+ *  fresh counts. `checked` is false when no fetch landed inside its wait
+ *  (no remote, unreachable, another check holding the slot, still running). */
 export function postRailGitCheck(path: string): Promise<RailGit & { checked: boolean }> {
   return mutateJson<RailGit & { checked: boolean }>("POST", "/api/git/rail/check", { path });
 }

@@ -1086,9 +1086,8 @@ export function ClaudeRail({
           // THE FOOT, under the list's hairline: the held outsider's ring
           // (header), then the way back to the whole canvas — the canvas
           // glyph, which deselects the node in the workbench. BELOW the
-          // scroller, not its last row: on a short window the list scrolls
-          // (no bar to say so), and a way out that has scrolled off is no
-          // way out.
+          // list, not its last row: the list clips to the rings that fit,
+          // and a way out that was clipped off is no way out.
           <div className="claude-rail-all-seat">
             {heldExtra && (
               <div className="claude-rail-held" role="list" aria-label={node ? "Pinned chat, not on this node" : "Pinned chat, past the list's room"}>
@@ -1139,23 +1138,31 @@ export function ClaudeRail({
                 const r = railGit.repo;
                 const behind = r.behind ?? 0;
                 const ahead = r.ahead ?? 0;
-                const counts =
-                  r.default_branch === null
-                    ? "No remote"
+                const counts = !r.has_remote
+                  ? "No remote"
+                  : r.default_branch === null
+                    ? "Default branch not known yet — check to find out"
                     : `${ahead} ahead · ${behind} behind ${r.default_branch}`;
                 const checkWords = railGit.checking
                   ? "Checking for updates…"
                   : railGit.checked === false
-                    ? "Check for updates — the remote could not be reached"
+                    ? "Check for updates — no fresh answer from the remote yet"
                     : "Check for updates";
                 const branch = r.branch ?? "detached HEAD";
+                // A seat with no door (no git panel on this page, no remote
+                // to check) is a LABEL, not a disabled button: `disabled`
+                // would swallow the pointer, and the hint is the only place
+                // its words are. `aria-disabled` says so; the press does
+                // nothing.
+                const label = (on: boolean) => (on ? {} : { "aria-disabled": true as const, className: " is-label" });
+                const door = label(!!git.onOpenGit);
                 return (
                   <>
                     <button
                       type="button"
-                      className="sidebar-rail-btn claude-rail-item claude-rail-git-branch"
+                      className={"sidebar-rail-btn claude-rail-item claude-rail-git-branch" + (door.className ?? "")}
                       aria-label={`On ${branch} · ${counts}${git.onOpenGit ? " — open the Git panel" : ""}`}
-                      disabled={!git.onOpenGit}
+                      {...(door["aria-disabled"] ? { "aria-disabled": true } : {})}
                       data-hint={`On ${branch}`}
                       data-hint-title={`On ${branch}`}
                       data-hint-reply={counts}
@@ -1169,17 +1176,21 @@ export function ClaudeRail({
                     </button>
                     <button
                       type="button"
-                      className={"sidebar-rail-btn claude-rail-item claude-rail-git-check" + (railGit.checking ? " is-checking" : "")}
+                      className={
+                        "sidebar-rail-btn claude-rail-item claude-rail-git-check" +
+                        (railGit.checking ? " is-checking" : "") +
+                        (label(r.has_remote).className ?? "")
+                      }
                       aria-label={`${checkWords} · ${counts}`}
                       aria-busy={railGit.checking || undefined}
-                      disabled={railGit.checking || r.default_branch === null}
+                      {...(r.has_remote ? {} : { "aria-disabled": true })}
                       data-hint={checkWords}
                       data-hint-title={checkWords}
                       data-hint-reply={counts}
                       data-hint-side="left"
                       onClick={() => {
                         hideHint();
-                        railGit.check();
+                        if (r.has_remote && !railGit.checking) railGit.check();
                       }}
                     >
                       <RefreshCw size={16} aria-hidden="true" />
@@ -1192,9 +1203,9 @@ export function ClaudeRail({
                         <button
                           key={c.sha}
                           type="button"
-                          className="sidebar-rail-btn claude-rail-item claude-rail-git-commit"
+                          className={"sidebar-rail-btn claude-rail-item claude-rail-git-commit" + (door.className ?? "")}
                           aria-label={`${c.subject} — ${who} (${c.short})`}
-                          disabled={!git.onOpenGit}
+                          {...(door["aria-disabled"] ? { "aria-disabled": true } : {})}
                           data-hint={c.subject}
                           data-hint-title={c.subject}
                           data-hint-reply={`${who} · ${c.short}`}

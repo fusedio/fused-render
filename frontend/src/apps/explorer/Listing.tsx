@@ -2127,7 +2127,7 @@ export default function Listing({
                   rail stands (below): where Claude is a ready companion the
                   rail at the split's right edge carries the opener instead
                   (shell/claude-rail) — exactly one opener on screen. */}
-              {pane.on && !sideState.open && !railHere && (
+              {pane.on && !sideState.open && !paneUndecided && !railHere && (
                 <SideToggleButton what={modeTitle(paneSide)} onClick={openSide} />
               )}
               {/* The path `···` is not here any more: it rides the crumb strip

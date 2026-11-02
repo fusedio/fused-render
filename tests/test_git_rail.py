@@ -54,6 +54,7 @@ def test_branch_and_last_three_commits_scoped_to_the_folder(repo):
     assert r["commits"][0]["sha"] == repo["shas"][-1]
     assert set(r["commits"][0]) >= {"sha", "short", "subject", "author", "when"}
     # No remote: nothing to count against.
+    assert r["has_remote"] is False
     assert r["default_branch"] is None
     assert r["ahead"] is None and r["behind"] is None
 
@@ -82,3 +83,20 @@ def test_check_without_a_remote_reports_unchecked_but_still_answers(repo):
     assert out["checked"] is False
     assert out["repo"]["branch"] == "main"
     assert len(out["repo"]["commits"]) == 3
+
+
+def test_a_remote_with_no_recorded_default_branch_is_still_a_remote(repo, tmp_path):
+    """`git init` + `remote add` + push leaves no refs/remotes/origin/HEAD:
+    the GET says has_remote with no default branch (no network re-ask); the
+    POST, which may ask, resolves it off the bare remote on disk."""
+    bare = tmp_path / "origin.git"
+    bare.mkdir()
+    _git("init", "-q", "--bare", "-b", "main", cwd=bare)
+    _git("remote", "add", "origin", str(bare), cwd=repo["root"])
+    _git("push", "-q", "origin", "main", cwd=repo["root"])
+    r = gr.rail_status(str(repo["app_dir"]))["repo"]
+    assert r["has_remote"] is True
+    assert r["default_branch"] is None
+    out = gr.rail_check(str(repo["app_dir"]))
+    assert out["repo"]["default_branch"] == "main"
+    assert out["repo"]["ahead"] == 0 and out["repo"]["behind"] == 0

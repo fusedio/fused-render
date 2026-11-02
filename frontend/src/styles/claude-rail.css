@@ -740,11 +740,18 @@ button.claude-rail-peek-scope.is-node:focus-visible {
   align-items: center;
   flex: 0 0 auto;
 }
-.claude-rail-git .sidebar-rail-btn:disabled {
+/* A seat that is a label (ClaudeRail `is-label`, `aria-disabled`): no door
+   behind it, so no hand cursor and no hover wash — but it still takes the
+   pointer, because its hint is where its words are. */
+.claude-rail-git .sidebar-rail-btn.is-label {
   cursor: default;
 }
-.claude-rail-git .sidebar-rail-btn:disabled:not(.claude-rail-git-check) {
-  opacity: 1;
+.claude-rail-git .sidebar-rail-btn.is-label:hover {
+  background: transparent;
+  color: inherit;
+}
+.claude-rail-git-check:disabled {
+  cursor: default;
 }
 /* The check seat turns while a fetch is out. */
 .claude-rail-git-check.is-checking svg {

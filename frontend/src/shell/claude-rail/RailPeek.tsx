@@ -598,13 +598,10 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       );
     };
     window.addEventListener("resize", re);
-    const list = railEl.querySelector(".claude-rail-chats");
-    list?.addEventListener("scroll", re, { passive: true });
     const ro = row && typeof ResizeObserver !== "undefined" ? new ResizeObserver(re) : null;
     if (row && ro) ro.observe(row);
     return () => {
       window.removeEventListener("resize", re);
-      list?.removeEventListener("scroll", re);
       ro?.disconnect();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
