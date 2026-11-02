@@ -6142,6 +6142,47 @@ export function loadAiModel(
     requester ? { headers: requesterHeaders(requester) } : undefined);
 }
 
+/** One model an app declares (`[tool.fused-render.app.models]`), as the
+ *  first-open overview shows it. `provider` is "local" | "apple" | "cloud";
+ *  `sizeGb` is null for apple/cloud. `candidates` is only non-empty on a
+ *  swappable row and lists already-downloaded same-capability models. */
+export interface AppModelRow {
+  capability: string;
+  verb: string;
+  label: string;
+  model: string;
+  use: string;
+  provider: "local" | "apple" | "cloud";
+  sizeGb: number | null;
+  downloaded: boolean;
+  swappable: boolean;
+  choice: string;
+  candidates: { id: string; label: string; sizeGb: number | null }[];
+  jobId: string | null;
+}
+
+export interface AppModelOverview {
+  declares: boolean;
+  accepted?: boolean;
+  appName?: string;
+  appDir?: string;
+  hash?: string;
+  rows?: AppModelRow[];
+  totalGb?: number;
+  needGb?: number;
+  etaMin?: number | null;
+}
+
+export function fetchAppModelOverview(path: string): Promise<AppModelOverview> {
+  return getJson<AppModelOverview>(`/api/app-models/overview?path=${encodeURIComponent(path)}`);
+}
+
+export function acceptAppModels(
+  path: string, substitutions: Record<string, string>,
+): Promise<{ ok: boolean; hash: string }> {
+  return postJson<{ ok: boolean; hash: string }>("/api/app-models/accept", { path, substitutions });
+}
+
 export function downloadAiModel(
   model: string, capability?: string, file?: string,
 ): Promise<AiLoadStarted> {

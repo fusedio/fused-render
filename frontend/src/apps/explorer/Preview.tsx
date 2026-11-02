@@ -4,6 +4,7 @@
 // No file-type checks live in the shell — html arrives through stat.templates
 // like everything else, via the "_render" sentinel (SPEC PT-12).
 import { canonFsPath } from "@platform/lib/path-url";
+import { AppModelGate } from "./AppModelGate";
 import { isBackendEnabled, useAgentBackends } from "@platform/lib/agent-backends";
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -2741,6 +2742,14 @@ export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar
   // property of the FILE, not of how its body happens to render.
   const ownsBar = !!actionsInTopbar && !stat.is_dir;
   const fileSearchField = <FileSearchField active={ownsBar} fsPath={fsPath} />;
+  // Turning down an app's AI-model overview means the app does not open: go
+  // back to where the user came from. Inside a frame (a tab, a panel) there is
+  // no history of the user's to walk, so the gate keeps its own placeholder.
+  const declineAppModels = () => {
+    if (IS_EMBED) return;
+    if (window.history.length > 1) window.history.back();
+    else navigate(fsPath.slice(0, fsPath.lastIndexOf("/")) || "/", { isDir: true });
+  };
   // Defensive filter (SPEC PT-12): an entry with path===null whose mode isn't
   // a recognized sentinel (`_render`, `_listing`) is dropped. Filtering here
   // keeps the non-empty dispatch check honest (an all-unknown list falls back
@@ -2832,14 +2841,16 @@ export default function Preview({ fsPath, stat, onRenderedTitle, actionsInTopbar
     return (
       <>
         {fileSearchField}
-        <TemplatePreview
-          fsPath={fsPath}
-          stat={stat}
-          templates={visible}
-          conditions={conditions}
-          onRenderedTitle={onRenderedTitle}
-          actionsInTopbar={actionsInTopbar}
-        />
+        <AppModelGate path={fsPath} onDecline={declineAppModels}>
+          <TemplatePreview
+            fsPath={fsPath}
+            stat={stat}
+            templates={visible}
+            conditions={conditions}
+            onRenderedTitle={onRenderedTitle}
+            actionsInTopbar={actionsInTopbar}
+          />
+        </AppModelGate>
       </>
     );
   return (
