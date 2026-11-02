@@ -78,6 +78,7 @@
 /* After home.css: the canvases listing is another page-family surface that
    layers its card grid over the .btn / .field-control vocabulary above. */
 @import "./styles/canvases.css";
+@import "./styles/claude-rail.css";
 @import "./styles/reduced-motion.css";
 @import "./styles/apps.css";
 /* After apps.css: the Marketplace (/marketplace) and the App-Store blocks it

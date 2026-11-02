@@ -156,7 +156,7 @@ function sizeOnce(p: HTMLDivElement): void {
 
 /** ANCHORED BESIDE ITS ELEMENT, NOT AT THE POINTER: `data-hint-side="left"`.
  *  For a hint on a control that sits at the window's edge in a column of its
- *  own — the canvas page's Claude rail (apps/canvases/ClaudeRail), a ring per
+ *  own — the Claude rail (shell/claude-rail/ClaudeRail), a ring per
  *  chat 48px from the right edge. Pointer placement put the panel below the
  *  cursor and, for the task form, clamped it into the middle band, so it hung
  *  hundreds of pixels left of the ring it described. Here it stands just left
