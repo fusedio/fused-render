@@ -38,6 +38,7 @@ import {
   toastOk,
   useConfirm,
   useModuleData,
+  ShowMore,
 } from "../bits";
 import type { HeadedSectionProps } from "../bits";
 import { FileEditor } from "../FileEditor";
@@ -181,7 +182,10 @@ export default function MemorySection({ filter = "", title, blurb }: HeadedSecti
               </div>
             </div>
             <List>
-              {p.shown.map((f) => (
+              <ShowMore
+                items={p.shown}
+                resetKey={needle}
+                render={(f) => (
                 <ListRow
                   key={f.name}
                   name={f.name}
@@ -197,7 +201,8 @@ export default function MemorySection({ filter = "", title, blurb }: HeadedSecti
                     />
                   }
                 />
-              ))}
+              )}
+            />
             </List>
           </div>
         );
