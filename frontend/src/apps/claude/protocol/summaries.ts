@@ -39,12 +39,7 @@ export const WHOLE_TOOL_GRANTABLE: ReadonlySet<string> = new Set([
 export const SWITCHABLE_MODES: ReadonlySet<string> = new Set<SwitchableMode>(["acceptEdits", "auto"]);
 
 /** T:11845 — the picker's words for a mode, reused by a resolved perm card. */
-export const PERMISSION_LABELS: Record<string, string> = {
-  plan: "plan first",
-  prompt: "ask every time",
-  acceptEdits: "auto-accept edits",
-  auto: "Claude decides",
-};
+export { PERMISSION_LABELS } from "@platform/lib/permission-modes";
 
 /** T:11911 — the strictest mode is the default. */
 export const DEFAULT_PERMISSION: PermissionMode = "prompt";

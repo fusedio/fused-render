@@ -2903,23 +2903,39 @@ describe("property pills", () => {
     expect(s).toContain("PERMISSION_ORDER.indexOf(m)");
   });
 
-  test("the pill row starts with Model, then Access, Where, When", () => {
+  test("the pill row starts with Model, Thinking, Access, then Where, When", () => {
     const s = src();
-    const order = ["Model", "Permissions", "Folder", "When"].map((k) => s.indexOf(`ariaLabel="${k}"`));
-    expect(order[0]).toBeGreaterThan(-1);
-    expect(order[0]).toBeLessThan(order[1]);
-    expect(order[1]).toBeLessThan(order[2]);
-    expect(order[2]).toBeLessThan(order[3]);
+    const order = ["Model", "Thinking", "Permissions", "Folder", "When"].map((k) => s.indexOf(`ariaLabel="${k}"`));
+    expect(order.every((i) => i > -1)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
   });
 
   test("the stale-time note ignores the seed when nothing is picked", () => {
     expect(src()).toMatch(/pastNoteFor\(timePicked && pickedOk \? picked : null,/);
   });
 
-  test("the MODEL pill shows the model and its thinking level, never with a ·", () => {
+  test("the MODEL pill says the model alone; Thinking is its own pill (the composer's row)", () => {
     const s = src();
-    expect(s).toContain('const modelText = (taskRunLabel(runModels, model) || "Default")');
-    expect(s).not.toMatch(/modelText[^;]*·/);
+    expect(s).toContain('const modelText = taskRunLabel(runModels, model) || "Default";');
+    expect(s).not.toContain("effortText.toLowerCase()");
+    // The three run words are bare pills; where and when are the chips, pushed
+    // to the right edge by the gap between the two groups.
+    expect(s.match(/className="pp--bare"/g)?.length).toBe(3);
+    // No Thinking pill for a model whose catalog row lists no levels: the
+    // whole pill is behind the guard, not just its rows.
+    const think = s.indexOf('ariaLabel="Thinking"');
+    expect(s.lastIndexOf("{runEfforts.length ? (", think)).toBeGreaterThan(s.indexOf('ariaLabel="Model"'));
+    const gap = s.indexOf('<span className="nt-pills-gap" aria-hidden="true" />');
+    expect(gap).toBeGreaterThan(s.indexOf('ariaLabel="Permissions"'));
+    expect(gap).toBeLessThan(s.indexOf('ariaLabel="Folder"'));
+  });
+
+  test("the ACCESS menu says what a mode means on the row's hover, not under the menu", () => {
+    const s = src();
+    const menu = s.slice(s.indexOf('aria-label="Permissions"'), s.indexOf('<span className="nt-pills-gap"'));
+    expect(menu).toContain("data-hint={PERMISSION_HINTS[m]}");
+    expect(menu).not.toContain("nt-menu-note");
+    expect(s).toContain('import { PERMISSION_HINTS, permissionLabel } from "@platform/lib/permission-modes";');
   });
 
   test("Escape in an open pill popover closes the popover only", () => {
@@ -2949,9 +2965,9 @@ describe("property pills", () => {
     expect(initialTextOf({ title: "a", text: "a\nb" }, undefined, "a", "b")).toBe("a\nb");
   });
 
-  test("four pills, in source order: Model, Access, Where, When", () => {
+  test("five pills, in source order: Model, Thinking, Access, Where, When", () => {
     const s = src();
-    const at = ["Model", "Permissions", "Folder", "When"].map((k) => s.indexOf(`ariaLabel="${k}"`));
+    const at = ["Model", "Thinking", "Permissions", "Folder", "When"].map((k) => s.indexOf(`ariaLabel="${k}"`));
     expect(at.every((i) => i > -1)).toBe(true);
     expect([...at].sort((a, b) => a - b)).toEqual(at);
     // …and they sit in the row that replaced the folder row.
@@ -2974,8 +2990,8 @@ describe("property pills", () => {
 
   test("the controls keep the aria-labels the rest of the suite finds them by", () => {
     const s = src();
-    for (const l of ['ariaLabel="Permissions"', 'ariaLabel="Model"', 'aria-label="Thinking"',
-      'ariaLabel="Repeats"']) {
+    for (const l of ['ariaLabel="Permissions"', 'ariaLabel="Model"', 'ariaLabel="Thinking"',
+      'aria-label="Thinking"', 'ariaLabel="Repeats"']) {
       expect(s).toContain(l);
     }
   });
@@ -3057,7 +3073,7 @@ describe("the agent crumb is the agent dropdown", () => {
     expect(s).toContain('className="pp--agent"');
     expect(s).toContain("agents.all.map((b) =>");
     expect(s.includes("agents.backends.map(")).toBe(false);
-    expect(s).toContain("popHeight={300}");
+    expect(s).toContain("popHeight={agents.all.length * 40 + 60}");
     expect(s).toContain("AGENT_PREFS_URL");
   });
 });

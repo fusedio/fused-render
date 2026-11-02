@@ -978,6 +978,54 @@ button.new-task-source:focus-visible {
   color: var(--fg-muted);
 }
 
+/* THE BARE PILLS — model, thinking, approvals — said the way the chat
+   composer's row says them (Akshil, 2026-11-02): a word and a chevron, no
+   box, no icon. Muted at rest, the row's ink on hover, a quiet wash while the
+   popover is up. Scoped under the dialog like `.pp` itself, so the dialog's
+   generic button skin (border, shadow) does not come back over it. */
+.new-task-dialog .nt-pills .pp--bare {
+  border-color: transparent;
+  background: none;
+  box-shadow: none;
+  color: var(--fg-muted);
+}
+
+.new-task-dialog .nt-pills .pp--bare:hover,
+.new-task-dialog .nt-pills .pp--bare.pp--open {
+  border-color: transparent;
+  background: var(--ctl-quiet-bg);
+  color: var(--fg);
+}
+
+/* The chevron hangs off the PILL, not off `.pp-v`: the value cell clips at
+   180px with an ellipsis, and a glyph inside it would be the first thing cut
+   on a long model name. */
+.new-task-dialog .nt-pills .pp--bare .pp-v {
+  padding-right: 2px;
+}
+
+.new-task-dialog .nt-pills .pp--bare::after {
+  content: "";
+  flex: none;
+  align-self: center;
+  width: 5px;
+  height: 5px;
+  margin: -2px 9px 0 1px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  opacity: 0.7;
+}
+
+/* The gap between the three words and the two chips: where and when sit on
+   the RIGHT edge of the row. A flex item rather than a margin because every
+   pill is inside a `display: contents` wrapper. On a row too narrow for all
+   five the gap collapses to nothing and the chips wrap under. */
+.nt-pills-gap {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
 /* THE READ-ONLY WHERE PILL (NewJobModal `WherePill`): a canvas's locked target,
    `canvas › node`. The pill's own chassis, minus every sign of a control — no
    hover border, no pressable shadow — and a span, so the dialog's button skin

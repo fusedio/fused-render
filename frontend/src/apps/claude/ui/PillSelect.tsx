@@ -26,6 +26,9 @@ export interface PillOption {
   value: string;
   /** What the MENU shows — always the full spelling (T:12537). */
   label: string;
+  /** One line on what the option MEANS, shown on hover of its menu row
+   *  (`data-hint`, platform/lib/hints) and never printed in the row. */
+  hint?: string;
 }
 
 export interface PillSelectProps {
@@ -164,6 +167,7 @@ export function PillSelect({
               key={option.value}
               type="button"
               className={`c-selpop-opt${option.value === value ? " is-on" : ""}`}
+              data-hint={option.hint}
               onClick={() => {
                 setOpen(false);
                 // Fired even when the value is unchanged: picking the value
