@@ -45,11 +45,11 @@ An app that calls `fused.ai` declares the models it uses in its folder `pyprojec
 
 ```toml
 [tool.fused-render.app.models]
-image = { model = "black-forest-labs/FLUX.2-klein-4B", swappable = true, use = "Cover art" }
+image = { model = "black-forest-labs/FLUX.2-klein-4B", use = "Cover art" }
 text  = { model = "Qwen/Qwen3-4B-Instruct-GGUF" }
 ```
 
-Key = the `fused.ai` verb (`text image video speech transcribe embed decide vision`). `model` = a catalog id (opaque, as above). `swappable = true` lets the user pick an already-downloaded model of the same capability instead; the runtime then substitutes it for calls that name the declared id (or none). `use` = a short label. Acceptance is per app and per declaration: change a `model` or `swappable` and the overview shows again; relabeling `use` does not. App Doctor's `models` check warns on a literal id the app uses but doesn't declare. The table does NOT make an app a background app.
+Key = the `fused.ai` verb (`text image video speech transcribe embed decide vision`). `model` = a catalog id (opaque, as above). The user can pick any already-downloaded model of the same capability instead of a declared one, and the runtime substitutes it for calls that name the declared id (or none). `use` = a short label. Acceptance is per app and per declaration: change a `model` (or add one) and the overview shows again; relabeling `use` does not. App Doctor's `models` check warns on a literal id the app uses but doesn't declare. The table does NOT make an app a background app.
 
 ## Text and cold start
 
