@@ -77,6 +77,7 @@ import {
   useLayoutEffect,
   useEffect,
   useCallback,
+  useMemo,
   useRef,
   useState,
   type FocusEvent as ReactFocusEvent,
@@ -109,7 +110,7 @@ import {
   taskWhen,
   type CardTitle,
 } from "@shell/tasks-lib";
-import { nodeName, railScope, type RailRow } from "./claude-rail-lib";
+import { nodeName, railScope, type RailPlace, type RailRow } from "./claude-rail-lib";
 import {
   PEEK_MAX_HEIGHT,
   PEEK_MAX_WIDTH,
@@ -186,7 +187,7 @@ interface SeatFacts {
   reply: string;
 }
 
-function seatFacts(seat: RailRow, dir: string | null): SeatFacts {
+function seatFacts(seat: RailRow, place: RailPlace): SeatFacts {
   const { pulse: t, row } = seat;
   const merged = row ? { ...row, status: t.status } : t;
   // The List's own title line (recap as the title once recaps are on).
@@ -201,7 +202,7 @@ function seatFacts(seat: RailRow, dir: string | null): SeatFacts {
     href,
     draft,
     id: draft ? "" : shortTaskId(t.task_id),
-    scope: railScope(t, dir),
+    scope: railScope(t, place),
     words: draft ? "draft" : statusWords(t, !!row?.failed),
     count: Math.max(0, row?.message_count ?? 0),
     unread: t.unread > 0 ? t.unread : 0,
@@ -214,6 +215,17 @@ function seatFacts(seat: RailRow, dir: string | null): SeatFacts {
     line,
     reply: row && !recapTitlesOn(row) ? (row.last_reply || "").trim() : "",
   };
+}
+
+/** THE ROW THE RAIL STANDS IN — the box the card is placed against and
+ *  watched for resizes: the rail's nearest ancestor that HAS a box. The
+ *  explorer's file view portals the rail into `.stat-side-slot`, which is
+ *  `display: contents` (explorer.css) and so measures as nothing; the row
+ *  there is the split behind it. */
+function rowOf(rail: HTMLElement | null): HTMLElement | null {
+  let el = rail?.parentElement ?? null;
+  while (el && getComputedStyle(el).display === "contents") el = el.parentElement;
+  return el;
 }
 
 export interface RailPeekHandle {
@@ -239,9 +251,10 @@ export interface RailPeekProps {
   anchorOf: (key: string) => HTMLElement | null;
   /** The rail, for its edge and for the row it stands in (its parent). */
   railEl: HTMLElement | null;
-  /** The clone dir: what a legacy row's target is read against to name its
-   *  node (claude-rail-lib `railScope`). */
-  dir: string | null;
+  /** Where the rail stands (claude-rail-lib `RailPlace`): what a row's
+   *  target is read against to name its node or file (`railScope`), and —
+   *  on a canvas — the selected node, whose chip is a label, not a door. */
+  place: RailPlace;
   /** The ⋮ filed or deleted a task: re-read the listing now rather than on
    *  the pulse's next move. */
   onReload: () => void;
@@ -267,11 +280,9 @@ export interface RailPeekProps {
   /** "Open in panel →", and any hop the chat itself makes. */
   onOpenChat: (href: string) => void;
   /** The head's node chip: select that node in the workbench (its name, as
-   *  the workbench names it — the file's stem). */
-  onSelectNode: (udfName: string) => void;
-  /** The node the canvas page has selected (its file), if any: that node's
-   *  chip is a label, not a door — it is already selected. */
-  selectedFile: string | null;
+   *  the workbench names it — the file's stem). Canvas pages only; without
+   *  it the chip is a label. */
+  onSelectNode?: (udfName: string) => void;
   /** The chip was pressed: pin the shown card (a keyboard press has no
    *  pointer-down to do it, `onPressInside`), and see the keyboard into its
    *  composer once that has mounted (ClaudeRail `focusComposerSoon`). */
@@ -312,12 +323,12 @@ function PlainBody({ facts }: { facts: SeatFacts }) {
     ? [str(form.model), str(form.effort), str(form.permission)].filter(Boolean)
     : [str(row?.model), str(row?.effort)].filter(Boolean);
   return (
-    <div className="canvas-rail-peek-plain">
-      <div className="canvas-rail-peek-plain-row">
-        <span className={"canvas-rail-peek-pill" + (draft ? " is-draft" : "")}>
+    <div className="claude-rail-peek-plain">
+      <div className="claude-rail-peek-plain-row">
+        <span className={"claude-rail-peek-pill" + (draft ? " is-draft" : "")}>
           {draft ? "Draft" : "Scheduled"}
         </span>
-        <span className="canvas-rail-peek-plain-when">
+        <span className="claude-rail-peek-plain-when">
           {draft
             ? saved
               ? `Not sent · saved ${saved}`
@@ -325,10 +336,10 @@ function PlainBody({ facts }: { facts: SeatFacts }) {
             : next ?? "Not started yet"}
         </span>
       </div>
-      <p className={"canvas-rail-peek-plain-words" + (!words || same ? " is-empty" : "")}>
+      <p className={"claude-rail-peek-plain-words" + (!words || same ? " is-empty" : "")}>
         {words && !same ? words : draft ? "No description yet." : "No message yet."}
       </p>
-      {meta.length > 0 && <p className="canvas-rail-peek-plain-meta">{meta.join(" · ")}</p>}
+      {meta.length > 0 && <p className="claude-rail-peek-plain-meta">{meta.join(" · ")}</p>}
     </div>
   );
 }
@@ -340,7 +351,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     kept,
     anchorOf,
     railEl,
-    dir,
+    place: where,
     onReload,
     onPointerEnter,
     onPointerLeave,
@@ -351,7 +362,6 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     onNoRoom,
     onOpenChat,
     onSelectNode,
-    selectedFile,
     onPin,
     held,
     onHeld,
@@ -436,9 +446,14 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // ends. A ref, not state — `place` runs before every `setBox`, so the
   // render that draws the new box reads a fresh value.
   const railLeft = useRef(0);
+  // The node the canvas page has selected (its file), if any (RailPeekProps
+  // `place`).
+  const selectedFile = where.kind === "canvas" ? where.file ?? null : null;
+  // Resolved once per rail element, not per placement: `rowOf` reads computed
+  // style, and `place` runs on every scroll of the rail's list.
+  const row = useMemo(() => rowOf(railEl), [railEl]);
   const place = (key: string): Box | null => {
     const anchor = anchorOf(key);
-    const row = railEl?.parentElement;
     if (!anchor || !railEl || !row) return null;
     const rail = railEl.getBoundingClientRect();
     railLeft.current = rail.left;
@@ -465,7 +480,6 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   };
   const onGripMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     const start = dragStart.current;
-    const row = railEl?.parentElement;
     if (!start || start.pointerId !== e.pointerId || !row) return;
     const next = dragResize(start.corner, start.box, e.clientX - start.x, e.clientY - start.y, row.getBoundingClientRect());
     dragLast.current = next;
@@ -584,9 +598,8 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       );
     };
     window.addEventListener("resize", re);
-    const list = railEl.querySelector(".canvas-rail-chats");
+    const list = railEl.querySelector(".claude-rail-chats");
     list?.addEventListener("scroll", re, { passive: true });
-    const row = railEl.parentElement;
     const ro = row && typeof ResizeObserver !== "undefined" ? new ResizeObserver(re) : null;
     if (row && ro) ro.observe(row);
     return () => {
@@ -738,7 +751,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     }
   };
 
-  const head = view ? seatFacts(view, dir) : null;
+  const head = view ? seatFacts(view, where) : null;
 
   // THE ⋮ IS THE CHAT'S OWN (owner, 2026-10-30: "it is not the same kebab
   // menu — fix that"): `@apps/claude/ui/Kebab`, the menu the pane's chat
@@ -869,7 +882,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
   // whether the title wears the app's hint (below).
   const titleRef = useRef<HTMLSpanElement | null>(null);
   const [titleClipped, setTitleClipped] = useState(false);
-  const titleText = view ? seatFacts(view, dir).label : "";
+  const titleText = view ? seatFacts(view, where).label : "";
   useLayoutEffect(() => {
     const el = titleRef.current;
     if (!el) {
@@ -914,7 +927,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
     <>
     {bridge && (
       <div
-        className={"canvas-rail-peek-bridge" + (visible ? " is-on" : "")}
+        className={"claude-rail-peek-bridge" + (visible ? " is-on" : "")}
         aria-hidden="true"
         style={bridge}
         onPointerEnter={() => setCone(true)}
@@ -925,7 +938,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
       ref={cardRef}
       id={id}
       className={
-        "canvas-rail-peek" +
+        "claude-rail-peek" +
         (visible ? " is-on" : "") +
         (held ? " is-held" : "") +
         (resizing ? " is-resizing" : "") +
@@ -954,7 +967,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
         (["tl", "bl"] as const).map((corner) => (
           <div
             key={corner}
-            className={"canvas-rail-peek-grip is-" + corner + (resizing === corner ? " is-active" : "")}
+            className={"claude-rail-peek-grip is-" + corner + (resizing === corner ? " is-active" : "")}
             aria-hidden="true"
             onPointerDown={onGripDown(corner)}
             onPointerMove={onGripMove}
@@ -963,7 +976,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
             onLostPointerCapture={() => dragStart.current && endDrag(true)}
           />
         ))}
-      <div className="canvas-rail-peek-card">
+      <div className="claude-rail-peek-card">
         {head && (
           // THE HEAD, TWO ROWS (owner, 2026-11-02, after the one-row head of
           // 2026-10-30): the first row is the task's FACTS and SEATS — the pin
@@ -975,11 +988,11 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
           // second row is the TITLE alone, full width, with the pencil on
           // hover: a recap title is a sentence, and a sentence squeezed
           // between chips on one row lost its end.
-          <div className="canvas-rail-peek-head" onKeyDown={onHeadKeyDown}>
-            <div className="canvas-rail-peek-row">
+          <div className="claude-rail-peek-head" onKeyDown={onHeadKeyDown}>
+            <div className="claude-rail-peek-row">
               <button
                 type="button"
-                className={"canvas-rail-peek-btn canvas-rail-peek-pin" + (held ? " is-held" : "")}
+                className={"claude-rail-peek-btn claude-rail-peek-pin" + (held ? " is-held" : "")}
                 aria-pressed={held}
                 title={held ? "Unpin and close the preview" : "Pin the preview: it stays until you unpin it"}
                 // One label, the state in `aria-pressed` (a flipping label
@@ -998,11 +1011,11 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                 {held ? <X size={14} aria-hidden="true" /> : <PinAngleFill size={14} />}
               </button>
               {head.id && (
-                <span className="canvas-rail-peek-id" title={head.words}>
+                <span className="claude-rail-peek-id" title={head.words}>
                   {head.id}
                 </span>
               )}
-              {head.scope.kind === "node" ? (
+              {head.scope.kind === "node" && onSelectNode ? (
                 // The node's chip is a door: it selects the node in the
                 // workbench (which zooms to it and shows its code). The card
                 // STAYS (owner, 2026-10-31: "when I click on the tag, shouldn't
@@ -1020,7 +1033,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                   return (
                     <button
                       type="button"
-                      className="canvas-rail-peek-scope is-node"
+                      className="claude-rail-peek-scope is-node"
                       aria-disabled={current || undefined}
                       title={
                         current
@@ -1049,12 +1062,19 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                     </button>
                   );
                 })()
+              ) : head.scope.kind === "whole" ? (
+                <span className="claude-rail-peek-scope" title={`On the ${head.scope.word.toLowerCase()} as a whole`}>
+                  {head.scope.word}
+                </span>
               ) : (
-                <span className="canvas-rail-peek-scope" title="On the canvas as a whole">
-                  Canvas
+                // A FILE under the folder (the app page, the explorer's folder
+                // view), or a node with no workbench to select it in: where the
+                // chat is, as a label — the full path in the tooltip.
+                <span className="claude-rail-peek-scope is-file" title={`On ${head.scope.file}`}>
+                  {head.scope.name}
                 </span>
               )}
-              <span className="canvas-rail-peek-gap" aria-hidden="true" />
+              <span className="claude-rail-peek-gap" aria-hidden="true" />
               {head.t.session_id && !head.draft && (
                 // THE PULSE AND THE ARCHIVE share one seat: the unread count
                 // (none → no count, the glyph goes too) and when the chat
@@ -1063,16 +1083,16 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                 // 2026-11-02: "only on hover over that area, like the card
                 // view"). A chat that never moved has no words — then the
                 // archive stands alone, always shown (`is-bare`).
-                <span className={"canvas-rail-peek-pulse" + (head.when || head.count > 0 ? "" : " is-bare")}>
+                <span className={"claude-rail-peek-pulse" + (head.when || head.count > 0 ? "" : " is-bare")}>
                   {(head.count > 0 || head.when) && (
-                    <span className="canvas-rail-peek-meta">
+                    <span className="claude-rail-peek-meta">
                       {head.count > 0 && (
                         // HOW MANY MESSAGES (owner, 2026-11-02: "number of
                         // messages left of time"), the bubble after the
                         // number as the mockup draws it; unread ones turn the
                         // count to ink, and the hover says how many.
                         <span
-                          className={"canvas-rail-peek-count" + (head.unread > 0 ? " is-unread" : "")}
+                          className={"claude-rail-peek-count" + (head.unread > 0 ? " is-unread" : "")}
                           // The List row's own caption (ScheduleTaskViews
                           // `.tasks-row-msgs`), in the app's hint panel.
                           // `role="img"` so the label is read: a bare span's
@@ -1094,7 +1114,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                       {head.when && (
                         // …and the List row's time cell: the exact moment, and
                         // which moment it is ("Last run …", "Drafted …").
-                        <span className="canvas-rail-peek-when" data-hint={head.whenFull || undefined}>
+                        <span className="claude-rail-peek-when" data-hint={head.whenFull || undefined}>
                           {head.when}
                         </span>
                       )}
@@ -1102,7 +1122,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                   )}
                   <button
                     type="button"
-                    className="canvas-rail-peek-btn canvas-rail-peek-archive"
+                    className="claude-rail-peek-btn claude-rail-peek-archive"
                     disabled={filing}
                     // ONE WORD, the List seat's caption (tasks-lib `filingIntent`;
                     // Akshil, 2026-10-05: "just say archive").
@@ -1121,7 +1141,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
               {head.href && (
                 <button
                   type="button"
-                  className="btn canvas-rail-peek-open"
+                  className="btn claude-rail-peek-open"
                   title={head.draft ? "Open the draft" : "Open this chat in the Claude panel"}
                   onClick={() => {
                     onOpenChat(head.href!);
@@ -1141,7 +1161,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                 // on each, which a hidden card has no business doing. Inside the
                 // chat's AgentProvider, so its terminal hand-off names the
                 // chat's own agent, not the default one.
-                <span className="canvas-rail-peek-kebab">
+                <span className="claude-rail-peek-kebab">
                   <AgentProvider backend={head.row?.backend ?? head.t.backend ?? ""}>
                     <Kebab
                       // Keyed per chat: the menu caches its labels per session.
@@ -1158,12 +1178,12 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                 </span>
               )}
             </div>
-            <div className="canvas-rail-peek-titlerow">
+            <div className="claude-rail-peek-titlerow">
               {draft === null ? (
                 <>
                   <span
                     ref={titleRef}
-                    className="canvas-rail-peek-title"
+                    className="claude-rail-peek-title"
                     // The List row's own caption (ScheduleTaskViews `.tasks-title`,
                     // hints.ts `renderTaskHint`): the title line and the reply
                     // line WHOLE, in the row's styles. Only when something is
@@ -1189,7 +1209,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                     // "show recap … like the Tasks view list"). Same hint as
                     // the title: both lines whole.
                     <span
-                      className="canvas-rail-peek-reply"
+                      className="claude-rail-peek-reply"
                       data-hint={head.reply}
                       data-hint-title={head.line.hint ?? head.label}
                       data-hint-reply={head.reply}
@@ -1200,7 +1220,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                   {head.renamable && (
                     <button
                       type="button"
-                      className="canvas-rail-peek-btn canvas-rail-peek-rename"
+                      className="claude-rail-peek-btn claude-rail-peek-rename"
                       title="Rename task"
                       aria-label="Rename task"
                       onClick={() => startRename(head)}
@@ -1213,7 +1233,7 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                 <>
                   <input
                     ref={titleInputRef}
-                    className="canvas-rail-peek-title-input"
+                    className="claude-rail-peek-title-input"
                     value={draft}
                     maxLength={TITLE_MAX_LENGTH}
                     disabled={renaming}
@@ -1237,21 +1257,21 @@ export const RailPeek = forwardRef<RailPeekHandle, RailPeekProps>(function RailP
                       }
                     }}
                   />
-                  {renameError && <span className="canvas-rail-peek-rename-error">{renameError}</span>}
+                  {renameError && <span className="claude-rail-peek-rename-error">{renameError}</span>}
                 </>
               )}
             </div>
             {askedKey.current === head.t.key && archiveAsk.node}
           </div>
         )}
-        <div className="canvas-rail-peek-body">
+        <div className="claude-rail-peek-body">
           {kept.map((seat) => {
             const { pulse: t, row } = seat;
-            const facts = seatFacts(seat, dir);
+            const facts = seatFacts(seat, where);
             return (
               <div
                 key={t.key}
-                className={"canvas-rail-peek-chat" + (t.key === viewKey ? " is-shown" : "")}
+                className={"claude-rail-peek-chat" + (t.key === viewKey ? " is-shown" : "")}
               >
                 {t.session_id ? (
                   <ChatMount

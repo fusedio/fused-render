@@ -41,6 +41,7 @@ import {
   embedUrlForFsPath,
   navigate,
   replaceSearch,
+  navigateUrl,
 } from "@platform/lib/router";
 import { dirname, normDir } from "@apps/explorer/lib/fs-actions";
 import { useUrlVersion } from "@platform/lib/hooks";
@@ -118,13 +119,14 @@ import {
   subscribePendingClaudeAsk,
   takePendingClaudeAsk,
 } from "@platform/lib/pending-claude-ask";
-import { SideToggleButton } from "@apps/explorer/SideChrome";
+import { SideToggleButton, startSideReopenPull } from "@apps/explorer/SideChrome";
+import { modeTitle } from "@platform/lib/mode-name";
+import { ClaudeRail, RAIL_W } from "@shell/claude-rail/ClaudeRail";
 import { useAppActionRows } from "@apps/explorer/EntryActionsMenu";
 import { canonFsPath } from "@platform/lib/path-url";
 import { McpDialog } from "@apps/explorer/McpDialog";
 import { withNoFocus } from "@platform/lib/frame-focus";
 import { unavailableReason } from "@platform/lib/mode-visibility";
-import { modeTitle } from "@platform/lib/mode-name";
 import { passedDragSlop } from "@apps/explorer/listing/marquee";
 import {
   INITIAL_SEARCH_SELECT,
@@ -415,8 +417,9 @@ export default function Listing({
   //
   // Switching it off HERE is the whole feature: `pane.on` IS this predicate
   // (D282 left nothing else in it), so one flag takes the slot, the divider, the
-  // closing chevron on the pane's header, the reopening SideToggleButton in the
-  // search row and the two `useDirMode` companion probes with it. Nothing about the
+  // closing chevron on the pane's header, the reopening Claude rail at the
+  // split's edge (or the search row's SideToggleButton where there is no
+  // Claude companion) and the two `useDirMode` companion probes with it. Nothing about the
   // ROWS changes: a pane's listing still selects, arrow-keys, and opens on a
   // single click/Enter — opening a file in a pane replaces that pane's
   // document, which is the point.
@@ -523,6 +526,8 @@ export default function Listing({
     setMcpOpen(false);
   }, [fsPath]);
   const paneOpen = pane.on && sideState.open;
+  // Where the Claude rail stands while the pane is shut (below): this folder.
+  const railPlace = useMemo(() => ({ kind: "folder" as const, dir: fsPath }), [fsPath]);
   // One writer for both halves of the state, and it writes the URL only where the
   // listing owns one: a frozen-tree snapshot and a panel pane are each a whole
   // shell handed a column by something else (`paneEnabled` above), and neither
@@ -1059,6 +1064,13 @@ export default function Listing({
   // `agent.py` — the moment the probe landed.
   const paneUndecided = paneSides.length === 0;
   const paneSide = activePaneSide(paneSides, sideState.mode, rememberedTab());
+  // THE RAIL IS CLAUDE'S (below): it stands only where this folder offers the
+  // Claude companion, and its door opens CLAUDE — not the mode the pane was
+  // shut on, which `openSide` keeps (a git pane reopened from a rail of chat
+  // rings would be a lie). A folder with no Claude companion keeps the search
+  // row's Show button.
+  const railHere = paneSides.includes("claude");
+  const openClaudeSide = () => setSide({ open: true, mode: "claude" });
   // The two facts `setSide`'s guard above needs, written on every render (see
   // its own comment for why they are refs and not values).
   showingClaude.current = paneOpen && paneSide === "claude";
@@ -2109,7 +2121,11 @@ export default function Listing({
               {(paneEnabled || ownsBarChrome) && (
                 <OverflowMenu items={buildFolderMenu()} title="Folder actions" badge={appRows.badge} />
               )}
-              {pane.on && !sideState.open && (
+              {/* The pane's Show button, while the pane is shut and no Claude
+                  rail stands (below): where Claude is a ready companion the
+                  rail at the split's right edge carries the opener instead
+                  (shell/claude-rail) — exactly one opener on screen. */}
+              {pane.on && !sideState.open && !railHere && (
                 <SideToggleButton what={modeTitle(paneSide)} onClick={openSide} />
               )}
               {/* The path `···` is not here any more: it rides the crumb strip
@@ -2314,6 +2330,29 @@ export default function Listing({
               />
             </div>
           </>
+        )}
+        {pane.on && !sideState.open && railHere && (
+          // THE PANE SHUT, Claude a ready companion (`railHere`): the Claude
+          // rail takes the split's edge
+          // (shell/claude-rail — the canvas page's rail, the same on every
+          // page since 2026-11-01): the way back in (its panel button, the
+          // search row's Show button moved to the column's own edge — exactly
+          // one opener on screen, SideChrome's rule), a + that opens the New
+          // task card on this folder, and one ring per chat IN THIS FOLDER in
+          // the List's order — what the shut pane's Claude mode was showing
+          // (claude-rail-lib `folder`: the pane's own Recent-list rule). Its
+          // inner seam pulls the pane open at the width the pointer takes it
+          // to (startSideReopenPull, measured from this split).
+          <ClaudeRail
+            place={railPlace}
+            newTask={{ target: fsPath, waiting: null, on: null }}
+            activeSessionId={new URLSearchParams(location.search).get("session_id")}
+            onOpen={openClaudeSide}
+            onOpenChat={(href) => navigateUrl(href)}
+            onPullStart={(e) =>
+              startSideReopenPull(e, e.currentTarget.closest<HTMLElement>(".listing-split"), openClaudeSide, RAIL_W)
+            }
+          />
         )}
       </div>
 

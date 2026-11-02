@@ -1,0 +1,719 @@
+/* THE CLAUDE RAIL (shell/claude-rail/ClaudeRail.tsx) and the card off it
+   (RailPeek.tsx): a page's right edge while its Claude pane is shut — the
+   canvas page, the app page, the explorer's file and folder views. The global
+   sidebar's collapsed column, mirrored: same 48px, same button and dot
+   classes (sidebar.css). Rules moved here from canvases.css when the rail
+   left the canvases app (2026-11-01). */
+/* ---- The Claude rail (ClaudeRail.tsx): the canvas page's right edge while
+   the Claude pane is shut. The global sidebar's collapsed column, mirrored:
+   same 48px, same button and dot classes (sidebar.css). */
+.claude-rail {
+  position: relative;
+  flex: 0 0 48px;
+  width: 48px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 10px 0;
+  box-sizing: border-box;
+  border-left: 1px solid var(--border);
+  background: var(--bg);
+  --rail-sep: color-mix(in srgb, var(--fg) 22%, transparent);
+}
+.claude-rail .sidebar-rail-items {
+  width: 100%;
+}
+.claude-rail-item {
+  position: relative;
+}
+/* The rail's inner edge (ClaudeRail `.claude-rail-seam`): pulled left, it opens
+   the pane. 6px of hit area straddling the rail's border, and the app's seam
+   hairline on hover — the explorer's reopen edge (.preview-side-reopen). */
+.claude-rail-seam {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -3px;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 3;
+}
+.claude-rail-seam::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 2px;
+  width: 1px;
+  background: transparent;
+  pointer-events: none;
+  transition:
+    background var(--dur-fast) var(--ease-out),
+    box-shadow var(--dur-fast) var(--ease-out);
+}
+.claude-rail-seam:hover::after {
+  background: var(--seam-hot);
+  box-shadow: 0 0 3px color-mix(in srgb, var(--seam-hot) 35%, transparent);
+}
+
+/* The rail's chats (ClaudeRail `.claude-rail-chats`): one status ring per chat,
+   in the List view's order, under the New task seat, in the sidebar's
+   scrolling middle (.sidebar-rail-scroll). The ring is the Tasks page's own
+   (schedule.css `.schedule-ring`), centred in the 28px seat; the seat's hover
+   wash and `.active` are the sidebar's. */
+.claude-rail-chats {
+  /* Scrolls on a short window rather than running off the rail. */
+  flex: 0 1 auto;
+}
+/* The list item wraps the link (ClaudeRail: the popup attributes live on the
+   link, not on a `listitem`); it is the 28px seat and nothing else. */
+.claude-rail-seat {
+  display: flex;
+  flex: 0 0 auto;
+}
+.claude-rail-chat {
+  position: relative;
+}
+/* NO DEAD ZONES (owner, 2026-11-02): the ring is 28px in a 48px rail with
+   4px between seats, and a pointer resting in the gap or the margin hovered
+   nothing. The link's hit area reaches half the gap up and down and nearly
+   to the rail's edges (9px: a 10th would scroll the rail sideways) — and the
+   WASH IS PAINTED ON THAT SAME BOX (owner: "tip of my pointer is on a
+   different item and a different item is shown highlighted"), so what lights
+   up is exactly what the pointer is over. The pseudo sits under the ring
+   (`z-index: -1` inside the link's own stacking context), and every state
+   wash the seat used to paint on itself moves onto it. */
+.claude-rail-chat {
+  isolation: isolate;
+}
+.claude-rail-chat::after {
+  content: "";
+  position: absolute;
+  inset: -2px -9px;
+  border-radius: 8px;
+  z-index: -1;
+}
+.claude-rail-chat.claude-rail-chat:hover,
+.claude-rail-chat.claude-rail-chat.active,
+.claude-rail-chat.claude-rail-chat.peeked,
+.claude-rail-chat.claude-rail-chat.is-last {
+  background: none;
+  box-shadow: none;
+}
+.claude-rail-chat:hover::after,
+.claude-rail-chat.active::after,
+.claude-rail-chat.peeked::after {
+  background: rgba(var(--tint), 0.08);
+}
+/* The seat under the list while a node is selected (ClaudeRail
+   `.claude-rail-all`): the canvas glyph, the way back to every chat on the
+   canvas. Below the scroller, so a short window never scrolls it away; a
+   hairline above it, the rail's own divider (.sidebar-rail-items wears the
+   same), so it reads as the list's foot and not as one more chat. */
+.claude-rail-all-seat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+  width: 28px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--rail-sep);
+}
+/* The held outsider's seat in the foot (ClaudeRail `heldExtra`): the ring
+   of a pinned chat that is not the selected node's, above the canvas glyph
+   and under the hairline, so it reads as "pinned, outside this list". */
+.claude-rail-held {
+  display: flex;
+  justify-content: center;
+}
+/* The ring whose chat the hover card shows (ClaudeRail `.peeked`, behind
+   `canvas_rail_peek_enabled`): the hover wash stays on while the pointer is
+   over the card, so the card and its ring read as one thing. */
+.claude-rail-chat.peeked {
+  color: var(--fg);
+}
+/* …and the ring whose card a click PINNED (ClaudeRail `.is-pinned`): a step
+   firmer than the hover wash, with a hairline, so "this one is open" holds
+   while the pointer is elsewhere — and still quieter than the ring's own
+   status colour. */
+.claude-rail-chat.peeked.is-pinned::after {
+  background: rgba(var(--tint), 0.14);
+  box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.22);
+}
+/* …and the ring whose card the reader HELD with its pin (ClaudeRail
+   `.is-held`; owner, 2026-11-02: "the item which is active on right sidebar
+   gets border accent as well"): the accent, the card's own held border, so
+   the ring and the card read as one thing while the pointer is anywhere. */
+.claude-rail-chat.peeked.is-held::after {
+  box-shadow: inset 0 0 0 1.5px var(--accent);
+}
+/* THE LAST RING PRESSED (ClaudeRail `.is-last`; owner, 2026-11-02): the
+   sidebar's own current-place wash, a step firmer, with a hairline — so the
+   chat the reader last opened is found again at a glance, on a rail that
+   may have narrowed to a node and back since. Under the held accent. */
+.claude-rail-chat.is-last::after {
+  background: rgba(var(--tint), 0.12);
+  box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.28);
+}
+
+/* THE CARD OFF THE RAIL (RailPeek.tsx; behind `canvas_rail_peek_enabled`):
+   the hovered chat itself, a gap off the rail's left edge, placed by
+   rail-peek-lib `peekPlacement` (inline left/top/width/height). One element,
+   kept in the DOM; `.is-on` fades it in and slides the inner card 6px
+   (var(--dur-med)); off, `visibility` waits for the fade so the close is a
+   fade too. NO TRANSFORM ON THIS BOX — a transformed ancestor would re-root
+   every fixed-position popover inside the chat — hence the slide on the
+   inner wrapper, which ends at `transform: none`. Position changes glide
+   only while the card is up (the ring-to-ring swap); a hidden card jumps.
+   Under the shadcn dialogs (z-50, NewJobModal) and over the page. */
+.claude-rail-peek {
+  position: fixed;
+  left: 0;
+  top: 0;
+  z-index: 45;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition:
+    opacity var(--dur-med) var(--ease-out),
+    visibility 0s linear var(--dur-med);
+}
+.claude-rail-peek.is-on {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  /* Size glides too: a hover card that gets pinned grows to the remembered
+     size rather than jumping (RailPeek header, "a pinned card resizes"). */
+  transition:
+    opacity var(--dur-med) var(--ease-out),
+    top var(--dur-med) var(--ease-out),
+    left var(--dur-med) var(--ease-out),
+    width var(--dur-med) var(--ease-out),
+    height var(--dur-med) var(--ease-out),
+    visibility 0s;
+}
+/* …but not under the pointer: a corner drag moves the box every frame. */
+.claude-rail-peek.is-resizing,
+.claude-rail-peek.is-resizing .claude-rail-peek-card {
+  transition: none;
+}
+.claude-rail-peek.is-resizing {
+  user-select: none;
+  -webkit-user-select: none;
+}
+/* THE GRIPS (RailPeek, owner 2026-11-02): the pinned card's two LEFT
+   corners — the right edge stands against the rail — as 12px hit areas
+   (8px of them over the card's rounded corner, clear of the pin seat), with
+   the corner's resize cursor. Quiet until the pointer rests on the corner
+   (owner, 2026-11-02: "show it when we hover over the corner … when we drag
+   the corner it changes color to accent"): a short L in the ink's tone
+   traces the corner under the pointer, and turns to the accent while the
+   drag is on. Children of the fixed box, not of the card
+   (the card clips its overflow), above the head and the chat. */
+.claude-rail-peek-grip {
+  position: absolute;
+  left: -4px;
+  width: 12px;
+  height: 12px;
+  z-index: 3;
+  touch-action: none;
+}
+.claude-rail-peek-grip.is-tl {
+  top: -4px;
+  cursor: nwse-resize;
+}
+.claude-rail-peek-grip.is-bl {
+  bottom: -4px;
+  cursor: nesw-resize;
+}
+.claude-rail-peek-grip::after {
+  content: "";
+  position: absolute;
+  left: 4px;
+  width: 7px;
+  height: 7px;
+  border-left: 2px solid currentColor;
+  color: var(--fg);
+  opacity: 0;
+  transition:
+    opacity var(--dur-fast) var(--ease-out),
+    color var(--dur-fast) var(--ease-out);
+}
+.claude-rail-peek-grip.is-tl::after {
+  top: 4px;
+  border-top: 2px solid currentColor;
+  border-top-left-radius: 4px;
+}
+.claude-rail-peek-grip.is-bl::after {
+  bottom: 4px;
+  border-bottom: 2px solid currentColor;
+  border-bottom-left-radius: 4px;
+}
+.claude-rail-peek-grip:hover::after,
+.claude-rail-peek-grip.is-active::after {
+  opacity: 1;
+}
+.claude-rail-peek-grip.is-active::after {
+  color: var(--accent);
+}
+.claude-rail-peek-card {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--fg);
+  /* THE EDGE READS AGAINST THE WORKBENCH (owner, 2026-10-30: "hard to know
+     the separation between that and the code panel — contrasting border,
+     subtle but noticeable"). The card floats over the embed's own dark
+     panels, which share the app's border tone, so a plain `--border`
+     vanished. Two lines: a 1px border a few steps brighter than --border
+     (a quarter of the ink), and a 1px halo of the background colour outside
+     it, so the border stands on a thin band of our own tone whatever panel
+     is beneath — the same trick a menu on a menu uses. The drop shadow does
+     the rest. */
+  border: 1px solid color-mix(in srgb, var(--fg) 24%, var(--bg));
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--bg) 70%, transparent),
+    0 14px 36px var(--shadow-sm),
+    0 2px 6px var(--shadow-ink-soft);
+  transform: translateX(6px);
+  transition: transform var(--dur-med) var(--ease-out);
+}
+.claude-rail-peek.is-on .claude-rail-peek-card {
+  transform: none;
+}
+/* A HELD card (the pin pressed; RailPeek `.is-held`) wears the accent on its
+   edge, the whole way round (owner, 2026-11-02: "in pin, we make border
+   accent of the whole preview window") — the one card on the page that an
+   outside press will not close should look held. The halo keeps its job. */
+.claude-rail-peek.is-held .claude-rail-peek-card {
+  border-color: var(--accent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent),
+    0 14px 36px var(--shadow-sm),
+    0 2px 6px var(--shadow-ink-soft);
+}
+/* The head, TWO ROWS (owner, 2026-11-02): the first row is the facts and
+   the seats — pin, number, where-chip, then at the right the unread count
+   and age, archive, Open, ⋮ — and the second row is the title alone, full
+   width. 12px, like the rail's own captions. */
+.claude-rail-peek-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 8px 5px 6px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  flex: 0 0 auto;
+}
+.claude-rail-peek-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  min-width: 0;
+}
+/* The flexible gap: everything before it hugs the left, everything after
+   it the right, and a long node name shrinks before any seat does. */
+.claude-rail-peek-gap {
+  flex: 1 1 0;
+  min-width: 4px;
+}
+/* The title row: the recap sentence, one line, the head's old title style
+   (12px, 500, ellipsis) on a line of its own — no box (owner, 2026-11-02:
+   "keep it as it was previously just in a new line"). The pencil at its
+   right end shows on hover or focus (TaskPeekWho's rule). */
+.claude-rail-peek-titlerow {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  min-height: 22px;
+  padding: 0 2px 0 6px;
+}
+.claude-rail-peek-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+/* The reply after the title, the List row's `.tasks-title-reply`: a quiet
+   italic aside that takes what the title leaves, never a second title. With
+   no reply the title has the row (its `flex: 0 1 auto` still shrinks it to
+   the box). */
+.claude-rail-peek-reply {
+  flex: 1 1 0;
+  min-width: 0;
+  margin-left: 4px;
+  color: var(--fg-muted);
+  font-style: italic;
+  font-weight: 300;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.claude-rail-peek-titlerow:not(:has(.claude-rail-peek-reply)) .claude-rail-peek-title {
+  flex: 1 1 auto;
+}
+.claude-rail-peek-rename {
+  width: 22px;
+  height: 22px;
+  opacity: 0;
+}
+.claude-rail-peek-titlerow:hover .claude-rail-peek-rename,
+.claude-rail-peek-rename:focus-visible {
+  opacity: 1;
+}
+@media (hover: none) {
+  .claude-rail-peek-rename {
+    opacity: 0.6;
+  }
+}
+.claude-rail-peek-title-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: inherit;
+  font-weight: 500;
+  line-height: 18px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 1px 4px;
+  margin: 0;
+}
+.claude-rail-peek-title-input[aria-invalid="true"] {
+  border-color: var(--error);
+}
+.claude-rail-peek-title-input:disabled {
+  opacity: 0.6;
+}
+.claude-rail-peek-rename-error {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--error);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The pin: pressed, it is the × (held card). Bootstrap's filled angled pin
+   at rest (RailPeek `PinAngleFill`); the seat's own hover wash either way. */
+/* THE PULSE SEAT: "2 ▭ 3m ago" as muted words (no chip), and the archive
+   button standing over the words' right end, shown on hover or focus — the
+   List row's hover-revealed actions (owner, 2026-11-02: "only on hover over
+   that area, like we did in card view"). The button carries the card's
+   background so it covers the age it stands on. A seat with no words
+   (`is-bare`) shows the button at rest. */
+.claude-rail-peek-pulse {
+  position: relative;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  min-width: 26px;
+  height: 26px;
+}
+.claude-rail-peek-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 4px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+.claude-rail-peek-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.claude-rail-peek-count.is-unread {
+  color: var(--fg);
+}
+.claude-rail-peek-count svg {
+  position: relative;
+  top: 0.5px;
+}
+/* Scoped under the pulse (two classes): the base seat rule has one, and the
+   minifier is free to order equals as it likes. */
+.claude-rail-peek-pulse .claude-rail-peek-archive {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 44px;
+  justify-content: flex-end;
+  padding-right: 6px;
+  border-radius: 0 6px 6px 0;
+  opacity: 0;
+  pointer-events: none;
+  /* Fades in from the right over the words it stands on — the List row's
+     revealed actions (`.tasks-acts-inner`): the card's background, solid
+     under the glyph, gone at the button's left edge. */
+  background: linear-gradient(to right, transparent, var(--bg) 42%);
+  transition: opacity 0.12s ease;
+}
+.claude-rail-peek-pulse:hover .claude-rail-peek-archive,
+.claude-rail-peek-pulse:focus-within .claude-rail-peek-archive,
+.claude-rail-peek-pulse.is-bare .claude-rail-peek-archive {
+  opacity: 1;
+  pointer-events: auto;
+}
+.claude-rail-peek-pulse .claude-rail-peek-archive:hover {
+  color: var(--fg);
+  background: linear-gradient(to right, transparent, var(--bg) 42%);
+}
+.claude-rail-peek-pulse .claude-rail-peek-archive:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+@media (hover: none) {
+  .claude-rail-peek-pulse .claude-rail-peek-archive {
+    opacity: 1;
+    pointer-events: auto;
+    position: static;
+    width: 26px;
+    padding-right: 0;
+    background: transparent;
+  }
+}
+.claude-rail-peek-words {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  color: var(--fg-muted);
+}
+.claude-rail-peek-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+.claude-rail-peek-btn:hover {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg);
+}
+.claude-rail-peek-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  color: var(--fg);
+}
+/* The chats: every kept mount stacked in the same box, the shown one visible.
+   `visibility`, not `display`: a hidden chat keeps its layout and its scroll
+   position, which is what makes coming back to it instant. */
+.claude-rail-peek-body {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.claude-rail-peek-chat {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  visibility: hidden;
+}
+.claude-rail-peek-chat.is-shown {
+  visibility: visible;
+}
+
+/* The head's facts (RailPeek, owner 2026-10-30): the task number in the
+   Tasks page's register, and WHERE the chat lives — "Canvas", or the node's
+   name — as a quiet chip. The "Open" door is a word, not a glyph. */
+.claude-rail-peek-id {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fg-muted);
+}
+.claude-rail-peek-scope {
+  flex: 0 0 auto;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 18px;
+  padding: 0 7px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+}
+.claude-rail-peek-scope.is-node {
+  color: var(--fg);
+  background: rgba(var(--tint), 0.06);
+}
+/* The node chip is a button (it selects the node in the workbench): the
+   same chip, with a button's UA styles reset and a hover wash like the
+   head's other seats. */
+button.claude-rail-peek-scope.is-node {
+  margin: 0;
+  font-family: inherit;
+  cursor: pointer;
+  transition:
+    background-color 0.12s ease,
+    border-color 0.12s ease;
+}
+button.claude-rail-peek-scope.is-node[aria-disabled="true"] {
+  cursor: default;
+}
+button.claude-rail-peek-scope.is-node:not([aria-disabled="true"]):hover {
+  background: rgba(var(--tint), 0.14);
+  border-color: rgba(var(--tint), 0.35);
+}
+button.claude-rail-peek-scope.is-node:not([aria-disabled="true"]):active {
+  background: rgba(var(--tint), 0.2);
+}
+button.claude-rail-peek-scope.is-node:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+/* The door, as the app's outline button (`.btn`, the sync strip's "Open in
+   workbench"), sized to the head's 26px seats. */
+.claude-rail-peek-open {
+  flex: 0 0 auto;
+  height: 24px;
+  padding: 0 10px;
+  font-size: 12px;
+  line-height: 22px;
+}
+/* The chat's own ⋮ (apps/claude/ui/Kebab), in a head seat: its button takes
+   the head's size and hover wash so it sits level with the close beside it. */
+.claude-rail-peek-kebab {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+.claude-rail-peek-kebab .c-kebabbtn {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+.claude-rail-peek-kebab .c-kebabbtn:hover {
+  background: rgba(var(--tint), 0.08);
+  color: var(--fg);
+}
+/* A seat with no conversation yet (a draft, a scheduled task): the card
+   hugs its content (`.is-plain`, no inline height) — the List's `Draft`
+   pill, when it was touched, its words, its settings. One door: the head's
+   Open. */
+.claude-rail-peek.is-plain {
+  height: auto;
+  max-height: 250px;
+}
+/* …so the shown seat has to be IN FLOW: the stacked chats are absolute
+   (every kept mount in one box), which gives a hugging card no height. */
+.claude-rail-peek.is-plain .claude-rail-peek-body {
+  flex: 0 1 auto;
+}
+.claude-rail-peek.is-plain .claude-rail-peek-chat.is-shown {
+  position: static;
+}
+.claude-rail-peek-plain {
+  padding: 14px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow: auto;
+}
+.claude-rail-peek-plain-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.claude-rail-peek-pill {
+  flex: 0 0 auto;
+  font-size: 11px;
+  line-height: 18px;
+  padding: 0 7px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  color: var(--fg-muted);
+}
+.claude-rail-peek-pill.is-draft {
+  color: var(--error);
+  border-color: color-mix(in srgb, var(--error) 45%, transparent);
+}
+.claude-rail-peek-plain-when {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+.claude-rail-peek-plain-words {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-line-clamp: 5;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.claude-rail-peek-plain-words.is-empty {
+  color: var(--fg-muted);
+  font-style: italic;
+}
+.claude-rail-peek-plain-meta {
+  margin: 0;
+  font-size: 11px;
+  color: var(--fg-muted);
+}
+
+/* THE BRIDGE between the card and the rail (RailPeek): transparent, the
+   gap's width, the card's height; a pointer resting in it is "on the card".
+   Hit-testable only while the card is up. */
+.claude-rail-peek-bridge {
+  position: fixed;
+  z-index: 44;
+  pointer-events: none;
+  background: transparent;
+}
+.claude-rail-peek-bridge.is-on {
+  pointer-events: auto;
+}
+
+/* A FILE's chip in the card's head (RailPeek: a chat on one file of the
+   folder the rail stands in): the node chip's shape, as a label — no
+   workbench to select it in, so no button. The name is the path under the
+   folder and may be long; it ellipsises rather than growing the head. */
+.claude-rail-peek-scope.is-file {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+}

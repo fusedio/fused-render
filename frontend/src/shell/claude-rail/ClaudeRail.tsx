@@ -1,7 +1,15 @@
-// THE CLAUDE RAIL: what stands at the canvas page's right edge while the Claude
-// pane is shut (owner, 2026-10-26: "a very min width column, like we have for
-// the fused render left sidebar, just a single width column with the button";
-// "rail stays on only when claude panel is collapsed").
+// THE CLAUDE RAIL: what stands at a page's right edge while its Claude pane
+// is shut (owner, 2026-10-26: "a very min width column, like we have for the
+// fused render left sidebar, just a single width column with the button";
+// "rail stays on only when claude panel is collapsed"). Born on the canvas
+// page; since 2026-11-01 the app page and the explorer's file and folder
+// views draw the same rail (owner: "replicate that same behaviour in explorer
+// and app view — exact same behaviour"). WHERE it stands is a `RailPlace`
+// (claude-rail-lib): a canvas, a folder, a file — which decides whose chats
+// ride it and what the + makes a task on; everything below is the same on
+// each. The canvas-specific parts (a node narrows the rail; the foot's canvas
+// seat and the card's node chip select in the workbench) are the `canvas`
+// place's alone and are said so.
 //
 // The same 48px column the global sidebar collapses to, in the same vocabulary
 // (sidebar.css: .sidebar-rail-btn, .sidebar-rail-items, .sidebar-rail-scroll),
@@ -133,15 +141,31 @@ import { fetchDrafts } from "@platform/lib/drafts";
 import { lastChatId, setLastChat, useLastChat } from "@platform/lib/last-chat";
 import { draftHref, preloadChat } from "@apps/claude";
 import { hideHint } from "@platform/lib/hints";
-import { dotCleared, keepMarks, railRows, railScope, readMark, type RailRow, type ReadMark } from "./claude-rail-lib";
-import { CanvasGlyph } from "./glyph";
+import {
+  dotCleared,
+  keepMarks,
+  nodeName,
+  placeName,
+  railRows,
+  railScope,
+  readMark,
+  type RailPlace,
+  type RailRow,
+  type ReadMark,
+} from "./claude-rail-lib";
+import { CanvasGlyph } from "@apps/canvases/glyph";
 import { PeekIntent, keepAlive, statusWords } from "./rail-peek-lib";
 import { useCanvasRailPeek } from "./rail-peek-flag";
 import { RailPeek, type RailPeekHandle } from "./RailPeek";
-import type { WorkbenchEnv } from "./api";
 
 /** The hover card's DOM id (one rail per page; the ring's `aria-controls`). */
-const PEEK_ID = "canvas-rail-peek";
+const PEEK_ID = "claude-rail-peek";
+
+/** The rail's width (claude-rail.css `.claude-rail`): what a shut pane leaves
+ *  at the edge, and what a pull to reopen it is measured past (the `closedWidth`
+ *  of panel-drag `reopenWidth`). The global sidebar's rail is the same 48px
+ *  (platform/lib/sidebarstate SIDEBAR_RAIL_WIDTH). */
+export const RAIL_W = 48;
 
 /** How long a press's read may stay in flight before the rail gives the dot
  *  back (CodeRabbit on #2049): a write that hangs would otherwise hold the
@@ -164,11 +188,8 @@ interface Card {
   /** The locked target as it was at the press: a node switched while the
    *  schedule read is out must not move the task (Bugbot on #2015). */
   target: string | null;
-  /** The selected node's name at the same press, for the card's WHERE pill
-   *  (null = the canvas as a whole). */
-  node: string | null;
-  /** The canvas's name at the same press, beside it. */
-  canvas: string;
+  /** The card's WHERE pill at the same press (`NewTaskSeed.where`). */
+  where: NewTaskSeed["where"];
   modes: string[];
   recents: string[];
   /** A DRAFT REOPENED IN PLACE (owner, 2026-11-02: "draft open took user to
@@ -181,6 +202,27 @@ interface Card {
   chatKey?: string;
   /** The time the stored form chose, or null (Scheduled `reopenTime`). */
   time?: Date | null;
+}
+
+/** What the +'s New task card is about, from the page: the page knows what
+ *  the pane's own composer would make a task on, and the rail restates it. */
+export interface NewTaskSeed {
+  /** The locked target (`NewJobModal lockTarget`): the clone or the node's
+   *  file on a canvas, the folder on the app page, the folder or the file in
+   *  the explorer. Null while the page cannot say yet. */
+  target: string | null;
+  /** Why the + is held, or null: the open pane has no chat to start one from
+   *  until the clone exists ("Loading the canvas…") or while the selected
+   *  node's file is still being written ("Saving <file>…"), so the + waits
+   *  for the same two waits. */
+  waiting: string | null;
+  /** The thing the task is ON, for the +'s words ("New task on hex"); null =
+   *  the place as a whole ("New task"). */
+  on: string | null;
+  /** SAID as the canvas and the node, not as the path (Akshil, 2026-10-30):
+   *  the card's read-only WHERE pill. Canvas pages only; elsewhere the card
+   *  shows the locked path as the Tasks page's own does. */
+  where?: { canvas: string; node: string | null };
 }
 
 /** How long the + waits on the schedule before opening the card without it
@@ -216,11 +258,8 @@ function cardSeed(): Promise<{ modes: string[]; recents: string[] }> {
 }
 
 export function ClaudeRail({
-  env,
-  name,
-  dir,
-  node,
-  nodeReady,
+  place,
+  newTask,
   activeSessionId,
   onOpen,
   onOpenChat,
@@ -228,19 +267,12 @@ export function ClaudeRail({
   onPullStart,
   onCardPinned,
 }: {
-  env: WorkbenchEnv;
-  name: string;
-  /** The clone dir (task rows that predate `task.canvas` name it as their
-   *  project; the New task card's locked target). Null until the clone
-   *  exists. */
-  dir: string | null;
-  /** The selected node (null = the canvas as a whole): its name for the
-   *  rail's words, its file (basename in the clone) for which chats show and
-   *  where a new task points. */
-  node: { udfName: string; file: string } | null;
-  /** The selected node's file is on disk (the pane's own "Saving…" gate);
-   *  true with no node selected. */
-  nodeReady: boolean;
+  /** Where the rail stands (claude-rail-lib `RailPlace`): whose chats ride
+   *  it. On a canvas the selected node's file narrows it (header). The
+   *  caller memoises it: the seats derive from it. */
+  place: RailPlace;
+  /** What the + makes a task on (`NewTaskSeed`). */
+  newTask: NewTaskSeed;
   /** The session the page's URL names, drawn as the current row. */
   activeSessionId: string | null;
   /** Open the pane as it is. */
@@ -248,9 +280,11 @@ export function ClaudeRail({
   /** Open one of the canvas's chats: its Tasks-page door (`taskHref`). */
   onOpenChat: (href: string) => void;
   /** The card's node chip: select that node in the workbench (RailPeek);
-   *  null — the rail's last seat while a node is selected (header) — asks
+   *  canvas pages only — without it the chip is a label and the foot's
+   *  canvas seat is not drawn. Null — the rail's last seat while a node is
+   *  selected (header) — asks
    *  it to deselect, back to the whole canvas. */
-  onSelectNode: (udfName: string | null) => void;
+  onSelectNode?: (udfName: string | null) => void;
   /** A pointer down on the rail's inner edge: the start of a pull that opens
    *  the pane at the width the pointer drags it to (CanvasWorkspace
    *  `onRailPull`). */
@@ -260,20 +294,22 @@ export function ClaudeRail({
   onCardPinned?: (pinned: boolean) => void;
 }) {
   const rows = useTasksPulseRows();
-  const nodeFile = node?.file ?? null;
   const peekOn = useCanvasRailPeek();
+  // THE CANVAS PLACE'S OWN FACTS (header): the selected node, as the
+  // workbench names it, and the canvas's name — what the foot's canvas seat
+  // and the +'s words read. Null / the place's own name elsewhere.
+  const node = useMemo(
+    () => (place.kind === "canvas" && place.file ? { udfName: nodeName(place.file), file: place.file } : null),
+    [place],
+  );
+  const name = place.kind === "canvas" ? place.name : placeName(place);
   // Drafts and scheduled rows ride the rail whatever the card flag says
   // (owner, 2026-10-30: "the flag is only for the preview thing; the fixes
   // we made — order etc. — should be there without the flag"): the rail is
-  // the List's order in rings, drafts included (claude-rail-lib `sessionless`).
-  const place = useMemo(
-    () => ({ env, name, dir, file: nodeFile, sessionless: true }),
-    [env, name, dir, nodeFile],
-  );
-  // A new task's locked target: the node's file under the clone while a node
-  // is selected, else the clone. Null until the clone exists.
-  const target = dir && nodeFile ? `${dir.replace(/\/+$/, "")}/${nodeFile}` : dir;
-  const scope = node ? node.udfName : "this canvas";
+  // the List's order in rings, drafts included (claude-rail-lib
+  // `sessionless`) — every page's rail, so it is set here, not by the page.
+  const seatPlace = useMemo((): RailPlace => ({ ...place, sessionless: true }), [place]);
+  const scope = placeName(place);
   // THE CAPTION'S WORDS ARE THE LISTING'S, not the pulse's: the pulse carries
   // status and a title, but the list row's caption is built from the full row
   // (recap, last reply, last message, the draft) — and so is the List's ORDER
@@ -311,7 +347,7 @@ export function ClaudeRail({
   // once per derivation, as `sortForList` asks; the derivation re-runs when a
   // row moves (the pulse) or the listing re-reads, which is when a rank can
   // change.
-  const baseSeats = useMemo(() => railRows(rows, full, place), [rows, full, place]);
+  const baseSeats = useMemo(() => railRows(rows, full, seatPlace), [rows, full, seatPlace]);
 
   // THE DOTS A PRESS CLEARED (header; claude-rail-lib `ReadMark`): held
   // while the pulse still reports what the press saw, spent the moment it
@@ -495,11 +531,11 @@ export function ClaudeRail({
     const onDown = (e: PointerEvent) => {
       const t = e.target as Node | null;
       const el = t instanceof Element ? t : null;
-      if (el?.closest(".canvas-rail-peek-bridge")) return;
+      if (el?.closest(".claude-rail-peek-bridge")) return;
       // A held card is not closed by any press outside it (header).
       if (heldRef.current) return;
       if (pinned) {
-        if (el && railRef.current?.querySelector(".canvas-rail-chats")?.contains(el)) return;
+        if (el && railRef.current?.querySelector(".claude-rail-chats")?.contains(el)) return;
       } else if (railRef.current?.contains(t)) return;
       insidePress.current = false;
       window.clearTimeout(tick);
@@ -713,17 +749,17 @@ export function ClaudeRail({
     refocusPlus.current = false;
     plusRef.current?.focus({ preventScroll: true });
   }, [node]);
-  const waiting = dir === null ? "Loading the canvas…" : !nodeReady && node ? `Saving ${node.file}…` : null;
+  const waiting = newTask.waiting;
   const openNewTask = () => {
     if (opening || card || waiting) return;
     setOpening(true);
-    const at = target;
-    const on = node?.udfName ?? null;
-    const canvasName = name;
+    // As they were at the press (header of `Card`).
+    const at = newTask.target;
+    const where = newTask.where;
     void cardSeed().then((got) => {
       if (!alive.current) return;
       setOpening(false);
-      setCard({ seq: Date.now(), target: at, node: on, canvas: canvasName, ...got });
+      setCard({ seq: Date.now(), target: at, where, ...got });
     });
   };
   // A DRAFT'S DOOR, IN PLACE (header of `Card.draft`): the same New task card
@@ -749,11 +785,16 @@ export function ClaudeRail({
     const chat = isChatDraftTask(row);
     if (!chat && !row.draft_id) return;
     setOpening(true);
-    const where = railScope(row, dir);
+    // Where the row lives (claude-rail-lib `railScope`): on a canvas the
+    // card's WHERE pill says the canvas and the node; elsewhere the locked
+    // path says it (`NewTaskSeed.where`).
+    const scopeOf = railScope(row, place);
     const base = {
-      target: row.target || target,
-      node: where.kind === "node" ? where.name : null,
-      canvas: name,
+      target: row.target || newTask.target,
+      where:
+        place.kind === "canvas"
+          ? { canvas: name, node: scopeOf.kind === "node" ? scopeOf.name : null }
+          : undefined,
     };
     type Read = { kind: "seed"; seed: DraftSeed | null } | { kind: "gone" } | { kind: "unknown" };
     const stored = new Promise<Read>((resolve) => {
@@ -816,6 +857,7 @@ export function ClaudeRail({
   };
   const openChatRef = useRef(openChat);
   openChatRef.current = openChat;
+  const plusLabel = waiting ?? (newTask.on ? `New task on ${newTask.on}` : "New task");
 
   // ONE RING, as the list draws it — and as the foot draws the held outsider.
   const ringOf = ({ pulse: t, row }: RailRow) => {
@@ -850,7 +892,7 @@ export function ClaudeRail({
               // and `aria-expanded` are not allowed on `listitem`, and a link
               // that opens a dialog is the shape they describe.
               return (
-                <div key={t.key} role="listitem" className="canvas-rail-seat">
+                <div key={t.key} role="listitem" className="claude-rail-seat">
                 <a
                   ref={(el) => {
                     if (el) ringEls.current.set(t.key, el);
@@ -858,7 +900,7 @@ export function ClaudeRail({
                   }}
                   href={href}
                   className={
-                    "sidebar-rail-btn canvas-rail-chat" +
+                    "sidebar-rail-btn claude-rail-chat" +
                     (activeSessionId && t.session_id === activeSessionId ? " active" : "") +
                     (peeked ? " peeked" : "") +
                     (peeked && pinned ? " is-pinned" : "") +
@@ -944,7 +986,7 @@ export function ClaudeRail({
   return (
     <aside
       ref={railRef}
-      className="canvas-rail"
+      className="claude-rail"
       aria-label="Claude"
       onPointerMove={(e) => {
         lastPointer.current = { x: e.clientX, y: e.clientY };
@@ -955,7 +997,7 @@ export function ClaudeRail({
           (SideReopenEdge) and the global sidebar's rail, the same gesture on
           the same kind of edge. The Show button stays the click. */}
       <div
-        className="canvas-rail-seam"
+        className="claude-rail-seam"
         role="separator"
         aria-orientation="vertical"
         aria-label="Drag to show the Claude panel"
@@ -975,9 +1017,9 @@ export function ClaudeRail({
         <button
           ref={plusRef}
           type="button"
-          className="sidebar-rail-btn canvas-rail-item"
-          title={waiting ?? (node ? `New task on ${node.udfName}` : "New task")}
-          aria-label={waiting ?? (node ? `New task on ${node.udfName}` : "New task")}
+          className="sidebar-rail-btn claude-rail-item"
+          title={plusLabel}
+          aria-label={plusLabel}
           aria-haspopup="dialog"
           aria-busy={opening || waiting !== null || undefined}
           disabled={opening || waiting !== null}
@@ -986,7 +1028,7 @@ export function ClaudeRail({
           <Plus size={16} aria-hidden="true" />
         </button>
         {baseSeats.length > 0 && (
-          <div className="sidebar-rail-scroll canvas-rail-chats" role="list" aria-label={`Chats on ${scope}`}>
+          <div className="sidebar-rail-scroll claude-rail-chats" role="list" aria-label={`Chats on ${scope}`}>
             {baseSeats.map(ringOf)}
           </div>
         )}
@@ -997,17 +1039,17 @@ export function ClaudeRail({
           // scroller, not its last row: on a short window the list scrolls
           // (no bar to say so), and a way out that has scrolled off is no
           // way out.
-          <div className="canvas-rail-all-seat">
+          <div className="claude-rail-all-seat">
             {heldExtra && (
-              <div className="canvas-rail-held" role="list" aria-label="Pinned chat, not on this node">
+              <div className="claude-rail-held" role="list" aria-label="Pinned chat, not on this node">
                 {ringOf(heldExtra)}
               </div>
             )}
-            {node && (
+            {node && onSelectNode && (
             <button
               ref={allRef}
               type="button"
-              className="sidebar-rail-btn canvas-rail-item canvas-rail-all"
+              className="sidebar-rail-btn claude-rail-item claude-rail-all"
               // No native `title` beside the app's hint (owner, 2026-11-02:
               // "there are two tooltips here — only have our one").
               aria-label={`All chats on ${name} (deselect ${node.udfName})`}
@@ -1044,7 +1086,7 @@ export function ClaudeRail({
           kept={keptSeats}
           anchorOf={anchorOf}
           railEl={railRef.current}
-          dir={dir}
+          place={place}
           onReload={refreshListing}
           onPointerEnter={() => intent.enterCard()}
           onPointerLeave={() => intent.leaveCard()}
@@ -1054,8 +1096,7 @@ export function ClaudeRail({
           onDismiss={dismissToRing}
           onNoRoom={onNoRoom}
           onOpenChat={openChat}
-          onSelectNode={onSelectNode}
-          selectedFile={nodeFile}
+          {...(onSelectNode ? { onSelectNode } : {})}
           held={held}
           onHeld={setHeld}
           pinned={pinned}
@@ -1077,17 +1118,19 @@ export function ClaudeRail({
           // The draft's own record, when a draft row opened it (`Card.draft`).
           initialDraft={card.draft ?? null}
           chatKey={card.chatKey ?? ""}
-          // SCOPED TO THE CLONE — or to the selected node's file in it — the
-          // project page's Tasks tab's way
-          // (CanvasPage.tsx `scope.project`, Scheduled.tsx `lockTarget`): a
-          // task made from the canvas is a task about the canvas, so the path
-          // is stated, not asked (the + is held until the clone exists).
+          // SCOPED TO THE PLACE — the clone or the selected node's file in
+          // it, the app folder, the explorer's folder or file — the project
+          // page's Tasks tab's way (CanvasPage.tsx `scope.project`,
+          // Scheduled.tsx `lockTarget`): a task made from a page is a task
+          // about that page, so the path is stated, not asked (the + is held
+          // until the page can say it).
           initialTarget={card.target}
           lockTarget={card.target !== null}
-          // …and SAID as the canvas and the node, not as that path (Akshil,
-          // 2026-10-30): the card's read-only WHERE pill. The canvas and node
-          // as they were at the press, the same snapshot as the target.
-          lockedWhere={{ canvas: card.canvas, node: card.node }}
+          // …and on a canvas SAID as the canvas and the node, not as that
+          // path (Akshil, 2026-10-30): the card's read-only WHERE pill. The
+          // canvas and node as they were at the press, the same snapshot as
+          // the target.
+          {...(card.where ? { lockedWhere: card.where } : {})}
           // From the List, not the calendar: a task typed here is one to run
           // now, and the when-row folds into More options.
           planning={!!card.time}
