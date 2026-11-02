@@ -130,7 +130,7 @@ import { StatusIcon } from "@shell/ScheduleTaskViews";
 import NewJobModal from "@shell/NewJobModal";
 import { draftHref, preloadChat } from "@apps/claude";
 import { hideHint } from "@platform/lib/hints";
-import { dotCleared, keepMarks, railRows, readMark, type ReadMark } from "./claude-rail-lib";
+import { dotCleared, keepMarks, railRows, readMark, type RailRow, type ReadMark } from "./claude-rail-lib";
 import { CanvasGlyph } from "./glyph";
 import { PeekIntent, keepAlive, statusWords } from "./rail-peek-lib";
 import { useCanvasRailPeek, useCanvasRailPeekTrigger } from "./rail-peek-flag";
@@ -379,21 +379,25 @@ export function ClaudeRail({
   useEffect(() => {
     if (!peekKey) setHeld(false);
   }, [peekKey]);
-  // A HELD CHAT KEEPS ITS RING (owner, 2026-11-02, asked what should happen
-  // when a node is selected and the held chat is not among that node's):
-  // the rail narrows to the node, and the held chat — if it is not the
-  // node's — stays as ONE more ring at the top, so the card has an anchor
-  // and the reader can see what they pinned. Letting go (the ×, Open) drops
-  // the ring with the next derivation; archiving the chat lets go first
-  // (RailPeek `fileTask`). Anything else — closing the card, hiding the
-  // chat — would undo the one thing the pin promised: "it stays".
+  // A HELD CHAT KEEPS ITS RING — OUTSIDE THE LIST (owner, 2026-11-02: "don't
+  // make it the top item; we have a separator and then a canvas button at
+  // the bottom — put it above the canvas button, after the separator, so we
+  // know it doesn't belong to the list"). The rail narrows to the node; the
+  // held chat, if it is not the node's, draws in the foot under the
+  // hairline, above the canvas glyph, so the card keeps its anchor and the
+  // reader sees what they pinned without mistaking it for one of the node's
+  // chats. Letting go (the ×, Open) drops it with the next derivation;
+  // archiving lets go first (RailPeek `onFiled`).
   const heldKey = held ? peekKey : null;
-  const seats = useMemo(() => {
-    if (!heldKey || baseSeats.some((s) => s.pulse.key === heldKey)) return baseSeats;
+  const heldExtra = useMemo((): RailRow | null => {
+    if (!heldKey || baseSeats.some((s) => s.pulse.key === heldKey)) return null;
     const pulse = rows.find((t) => t.key === heldKey) ?? full.get(heldKey) ?? null;
-    if (!pulse) return baseSeats;
-    return [{ pulse, row: full.get(heldKey) ?? null }, ...baseSeats];
+    return pulse ? { pulse, row: full.get(heldKey) ?? null } : null;
   }, [baseSeats, heldKey, rows, full]);
+  // Every seat the rail draws — the list's, plus the held outsider — for the
+  // card's anchors, the kept mounts and the prune; the LIST itself is
+  // `baseSeats`, and the outsider draws in the foot (below).
+  const seats = useMemo(() => (heldExtra ? [...baseSeats, heldExtra] : baseSeats), [baseSeats, heldExtra]);
   // THE LAST RING PRESSED (owner, 2026-11-02): "the active css to the last
   // selected task… keep by task id so it is easier to spot; it doesn't
   // change when we filter tasks based on the selected node, only when we
@@ -708,53 +712,8 @@ export function ClaudeRail({
     });
   };
 
-  return (
-    <aside
-      ref={railRef}
-      className="canvas-rail"
-      aria-label="Claude"
-      onPointerMove={(e) => {
-        lastPointer.current = { x: e.clientX, y: e.clientY };
-      }}
-    >
-      {/* THE RAIL'S INNER EDGE IS A SEAM: pulled left it opens the pane at the
-          width the pointer takes it to — the explorer sidebar's reopen edge
-          (SideReopenEdge) and the global sidebar's rail, the same gesture on
-          the same kind of edge. The Show button stays the click. */}
-      <div
-        className="canvas-rail-seam"
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="Drag to show the Claude panel"
-        onPointerDown={onPullStart}
-      />
-      <button
-        type="button"
-        className="sidebar-rail-btn"
-        title="Show the Claude panel"
-        aria-label="Show the Claude panel"
-        aria-expanded={false}
-        onClick={onOpen}
-      >
-        <PanelIcon side="right" />
-      </button>
-      <div className="sidebar-rail-items">
-        <button
-          ref={plusRef}
-          type="button"
-          className="sidebar-rail-btn canvas-rail-item"
-          title={waiting ?? (node ? `New task on ${node.udfName}` : "New task")}
-          aria-label={waiting ?? (node ? `New task on ${node.udfName}` : "New task")}
-          aria-haspopup="dialog"
-          aria-busy={opening || waiting !== null || undefined}
-          disabled={opening || waiting !== null}
-          onClick={openNewTask}
-        >
-          <Plus size={16} aria-hidden="true" />
-        </button>
-        {seats.length > 0 && (
-          <div className="sidebar-rail-scroll canvas-rail-chats" role="list" aria-label={`Chats on ${scope}`}>
-            {seats.map(({ pulse: t, row }) => {
+  // ONE RING, as the list draws it — and as the foot draws the held outsider.
+  const ringOf = ({ pulse: t, row }: RailRow) => {
               // The live status is the pulse's (fresher than the listing).
               const merged = row ? { ...row, status: t.status } : t;
               // Hollow since the press, until the pulse agrees (header).
@@ -875,21 +834,77 @@ export function ClaudeRail({
                 </a>
                 </div>
               );
-            })}
+  };
+
+  return (
+    <aside
+      ref={railRef}
+      className="canvas-rail"
+      aria-label="Claude"
+      onPointerMove={(e) => {
+        lastPointer.current = { x: e.clientX, y: e.clientY };
+      }}
+    >
+      {/* THE RAIL'S INNER EDGE IS A SEAM: pulled left it opens the pane at the
+          width the pointer takes it to — the explorer sidebar's reopen edge
+          (SideReopenEdge) and the global sidebar's rail, the same gesture on
+          the same kind of edge. The Show button stays the click. */}
+      <div
+        className="canvas-rail-seam"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Drag to show the Claude panel"
+        onPointerDown={onPullStart}
+      />
+      <button
+        type="button"
+        className="sidebar-rail-btn"
+        title="Show the Claude panel"
+        aria-label="Show the Claude panel"
+        aria-expanded={false}
+        onClick={onOpen}
+      >
+        <PanelIcon side="right" />
+      </button>
+      <div className="sidebar-rail-items">
+        <button
+          ref={plusRef}
+          type="button"
+          className="sidebar-rail-btn canvas-rail-item"
+          title={waiting ?? (node ? `New task on ${node.udfName}` : "New task")}
+          aria-label={waiting ?? (node ? `New task on ${node.udfName}` : "New task")}
+          aria-haspopup="dialog"
+          aria-busy={opening || waiting !== null || undefined}
+          disabled={opening || waiting !== null}
+          onClick={openNewTask}
+        >
+          <Plus size={16} aria-hidden="true" />
+        </button>
+        {baseSeats.length > 0 && (
+          <div className="sidebar-rail-scroll canvas-rail-chats" role="list" aria-label={`Chats on ${scope}`}>
+            {baseSeats.map(ringOf)}
           </div>
         )}
-        {node && (
-          // The way back to the whole canvas (header): the canvas glyph,
-          // under the list's foot, deselects the node in the workbench.
-          // BELOW the scroller, not its last row: on a short window the
-          // list scrolls (no bar to say so), and a way out that has
-          // scrolled off is no way out.
+        {(node || heldExtra) && (
+          // THE FOOT, under the list's hairline: the held outsider's ring
+          // (header), then the way back to the whole canvas — the canvas
+          // glyph, which deselects the node in the workbench. BELOW the
+          // scroller, not its last row: on a short window the list scrolls
+          // (no bar to say so), and a way out that has scrolled off is no
+          // way out.
           <div className="canvas-rail-all-seat">
+            {heldExtra && (
+              <div className="canvas-rail-held" role="list" aria-label="Pinned chat, not on this node">
+                {ringOf(heldExtra)}
+              </div>
+            )}
+            {node && (
             <button
               ref={allRef}
               type="button"
               className="sidebar-rail-btn canvas-rail-item canvas-rail-all"
-              title={`All chats on ${name}`}
+              // No native `title` beside the app's hint (owner, 2026-11-02:
+              // "there are two tooltips here — only have our one").
               aria-label={`All chats on ${name} (deselect ${node.udfName})`}
               data-hint={`All chats on ${name}`}
               data-hint-side="left"
@@ -912,6 +927,7 @@ export function ClaudeRail({
             >
               <CanvasGlyph size={16} />
             </button>
+            )}
           </div>
         )}
       </div>

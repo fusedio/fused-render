@@ -466,12 +466,34 @@
 }
 /* NO DEAD ZONES (owner, 2026-11-02): the ring is 28px in a 48px rail with
    4px between seats, and a pointer resting in the gap or the margin hovered
-   nothing. The link's hit area reaches half the gap up and down and to the
-   rail's edges; the painted seat does not move. */
+   nothing. The link's hit area reaches half the gap up and down and nearly
+   to the rail's edges (9px: a 10th would scroll the rail sideways) — and the
+   WASH IS PAINTED ON THAT SAME BOX (owner: "tip of my pointer is on a
+   different item and a different item is shown highlighted"), so what lights
+   up is exactly what the pointer is over. The pseudo sits under the ring
+   (`z-index: -1` inside the link's own stacking context), and every state
+   wash the seat used to paint on itself moves onto it. */
+.canvas-rail-chat {
+  isolation: isolate;
+}
 .canvas-rail-chat::after {
   content: "";
   position: absolute;
-  inset: -2px -10px;
+  inset: -2px -9px;
+  border-radius: 8px;
+  z-index: -1;
+}
+.canvas-rail-chat.canvas-rail-chat:hover,
+.canvas-rail-chat.canvas-rail-chat.active,
+.canvas-rail-chat.canvas-rail-chat.peeked,
+.canvas-rail-chat.canvas-rail-chat.is-last {
+  background: none;
+  box-shadow: none;
+}
+.canvas-rail-chat:hover::after,
+.canvas-rail-chat.active::after,
+.canvas-rail-chat.peeked::after {
+  background: rgba(var(--tint), 0.08);
 }
 /* The seat under the list while a node is selected (ClaudeRail
    `.canvas-rail-all`): the canvas glyph, the way back to every chat on the
@@ -480,25 +502,33 @@
    same), so it reads as the list's foot and not as one more chat. */
 .canvas-rail-all-seat {
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
   flex: 0 0 auto;
   width: 28px;
   margin-top: 6px;
   padding-top: 6px;
   border-top: 1px solid var(--rail-sep);
 }
+/* The held outsider's seat in the foot (ClaudeRail `heldExtra`): the ring
+   of a pinned chat that is not the selected node's, above the canvas glyph
+   and under the hairline, so it reads as "pinned, outside this list". */
+.canvas-rail-held {
+  display: flex;
+  justify-content: center;
+}
 /* The ring whose chat the hover card shows (ClaudeRail `.peeked`, behind
    `canvas_rail_peek_enabled`): the hover wash stays on while the pointer is
    over the card, so the card and its ring read as one thing. */
 .canvas-rail-chat.peeked {
-  background: rgba(var(--tint), 0.08);
   color: var(--fg);
 }
 /* …and the ring whose card a click PINNED (ClaudeRail `.is-pinned`): a step
    firmer than the hover wash, with a hairline, so "this one is open" holds
    while the pointer is elsewhere — and still quieter than the ring's own
    status colour. */
-.canvas-rail-chat.peeked.is-pinned {
+.canvas-rail-chat.peeked.is-pinned::after {
   background: rgba(var(--tint), 0.14);
   box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.22);
 }
@@ -506,14 +536,14 @@
    `.is-held`; owner, 2026-11-02: "the item which is active on right sidebar
    gets border accent as well"): the accent, the card's own held border, so
    the ring and the card read as one thing while the pointer is anywhere. */
-.canvas-rail-chat.peeked.is-held {
+.canvas-rail-chat.peeked.is-held::after {
   box-shadow: inset 0 0 0 1.5px var(--accent);
 }
 /* THE LAST RING PRESSED (ClaudeRail `.is-last`; owner, 2026-11-02): the
    sidebar's own current-place wash, a step firmer, with a hairline — so the
    chat the reader last opened is found again at a glance, on a rail that
    may have narrowed to a node and back since. Under the held accent. */
-.canvas-rail-chat.is-last {
+.canvas-rail-chat.is-last::after {
   background: rgba(var(--tint), 0.12);
   box-shadow: inset 0 0 0 1px rgba(var(--tint), 0.28);
 }
@@ -719,6 +749,14 @@
 }
 .canvas-rail-peek-titlerow:not(:has(.canvas-rail-peek-reply)) .canvas-rail-peek-title {
   flex: 1 1 auto;
+}
+/* With an aside, the title keeps at most ~55% of the row (the List row's
+   rule, tasks.css) so the recap is never squeezed out by a long message. */
+.canvas-rail-peek-titlerow:has(.canvas-rail-peek-reply) .canvas-rail-peek-title {
+  max-width: 60%;
+}
+.canvas-rail-peek-reply {
+  min-width: 40%;
 }
 .canvas-rail-peek-rename {
   width: 22px;

@@ -523,6 +523,17 @@ button.tasks-caret,
   min-width: 0;
   margin-left: calc(var(--tasks-row-gap) * -1);
 }
+/* …and the title leaves the aside room (owner, 2026-11-02: a long first
+   message hid the recap entirely — "this thing still doesn't have recap?").
+   The title keeps at most ~55% of the row when an aside follows it; a short
+   title still hands the rest over. The hover shows both lines whole. */
+.tasks-row:has(.tasks-title-reply) .tasks-title {
+  flex: 0 1 auto;
+  max-width: 60%;
+}
+.tasks-row:has(.tasks-title-reply) .tasks-title-reply {
+  min-width: min(40%, 240px);
+}
 
 /* A task whose work has not happened yet (tasks-lib.isUpcomingTask, 2026-08-18).
    The List is mostly history, and the rows scheduled ahead are the ones a reader
