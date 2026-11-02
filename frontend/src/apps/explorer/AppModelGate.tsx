@@ -63,6 +63,7 @@ export function AppModelGate({
   const [stalled, setStalled] = useState(false);
   const choicesRef = useRef(choices);
   choicesRef.current = choices;
+  const opening = useRef(false);
 
   useEffect(() => {
     if (skip) return;
@@ -113,8 +114,17 @@ export function AppModelGate({
         if (stopped) return;
         if (ov.rows) {
           setOverview(ov);
-          if (pendingRows(ov.rows, choicesRef.current).length === 0) setPhase("ready");
-          else setStalled(true);
+          if (pendingRows(ov.rows, choicesRef.current).length === 0) {
+            // Every download finished: the app opens now, so record acceptance now.
+            if (opening.current) return;
+            opening.current = true;
+            try {
+              await acceptAppModels(path, substitutionsOf(ov.rows, choicesRef.current));
+            } catch {
+              /* fail open: the app opens, the next open asks again */
+            }
+            if (!stopped) setPhase("ready");
+          } else setStalled(true);
         }
       } catch {
         /* a missed poll is retried on the next tick */
@@ -134,9 +144,10 @@ export function AppModelGate({
       setBusy(true);
       setFailed(null);
       try {
-        await acceptAppModels(path, substitutionsOf(rows, picks));
         const todo = pendingRows(rows, picks);
         if (todo.length === 0) {
+          // Nothing to download: the app opens now, so record acceptance now.
+          await acceptAppModels(path, substitutionsOf(rows, picks));
           setPhase("ready");
           return;
         }

@@ -162,13 +162,12 @@ describe("review dialog", () => {
     expect(text(r)).toContain("Review models");
   });
 
-  test("Download accepts, then downloads only the rows not on disk, then shows progress", async () => {
+  test("Download starts only the rows not on disk and records nothing until the app opens", async () => {
     ov = overview([row(), textRow()]);
     const r = await mount();
     await press(r, "Download");
     const posts = calls.filter((c) => c.method === "POST");
-    expect(posts[0].url).toContain("/api/app-models/accept");
-    expect(posts[0].body.substitutions).toEqual({});
+    expect(posts.some((c) => c.url.includes("/api/app-models/accept"))).toBe(false);
     const downloads = posts.filter((c) => c.url.includes("/api/ai/runtime/download"));
     expect(downloads.map((d) => d.body.model)).toEqual(["black-forest-labs/FLUX.2-klein-4B"]);
     expect(text(r)).toContain("Getting ready");
@@ -208,6 +207,32 @@ describe("progress view", () => {
     await press(r, "Cancel download");
     expect(calls.some((c) => c.method === "POST" && c.url.endsWith("/cancel") && c.url.includes("FLUX"))).toBe(true);
     expect(declined).toBe(1);
+    expect(hasApp(r)).toBe(false);
+    expect(calls.some((c) => c.url.includes("/api/app-models/accept"))).toBe(false);
+  });
+
+  test("acceptance is recorded when the downloads finish, even with the dialog hidden", async () => {
+    ov = overview([row()]);
+    const r = await mount();
+    await press(r, "Download");
+    await press(r, "Hide");
+    expect(calls.some((c) => c.url.includes("/api/app-models/accept"))).toBe(false);
+    jobs = [{ id: "sys:ai-model:black-forest-labs/FLUX.2-klein-4B", state: "done", done: 10, total: 10, message: "" }];
+    ov = overview([row({ downloaded: true })]);
+    await act(async () => { await new Promise((res) => setTimeout(res, 60)); });
+    await flush();
+    expect(calls.filter((c) => c.url.includes("/api/app-models/accept")).length).toBe(1);
+    expect(hasApp(r)).toBe(true);
+  });
+
+  test("a failed download records nothing", async () => {
+    ov = overview([row()]);
+    const r = await mount();
+    await press(r, "Download");
+    jobs = [{ id: "sys:ai-model:black-forest-labs/FLUX.2-klein-4B", state: "error", message: "disk full" }];
+    await act(async () => { await new Promise((res) => setTimeout(res, 60)); });
+    await flush();
+    expect(calls.some((c) => c.url.includes("/api/app-models/accept"))).toBe(false);
     expect(hasApp(r)).toBe(false);
   });
 });
