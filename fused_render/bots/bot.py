@@ -3038,8 +3038,10 @@ class Bot:
                         continue
                     reply = " ".join(((row or {}).get("last_reply") or "").split())[:400]
                     app = os.path.basename(str(bd.get("dir") or "").rstrip("/"))
-                    # done_at is on disk BEFORE the "ready" event: a restart in between must not resume this watcher
-                    # (resumed ones accept `done` at once) and tell the user twice.
+                    # Order matters across a restart: the asker's tick (idempotent) lands while done_at is still unset,
+                    # so a restart redoes it; done_at is on disk BEFORE the "ready" event, so a restart never resumes
+                    # this watcher (resumed ones accept `done` at once) to tell the user twice.
+                    self._trust_for_asker(bd.get("via"), app)
                     with self.lock:
                         bd["done_at"] = time.time()
                         # The app it just built is ticked under "Apps it may use without asking": its scripts run
@@ -3049,7 +3051,6 @@ class Bot:
                     # `app` lets the chat render an app card under this message (open inline / beside the chat).
                     self.emit("done", f"Your app \"{bd['name']}\" is ready: {_app_link(bd['dir'])}" + (f"\n\n{reply}" if reply else ""),
                               app={"name": bd["name"], "dir": bd["dir"]}, source="build", via=bd.get("via"))
-                    self._trust_for_asker(bd.get("via"), app)
                     return
                 stable = ""
         threading.Thread(target=run, name=f"build-{(bd.get('entry_id') or '')[:8]}", daemon=True).start()
