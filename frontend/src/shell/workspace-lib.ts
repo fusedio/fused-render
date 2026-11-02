@@ -110,14 +110,17 @@ export function blockingReasons(reasons: readonly string[]): string[] {
 
 /** The hold reasons a card prints under its chips. Drops what the card already
  *  says elsewhere: "N unread" (the bold title), a PR that is open or draft and
- *  the bg-job count (their chips), and running / needs you (the status ring). Worktree facts, "unknown", "checking", "queued" and "run pending"
- *  stay. The task still counts as held: "clear" is decided on the full list. */
-export function visibleReasons(reasons: readonly string[]): string[] {
+ *  the bg-job count (their chips), running / needs you (the status ring), and
+ *  "run pending" when the card sits in the Upcoming section (the section says
+ *  it). Worktree facts, "unknown", "checking" and "queued" stay. The task still
+ *  counts as held: "clear" is decided on the full list. */
+export function visibleReasons(reasons: readonly string[], group?: WorkspaceGroupKey): string[] {
   return reasons.filter((r) => {
     if (/^\d+ unread$/.test(r)) return false;
     if (/^PR #\d+ (open|draft)$/.test(r)) return false;
     if (/^\d+ bg jobs?$/.test(r)) return false;
     if ((r === "running" || r === "needs you")) return false;
+    if (r === "run pending" && group === "upcoming") return false;
     return true;
   });
 }
@@ -278,12 +281,13 @@ export function pickBranch(
   return head ? { name: head, more: 0, also: [] } : null;
 }
 
-export type WorkspaceGroupKey = "pinned" | "needs" | "working" | "pr" | "turn" | "clear" | "archived";
+export type WorkspaceGroupKey = "pinned" | "needs" | "working" | "upcoming" | "pr" | "turn" | "clear" | "archived";
 
 export const WORKSPACE_GROUPS: readonly { key: WorkspaceGroupKey; label: string }[] = [
   { key: "pinned", label: "Pinned" },
   { key: "needs", label: "Needs you" },
   { key: "working", label: "Working" },
+  { key: "upcoming", label: "Upcoming" },
   { key: "pr", label: "PR open" },
   { key: "turn", label: "Your turn" },
   { key: "clear", label: "Safe to archive" },
@@ -294,22 +298,29 @@ export const WORKSPACE_GROUPS: readonly { key: WorkspaceGroupKey; label: string 
  *  holding it, is the archive candidate; before that it is simply your turn. */
 export const ARCHIVE_IDLE_SECONDS = 24 * 3600;
 
+/** A run is still to come: a task that has never run (status upcoming) or a
+ *  settled one with a next run on the clock. */
+export function isUpcoming(task: Pick<Task, "status" | "next_run">): boolean {
+  return task.status === "upcoming" || (task.next_run ?? 0) > 0;
+}
+
 /** The first group that matches: archived (closed), needs you (waiting, failed,
- *  usage limit), working (running, queued, upcoming, bg jobs or a run pending),
- *  PR open (a PR known open or draft), safe to archive (idle at least
- *  ARCHIVE_IDLE_SECONDS and no blocking holds), and otherwise your turn. `now`
- *  is epoch seconds; a task with no activity time is never idle. */
+ *  usage limit), working (running, queued or bg jobs), upcoming (a run still to
+ *  come — its own section rather than a "run pending" chip under Working,
+ *  Akshil 2026-11-02), PR open (a PR known open or draft), safe to archive
+ *  (idle at least ARCHIVE_IDLE_SECONDS and no blocking holds), and otherwise
+ *  your turn. `now` is epoch seconds; a task with no activity time is never
+ *  idle. */
 export function workspaceGroup(task: Task, facts: WorkspaceFacts, now: number): WorkspaceGroupKey {
   if (task.status === "archived") return "archived";
   if (needsYou(task)) return "needs";
   if (
     task.status === "in_progress" ||
     task.status === "queued" ||
-    task.status === "upcoming" ||
-    (task.background_jobs?.count ?? 0) > 0 ||
-    (task.next_run ?? 0) > 0
+    (task.background_jobs?.count ?? 0) > 0
   )
     return "working";
+  if (isUpcoming(task)) return "upcoming";
   for (const ref of prRefsOf(task)) {
     if (!ref.repo) continue; // no repo, no status lookup: never resolvable
     const state = facts.prStates[prKey(ref)];
@@ -322,7 +333,8 @@ export function workspaceGroup(task: Task, facts: WorkspaceFacts, now: number): 
 }
 
 /** `rows` split into the groups above, in that order, empty groups left out;
- *  each keeps `rows`' order. A non-archived task whose key is in `pinned` goes
+ *  each keeps `rows`' order except Upcoming, which reads soonest first (a run
+ *  with no time on it last). A non-archived task whose key is in `pinned` goes
  *  to "pinned"; archived tasks stay archived whether pinned or not. */
 export function groupTasks(
   rows: readonly Task[],
@@ -335,7 +347,11 @@ export function groupTasks(
     const k = t.status !== "archived" && pinned.has(t.key) ? "pinned" : workspaceGroup(t, facts(t), now);
     by.set(k, [...(by.get(k) ?? []), t]);
   }
-  return WORKSPACE_GROUPS.filter((g) => by.has(g.key)).map((g) => ({ ...g, tasks: by.get(g.key)! }));
+  const soon = (t: Task): number => ((t.next_run ?? 0) > 0 ? t.next_run! : Number.POSITIVE_INFINITY);
+  return WORKSPACE_GROUPS.filter((g) => by.has(g.key)).map((g) => ({
+    ...g,
+    tasks: g.key === "upcoming" ? [...by.get(g.key)!].sort((a, b) => soon(a) - soon(b)) : by.get(g.key)!,
+  }));
 }
 
 /** A group shows this many cards until its "Show N more" is pressed. */

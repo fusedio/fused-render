@@ -257,6 +257,7 @@ describe("visibleReasons", () => {
     expect(visibleReasons(all)).toEqual(["1 uncommitted", "2 unpushed", "unknown"]);
   });
   test("keeps an unknown PR, queued and a pending run", () => {
+    expect(visibleReasons(["PR #7 unknown", "queued", "run pending"], "upcoming")).toEqual(["PR #7 unknown", "queued"]);
     expect(visibleReasons(["PR #7 unknown", "queued", "run pending"])).toEqual([
       "PR #7 unknown",
       "queued",
@@ -338,16 +339,27 @@ describe("workspaceGroup / groupTasks", () => {
   test("last_active falls back to started", () => {
     expect(g(task({ last_active: 0, started: NOW - 25 * 3600 }))).toBe("clear");
   });
-  test("queued, upcoming, bg jobs and a pending run are working", () => {
+  test("queued and bg jobs are working; a run still to come is upcoming", () => {
     expect(g(task({ status: "queued" }))).toBe("working");
-    expect(g(task({ status: "upcoming" }))).toBe("working");
-    expect(g(task({ next_run: 5 }))).toBe("working");
     expect(g(task({ background_jobs: { count: 1, run_id: "r", jobs: [] } }))).toBe("working");
+    expect(g(task({ status: "upcoming" }))).toBe("upcoming");
+    expect(g(task({ next_run: 5 }))).toBe("upcoming");
+    expect(g(task({ next_run: 5, ...pr, ...idle }), open)).toBe("upcoming");
   });
-  test("priority: archived and needs beat working, working beats PR open", () => {
+  test("priority: archived and needs beat working, working beats upcoming and PR open", () => {
     expect(g(task({ status: "archived", ...pr }), open)).toBe("archived");
     expect(g(task({ status: "in_progress", ...pr }), open)).toBe("working");
+    expect(g(task({ status: "in_progress", next_run: 5 }))).toBe("working");
     expect(g(task({ status: "needs_attention", unread: 3 }))).toBe("needs");
+  });
+  test("Upcoming reads soonest first; a run with no time on it last", () => {
+    const rows = [
+      task({ key: "late", started: 9, next_run: NOW + 7200 }),
+      task({ key: "never", started: 8, status: "upcoming" }),
+      task({ key: "soon", started: 7, next_run: NOW + 60 }),
+    ];
+    const grouped = groupTasks(rows, () => facts(), NOW, new Set());
+    expect(grouped.map((x) => [x.key, x.tasks.map((t) => t.key)])).toEqual([["upcoming", ["soon", "late", "never"]]]);
   });
   test("groups come in order, empty ones omitted, rows keep their order", () => {
     const rows = [
@@ -357,12 +369,14 @@ describe("workspaceGroup / groupTasks", () => {
       task({ key: "d", status: "archived" }),
       task({ key: "e", last_active: NOW - 60 }),
       task({ key: "f", status: "queued" }),
+      task({ key: "g", next_run: NOW + 600 }),
       task({ key: "h", ...pr, ...idle }),
     ];
     const grouped = groupTasks(rows, (t) => (t.key === "h" ? open : facts()), NOW, new Set());
     expect(grouped.map((x) => [x.key, x.label, x.tasks.map((t) => t.key)])).toEqual([
       ["needs", "Needs you", ["b"]],
       ["working", "Working", ["f"]],
+      ["upcoming", "Upcoming", ["g"]],
       ["pr", "PR open", ["h"]],
       ["turn", "Your turn", ["e"]],
       ["clear", "Safe to archive", ["a", "c"]],
