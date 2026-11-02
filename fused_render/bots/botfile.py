@@ -118,6 +118,19 @@ def _origin(idx: dict) -> dict:
     return {"bot_id": _str(o.get("bot_id"))[:64], "exported_at": _str(o.get("exported_at"))[:64]}
 
 
+def _package_sha(idx: dict) -> str:
+    """The digest that binds a bot to the exact package it was installed from: sha256 over the index's member
+    hashes (path + sha256, sorted) and its raw `apps` rows. Not bot.json's hash alone: two exports of one bot
+    in the same second carry the same bot.json and `origin` and differ only in which apps they list. Index-only
+    (read_index already validated every entry's sha256), so no member is read to compute it."""
+    files = sorted((_str(f.get("path")), _str(f.get("sha256"))) for f in idx.get("files") or [] if isinstance(f, dict))
+    try:
+        apps = json.dumps(idx.get("apps"), sort_keys=True, separators=(",", ":"), default=str)
+    except (TypeError, ValueError, RecursionError):
+        apps = repr(idx.get("apps"))
+    return hashlib.sha256(json.dumps([files, apps], separators=(",", ":")).encode()).hexdigest()
+
+
 def _folder_ok(folder) -> bool:
     """An app row's folder is one plain path segment: it names a member (`apps/<folder>.fused`) and a
     workspace folder, so a slash, a dot-name or anything path_problem refuses never reaches the disk."""
@@ -126,9 +139,15 @@ def _folder_ok(folder) -> bool:
 
 
 def _app_rows(idx: dict) -> list[dict]:
-    """The index's `apps` rows, cleaned to {folder, name, app_id, source}; a malformed row is dropped."""
+    """The index's `apps` rows, cleaned to {folder, name, app_id, source}; a malformed row is dropped. A
+    non-list `apps` is a broken package (refused like a non-object bot.json), not a server error."""
+    apps = idx.get("apps")
+    if apps is None:
+        apps = []
+    if not isinstance(apps, list):
+        raise BotFileError("this bot package's app list is not a list")
     out, seen = [], set()
-    for r in idx.get("apps") or []:
+    for r in apps:
         if not isinstance(r, dict) or not _folder_ok(r.get("folder")) or r["folder"] in seen:
             logger.debug("bot package: dropped a malformed apps row %r", r)  # every probe re-reads the index
             continue
@@ -704,6 +723,10 @@ def _install_into(path: str, idx: dict, bot_id: str, apps) -> dict:
     if not (want["bot_id"] and want["exported_at"] and have.get("bot_id") == want["bot_id"]
             and have.get("exported_at") == want["exported_at"]):
         raise BotFileError("that bot did not come from this file")
+    # bot_id + exported_at (1 s resolution) can match a DIFFERENT export of the same bot made in the same
+    # second; the digest stamped at first install names the very package, so its apps never land in this bot.
+    if have.get("package_sha") != _package_sha(idx):
+        raise BotFileError("this package is not the one this bot was installed from")
     rows = _app_rows(idx)
     orig = {id(r): r["folder"] for r in rows}  # the index spelling, before _install_apps follows the disk
     results, done = _install_apps(path, idx, rows, apps)
@@ -725,6 +748,43 @@ def _install_into(path: str, idx: dict, bot_id: str, apps) -> dict:
             logger.warning("bot package: re-install could not update %s", b.id, exc_info=True)
             warnings.append(f"settings: {e or e.__class__.__name__}")
     return {"ok": True, "bot_id": b.id, "apps": results, "warnings": warnings}
+
+
+def _copy_folder_members(path: str, idx: dict, bid: str, warnings: list[str]) -> None:
+    """The package's README.md and icon.svg into the new bot's public folder, where export picked them up: without
+    this a re-export of an imported bot silently drops both. Each is bounded (icon at the cap export and the
+    install page apply, README at the text cap) and never replaces a file already there; any failure is a
+    warning, never a failed install (the bot exists by now)."""
+    _total, text_cap = _caps()
+    for rel, cap in (("README.md", text_cap), ("icon.svg", appfile.MAX_ICON_BYTES)):
+        entry = appfile_container.find(idx, rel)
+        if entry is None:
+            continue
+        if not isinstance(entry.get("size"), int) or entry["size"] > cap:
+            warnings.append(f"{rel}: larger than {cap} bytes; not copied")
+            continue
+        try:
+            raw = _member_bytes(path, idx, rel, cap)
+            if raw is None:
+                continue
+            dst = os.path.join(bpaths.bot_folder(bid), rel)
+            try:
+                f = open(dst, "xb")  # exclusive: never over a file the bot already has
+            except FileExistsError:
+                warnings.append(f"{rel}: the bot already has one; kept it")
+                continue
+            try:
+                with f:
+                    f.write(raw)
+            except OSError:
+                try:
+                    os.unlink(dst)  # ours, half-written: it would export as something the author never wrote
+                except OSError:
+                    pass
+                raise
+        except (BotFileError, OSError, LookupError) as e:
+            logger.warning("bot package: %s not copied to %s", rel, bid, exc_info=True)
+            warnings.append(f"{rel}: {e or e.__class__.__name__}")
 
 
 def _install_new(path: str, idx: dict, pub: dict, apps, memory: bool) -> dict:
@@ -770,12 +830,14 @@ def _install_new(path: str, idx: dict, pub: dict, apps, memory: bool) -> dict:
         warnings.append(f"create: {e or e.__class__.__name__}")
         b = registry.get(new[0])
 
-    def step(what, fn):
+    def step(what, fn) -> bool:
         try:
             fn()
+            return True
         except Exception as e:  # noqa: BLE001 - the bot exists: report, never fail the request (comment above)
             logger.warning("bot package: %s failed for %s", what, b.id, exc_info=True)
             warnings.append(f"{what}: {e or e.__class__.__name__}")
+            return False
 
     def apply_meta():
         with b.lock:
@@ -783,10 +845,12 @@ def _install_new(path: str, idx: dict, pub: dict, apps, memory: bool) -> dict:
             b.meta["routines"] = routines
             b.meta["apps"] = rows
             b.meta["trusted_apps"] = apptools.clean_trusted_apps(trusted)
-            b.meta["origin"] = _origin(idx)
+            # package_sha (private, like all of origin): re-install mode accepts only this very package.
+            b.meta["origin"] = {**_origin(idx), "package_sha": _package_sha(idx)}
             b.save()
 
-    step("settings", apply_meta)
+    if step("settings", apply_meta):
+        _copy_folder_members(path, idx, b.id, warnings)
     written: set[str] = set()
     for sk in skills:
         try:

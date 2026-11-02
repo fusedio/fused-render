@@ -30,6 +30,19 @@ still says running from an owner that quit goes idle, a routine stuck on
 "started" gets its outcome) and the routines wake agent (`sync_wake`, the
 LaunchAgent `schedule_wake` keeps for Tasks: daily and once routines relaunch
 a quit app; interval ones wait for the next launch, owner's call Q1).
+One WORKSPACE, one ticker. The owner lock above is per home (machine state —
+browsers, channels, forwarding — stays per home), but two homes can share one
+workspace: the main app and a `FUSED_RENDER_BRANCH` install both default to
+`~/Fused/bots`, each wins its own home's `routines.lock`, and both would tick
+the same bots, firing a due routine twice. So an owner also flocks
+`<bots_root>/.routines.lock` (the workspace claim, beside `.migrate.lock`) and
+keeps it for its lifetime. Without the claim it still serves its home (chats,
+forwarding, the dock) but SKIPS `tick_routines()` and the steps that write the
+shared workspace (the v3 folder migration, the Super Bot seed, the browser
+sweep), logs "another fused-render owns routines for <bots_root>" once, and
+re-tries the claim every pass, so a quitting main app hands routines over.
+The claim drops with the owner lock (`_drop_routines_lock`).
+
 `shutdown()` (from `@on_shutdown_always _shutdown_bots`) stops every bot's
 task and Chrome and drops the lock LAST, so a successor never builds Bots
 while this process's engines still write. Both hooks live in
@@ -66,7 +79,11 @@ _chan = {"router": None}   # the channels router (bots/channels/router.py); None
 # Ownership (module docstring). `fh`: the flock'd lock file while this process owns; `lean`: never elect;
 # `ready`: _become_owner ran (seed, import, sweep, router, reconcile) — get() in a test process that never
 # called start() elects lazily and skips that, so tests see the registry they always did.
-_OWNER = {"fh": None, "lean": False, "ready": False, "elect_lock": threading.Lock()}
+# `ws_fh`: the flock'd `<bots_root>/.routines.lock` (the workspace claim, module docstring); `ws_ready`: the
+# shared-workspace steps ran under it; `ws_logged`: the "another process owns routines" line went out.
+_OWNER = {"fh": None, "lean": False, "ready": False, "elect_lock": threading.Lock(),
+          "ws_fh": None, "ws_ready": False, "ws_logged": False}
+WS_LOCK = ".routines.lock"
 
 
 class NotOwner(RuntimeError):
@@ -348,24 +365,93 @@ def _become_owner() -> None:
     """What every start() used to do, now once, in the winner, before its first
     tick: layout migration, the FusedBot import, the v3 folder migration, the Super Bot seed, the orphan
     browser sweep, the channels router, the takeover walk, the wake agent.
-    Idempotent per ownership; errors in one step never block the next."""
+    Idempotent per ownership; errors in one step never block the next. The three steps that write the shared
+    workspace (`_WS_STEPS`) run only under the workspace claim (module docstring): when another home holds it
+    they wait for the pass that wins it (`_workspace_steps`)."""
     if _OWNER["ready"]:
+        _workspace_steps()
         return
     _OWNER["ready"] = True
+    claimed = _claim_workspace()
+    if claimed:
+        _OWNER["ws_ready"] = True
     # Router BEFORE anything that builds a Bot (the takeover walk, the sweep): a Bot's __init__ may emit an
     # interrupted hand-off's result card that must reach the phone, and on_event skips a router that is None.
-    for label, step in (("layout migration", lambda: bpaths.migrate_layout()),
-                        ("FusedBot import", _import_fusedbot),
-                        ("v3 folder migration", _migrate_v3),
-                        ("Super Bot seed", seed_super),
-                        ("channels router", _start_router),
-                        ("takeover walk", _reconcile),
-                        ("browser sweep", _sweep_browsers),
-                        ("routines wake agent", sync_wake)):
+    steps = [("layout migration", lambda: bpaths.migrate_layout()),
+             ("FusedBot import", _import_fusedbot),
+             ("v3 folder migration", _migrate_v3),
+             ("Super Bot seed", _seed_super),
+             ("channels router", _start_router),
+             ("takeover walk", _reconcile),
+             ("browser sweep", _sweep_browsers),
+             ("routines wake agent", sync_wake)]
+    _run_steps([x for x in steps if claimed or x[0] not in _WS_STEPS])
+
+
+_WS_STEPS = ("v3 folder migration", "Super Bot seed", "browser sweep")
+
+
+def _run_steps(steps) -> None:
+    for label, step in steps:
         try:
             step()
         except Exception:  # noqa: BLE001 — a missing piece is not a broken owner
             logger.warning("bots owner: %s failed", label, exc_info=True)
+
+
+def _workspace_steps() -> None:
+    """The shared-workspace steps, once, on the first pass that holds the workspace claim after an ownership
+    that started without it (a main app on the same workspace quit)."""
+    if _OWNER["ws_ready"] or not _claim_workspace():
+        return
+    _OWNER["ws_ready"] = True
+    _run_steps((("v3 folder migration", _migrate_v3), ("Super Bot seed", _seed_super),
+                ("browser sweep", _sweep_browsers)))
+
+
+def _claim_workspace() -> bool:
+    """The workspace claim: a non-blocking flock on `<bots_root>/.routines.lock`, kept while this process owns
+    (module docstring). True when held. A miss logs once and is re-tried by the caller's next pass."""
+    if _OWNER["ws_fh"] is not None:
+        return True
+    try:
+        root = bpaths.bots_root()
+        fh = open(os.path.join(root, WS_LOCK), "a+", encoding="utf-8")
+    except OSError:
+        logger.warning("bots: could not open the workspace routines lock", exc_info=True)
+        return False
+    try:
+        held = _platform.flock(fh, blocking=False)
+    except OSError:
+        held = False
+    if not held:
+        fh.close()  # re-tried every pass: never leak the fd
+        if not _OWNER["ws_logged"]:
+            _OWNER["ws_logged"] = True
+            logger.info("bots: another fused-render owns routines for %s; serving this home without ticking them",
+                        root)
+        return False
+    _OWNER["ws_fh"] = fh
+    if _OWNER["ws_logged"]:
+        logger.info("bots: took over routines for %s", root)
+    _OWNER["ws_logged"] = False
+    return True
+
+
+def _drop_workspace_claim() -> None:
+    fh, _OWNER["ws_fh"] = _OWNER["ws_fh"], None
+    _OWNER["ws_ready"] = False
+    _OWNER["ws_logged"] = False
+    if fh is None:
+        return
+    try:
+        _platform.funlock(fh)
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        fh.close()
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _import_fusedbot() -> None:
@@ -378,6 +464,16 @@ def _migrate_v3() -> None:
     # anything that builds a Bot: from here on only the per-bot folders under the workspace are read.
     from fused_render.bots import migrate_v3
     migrate_v3.migrate_once()
+
+
+def _seed_super() -> None:
+    from fused_render.bots import migrate_v3
+    if not os.path.exists(migrate_v3.stamp_path()):
+        # Until the v3 migration has stamped, a legacy Super Bot is still in the legacy tree, invisible to
+        # super_id(): a seed now would make a second one, and super-seeded.json would keep it for good.
+        logger.info("Super Bot seed skipped: the v3 folder migration has not completed")
+        return
+    seed_super()
 
 
 def _sweep_browsers() -> None:
@@ -501,17 +597,25 @@ def _scheduler(stop: threading.Event) -> None:
             standing_down = False
             logger.info("bots: took over the bots (the previous owner quit)")
         try:
-            _become_owner()
-            _write_lock_record()  # the heartbeat (`ticked_at`), read by owner_info() in other processes
-            _sweep_handoffs()
-            for b in all():
-                try:
-                    b.tick_routines()
-                except Exception:  # noqa: BLE001
-                    logger.warning("routine tick failed for %s", getattr(b, "id", "?"), exc_info=True)
+            _pass()
         except Exception:  # noqa: BLE001
             logger.warning("scheduler pass failed", exc_info=True)
         stop.wait(SCHED_EVERY_S)
+
+
+def _pass() -> None:
+    """One owner pass: the owner steps (once), the heartbeat, the hand-off sweep, and every bot's routine tick
+    only while this process holds the workspace claim (module docstring)."""
+    _become_owner()
+    _write_lock_record()  # the heartbeat (`ticked_at`), read by owner_info() in other processes
+    _sweep_handoffs()
+    if not _claim_workspace():
+        return  # another home's owner ticks this workspace; re-tried next pass
+    for b in all():
+        try:
+            b.tick_routines()
+        except Exception:  # noqa: BLE001
+            logger.warning("routine tick failed for %s", getattr(b, "id", "?"), exc_info=True)
 
 
 SEED_STAMP = "super-seeded.json"
@@ -630,6 +734,7 @@ def _take_routines_lock() -> bool:
 
 
 def _drop_routines_lock() -> None:
+    _drop_workspace_claim()  # the workspace claim lives and dies with the ownership (module docstring)
     fh, _OWNER["fh"] = _OWNER["fh"], None
     _OWNER["ready"] = False
     if fh is None:

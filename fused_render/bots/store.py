@@ -85,7 +85,9 @@ def read_meta(bid: str) -> dict:
     (a public row plus its private run state; a private row whose routine is gone is dropped). Raises
     FileNotFoundError when there is no bot.json — also for a bid no folder carries, since every caller treats
     "unknown bot" and "no bot.json" alike (OpenBot `_read_meta` raised OSError for both) — and ValueError on
-    corrupt JSON in either file."""
+    a corrupt bot.json. An unreadable or corrupt state.json is moved aside to `state.json.corrupt-<ms>` and the
+    bot loads with empty private state (the next save must not overwrite the original); when it cannot be moved
+    aside, the read error is raised and the bot does not load."""
     # The folder is resolved ONCE: a second lookup could miss (delete() racing this read) and raise LookupError
     # out of a function whose callers catch OSError; and a read must not create `.fused/` (bot_private would).
     try:
@@ -101,14 +103,23 @@ def read_meta(bid: str) -> dict:
     try:
         with open(spath, encoding="utf-8") as f:
             private = json.load(f)
+        if not isinstance(private, dict):
+            raise ValueError(f"{spath}: not a JSON object")
     except FileNotFoundError:
         private = {}
     except (OSError, ValueError) as e:
         # The private half is runtime state the bot can rebuild; a torn state.json must not make the bot
-        # unloadable when its bot.json is fine.
-        logging.getLogger(__name__).warning("bots: %s unreadable (%s); starting the bot with empty state", spath, e)
-        private = {}
-    if not isinstance(private, dict):
+        # unloadable when its bot.json is fine. But the bot's next save would overwrite it, so it is moved aside
+        # first (never optional): when that fails too, the bot does not load and the original stays untouched.
+        aside = f"{spath}.corrupt-{int(time.time() * 1000)}"
+        try:
+            os.replace(spath, aside)
+        except OSError:
+            logging.getLogger(__name__).warning("bots: %s unreadable (%s) and cannot be moved aside", spath, e,
+                                                exc_info=True)
+            raise e from None
+        logging.getLogger(__name__).warning("bots: %s unreadable (%s); moved to %s, starting the bot with empty "
+                                            "state", spath, e, os.path.basename(aside))
         private = {}
     priv_routines = private.pop("routines", None)
     out = {**private, **public}
@@ -164,6 +175,8 @@ def write_meta(bid: str, meta: dict) -> None:
     second rule keeps a bot folder git-clean: the runtime saves on every status flip and routine tick, and
     none of that may touch the public file. state.json goes first, so a bot.json that appears (a new bot)
     always has its private half beside it. Raises LookupError when the bot has no folder (place() first)."""
+    # Not atomic across the two files: private (state.json) then public (bot.json), no shared generation stamp.
+    # One owner per workspace (registry's workspace routine claim) is what keeps the writers to one process.
     public, private = split_meta(meta)
     # bot.json's `id` is what paths.folders() keys the folder by: a missing or foreign one would lose the bot on
     # the next scan (or pose it as another), so the file always carries the bid it is saved under.

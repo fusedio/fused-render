@@ -320,8 +320,10 @@ export interface PackageAppRow {
   /** Bundled rows: the size of what ships; 0 for references (starter / marketplace / github). */
   bytes: number;
   problem?: string;
-  /** A bundled row that is a GitHub app whose link would not carry it: `code` is dirty / unpushed / no_default (share_app.github_link_state). */
-  fallback?: { kind: "github"; code: string; repo?: string | null };
+  /** A bundled row whose reference (GitHub / Marketplace / starter) would not carry it: `kind` is the reference it
+   *  would have been, `code` why (dirty = local changes; github also unpushed / no_default, share_app.github_link_state);
+   *  `repo` (github), `slug` (marketplace) or `key` (starter) names it. */
+  fallback?: { kind: PackageSourceKind; code: string; repo?: string | null; slug?: string | null; key?: string | null };
   /** Bundled app with no id yet and no git remote: exporting stamps an app id into its entry page (as sharing the app does). */
   mints_app_id?: boolean;
 }
@@ -338,8 +340,10 @@ export interface PackagePlan {
   secrets: { where: string; snippet: string }[];
   /** What the secret scan covered (bundled app sources are not scanned here). */
   secrets_scope?: string[];
-  /** Skills + memory over the text cap: the export would be refused, so Export is disabled with this sentence. */
+  /** Skills over the text cap: the export would be refused, so Export is disabled with this sentence. */
   text_problem?: string | null;
+  /** Skills + memory over the text cap: blocks Export only while memory is ticked (absent from an older backend: null). */
+  memory_text_problem?: string | null;
   super: boolean;
 }
 /** POST /api/bots/<id>/package: `apps` = the folders to ship (bundled) or reference; `file_name` absent = plan's default. */

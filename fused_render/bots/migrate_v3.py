@@ -703,7 +703,20 @@ def _move_bot(bid: str, meta: dict, *_unused) -> str:
     leftovers = _leftover_dir(folder)
     os.makedirs(inbox, exist_ok=True)
 
-    # The staged old Inbox(es): every task folder (and index.jsonl) goes under .fused/inbox/.
+    # The staged old Inbox(es): every task folder (and index.jsonl) goes under .fused/inbox/. Each staged
+    # `<stage>/<name>/` was `<bots_root>/<name>/` (a pin outside the root is never staged), and that, or the pin as
+    # written, is the prefix the index rows carry: collected BEFORE the loop empties the stage.
+    names = {n for stg in (staged, f"{staged}-clash") if os.path.isdir(stg) for n in os.listdir(stg)}
+    olds = [os.path.join(paths.legacy_data_dir(), bid, "inbox")] + [os.path.join(root, n) for n in sorted(names)]
+    # A rerun after a crash that moved the index but not yet rewrote it finds the stage gone: the pin, or the slug
+    # folder, is still the prefix then, as long as it is no longer a folder (a pin left in place keeps its rows).
+    for o in (meta.get("artifacts_dir"), os.path.join(root, _folder_name(bid, meta.get("name")))):
+        if isinstance(o, str) and o and _same_dir(os.path.dirname(os.path.normpath(o)), root) \
+                and (os.path.basename(os.path.normpath(o)) in names or not os.path.isdir(o)):
+            olds.append(o)
+    # The bot's own folder too: it is usually the old Inbox's name, and a crash after the lift but before the rewrite
+    # leaves rows at `<folder>/<task>/…` (rows already under `<folder>/.fused/inbox/` are skipped by _rewrite_index).
+    olds.append(folder)
     for stg in (staged, f"{staged}-clash"):
         if not os.path.isdir(stg):
             continue
@@ -735,6 +748,11 @@ def _move_bot(bid: str, meta: dict, *_unused) -> str:
         for n in sorted(os.listdir(cache)):
             _move_tree(os.path.join(cache, n), os.path.join(private, "cache", n), os.path.join(leftovers, "cache", n))
 
+    # The moved index's rows still name the old Inbox: rewritten onto .fused/inbox/ so Bot.artifacts() (which drops
+    # a row whose path is gone) and resolve_path see them. A second staged index clashed into legacy-leftovers.
+    for idx in (os.path.join(inbox, "index.jsonl"), os.path.join(leftovers, "inbox", "index.jsonl")):
+        _rewrite_index(idx, olds, inbox)
+
     left = _drain_check(data, keep=frozenset({store.BOT_FILE})) + _drain_check(cache)
     if left:
         raise RuntimeError(f"legacy files left behind for bot {bid}: {', '.join(left[:5])}"
@@ -747,6 +765,63 @@ def _move_bot(bid: str, meta: dict, *_unused) -> str:
         meta["apps"] = seed_apps(meta)
     store.write_meta(bid, meta)
     return folder
+
+
+def _rewrite_index(idx: str, olds, inbox: str) -> bool:
+    """Point every Inbox row of `idx` (an index.jsonl) that still names an old Inbox at the same relative path
+    under `inbox`. Only `path` is absolute in a row (bot.py _record_artifact; `folder`/`name` are basenames); a
+    `build` row names the app folder and is never touched. Unparseable lines and rows under no old prefix stay
+    verbatim, so a rerun over an already-rewritten index changes nothing. Atomic (tmp + replace). True when
+    the file changed."""
+    if not os.path.isfile(idx) or os.path.islink(idx):
+        return False
+    prefixes = []
+    for o in dict.fromkeys(olds):
+        for v in (os.path.normpath(o), os.path.realpath(o)):
+            k = os.path.normcase(v)
+            if k not in prefixes and not _same_dir(v, inbox):
+                prefixes.append(k)
+    prefixes.sort(key=len, reverse=True)  # the longest old prefix wins
+    here = os.path.normcase(os.path.normpath(inbox)) + os.sep
+    with open(idx, encoding="utf-8", newline="") as f:
+        lines = f.readlines()
+    out, changed = [], False
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            out.append(line)
+            continue
+        p = row.get("path") if isinstance(row, dict) else None
+        if not isinstance(p, str) or not p or row.get("kind") == "build":
+            out.append(line)
+            continue
+        norm = os.path.normpath(p)
+        key = os.path.normcase(norm)
+        # Already under the new Inbox: left alone (the bot's new folder is often the old Inbox's own name, so
+        # `<root>/foo/.fused/inbox/…` also starts with the old prefix `<root>/foo/`).
+        hit = None if key.startswith(here) else next((o for o in prefixes if key.startswith(o + os.sep)), None)
+        if hit is None:
+            out.append(line)
+            continue
+        row["path"] = os.path.join(inbox, norm[len(hit) + 1:])
+        end = line[len(line.rstrip("\r\n")):] or "\n"
+        out.append(json.dumps(row) + end)
+        changed = True
+    if not changed:
+        return False
+    tmp = idx + ".tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8", newline="") as f:
+            f.writelines(out)
+        os.replace(tmp, idx)
+    except OSError:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return True
 
 
 def _stage_inboxes(bid: str, srcs) -> None:

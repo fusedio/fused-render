@@ -645,8 +645,10 @@ def test_migrate_v3_backup_is_verified_before_the_first_destination_write(app_ho
 def test_migrate_v3_clash_goes_to_leftovers_and_legacy_is_drained(app_home, ws):
     bid = "a1b2c3d4"
     _legacy(app_home, bid, "Daily Digest")
-    # the destination already holds a memory.md of its own (a half-made folder from an older attempt)
+    # the destination already holds a memory.md of its own (a half-made folder from an older attempt: place()
+    # wrote its ownership marker, which is what lets adopt=True take it back)
     _touch(os.path.join(ws, "bots", "daily-digest", ".fused", "memory.md"), "newer")
+    _touch(os.path.join(ws, "bots", "daily-digest", ".fused", ".bot-id"), bid + "\n")
     r = migrate_v3.migrate_once()
     assert r["moved"] == 1 and r["stamped"] is True
     folder = os.path.join(ws, "bots", "daily-digest")
@@ -832,3 +834,111 @@ def test_is_bot_workdir_after_migrate_v3_hides_the_adopted_inbox(app_home, ws):
     assert bpaths.is_bot_workdir(legacy_cache)
     assert bpaths.is_bot_workdir(bpaths.bot_cache_dir(bid)) and bpaths.bot_cache_dir(bid).startswith(inbox + os.sep)
     assert bpaths.is_bot_workdir(bpaths.bot_inbox(bid))
+
+
+# ------------------------------------------------- place(): ownership marker, .gitignore, state.json ---
+def test_place_writes_the_ownership_marker(app_home, ws):
+    folder = bpaths.place("a1b2c3d4", "Notes")
+    with open(os.path.join(folder, ".fused", ".bot-id"), encoding="utf-8") as f:
+        assert f.read() == "a1b2c3d4\n"
+
+
+def test_place_adopt_never_takes_a_users_folder_with_its_own_fused_dir(app_home, ws):
+    # A user's own ~/Fused/bots/notes/ that happens to hold a .fused/ (an app, a clone): no marker, never adopted,
+    # so a later delete() of the bot cannot rmtree it.
+    mine = os.path.join(ws, "bots", "notes")
+    _touch(os.path.join(mine, ".fused", "data", "x.json"), "{}")
+    _touch(os.path.join(mine, "essay.txt"), "mine")
+    folder = bpaths.place("a1b2c3d4", "Notes", adopt=True)
+    assert os.path.basename(folder) == "notes-a1b2"
+    assert sorted(os.listdir(mine)) == [".fused", "essay.txt"]
+    assert sorted(os.listdir(os.path.join(mine, ".fused"))) == ["data"]
+
+
+def test_place_adopt_takes_its_own_half_made_folder(app_home, ws):
+    # A run that died after place() but before bot.json: a fresh process (empty cache) adopts it by its marker.
+    first = bpaths.place("a1b2c3d4", "Notes")
+    bpaths._reset_folders()
+    assert bpaths.place("a1b2c3d4", "Notes", adopt=True) == first
+    bpaths._reset_folders()
+    assert bpaths.place("a1b2c3d4", "Notes") != first  # without adopt=True it is somebody's: next name
+
+
+def test_place_adopt_refuses_another_ids_marker(app_home, ws):
+    other = bpaths.place("b1b2c3d4", "Notes")
+    bpaths._reset_folders()  # a new process: b1b2c3d4 has no bot.json, so only its marker says whose it is
+    folder = bpaths.place("a1b2c3d4", "Notes", adopt=True)
+    assert folder != other and os.path.basename(folder) == "notes-a1b2"
+    with open(os.path.join(other, ".fused", ".bot-id"), encoding="utf-8") as f:
+        assert f.read() == "b1b2c3d4\n"
+
+
+def test_place_failure_after_the_claim_leaves_no_folder(app_home, ws, monkeypatch):
+    def boom(folder, bid):
+        raise OSError("disk full")
+    monkeypatch.setattr(bpaths, "_write_marker", boom)
+    with pytest.raises(OSError):
+        bpaths.place("a1b2c3d4", "Notes")
+    assert not os.path.exists(os.path.join(ws, "bots", "notes"))
+
+
+@pytest.mark.skipif(os.name == "nt" or (hasattr(os, "geteuid") and os.geteuid() == 0),
+                    reason="needs POSIX permissions that bind (not root)")
+def test_unwritable_gitignore_fails_placement_before_private_state(app_home, ws):
+    folder = os.path.join(ws, "bots", "notes")
+    _touch(os.path.join(folder, "bot.json"), json.dumps({"id": "a1b2c3d4", "name": "Notes"}))
+    ignore = os.path.join(folder, ".gitignore")
+    _touch(ignore, "node_modules/\n")
+    os.chmod(ignore, 0o444)
+    try:
+        with pytest.raises(OSError):
+            bpaths.place("a1b2c3d4", "Notes")  # its own folder (bot.json says so), but .fused/ cannot be ignored
+        assert not os.path.exists(os.path.join(folder, ".fused"))
+        with pytest.raises(OSError):
+            bpaths.bot_private("a1b2c3d4")  # the lazy path (a cloned folder) refuses the same way
+        assert not os.path.exists(os.path.join(folder, ".fused"))
+    finally:
+        os.chmod(ignore, 0o644)
+    with open(ignore, encoding="utf-8") as f:
+        assert f.read() == "node_modules/\n"
+
+
+def test_corrupt_state_json_is_moved_aside_not_overwritten(app_home, ws):
+    bpaths.place("a1b2c3d4", "Notes")
+    store.write_meta("a1b2c3d4", {"id": "a1b2c3d4", "name": "Notes", "status": "idle"})
+    spath = store.state_path("a1b2c3d4")
+    _touch(spath, "{torn")
+    meta = store.read_meta("a1b2c3d4")
+    assert meta["name"] == "Notes" and "status" not in meta  # loads, private half empty
+    priv = os.path.dirname(spath)
+    aside = [n for n in os.listdir(priv) if n.startswith("state.json.corrupt-")]
+    assert len(aside) == 1 and not os.path.exists(spath)
+    with open(os.path.join(priv, aside[0]), encoding="utf-8") as f:
+        assert f.read() == "{torn"
+
+
+def test_corrupt_state_json_that_cannot_be_moved_aside_fails_the_load(app_home, ws, monkeypatch):
+    bpaths.place("a1b2c3d4", "Notes")
+    store.write_meta("a1b2c3d4", {"id": "a1b2c3d4", "name": "Notes"})
+    spath = store.state_path("a1b2c3d4")
+    _touch(spath, "[1, 2]")  # valid JSON, not an object: corrupt all the same
+
+    def no_rename(src, dst):
+        raise OSError("read-only")
+    monkeypatch.setattr(os, "replace", no_rename)
+    with pytest.raises(ValueError):
+        store.read_meta("a1b2c3d4")
+    monkeypatch.setattr(os, "replace", os.rename)  # restored for teardown (never monkeypatch.undo())
+    with open(spath, encoding="utf-8") as f:
+        assert f.read() == "[1, 2]"  # untouched: the bot does not load, so nothing saves over it
+
+
+def test_browser_sweep_skips_when_a_parked_bot_json_is_unreadable(app_home, ws):
+    from fused_render.bots import browsers
+    _touch(os.path.join(ws, "bots", ".unmigrated", "a1b2c3d4", "bot.json"), "{not json")
+    orphan = os.path.join(browsers.data_dir(), "cafef00d")
+    _touch(os.path.join(orphan, "browser.json"), "{}")
+    assert browsers._metas_on_disk() is None  # its browser_id may be a shared browser's: not by folder name
+    assert browsers.used_on_disk("cafef00d") is None
+    assert browsers.sweep([]) == 0
+    assert os.path.isdir(orphan)

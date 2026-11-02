@@ -26,6 +26,9 @@ from fused_render.server.common import _error, _require_fused
 router = APIRouter()
 
 UPLOAD_MAX_BYTES = 1 << 30  # package.PACKAGE_MAX_BYTES: an upload is a whole package
+# The install POST's JSON body ({path, apps: [folder], memory, request_id, bot_id}): a few hundred bytes in
+# practice, so a fixed cap keeps an unbounded body off the event loop (read and json.loads both run there).
+INSTALL_BODY_MAX_BYTES = 64 << 10
 EXT = ".fusedbot"
 
 
@@ -124,6 +127,25 @@ async def _forward_to_owner(request: Request, body: bytes, read_timeout_s: float
     return Response(resp.content, status_code=resp.status_code, headers=out_headers)
 
 
+async def _read_capped(request: Request, cap: int) -> bytes | JSONResponse | None:
+    """The whole body when it is at most `cap` bytes, else None (the caller answers 413); a bad Content-Length
+    is the error response itself. Same two checks as botfile_upload: the declared length before a byte is
+    read, the running count while streaming (a chunked body declares none)."""
+    declared = request.headers.get("content-length")
+    if declared is not None:
+        try:
+            if int(declared) > cap:
+                return None
+        except ValueError:
+            return _error("bad Content-Length")
+    buf = bytearray()
+    async for chunk in request.stream():
+        buf += chunk
+        if len(buf) > cap:
+            return None
+    return bytes(buf)
+
+
 @router.post("/api/botfile/install")
 async def botfile_install(request: Request, x_fused: str | None = Header(default=None)):
     """Install the package: body `{path, apps: [folder], memory: bool, bot_id?, request_id?}` -> `{ok, bot_id,
@@ -133,7 +155,11 @@ async def botfile_install(request: Request, x_fused: str | None = Header(default
     guard = _require_fused(x_fused)
     if guard is not None:
         return guard
-    raw = await request.body()
+    raw = await _read_capped(request, INSTALL_BODY_MAX_BYTES)
+    if raw is None:
+        return _error(f"the request body is larger than {INSTALL_BODY_MAX_BYTES >> 10} KB", 413)
+    if isinstance(raw, JSONResponse):
+        return raw
     try:
         import json
         body = json.loads(raw or b"{}")
@@ -239,9 +265,18 @@ async def botfile_upload(request: Request, name: str = Query(""), x_fused: str |
         if not got:
             return _error("the request body must be the .fusedbot file")
         try:  # the reader's own sentence: "this is a fused app file…", the version line, or the generic refusal
-            await asyncio.to_thread(appfile_container.read_index, tmp, max_entries=appfile.MAX_OPEN_ENTRIES,
-                                    max_entry_bytes=1 << 30, max_total_bytes=1 << 30, kind="bot")
+            idx = await asyncio.to_thread(appfile_container.read_index, tmp, max_entries=appfile.MAX_OPEN_ENTRIES,
+                                          max_entry_bytes=1 << 30, max_total_bytes=1 << 30, kind="bot")
         except appfile_container.ContainerError as e:
+            return _error(str(e))
+        # The install page's probe also needs a readable bot.json (and skills + memory within the text cap):
+        # refuse here with the probe's own sentence rather than save a file the next page cannot open. The temp
+        # file is unlinked in `finally`; nothing has been placed yet.
+        bf = _botfile()
+        try:
+            await asyncio.to_thread(bf._check_text_budget, idx)
+            await asyncio.to_thread(bf._bot_json, tmp, idx)
+        except bf.BotFileError as e:
             return _error(str(e))
         # No-clobber placement: link() fails on an existing name, so a racing upload of the same name takes
         # the next free one instead of being overwritten (a check-then-replace would race).

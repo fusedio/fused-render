@@ -308,8 +308,8 @@ def _metas_on_disk() -> list[dict] | None:
     # Bots still in the pre-v3 legacy tree (the migration has not lifted them yet) name browsers too; reading them
     # here is what keeps the sweep from removing their logins in the window before the stamp.
     # …and bots the v3 migration parked under `<bots_root>/.unmigrated/<id>/` (unreadable bot.json or a bad id):
-    # the user may repair them by hand, so their logins stay until then. A parked bot.json that cannot be read
-    # still names its browser by the folder (a pre-browsers bot's browser id IS its bot id).
+    # the user may repair them by hand, so their logins stay until then. A parked bot.json that cannot be read is
+    # a partial list like any other (its `browser_id` may be a shared browser's, not its folder name): None.
     legacy = bpaths.legacy_data_dir()
     parked = os.path.join(bpaths.bots_root(), ".unmigrated")
     for base in (legacy, parked):
@@ -325,14 +325,8 @@ def _metas_on_disk() -> list[dict] | None:
                 with open(meta, encoding="utf-8") as f:
                     m = json.load(f)
             except (OSError, ValueError):
-                if base == parked:
-                    out.append({"id": n})
-                    continue
                 return None
             if not isinstance(m, dict):
-                if base == parked:
-                    out.append({"id": n})
-                    continue
                 return None
             out.append({**m, "id": m.get("id") or n})
     return out

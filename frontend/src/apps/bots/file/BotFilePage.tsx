@@ -14,15 +14,20 @@
 // warning it stays open, so they are read, and the pill opens the bot.
 //
 // Retries never make a second bot. Every install POST carries the page mount's `request_id` (the server dedups on
-// it), so the error-phase Retry pill re-sends the same request. A row that failed after the bot exists has its own
-// Retry: it POSTs only that folder with the bot's `bot_id` (the server adds the app to that bot) and a fresh
-// `request_id`, then merges the returned row.
+// it and answers a repeat with the FIRST result, without comparing the body), so the first submit pins its
+// selection (apps + memory) in state, the checkboxes lock from then on, and the error-phase Retry pill re-sends
+// exactly that body. A row that failed after the bot exists has its own Retry: it POSTs only that folder with the
+// bot's `bot_id` (the server adds the app to that bot) and a fresh `request_id`, then merges the returned row and
+// its warnings.
+//
+// Permissions never travel (botfile._public_fields): whatever the file says, the new bot gets the creation defaults
+// (approval ask, build_access scoped, terminal off), so the page shows those, never the packaged values.
 //
 // Styling: the blocks come from @platform/ui/appstore; the "Comes with" list borrows three of their classes from
 // styles/marketplace.css (loaded by shell.css) — `as-info` (the aside section), `as-side-title` (its heading),
 // `as-tag` (the source pill) and `as-link-btn` (a row's Retry) — so it reads as one of the aside's own sections. A rename there must follow here.
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Bot as BotIcon, Brain, CalendarClock, Globe, Hammer, ShieldAlert, ShieldCheck, TerminalSquare } from "lucide-react";
+import { Bot as BotIcon, Brain, CalendarClock, Globe, ShieldCheck } from "lucide-react";
 import {
   ActionPill,
   AppIcon,
@@ -78,9 +83,11 @@ function fmtStamp(iso: string | null | undefined): string | null {
   return d.toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-// The Settings dialog's own words for each value (dialogs/BotSettings.tsx), so the page and the bot agree.
-const APPROVAL: Record<string, string> = { ask: "Ask me first", auto: "Never ask" };
-const BUILD_ACCESS: Record<string, string> = { scoped: "Ask before risky steps", full: "Run unattended" };
+// What an imported bot gets, in the Settings dialog's own words (dialogs/BotSettings.tsx): install never applies the
+// file's approval / build_access / terminal (botfile._public_fields), so these are the creation defaults.
+const DEFAULT_APPROVAL = "Ask me first";
+const DEFAULT_BUILD_ACCESS = "Ask before risky steps";
+const DEFAULT_TERMINAL = "Off";
 const SOURCE: Record<string, string> = { bundled: "Bundled", marketplace: "Marketplace", starter: "Built in", github: "GitHub" };
 
 /** A probe state as a short line: appfile's install states for a bundled app, installed/missing for a reference
@@ -112,7 +119,7 @@ const FAILED: Record<string, string> = {
   marketplace: "Could not fetch it from the Marketplace.",
   starter: "Built-in app could not be installed.",
   bundled: "Could not install the bundled app.",
-  github: "Could not clone it from GitHub.",
+  github: "Could not install it from GitHub.",
 };
 
 // -- Navigation -------------------------------------------------------------------------------------------------
@@ -139,6 +146,9 @@ type Phase =
   | { kind: "done"; result: BotFileInstallResult }
   | { kind: "error"; message: string };
 
+/** The selection the first submit sent: every Retry with the same `request_id` re-sends exactly this. */
+type Sent = { apps: string[]; memory: boolean };
+
 export function BotFilePage({ path }: { path: string }) {
   const [probe, setProbe] = useState<BotFileProbe | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -147,6 +157,8 @@ export function BotFilePage({ path }: { path: string }) {
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   /** Rows whose per-row Retry is in flight. */
   const [retrying, setRetrying] = useState<Set<string>>(new Set());
+  /** Pinned on the first submit (state, so the locked checkboxes render); null until then. */
+  const [sent, setSent] = useState<Sent | null>(null);
   // One id per page mount: a Retry of the whole install re-sends it, and the server answers the first install's
   // result instead of creating a second bot.
   const requestId = useRef(newRequestId());
@@ -206,11 +218,10 @@ export function BotFilePage({ path }: { path: string }) {
   const pub = p.public;
   const model = str(pub.model);
   const effort = str(pub.effort);
-  const approval = str(pub.approval) || "ask";
-  const buildAccess = str(pub.build_access) || "scoped";
   const routines = Array.isArray(pub.routines) ? pub.routines.length : 0;
   const instructions = str(pub.instructions).trim();
-  const busy = phase.kind === "installing" || phase.kind === "done";
+  // From the first submit on the selection is the pinned one, in the error phase too (a Retry resends it).
+  const busy = sent !== null || phase.kind === "installing" || phase.kind === "done";
   const results = phase.kind === "done" ? new Map(phase.result.apps.map((r) => [r.folder, r])) : null;
 
   const toggle = (folder: string, on: boolean) =>
@@ -222,11 +233,17 @@ export function BotFilePage({ path }: { path: string }) {
     });
 
   const run = async () => {
+    // The first submit pins the body; a Retry re-sends it as is (the server answers a repeated request_id with the
+    // first result, so a different body would be reported as installed without ever being installed).
+    // The probe's order: apps install in the order the file lists them.
+    const body: Sent = sent ?? {
+      apps: p.apps.filter((a) => a.tickable && ticked.has(a.folder)).map((a) => a.folder),
+      memory: p.memory && memory,
+    };
+    if (!sent) setSent(body);
     setPhase({ kind: "installing" });
     try {
-      // The probe's order: apps install in the order the file lists them.
-      const apps = p.apps.filter((a) => a.tickable && ticked.has(a.folder)).map((a) => a.folder);
-      const r = await install(path, { apps, memory: p.memory && memory, request_id: requestId.current });
+      const r = await install(path, { apps: body.apps, memory: body.memory, request_id: requestId.current });
       setPhase({ kind: "done", result: r });
       const failed = r.apps.filter((a) => !a.ok).length;
       notify({
@@ -241,24 +258,30 @@ export function BotFilePage({ path }: { path: string }) {
     }
   };
 
-  // One failed row again, into the bot the first install made: only that folder, never the memory (the bot has it
-  // already, or was installed without it), a fresh request id (this is a new request, not a resend).
+  // One failed row again, into the bot the first install made: only that folder (one of the pinned selection's: a
+  // failed row comes from the pinned install's results), never the memory (the bot has it already, or was installed
+  // without it), a fresh request id (this is a new request, not a resend). Its warnings (a `settings: …` one = the
+  // app installed but the bot was not updated) join the page's.
   const retryRow = async (folder: string) => {
-    if (phase.kind !== "done") return;
+    if (phase.kind !== "done" || !sent?.apps.includes(folder)) return;
     const botId = phase.result.bot_id;
     setRetrying((s) => new Set(s).add(folder));
     let row: BotFileAppResult;
+    let more: string[] = [];
     try {
       const r = await install(path, { apps: [folder], memory: false, bot_id: botId, request_id: newRequestId() });
       row = r.apps.find((a) => a.folder === folder) ?? { folder, ok: false, state: "missing", error: "The server did not answer for this app." };
+      more = r.warnings ?? [];
     } catch (e) {
       row = { folder, ok: false, state: "error", error: (e as Error).message || "Install failed" };
     }
-    setPhase((ph) =>
-      ph.kind === "done"
-        ? { ...ph, result: { ...ph.result, apps: ph.result.apps.some((a) => a.folder === folder) ? ph.result.apps.map((a) => (a.folder === folder ? row : a)) : [...ph.result.apps, row] } }
-        : ph,
-    );
+    setPhase((ph) => {
+      if (ph.kind !== "done") return ph;
+      const apps = ph.result.apps.some((a) => a.folder === folder) ? ph.result.apps.map((a) => (a.folder === folder ? row : a)) : [...ph.result.apps, row];
+      const had = ph.result.warnings ?? [];
+      const warnings = [...had, ...more.filter((w) => !had.includes(w))];
+      return { ...ph, result: { ...ph.result, apps, warnings } };
+    });
     setRetrying((s) => {
       const next = new Set(s);
       next.delete(folder);
@@ -271,7 +294,7 @@ export function BotFilePage({ path }: { path: string }) {
   let note: ReactNode;
   if (phase.kind === "installing") {
     pill = { state: "progress", progress: null, label: "Installing" };
-    note = ticked.size ? "Installing its apps, then the bot…" : "Creating the bot…";
+    note = sent?.apps.length ? "Installing its apps, then the bot…" : "Creating the bot…";
   } else if (phase.kind === "done") {
     const id = phase.result.bot_id;
     const failed = phase.result.apps.filter((a) => !a.ok).length;
@@ -311,9 +334,10 @@ export function BotFilePage({ path }: { path: string }) {
   const rows: InfoListRow[] = [
     { label: "Model", value: model || "Default" },
     { label: "Effort", value: effort || "Default" },
-    { label: "Approval", value: APPROVAL[approval] ?? approval },
-    { label: "Build access", value: BUILD_ACCESS[buildAccess] ?? buildAccess },
-    { label: "Terminal", value: pub.terminal === true ? "On" : "Off" },
+    // Not the file's values: permissions are never imported (see the header).
+    { label: "Approval", value: DEFAULT_APPROVAL },
+    { label: "Build access", value: DEFAULT_BUILD_ACCESS },
+    { label: "Terminal", value: DEFAULT_TERMINAL },
     { label: "Routines", value: routines ? `${routines}, installed paused` : "None" },
   ];
 
@@ -321,21 +345,13 @@ export function BotFilePage({ path }: { path: string }) {
   // the install that is the ticked rows.
   const trusted = p.apps.filter((a) => a.tickable && ticked.has(a.folder)).map((a) => a.name || a.folder);
   const trust: TrustItem[] = [
-    approval === "auto"
-      ? {
-          key: "approval",
-          icon: <ShieldAlert size={16} strokeWidth={2} />,
-          title: "Acts without asking",
-          detail: "Its approval is set to Never ask: it runs every step on its own.",
-          tone: "caution",
-        }
-      : {
-          key: "approval",
-          icon: <ShieldCheck size={16} strokeWidth={2} />,
-          title: "Asks before acting",
-          detail: "You approve each step that does something.",
-          tone: "ok",
-        },
+    {
+      key: "approval",
+      icon: <ShieldCheck size={16} strokeWidth={2} />,
+      title: "Asks before acting",
+      detail: "Permissions are not imported; the new bot starts with the defaults.",
+      tone: "ok",
+    },
     {
       key: "trusted",
       icon: <BotIcon size={16} strokeWidth={2} />,
@@ -355,23 +371,6 @@ export function BotFilePage({ path }: { path: string }) {
       detail: p.memory ? "What its author's bot remembered." : undefined,
     },
   ];
-  if (buildAccess === "full") {
-    trust.push({
-      key: "build",
-      icon: <Hammer size={16} strokeWidth={2} />,
-      title: "Builds apps unattended",
-      detail: "Its builds run without asking before risky steps.",
-      tone: "caution",
-    });
-  }
-  if (pub.terminal === true) {
-    trust.push({
-      key: "terminal",
-      icon: <TerminalSquare size={16} strokeWidth={2} />,
-      title: "Can use a terminal",
-      tone: "caution",
-    });
-  }
   if (routines) {
     trust.push({
       key: "routines",
@@ -418,8 +417,13 @@ export function BotFilePage({ path }: { path: string }) {
                   {!a.tickable && a.reason && !res && <span className="text-[12px] text-muted-foreground">{a.reason}</span>}
                   {res && !res.ok && (
                     <span className="flex items-start gap-2 text-[12px] text-destructive">
-                      <span className="min-w-0 flex-1" title={res.error || undefined}>
-                        {FAILED[a.source.kind] ?? "Could not install it."}
+                      <span className="flex min-w-0 flex-1 flex-col">
+                        <span>{FAILED[a.source.kind] ?? "Could not install it."}</span>
+                        {res.error && (
+                          <span className="truncate text-muted-foreground" title={res.error}>
+                            {res.error}
+                          </span>
+                        )}
                       </span>
                       <button
                         type="button"

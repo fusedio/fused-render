@@ -265,6 +265,12 @@ def _claims(index: dict) -> list[str]:
     return [k for k, (key, _ver) in KINDS.items() if key in index]
 
 
+def _at_version(v: object, want: int) -> bool:
+    """Whether an index's kind-key value `v` is the integer `want`: a JSON
+    `true` is not version 1 (`True == 1` in Python), nor is `1.0`."""
+    return isinstance(v, int) and not isinstance(v, bool) and v == want
+
+
 def _kind_in(index: dict) -> str | None:
     """Which ``KINDS`` entry ``index`` claims: None when it claims none, or
     more than one, or the one it claims is not at the version this build
@@ -273,7 +279,7 @@ def _kind_in(index: dict) -> str | None:
     if len(found) != 1:
         return None
     key, ver = KINDS[found[0]]
-    return found[0] if index.get(key) == ver else None
+    return found[0] if _at_version(index.get(key), ver) else None
 
 
 def kind_of(path: str) -> str | None:
@@ -303,7 +309,7 @@ def read_index(path: str, *, max_entries: int, max_entry_bytes: int,
         raise ContainerError(f"not a {noun} (its index claims more than one kind)")
     if claims and claims[0] != kind:
         raise ContainerError(_WRONG_KIND[kind])
-    if index.get(key) != key_version:
+    if not _at_version(index.get(key), key_version):
         raise ContainerError(f"not a {noun} (index carries no {key}: {key_version})")
     files = index.get("files")
     if not isinstance(files, list):

@@ -2311,9 +2311,9 @@ bots router's middleware, §7):
 | route | answer |
 |---|---|
 | `GET /install?path=<abs>[&light=1]` | `probe(path)`; `light` reads only the index + `bot.json` (the template's card peek) |
-| `POST /install` `{path, apps: [folder], memory, request_id?, bot_id?}` | `install(...)`, `X-Fused`. `request_id` (≤64 `[A-Za-z0-9_-]`) makes the POST idempotent in the owner: a resend answers the first result (a 200-entry, 1 h memo), so a page Retry after a lost reply never mints a second bot. `bot_id` is re-install mode (the per-row Retry): no bot is created; the file's `origin` must match that bot's, only the listed rows install, and they join its `apps` + `trusted_apps` |
+| `POST /install` `{path, apps: [folder], memory, request_id?, bot_id?}` | `install(...)`, `X-Fused`; the body is read streamed and capped at 64 KiB (413 over). `request_id` (≤64 `[A-Za-z0-9_-]`) makes the POST idempotent in the owner: a resend answers the first result (a 200-entry, 1 h memo), so a page Retry after a lost reply never mints a second bot. `bot_id` is re-install mode (the per-row Retry): no bot is created; the file's `origin` must match that bot's, `package_sha` included, only the listed rows install, and they join its `apps` + `trusted_apps` |
 | `GET /icon?path=` | the `icon.svg` member, else 404 (the page falls back to the face) |
-| `POST /upload?name=<file name>` (body = the raw bytes) | writes `<downloads dir>/<safe name>.fusedbot` (appfetch's dir), `Content-Length` checked against the 1 GiB cap before a byte is read, streamed to a temp file, `X-Fused` → `{ok, path}` |
+| `POST /upload?name=<file name>` (body = the raw bytes) | writes `<downloads dir>/<safe name>.fusedbot` (appfetch's dir), `Content-Length` checked against the 1 GiB cap before a byte is read, streamed to a temp file, `X-Fused` → `{ok, path}`; refused with the probe's own error (nothing saved) unless the index, the text budget and `bot.json` read as the probe reads them |
 
 `probe` answers `{ok, name, public, skills, memory: bool, exported_at, origin,
 apps: [{folder, name, app_id, source, state, ticked, tickable, reason?}],
@@ -2327,7 +2327,7 @@ TTL. Per-row state:
 | bundled | `appfile.install_target(member, light=True)["state"]` | `new`, `update` | not `WARN_STATES` (`diverged`, `same`, `downgrade`, `unknown`) and not `clash`; `same` reads "Already installed" |
 | starter | `installed` / `missing` (`starters.list_state`) | when missing | yes |
 | marketplace | `installed` / `missing` (`marketplace.installed_copies()`) | when missing | yes |
-| github | `installed` / `missing` (`appfile_git.installed_clone_of(normalize_url(url))`, else a workspace copy carrying the row's `app_id`; local git only, no network); a row whose `url` is not a `https://github.com/<owner>/<repo>` link of at most 256 chars (`appfetch.parse_github_repo`) reads `unknown`; `repo` and `url` are rewritten from the url's owner/name (the file's `repo` is never shown) | when missing | yes |
+| github | `installed` / `missing` (`appfile_git.installed_clone_of(normalize_url(url))`: a real clone only; local git only, no network); a row whose `url` is not a `https://github.com/<owner>/<repo>` link of at most 256 chars (`appfetch.parse_github_repo`) reads `unknown`; `repo` and `url` are rewritten from the url's owner/name (the file's `repo` is never shown) | when missing | yes |
 
 **Install order.** `install` → `{ok, bot_id, apps: [{folder, ok, state,
 error?}], warnings: [str]}`. Once `bot.create()` has returned the POST answers
@@ -2356,8 +2356,14 @@ key only (no `apply_preset`: the skills are in the file); routines from the
 file with run fields stripped and every row **`enabled: false`**; `apps` = the
 file rows; `trusted_apps` = the folders that installed OK and are in the
 index's `apps` rows (`trusted_apps` is private, never in the file); skills via
-`skill_save`; memory via `set_memory` only when asked and present; private
-state gets `origin` (the exporter's `{bot_id, exported_at}`); a `system` event
+`skill_save`; memory via `set_memory` only when asked and present; the
+package's `README.md` and `icon.svg` (≤ `appfile.MAX_ICON_BYTES`) copied into
+the new bot's folder so a re-export keeps them (never over an existing file; a
+miss is a warning); private state gets `origin` (the exporter's `{bot_id,
+exported_at}` plus `package_sha`, the sha256 of the index's member hashes and
+`apps` rows: two exports of one bot in the same second share `bot_id` +
+`exported_at`, so re-install mode refuses any package whose digest differs —
+"this package is not the one this bot was installed from"); a `system` event
 "Imported from <file>"; then `greet()`. A fresh id every time: there is no
 update-in-place. The page's failed row re-POSTs with only that folder and the
 `bot_id` it was given (re-install mode above).

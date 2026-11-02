@@ -207,6 +207,10 @@ def bots_root() -> str:
 # ------------------------------------------------------- id -> folder map ---
 _META = "bot.json"
 _PRIVATE = ".fused"
+# `.fused/.bot-id`: the id place() wrote the moment it claimed the folder (one line, the 8-hex id). The only
+# proof a bot.json-less folder is a half-made bot folder rather than a user's own folder that happens to hold a
+# `.fused/` (an app, a clone): place(adopt=True) adopts nothing else. The id -> folder index still keys on bot.json.
+_MARKER = ".bot-id"
 _ID_RE = re.compile(r"[0-9a-f]{8}")
 _index_lock = threading.RLock()
 # The id -> folder map, per bots root: keyed by the root path so a test (or anything) that redirects
@@ -402,8 +406,10 @@ def bot_private(bid: str) -> str:
     folder = bot_folder(bid)
     p = os.path.join(folder, _PRIVATE)
     if not os.path.lexists(p):
+        # A cloned/copied folder never went through place(). The ignore line first: when it cannot be written
+        # this raises before any private file exists for `git add` to pick up.
+        _seed_gitignore(os.path.join(folder, ".gitignore"))
         _mkdir_real(p)
-        _seed_gitignore(os.path.join(folder, ".gitignore"))  # a cloned/copied folder never went through place()
     elif os.path.islink(p):
         raise OSError(f"{p} is a symlink; refusing to use it as a bot folder")
     return p
@@ -462,14 +468,16 @@ def place(bid: str, name: str | None, *, adopt: bool = False) -> str:
     slug says nothing (empty -> slug's "app" fallback, which is a word for app paths, not a bot name). A folder
     of that name owned by ANOTHER bot (its bot.json, or registered here and not written yet) -> `<slug>-<id4>`;
     one owned by this same id is reused (migrate_v3 reruns); one with no bot.json is adopted ONLY with
-    `adopt=True` and only when it already holds a `.fused/` directory — i.e. a folder this function started for
-    a run that died before its bot.json was written (migrate_v3 writes the meta last). A bot.json-less folder
-    WITHOUT `.fused/` is a user's own folder whatever its name: it counts as taken and the next candidate is
-    tried, so a stray `~/Fused/bots/notes/` is never claimed as a bot. migrate_v3 stages every old Inbox out
-    of the way BEFORE placing, so adoption only ever meets its own half-made folders.
+    `adopt=True` and only when its `.fused/.bot-id` marker names THIS id — i.e. a folder this function claimed
+    for a run that died before its bot.json was written (migrate_v3 writes the meta last). Any other
+    bot.json-less folder (no `.fused/`, or a `.fused/` with no marker or another id's) is a user's own folder
+    whatever its name: it counts as taken and the next candidate is tried, so a stray `~/Fused/bots/notes/`
+    is never claimed as a bot (and never rmtree'd by its delete()). migrate_v3 stages every old Inbox out of
+    the way BEFORE placing, so adoption only ever meets its own half-made folders.
     A symlink or a file of that name is never used. The folder is claimed with os.mkdir, so two processes
     placing the same slug at once get different folders. `.gitignore`: seeded with ".fused/" when absent;
-    when the user owns one that lacks the line, the line is appended (other lines are never touched)."""
+    when the user owns one that lacks the line, the line is appended (other lines are never touched); when
+    that append fails, OSError is raised before `.fused/` or the marker is written."""
     if not bid or not _ID_RE.fullmatch(bid):
         raise ValueError(f"bad bot id {bid!r}")
     root = bots_root()
@@ -480,13 +488,14 @@ def place(bid: str, name: str | None, *, adopt: bool = False) -> str:
             except OSError:
                 log.warning("bots: cannot list %s", root, exc_info=True)
         known = _index["map"].get(bid) if _index["root"] == root else None
+        claimed = False
         if known and _still_holds(known, bid):
             folder = known
         else:
             base = slug(name)
             if base == "app":
                 base = bid
-            folder, claimed = None, False
+            folder = None
             for cand in (base, f"{base}-{bid[:4]}", f"{base}-{bid}"):
                 path = os.path.join(root, cand)
                 if os.path.islink(path) or (os.path.lexists(path) and not os.path.isdir(path)):
@@ -502,21 +511,32 @@ def place(bid: str, name: str | None, *, adopt: bool = False) -> str:
                 if holder == bid:
                     folder = path
                     break
-                # Adoptable: a folder THIS function started (its `.fused/` exists) whose bot.json was never
-                # written — a run that died mid-move. Never a user's own folder (no `.fused/`), whatever its name.
-                if holder is None and adopt and os.path.isdir(os.path.join(path, _PRIVATE)) \
-                        and not os.path.islink(os.path.join(path, _PRIVATE)):
+                # Adoptable: a folder THIS function claimed for this id (its marker says so) whose bot.json was
+                # never written — a run that died mid-move. Never a user's own folder, whatever its name or
+                # whether it holds a `.fused/` of its own.
+                if holder is None and adopt and _marker_id(path) == bid:
                     folder = path
                     break
             if folder is None:
                 raise ValueError(f"no free folder for bot {bid} under {root}")
         try:
-            _mkdir_real(os.path.join(folder, _PRIVATE))
+            # The ignore line first, so a .gitignore that cannot take it fails placement before any private
+            # file exists; then `.fused/` and the ownership marker (the claim adopt=True honours).
             _seed_gitignore(os.path.join(folder, ".gitignore"))
+            _mkdir_real(os.path.join(folder, _PRIVATE))
+            _write_marker(folder, bid)
         except OSError:
             if claimed:
+                # A claim that could not be furnished must not read as "taken" next time. Only what this call
+                # made is removed (the folder was empty when os.mkdir claimed it).
+                for child in (os.path.join(_PRIVATE, _MARKER), _PRIVATE, ".gitignore"):
+                    c = os.path.join(folder, child)
+                    try:
+                        os.rmdir(c) if child == _PRIVATE else os.remove(c)
+                    except OSError:
+                        pass
                 try:
-                    os.rmdir(folder)  # a claim that could not be furnished must not read as "taken" next time
+                    os.rmdir(folder)
                 except OSError:
                     pass
             raise
@@ -529,9 +549,46 @@ def place(bid: str, name: str | None, *, adopt: bool = False) -> str:
         return folder
 
 
+def _marker_id(folder: str) -> str | None:
+    """The id in `<folder>/.fused/.bot-id`, or None (absent, unreadable, a symlink anywhere on the way, or not
+    an id)."""
+    priv = os.path.join(folder, _PRIVATE)
+    marker = os.path.join(priv, _MARKER)
+    if os.path.islink(priv) or not os.path.isdir(priv) or os.path.islink(marker):
+        return None
+    try:
+        with open(marker, encoding="utf-8") as f:
+            text = f.read(64).strip()
+    except (OSError, ValueError):
+        return None
+    return text if _ID_RE.fullmatch(text) else None
+
+
+def _write_marker(folder: str, bid: str) -> None:
+    """Write `<folder>/.fused/.bot-id` = `bid` (atomically; a no-op when it already says so)."""
+    if _marker_id(folder) == bid:
+        return
+    marker = os.path.join(folder, _PRIVATE, _MARKER)
+    if os.path.islink(marker):
+        raise OSError(f"{marker} is a symlink; refusing to write it")
+    tmp = f"{marker}.{os.getpid()}-{threading.get_ident()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(bid + "\n")
+        os.replace(tmp, marker)
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
+
+
 def _seed_gitignore(ignore: str) -> None:
     """`.fused/` must be ignored whatever else the file says: create it when absent; when the user owns one
-    without the line, append it (never rewrite their lines). A symlinked .gitignore is left alone."""
+    without the line, append it (never rewrite their lines). A symlinked .gitignore is left alone. Raises
+    OSError when the line cannot be written (the callers then write no private state: `git add` would commit
+    it)."""
     if os.path.islink(ignore):
         return
     try:
@@ -544,8 +601,8 @@ def _seed_gitignore(ignore: str) -> None:
                 return
             with open(ignore, "a", encoding="utf-8") as f:
                 f.write(("" if not text or text.endswith("\n") else "\n") + ".fused/\n")
-        except OSError:
-            log.warning("bots: could not add .fused/ to %s", ignore, exc_info=True)
+        except OSError as e:
+            raise OSError(f"cannot add .fused/ to {ignore} ({e}); refusing to write private bot state there") from e
         return
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(".fused/\n")

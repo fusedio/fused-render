@@ -26,8 +26,13 @@ import { CARD_CLASS, DIALOG_CLASS, DIALOG_SIZE, FOOTER_CLASS, HEADER_CLASS } fro
 
 const EXT = ".fusedbot";
 const SOURCE_LABEL: Record<PackageSourceKind, string> = { bundled: "Bundled", marketplace: "Marketplace", starter: "Built in", github: "GitHub" };
-/** Why a GitHub app is bundled instead of linked (PackageAppRow.fallback.code → share_app.github_link_state's code). */
-const FALLBACK_WHY: Record<string, string> = { dirty: "uncommitted changes", unpushed: "unpushed commits", no_default: "no default branch" };
+/** Why an app is bundled instead of referenced (PackageAppRow.fallback): the reference it would have been … */
+const FALLBACK_KIND: Record<string, string> = { github: "GitHub", marketplace: "Marketplace", starter: "Starter" };
+/** … and why (fallback.code; github's come from share_app.github_link_state). `dirty` = ANY local change count, a
+ *  contributor copy's committed-locally edits included, so it never says "uncommitted". */
+const FALLBACK_WHY: Record<string, string> = { unpushed: "unpushed commits", no_default: "no default branch" };
+const fallbackWhy = (kind: string, code: string): string =>
+  code === "dirty" ? `local changes that are not on ${FALLBACK_KIND[kind] ?? kind}` : FALLBACK_WHY[code] ?? code;
 const APPROVAL_LABEL: Record<string, string> = { ask: "Ask me first", auto: "Never ask" };
 
 /** Human size with GB too: a package may carry up to 1 GiB of bundled apps. */
@@ -102,6 +107,10 @@ export function ExportBotDialog({ bot, onClose }: { bot: Bot; onClose: () => voi
   const appBytes = (plan?.apps || []).reduce((n, a) => n + (ticked.has(a.folder) && !a.problem && a.source.kind === "bundled" ? a.bytes : 0), 0);
   const total = textBytes + (memory ? plan?.memory_bytes || 0 : 0) + appBytes;
   const extraTicked = extras.some((x) => ticked.has(x.folder));
+  // Skills alone over the cap always block; skills + memory only while memory is ticked (a missing field = null).
+  const textProblem = plan?.text_problem ? `${plan.text_problem}. Trim skills before exporting.`
+    : memory && plan?.memory_text_problem ? `${plan.memory_text_problem}. Leave memory out or trim it before exporting.`
+    : "";
 
   const toggle = (folder: string, on: boolean) => setTicked((cur) => {
     const next = new Set(cur);
@@ -255,9 +264,7 @@ export function ExportBotDialog({ bot, onClose }: { bot: Bot; onClose: () => voi
                   )}
                 </section>
 
-                {plan.text_problem ? (
-                  <p className="m-0 text-sm text-destructive">{plan.text_problem}. Trim memory or skills before exporting.</p>
-                ) : null}
+                {textProblem ? <p className="m-0 text-sm text-destructive">{textProblem}</p> : null}
                 {plan.secrets.length ? (
                   <section className="flex flex-col gap-1.5 rounded-xl border border-amber-500/30 bg-amber-500/[0.06] p-4 text-[13px]" aria-labelledby="exsecrets">
                     <h3 id="exsecrets" className="m-0 flex items-center gap-2 text-sm font-medium"><TriangleAlertIcon className="size-4 text-amber-500" />This may contain a secret</h3>
@@ -292,7 +299,7 @@ export function ExportBotDialog({ bot, onClose }: { bot: Bot; onClose: () => voi
                 {plan && !isSuper ? `About ${size(total)}${extraTicked ? " plus added apps" : ""}` : ""}
               </span>
               <Button variant="outline" disabled={busy} onClick={onClose}>Cancel</Button>
-              <Button disabled={!plan || isSuper || busy || !!plan.text_problem} onClick={() => { void doExport(); }}>{busy ? "Exporting…" : "Export"}</Button>
+              <Button disabled={!plan || isSuper || busy || !!textProblem} onClick={() => { void doExport(); }}>{busy ? "Exporting…" : "Export"}</Button>
             </div>
           )}
           {err ? <p className="m-0 w-full text-[13px] text-destructive" role="alert">{err}</p> : null}
@@ -310,8 +317,10 @@ function PlanAppRow({ a, on, icon, disabled, onToggle }: { a: PackageAppRow; on:
   const bad = !!a.problem;
   const gh = a.source.kind === "github";
   const where = gh ? [a.source.repo || a.folder, a.source.commit ? a.source.commit.slice(0, 7) : ""].filter(Boolean).join(" @ ") : a.folder;
-  const fallback = !bad && a.source.kind === "bundled" && a.fallback
-    ? `Bundled: its GitHub copy has ${FALLBACK_WHY[a.fallback.code] ?? a.fallback.code}${a.fallback.repo ? ` (${a.fallback.repo})` : ""}`
+  const fb = a.fallback;
+  const fbName = fb ? fb.repo || fb.slug || fb.key || "" : "";
+  const fallback = !bad && a.source.kind === "bundled" && fb
+    ? `Bundled, not linked to ${FALLBACK_KIND[fb.kind] ?? fb.kind}${fbName ? ` (${fbName})` : ""}: it has ${fallbackWhy(fb.kind, fb.code)}`
     : null;
   return (
     <label className={cn("flex items-center gap-3 rounded-md px-1 py-1.5 text-sm", bad ? "opacity-60" : "cursor-pointer hover:bg-foreground/[0.04]")}>

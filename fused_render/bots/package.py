@@ -14,7 +14,8 @@ kind ever half-opens as the other. Members:
 Apps travel four ways (`resolve_source`): a starter, a marketplace app or a
 GitHub-linked app (a clean, pushed clone of a GitHub repo — the user's own or a
 copy installed from someone's link) is a REFERENCE in the index (the importer
-installs it from its own source), only a hand-made app is bundled. Everything here reads the bot's files from disk,
+installs it from its own source), only a hand-made app — or a reference whose local copy carries edits the
+reference would drop — is bundled. Everything here reads the bot's files from disk,
 never a live Bot: the export must work whether or not the registry has that
 bot loaded, and a running task's in-memory meta is not what the user sees in
 the folder.
@@ -75,9 +76,12 @@ def resolve_source(app_dir: str) -> dict:
     A reference is always preferred over bundling: the importer gets the app from where it is maintained, so it
     keeps receiving updates, and the package stays small.
 
-    A GitHub app whose link would NOT carry it faithfully (`code` dirty / unpushed / no_default) is bundled
-    instead, and the dict carries `"fallback": {"kind": "github", "code", "repo"}` so the export dialog can say
-    why; `write()` never puts `fallback` in an index row. The url is the repo's canonical
+    A reference that would NOT carry the local copy faithfully is bundled instead, and the dict carries a
+    `"fallback"` naming the reference it replaces so the export dialog can say why: a GitHub app whose link fails
+    (`{"kind": "github", "code": dirty|unpushed|no_default, "repo"}`), a marketplace copy with edits of its own
+    (`{"kind": "marketplace", "code": "dirty", "slug"}`, _marketplace_edited), a starter whose files differ from
+    the shipped starter (`{"kind": "starter", "code": "dirty", "key"}`, _starter_edited). `write()` never puts
+    `fallback` in an index row. The url is the repo's canonical
     `https://github.com/<owner>/<name>` — what `appfetch.download_github_app` and `appfile_git` compare on — not
     the state's install-page link. No network: the state reads local refs only."""
     from fused_render.bots import starters
@@ -85,6 +89,8 @@ def resolve_source(app_dir: str) -> dict:
     rec0 = starters._installed_record(app_dir)
     key = rec0.get("starter") if isinstance(rec0, dict) else None
     if isinstance(key, str) and key:
+        if _starter_edited(app_dir, key, rec0):
+            return {"kind": "bundled", "fallback": {"kind": "starter", "code": "dirty", "key": key}}
         return {"kind": "starter", "key": key}
     from fused_render.contrib import store as cstore
 
@@ -101,6 +107,8 @@ def resolve_source(app_dir: str) -> dict:
         commit = (rec.get("approved") or {}).get("commit") if isinstance(rec.get("approved"), dict) else None
         if isinstance(commit, str) and commit:
             out["commit"] = commit
+        if _marketplace_edited(app_dir):
+            return {"kind": "bundled", "fallback": {"kind": "marketplace", "code": "dirty", "slug": rec["slug"]}}
         return out
     gh = _github_source(app_dir)
     if gh is not None:
@@ -109,6 +117,97 @@ def resolve_source(app_dir: str) -> dict:
 
 
 _GITHUB_FALLBACK_CODES = ("dirty", "unpushed", "no_default")
+
+
+def _marketplace_edited(app_dir: str) -> bool:
+    """Whether a marketplace copy carries edits of its own, which a slug reference would drop: the count the share
+    sheet uses (`share_app.github_link_state` -> `_contributor_link`: the contrib engine's changed files against the
+    approved line plus one for uncommitted tracked edits; local git only, no network). Untracked new files are not
+    counted (the engine's rule). Any failure keeps the reference — the behaviour before this check existed."""
+    from fused_render import share_app
+
+    try:
+        state = share_app.github_link_state(os.path.realpath(app_dir))
+        return state.get("code") == "contributor" and int(state.get("changes") or 0) > 0
+    except Exception:  # noqa: BLE001 - see docstring
+        log.debug("marketplace change count failed for %s", app_dir, exc_info=True)
+        return False
+
+
+# What the edit check of an installed starter ignores besides starters.SKIP (never copied, so never compared): the
+# uv.lock `uv sync` writes into the app folder on its first build (_env_install_worker._sync_root) — uv's output, not
+# an edit — and a git checkout's own folder.
+_STARTER_DERIVED = frozenset({"uv.lock", ".git"})
+
+
+def _starter_tree(root: str) -> dict[str, tuple]:
+    """relpath -> ("file", size, abs path) | ("link",) for every file under `root` that the starter comparison counts:
+    starters.SKIP names (`.fused/`, `.venv`, caches) are pruned at any depth, as starters._copy prunes them."""
+    out: dict[str, tuple] = {}
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        rel_dir = os.path.relpath(dirpath, root)
+        dirnames[:] = [d for d in dirnames if d not in _skip_names(rel_dir)]
+        for d in list(dirnames):
+            if os.path.islink(os.path.join(dirpath, d)):
+                dirnames.remove(d)
+                out[_rel(rel_dir, d)] = ("link",)
+        for f in filenames:
+            if f in _skip_names(rel_dir):
+                continue
+            full = os.path.join(dirpath, f)
+            out[_rel(rel_dir, f)] = ("link",) if os.path.islink(full) else ("file", os.path.getsize(full), full)
+    return out
+
+
+def _skip_names(rel_dir: str) -> frozenset:
+    from fused_render.bots import starters
+
+    return frozenset(starters.SKIP) | (_STARTER_DERIVED if rel_dir == "." else frozenset())
+
+
+def _rel(rel_dir: str, name: str) -> str:
+    return name if rel_dir == "." else f"{rel_dir}/{name}".replace(os.sep, "/")
+
+
+def _sha256(path: str) -> str:
+    import hashlib
+
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _starter_edited(app_dir: str, key: str, rec: dict) -> bool:
+    """Whether an installed starter differs from the starter this build ships, by (relpath, size, sha256) over its
+    files (starters.SKIP pruned, uv.lock ignored): a reference would install the pristine starter and drop the
+    user's edits. Only answered when the installed copy records the SAME version as the shipped one — after a
+    release changed the starter, the trees differ with no edit at all, so that copy keeps its reference. Offline;
+    any failure (an odd key, an unreadable file) keeps the reference too."""
+    from fused_render.bots import starters
+
+    try:
+        if key != os.path.basename(key) or key.startswith(".") or "\\" in key:
+            return False
+        src = os.path.join(starters.STARTERS_DIR, key)
+        if not os.path.isdir(src) or os.path.islink(src):
+            return False
+        if str(rec.get("version") or "") != starters._pyproject(src).get("version", ""):
+            return False
+        mine, theirs = _starter_tree(app_dir), _starter_tree(src)
+        if mine.keys() != theirs.keys():
+            return True
+        for rel, a in mine.items():
+            b = theirs[rel]
+            if a[0] != "file" or b[0] != "file":
+                return True  # a link where the starter ships a file (or vice versa) is not the starter
+            if a[1] != b[1] or _sha256(a[2]) != _sha256(b[2]):
+                return True
+        return False
+    except Exception:  # noqa: BLE001 - see docstring
+        log.debug("starter edit check failed for %s", app_dir, exc_info=True)
+        return False
 
 
 def _github_source(app_dir: str) -> dict | None:
@@ -163,6 +262,12 @@ def _public(bid: str) -> tuple[str, bytes, dict, dict]:
         raise ValueError(f"this bot's bot.json is not valid JSON: {e}")
     public, _private = store.split_meta(meta)
     public["id"] = bid
+    if isinstance(public.get("routines"), list):
+        # split_meta keeps a routine row with no id WHOLE (it has no id to rejoin its halves by), so a bot.json read
+        # before Bot.__init__ minted the id would ship its run state (enabled/last/next/fails). Every row is cut to
+        # the public keys here; a row with an id is already exactly that.
+        public["routines"] = [{k: v for k, v in r.items() if k in store.ROUTINE_PUBLIC_KEYS} if isinstance(r, dict)
+                              else r for r in public["routines"]]
     return path, store.public_json(public).encode("utf-8"), public, meta
 
 
@@ -331,7 +436,7 @@ def _app_row(folder: str, manifest_row: dict | None) -> dict:
     fallback = source.pop("fallback", None)
     out = {"folder": folder, "name": name, "app_id": app_id, "source": source, "bytes": 0}
     if isinstance(fallback, dict):
-        out["fallback"] = fallback  # why a GitHub app is bundled; a plan-row key, never an index-row one (write())
+        out["fallback"] = fallback  # which reference was passed over and why; a plan-row key, never an index-row one
     if source.get("kind") == "bundled":
         out["bytes"], problem = _bundle_size(app_dir)
         if problem:
@@ -397,9 +502,16 @@ def plan(bid: str) -> dict:
     memory_bytes = _size(mpath) if _regular(mpath) else 0
     if memory_bytes:
         _scan("memory", _read_text(mpath), hits)
+    # Two answers, because memory is the user's choice in the dialog: `text_problem` is skills alone (they always
+    # travel) and blocks Export outright; `memory_text_problem` blocks it only while memory is ticked — so a
+    # small-skills bot with a large memory.md can still be exported without its memory.
     text_problem = None
-    if skills_bytes + memory_bytes > TEXT_MAX_BYTES:
-        text_problem = f"skills and memory together are {skills_bytes + memory_bytes} bytes; the cap is {TEXT_MAX_BYTES}"
+    if skills_bytes > TEXT_MAX_BYTES:
+        text_problem = f"skills are {skills_bytes} bytes; the cap is {TEXT_MAX_BYTES}"
+    memory_text_problem = None
+    if memory_bytes and skills_bytes + memory_bytes > TEXT_MAX_BYTES:
+        memory_text_problem = (f"skills and memory together are {skills_bytes + memory_bytes} bytes; the cap is "
+                               f"{TEXT_MAX_BYTES} — export without memory, or trim it")
     return {
         "ok": True,
         "name": name,
@@ -414,6 +526,7 @@ def plan(bid: str) -> dict:
         # What the caution line covers; bundled app SOURCES are not scanned here (the app doctor is for that).
         "secrets_scope": ["instructions", "memory", "skills", "readme", "routines"],
         "text_problem": text_problem,
+        "memory_text_problem": memory_text_problem,
         "super": is_super(public),
     }
 
@@ -465,7 +578,8 @@ def write(bid: str, *, memory: bool, apps: list[str], file_name: str | None, des
         members.append((".fused/memory.md", mpath))
         text_bytes += _size(mpath)
     if text_bytes > TEXT_MAX_BYTES:
-        raise ValueError(f"skills and memory are too large to export ({text_bytes} bytes > {TEXT_MAX_BYTES})")
+        what = "skills and memory are" if memory and _regular(mpath) else "skills are"
+        raise ValueError(f"{what} too large to export ({text_bytes} bytes > {TEXT_MAX_BYTES})")
 
     manifest = _manifest(meta)
     rows: list[dict] = []
@@ -530,33 +644,60 @@ def write(bid: str, *, memory: bool, apps: list[str], file_name: str | None, des
     return final
 
 
+_NO_HARD_LINK = (errno.EPERM, errno.EXDEV, errno.ENOTSUP, errno.EOPNOTSUPP)
+
+
 def _place(tmp: str, dest_dir: str, file_name: str, unique) -> str:
     """Move the finished package to its final name without ever overwriting: `os.link` fails with EEXIST when a
     racing writer took the name since `unique()` looked (os.replace would silently win that race), so the next free
-    name is tried; a filesystem without hard links falls back to a re-checked os.replace."""
+    name is tried. A filesystem without hard links gets the same guarantee from an exclusive create
+    (`O_CREAT|O_EXCL`) that the bytes are then copied into: a name taken meanwhile is skipped, never overwritten, and
+    a copy that fails leaves no partial file behind."""
     final = unique(dest_dir, file_name)
+    copy = False
     for _ in range(20):
+        if copy:
+            try:
+                _copy_exclusive(tmp, final)
+            except FileExistsError:
+                final = unique(dest_dir, file_name)
+                continue
+            except OSError as e:
+                raise ValueError(f"could not save the package: {e}")
+            return final
         try:
             os.link(tmp, final)
         except FileExistsError:
             final = unique(dest_dir, file_name)
             continue
         except OSError as e:
-            if e.errno not in (errno.EPERM, errno.EXDEV, errno.ENOTSUP, errno.EOPNOTSUPP):
+            if e.errno not in _NO_HARD_LINK:
                 raise ValueError(f"could not save the package: {e}")
-            if os.path.lexists(final):
-                raise ValueError(f"refusing to overwrite existing file: {final}")
-            try:
-                os.replace(tmp, final)
-            except OSError as e2:
-                raise ValueError(f"could not save the package: {e2}")
-            return final
+            copy = True
+            continue
         try:
             os.unlink(tmp)
         except OSError:
             pass
         return final
     raise ValueError(f"could not find a free file name for {file_name} under {dest_dir}")
+
+
+def _copy_exclusive(src: str, dst: str) -> None:
+    """Copy `src` to a NEW file `dst`: FileExistsError (nothing written) when `dst` exists, symlink included; on any
+    other failure the partial `dst` is removed before the error propagates."""
+    fd = os.open(dst, os.O_CREAT | os.O_EXCL | os.O_WRONLY | getattr(os, "O_BINARY", 0), 0o666)
+    try:
+        with os.fdopen(fd, "wb") as out, open(src, "rb") as inp:
+            shutil.copyfileobj(inp, out, 1024 * 1024)
+            out.flush()
+            os.fsync(out.fileno())
+    except BaseException:
+        try:
+            os.unlink(dst)
+        except OSError:
+            pass
+        raise
 
 
 def _require_app(folder: str) -> None:
