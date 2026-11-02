@@ -351,6 +351,8 @@ def _move_layer(doc: dict, cmd: dict) -> dict:
 
 def _split_layer(doc: dict, cmd: dict) -> dict:
     index = _find(doc, cmd.get("id"))
+    if doc["layers"][index]["kind"] not in ("auto", "vector"):
+        raise MapDocError("split_layer splits vector layers only")
     names = cmd.get("source_layers")
     if not (isinstance(names, list) and names
             and all(isinstance(name, str) and name for name in names)

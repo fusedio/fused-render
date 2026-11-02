@@ -193,6 +193,13 @@ def test_split_layer_refuses_anything_but_distinct_layer_names(names):
         md.apply(doc, command)
 
 
+@pytest.mark.parametrize("kind", ["raster", "zarr", "pmtiles", "pointcloud"])
+def test_split_layer_only_splits_vector_layers(kind):
+    doc, _ = run([{"op": "add_layer", "source": "/data/a.tif", "kind": kind}])
+    with pytest.raises(md.MapDocError, match="vector layers only"):
+        md.apply(doc, {"op": "split_layer", "id": "a", "source_layers": ["x", "y"]})
+
+
 def test_view_bounds_and_center_replace_each_other():
     doc, _ = run([{"op": "set_view", "bounds": [0, 0, 10, 10]}])
     assert doc["view"]["bounds"] == [0, 0, 10, 10]
@@ -272,6 +279,10 @@ PARITY_CASES = [
      {"op": "split_layer", "id": "dem", "source_layers": ["a", "a"]},
      {"op": "split_layer", "id": "dem", "source_layers": []},
      {"op": "split_layer", "id": "dem"}],
+    [{"op": "add_layer", "source": "/a.tif", "kind": "raster"},
+     {"op": "split_layer", "id": "a", "source_layers": ["x"]},
+     {"op": "add_layer", "source": "/b.gpkg", "kind": "vector"},
+     {"op": "split_layer", "id": "b", "source_layers": ["x"]}],
 ]
 NORMALIZE_CASES = [
     {"type": "fused-map", "basemap": "dark", "view": {"center": [1, 2], "zoom": 3},

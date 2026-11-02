@@ -779,6 +779,7 @@
     },
     split_layer(doc, cmd) {
       const index = find(doc, cmd.id), names = cmd.source_layers;
+      if (!["auto", "vector"].includes(doc.layers[index].kind)) fail("split_layer splits vector layers only");
       if (!(Array.isArray(names) && names.length && names.every(name => typeof name === "string" && name !== "")
             && new Set(names).size === names.length)) fail("source_layers must be a list of distinct layer names");
       const [layer] = doc.layers.splice(index, 1);
@@ -1944,7 +1945,7 @@ function fitLayers(ids) {
     else if (r.engine === "raster") waiting = true;
   }
   if (waiting || (failed && !boxes.length)) { deferFit(group); return; }
-  for (const id of group) pendingFit.delete(id);
+  for (const id of ids) pendingFit.delete(id);
   if (!boxes.length) return;
   const w = Math.min(...boxes.map(b => b[0])), s = Math.min(...boxes.map(b => b[1]));
   const e = Math.max(...boxes.map(b => b[2])), n = Math.max(...boxes.map(b => b[3]));
