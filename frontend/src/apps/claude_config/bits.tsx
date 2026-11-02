@@ -141,6 +141,37 @@ export function Card({ children }: { children: ReactNode }) {
 // than free-floating on the page background — see claude-config.css's .cc-list
 // for the defect this fixes (a row's content stopping well short of the page's
 // full-bleed width, with a hairline running under the void it left).
+/** How many rows a long list shows before "Show N more". */
+export const SHOW_MORE_LIMIT = 6;
+
+/** The first `limit` items, then a quiet "Show N more" / "Show less" row.
+ *  Collapses again whenever `resetKey` changes (pass the search filter). */
+export function ShowMore<T>({
+  items,
+  limit = SHOW_MORE_LIMIT,
+  render,
+  resetKey,
+}: {
+  items: T[];
+  limit?: number;
+  render: (item: T) => ReactNode;
+  resetKey?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  useEffect(() => setOpen(false), [resetKey]);
+  const hidden = items.length - limit;
+  return (
+    <>
+      {(open || hidden <= 0 ? items : items.slice(0, limit)).map(render)}
+      {hidden > 0 && (
+        <button type="button" className="cc-showmore" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+          {open ? "Show less" : `Show ${hidden} more`}
+        </button>
+      )}
+    </>
+  );
+}
+
 export function List({ children }: { children: ReactNode }) {
   return <div className="cc-list">{children}</div>;
 }
